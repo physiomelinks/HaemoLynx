@@ -3,6 +3,7 @@
 import logging
 import sys
 from pathlib import Path
+from skan import csr
 
 import networkx as nx
 
@@ -112,12 +113,7 @@ def main() -> None:
     )
 
     # 3) Convert skeleton to graph.
-    try:
-        from skan import csr
-
-        sk = csr.Skeleton(skeleton)
-    except ImportError as exc:
-        raise ImportError("skan is required. Install with `pip install skan`.") from exc
+    sk = csr.Skeleton(skeleton)
 
     G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
         sk,

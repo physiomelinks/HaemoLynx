@@ -4,6 +4,7 @@ from typing import Optional, List, Dict, Any, Tuple
 
 import numpy as np
 import networkx as nx
+from skan import csr
 
 from . import io
 from . import preprocessing
@@ -76,11 +77,7 @@ def run_pipeline(
         skeleton, min_branch_length=min_branch_length
     )
 
-    try:
-        from skan import csr
-        sk = csr.Skeleton(skeleton)
-    except ImportError:
-        raise ImportError("skan is required for graph building")
+    sk = csr.Skeleton(skeleton)
 
     G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
         sk, skeleton, debug=debug
