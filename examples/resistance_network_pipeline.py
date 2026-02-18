@@ -4,6 +4,7 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
 import networkx as nx
 
 # Ensure package is importable when running from repo root.
@@ -19,6 +20,7 @@ INPUT_PATH = "path/to/your_image.tif"
 INPUT_FORMAT = "tif"  # "tif" or "h5"
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 STARTING_NODES = [426, 184, 509]
+RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
 VISUALIZE_RESULTS = True
 VERBOSE_LOGGING = True
 MIN_BRANCH_LENGTH = 10
@@ -157,7 +159,42 @@ def main() -> None:
             DIAMETER_BY_BRANCH_ORDER_ENHANCED,
         )
 
-    # 5) Compute and print vessel statistics.
+    # 5) Compute effective resistance between two selected nodes.
+    # Edge "weight" in this pipeline is treated as conductance.
+    node_list = list(G.nodes())
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+
+    source_node, target_node = RESISTANCE_NODE_PAIR
+    if source_node in node_to_idx and target_node in node_to_idx:
+        conductance = np.zeros((len(node_list), len(node_list)), dtype=float)
+        for u, v, data in G.edges(data=True):
+            edge_weight = data.get("weight")
+            if edge_weight is None or edge_weight <= 0:
+                continue
+            i = node_to_idx[u]
+            j = node_to_idx[v]
+            # Sum conductance for parallel edges.
+            conductance[i, j] += edge_weight
+            conductance[j, i] += edge_weight
+
+        laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+        two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+            laplacian,
+            G,
+            source_node,
+            target_node,
+        )
+        print(
+            f"\nEffective resistance between nodes {source_node} and "
+            f"{target_node}: {two_point_resistance}"
+        )
+    else:
+        print(
+            f"\nSkipped two-point resistance: nodes {RESISTANCE_NODE_PAIR} "
+            "are not both present in the graph."
+        )
+
+    # 6) Compute and print vessel statistics.
     node_positions = nx.get_node_attributes(G, "pos")
     stats = statistics.compute_comprehensive_vessel_statistics(
         G,
@@ -169,7 +206,7 @@ def main() -> None:
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
-    # 6) Optional visualization.
+    # 7) Optional visualization.
     if VISUALIZE_RESULTS:
         visualization.plot_node_degree_distribution(G)
         visualization.visualize_edges_and_nodes(image, G)
