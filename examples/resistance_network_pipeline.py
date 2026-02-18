@@ -4,14 +4,12 @@ import logging
 import sys
 from pathlib import Path
 
-import numpy as np
 import networkx as nx
 
 # Ensure package is importable when running from repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization
-from ImageLynx.config import DIAMETER_BY_BRANCH_ORDER_ENHANCED
 
 # ---------------------------
 # Beginner-friendly settings
@@ -160,23 +158,11 @@ def main() -> None:
         )
 
     # 5) Compute effective resistance between two selected nodes.
-    # Edge "weight" in this pipeline is treated as conductance.
-    node_list = list(G.nodes())
+    conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
     source_node, target_node = RESISTANCE_NODE_PAIR
     if source_node in node_to_idx and target_node in node_to_idx:
-        conductance = np.zeros((len(node_list), len(node_list)), dtype=float)
-        for u, v, data in G.edges(data=True):
-            edge_weight = data.get("weight")
-            if edge_weight is None or edge_weight <= 0:
-                continue
-            i = node_to_idx[u]
-            j = node_to_idx[v]
-            # Sum conductance for parallel edges.
-            conductance[i, j] += edge_weight
-            conductance[j, i] += edge_weight
-
         laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
         two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
             laplacian,

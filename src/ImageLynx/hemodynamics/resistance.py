@@ -3,6 +3,32 @@ import numpy as np
 import networkx as nx
 
 
+def build_conductance_matrix_from_graph(
+    G: nx.Graph, weight_attr: str = "weight"
+) -> tuple[np.ndarray, list]:
+    """Build symmetric conductance matrix from graph edge weights.
+
+    Returns:
+        A tuple of (conductance_matrix, node_list) where matrix indices map to
+        node IDs via node_list order.
+    """
+    node_list = list(G.nodes())
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    conductance = np.zeros((len(node_list), len(node_list)), dtype=float)
+
+    for u, v, data in G.edges(data=True):
+        edge_weight = data.get(weight_attr)
+        if edge_weight is None or edge_weight <= 0:
+            continue
+        i = node_to_idx[u]
+        j = node_to_idx[v]
+        # Sum conductance for parallel edges.
+        conductance[i, j] += edge_weight
+        conductance[j, i] += edge_weight
+
+    return conductance, node_list
+
+
 def calc_laplacian_from_conductance_matrix(C: np.ndarray) -> np.ndarray:
     """Compute graph Laplacian from conductance matrix. L = diag(sum(C,1)) - C."""
     if not np.allclose(C, C.T):

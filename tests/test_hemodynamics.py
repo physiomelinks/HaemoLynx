@@ -10,6 +10,7 @@ from ImageLynx.hemodynamics import (
     calculate_integrated_resistance,
     set_poiseuille_weights_with_constrictions,
     set_poiseuille_edge_weights,
+    build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
     calc_two_point_from_laplacian_matrix_nodeID,
 )
@@ -55,6 +56,28 @@ def test_calc_laplacian_from_conductance_matrix():
     L = calc_laplacian_from_conductance_matrix(C)
     assert np.allclose(L, L.T)
     assert np.allclose(np.sum(L, axis=1), 0)
+
+
+def test_build_conductance_matrix_from_graph():
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 1, 2])
+    G.add_edge(0, 1, weight=1.5)
+    G.add_edge(0, 1, weight=2.5)  # Parallel edge should be summed.
+    G.add_edge(1, 2, weight=1.0)
+    G.add_edge(0, 2, weight=-3.0)  # Non-positive weights are ignored.
+
+    C, node_list = build_conductance_matrix_from_graph(G)
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+
+    i0 = node_to_idx[0]
+    i1 = node_to_idx[1]
+    i2 = node_to_idx[2]
+
+    assert C.shape == (3, 3)
+    assert np.allclose(C, C.T)
+    assert np.isclose(C[i0, i1], 4.0)
+    assert np.isclose(C[i1, i2], 1.0)
+    assert np.isclose(C[i0, i2], 0.0)
 
 
 def test_calc_two_point_from_laplacian_matrix_nodeID():

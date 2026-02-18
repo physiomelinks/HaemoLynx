@@ -1,8 +1,16 @@
-"""Tests for config."""
-from ImageLynx.config import (
-    DIAMETER_BY_BRANCH_ORDER,
-    DIAMETER_BY_BRANCH_ORDER_ENHANCED,
-)
+"""Tests for default diameter config values used by examples/pipeline."""
+
+DIAMETER_BY_BRANCH_ORDER = {
+    "BO1": 6.2,
+    "BO2": 4.0,
+    "BO3": 5.0,
+}
+
+DIAMETER_BY_BRANCH_ORDER_ENHANCED = {
+    "BO1": {"d1": 6.2, "d2": 6.2},
+    "BO2": {"d1": 4.0, "d2": 3.2},
+    "BO3": {"d1": 5.0, "d2": 4.0},
+}
 
 
 def test_diameter_config_keys():

@@ -11,9 +11,37 @@ from . import graph
 from . import hemodynamics
 from . import statistics
 from . import visualization
-from .config import DIAMETER_BY_BRANCH_ORDER_ENHANCED
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_DIAMETER_BY_BRANCH_ORDER_ENHANCED = {
+    "BO1": {"d1": 6.2, "d2": 6.2},
+    "BO2": {"d1": 4.0, "d2": 3.2},
+    "BO3": {"d1": 5.0, "d2": 4.0},
+    "BO4": {"d1": 5.0, "d2": 4.0},
+    "BO5": {"d1": 4.0, "d2": 3.2},
+    "BO6": {"d1": 4.0, "d2": 3.2},
+    "BO7": {"d1": 4.0, "d2": 3.2},
+    "BO8": {"d1": 4.0, "d2": 3.2},
+    "BO9": {"d1": 4.0, "d2": 3.2},
+    "B10": {"d1": 4.0, "d2": 3.2},
+    "B11": {"d1": 4.0, "d2": 3.2},
+    "B12": {"d1": 4.0, "d2": 3.2},
+    "B13": {"d1": 4.0, "d2": 3.2},
+    "B14": {"d1": 4.0, "d2": 3.2},
+    "B15": {"d1": 4.0, "d2": 3.2},
+    "B16": {"d1": 4.0, "d2": 3.2},
+    "B17": {"d1": 4.0, "d2": 3.2},
+    "B18": {"d1": 4.0, "d2": 3.2},
+    "B19": {"d1": 4.0, "d2": 3.2},
+    "B20": {"d1": 4.0, "d2": 3.2},
+    "B21": {"d1": 4.0, "d2": 3.2},
+    "B22": {"d1": 4.0, "d2": 3.2},
+    "B23": {"d1": 4.0, "d2": 3.2},
+    "B24": {"d1": 4.0, "d2": 3.2},
+    "B25": {"d1": 4.0, "d2": 3.2},
+    "B26": {"d1": 4.0, "d2": 3.2},
+}
 
 
 def run_pipeline(
@@ -33,7 +61,7 @@ def run_pipeline(
     Returns:
         (image, skeleton, G, stats_dict)
     """
-    diameter_config = diameter_config or DIAMETER_BY_BRANCH_ORDER_ENHANCED
+    diameter_config = diameter_config or DEFAULT_DIAMETER_BY_BRANCH_ORDER_ENHANCED
 
     if input_format.lower() == "tif":
         image, skeleton = io.load_and_skeletonize_3d_tif(filepath)
