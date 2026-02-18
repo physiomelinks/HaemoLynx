@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ImageLynx"
+version = "0.1.0"
+description = "Vascular network analysis from 3D microscopy"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "tifffile",
+    "matplotlib",
+    "networkx",
+    "scikit-image<0.25",
+    "scipy",
+    "pandas",
+    "plotly",
+    "h5py",
+    "skan",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "plotting: marks tests that create figures",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

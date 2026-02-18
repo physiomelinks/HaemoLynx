@@ -1,0 +1,13 @@
+numpy
+tifffile
+matplotlib
+networkx
+scikit-image<0.25
+scipy
+pandas
+plotly
+h5py
+skan
+
+[dev]
+pytest
