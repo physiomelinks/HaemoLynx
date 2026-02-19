@@ -8,14 +8,16 @@ from skan import csr
 import networkx as nx
 
 # Ensure package is importable when running from repo root.
+root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 
 from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization
 
 # ---------------------------
 # Beginner-friendly settings
 # ---------------------------
-INPUT_PATH = "path/to/your_image.tif"
+INPUT_PATH = root_dir / "examples" / "Images" / "Nerve_capillaries.tif"
 INPUT_FORMAT = "tif"  # "tif" or "h5"
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 STARTING_NODES = [426, 184, 509]
