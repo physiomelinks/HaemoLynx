@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
 from matplotlib.colors import Normalize
+import plotly.graph_objects as go
 
 from ._helpers import (
     sort_branch_orders_numerically,
@@ -235,3 +236,51 @@ def visualize_geometry_with_edge_weights(
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
     plt.show()
     return fig, ax, (vmin, vmax), cmap
+
+
+
+def interactive_3d_graph(G):
+    pos = nx.get_node_attributes(G, 'pos')
+    edge_x, edge_y, edge_z = [], [], []
+    edge_text = []
+
+    for i, (u, v, d) in enumerate(G.edges(data=True)):
+        path = d.get("voxels", [])
+        if not path:
+            continue
+        path = np.array(path)
+        edge_x.extend(path[:, 0].tolist() + [None])
+        edge_y.extend(path[:, 1].tolist() + [None])
+        edge_z.extend(path[:, 2].tolist() + [None])
+        edge_text.append(f"Edge {u}-{v}, Length: {d.get('weight', 0):.2f} µm")
+
+    node_x, node_y, node_z, node_text = [], [], [], []
+    for node, (z, y, x) in pos.items():
+        node_x.append(z)
+        node_y.append(y)
+        node_z.append(x)
+        node_text.append(f"Node {node}, Degree: {G.degree(node)}")
+
+    edge_trace = go.Scatter3d(
+        x=edge_x, y=edge_y, z=edge_z,
+        mode='lines',
+        line=dict(color='blue', width=2),
+        hoverinfo='text',
+        text=edge_text * len(edge_x)  # Repeat edge labels
+    )
+
+    node_trace = go.Scatter3d(
+        x=node_x, y=node_y, z=node_z,
+        mode='markers',
+        marker=dict(size=3, color='red'),
+        text=node_text,
+        hoverinfo='text'
+    )
+
+    fig = go.Figure(data=[edge_trace, node_trace])
+    fig.update_layout(
+        title='Interactive 3D Vascular Graph',
+        scene=dict(xaxis_title='Z', yaxis_title='Y', zaxis_title='X'),
+        showlegend=False
+    )
+    fig.show()
