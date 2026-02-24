@@ -27,11 +27,13 @@ VISUALIZE_VTK = False
 VERBOSE_LOGGING = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
+#HD note - Need to add back in community analysis, tortusity, average length statistics etc 
 
 
 def main() -> None:
 
     # TODO these diameters etc should be automated 
+    #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
     """Configuration defaults for diameter maps."""
 
     # Diameter by branch order (simple scalar)
@@ -217,6 +219,8 @@ def main() -> None:
     if VISUALIZE_RESULTS:
         visualization.plot_node_degree_distribution(G)
         visualization.visualize_edges_and_nodes(image, G)
+        #HD note - need visualisation of pericyte localisations (ie based upon constriction data)
+        #HD note - need interactive 3D visualisation as per original script, but with vessel ID, length, tortusity etc toggleable
         if STARTING_NODES:
             visualization.visualize_geometry_with_branch_orders(
                 image,
