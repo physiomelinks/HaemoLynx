@@ -21,6 +21,7 @@ INPUT_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
 INPUT_FORMAT = "tif"  # "tif" or "h5"
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 STARTING_NODES = [426, 184, 509]
+#HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
 RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
 VISUALIZE_RESULTS = True
 VISUALIZE_VTK = False
