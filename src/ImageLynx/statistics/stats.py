@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, Union
 import numpy as np
 import networkx as nx
 from scipy.spatial.distance import euclidean
+from networkx.algorithms.community import greedy_modularity_communities
 
 
 def compute_basic_statistics(
@@ -255,7 +256,12 @@ def compute_vessel_density(
             "N/A (no image dimension data)"
         )
     return out
-
+    
+def compute_communities(G):
+    return list(greedy_modularity_communities(G))
+    
+def compute_betweenness(G):
+    return nx.betweenness_centrality(G)
 
 def compute_comprehensive_vessel_statistics(
     G: Union[nx.Graph, nx.MultiGraph],
@@ -277,6 +283,8 @@ def compute_comprehensive_vessel_statistics(
         **compute_tree_asymmetry(G_simple),
         **compute_fractal_dimension(G_simple, node_positions),
         **compute_path_efficiency(G, is_mg),
+        **compute_communities(G),
+        **compute_betweenness(G),
         **compute_vessel_density(
             G, node_positions, voxel_size, image_dimensions, is_mg
         ),
