@@ -258,9 +258,11 @@ def compute_vessel_density(
     return out
     
 def compute_communities(G):
+     #need to add resistance as weight
     return list(greedy_modularity_communities(G))
     
 def compute_betweenness(G):
+    #need to add resistance as weight
     return nx.betweenness_centrality(G)
 
 def compute_comprehensive_vessel_statistics(
