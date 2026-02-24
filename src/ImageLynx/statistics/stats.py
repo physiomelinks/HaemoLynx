@@ -34,7 +34,7 @@ def compute_basic_statistics(
         "Average Degree": sum(node_degrees) / len(node_degrees) if node_degrees else 0,
     }
 
-
+#Update with newer tortuosity values HD gave to Anna
 def compute_tortuosity_measures(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict],
