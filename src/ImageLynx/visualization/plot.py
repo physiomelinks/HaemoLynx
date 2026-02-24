@@ -238,7 +238,7 @@ def visualize_geometry_with_edge_weights(
     return fig, ax, (vmin, vmax), cmap
 
 
-
+#Need to add in feature where tortusity, resistance, length etc is shown upon highlighting a vessel
 def interactive_3d_graph(G):
     pos = nx.get_node_attributes(G, 'pos')
     edge_x, edge_y, edge_z = [], [], []
