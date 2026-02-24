@@ -222,8 +222,9 @@ def main() -> None:
     if VISUALIZE_RESULTS:
         visualization.plot_node_degree_distribution(G)
         visualization.visualize_edges_and_nodes(image, G)
+        visualization.interactive_3d_graph(G)
         #HD note - need visualisation of pericyte localisations (ie based upon constriction data)
-        #HD note - need interactive 3D visualisation as per original script, but with vessel ID, length, tortusity etc toggleable
+        
         if STARTING_NODES:
             visualization.visualize_geometry_with_branch_orders(
                 image,
