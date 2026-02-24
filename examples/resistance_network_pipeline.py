@@ -1,3 +1,9 @@
+#Ability to compare datasets - Dave's suggestion
+#Summarise by BO in statistics
+#Resistance should be from start of arteriole to end of venule
+#Mean distance of object (classifier) to each capillary type and BO
+#Overall list of every vessel and its properties
+
 #!/usr/bin/env python3
 """Refactored full pipeline example using ImageLynx package."""
 import logging
