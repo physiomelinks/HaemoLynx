@@ -27,13 +27,13 @@ VISUALIZE_VTK = False
 VERBOSE_LOGGING = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
-#HD note - Need to add back in community analysis, tortusity, average length statistics etc 
 
 
 def main() -> None:
 
     # TODO these diameters etc should be automated 
     #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
+    #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
     """Configuration defaults for diameter maps."""
 
     # Diameter by branch order (simple scalar)
@@ -152,6 +152,8 @@ def main() -> None:
     G = graph.prune_vascular_stubs(G, debug=VERBOSE_LOGGING)
 
     # 4) Add branch orders and hemodynamic edge weights.
+    #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
+    #HD note - eventually add in probability of pericyte contraction?
     if STARTING_NODES:
         graph.assign_branch_orders(G, STARTING_NODES)
         poiseuille_model = hemodynamics.PoiseuilleModel(
