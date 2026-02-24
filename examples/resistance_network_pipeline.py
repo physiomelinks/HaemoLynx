@@ -17,14 +17,16 @@ from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visual
 # ---------------------------
 # Beginner-friendly settings
 # ---------------------------
-INPUT_PATH = root_dir / "examples" / "Images" / "Nerve_capillaries.tif"
+INPUT_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
 INPUT_FORMAT = "tif"  # "tif" or "h5"
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 STARTING_NODES = [426, 184, 509]
 RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
 VISUALIZE_RESULTS = True
+VISUALIZE_VTK = False
 VERBOSE_LOGGING = True
 MIN_BRANCH_LENGTH = 10
+VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
 
 
 def main() -> None:
@@ -150,12 +152,33 @@ def main() -> None:
     # 4) Add branch orders and hemodynamic edge weights.
     if STARTING_NODES:
         graph.assign_branch_orders(G, STARTING_NODES)
-        hemodynamics.set_poiseuille_weights_with_constrictions(
+        poiseuille_model = hemodynamics.PoiseuilleModel(
+            constriction_length=40.0,
+            constriction_spacing=100.0,
+        )
+        poiseuille_model.set_poiseuille_weights_with_constrictions(
             G,
             DIAMETER_BY_BRANCH_ORDER_ENHANCED,
         )
 
-    # 5) Compute effective resistance between two selected nodes.
+    # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
+    # TODO VTK Export currently not creating a connected graph. Don't use this yet.
+    vtk_export = visualization.graph_to_vtk(G, VTK_OUTPUT_PREFIX)
+    print("\n=== VTK Export ===")
+    print(f"  Vessels:   {vtk_export['vessels_path']}")
+    print(f"  Pericytes: {vtk_export['pericytes_path']}")
+    print(f"  Nodes:     {vtk_export['nodes_path']}")
+    print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
+          f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
+    if VISUALIZE_VTK:
+        visualization.visualize_vtk_network(
+            vtk_export["vessels_path"],
+            vtk_export["pericytes_path"],
+            vtk_export["nodes_path"],
+            show_nodes=False,
+        )
+
+    # 6) Compute effective resistance between two selected nodes.
     conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
@@ -178,7 +201,7 @@ def main() -> None:
             "are not both present in the graph."
         )
 
-    # 6) Compute and print vessel statistics.
+    # 7) Compute and print vessel statistics.
     node_positions = nx.get_node_attributes(G, "pos")
     stats = statistics.compute_comprehensive_vessel_statistics(
         G,
@@ -190,7 +213,7 @@ def main() -> None:
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
-    # 7) Optional visualization.
+    # 8) Optional matplotlib visualization.
     if VISUALIZE_RESULTS:
         visualization.plot_node_degree_distribution(G)
         visualization.visualize_edges_and_nodes(image, G)

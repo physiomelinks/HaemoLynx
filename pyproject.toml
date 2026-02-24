@@ -19,6 +19,7 @@ dependencies = [
     "plotly",
     "h5py",
     "skan",
+    "pyvista",
 ]
 
 [project.optional-dependencies]

@@ -92,13 +92,15 @@ def run_pipeline(
     G = graph.prune_vascular_stubs(G, debug=debug)
     G = graph.smart_multigraph_degree2_removal(G, skeleton, debug=debug)
 
+    poiseuille_model = hemodynamics.PoiseuilleModel(
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+    )
     if starting_nodes:
         graph.assign_branch_orders(G, starting_nodes)
-        hemodynamics.set_poiseuille_weights_with_constrictions(
-            G, diameter_config
-        )
+        poiseuille_model.set_poiseuille_weights_with_constrictions(G, diameter_config)
     if custom_edges:
-        hemodynamics.set_poiseuille_edge_weights(
+        poiseuille_model.set_poiseuille_edge_weights(
             G, custom_edges, 6.0, use_resistance=False
         )
 

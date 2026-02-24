@@ -9,3 +9,4 @@ plotly
 h5py
 skan
 pytest
+pyvista
