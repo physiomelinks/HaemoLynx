@@ -4,6 +4,7 @@ from .plot import (
     visualize_edges_and_nodes,
     visualize_geometry_with_branch_orders,
     visualize_geometry_with_edge_weights,
+    visualize_skeleton,
 )
 from .vtk_io import (
     derive_pericyte_points_from_graph,

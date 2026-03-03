@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 from skimage.filters import threshold_otsu
 from scipy.ndimage import binary_fill_holes, label, binary_dilation,  map_coordinates, distance_transform_edt
+from scipy.ndimage import generate_binary_structure, gaussian_filter
 from skimage.util import img_as_bool
 from scipy.spatial import KDTree, cKDTree
 from skimage.morphology import remove_small_objects, binary_dilation, skeletonize_3d
@@ -44,16 +45,21 @@ import random
 import threading
 from scipy.spatial.distance import directed_hausdorff
 from scipy import ndimage
+import sys
+from pathlib import Path
 
-# the below is for the new ImageLynx package
+root_dir = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization
+
 
 # %%
 #User input
 # PARAMETERS
-# TODO This wasn't used.
-# filepath = "C:\\Users\\hd01\\Dropbox\\Modelling - nerve vasculature\\2425_Fem_DAPI_FITCdextran_NG2dsRed_24112023_a_2425_Fem_DAPI_FI...laments_manuallyaddedfilaments_06112024.ims Resolution Level 1 - C=10_cropped.tif"
-
+filepath = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
+plot_dir = root_dir / "examples" / "plots" 
+if not plot_dir.exists():
+    plot_dir.mkdir(parents=True, exist_ok=True)
 
 diameter_by_branch_order = {
         'BO1': 6.2,  # Arterioles
@@ -205,8 +211,7 @@ def simplify_to_3d(image):
     
     return image
 
-image, skeleton = load_and_skeletonize_3d_tif("C://Users//hd01//Dropbox//710//For density analysis//4w Males//C1-Zstack_animal1_4w_male_1587_19102024.tif")
-#image, skeleton = load_and_skeletonize_3d_h5('C://Users//hd01//Dropbox//710//For density analysis//4w Males//C1-Zstack2_animal1_4w_male_1587_19102024_Simple Segmentation.h5')
+image, skeleton = load_and_skeletonize_3d_tif(filepath)
 
 
 # %%
@@ -219,7 +224,7 @@ def preprocess_skeleton_for_graph(skeleton_image, min_branch_length=5):
     cleaned = remove_small_objects(skeleton_image, min_size=min_branch_length)
     
     # Re-skeletonize to ensure proper skeleton properties
-    cleaned = skeletonize_3D(cleaned > 0)
+    cleaned = skeletonize_3d(cleaned > 0)
     
     return cleaned.astype(bool)
 
@@ -1173,6 +1178,21 @@ def safer_simple_remove_all_degree2_nodes(G, max_degree=4, debug=False, max_iter
     
     return G
 
+# THIS FUNCTION WASNT HERE ORIGINALLY - ADDED TO GET THINGS RUNNING.
+def get_all_edge_data(
+    G: Union[nx.Graph, nx.MultiGraph], u: int, v: int
+) -> List[dict]:
+    """Return list of edge data dicts (all parallel edges for MultiGraph)."""
+    if not G.has_edge(u, v):
+        return []
+    ed = G.get_edge_data(u, v)
+    if isinstance(ed, dict):
+        # MultiGraph: ed = {key: {attrs}, ...}
+        if isinstance(list(ed.values())[0], dict):
+            return [d.copy() for d in ed.values()]
+        return [ed.copy()]
+    return [ed.copy()]
+
 def trivial_remove_all_degree2_nodes(G, max_degree=4, debug=False):
     
     total_removed = 0
@@ -1630,8 +1650,12 @@ G, loops, edges = build_graph_segment_skan_stitched_loops(
         debug=True,                    
         max_voxel_graph_size=50000)
 
+
 #Improve graph (run in order)
 G = reconnect_secondary_loop_edges(G, skeleton, debug=True) 
+
+visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "OLD_reconnect_secondary_loop_edges.png")
+
 G, voxel_loops = optimise_graph_topology_fixed(
     G, loops, edges, 
     skeleton,  # Pass original skeleton
@@ -1639,11 +1663,16 @@ G, voxel_loops = optimise_graph_topology_fixed(
     validate_reconnections=True,
     aggressive_degree2_cleanup_level=0
 )
+
 G = safer_simple_remove_all_degree2_nodes(G, max_degree=5, max_edge_length_ratio=2.0)
+visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "OLD_safer_simple_remove_all_degree2_nodes.png")
 G = trivial_remove_all_degree2_nodes(G, max_degree=5, debug=True)
 G = smart_multigraph_degree2_removal(G, skeleton)
+visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "OLD_smart_multigraph_degree2_removal.png")
 G = prune_vascular_stubs(G)
+visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "OLD_prune_vascular_stubs.png")
 G = smart_multigraph_degree2_removal(G, skeleton)
+visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "OLD_smart_multigraph_degree2_removal_REPEAT.png")
 
 #Assign branch orders and resistance:
 def assign_branch_orders(G, starting_nodes):
@@ -1718,8 +1747,6 @@ assign_branch_orders(G, starting_nodes)
 # %%
 #Analysis/statistics functions for downstream stuff
 #***For epineurial vessels***
-#Constricted pericytes
-set_poiseuille_weights_with_constrictions(G, diameter_by_branch_order_enhanced)
 
 def set_poiseuille_weights_with_constrictions(G, diameter_by_branch_order):
     """
@@ -1852,6 +1879,9 @@ def set_poiseuille_weights_with_constrictions(G, diameter_by_branch_order):
     
     return results
 
+#Constricted pericytes
+set_poiseuille_weights_with_constrictions(G, diameter_by_branch_order_enhanced)
+
 #Passive diameter pericytes
 #set_poiseuille_weights(G, diameter_by_branch_order)
 def calculate_viscosity(diameter):
@@ -1898,9 +1928,6 @@ def calculate_integrated_resistance(length, d1, d2, num_points=1000):
     total_resistance = np.trapz(resistances, dx=length/(num_points-1))
     
     return total_resistance
-
-#*** For endoneurial vessel subset (defined by user input custom_edges)***
-set_poiseuille_edge_weights(G, custom_edges, 6, use_resistance=False)
 
 def set_poiseuille_edge_weights(G, custom_edges, edge_diameter, use_resistance=True):
     """
@@ -2023,8 +2050,10 @@ def set_poiseuille_edge_weights(G, custom_edges, edge_diameter, use_resistance=T
                         f"viscosity={viscosity:.6f}, new_weight={new_weight:.6f}")
     
     return results
-#Visualise and produce statistics
-plot_node_degree_distribution(G)
+
+#*** For endoneurial vessel subset (defined by user input custom_edges)***
+set_poiseuille_edge_weights(G, custom_edges, 6, use_resistance=False)
+
 def plot_node_degree_distribution(G, title="Node Degree Distribution"):
     """
     Enhanced plotting function with more details
@@ -2059,7 +2088,8 @@ def plot_node_degree_distribution(G, title="Node Degree Distribution"):
     
     return degree_counts
 
-visualize_edges_and_nodes(image, G)
+#Visualise and produce statistics
+plot_node_degree_distribution(G)
 
 def visualize_edges_and_nodes(image, G):
     projection = np.max(image, axis=0)
@@ -2076,13 +2106,9 @@ def visualize_edges_and_nodes(image, G):
     plt.title("Overlay: Edges and Nodes on Z-Projection")
     plt.axis('off')
     plt.show()
+
+visualize_edges_and_nodes(image, G)
     
-stats = compute_comprehensive_vessel_statistics(
-    G, 
-    node_positions=your_positions_dict,
-    voxel_size=(1, 1, 1),  # in microns
-    image_dimensions=(x_size, y_size, z_size)  # in voxels
-)
 
 def compute_comprehensive_vessel_statistics(G, node_positions=None, voxel_size=(1.0, 1.0, 1.0), image_dimensions=None):
     # Handle MultiGraph by converting to simple graph for some calculations
@@ -2127,6 +2153,13 @@ def compute_comprehensive_vessel_statistics(G, node_positions=None, voxel_size=(
     }
     
     return all_stats
+
+stats = compute_comprehensive_vessel_statistics(
+    G, 
+    node_positions=your_positions_dict,
+    voxel_size=(1, 1, 1),  # in microns
+    image_dimensions=(x_size, y_size, z_size)  # in voxels
+)
 
 def compute_basic_statistics(G, is_multigraph):
     """Compute basic graph statistics including edge length measures."""
