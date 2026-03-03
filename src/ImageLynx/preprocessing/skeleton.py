@@ -12,6 +12,37 @@ def bridge_gaps(binary_skeleton, max_gap=4):
     fill_mask = (dist <= max_gap) & (~binary_skeleton)
     filled = binary_skeleton | fill_mask
     return filled
+    
+def simplify_to_3d(image):
+    """
+    Simplify 4D or 5D datasets to 3D by removing the fourth dimension (channels).
+    
+    Parameters:
+    -----------
+    image : numpy.ndarray
+        Input image array (3D, 4D, or 5D)
+    
+    Returns:
+    --------
+    numpy.ndarray
+        3D image array
+    """
+    if image.ndim == 3:
+        return image
+    elif image.ndim == 4:
+        # Remove the 4th dimension (channels) - take first channel
+        return image[:, :, :, 0]
+    elif image.ndim == 5:
+        # Remove the 4th and 5th dimensions - take first channel and first of 5th dim
+        return image[:, :, :, 0, 0]
+    elif image.ndim < 3:
+        raise ValueError(f"Image has {image.ndim} dimensions. Need at least 3D data.")
+    else:
+        # For higher dimensions, take first 3 spatial dimensions
+        logger.warning(f"Image has {image.ndim} dimensions. Taking first 3 spatial dimensions and first channel.")
+        return image[:, :, :, 0, 0, 0] if image.ndim == 6 else image[:, :, :, 0]
+    
+    return image
 
 def load_and_skeletonize_3d_tif(filepath, voxel_size=1.0):
     logger.debug("Loading and skeletonizing TIFF...")
