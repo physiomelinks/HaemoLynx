@@ -179,31 +179,50 @@ def get_line_points_3d(p1, p2):
     return line_points
 
 
-def calculate_path_length(voxels: List) -> float:
-    """Sum of Euclidean distances between consecutive voxels."""
+def calculate_path_length(voxels):
+    """Calculate length as sum of distances between consecutive voxels."""
+    import numpy as np
+    
     if len(voxels) < 2:
         return 0.0
-    arr = np.array(voxels, dtype=float)
-    diffs = np.diff(arr, axis=0)
-    return float(np.sum(np.linalg.norm(diffs, axis=1)))
+    
+    total = 0.0
+    for i in range(len(voxels) - 1):
+        p1 = np.array(voxels[i])
+        p2 = np.array(voxels[i + 1])
+        total += np.linalg.norm(p2 - p1)
+    
+    return total
 
-
-def calculate_edge_length(
-    node: int,
-    neighbor: int,
-    edge_data: dict,
-    voxel_size: Tuple[float, float, float],
-) -> float:
-    """Edge length from voxels or Euclidean distance * voxel scale."""
-    voxels = edge_data.get("voxels", [])
-    if len(voxels) >= 2:
-        return calculate_path_length(
-            [tuple(np.array(v) * np.array(voxel_size)) for v in voxels]
-        )
-    length = edge_data.get("length", edge_data.get("weight", 0))
-    if length > 0:
-        return float(length)
-    return 0.0
+#Below needs to be improved, returns weight or euclidean distance
+def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: Tuple[float, float, float] = (1, 1, 1)) -> float:
+    """
+    Calculate the length of an edge between two nodes.
+    -------
+    float
+        Edge length
+    """
+    # If length is pre-calculated in edge data
+    if 'length' in edge_data:
+        return edge_data['length']
+    
+    # If we have coordinate information, calculate Euclidean distance
+    if 'pos' in edge_data or ('x' in edge_data and 'y' in edge_data):
+        if 'pos' in edge_data:
+            pos1, pos2 = edge_data['pos']
+        else:
+            pos1 = (edge_data.get('x1', 0), edge_data.get('y1', 0), edge_data.get('z1', 0))
+            pos2 = (edge_data.get('x2', 0), edge_data.get('y2', 0), edge_data.get('z2', 0))
+        
+        # Calculate distance accounting for voxel size
+        diff = np.array(pos2) - np.array(pos1)
+        scaled_diff = diff * np.array(voxel_size)
+        return np.linalg.norm(scaled_diff)
+    
+    # If we have weight, use that
+    if 'weight' in edge_data:
+        return edge_data['weight']
+    
 
 
 # For merge_edges_with_topology_improvement
