@@ -3,6 +3,8 @@ from typing import List, Tuple, Dict, Any, Union
 
 import numpy as np
 import networkx as nx
+import heapq
+from collections import defaultdict
 
 def add_edge_safe(G, u, v, **attr):
     
@@ -238,22 +240,37 @@ def is_path_curved(voxels: List, ratio_threshold: float = 1.15) -> bool:
     return path_len / straight > ratio_threshold
 
 
-def merge_curved_edges(
-    voxels1: List, voxels2: List, node_pos: np.ndarray, debug: bool = False
-) -> List:
-    """Concatenate two curved paths at junction node."""
+def merge_curved_edges(voxels1, voxels2, connection_pos, debug=False):
+    """
+    Merge two edge paths at a connection point, preserving topology.
+    """
+    
+    connection_pos = np.array(connection_pos)
+    
+    # Orient voxels1 to end at connection_pos
+    oriented_voxels1 = orient_path_to_endpoint(voxels1, connection_pos)
+    
+    # Orient voxels2 to start from connection_pos  
+    oriented_voxels2 = orient_path_from_startpoint(voxels2, connection_pos)
+    
+    # Merge the paths
     merged = []
-    if voxels1:
-        merged.extend(voxels1)
-    if node_pos is not None:
-        v = tuple(np.round(node_pos).astype(int))
-        if not merged or merged[-1] != v:
-            merged.append(v)
-    if voxels2:
-        v0 = tuple(np.round(np.array(voxels2[0])).astype(int))
-        np_v = tuple(np.round(node_pos).astype(int))
-        start = 1 if v0 == np_v else 0
-        merged.extend(voxels2[start:])
+    
+    # Add first path
+    if oriented_voxels1:
+        merged.extend(oriented_voxels1)
+    
+    # Add connection point if not already present
+    connection_voxel = tuple(connection_pos.astype(int))
+    if not merged or tuple(merged[-1]) != connection_voxel:
+        merged.append(connection_voxel)
+    
+    # Add second path (skip duplicate connection point)
+    if oriented_voxels2:
+        start_idx = 1 if (len(oriented_voxels2) > 0 and 
+                         tuple(oriented_voxels2[0]) == connection_voxel) else 0
+        merged.extend(oriented_voxels2[start_idx:])
+    
     return merged
 
 
@@ -272,31 +289,131 @@ def improve_straight_edge_with_skeleton(
         return []
 
 
-def improve_straight_path_with_skeleton(
-    pos1: np.ndarray, pos2: np.ndarray, skeleton_data: np.ndarray, debug: bool = False
-) -> List:
-    """Find skeleton path between two points."""
-    return improve_straight_edge_with_skeleton(pos1, pos2, skeleton_data, debug)
+def improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug=False):
+    """
+    Improve a straight edge by tracing through skeleton topology.
+    Returns improved voxel path or None if improvement not possible.
+    """
+    if skeleton_data is None:
+        return None
+    
+    traced_path = trace_skeleton_path(skeleton_data, start_pos, end_pos, debug)
+    
+    if traced_path and len(traced_path) >= 2:
+        # Verify the traced path is actually better (longer/more curved)
+        if is_path_curved(traced_path) or len(traced_path) > 3:
+            return traced_path
+    
+    return None
 
+def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False):
+    """
+    Trace path through skeleton data from start_pos to end_pos using A* pathfinding.
+    
+    Args:
+        skeleton_data: 3D binary array where 1s represent skeleton voxels,
+                      OR dict with 'skeleton' key containing the binary array,
+                      OR list of skeleton voxel coordinates
+        start_pos: Starting position (3D coordinates)
+        end_pos: Ending position (3D coordinates)
+        debug: Whether to print debug info
+    
+    Returns:
+        List of voxel coordinates [(x,y,z), ...] or None if no path found
+    """
 
-def should_add_merged_edge(
-    G: nx.MultiGraph,
-    n1: int,
-    n2: int,
-    merged_voxels: List,
-    merged_attrs: dict,
-    debug: bool = False,
-) -> Tuple[bool, Any]:
-    """Whether to add merged edge; return (should_add, replace_key or None)."""
+    
+    if debug:
+        print(f"       Tracing skeleton from {start_pos} to {end_pos}")
+    
+    # Parse skeleton data into binary array
+    skeleton_array = parse_skeleton_data(skeleton_data)
+    if skeleton_array is None:
+        if debug:
+            print(f"       Could not parse skeleton data")
+        return None
+    
+    # Find nearest skeleton voxels to start and end positions
+    start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_pos)
+    end_skeleton = find_nearest_skeleton_voxel(skeleton_array, end_pos)
+    
+    if start_skeleton is None or end_skeleton is None:
+        if debug:
+            print(f"       Could not find skeleton voxels near start/end positions")
+        return None
+    
+    if debug:
+        start_dist = np.linalg.norm(np.array(start_pos) - np.array(start_skeleton))
+        end_dist = np.linalg.norm(np.array(end_pos) - np.array(end_skeleton))
+        print(f"       Start skeleton voxel: {start_skeleton} (dist: {start_dist:.1f})")
+        print(f"       End skeleton voxel: {end_skeleton} (dist: {end_dist:.1f})")
+    
+    # Use A* to find path through skeleton
+    path = astar_skeleton_path(skeleton_array, start_skeleton, end_skeleton, debug)
+    
+    if path:
+        if debug:
+            print(f"       Found skeleton path with {len(path)} voxels")
+        return path
+    else:
+        if debug:
+            print(f"       No skeleton path found")
+        return None
+
+def are_paths_similar(voxels1, voxels2, tolerance=3.0):
+    """Check if two paths connect similar endpoints."""
+    import numpy as np
+    
+    if len(voxels1) < 2 or len(voxels2) < 2:
+        return False
+    
+    start1, end1 = np.array(voxels1[0]), np.array(voxels1[-1])
+    start2, end2 = np.array(voxels2[0]), np.array(voxels2[-1])
+    
+    # Check both orientations
+    dist_same = np.linalg.norm(start1 - start2) + np.linalg.norm(end1 - end2)
+    dist_flipped = np.linalg.norm(start1 - end2) + np.linalg.norm(end1 - start2)
+    
+    return min(dist_same, dist_flipped) <= tolerance * 2
+    
+def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
+    """
+    Check if we should add this merged edge, avoiding duplicates.
+    """
+    import numpy as np
+    
     if not G.has_edge(n1, n2):
         return True, None
-    for key, data in G[n1][n2].items():
-        ev = data.get("voxels", [])
-        if len(ev) > 0 and len(merged_voxels) > 0:
-            sim = len(set(map(tuple, ev)) & set(map(tuple, merged_voxels)))
-            sim /= max(len(ev), len(merged_voxels))
-            if sim > 0.9 and merged_attrs.get("length", 0) < data.get("length", float("inf")):
-                return True, key
-            if sim > 0.9 and merged_attrs.get("length", 0) >= data.get("length", 0):
+    
+    new_length = new_attrs.get('length', 0)
+    new_is_curved = is_path_curved(new_voxels)
+    
+    # Check existing edges for similar paths
+    for edge_key, edge_data in G[n1][n2].items():
+        existing_voxels = edge_data.get('voxels', [])
+        existing_length = edge_data.get('length', 0)
+        existing_is_curved = is_path_curved(existing_voxels)
+        
+        # Check if paths are similar
+        if are_paths_similar(new_voxels, existing_voxels):
+            # Prefer curved over straight
+            if new_is_curved and not existing_is_curved:
+                if debug:
+                    print(f"     Replacing straight with curved path")
+                return True, edge_key
+            elif not new_is_curved and existing_is_curved:
+                if debug:
+                    print(f"     Keeping existing curved over new straight")
                 return False, None
+            else:
+                # Same type - prefer shorter
+                if new_length < existing_length * 0.95:
+                    if debug:
+                        print(f"     Replacing with shorter path ({new_length:.1f} vs {existing_length:.1f})")
+                    return True, edge_key
+                else:
+                    if debug:
+                        print(f"     Keeping existing shorter path ({existing_length:.1f} vs {new_length:.1f})")
+                    return False, None
+    
     return True, None
