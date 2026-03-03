@@ -52,8 +52,11 @@ def plot_node_degree_distribution(
     return degree_counts
 
 
-def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph) -> None:
-    """Overlay edges and nodes on Z-projection of image."""
+def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool = False, save_path: Optional[str] = None) -> None:
+    """Overlay edges and nodes on Z-projection of image.
+
+    Set label_nodes=True to draw node IDs.
+    """
     projection = np.max(image, axis=0)
     pos = nx.get_node_attributes(G, "pos")
     plt.figure(figsize=(10, 10))
@@ -66,8 +69,19 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph) -> None:
     if pos:
         coords = np.array(list(pos.values()))
         plt.scatter(coords[:, 2], coords[:, 1], c="red", s=3)
+        if label_nodes:
+            for node_id, node_pos in pos.items():
+                plt.text(
+                    float(node_pos[2]) + 1.0,
+                    float(node_pos[1]) + 1.0,
+                    str(node_id),
+                    color="yellow",
+                    fontsize=6,
+                )
     plt.title("Overlay: Edges and Nodes on Z-Projection")
     plt.axis("off")
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
 
 
@@ -284,3 +298,11 @@ def interactive_3d_graph(G):
         showlegend=False
     )
     fig.show()
+
+def visualize_skeleton(skeleton: np.ndarray) -> None:
+    """Visualize the skeleton."""
+    plt.figure(figsize=(10, 10))
+    plt.imshow(skeleton, cmap="gray")
+    plt.axis("off")
+    plt.show()
+    return 

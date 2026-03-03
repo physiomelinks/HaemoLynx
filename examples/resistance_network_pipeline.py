@@ -10,7 +10,8 @@ import logging
 import sys
 from pathlib import Path
 from skan import csr
-
+import tifffile
+import numpy as np
 import networkx as nx
 
 # Ensure package is importable when running from repo root.
@@ -24,14 +25,21 @@ from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visual
 # Beginner-friendly settings
 # ---------------------------
 INPUT_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
+PLOT_DIR = root_dir / "examples" / "plots" 
+if not PLOT_DIR.exists():
+    PLOT_DIR.mkdir(parents=True, exist_ok=True)
 INPUT_FORMAT = "tif"  # "tif" or "h5"
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
-STARTING_NODES = [426, 184, 509]
+# STARTING_NODES = [426, 184, 509]
+STARTING_NODES = [3, 95, 169]
 #HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
-RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
+# RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
+RESISTANCE_NODE_PAIR = (3, 166)  # (source_node_id, target_node_id)
 VISUALIZE_RESULTS = True
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = True
+DO_SKELETONIZE = True
+CONSTRICT_AT_PERICYTES = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
 
@@ -103,6 +111,31 @@ def main() -> None:
         "B26": {"d1": 4.0, "d2": 3.2},
     }
     
+    # These are vesses that constrict differently (e.g. endoneurial vessels).
+    custom_edges= [
+        (103, 262),
+        (103, 104),
+        (309, 363),
+        (363, 746),
+        (363, 745),
+        (746, 874),
+        (745, 766),
+        (874, 1140),
+        (221, 309),
+        (103, 106),
+        (34, 222),
+        (222, 258),
+        (233, 236),
+        (123, 176),
+        (234, 235),
+        (35, 65),
+        (32, 35),
+        (260,290),
+        (290,846),
+        (290,846),
+        (766, 846),
+        (766, 845)
+    ]  
     
     logging.basicConfig(
         level=logging.DEBUG if VERBOSE_LOGGING else logging.INFO,
@@ -110,20 +143,31 @@ def main() -> None:
     )
 
     # 1) Load image and skeletonize.
-    if INPUT_FORMAT == "tif":
-        image, skeleton = io.load_and_skeletonize_3d_tif(INPUT_PATH)
-    elif INPUT_FORMAT == "h5":
-        if not H5_DATASET_NAME:
-            raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
-        image, skeleton = io.load_and_skeletonize_3d_h5(INPUT_PATH, H5_DATASET_NAME)
+    skeleton_path = INPUT_PATH.with_name(f"{INPUT_PATH.stem}_skeleton.npy")
+    if DO_SKELETONIZE:
+        if INPUT_FORMAT == "tif":
+            image, skeleton = io.load_and_skeletonize_3d_tif(INPUT_PATH)
+        elif INPUT_FORMAT == "h5":
+            if not H5_DATASET_NAME:
+                raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
+            image, skeleton = io.load_and_skeletonize_3d_h5(INPUT_PATH, H5_DATASET_NAME)
+        else:
+            raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
+        
+        # save the skeleton
+        np.save(skeleton_path, skeleton)
     else:
-        raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
+        # load the skeleton
+        skeleton = np.load(skeleton_path)
+        image = tifffile.imread(INPUT_PATH)
 
     # 2) Clean skeleton before graph conversion.
     skeleton = preprocessing.preprocess_skeleton_for_graph(
         skeleton,
         min_branch_length=MIN_BRANCH_LENGTH,
     )
+    # visualise the skeleton TODO
+    # visualization.visualise_skeleton(skeleton)
 
     # 3) Convert skeleton to graph.
     sk = csr.Skeleton(skeleton)
@@ -133,7 +177,10 @@ def main() -> None:
         skeleton,
         debug=VERBOSE_LOGGING,
     )
+    # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
     G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=VERBOSE_LOGGING)
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "reconnect_secondary_loop_edges.png")
+    
     G, _ = graph.optimise_graph_topology_fixed(
         G,
         voxel_loops,
@@ -141,22 +188,38 @@ def main() -> None:
         skeleton_data=skeleton,
         debug=VERBOSE_LOGGING,
     )
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
     G = graph.safer_simple_remove_all_degree2_nodes(
         G,
         max_degree=5,
         debug=VERBOSE_LOGGING,
     )
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
     G = graph.trivial_remove_all_degree2_nodes(
         G,
         max_degree=5,
         debug=VERBOSE_LOGGING,
     )
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
     G = graph.smart_multigraph_degree2_removal(
         G,
         skeleton,
         debug=VERBOSE_LOGGING,
     )
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal.png")
     G = graph.prune_vascular_stubs(G, debug=VERBOSE_LOGGING)
+
+    # Here we should visualise the network with node numbers so we can choose the starting nodes.
+    print(f"Starting nodes are: {STARTING_NODES}")
+    print("Check that they correspond to the correct node numbers in the image")
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "prune_vascular_stubs.png")
+    
+    G = graph.smart_multigraph_degree2_removal(
+        G,
+        skeleton,
+        debug=VERBOSE_LOGGING,
+    )
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
 
     # 4) Add branch orders and hemodynamic edge weights.
     #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
@@ -167,10 +230,18 @@ def main() -> None:
             constriction_length=40.0,
             constriction_spacing=100.0,
         )
-        poiseuille_model.set_poiseuille_weights_with_constrictions(
-            G,
-            DIAMETER_BY_BRANCH_ORDER_ENHANCED,
-        )
+        if CONSTRICT_AT_PERICYTES:
+            poiseuille_model.set_poiseuille_edge_weights(
+                G,
+                custom_edges,
+                edge_diameter=6.0,
+                use_resistance=False,
+            )
+        else:
+            poiseuille_model.set_poiseuille_weights_with_constrictions(
+                G,
+                DIAMETER_BY_BRANCH_ORDER_ENHANCED,
+            )
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # TODO VTK Export currently not creating a connected graph. Don't use this yet.
