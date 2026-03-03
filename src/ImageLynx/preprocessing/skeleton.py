@@ -21,9 +21,9 @@ def load_and_skeletonize_3d_tif(filepath, voxel_size=1.0):
     filled = binary_fill_holes(binary)
     bridged = bridge_gaps(filled)
     skeleton = skeletonize_3d(img_as_bool(bridged))
-    cleaned = remove_small_objects(skeleton_image, min_size=min_branch_length)
-    cleaned = skeletonize_3D(cleaned > 0)
-    return image, skeleton, cleaned.astype(bool)
+    skeleton = remove_small_objects(skeleton_image, min_size=min_branch_length)
+    skeleton = skeletonize_3D(cleaned > 0)
+    return image, skeleton.astype(bool)
 
 def load_and_skeletonize_3d_h5(filepath, dataset_name=None, voxel_size=1.0):
     logger.debug("Loading and skeletonizing H5...")
@@ -61,8 +61,8 @@ def load_and_skeletonize_3d_h5(filepath, dataset_name=None, voxel_size=1.0):
     filled = binary_fill_holes(binary)
     bridged = bridge_gaps(filled)  
     skeleton = skeletonize_3d(img_as_bool(bridged))
-    cleaned = remove_small_objects(skeleton_image, min_size=min_branch_length)
-    cleaned = skeletonize_3D(cleaned > 0)
+    skeleton = remove_small_objects(skeleton_image, min_size=min_branch_length)
+    skeleton = skeletonize_3D(cleaned > 0)
     
-    return image, skeleton, cleaned.astype(bool)
+    return image, skeleton.astype(bool)
 
