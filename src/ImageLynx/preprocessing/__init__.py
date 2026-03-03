@@ -1,4 +1,8 @@
 """Preprocessing: skeleton cleaning, bridging, skeletonization."""
-from .skeleton import bridge_gaps, skeletonize_3d_safe, preprocess_skeleton_for_graph
+from .skeleton import bridge_gaps, load_and_skeletonize_3d_tif, load_and_skeletonize_3d_h5
 
-__all__ = ["bridge_gaps", "skeletonize_3d_safe", "preprocess_skeleton_for_graph"]
+__all__ = [
+    "load_and_skeletonize_3d_tif",
+    "load_and_skeletonize_3d_h5",
+    "bridge_gaps",
+]
