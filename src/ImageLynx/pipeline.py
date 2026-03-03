@@ -65,17 +65,13 @@ def run_pipeline(
     diameter_config = diameter_config or DEFAULT_DIAMETER_BY_BRANCH_ORDER_ENHANCED
 
     if input_format.lower() == "tif":
-        image, skeleton = io.load_and_skeletonize_3d_tif(filepath)
+        image, skeleton, cleaned = io.load_and_skeletonize_3d_tif(filepath)
     else:
         if not dataset_name:
             raise ValueError("dataset_name required for HDF5 input")
-        image, skeleton = io.load_and_skeletonize_3d_h5(
+        image, skeleton, cleaned = io.load_and_skeletonize_3d_h5(
             filepath, dataset_name
         )
-
-    skeleton = preprocessing.preprocess_skeleton_for_graph(
-        skeleton, min_branch_length=min_branch_length
-    )
 
     sk = csr.Skeleton(skeleton)
 
