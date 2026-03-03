@@ -6,7 +6,6 @@ import numpy as np
 import networkx as nx
 from skan import csr
 
-from . import io
 from . import preprocessing
 from . import graph
 from . import hemodynamics
