@@ -1076,6 +1076,68 @@ def validate_skeleton_connection(skeleton_data, pos1, pos2, max_gap=3.0):
         # If validation fails, be conservative
         return False, None
 
+## THIS FUNCTION WASNT HERE ORIGINALLY - ADDED TO GET THINGS RUNNING.
+def create_merged_edge_attributes(
+    edge1_data: dict, edge2_data: dict, node_pos: Any
+) -> dict:
+    """Merge two edge attributes when removing a degree-2 node."""
+    voxels1 = edge1_data.get("voxels", [])
+    voxels2 = edge2_data.get("voxels", [])
+    merged_voxels = []
+    if voxels1:
+        merged_voxels.extend(voxels1)
+    if node_pos is not None:
+        node_voxel = tuple(np.array(node_pos).astype(int))
+        if not merged_voxels or merged_voxels[-1] != node_voxel:
+            merged_voxels.append(node_voxel)
+    if voxels2:
+        start_idx = 0
+        if (
+            voxels2
+            and node_pos is not None
+            and len(voxels2) > 0
+            and tuple(np.array(voxels2[0]).astype(int)) == tuple(np.array(node_pos).astype(int))
+        ):
+            start_idx = 1
+        merged_voxels.extend(voxels2[start_idx:])
+
+    return {
+        "weight": edge1_data.get("weight", 0) + edge2_data.get("weight", 0),
+        "length": edge1_data.get("length", 0) + edge2_data.get("length", 0),
+        "voxels": merged_voxels,
+        "merged": True,
+        "removed_node_pos": node_pos,
+    }
+
+# THIS FUNCTION WASNT HERE ORIGINALLY - ADDED TO GET THINGS RUNNING.
+def add_edge_safe(
+    G: Union[nx.Graph, nx.MultiGraph], u: int, v: int, **attrs: Any
+) -> None:
+    """Add edge to Graph or MultiGraph with given attributes."""
+    G.add_edge(u, v, **attrs)
+
+# THIS FUNCTION WASNT HERE ORIGINALLY - ADDED TO GET THINGS RUNNING.
+def has_edge_safe(G: Union[nx.Graph, nx.MultiGraph], u: int, v: int) -> bool:
+    """Check if edge exists between u and v."""
+    return G.has_edge(u, v)
+
+# THIS FUNCTION WASNT HERE ORIGINALLY - ADDED TO GET THINGS RUNNING.
+def remove_edge_safe(
+    G: Union[nx.Graph, nx.MultiGraph], u: int, v: int, key: Any = None
+) -> None:
+    """Remove edge(s) between u and v."""
+    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
+        if key is not None:
+            if G.has_edge(u, v, key):
+                G.remove_edge(u, v, key)
+        else:
+            while G.has_edge(u, v):
+                keys = list(G[u][v].keys())
+                G.remove_edge(u, v, keys[0])
+    else:
+        if G.has_edge(u, v):
+            G.remove_edge(u, v)
+
 def safer_simple_remove_all_degree2_nodes(G, max_degree=4, debug=False, max_iterations=100, 
                                          max_edge_length_ratio=2.0):
     logger = logging.getLogger(__name__)
