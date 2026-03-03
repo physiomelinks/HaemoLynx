@@ -7,7 +7,7 @@ from skimage.filters import threshold_otsu
 from scipy.ndimage import binary_fill_holes, distance_transform_edt
 from skimage.util import img_as_bool
 
-from ..preprocessing.skeleton import bridge_gaps, skeletonize_3d_safe
+from ..preprocessing.skeleton import bridge_gaps, close_binary_mask, skeletonize_3d_safe
 
 try:
     import h5py
@@ -17,22 +17,58 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def load_and_skeletonize_3d_tif(filepath: str, voxel_size: float = 1.0):
-    """Load a TIFF stack, threshold, fill holes, bridge gaps, skeletonize."""
+def load_and_skeletonize_3d_tif(
+    filepath: str,
+    voxel_size: float = 1.0,
+    closing_radius: int = 3,
+    bridge_gap_size: int = 4,
+):
+    """Load a TIFF stack, threshold, fill holes, close gaps, and skeletonize.
+
+    Parameters
+    ----------
+    filepath:
+        Path to the TIFF file.
+    voxel_size:
+        Isotropic voxel size (unused in the skeleton but available for callers).
+    closing_radius:
+        Radius (in voxels) for the morphological closing step applied to the
+        binary mask before skeletonization.  Closing seals concavities and
+        bridges between nearby vessel blobs without permanently expanding
+        boundaries.  Set to 0 to skip.
+    bridge_gap_size:
+        Maximum gap (in voxels) filled by the distance-transform dilation step
+        after closing and hole-filling.
+    """
     logger.debug("Loading and skeletonizing TIFF...")
     image = tifffile.imread(filepath)
     threshold = threshold_otsu(image)
     binary = image > threshold
+    if closing_radius > 0:
+        logger.debug("Applying morphological closing (radius=%d)…", closing_radius)
+        binary = close_binary_mask(binary, radius=closing_radius)
     filled = binary_fill_holes(binary)
-    bridged = bridge_gaps(filled)
+    bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
     skeleton = skeletonize_3d_safe(img_as_bool(bridged))
     return image, skeleton
 
 
 def load_and_skeletonize_3d_h5(
-    filepath: str, dataset_name: str, voxel_size: float = 1.0
+    filepath: str,
+    dataset_name: str,
+    voxel_size: float = 1.0,
+    closing_radius: int = 3,
+    bridge_gap_size: int = 4,
 ):
-    """Load an HDF5 dataset, simplify to 3D, then skeletonize."""
+    """Load an HDF5 dataset, simplify to 3D, then skeletonize.
+
+    Parameters
+    ----------
+    closing_radius:
+        Radius for the morphological closing step.  Set to 0 to skip.
+    bridge_gap_size:
+        Maximum gap filled by the distance-transform dilation step.
+    """
     if h5py is None:
         raise ImportError("h5py is required for HDF5 support. Install with: pip install h5py")
     logger.debug("Loading and skeletonizing H5...")
@@ -48,8 +84,11 @@ def load_and_skeletonize_3d_h5(
     logger.debug("Simplified image shape: %s", image.shape)
     threshold = threshold_otsu(image)
     binary = image > threshold
+    if closing_radius > 0:
+        logger.debug("Applying morphological closing (radius=%d)…", closing_radius)
+        binary = close_binary_mask(binary, radius=closing_radius)
     filled = binary_fill_holes(binary)
-    bridged = bridge_gaps(filled)
+    bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
     skeleton = skeletonize_3d_safe(img_as_bool(bridged))
     return image, skeleton
 
