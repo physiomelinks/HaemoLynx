@@ -166,8 +166,12 @@ def main() -> None:
         skeleton,
         min_branch_length=MIN_BRANCH_LENGTH,
     )
-    # visualise the skeleton TODO
-    # visualization.visualise_skeleton(skeleton)
+    # Visualise the 3D skeleton interactively (PyVista).
+    # When VISUALIZE_RESULTS is False, saves a 2D Z-projection PNG instead.
+    visualization.visualize_skeleton(
+        skeleton,
+        save_path=PLOT_DIR / "skeleton.png" if not VISUALIZE_RESULTS else None,
+    )
 
     # 3) Convert skeleton to graph.
     sk = csr.Skeleton(skeleton)

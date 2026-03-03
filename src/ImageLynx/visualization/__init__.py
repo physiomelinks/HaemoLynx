@@ -17,6 +17,7 @@ __all__ = [
     "visualize_edges_and_nodes",
     "visualize_geometry_with_branch_orders",
     "visualize_geometry_with_edge_weights",
+    "visualize_skeleton",
     "derive_pericyte_points_from_graph",
     "graph_to_vtk",
     "visualize_vtk_network",

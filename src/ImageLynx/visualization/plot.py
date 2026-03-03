@@ -82,7 +82,8 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
     plt.axis("off")
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    else:
+        plt.show()
 
 
 def visualize_geometry_with_branch_orders(
@@ -252,57 +253,126 @@ def visualize_geometry_with_edge_weights(
     return fig, ax, (vmin, vmax), cmap
 
 
-#Need to add in feature where tortusity, resistance, length etc is shown upon highlighting a vessel
-def interactive_3d_graph(G):
-    pos = nx.get_node_attributes(G, 'pos')
+def visualize_3d_plotly(G: nx.Graph, title: str = "3D Network") -> None:
+    """Interactive 3D scatter + line plot of graph using Plotly."""
+    pos = nx.get_node_attributes(G, "pos")
+    if not pos:
+        return
+    node_x = [float(p[0]) for p in pos.values()]
+    node_y = [float(p[1]) for p in pos.values()]
+    node_z = [float(p[2]) for p in pos.values()]
     edge_x, edge_y, edge_z = [], [], []
-    edge_text = []
-
-    for i, (u, v, d) in enumerate(G.edges(data=True)):
-        path = d.get("voxels", [])
-        if not path:
-            continue
-        path = np.array(path)
-        edge_x.extend(path[:, 0].tolist() + [None])
-        edge_y.extend(path[:, 1].tolist() + [None])
-        edge_z.extend(path[:, 2].tolist() + [None])
-        edge_text.append(f"Edge {u}-{v}, Length: {d.get('weight', 0):.2f} µm")
-
-    node_x, node_y, node_z, node_text = [], [], [], []
-    for node, (z, y, x) in pos.items():
-        node_x.append(z)
-        node_y.append(y)
-        node_z.append(x)
-        node_text.append(f"Node {node}, Degree: {G.degree(node)}")
-
-    edge_trace = go.Scatter3d(
+    for u, v in G.edges():
+        if u in pos and v in pos:
+            pu, pv = pos[u], pos[v]
+            edge_x += [float(pu[0]), float(pv[0]), None]
+            edge_y += [float(pu[1]), float(pv[1]), None]
+            edge_z += [float(pu[2]), float(pv[2]), None]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter3d(
         x=edge_x, y=edge_y, z=edge_z,
-        mode='lines',
-        line=dict(color='blue', width=2),
-        hoverinfo='text',
-        text=edge_text * len(edge_x)  # Repeat edge labels
-    )
-
-    node_trace = go.Scatter3d(
+        mode="lines",
+        line=dict(color="cyan", width=2),
+        name="Edges",
+    ))
+    fig.add_trace(go.Scatter3d(
         x=node_x, y=node_y, z=node_z,
-        mode='markers',
-        marker=dict(size=3, color='red'),
-        text=node_text,
-        hoverinfo='text'
-    )
-
-    fig = go.Figure(data=[edge_trace, node_trace])
-    fig.update_layout(
-        title='Interactive 3D Vascular Graph',
-        scene=dict(xaxis_title='Z', yaxis_title='Y', zaxis_title='X'),
-        showlegend=False
-    )
+        mode="markers",
+        marker=dict(size=3, color="red"),
+        name="Nodes",
+    ))
+    fig.update_layout(title=title, showlegend=True)
     fig.show()
 
-def visualize_skeleton(skeleton: np.ndarray) -> None:
-    """Visualize the skeleton."""
-    plt.figure(figsize=(10, 10))
-    plt.imshow(skeleton, cmap="gray")
-    plt.axis("off")
-    plt.show()
-    return 
+
+def visualize_skeleton(
+    skeleton: np.ndarray,
+    save_path: Optional[str] = None,
+    dpi: int = 150,
+    voxel_color: str = "cyan",
+    background_color: str = "black",
+    point_size: float = 3.0,
+    show: bool = True,
+) -> None:
+    """Visualize a 3D skeleton in an interactive PyVista 3D view.
+
+    Each foreground voxel is rendered as a point cloud. For 2D skeletons, or
+    when save_path is supplied (headless/CI use), falls back to a flat
+    Z-projection saved with matplotlib instead.
+
+    Parameters
+    ----------
+    skeleton:
+        2D or 3D boolean array produced by the pipeline.
+    save_path:
+        When given, saves a 2D Z-projection PNG instead of opening the 3D
+        viewer (useful for automated runs without a display).
+    dpi:
+        Resolution used when saving the 2D fallback figure.
+    voxel_color:
+        Colour of skeleton voxel points in the 3D view.
+    background_color:
+        Plotter background colour.
+    point_size:
+        Rendered sphere radius for each voxel point.
+    show:
+        Pass False to suppress the interactive window (e.g. tests).
+    """
+    if skeleton.ndim not in (2, 3):
+        raise ValueError(
+            f"Expected 2D or 3D skeleton, got shape {skeleton.shape}"
+        )
+
+    # 2D skeleton or headless save → matplotlib Z-projection fallback.
+    if skeleton.ndim == 2 or save_path is not None:
+        projection = (
+            np.max(skeleton, axis=0).astype(float)
+            if skeleton.ndim == 3
+            else skeleton.astype(float)
+        )
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.imshow(projection, cmap="gray", interpolation="nearest")
+        ax.set_title(
+            f"Skeleton Z-projection  —  shape: {skeleton.shape}  "
+            f"voxels: {int(skeleton.sum())}"
+        )
+        ax.axis("off")
+        fig.tight_layout()
+        if save_path:
+            fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+        else:
+            plt.show()
+        return
+
+    # 3D skeleton → PyVista interactive viewer.
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise ImportError(
+            "pyvista is required for 3D skeleton visualization. "
+            "Install with `pip install pyvista`."
+        ) from exc
+
+    # Get (Z, Y, X) foreground voxel coordinates → convert to (X, Y, Z).
+    coords = np.argwhere(skeleton).astype(float)
+    xyz = coords[:, [2, 1, 0]]
+
+    cloud = pv.PolyData(xyz)
+    plotter = pv.Plotter(
+        title=f"Skeleton — shape: {skeleton.shape}, voxels: {int(skeleton.sum())}"
+    )
+    plotter.set_background(background_color)
+    plotter.add_mesh(
+        cloud,
+        color=voxel_color,
+        point_size=point_size,
+        render_points_as_spheres=True,
+    )
+    plotter.add_axes()
+    if show:
+        plotter.show()
+
+
+# British-spelling alias used in the example script.
+visualise_skeleton = visualize_skeleton
