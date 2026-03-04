@@ -288,6 +288,7 @@ def compute_comprehensive_vessel_statistics(
         if is_mg
         else G
     )
+    communities = compute_communities(G)
     return {
         **compute_basic_statistics(G, is_mg),
         **compute_tortuosity_measures(G, node_positions, is_mg),
@@ -295,7 +296,7 @@ def compute_comprehensive_vessel_statistics(
         **compute_tree_asymmetry(G_simple),
         **compute_fractal_dimension(G_simple, node_positions),
         **compute_path_efficiency(G, is_mg),
-        **compute_communities(G),
+        "communities": communities,
         **compute_betweenness(G),
         **compute_vessel_density(
             G, node_positions, voxel_size, image_dimensions, is_mg

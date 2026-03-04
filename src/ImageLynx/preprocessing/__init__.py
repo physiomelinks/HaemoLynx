@@ -4,6 +4,7 @@ from .skeleton import (
     close_binary_mask,
     connect_skeleton_components,
     preprocess_skeleton_for_graph,
+    skeletonize_voxel_bundles_into_paths,
     skeletonize_3d_safe,
     print_skeleton_connectivity_stats,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "close_binary_mask",
     "connect_skeleton_components",
     "preprocess_skeleton_for_graph",
+    "skeletonize_voxel_bundles_into_paths",
     "skeletonize_3d_safe",
     "print_skeleton_connectivity_stats",
 ]
