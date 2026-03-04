@@ -3,15 +3,9 @@ from typing import List, Tuple, Dict, Any, Union
 
 import numpy as np
 import networkx as nx
-import heapq
-from collections import defaultdict
 
 def add_edge_safe(G, u, v, **attr):
-    
-    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
-        return G.add_edge(u, v, **attr)
-    else:
-        return G.add_edge(u, v, **attr)
+    return G.add_edge(u, v, **attr)
 
 def has_edge_safe(G: Union[nx.Graph, nx.MultiGraph], u: int, v: int) -> bool:
     """Check if edge exists between u and v."""
