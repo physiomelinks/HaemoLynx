@@ -71,33 +71,42 @@ class PoiseuilleModel:
         for u, v, key, data in G.edges(keys=True, data=True):
             branch_order = data.get("branch_order")
             if branch_order is None:
-                results["missing_branch_order"].append((u, v, key))
-                continue
+                raise ValueError(
+                    f"Edge ({u}, {v}, {key}) missing required 'branch_order' attribute."
+                )
             length = data.get("length")
             if length is None:
-                results["missing_length"].append((u, v, key))
-                continue
+                raise ValueError(
+                    f"Edge ({u}, {v}, {key}) missing required 'length' attribute."
+                )
             if length <= 0:
-                results["invalid_length"].append((u, v, key, length))
-                continue
+                raise ValueError(
+                    f"Edge ({u}, {v}, {key}) has non-positive length: {length}."
+                )
             diameters = diameter_by_branch_order.get(branch_order)
             if diameters is None:
-                results["unknown_branch_order"].append((u, v, key, branch_order))
-                continue
+                raise ValueError(
+                    f"Edge ({u}, {v}, {key}) has unknown branch_order '{branch_order}'. "
+                    "No matching entry in diameter_by_branch_order."
+                )
             if not isinstance(diameters, dict) or "d1" not in diameters or "d2" not in diameters:
-                results["invalid_diameter"].append((u, v, key, branch_order))
-                continue
+                raise ValueError(
+                    f"Invalid diameter mapping for branch_order '{branch_order}'. "
+                    "Expected dict containing 'd1' and 'd2'."
+                )
             d1, d2 = diameters["d1"], diameters["d2"]
             if d1 <= 0 or d2 <= 0:
-                results["invalid_diameter"].append((u, v, key, branch_order))
-                continue
+                raise ValueError(
+                    f"Invalid non-positive diameters for branch_order '{branch_order}': "
+                    f"d1={d1}, d2={d2}."
+                )
             try:
                 total_resistance = self.calculate_integrated_resistance(length, d1, d2)
                 weight = 1.0 / total_resistance
                 G[u][v][key]["weight"] = weight
                 results["weights_set"] += 1
             except Exception as e:
-                logger.warning("Resistance calc failed for (%s,%s,%s): %s", u, v, key, e)
+                raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
         return results
 
     def set_poiseuille_edge_weights(

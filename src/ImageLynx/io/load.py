@@ -51,8 +51,6 @@ def load_and_skeletonize_3d_tif(
     filled = binary_fill_holes(binary)
     bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
     skeleton = skeletonize_3d(img_as_bool(bridged))
-    skeleton = remove_small_objects(skeleton_image, min_size=min_branch_length)
-    skeleton = skeletonize_3D(cleaned > 0)
     return image, skeleton.astype(bool)
 
 
@@ -92,7 +90,7 @@ def load_and_skeletonize_3d_h5(
         binary = close_binary_mask(binary, radius=closing_radius)
     filled = binary_fill_holes(binary)
     bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
-    skeleton = skeletonize_3d_safe(img_as_bool(bridged))
+    skeleton = skeletonize_3d(img_as_bool(bridged))
     return image, skeleton
 
 

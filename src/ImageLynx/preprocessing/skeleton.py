@@ -121,10 +121,9 @@ def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
     return binary_closing(binary.astype(bool), structure=struct, iterations=radius)
 
 
-def skeletonize_3d_safe(img: np.ndarray) -> np.ndarray:
+def skeletonize_3d(img: np.ndarray) -> np.ndarray:
     """Safe 3D skeletonization wrapper."""
-    return _skeletonize_3d(img.astype(bool))
-
+    return skeletonize(img.astype(bool), method="lee")
 
 def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None:
     """Set voxels along the straight line from *start* to *end* to True."""
@@ -185,7 +184,7 @@ def skeletonize_voxel_bundles_into_paths(
     if hub_min_spacing is None:
         hub_min_spacing = max(1, int(min(scan) / 2))
 
-    base_skeleton = _skeletonize_3d(mask)
+    base_skeleton = skeletonize_3d(mask)
     density = uniform_filter(mask.astype(np.float32), size=scan, mode="constant")
     dense_volume = density >= density_fraction
     if not dense_volume.any():
@@ -253,7 +252,7 @@ def skeletonize_voxel_bundles_into_paths(
         for _, endpoint in chosen:
             _draw_line_3d(result, center, endpoint)
 
-    return _skeletonize_3d(result.astype(bool)).astype(bool)
+    return skeletonize_3d(result.astype(bool)).astype(bool)
 
 
 def connect_skeleton_components(
@@ -317,7 +316,7 @@ def connect_skeleton_components(
 
     if bridged:
         logger.debug("Bridged %d isolated skeleton component(s).", bridged)
-        result = _skeletonize_3d(result)
+        result = skeletonize_3d(result)
 
     return result.astype(bool)
 
@@ -338,7 +337,7 @@ def preprocess_skeleton_for_graph(
     Parameters
     ----------
     skeleton_image:
-        Raw boolean skeleton from :func:`skeletonize_3d_safe`.
+        Raw boolean skeleton from :func:`skeletonize_3d`.
     min_branch_length:
         Connected components with fewer than this many voxels are removed
         before re-skeletonizing (reduces degree-2 noise nodes).
@@ -384,7 +383,7 @@ def preprocess_skeleton_for_graph(
             min_component_fraction=min_component_fraction,
             component_connectivity=conn,
         )
-    cleaned = _skeletonize_3d(cleaned.astype(bool))
+    cleaned = skeletonize_3d(cleaned.astype(bool))
     if max_bridge_distance > 0:
         cleaned = connect_skeleton_components(
             cleaned.astype(bool),

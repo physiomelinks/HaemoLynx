@@ -86,8 +86,8 @@ def run_pipeline(
     G, _ = graph.optimise_graph_topology_fixed(
         G, voxel_loops, loop_edges, skeleton_data=skeleton, debug=debug
     )
-    G = graph.safer_simple_remove_all_degree2_nodes(G, max_degree=5, debug=debug)
-    G = graph.trivial_remove_all_degree2_nodes(G, max_degree=5, debug=debug)
+    # Keep only topology-aware degree-2 removal to avoid introducing
+    # straight-line shortcuts from aggressive simple merges.
     G = graph.smart_multigraph_degree2_removal(G, skeleton, debug=debug)
     G = graph.prune_vascular_stubs(G, debug=debug)
     G = graph.smart_multigraph_degree2_removal(G, skeleton, debug=debug)

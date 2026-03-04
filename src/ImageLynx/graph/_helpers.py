@@ -27,7 +27,6 @@ def get_all_edge_data(G, u, v):
     """
     Get all edge data between two nodes (for multigraphs, returns list of all parallel edges).
     """
-    import networkx as nx
     
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         if G.has_edge(u, v):
@@ -36,7 +35,6 @@ def get_all_edge_data(G, u, v):
     else:
         edge_data = G.get_edge_data(u, v)
         return [edge_data] if edge_data is not None else []
-
 
 def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
     """
@@ -154,7 +152,80 @@ def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
     
     return merged_attrs
 
+def calculate_voxel_path_length(voxels):
+    """
+    Calculate the actual length along a voxel path.
+    """
+    if not voxels or len(voxels) < 2:
+        return 0.0
+        
+    import numpy as np
+    
+    total_length = 0.0
+    for i in range(len(voxels) - 1):
+        p1 = np.array(voxels[i])
+        p2 = np.array(voxels[i + 1])
+        total_length += np.linalg.norm(p2 - p1)
+    
+    return total_length
 
+def validate_voxel_path_continuity(voxels):
+    """
+    Check if a voxel path is continuous and return the maximum gap.
+    """
+    if len(voxels) < 2:
+        return 0.0
+    
+    import numpy as np
+    
+    max_gap = 0.0
+    for i in range(len(voxels) - 1):
+        p1 = np.array(voxels[i])
+        p2 = np.array(voxels[i + 1])
+        gap = np.linalg.norm(p2 - p1)
+        max_gap = max(max_gap, gap)
+    
+    return max_gap
+
+def merge_edge_voxels_at_node(voxels1: List, voxels2: List, node_pos: Any) -> List:
+    """Concatenate two edge voxel paths at the removed node with orientation."""
+    part1 = orient_voxel_path_to_node(voxels1, node_pos, node_should_be_start=False)
+    part2 = orient_voxel_path_to_node(voxels2, node_pos, node_should_be_start=True)
+    merged = list(part1)
+    if node_pos is not None:
+        node_voxel = tuple(np.array(node_pos).astype(int))
+        if not merged or _voxel_key(merged[-1]) != node_voxel:
+            merged.append(node_voxel)
+    if part2:
+        start_idx = 0
+        if node_pos is not None and _voxel_key(part2[0]) == tuple(np.array(node_pos).astype(int)):
+            start_idx = 1
+        merged.extend(part2[start_idx:])
+    return merged
+
+def _voxel_key(point: Any) -> Tuple[int, ...]:
+    arr = np.asarray(point, dtype=float)
+    return tuple(np.round(arr).astype(int))
+
+def orient_voxel_path_to_node(
+    voxels: List, node_pos: Any, *, node_should_be_start: bool
+) -> List:
+    """Orient a voxel path so the removed node is at desired endpoint."""
+    if not voxels:
+        return []
+    oriented = list(voxels)
+    if node_pos is None:
+        return oriented
+    node_key = _voxel_key(node_pos)
+    start_key = _voxel_key(oriented[0])
+    end_key = _voxel_key(oriented[-1])
+    if node_should_be_start:
+        if start_key != node_key and end_key == node_key:
+            oriented.reverse()
+    else:
+        if end_key != node_key and start_key == node_key:
+            oriented.reverse()
+    return oriented
 
 def get_line_points_3d(p1, p2):
     """
@@ -269,21 +340,38 @@ def merge_curved_edges(voxels1, voxels2, connection_pos, debug=False):
     
     return merged
 
-
-def improve_straight_edge_with_skeleton(
-    pos_a: np.ndarray, pos_b: np.ndarray, skeleton_data: np.ndarray, debug: bool = False
-) -> List:
-    """Find skeleton-based path between two points (for straight edges)."""
-    from skimage.graph import route_through_array
-    pa = np.round(pos_a).astype(int)
-    pb = np.round(pos_b).astype(int)
-    cost = 1 + (1 - skeleton_data.astype(float)) * 100
-    try:
-        path, _ = route_through_array(cost, tuple(pa), tuple(pb), fully_connected=True)
-        return [tuple(p) for p in path]
-    except Exception:
+def orient_path_to_endpoint(voxels, target_pos):
+    """Orient path so it ends at target_pos."""
+    import numpy as np
+    
+    if not voxels:
         return []
+    
+    target = np.array(target_pos)
+    start_dist = np.linalg.norm(np.array(voxels[0]) - target)
+    end_dist = np.linalg.norm(np.array(voxels[-1]) - target)
+    
+    if start_dist < end_dist:
+        return voxels[::-1]  # Reverse to end at target
+    else:
+        return list(voxels)  # Already ends at target
 
+
+def orient_path_from_startpoint(voxels, target_pos):
+    """Orient path so it starts from target_pos."""
+    import numpy as np
+    
+    if not voxels:
+        return []
+    
+    target = np.array(target_pos)
+    start_dist = np.linalg.norm(np.array(voxels[0]) - target)
+    end_dist = np.linalg.norm(np.array(voxels[-1]) - target)
+    
+    if start_dist < end_dist:
+        return list(voxels)  # Already starts from target
+    else:
+        return voxels[::-1]  # Reverse to start from target
 
 def improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug=False):
     """
@@ -356,6 +444,190 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False):
             print(f"       No skeleton path found")
         return None
 
+def parse_skeleton_data(skeleton_data):
+    """
+    Parse skeleton data into a 3D binary numpy array.
+    Handles multiple input formats.
+    """
+    import numpy as np
+    
+    if skeleton_data is None:
+        return None
+    
+    # Case 1: Already a numpy array
+    if isinstance(skeleton_data, np.ndarray):
+        if skeleton_data.ndim == 3:
+            return skeleton_data.astype(bool)
+        else:
+            return None
+    
+    # Case 2: Dictionary with skeleton key
+    elif isinstance(skeleton_data, dict):
+        if 'skeleton' in skeleton_data:
+            skel = skeleton_data['skeleton']
+            if isinstance(skel, np.ndarray) and skel.ndim == 3:
+                return skel.astype(bool)
+        # Try other common keys
+        for key in ['binary', 'mask', 'data', 'array']:
+            if key in skeleton_data:
+                skel = skeleton_data[key]
+                if isinstance(skel, np.ndarray) and skel.ndim == 3:
+                    return skel.astype(bool)
+        return None
+    
+    # Case 3: List of coordinates - convert to binary array
+    elif isinstance(skeleton_data, (list, tuple)):
+        if len(skeleton_data) > 0:
+            coords = np.array(skeleton_data)
+            if coords.ndim == 2 and coords.shape[1] == 3:
+                # Create binary array from coordinates
+                max_coords = coords.max(axis=0) + 1
+                binary_array = np.zeros(max_coords, dtype=bool)
+                for coord in coords:
+                    binary_array[tuple(coord)] = True
+                return binary_array
+        return None
+    
+    else:
+        return None
+
+
+def find_nearest_skeleton_voxel(skeleton_array, target_pos, max_search_radius=10):
+    """
+    Find the nearest skeleton voxel to target_pos within search radius.
+    """
+    import numpy as np
+    
+    target = np.array(target_pos, dtype=int)
+    
+    # Check if target is already on skeleton
+    if (target >= 0).all() and (target < skeleton_array.shape).all():
+        if skeleton_array[tuple(target)]:
+            return tuple(target)
+    
+    # Search in expanding radius
+    for radius in range(1, max_search_radius + 1):
+        candidates = []
+        
+        # Create search box around target
+        min_coords = np.maximum(target - radius, 0)
+        max_coords = np.minimum(target + radius + 1, skeleton_array.shape)
+        
+        # Find skeleton voxels in search box
+        for x in range(min_coords[0], max_coords[0]):
+            for y in range(min_coords[1], max_coords[1]):
+                for z in range(min_coords[2], max_coords[2]):
+                    if skeleton_array[x, y, z]:
+                        dist = np.linalg.norm(np.array([x, y, z]) - target)
+                        if dist <= radius:
+                            candidates.append(((x, y, z), dist))
+        
+        if candidates:
+            # Return closest candidate
+            candidates.sort(key=lambda x: x[1])
+            return candidates[0][0]
+    
+    return None
+
+
+def astar_skeleton_path(skeleton_array, start, end, debug=False):
+    """
+    A* pathfinding through skeleton voxels only.
+    """
+    import numpy as np
+    import heapq
+    from collections import defaultdict
+    
+    start = tuple(start)
+    end = tuple(end)
+    
+    if start == end:
+        return [start]
+    
+    # Priority queue: (f_score, g_score, position)
+    open_set = [(0, 0, start)]
+    came_from = {}
+    g_score = defaultdict(lambda: float('inf'))
+    g_score[start] = 0
+    
+    # Track visited nodes
+    closed_set = set()
+    
+    def heuristic(pos):
+        return np.linalg.norm(np.array(pos) - np.array(end))
+    
+    def get_neighbors(pos):
+        """Get valid skeleton neighbors (26-connectivity)"""
+        neighbors = []
+        x, y, z = pos
+        
+        # Check all 26 neighbors (3x3x3 - center)
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                for dz in [-1, 0, 1]:
+                    if dx == 0 and dy == 0 and dz == 0:
+                        continue
+                    
+                    nx, ny, nz = x + dx, y + dy, z + dz
+                    
+                    # Check bounds
+                    if (0 <= nx < skeleton_array.shape[0] and
+                        0 <= ny < skeleton_array.shape[1] and
+                        0 <= nz < skeleton_array.shape[2]):
+                        
+                        # Check if it's a skeleton voxel
+                        if skeleton_array[nx, ny, nz]:
+                            neighbors.append((nx, ny, nz))
+        
+        return neighbors
+    
+    iterations = 0
+    max_iterations = 50000  # Prevent infinite loops
+    
+    while open_set and iterations < max_iterations:
+        iterations += 1
+        
+        # Get node with lowest f_score
+        f_score, current_g, current = heapq.heappop(open_set)
+        
+        if current in closed_set:
+            continue
+        
+        closed_set.add(current)
+        
+        # Check if we reached the goal
+        if current == end:
+            # Reconstruct path
+            path = []
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            path.append(start)
+            path.reverse()
+            
+            if debug:
+                print(f"      🎯 A* found path in {iterations} iterations")
+            return path
+        
+        # Explore neighbors
+        for neighbor in get_neighbors(current):
+            if neighbor in closed_set:
+                continue
+            
+            # Calculate distance to neighbor
+            distance = np.linalg.norm(np.array(neighbor) - np.array(current))
+            tentative_g = g_score[current] + distance
+            
+            if tentative_g < g_score[neighbor]:
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative_g
+                f_score = tentative_g + heuristic(neighbor)
+                heapq.heappush(open_set, (f_score, tentative_g, neighbor))
+    
+    if debug:
+        print(f"      ❌ A* failed to find path after {iterations} iterations")
+    return None
+
 def are_paths_similar(voxels1, voxels2, tolerance=3.0):
     """Check if two paths connect similar endpoints."""
     import numpy as np
@@ -413,3 +685,20 @@ def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
                     return False, None
     
     return True, None
+
+def voxel_path_overlap_ratio(path_a: List, path_b: List) -> float:
+    """Return overlap ratio between two voxel paths based on rounded voxels."""
+    if not path_a or not path_b:
+        return 0.0
+    set_a = set(_voxel_key(p) for p in path_a)
+    set_b = set(_voxel_key(p) for p in path_b)
+    if not set_a or not set_b:
+        return 0.0
+    overlap = len(set_a.intersection(set_b))
+    return overlap / max(len(set_a), len(set_b))
+
+def improve_straight_path_with_skeleton(start_pos, end_pos, skeleton_data, debug=False):
+    """
+    Improve an entire straight path between two endpoints using skeleton.
+    """
+    return improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug)
