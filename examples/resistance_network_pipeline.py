@@ -31,11 +31,14 @@ if not PLOT_DIR.exists():
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
 INPUT_FORMAT = "tif"  # "tif" or "h5"
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
-# STARTING_NODES = [426, 184, 509]
-# TODO automate the selection of starting nodes
-STARTING_NODES = [918, 747, 1108]
-# TODO automate the selection of output nodes
-OUTPUT_NODES = [47, 69, 67, 341, 328, 492, 543, 94, 467]
+# STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
+# end of the image.
+EDGE_PERCENT = 10.0
+END_PERCENT = 10.0
+# For 3D skeletons this is usually the y-axis in (z, y, x).
+NODE_EDGE_AXIS = 1
+STARTING_NODES: list[int] = []
+OUTPUT_NODES: list[int] = []
 # TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
 # TODO automate the selection of resistance node pairs
 # RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
@@ -59,6 +62,43 @@ SKELETON_COMPONENT_CONNECTIVITY = 3
 # Keep only connected components at or above this percentage of total
 # skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
 SKELETON_MIN_COMPONENT_PERCENT = 5.0
+
+
+def select_boundary_terminal_nodes(
+    G: nx.Graph,
+    image_shape: tuple[int, ...],
+    *,
+    edge_percent: float,
+    end_percent: float,
+    axis: int = 1,
+) -> tuple[list[int], list[int]]:
+    """Select degree-1 nodes in top and bottom image bands along one axis."""
+    if not (0.0 <= edge_percent <= 100.0 and 0.0 <= end_percent <= 100.0):
+        raise ValueError("edge_percent and end_percent must be in [0, 100].")
+    if axis < 0 or axis >= len(image_shape):
+        raise ValueError(f"axis={axis} out of bounds for image shape {image_shape}.")
+
+    node_pos = nx.get_node_attributes(G, "pos")
+    terminal_nodes = [node for node, degree in G.degree() if degree == 1 and node in node_pos]
+    if not terminal_nodes:
+        return [], []
+
+    axis_size = float(image_shape[axis] - 1)
+    top_limit = axis_size * (edge_percent / 100.0)
+    bottom_start = axis_size * (1.0 - (end_percent / 100.0))
+
+    def axis_coord(node_id: int) -> float:
+        return float(np.asarray(node_pos[node_id], dtype=float)[axis])
+
+    starting = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
+    outputs = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
+    starting_set = set(starting)
+    outputs = [node for node in outputs if node not in starting_set]
+
+    starting.sort(key=lambda n: (axis_coord(n), n))
+    outputs.sort(key=lambda n: (-axis_coord(n), n))
+    return starting, outputs
+
 
 def main() -> None:
 
@@ -256,9 +296,7 @@ def main() -> None:
         # remove any nodes that are connected to themselves with no nodes in between
         G = graph.remove_edges_for_self_connected_nodes(G)
 
-        # Here we should visualise the network with node numbers so we can choose the starting nodes.
-        print(f"Starting nodes are: {STARTING_NODES}")
-        print("Check that they correspond to the correct node numbers in the image")
+        # Visualize node labels for debugging/verification of auto-selected boundary nodes.
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "prune_vascular_stubs.png")
         
         # G = graph.smart_multigraph_degree2_removal(
@@ -280,6 +318,30 @@ def main() -> None:
         with graph_path.open("rb") as f:
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
+
+    STARTING_NODES[:] = []
+    OUTPUT_NODES[:] = []
+    start_nodes, out_nodes = select_boundary_terminal_nodes(
+        G,
+        image.shape,
+        edge_percent=EDGE_PERCENT,
+        end_percent=END_PERCENT,
+        axis=NODE_EDGE_AXIS,
+    )
+    STARTING_NODES.extend(start_nodes)
+    OUTPUT_NODES.extend(out_nodes)
+    print(
+        f"Auto-selected {len(STARTING_NODES)} STARTING_NODES "
+        f"(top {EDGE_PERCENT}%) and {len(OUTPUT_NODES)} OUTPUT_NODES "
+        f"(bottom {END_PERCENT}%) along axis {NODE_EDGE_AXIS}."
+    )
+    print(f"Starting nodes are: {STARTING_NODES}")
+    print(f"Output nodes are: {OUTPUT_NODES}")
+
+    resistance_node_pair = RESISTANCE_NODE_PAIR
+    if STARTING_NODES and OUTPUT_NODES:
+        resistance_node_pair = (STARTING_NODES[0], OUTPUT_NODES[0])
+        print(f"Auto-selected resistance node pair: {resistance_node_pair}")
 
     # 4) Add branch orders and hemodynamic edge weights.
     #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
@@ -326,7 +388,7 @@ def main() -> None:
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
     if DO_RESISTANCE_CALCULATION:
-        source_node, target_node = RESISTANCE_NODE_PAIR
+        source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
             laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
             two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
@@ -341,7 +403,7 @@ def main() -> None:
             )
         else:
             print(
-                f"\nSkipped two-point resistance: nodes {RESISTANCE_NODE_PAIR} "
+                f"\nSkipped two-point resistance: nodes {resistance_node_pair} "
                 "are not both present in the graph."
             )
 
