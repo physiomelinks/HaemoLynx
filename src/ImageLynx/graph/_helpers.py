@@ -196,7 +196,7 @@ def calculate_path_length(voxels):
     
     return total
 
-#Below needs to be improved, returns weight or euclidean distance
+
 def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: Tuple[float, float, float] = (1, 1, 1)) -> float:
     """
     Calculate the length of an edge between two nodes.
@@ -224,6 +224,8 @@ def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: T
     # If we have weight, use that
     if 'weight' in edge_data:
         return edge_data['weight']
+    # Fallback
+    return 1.0
     
 
 
