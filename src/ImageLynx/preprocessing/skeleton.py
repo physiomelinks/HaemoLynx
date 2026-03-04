@@ -84,11 +84,6 @@ def print_skeleton_connectivity_stats(
     )
     print(f"[skeleton:{name}] top component sizes (up to 10): {top_sizes}")
 
-def _skeletonize_3d(img: np.ndarray) -> np.ndarray:
-    """Skeletonize 3D binary image. Uses skeletonize with Lee method."""
-    return skeletonize(img, method="lee")
-
-
 def bridge_gaps(binary_skeleton: np.ndarray, max_gap: int = 4) -> np.ndarray:
     """Fill small gaps in a binary mask using a distance-transform dilation.
 

@@ -5,7 +5,7 @@ import networkx as nx
 
 from ._helpers import calculate_edge_length
 
-
+#Does this need to return G not G_pruned to remain in pipeline?
 def prune_vascular_stubs(
     G: Union[nx.Graph, nx.MultiGraph],
     min_stub_length: float = 10.0,
