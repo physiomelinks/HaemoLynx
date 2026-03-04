@@ -41,10 +41,14 @@ def get_all_edge_data(
     if not G.has_edge(u, v):
         return []
     ed = G.get_edge_data(u, v)
+    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
+        if not isinstance(ed, dict) or not ed:
+            return []
+        out: List[dict] = []
+        for value in ed.values():
+            out.append(value.copy() if isinstance(value, dict) else {})
+        return out
     if isinstance(ed, dict):
-        # MultiGraph: ed = {key: {attrs}, ...}
-        if isinstance(list(ed.values())[0], dict):
-            return [d.copy() for d in ed.values()]
         return [ed.copy()]
     return [ed.copy()]
 
@@ -55,23 +59,7 @@ def create_merged_edge_attributes(
     """Merge two edge attributes when removing a degree-2 node."""
     voxels1 = edge1_data.get("voxels", [])
     voxels2 = edge2_data.get("voxels", [])
-    merged_voxels = []
-    if voxels1:
-        merged_voxels.extend(voxels1)
-    if node_pos is not None:
-        node_voxel = tuple(np.array(node_pos).astype(int))
-        if not merged_voxels or merged_voxels[-1] != node_voxel:
-            merged_voxels.append(node_voxel)
-    if voxels2:
-        start_idx = 0
-        if (
-            voxels2
-            and node_pos is not None
-            and len(voxels2) > 0
-            and tuple(np.array(voxels2[0]).astype(int)) == tuple(np.array(node_pos).astype(int))
-        ):
-            start_idx = 1
-        merged_voxels.extend(voxels2[start_idx:])
+    merged_voxels = merge_edge_voxels_at_node(voxels1, voxels2, node_pos)
 
     return {
         "weight": edge1_data.get("weight", 0) + edge2_data.get("weight", 0),
@@ -80,6 +68,61 @@ def create_merged_edge_attributes(
         "merged": True,
         "removed_node_pos": node_pos,
     }
+
+
+def _voxel_key(point: Any) -> Tuple[int, ...]:
+    arr = np.asarray(point, dtype=float)
+    return tuple(np.round(arr).astype(int))
+
+
+def orient_voxel_path_to_node(
+    voxels: List, node_pos: Any, *, node_should_be_start: bool
+) -> List:
+    """Orient a voxel path so the removed node is at desired endpoint."""
+    if not voxels:
+        return []
+    oriented = list(voxels)
+    if node_pos is None:
+        return oriented
+    node_key = _voxel_key(node_pos)
+    start_key = _voxel_key(oriented[0])
+    end_key = _voxel_key(oriented[-1])
+    if node_should_be_start:
+        if start_key != node_key and end_key == node_key:
+            oriented.reverse()
+    else:
+        if end_key != node_key and start_key == node_key:
+            oriented.reverse()
+    return oriented
+
+
+def merge_edge_voxels_at_node(voxels1: List, voxels2: List, node_pos: Any) -> List:
+    """Concatenate two edge voxel paths at the removed node with orientation."""
+    part1 = orient_voxel_path_to_node(voxels1, node_pos, node_should_be_start=False)
+    part2 = orient_voxel_path_to_node(voxels2, node_pos, node_should_be_start=True)
+    merged = list(part1)
+    if node_pos is not None:
+        node_voxel = tuple(np.array(node_pos).astype(int))
+        if not merged or _voxel_key(merged[-1]) != node_voxel:
+            merged.append(node_voxel)
+    if part2:
+        start_idx = 0
+        if node_pos is not None and _voxel_key(part2[0]) == tuple(np.array(node_pos).astype(int)):
+            start_idx = 1
+        merged.extend(part2[start_idx:])
+    return merged
+
+
+def voxel_path_overlap_ratio(path_a: List, path_b: List) -> float:
+    """Return overlap ratio between two voxel paths based on rounded voxels."""
+    if not path_a or not path_b:
+        return 0.0
+    set_a = set(_voxel_key(p) for p in path_a)
+    set_b = set(_voxel_key(p) for p in path_b)
+    if not set_a or not set_b:
+        return 0.0
+    overlap = len(set_a.intersection(set_b))
+    return overlap / max(len(set_a), len(set_b))
 
 
 def get_line_points_3d(p1: np.ndarray, p2: np.ndarray) -> List[Tuple[int, ...]]:
@@ -144,19 +187,7 @@ def merge_curved_edges(
     voxels1: List, voxels2: List, node_pos: np.ndarray, debug: bool = False
 ) -> List:
     """Concatenate two curved paths at junction node."""
-    merged = []
-    if voxels1:
-        merged.extend(voxels1)
-    if node_pos is not None:
-        v = tuple(np.round(node_pos).astype(int))
-        if not merged or merged[-1] != v:
-            merged.append(v)
-    if voxels2:
-        v0 = tuple(np.round(np.array(voxels2[0])).astype(int))
-        np_v = tuple(np.round(node_pos).astype(int))
-        start = 1 if v0 == np_v else 0
-        merged.extend(voxels2[start:])
-    return merged
+    return merge_edge_voxels_at_node(voxels1, voxels2, node_pos)
 
 
 def improve_straight_edge_with_skeleton(

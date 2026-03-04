@@ -8,6 +8,8 @@ import networkx as nx
 from ._helpers import (
     get_all_edge_data,
     create_merged_edge_attributes,
+    merge_edge_voxels_at_node,
+    voxel_path_overlap_ratio,
     add_edge_safe,
     has_edge_safe,
     remove_edge_safe,
@@ -20,6 +22,22 @@ from ._helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _should_replace_existing_simple_edge(
+    G: nx.Graph,
+    n1: Any,
+    n2: Any,
+    merged_voxels: List,
+    overlap_threshold: float = 0.9,
+) -> bool:
+    """Only replace existing edge when voxel overlap is significant."""
+    if not G.has_edge(n1, n2):
+        return True
+    existing = G.get_edge_data(n1, n2) or {}
+    existing_voxels = existing.get("voxels", [])
+    overlap = voxel_path_overlap_ratio(existing_voxels, merged_voxels)
+    return overlap >= overlap_threshold
 
 
 def safer_simple_remove_all_degree2_nodes(
@@ -87,7 +105,18 @@ def safer_simple_remove_all_degree2_nodes(
                     edge1_data, edge2_data, node_pos
                 )
                 if has_edge_safe(G, n1, n2):
-                    remove_edge_safe(G, n1, n2)
+                    if _should_replace_existing_simple_edge(
+                        G, n1, n2, merged_attrs.get("voxels", [])
+                    ):
+                        remove_edge_safe(G, n1, n2)
+                    else:
+                        if debug:
+                            logger.debug(
+                                "Preserved existing edge %s-%s (low overlap with merged path)",
+                                n1,
+                                n2,
+                            )
+                        continue
                 add_edge_safe(G, n1, n2, **merged_attrs)
             removed_this_iter += 1
             total_removed += 1
@@ -155,7 +184,18 @@ def trivial_remove_all_degree2_nodes(
                     edge1_data, edge2_data, node_pos
                 )
                 if G.has_edge(n1, n2):
-                    G.remove_edge(n1, n2)
+                    if _should_replace_existing_simple_edge(
+                        G, n1, n2, merged_edge.get("voxels", [])
+                    ):
+                        G.remove_edge(n1, n2)
+                    else:
+                        if debug:
+                            logger.debug(
+                                "Preserved existing edge %s-%s (low overlap with trivial merged path)",
+                                n1,
+                                n2,
+                            )
+                        continue
                 G.add_edge(n1, n2, **merged_edge)
             removed_this_iter += 1
             total_removed += 1
@@ -174,24 +214,7 @@ def create_trivial_merged_edge(
     """Create merged edge with exact topology preservation."""
     voxels1 = edge1_data.get("voxels", [])
     voxels2 = edge2_data.get("voxels", [])
-    merged_voxels = []
-    if voxels1:
-        merged_voxels.extend(voxels1)
-    if removed_node_pos is not None:
-        node_voxel = tuple(np.array(removed_node_pos).astype(int))
-        if not merged_voxels or merged_voxels[-1] != node_voxel:
-            merged_voxels.append(node_voxel)
-    if voxels2:
-        start_idx = 0
-        if (
-            voxels2
-            and removed_node_pos is not None
-            and len(voxels2) > 0
-            and tuple(np.array(voxels2[0]).astype(int))
-            == tuple(np.array(removed_node_pos).astype(int))
-        ):
-            start_idx = 1
-        merged_voxels.extend(voxels2[start_idx:])
+    merged_voxels = merge_edge_voxels_at_node(voxels1, voxels2, removed_node_pos)
     merged_attributes = {
         "weight": edge1_data.get("weight", 0) + edge2_data.get("weight", 0),
         "length": edge1_data.get("length", 0) + edge2_data.get("length", 0),
