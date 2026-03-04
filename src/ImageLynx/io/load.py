@@ -8,7 +8,7 @@ from scipy.ndimage import binary_fill_holes, distance_transform_edt
 from skimage.util import img_as_bool
 from skimage.morphology import remove_small_objects, skeletonize_3d
 
-from ..preprocessing.skeleton import bridge_gaps, close_binary_mask, skeletonize_3d_safe
+from ..preprocessing.skeleton import bridge_gaps, close_binary_mask
 
 try:
     import h5py
