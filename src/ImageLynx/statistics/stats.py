@@ -6,6 +6,7 @@ import networkx as nx
 from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
 
+#Need to add in bifurcation ratios
 
 def compute_basic_statistics(
     G: Union[nx.Graph, nx.MultiGraph], is_multigraph: bool
