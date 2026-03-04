@@ -6,8 +6,9 @@ import tifffile
 from skimage.filters import threshold_otsu
 from scipy.ndimage import binary_fill_holes, distance_transform_edt
 from skimage.util import img_as_bool
+from skimage.morphology import remove_small_objects, skeletonize_3d
 
-from ..preprocessing.skeleton import bridge_gaps, close_binary_mask, skeletonize_3d_safe
+from ..preprocessing.skeleton import bridge_gaps, close_binary_mask
 
 try:
     import h5py
@@ -49,8 +50,10 @@ def load_and_skeletonize_3d_tif(
         binary = close_binary_mask(binary, radius=closing_radius)
     filled = binary_fill_holes(binary)
     bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
-    skeleton = skeletonize_3d_safe(img_as_bool(bridged))
-    return image, skeleton
+    skeleton = skeletonize_3d(img_as_bool(bridged))
+    skeleton = remove_small_objects(skeleton_image, min_size=min_branch_length)
+    skeleton = skeletonize_3D(cleaned > 0)
+    return image, skeleton.astype(bool)
 
 
 def load_and_skeletonize_3d_h5(
