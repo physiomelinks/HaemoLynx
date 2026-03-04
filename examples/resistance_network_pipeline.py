@@ -437,7 +437,7 @@ def main() -> None:
     if VISUALIZE_RESULTS:
         visualization.plot_node_degree_distribution(G)
         visualization.visualize_edges_and_nodes(image, G)
-        visualization.interactive_3d_graph(G)
+        # visualization.interactive_3d_graph(G)
         #HD note - need visualisation of pericyte localisations (ie based upon constriction data)
         
         if STARTING_NODES:
