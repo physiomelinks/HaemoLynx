@@ -32,15 +32,22 @@ if not PLOT_DIR.exists():
 INPUT_FORMAT = "tif"  # "tif" or "h5"
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING_NODES = [426, 184, 509]
+# TODO automate the selection of starting nodes
 STARTING_NODES = [918, 747, 1108]
-#HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
+# TODO automate the selection of output nodes
+OUTPUT_NODES = [47, 69, 67, 341, 328, 492, 543, 94, 467]
+# TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
+# TODO automate the selection of resistance node pairs
 # RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
 RESISTANCE_NODE_PAIR = (918, 47)  # (source_node_id, target_node_id)
+INPUT_P_BC = 1000 # Pa 
+OUTPUT_P_BC = 500 # Pa
 VISUALIZE_RESULTS = True
-VISUALIZE_VTK = True
+VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
-DO_SKELETONIZE = False
-DO_GRAPH_BUILDING = False
+DO_SKELETONIZE = True
+DO_GRAPH_BUILDING = True
+DO_RESISTANCE_CALCULATION = False
 CONSTRICT_AT_PERICYTES = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
@@ -225,26 +232,29 @@ def main() -> None:
             skeleton_data=skeleton,
             debug=VERBOSE_LOGGING,
         )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "optimise_graph_topology_fixed.png")
         G = graph.safer_simple_remove_all_degree2_nodes(
             G,
             max_degree=5,
             debug=VERBOSE_LOGGING,
         )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "safer_simple_remove_all_degree2_nodes.png")
         G = graph.trivial_remove_all_degree2_nodes(
             G,
             max_degree=5,
             debug=VERBOSE_LOGGING,
         )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "trivial_remove_all_degree2_nodes.png")
         G = graph.smart_multigraph_degree2_removal(
             G,
             skeleton,
             debug=VERBOSE_LOGGING,
         )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal.png")
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal.png")
         G = graph.prune_vascular_stubs(G, debug=VERBOSE_LOGGING)
+
+        # remove any nodes that are connected to themselves with no nodes in between
+        G = graph.remove_edges_for_self_connected_nodes(G)
 
         # Here we should visualise the network with node numbers so we can choose the starting nodes.
         print(f"Starting nodes are: {STARTING_NODES}")
@@ -294,7 +304,8 @@ def main() -> None:
             )
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
-    # TODO VTK Export currently not creating a connected graph. Don't use this yet.
+    # FA I have no idea if pericyte location is correct. AI did that part.
+    # FA I don't fully understand how pericyte location is currently determined?
     vtk_export = visualization.graph_to_vtk(G, VTK_OUTPUT_PREFIX)
     print("\n=== VTK Export ===")
     print(f"  Vessels:   {vtk_export['vessels_path']}")
@@ -314,24 +325,25 @@ def main() -> None:
     conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
-    source_node, target_node = RESISTANCE_NODE_PAIR
-    if source_node in node_to_idx and target_node in node_to_idx:
-        laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-        two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
-            laplacian,
-            G,
-            source_node,
-            target_node,
-        )
-        print(
-            f"\nEffective resistance between nodes {source_node} and "
-            f"{target_node}: {two_point_resistance}"
-        )
-    else:
-        print(
-            f"\nSkipped two-point resistance: nodes {RESISTANCE_NODE_PAIR} "
-            "are not both present in the graph."
-        )
+    if DO_RESISTANCE_CALCULATION:
+        source_node, target_node = RESISTANCE_NODE_PAIR
+        if source_node in node_to_idx and target_node in node_to_idx:
+            laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+            two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+                laplacian,
+                G,
+                source_node,
+                target_node,
+            )
+            print(
+                f"\nEffective resistance between nodes {source_node} and "
+                f"{target_node}: {two_point_resistance}"
+            )
+        else:
+            print(
+                f"\nSkipped two-point resistance: nodes {RESISTANCE_NODE_PAIR} "
+                "are not both present in the graph."
+            )
 
     # 7) Compute and print vessel statistics.
     node_positions = nx.get_node_attributes(G, "pos")
@@ -345,7 +357,21 @@ def main() -> None:
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
-    # 8) Optional matplotlib visualization.
+    # 8) Also solve for flow throughout the network using the conductance matrix 
+    # and the input and output pressures.
+    flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
+        conductance,
+        node_list,
+        INPUT_P_BC,
+        OUTPUT_P_BC,
+        STARTING_NODES,
+        OUTPUT_NODES,
+        vtk_export,
+    )
+    print("Flow through the network solved")
+    print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
+
+    # 9) Optional matplotlib visualization.
     if VISUALIZE_RESULTS:
         visualization.plot_node_degree_distribution(G)
         visualization.visualize_edges_and_nodes(image, G)

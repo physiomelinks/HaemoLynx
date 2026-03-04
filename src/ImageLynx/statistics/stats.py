@@ -165,8 +165,14 @@ def compute_fractal_dimension(
 def compute_path_efficiency(
     G: Union[nx.Graph, nx.MultiGraph], is_multigraph: bool
 ) -> Dict[str, Any]:
-    """Compute path efficiency."""
+    """Compute path efficiency from weighted shortest-path lengths.
+
+    Path efficiency is defined here as the inverse of the mean weighted
+    shortest-path length across all unique node pairs.
+    """
     if is_multigraph:
+        # Reduce a MultiGraph to a simple graph by keeping the lightest edge
+        # between each unordered node pair.
         G_s = nx.Graph()
         G_s.add_nodes_from(G.nodes())
         ew = {}
@@ -179,24 +185,28 @@ def compute_path_efficiency(
             G_s.add_edge(u, v, weight=w)
     else:
         G_s = G
+
+    # Efficiency is undefined for disconnected graphs because some node pairs
+    # have infinite path length.
     if not nx.is_connected(G_s):
         return {"Path Efficiency": "N/A (disconnected graph)"}
-    avg_path_length = 0
-    try:
-        path_lengths = []
-        nodes = list(G_s.nodes())
-        for i, src in enumerate(nodes):
-            for tgt in nodes[i + 1 :]:
-                try:
-                    pl = nx.shortest_path_length(
-                        G_s, src, tgt, weight="weight"
-                    )
-                    path_lengths.append(pl)
-                except nx.NetworkXNoPath:
-                    pass
-        avg_path_length = np.mean(path_lengths) if path_lengths else 0
-    except Exception:
-        pass
+
+    # For a connected graph, every pair should have a valid path.
+    # Unexpected failures should surface as errors rather than being silently
+    # swallowed, otherwise statistics can look valid while being wrong.
+    path_lengths = []
+    nodes = list(G_s.nodes())
+    for i, src in enumerate(nodes):
+        for tgt in nodes[i + 1 :]:
+            try:
+                pl = nx.shortest_path_length(G_s, src, tgt, weight="weight")
+            except nx.NetworkXNoPath as exc:
+                raise RuntimeError(
+                    f"No path between connected-graph nodes {src} and {tgt}"
+                ) from exc
+            path_lengths.append(pl)
+
+    avg_path_length = np.mean(path_lengths) if path_lengths else 0
     efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
     return {
         "Path Efficiency": efficiency,

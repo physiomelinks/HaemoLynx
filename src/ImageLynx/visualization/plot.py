@@ -76,7 +76,7 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
                     float(node_pos[1]) + 1.0,
                     str(node_id),
                     color="yellow",
-                    fontsize=6,
+                    fontsize=3,
                 )
     plt.title("Overlay: Edges and Nodes on Z-Projection")
     plt.axis("off")
