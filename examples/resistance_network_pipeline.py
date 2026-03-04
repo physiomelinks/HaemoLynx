@@ -8,6 +8,7 @@
 """Refactored full pipeline example using ImageLynx package."""
 import logging
 import sys
+import pickle
 from pathlib import Path
 from skan import csr
 import tifffile
@@ -31,14 +32,15 @@ if not PLOT_DIR.exists():
 INPUT_FORMAT = "tif"  # "tif" or "h5"
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING_NODES = [426, 184, 509]
-STARTING_NODES = [3, 95, 169]
+STARTING_NODES = [918, 747, 1108]
 #HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
 # RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
-RESISTANCE_NODE_PAIR = (3, 166)  # (source_node_id, target_node_id)
+RESISTANCE_NODE_PAIR = (918, 47)  # (source_node_id, target_node_id)
 VISUALIZE_RESULTS = True
-VISUALIZE_VTK = False
+VISUALIZE_VTK = True
 VERBOSE_LOGGING = False
-DO_SKELETONIZE = True
+DO_SKELETONIZE = False
+DO_GRAPH_BUILDING = False
 CONSTRICT_AT_PERICYTES = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
@@ -151,6 +153,7 @@ def main() -> None:
 
     # 1) Load image and skeletonize.
     skeleton_path = INPUT_PATH.with_name(f"{INPUT_PATH.stem}_skeleton.npy")
+    graph_path = INPUT_PATH.with_name(f"{INPUT_PATH.stem}_graph.pkl")
     projection_path = PLOT_DIR / "skeleton_projection.png"
 
     if DO_SKELETONIZE:
@@ -172,6 +175,25 @@ def main() -> None:
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
         
+        preprocessing.print_skeleton_connectivity_stats(
+            "raw",
+            skeleton,
+            component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
+        )
+
+        skeleton = preprocessing.preprocess_skeleton_for_graph(
+            skeleton,
+            min_branch_length=SKELETON_MIN_BRANCH_LENGTH,
+            max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE,
+            component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
+            min_component_fraction=SKELETON_MIN_COMPONENT_PERCENT / 100.0,
+        )
+        preprocessing.print_skeleton_connectivity_stats(
+            "cleaned",
+            skeleton,
+            component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
+        )
+        
         # save the skeleton
         np.save(skeleton_path, skeleton)
     else:
@@ -179,80 +201,75 @@ def main() -> None:
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(INPUT_PATH)
 
-    preprocessing.print_skeleton_connectivity_stats(
-        "raw",
-        skeleton,
-        component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
-    )
-
-    skeleton = preprocessing.preprocess_skeleton_for_graph(
-        skeleton,
-        min_branch_length=SKELETON_MIN_BRANCH_LENGTH,
-        max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE,
-        component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
-        min_component_fraction=SKELETON_MIN_COMPONENT_PERCENT / 100.0,
-    )
-    preprocessing.print_skeleton_connectivity_stats(
-        "cleaned",
-        skeleton,
-        component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
-    )
-
     # Optional interactive skeleton viewer (disabled by default for debug runs).
     if VISUALIZE_RESULTS:
         visualization.visualize_skeleton(skeleton, save_path=projection_path)
 
-    # 3) Convert skeleton to graph.
-    sk = csr.Skeleton(skeleton)
+    if DO_GRAPH_BUILDING:
+        # 3) Convert skeleton to graph.
+        sk = csr.Skeleton(skeleton)
 
-    G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
-        sk,
-        skeleton,
-        debug=VERBOSE_LOGGING,
-    )
-    # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
-    G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=VERBOSE_LOGGING)
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "reconnect_secondary_loop_edges.png")
-    
-    G, _ = graph.optimise_graph_topology_fixed(
-        G,
-        voxel_loops,
-        loop_edges,
-        skeleton_data=skeleton,
-        debug=VERBOSE_LOGGING,
-    )
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
-    G = graph.safer_simple_remove_all_degree2_nodes(
-        G,
-        max_degree=5,
-        debug=VERBOSE_LOGGING,
-    )
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
-    G = graph.trivial_remove_all_degree2_nodes(
-        G,
-        max_degree=5,
-        debug=VERBOSE_LOGGING,
-    )
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
-    G = graph.smart_multigraph_degree2_removal(
-        G,
-        skeleton,
-        debug=VERBOSE_LOGGING,
-    )
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal.png")
-    G = graph.prune_vascular_stubs(G, debug=VERBOSE_LOGGING)
+        G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
+            sk,
+            skeleton,
+            debug=VERBOSE_LOGGING,
+        )
+        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
+        G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=VERBOSE_LOGGING)
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "reconnect_secondary_loop_edges.png")
+        
+        G, _ = graph.optimise_graph_topology_fixed(
+            G,
+            voxel_loops,
+            loop_edges,
+            skeleton_data=skeleton,
+            debug=VERBOSE_LOGGING,
+        )
+        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
+        G = graph.safer_simple_remove_all_degree2_nodes(
+            G,
+            max_degree=5,
+            debug=VERBOSE_LOGGING,
+        )
+        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
+        G = graph.trivial_remove_all_degree2_nodes(
+            G,
+            max_degree=5,
+            debug=VERBOSE_LOGGING,
+        )
+        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
+        G = graph.smart_multigraph_degree2_removal(
+            G,
+            skeleton,
+            debug=VERBOSE_LOGGING,
+        )
+        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal.png")
+        G = graph.prune_vascular_stubs(G, debug=VERBOSE_LOGGING)
 
-    # Here we should visualise the network with node numbers so we can choose the starting nodes.
-    print(f"Starting nodes are: {STARTING_NODES}")
-    print("Check that they correspond to the correct node numbers in the image")
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "prune_vascular_stubs.png")
+        # Here we should visualise the network with node numbers so we can choose the starting nodes.
+        print(f"Starting nodes are: {STARTING_NODES}")
+        print("Check that they correspond to the correct node numbers in the image")
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "prune_vascular_stubs.png")
+        
+        # G = graph.smart_multigraph_degree2_removal(
+        #     G,
+        #     skeleton,
+        #     debug=VERBOSE_LOGGING,
+        # )
+        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
     
-    G = graph.smart_multigraph_degree2_removal(
-        G,
-        skeleton,
-        debug=VERBOSE_LOGGING,
-    )
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
+        with graph_path.open("wb") as f:
+            pickle.dump(G, f)
+        print(f"Saved graph to: {graph_path}")
+    else:
+        if not graph_path.exists():
+            raise FileNotFoundError(
+                f"Graph file not found at {graph_path}. "
+                "Set DO_GRAPH_BUILDING=True to generate it first."
+            )
+        with graph_path.open("rb") as f:
+            G = pickle.load(f)
+        print(f"Loaded graph from: {graph_path}")
 
     # 4) Add branch orders and hemodynamic edge weights.
     #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
