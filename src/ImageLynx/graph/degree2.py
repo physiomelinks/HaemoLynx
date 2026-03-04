@@ -8,7 +8,6 @@ import networkx as nx
 from ._helpers import (
     get_all_edge_data,
     create_merged_edge_attributes,
-    merge_edge_voxels_at_node,
     voxel_path_overlap_ratio,
     add_edge_safe,
     has_edge_safe,
