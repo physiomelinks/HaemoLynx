@@ -19,7 +19,7 @@ root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization
+from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization 
 
 # ---------------------------
 # Beginner-friendly settings
@@ -37,12 +37,19 @@ STARTING_NODES = [3, 95, 169]
 RESISTANCE_NODE_PAIR = (3, 166)  # (source_node_id, target_node_id)
 VISUALIZE_RESULTS = True
 VISUALIZE_VTK = False
-VERBOSE_LOGGING = True
+VERBOSE_LOGGING = False
 DO_SKELETONIZE = True
 CONSTRICT_AT_PERICYTES = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
-
+SKELETON_CLOSING_RADIUS = 3
+SKELETON_BRIDGE_GAP_SIZE = 4
+SKELETON_MIN_BRANCH_LENGTH = 3
+SKELETON_MAX_BRIDGE_DISTANCE = 0
+SKELETON_COMPONENT_CONNECTIVITY = 3
+# Keep only connected components at or above this percentage of total
+# skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
+SKELETON_MIN_COMPONENT_PERCENT = 5.0
 
 def main() -> None:
 
@@ -144,13 +151,24 @@ def main() -> None:
 
     # 1) Load image and skeletonize.
     skeleton_path = INPUT_PATH.with_name(f"{INPUT_PATH.stem}_skeleton.npy")
+    projection_path = PLOT_DIR / "skeleton_projection.png"
+
     if DO_SKELETONIZE:
         if INPUT_FORMAT == "tif":
-            image, skeleton = io.load_and_skeletonize_3d_tif(INPUT_PATH)
+            image, skeleton = io.load_and_skeletonize_3d_tif(
+                INPUT_PATH,
+                closing_radius=SKELETON_CLOSING_RADIUS,
+                bridge_gap_size=SKELETON_BRIDGE_GAP_SIZE,
+            )
         elif INPUT_FORMAT == "h5":
             if not H5_DATASET_NAME:
                 raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
-            image, skeleton = io.load_and_skeletonize_3d_h5(INPUT_PATH, H5_DATASET_NAME)
+            image, skeleton = io.load_and_skeletonize_3d_h5(
+                INPUT_PATH,
+                H5_DATASET_NAME,
+                closing_radius=SKELETON_CLOSING_RADIUS,
+                bridge_gap_size=SKELETON_BRIDGE_GAP_SIZE,
+            )
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
         
@@ -161,17 +179,28 @@ def main() -> None:
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(INPUT_PATH)
 
-    # 2) Clean skeleton before graph conversion.
+    preprocessing.print_skeleton_connectivity_stats(
+        "raw",
+        skeleton,
+        component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
+    )
+
     skeleton = preprocessing.preprocess_skeleton_for_graph(
         skeleton,
-        min_branch_length=MIN_BRANCH_LENGTH,
+        min_branch_length=SKELETON_MIN_BRANCH_LENGTH,
+        max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE,
+        component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
+        min_component_fraction=SKELETON_MIN_COMPONENT_PERCENT / 100.0,
     )
-    # Visualise the 3D skeleton interactively (PyVista).
-    # When VISUALIZE_RESULTS is False, saves a 2D Z-projection PNG instead.
-    visualization.visualize_skeleton(
+    preprocessing.print_skeleton_connectivity_stats(
+        "cleaned",
         skeleton,
-        save_path=PLOT_DIR / "skeleton.png" if not VISUALIZE_RESULTS else None,
+        component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
     )
+
+    # Optional interactive skeleton viewer (disabled by default for debug runs).
+    if VISUALIZE_RESULTS:
+        visualization.visualize_skeleton(skeleton, save_path=projection_path)
 
     # 3) Convert skeleton to graph.
     sk = csr.Skeleton(skeleton)
