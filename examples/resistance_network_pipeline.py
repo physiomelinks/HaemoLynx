@@ -42,7 +42,6 @@ OUTPUT_NODES: list[int] = []
 # TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
 # TODO automate the selection of resistance node pairs
 # RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
-RESISTANCE_NODE_PAIR = (918, 47)  # (source_node_id, target_node_id)
 INPUT_P_BC = 1000 # Pa 
 OUTPUT_P_BC = 500 # Pa
 VISUALIZE_RESULTS = True
@@ -54,8 +53,8 @@ DO_RESISTANCE_CALCULATION = False
 CONSTRICT_AT_PERICYTES = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
-SKELETON_CLOSING_RADIUS = 3
-SKELETON_BRIDGE_GAP_SIZE = 4
+SKELETON_CLOSING_RADIUS = 2
+SKELETON_BRIDGE_GAP_SIZE = 3
 SKELETON_MIN_BRANCH_LENGTH = 3
 SKELETON_MAX_BRIDGE_DISTANCE = 0
 SKELETON_COMPONENT_CONNECTIVITY = 3
@@ -273,18 +272,9 @@ def main() -> None:
             debug=VERBOSE_LOGGING,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "optimise_graph_topology_fixed.png")
-        G = graph.safer_simple_remove_all_degree2_nodes(
-            G,
-            max_degree=5,
-            debug=VERBOSE_LOGGING,
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "safer_simple_remove_all_degree2_nodes.png")
-        G = graph.trivial_remove_all_degree2_nodes(
-            G,
-            max_degree=5,
-            debug=VERBOSE_LOGGING,
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "trivial_remove_all_degree2_nodes.png")
+        # Use only the topology-aware degree-2 removal path here. The legacy
+        # simple/trivial passes can collapse curved paths into straight shortcuts
+        # before smart merging has a chance to preserve topology.
         G = graph.smart_multigraph_degree2_removal(
             G,
             skeleton,
@@ -338,10 +328,11 @@ def main() -> None:
     print(f"Starting nodes are: {STARTING_NODES}")
     print(f"Output nodes are: {OUTPUT_NODES}")
 
-    resistance_node_pair = RESISTANCE_NODE_PAIR
     if STARTING_NODES and OUTPUT_NODES:
         resistance_node_pair = (STARTING_NODES[0], OUTPUT_NODES[0])
         print(f"Auto-selected resistance node pair: {resistance_node_pair}")
+    else:
+        raise ValueError(f"No starting or output nodes found in input {EDGE_PERCENT}% or output {END_PERCENT}%")
 
     # 4) Add branch orders and hemodynamic edge weights.
     #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?

@@ -18,6 +18,7 @@ from ._helpers import (
     improve_straight_path_with_skeleton,
     should_add_merged_edge,
     calculate_path_length,
+    merge_edge_voxels_at_node,
 )
 
 logger = logging.getLogger(__name__)
