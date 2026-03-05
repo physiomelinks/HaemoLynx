@@ -107,7 +107,7 @@ class PoiseuilleModel:
                 results["weights_set"] += 1
             except Exception as e:
                 raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
-        return results
+        return G, results
 
     def set_poiseuille_edge_weights(
         self,
@@ -125,7 +125,7 @@ class PoiseuilleModel:
         }
         if edge_diameter <= 0:
             results["invalid_diameter"].append(edge_diameter)
-            return results
+            return G, results
         viscosity = self.calculate_viscosity(edge_diameter)
         edge_pairs = custom_edges.keys() if isinstance(custom_edges, dict) else custom_edges
         for edge_pair in edge_pairs:
@@ -164,4 +164,4 @@ class PoiseuilleModel:
                         "new_weight": new_weight,
                     }
                 )
-        return results
+        return G, results
