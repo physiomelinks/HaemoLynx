@@ -9,7 +9,6 @@ from . import graph
 from . import hemodynamics
 from . import statistics
 from . import visualization
-from .pipeline import run_pipeline
 
 __all__ = [
     "io",
@@ -18,5 +17,4 @@ __all__ = [
     "hemodynamics",
     "statistics",
     "visualization",
-    "run_pipeline",
 ]
