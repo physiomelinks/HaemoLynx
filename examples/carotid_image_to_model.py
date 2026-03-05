@@ -26,7 +26,9 @@ from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visual
 # Beginner-friendly settings
 # ---------------------------
 INPUT_PATH = None
-PLOT_DIR = root_dir / "examples" / "plots" 
+BASE_PLOT_DIR = root_dir / "examples" / "plots" 
+if not BASE_PLOT_DIR.exists():
+    BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
 # end of the image.
@@ -392,4 +394,5 @@ if __name__ == "__main__":
     # create_mask_from_image()
     
     temp_input_mask_path = root_dir / "examples" / "images" / "carotid_mask.tif"
-    carotid_image_to_model(input_path=temp_input_mask_path)
+    plot_dir = BASE_PLOT_DIR / "carotid"
+    carotid_image_to_model(input_path=temp_input_mask_path, plot_dir=plot_dir)
