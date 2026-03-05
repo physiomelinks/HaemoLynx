@@ -56,6 +56,124 @@ class PoiseuilleModel:
         integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
         return float(integ(resistances, dx=dx))
 
+    def set_poiseuille_weights(self, G: nx.MultiGraph, diameter_by_branch_order: dict) -> tuple[nx.MultiGraph, dict]:
+        """
+        Set edge weights using the inverse of Poiseuille's law with calculated viscosity.
+        Weight = (π * diameter^4) / (128 * viscosity * length)
+        Where viscosity = 1 / diameter^1.647
+        
+        Parameters:
+        -----------
+        G : networkx.MultiGraph
+            The multigraph with branch_order and length attributes
+        diameter_by_branch_order : dict
+            Dictionary mapping branch order strings to diameter values in micrometers (μm)
+            e.g., {'BO1': 10.0, 'BO2': 8.0, 'BO3': 6.0}
+            
+        Returns:
+        --------
+        dict : Summary of weight assignments
+        """
+        import numpy as np
+        
+        PI = np.pi
+        results = {
+            'weights_set': 0,
+            'missing_branch_order': [],
+            'missing_length': [],
+            'unknown_branch_order': [],
+            'invalid_length': [],
+            'invalid_diameter': [],
+            'viscosity_calculations': {}  # Track viscosity for each diameter
+        }
+        
+        print(f"=== Poiseuille Weight Calculation (Branch Order Based) ===")
+        print(f"Formula: Weight = (π * diameter^4) / (128 * viscosity * length)")
+        print(f"Viscosity calculation: μ = 1 / diameter^1.647")
+        print(f"Units: diameter and length in micrometers (μm)")
+        print()
+        
+        # Pre-calculate viscosities for each diameter to avoid redundant calculations
+        diameter_viscosity_map = {}
+        for branch_order, diameter in diameter_by_branch_order.items():
+            if diameter <= 0:
+                print(f"Warning: Invalid diameter {diameter} for {branch_order}")
+                continue
+            viscosity = 1.0 / (diameter ** 1.647)
+            diameter_viscosity_map[diameter] = viscosity
+            results['viscosity_calculations'][branch_order] = {
+                'diameter': diameter,
+                'viscosity': viscosity
+            }
+            print(f"{branch_order}: diameter={diameter}μm, calculated viscosity={viscosity:.6f}")
+        
+        print()
+        
+        for u, v, key, data in G.edges(keys=True, data=True):
+            # Check for branch order
+            branch_order = data.get('branch_order', None)
+            if branch_order is None:
+                results['missing_branch_order'].append((u, v, key))
+                continue
+            
+            # Check for length
+            length = data.get('length', None)
+            if length is None:
+                results['missing_length'].append((u, v, key))
+                continue
+            
+            if length <= 0:
+                results['invalid_length'].append((u, v, key, length))
+                continue
+            
+            # Get diameter for this branch order
+            diameter = diameter_by_branch_order.get(branch_order, None)
+            if diameter is None:
+                results['unknown_branch_order'].append((u, v, key, branch_order))
+                continue
+            
+            if diameter <= 0:
+                results['invalid_diameter'].append((u, v, key, branch_order, diameter))
+                continue
+            
+            # Get pre-calculated viscosity for this diameter
+            viscosity = diameter_viscosity_map.get(diameter, None)
+            if viscosity is None:
+                # Fallback calculation if not in map
+                viscosity = 1.0 / (diameter ** 1.647)
+            
+            # Calculate weight using inverse Poiseuille's law
+            # Weight = (π * diameter^4) / (128 * viscosity * length)
+            weight = (PI * diameter**4) / (128.0 * viscosity * length)
+            
+            # Store old weight for comparison
+            old_weight = data.get('weight', None)
+            
+            # Set new weight
+            G[u][v][key]['weight'] = weight
+            
+            results['weights_set'] += 1
+            
+            logger.debug(f"Edge ({u}, {v}, {key}): {branch_order}, "
+                        f"diameter={diameter}μm, length={length:.3f}μm, "
+                        f"viscosity={viscosity:.6f}, weight={weight:.6f}")
+        
+        # Print summary
+        print(f"=== Summary ===")
+        print(f"Weights successfully set: {results['weights_set']}")
+        if results['missing_branch_order']:
+            print(f"Edges missing branch_order: {len(results['missing_branch_order'])}")
+        if results['missing_length']:
+            print(f"Edges missing length: {len(results['missing_length'])}")
+        if results['unknown_branch_order']:
+            print(f"Edges with unknown branch_order: {len(results['unknown_branch_order'])}")
+        if results['invalid_length']:
+            print(f"Edges with invalid length: {len(results['invalid_length'])}")
+        if results['invalid_diameter']:
+            print(f"Edges with invalid diameter: {len(results['invalid_diameter'])}")
+        
+        return G, results
+
     def set_poiseuille_weights_with_constrictions(
         self, G: nx.MultiGraph, diameter_by_branch_order: dict
     ) -> dict:

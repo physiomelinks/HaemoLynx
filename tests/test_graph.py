@@ -15,6 +15,7 @@ from ImageLynx.graph import (
     merge_edges_with_topology_improvement,
     prune_vascular_stubs,
     assign_branch_orders,
+    select_boundary_nodes_by_method,
 )
 from ImageLynx.graph._helpers import (
     get_line_points_3d,
@@ -126,3 +127,40 @@ def test_build_graph_requires_skan(tiny_skeleton):
     assert isinstance(G, nx.Graph)
     assert isinstance(loops, list)
     assert isinstance(loop_edges, set)
+
+
+def test_select_boundary_nodes_by_method_coordinates():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([1.0, 1.0, 1.0]))
+    G.add_node(1, pos=np.array([8.0, 8.0, 8.0]))
+    G.add_node(2, pos=np.array([5.0, 5.0, 5.0]))
+    G.add_edge(0, 2, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+
+    nodes = select_boundary_nodes_by_method(
+        G,
+        (10, 10, 10),
+        method="coordinates",
+        node_role="input",
+        coordinates=[(0.0, 0.0, 0.0)],
+    )
+    assert nodes == [0]
+
+
+def test_select_boundary_nodes_by_method_volume_and_exclude():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([1.0, 1.0, 1.0]))
+    G.add_node(1, pos=np.array([8.0, 8.0, 8.0]))
+    G.add_node(2, pos=np.array([5.0, 5.0, 5.0]))
+    G.add_edge(0, 2, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+
+    nodes = select_boundary_nodes_by_method(
+        G,
+        (10, 10, 10),
+        method="volume",
+        node_role="output",
+        volume_boxes=[((0.0, 0.0, 0.0), (9.0, 9.0, 9.0))],
+        exclude_nodes=[0],
+    )
+    assert nodes == [1]
