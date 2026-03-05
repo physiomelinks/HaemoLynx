@@ -27,9 +27,11 @@ dev = ["pytest"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 markers = [
     "slow: marks tests as slow",
     "plotting: marks tests that create figures",
+    "integration: marks integration tests",
 ]
 
 [tool.setuptools.packages.find]
