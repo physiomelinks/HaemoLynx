@@ -49,7 +49,6 @@ VERBOSE_LOGGING = False
 DO_SKELETONIZE = False
 DO_GRAPH_BUILDING = False
 DO_EQUIV_RESISTANCE_CALCULATION = False
-CONSTRICT_AT_PERICYTES = False
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
 SKELETON_CLOSING_RADIUS = 2
@@ -123,13 +122,12 @@ custom_edges= [
 ]  
 
 def image_to_model_pipeline(image_path=INPUT_PATH, 
-                            diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER_ENHANCED,
+                            diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER_ENHANCED, # TODO this doesn't work with the DIAMETER_BY_BRANCH_ORDER dictionary it needs d2
                             plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING, 
                             do_skeletonize=DO_SKELETONIZE, 
                             do_graph_building=DO_GRAPH_BUILDING, 
                             do_equiv_resistance_calculation=DO_EQUIV_RESISTANCE_CALCULATION, 
-                            constrict_at_pericytes=CONSTRICT_AT_PERICYTES, 
                             min_branch_length=MIN_BRANCH_LENGTH, 
                             min_stub_length=MIN_STUB_LENGTH,
                             vtk_output_prefix=VTK_OUTPUT_PREFIX, 
@@ -310,18 +308,27 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             constriction_length=40.0,
             constriction_spacing=100.0,
         )
-        if constrict_at_pericytes:
-            poiseuille_model.set_poiseuille_weights_with_constrictions(
-                G,
-                diameter_by_branch_order,
-            )
-        else:
-            poiseuille_model.set_poiseuille_edge_weights(
-                G,
-                custom_edges,
-                edge_diameter=6.0,
-                use_resistance=False,
-            )
+
+        G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+            G,
+            diameter_by_branch_order,
+        )
+
+        print(f"Results from set_poiseuille_weights_with_constrictions: {results}")
+
+        G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
+            G,
+            custom_edges,
+            edge_diameter=6.0,
+            use_resistance=False,
+        )
+
+        print(f"Results from set_poiseuille_edge_weights: {results_2}")
+        # create list of resistances of all edges
+        resistances = []
+        for u, v, key in G.edges(keys=True, data=True):
+            resistances.append(G[u][v][key]['weight'])
+        print(f"Resistances of all edges: {resistances}")
 
     # visualize pre vtk
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "pre_vtk.png")
