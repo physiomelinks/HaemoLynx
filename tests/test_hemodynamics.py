@@ -38,13 +38,17 @@ def test_calculate_integrated_resistance():
 def test_set_poiseuille_weights_with_constrictions(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     config = {"BO1": {"d1": 6.2, "d2": 6.2}}
-    res = MODEL.set_poiseuille_weights_with_constrictions(G, config)
+    out_graph, res = MODEL.set_poiseuille_weights_with_constrictions(G, config)
+    assert isinstance(out_graph, nx.MultiGraph)
     assert res["weights_set"] >= 0
 
 
 def test_set_poiseuille_edge_weights(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
-    res = MODEL.set_poiseuille_edge_weights(G, [(0, 1)], 6.0, use_resistance=False)
+    out_graph, res = MODEL.set_poiseuille_edge_weights(
+        G, [(0, 1)], 6.0, use_resistance=False
+    )
+    assert isinstance(out_graph, nx.MultiGraph)
     assert "updated" in res
 
 
