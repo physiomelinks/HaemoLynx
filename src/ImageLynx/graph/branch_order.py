@@ -52,7 +52,7 @@ def assign_branch_orders(
             results["edges_skipped"] += 1
             continue
         edge_distance = min(u_dist, v_dist) + 1
-        branch_order = f"BO{edge_distance}"
+        branch_order = f"B{edge_distance:02d}"
         G[u][v][key]["branch_order"] = branch_order
         results["edges_assigned"] += 1
         results["branch_order_counts"][branch_order] += 1

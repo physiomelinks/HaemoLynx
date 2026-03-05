@@ -129,6 +129,9 @@ def reconnect_secondary_loop_edges(
 
     if debug:
         logger.info("%d candidate deg-2 pairs", len(pairs))
+    
+    if len(pairs) == 0:
+        return G
 
     def attempt_reconnect(pair_data):
         u, v, node_positions = pair_data

@@ -49,7 +49,7 @@ VERBOSE_LOGGING = False
 DO_SKELETONIZE = False
 DO_GRAPH_BUILDING = False
 DO_EQUIV_RESISTANCE_CALCULATION = False
-CONSTRICT_AT_PERICYTES = True
+CONSTRICT_AT_PERICYTES = False
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
 SKELETON_CLOSING_RADIUS = 2
@@ -68,64 +68,33 @@ SET_STUBS_TO_OUTLET_PRESSURE = False
 """Configuration defaults for diameter maps."""
 
 # Diameter by branch order (simple scalar)
-DIAMETER_BY_BRANCH_ORDER = {
-    "BO1": 6.2,
-    "BO2": 4.0,
-    "BO3": 5.0,
-    "BO4": 5.0,
-    "BO5": 4.0,
-    "BO6": 4.0,
-    "BO7": 4.0,
-    "BO8": 4.0,
-    "BO9": 4.0,
-    "B10": 4.0,
-    "B11": 4.0,
-    "B12": 4.0,
-    "B13": 4.0,
-    "B14": 4.0,
-    "B15": 4.0,
-    "B16": 4.0,
-    "B17": 4.0,
-    "B18": 4.0,
-    "B19": 4.0,
-    "B20": 4.0,
-    "B21": 4.0,
-    "B22": 4.0,
-    "B23": 4.0,
-    "B24": 4.0,
-    "B25": 4.0,
-    "B26": 4.0,
-}
+print("TODO HARVEY CHANGE THIS ALL_DIAMS_CONST BACK TO FALSE FOR ORIGINAL RUN")
+ALL_DIAMS_CONST = True
+
+DIAMETER_BY_BRANCH_ORDER = {}
+if ALL_DIAMS_CONST:
+    for i in range(1,52):
+        DIAMETER_BY_BRANCH_ORDER[f"B{i:02d}"] = 4.0
+else:
+    DIAMETER_BY_BRANCH_ORDER = {
+        "B01": 6.2,
+        "B02": 4.0,
+        "B03": 5.0,
+        "B04": 5.0,
+    }
+    for i in range(5, 52):
+        DIAMETER_BY_BRANCH_ORDER[f"B{i:02d}"] = 4.0
 
 # Enhanced: passive (d1) and constricted (d2) diameters
 DIAMETER_BY_BRANCH_ORDER_ENHANCED = {
-    "BO1": {"d1": 6.2, "d2": 6.2},
-    "BO2": {"d1": 4.0, "d2": 3.2},
-    "BO3": {"d1": 5.0, "d2": 4.0},
-    "BO4": {"d1": 5.0, "d2": 4.0},
-    "BO5": {"d1": 4.0, "d2": 3.2},
-    "BO6": {"d1": 4.0, "d2": 3.2},
-    "BO7": {"d1": 4.0, "d2": 3.2},
-    "BO8": {"d1": 4.0, "d2": 3.2},
-    "BO9": {"d1": 4.0, "d2": 3.2},
-    "B10": {"d1": 4.0, "d2": 3.2},
-    "B11": {"d1": 4.0, "d2": 3.2},
-    "B12": {"d1": 4.0, "d2": 3.2},
-    "B13": {"d1": 4.0, "d2": 3.2},
-    "B14": {"d1": 4.0, "d2": 3.2},
-    "B15": {"d1": 4.0, "d2": 3.2},
-    "B16": {"d1": 4.0, "d2": 3.2},
-    "B17": {"d1": 4.0, "d2": 3.2},
-    "B18": {"d1": 4.0, "d2": 3.2},
-    "B19": {"d1": 4.0, "d2": 3.2},
-    "B20": {"d1": 4.0, "d2": 3.2},
-    "B21": {"d1": 4.0, "d2": 3.2},
-    "B22": {"d1": 4.0, "d2": 3.2},
-    "B23": {"d1": 4.0, "d2": 3.2},
-    "B24": {"d1": 4.0, "d2": 3.2},
-    "B25": {"d1": 4.0, "d2": 3.2},
-    "B26": {"d1": 4.0, "d2": 3.2},
+    "B01": {"d1": 6.2, "d2": 6.2},
+    "B02": {"d1": 4.0, "d2": 3.2},
+    "B03": {"d1": 5.0, "d2": 4.0},
+    "B04": {"d1": 5.0, "d2": 4.0},
 }
+# repeat for 50 entries
+for i in range(5, 52):
+    DIAMETER_BY_BRANCH_ORDER_ENHANCED[f"B{i:02d}"] = {"d1": 4.0, "d2": 3.2}
 
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= [
@@ -258,7 +227,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             skeleton,
             debug=verbose_logging,
         )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "build_graph_segment_skan_stitched_loops.png")
         G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=verbose_logging)
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "reconnect_secondary_loop_edges.png")
         
@@ -342,16 +311,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             constriction_spacing=100.0,
         )
         if constrict_at_pericytes:
+            poiseuille_model.set_poiseuille_weights_with_constrictions(
+                G,
+                diameter_by_branch_order,
+            )
+        else:
             poiseuille_model.set_poiseuille_edge_weights(
                 G,
                 custom_edges,
                 edge_diameter=6.0,
                 use_resistance=False,
-            )
-        else:
-            poiseuille_model.set_poiseuille_weights_with_constrictions(
-                G,
-                diameter_by_branch_order,
             )
 
     # visualize pre vtk
