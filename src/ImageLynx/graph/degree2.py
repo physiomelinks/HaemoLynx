@@ -272,13 +272,14 @@ def smart_multigraph_degree2_removal(
     skeleton_data: np.ndarray = None,
     max_degree: int = 4,
     debug: bool = False,
+    max_iterations: int = 500,
 ) -> nx.MultiGraph:
     """Smart degree-2 removal for MultiGraphs with topology improvement."""
     if not isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         raise ValueError("This function is designed for MultiGraphs")
 
     total_removed = 0
-    for iteration in range(100):
+    for iteration in range(max_iterations):
         degree2_nodes = [n for n in G.nodes() if G.degree[n] == 2]
         if not degree2_nodes:
             break

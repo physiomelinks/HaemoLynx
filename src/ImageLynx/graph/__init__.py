@@ -12,6 +12,7 @@ from .degree2 import (
 )
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .branch_order import assign_branch_orders
+from .boundaries import select_boundary_terminal_nodes
 from ._helpers import (
     add_edge_safe,
     has_edge_safe,
@@ -51,6 +52,7 @@ __all__ = [
     "merge_edges_with_topology_improvement",
     "prune_vascular_stubs",
     "assign_branch_orders",
+    "select_boundary_terminal_nodes",
     "remove_edges_for_self_connected_nodes",
     "add_edge_safe",
     "has_edge_safe",
