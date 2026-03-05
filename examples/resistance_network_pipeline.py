@@ -326,9 +326,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         print(f"Results from set_poiseuille_edge_weights: {results_2}")
         # create list of resistances of all edges
         resistances = []
-        for u, v, key in G.edges(keys=True, data=True):
-            resistances.append(G[u][v][key]['weight'])
-        print(f"Resistances of all edges: {resistances}")
+        # TODO DEBUG
+        # for u, v, key in G.edges(keys=True, data=True):
+        #     resistances.append(G[u][v][key]['weight'])
+        # print(f"Resistances of all edges: {resistances}")
 
     # visualize pre vtk
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "pre_vtk.png")
