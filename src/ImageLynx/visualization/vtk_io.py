@@ -49,6 +49,27 @@ def _snap_edge_endpoints_to_nodes(
     return out
 
 
+def _orient_edge_points_to_nodes(
+    points: np.ndarray, u: Any, v: Any, graph: nx.Graph
+) -> np.ndarray:
+    """Orient polyline so first point maps best to u and last to v."""
+    u_pos = graph.nodes[u].get("pos")
+    v_pos = graph.nodes[v].get("pos")
+    if u_pos is None or v_pos is None or len(points) < 2:
+        return points
+
+    u_arr = np.asarray(u_pos, dtype=float)[:3]
+    v_arr = np.asarray(v_pos, dtype=float)[:3]
+    start = np.asarray(points[0], dtype=float)
+    end = np.asarray(points[-1], dtype=float)
+
+    direct_cost = float(np.linalg.norm(start - u_arr) + np.linalg.norm(end - v_arr))
+    flipped_cost = float(np.linalg.norm(start - v_arr) + np.linalg.norm(end - u_arr))
+    if flipped_cost < direct_cost:
+        return points[::-1].copy()
+    return points
+
+
 def _point_key(point: np.ndarray, decimals: int) -> tuple[float, float, float]:
     rounded = np.round(np.asarray(point, dtype=float), decimals=decimals)
     return (float(rounded[0]), float(rounded[1]), float(rounded[2]))
@@ -182,6 +203,7 @@ def graph_to_vtk(
             pts = _edge_points(u, v, data, graph)
         except ValueError:
             continue
+        pts = _orient_edge_points_to_nodes(pts, u, v, graph)
         pts = _snap_edge_endpoints_to_nodes(pts, u, v, graph)
 
         edge_ids: List[int] = []

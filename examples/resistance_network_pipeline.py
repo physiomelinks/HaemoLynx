@@ -356,6 +356,8 @@ def main() -> None:
                 DIAMETER_BY_BRANCH_ORDER_ENHANCED,
             )
 
+    # visualize pre vtk
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "pre_vtk.png")
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
