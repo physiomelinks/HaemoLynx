@@ -64,6 +64,7 @@ SKELETON_MIN_COMPONENT_PERCENT = 5.0
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
+SET_STUBS_TO_OUTLET_PRESSURE = False
 """Configuration defaults for diameter maps."""
 
 # Diameter by branch order (simple scalar)
@@ -176,6 +177,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             output_nodes=OUTPUT_NODES, 
                             input_p_bc=INPUT_P_BC, 
                             output_p_bc=OUTPUT_P_BC, 
+                            set_stubs_to_outlet_pressure=SET_STUBS_TO_OUTLET_PRESSURE,
                             visualize_results=VISUALIZE_RESULTS, 
                             visualize_vtk=VISUALIZE_VTK) -> None:
                         
@@ -408,6 +410,26 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
+    flow_output_nodes = list(output_nodes)
+    if set_stubs_to_outlet_pressure:
+        starting_node_set = set(starting_nodes)
+        output_node_set = set(flow_output_nodes)
+        stub_nodes = sorted(
+            node_id
+            for node_id, degree in G.degree()
+            if degree == 1
+            and node_id not in starting_node_set
+            and node_id not in output_node_set
+        )
+        if stub_nodes:
+            flow_output_nodes.extend(stub_nodes)
+            print(
+                "Applied outlet pressure to terminal stubs: "
+                f"added {len(stub_nodes)} node(s) -> {stub_nodes}"
+            )
+        else:
+            print("No additional terminal stubs found for outlet pressure assignment.")
+
     # 8) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.
     flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
@@ -416,7 +438,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         input_p_bc,
         output_p_bc,
         starting_nodes,
-        output_nodes,
+        flow_output_nodes,
         vtk_export,
     )
     print("Flow through the network solved")
@@ -439,4 +461,4 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
 if __name__ == "__main__":
     plot_dir = BASE_PLOT_DIR / "nerve"
-    image_to_model_pipeline(plot_dir=plot_dir)
+    image_to_model_pipeline(plot_dir=plot_dir, set_stubs_to_outlet_pressure=True)
