@@ -52,7 +52,9 @@ def plot_node_degree_distribution(
     return degree_counts
 
 
-def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool = False, save_path: Optional[str] = None) -> None:
+def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool = False, 
+                              save_path: Optional[str] = None,
+                              show_coordinates_degree_1: bool = False) -> None:
     """Overlay edges and nodes on Z-projection of image.
 
     Set label_nodes=True to draw node IDs.
@@ -78,6 +80,19 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
                     color="yellow",
                     fontsize=3,
                 )
+        if show_coordinates_degree_1:
+            for node_id, node_pos in pos.items():
+                if G.degree(node_id) == 1:
+                    x = int(round(float(node_pos[2])))
+                    y = int(round(float(node_pos[1])))
+                    z = int(round(float(node_pos[0])))
+                    plt.text(
+                        float(node_pos[2]) + 1.0,
+                        float(node_pos[1]) + 1.0,
+                        f"({x}, {y}, {z})",
+                        color="blue",
+                        fontsize=3,
+                    )
     plt.title("Overlay: Edges and Nodes on Z-Projection")
     plt.axis("off")
     if save_path:

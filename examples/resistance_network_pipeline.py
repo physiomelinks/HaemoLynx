@@ -32,10 +32,16 @@ if not BASE_PLOT_DIR.exists():
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
 # end of the image.
+SET_INPUT_NODE_METHOD = "coordinates" # "coordinates" or "edge_percent"
+SET_OUTPUT_NODE_METHOD = "all_degree_1" # "coordinates" or "edge_percent"
 EDGE_PERCENT = 10.0
 END_PERCENT = 10.0
 # For 3D skeletons this is usually the y-axis in (z, y, x).
 NODE_EDGE_AXIS = 1
+STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0)]
+OUTPUT_NODE_COORDINATES = []
+STARTING_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+OUTPUT_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 STARTING_NODES: list[int] = []
 OUTPUT_NODES: list[int] = []
 # TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
@@ -63,12 +69,12 @@ SKELETON_MIN_COMPONENT_PERCENT = 5.0
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
-SET_STUBS_TO_OUTLET_PRESSURE = False
 """Configuration defaults for diameter maps."""
 
 # Diameter by branch order (simple scalar)
 print("TODO HARVEY CHANGE THIS ALL_DIAMS_CONST BACK TO FALSE FOR ORIGINAL RUN")
 ALL_DIAMS_CONST = True
+DO_PERICYTE_CONSTRUCTION = False
 
 DIAMETER_BY_BRANCH_ORDER = {}
 if ALL_DIAMS_CONST:
@@ -84,16 +90,11 @@ else:
     for i in range(5, 52):
         DIAMETER_BY_BRANCH_ORDER[f"B{i:02d}"] = 4.0
 
-# Enhanced: passive (d1) and constricted (d2) diameters
-DIAMETER_BY_BRANCH_ORDER_ENHANCED = {
-    "B01": {"d1": 6.2, "d2": 6.2},
-    "B02": {"d1": 4.0, "d2": 3.2},
-    "B03": {"d1": 5.0, "d2": 4.0},
-    "B04": {"d1": 5.0, "d2": 4.0},
+CONSTRICTION_BY_BRANCH_ORDER = {
+    "B01": 1.0,
 }
-# repeat for 50 entries
-for i in range(5, 52):
-    DIAMETER_BY_BRANCH_ORDER_ENHANCED[f"B{i:02d}"] = {"d1": 4.0, "d2": 3.2}
+for i in range(2, 52):
+    CONSTRICTION_BY_BRANCH_ORDER[f"B{i:02d}"] = 0.8
 
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= [
@@ -122,7 +123,9 @@ custom_edges= [
 ]  
 
 def image_to_model_pipeline(image_path=INPUT_PATH, 
-                            diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER_ENHANCED, # TODO this doesn't work with the DIAMETER_BY_BRANCH_ORDER dictionary it needs d2
+                            diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
+                            constriction_by_branch_order=CONSTRICTION_BY_BRANCH_ORDER,
+                            do_pericyte_constriction=DO_PERICYTE_CONSTRUCTION,
                             plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING, 
                             do_skeletonize=DO_SKELETONIZE, 
@@ -137,6 +140,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             skeleton_max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE, 
                             skeleton_component_connectivity=SKELETON_COMPONENT_CONNECTIVITY, 
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT, 
+                            set_input_node_method=SET_INPUT_NODE_METHOD,
+                            set_output_node_method=SET_OUTPUT_NODE_METHOD,
+                            starting_node_coordinates=STARTING_NODE_COORDINATES,
+                            output_node_coordinates=OUTPUT_NODE_COORDINATES,
+                            starting_node_volumes=STARTING_NODE_VOLUMES,
+                            output_node_volumes=OUTPUT_NODE_VOLUMES,
                             edge_percent=EDGE_PERCENT, 
                             end_percent=END_PERCENT, 
                             node_edge_axis=NODE_EDGE_AXIS, 
@@ -144,7 +153,6 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             output_nodes=OUTPUT_NODES, 
                             input_p_bc=INPUT_P_BC, 
                             output_p_bc=OUTPUT_P_BC, 
-                            set_stubs_to_outlet_pressure=SET_STUBS_TO_OUTLET_PRESSURE,
                             visualize_results=VISUALIZE_RESULTS, 
                             visualize_vtk=VISUALIZE_VTK) -> None:
                         
@@ -251,8 +259,6 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         # remove any nodes that are connected to themselves with no nodes in between
         G = graph.remove_edges_for_self_connected_nodes(G)
 
-        # Visualize node labels for debugging/verification of auto-selected boundary nodes.
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "prune_vascular_stubs.png")
         
         # G = graph.smart_multigraph_degree2_removal(
         #     G,
@@ -273,22 +279,42 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         with graph_path.open("rb") as f:
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
+    
+    # Visualize node labels for debugging/verification of auto-selected boundary nodes.
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=False, save_path=plot_dir / "final_graph.png", 
+                                            show_coordinates_degree_1=True)
 
     starting_nodes[:] = []
     output_nodes[:] = []
-    start_nodes, out_nodes = graph.select_boundary_terminal_nodes(
+    start_nodes = graph.select_boundary_nodes_by_method(
         G,
         image.shape,
+        method=set_input_node_method,
+        node_role="input",
+        coordinates=starting_node_coordinates,
+        volume_boxes=starting_node_volumes,
         edge_percent=edge_percent,
         end_percent=end_percent,
         axis=node_edge_axis,
     )
+    out_nodes = graph.select_boundary_nodes_by_method(
+        G,
+        image.shape,
+        method=set_output_node_method,
+        node_role="output",
+        coordinates=output_node_coordinates,
+        volume_boxes=output_node_volumes,
+        edge_percent=edge_percent,
+        end_percent=end_percent,
+        axis=node_edge_axis,
+        exclude_nodes=start_nodes,
+    )
     starting_nodes.extend(start_nodes)
     output_nodes.extend(out_nodes)
     print(
-        f"Auto-selected {len(starting_nodes)} STARTING_NODES "
-        f"(top {edge_percent}%) and {len(output_nodes)} OUTPUT_NODES "
-        f"(bottom {end_percent}%) along axis {node_edge_axis}."
+        f"Selected {len(starting_nodes)} STARTING_NODES using "
+        f"method='{set_input_node_method}' and {len(output_nodes)} OUTPUT_NODES "
+        f"using method='{set_output_node_method}'."
     )
     print(f"Starting nodes are: {starting_nodes}")
     print(f"Output nodes are: {output_nodes}")
@@ -308,12 +334,23 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             constriction_length=40.0,
             constriction_spacing=100.0,
         )
+        if do_pericyte_constriction:
+            diameter_by_branch_order_enhanced = {}
+            for branch_order, diameter in diameter_by_branch_order.items():
+                diameter_by_branch_order_enhanced[branch_order] = {
+                    "d1": diameter,
+                    "d2": diameter * constriction_by_branch_order[branch_order],
+                }
 
-        G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
-            G,
-            diameter_by_branch_order,
-        )
-
+            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                G,
+                diameter_by_branch_order_enhanced,
+            )
+        else:
+            G, results = poiseuille_model.set_poiseuille_weights(
+                G,
+                diameter_by_branch_order,
+            )
         print(f"Results from set_poiseuille_weights_with_constrictions: {results}")
 
         G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
@@ -325,14 +362,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
         print(f"Results from set_poiseuille_edge_weights: {results_2}")
         # create list of resistances of all edges
-        resistances = []
+        conductances = []
         # TODO DEBUG
-        # for u, v, key in G.edges(keys=True, data=True):
-        #     resistances.append(G[u][v][key]['weight'])
-        # print(f"Resistances of all edges: {resistances}")
+        for u, v, key in G.edges(keys=True):
+            conductance = G[u][v][key]['weight']
+            print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
+            conductances.append(conductance)
 
-    # visualize pre vtk
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "pre_vtk.png")
+        # print(f"Conductances of all edges: {conductances}")
+
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
@@ -387,26 +425,6 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
-    flow_output_nodes = list(output_nodes)
-    if set_stubs_to_outlet_pressure:
-        starting_node_set = set(starting_nodes)
-        output_node_set = set(flow_output_nodes)
-        stub_nodes = sorted(
-            node_id
-            for node_id, degree in G.degree()
-            if degree == 1
-            and node_id not in starting_node_set
-            and node_id not in output_node_set
-        )
-        if stub_nodes:
-            flow_output_nodes.extend(stub_nodes)
-            print(
-                "Applied outlet pressure to terminal stubs: "
-                f"added {len(stub_nodes)} node(s) -> {stub_nodes}"
-            )
-        else:
-            print("No additional terminal stubs found for outlet pressure assignment.")
-
     # 8) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.
     flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
@@ -415,7 +433,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         input_p_bc,
         output_p_bc,
         starting_nodes,
-        flow_output_nodes,
+        output_nodes,
         vtk_export,
     )
     print("Flow through the network solved")
@@ -438,4 +456,5 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
 if __name__ == "__main__":
     plot_dir = BASE_PLOT_DIR / "nerve"
-    image_to_model_pipeline(plot_dir=plot_dir, set_stubs_to_outlet_pressure=True)
+    image_to_model_pipeline(plot_dir=plot_dir)
+
