@@ -46,9 +46,9 @@ OUTPUT_P_BC = 500 # Pa
 VISUALIZE_RESULTS = True
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
-DO_SKELETONIZE = True
-DO_GRAPH_BUILDING = True
-DO_RESISTANCE_CALCULATION = False
+DO_SKELETONIZE = False
+DO_GRAPH_BUILDING = False
+DO_EQUIV_RESISTANCE_CALCULATION = False
 CONSTRICT_AT_PERICYTES = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
@@ -159,7 +159,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             verbose_logging=VERBOSE_LOGGING, 
                             do_skeletonize=DO_SKELETONIZE, 
                             do_graph_building=DO_GRAPH_BUILDING, 
-                            do_resistance_calculation=DO_RESISTANCE_CALCULATION, 
+                            do_equiv_resistance_calculation=DO_EQUIV_RESISTANCE_CALCULATION, 
                             constrict_at_pericytes=CONSTRICT_AT_PERICYTES, 
                             min_branch_length=MIN_BRANCH_LENGTH, 
                             min_stub_length=MIN_STUB_LENGTH,
@@ -378,7 +378,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
-    if do_resistance_calculation:
+    if do_equiv_resistance_calculation:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
             laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
