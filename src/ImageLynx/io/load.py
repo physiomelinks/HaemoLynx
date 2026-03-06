@@ -1,5 +1,6 @@
 """Load 3D images from TIFF or HDF5 and produce skeleton."""
 import logging
+from pathlib import Path
 
 import numpy as np
 import tifffile
@@ -16,6 +17,54 @@ except ImportError:
     h5py = None
 
 logger = logging.getLogger(__name__)
+
+
+def crop_tiff_volume_from_corners(
+    input_path: str | Path,
+    output_path: str | Path,
+    corner_a: tuple[float, float, float],
+    corner_b: tuple[float, float, float],
+) -> dict:
+    """Crop a 3D TIFF volume using two opposite corners and save to TIFF.
+
+    Corners are interpreted in (z, y, x) index order and treated as inclusive.
+    Corner order does not matter; bounds are normalized internally.
+    """
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    volume = tifffile.imread(str(input_path))
+    if volume.ndim != 3:
+        volume = simplify_to_3d(np.asarray(volume))
+
+    shape = np.asarray(volume.shape, dtype=int)
+    a = np.asarray(corner_a, dtype=float)
+    b = np.asarray(corner_b, dtype=float)
+    if a.shape != (3,) or b.shape != (3,):
+        raise ValueError("corner_a and corner_b must each be 3D (z, y, x) coordinates.")
+
+    lo = np.minimum(a, b).astype(int)
+    hi = np.maximum(a, b).astype(int)
+    lo = np.clip(lo, 0, shape - 1)
+    hi = np.clip(hi, 0, shape - 1)
+    if np.any(hi < lo):
+        raise ValueError("Invalid crop bounds after clipping.")
+
+    cropped = volume[
+        lo[0] : hi[0] + 1,
+        lo[1] : hi[1] + 1,
+        lo[2] : hi[2] + 1,
+    ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(str(output_path), cropped)
+
+    return {
+        "input_path": str(input_path),
+        "output_path": str(output_path),
+        "source_shape": tuple(int(v) for v in shape),
+        "cropped_shape": tuple(int(v) for v in cropped.shape),
+        "corner_a": tuple(int(v) for v in lo),
+        "corner_b": tuple(int(v) for v in hi),
+    }
 
 
 def load_and_skeletonize_3d_tif(
