@@ -164,3 +164,25 @@ def test_select_boundary_nodes_by_method_volume_and_exclude():
         exclude_nodes=[0],
     )
     assert nodes == [1]
+
+
+def test_select_boundary_nodes_by_method_degree_1_from_starting():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([3.0, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([5.0, 0.0, 0.0]))
+    G.add_node(3, pos=np.array([10.0, 0.0, 0.0]))
+    G.add_edge(0, 2, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+    G.add_edge(2, 3, length=1.0, weight=1.0)
+
+    nodes = select_boundary_nodes_by_method(
+        G,
+        (20, 20, 20),
+        method="degree_1_from_starting",
+        node_role="output",
+        starting_nodes_for_distance=[0],
+        distance_from_starting_node=5.0,
+        exclude_nodes=[0],
+    )
+    assert nodes == [3]

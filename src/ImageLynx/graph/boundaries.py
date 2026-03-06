@@ -73,6 +73,8 @@ def select_boundary_nodes_by_method(
     end_percent: float = 10.0,
     axis: int = 1,
     exclude_nodes: Iterable[Any] | None = None,
+    starting_nodes_for_distance: Iterable[Any] | None = None,
+    distance_from_starting_node: float = 0.0,
 ) -> list[Any]:
     """Select boundary nodes for one role using the specified method."""
     if node_role not in {"input", "output"}:
@@ -130,10 +132,30 @@ def select_boundary_nodes_by_method(
             axis=axis,
         )
         selected = start_nodes if node_role == "input" else out_nodes
+    elif method_norm == "degree_1_from_starting":
+        if distance_from_starting_node < 0:
+            raise ValueError("distance_from_starting_node must be non-negative.")
+        node_pos_all = nx.get_node_attributes(G, "pos")
+        starting_positions = [
+            np.asarray(node_pos_all[node_id], dtype=float)
+            for node_id in (starting_nodes_for_distance or [])
+            if node_id in node_pos_all
+        ]
+        if not starting_positions:
+            return []
+        selected = []
+        for node_id in terminals:
+            nearest_start_dist = min(
+                float(np.linalg.norm(pos[node_id] - start_pos))
+                for start_pos in starting_positions
+            )
+            if nearest_start_dist > distance_from_starting_node:
+                selected.append(node_id)
     else:
         raise ValueError(
             "Unknown boundary-node method. Supported methods are: "
-            "'coordinates', 'all_degree_1', 'volume', 'edge_percent'."
+            "'coordinates', 'all_degree_1', 'volume', 'edge_percent', "
+            "'degree_1_from_starting'."
         )
 
     return [node for node in _sort_nodes(selected) if node not in excluded]
