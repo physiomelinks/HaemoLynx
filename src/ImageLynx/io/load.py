@@ -1,5 +1,6 @@
 """Load 3D images from TIFF or HDF5 and produce skeleton."""
 import logging
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,56 @@ except ImportError:
     h5py = None
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_image_path_with_optional_zip(image_path: str | Path) -> Path:
+    """Return an existing image path, extracting from a nearby zip when needed."""
+    image_path = Path(image_path)
+    if image_path.exists():
+        return image_path
+
+    zip_candidates = [
+        image_path.with_suffix(f"{image_path.suffix}.zip"),
+        image_path.with_suffix(".zip"),
+    ]
+    checked: list[Path] = []
+    for zip_path in zip_candidates:
+        if zip_path in checked:
+            continue
+        checked.append(zip_path)
+        if not zip_path.exists():
+            continue
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            members = [name for name in zf.namelist() if not name.endswith("/")]
+            target_member = None
+
+            # Prefer an exact filename match within the archive.
+            for member in members:
+                if Path(member).name == image_path.name:
+                    target_member = member
+                    break
+
+            # Fallback: if archive has only one file, use it.
+            if target_member is None and len(members) == 1:
+                target_member = members[0]
+
+            if target_member is None:
+                raise FileNotFoundError(
+                    f"Could not find '{image_path.name}' in archive '{zip_path}'. "
+                    f"Archive members: {members}"
+                )
+
+            zf.extract(target_member, path=image_path.parent)
+            extracted_path = image_path.parent / target_member
+            if extracted_path.exists():
+                logger.info("Extracted '%s' from '%s'.", target_member, zip_path)
+                return extracted_path
+
+    raise FileNotFoundError(
+        f"Input image not found: {image_path}. "
+        f"Checked zip candidates: {[str(p) for p in checked]}"
+    )
 
 
 def crop_tiff_volume_from_corners(
