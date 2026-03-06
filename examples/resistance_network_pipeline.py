@@ -56,8 +56,8 @@ OUTPUT_P_BC = 1000 # Pa
 VISUALIZE_RESULTS = True
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
-DO_SKELETONIZE = False
-DO_GRAPH_BUILDING = False
+DO_SKELETONIZE = True
+DO_GRAPH_BUILDING = True
 DO_EQUIV_RESISTANCE_CALCULATION = False
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
@@ -160,13 +160,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             output_p_bc=OUTPUT_P_BC, 
                             visualize_results=VISUALIZE_RESULTS, 
                             visualize_vtk=VISUALIZE_VTK) -> None:
-                        
+    image_path = Path(image_path)
+    image_path = io.resolve_image_path_with_optional_zip(image_path)
     # get image format from image_path
     input_format = image_path.suffix[1:].lower()
     if input_format not in ["tif", "h5"]:
         raise ValueError(f"Invalid image format: {input_format}")
-
-    image_path = Path(image_path)
     vtk_output_prefix = Path(vtk_output_prefix)
     output_dir = vtk_output_prefix.parent
 
