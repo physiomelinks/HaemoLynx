@@ -33,12 +33,16 @@ H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
 # end of the image.
 SET_INPUT_NODE_METHOD = "coordinates" # "coordinates" or "edge_percent"
-SET_OUTPUT_NODE_METHOD = "all_degree_1" # "coordinates" or "edge_percent"
+SET_OUTPUT_NODE_METHOD = "degree_1_from_starting" # "coordinates" or "edge_percent"
+DISTANCE_FROM_STARTING_NODE = 200.0
 EDGE_PERCENT = 10.0
 END_PERCENT = 10.0
 # For 3D skeletons this is usually the y-axis in (z, y, x).
 NODE_EDGE_AXIS = 1
-STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0)]
+STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0), # top right
+                             (202.0, 1303.0, 132.0), (104.0, 1321.0, 133.0), #bottom left
+                             (361.0, 332.0, 120.0), (321.0, 334.0, 163.0)] #bottom right
+
 OUTPUT_NODE_COORDINATES = []
 STARTING_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 OUTPUT_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
@@ -146,6 +150,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             output_node_coordinates=OUTPUT_NODE_COORDINATES,
                             starting_node_volumes=STARTING_NODE_VOLUMES,
                             output_node_volumes=OUTPUT_NODE_VOLUMES,
+                            distance_from_starting_node=DISTANCE_FROM_STARTING_NODE,
                             edge_percent=EDGE_PERCENT, 
                             end_percent=END_PERCENT, 
                             node_edge_axis=NODE_EDGE_AXIS, 
@@ -308,6 +313,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         end_percent=end_percent,
         axis=node_edge_axis,
         exclude_nodes=start_nodes,
+        starting_nodes_for_distance=start_nodes,
+        distance_from_starting_node=distance_from_starting_node,
     )
     starting_nodes.extend(start_nodes)
     output_nodes.extend(out_nodes)
