@@ -30,4 +30,4 @@ jobs:
         run: pytest -m "not integration"
 
       - name: Run integration tests
-        run: pytest -m integration -s tests/integration
+        run: pytest -m integration -s
