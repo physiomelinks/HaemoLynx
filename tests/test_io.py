@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from ImageLynx.io import (
+    crop_tiff_volume_from_corners,
     load_and_skeletonize_3d_tif,
     load_and_skeletonize_3d_h5,
     bridge_gaps,
@@ -42,3 +43,23 @@ def test_load_and_skeletonize_3d_tif(tmp_path):
     assert image.shape == (6, 6, 6)
     assert skeleton.shape == (6, 6, 6)
     assert skeleton.dtype == bool
+
+
+def test_crop_tiff_volume_from_corners(tmp_path):
+    src = tmp_path / "src.tif"
+    dst = tmp_path / "dst.tif"
+    arr = np.arange(10 * 8 * 6, dtype=np.uint16).reshape((10, 8, 6))
+    import tifffile
+
+    tifffile.imwrite(src, arr)
+    info = crop_tiff_volume_from_corners(
+        src,
+        dst,
+        corner_a=(9, 7, 5),
+        corner_b=(7, 4, 0),
+    )
+
+    out = tifffile.imread(dst)
+    assert out.shape == (3, 4, 6)
+    assert tuple(info["source_shape"]) == (10, 8, 6)
+    assert tuple(info["cropped_shape"]) == (3, 4, 6)

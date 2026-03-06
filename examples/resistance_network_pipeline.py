@@ -34,14 +34,14 @@ H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # end of the image.
 SET_INPUT_NODE_METHOD = "coordinates" # "coordinates" or "edge_percent"
 SET_OUTPUT_NODE_METHOD = "degree_1_from_starting" # "coordinates" or "edge_percent"
-DISTANCE_FROM_STARTING_NODE = 200.0
+DISTANCE_FROM_STARTING_NODE = 300.0
 EDGE_PERCENT = 10.0
 END_PERCENT = 10.0
 # For 3D skeletons this is usually the y-axis in (z, y, x).
 NODE_EDGE_AXIS = 1
 STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0), # top right
                              (202.0, 1303.0, 132.0), (104.0, 1321.0, 133.0), #bottom left
-                             (361.0, 332.0, 120.0), (321.0, 334.0, 163.0)] #bottom right
+                             (361.0, 332.0, 120.0), (321.0, 334.0, 163.0)] #top right
 
 OUTPUT_NODE_COORDINATES = []
 STARTING_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
@@ -51,8 +51,8 @@ OUTPUT_NODES: list[int] = []
 # TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
 # TODO automate the selection of resistance node pairs
 # RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
-INPUT_P_BC = 1000 # Pa 
-OUTPUT_P_BC = 500 # Pa
+INPUT_P_BC = 4500# Pa 
+OUTPUT_P_BC = 1000 # Pa
 VISUALIZE_RESULTS = True
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
@@ -168,6 +168,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     image_path = Path(image_path)
     vtk_output_prefix = Path(vtk_output_prefix)
+    output_dir = vtk_output_prefix.parent
 
     logging.basicConfig(
         level=logging.DEBUG if verbose_logging else logging.INFO,
@@ -175,8 +176,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     )
 
     # 1) Load image and skeletonize.
-    skeleton_path = image_path.with_name(f"{image_path.stem}_skeleton.npy")
-    graph_path = image_path.with_name(f"{image_path.stem}_graph.pkl")
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
+    skeleton_path = output_dir / f"{image_path.stem}_skeleton.npy"
+    graph_path = output_dir / f"{image_path.stem}_graph.pkl"
     projection_path = plot_dir / "skeleton_projection.png"
     if not plot_dir.exists():
         plot_dir.mkdir(parents=True, exist_ok=True)
@@ -373,7 +376,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         # TODO DEBUG
         for u, v, key in G.edges(keys=True):
             conductance = G[u][v][key]['weight']
-            print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
+            # print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
             conductances.append(conductance)
 
         # print(f"Conductances of all edges: {conductances}")
