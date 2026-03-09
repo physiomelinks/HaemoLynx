@@ -10,4 +10,11 @@ to run tests do
 
 from the repo root directory
 
+# Allowable input mask formats
+
+tif
+
+h5 (in progress)
+
+
 
