@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_PATH = REPO_ROOT / "examples" / "resistance_network_pipeline.py"
 TESTS_DIR = REPO_ROOT / "tests"
 FIXTURE_TIFF = REPO_ROOT / "tests" / "data" / "seven_vessel_noisy_3d.tif"
+FIXTURE_H5 = REPO_ROOT / "tests" / "data" / "bundled_vessels_8_to_2.h5"
 
 
 def _load_pipeline_module():
@@ -151,3 +152,77 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
     assert n_nodes > 0
     assert n_edges > 0
     assert vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
+    """Run full pipeline against committed H5 fixture with bundled vessels."""
+    pytest.importorskip("pyvista")
+    pytest.importorskip("h5py")
+
+    input_h5 = FIXTURE_H5
+    assert input_h5.exists(), f"Missing H5 fixture: {input_h5}"
+
+    plot_dir = TESTS_DIR / "plots" / "plots_image_to_model_h5_bundle"
+    output_dir = TESTS_DIR / "outputs" / "image_to_model_h5_bundle"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vtk_prefix = output_dir / "integration_h5_bundle"
+
+    pipeline = _load_pipeline_module()
+    previous_dataset_name = getattr(pipeline, "H5_DATASET_NAME", None)
+    pipeline.H5_DATASET_NAME = "data"
+    try:
+        pipeline.image_to_model_pipeline(
+            image_path=input_h5,
+            plot_dir=plot_dir,
+            vtk_output_prefix=vtk_prefix,
+            verbose_logging=False,
+            do_skeletonize=True,
+            do_graph_building=True,
+            do_equiv_resistance_calculation=False,
+            skeleton_closing_radius=1,
+            skeleton_bridge_gap_size=1,
+            skeleton_min_branch_length=3,
+            skeleton_max_bridge_distance=2,
+            skeleton_component_connectivity=3,
+            skeleton_min_component_percent=1.0,
+            set_input_node_method="edge_percent",
+            set_output_node_method="edge_percent",
+            edge_percent=20.0,
+            end_percent=20.0,
+            node_edge_axis=1,
+            starting_nodes=[],
+            output_nodes=[],
+            input_p_bc=1000.0,
+            output_p_bc=500.0,
+            min_stub_length=3.0,
+            visualize_results=False,
+            visualize_vtk=False,
+        )
+    finally:
+        pipeline.H5_DATASET_NAME = previous_dataset_name
+
+    skeleton_path = output_dir / f"{input_h5.stem}_skeleton.npy"
+    graph_path = output_dir / f"{input_h5.stem}_graph.pkl"
+    vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
+    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
+    nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
+
+    assert skeleton_path.exists()
+    assert graph_path.exists()
+    assert vessels_path.exists()
+    assert vessels_flow_path.exists()
+    assert pericytes_path.exists()
+    assert nodes_path.exists()
+
+    with graph_path.open("rb") as fh:
+        graph = pickle.load(fh)
+    n_nodes = graph.number_of_nodes()
+    n_edges = graph.number_of_edges()
+    print(f"[integration_h5_bundle] n_nodes={n_nodes}, n_edges={n_edges}")
+
+    assert n_nodes == 10, f"Expected 10 nodes, got {n_nodes}"
+    assert n_edges == 9, f"Expected 9 edges, got {n_edges}"
