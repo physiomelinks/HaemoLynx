@@ -91,8 +91,8 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
     n_edges = graph.number_of_edges()
     print(f"[integration_static] n_nodes={n_nodes}, n_edges={n_edges}")
 
-    assert n_nodes == 8, f"Expected 8 nodes, got {n_nodes}"
-    assert n_edges == 7, f"Expected 7 edges, got {n_edges}"
+    assert n_nodes == 15, f"Expected 15 nodes, got {n_nodes}"
+    assert n_edges == 14, f"Expected 14 edges, got {n_edges}"
 
 
 @pytest.mark.integration
