@@ -9,6 +9,8 @@
 import logging
 import sys
 import pickle
+import os
+import subprocess
 from pathlib import Path
 from skan import csr
 import tifffile
@@ -25,6 +27,19 @@ from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visual
 # ---------------------------
 # Beginner-friendly settings
 # ---------------------------
+
+# Ilastik configuration settings
+RUN_ILASTIK = False
+ILASTIK_OUTPUT_PROBABILITIES = False # Set to True for Probabilities, False for Simple Segmentation
+ILASTIK_BINARY_PATH = "/home/dsas627/Desktop/ilastik-1.4.1rc2-gpu-Linux/run_ilastik.sh"
+ILASTIK_PROJECT_PATH = root_dir / "examples" / "images" / "cb_wky_2x2x2_A.ilp"
+RAW_IMAGE_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_input_images"
+ILASTIK_OUTPUT_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_output_images"
+
+# Paths for multi-input Ilastik features (e.g., Raw + Frangi)
+RAW_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vessels.tif"
+FRANGI_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map.tif"
+
 INPUT_PATH = None
 BASE_PLOT_DIR = root_dir / "examples" / "plots" 
 if not BASE_PLOT_DIR.exists():
@@ -48,7 +63,7 @@ VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
 DO_SKELETONIZE = True
 DO_GRAPH_BUILDING = True
-DO_RESISTANCE_CALCULATION = False
+DO_RESISTANCE_CALCULATION = True
 CONSTRICT_AT_PERICYTES = False
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
@@ -100,9 +115,123 @@ DIAMETER_BY_BRANCH_ORDER_ENHANCED = None
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= []  
 
+class IlastikClassifier():
+    """Wrapper for the Ilastik headless engine to perform pixel classification."""
+    def __init__(self, ilastik_binary_path, project_file_path):
+        self.binary = ilastik_binary_path
+        self.project = project_file_path
+
+        if not os.path.exists(self.binary):
+            raise FileNotFoundError(f"Ilastik binary not found at: {self.binary}")
+        if not os.path.exists(self.project):
+            raise FileNotFoundError(f"Project file not found at: {self.project}")
+
+    def segment_images(self, image_paths, output_dir, export_source="Simple Segmentation"):
+        """Runs the segmentation on a volume composed of multiple input feature files."""
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Ensure all paths exist and are absolute strings
+        formatted_paths = []
+        for p in image_paths:
+            p = Path(p)
+            if not p.exists():
+                raise FileNotFoundError(f"Input image not found: {p}")
+            formatted_paths.append(str(p))
+
+        print(f"Starting Ilastik engine for {export_source} with {len(formatted_paths)} input features...")
+
+        # Determine suffix for naming (seg or probs)
+        suffix = "probs" if export_source == "Probabilities" else "seg"
+
+        # Base command - Use multipage tiff to support 3D volumes
+        cmd = [
+            str(self.binary),
+            "--headless",
+            f"--project={self.project}",
+            "--output_format=multipage tiff", 
+            f"--export_source={export_source}",
+            f"--output_filename_format={output_dir}/{{nickname}}_{suffix}.tif"
+        ]
+        
+        # Add each file as a separate raw_data entry to fill Ilastik input slots
+        for path_str in formatted_paths:
+            cmd.append(f"--raw_data={path_str}")
+
+        try:
+            process = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print("Ilastik Output Log (Success):\n", process.stdout)
+            print(f"Results saved in: {output_dir}")
+        except subprocess.CalledProcessError as e:
+            print("\n!!! Error occurred during Ilastik processing !!!")
+            print("--- ILASTIK ERROR OUTPUT ---\n", e.stderr)
+            raise e
+
+def run_ilastik_segmentation(ilastik_bin=ILASTIK_BINARY_PATH, 
+                             project_path=ILASTIK_PROJECT_PATH, 
+                             raw_image_path=RAW_IMAGE_PATH,
+                             frangi_image_path=FRANGI_IMAGE_PATH,
+                             output_dir=ILASTIK_OUTPUT_DIR, 
+                             output_probabilities=ILASTIK_OUTPUT_PROBABILITIES):
+    """
+    Stand-alone function to trigger the Ilastik headless segmentation.
+    
+    Args:
+        ilastik_bin (str): Path to the run_ilastik.sh executable.
+        project_path (str): Path to the .ilp project file.
+        raw_image_path (str): Path to the raw CB image.
+        frangi_image_path (str): Path to the frangi vesselness map.
+        output_dir (str): Directory where the result will be saved.
+        output_probabilities (bool): If True, exports "Probabilities". If False, "Simple Segmentation".
+        
+    Returns:
+        Path: The absolute path to the generated segmentation/probability TIFF file.
+    """
+    
+    # Bundle input features (Order matters! Matches Ilastik slots)
+    input_features = [raw_image_path, frangi_image_path]
+    
+    classifier = IlastikClassifier(ilastik_bin, project_path)
+    
+    # Set export source based on toggle
+    export_src = "Probabilities" if output_probabilities else "Simple Segmentation"
+    suffix = "probs" if output_probabilities else "seg"
+
+    # Trigger the segmentation
+    classifier.segment_images(
+        image_paths=input_features,
+        output_dir=output_dir,
+        export_source=export_src
+    )
+    
+    # Identify the resulting filename
+    # Ilastik headless can be unpredictable with nicknames and extensions (.tif vs .tiff)
+    possible_stems = [Path(p).stem for p in input_features]
+    exts = [".tif", ".tiff"]
+    
+    result_path = None
+    for stem in possible_stems:
+        for ext in exts:
+            test_path = Path(output_dir) / f"{stem}_{suffix}{ext}"
+            if test_path.exists():
+                result_path = test_path
+                break
+        if result_path: break
+
+    if not result_path:
+        # Final fallback: look for ANY file in the output dir modified in the last 60 seconds
+        print(f"Warning: Specific output not found. Searching {output_dir} for recent results...")
+        recent_files = sorted(Path(output_dir).glob(f"*_{suffix}.tif*"), key=os.path.getmtime, reverse=True)
+        if recent_files:
+            result_path = recent_files[0]
+            print(f"Detected output file: {result_path}")
+        else:
+            raise FileNotFoundError(f"Could not find Ilastik output in {output_dir}")
+        
+    return result_path
+
 def carotid_image_to_model(image_path=INPUT_PATH, 
                             diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
-                            plot_dir=PLOT_DIR,
+                            plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING, 
                             do_skeletonize=DO_SKELETONIZE, 
                             do_graph_building=DO_GRAPH_BUILDING, 
@@ -128,8 +257,12 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                         
     # get image format from image_path
     input_format = image_path.suffix[1:].lower()
-    if input_format not in ["tif", "h5"]:
+    if input_format not in ["tif", "tiff", "h5"]:
         raise ValueError(f"Invalid image format: {input_format}")
+
+    # Canonicalize format for later checks
+    if input_format == "tiff":
+        input_format = "tif"
 
     image_path = Path(image_path)
     vtk_output_prefix = Path(vtk_output_prefix)
@@ -274,7 +407,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
 
     if starting_nodes and output_nodes:
         resistance_node_pair = (starting_nodes[0], output_nodes[0])
-        print(f"Auto-selected resistance node pair: {resistance_node_pair}")
+        print(f"Auto-selected resistance node_pair: {resistance_node_pair}")
     else:
         raise ValueError(f"No starting or output nodes found in input {edge_percent}% or output {end_percent}%")
 
@@ -386,13 +519,27 @@ def carotid_image_to_model(image_path=INPUT_PATH,
 
 
 if __name__ == "__main__":
-
-    input_path = root_dir / "examples" / "images" / "carotid.tif"
-    # TODO Dale 
-    # image to segmentation
-    
-    # create_mask_from_image()
-    
-    temp_input_mask_path = root_dir / "examples" / "images" / "carotid_mask.tif"
     plot_dir = BASE_PLOT_DIR / "carotid"
-    carotid_image_to_model(input_path=temp_input_mask_path, plot_dir=plot_dir)
+    
+    # 1. Run Ilastik Segmentation (if enabled)
+    if RUN_ILASTIK:
+        # Example using explicit kwargs for clarity
+        target_input_mask_path = run_ilastik_segmentation(
+            ilastik_bin=ILASTIK_BINARY_PATH,
+            project_path=ILASTIK_PROJECT_PATH,
+            raw_image_path=RAW_IMAGE_PATH,
+            frangi_image_path=FRANGI_IMAGE_PATH,
+            output_dir=ILASTIK_OUTPUT_DIR,
+            output_probabilities=ILASTIK_OUTPUT_PROBABILITIES
+        )
+    else:
+        # Fallback if we aren't running Ilastik (use pre-segmented mask)
+        target_input_mask_path = root_dir / "examples" / "images" / "ilastik_batch_processing_output_images" / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_seg.tiff"
+
+    # 2. Run the Network Pipeline
+    carotid_image_to_model(image_path=target_input_mask_path, plot_dir=plot_dir)
+
+    ### // NOTES TO SELF FOR LATER // ###
+
+    ### Run through current image-to-model functionality with CB binary-mask and add fixes/
+    ### features on the fly
