@@ -142,33 +142,37 @@ def load_and_skeletonize_3d_tif(
 
 def load_and_skeletonize_3d_h5(
     filepath: str,
-    dataset_name: str,
+    dataset_name: str | None = None,
 ):
-    """Load an HDF5 dataset, simplify to 3D, then skeletonize.
 
-    Parameters
-    ----------
-    closing_radius:
-        Radius for the morphological closing step.  Set to 0 to skip.
-    bridge_gap_size:
-        Maximum gap filled by the distance-transform dilation step.
-    """
-    if h5py is None:
-        raise ImportError("h5py is required for HDF5 support. Install with: pip install h5py")
+    if dataset_name is None:
+        path = Path(filepath)
+        if path.suffix != ".h5":
+            raise ValueError(f"Expected a .h5 file, got: {filepath}")
+        dataset_name = path.stem
+        logger.debug("Auto-parsed dataset name: %s", dataset_name)
+
     logger.debug("Loading and skeletonizing H5...")
     with h5py.File(filepath, "r") as f:
         if dataset_name not in f:
             available = list(f.keys())
-            raise ValueError(
-                f"Dataset '{dataset_name}' not found. Available: {available}"
+            raise KeyError(
+                f"Dataset '{dataset_name}' not found in {filepath}. "
+                f"Available datasets: {available}"
             )
-        image = np.array(f[dataset_name][:])
+        image = np.array(f[dataset_name])
+
     logger.debug("Original image shape: %s", image.shape)
     image = simplify_to_3d(image)
     logger.debug("Simplified image shape: %s", image.shape)
-    skeleton = skeletonize_3d(img_as_bool(image))
-    return image, skeleton
 
+    # Ensure image is (X, Y, Z)
+    if image.ndim != 3:
+        raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
+
+    binary = image.astype(bool)
+    skeleton = skeletonize_3d(binary)
+    return image, skeleton
 
 def simplify_to_3d(image: np.ndarray) -> np.ndarray:
     """Reduce image to 3D by taking first spatial/channel slice."""

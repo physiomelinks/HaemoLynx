@@ -29,7 +29,6 @@ INPUT_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
 BASE_PLOT_DIR = root_dir / "examples" / "plots" 
 if not BASE_PLOT_DIR.exists():
     BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
-H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
 # end of the image.
 SET_INPUT_NODE_METHOD = "coordinates" # "coordinates" or "edge_percent"
@@ -191,11 +190,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 image_path,
             )
         elif input_format == "h5":
-            if not H5_DATASET_NAME:
-                raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
             image, skeleton = io.load_and_skeletonize_3d_h5(
                 image_path,
-                H5_DATASET_NAME,
             )
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
@@ -459,6 +455,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     # 9) Optional matplotlib visualization.
     if visualize_results:
+        print("\nGenerating visualizations...")
         visualization.plot_node_degree_distribution(G)
         visualization.visualize_edges_and_nodes(image, G)
         # visualization.interactive_3d_graph(G)
