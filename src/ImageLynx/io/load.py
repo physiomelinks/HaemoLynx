@@ -5,12 +5,8 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from skimage.filters import threshold_otsu
-from scipy.ndimage import binary_fill_holes, distance_transform_edt
 from skimage.util import img_as_bool
-from skimage.morphology import remove_small_objects, skeletonize_3d
-
-from ..preprocessing.skeleton import bridge_gaps, close_binary_mask
+from skimage.morphology import  skeletonize_3d
 
 try:
     import h5py
@@ -120,9 +116,6 @@ def crop_tiff_volume_from_corners(
 
 def load_and_skeletonize_3d_tif(
     filepath: str,
-    voxel_size: float = 1.0,
-    closing_radius: int = 3,
-    bridge_gap_size: int = 4,
 ):
     """Load a TIFF stack, threshold, fill holes, close gaps, and skeletonize.
 
@@ -143,23 +136,13 @@ def load_and_skeletonize_3d_tif(
     """
     logger.debug("Loading and skeletonizing TIFF...")
     image = tifffile.imread(filepath)
-    threshold = threshold_otsu(image)
-    binary = image > threshold
-    if closing_radius > 0:
-        logger.debug("Applying morphological closing (radius=%d)…", closing_radius)
-        binary = close_binary_mask(binary, radius=closing_radius)
-    filled = binary_fill_holes(binary)
-    bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
-    skeleton = skeletonize_3d(img_as_bool(bridged))
+    skeleton = skeletonize_3d(img_as_bool(image))
     return image, skeleton.astype(bool)
 
 
 def load_and_skeletonize_3d_h5(
     filepath: str,
     dataset_name: str,
-    voxel_size: float = 1.0,
-    closing_radius: int = 3,
-    bridge_gap_size: int = 4,
 ):
     """Load an HDF5 dataset, simplify to 3D, then skeletonize.
 
@@ -183,14 +166,7 @@ def load_and_skeletonize_3d_h5(
     logger.debug("Original image shape: %s", image.shape)
     image = simplify_to_3d(image)
     logger.debug("Simplified image shape: %s", image.shape)
-    threshold = threshold_otsu(image)
-    binary = image > threshold
-    if closing_radius > 0:
-        logger.debug("Applying morphological closing (radius=%d)…", closing_radius)
-        binary = close_binary_mask(binary, radius=closing_radius)
-    filled = binary_fill_holes(binary)
-    bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
-    skeleton = skeletonize_3d(img_as_bool(bridged))
+    skeleton = skeletonize_3d(img_as_bool(image))
     return image, skeleton
 
 

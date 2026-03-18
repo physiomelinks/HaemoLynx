@@ -187,8 +187,6 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         if input_format == "tif":
             image, skeleton = io.load_and_skeletonize_3d_tif(
                 image_path,
-                closing_radius=skeleton_closing_radius,
-                bridge_gap_size=skeleton_bridge_gap_size,
             )
         elif input_format == "h5":
             if not H5_DATASET_NAME:
@@ -196,8 +194,6 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             image, skeleton = io.load_and_skeletonize_3d_h5(
                 image_path,
                 H5_DATASET_NAME,
-                closing_radius=skeleton_closing_radius,
-                bridge_gap_size=skeleton_bridge_gap_size,
             )
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
