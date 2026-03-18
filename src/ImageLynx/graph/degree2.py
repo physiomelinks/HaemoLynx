@@ -280,60 +280,82 @@ def smart_multigraph_degree2_removal(
 
     total_removed = 0
     for iteration in range(max_iterations):
-        degree2_nodes = [n for n in G.nodes() if G.degree[n] == 2]
-        if not degree2_nodes:
-            break
         removed_this_iter = 0
-        for node in degree2_nodes:
+
+        # FIX 1: Iterate over all nodes (fresh snapshot each outer iteration)
+        # rather than pre-filtering degree-2 nodes once. This ensures nodes
+        # whose degree drops to 2 mid-iteration are caught in the same pass.
+        for node in list(G.nodes()):
+            # Re-check freshly — graph has changed since snapshot was taken
             if not G.has_node(node) or G.degree[node] != 2:
                 continue
-            neighbors = list(G.neighbors(node))
-            if len(neighbors) != 2:
+
+            # FIX 2: Use G.edges() instead of G.neighbors() to correctly
+            # handle MultiGraphs where both edges may go to the same neighbor.
+            # G.neighbors() deduplicates, so a node with 2 edges to the same
+            # neighbor would appear to have only 1 neighbor and be skipped.
+            edges = list(G.edges(node, keys=True, data=True))
+            if len(edges) != 2:
+                # Degree is 2 but we don't have exactly 2 edges — shouldn't
+                # happen in a valid MultiGraph, but guard anyway.
                 continue
-            n1, n2 = neighbors
+
+            _, n1, k1, d1 = edges[0]
+            _, n2, k2, d2 = edges[1]
+
+            # Guard: skip if merging would push neighbors over max_degree.
+            # Note: after removing `node`, n1 and n2 each lose 1 degree, then
+            # gain 1 for the new merged edge — net 0 change if no existing
+            # edge between n1/n2, net +1 if one already exists. We check
+            # current degree here as a conservative upper bound.
             if G.degree[n1] >= max_degree or G.degree[n2] >= max_degree:
                 continue
+
             node_pos = G.nodes[node].get("pos", None)
             n1_pos = G.nodes[n1].get("pos", None)
             n2_pos = G.nodes[n2].get("pos", None)
             if node_pos is None or n1_pos is None or n2_pos is None:
                 continue
-            edges_to_n1 = list(G[node][n1].values()) if G.has_edge(node, n1) else []
-            edges_to_n2 = list(G[node][n2].values()) if G.has_edge(node, n2) else []
-            if not edges_to_n1 or not edges_to_n2:
-                continue
+
+            # Edge data is already in d1, d2 — no secondary lookup needed.
+            voxels1 = d1.get("voxels", [])
+            voxels2 = d2.get("voxels", [])
+
+            # Remove the node before adding the merged edge, so that
+            # should_add_merged_edge sees the graph in its post-removal state.
             G.remove_node(node)
-            for edge1_data in edges_to_n1:
-                for edge2_data in edges_to_n2:
-                    voxels1 = edge1_data.get("voxels", [])
-                    voxels2 = edge2_data.get("voxels", [])
-                    merged_voxels = merge_edges_with_topology_improvement(
-                        voxels1,
-                        voxels2,
-                        np.array(n1_pos),
-                        np.array(node_pos),
-                        np.array(n2_pos),
-                        skeleton_data,
-                        debug,
-                    )
-                    merged_attrs = {
-                        "weight": edge1_data.get("weight", 0) + edge2_data.get("weight", 0),
-                        "length": calculate_path_length(merged_voxels),
-                        "voxels": merged_voxels,
-                        "merged": True,
-                        "original_edges": 2,
-                    }
-                    should_add, replace_key = should_add_merged_edge(
-                        G, n1, n2, merged_voxels, merged_attrs, debug
-                    )
-                    if should_add:
-                        if replace_key is not None:
-                            G.remove_edge(n1, n2, key=replace_key)
-                        G.add_edge(n1, n2, **merged_attrs)
+
+            merged_voxels = merge_edges_with_topology_improvement(
+                voxels1,
+                voxels2,
+                np.array(n1_pos),
+                np.array(node_pos),
+                np.array(n2_pos),
+                skeleton_data,
+                debug,
+            )
+            merged_attrs = {
+                "weight": d1.get("weight", 0) + d2.get("weight", 0),
+                "length": calculate_path_length(merged_voxels),
+                "voxels": merged_voxels,
+                "merged": True,
+                "original_edges": 2,
+            }
+
+            should_add, replace_key = should_add_merged_edge(
+                G, n1, n2, merged_voxels, merged_attrs, debug
+            )
+            if should_add:
+                if replace_key is not None:
+                    G.remove_edge(n1, n2, key=replace_key)
+                G.add_edge(n1, n2, **merged_attrs)
+
             removed_this_iter += 1
             total_removed += 1
+
         if removed_this_iter == 0:
             break
+
     if debug:
         logger.info("Smart removal: %d removed", total_removed)
     return G
