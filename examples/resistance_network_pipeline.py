@@ -186,7 +186,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     if do_skeletonize:
         if input_format == "tif":
-            image, skeleton = io.load_and_skeletonize_3d_tif(
+            image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z = io.load_and_skeletonize_3d_tif(
                 image_path,
             )
         elif input_format == "h5":
@@ -263,11 +263,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         G = graph.remove_edges_for_self_connected_nodes(G)
 
         
-        # G = graph.smart_multigraph_degree2_removal(
-        #     G,
-        #     skeleton,
-        #     debug=VERBOSE_LOGGING,
-        # )
+        G = graph.smart_multigraph_degree2_removal(
+             G,
+             skeleton,
+             debug=VERBOSE_LOGGING,
+        )
         # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
     
         with graph_path.open("wb") as f:

@@ -80,9 +80,6 @@ def crop_tiff_volume_from_corners(
     input_path = Path(input_path)
     output_path = Path(output_path)
     volume = tifffile.imread(str(input_path))
-    if volume.ndim != 3:
-        volume = simplify_to_3d(np.asarray(volume))
-
     shape = np.asarray(volume.shape, dtype=int)
     a = np.asarray(corner_a, dtype=float)
     b = np.asarray(corner_b, dtype=float)
@@ -115,7 +112,7 @@ def crop_tiff_volume_from_corners(
 
 
 def load_and_skeletonize_3d_tif(filepath: str):
-    logger.debug("Loading and skeletonizing TIFF...")
+    print("Loading and skeletonizing TIFF...")
 
     with tifffile.TiffFile(filepath) as tif:
         image = tif.asarray()
@@ -125,17 +122,29 @@ def load_and_skeletonize_3d_tif(filepath: str):
         x_res_tag = tags.get("XResolution")
         y_res_tag = tags.get("YResolution")
 
-        x_res = (x_res_tag.value[0] / x_res_tag.value[1]) if x_res_tag else 1.0 and print("No x resolution tag found; defaulting to 1.0")
-        y_res = (y_res_tag.value[0] / y_res_tag.value[1]) if y_res_tag else 1.0 and print("No y resolution tag found; defaulting to 1.0")
-        z_res = float(meta.get("spacing")) if "spacing" in meta else print("No z resolution (spacing) found; defaulting to 1.0")
+        if x_res_tag:
+            x_res = x_res_tag.value[0] / x_res_tag.value[1]
+        else:
+            print("No x resolution tag found; defaulting to 1.0")
+            x_res = 1.0
 
-        voxel_size_x = 1.0 / x_res if x_res else 1.0 and print("Invalid x resolution; defaulting to 1.0")
-        voxel_size_y = 1.0 / y_res if y_res else 1.0 and print("Invalid y resolution; defaulting to 1.0")   
+        if y_res_tag:
+            y_res = y_res_tag.value[0] / y_res_tag.value[1]
+        else:
+            print("No y resolution tag found; defaulting to 1.0")
+            y_res = 1.0
+
+        if "spacing" in meta:
+            z_res = float(meta.get("spacing"))
+        else:
+            print("No z resolution (spacing) found; defaulting to 1.0")
+            z_res = 1.0
+
+        voxel_size_x = 1.0 / x_res if x_res else 1.0
+        voxel_size_y = 1.0 / y_res if y_res else 1.0
         voxel_size_z = z_res
-        voxel_size = voxel_size_x, voxel_size_y, voxel_size_z
 
-    logger.debug("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
-
+    print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
     skeleton = skeletonize_3d(img_as_bool(image))
     return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z
 
