@@ -4,7 +4,6 @@ import logging
 import numpy as np
 from scipy.ndimage import (
     binary_dilation,
-    binary_erosion,
     distance_transform_edt,
     generate_binary_structure,
     label,
