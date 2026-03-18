@@ -54,6 +54,8 @@ OUTPUT_NODES: list[int] = []
 INPUT_P_BC = 4500# Pa 
 OUTPUT_P_BC = 1000 # Pa
 VISUALIZE_RESULTS = True
+VTK_export = True
+STATISTICS = False
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
 DO_SKELETONIZE = True
@@ -220,10 +222,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         
         # save the skeleton
         np.save(skeleton_path, skeleton)
+        print(f"Saved skeleton to: {skeleton_path}")
     else:
         # load the skeleton
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(image_path)
+        print(f"Loaded skeleton from: {skeleton_path}")
 
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
 
@@ -379,25 +383,29 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
-    vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix)
-    print("\n=== VTK Export ===")
-    print(f"  Vessels:   {vtk_export['vessels_path']}")
-    print(f"  Pericytes: {vtk_export['pericytes_path']}")
-    print(f"  Nodes:     {vtk_export['nodes_path']}")
-    print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
+    if VTK_export:
+        vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix)
+        print("\n=== VTK Export ===")
+        print(f"  Vessels:   {vtk_export['vessels_path']}")
+        print(f"  Pericytes: {vtk_export['pericytes_path']}")
+        print(f"  Nodes:     {vtk_export['nodes_path']}")
+        print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
           f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
-    if visualize_vtk:
+    if visualize_vtk and VTK_export:
         visualization.visualize_vtk_network(
             vtk_export["vessels_path"],
             vtk_export["pericytes_path"],
             vtk_export["nodes_path"],
             show_nodes=False,
         )
-
+    if visualize_vtk and not VTK_export:
+        print("VTK visualization requested but VTK export is disabled. Set VTK_export=True to enable.")
+    else:
+        print("VTK visualization skipped.") 
     # 6) Compute effective resistance between two selected nodes.
     conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-
+    print(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
     if do_equiv_resistance_calculation:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
@@ -419,19 +427,24 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             )
 
     # 7) Compute and print vessel statistics.
-    node_positions = nx.get_node_attributes(G, "pos")
-    stats = statistics.compute_comprehensive_vessel_statistics(
-        G,
-        node_positions=node_positions,
-        image_dimensions=image.shape,
-    )
+    print("\nComputing vessel statistics...")
+    if STATISTICS:
+        node_positions = nx.get_node_attributes(G, "pos")
+        stats = statistics.compute_comprehensive_vessel_statistics(
+            G,
+            node_positions=node_positions,
+            image_dimensions=image.shape,
+        )
 
-    print("\n=== Statistics ===")
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
+        print("\n=== Statistics ===")
+        for key, value in stats.items():
+            print(f"  {key}: {value}")
+    else:
+        print("Vessel statistics skipped.")
 
     # 8) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.
+    print("\nSolving flow through the network...")
     flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
@@ -457,6 +470,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 G,
                 group_above=8,
             )
+    else:
+        print("Matplotlib visualizations skipped.")
 
 
 if __name__ == "__main__":
