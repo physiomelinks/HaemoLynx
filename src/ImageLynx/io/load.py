@@ -114,30 +114,30 @@ def crop_tiff_volume_from_corners(
     }
 
 
-def load_and_skeletonize_3d_tif(
-    filepath: str,
-):
-    """Load a TIFF stack, threshold, fill holes, close gaps, and skeletonize.
-
-    Parameters
-    ----------
-    filepath:
-        Path to the TIFF file.
-    voxel_size:
-        Isotropic voxel size (unused in the skeleton but available for callers).
-    closing_radius:
-        Radius (in voxels) for the morphological closing step applied to the
-        binary mask before skeletonization.  Closing seals concavities and
-        bridges between nearby vessel blobs without permanently expanding
-        boundaries.  Set to 0 to skip.
-    bridge_gap_size:
-        Maximum gap (in voxels) filled by the distance-transform dilation step
-        after closing and hole-filling.
-    """
+def load_and_skeletonize_3d_tif(filepath: str):
     logger.debug("Loading and skeletonizing TIFF...")
-    image = tifffile.imread(filepath)
+
+    with tifffile.TiffFile(filepath) as tif:
+        image = tif.asarray()
+        meta = tif.imagej_metadata or {}
+        tags = tif.pages[0].tags
+
+        x_res_tag = tags.get("XResolution")
+        y_res_tag = tags.get("YResolution")
+
+        x_res = (x_res_tag.value[0] / x_res_tag.value[1]) if x_res_tag else 1.0 and print("No x resolution tag found; defaulting to 1.0")
+        y_res = (y_res_tag.value[0] / y_res_tag.value[1]) if y_res_tag else 1.0 and print("No y resolution tag found; defaulting to 1.0")
+        z_res = float(meta.get("spacing")) if "spacing" in meta else print("No z resolution (spacing) found; defaulting to 1.0")
+
+        voxel_size_x = 1.0 / x_res if x_res else 1.0 and print("Invalid x resolution; defaulting to 1.0")
+        voxel_size_y = 1.0 / y_res if y_res else 1.0 and print("Invalid y resolution; defaulting to 1.0")   
+        voxel_size_z = z_res
+        voxel_size = voxel_size_x, voxel_size_y, voxel_size_z
+
+    logger.debug("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
+
     skeleton = skeletonize_3d(img_as_bool(image))
-    return image, skeleton.astype(bool)
+    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z
 
 
 def load_and_skeletonize_3d_h5(
@@ -163,7 +163,6 @@ def load_and_skeletonize_3d_h5(
         image = np.array(f[dataset_name])
 
     logger.debug("Original image shape: %s", image.shape)
-    image = simplify_to_3d(image)
     logger.debug("Simplified image shape: %s", image.shape)
 
     # Ensure image is (X, Y, Z)
@@ -174,16 +173,3 @@ def load_and_skeletonize_3d_h5(
     skeleton = skeletonize_3d(binary)
     return image, skeleton
 
-def simplify_to_3d(image: np.ndarray) -> np.ndarray:
-    """Reduce image to 3D by taking first spatial/channel slice."""
-    if image.ndim == 3:
-        return image
-    if image.ndim < 3:
-        raise ValueError(f"Image has {image.ndim} dimensions. Need at least 3D.")
-    logger.warning(
-        "Image has %d dimensions. Taking first 3 spatial + first channel.",
-        image.ndim,
-    )
-    if image.ndim == 6:
-        return image[:, :, :, 0, 0, 0]
-    return image[:, :, :, 0]
