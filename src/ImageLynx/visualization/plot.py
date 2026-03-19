@@ -80,7 +80,8 @@ def plot_node_degree_distribution(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-    if show:
+        plt.close()
+    elif show:
         plt.show()
     else:
         plt.close()
@@ -136,7 +137,8 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
     plt.axis("off")
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    if show:
+        plt.close()
+    elif show:
         plt.show()
     else:
         plt.close()
@@ -230,7 +232,8 @@ def visualize_geometry_with_branch_orders(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-    if show:
+        plt.close(fig)
+    elif show:
         plt.show()
     else:
         plt.close(fig)
@@ -316,7 +319,8 @@ def visualize_geometry_with_edge_weights(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-    if show:
+        plt.close(fig)
+    elif show:
         plt.show()
     else:
         plt.close(fig)

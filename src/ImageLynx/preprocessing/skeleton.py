@@ -259,25 +259,20 @@ def connect_skeleton_components(
     max_bridge_distance: int = 20,
     component_connectivity: int | None = None,
 ) -> np.ndarray:
-    """Bridge isolated skeleton components to the main (largest) component.
+    """Bridge nearby skeleton components with straight voxel lines.
 
-    After pruning, a skeleton may contain small isolated fragments that are
-    genuinely connected in the original vessel image but were separated by the
-    ``remove_small_objects`` step.  This function:
-
-    1. Labels connected components.
-    2. For every non-main component whose nearest voxel is within
-       *max_bridge_distance* of the main component, draws a straight voxel
-       line to reconnect it.
-    3. Re-skeletonizes the result to restore a single-pixel-wide skeleton.
+    Unlike a main-component-only strategy, this function considers *all*
+    pairwise inter-component gaps.  A greedy union-find approach bridges the
+    closest pairs first, avoiding redundant connections once two components
+    have already been merged.
 
     Parameters
     ----------
     skeleton:
         Boolean skeleton array.
     max_bridge_distance:
-        Maximum voxel distance allowed for bridging.  Isolated fragments
-        further away than this are left untouched.
+        Maximum voxel distance allowed for bridging.  Component pairs
+        further apart than this are left disconnected.
     """
     from scipy.ndimage import label
     from scipy.spatial import cKDTree
@@ -288,33 +283,55 @@ def connect_skeleton_components(
     if n_components <= 1:
         return skeleton
 
-    component_sizes = np.bincount(labeled.ravel())
-    component_sizes[0] = 0  # exclude background
-    main_label = int(np.argmax(component_sizes))
+    comp_coords: dict[int, np.ndarray] = {}
+    comp_trees: dict[int, cKDTree] = {}
+    for comp_id in range(1, n_components + 1):
+        coords = np.argwhere(labeled == comp_id)
+        if len(coords) == 0:
+            continue
+        comp_coords[comp_id] = coords
+        comp_trees[comp_id] = cKDTree(coords)
+
+    # Union-find helpers
+    _parent: dict[int, int] = {c: c for c in comp_coords}
+
+    def _find(x: int) -> int:
+        while _parent[x] != x:
+            _parent[x] = _parent[_parent[x]]
+            x = _parent[x]
+        return x
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            _parent[ra] = rb
+
+    # Collect candidate bridges (distance, start, end, comp_a, comp_b)
+    comp_ids = sorted(comp_coords.keys())
+    candidates: list[tuple[float, np.ndarray, np.ndarray, int, int]] = []
+    for i, cid_a in enumerate(comp_ids):
+        for cid_b in comp_ids[i + 1 :]:
+            dists, idxs = comp_trees[cid_b].query(comp_coords[cid_a])
+            nearest_idx = int(np.argmin(dists))
+            min_dist = float(dists[nearest_idx])
+            if min_dist <= max_bridge_distance:
+                start = comp_coords[cid_a][nearest_idx]
+                end = comp_coords[cid_b][int(idxs[nearest_idx])]
+                candidates.append((min_dist, start, end, cid_a, cid_b))
+
+    candidates.sort(key=lambda c: c[0])
 
     result = skeleton.copy()
-    main_coords = np.argwhere(labeled == main_label)
-    tree = cKDTree(main_coords)
-
     bridged = 0
-    for comp_id in range(1, n_components + 1):
-        if comp_id == main_label:
+    for _, start, end, cid_a, cid_b in candidates:
+        if _find(cid_a) == _find(cid_b):
             continue
-        comp_coords = np.argwhere(labeled == comp_id)
-        if len(comp_coords) == 0:
-            continue
-        dists, idxs = tree.query(comp_coords)
-        nearest_comp_idx = int(np.argmin(dists))
-        min_dist = float(dists[nearest_comp_idx])
-        if min_dist > max_bridge_distance:
-            continue
-        start = comp_coords[nearest_comp_idx]
-        end = main_coords[int(idxs[nearest_comp_idx])]
         _draw_line_3d(result, start, end)
+        _union(cid_a, cid_b)
         bridged += 1
 
     if bridged:
-        logger.debug("Bridged %d isolated skeleton component(s).", bridged)
+        logger.debug("Bridged %d skeleton component pair(s).", bridged)
         result = skeletonize_3d(result)
 
     return result.astype(bool)
@@ -326,6 +343,8 @@ def preprocess_skeleton_for_graph(
     max_bridge_distance: int = 20,
     component_connectivity: int | None = None,
     min_component_fraction: float = 0.0,
+    closing_radius: int = 0,
+    bridge_gap_size: int = 0,
     bundle_scan_size: int | tuple[int, ...] = 9,
     bundle_density_fraction: float = 0.35,
     bundle_max_connections_per_hub: int = 8,
@@ -352,6 +371,15 @@ def preprocess_skeleton_for_graph(
         Minimum fraction (0.0-1.0) of total skeleton voxels required for a
         connected component to be retained. For example, 0.05 keeps only
         components with at least 5% of all skeleton voxels.
+    closing_radius:
+        Morphological closing iterations applied before re-skeletonization.
+        Seals narrow gaps without permanently expanding boundaries. Set to 0
+        to disable.
+    bridge_gap_size:
+        Maximum distance (in voxels) for the dilation-based gap filler
+        applied before re-skeletonization. Every background voxel within this
+        distance of a foreground voxel is set to foreground, then the result
+        is re-skeletonized. Set to 0 to disable.
     bundle_scan_size:
         Sliding window size used to detect local dense bundles.
     bundle_density_fraction:
@@ -376,17 +404,30 @@ def preprocess_skeleton_for_graph(
         hub_min_spacing=bundle_hub_min_spacing,
     )
 
-    if min_component_fraction > 0.0:
-        cleaned = _filter_components_by_total_fraction(
-            cleaned,
-            min_component_fraction=min_component_fraction,
-            component_connectivity=conn,
-        )
+    # Morphological closing seals narrow gaps without expanding boundaries.
+    if closing_radius > 0:
+        cleaned = close_binary_mask(cleaned, radius=closing_radius)
+
+    # Dilation-based gap filling reconnects nearby foreground regions.
+    if bridge_gap_size > 0:
+        cleaned = bridge_gaps(cleaned.astype(bool), max_gap=bridge_gap_size)
+
     cleaned = skeletonize_3d(cleaned.astype(bool))
+
+    # Bridge remaining disconnected components BEFORE filtering by size so
+    # that small fragments get a chance to merge rather than being discarded.
     if max_bridge_distance > 0:
         cleaned = connect_skeleton_components(
             cleaned.astype(bool),
             max_bridge_distance=max_bridge_distance,
             component_connectivity=conn,
         )
+
+    if min_component_fraction > 0.0:
+        cleaned = _filter_components_by_total_fraction(
+            cleaned,
+            min_component_fraction=min_component_fraction,
+            component_connectivity=conn,
+        )
+
     return cleaned.astype(bool)
