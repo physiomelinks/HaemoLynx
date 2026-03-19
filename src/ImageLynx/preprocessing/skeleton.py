@@ -57,6 +57,40 @@ def rescale_and_skeletonize_3d(
     return skeletonize(thick_skel)
 
 
+def keep_largest_mask_components(
+    binary_mask: np.ndarray,
+    n_components: int = 1,
+    connectivity: int | None = None,
+) -> np.ndarray:
+    """Keep only the N largest connected components in a binary mask.
+
+    Parameters
+    ----------
+    binary_mask:
+        Input boolean mask.
+    n_components:
+        Number of largest components to keep.
+    connectivity:
+        Connectivity for labeling (e.g., 3 for 26-neighbor in 3D).
+    """
+    if not binary_mask.any():
+        return binary_mask
+
+    conn = _resolve_component_connectivity(binary_mask.ndim, connectivity)
+    struct = generate_binary_structure(binary_mask.ndim, conn)
+    labeled, n_found = label(binary_mask, structure=struct)
+
+    if n_found <= n_components:
+        return binary_mask
+
+    sizes = np.bincount(labeled.ravel())
+    # Sort labels by size descending, exclude background (index 0)
+    sorted_labels = np.argsort(sizes[1:])[::-1] + 1
+    keep_labels = sorted_labels[:n_components]
+
+    return np.isin(labeled, keep_labels)
+
+
 def _resolve_component_connectivity(ndim: int, connectivity: int | None) -> int:
     """Return valid component-connectivity in [1, ndim]."""
     if connectivity is None:

@@ -118,6 +118,23 @@ def crop_tiff_volume_from_corners(
     }
 
 
+def load_3d_tif(filepath: str | Path) -> np.ndarray:
+    """Load a 3D TIFF volume."""
+    return tifffile.imread(str(filepath))
+
+
+def load_3d_h5(filepath: str | Path, dataset_name: str) -> np.ndarray:
+    """Load a 3D HDF5 volume."""
+    if h5py is None:
+        raise ImportError("h5py is required for HDF5 support. Install with: pip install h5py")
+    with h5py.File(str(filepath), "r") as f:
+        if dataset_name not in f:
+            available = list(f.keys())
+            raise ValueError(f"Dataset '{dataset_name}' not found. Available: {available}")
+        image = np.array(f[dataset_name][:])
+    return simplify_to_3d(image)
+
+
 def load_and_skeletonize_3d_tif(
     filepath: str,
     voxel_size: float = 1.0,
