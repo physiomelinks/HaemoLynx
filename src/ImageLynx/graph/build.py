@@ -28,7 +28,7 @@ def build_graph_segment_skan_stitched_loops(
 
     if sk.n_paths == 0:
         logger.warning("No paths found in skeleton")
-        return nx.Graph(), [], set()
+        return nx.MultiGraph(), [], set()
 
     paths = [(i, sk.path_coordinates(i)) for i in range(sk.n_paths)]
     skel = skeleton_image
@@ -108,9 +108,11 @@ def build_graph_segment_skan_stitched_loops(
 
     if not segments:
         logger.warning("No valid segments found")
-        return nx.Graph(), voxel_loops, set()
+        return nx.MultiGraph(), voxel_loops, set()
 
-    G = nx.Graph()
+    # Use MultiGraph so distinct vessel segments between the same two
+    # junction nodes are preserved instead of overwritten.
+    G = nx.MultiGraph()
     loop_edges = set()
     mapping = {}
     voxel_size_arr = np.asarray(voxel_size, dtype=float)

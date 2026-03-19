@@ -15,6 +15,7 @@ from skan import csr
 import tifffile
 import numpy as np
 import networkx as nx
+import matplotlib.pyplot as plt
 
 # Ensure package is importable when running from repo root.
 root_dir = Path(__file__).resolve().parents[1]
@@ -55,6 +56,17 @@ INPUT_P_BC = 4500# Pa
 OUTPUT_P_BC = 1000 # Pa
 VISUALIZE_RESULTS = True
 INTERACTIVE_PLOTS = False
+# When True, keep saving PNGs and also display visualization windows
+# in a non-blocking way during pipeline execution.
+SHOW_PLOTS_IN_IDE = True
+# Control how many plots are shown interactively in the IDE while still
+# saving all configured output PNGs.
+# - "all": show every plot in the visualize_results block
+# - "final_only": show only the final edges/nodes overlay
+# - "none": do not show IDE windows (save only)
+IDE_PLOT_MODE = "final_only"
+# Keep matplotlib windows open at the end of the run when plotting to IDE.
+HOLD_IDE_PLOTS_OPEN = True
 VTK_export = True
 STATISTICS = False
 VISUALIZE_VTK = False
@@ -74,7 +86,7 @@ MIN_STUB_LENGTH = 10.0
 CLUSTER_COLLAPSE_DISTANCE = 5.0
 # Keep only connected components at or above this percentage of total
 # skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
-SKELETON_MIN_COMPONENT_PERCENT = 5.0
+SKELETON_MIN_COMPONENT_PERCENT = 0.0
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
@@ -167,6 +179,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             output_p_bc=OUTPUT_P_BC, 
                             visualize_results=VISUALIZE_RESULTS, 
                             interactive_plots=INTERACTIVE_PLOTS,
+                            show_plots_in_ide=SHOW_PLOTS_IN_IDE,
+                            ide_plot_mode=IDE_PLOT_MODE,
+                            hold_ide_plots_open=HOLD_IDE_PLOTS_OPEN,
                             visualize_vtk=VISUALIZE_VTK) -> None:
     image_path = Path(image_path)
     image_path = io.resolve_image_path_with_optional_zip(image_path)
@@ -282,13 +297,6 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             reconnect_threshold=graph_reconnect_threshold,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "optimise_graph_topology_fixed.png")
-        # Low-risk cleanup strategy:
-        # 1) run topology-aware degree-2 removal,
-        # 2) collapse node clusters,
-        # 3) run topology-aware degree-2 removal again (collapsing can create new degree-2 nodes),
-        # 4) prune stubs,
-        # 5) run topology-aware degree-2 removal again with a higher max-degree
-        #    threshold to catch residual artifacts near higher-order junctions.
         degree2_pass1_max_degree = 4
         degree2_pass2_max_degree = 8
         G = graph.smart_multigraph_degree2_removal(
@@ -534,16 +542,28 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     # 9) Optional matplotlib visualization.
     if visualize_results:
         print("\nGenerating visualizations...")
+        valid_plot_modes = {"all", "final_only", "none"}
+        if ide_plot_mode not in valid_plot_modes:
+            raise ValueError(
+                f"Invalid ide_plot_mode='{ide_plot_mode}'. "
+                f"Choose one of {sorted(valid_plot_modes)}."
+            )
+        show_any_ide_plot = show_plots_in_ide and ide_plot_mode != "none"
+        show_degree_plot = show_plots_in_ide and ide_plot_mode == "all"
+        show_overlay_plot = show_any_ide_plot
+        show_branch_order_plot = show_plots_in_ide and ide_plot_mode == "all"
         visualization.plot_node_degree_distribution(
             G,
             save_path=None if interactive_plots else plot_dir / "node_degree_distribution.png",
-            show=interactive_plots,
+            show=interactive_plots or show_degree_plot,
+            show_after_save=show_degree_plot and not interactive_plots,
         )
         visualization.visualize_edges_and_nodes(
             image,
             G,
             save_path=None if interactive_plots else plot_dir / "edges_and_nodes_overlay.png",
-            show=interactive_plots,
+            show=interactive_plots or show_overlay_plot,
+            show_after_save=show_overlay_plot and not interactive_plots,
         )
         # visualization.interactive_3d_graph(G)
         #HD note - need visualisation of pericyte localisations (ie based upon constriction data)
@@ -554,8 +574,17 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 G,
                 group_above=8,
                 save_path=None if interactive_plots else plot_dir / "geometry_with_branch_orders.png",
-                show=interactive_plots,
+                show=interactive_plots or show_branch_order_plot,
+                show_after_save=show_branch_order_plot and not interactive_plots,
             )
+        if (
+            hold_ide_plots_open
+            and show_any_ide_plot
+            and not interactive_plots
+            and plt.get_fignums()
+        ):
+            print("Holding plot windows open. Close them to finish the script.")
+            plt.show(block=True)
     else:
         print("Matplotlib visualizations skipped.")
 
