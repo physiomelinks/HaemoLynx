@@ -91,6 +91,14 @@ SKELETON_PADDED_SLICING_PADDING = 3
 # Prune the binary mask to keep only the largest N connected components BEFORE skeletonization.
 # This speeds up skeletonization by removing noise fragments. Set to 0 to disable.
 SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1 
+
+# Sub-volume / ROI settings. 
+# SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
+SKELETON_SUB_VOLUME_PERCENTAGE = 1.0
+# Center offsets for the ROI (as percentage of original dimensions, -0.5 to 0.5).
+SKELETON_SUB_VOLUME_CENTER_OFFSET_Z = 0.0
+SKELETON_SUB_VOLUME_CENTER_OFFSET_Y = 0.0
+SKELETON_SUB_VOLUME_CENTER_OFFSET_X = 0.0
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
@@ -265,6 +273,10 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             skeleton_use_padded_slicing=SKELETON_USE_PADDED_SLICING,
                             skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING,
                             skeleton_prune_mask_before=SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION,
+                            skeleton_sub_volume_percentage=SKELETON_SUB_VOLUME_PERCENTAGE,
+                            skeleton_sub_volume_offset_z=SKELETON_SUB_VOLUME_CENTER_OFFSET_Z,
+                            skeleton_sub_volume_offset_y=SKELETON_SUB_VOLUME_CENTER_OFFSET_Y,
+                            skeleton_sub_volume_offset_x=SKELETON_SUB_VOLUME_CENTER_OFFSET_X,
                             edge_percent=EDGE_PERCENT, 
                             end_percent=END_PERCENT, 
                             node_edge_axis=NODE_EDGE_AXIS, 
@@ -302,53 +314,63 @@ def carotid_image_to_model(image_path=INPUT_PATH,
     if do_skeletonize:
         if input_format == "tif":
             image = io.load_3d_tif(image_path)
-            from skimage.filters import threshold_otsu
-            threshold = threshold_otsu(image)
-            binary = image > threshold
-            
-            if skeleton_prune_mask_before > 0:
-                print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
-                binary = preprocessing.skeleton.keep_largest_mask_components(
-                    binary, n_components=skeleton_prune_mask_before, connectivity=skeleton_component_connectivity
-                )
-
-            if skeleton_closing_radius > 0:
-                binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
-            if skeleton_bridge_gap_size > 0:
-                binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
-            
-            if skeleton_downsample_factor > 1.0:
-                print(f"Applying downsampled skeletonization (factor={skeleton_downsample_factor})...")
-                skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skeleton_downsample_factor)
-            else:
-                skeleton = preprocessing.skeleton.skeletonize_3d(binary)
-
         elif input_format == "h5":
             if not H5_DATASET_NAME:
                 raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
             image = io.load_3d_h5(image_path, H5_DATASET_NAME)
-            from skimage.filters import threshold_otsu
-            threshold = threshold_otsu(image)
-            binary = image > threshold
-
-            if skeleton_prune_mask_before > 0:
-                print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
-                binary = preprocessing.skeleton.keep_largest_mask_components(
-                    binary, n_components=skeleton_prune_mask_before, connectivity=skeleton_component_connectivity
-                )
-            
-            if skeleton_closing_radius > 0:
-                binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
-            if skeleton_bridge_gap_size > 0:
-                binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
-
-            if skeleton_downsample_factor > 1.0:
-                 print(f"Applying downsampled skeletonization (factor={skeleton_downsample_factor})...")
-                 skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skeleton_downsample_factor)
-            else:
-                skeleton = preprocessing.skeleton.skeletonize_3d(binary)
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
+
+        # 1.5) Sub-volume / ROI Cropping
+        if 0 < skeleton_sub_volume_percentage < 1.0 or skeleton_sub_volume_offset_z != 0 or \
+           skeleton_sub_volume_offset_y != 0 or skeleton_sub_volume_offset_x != 0:
+            
+            print(f"Applying ROI crop (sub-volume={skeleton_sub_volume_percentage})...")
+            orig_shape = image.shape
+            target_dims = [max(1, int(dim * skeleton_sub_volume_percentage)) for dim in orig_shape]
+            
+            # Calculate centers and offsets
+            centers = [dim / 2 for dim in orig_shape]
+            offsets = [
+                int(orig_shape[0] * skeleton_sub_volume_offset_z),
+                int(orig_shape[1] * skeleton_sub_volume_offset_y),
+                int(orig_shape[2] * skeleton_sub_volume_offset_x)
+            ]
+            
+            sub_centers = [center + offset for center, offset in zip(centers, offsets)]
+            
+            # Calculate slice bounds
+            starts = [max(0, int(center - target / 2)) for center, target in zip(sub_centers, target_dims)]
+            ends = [min(orig, start + target) for orig, start, target in zip(orig_shape, starts, target_dims)]
+            
+            # Final alignment check
+            for i in range(3):
+                if ends[i] > orig_shape[i]: starts[i] = max(0, orig_shape[i] - target_dims[i])
+                ends[i] = min(orig_shape[i], starts[i] + target_dims[i])
+            
+            image = image[starts[0]:ends[0], starts[1]:ends[1], starts[2]:ends[2]]
+            print(f"  ROI new shape: {image.shape}")
+
+        from skimage.filters import threshold_otsu
+        threshold = threshold_otsu(image)
+        binary = image > threshold
+        
+        if skeleton_prune_mask_before > 0:
+            print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
+            binary = preprocessing.skeleton.keep_largest_mask_components(
+                binary, n_components=skeleton_prune_mask_before, connectivity=skeleton_component_connectivity
+            )
+
+        if skeleton_closing_radius > 0:
+            binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
+        if skeleton_bridge_gap_size > 0:
+            binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
+        
+        if skeleton_downsample_factor > 1.0:
+            print(f"Applying downsampled skeletonization (factor={skeleton_downsample_factor})...")
+            skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skeleton_downsample_factor)
+        else:
+            skeleton = preprocessing.skeleton.skeletonize_3d(binary)
         
         preprocessing.print_skeleton_connectivity_stats(
             "raw",
@@ -597,7 +619,11 @@ if __name__ == "__main__":
         skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
         skeleton_use_padded_slicing=SKELETON_USE_PADDED_SLICING,
         skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING,
-        skeleton_prune_mask_before=SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION
+        skeleton_prune_mask_before=SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION,
+        skeleton_sub_volume_percentage=SKELETON_SUB_VOLUME_PERCENTAGE,
+        skeleton_sub_volume_offset_z=SKELETON_SUB_VOLUME_CENTER_OFFSET_Z,
+        skeleton_sub_volume_offset_y=SKELETON_SUB_VOLUME_CENTER_OFFSET_Y,
+        skeleton_sub_volume_offset_x=SKELETON_SUB_VOLUME_CENTER_OFFSET_X
     )
 
     ### // NOTES TO SELF FOR LATER // ###
