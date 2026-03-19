@@ -59,6 +59,8 @@ OUTPUT_NODES: list[int] = []
 INPUT_P_BC = 1000 # Pa 
 OUTPUT_P_BC = 500 # Pa
 VISUALIZE_RESULTS = True
+VISUALIZE_MASK_ONLY = True
+VISUALIZE_MASK_OPACITY = 1.0
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
 DO_SKELETONIZE = True
@@ -94,7 +96,7 @@ SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1
 
 # Sub-volume / ROI settings. 
 # SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
-SKELETON_SUB_VOLUME_PERCENTAGE = 0.2
+SKELETON_SUB_VOLUME_PERCENTAGE = 0.05
 # Center offsets for the ROI (as percentage of original dimensions, -0.5 to 0.5).
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Z = 0.0
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Y = 0.0
@@ -269,6 +271,8 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             input_p_bc=INPUT_P_BC, 
                             output_p_bc=OUTPUT_P_BC, 
                             visualize_results=VISUALIZE_RESULTS, 
+                            visualize_mask_only=VISUALIZE_MASK_ONLY,
+                            visualize_mask_opacity=VISUALIZE_MASK_OPACITY,
                             visualize_vtk=VISUALIZE_VTK) -> None:
                         
     # get image format from image_path
@@ -323,6 +327,12 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         threshold = threshold_otsu(image)
         binary = image > threshold
         
+        if visualize_mask_only:
+            print(f"Visualizing 3D mask only (opacity={visualize_mask_opacity}). Close window to exit.")
+            visualization.visualize_volume(binary, title="3D Segmentation Mask", opacity=visualize_mask_opacity)
+            print("Exiting pipeline as requested.")
+            return
+
         if skeleton_prune_mask_before > 0:
             print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
             binary = preprocessing.skeleton.keep_largest_mask_components(
@@ -591,7 +601,9 @@ if __name__ == "__main__":
         skeleton_sub_volume_percentage=SKELETON_SUB_VOLUME_PERCENTAGE,
         skeleton_sub_volume_offset_z=SKELETON_SUB_VOLUME_CENTER_OFFSET_Z,
         skeleton_sub_volume_offset_y=SKELETON_SUB_VOLUME_CENTER_OFFSET_Y,
-        skeleton_sub_volume_offset_x=SKELETON_SUB_VOLUME_CENTER_OFFSET_X
+        skeleton_sub_volume_offset_x=SKELETON_SUB_VOLUME_CENTER_OFFSET_X,
+        visualize_mask_only=VISUALIZE_MASK_ONLY,
+        visualize_mask_opacity=VISUALIZE_MASK_OPACITY
     )
 
     ### // NOTES TO SELF FOR LATER // ###
