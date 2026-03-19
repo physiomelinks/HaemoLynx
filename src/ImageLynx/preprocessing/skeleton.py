@@ -5,6 +5,7 @@ import numpy as np
 from scipy.ndimage import (
     binary_dilation,
     binary_erosion,
+    binary_closing,
     distance_transform_edt,
     generate_binary_structure,
     label,
@@ -12,7 +13,49 @@ from scipy.ndimage import (
     uniform_filter,
 )
 from skimage.morphology import remove_small_objects, skeletonize
+from skimage.transform import rescale, resize
 logger = logging.getLogger(__name__)
+
+def rescale_and_skeletonize_3d(
+    binary_volume: np.ndarray, downsample_factor: float = 2.0
+) -> np.ndarray:
+    """Perform faster skeletonization by downsampling, skeletonizing, and upscaling.
+
+    Parameters
+    ----------
+    binary_volume:
+        Input boolean 3D array.
+    downsample_factor:
+        Factor to downsample by (e.g., 2.0 reduces each dimension by half).
+    """
+    if downsample_factor <= 1.0:
+        return skeletonize_3d(binary_volume)
+
+    # 1. Downscale the binary volume
+    # anti_aliasing=False and order=0 preserves the binary nature (0 or 1)
+    small_vol = rescale(
+        binary_volume,
+        1.0 / downsample_factor,
+        order=0,
+        preserve_range=True,
+        anti_aliasing=False,
+    ).astype(bool)
+
+    # 2. Skeletonize the small volume
+    small_skel = skeletonize(small_vol)
+
+    # 3. Upscale back to original size
+    thick_skel = resize(
+        small_skel,
+        binary_volume.shape,
+        order=0,
+        preserve_range=True,
+        anti_aliasing=False,
+    ).astype(bool)
+
+    # 4. Final thinning pass
+    return skeletonize(thick_skel)
+
 
 def _resolve_component_connectivity(ndim: int, connectivity: int | None) -> int:
     """Return valid component-connectivity in [1, ndim]."""
