@@ -316,6 +316,11 @@ def smart_multigraph_degree2_removal(
             _, n1, k1, d1 = edges[0]
             _, n2, k2, d2 = edges[1]
 
+            # Degenerate case: both incident edges point to the same neighbor.
+            # Removing the node here can collapse/erase valid parallel paths.
+            if n1 == n2:
+                continue
+
             if G.degree[n1] >= max_degree or G.degree[n2] >= max_degree:
                 continue
 
@@ -327,8 +332,6 @@ def smart_multigraph_degree2_removal(
 
             voxels1 = d1.get("voxels", [])
             voxels2 = d2.get("voxels", [])
-
-            G.remove_node(node)
 
             merged_voxels = merge_edges_with_topology_improvement(
                 voxels1,
@@ -348,13 +351,19 @@ def smart_multigraph_degree2_removal(
                 "original_edges": 2,
             }
 
+            # Decide whether a replacement edge is acceptable BEFORE deleting
+            # the degree-2 node; otherwise a "reject" decision would erase the
+            # original vessel segment.
             should_add, replace_key = should_add_merged_edge(
                 G, n1, n2, merged_voxels, merged_attrs, debug
             )
-            if should_add:
-                if replace_key is not None:
-                    G.remove_edge(n1, n2, key=replace_key)
-                G.add_edge(n1, n2, **merged_attrs)
+            if not should_add:
+                continue
+
+            G.remove_node(node)
+            if replace_key is not None:
+                G.remove_edge(n1, n2, key=replace_key)
+            G.add_edge(n1, n2, **merged_attrs)
 
             removed_this_iter += 1
             total_removed += 1
