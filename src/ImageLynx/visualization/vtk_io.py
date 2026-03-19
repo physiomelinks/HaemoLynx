@@ -320,3 +320,15 @@ def visualize_vtk_network(
     if show:
         plotter.show()
     return plotter
+
+
+def load_vtp(filepath: str | Path) -> Any:
+    """Load a VTK PolyData file (.vtp) using PyVista."""
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise ImportError(
+            "pyvista is required to load VTK files. "
+            "Install with `pip install pyvista`."
+        ) from exc
+    return pv.read(str(filepath))

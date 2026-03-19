@@ -389,5 +389,62 @@ def visualize_skeleton(
         plotter.show()
 
 
+def visualize_volume(
+    volume: np.ndarray,
+    title: str = "3D Volume Mask",
+    background_color: str = "black",
+    vessel_color: str = "salmon",
+    opacity: float = 1.0,
+    show: bool = True,
+) -> Any:
+    """Visualize a 3D binary volume as a smooth surface mesh using PyVista.
+
+    Parameters
+    ----------
+    volume:
+        3D boolean or integer array.
+    title:
+        Window title.
+    vessel_color:
+        Color of the rendered vessel surface.
+    """
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise ImportError(
+            "pyvista is required for 3D volume visualization. "
+            "Install with `pip install pyvista`."
+        ) from exc
+
+    if volume.ndim != 3:
+        raise ValueError(f"visualize_volume expects a 3D array, got {volume.ndim}D")
+
+    # Create a uniform grid from the voxel data
+    # Note: PyVista expects (X, Y, Z) ordering for dimensions
+    # Our data is (Z, Y, X), so we transpose to (X, Y, Z)
+    grid = pv.ImageData()
+    grid.dimensions = np.array(volume.transpose(2, 1, 0).shape) + 1
+    grid.cell_data["values"] = volume.transpose(2, 1, 0).flatten(order="F")
+
+    # Extract the surface where value >= 0.5 (the vessel boundary)
+    # Note: contour filter requires point data, so we convert cell data to point data (ctp)
+    surface = grid.ctp().contour([0.5], scalars="values")
+
+    plotter = pv.Plotter(title=title)
+    plotter.set_background(background_color)
+    plotter.add_mesh(
+        surface,
+        color=vessel_color,
+        opacity=opacity,
+        smooth_shading=True,
+        show_edges=False,
+    )
+    plotter.add_axes()
+    
+    if show:
+        plotter.show()
+    return plotter
+
+
 # British-spelling alias used in the example script.
 visualise_skeleton = visualize_skeleton
