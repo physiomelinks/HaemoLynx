@@ -40,12 +40,20 @@ def _projection_extent(
     return (0.0, x_size * vx, y_size * vy, 0.0)
 
 
+def _show_matplotlib_non_blocking(pause_s: float = 0.001) -> None:
+    """Show matplotlib figures without blocking script execution."""
+    plt.show(block=False)
+    plt.pause(pause_s)
+
+
 def plot_node_degree_distribution(
     G: nx.Graph,
     title: str = "Node Degree Distribution",
     save_path: Optional[str] = None,
     dpi: int = 300,
     show: bool = True,
+    show_after_save: bool = False,
+    block: bool = False,
 ) -> dict:
     """Plot histogram of node degrees."""
     degrees = [d for _, d in G.degree()]
@@ -80,9 +88,18 @@ def plot_node_degree_distribution(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-        plt.close()
+        if show and show_after_save:
+            if block:
+                plt.show()
+            else:
+                _show_matplotlib_non_blocking()
+        else:
+            plt.close()
     elif show:
-        plt.show()
+        if block:
+            plt.show()
+        else:
+            _show_matplotlib_non_blocking()
     else:
         plt.close()
     return degree_counts
@@ -92,7 +109,9 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
                               save_path: Optional[str] = None,
                               show_coordinates_degree_1: bool = False,
                               voxel_size: Optional[Tuple[float, float, float]] = None,
-                              show: bool = True) -> None:
+                              show: bool = True,
+                              show_after_save: bool = False,
+                              block: bool = False) -> None:
     """Overlay edges and nodes on Z-projection of image.
 
     Set label_nodes=True to draw node IDs.
@@ -137,9 +156,18 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
     plt.axis("off")
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        plt.close()
+        if show and show_after_save:
+            if block:
+                plt.show()
+            else:
+                _show_matplotlib_non_blocking()
+        else:
+            plt.close()
     elif show:
-        plt.show()
+        if block:
+            plt.show()
+        else:
+            _show_matplotlib_non_blocking()
     else:
         plt.close()
 
@@ -161,6 +189,8 @@ def visualize_geometry_with_branch_orders(
     group_above=None,
     voxel_size: Optional[Tuple[float, float, float]] = None,
     show=True,
+    show_after_save: bool = False,
+    block: bool = False,
 ):
     """Plot network colored by branch order."""
     projection = np.max(image, axis=0)
@@ -232,9 +262,18 @@ def visualize_geometry_with_branch_orders(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-        plt.close(fig)
+        if show and show_after_save:
+            if block:
+                plt.show()
+            else:
+                _show_matplotlib_non_blocking()
+        else:
+            plt.close(fig)
     elif show:
-        plt.show()
+        if block:
+            plt.show()
+        else:
+            _show_matplotlib_non_blocking()
     else:
         plt.close(fig)
     return fig, ax, color_mapping
@@ -260,6 +299,8 @@ def visualize_geometry_with_edge_weights(
     use_inverse=True,
     voxel_size: Optional[Tuple[float, float, float]] = None,
     show=True,
+    show_after_save: bool = False,
+    block: bool = False,
 ):
     """Plot network colored by edge weight."""
     projection = np.max(image, axis=0)
@@ -319,9 +360,18 @@ def visualize_geometry_with_edge_weights(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-        plt.close(fig)
+        if show and show_after_save:
+            if block:
+                plt.show()
+            else:
+                _show_matplotlib_non_blocking()
+        else:
+            plt.close(fig)
     elif show:
-        plt.show()
+        if block:
+            plt.show()
+        else:
+            _show_matplotlib_non_blocking()
     else:
         plt.close(fig)
     return fig, ax, (vmin, vmax), cmap
@@ -368,6 +418,7 @@ def visualize_skeleton(
     point_size: float = 3.0,
     voxel_size: Optional[Tuple[float, float, float]] = None,
     show: bool = True,
+    block: bool = False,
 ) -> None:
     """Visualize a 3D skeleton in an interactive PyVista 3D view.
 
@@ -392,6 +443,9 @@ def visualize_skeleton(
         Rendered sphere radius for each voxel point.
     show:
         Pass False to suppress the interactive window (e.g. tests).
+    block:
+        When True, use blocking display calls; default False keeps the script
+        running while windows stay open.
     """
     if skeleton.ndim not in (2, 3):
         raise ValueError(
@@ -419,7 +473,10 @@ def visualize_skeleton(
             fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
         else:
-            plt.show()
+            if block:
+                plt.show()
+            else:
+                _show_matplotlib_non_blocking()
         return
 
     # 3D skeleton → PyVista interactive viewer.
@@ -448,7 +505,10 @@ def visualize_skeleton(
     )
     plotter.add_axes()
     if show:
-        plotter.show()
+        if block:
+            plotter.show()
+        else:
+            plotter.show(auto_close=False, interactive_update=True)
 
 
 # British-spelling alias used in the example script.
