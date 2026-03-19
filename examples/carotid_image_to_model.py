@@ -326,29 +326,13 @@ def carotid_image_to_model(image_path=INPUT_PATH,
            skeleton_sub_volume_offset_y != 0 or skeleton_sub_volume_offset_x != 0:
             
             print(f"Applying ROI crop (sub-volume={skeleton_sub_volume_percentage})...")
-            orig_shape = image.shape
-            target_dims = [max(1, int(dim * skeleton_sub_volume_percentage)) for dim in orig_shape]
-            
-            # Calculate centers and offsets
-            centers = [dim / 2 for dim in orig_shape]
-            offsets = [
-                int(orig_shape[0] * skeleton_sub_volume_offset_z),
-                int(orig_shape[1] * skeleton_sub_volume_offset_y),
-                int(orig_shape[2] * skeleton_sub_volume_offset_x)
-            ]
-            
-            sub_centers = [center + offset for center, offset in zip(centers, offsets)]
-            
-            # Calculate slice bounds
-            starts = [max(0, int(center - target / 2)) for center, target in zip(sub_centers, target_dims)]
-            ends = [min(orig, start + target) for orig, start, target in zip(orig_shape, starts, target_dims)]
-            
-            # Final alignment check
-            for i in range(3):
-                if ends[i] > orig_shape[i]: starts[i] = max(0, orig_shape[i] - target_dims[i])
-                ends[i] = min(orig_shape[i], starts[i] + target_dims[i])
-            
-            image = image[starts[0]:ends[0], starts[1]:ends[1], starts[2]:ends[2]]
+            image = preprocessing.crop_roi(
+                image,
+                sub_volume_percentage=skeleton_sub_volume_percentage,
+                offset_z=skeleton_sub_volume_offset_z,
+                offset_y=skeleton_sub_volume_offset_y,
+                offset_x=skeleton_sub_volume_offset_x
+            )
             print(f"  ROI new shape: {image.shape}")
 
         from skimage.filters import threshold_otsu
