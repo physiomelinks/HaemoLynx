@@ -7,6 +7,7 @@ import numpy as np
 import tifffile
 from skimage.util import img_as_bool
 from skimage.morphology import  skeletonize_3d
+from scipy.ndimage import binary_fill_holes
 
 try:
     import h5py
@@ -146,6 +147,8 @@ def load_and_skeletonize_3d_tif(filepath: str):
 
     print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
     skeleton = skeletonize_3d(img_as_bool(image))
+    skeleton = binary_fill_holes(skeleton)
+    skeleton = bridge_gaps(skeleton, max_gap=bridge_gap_size)
     return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z
 
 
