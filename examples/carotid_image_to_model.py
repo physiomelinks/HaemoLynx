@@ -82,6 +82,11 @@ SKELETON_MIN_COMPONENT_PERCENT = 5.0
 # Downsample factor for 3D skeletonization (e.g. 2.0 reduces each dimension by half).
 # Set to 1.0 to disable downsampling.
 SKELETON_DOWNSAMPLE_FACTOR = 1.0 
+
+# Enable local padded slicing for much faster loop detection on large skeletons.
+SKELETON_USE_PADDED_SLICING = True
+# Voxel padding for the local slicing crops.
+SKELETON_PADDED_SLICING_PADDING = 3
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
@@ -253,6 +258,8 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             skeleton_component_connectivity=SKELETON_COMPONENT_CONNECTIVITY, 
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT, 
                             skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
+                            skeleton_use_padded_slicing=SKELETON_USE_PADDED_SLICING,
+                            skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING,
                             edge_percent=EDGE_PERCENT, 
                             end_percent=END_PERCENT, 
                             node_edge_axis=NODE_EDGE_AXIS, 
@@ -346,6 +353,8 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             sk,
             skeleton,
             debug=verbose_logging,
+            use_padded_slicing=skeleton_use_padded_slicing,
+            padding=skeleton_padded_slicing_padding,
         )
         # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
         G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=verbose_logging)
@@ -550,7 +559,9 @@ if __name__ == "__main__":
     carotid_image_to_model(
         image_path=target_input_mask_path, 
         plot_dir=plot_dir,
-        skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR
+        skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
+        skeleton_use_padded_slicing=SKELETON_USE_PADDED_SLICING,
+        skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING
     )
 
     ### // NOTES TO SELF FOR LATER // ###
