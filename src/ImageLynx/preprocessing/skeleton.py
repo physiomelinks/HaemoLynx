@@ -13,7 +13,7 @@ from scipy.ndimage import (
     uniform_filter,
 )
 from skimage.morphology import remove_small_objects, skeletonize
-from skimage.transform import rescale, resize
+from skimage.transform import resize
 logger = logging.getLogger(__name__)
 
 def rescale_and_skeletonize_3d(
@@ -31,30 +31,38 @@ def rescale_and_skeletonize_3d(
     if downsample_factor <= 1.0:
         return skeletonize_3d(binary_volume)
 
-    # 1. Downscale the binary volume
-    # anti_aliasing=False and order=0 preserves the binary nature (0 or 1)
-    small_vol = rescale(
-        binary_volume,
-        1.0 / downsample_factor,
-        order=0,
-        preserve_range=True,
-        anti_aliasing=False,
-    ).astype(bool)
+    # 1. Manual Max Pooling (most robust for binary downsampling)
+    f = int(np.round(downsample_factor))
+    
+    # Pad to multiple of f
+    pad_width = [ (0, (f - dim % f) % f) for dim in binary_volume.shape ]
+    padded = np.pad(binary_volume, pad_width, mode='constant', constant_values=False)
+    
+    new_shape = [ dim // f for dim in padded.shape ]
+    small_vol = padded.reshape(
+        new_shape[0], f, 
+        new_shape[1], f, 
+        new_shape[2], f
+    ).max(axis=(1, 3, 5))
 
     # 2. Skeletonize the small volume
-    small_skel = skeletonize(small_vol)
+    small_skel = skeletonize_3d(small_vol)
 
     # 3. Upscale back to original size
     thick_skel = resize(
-        small_skel,
+        small_skel.astype(float),
         binary_volume.shape,
         order=0,
         preserve_range=True,
         anti_aliasing=False,
-    ).astype(bool)
+    ) > 0.5
 
+    # 3.5 Expansion pass to ensure robustness during final thinning
+    struct = generate_binary_structure(binary_volume.ndim, 1)
+    thick_skel = binary_dilation(thick_skel, structure=struct)
+    
     # 4. Final thinning pass
-    return skeletonize(thick_skel)
+    return skeletonize_3d(thick_skel)
 
 
 def keep_largest_mask_components(
