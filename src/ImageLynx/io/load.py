@@ -10,7 +10,7 @@ from scipy.ndimage import binary_fill_holes, distance_transform_edt
 from skimage.util import img_as_bool
 from skimage.morphology import remove_small_objects, skeletonize
 
-from ..preprocessing.skeleton import bridge_gaps, close_binary_mask
+from ..preprocessing.skeleton import bridge_gaps, close_binary_mask, rescale_and_skeletonize_3d
 
 try:
     import h5py
@@ -123,6 +123,7 @@ def load_and_skeletonize_3d_tif(
     voxel_size: float = 1.0,
     closing_radius: int = 3,
     bridge_gap_size: int = 4,
+    downsample_factor: float = 1.0,
 ):
     """Load a TIFF stack, threshold, fill holes, close gaps, and skeletonize.
 
@@ -140,6 +141,8 @@ def load_and_skeletonize_3d_tif(
     bridge_gap_size:
         Maximum gap (in voxels) filled by the distance-transform dilation step
         after closing and hole-filling.
+    downsample_factor:
+        Factor to downsample by before skeletonization.
     """
     logger.debug("Loading and skeletonizing TIFF...")
     image = tifffile.imread(filepath)
@@ -150,7 +153,11 @@ def load_and_skeletonize_3d_tif(
         binary = close_binary_mask(binary, radius=closing_radius)
     filled = binary_fill_holes(binary)
     bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
-    skeleton = skeletonize(img_as_bool(bridged))
+
+    if downsample_factor > 1.0:
+        skeleton = rescale_and_skeletonize_3d(bridged, downsample_factor=downsample_factor)
+    else:
+        skeleton = skeletonize(img_as_bool(bridged))
     return image, skeleton.astype(bool)
 
 
@@ -160,6 +167,7 @@ def load_and_skeletonize_3d_h5(
     voxel_size: float = 1.0,
     closing_radius: int = 3,
     bridge_gap_size: int = 4,
+    downsample_factor: float = 1.0,
 ):
     """Load an HDF5 dataset, simplify to 3D, then skeletonize.
 
@@ -169,6 +177,8 @@ def load_and_skeletonize_3d_h5(
         Radius for the morphological closing step.  Set to 0 to skip.
     bridge_gap_size:
         Maximum gap filled by the distance-transform dilation step.
+    downsample_factor:
+        Factor to downsample by before skeletonization.
     """
     if h5py is None:
         raise ImportError("h5py is required for HDF5 support. Install with: pip install h5py")
@@ -190,7 +200,11 @@ def load_and_skeletonize_3d_h5(
         binary = close_binary_mask(binary, radius=closing_radius)
     filled = binary_fill_holes(binary)
     bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
-    skeleton = skeletonize(img_as_bool(bridged))
+
+    if downsample_factor > 1.0:
+        skeleton = rescale_and_skeletonize_3d(bridged, downsample_factor=downsample_factor)
+    else:
+        skeleton = skeletonize(img_as_bool(bridged))
     return image, skeleton
 
 

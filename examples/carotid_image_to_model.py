@@ -75,6 +75,13 @@ SKELETON_COMPONENT_CONNECTIVITY = 3
 # Keep only connected components at or above this percentage of total
 # skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
 SKELETON_MIN_COMPONENT_PERCENT = 5.0
+
+# ---------------------------
+# Advanced Efficiency settings (Added 19/03/2026)
+# ---------------------------
+# Downsample factor for 3D skeletonization (e.g. 2.0 reduces each dimension by half).
+# Set to 1.0 to disable downsampling.
+SKELETON_DOWNSAMPLE_FACTOR = 1.0 
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
@@ -245,6 +252,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             skeleton_max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE, 
                             skeleton_component_connectivity=SKELETON_COMPONENT_CONNECTIVITY, 
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT, 
+                            skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
                             edge_percent=EDGE_PERCENT, 
                             end_percent=END_PERCENT, 
                             node_edge_axis=NODE_EDGE_AXIS, 
@@ -285,6 +293,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                 image_path,
                 closing_radius=skeleton_closing_radius,
                 bridge_gap_size=skeleton_bridge_gap_size,
+                downsample_factor=skeleton_downsample_factor,
             )
         elif input_format == "h5":
             if not H5_DATASET_NAME:
@@ -294,6 +303,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                 H5_DATASET_NAME,
                 closing_radius=skeleton_closing_radius,
                 bridge_gap_size=skeleton_bridge_gap_size,
+                downsample_factor=skeleton_downsample_factor,
             )
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
@@ -537,7 +547,11 @@ if __name__ == "__main__":
         target_input_mask_path = root_dir / "examples" / "images" / "ilastik_batch_processing_output_images" / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_seg.tiff"
 
     # 2. Run the Network Pipeline
-    carotid_image_to_model(image_path=target_input_mask_path, plot_dir=plot_dir)
+    carotid_image_to_model(
+        image_path=target_input_mask_path, 
+        plot_dir=plot_dir,
+        skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR
+    )
 
     ### // NOTES TO SELF FOR LATER // ###
 
