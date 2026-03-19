@@ -54,6 +54,7 @@ OUTPUT_NODES: list[int] = []
 INPUT_P_BC = 4500# Pa 
 OUTPUT_P_BC = 1000 # Pa
 VISUALIZE_RESULTS = True
+INTERACTIVE_PLOTS = False
 VTK_export = True
 STATISTICS = False
 VISUALIZE_VTK = False
@@ -163,6 +164,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             input_p_bc=INPUT_P_BC, 
                             output_p_bc=OUTPUT_P_BC, 
                             visualize_results=VISUALIZE_RESULTS, 
+                            interactive_plots=INTERACTIVE_PLOTS,
                             visualize_vtk=VISUALIZE_VTK) -> None:
     image_path = Path(image_path)
     image_path = io.resolve_image_path_with_optional_zip(image_path)
@@ -520,8 +522,17 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     # 9) Optional matplotlib visualization.
     if visualize_results:
         print("\nGenerating visualizations...")
-        visualization.plot_node_degree_distribution(G)
-        visualization.visualize_edges_and_nodes(image, G)
+        visualization.plot_node_degree_distribution(
+            G,
+            save_path=None if interactive_plots else plot_dir / "node_degree_distribution.png",
+            show=interactive_plots,
+        )
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            save_path=None if interactive_plots else plot_dir / "edges_and_nodes_overlay.png",
+            show=interactive_plots,
+        )
         # visualization.interactive_3d_graph(G)
         #HD note - need visualisation of pericyte localisations (ie based upon constriction data)
         
@@ -530,6 +541,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 image,
                 G,
                 group_above=8,
+                save_path=None if interactive_plots else plot_dir / "geometry_with_branch_orders.png",
+                show=interactive_plots,
             )
     else:
         print("Matplotlib visualizations skipped.")
