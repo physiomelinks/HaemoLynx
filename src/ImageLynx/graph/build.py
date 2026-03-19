@@ -19,6 +19,7 @@ def build_graph_segment_skan_stitched_loops(
     reconnect_threshold=3.0,
     max_voxel_graph_size=100000,
     use_spatial_index=True,
+    voxel_size=(1.0, 1.0, 1.0),
 ):
     """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection."""
     if sk is None or skeleton_image is None:
@@ -102,6 +103,7 @@ def build_graph_segment_skan_stitched_loops(
     G = nx.Graph()
     loop_edges = set()
     mapping = {}
+    voxel_size_arr = np.asarray(voxel_size, dtype=float)
 
     for seg_idx, seg in enumerate(segments):
         if len(seg) < 2:
@@ -109,23 +111,23 @@ def build_graph_segment_skan_stitched_loops(
         u_vox, v_vox = seg[0], seg[-1]
         uid = mapping.setdefault(u_vox, len(mapping))
         vid = mapping.setdefault(v_vox, len(mapping))
-        u_pos = np.array(u_vox, dtype=float)
-        v_pos = np.array(v_vox, dtype=float)
+        u_pos = np.array(u_vox, dtype=float) * voxel_size_arr
+        v_pos = np.array(v_vox, dtype=float) * voxel_size_arr
         if not G.has_node(uid):
             G.add_node(uid, pos=u_pos)
         if not G.has_node(vid):
             G.add_node(vid, pos=v_pos)
-        seg_array = np.array(seg, dtype=float)
-        if len(seg_array) > 1:
-            total_dist = float(np.sum(np.linalg.norm(np.diff(seg_array, axis=0), axis=1)))
+        seg_array_phys = np.array(seg, dtype=float) * voxel_size_arr
+        if len(seg_array_phys) > 1:
+            total_dist = float(np.sum(np.linalg.norm(np.diff(seg_array_phys, axis=0), axis=1)))
         else:
             total_dist = 0.0
         G.add_edge(
             uid,
             vid,
             weight=max(total_dist, 1e-6),
-            length=len(seg),
-            voxels=seg,
+            length=total_dist,
+            voxels=seg_array_phys.tolist(),
             segment_id=seg_idx,
         )
         if u_vox in loop_vox and v_vox in loop_vox:
@@ -180,10 +182,10 @@ def build_graph_segment_skan_stitched_loops(
                     src,
                     tgt,
                     weight=max(dist, 1e-6),
-                    length=2,
+                    length=dist,
                     voxels=[
-                        tuple(src_pos.astype(int)),
-                        tuple(tgt_pos.astype(int)),
+                        src_pos.tolist(),
+                        tgt_pos.tolist(),
                     ],
                     reconnected=True,
                 )
@@ -206,4 +208,5 @@ def build_graph_segment_skan_stitched_loops(
             G.number_of_edges(),
             len(loop_edges),
         )
+    G.graph["voxel_size"] = tuple(float(v) for v in voxel_size_arr)
     return G, voxel_loops, loop_edges

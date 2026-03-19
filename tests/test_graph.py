@@ -16,6 +16,8 @@ from ImageLynx.graph import (
     prune_vascular_stubs,
     assign_branch_orders,
     select_boundary_nodes_by_method,
+    diagnose_degree2_nodes,
+    format_degree2_diagnostics_report,
 )
 from ImageLynx.graph._helpers import (
     get_line_points_3d,
@@ -115,6 +117,14 @@ def test_smart_multigraph_degree2_removal(simple_graph):
     G = nx.MultiGraph(simple_graph)
     G2 = smart_multigraph_degree2_removal(G, skeleton_data=None, debug=False)
     assert isinstance(G2, nx.MultiGraph)
+
+
+def test_degree2_diagnostics(simple_graph):
+    report = diagnose_degree2_nodes(simple_graph, max_degree=4)
+    assert "total_degree2" in report
+    assert "reason_counts" in report
+    text = format_degree2_diagnostics_report(report)
+    assert "Degree-2 diagnostics" in text
 
 
 def test_build_graph_requires_skan(tiny_skeleton):

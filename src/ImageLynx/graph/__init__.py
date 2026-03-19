@@ -11,6 +11,7 @@ from .degree2 import (
     merge_edges_with_topology_improvement,
 )
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
+from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
 from .branch_order import assign_branch_orders
 from .boundaries import select_boundary_terminal_nodes, select_boundary_nodes_by_method
 from ._helpers import (
@@ -51,6 +52,8 @@ __all__ = [
     "smart_multigraph_degree2_removal",
     "merge_edges_with_topology_improvement",
     "prune_vascular_stubs",
+    "diagnose_degree2_nodes",
+    "format_degree2_diagnostics_report",
     "assign_branch_orders",
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",

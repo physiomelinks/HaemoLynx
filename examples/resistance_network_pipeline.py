@@ -9,6 +9,7 @@
 import logging
 import sys
 import pickle
+import json
 from pathlib import Path
 from skan import csr
 import tifffile
@@ -179,6 +180,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
     skeleton_path = output_dir / f"{image_path.stem}_skeleton.npy"
+    voxel_meta_path = output_dir / f"{image_path.stem}_voxel_size.json"
     graph_path = output_dir / f"{image_path.stem}_graph.pkl"
     projection_path = plot_dir / "skeleton_projection.png"
     if not plot_dir.exists():
@@ -189,10 +191,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z = io.load_and_skeletonize_3d_tif(
                 image_path,
             )
+            voxel_size = (
+                float(voxel_size_x),
+                float(voxel_size_y),
+                float(voxel_size_z),
+            )
         elif input_format == "h5":
             image, skeleton = io.load_and_skeletonize_3d_h5(
                 image_path,
             )
+            voxel_size = (1.0, 1.0, 1.0)
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
         
@@ -218,11 +226,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         
         # save the skeleton
         np.save(skeleton_path, skeleton)
+        voxel_meta_path.write_text(json.dumps({"voxel_size": voxel_size}))
         print(f"Saved skeleton to: {skeleton_path}")
     else:
         # load the skeleton
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(image_path)
+        if voxel_meta_path.exists():
+            voxel_size = tuple(json.loads(voxel_meta_path.read_text())["voxel_size"])
+        else:
+            voxel_size = (1.0, 1.0, 1.0)
         print(f"Loaded skeleton from: {skeleton_path}")
 
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
@@ -235,9 +248,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             sk,
             skeleton,
             debug=verbose_logging,
+            voxel_size=voxel_size,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "build_graph_segment_skan_stitched_loops.png")
-        G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=verbose_logging)
+        G = graph.reconnect_secondary_loop_edges(
+            G,
+            skeleton,
+            voxel_size=voxel_size,
+            debug=verbose_logging,
+        )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "reconnect_secondary_loop_edges.png")
         
         G, _ = graph.optimise_graph_topology_fixed(
@@ -248,19 +267,52 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             debug=verbose_logging,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "optimise_graph_topology_fixed.png")
-        # Use only the topology-aware degree-2 removal path here. The legacy
-        # simple/trivial passes can collapse curved paths into straight shortcuts
-        # before smart merging has a chance to preserve topology.
+        # Low-risk cleanup strategy:
+        # 1) run topology-aware degree-2 removal,
+        # 2) prune stubs,
+        # 3) run topology-aware degree-2 removal again with a higher max-degree
+        #    threshold to catch residual artifacts near higher-order junctions.
+        degree2_pass1_max_degree = 4
+        degree2_pass2_max_degree = 8
         G = graph.smart_multigraph_degree2_removal(
             G,
             skeleton,
+            max_degree=degree2_pass1_max_degree,
             debug=verbose_logging,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal.png")
+        degree2_diag = graph.diagnose_degree2_nodes(
+            G, max_degree=degree2_pass1_max_degree
+        )
+        print(graph.format_degree2_diagnostics_report(degree2_diag))
+
         G = graph.prune_vascular_stubs(G, debug=verbose_logging, min_stub_length=min_stub_length)
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "prune_vascular_stubs.png")
+        degree2_diag = graph.diagnose_degree2_nodes(
+            G, max_degree=degree2_pass2_max_degree
+        )
+        print(graph.format_degree2_diagnostics_report(degree2_diag))
+
+        G = graph.smart_multigraph_degree2_removal(
+            G,
+            skeleton,
+            max_degree=degree2_pass2_max_degree,
+            debug=verbose_logging,
+        )
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            save_path=plot_dir / "smart_multigraph_degree2_removal_post_prune.png",
+        )
+        degree2_diag = graph.diagnose_degree2_nodes(
+            G, max_degree=degree2_pass2_max_degree
+        )
+        print(graph.format_degree2_diagnostics_report(degree2_diag))
 
         # remove any nodes that are connected to themselves with no nodes in between
         G = graph.remove_edges_for_self_connected_nodes(G)
+<<<<<<< Current (Your changes)
 
         
         G = graph.smart_multigraph_degree2_removal(
@@ -269,6 +321,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
              debug=VERBOSE_LOGGING,
         )
         # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
+=======
+>>>>>>> Incoming (Background Agent changes)
     
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
