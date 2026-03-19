@@ -87,6 +87,10 @@ SKELETON_DOWNSAMPLE_FACTOR = 1.0
 SKELETON_USE_PADDED_SLICING = True
 # Voxel padding for the local slicing crops.
 SKELETON_PADDED_SLICING_PADDING = 3
+
+# Prune the binary mask to keep only the largest N connected components BEFORE skeletonization.
+# This speeds up skeletonization by removing noise fragments. Set to 0 to disable.
+SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1 
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
@@ -260,6 +264,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
                             skeleton_use_padded_slicing=SKELETON_USE_PADDED_SLICING,
                             skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING,
+                            skeleton_prune_mask_before=SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION,
                             edge_percent=EDGE_PERCENT, 
                             end_percent=END_PERCENT, 
                             node_edge_axis=NODE_EDGE_AXIS, 
@@ -296,22 +301,52 @@ def carotid_image_to_model(image_path=INPUT_PATH,
 
     if do_skeletonize:
         if input_format == "tif":
-            image, skeleton = io.load_and_skeletonize_3d_tif(
-                image_path,
-                closing_radius=skeleton_closing_radius,
-                bridge_gap_size=skeleton_bridge_gap_size,
-                downsample_factor=skeleton_downsample_factor,
-            )
+            image = io.load_3d_tif(image_path)
+            from skimage.filters import threshold_otsu
+            threshold = threshold_otsu(image)
+            binary = image > threshold
+            
+            if skeleton_prune_mask_before > 0:
+                print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
+                binary = preprocessing.skeleton.keep_largest_mask_components(
+                    binary, n_components=skeleton_prune_mask_before, connectivity=skeleton_component_connectivity
+                )
+
+            if skeleton_closing_radius > 0:
+                binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
+            if skeleton_bridge_gap_size > 0:
+                binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
+            
+            if skeleton_downsample_factor > 1.0:
+                print(f"Applying downsampled skeletonization (factor={skeleton_downsample_factor})...")
+                skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skeleton_downsample_factor)
+            else:
+                skeleton = preprocessing.skeleton.skeletonize_3d(binary)
+
         elif input_format == "h5":
             if not H5_DATASET_NAME:
                 raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
-            image, skeleton = io.load_and_skeletonize_3d_h5(
-                image_path,
-                H5_DATASET_NAME,
-                closing_radius=skeleton_closing_radius,
-                bridge_gap_size=skeleton_bridge_gap_size,
-                downsample_factor=skeleton_downsample_factor,
-            )
+            image = io.load_3d_h5(image_path, H5_DATASET_NAME)
+            from skimage.filters import threshold_otsu
+            threshold = threshold_otsu(image)
+            binary = image > threshold
+
+            if skeleton_prune_mask_before > 0:
+                print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
+                binary = preprocessing.skeleton.keep_largest_mask_components(
+                    binary, n_components=skeleton_prune_mask_before, connectivity=skeleton_component_connectivity
+                )
+            
+            if skeleton_closing_radius > 0:
+                binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
+            if skeleton_bridge_gap_size > 0:
+                binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
+
+            if skeleton_downsample_factor > 1.0:
+                 print(f"Applying downsampled skeletonization (factor={skeleton_downsample_factor})...")
+                 skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skeleton_downsample_factor)
+            else:
+                skeleton = preprocessing.skeleton.skeletonize_3d(binary)
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
         
@@ -561,7 +596,8 @@ if __name__ == "__main__":
         plot_dir=plot_dir,
         skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
         skeleton_use_padded_slicing=SKELETON_USE_PADDED_SLICING,
-        skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING
+        skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING,
+        skeleton_prune_mask_before=SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION
     )
 
     ### // NOTES TO SELF FOR LATER // ###
