@@ -48,9 +48,9 @@ H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
 # end of the image.
 EDGE_PERCENT = 10.0
-END_PERCENT = 10.0
+END_PERCENT = 25.0
 # For 3D skeletons this is usually the y-axis in (z, y, x).
-NODE_EDGE_AXIS = 1
+NODE_EDGE_AXIS = 0
 STARTING_NODES: list[int] = []
 OUTPUT_NODES: list[int] = []
 # TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
@@ -94,7 +94,7 @@ SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1
 
 # Sub-volume / ROI settings. 
 # SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
-SKELETON_SUB_VOLUME_PERCENTAGE = 1.0
+SKELETON_SUB_VOLUME_PERCENTAGE = 0.2
 # Center offsets for the ROI (as percentage of original dimensions, -0.5 to 0.5).
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Z = 0.0
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Y = 0.0
@@ -104,34 +104,18 @@ SKELETON_SUB_VOLUME_CENTER_OFFSET_X = 0.0
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
 """Configuration defaults for diameter maps."""
 
-# Diameter by branch order (simple scalar)
+# Diameter by branch order (dict with d1 and d2 for pericyte constriction simulation)
 DIAMETER_BY_BRANCH_ORDER = {
-    "BO1": 4.0,
-    "BO2": 4.0,
-    "BO3": 4.0,
-    "BO4": 4.0,
-    "BO5": 4.0,
-    "BO6": 4.0,
-    "BO7": 4.0,
-    "BO8": 4.0,
-    "BO9": 4.0,
-    "B10": 4.0,
-    "B11": 4.0,
-    "B12": 4.0,
-    "B13": 4.0,
-    "B14": 4.0,
-    "B15": 4.0,
-    "B16": 4.0,
-    "B17": 4.0,
-    "B18": 4.0,
-    "B19": 4.0,
-    "B20": 4.0,
-    "B21": 4.0,
-    "B22": 4.0,
-    "B23": 4.0,
-    "B24": 4.0,
-    "B25": 4.0,
-    "B26": 4.0,
+    "BO1": {"d1": 4.0, "d2": 4.0},
+    "BO2": {"d1": 4.0, "d2": 4.0},
+    "BO3": {"d1": 4.0, "d2": 4.0},
+    "BO4": {"d1": 4.0, "d2": 4.0},
+    "BO5": {"d1": 4.0, "d2": 4.0},
+    "BO6": {"d1": 4.0, "d2": 4.0},
+    "BO7": {"d1": 4.0, "d2": 4.0},
+    "BO8": {"d1": 4.0, "d2": 4.0},
+    "BO9": {"d1": 4.0, "d2": 4.0},
+    "DEFAULT": {"d1": 4.0, "d2": 4.0},
 }
 
 DIAMETER_BY_BRANCH_ORDER_ENHANCED = None

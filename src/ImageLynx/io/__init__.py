@@ -1,6 +1,8 @@
 """I/O utilities for loading and simplifying image data."""
 from .load import (
     crop_tiff_volume_from_corners,
+    load_3d_tif,
+    load_3d_h5,
     load_and_skeletonize_3d_tif,
     load_and_skeletonize_3d_h5,
     resolve_image_path_with_optional_zip,
@@ -9,6 +11,8 @@ from .load import (
 from ..preprocessing.skeleton import bridge_gaps
 
 __all__ = [
+    "load_3d_tif",
+    "load_3d_h5",
     "load_and_skeletonize_3d_tif",
     "load_and_skeletonize_3d_h5",
     "crop_tiff_volume_from_corners",

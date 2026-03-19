@@ -203,10 +203,13 @@ class PoiseuilleModel:
                 )
             diameters = diameter_by_branch_order.get(branch_order)
             if diameters is None:
-                raise ValueError(
-                    f"Edge ({u}, {v}, {key}) has unknown branch_order '{branch_order}'. "
-                    "No matching entry in diameter_by_branch_order."
-                )
+                # Try fallback to DEFAULT key if available
+                diameters = diameter_by_branch_order.get("DEFAULT")
+                if diameters is None:
+                    raise ValueError(
+                        f"Edge ({u}, {v}, {key}) has unknown branch_order '{branch_order}' "
+                        "and no 'DEFAULT' entry in diameter_by_branch_order."
+                    )
             if not isinstance(diameters, dict) or "d1" not in diameters or "d2" not in diameters:
                 raise ValueError(
                     f"Invalid diameter mapping for branch_order '{branch_order}'. "
