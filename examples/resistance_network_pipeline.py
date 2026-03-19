@@ -69,6 +69,7 @@ SKELETON_MIN_BRANCH_LENGTH = 3
 SKELETON_MAX_BRIDGE_DISTANCE = 0
 SKELETON_COMPONENT_CONNECTIVITY = 3
 MIN_STUB_LENGTH = 10.0
+CLUSTER_COLLAPSE_DISTANCE = 5.0
 # Keep only connected components at or above this percentage of total
 # skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
 SKELETON_MIN_COMPONENT_PERCENT = 5.0
@@ -139,6 +140,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             do_equiv_resistance_calculation=DO_EQUIV_RESISTANCE_CALCULATION, 
                             min_branch_length=MIN_BRANCH_LENGTH, 
                             min_stub_length=MIN_STUB_LENGTH,
+                            cluster_collapse_distance=CLUSTER_COLLAPSE_DISTANCE,
                             vtk_output_prefix=VTK_OUTPUT_PREFIX, 
                             skeleton_closing_radius=SKELETON_CLOSING_RADIUS, 
                             skeleton_bridge_gap_size=SKELETON_BRIDGE_GAP_SIZE, 
@@ -269,8 +271,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "optimise_graph_topology_fixed.png")
         # Low-risk cleanup strategy:
         # 1) run topology-aware degree-2 removal,
-        # 2) prune stubs,
-        # 3) run topology-aware degree-2 removal again with a higher max-degree
+        # 2) collapse node clusters,
+        # 3) run topology-aware degree-2 removal again (collapsing can create new degree-2 nodes),
+        # 4) prune stubs,
+        # 5) run topology-aware degree-2 removal again with a higher max-degree
         #    threshold to catch residual artifacts near higher-order junctions.
         degree2_pass1_max_degree = 4
         degree2_pass2_max_degree = 8
@@ -285,6 +289,23 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G, max_degree=degree2_pass1_max_degree
         )
         print(graph.format_degree2_diagnostics_report(degree2_diag))
+
+        G = graph.collapse_node_clusters(
+            G,
+            distance_threshold=cluster_collapse_distance,
+            debug=verbose_logging,
+        )
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "collapse_node_clusters.png")
+
+        # Collapsing clusters can create new degree-2 pass-through nodes;
+        # run a second degree-2 cleanup pass.
+        G = graph.smart_multigraph_degree2_removal(
+            G,
+            skeleton,
+            max_degree=degree2_pass1_max_degree,
+            debug=verbose_logging,
+        )
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal_post_collapse.png")
 
         G = graph.prune_vascular_stubs(G, debug=verbose_logging, min_stub_length=min_stub_length)
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "prune_vascular_stubs.png")
@@ -517,4 +538,3 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 if __name__ == "__main__":
     plot_dir = BASE_PLOT_DIR / "nerve"
     image_to_model_pipeline(plot_dir=plot_dir)
-

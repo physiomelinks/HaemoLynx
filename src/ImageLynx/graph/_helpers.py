@@ -373,53 +373,45 @@ def orient_path_from_startpoint(voxels, target_pos):
     else:
         return voxels[::-1]  # Reverse to start from target
 
-def improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug=False):
+def improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug=False, voxel_size=(1.0, 1.0, 1.0)):
     """
     Improve a straight edge by tracing through skeleton topology.
-    Returns improved voxel path or None if improvement not possible.
+    Returns improved voxel path (physical coords) or None if not possible.
     """
     if skeleton_data is None:
         return None
     
-    traced_path = trace_skeleton_path(skeleton_data, start_pos, end_pos, debug)
+    traced_path = trace_skeleton_path(skeleton_data, start_pos, end_pos, debug, voxel_size=voxel_size)
     
     if traced_path and len(traced_path) >= 2:
-        # Verify the traced path is actually better (longer/more curved)
         if is_path_curved(traced_path) or len(traced_path) > 3:
             return traced_path
     
     return None
 
-def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False):
+def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_size=(1.0, 1.0, 1.0)):
     """
     Trace path through skeleton data from start_pos to end_pos using A* pathfinding.
     
-    Args:
-        skeleton_data: 3D binary array where 1s represent skeleton voxels,
-                      OR dict with 'skeleton' key containing the binary array,
-                      OR list of skeleton voxel coordinates
-        start_pos: Starting position (3D coordinates)
-        end_pos: Ending position (3D coordinates)
-        debug: Whether to print debug info
-    
-    Returns:
-        List of voxel coordinates [(x,y,z), ...] or None if no path found
+    Positions are in physical units; *voxel_size* converts them to array
+    indices for look-ups.  The returned path is converted back to physical
+    coordinates.
     """
-
+    vs = np.asarray(voxel_size, dtype=float)
+    start_vox = np.round(np.asarray(start_pos, dtype=float) / vs).astype(int)
+    end_vox = np.round(np.asarray(end_pos, dtype=float) / vs).astype(int)
     
     if debug:
-        print(f"       Tracing skeleton from {start_pos} to {end_pos}")
+        print(f"       Tracing skeleton from {start_pos} (vox {start_vox}) to {end_pos} (vox {end_vox})")
     
-    # Parse skeleton data into binary array
     skeleton_array = parse_skeleton_data(skeleton_data)
     if skeleton_array is None:
         if debug:
             print(f"       Could not parse skeleton data")
         return None
     
-    # Find nearest skeleton voxels to start and end positions
-    start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_pos)
-    end_skeleton = find_nearest_skeleton_voxel(skeleton_array, end_pos)
+    start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_vox)
+    end_skeleton = find_nearest_skeleton_voxel(skeleton_array, end_vox)
     
     if start_skeleton is None or end_skeleton is None:
         if debug:
@@ -432,13 +424,13 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False):
         print(f"       Start skeleton voxel: {start_skeleton} (dist: {start_dist:.1f})")
         print(f"       End skeleton voxel: {end_skeleton} (dist: {end_dist:.1f})")
     
-    # Use A* to find path through skeleton
     path = astar_skeleton_path(skeleton_array, start_skeleton, end_skeleton, debug)
     
     if path:
         if debug:
             print(f"       Found skeleton path with {len(path)} voxels")
-        return path
+        phys_path = [(np.array(p, dtype=float) * vs).tolist() for p in path]
+        return phys_path
     else:
         if debug:
             print(f"       No skeleton path found")
@@ -697,8 +689,8 @@ def voxel_path_overlap_ratio(path_a: List, path_b: List) -> float:
     overlap = len(set_a.intersection(set_b))
     return overlap / max(len(set_a), len(set_b))
 
-def improve_straight_path_with_skeleton(start_pos, end_pos, skeleton_data, debug=False):
+def improve_straight_path_with_skeleton(start_pos, end_pos, skeleton_data, debug=False, voxel_size=(1.0, 1.0, 1.0)):
     """
     Improve an entire straight path between two endpoints using skeleton.
     """
-    return improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug)
+    return improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug, voxel_size=voxel_size)

@@ -14,8 +14,38 @@ from ._helpers import (
 )
 
 
+def _resolve_voxel_size(
+    G: Optional[nx.Graph] = None,
+    voxel_size: Optional[Tuple[float, float, float]] = None,
+) -> Tuple[float, float, float]:
+    """Resolve voxel size from explicit input or graph metadata."""
+    if voxel_size is not None:
+        return tuple(float(v) for v in voxel_size)
+    if G is not None:
+        meta = G.graph.get("voxel_size")
+        if meta is not None and len(meta) == 3:
+            return tuple(float(v) for v in meta)
+    return (1.0, 1.0, 1.0)
+
+
+def _projection_extent(
+    projection_shape: Tuple[int, int],
+    voxel_size: Tuple[float, float, float],
+) -> Tuple[float, float, float, float]:
+    """Return imshow extent for (Y, X) projection in physical units."""
+    y_size, x_size = projection_shape
+    vy = float(voxel_size[1])
+    vx = float(voxel_size[2])
+    # Keep top-left origin semantics used by existing overlays.
+    return (0.0, x_size * vx, y_size * vy, 0.0)
+
+
 def plot_node_degree_distribution(
-    G: nx.Graph, title: str = "Node Degree Distribution"
+    G: nx.Graph,
+    title: str = "Node Degree Distribution",
+    save_path: Optional[str] = None,
+    dpi: int = 300,
+    show: bool = True,
 ) -> dict:
     """Plot histogram of node degrees."""
     degrees = [d for _, d in G.degree()]
@@ -48,21 +78,30 @@ def plot_node_degree_distribution(
         fontsize=9,
     )
     plt.tight_layout()
-    plt.show()
+    if save_path:
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close()
     return degree_counts
 
 
 def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool = False, 
                               save_path: Optional[str] = None,
-                              show_coordinates_degree_1: bool = False) -> None:
+                              show_coordinates_degree_1: bool = False,
+                              voxel_size: Optional[Tuple[float, float, float]] = None,
+                              show: bool = True) -> None:
     """Overlay edges and nodes on Z-projection of image.
 
     Set label_nodes=True to draw node IDs.
     """
     projection = np.max(image, axis=0)
     pos = nx.get_node_attributes(G, "pos")
+    resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
+    extent = _projection_extent(projection.shape, resolved_voxel_size)
     plt.figure(figsize=(10, 10))
-    plt.imshow(projection, cmap="gray")
+    plt.imshow(projection, cmap="gray", extent=extent)
     for u, v, d in G.edges(data=True):
         path = d.get("voxels", [])
         if len(path) > 1:
@@ -83,13 +122,13 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
         if show_coordinates_degree_1:
             for node_id, node_pos in pos.items():
                 if G.degree(node_id) == 1:
-                    x = int(round(float(node_pos[2])))
-                    y = int(round(float(node_pos[1])))
-                    z = int(round(float(node_pos[0])))
+                    x = float(node_pos[2])
+                    y = float(node_pos[1])
+                    z = float(node_pos[0])
                     plt.text(
                         float(node_pos[2]) + 1.0,
                         float(node_pos[1]) + 1.0,
-                        f"({x}, {y}, {z})",
+                        f"({x:.1f}, {y:.1f}, {z:.1f})",
                         color="blue",
                         fontsize=3,
                     )
@@ -97,8 +136,10 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
     plt.axis("off")
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    else:
+    if show:
         plt.show()
+    else:
+        plt.close()
 
 
 def visualize_geometry_with_branch_orders(
@@ -116,9 +157,13 @@ def visualize_geometry_with_branch_orders(
     alpha=0.8,
     reverse_gradient=True,
     group_above=None,
+    voxel_size: Optional[Tuple[float, float, float]] = None,
+    show=True,
 ):
     """Plot network colored by branch order."""
     projection = np.max(image, axis=0)
+    resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
+    extent = _projection_extent(projection.shape, resolved_voxel_size)
     all_branch_orders = set()
     edge_branch_orders = {}
     edge_paths = {}
@@ -150,7 +195,7 @@ def visualize_geometry_with_branch_orders(
         branch_orders, group_above, actual_edge_counts
     )
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    ax.imshow(projection, cmap=background_cmap)
+    ax.imshow(projection, cmap=background_cmap, extent=extent)
     for bo in branch_orders:
         paths = [
             np.array(edge_paths[(u, v, k)])
@@ -185,7 +230,10 @@ def visualize_geometry_with_branch_orders(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
     return fig, ax, color_mapping
 
 
@@ -207,9 +255,13 @@ def visualize_geometry_with_edge_weights(
     legend_bins=5,
     reverse_gradient=False,
     use_inverse=True,
+    voxel_size: Optional[Tuple[float, float, float]] = None,
+    show=True,
 ):
     """Plot network colored by edge weight."""
     projection = np.max(image, axis=0)
+    resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
+    extent = _projection_extent(projection.shape, resolved_voxel_size)
     edge_weights = {}
     edge_paths = {}
     weights_list = []
@@ -237,7 +289,7 @@ def visualize_geometry_with_edge_weights(
         cmap = cmap.reversed()
     norm = Normalize(vmin=vmin, vmax=vmax)
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    ax.imshow(projection, cmap=background_cmap)
+    ax.imshow(projection, cmap=background_cmap, extent=extent)
     for (u, v, key), weight in edge_weights.items():
         if weight is not None:
             path = edge_paths[(u, v, key)]
@@ -264,7 +316,10 @@ def visualize_geometry_with_edge_weights(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
     return fig, ax, (vmin, vmax), cmap
 
 
@@ -307,6 +362,7 @@ def visualize_skeleton(
     voxel_color: str = "cyan",
     background_color: str = "black",
     point_size: float = 3.0,
+    voxel_size: Optional[Tuple[float, float, float]] = None,
     show: bool = True,
 ) -> None:
     """Visualize a 3D skeleton in an interactive PyVista 3D view.
@@ -345,8 +401,10 @@ def visualize_skeleton(
             if skeleton.ndim == 3
             else skeleton.astype(float)
         )
+        resolved_voxel_size = voxel_size or (1.0, 1.0, 1.0)
+        extent = _projection_extent(projection.shape, resolved_voxel_size)
         fig, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow(projection, cmap="gray", interpolation="nearest")
+        ax.imshow(projection, cmap="gray", interpolation="nearest", extent=extent)
         ax.set_title(
             f"Skeleton Z-projection  —  shape: {skeleton.shape}  "
             f"voxels: {int(skeleton.sum())}"

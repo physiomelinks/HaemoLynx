@@ -28,6 +28,8 @@ def optimise_graph_topology_fixed(
     aggressive_degree2_cleanup_level=1,
 ):
     """Reconnect nearby terminals with optional skeleton validation."""
+    vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
+
     if reconnect_threshold and reconnect_threshold > 0:
         valid_nodes = [n for n in G.nodes() if "pos" in G.nodes[n]]
         terminals = [n for n in valid_nodes if G.degree[n] == 1]
@@ -91,19 +93,25 @@ def optimise_graph_topology_fixed(
 
                 if validate_reconnections and skeleton_data is not None:
                     connection_valid, voxel_path = validate_skeleton_connection(
-                        skeleton_data, src_pos, tgt_pos, max_gap=reconnect_threshold
+                        skeleton_data, src_pos, tgt_pos, max_gap=reconnect_threshold,
+                        voxel_size=vs,
                     )
                     if not connection_valid:
                         if debug:
                             logger.debug("Skipped reconnection %s-%s: no skeleton path", src, tgt)
                         continue
+                    vs_arr = np.asarray(vs, dtype=float)
+                    if voxel_path:
+                        phys_path = [(np.array(p, dtype=float) * vs_arr).tolist() for p in voxel_path]
+                    else:
+                        phys_path = [src_pos.tolist(), tgt_pos.tolist()]
                     add_edge_safe(
                         G,
                         src,
                         tgt,
                         weight=max(dist, 1e-6),
-                        length=len(voxel_path) if voxel_path else dist,
-                        voxels=voxel_path if voxel_path else [tuple(src_pos.astype(int)), tuple(tgt_pos.astype(int))],
+                        length=len(voxel_path) * float(np.linalg.norm(vs_arr)) if voxel_path else dist,
+                        voxels=phys_path,
                         reconnected=True,
                         validated=True,
                     )
@@ -125,7 +133,7 @@ def optimise_graph_topology_fixed(
                         tgt,
                         weight=max(dist, 1e-6),
                         length=dist,
-                        voxels=[tuple(src_pos.astype(int)), tuple(tgt_pos.astype(int))],
+                        voxels=[src_pos.tolist(), tgt_pos.tolist()],
                         reconnected=True,
                         conservative=True,
                     )

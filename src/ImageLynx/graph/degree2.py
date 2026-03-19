@@ -24,6 +24,26 @@ from ._helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _compute_skeleton_overlap(
+    voxels: List, skeleton_data: np.ndarray
+) -> float:
+    """Fraction of voxel path coordinates that lie on the skeleton."""
+    if not voxels or skeleton_data is None or skeleton_data.size == 0:
+        return 0.0
+    shape = skeleton_data.shape
+    on_skeleton = 0
+    total = 0
+    for v in voxels:
+        coords = tuple(int(round(c)) for c in v)
+        if all(0 <= coords[i] < shape[i] for i in range(len(coords))):
+            total += 1
+            if skeleton_data[coords]:
+                on_skeleton += 1
+        else:
+            total += 1
+    return on_skeleton / total if total > 0 else 0.0
+
+
 def _should_replace_existing_simple_edge(
     G: nx.Graph,
     n1: Any,
@@ -237,6 +257,7 @@ def merge_edges_with_topology_improvement(
     pos2: np.ndarray,
     skeleton_data,
     debug: bool = False,
+    voxel_size: tuple = (1.0, 1.0, 1.0),
 ) -> List:
     """Merge two edges while improving straight segments using skeleton."""
     if skeleton_data is None or skeleton_data.size == 0:
@@ -247,20 +268,20 @@ def merge_edges_with_topology_improvement(
         return merge_curved_edges(voxels1, voxels2, node_pos, debug)
     if is_curved1 and not is_curved2:
         improved_voxels2 = improve_straight_edge_with_skeleton(
-            node_pos, pos2, skeleton_data, debug
+            node_pos, pos2, skeleton_data, debug, voxel_size=voxel_size
         )
         if improved_voxels2:
             return merge_curved_edges(voxels1, improved_voxels2, node_pos, debug)
         return merge_curved_edges(voxels1, voxels2, node_pos, debug)
     if not is_curved1 and is_curved2:
         improved_voxels1 = improve_straight_edge_with_skeleton(
-            pos1, node_pos, skeleton_data, debug
+            pos1, node_pos, skeleton_data, debug, voxel_size=voxel_size
         )
         if improved_voxels1:
             return merge_curved_edges(improved_voxels1, voxels2, node_pos, debug)
         return merge_curved_edges(voxels1, voxels2, node_pos, debug)
     improved_full_path = improve_straight_path_with_skeleton(
-        pos1, pos2, skeleton_data, debug
+        pos1, pos2, skeleton_data, debug, voxel_size=voxel_size
     )
     if improved_full_path:
         return improved_full_path
@@ -278,36 +299,23 @@ def smart_multigraph_degree2_removal(
     if not isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         raise ValueError("This function is designed for MultiGraphs")
 
+    vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
+
     total_removed = 0
     for iteration in range(max_iterations):
         removed_this_iter = 0
 
-        # FIX 1: Iterate over all nodes (fresh snapshot each outer iteration)
-        # rather than pre-filtering degree-2 nodes once. This ensures nodes
-        # whose degree drops to 2 mid-iteration are caught in the same pass.
         for node in list(G.nodes()):
-            # Re-check freshly — graph has changed since snapshot was taken
             if not G.has_node(node) or G.degree[node] != 2:
                 continue
 
-            # FIX 2: Use G.edges() instead of G.neighbors() to correctly
-            # handle MultiGraphs where both edges may go to the same neighbor.
-            # G.neighbors() deduplicates, so a node with 2 edges to the same
-            # neighbor would appear to have only 1 neighbor and be skipped.
             edges = list(G.edges(node, keys=True, data=True))
             if len(edges) != 2:
-                # Degree is 2 but we don't have exactly 2 edges — shouldn't
-                # happen in a valid MultiGraph, but guard anyway.
                 continue
 
             _, n1, k1, d1 = edges[0]
             _, n2, k2, d2 = edges[1]
 
-            # Guard: skip if merging would push neighbors over max_degree.
-            # Note: after removing `node`, n1 and n2 each lose 1 degree, then
-            # gain 1 for the new merged edge — net 0 change if no existing
-            # edge between n1/n2, net +1 if one already exists. We check
-            # current degree here as a conservative upper bound.
             if G.degree[n1] >= max_degree or G.degree[n2] >= max_degree:
                 continue
 
@@ -317,12 +325,9 @@ def smart_multigraph_degree2_removal(
             if node_pos is None or n1_pos is None or n2_pos is None:
                 continue
 
-            # Edge data is already in d1, d2 — no secondary lookup needed.
             voxels1 = d1.get("voxels", [])
             voxels2 = d2.get("voxels", [])
 
-            # Remove the node before adding the merged edge, so that
-            # should_add_merged_edge sees the graph in its post-removal state.
             G.remove_node(node)
 
             merged_voxels = merge_edges_with_topology_improvement(
@@ -333,6 +338,7 @@ def smart_multigraph_degree2_removal(
                 np.array(n2_pos),
                 skeleton_data,
                 debug,
+                voxel_size=vs,
             )
             merged_attrs = {
                 "weight": d1.get("weight", 0) + d2.get("weight", 0),
