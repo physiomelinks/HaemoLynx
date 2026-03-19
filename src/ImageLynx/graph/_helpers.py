@@ -158,16 +158,8 @@ def calculate_voxel_path_length(voxels):
     """
     if not voxels or len(voxels) < 2:
         return 0.0
-        
-    import numpy as np
-    
-    total_length = 0.0
-    for i in range(len(voxels) - 1):
-        p1 = np.array(voxels[i])
-        p2 = np.array(voxels[i + 1])
-        total_length += np.linalg.norm(p2 - p1)
-    
-    return total_length
+    arr = np.array(voxels, dtype=float)
+    return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
 
 def validate_voxel_path_continuity(voxels):
     """
@@ -175,17 +167,8 @@ def validate_voxel_path_continuity(voxels):
     """
     if len(voxels) < 2:
         return 0.0
-    
-    import numpy as np
-    
-    max_gap = 0.0
-    for i in range(len(voxels) - 1):
-        p1 = np.array(voxels[i])
-        p2 = np.array(voxels[i + 1])
-        gap = np.linalg.norm(p2 - p1)
-        max_gap = max(max_gap, gap)
-    
-    return max_gap
+    arr = np.array(voxels, dtype=float)
+    return float(np.max(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
 
 def merge_edge_voxels_at_node(voxels1: List, voxels2: List, node_pos: Any) -> List:
     """Concatenate two edge voxel paths at the removed node with orientation."""
@@ -231,8 +214,6 @@ def get_line_points_3d(p1, p2):
     """
     Get 3D line points between two positions using Bresenham-like algorithm.
     """
-    import numpy as np
-    
     # Simple linear interpolation for 3D line
     distance = np.linalg.norm(p2 - p1)
     num_points = max(int(distance) + 1, 2)
@@ -248,18 +229,10 @@ def get_line_points_3d(p1, p2):
 
 def calculate_path_length(voxels):
     """Calculate length as sum of distances between consecutive voxels."""
-    import numpy as np
-    
     if len(voxels) < 2:
         return 0.0
-    
-    total = 0.0
-    for i in range(len(voxels) - 1):
-        p1 = np.array(voxels[i])
-        p2 = np.array(voxels[i + 1])
-        total += np.linalg.norm(p2 - p1)
-    
-    return total
+    arr = np.array(voxels, dtype=float)
+    return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
 
 
 def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: Tuple[float, float, float] = (1, 1, 1)) -> float:
@@ -342,8 +315,6 @@ def merge_curved_edges(voxels1, voxels2, connection_pos, debug=False):
 
 def orient_path_to_endpoint(voxels, target_pos):
     """Orient path so it ends at target_pos."""
-    import numpy as np
-    
     if not voxels:
         return []
     
@@ -359,8 +330,6 @@ def orient_path_to_endpoint(voxels, target_pos):
 
 def orient_path_from_startpoint(voxels, target_pos):
     """Orient path so it starts from target_pos."""
-    import numpy as np
-    
     if not voxels:
         return []
     
@@ -441,15 +410,13 @@ def parse_skeleton_data(skeleton_data):
     Parse skeleton data into a 3D binary numpy array.
     Handles multiple input formats.
     """
-    import numpy as np
-    
     if skeleton_data is None:
         return None
     
     # Case 1: Already a numpy array
     if isinstance(skeleton_data, np.ndarray):
         if skeleton_data.ndim == 3:
-            return skeleton_data.astype(bool)
+            return skeleton_data if skeleton_data.dtype == bool else skeleton_data.astype(bool)
         else:
             return None
     
@@ -488,36 +455,27 @@ def find_nearest_skeleton_voxel(skeleton_array, target_pos, max_search_radius=10
     """
     Find the nearest skeleton voxel to target_pos within search radius.
     """
-    import numpy as np
-    
     target = np.array(target_pos, dtype=int)
+    shape = skeleton_array.shape
     
-    # Check if target is already on skeleton
-    if (target >= 0).all() and (target < skeleton_array.shape).all():
+    if (target >= 0).all() and (target < shape).all():
         if skeleton_array[tuple(target)]:
             return tuple(target)
     
-    # Search in expanding radius
     for radius in range(1, max_search_radius + 1):
-        candidates = []
+        lo = np.maximum(target - radius, 0)
+        hi = np.minimum(target + radius + 1, shape)
         
-        # Create search box around target
-        min_coords = np.maximum(target - radius, 0)
-        max_coords = np.minimum(target + radius + 1, skeleton_array.shape)
+        sub = skeleton_array[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
+        if not np.any(sub):
+            continue
         
-        # Find skeleton voxels in search box
-        for x in range(min_coords[0], max_coords[0]):
-            for y in range(min_coords[1], max_coords[1]):
-                for z in range(min_coords[2], max_coords[2]):
-                    if skeleton_array[x, y, z]:
-                        dist = np.linalg.norm(np.array([x, y, z]) - target)
-                        if dist <= radius:
-                            candidates.append(((x, y, z), dist))
-        
-        if candidates:
-            # Return closest candidate
-            candidates.sort(key=lambda x: x[1])
-            return candidates[0][0]
+        local_hits = np.argwhere(sub) + lo
+        dists = np.linalg.norm(local_hits - target, axis=1)
+        within = dists <= radius
+        if np.any(within):
+            best = int(np.argmin(np.where(within, dists, np.inf)))
+            return tuple(local_hits[best])
     
     return None
 
@@ -526,7 +484,6 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
     """
     A* pathfinding through skeleton voxels only.
     """
-    import numpy as np
     import heapq
     from collections import defaultdict
     
@@ -536,94 +493,75 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
     if start == end:
         return [start]
     
-    # Priority queue: (f_score, g_score, position)
+    ex, ey, ez = end
+    sx, sy, sz = skeleton_array.shape
+
     open_set = [(0, 0, start)]
     came_from = {}
     g_score = defaultdict(lambda: float('inf'))
     g_score[start] = 0
     
-    # Track visited nodes
     closed_set = set()
     
-    def heuristic(pos):
-        return np.linalg.norm(np.array(pos) - np.array(end))
-    
-    def get_neighbors(pos):
-        """Get valid skeleton neighbors (26-connectivity)"""
-        neighbors = []
-        x, y, z = pos
-        
-        # Check all 26 neighbors (3x3x3 - center)
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                for dz in [-1, 0, 1]:
-                    if dx == 0 and dy == 0 and dz == 0:
-                        continue
-                    
-                    nx, ny, nz = x + dx, y + dy, z + dz
-                    
-                    # Check bounds
-                    if (0 <= nx < skeleton_array.shape[0] and
-                        0 <= ny < skeleton_array.shape[1] and
-                        0 <= nz < skeleton_array.shape[2]):
-                        
-                        # Check if it's a skeleton voxel
-                        if skeleton_array[nx, ny, nz]:
-                            neighbors.append((nx, ny, nz))
-        
-        return neighbors
+    _OFFSETS_26 = [
+        (dx, dy, dz)
+        for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+        if not (dx == 0 and dy == 0 and dz == 0)
+    ]
     
     iterations = 0
-    max_iterations = 50000  # Prevent infinite loops
+    max_iterations = 50000
     
     while open_set and iterations < max_iterations:
         iterations += 1
         
-        # Get node with lowest f_score
-        f_score, current_g, current = heapq.heappop(open_set)
+        _, current_g, current = heapq.heappop(open_set)
         
         if current in closed_set:
             continue
         
         closed_set.add(current)
         
-        # Check if we reached the goal
         if current == end:
-            # Reconstruct path
             path = []
             while current in came_from:
                 path.append(current)
                 current = came_from[current]
             path.append(start)
             path.reverse()
-            
-            if debug:
-                print(f"      🎯 A* found path in {iterations} iterations")
             return path
         
-        # Explore neighbors
-        for neighbor in get_neighbors(current):
+        cx, cy, cz = current
+        cur_g = g_score[current]
+        
+        for dx, dy, dz in _OFFSETS_26:
+            nx_, ny_, nz_ = cx + dx, cy + dy, cz + dz
+            
+            if not (0 <= nx_ < sx and 0 <= ny_ < sy and 0 <= nz_ < sz):
+                continue
+            if not skeleton_array[nx_, ny_, nz_]:
+                continue
+            
+            neighbor = (nx_, ny_, nz_)
             if neighbor in closed_set:
                 continue
             
-            # Calculate distance to neighbor
-            distance = np.linalg.norm(np.array(neighbor) - np.array(current))
-            tentative_g = g_score[current] + distance
+            distance = (dx*dx + dy*dy + dz*dz) ** 0.5
+            tentative_g = cur_g + distance
             
             if tentative_g < g_score[neighbor]:
                 came_from[neighbor] = current
                 g_score[neighbor] = tentative_g
-                f_score = tentative_g + heuristic(neighbor)
-                heapq.heappush(open_set, (f_score, tentative_g, neighbor))
+                hdx = nx_ - ex
+                hdy = ny_ - ey
+                hdz = nz_ - ez
+                f = tentative_g + (hdx*hdx + hdy*hdy + hdz*hdz) ** 0.5
+                heapq.heappush(open_set, (f, tentative_g, neighbor))
     
-    if debug:
-        print(f"      ❌ A* failed to find path after {iterations} iterations")
     return None
 
 def are_paths_similar(voxels1, voxels2, tolerance=3.0):
     """Check if two paths connect similar endpoints."""
-    import numpy as np
-    
     if len(voxels1) < 2 or len(voxels2) < 2:
         return False
     
@@ -640,8 +578,6 @@ def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
     """
     Check if we should add this merged edge, avoiding duplicates.
     """
-    import numpy as np
-    
     if not G.has_edge(n1, n2):
         return True, None
     
