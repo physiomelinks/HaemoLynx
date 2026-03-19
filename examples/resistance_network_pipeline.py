@@ -300,11 +300,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "collapse_node_clusters.png")
 
         # Collapsing clusters can create new degree-2 pass-through nodes;
-        # run a second degree-2 cleanup pass.
+        # run a second degree-2 cleanup pass with a higher threshold since
+        # remaining degree-2 nodes typically neighbour high-degree junctions.
         G = graph.smart_multigraph_degree2_removal(
             G,
             skeleton,
-            max_degree=degree2_pass1_max_degree,
+            max_degree=degree2_pass2_max_degree,
             debug=verbose_logging,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal_post_collapse.png")
