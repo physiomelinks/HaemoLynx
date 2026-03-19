@@ -312,18 +312,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
         # remove any nodes that are connected to themselves with no nodes in between
         G = graph.remove_edges_for_self_connected_nodes(G)
-<<<<<<< Current (Your changes)
 
-        
-        G = graph.smart_multigraph_degree2_removal(
-             G,
-             skeleton,
-             debug=VERBOSE_LOGGING,
-        )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
-=======
->>>>>>> Incoming (Background Agent changes)
-    
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")
