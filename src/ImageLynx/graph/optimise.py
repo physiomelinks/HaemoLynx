@@ -46,8 +46,8 @@ def optimise_graph_topology_fixed(
                     if (
                         G.has_edge(src, tgt)
                         or edge_norm in loop_edges
-                        or G.degree[src] >= 3
-                        or G.degree[tgt] >= 3
+                        or G.degree[src] > 1
+                        or G.degree[tgt] > 1
                     ):
                         continue
                     dist = np.linalg.norm(terminal_coords[i] - terminal_coords[j])
@@ -64,8 +64,8 @@ def optimise_graph_topology_fixed(
                         edge_norm = tuple(sorted([src, tgt]))
                         if (
                             edge_norm in loop_edges
-                            or G.degree[src] >= 3
-                            or G.degree[tgt] >= 3
+                            or G.degree[src] > 1
+                            or G.degree[tgt] > 1
                         ):
                             continue
                         src_pos = np.array(G.nodes[src]["pos"])
@@ -84,8 +84,8 @@ def optimise_graph_topology_fixed(
                     or "pos" not in G.nodes[src]
                     or "pos" not in G.nodes[tgt]
                     or G.has_edge(src, tgt)
-                    or G.degree[src] >= 3
-                    or G.degree[tgt] >= 3
+                    or G.degree[src] > 1
+                    or G.degree[tgt] > 1
                 ):
                     continue
                 src_pos = np.array(G.nodes[src]["pos"])

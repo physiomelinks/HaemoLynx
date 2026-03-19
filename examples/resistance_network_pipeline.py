@@ -67,8 +67,9 @@ VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
 SKELETON_CLOSING_RADIUS = 2
 SKELETON_BRIDGE_GAP_SIZE = 3
 SKELETON_MIN_BRANCH_LENGTH = 3
-SKELETON_MAX_BRIDGE_DISTANCE = 0
+SKELETON_MAX_BRIDGE_DISTANCE = 4
 SKELETON_COMPONENT_CONNECTIVITY = 3
+GRAPH_RECONNECT_THRESHOLD = 10.0
 MIN_STUB_LENGTH = 10.0
 CLUSTER_COLLAPSE_DISTANCE = 5.0
 # Keep only connected components at or above this percentage of total
@@ -130,25 +131,26 @@ custom_edges= [
     (766, 845)
 ]  
 
-def image_to_model_pipeline(image_path=INPUT_PATH, 
+def image_to_model_pipeline(image_path=INPUT_PATH,
                             diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
                             constriction_by_branch_order=CONSTRICTION_BY_BRANCH_ORDER,
                             do_pericyte_constriction=DO_PERICYTE_CONSTRUCTION,
                             plot_dir=BASE_PLOT_DIR,
-                            verbose_logging=VERBOSE_LOGGING, 
-                            do_skeletonize=DO_SKELETONIZE, 
-                            do_graph_building=DO_GRAPH_BUILDING, 
-                            do_equiv_resistance_calculation=DO_EQUIV_RESISTANCE_CALCULATION, 
-                            min_branch_length=MIN_BRANCH_LENGTH, 
+                            verbose_logging=VERBOSE_LOGGING,
+                            do_skeletonize=DO_SKELETONIZE,
+                            do_graph_building=DO_GRAPH_BUILDING,
+                            do_equiv_resistance_calculation=DO_EQUIV_RESISTANCE_CALCULATION,
+                            min_branch_length=MIN_BRANCH_LENGTH,
                             min_stub_length=MIN_STUB_LENGTH,
                             cluster_collapse_distance=CLUSTER_COLLAPSE_DISTANCE,
-                            vtk_output_prefix=VTK_OUTPUT_PREFIX, 
-                            skeleton_closing_radius=SKELETON_CLOSING_RADIUS, 
-                            skeleton_bridge_gap_size=SKELETON_BRIDGE_GAP_SIZE, 
-                            skeleton_min_branch_length=SKELETON_MIN_BRANCH_LENGTH, 
-                            skeleton_max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE, 
-                            skeleton_component_connectivity=SKELETON_COMPONENT_CONNECTIVITY, 
-                            skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT, 
+                            vtk_output_prefix=VTK_OUTPUT_PREFIX,
+                            skeleton_closing_radius=SKELETON_CLOSING_RADIUS,
+                            skeleton_bridge_gap_size=SKELETON_BRIDGE_GAP_SIZE,
+                            skeleton_min_branch_length=SKELETON_MIN_BRANCH_LENGTH,
+                            skeleton_max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE,
+                            skeleton_component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
+                            skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT,
+                            graph_reconnect_threshold=GRAPH_RECONNECT_THRESHOLD,
                             set_input_node_method=SET_INPUT_NODE_METHOD,
                             set_output_node_method=SET_OUTPUT_NODE_METHOD,
                             starting_node_coordinates=STARTING_NODE_COORDINATES,
@@ -221,6 +223,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             max_bridge_distance=skeleton_max_bridge_distance,
             component_connectivity=skeleton_component_connectivity,
             min_component_fraction=skeleton_min_component_percent / 100.0,
+            closing_radius=skeleton_closing_radius,
+            bridge_gap_size=skeleton_bridge_gap_size,
         )
         preprocessing.print_skeleton_connectivity_stats(
             "cleaned",
@@ -242,17 +246,23 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             voxel_size = (1.0, 1.0, 1.0)
         print(f"Loaded skeleton from: {skeleton_path}")
 
+    print("Visualizing skeleton projection...")
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
+    print("Skeleton projection saved.")
 
     if do_graph_building:
         # 3) Convert skeleton to graph.
+        print("Building skan Skeleton object...")
         sk = csr.Skeleton(skeleton)
+        print(f"skan Skeleton built: {sk.n_paths} paths")
 
+        print("Building graph (loop detection + segment extraction)...")
         G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
             sk,
             skeleton,
             debug=verbose_logging,
             voxel_size=voxel_size,
+            reconnect_threshold=graph_reconnect_threshold,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "build_graph_segment_skan_stitched_loops.png")
         G = graph.reconnect_secondary_loop_edges(
@@ -269,6 +279,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             loop_edges,
             skeleton_data=skeleton,
             debug=verbose_logging,
+            reconnect_threshold=graph_reconnect_threshold,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "optimise_graph_topology_fixed.png")
         # Low-risk cleanup strategy:
