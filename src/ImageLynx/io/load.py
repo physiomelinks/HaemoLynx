@@ -169,9 +169,8 @@ def crop_tiff_volume_from_corners(
     }
 
 
-def load_and_skeletonize_3d_tif(filepath: str):
-    print("Loading and skeletonizing TIFF...")
-
+def load_3d_tif_with_voxel_size(filepath: str) -> tuple[np.ndarray, float, float, float]:
+    """Load 3D TIFF image and return image with voxel sizes (x, y, z)."""
     with tifffile.TiffFile(filepath) as tif:
         image = tif.asarray()
         meta = tif.imagej_metadata or {}
@@ -202,16 +201,14 @@ def load_and_skeletonize_3d_tif(filepath: str):
         voxel_size_y = 1.0 / y_res if y_res else 1.0
         voxel_size_z = z_res
 
-    print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
-    skeleton = skeletonize_3d(img_as_bool(image))
-    skeleton = binary_fill_holes(skeleton)
-    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z
+    return image, voxel_size_x, voxel_size_y, voxel_size_z
 
 
-def load_and_skeletonize_3d_h5(
+def load_3d_h5_with_voxel_size(
     filepath: str,
     dataset_name: str | None = None,
-):
+) -> tuple[np.ndarray, float, float, float]:
+    """Load 3D H5 image and return image with voxel sizes (x, y, z)."""
     if h5py is None:
         raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
     if dataset_name is None:
@@ -221,7 +218,6 @@ def load_and_skeletonize_3d_h5(
         dataset_name = path.stem
         logger.debug("Auto-parsed dataset name: %s", dataset_name)
 
-    logger.debug("Loading and skeletonizing H5...")
     with h5py.File(filepath, "r") as f:
         if dataset_name not in f:
             available = list(f.keys())
@@ -232,6 +228,32 @@ def load_and_skeletonize_3d_h5(
         dataset = f[dataset_name]
         image = np.array(dataset)
         voxel_size_x, voxel_size_y, voxel_size_z = _extract_h5_voxel_size(dataset, f)
+
+    if image.ndim != 3:
+        raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
+
+    return image, voxel_size_x, voxel_size_y, voxel_size_z
+
+
+def load_and_skeletonize_3d_tif(filepath: str):
+    print("Loading and skeletonizing TIFF...")
+    image, voxel_size_x, voxel_size_y, voxel_size_z = load_3d_tif_with_voxel_size(filepath)
+
+    print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
+    skeleton = skeletonize_3d(img_as_bool(image))
+    skeleton = binary_fill_holes(skeleton)
+    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z
+
+
+def load_and_skeletonize_3d_h5(
+    filepath: str,
+    dataset_name: str | None = None,
+):
+    logger.debug("Loading and skeletonizing H5...")
+    image, voxel_size_x, voxel_size_y, voxel_size_z = load_3d_h5_with_voxel_size(
+        filepath,
+        dataset_name=dataset_name,
+    )
 
     logger.debug("Original image shape: %s", image.shape)
     logger.debug("Simplified image shape: %s", image.shape)
