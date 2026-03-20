@@ -12,6 +12,11 @@ def _sort_nodes(nodes: set[Any]) -> list[Any]:
     return sorted(nodes, key=lambda n: (str(type(n)), str(n)))
 
 
+def _edge_id(u: Any, v: Any, key: int) -> tuple[Any, Any, int]:
+    """Orientation-independent edge id for MultiGraph edges."""
+    return (u, v, key) if u <= v else (v, u, key)
+
+
 def _terminal_nodes_with_positions(G: nx.Graph) -> list[tuple[Any, np.ndarray]]:
     node_pos = nx.get_node_attributes(G, "pos")
     terminals: list[tuple[Any, np.ndarray]] = []
@@ -696,6 +701,260 @@ def write_automated_vessel_assignment_3d_html(
         )
     fig.update_layout(
         title="Automated Vessel Assignment (3D)",
+        showlegend=True,
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Z",
+            aspectmode="data",
+        ),
+    )
+    fig.write_html(str(output_html_path), include_plotlyjs="cdn")
+    return True
+
+
+def write_small_vessel_mask_boundary_labelling_3d_html(
+    G: nx.Graph,
+    *,
+    small_arteriole_mask: np.ndarray,
+    small_venule_mask: np.ndarray,
+    arteriole_boundary_nodes: list[Any],
+    venule_boundary_nodes: list[Any],
+    voxel_size_xyz: tuple[float, float, float],
+    output_html_path: str | Path,
+    title: str = "Small Vessel Mask Boundary Labelling (3D)",
+) -> bool:
+    """Write interactive 3D HTML: small-vessel masks, mask-labelled edges, boundary nodes."""
+    try:
+        import plotly.graph_objects as go
+    except ModuleNotFoundError:
+        return False
+
+    pos = nx.get_node_attributes(G, "pos")
+    if not pos:
+        raise ValueError("Graph has no node positions ('pos').")
+    if small_arteriole_mask.shape != small_venule_mask.shape:
+        raise ValueError(
+            "small_arteriole_mask and small_venule_mask must share a shape. "
+            f"Got {small_arteriole_mask.shape} and {small_venule_mask.shape}."
+        )
+
+    output_html_path = Path(output_html_path)
+    output_html_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _empty_line_lists() -> tuple[list[float | None], list[float | None], list[float | None]]:
+        return [], [], []
+
+    segs: dict[str, tuple[list[float | None], list[float | None], list[float | None]]] = {
+        "capillary": _empty_line_lists(),
+        "arteriole": _empty_line_lists(),
+        "venule": _empty_line_lists(),
+        "overlap": _empty_line_lists(),
+    }
+
+    def _push_edge(kind: str, pu: np.ndarray, pv: np.ndarray) -> None:
+        lx, ly, lz = segs[kind]
+        lx += [float(pu[2]), float(pv[2]), None]
+        ly += [float(pu[1]), float(pv[1]), None]
+        lz += [float(pu[0]), float(pv[0]), None]
+
+    if isinstance(G, nx.MultiGraph):
+        for u, v, _k, edge_data in G.edges(keys=True, data=True):
+            if u not in pos or v not in pos:
+                continue
+            pu = np.asarray(pos[u], dtype=float)
+            pv = np.asarray(pos[v], dtype=float)
+            vt = edge_data.get("mask_vessel_type")
+            kind = (
+                vt
+                if vt in ("arteriole", "venule", "overlap")
+                else "capillary"
+            )
+            _push_edge(kind, pu, pv)
+    else:
+        for u, v, edge_data in G.edges(data=True):
+            if u not in pos or v not in pos:
+                continue
+            pu = np.asarray(pos[u], dtype=float)
+            pv = np.asarray(pos[v], dtype=float)
+            vt = edge_data.get("mask_vessel_type")
+            kind = (
+                vt
+                if vt in ("arteriole", "venule", "overlap")
+                else "capillary"
+            )
+            _push_edge(kind, pu, pv)
+
+    def _coords(nodes: list[Any]) -> tuple[list[float], list[float], list[float]]:
+        xs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
+        ys = [float(np.asarray(pos[n], dtype=float)[1]) for n in nodes if n in pos]
+        zs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
+        return xs, ys, zs
+
+    def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
+        if not np.any(mask):
+            return
+        z_scale, y_scale, x_scale = voxel_size_xyz
+        zz, yy, xx = np.indices(mask.shape, dtype=float)
+        fig.add_trace(
+            go.Volume(
+                x=(xx * float(x_scale)).ravel(),
+                y=(yy * float(y_scale)).ravel(),
+                z=(zz * float(z_scale)).ravel(),
+                value=mask.astype(float).ravel(),
+                isomin=0.5,
+                isomax=1.0,
+                opacity=0.12,
+                surface_count=1,
+                caps=dict(x_show=False, y_show=False, z_show=False),
+                colorscale=[[0.0, color], [1.0, color]],
+                showscale=False,
+                name=name,
+            )
+        )
+
+    art_b = set(arteriole_boundary_nodes)
+    ven_b = set(venule_boundary_nodes)
+    neutral_nodes: list[Any] = []
+    art_interior: list[Any] = []
+    ven_interior: list[Any] = []
+    for n in G.nodes:
+        if n in art_b or n in ven_b:
+            continue
+        t = G.nodes[n].get("mask_vessel_type")
+        if t == "arteriole":
+            art_interior.append(n)
+        elif t == "venule":
+            ven_interior.append(n)
+        else:
+            neutral_nodes.append(n)
+
+    fig = go.Figure()
+    _add_volume_trace(
+        small_arteriole_mask.astype(bool, copy=False),
+        name="Small arteriole mask",
+        color="#00FF7F",
+        fig=fig,
+    )
+    _add_volume_trace(
+        small_venule_mask.astype(bool, copy=False),
+        name="Small venule mask",
+        color="#FF3EA5",
+        fig=fig,
+    )
+
+    cap_x, cap_y, cap_z = segs["capillary"]
+    if cap_x:
+        fig.add_trace(
+            go.Scatter3d(
+                x=cap_x,
+                y=cap_y,
+                z=cap_z,
+                mode="lines",
+                line=dict(color="rgba(0, 200, 255, 0.45)", width=3),
+                name="Edges (capillary / unlabelled)",
+            )
+        )
+    a_x, a_y, a_z = segs["arteriole"]
+    if a_x:
+        fig.add_trace(
+            go.Scatter3d(
+                x=a_x,
+                y=a_y,
+                z=a_z,
+                mode="lines",
+                line=dict(color="rgba(0, 220, 120, 0.9)", width=5),
+                name="Edges (arteriole mask)",
+            )
+        )
+    v_x, v_y, v_z = segs["venule"]
+    if v_x:
+        fig.add_trace(
+            go.Scatter3d(
+                x=v_x,
+                y=v_y,
+                z=v_z,
+                mode="lines",
+                line=dict(color="rgba(255, 62, 165, 0.9)", width=5),
+                name="Edges (venule mask)",
+            )
+        )
+    o_x, o_y, o_z = segs["overlap"]
+    if o_x:
+        fig.add_trace(
+            go.Scatter3d(
+                x=o_x,
+                y=o_y,
+                z=o_z,
+                mode="lines",
+                line=dict(color="rgba(255, 200, 0, 0.95)", width=6),
+                name="Edges (overlap)",
+            )
+        )
+
+    if neutral_nodes:
+        nx_, ny_, nz_ = _coords(neutral_nodes)
+        fig.add_trace(
+            go.Scatter3d(
+                x=nx_,
+                y=ny_,
+                z=nz_,
+                mode="markers",
+                marker=dict(size=4, color="#9E9E9E"),
+                name="Nodes (unlabelled)",
+            )
+        )
+    if art_interior:
+        ix, iy, iz = _coords(art_interior)
+        fig.add_trace(
+            go.Scatter3d(
+                x=ix,
+                y=iy,
+                z=iz,
+                mode="markers",
+                marker=dict(size=6, color="#00CC66"),
+                name="Nodes (arteriole interior)",
+            )
+        )
+    if ven_interior:
+        vx, vy, vz = _coords(ven_interior)
+        fig.add_trace(
+            go.Scatter3d(
+                x=vx,
+                y=vy,
+                z=vz,
+                mode="markers",
+                marker=dict(size=6, color="#E040A0"),
+                name="Nodes (venule interior)",
+            )
+        )
+    if arteriole_boundary_nodes:
+        bx, by, bz = _coords(list(arteriole_boundary_nodes))
+        fig.add_trace(
+            go.Scatter3d(
+                x=bx,
+                y=by,
+                z=bz,
+                mode="markers",
+                marker=dict(size=11, color="#00FF7F", symbol="diamond", line=dict(width=1, color="#004422")),
+                name="Arteriole boundary",
+            )
+        )
+    if venule_boundary_nodes:
+        bx, by, bz = _coords(list(venule_boundary_nodes))
+        fig.add_trace(
+            go.Scatter3d(
+                x=bx,
+                y=by,
+                z=bz,
+                mode="markers",
+                marker=dict(size=11, color="#FF3EA5", symbol="diamond", line=dict(width=1, color="#440022")),
+                name="Venule boundary",
+            )
+        )
+
+    fig.update_layout(
+        title=title,
         showlegend=True,
         scene=dict(
             xaxis_title="X",

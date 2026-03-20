@@ -21,6 +21,7 @@ from .automated_vessel_assignment import (
     resolve_overlapping_terminal_node_assignment,
     select_terminal_nodes_from_large_vessel_masks,
     write_automated_vessel_assignment_3d_html,
+    write_small_vessel_mask_boundary_labelling_3d_html,
 )
 from .large_vessels import (
     dilate_binary_mask_by_microns,
@@ -77,6 +78,7 @@ __all__ = [
     "resolve_overlapping_terminal_node_assignment",
     "select_terminal_nodes_from_large_vessel_masks",
     "write_automated_vessel_assignment_3d_html",
+    "write_small_vessel_mask_boundary_labelling_3d_html",
     "dilate_binary_mask_by_microns",
     "dilate_large_vessel_masks_by_microns",
     "remove_edges_for_self_connected_nodes",

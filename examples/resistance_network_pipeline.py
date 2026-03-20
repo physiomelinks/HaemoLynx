@@ -59,6 +59,8 @@ ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule
 USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
 USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
 SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
+# When small-vessel masks assign boundaries, save rotatable Plotly HTML (requires plotly).
+WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML = True
 SMALL_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
 SMALL_VENULE_MASK_PATH = root_dir / "examples" / "images" / "small_venule_mask.tif"
 ILASTIK_UNSEGMENTED_SMALL_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
@@ -234,6 +236,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_small_vessel_masks_for_boundary_assignment=USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT,
                             use_ilastik_small_vessel_segmentation=USE_ILASTIK_SMALL_VESSEL_SEGMENTATION,
                             small_vessel_mask_min_overlap_fraction=SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION,
+                            write_small_vessel_boundary_labelling_3d_html=WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML,
                             automated_vessel_assignment=AUTOMATED_VESSEL_ASSIGNMENT,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
                             large_venule_mask_path=LARGE_VENULE_MASK_PATH,
@@ -1059,6 +1062,24 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             f"venule_edges={inferred_boundary_results['venule_edge_count']}, "
             f"overlap_edges={inferred_boundary_results['overlap_edge_count']}."
         )
+        if write_small_vessel_boundary_labelling_3d_html:
+            boundary_html = Path(plot_dir) / "small_vessel_mask_boundary_labelling_3d.html"
+            Path(plot_dir).mkdir(parents=True, exist_ok=True)
+            ok = graph.write_small_vessel_mask_boundary_labelling_3d_html(
+                G,
+                small_arteriole_mask=small_arteriole_mask,
+                small_venule_mask=small_venule_mask,
+                arteriole_boundary_nodes=arteriole_boundary_nodes,
+                venule_boundary_nodes=venule_boundary_nodes,
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                output_html_path=boundary_html,
+            )
+            if ok:
+                print(f"Saved interactive 3D small-vessel boundary view: {boundary_html}")
+            else:
+                print(
+                    "Small-vessel boundary 3D HTML not written (install plotly to enable)."
+                )
     if automated_vessel_assignment:
         print(
             f"Selected {len(starting_nodes)} STARTING_NODES and {len(output_nodes)} "
@@ -1330,5 +1351,20 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Resistance network pipeline example.")
+    parser.add_argument(
+        "--run-small-vessel-boundary-labelling-tests",
+        action="store_true",
+        help="Run pytest on tests/test_small_vessel_mask_boundary_labelling.py and exit.",
+    )
+    cli = parser.parse_args()
+    if cli.run_small_vessel_boundary_labelling_tests:
+        import pytest
+
+        raise SystemExit(
+            pytest.main([str(root_dir / "tests" / "test_small_vessel_mask_boundary_labelling.py"), "-q"])
+        )
     plot_dir = BASE_PLOT_DIR / "nerve"
     image_to_model_pipeline(plot_dir=plot_dir)
