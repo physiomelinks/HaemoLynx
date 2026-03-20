@@ -28,6 +28,15 @@ from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visual
 # Beginner-friendly settings
 # ---------------------------
 INPUT_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
+USE_ILASTIK_SEGMENTATION = False
+# INPUT_PATH is the segmented image path used when USE_ILASTIK_SEGMENTATION=False.
+# Required when USE_ILASTIK_SEGMENTATION=True: path to the raw/unsegmented image.
+ILASTIK_UNSEGMENTED_IMAGE_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
+ILASTIK_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "nerve_classifier.ilp"
+ILASTIK_EXECUTABLE = "ilastik.exe"
+ILASTIK_OUTPUT_DIR = root_dir / "examples" / "outputs" / "segmentations"
+# Output extension for ilastik segmentation result. Supported: ".tif", ".tiff", ".h5"
+ILASTIK_OUTPUT_SUFFIX = ".tif"
 BASE_PLOT_DIR = root_dir / "examples" / "plots" 
 if not BASE_PLOT_DIR.exists():
     BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -177,6 +186,12 @@ def _save_graph_snapshot(
 
 
 def image_to_model_pipeline(image_path=INPUT_PATH,
+                            use_ilastik_segmentation=USE_ILASTIK_SEGMENTATION,
+                            ilastik_unsegmented_image_path=ILASTIK_UNSEGMENTED_IMAGE_PATH,
+                            ilastik_classifier_path=ILASTIK_CLASSIFIER_PATH,
+                            ilastik_executable=ILASTIK_EXECUTABLE,
+                            ilastik_output_dir=ILASTIK_OUTPUT_DIR,
+                            ilastik_output_suffix=ILASTIK_OUTPUT_SUFFIX,
                             diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
                             constriction_by_branch_order=CONSTRICTION_BY_BRANCH_ORDER,
                             do_pericyte_constriction=DO_PERICYTE_CONSTRUCTION,
@@ -220,10 +235,32 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             visualize_vtk=VISUALIZE_VTK,
                             statistics_mode=STATISTICS_MODE) -> None:
     image_path = Path(image_path)
+    if use_ilastik_segmentation:
+        unsegmented_image_path = Path(ilastik_unsegmented_image_path)
+        unsegmented_image_path = io.resolve_image_path_with_optional_zip(unsegmented_image_path)
+        if ilastik_classifier_path is None:
+            raise ValueError(
+                "ilastik_classifier_path must be set when use_ilastik_segmentation=True."
+            )
+        ilastik_output_dir = Path(ilastik_output_dir)
+        ilastik_segmented_path = ilastik_output_dir / (
+            f"{unsegmented_image_path.stem}_segmented{ilastik_output_suffix}"
+        )
+        print(f"Running ilastik segmentation for unsegmented image: {unsegmented_image_path}")
+        image_path = io.run_ilastik_headless_segmentation(
+            input_image_path=unsegmented_image_path,
+            classifier_path=Path(ilastik_classifier_path),
+            output_path=ilastik_segmented_path,
+            ilastik_executable=ilastik_executable,
+        )
+        print(f"Using ilastik-segmented image: {image_path}")
+    else:
+        print(f"Using segmented input image: {image_path}")
+
     image_path = io.resolve_image_path_with_optional_zip(image_path)
     # get image format from image_path
     input_format = image_path.suffix[1:].lower()
-    if input_format not in ["tif", "h5"]:
+    if input_format not in ["tif", "tiff", "h5"]:
         raise ValueError(f"Invalid image format: {input_format}")
     vtk_output_prefix = Path(vtk_output_prefix)
     output_dir = vtk_output_prefix.parent
@@ -250,7 +287,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         plot_dir.mkdir(parents=True, exist_ok=True)
 
     if do_skeletonize:
-        if input_format == "tif":
+        if input_format in {"tif", "tiff"}:
             image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z = io.load_and_skeletonize_3d_tif(
                 image_path,
             )
@@ -269,7 +306,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 float(voxel_size_z),
             )
         else:
-            raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
+            raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
         
         preprocessing.print_skeleton_connectivity_stats(
             "raw",
