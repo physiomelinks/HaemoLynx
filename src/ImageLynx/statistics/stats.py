@@ -164,7 +164,10 @@ def compute_fractal_dimension(
 
 
 def compute_path_efficiency(
-    G: Union[nx.Graph, nx.MultiGraph], is_multigraph: bool
+    G: Union[nx.Graph, nx.MultiGraph],
+    is_multigraph: bool,
+    max_pairs: Optional[int] = 5000,
+    rng_seed: int = 42,
 ) -> Dict[str, Any]:
     """Compute path efficiency from weighted shortest-path lengths.
 
@@ -197,21 +200,47 @@ def compute_path_efficiency(
     # swallowed, otherwise statistics can look valid while being wrong.
     path_lengths = []
     nodes = list(G_s.nodes())
-    for i, src in enumerate(nodes):
-        for tgt in nodes[i + 1 :]:
-            try:
-                pl = nx.shortest_path_length(G_s, src, tgt, weight="weight")
-            except nx.NetworkXNoPath as exc:
-                raise RuntimeError(
-                    f"No path between connected-graph nodes {src} and {tgt}"
-                ) from exc
-            path_lengths.append(pl)
+    total_pairs = (len(nodes) * (len(nodes) - 1)) // 2
+
+    # For large graphs, estimate efficiency from a bounded random sample of
+    # node pairs to avoid very long runtimes.
+    if max_pairs is not None and total_pairs > max_pairs:
+        rng = np.random.default_rng(rng_seed)
+        sampled_pairs = set()
+        while len(sampled_pairs) < max_pairs:
+            i = int(rng.integers(0, len(nodes)))
+            j = int(rng.integers(0, len(nodes)))
+            if i == j:
+                continue
+            if i > j:
+                i, j = j, i
+            sampled_pairs.add((i, j))
+
+        pairs = [(nodes[i], nodes[j]) for i, j in sampled_pairs]
+    else:
+        pairs = []
+        for i, src in enumerate(nodes):
+            for tgt in nodes[i + 1 :]:
+                pairs.append((src, tgt))
+
+    for src, tgt in pairs:
+        try:
+            pl = nx.shortest_path_length(G_s, src, tgt, weight="weight")
+        except nx.NetworkXNoPath as exc:
+            raise RuntimeError(
+                f"No path between connected-graph nodes {src} and {tgt}"
+            ) from exc
+        path_lengths.append(pl)
 
     avg_path_length = np.mean(path_lengths) if path_lengths else 0
     efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
     return {
         "Path Efficiency": efficiency,
         "Average Shortest Path Length (microns)": avg_path_length,
+        "Path Efficiency Pair Sample Size": len(path_lengths),
+        "Path Efficiency Pair Coverage": (
+            len(path_lengths) / total_pairs if total_pairs > 0 else 0
+        ),
     }
 
 
@@ -268,38 +297,121 @@ def compute_vessel_density(
         )
     return out
     
-def compute_communities(G):
-     #need to add resistance as weight
+def compute_communities_summary(
+    G: nx.Graph, max_nodes_exact: int = 1500
+) -> Dict[str, Any]:
+    """Compute community statistics with runtime guards."""
+    n_nodes = G.number_of_nodes()
+    if n_nodes == 0:
+        return {"Community Count": 0}
+
+    if n_nodes <= max_nodes_exact:
+        communities = list(greedy_modularity_communities(G))
+        sizes = [len(c) for c in communities]
+        return {
+            "Community Count": len(communities),
+            "Largest Community Size": max(sizes) if sizes else 0,
+            "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
+            "Community Method": "greedy_modularity",
+        }
+
+    # Fallback for large graphs: connected components are fast and stable.
+    components = list(nx.connected_components(G))
+    sizes = [len(c) for c in components]
+    return {
+        "Community Count": len(components),
+        "Largest Community Size": max(sizes) if sizes else 0,
+        "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
+        "Community Method": "connected_components_fallback",
+    }
+
+
+def compute_communities(G: nx.Graph):
+    # TODO: consider weighted community detection for resistance-aware grouping.
     return list(greedy_modularity_communities(G))
-    
-def compute_betweenness(G):
-    #need to add resistance as weight
+
+
+def compute_betweenness_summary(
+    G: nx.Graph,
+    max_nodes_exact: int = 1000,
+    approx_k: int = 128,
+    seed: int = 42,
+    top_n: int = 5,
+) -> Dict[str, Any]:
+    """Compute compact betweenness summary, avoiding huge outputs."""
+    n_nodes = G.number_of_nodes()
+    if n_nodes == 0:
+        return {"Betweenness Mean": 0.0, "Betweenness Max": 0.0}
+
+    if n_nodes <= max_nodes_exact:
+        bet = nx.betweenness_centrality(G)
+        method = "exact"
+    else:
+        k = min(approx_k, n_nodes)
+        bet = nx.betweenness_centrality(G, k=k, seed=seed)
+        method = f"approx_k={k}"
+
+    values = list(bet.values())
+    top = sorted(bet.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+    return {
+        "Betweenness Mean": float(np.mean(values)) if values else 0.0,
+        "Betweenness Max": float(np.max(values)) if values else 0.0,
+        "Betweenness Top Nodes": top,
+        "Betweenness Method": method,
+    }
+
+
+def compute_betweenness(G: nx.Graph):
+    # TODO: consider weighted betweenness using resistance.
     return nx.betweenness_centrality(G)
+
 
 def compute_comprehensive_vessel_statistics(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict] = None,
     voxel_size=(1.0, 1.0, 1.0),
     image_dimensions=None,
+    statistics_mode: str = "fast",
 ) -> Dict[str, Any]:
     """Combine all vessel statistics."""
+    valid_modes = {"fast", "full"}
+    if statistics_mode not in valid_modes:
+        raise ValueError(
+            f"Invalid statistics_mode='{statistics_mode}'. "
+            f"Choose one of {sorted(valid_modes)}."
+        )
+
     is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     G_simple = (
         (nx.Graph(G) if not G.is_directed() else nx.DiGraph(G))
         if is_mg
         else G
     )
-    communities = compute_communities(G)
-    return {
+
+    base = {
         **compute_basic_statistics(G, is_mg),
         **compute_tortuosity_measures(G, node_positions, is_mg),
         **compute_branching_statistics(G_simple, node_positions),
         **compute_tree_asymmetry(G_simple),
         **compute_fractal_dimension(G_simple, node_positions),
-        **compute_path_efficiency(G, is_mg),
-        "communities": communities,
-        **compute_betweenness(G),
         **compute_vessel_density(
             G, node_positions, voxel_size, image_dimensions, is_mg
         ),
+    }
+
+    if statistics_mode == "full":
+        return {
+            **base,
+            **compute_path_efficiency(G, is_mg, max_pairs=None),
+            "communities": compute_communities(G_simple),
+            **compute_betweenness(G_simple),
+            "Statistics Mode": "full",
+        }
+
+    return {
+        **base,
+        **compute_path_efficiency(G, is_mg),
+        **compute_communities_summary(G_simple),
+        **compute_betweenness_summary(G_simple),
+        "Statistics Mode": "fast",
     }
