@@ -1,5 +1,5 @@
 """Vessel network statistics."""
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, Callable
 
 import numpy as np
 import networkx as nx
@@ -364,6 +364,153 @@ def compute_betweenness_summary(
 def compute_betweenness(G: nx.Graph):
     # TODO: consider weighted betweenness using resistance.
     return nx.betweenness_centrality(G)
+
+
+def _simple_graph_with_edge_attr(
+    G: Union[nx.Graph, nx.MultiGraph],
+    source_attr: str,
+    transform: Optional[Callable[[float], float]] = None,
+    target_attr: str = "analysis_weight",
+) -> nx.Graph:
+    """Build a simple graph carrying one transformed edge attribute.
+
+    For MultiGraph inputs, parallel edges are collapsed by taking the smallest
+    transformed value, which is appropriate for path-based distance weights.
+    """
+    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    G_s = nx.Graph()
+    G_s.add_nodes_from(G.nodes())
+
+    if transform is None:
+        transform = lambda x: x  # noqa: E731
+
+    if is_mg:
+        best = {}
+        for u, v, _, data in G.edges(keys=True, data=True):
+            raw = data.get(source_attr)
+            if raw is None or raw <= 0:
+                continue
+            transformed = transform(raw)
+            if transformed is None or transformed <= 0:
+                continue
+            uv = tuple(sorted((u, v)))
+            if uv not in best or transformed < best[uv]:
+                best[uv] = float(transformed)
+        for (u, v), val in best.items():
+            G_s.add_edge(u, v, **{target_attr: val})
+    else:
+        for u, v, data in G.edges(data=True):
+            raw = data.get(source_attr)
+            if raw is None or raw <= 0:
+                continue
+            transformed = transform(raw)
+            if transformed is None or transformed <= 0:
+                continue
+            existing = G_s.get_edge_data(u, v, default={}).get(target_attr)
+            if existing is None or transformed < existing:
+                G_s.add_edge(u, v, **{target_attr: float(transformed)})
+    return G_s
+
+
+def compute_weighted_betweenness_summary(
+    G: Union[nx.Graph, nx.MultiGraph],
+    source_attr: str,
+    inverse_source_attr: bool = False,
+    max_nodes_exact: int = 1000,
+    approx_k: int = 128,
+    seed: int = 42,
+    top_n: int = 5,
+) -> Dict[str, Any]:
+    """Compute weighted betweenness summary from a chosen edge attribute."""
+    transform = (lambda x: 1.0 / x) if inverse_source_attr else None
+    G_s = _simple_graph_with_edge_attr(
+        G, source_attr=source_attr, transform=transform, target_attr="analysis_weight"
+    )
+    n_nodes = G_s.number_of_nodes()
+    if n_nodes == 0:
+        return {"Betweenness Mean": 0.0, "Betweenness Max": 0.0}
+
+    if n_nodes <= max_nodes_exact:
+        bet = nx.betweenness_centrality(G_s, weight="analysis_weight")
+        method = "exact_weighted"
+    else:
+        k = min(approx_k, n_nodes)
+        bet = nx.betweenness_centrality(
+            G_s, k=k, seed=seed, weight="analysis_weight"
+        )
+        method = f"approx_weighted_k={k}"
+
+    values = list(bet.values())
+    top = sorted(bet.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+    return {
+        "Betweenness Mean": float(np.mean(values)) if values else 0.0,
+        "Betweenness Max": float(np.max(values)) if values else 0.0,
+        "Betweenness Top Nodes": [
+            {"node": node, "value": float(value)} for node, value in top
+        ],
+        "Betweenness Method": method,
+    }
+
+
+def compute_weighted_communities_summary(
+    G: Union[nx.Graph, nx.MultiGraph],
+    source_attr: str,
+    inverse_source_attr: bool = False,
+    max_nodes_exact: int = 1500,
+) -> Dict[str, Any]:
+    """Compute weighted community summary using greedy modularity."""
+    transform = (lambda x: 1.0 / x) if inverse_source_attr else None
+    G_s = _simple_graph_with_edge_attr(
+        G, source_attr=source_attr, transform=transform, target_attr="analysis_weight"
+    )
+    n_nodes = G_s.number_of_nodes()
+    if n_nodes == 0:
+        return {"Community Count": 0}
+
+    if n_nodes <= max_nodes_exact:
+        communities = list(greedy_modularity_communities(G_s, weight="analysis_weight"))
+        sizes = [len(c) for c in communities]
+        return {
+            "Community Count": len(communities),
+            "Largest Community Size": max(sizes) if sizes else 0,
+            "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
+            "Community Method": "greedy_modularity_weighted",
+        }
+
+    components = list(nx.connected_components(G_s))
+    sizes = [len(c) for c in components]
+    return {
+        "Community Count": len(components),
+        "Largest Community Size": max(sizes) if sizes else 0,
+        "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
+        "Community Method": "connected_components_fallback",
+    }
+
+
+def compute_betweenness_and_community_measurements(
+    G: Union[nx.Graph, nx.MultiGraph],
+) -> Dict[str, Dict[str, Any]]:
+    """Compute weighted betweenness/community using two edge distance models."""
+    inverse_weight_results = {
+        "Betweenness": compute_weighted_betweenness_summary(
+            G, source_attr="weight", inverse_source_attr=True
+        ),
+        "Communities": compute_weighted_communities_summary(
+            G, source_attr="weight", inverse_source_attr=True
+        ),
+    }
+    edge_length_results = {
+        "Betweenness": compute_weighted_betweenness_summary(
+            G, source_attr="length", inverse_source_attr=False
+        ),
+        "Communities": compute_weighted_communities_summary(
+            G, source_attr="length", inverse_source_attr=False
+        ),
+    }
+    return {
+        "inverse_edge_weight": inverse_weight_results,
+        "edge_length": edge_length_results,
+    }
 
 
 def compute_comprehensive_vessel_statistics(
