@@ -244,10 +244,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 float(voxel_size_z),
             )
         elif input_format == "h5":
-            image, skeleton = io.load_and_skeletonize_3d_h5(
+            image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z = io.load_and_skeletonize_3d_h5(
                 image_path,
             )
-            voxel_size = (1.0, 1.0, 1.0)
+            voxel_size = (
+                float(voxel_size_x),
+                float(voxel_size_y),
+                float(voxel_size_z),
+            )
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
         
