@@ -670,6 +670,24 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         print("\n=== Statistics ===")
         for key, value in stats.items():
             print(f"  {key}: {value}")
+
+        weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
+        print("\n=== Weighted Betweenness and Communities ===")
+        for model_name, model_results in weighted_measurements.items():
+            print(f"  [{model_name}]")
+            for metric_name, metric_values in model_results.items():
+                print(f"    {metric_name}: {metric_values}")
+
+        inv_weight_path = output_dir / f"{image_path.stem}_betweenness_communities_inverse_weight.json"
+        inv_weight_path.write_text(
+            json.dumps(weighted_measurements["inverse_edge_weight"], indent=2)
+        )
+        length_path = output_dir / f"{image_path.stem}_betweenness_communities_edge_length.json"
+        length_path.write_text(
+            json.dumps(weighted_measurements["edge_length"], indent=2)
+        )
+        print(f"Saved inverse-weight stats to: {inv_weight_path}")
+        print(f"Saved edge-length stats to: {length_path}")
     else:
         print("Vessel statistics skipped.")
 

@@ -8,6 +8,7 @@ from .stats import (
     compute_fractal_dimension,
     compute_path_efficiency,
     compute_vessel_density,
+    compute_betweenness_and_community_measurements,
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "compute_fractal_dimension",
     "compute_path_efficiency",
     "compute_vessel_density",
+    "compute_betweenness_and_community_measurements",
 ]
