@@ -38,8 +38,16 @@ ILASTIK_OUTPUT_DIR = root_dir / "examples" / "outputs" / "segmentations"
 # Output extension for ilastik segmentation result. Supported: ".tif", ".tiff", ".h5"
 ILASTIK_OUTPUT_SUFFIX = ".tif"
 USE_LARGE_VESSEL_MASKS = False
+# Toggle large-vessel input mode:
+# - False: use pre-segmented arteriole/venule masks from LARGE_*_MASK_PATH.
+# - True: use raw arteriole/venule images and segment both with ilastik.
+USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
 LARGE_VENULE_MASK_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
+ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
+ILASTIK_UNSEGMENTED_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
+ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "arteriole_classifier.ilp"
+ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
 BASE_PLOT_DIR = root_dir / "examples" / "plots" 
 if not BASE_PLOT_DIR.exists():
     BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -196,8 +204,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             ilastik_output_dir=ILASTIK_OUTPUT_DIR,
                             ilastik_output_suffix=ILASTIK_OUTPUT_SUFFIX,
                             use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
+                            use_ilastik_large_vessel_segmentation=USE_ILASTIK_LARGE_VESSEL_SEGMENTATION,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
                             large_venule_mask_path=LARGE_VENULE_MASK_PATH,
+                            ilastik_unsegmented_arteriole_image_path=ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH,
+                            ilastik_unsegmented_venule_image_path=ILASTIK_UNSEGMENTED_VENULE_IMAGE_PATH,
+                            ilastik_arteriole_classifier_path=ILASTIK_ARTERIOLE_CLASSIFIER_PATH,
+                            ilastik_venule_classifier_path=ILASTIK_VENULE_CLASSIFIER_PATH,
                             diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
                             constriction_by_branch_order=CONSTRICTION_BY_BRANCH_ORDER,
                             do_pericyte_constriction=DO_PERICYTE_CONSTRUCTION,
@@ -354,6 +367,76 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
     print("Skeleton projection saved.")
 
+    if use_ilastik_large_vessel_segmentation and not use_large_vessel_masks:
+        raise ValueError(
+            "use_ilastik_large_vessel_segmentation=True requires "
+            "use_large_vessel_masks=True."
+        )
+
+    effective_large_arteriole_mask_path = large_arteriole_mask_path
+    effective_large_venule_mask_path = large_venule_mask_path
+    if use_large_vessel_masks and use_ilastik_large_vessel_segmentation:
+        if ilastik_unsegmented_arteriole_image_path is None:
+            raise ValueError(
+                "ilastik_unsegmented_arteriole_image_path must be set when "
+                "use_ilastik_large_vessel_segmentation=True."
+            )
+        if ilastik_unsegmented_venule_image_path is None:
+            raise ValueError(
+                "ilastik_unsegmented_venule_image_path must be set when "
+                "use_ilastik_large_vessel_segmentation=True."
+            )
+        if ilastik_arteriole_classifier_path is None:
+            raise ValueError(
+                "ilastik_arteriole_classifier_path must be set when "
+                "use_ilastik_large_vessel_segmentation=True."
+            )
+        if ilastik_venule_classifier_path is None:
+            raise ValueError(
+                "ilastik_venule_classifier_path must be set when "
+                "use_ilastik_large_vessel_segmentation=True."
+            )
+
+        ilastik_output_dir = Path(ilastik_output_dir)
+        unsegmented_arteriole_image_path = io.resolve_image_path_with_optional_zip(
+            Path(ilastik_unsegmented_arteriole_image_path)
+        )
+        unsegmented_venule_image_path = io.resolve_image_path_with_optional_zip(
+            Path(ilastik_unsegmented_venule_image_path)
+        )
+        ilastik_segmented_arteriole_path = ilastik_output_dir / (
+            f"{unsegmented_arteriole_image_path.stem}_segmented{ilastik_output_suffix}"
+        )
+        ilastik_segmented_venule_path = ilastik_output_dir / (
+            f"{unsegmented_venule_image_path.stem}_segmented{ilastik_output_suffix}"
+        )
+
+        print(
+            "Running ilastik segmentation for large arteriole image: "
+            f"{unsegmented_arteriole_image_path}"
+        )
+        effective_large_arteriole_mask_path = io.run_ilastik_headless_segmentation(
+            input_image_path=unsegmented_arteriole_image_path,
+            classifier_path=Path(ilastik_arteriole_classifier_path),
+            output_path=ilastik_segmented_arteriole_path,
+            ilastik_executable=ilastik_executable,
+        )
+        print(
+            "Running ilastik segmentation for large venule image: "
+            f"{unsegmented_venule_image_path}"
+        )
+        effective_large_venule_mask_path = io.run_ilastik_headless_segmentation(
+            input_image_path=unsegmented_venule_image_path,
+            classifier_path=Path(ilastik_venule_classifier_path),
+            output_path=ilastik_segmented_venule_path,
+            ilastik_executable=ilastik_executable,
+        )
+        print(
+            "Using ilastik-segmented large-vessel masks: "
+            f"arteriole={effective_large_arteriole_mask_path}, "
+            f"venule={effective_large_venule_mask_path}"
+        )
+
     (
         large_arteriole_mask,
         large_venule_mask,
@@ -361,8 +444,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         large_venule_mask_voxel_size,
     ) = io.load_large_vessel_masks(
         enabled=use_large_vessel_masks,
-        large_arteriole_mask_path=large_arteriole_mask_path,
-        large_venule_mask_path=large_venule_mask_path,
+        large_arteriole_mask_path=effective_large_arteriole_mask_path,
+        large_venule_mask_path=effective_large_venule_mask_path,
     )
     if large_arteriole_mask is not None and large_venule_mask is not None:
         if large_arteriole_mask.shape != image.shape:
