@@ -50,7 +50,7 @@ from pathlib import Path
 
 root_dir = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization
+from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 
 
 # %%

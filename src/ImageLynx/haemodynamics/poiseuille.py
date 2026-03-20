@@ -6,6 +6,63 @@ import networkx as nx
 
 logger = logging.getLogger(__name__)
 
+
+def build_diameter_by_branch_order(
+    *,
+    all_diams_const: bool,
+    max_branch_order: int = 51,
+    default_diameter: float = 4.0,
+    manual_capillary_diameter_by_branch_order: dict[str, float] | None = None,
+    manual_arteriole_diameter_by_branch_order: dict[str, float] | None = None,
+    manual_venule_diameter_by_branch_order: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Build diameter mapping for Bxx, Artx, and Venx branch-order labels."""
+    if max_branch_order < 1:
+        raise ValueError(
+            f"max_branch_order must be >= 1, got {max_branch_order}."
+        )
+    if default_diameter <= 0:
+        raise ValueError(
+            f"default_diameter must be positive, got {default_diameter}."
+        )
+
+    capillary_overrides = manual_capillary_diameter_by_branch_order or {}
+    arteriole_overrides = manual_arteriole_diameter_by_branch_order or {}
+    venule_overrides = manual_venule_diameter_by_branch_order or {}
+
+    diameter_by_branch_order: dict[str, float] = {}
+    if all_diams_const:
+        for i in range(1, max_branch_order + 1):
+            diameter_by_branch_order[f"B{i:02d}"] = default_diameter
+            diameter_by_branch_order[f"Art{i}"] = default_diameter
+            diameter_by_branch_order[f"Ven{i}"] = default_diameter
+        return diameter_by_branch_order
+
+    for i in range(1, max_branch_order + 1):
+        key = f"B{i:02d}"
+        diameter_by_branch_order[key] = capillary_overrides.get(
+            key,
+            default_diameter,
+        )
+
+    default_small_vessel_diameter = diameter_by_branch_order.get(
+        "B01",
+        default_diameter,
+    )
+    for i in range(1, max_branch_order + 1):
+        art_key = f"Art{i}"
+        ven_key = f"Ven{i}"
+        diameter_by_branch_order[art_key] = arteriole_overrides.get(
+            art_key,
+            default_small_vessel_diameter,
+        )
+        diameter_by_branch_order[ven_key] = venule_overrides.get(
+            ven_key,
+            default_small_vessel_diameter,
+        )
+    return diameter_by_branch_order
+
+
 class PoiseuilleModel:
     """Encapsulates Poiseuille computations and constriction settings."""
 
@@ -61,7 +118,7 @@ class PoiseuilleModel:
         Set edge weights using the inverse of Poiseuille's law with calculated viscosity.
         Weight = (π * diameter^4) / (128 * viscosity * length)
         Where viscosity = 1 / diameter^1.647
-        
+
         Parameters:
         -----------
         G : networkx.MultiGraph
@@ -69,13 +126,13 @@ class PoiseuilleModel:
         diameter_by_branch_order : dict
             Dictionary mapping branch order strings to diameter values in micrometers (μm)
             e.g., {'BO1': 10.0, 'BO2': 8.0, 'BO3': 6.0}
-            
+
         Returns:
         --------
         dict : Summary of weight assignments
         """
         import numpy as np
-        
+
         PI = np.pi
         results = {
             'weights_set': 0,
@@ -86,13 +143,13 @@ class PoiseuilleModel:
             'invalid_diameter': [],
             'viscosity_calculations': {}  # Track viscosity for each diameter
         }
-        
+
         print(f"=== Poiseuille Weight Calculation (Branch Order Based) ===")
         print(f"Formula: Weight = (π * diameter^4) / (128 * viscosity * length)")
         print(f"Viscosity calculation: μ = 1 / diameter^1.647")
         print(f"Units: diameter and length in micrometers (μm)")
         print()
-        
+
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
         diameter_viscosity_map = {}
         for branch_order, diameter in diameter_by_branch_order.items():
@@ -106,58 +163,58 @@ class PoiseuilleModel:
                 'viscosity': viscosity
             }
             print(f"{branch_order}: diameter={diameter}μm, calculated viscosity={viscosity:.6f}")
-        
+
         print()
-        
+
         for u, v, key, data in G.edges(keys=True, data=True):
             # Check for branch order
             branch_order = data.get('branch_order', None)
             if branch_order is None:
                 results['missing_branch_order'].append((u, v, key))
                 continue
-            
+
             # Check for length
             length = data.get('length', None)
             if length is None:
                 results['missing_length'].append((u, v, key))
                 continue
-            
+
             if length <= 0:
                 results['invalid_length'].append((u, v, key, length))
                 continue
-            
+
             # Get diameter for this branch order
             diameter = diameter_by_branch_order.get(branch_order, None)
             if diameter is None:
                 results['unknown_branch_order'].append((u, v, key, branch_order))
                 continue
-            
+
             if diameter <= 0:
                 results['invalid_diameter'].append((u, v, key, branch_order, diameter))
                 continue
-            
+
             # Get pre-calculated viscosity for this diameter
             viscosity = diameter_viscosity_map.get(diameter, None)
             if viscosity is None:
                 # Fallback calculation if not in map
                 viscosity = 1.0 / (diameter ** 1.647)
-            
+
             # Calculate weight using inverse Poiseuille's law
             # Weight = (π * diameter^4) / (128 * viscosity * length)
             weight = (PI * diameter**4) / (128.0 * viscosity * length)
-            
+
             # Store old weight for comparison
             old_weight = data.get('weight', None)
-            
+
             # Set new weight
             G[u][v][key]['weight'] = weight
-            
+
             results['weights_set'] += 1
-            
+
             logger.debug(f"Edge ({u}, {v}, {key}): {branch_order}, "
                         f"diameter={diameter}μm, length={length:.3f}μm, "
                         f"viscosity={viscosity:.6f}, weight={weight:.6f}")
-        
+
         # Print summary
         print(f"=== Summary ===")
         print(f"Weights successfully set: {results['weights_set']}")
@@ -171,7 +228,7 @@ class PoiseuilleModel:
             print(f"Edges with invalid length: {len(results['invalid_length'])}")
         if results['invalid_diameter']:
             print(f"Edges with invalid diameter: {len(results['invalid_diameter'])}")
-        
+
         return G, results
 
     def set_poiseuille_weights_with_constrictions(
