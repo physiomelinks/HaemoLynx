@@ -63,10 +63,16 @@ STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0), # top
                              (361.0, 332.0, 120.0), (321.0, 334.0, 163.0)] #top right
 
 OUTPUT_NODE_COORDINATES = []
+ARTERIOLE_BOUNDARY_NODE_COORDINATES = []
+VENULE_BOUNDARY_NODE_COORDINATES = []
 STARTING_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 OUTPUT_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 STARTING_NODES: list[int] = []
 OUTPUT_NODES: list[int] = []
+ARTERIOLE_BOUNDARY_NODES: list[int] = []
+VENULE_BOUNDARY_NODES: list[int] = []
 # TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
 # TODO automate the selection of resistance node pairs
 # RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
@@ -136,36 +142,24 @@ else:
     for i in range(5, 52):
         DIAMETER_BY_BRANCH_ORDER[f"B{i:02d}"] = 4.0
 
+default_small_vessel_diameter = DIAMETER_BY_BRANCH_ORDER.get("B01", 4.0)
+for i in range(1, 52):
+    DIAMETER_BY_BRANCH_ORDER[f"Art{i}"] = default_small_vessel_diameter
+    DIAMETER_BY_BRANCH_ORDER[f"Ven{i}"] = default_small_vessel_diameter
+
 CONSTRICTION_BY_BRANCH_ORDER = {
     "B01": 1.0,
 }
 for i in range(2, 52):
     CONSTRICTION_BY_BRANCH_ORDER[f"B{i:02d}"] = 0.8
+CONSTRICTION_BY_BRANCH_ORDER["Art1"] = 1.0
+CONSTRICTION_BY_BRANCH_ORDER["Ven1"] = 1.0
+for i in range(2, 52):
+    CONSTRICTION_BY_BRANCH_ORDER[f"Art{i}"] = 0.8
+    CONSTRICTION_BY_BRANCH_ORDER[f"Ven{i}"] = 0.8
 
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= [
-    (103, 262),
-    (103, 104),
-    (309, 363),
-    (363, 746),
-    (363, 745),
-    (746, 874),
-    (745, 766),
-    (874, 1140),
-    (221, 309),
-    (103, 106),
-    (34, 222),
-    (222, 258),
-    (233, 236),
-    (123, 176),
-    (234, 235),
-    (35, 65),
-    (32, 35),
-    (260,290),
-    (290,846),
-    (290,846),
-    (766, 846),
-    (766, 845)
 ]  
 
 
@@ -233,10 +227,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
                             starting_node_coordinates=STARTING_NODE_COORDINATES,
                             output_node_coordinates=OUTPUT_NODE_COORDINATES,
+                            arteriole_boundary_node_coordinates=ARTERIOLE_BOUNDARY_NODE_COORDINATES,
+                            venule_boundary_node_coordinates=VENULE_BOUNDARY_NODE_COORDINATES,
                             starting_node_volumes=STARTING_NODE_VOLUMES,
                             output_node_volumes=OUTPUT_NODE_VOLUMES,
+                            arteriole_boundary_node_volumes=ARTERIOLE_BOUNDARY_NODE_VOLUMES,
+                            venule_boundary_node_volumes=VENULE_BOUNDARY_NODE_VOLUMES,
                             starting_nodes=STARTING_NODES, 
                             output_nodes=OUTPUT_NODES, 
+                            arteriole_boundary_nodes=ARTERIOLE_BOUNDARY_NODES,
+                            venule_boundary_nodes=VENULE_BOUNDARY_NODES,
                             input_p_bc=INPUT_P_BC, 
                             output_p_bc=OUTPUT_P_BC, 
                             visualize_results=VISUALIZE_RESULTS, 
@@ -794,6 +794,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     starting_nodes[:] = []
     output_nodes[:] = []
+    arteriole_boundary_nodes[:] = []
+    venule_boundary_nodes[:] = []
     if automated_vessel_assignment:
         # Use direct terminal-node overlap assignment from vessel masks.
         start_nodes = auto_start_nodes
@@ -818,6 +820,31 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
     starting_nodes.extend(start_nodes)
     output_nodes.extend(out_nodes)
+    used_nodes = set(starting_nodes) | set(output_nodes)
+    if arteriole_boundary_node_coordinates or arteriole_boundary_node_volumes:
+        art_boundary = graph.select_boundary_nodes_by_method(
+            G,
+            image.shape,
+            method="coordinates",
+            node_role="input",
+            coordinates=arteriole_boundary_node_coordinates,
+            volume_boxes=arteriole_boundary_node_volumes,
+            exclude_nodes=list(used_nodes),
+        )
+        arteriole_boundary_nodes.extend(art_boundary)
+        used_nodes.update(arteriole_boundary_nodes)
+
+    if venule_boundary_node_coordinates or venule_boundary_node_volumes:
+        ven_boundary = graph.select_boundary_nodes_by_method(
+            G,
+            image.shape,
+            method="coordinates",
+            node_role="output",
+            coordinates=venule_boundary_node_coordinates,
+            volume_boxes=venule_boundary_node_volumes,
+            exclude_nodes=list(used_nodes),
+        )
+        venule_boundary_nodes.extend(ven_boundary)
     if automated_vessel_assignment:
         print(
             f"Selected {len(starting_nodes)} STARTING_NODES and {len(output_nodes)} "
@@ -830,6 +857,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
     print(f"Starting nodes are: {starting_nodes}")
     print(f"Output nodes are: {output_nodes}")
+    print(f"Arteriole boundary nodes are: {arteriole_boundary_nodes}")
+    print(f"Venule boundary nodes are: {venule_boundary_nodes}")
 
     if starting_nodes and output_nodes:
         resistance_node_pair = (starting_nodes[0], output_nodes[0])
@@ -848,7 +877,40 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
     #HD note - eventually add in probability of pericyte contraction?
     if starting_nodes:
-        graph.assign_branch_orders(G, starting_nodes)
+        use_hierarchical_assignment = bool(
+            arteriole_boundary_nodes and venule_boundary_nodes and output_nodes
+        )
+        if use_hierarchical_assignment:
+            branch_assignment_results = graph.assign_hierarchical_branch_orders(
+                G,
+                starting_nodes=starting_nodes,
+                output_nodes=output_nodes,
+                arteriole_boundary_nodes=arteriole_boundary_nodes,
+                venule_boundary_nodes=venule_boundary_nodes,
+            )
+            print(
+                "Assigned hierarchical branch orders "
+                "(Art*/Ven* first, then capillary B* from arteriole boundary)."
+            )
+            print(f"Branch assignment summary: {branch_assignment_results}")
+        else:
+            graph.assign_branch_orders(G, starting_nodes)
+            print(
+                "Assigned capillary branch orders from STARTING_NODES only "
+                "(no arteriole/venule boundary-node sets supplied)."
+            )
+
+        vessel_type_3d_path = plot_dir / "vessel_types_assigned_3d.html"
+        visualization.visualize_3d_plotly_vessel_types(
+            G,
+            title="Assigned Vessel Types (Interactive 3D)",
+            save_html_path=str(vessel_type_3d_path),
+            show=False,
+        )
+        print(
+            "Saved vessel-type 3D visualization after branch assignment to: "
+            f"{vessel_type_3d_path}"
+        )
         poiseuille_model = hemodynamics.PoiseuilleModel(
             constriction_length=40.0,
             constriction_spacing=100.0,

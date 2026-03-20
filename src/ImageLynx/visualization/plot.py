@@ -462,6 +462,140 @@ def visualize_3d_plotly(
     return fig
 
 
+def visualize_3d_plotly_vessel_types(
+    G: nx.Graph,
+    title: str = "3D Vessel Types",
+    save_html_path: Optional[str] = None,
+    show: bool = True,
+) -> go.Figure:
+    """
+    Interactive 3D graph rendering colored by vessel class from branch_order.
+
+    Mapping:
+    - Art* -> arteriole (red)
+    - B*   -> capillary (green)
+    - Ven* -> venule (blue)
+    """
+    pos = nx.get_node_attributes(G, "pos")
+    if not pos:
+        raise ValueError("Graph has no node positions ('pos').")
+
+    def _vessel_type(branch_order: Any) -> str:
+        label = str(branch_order or "")
+        if label.startswith("Art"):
+            return "arteriole"
+        if label.startswith("Ven"):
+            return "venule"
+        if label.startswith("B"):
+            return "capillary"
+        return "unknown"
+
+    type_to_color = {
+        "arteriole": "#d62728",  # red
+        "capillary": "#2ca02c",  # green
+        "venule": "#1f77b4",  # blue
+        "unknown": "#7f7f7f",
+    }
+    type_to_label = {
+        "arteriole": "Arterioles",
+        "capillary": "Capillaries",
+        "venule": "Venules",
+        "unknown": "Unknown",
+    }
+
+    # Collect edge polylines per vessel type.
+    per_type_coords: dict[str, dict[str, list[float | None]]] = {
+        k: {"x": [], "y": [], "z": []} for k in type_to_color
+    }
+    per_type_counts = {k: 0 for k in type_to_color}
+
+    if isinstance(G, nx.MultiGraph):
+        edge_iter = G.edges(keys=True, data=True)
+        for u, v, _k, edge_data in edge_iter:
+            vessel_type = _vessel_type(edge_data.get("branch_order"))
+            voxels = edge_data.get("voxels", [])
+            if len(voxels) > 1:
+                for pt in voxels:
+                    per_type_coords[vessel_type]["x"].append(float(pt[2]))
+                    per_type_coords[vessel_type]["y"].append(float(pt[1]))
+                    per_type_coords[vessel_type]["z"].append(float(pt[0]))
+                per_type_coords[vessel_type]["x"].append(None)
+                per_type_coords[vessel_type]["y"].append(None)
+                per_type_coords[vessel_type]["z"].append(None)
+                per_type_counts[vessel_type] += 1
+            elif u in pos and v in pos:
+                pu, pv = pos[u], pos[v]
+                per_type_coords[vessel_type]["x"] += [float(pu[2]), float(pv[2]), None]
+                per_type_coords[vessel_type]["y"] += [float(pu[1]), float(pv[1]), None]
+                per_type_coords[vessel_type]["z"] += [float(pu[0]), float(pv[0]), None]
+                per_type_counts[vessel_type] += 1
+    else:
+        for u, v, edge_data in G.edges(data=True):
+            vessel_type = _vessel_type(edge_data.get("branch_order"))
+            voxels = edge_data.get("voxels", [])
+            if len(voxels) > 1:
+                for pt in voxels:
+                    per_type_coords[vessel_type]["x"].append(float(pt[2]))
+                    per_type_coords[vessel_type]["y"].append(float(pt[1]))
+                    per_type_coords[vessel_type]["z"].append(float(pt[0]))
+                per_type_coords[vessel_type]["x"].append(None)
+                per_type_coords[vessel_type]["y"].append(None)
+                per_type_coords[vessel_type]["z"].append(None)
+                per_type_counts[vessel_type] += 1
+            elif u in pos and v in pos:
+                pu, pv = pos[u], pos[v]
+                per_type_coords[vessel_type]["x"] += [float(pu[2]), float(pv[2]), None]
+                per_type_coords[vessel_type]["y"] += [float(pu[1]), float(pv[1]), None]
+                per_type_coords[vessel_type]["z"] += [float(pu[0]), float(pv[0]), None]
+                per_type_counts[vessel_type] += 1
+
+    node_x = [float(p[2]) for p in pos.values()]
+    node_y = [float(p[1]) for p in pos.values()]
+    node_z = [float(p[0]) for p in pos.values()]
+
+    fig = go.Figure()
+    for vessel_type in ("arteriole", "capillary", "venule", "unknown"):
+        coords = per_type_coords[vessel_type]
+        if not coords["x"]:
+            continue
+        fig.add_trace(
+            go.Scatter3d(
+                x=coords["x"],
+                y=coords["y"],
+                z=coords["z"],
+                mode="lines",
+                line=dict(color=type_to_color[vessel_type], width=3),
+                name=f"{type_to_label[vessel_type]} ({per_type_counts[vessel_type]})",
+            )
+        )
+
+    fig.add_trace(
+        go.Scatter3d(
+            x=node_x,
+            y=node_y,
+            z=node_z,
+            mode="markers",
+            marker=dict(size=3, color="black"),
+            name="Nodes",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        showlegend=True,
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Z",
+            aspectmode="data",
+        ),
+    )
+    if save_html_path:
+        fig.write_html(str(save_html_path), include_plotlyjs="cdn")
+    if show:
+        fig.show()
+    return fig
+
+
 def visualize_skeleton(
     skeleton: np.ndarray,
     save_path: Optional[str] = None,
