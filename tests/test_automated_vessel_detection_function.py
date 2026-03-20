@@ -15,6 +15,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from ImageLynx.graph import (
+    compute_overlapping_terminal_assignment_metrics,
     dilate_large_vessel_masks_by_microns,
     select_terminal_nodes_from_large_vessel_masks,
 )
@@ -29,6 +30,7 @@ def _write_rotatable_assignment_graph(
     html_path: Path,
     voxel_size_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
     title: str = "Automated Vessel Detection (3D)",
+    annotation_lines: list[str] | None = None,
 ) -> None:
     """Write interactive 3D HTML with masks and color-coded IO nodes."""
     try:
@@ -157,6 +159,20 @@ def _write_rotatable_assignment_graph(
         ),
         showlegend=True,
     )
+    if annotation_lines:
+        fig.add_annotation(
+            x=0.01,
+            y=0.99,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            align="left",
+            text="<br>".join(annotation_lines),
+            bgcolor="rgba(255,255,255,0.75)",
+            bordercolor="#666",
+            borderwidth=1,
+            font=dict(size=12),
+        )
     fig.write_html(str(html_path), include_plotlyjs="cdn")
     # Best-effort auto-open for local interactive debugging.
     try:
@@ -270,8 +286,8 @@ def test_automated_vessel_detection(tmp_path):
     )
 
 
-def test_overlap_resolution_prefers_higher_percentage(tmp_path):
-    """Overlapping cylinders: higher local overlap percentage wins."""
+def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
+    """Overlapping cylinders: cross-section midline distance is evaluated first."""
     G = nx.MultiGraph()
     G.add_node(0, pos=np.array([6.0, 6.0, 2.0]))   # overlapping terminal
     G.add_node(1, pos=np.array([6.0, 6.0, 12.0]))  # junction
@@ -290,54 +306,7 @@ def test_overlap_resolution_prefers_higher_percentage(tmp_path):
         shape, center_z=6.0, center_y=5.0, radius=2.0, x_start=2, x_end=5
     )
     venule_mask = _parallel_cylinder_mask_along_x(
-        shape, center_z=6.0, center_y=7.0, radius=2.0, x_start=2, x_end=10
-    )
-
-    start_nodes, out_nodes = select_terminal_nodes_from_large_vessel_masks(
-        G,
-        large_arteriole_mask=arteriole_mask,
-        large_venule_mask=venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-        allow_overlap=False,
-    )
-    assert start_nodes == []
-    assert out_nodes == [0]
-
-    _write_rotatable_assignment_graph(
-        G=G,
-        input_nodes=start_nodes,
-        output_nodes=out_nodes,
-        arteriole_mask=arteriole_mask,
-        venule_mask=venule_mask,
-        html_path=tmp_path / "overlap_resolution_higher_percentage_3d.html",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-    )
-
-
-def test_overlap_resolution_tie_breaks_by_midpoint_distance(tmp_path):
-    """Overlapping cylinders: equal percentage, midpoint distance tie-break."""
-    G = nx.MultiGraph()
-    G.add_node(0, pos=np.array([6.0, 6.0, 2.0]))   # overlapping terminal
-    G.add_node(1, pos=np.array([6.0, 6.0, 12.0]))  # junction
-    G.add_node(2, pos=np.array([6.0, 8.0, 12.0]))  # second terminal
-    G.add_edge(
-        0,
-        1,
-        length=10.0,
-        weight=10.0,
-        voxels=[(6.0, 6.0, float(x)) for x in range(2, 13)],
-    )
-    G.add_edge(1, 2, length=2.0, weight=2.0, voxels=[(6.0, 6.0, 12.0), (6.0, 8.0, 12.0)])
-
-    shape = (16, 16, 40)
-    arteriole_mask = _parallel_cylinder_mask_along_x(
-        shape, center_z=6.0, center_y=5.0, radius=2.0, x_start=2, x_end=8
-    )
-    venule_mask = _parallel_cylinder_mask_along_x(
-        shape, center_z=6.0, center_y=7.0, radius=2.0, x_start=2, x_end=8
-    )
-    venule_mask |= _parallel_cylinder_mask_along_x(
-        shape, center_z=6.0, center_y=7.0, radius=2.0, x_start=30, x_end=35
+        shape, center_z=6.0, center_y=8.0, radius=2.0, x_start=2, x_end=10
     )
 
     start_nodes, out_nodes = select_terminal_nodes_from_large_vessel_masks(
@@ -349,6 +318,18 @@ def test_overlap_resolution_tie_breaks_by_midpoint_distance(tmp_path):
     )
     assert start_nodes == [0]
     assert out_nodes == []
+    metrics = compute_overlapping_terminal_assignment_metrics(
+        G,
+        0,
+        node_pos=np.asarray(G.nodes[0]["pos"], dtype=float),
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+    assert (
+        metrics["arteriole_cross_section_midpoint_distance"]
+        < metrics["venule_cross_section_midpoint_distance"]
+    )
 
     _write_rotatable_assignment_graph(
         G=G,
@@ -356,8 +337,17 @@ def test_overlap_resolution_tie_breaks_by_midpoint_distance(tmp_path):
         output_nodes=out_nodes,
         arteriole_mask=arteriole_mask,
         venule_mask=venule_mask,
-        html_path=tmp_path / "overlap_resolution_midpoint_tiebreak_3d.html",
+        html_path=tmp_path / "overlap_resolution_cross_section_priority_3d.html",
         voxel_size_xyz=(1.0, 1.0, 1.0),
+        title="Overlap Resolution: Cross-section Priority",
+        annotation_lines=[
+            f"Node 0 cross-section distance -> arteriole={metrics['arteriole_cross_section_midpoint_distance']:.3f}, "
+            f"venule={metrics['venule_cross_section_midpoint_distance']:.3f}",
+            f"Node 0 overlap -> arteriole={metrics['arteriole_overlap_fraction']:.3f}, "
+            f"venule={metrics['venule_overlap_fraction']:.3f}",
+            f"Node 0 midpoint distance -> arteriole={metrics['arteriole_midpoint_distance']:.3f}, "
+            f"venule={metrics['venule_midpoint_distance']:.3f}",
+        ],
     )
 
 

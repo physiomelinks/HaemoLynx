@@ -16,6 +16,7 @@ from .collapse import collapse_node_clusters
 from .branch_order import assign_branch_orders
 from .boundaries import select_boundary_terminal_nodes, select_boundary_nodes_by_method
 from .automated_vessel_assignment import (
+    compute_overlapping_terminal_assignment_metrics,
     resolve_overlapping_terminal_node_assignment,
     select_terminal_nodes_from_large_vessel_masks,
     write_automated_vessel_assignment_3d_html,
@@ -69,6 +70,7 @@ __all__ = [
     "assign_branch_orders",
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
+    "compute_overlapping_terminal_assignment_metrics",
     "resolve_overlapping_terminal_node_assignment",
     "select_terminal_nodes_from_large_vessel_masks",
     "write_automated_vessel_assignment_3d_html",
