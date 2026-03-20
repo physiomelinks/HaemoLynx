@@ -22,7 +22,7 @@ root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization 
+from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization 
 
 # ---------------------------
 # Beginner-friendly settings
@@ -37,6 +37,8 @@ ILASTIK_EXECUTABLE = "ilastik.exe"
 ILASTIK_OUTPUT_DIR = root_dir / "examples" / "outputs" / "segmentations"
 # Output extension for ilastik segmentation result. Supported: ".tif", ".tiff", ".h5"
 ILASTIK_OUTPUT_SUFFIX = ".tif"
+
+#Do you want to use large vessel masks to determine input and output nodes?
 USE_LARGE_VESSEL_MASKS = False
 # Toggle large-vessel input mode:
 # - False: use pre-segmented arteriole/venule masks from LARGE_*_MASK_PATH.
@@ -51,8 +53,9 @@ ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "l
 ILASTIK_UNSEGMENTED_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
 ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "arteriole_classifier.ilp"
 ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
+
 # Small-vessel masks can be used to auto-detect arteriole/venule boundary nodes
-# (mask-to-capillary transition points) for hierarchical Art/Ven/B branch ordering.
+# Do this to automatically determine terminal arteriole/venule-to-capillary transition points for automated hierarchical Art/Ven/Capillary branch ordering.
 USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
 USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
 SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
@@ -83,6 +86,7 @@ STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0), # top
 OUTPUT_NODE_COORDINATES = []
 ARTERIOLE_BOUNDARY_NODE_COORDINATES = []
 VENULE_BOUNDARY_NODE_COORDINATES = []
+
 #Assign by volume boxes
 # - Volume boxes: set USE_VOLUME_BOXES=True and supply STARTING_NODE_VOLUMES and OUTPUT_NODE_VOLUMES.
 # - Coordinates: set USE_VOLUME_BOXES=False and supply STARTING_NODE_COORDINATES and OUTPUT_NODE_COORDINATES.
@@ -105,6 +109,7 @@ INTERACTIVE_PLOTS = False
 # When True, keep saving PNGs and also display visualization windows
 # in a non-blocking way during pipeline execution.
 SHOW_PLOTS_IN_IDE = True
+
 # Control how many plots are shown interactively in the IDE while still
 # saving all configured output PNGs.
 # - "all": show every plot in the visualize_results block
@@ -132,11 +137,13 @@ SKELETON_MIN_BRANCH_LENGTH = 3
 SKELETON_MAX_BRIDGE_DISTANCE = 4
 SKELETON_COMPONENT_CONNECTIVITY = 3
 GRAPH_RECONNECT_THRESHOLD = 10.0
+
 # Keep final orphan/dangling reconnect local-only to avoid creating
 # long cross-links in dense regions.
 FINAL_ORPHAN_RECONNECT_THRESHOLD = 3.0
 MIN_STUB_LENGTH = 10.0
 CLUSTER_COLLAPSE_DISTANCE = 5.0
+
 # Keep only connected components at or above this percentage of total
 # skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
 SKELETON_MIN_COMPONENT_PERCENT = 0.0
@@ -150,33 +157,37 @@ print("TODO HARVEY CHANGE THIS ALL_DIAMS_CONST BACK TO FALSE FOR ORIGINAL RUN")
 ALL_DIAMS_CONST = True
 DO_PERICYTE_CONSTRUCTION = False
 
-DIAMETER_BY_BRANCH_ORDER = {}
-if ALL_DIAMS_CONST:
-    for i in range(1,52):
-        DIAMETER_BY_BRANCH_ORDER[f"B{i:02d}"] = 4.0
-else:
-    DIAMETER_BY_BRANCH_ORDER = {
-        "B01": 6.2,
-        "B02": 4.0,
-        "B03": 5.0,
-        "B04": 5.0,
-    }
-    for i in range(5, 52):
-        DIAMETER_BY_BRANCH_ORDER[f"B{i:02d}"] = 4.0
+MAX_BRANCH_ORDER = 51
+DEFAULT_DIAMETER = 4.0
 
-default_small_vessel_diameter = DIAMETER_BY_BRANCH_ORDER.get("B01", 4.0)
-for i in range(1, 52):
-    DIAMETER_BY_BRANCH_ORDER[f"Art{i}"] = default_small_vessel_diameter
-    DIAMETER_BY_BRANCH_ORDER[f"Ven{i}"] = default_small_vessel_diameter
+# Manual diameter overrides for capillaries (B01, B02, ...),
+# arterioles (Art1, Art2, ...), and venules (Ven1, Ven2, ...).
+MANUAL_CAPILLARY_DIAMETER_BY_BRANCH_ORDER = {
+    "B01": 6.2,
+    "B02": 4.0,
+    "B03": 5.0,
+    "B04": 5.0,
+}
+MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER = {}
+MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER = {}
+
+DIAMETER_BY_BRANCH_ORDER = haemodynamics.build_diameter_by_branch_order(
+    all_diams_const=ALL_DIAMS_CONST,
+    max_branch_order=MAX_BRANCH_ORDER,
+    default_diameter=DEFAULT_DIAMETER,
+    manual_capillary_diameter_by_branch_order=MANUAL_CAPILLARY_DIAMETER_BY_BRANCH_ORDER,
+    manual_arteriole_diameter_by_branch_order=MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER,
+    manual_venule_diameter_by_branch_order=MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER,
+)
 
 CONSTRICTION_BY_BRANCH_ORDER = {
     "B01": 1.0,
 }
-for i in range(2, 52):
+for i in range(2, MAX_BRANCH_ORDER + 1):
     CONSTRICTION_BY_BRANCH_ORDER[f"B{i:02d}"] = 0.8
 CONSTRICTION_BY_BRANCH_ORDER["Art1"] = 1.0
 CONSTRICTION_BY_BRANCH_ORDER["Ven1"] = 1.0
-for i in range(2, 52):
+for i in range(2, MAX_BRANCH_ORDER + 1):
     CONSTRICTION_BY_BRANCH_ORDER[f"Art{i}"] = 0.8
     CONSTRICTION_BY_BRANCH_ORDER[f"Ven{i}"] = 0.8
 
@@ -1114,7 +1125,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "Saved vessel-type 3D visualization after branch assignment to: "
             f"{vessel_type_3d_path}"
         )
-        poiseuille_model = hemodynamics.PoiseuilleModel(
+        poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=40.0,
             constriction_spacing=100.0,
         )
@@ -1178,14 +1189,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     else:
         print("VTK visualization skipped.") 
     # 6) Compute effective resistance between two selected nodes.
-    conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
+    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
     print(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
     if do_equiv_resistance_calculation:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
-            laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-            two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+            laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+            two_point_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
                 laplacian,
                 G,
                 source_node,
@@ -1245,7 +1256,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     # 8) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.
     print("\nSolving flow through the network...")
-    flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
+    flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
         input_p_bc,
