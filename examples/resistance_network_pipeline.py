@@ -37,6 +37,9 @@ ILASTIK_EXECUTABLE = "ilastik.exe"
 ILASTIK_OUTPUT_DIR = root_dir / "examples" / "outputs" / "segmentations"
 # Output extension for ilastik segmentation result. Supported: ".tif", ".tiff", ".h5"
 ILASTIK_OUTPUT_SUFFIX = ".tif"
+USE_LARGE_VESSEL_MASKS = False
+LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
+LARGE_VENULE_MASK_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
 BASE_PLOT_DIR = root_dir / "examples" / "plots" 
 if not BASE_PLOT_DIR.exists():
     BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -192,6 +195,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             ilastik_executable=ILASTIK_EXECUTABLE,
                             ilastik_output_dir=ILASTIK_OUTPUT_DIR,
                             ilastik_output_suffix=ILASTIK_OUTPUT_SUFFIX,
+                            use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
+                            large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
+                            large_venule_mask_path=LARGE_VENULE_MASK_PATH,
                             diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
                             constriction_by_branch_order=CONSTRICTION_BY_BRANCH_ORDER,
                             do_pericyte_constriction=DO_PERICYTE_CONSTRUCTION,
@@ -347,6 +353,79 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     print("Visualizing skeleton projection...")
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
     print("Skeleton projection saved.")
+
+    (
+        large_arteriole_mask,
+        large_venule_mask,
+        large_arteriole_mask_voxel_size,
+        large_venule_mask_voxel_size,
+    ) = io.load_large_vessel_masks(
+        enabled=use_large_vessel_masks,
+        large_arteriole_mask_path=large_arteriole_mask_path,
+        large_venule_mask_path=large_venule_mask_path,
+    )
+    if large_arteriole_mask is not None and large_venule_mask is not None:
+        if large_arteriole_mask.shape != image.shape:
+            raise ValueError(
+                "large_arteriole_mask shape does not match input image shape: "
+                f"{large_arteriole_mask.shape} != {image.shape}"
+            )
+        if large_venule_mask.shape != image.shape:
+            raise ValueError(
+                "large_venule_mask shape does not match input image shape: "
+                f"{large_venule_mask.shape} != {image.shape}"
+            )
+        print(
+            "Loaded large-vessel masks: "
+            f"arteriole={large_arteriole_mask.shape}, "
+            f"venule={large_venule_mask.shape}"
+        )
+        print(
+            "Large-vessel mask voxel sizes (x, y, z): "
+            f"arteriole={large_arteriole_mask_voxel_size}, "
+            f"venule={large_venule_mask_voxel_size}"
+        )
+        main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
+        arteriole_voxel_size_xyz = tuple(float(v) for v in large_arteriole_mask_voxel_size)
+        venule_voxel_size_xyz = tuple(float(v) for v in large_venule_mask_voxel_size)
+        voxel_match_main_vs_arteriole = np.allclose(
+            main_voxel_size_xyz,
+            arteriole_voxel_size_xyz,
+            rtol=0.0,
+            atol=0.0,
+        )
+        voxel_match_main_vs_venule = np.allclose(
+            main_voxel_size_xyz,
+            venule_voxel_size_xyz,
+            rtol=0.0,
+            atol=0.0,
+        )
+        voxel_match_arteriole_vs_venule = np.allclose(
+            arteriole_voxel_size_xyz,
+            venule_voxel_size_xyz,
+            rtol=0.0,
+            atol=0.0,
+        )
+        if not (
+            voxel_match_main_vs_arteriole
+            and voxel_match_main_vs_venule
+            and voxel_match_arteriole_vs_venule
+        ):
+            error_message = (
+                "Voxel-size mismatch detected across input image and large-vessel masks. "
+                f"main={main_voxel_size_xyz}, "
+                f"arteriole={arteriole_voxel_size_xyz}, "
+                f"venule={venule_voxel_size_xyz}. "
+                "All three must match exactly in x, y, and z."
+            )
+            print(error_message)
+            raise ValueError(error_message)
+        print(
+            "Voxel-size check passed. Arteriole and venule masks are aligned "
+            "to the same physical voxel units as the main image."
+        )
+    else:
+        print("Large-vessel masks disabled; skipping arteriole/venule mask loading.")
 
     if do_graph_building:
         # 3) Convert skeleton to graph.
@@ -532,6 +611,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         with graph_path.open("rb") as f:
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
+
+    # Store physical voxel-unit metadata used for skeleton/graph geometry and mask alignment.
+    G.graph["image_voxel_size_xyz"] = tuple(float(v) for v in voxel_size)
+    if large_arteriole_mask is not None and large_venule_mask is not None:
+        G.graph["large_arteriole_mask_voxel_size_xyz"] = tuple(
+            float(v) for v in large_arteriole_mask_voxel_size
+        )
+        G.graph["large_venule_mask_voxel_size_xyz"] = tuple(
+            float(v) for v in large_venule_mask_voxel_size
+        )
     
     # Visualize final graph used for boundary-node verification.
     if final_render_mode == "3d":
