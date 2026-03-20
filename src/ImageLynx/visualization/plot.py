@@ -377,21 +377,61 @@ def visualize_geometry_with_edge_weights(
     return fig, ax, (vmin, vmax), cmap
 
 
-def visualize_3d_plotly(G: nx.Graph, title: str = "3D Network") -> None:
-    """Interactive 3D scatter + line plot of graph using Plotly."""
+def visualize_3d_plotly(
+    G: nx.Graph,
+    title: str = "3D Network",
+    save_html_path: Optional[str] = None,
+    show: bool = True,
+) -> go.Figure:
+    """Interactive 3D graph rendering using Plotly.
+
+    Uses edge voxel polylines when present, otherwise falls back to node-to-node
+    straight segments. Coordinates are interpreted as (z, y, x) in graph
+    metadata and mapped to Plotly axes as (x, y, z).
+    """
     pos = nx.get_node_attributes(G, "pos")
     if not pos:
-        return
-    node_x = [float(p[0]) for p in pos.values()]
-    node_y = [float(p[1]) for p in pos.values()]
-    node_z = [float(p[2]) for p in pos.values()]
+        raise ValueError("Graph has no node positions ('pos').")
     edge_x, edge_y, edge_z = [], [], []
-    for u, v in G.edges():
-        if u in pos and v in pos:
-            pu, pv = pos[u], pos[v]
-            edge_x += [float(pu[0]), float(pv[0]), None]
-            edge_y += [float(pu[1]), float(pv[1]), None]
-            edge_z += [float(pu[2]), float(pv[2]), None]
+    if isinstance(G, nx.MultiGraph):
+        edge_iter = G.edges(keys=True, data=True)
+        for u, v, _k, edge_data in edge_iter:
+            voxels = edge_data.get("voxels", [])
+            if len(voxels) > 1:
+                for pt in voxels:
+                    # Stored as (z, y, x)
+                    edge_x.append(float(pt[2]))
+                    edge_y.append(float(pt[1]))
+                    edge_z.append(float(pt[0]))
+                edge_x.append(None)
+                edge_y.append(None)
+                edge_z.append(None)
+            elif u in pos and v in pos:
+                pu, pv = pos[u], pos[v]
+                edge_x += [float(pu[2]), float(pv[2]), None]
+                edge_y += [float(pu[1]), float(pv[1]), None]
+                edge_z += [float(pu[0]), float(pv[0]), None]
+    else:
+        for u, v, edge_data in G.edges(data=True):
+            voxels = edge_data.get("voxels", [])
+            if len(voxels) > 1:
+                for pt in voxels:
+                    edge_x.append(float(pt[2]))
+                    edge_y.append(float(pt[1]))
+                    edge_z.append(float(pt[0]))
+                edge_x.append(None)
+                edge_y.append(None)
+                edge_z.append(None)
+            elif u in pos and v in pos:
+                pu, pv = pos[u], pos[v]
+                edge_x += [float(pu[2]), float(pv[2]), None]
+                edge_y += [float(pu[1]), float(pv[1]), None]
+                edge_z += [float(pu[0]), float(pv[0]), None]
+
+    # Stored as (z, y, x) -> plot as (x, y, z)
+    node_x = [float(p[2]) for p in pos.values()]
+    node_y = [float(p[1]) for p in pos.values()]
+    node_z = [float(p[0]) for p in pos.values()]
     fig = go.Figure()
     fig.add_trace(go.Scatter3d(
         x=edge_x, y=edge_y, z=edge_z,
@@ -405,8 +445,21 @@ def visualize_3d_plotly(G: nx.Graph, title: str = "3D Network") -> None:
         marker=dict(size=3, color="red"),
         name="Nodes",
     ))
-    fig.update_layout(title=title, showlegend=True)
-    fig.show()
+    fig.update_layout(
+        title=title,
+        showlegend=True,
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Z",
+            aspectmode="data",
+        ),
+    )
+    if save_html_path:
+        fig.write_html(str(save_html_path), include_plotlyjs="cdn")
+    if show:
+        fig.show()
+    return fig
 
 
 def visualize_skeleton(
