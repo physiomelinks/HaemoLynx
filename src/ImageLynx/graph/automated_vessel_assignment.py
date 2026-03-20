@@ -95,6 +95,40 @@ def _mask_midpoint_physical(
     return np.mean(points_zyx.astype(float), axis=0) * voxel_size
 
 
+def _mask_principal_axis(mask: np.ndarray) -> int:
+    points_zyx = np.argwhere(mask.astype(bool, copy=False))
+    if points_zyx.size == 0:
+        return 0
+    spans = np.ptp(points_zyx.astype(float), axis=0)
+    return int(np.argmax(spans))
+
+
+def _cross_section_midpoint_physical(
+    mask: np.ndarray,
+    voxel_size_xyz: tuple[float, float, float],
+    intersection_point: np.ndarray | None,
+) -> np.ndarray:
+    points_zyx = np.argwhere(mask.astype(bool, copy=False))
+    if points_zyx.size == 0 or intersection_point is None:
+        return np.asarray([np.inf, np.inf, np.inf], dtype=float)
+    axis = _mask_principal_axis(mask)
+    voxel_size = np.asarray(voxel_size_xyz, dtype=float)
+    intersection_index = np.rint(intersection_point / voxel_size).astype(int)
+    target_slice = int(intersection_index[axis])
+    slice_coords = points_zyx[:, axis]
+    in_slice = points_zyx[slice_coords == target_slice]
+    if in_slice.size == 0:
+        nearest_slice = int(
+            np.unique(slice_coords)[
+                int(np.argmin(np.abs(np.unique(slice_coords) - target_slice)))
+            ]
+        )
+        in_slice = points_zyx[slice_coords == nearest_slice]
+    if in_slice.size == 0:
+        return np.asarray([np.inf, np.inf, np.inf], dtype=float)
+    return np.mean(in_slice.astype(float), axis=0) * voxel_size
+
+
 def _overlap_fraction_and_intersection(
     sample_points: np.ndarray,
     mask: np.ndarray,
@@ -137,10 +171,55 @@ def resolve_overlapping_terminal_node_assignment(
     """Resolve input/output assignment for a terminal node in both masks.
 
     Decision rule:
-    1) Prefer the vessel with the higher local overlap percentage near the node.
-    2) If tied, choose the vessel with the shorter distance from its overlap
-       intersection point to the vessel-volume midpoint.
+    1) Prefer shorter distance from overlap-entry point to vessel cross-section
+       midpoint at the entry slice.
+    2) If tied, prefer shorter distance to vessel volume midpoint.
+    3) If still tied, use higher local overlap percentage near the node.
     """
+    metrics = compute_overlapping_terminal_assignment_metrics(
+        G,
+        node_id,
+        node_pos=node_pos,
+        large_arteriole_mask=large_arteriole_mask,
+        large_venule_mask=large_venule_mask,
+        voxel_size_xyz=voxel_size_xyz,
+        max_sample_points=max_sample_points,
+    )
+    arteriole_overlap = float(metrics["arteriole_overlap_fraction"])
+    venule_overlap = float(metrics["venule_overlap_fraction"])
+    arteriole_cross_section_dist = float(metrics["arteriole_cross_section_midpoint_distance"])
+    venule_cross_section_dist = float(metrics["venule_cross_section_midpoint_distance"])
+    if arteriole_cross_section_dist < venule_cross_section_dist:
+        return "input"
+    if venule_cross_section_dist < arteriole_cross_section_dist:
+        return "output"
+
+    arteriole_dist = float(metrics["arteriole_midpoint_distance"])
+    venule_dist = float(metrics["venule_midpoint_distance"])
+    if arteriole_dist < venule_dist:
+        return "input"
+    if venule_dist < arteriole_dist:
+        return "output"
+
+    if arteriole_overlap > venule_overlap:
+        return "input"
+    if venule_overlap > arteriole_overlap:
+        return "output"
+    # Final deterministic tie-break.
+    return "input"
+
+
+def compute_overlapping_terminal_assignment_metrics(
+    G: nx.Graph,
+    node_id: Any,
+    *,
+    node_pos: np.ndarray,
+    large_arteriole_mask: np.ndarray,
+    large_venule_mask: np.ndarray,
+    voxel_size_xyz: tuple[float, float, float],
+    max_sample_points: int = 25,
+) -> dict[str, Any]:
+    """Compute overlap and midpoint-distance metrics for overlap resolution."""
     samples = _terminal_edge_sample_points(
         G,
         node_id,
@@ -153,25 +232,44 @@ def resolve_overlapping_terminal_node_assignment(
     venule_overlap, venule_intersection = _overlap_fraction_and_intersection(
         samples, large_venule_mask, voxel_size_xyz, node_pos
     )
-    if arteriole_overlap > venule_overlap:
-        return "input"
-    if venule_overlap > arteriole_overlap:
-        return "output"
-
     arteriole_mid = _mask_midpoint_physical(large_arteriole_mask, voxel_size_xyz)
     venule_mid = _mask_midpoint_physical(large_venule_mask, voxel_size_xyz)
+    arteriole_cross_section_mid = _cross_section_midpoint_physical(
+        large_arteriole_mask, voxel_size_xyz, arteriole_intersection
+    )
+    venule_cross_section_mid = _cross_section_midpoint_physical(
+        large_venule_mask, voxel_size_xyz, venule_intersection
+    )
     arteriole_dist = np.inf
     venule_dist = np.inf
+    arteriole_cross_section_dist = np.inf
+    venule_cross_section_dist = np.inf
     if arteriole_intersection is not None and np.all(np.isfinite(arteriole_mid)):
         arteriole_dist = float(np.linalg.norm(arteriole_intersection - arteriole_mid))
     if venule_intersection is not None and np.all(np.isfinite(venule_mid)):
         venule_dist = float(np.linalg.norm(venule_intersection - venule_mid))
-    if arteriole_dist < venule_dist:
-        return "input"
-    if venule_dist < arteriole_dist:
-        return "output"
-    # Final deterministic tie-break.
-    return "input"
+    if arteriole_intersection is not None and np.all(np.isfinite(arteriole_cross_section_mid)):
+        arteriole_cross_section_dist = float(
+            np.linalg.norm(arteriole_intersection - arteriole_cross_section_mid)
+        )
+    if venule_intersection is not None and np.all(np.isfinite(venule_cross_section_mid)):
+        venule_cross_section_dist = float(
+            np.linalg.norm(venule_intersection - venule_cross_section_mid)
+        )
+    return {
+        "arteriole_overlap_fraction": float(arteriole_overlap),
+        "venule_overlap_fraction": float(venule_overlap),
+        "arteriole_cross_section_midpoint_distance": float(arteriole_cross_section_dist),
+        "venule_cross_section_midpoint_distance": float(venule_cross_section_dist),
+        "arteriole_midpoint_distance": float(arteriole_dist),
+        "venule_midpoint_distance": float(venule_dist),
+        "arteriole_intersection": None if arteriole_intersection is None else arteriole_intersection.copy(),
+        "venule_intersection": None if venule_intersection is None else venule_intersection.copy(),
+        "arteriole_cross_section_midpoint": arteriole_cross_section_mid.copy(),
+        "venule_cross_section_midpoint": venule_cross_section_mid.copy(),
+        "arteriole_midpoint": arteriole_mid.copy(),
+        "venule_midpoint": venule_mid.copy(),
+    }
 
 
 def select_terminal_nodes_from_large_vessel_masks(
