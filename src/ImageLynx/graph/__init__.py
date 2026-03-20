@@ -15,6 +15,10 @@ from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_repo
 from .collapse import collapse_node_clusters
 from .branch_order import assign_branch_orders
 from .boundaries import select_boundary_terminal_nodes, select_boundary_nodes_by_method
+from .large_vessels import (
+    dilate_binary_mask_by_microns,
+    dilate_large_vessel_masks_by_microns,
+)
 from ._helpers import (
     add_edge_safe,
     has_edge_safe,
@@ -60,6 +64,8 @@ __all__ = [
     "assign_branch_orders",
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
+    "dilate_binary_mask_by_microns",
+    "dilate_large_vessel_masks_by_microns",
     "remove_edges_for_self_connected_nodes",
     "add_edge_safe",
     "has_edge_safe",
