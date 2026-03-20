@@ -13,7 +13,7 @@ from .degree2 import (
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
 from .collapse import collapse_node_clusters
-from .branch_order import assign_branch_orders
+from .branch_order import assign_branch_orders, assign_hierarchical_branch_orders
 from .boundaries import select_boundary_terminal_nodes, select_boundary_nodes_by_method
 from .automated_vessel_assignment import (
     compute_overlapping_terminal_assignment_metrics,
@@ -68,6 +68,7 @@ __all__ = [
     "format_degree2_diagnostics_report",
     "collapse_node_clusters",
     "assign_branch_orders",
+    "assign_hierarchical_branch_orders",
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
     "compute_overlapping_terminal_assignment_metrics",
