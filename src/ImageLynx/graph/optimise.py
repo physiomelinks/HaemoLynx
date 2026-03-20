@@ -144,3 +144,125 @@ def optimise_graph_topology_fixed(
                 logger.info("Reconnected %d terminal pairs", reconnected)
 
     return G, voxel_loops
+
+
+def reconnect_orphan_and_dangling_nodes(
+    G: nx.MultiGraph,
+    skeleton_data=None,
+    reconnect_threshold: float = 3.0,
+    include_degree1: bool = True,
+    max_new_edges_per_node: int = 1,
+    validate_reconnections: bool = True,
+    debug: bool = False,
+) -> nx.MultiGraph:
+    """Reconnect degree-0/degree-1 nodes to nearby nodes via skeleton path."""
+    if reconnect_threshold <= 0:
+        return G
+    if max_new_edges_per_node < 1:
+        return G
+    if not isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
+        raise ValueError("This function is designed for MultiGraphs")
+
+    vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
+    vs_arr = np.asarray(vs, dtype=float)
+
+    valid_nodes = [n for n in G.nodes if "pos" in G.nodes[n]]
+    if len(valid_nodes) < 2:
+        return G
+
+    target_nodes = []
+    for node in valid_nodes:
+        degree = G.degree[node]
+        if degree >= 1:
+            target_nodes.append(node)
+    if len(target_nodes) < 1:
+        return G
+
+    source_nodes = []
+    for node in valid_nodes:
+        degree = G.degree[node]
+        if degree == 0 or (include_degree1 and degree == 1):
+            source_nodes.append(node)
+    if not source_nodes:
+        return G
+
+    target_coords = np.array([G.nodes[n]["pos"] for n in target_nodes], dtype=float)
+    tree = cKDTree(target_coords)
+
+    candidate_pairs = []
+    for src in source_nodes:
+        src_pos = np.array(G.nodes[src]["pos"], dtype=float)
+        idxs = tree.query_ball_point(src_pos, reconnect_threshold)
+        for idx in idxs:
+            tgt = target_nodes[idx]
+            if tgt == src:
+                continue
+            if G.has_edge(src, tgt):
+                continue
+            dist = float(np.linalg.norm(src_pos - np.array(G.nodes[tgt]["pos"], dtype=float)))
+            if dist <= reconnect_threshold:
+                candidate_pairs.append((dist, src, tgt))
+
+    if not candidate_pairs:
+        return G
+
+    heapq.heapify(candidate_pairs)
+    added_edges_per_node = {n: 0 for n in source_nodes}
+    reconnect_count = 0
+
+    while candidate_pairs:
+        dist, src, tgt = heapq.heappop(candidate_pairs)
+        if not G.has_node(src) or not G.has_node(tgt):
+            continue
+        if "pos" not in G.nodes[src] or "pos" not in G.nodes[tgt]:
+            continue
+        if G.has_edge(src, tgt):
+            continue
+        if added_edges_per_node.get(src, 0) >= max_new_edges_per_node:
+            continue
+        if G.degree[src] > 1 and include_degree1:
+            continue
+
+        src_pos = np.array(G.nodes[src]["pos"], dtype=float)
+        tgt_pos = np.array(G.nodes[tgt]["pos"], dtype=float)
+        voxel_path = None
+
+        if validate_reconnections and skeleton_data is not None:
+            connection_valid, voxel_path = validate_skeleton_connection(
+                skeleton_data,
+                src_pos,
+                tgt_pos,
+                max_gap=reconnect_threshold,
+                voxel_size=vs,
+            )
+            if not connection_valid:
+                continue
+            if voxel_path:
+                phys_path = [(np.array(p, dtype=float) * vs_arr).tolist() for p in voxel_path]
+            else:
+                phys_path = [src_pos.tolist(), tgt_pos.tolist()]
+        else:
+            phys_path = [src_pos.tolist(), tgt_pos.tolist()]
+
+        length = (
+            len(voxel_path) * float(np.linalg.norm(vs_arr))
+            if voxel_path
+            else float(np.linalg.norm(tgt_pos - src_pos))
+        )
+        add_edge_safe(
+            G,
+            src,
+            tgt,
+            weight=max(length, 1e-6),
+            length=length,
+            voxels=phys_path,
+            reconnected=True,
+            orphan_reconnect=True,
+            validated=bool(validate_reconnections and skeleton_data is not None),
+        )
+        added_edges_per_node[src] = added_edges_per_node.get(src, 0) + 1
+        reconnect_count += 1
+
+    if debug and reconnect_count > 0:
+        logger.info("Reconnected %d orphan/dangling node edge(s)", reconnect_count)
+    return G
