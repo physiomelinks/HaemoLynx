@@ -40,7 +40,8 @@ ILASTIK_OUTPUT_SUFFIX = ".tif"
 USE_LARGE_VESSEL_MASKS = False
 # Toggle large-vessel input mode:
 # - False: use pre-segmented arteriole/venule masks from LARGE_*_MASK_PATH.
-# - True: use raw arteriole/venule images and segment both with ilastik.
+# - True: use raw arteriole and artery/venule and vein images and segment both with ilastik.
+# If true, these vessels should be the largest vessels, that will not be modelled in the graph.
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 LARGE_VESSEL_MASK_DILATION_MICRONS = 0.0
 
