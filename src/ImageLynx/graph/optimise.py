@@ -6,10 +6,17 @@ import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
 
-from ._helpers import add_edge_safe
+from ._helpers import add_edge_safe, calculate_path_length
 from .validate import validate_skeleton_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _physical_path_length(points) -> float:
+    """Compute 3D polyline length in physical units."""
+    if not points or len(points) < 2:
+        return 0.0
+    return float(calculate_path_length(points))
 
 
 def optimise_graph_topology_fixed(
@@ -105,12 +112,13 @@ def optimise_graph_topology_fixed(
                         phys_path = [(np.array(p, dtype=float) * vs_arr).tolist() for p in voxel_path]
                     else:
                         phys_path = [src_pos.tolist(), tgt_pos.tolist()]
+                    path_length = _physical_path_length(phys_path)
                     add_edge_safe(
                         G,
                         src,
                         tgt,
                         weight=max(dist, 1e-6),
-                        length=len(voxel_path) * float(np.linalg.norm(vs_arr)) if voxel_path else dist,
+                        length=path_length if path_length > 0 else dist,
                         voxels=phys_path,
                         reconnected=True,
                         validated=True,
@@ -244,11 +252,9 @@ def reconnect_orphan_and_dangling_nodes(
         else:
             phys_path = [src_pos.tolist(), tgt_pos.tolist()]
 
-        length = (
-            len(voxel_path) * float(np.linalg.norm(vs_arr))
-            if voxel_path
-            else float(np.linalg.norm(tgt_pos - src_pos))
-        )
+        length = _physical_path_length(phys_path)
+        if length <= 0:
+            length = float(np.linalg.norm(tgt_pos - src_pos))
         add_edge_safe(
             G,
             src,

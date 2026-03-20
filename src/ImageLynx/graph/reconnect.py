@@ -12,6 +12,14 @@ from skimage.graph import route_through_array
 logger = logging.getLogger(__name__)
 
 
+def _path_length_3d(points) -> float:
+    """Compute 3D polyline length from physical coordinates."""
+    if not points or len(points) < 2:
+        return 0.0
+    arr = np.asarray(points, dtype=float)
+    return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
+
+
 def reconnect_secondary_loop_edges(
     G,
     skeleton,
@@ -242,6 +250,7 @@ def reconnect_secondary_loop_edges(
                                 )
                             continue
                         vox3d = (abs_coords * np.array(voxel_size)).tolist()
+                        path_length_3d = _path_length_3d(vox3d)
                         unique_voxels = len(new_set - orig_set)
                         path_novelty = unique_voxels / len(new_set)
                         best_paths.append(
@@ -249,7 +258,7 @@ def reconnect_secondary_loop_edges(
                                 "voxels": vox3d,
                                 "overlap": overlap,
                                 "deviation": hausdorff_dist,
-                                "length": path_length,
+                                "length": path_length_3d if path_length_3d > 0 else float(path_length),
                                 "cost": cost,
                                 "novelty": path_novelty,
                                 "voxel_similarity": path_similarity,

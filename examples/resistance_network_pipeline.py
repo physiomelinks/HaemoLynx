@@ -67,6 +67,7 @@ SHOW_PLOTS_IN_IDE = True
 IDE_PLOT_MODE = "final_only"
 # Keep matplotlib windows open at the end of the run when plotting to IDE.
 HOLD_IDE_PLOTS_OPEN = True
+FINAL_RENDER_MODE = "3d"  # "2d" or "3d"
 VTK_export = True
 STATISTICS = False
 # "fast" uses bounded/approximate graph metrics to avoid long runtimes.
@@ -85,6 +86,9 @@ SKELETON_MIN_BRANCH_LENGTH = 3
 SKELETON_MAX_BRIDGE_DISTANCE = 4
 SKELETON_COMPONENT_CONNECTIVITY = 3
 GRAPH_RECONNECT_THRESHOLD = 10.0
+# Keep final orphan/dangling reconnect local-only to avoid creating
+# long cross-links in dense regions.
+FINAL_ORPHAN_RECONNECT_THRESHOLD = 3.0
 MIN_STUB_LENGTH = 10.0
 CLUSTER_COLLAPSE_DISTANCE = 5.0
 # Keep only connected components at or above this percentage of total
@@ -192,6 +196,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             skeleton_component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT,
                             graph_reconnect_threshold=GRAPH_RECONNECT_THRESHOLD,
+                            final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
                             set_input_node_method=SET_INPUT_NODE_METHOD,
                             set_output_node_method=SET_OUTPUT_NODE_METHOD,
                             starting_node_coordinates=STARTING_NODE_COORDINATES,
@@ -211,6 +216,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             show_plots_in_ide=SHOW_PLOTS_IN_IDE,
                             ide_plot_mode=IDE_PLOT_MODE,
                             hold_ide_plots_open=HOLD_IDE_PLOTS_OPEN,
+                            final_render_mode=FINAL_RENDER_MODE,
                             visualize_vtk=VISUALIZE_VTK,
                             statistics_mode=STATISTICS_MODE) -> None:
     image_path = Path(image_path)
@@ -221,6 +227,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         raise ValueError(f"Invalid image format: {input_format}")
     vtk_output_prefix = Path(vtk_output_prefix)
     output_dir = vtk_output_prefix.parent
+    valid_final_render_modes = {"2d", "3d"}
+    if final_render_mode not in valid_final_render_modes:
+        raise ValueError(
+            f"Invalid final_render_mode='{final_render_mode}'. "
+            f"Choose one of {sorted(valid_final_render_modes)}."
+        )
 
     logging.basicConfig(
         level=logging.DEBUG if verbose_logging else logging.INFO,
@@ -433,7 +445,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         G = graph.reconnect_orphan_and_dangling_nodes(
             G,
             skeleton_data=skeleton,
-            reconnect_threshold=graph_reconnect_threshold,
+            reconnect_threshold=final_orphan_reconnect_threshold,
             include_degree1=True,
             max_new_edges_per_node=1,
             validate_reconnections=True,
@@ -453,7 +465,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         G = graph.smart_multigraph_degree2_removal(
             G,
             skeleton,
-            max_degree=degree2_pass2_max_degree,
+            max_degree=4,
             debug=verbose_logging,
         )
         _save_graph_snapshot(
@@ -484,9 +496,24 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
     
-    # Visualize node labels for debugging/verification of auto-selected boundary nodes.
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=False, save_path=plot_dir / "final_graph.png", 
-                                            show_coordinates_degree_1=True)
+    # Visualize final graph used for boundary-node verification.
+    if final_render_mode == "3d":
+        final_graph_3d_path = plot_dir / "final_graph_3d.html"
+        visualization.visualize_3d_plotly(
+            G,
+            title="Final Graph (Interactive 3D)",
+            save_html_path=str(final_graph_3d_path),
+            show=show_plots_in_ide or interactive_plots,
+        )
+        print(f"Saved interactive 3D final graph to: {final_graph_3d_path}")
+    else:
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=False,
+            save_path=plot_dir / "final_graph.png",
+            show_coordinates_degree_1=True,
+        )
 
     starting_nodes[:] = []
     output_nodes[:] = []
@@ -672,7 +699,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             )
         show_any_ide_plot = show_plots_in_ide and ide_plot_mode != "none"
         show_degree_plot = show_plots_in_ide and ide_plot_mode == "all"
-        show_overlay_plot = show_any_ide_plot
+        show_overlay_plot = show_any_ide_plot and final_render_mode == "2d"
+        show_3d_plot = show_any_ide_plot and final_render_mode == "3d"
         show_branch_order_plot = show_plots_in_ide and ide_plot_mode == "all"
         visualization.plot_node_degree_distribution(
             G,
@@ -680,14 +708,24 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             show=interactive_plots or show_degree_plot,
             show_after_save=show_degree_plot and not interactive_plots,
         )
-        visualization.visualize_edges_and_nodes(
-            image,
-            G,
-            save_path=None if interactive_plots else plot_dir / "edges_and_nodes_overlay.png",
-            show=interactive_plots or show_overlay_plot,
-            show_after_save=show_overlay_plot and not interactive_plots,
-        )
-        # visualization.interactive_3d_graph(G)
+        if final_render_mode == "3d":
+            overlay_3d_path = None if interactive_plots else plot_dir / "edges_and_nodes_overlay_3d.html"
+            visualization.visualize_3d_plotly(
+                G,
+                title="Edges and Nodes Overlay (Interactive 3D)",
+                save_html_path=str(overlay_3d_path) if overlay_3d_path else None,
+                show=interactive_plots or show_3d_plot,
+            )
+            if overlay_3d_path is not None:
+                print(f"Saved interactive 3D overlay to: {overlay_3d_path}")
+        else:
+            visualization.visualize_edges_and_nodes(
+                image,
+                G,
+                save_path=None if interactive_plots else plot_dir / "edges_and_nodes_overlay.png",
+                show=interactive_plots or show_overlay_plot,
+                show_after_save=show_overlay_plot and not interactive_plots,
+            )
         #HD note - need visualisation of pericyte localisations (ie based upon constriction data)
         
         if starting_nodes:
