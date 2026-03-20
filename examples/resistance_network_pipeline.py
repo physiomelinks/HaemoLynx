@@ -43,6 +43,7 @@ USE_LARGE_VESSEL_MASKS = False
 # - True: use raw arteriole/venule images and segment both with ilastik.
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 LARGE_VESSEL_MASK_DILATION_MICRONS = 0.0
+
 LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
 LARGE_VENULE_MASK_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
 ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
@@ -52,15 +53,10 @@ ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule
 BASE_PLOT_DIR = root_dir / "examples" / "plots" 
 if not BASE_PLOT_DIR.exists():
     BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
-# STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
-# end of the image.
-SET_INPUT_NODE_METHOD = "coordinates" # "coordinates" or "edge_percent"
-SET_OUTPUT_NODE_METHOD = "degree_1_from_starting" # "coordinates" or "edge_percent"
-DISTANCE_FROM_STARTING_NODE = 300.0
-EDGE_PERCENT = 10.0
-END_PERCENT = 10.0
-# For 3D skeletons this is usually the y-axis in (z, y, x).
-NODE_EDGE_AXIS = 1
+# Boundary-node assignment modes:
+# - Manual: set AUTOMATED_VESSEL_ASSIGNMENT=False and supply STARTING_NODE_COORDINATES and OUTPUT_NODE_COORDINATES.
+# - Automated: set AUTOMATED_VESSEL_ASSIGNMENT=True and use large-vessel masks.
+AUTOMATED_VESSEL_ASSIGNMENT = False
 STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0), # top right
                              (202.0, 1303.0, 132.0), (104.0, 1321.0, 133.0), #bottom left
                              (361.0, 332.0, 120.0), (321.0, 334.0, 163.0)] #top right
@@ -207,6 +203,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
                             use_ilastik_large_vessel_segmentation=USE_ILASTIK_LARGE_VESSEL_SEGMENTATION,
                             large_vessel_mask_dilation_microns=LARGE_VESSEL_MASK_DILATION_MICRONS,
+                            automated_vessel_assignment=AUTOMATED_VESSEL_ASSIGNMENT,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
                             large_venule_mask_path=LARGE_VENULE_MASK_PATH,
                             ilastik_unsegmented_arteriole_image_path=ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH,
@@ -233,16 +230,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT,
                             graph_reconnect_threshold=GRAPH_RECONNECT_THRESHOLD,
                             final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
-                            set_input_node_method=SET_INPUT_NODE_METHOD,
-                            set_output_node_method=SET_OUTPUT_NODE_METHOD,
                             starting_node_coordinates=STARTING_NODE_COORDINATES,
                             output_node_coordinates=OUTPUT_NODE_COORDINATES,
                             starting_node_volumes=STARTING_NODE_VOLUMES,
                             output_node_volumes=OUTPUT_NODE_VOLUMES,
-                            distance_from_starting_node=DISTANCE_FROM_STARTING_NODE,
-                            edge_percent=EDGE_PERCENT, 
-                            end_percent=END_PERCENT, 
-                            node_edge_axis=NODE_EDGE_AXIS, 
                             starting_nodes=STARTING_NODES, 
                             output_nodes=OUTPUT_NODES, 
                             input_p_bc=INPUT_P_BC, 
@@ -739,40 +730,103 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             show_coordinates_degree_1=True,
         )
 
+    auto_start_nodes: list[int] = []
+    auto_output_nodes: list[int] = []
+    if automated_vessel_assignment:
+        if large_arteriole_mask is None or large_venule_mask is None:
+            raise ValueError(
+                "automated_vessel_assignment=True requires arteriole and venule masks. "
+                "Set use_large_vessel_masks=True and provide mask paths."
+            )
+        auto_start_nodes, auto_output_nodes = (
+            graph.select_terminal_nodes_from_large_vessel_masks(
+                G,
+                large_arteriole_mask=large_arteriole_mask,
+                large_venule_mask=large_venule_mask,
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                allow_overlap=False,
+            )
+        )
+        if not auto_start_nodes:
+            raise ValueError(
+                "automated_vessel_assignment=True found no terminal nodes in the "
+                "arteriole mask (after any configured dilation)."
+            )
+        if not auto_output_nodes:
+            raise ValueError(
+                "automated_vessel_assignment=True found no terminal nodes in the "
+                "venule mask (after any configured dilation)."
+            )
+        starting_node_coordinates = [
+            tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
+            for node_id in auto_start_nodes
+        ]
+        output_node_coordinates = [
+            tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
+            for node_id in auto_output_nodes
+        ]
+        automated_assignment_html_path = plot_dir / "automated_vessel_assignment_3d.html"
+        wrote_assignment_html = graph.write_automated_vessel_assignment_3d_html(
+            G,
+            large_arteriole_mask=large_arteriole_mask,
+            large_venule_mask=large_venule_mask,
+            input_nodes=auto_start_nodes,
+            output_nodes=auto_output_nodes,
+            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            output_html_path=automated_assignment_html_path,
+        )
+        if wrote_assignment_html:
+            print(
+                "Saved automated vessel-assignment 3D visualization to: "
+                f"{automated_assignment_html_path}"
+            )
+        else:
+            print(
+                "Skipped automated vessel-assignment 3D visualization "
+                "(plotly is not installed)."
+            )
+        print(
+            "Automated vessel assignment selected "
+            f"{len(starting_node_coordinates)} input coordinates from arteriole-mask overlap "
+            f"and {len(output_node_coordinates)} output coordinates from venule-mask overlap."
+        )
+
     starting_nodes[:] = []
     output_nodes[:] = []
-    start_nodes = graph.select_boundary_nodes_by_method(
-        G,
-        image.shape,
-        method=set_input_node_method,
-        node_role="input",
-        coordinates=starting_node_coordinates,
-        volume_boxes=starting_node_volumes,
-        edge_percent=edge_percent,
-        end_percent=end_percent,
-        axis=node_edge_axis,
-    )
-    out_nodes = graph.select_boundary_nodes_by_method(
-        G,
-        image.shape,
-        method=set_output_node_method,
-        node_role="output",
-        coordinates=output_node_coordinates,
-        volume_boxes=output_node_volumes,
-        edge_percent=edge_percent,
-        end_percent=end_percent,
-        axis=node_edge_axis,
-        exclude_nodes=start_nodes,
-        starting_nodes_for_distance=start_nodes,
-        distance_from_starting_node=distance_from_starting_node,
-    )
+    if automated_vessel_assignment:
+        # Use direct terminal-node overlap assignment from vessel masks.
+        start_nodes = auto_start_nodes
+        out_nodes = [node_id for node_id in auto_output_nodes if node_id not in set(start_nodes)]
+    else:
+        start_nodes = graph.select_boundary_nodes_by_method(
+            G,
+            image.shape,
+            method="coordinates",
+            node_role="input",
+            coordinates=starting_node_coordinates,
+            volume_boxes=starting_node_volumes,
+        )
+        out_nodes = graph.select_boundary_nodes_by_method(
+            G,
+            image.shape,
+            method="coordinates",
+            node_role="output",
+            coordinates=output_node_coordinates,
+            volume_boxes=output_node_volumes,
+            exclude_nodes=start_nodes,
+        )
     starting_nodes.extend(start_nodes)
     output_nodes.extend(out_nodes)
-    print(
-        f"Selected {len(starting_nodes)} STARTING_NODES using "
-        f"method='{set_input_node_method}' and {len(output_nodes)} OUTPUT_NODES "
-        f"using method='{set_output_node_method}'."
-    )
+    if automated_vessel_assignment:
+        print(
+            f"Selected {len(starting_nodes)} STARTING_NODES and {len(output_nodes)} "
+            "OUTPUT_NODES directly from terminal-node overlap with vessel masks."
+        )
+    else:
+        print(
+            f"Selected {len(starting_nodes)} STARTING_NODES and {len(output_nodes)} "
+            "OUTPUT_NODES from manual coordinates."
+        )
     print(f"Starting nodes are: {starting_nodes}")
     print(f"Output nodes are: {output_nodes}")
 
@@ -780,7 +834,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         resistance_node_pair = (starting_nodes[0], output_nodes[0])
         print(f"Auto-selected resistance node pair: {resistance_node_pair}")
     else:
-        raise ValueError(f"No starting or output nodes found in input {edge_percent}% or output {end_percent}%")
+        if automated_vessel_assignment:
+            raise ValueError(
+                "No starting or output nodes found from terminal-node overlap with "
+                "arteriole/venule masks."
+            )
+        raise ValueError(
+            "No starting or output nodes found from manual input coordinates."
+        )
 
     # 4) Add branch orders and hemodynamic edge weights.
     #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
