@@ -42,6 +42,7 @@ USE_LARGE_VESSEL_MASKS = False
 # - False: use pre-segmented arteriole/venule masks from LARGE_*_MASK_PATH.
 # - True: use raw arteriole/venule images and segment both with ilastik.
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
+LARGE_VESSEL_MASK_DILATION_MICRONS = 0.0
 LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
 LARGE_VENULE_MASK_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
 ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
@@ -205,6 +206,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             ilastik_output_suffix=ILASTIK_OUTPUT_SUFFIX,
                             use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
                             use_ilastik_large_vessel_segmentation=USE_ILASTIK_LARGE_VESSEL_SEGMENTATION,
+                            large_vessel_mask_dilation_microns=LARGE_VESSEL_MASK_DILATION_MICRONS,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
                             large_venule_mask_path=LARGE_VENULE_MASK_PATH,
                             ilastik_unsegmented_arteriole_image_path=ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH,
@@ -507,6 +509,19 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "Voxel-size check passed. Arteriole and venule masks are aligned "
             "to the same physical voxel units as the main image."
         )
+        if large_vessel_mask_dilation_microns > 0:
+            large_arteriole_mask, large_venule_mask = (
+                graph.dilate_large_vessel_masks_by_microns(
+                    large_arteriole_mask=large_arteriole_mask,
+                    large_venule_mask=large_venule_mask,
+                    dilation_microns=large_vessel_mask_dilation_microns,
+                    voxel_size_xyz=main_voxel_size_xyz,
+                )
+            )
+            print(
+                "Dilated large-vessel masks by "
+                f"{float(large_vessel_mask_dilation_microns):.3f} microns."
+            )
     else:
         print("Large-vessel masks disabled; skipping arteriole/venule mask loading.")
 
