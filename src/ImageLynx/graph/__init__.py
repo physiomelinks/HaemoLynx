@@ -17,6 +17,7 @@ from .branch_order import assign_branch_orders, assign_hierarchical_branch_order
 from .boundaries import select_boundary_terminal_nodes, select_boundary_nodes_by_method
 from .automated_vessel_assignment import (
     compute_overlapping_terminal_assignment_metrics,
+    infer_boundary_nodes_from_small_vessel_masks,
     resolve_overlapping_terminal_node_assignment,
     select_terminal_nodes_from_large_vessel_masks,
     write_automated_vessel_assignment_3d_html,
@@ -72,6 +73,7 @@ __all__ = [
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
     "compute_overlapping_terminal_assignment_metrics",
+    "infer_boundary_nodes_from_small_vessel_masks",
     "resolve_overlapping_terminal_node_assignment",
     "select_terminal_nodes_from_large_vessel_masks",
     "write_automated_vessel_assignment_3d_html",
