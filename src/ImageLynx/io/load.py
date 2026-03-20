@@ -16,6 +16,64 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _coerce_triplet(value) -> tuple[float, float, float] | None:
+    """Convert HDF5 attr values to a 3-float tuple when possible."""
+    if value is None:
+        return None
+    arr = np.asarray(value).astype(float).ravel()
+    if arr.size == 1:
+        v = float(arr[0])
+        return (v, v, v)
+    if arr.size >= 3:
+        return (float(arr[0]), float(arr[1]), float(arr[2]))
+    return None
+
+
+def _extract_h5_voxel_size(dataset, h5_file) -> tuple[float, float, float]:
+    """Extract (x, y, z) voxel size from common HDF5 attribute conventions."""
+    attrs = {}
+    for source in (h5_file.attrs, dataset.attrs):
+        for key in source.keys():
+            attrs[str(key).lower()] = source[key]
+
+    # Most common in microscopy exports: element_size_um is usually stored as (z, y, x).
+    if "element_size_um" in attrs:
+        zyx = _coerce_triplet(attrs["element_size_um"])
+        if zyx is not None:
+            z, y, x = zyx
+            return (x, y, z)
+
+    # Common generic triplet keys; assume they are already ordered (x, y, z).
+    for key in ("voxel_size", "voxel_size_um", "pixelsize", "pixel_size", "resolution"):
+        if key in attrs:
+            xyz = _coerce_triplet(attrs[key])
+            if xyz is not None:
+                return xyz
+
+    # Axis-specific metadata keys.
+    x = y = z = None
+    x_keys = ("voxel_size_x", "x_voxel_size", "spacing_x", "x_spacing", "resolution_x")
+    y_keys = ("voxel_size_y", "y_voxel_size", "spacing_y", "y_spacing", "resolution_y")
+    z_keys = ("voxel_size_z", "z_voxel_size", "spacing_z", "z_spacing", "resolution_z", "spacing")
+    for key in x_keys:
+        if key in attrs:
+            x = float(np.asarray(attrs[key]).astype(float).ravel()[0])
+            break
+    for key in y_keys:
+        if key in attrs:
+            y = float(np.asarray(attrs[key]).astype(float).ravel()[0])
+            break
+    for key in z_keys:
+        if key in attrs:
+            z = float(np.asarray(attrs[key]).astype(float).ravel()[0])
+            break
+
+    if x is not None and y is not None and z is not None:
+        return (x, y, z)
+
+    return (1.0, 1.0, 1.0)
+
+
 def resolve_image_path_with_optional_zip(image_path: str | Path) -> Path:
     """Return an existing image path, extracting from a nearby zip when needed."""
     image_path = Path(image_path)
@@ -154,7 +212,8 @@ def load_and_skeletonize_3d_h5(
     filepath: str,
     dataset_name: str | None = None,
 ):
-
+    if h5py is None:
+        raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
     if dataset_name is None:
         path = Path(filepath)
         if path.suffix != ".h5":
@@ -170,7 +229,9 @@ def load_and_skeletonize_3d_h5(
                 f"Dataset '{dataset_name}' not found in {filepath}. "
                 f"Available datasets: {available}"
             )
-        image = np.array(f[dataset_name])
+        dataset = f[dataset_name]
+        image = np.array(dataset)
+        voxel_size_x, voxel_size_y, voxel_size_z = _extract_h5_voxel_size(dataset, f)
 
     logger.debug("Original image shape: %s", image.shape)
     logger.debug("Simplified image shape: %s", image.shape)
@@ -181,5 +242,5 @@ def load_and_skeletonize_3d_h5(
 
     binary = image.astype(bool)
     skeleton = skeletonize_3d(binary)
-    return image, skeleton
+    return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z
 

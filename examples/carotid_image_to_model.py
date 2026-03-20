@@ -156,7 +156,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         elif input_format == "h5":
             if not H5_DATASET_NAME:
                 raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
-            image, skeleton = io.load_and_skeletonize_3d_h5(
+            image, skeleton, _voxel_size_x, _voxel_size_y, _voxel_size_z = io.load_and_skeletonize_3d_h5(
                 image_path,
                 H5_DATASET_NAME,
                 closing_radius=skeleton_closing_radius,
