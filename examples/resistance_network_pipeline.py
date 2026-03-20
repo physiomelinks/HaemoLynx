@@ -51,6 +51,17 @@ ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "l
 ILASTIK_UNSEGMENTED_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
 ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "arteriole_classifier.ilp"
 ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
+# Small-vessel masks can be used to auto-detect arteriole/venule boundary nodes
+# (mask-to-capillary transition points) for hierarchical Art/Ven/B branch ordering.
+USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
+USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
+SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
+SMALL_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
+SMALL_VENULE_MASK_PATH = root_dir / "examples" / "images" / "small_venule_mask.tif"
+ILASTIK_UNSEGMENTED_SMALL_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
+ILASTIK_UNSEGMENTED_SMALL_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "small_venule_mask.tif"
+ILASTIK_SMALL_ARTERIOLE_CLASSIFIER_PATH = ILASTIK_ARTERIOLE_CLASSIFIER_PATH
+ILASTIK_SMALL_VENULE_CLASSIFIER_PATH = ILASTIK_VENULE_CLASSIFIER_PATH
 BASE_PLOT_DIR = root_dir / "examples" / "plots" 
 if not BASE_PLOT_DIR.exists():
     BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,6 +69,13 @@ if not BASE_PLOT_DIR.exists():
 # - Manual: set AUTOMATED_VESSEL_ASSIGNMENT=False and supply STARTING_NODE_COORDINATES and OUTPUT_NODE_COORDINATES.
 # - Automated: set AUTOMATED_VESSEL_ASSIGNMENT=True and use large-vessel masks.
 AUTOMATED_VESSEL_ASSIGNMENT = False
+# Manual node-selection methods (when AUTOMATED_VESSEL_ASSIGNMENT=False):
+# - "coordinates": choose nearest degree-1 node to each provided point
+# - "volume": choose all degree-1 nodes inside provided volume boxes
+STARTING_NODE_SELECTION_METHOD = "coordinates"
+OUTPUT_NODE_SELECTION_METHOD = "coordinates"
+ARTERIOLE_BOUNDARY_SELECTION_METHOD = "coordinates"
+VENULE_BOUNDARY_SELECTION_METHOD = "coordinates"
 STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0), # top right
                              (202.0, 1303.0, 132.0), (104.0, 1321.0, 133.0), #bottom left
                              (361.0, 332.0, 120.0), (321.0, 334.0, 163.0)] #top right
@@ -65,6 +83,10 @@ STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0), # top
 OUTPUT_NODE_COORDINATES = []
 ARTERIOLE_BOUNDARY_NODE_COORDINATES = []
 VENULE_BOUNDARY_NODE_COORDINATES = []
+#Assign by volume boxes
+# - Volume boxes: set USE_VOLUME_BOXES=True and supply STARTING_NODE_VOLUMES and OUTPUT_NODE_VOLUMES.
+# - Coordinates: set USE_VOLUME_BOXES=False and supply STARTING_NODE_COORDINATES and OUTPUT_NODE_COORDINATES.
+USE_VOLUME_BOXES = False
 STARTING_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 OUTPUT_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
@@ -198,13 +220,22 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
                             use_ilastik_large_vessel_segmentation=USE_ILASTIK_LARGE_VESSEL_SEGMENTATION,
                             large_vessel_mask_dilation_microns=LARGE_VESSEL_MASK_DILATION_MICRONS,
+                            use_small_vessel_masks_for_boundary_assignment=USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT,
+                            use_ilastik_small_vessel_segmentation=USE_ILASTIK_SMALL_VESSEL_SEGMENTATION,
+                            small_vessel_mask_min_overlap_fraction=SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION,
                             automated_vessel_assignment=AUTOMATED_VESSEL_ASSIGNMENT,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
                             large_venule_mask_path=LARGE_VENULE_MASK_PATH,
+                            small_arteriole_mask_path=SMALL_ARTERIOLE_MASK_PATH,
+                            small_venule_mask_path=SMALL_VENULE_MASK_PATH,
                             ilastik_unsegmented_arteriole_image_path=ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH,
                             ilastik_unsegmented_venule_image_path=ILASTIK_UNSEGMENTED_VENULE_IMAGE_PATH,
                             ilastik_arteriole_classifier_path=ILASTIK_ARTERIOLE_CLASSIFIER_PATH,
                             ilastik_venule_classifier_path=ILASTIK_VENULE_CLASSIFIER_PATH,
+                            ilastik_unsegmented_small_arteriole_image_path=ILASTIK_UNSEGMENTED_SMALL_ARTERIOLE_IMAGE_PATH,
+                            ilastik_unsegmented_small_venule_image_path=ILASTIK_UNSEGMENTED_SMALL_VENULE_IMAGE_PATH,
+                            ilastik_small_arteriole_classifier_path=ILASTIK_SMALL_ARTERIOLE_CLASSIFIER_PATH,
+                            ilastik_small_venule_classifier_path=ILASTIK_SMALL_VENULE_CLASSIFIER_PATH,
                             diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
                             constriction_by_branch_order=CONSTRICTION_BY_BRANCH_ORDER,
                             do_pericyte_constriction=DO_PERICYTE_CONSTRUCTION,
@@ -225,6 +256,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT,
                             graph_reconnect_threshold=GRAPH_RECONNECT_THRESHOLD,
                             final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
+                            starting_node_selection_method=STARTING_NODE_SELECTION_METHOD,
+                            output_node_selection_method=OUTPUT_NODE_SELECTION_METHOD,
+                            arteriole_boundary_selection_method=ARTERIOLE_BOUNDARY_SELECTION_METHOD,
+                            venule_boundary_selection_method=VENULE_BOUNDARY_SELECTION_METHOD,
                             starting_node_coordinates=STARTING_NODE_COORDINATES,
                             output_node_coordinates=OUTPUT_NODE_COORDINATES,
                             arteriole_boundary_node_coordinates=ARTERIOLE_BOUNDARY_NODE_COORDINATES,
@@ -369,6 +404,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     effective_large_arteriole_mask_path = large_arteriole_mask_path
     effective_large_venule_mask_path = large_venule_mask_path
+    if not use_large_vessel_masks:
+        # Keep the loader contract strict: disabled mode must not receive mask paths.
+        effective_large_arteriole_mask_path = None
+        effective_large_venule_mask_path = None
     if use_large_vessel_masks and use_ilastik_large_vessel_segmentation:
         if ilastik_unsegmented_arteriole_image_path is None:
             raise ValueError(
@@ -516,6 +555,140 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             )
     else:
         print("Large-vessel masks disabled; skipping arteriole/venule mask loading.")
+
+    if (
+        use_ilastik_small_vessel_segmentation
+        and not use_small_vessel_masks_for_boundary_assignment
+    ):
+        raise ValueError(
+            "use_ilastik_small_vessel_segmentation=True requires "
+            "use_small_vessel_masks_for_boundary_assignment=True."
+        )
+
+    effective_small_arteriole_mask_path = small_arteriole_mask_path
+    effective_small_venule_mask_path = small_venule_mask_path
+    if not use_small_vessel_masks_for_boundary_assignment:
+        # Keep the loader contract strict: disabled mode must not receive mask paths.
+        effective_small_arteriole_mask_path = None
+        effective_small_venule_mask_path = None
+    if (
+        use_small_vessel_masks_for_boundary_assignment
+        and use_ilastik_small_vessel_segmentation
+    ):
+        if ilastik_unsegmented_small_arteriole_image_path is None:
+            raise ValueError(
+                "ilastik_unsegmented_small_arteriole_image_path must be set when "
+                "use_ilastik_small_vessel_segmentation=True."
+            )
+        if ilastik_unsegmented_small_venule_image_path is None:
+            raise ValueError(
+                "ilastik_unsegmented_small_venule_image_path must be set when "
+                "use_ilastik_small_vessel_segmentation=True."
+            )
+        if ilastik_small_arteriole_classifier_path is None:
+            raise ValueError(
+                "ilastik_small_arteriole_classifier_path must be set when "
+                "use_ilastik_small_vessel_segmentation=True."
+            )
+        if ilastik_small_venule_classifier_path is None:
+            raise ValueError(
+                "ilastik_small_venule_classifier_path must be set when "
+                "use_ilastik_small_vessel_segmentation=True."
+            )
+
+        ilastik_output_dir = Path(ilastik_output_dir)
+        unsegmented_small_arteriole_image_path = io.resolve_image_path_with_optional_zip(
+            Path(ilastik_unsegmented_small_arteriole_image_path)
+        )
+        unsegmented_small_venule_image_path = io.resolve_image_path_with_optional_zip(
+            Path(ilastik_unsegmented_small_venule_image_path)
+        )
+        ilastik_segmented_small_arteriole_path = ilastik_output_dir / (
+            f"{unsegmented_small_arteriole_image_path.stem}_segmented{ilastik_output_suffix}"
+        )
+        ilastik_segmented_small_venule_path = ilastik_output_dir / (
+            f"{unsegmented_small_venule_image_path.stem}_segmented{ilastik_output_suffix}"
+        )
+
+        print(
+            "Running ilastik segmentation for small arteriole image: "
+            f"{unsegmented_small_arteriole_image_path}"
+        )
+        effective_small_arteriole_mask_path = io.run_ilastik_headless_segmentation(
+            input_image_path=unsegmented_small_arteriole_image_path,
+            classifier_path=Path(ilastik_small_arteriole_classifier_path),
+            output_path=ilastik_segmented_small_arteriole_path,
+            ilastik_executable=ilastik_executable,
+        )
+        print(
+            "Running ilastik segmentation for small venule image: "
+            f"{unsegmented_small_venule_image_path}"
+        )
+        effective_small_venule_mask_path = io.run_ilastik_headless_segmentation(
+            input_image_path=unsegmented_small_venule_image_path,
+            classifier_path=Path(ilastik_small_venule_classifier_path),
+            output_path=ilastik_segmented_small_venule_path,
+            ilastik_executable=ilastik_executable,
+        )
+        print(
+            "Using ilastik-segmented small-vessel masks: "
+            f"arteriole={effective_small_arteriole_mask_path}, "
+            f"venule={effective_small_venule_mask_path}"
+        )
+
+    (
+        small_arteriole_mask,
+        small_venule_mask,
+        small_arteriole_mask_voxel_size,
+        small_venule_mask_voxel_size,
+    ) = io.load_large_vessel_masks(
+        enabled=use_small_vessel_masks_for_boundary_assignment,
+        large_arteriole_mask_path=effective_small_arteriole_mask_path,
+        large_venule_mask_path=effective_small_venule_mask_path,
+    )
+    if small_arteriole_mask is not None and small_venule_mask is not None:
+        if small_arteriole_mask.shape != image.shape:
+            raise ValueError(
+                "small_arteriole_mask shape does not match input image shape: "
+                f"{small_arteriole_mask.shape} != {image.shape}"
+            )
+        if small_venule_mask.shape != image.shape:
+            raise ValueError(
+                "small_venule_mask shape does not match input image shape: "
+                f"{small_venule_mask.shape} != {image.shape}"
+            )
+        main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
+        small_arteriole_voxel_size_xyz = tuple(
+            float(v) for v in small_arteriole_mask_voxel_size
+        )
+        small_venule_voxel_size_xyz = tuple(float(v) for v in small_venule_mask_voxel_size)
+        if not (
+            np.allclose(main_voxel_size_xyz, small_arteriole_voxel_size_xyz, rtol=0.0, atol=0.0)
+            and np.allclose(main_voxel_size_xyz, small_venule_voxel_size_xyz, rtol=0.0, atol=0.0)
+            and np.allclose(
+                small_arteriole_voxel_size_xyz,
+                small_venule_voxel_size_xyz,
+                rtol=0.0,
+                atol=0.0,
+            )
+        ):
+            raise ValueError(
+                "Voxel-size mismatch detected across input image and small-vessel masks. "
+                f"main={main_voxel_size_xyz}, "
+                f"small_arteriole={small_arteriole_voxel_size_xyz}, "
+                f"small_venule={small_venule_voxel_size_xyz}. "
+                "All must match exactly in x, y, and z."
+            )
+        print(
+            "Loaded small-vessel masks for boundary assignment: "
+            f"arteriole={small_arteriole_mask.shape}, venule={small_venule_mask.shape}, "
+            f"min_overlap_fraction={float(small_vessel_mask_min_overlap_fraction):.3f}"
+        )
+    else:
+        print(
+            "Small-vessel-mask boundary assignment disabled; "
+            "manual arteriole/venule boundary-node selection remains available."
+        )
 
     if do_graph_building:
         # 3) Convert skeleton to graph.
@@ -804,7 +977,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         start_nodes = graph.select_boundary_nodes_by_method(
             G,
             image.shape,
-            method="coordinates",
+            method=starting_node_selection_method,
             node_role="input",
             coordinates=starting_node_coordinates,
             volume_boxes=starting_node_volumes,
@@ -812,7 +985,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         out_nodes = graph.select_boundary_nodes_by_method(
             G,
             image.shape,
-            method="coordinates",
+            method=output_node_selection_method,
             node_role="output",
             coordinates=output_node_coordinates,
             volume_boxes=output_node_volumes,
@@ -825,7 +998,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         art_boundary = graph.select_boundary_nodes_by_method(
             G,
             image.shape,
-            method="coordinates",
+            method=arteriole_boundary_selection_method,
             node_role="input",
             coordinates=arteriole_boundary_node_coordinates,
             volume_boxes=arteriole_boundary_node_volumes,
@@ -838,13 +1011,43 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         ven_boundary = graph.select_boundary_nodes_by_method(
             G,
             image.shape,
-            method="coordinates",
+            method=venule_boundary_selection_method,
             node_role="output",
             coordinates=venule_boundary_node_coordinates,
             volume_boxes=venule_boundary_node_volumes,
             exclude_nodes=list(used_nodes),
         )
         venule_boundary_nodes.extend(ven_boundary)
+    if use_small_vessel_masks_for_boundary_assignment:
+        if small_arteriole_mask is None or small_venule_mask is None:
+            raise ValueError(
+                "use_small_vessel_masks_for_boundary_assignment=True requires "
+                "small_arteriole_mask_path and small_venule_mask_path."
+            )
+        inferred_boundary_results = graph.infer_boundary_nodes_from_small_vessel_masks(
+            G,
+            small_arteriole_mask=small_arteriole_mask,
+            small_venule_mask=small_venule_mask,
+            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            minimum_overlap_fraction=float(small_vessel_mask_min_overlap_fraction),
+            allow_overlap=False,
+        )
+        arteriole_boundary_nodes[:] = list(
+            inferred_boundary_results["arteriole_boundary_nodes"]
+        )
+        venule_boundary_nodes[:] = list(inferred_boundary_results["venule_boundary_nodes"])
+        print(
+            "Small-vessel mask boundary assignment selected "
+            f"{len(arteriole_boundary_nodes)} arteriole boundary nodes and "
+            f"{len(venule_boundary_nodes)} venule boundary nodes "
+            f"(min_overlap_fraction={float(small_vessel_mask_min_overlap_fraction):.3f})."
+        )
+        print(
+            "Small-vessel mask edge labels: "
+            f"arteriole_edges={inferred_boundary_results['arteriole_edge_count']}, "
+            f"venule_edges={inferred_boundary_results['venule_edge_count']}, "
+            f"overlap_edges={inferred_boundary_results['overlap_edge_count']}."
+        )
     if automated_vessel_assignment:
         print(
             f"Selected {len(starting_nodes)} STARTING_NODES and {len(output_nodes)} "

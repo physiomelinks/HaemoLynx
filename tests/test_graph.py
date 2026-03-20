@@ -17,6 +17,7 @@ from ImageLynx.graph import (
     assign_branch_orders,
     select_boundary_nodes_by_method,
     select_terminal_nodes_from_large_vessel_masks,
+    infer_boundary_nodes_from_small_vessel_masks,
     diagnose_degree2_nodes,
     format_degree2_diagnostics_report,
 )
@@ -246,4 +247,42 @@ def test_select_terminal_nodes_from_large_vessel_masks_excludes_overlap():
     assert start_nodes == [0]
     assert out_nodes == [1]
 
+
+def test_infer_boundary_nodes_from_small_vessel_masks():
+    G = nx.MultiGraph()
+    for node_id, pos in {
+        0: (0.0, 0.0, 0.0),
+        1: (1.0, 0.0, 0.0),
+        2: (2.0, 0.0, 0.0),
+        3: (3.0, 0.0, 0.0),
+        4: (4.0, 0.0, 0.0),
+        5: (5.0, 0.0, 0.0),
+    }.items():
+        G.add_node(node_id, pos=np.asarray(pos, dtype=float))
+
+    G.add_edge(0, 1, voxels=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], length=1.0, weight=1.0)
+    G.add_edge(1, 2, voxels=[(1.0, 0.0, 0.0), (2.0, 0.0, 0.0)], length=1.0, weight=1.0)
+    G.add_edge(2, 3, voxels=[(2.0, 0.0, 0.0), (3.0, 0.0, 0.0)], length=1.0, weight=1.0)
+    G.add_edge(3, 4, voxels=[(3.0, 0.0, 0.0), (4.0, 0.0, 0.0)], length=1.0, weight=1.0)
+    G.add_edge(4, 5, voxels=[(4.0, 0.0, 0.0), (5.0, 0.0, 0.0)], length=1.0, weight=1.0)
+
+    small_arteriole_mask = np.zeros((8, 4, 8), dtype=bool)
+    small_venule_mask = np.zeros((8, 4, 8), dtype=bool)
+    small_arteriole_mask[0:2, 0, 0] = True
+    small_venule_mask[4:6, 0, 0] = True
+
+    result = infer_boundary_nodes_from_small_vessel_masks(
+        G,
+        small_arteriole_mask=small_arteriole_mask,
+        small_venule_mask=small_venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        minimum_overlap_fraction=0.5,
+    )
+
+    assert result["arteriole_boundary_nodes"] == [2]
+    assert result["venule_boundary_nodes"] == [3]
+    assert result["arteriole_edge_count"] == 2
+    assert result["venule_edge_count"] == 2
+    assert G.nodes[2]["mask_vessel_type"] == "arteriole"
+    assert G.nodes[3]["mask_vessel_type"] == "venule"
 
