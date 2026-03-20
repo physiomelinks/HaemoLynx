@@ -69,6 +69,9 @@ IDE_PLOT_MODE = "final_only"
 HOLD_IDE_PLOTS_OPEN = True
 VTK_export = True
 STATISTICS = False
+# "fast" uses bounded/approximate graph metrics to avoid long runtimes.
+# "full" restores exact, potentially much slower statistics calculations.
+STATISTICS_MODE = "fast"
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
 DO_SKELETONIZE = True
@@ -208,7 +211,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             show_plots_in_ide=SHOW_PLOTS_IN_IDE,
                             ide_plot_mode=IDE_PLOT_MODE,
                             hold_ide_plots_open=HOLD_IDE_PLOTS_OPEN,
-                            visualize_vtk=VISUALIZE_VTK) -> None:
+                            visualize_vtk=VISUALIZE_VTK,
+                            statistics_mode=STATISTICS_MODE) -> None:
     image_path = Path(image_path)
     image_path = io.resolve_image_path_with_optional_zip(image_path)
     # get image format from image_path
@@ -422,6 +426,51 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "remove_edges_for_self_connected_nodes",
         )
 
+        # Final topology repair:
+        # 1) reconnect remaining orphan/dangling nodes only if a skeleton path
+        #    validates the link, then
+        # 2) remove any new degree-2 pass-through nodes that remain.
+        G = graph.reconnect_orphan_and_dangling_nodes(
+            G,
+            skeleton_data=skeleton,
+            reconnect_threshold=graph_reconnect_threshold,
+            include_degree1=True,
+            max_new_edges_per_node=1,
+            validate_reconnections=True,
+            debug=verbose_logging,
+        )
+        _save_graph_snapshot(
+            G, image, output_dir, plot_dir, image_path.stem,
+            "reconnect_orphan_and_dangling_nodes",
+        )
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            save_path=plot_dir / "reconnect_orphan_and_dangling_nodes.png",
+        )
+
+        G = graph.smart_multigraph_degree2_removal(
+            G,
+            skeleton,
+            max_degree=degree2_pass2_max_degree,
+            debug=verbose_logging,
+        )
+        _save_graph_snapshot(
+            G, image, output_dir, plot_dir, image_path.stem,
+            "smart_multigraph_degree2_removal_post_orphan_reconnect",
+        )
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            save_path=plot_dir / "smart_multigraph_degree2_removal_post_orphan_reconnect.png",
+        )
+        degree2_diag = graph.diagnose_degree2_nodes(
+            G, max_degree=degree2_pass2_max_degree
+        )
+        print(graph.format_degree2_diagnostics_report(degree2_diag))
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")
@@ -577,11 +626,18 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     # 7) Compute and print vessel statistics.
     print("\nComputing vessel statistics...")
     if STATISTICS:
+        valid_statistics_modes = {"fast", "full"}
+        if statistics_mode not in valid_statistics_modes:
+            raise ValueError(
+                f"Invalid statistics_mode='{statistics_mode}'. "
+                f"Choose one of {sorted(valid_statistics_modes)}."
+            )
         node_positions = nx.get_node_attributes(G, "pos")
         stats = statistics.compute_comprehensive_vessel_statistics(
             G,
             node_positions=node_positions,
             image_dimensions=image.shape,
+            statistics_mode=statistics_mode,
         )
 
         print("\n=== Statistics ===")
