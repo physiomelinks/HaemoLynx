@@ -101,8 +101,6 @@ STARTING_NODES: list[int] = []
 OUTPUT_NODES: list[int] = []
 ARTERIOLE_BOUNDARY_NODES: list[int] = []
 VENULE_BOUNDARY_NODES: list[int] = []
-# TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
-# TODO automate the selection of resistance node pairs
 # RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
 INPUT_P_BC = 4500# Pa 
 OUTPUT_P_BC = 1000 # Pa
