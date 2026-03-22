@@ -29,6 +29,25 @@ def test_fwhm_from_profile_gaussian_fit():
     assert abs(w - expected) < 0.2
 
 
+def test_robust_baseline_wings_one_sided_shoulder():
+    x = np.linspace(-8.0, 8.0, 161, dtype=float)
+    y = 100.0 * np.exp(-(x**2) / (2.0 * 1.5**2))
+    y = np.asarray(y, dtype=float).copy()
+    y[x > 4.0] += 40.0
+    b = automated.robust_baseline_from_profile_wings(x, y, wing_fraction=0.2)
+    assert b < 12.0
+
+
+def test_fwhm_percentile_and_wings_modes_symmetric_gaussian():
+    sigma = 1.5
+    x = np.linspace(-8.0, 8.0, 161, dtype=float)
+    y = 100.0 * np.exp(-(x**2) / (2.0 * sigma**2))
+    w_w = automated.fwhm_from_profile(x, y, profile_baseline_mode="wings")
+    w_p = automated.fwhm_from_profile(x, y, profile_baseline_mode="percentile")
+    assert w_w is not None and w_p is not None
+    assert abs(w_w - w_p) < 0.3
+
+
 def test_build_graph_branch_label_volume():
     G = nx.MultiGraph()
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))

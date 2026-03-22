@@ -220,6 +220,14 @@ FWHM_DIAMETER_GUESS_UM = 4.0
 FWHM_MIN_TOTAL_EXTENT_MULTIPLIER = 3.0
 FWHM_BACKGROUND_LABEL = 0
 FWHM_JUNCTION_LABEL = -1
+# Transverse profile baseline for Gaussian fit: "wings" uses outer medians (less shoulder
+# bias from neighbours); "percentile" uses global 10th percentile (legacy).
+FWHM_PROFILE_BASELINE_MODE = "wings"
+FWHM_PROFILE_BASELINE_WING_FRACTION = 0.2
+# If True, keep the fitted baseline near the wing/percentile anchor (stricter; try if
+# shoulders still bias the optimiser).
+FWHM_CONSTRAIN_FITTED_BASELINE = False
+FWHM_BASELINE_CONSTRAINT_HALF_WIDTH_PTP = 0.35
 
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= [
@@ -332,7 +340,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_diameter_guess_um=FWHM_DIAMETER_GUESS_UM,
                             fwhm_min_total_extent_multiplier=FWHM_MIN_TOTAL_EXTENT_MULTIPLIER,
                             fwhm_background_label=FWHM_BACKGROUND_LABEL,
-                            fwhm_junction_label=FWHM_JUNCTION_LABEL) -> None:
+                            fwhm_junction_label=FWHM_JUNCTION_LABEL,
+                            fwhm_profile_baseline_mode=FWHM_PROFILE_BASELINE_MODE,
+                            fwhm_profile_baseline_wing_fraction=FWHM_PROFILE_BASELINE_WING_FRACTION,
+                            fwhm_constrain_fitted_baseline=FWHM_CONSTRAIN_FITTED_BASELINE,
+                            fwhm_baseline_constraint_half_width_ptp=FWHM_BASELINE_CONSTRAINT_HALF_WIDTH_PTP) -> None:
     image_path = Path(image_path)
     if use_ilastik_segmentation:
         unsegmented_image_path = Path(ilastik_unsegmented_image_path)
@@ -1203,6 +1215,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 background_label=int(fwhm_background_label),
                 junction_label=int(fwhm_junction_label),
                 min_total_extent_multiplier=float(fwhm_min_total_extent_multiplier),
+                profile_baseline_mode=fwhm_profile_baseline_mode,
+                profile_baseline_wing_fraction=float(fwhm_profile_baseline_wing_fraction),
+                constrain_fitted_baseline=bool(fwhm_constrain_fitted_baseline),
+                baseline_constraint_half_width_ptp=float(
+                    fwhm_baseline_constraint_half_width_ptp
+                ),
             )
             print(f"FWHM diameter measurement summary: {fwhm_summary}")
             if do_pericyte_constriction:
