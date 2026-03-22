@@ -2,7 +2,9 @@
 
 At each sample along an edge, intensity along the perpendicular line is fit with a Gaussian
 plus baseline; vessel size is reported as the Gaussian **FWHM**,
-``2 * sqrt(2 ln 2) * σ`` (micrometers).
+``2 * sqrt(2 ln 2) * σ`` (micrometers). By default the baseline seed uses **outer wings**
+of the profile (see ``robust_baseline_from_profile_wings``) to reduce bias from a
+neighbour-induced shoulder on one side.
 
 Branch identity for clipping comes from an in-memory label volume rasterized from the graph
 (see ``build_graph_branch_label_volume``). Transverse extent follows the configured minimum
@@ -11,7 +13,7 @@ relative to the current FWHM estimate unless truncated at another edge or volume
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import networkx as nx
@@ -275,16 +277,69 @@ def _gaussian_fluorescence_1d(
     return baseline + amplitude * np.exp(-0.5 * ((x - float(x0)) / sig) ** 2)
 
 
+def robust_baseline_from_profile_wings(
+    x_sorted: np.ndarray,
+    y_sorted: np.ndarray,
+    wing_fraction: float = 0.2,
+) -> float:
+    """Baseline guess from outer ``wing_fraction`` of the line (by position).
+
+    Uses the **minimum** of the left-wing and right-wing intensity medians so a
+    neighbour-induced shoulder on **one** side does not raise the whole baseline.
+    """
+    if wing_fraction <= 0.0 or wing_fraction >= 0.5:
+        raise ValueError("wing_fraction must be in (0, 0.5).")
+    x = np.asarray(x_sorted, dtype=float).ravel()
+    y = np.asarray(y_sorted, dtype=float).ravel()
+    if x.size == 0:
+        raise ValueError("empty profile")
+    x_min = float(x[0])
+    x_max = float(x[-1])
+    span = x_max - x_min
+    if span <= 0:
+        return float(np.median(y))
+    lo_cut = x_min + wing_fraction * span
+    hi_cut = x_max - wing_fraction * span
+    left = y[x <= lo_cut]
+    right = y[x >= hi_cut]
+    if left.size == 0 and right.size == 0:
+        return float(np.median(y))
+    if left.size == 0:
+        return float(np.median(right))
+    if right.size == 0:
+        return float(np.median(left))
+    return float(min(np.median(left), np.median(right)))
+
+
 def fwhm_from_profile(
     positions_um: np.ndarray,
     intensities: np.ndarray,
     *,
     min_points: int = 5,
+    profile_baseline_mode: Literal["wings", "percentile"] = "wings",
+    profile_baseline_wing_fraction: float = 0.2,
+    constrain_fitted_baseline: bool = False,
+    baseline_constraint_half_width_ptp: float = 0.35,
 ) -> float | None:
     """FWHM (µm) from a least-squares Gaussian + baseline fit to the 1D intensity profile.
 
     The model is ``baseline + amplitude * exp(-(x - x0)^2 / (2 sigma^2))`` with
     ``amplitude > 0``. Returns ``FWHM = 2 * sqrt(2 ln 2) * sigma``.
+
+    Parameters
+    ----------
+    profile_baseline_mode :
+        ``wings`` (default): initial baseline from ``robust_baseline_from_profile_wings``,
+        which reduces bias when a neighbour adds a shoulder on one side of the profile.
+        ``percentile``: legacy initial guess via the 10th percentile of all samples.
+    profile_baseline_wing_fraction :
+        Fraction of line length (each end) used as wings when ``mode="wings"``.
+    constrain_fitted_baseline :
+        If True, restrict the fitted baseline to a band around the wing (or percentile)
+        guess so the optimiser cannot absorb a shoulder mostly into a higher baseline.
+    baseline_constraint_half_width_ptp :
+        Half-width of that band as a fraction of peak-to-peak intensity (only if
+        ``constrain_fitted_baseline`` is True).
     """
     x = np.asarray(positions_um, dtype=float).ravel()
     y = np.asarray(intensities, dtype=float).ravel()
@@ -304,15 +359,37 @@ def fwhm_from_profile(
 
     y_min, y_max = float(np.min(y)), float(np.max(y))
     y_ptp = max(y_max - y_min, 1e-12)
-    b0 = float(np.percentile(y, 10))
-    b0 = min(max(b0, y_min - y_ptp), y_max - 0.01 * y_ptp)
+
+    if profile_baseline_mode == "wings":
+        try:
+            b_anchor = robust_baseline_from_profile_wings(
+                x, y, wing_fraction=profile_baseline_wing_fraction
+            )
+        except ValueError:
+            b_anchor = float(np.percentile(y, 10))
+    elif profile_baseline_mode == "percentile":
+        b_anchor = float(np.percentile(y, 10))
+    else:
+        raise ValueError(
+            f"Unknown profile_baseline_mode={profile_baseline_mode!r}; "
+            "use 'wings' or 'percentile'."
+        )
+
+    b0 = min(max(b_anchor, y_min - y_ptp), y_max - 0.01 * y_ptp)
     amp0 = max(y_max - b0, y_ptp * 0.5, 1e-9)
     x0_guess = float(x[int(np.argmax(y))])
     sig0 = max(span / 5.0, sigma_min)
 
     p0 = np.array([b0, amp0, x0_guess, sig0], dtype=float)
-    b_lo = y_min - 5.0 * y_ptp
-    b_hi = y_max + 5.0 * y_ptp
+    half_w = float(baseline_constraint_half_width_ptp) * y_ptp
+    if constrain_fitted_baseline and half_w > 0:
+        b_lo = max(y_min - 0.5 * y_ptp, b_anchor - half_w)
+        b_hi = min(y_max + 0.5 * y_ptp, b_anchor + half_w)
+        if b_lo >= b_hi:
+            b_lo, b_hi = y_min - 2.0 * y_ptp, y_max + 2.0 * y_ptp
+    else:
+        b_lo = y_min - 5.0 * y_ptp
+        b_hi = y_max + 5.0 * y_ptp
     lo = np.array([b_lo, 1e-12, np.min(x) - span, sigma_min], dtype=float)
     hi = np.array([b_hi, max(y_max * 20.0, amp0 * 1e3), np.max(x) + span, span], dtype=float)
 
@@ -412,6 +489,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     background_label: int = 0,
     junction_label: int = -1,
     min_total_extent_multiplier: float = 3.0,
+    profile_baseline_mode: Literal["wings", "percentile"] = "wings",
+    profile_baseline_wing_fraction: float = 0.2,
+    constrain_fitted_baseline: bool = False,
+    baseline_constraint_half_width_ptp: float = 0.35,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -444,7 +525,20 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         another edge's id.
     min_total_extent_multiplier :
         Ensures total transverse extent >= this factor × measured FWHM when not truncated.
+    profile_baseline_mode :
+        ``wings`` (default) or ``percentile`` — see ``fwhm_from_profile``.
+    profile_baseline_wing_fraction :
+        Outer line fraction used per end for wing baseline (if mode is ``wings``).
+    constrain_fitted_baseline :
+        If True, narrow the fitted-baseline bounds around the anchor guess.
+    baseline_constraint_half_width_ptp :
+        Half-width of that band as a fraction of profile peak-to-peak intensity.
     """
+    if profile_baseline_mode not in ("wings", "percentile"):
+        raise ValueError(
+            f"profile_baseline_mode must be 'wings' or 'percentile', got {profile_baseline_mode!r}."
+        )
+
     raw = load_single_channel_tiff_volume(raw_tiff_path)
     labels, _ = build_graph_branch_label_volume(
         G,
@@ -506,7 +600,14 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 background_label=int(background_label),
                 junction_label=jn,
             )
-            d0 = fwhm_from_profile(pos, prof)
+            d0 = fwhm_from_profile(
+                pos,
+                prof,
+                profile_baseline_mode=profile_baseline_mode,
+                profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+                constrain_fitted_baseline=constrain_fitted_baseline,
+                baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+            )
             if d0 is not None and d0 > 0:
                 half_extent = max(
                     half_extent,
@@ -524,7 +625,14 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     background_label=int(background_label),
                     junction_label=jn,
                 )
-                d1 = fwhm_from_profile(pos, prof)
+                d1 = fwhm_from_profile(
+                    pos,
+                    prof,
+                    profile_baseline_mode=profile_baseline_mode,
+                    profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+                    constrain_fitted_baseline=constrain_fitted_baseline,
+                    baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+                )
                 if d1 is not None:
                     diameters.append(d1)
             elif d0 is not None:
