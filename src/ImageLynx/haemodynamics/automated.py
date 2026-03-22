@@ -1,0 +1,550 @@
+"""Automated vessel diameter estimation from raw TIFF intensity (transverse profiles).
+
+At each sample along an edge, intensity along the perpendicular line is fit with a Gaussian
+plus baseline; vessel size is reported as the Gaussian **FWHM**,
+``2 * sqrt(2 ln 2) * σ`` (micrometers).
+
+Branch identity for clipping comes from an in-memory label volume rasterized from the graph
+(see ``build_graph_branch_label_volume``). Transverse extent follows the configured minimum
+relative to the current FWHM estimate unless truncated at another edge or volume bounds.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import networkx as nx
+import tifffile
+from scipy.ndimage import map_coordinates
+from scipy.optimize import curve_fit
+
+# FWHM of a Gaussian with standard deviation sigma (not 2*sigma^2 in the exponent).
+_GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
+
+
+def load_single_channel_tiff_volume(path: str | Path) -> np.ndarray:
+    """Load a 3D TIFF as float32. Single channel / single signal expected."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"TIFF not found: {path}")
+    vol = tifffile.imread(str(path))
+    if vol.ndim == 2:
+        vol = vol[np.newaxis, ...]
+    if vol.ndim != 3:
+        raise ValueError(
+            f"Expected 2D slice stack or 3D volume, got shape {vol.shape} for {path}"
+        )
+    return np.asarray(vol, dtype=np.float32)
+
+
+def _spacing_vec(voxel_size_xyz: tuple[float, float, float]) -> np.ndarray:
+    s = np.asarray(voxel_size_xyz, dtype=float).ravel()
+    if s.size != 3:
+        raise ValueError("voxel_size_xyz must have length 3")
+    return s
+
+
+def physical_points_to_continuous_indices(
+    points_phys: np.ndarray,
+    voxel_size_xyz: tuple[float, float, float],
+) -> np.ndarray:
+    """Convert physical (axis0, axis1, axis2) coordinates to continuous voxel indices.
+
+    Uses the same element-wise scaling as graph construction:
+    ``phys[i] = index[i] * voxel_size_xyz[i]``.
+    """
+    pts = np.asarray(points_phys, dtype=float)
+    if pts.ndim == 1:
+        pts = pts.reshape(1, 3)
+    spacing = _spacing_vec(voxel_size_xyz)
+    if np.any(spacing <= 0):
+        raise ValueError("voxel_size_xyz components must be positive.")
+    return pts / spacing
+
+
+def _gram_schmidt_perpendicular(tangent: np.ndarray) -> np.ndarray:
+    """Unit vector perpendicular to ``tangent`` (3D)."""
+    t = np.asarray(tangent, dtype=float).ravel()
+    nrm = np.linalg.norm(t)
+    if nrm < 1e-12:
+        return np.array([1.0, 0.0, 0.0], dtype=float)
+    t = t / nrm
+    # Pick a reference axis least parallel to t
+    refs = (
+        np.array([1.0, 0.0, 0.0]),
+        np.array([0.0, 1.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+    )
+    best = max(refs, key=lambda r: abs(float(np.dot(r, t))))
+    n = best - np.dot(best, t) * t
+    nn = np.linalg.norm(n)
+    if nn < 1e-12:
+        n = np.array([0.0, 1.0, 0.0]) - np.dot(np.array([0.0, 1.0, 0.0]), t) * t
+        nn = np.linalg.norm(n)
+    if nn < 1e-12:
+        return np.array([1.0, 0.0, 0.0], dtype=float)
+    return (n / nn).astype(float)
+
+
+def _arc_length_parameterize(poly_phys: np.ndarray) -> tuple[np.ndarray, float]:
+    """Cumulative arc length along polyline (micrometers)."""
+    p = np.asarray(poly_phys, dtype=float)
+    if len(p) < 2:
+        return np.array([0.0], dtype=float), 0.0
+    seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(seg)])
+    return s, float(s[-1])
+
+
+def _interpolate_centerline(poly_phys: np.ndarray, s: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Interpolate 3D positions at arc-length values ``targets``."""
+    p = np.asarray(poly_phys, dtype=float)
+    out = np.empty((len(targets), 3), dtype=float)
+    for i, t in enumerate(targets):
+        out[i] = np.array(
+            [float(np.interp(t, s, p[:, j])) for j in range(3)],
+            dtype=float,
+        )
+    return out
+
+
+def _tangent_at(poly_phys: np.ndarray, s: np.ndarray, s0: float) -> np.ndarray:
+    """Central-difference tangent on the polyline at arc length ``s0``."""
+    p = np.asarray(poly_phys, dtype=float)
+    if len(p) < 2:
+        return np.array([0.0, 0.0, 1.0], dtype=float)
+    if s0 <= s[0] + 1e-9:
+        return p[1] - p[0]
+    if s0 >= s[-1] - 1e-9:
+        return p[-1] - p[-2]
+    idx = int(np.searchsorted(s, s0, side="right") - 1)
+    idx = max(0, min(idx, len(p) - 2))
+    ds = s[idx + 1] - s[idx]
+    if ds < 1e-12:
+        return p[idx + 1] - p[idx]
+    alpha = (s0 - s[idx]) / ds
+    t0 = p[idx + 1] - p[idx]
+    if idx > 0:
+        t0 = (1 - alpha) * (p[idx + 1] - p[idx]) + alpha * (p[idx] - p[idx - 1])
+    elif idx + 2 < len(p):
+        t0 = p[idx + 2] - p[idx]
+    return t0.astype(float)
+
+
+def _nearest_integer_index(pt_idx: np.ndarray, shape: tuple[int, ...]) -> tuple[int, int, int]:
+    iz, iy, ix = (int(round(float(pt_idx[0]))), int(round(float(pt_idx[1]))), int(round(float(pt_idx[2]))))
+    iz = int(np.clip(iz, 0, shape[0] - 1))
+    iy = int(np.clip(iy, 0, shape[1] - 1))
+    ix = int(np.clip(ix, 0, shape[2] - 1))
+    return iz, iy, ix
+
+
+def _label_at(
+    labels: np.ndarray,
+    pt_idx: np.ndarray,
+    shape: tuple[int, ...],
+) -> int:
+    iz, iy, ix = _nearest_integer_index(pt_idx, shape)
+    return int(labels[iz, iy, ix])
+
+
+def _max_extent_along_ray(
+    center_idx: np.ndarray,
+    direction_unit: np.ndarray,
+    assigned_label: int,
+    labels: np.ndarray,
+    max_physical_extent: float,
+    voxel_size_xyz: tuple[float, float, float],
+    step_um: float,
+    *,
+    background_label: int,
+    junction_label: int | None,
+) -> float:
+    """Positive distance along +direction until hitting another edge or the volume edge.
+
+    Voxels labeled ``assigned_label``, ``background_label`` (unpainted lumen), or
+    ``junction_label`` allow the ray to continue up to ``max_physical_extent``. Any
+    other positive label is treated as a different graph edge and truncates the line.
+    """
+    spacing = _spacing_vec(voxel_size_xyz)
+    if step_um <= 0:
+        raise ValueError("step_um must be positive.")
+    d = direction_unit / np.linalg.norm(direction_unit)
+    n_steps = int(np.ceil(max_physical_extent / step_um))
+    shape = labels.shape
+    for k in range(1, n_steps + 1):
+        delta_phys = d * (k * step_um)
+        idx = center_idx + delta_phys / spacing
+        if (
+            idx[0] < 0
+            or idx[1] < 0
+            or idx[2] < 0
+            or idx[0] > shape[0] - 1
+            or idx[1] > shape[1] - 1
+            or idx[2] > shape[2] - 1
+        ):
+            return max(0.0, (k - 1) * step_um)
+        lab = _label_at(labels, idx, shape)
+        if lab == assigned_label:
+            continue
+        if lab == background_label:
+            continue
+        if junction_label is not None and lab == junction_label:
+            continue
+        return max(0.0, (k - 1) * step_um)
+    return max_physical_extent
+
+
+def _sample_transverse_profile(
+    raw: np.ndarray,
+    labels: np.ndarray,
+    center_phys: np.ndarray,
+    tangent: np.ndarray,
+    assigned_label: int,
+    half_extent_um: float,
+    transverse_step_um: float,
+    voxel_size_xyz: tuple[float, float, float],
+    *,
+    background_label: int,
+    junction_label: int | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample intensity along a line through ``center_phys``, perpendicular to ``tangent``.
+
+    Returns (positions_along_line_um, intensities).
+    """
+    spacing = _spacing_vec(voxel_size_xyz)
+    n_hat = _gram_schmidt_perpendicular(tangent)
+    center_idx = center_phys / spacing
+
+    pos_plus = _max_extent_along_ray(
+        center_idx,
+        n_hat,
+        assigned_label,
+        labels,
+        half_extent_um,
+        voxel_size_xyz,
+        transverse_step_um,
+        background_label=background_label,
+        junction_label=junction_label,
+    )
+    pos_minus = _max_extent_along_ray(
+        center_idx,
+        -n_hat,
+        assigned_label,
+        labels,
+        half_extent_um,
+        voxel_size_xyz,
+        transverse_step_um,
+        background_label=background_label,
+        junction_label=junction_label,
+    )
+
+    n_neg = int(np.floor(pos_minus / transverse_step_um))
+    n_pos = int(np.floor(pos_plus / transverse_step_um))
+    offsets = np.arange(-n_neg, n_pos + 1, dtype=float) * transverse_step_um
+    if offsets.size == 0:
+        offsets = np.array([0.0], dtype=float)
+
+    coords = []
+    for off in offsets:
+        p_phys = center_phys + off * n_hat
+        idx = p_phys / spacing
+        coords.append(idx)
+    coord_arr = np.stack(coords, axis=1)  # (3, N)
+    zc, yc, xc = coord_arr[0], coord_arr[1], coord_arr[2]
+    vals = map_coordinates(
+        raw,
+        np.vstack([zc, yc, xc]),
+        order=1,
+        mode="constant",
+        cval=0.0,
+    )
+    return offsets, np.asarray(vals, dtype=float)
+
+
+def _gaussian_fluorescence_1d(
+    x: np.ndarray,
+    baseline: float,
+    amplitude: float,
+    x0: float,
+    sigma: float,
+) -> np.ndarray:
+    """baseline + amplitude * exp(-(x - x0)^2 / (2 sigma^2))."""
+    sig = max(float(sigma), 1e-15)
+    return baseline + amplitude * np.exp(-0.5 * ((x - float(x0)) / sig) ** 2)
+
+
+def fwhm_from_profile(
+    positions_um: np.ndarray,
+    intensities: np.ndarray,
+    *,
+    min_points: int = 5,
+) -> float | None:
+    """FWHM (µm) from a least-squares Gaussian + baseline fit to the 1D intensity profile.
+
+    The model is ``baseline + amplitude * exp(-(x - x0)^2 / (2 sigma^2))`` with
+    ``amplitude > 0``. Returns ``FWHM = 2 * sqrt(2 ln 2) * sigma``.
+    """
+    x = np.asarray(positions_um, dtype=float).ravel()
+    y = np.asarray(intensities, dtype=float).ravel()
+    if x.size < min_points or y.size != x.size:
+        return None
+
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+
+    span = float(np.ptp(x))
+    if span <= 0 or not np.isfinite(span):
+        return None
+
+    dx = float(np.median(np.abs(np.diff(x)))) if x.size > 1 else span
+    sigma_min = max(0.25 * dx, span * 1e-6, 1e-9)
+
+    y_min, y_max = float(np.min(y)), float(np.max(y))
+    y_ptp = max(y_max - y_min, 1e-12)
+    b0 = float(np.percentile(y, 10))
+    b0 = min(max(b0, y_min - y_ptp), y_max - 0.01 * y_ptp)
+    amp0 = max(y_max - b0, y_ptp * 0.5, 1e-9)
+    x0_guess = float(x[int(np.argmax(y))])
+    sig0 = max(span / 5.0, sigma_min)
+
+    p0 = np.array([b0, amp0, x0_guess, sig0], dtype=float)
+    b_lo = y_min - 5.0 * y_ptp
+    b_hi = y_max + 5.0 * y_ptp
+    lo = np.array([b_lo, 1e-12, np.min(x) - span, sigma_min], dtype=float)
+    hi = np.array([b_hi, max(y_max * 20.0, amp0 * 1e3), np.max(x) + span, span], dtype=float)
+
+    try:
+        popt, _ = curve_fit(
+            _gaussian_fluorescence_1d,
+            x,
+            y,
+            p0=p0,
+            bounds=(lo, hi),
+            maxfev=50000,
+        )
+    except (RuntimeError, ValueError):
+        return None
+
+    baseline_fit, amplitude_fit, _, sigma_fit = (float(popt[0]), float(popt[1]), float(popt[2]), float(popt[3]))
+    if not np.isfinite(sigma_fit) or sigma_fit <= 0:
+        return None
+    if amplitude_fit <= 0:
+        return None
+
+    fwhm = float(_GAUSSIAN_FWHM_FROM_SIGMA * sigma_fit)
+    return fwhm if fwhm > 0 else None
+
+
+def build_graph_branch_label_volume(
+    G: nx.MultiGraph,
+    volume_shape: tuple[int, int, int],
+    voxel_size_xyz: tuple[float, float, float],
+    *,
+    background_label: int = 0,
+    junction_label: int = -1,
+) -> tuple[np.ndarray, dict[tuple[int, int, int], int]]:
+    """Paint each edge's ``voxels`` path into a 3D label array (same shape as the raw stack).
+
+    Edges are processed in deterministic ``(u, v, key)`` order and receive ids ``1 .. E``.
+    Voxels claimed by more than one edge are set to ``junction_label`` so transverse FWHM
+    profiles can cross node regions without immediately hitting another edge's id.
+
+    Each edge dict is updated with ``graph_edge_label_id`` (and ``image_branch_label``
+    as an alias for the same value).
+
+    Returns
+    -------
+    labels :
+        ``int32`` array of shape ``volume_shape``.
+    edge_key_to_label :
+        Map ``(u, v, key) -> int`` label id.
+    """
+    if junction_label == background_label:
+        raise ValueError("junction_label must differ from background_label.")
+    shape = (int(volume_shape[0]), int(volume_shape[1]), int(volume_shape[2]))
+    labels = np.full(shape, int(background_label), dtype=np.int32)
+    sorted_edges = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
+    edge_key_to_label: dict[tuple[int, int, int], int] = {}
+    for i, (u, v, key) in enumerate(sorted_edges, start=1):
+        edge_key_to_label[(u, v, key)] = i
+        G[u][v][key]["graph_edge_label_id"] = i
+        G[u][v][key]["image_branch_label"] = i
+
+    jlab = int(junction_label)
+    bg = int(background_label)
+
+    for u, v, key in sorted_edges:
+        label = edge_key_to_label[(u, v, key)]
+        vox = G[u][v][key].get("voxels")
+        if not vox:
+            continue
+        idx_all = physical_points_to_continuous_indices(
+            np.asarray(vox, dtype=float),
+            voxel_size_xyz,
+        )
+        for row in idx_all:
+            iz, iy, ix = _nearest_integer_index(row, shape)
+            cur = int(labels[iz, iy, ix])
+            if cur == bg:
+                labels[iz, iy, ix] = int(label)
+            elif cur == int(label):
+                continue
+            elif cur == jlab:
+                continue
+            else:
+                labels[iz, iy, ix] = jlab
+
+    return labels, edge_key_to_label
+
+
+def measure_edge_diameters_fwhm_from_raw_tiff(
+    G: nx.MultiGraph,
+    *,
+    raw_tiff_path: str | Path,
+    voxel_size_xyz: tuple[float, float, float],
+    sample_spacing_along_edge_um: float,
+    transverse_profile_step_um: float,
+    transverse_half_extent_um: float,
+    diameter_guess_um: float = 4.0,
+    background_label: int = 0,
+    junction_label: int = -1,
+    min_total_extent_multiplier: float = 3.0,
+) -> dict[str, Any]:
+    """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
+
+    Diameter at each transverse sample is the FWHM of a Gaussian least-squares fit to
+    intensity along the line (see ``fwhm_from_profile``).
+
+    A label volume is built from edge ``voxels`` (see ``build_graph_branch_label_volume``);
+    no separate label TIFF is required.
+
+    Parameters
+    ----------
+    G :
+        MultiGraph with ``voxels`` edge attribute (physical coordinates, same axis order
+        as the raw TIFF).
+    raw_tiff_path :
+        Single-channel 3D TIFF (intensity); shape defines the rasterized label grid.
+    voxel_size_xyz :
+        Spacing per image axis (same tuple passed to graph building).
+    sample_spacing_along_edge_um :
+        Distance along the edge centerline between FWHM samples.
+    transverse_profile_step_um :
+        Step size along the transverse line (sampling resolution along the profile).
+    transverse_half_extent_um :
+        Initial half-length of the transverse line (µm). After a first FWHM estimate,
+        the half-extent is enlarged to at least ``min_total_extent_multiplier / 2``
+        times that diameter unless truncated earlier.
+    junction_label :
+        Reserved value marking voxels shared by multiple edges in the rasterized volume.
+        Transverse rays may pass through these; they stop at ``background_label`` or at
+        another edge's id.
+    min_total_extent_multiplier :
+        Ensures total transverse extent >= this factor × measured FWHM when not truncated.
+    """
+    raw = load_single_channel_tiff_volume(raw_tiff_path)
+    labels, _ = build_graph_branch_label_volume(
+        G,
+        raw.shape,
+        voxel_size_xyz,
+        background_label=background_label,
+        junction_label=junction_label,
+    )
+
+    summary: dict[str, Any] = {
+        "edges_measured": 0,
+        "edges_skipped": [],
+        "per_edge": [],
+    }
+
+    mult = float(min_total_extent_multiplier)
+    if mult < 1.0:
+        raise ValueError("min_total_extent_multiplier must be >= 1.")
+
+    jn = int(junction_label)
+
+    for u, v, key, data in G.edges(keys=True, data=True):
+        vox = data.get("voxels")
+        assigned = data.get("graph_edge_label_id")
+        if not vox or len(vox) < 2 or assigned is None:
+            summary["edges_skipped"].append((u, v, key, "no_voxels_or_label"))
+            continue
+
+        poly = np.asarray(vox, dtype=float)
+        s, total_len = _arc_length_parameterize(poly)
+        if total_len <= 0:
+            summary["edges_skipped"].append((u, v, key, "zero_length"))
+            continue
+
+        if sample_spacing_along_edge_um <= 0:
+            raise ValueError("sample_spacing_along_edge_um must be positive.")
+
+        n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
+        targets = np.linspace(0.0, total_len, n_samples)
+        pts = _interpolate_centerline(poly, s, targets)
+
+        diameters: list[float] = []
+        for s0, center in zip(targets, pts):
+            tangent = _tangent_at(poly, s, float(s0))
+
+            half_extent = max(
+                float(transverse_half_extent_um),
+                0.5 * mult * float(diameter_guess_um),
+            )
+            pos, prof = _sample_transverse_profile(
+                raw,
+                labels,
+                center,
+                tangent,
+                int(assigned),
+                half_extent,
+                float(transverse_profile_step_um),
+                voxel_size_xyz,
+                background_label=int(background_label),
+                junction_label=jn,
+            )
+            d0 = fwhm_from_profile(pos, prof)
+            if d0 is not None and d0 > 0:
+                half_extent = max(
+                    half_extent,
+                    0.5 * mult * d0,
+                )
+                pos, prof = _sample_transverse_profile(
+                    raw,
+                    labels,
+                    center,
+                    tangent,
+                    int(assigned),
+                    half_extent,
+                    float(transverse_profile_step_um),
+                    voxel_size_xyz,
+                    background_label=int(background_label),
+                    junction_label=jn,
+                )
+                d1 = fwhm_from_profile(pos, prof)
+                if d1 is not None:
+                    diameters.append(d1)
+            elif d0 is not None:
+                diameters.append(d0)
+
+        if not diameters:
+            summary["edges_skipped"].append((u, v, key, "fwhm_failed"))
+            continue
+
+        d_mean = float(np.mean(diameters))
+        data["fwhm_diameter_um"] = d_mean
+        data["fwhm_diameter_samples_um"] = diameters
+        summary["edges_measured"] += 1
+        summary["per_edge"].append(
+            {
+                "edge": (u, v, key),
+                "graph_edge_label_id": int(assigned),
+                "fwhm_diameter_um": d_mean,
+                "n_samples": len(diameters),
+            }
+        )
+
+    return summary

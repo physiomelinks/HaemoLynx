@@ -11,6 +11,7 @@ import sys
 import pickle
 import json
 from pathlib import Path
+from typing import Optional
 from skan import csr
 import tifffile
 import numpy as np
@@ -147,12 +148,27 @@ CLUSTER_COLLAPSE_DISTANCE = 5.0
 # Keep only connected components at or above this percentage of total
 # skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
 SKELETON_MIN_COMPONENT_PERCENT = 0.0
-# TODO these diameters etc should be automated 
-#HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
-#HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
-"""Configuration defaults for diameter maps."""
+# -----------------------------------------------------------------------------
+# Vessel diameter for Poiseuille weights (manual branch-order vs automated FWHM)
+# -----------------------------------------------------------------------------
+# Manual mode (default): USE_FWHM_EDGE_DIAMETERS=False. Diameters come from
+# DIAMETER_BY_BRANCH_ORDER (built from ALL_DIAMS_CONST, DEFAULT_DIAMETER, and
+# MANUAL_*_DIAMETER_BY_BRANCH_ORDER). Used by PoiseuilleModel.set_poiseuille_weights.
+#
+# Automated mode: USE_FWHM_EDGE_DIAMETERS=True. Requires FWHM_RAW_TIFF_PATH to a
+# single-channel raw fluorescence TIFF aligned with the graph. Per-edge
+# ``fwhm_diameter_um`` comes from haemodynamics.automated (Gaussian transverse fit).
+# With DO_PERICYTE_CONSTRUCTION=False, plain Poiseuille uses that per edge (branch-order
+# fallback if no fit). With DO_PERICYTE_CONSTRUCTION=True, integrated constriction
+# uses FWHM as passive d1 and d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER (same multipliers
+# as manual mode), with scalar DIAMETER_BY_BRANCH_ORDER as fallback d1 when FWHM
+# is missing on an edge.
+#
+# Optional: set FWHM_RAW_TIFF_PATH = ILASTIK_UNSEGMENTED_IMAGE_PATH when the raw
+# stack is the same file as your unsegmented input (see top of this file).
+#HD note - manual overrides for in vivo diameters; endoneurial custom vessels not in graph.
+# -----------------------------------------------------------------------------
 
-# Diameter by branch order (simple scalar)
 print("TODO HARVEY CHANGE THIS ALL_DIAMS_CONST BACK TO FALSE FOR ORIGINAL RUN")
 ALL_DIAMS_CONST = True
 DO_PERICYTE_CONSTRUCTION = False
@@ -160,8 +176,6 @@ DO_PERICYTE_CONSTRUCTION = False
 MAX_BRANCH_ORDER = 51
 DEFAULT_DIAMETER = 4.0
 
-# Manual diameter overrides for capillaries (B01, B02, ...),
-# arterioles (Art1, Art2, ...), and venules (Ven1, Ven2, ...).
 MANUAL_CAPILLARY_DIAMETER_BY_BRANCH_ORDER = {
     "B01": 6.2,
     "B02": 4.0,
@@ -190,6 +204,22 @@ CONSTRICTION_BY_BRANCH_ORDER["Ven1"] = 1.0
 for i in range(2, MAX_BRANCH_ORDER + 1):
     CONSTRICTION_BY_BRANCH_ORDER[f"Art{i}"] = 0.8
     CONSTRICTION_BY_BRANCH_ORDER[f"Ven{i}"] = 0.8
+
+# --- Toggle: False = manual branch-order diameters only; True = run FWHM pipeline ---
+USE_FWHM_EDGE_DIAMETERS = False
+# Raw single-channel 3D TIFF (required if USE_FWHM_EDGE_DIAMETERS is True).
+FWHM_RAW_TIFF_PATH: Optional[Path] = None
+# Interval along the vessel centerline between transverse profiles (µm).
+FWHM_SAMPLE_SPACING_ALONG_EDGE_UM = 2.0
+# Sample spacing along each transverse line profile / line resolution (µm).
+FWHM_TRANSVERSE_PROFILE_STEP_UM = 0.25
+# Initial maximum half-length of the transverse line on each side of the center (µm);
+# may grow with measured width (see FWHM_MIN_TOTAL_EXTENT_MULTIPLIER in automated.py).
+FWHM_TRANSVERSE_HALF_EXTENT_UM = 6.0
+FWHM_DIAMETER_GUESS_UM = 4.0
+FWHM_MIN_TOTAL_EXTENT_MULTIPLIER = 3.0
+FWHM_BACKGROUND_LABEL = 0
+FWHM_JUNCTION_LABEL = -1
 
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= [
@@ -293,7 +323,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             hold_ide_plots_open=HOLD_IDE_PLOTS_OPEN,
                             final_render_mode=FINAL_RENDER_MODE,
                             visualize_vtk=VISUALIZE_VTK,
-                            statistics_mode=STATISTICS_MODE) -> None:
+                            statistics_mode=STATISTICS_MODE,
+                            use_fwhm_edge_diameters=USE_FWHM_EDGE_DIAMETERS,
+                            fwhm_raw_tiff_path=FWHM_RAW_TIFF_PATH,
+                            fwhm_sample_spacing_along_edge_um=FWHM_SAMPLE_SPACING_ALONG_EDGE_UM,
+                            fwhm_transverse_profile_step_um=FWHM_TRANSVERSE_PROFILE_STEP_UM,
+                            fwhm_transverse_half_extent_um=FWHM_TRANSVERSE_HALF_EXTENT_UM,
+                            fwhm_diameter_guess_um=FWHM_DIAMETER_GUESS_UM,
+                            fwhm_min_total_extent_multiplier=FWHM_MIN_TOTAL_EXTENT_MULTIPLIER,
+                            fwhm_background_label=FWHM_BACKGROUND_LABEL,
+                            fwhm_junction_label=FWHM_JUNCTION_LABEL) -> None:
     image_path = Path(image_path)
     if use_ilastik_segmentation:
         unsegmented_image_path = Path(ilastik_unsegmented_image_path)
@@ -1144,28 +1183,81 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "Saved vessel-type 3D visualization after branch assignment to: "
             f"{vessel_type_3d_path}"
         )
+        if use_fwhm_edge_diameters:
+            if fwhm_raw_tiff_path is None:
+                raise ValueError(
+                    "use_fwhm_edge_diameters=True requires fwhm_raw_tiff_path."
+                )
+            raw_p = io.resolve_image_path_with_optional_zip(Path(fwhm_raw_tiff_path))
+            voxel_sz = tuple(
+                float(v) for v in G.graph.get("image_voxel_size_xyz", voxel_size)
+            )
+            fwhm_summary = haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff(
+                G,
+                raw_tiff_path=raw_p,
+                voxel_size_xyz=voxel_sz,
+                sample_spacing_along_edge_um=float(fwhm_sample_spacing_along_edge_um),
+                transverse_profile_step_um=float(fwhm_transverse_profile_step_um),
+                transverse_half_extent_um=float(fwhm_transverse_half_extent_um),
+                diameter_guess_um=float(fwhm_diameter_guess_um),
+                background_label=int(fwhm_background_label),
+                junction_label=int(fwhm_junction_label),
+                min_total_extent_multiplier=float(fwhm_min_total_extent_multiplier),
+            )
+            print(f"FWHM diameter measurement summary: {fwhm_summary}")
+            if do_pericyte_constriction:
+                print(
+                    "Pericyte mode: passive diameter d1 from per-edge FWHM where available, "
+                    "else DIAMETER_BY_BRANCH_ORDER; d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER."
+                )
+        elif not use_fwhm_edge_diameters:
+            print(
+                "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
+                "set_poiseuille_weights without per-edge FWHM)."
+            )
         poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=40.0,
             constriction_spacing=100.0,
         )
         if do_pericyte_constriction:
-            diameter_by_branch_order_enhanced = {}
-            for branch_order, diameter in diameter_by_branch_order.items():
-                diameter_by_branch_order_enhanced[branch_order] = {
-                    "d1": diameter,
-                    "d2": diameter * constriction_by_branch_order[branch_order],
-                }
+            if use_fwhm_edge_diameters:
+                G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                    G,
+                    diameter_by_branch_order,
+                    prefer_edge_fwhm_baseline=True,
+                    constriction_factor_by_branch_order=constriction_by_branch_order,
+                )
+                print(
+                    "Results from set_poiseuille_weights_with_constrictions "
+                    f"(FWHM baseline d1, constriction factors): {results}"
+                )
+            else:
+                diameter_by_branch_order_enhanced = {}
+                for branch_order, diameter in diameter_by_branch_order.items():
+                    diameter_by_branch_order_enhanced[branch_order] = {
+                        "d1": diameter,
+                        "d2": diameter * constriction_by_branch_order[branch_order],
+                    }
 
-            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
-                G,
-                diameter_by_branch_order_enhanced,
-            )
+                G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                    G,
+                    diameter_by_branch_order_enhanced,
+                )
+                print(
+                    f"Results from set_poiseuille_weights_with_constrictions: {results}"
+                )
         else:
             G, results = poiseuille_model.set_poiseuille_weights(
                 G,
                 diameter_by_branch_order,
+                prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
             )
-        print(f"Results from set_poiseuille_weights_with_constrictions: {results}")
+            _diam_mode = (
+                "per-edge FWHM (Gaussian fit) with branch-order fallback"
+                if use_fwhm_edge_diameters
+                else "branch-order table only"
+            )
+            print(f"Results from set_poiseuille_weights ({_diam_mode}): {results}")
 
         G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
             G,
@@ -1357,6 +1449,21 @@ if __name__ == "__main__":
         action="store_true",
         help="Run pytest on tests/test_small_vessel_mask_boundary_labelling.py and exit.",
     )
+    parser.add_argument(
+        "--use-fwhm-edge-diameters",
+        action="store_true",
+        help=(
+            "Override USE_FWHM_EDGE_DIAMETERS: measure diameters from raw TIFF "
+            "(Gaussian transverse fit). Requires --fwhm-raw-tiff unless "
+            "FWHM_RAW_TIFF_PATH is set in this file."
+        ),
+    )
+    parser.add_argument(
+        "--fwhm-raw-tiff",
+        type=Path,
+        default=None,
+        help="Path to raw single-channel TIFF for FWHM (overrides FWHM_RAW_TIFF_PATH).",
+    )
     cli = parser.parse_args()
     if cli.run_small_vessel_boundary_labelling_tests:
         import pytest
@@ -1365,4 +1472,9 @@ if __name__ == "__main__":
             pytest.main([str(root_dir / "tests" / "test_small_vessel_mask_boundary_labelling.py"), "-q"])
         )
     plot_dir = BASE_PLOT_DIR / "nerve"
-    image_to_model_pipeline(plot_dir=plot_dir)
+    pipeline_kwargs: dict = {}
+    if cli.use_fwhm_edge_diameters:
+        pipeline_kwargs["use_fwhm_edge_diameters"] = True
+    if cli.fwhm_raw_tiff is not None:
+        pipeline_kwargs["fwhm_raw_tiff_path"] = cli.fwhm_raw_tiff
+    image_to_model_pipeline(plot_dir=plot_dir, **pipeline_kwargs)

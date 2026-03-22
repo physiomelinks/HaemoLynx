@@ -113,7 +113,13 @@ class PoiseuilleModel:
         integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
         return float(integ(resistances, dx=dx))
 
-    def set_poiseuille_weights(self, G: nx.MultiGraph, diameter_by_branch_order: dict) -> tuple[nx.MultiGraph, dict]:
+    def set_poiseuille_weights(
+        self,
+        G: nx.MultiGraph,
+        diameter_by_branch_order: dict,
+        *,
+        prefer_edge_fwhm_diameter: bool = False,
+    ) -> tuple[nx.MultiGraph, dict]:
         """
         Set edge weights using the inverse of Poiseuille's law with calculated viscosity.
         Weight = (π * diameter^4) / (128 * viscosity * length)
@@ -126,6 +132,9 @@ class PoiseuilleModel:
         diameter_by_branch_order : dict
             Dictionary mapping branch order strings to diameter values in micrometers (μm)
             e.g., {'BO1': 10.0, 'BO2': 8.0, 'BO3': 6.0}
+        prefer_edge_fwhm_diameter : bool
+            If True, use each edge's ``fwhm_diameter_um`` (when set and positive) instead
+            of the branch-order table.
 
         Returns:
         --------
@@ -141,7 +150,8 @@ class PoiseuilleModel:
             'unknown_branch_order': [],
             'invalid_length': [],
             'invalid_diameter': [],
-            'viscosity_calculations': {}  # Track viscosity for each diameter
+            'viscosity_calculations': {},  # Track viscosity for each diameter
+            'used_fwhm_edge_diameter': 0,
         }
 
         print(f"=== Poiseuille Weight Calculation (Branch Order Based) ===")
@@ -183,8 +193,15 @@ class PoiseuilleModel:
                 results['invalid_length'].append((u, v, key, length))
                 continue
 
-            # Get diameter for this branch order
-            diameter = diameter_by_branch_order.get(branch_order, None)
+            # Get diameter for this branch order (or per-edge FWHM measurement)
+            diameter = None
+            if prefer_edge_fwhm_diameter:
+                fwhm_d = data.get("fwhm_diameter_um")
+                if fwhm_d is not None and float(fwhm_d) > 0:
+                    diameter = float(fwhm_d)
+                    results['used_fwhm_edge_diameter'] += 1
+            if diameter is None:
+                diameter = diameter_by_branch_order.get(branch_order, None)
             if diameter is None:
                 results['unknown_branch_order'].append((u, v, key, branch_order))
                 continue
@@ -218,6 +235,11 @@ class PoiseuilleModel:
         # Print summary
         print(f"=== Summary ===")
         print(f"Weights successfully set: {results['weights_set']}")
+        if prefer_edge_fwhm_diameter:
+            print(
+                f"Edges using per-edge fwhm_diameter_um: "
+                f"{results.get('used_fwhm_edge_diameter', 0)}"
+            )
         if results['missing_branch_order']:
             print(f"Edges missing branch_order: {len(results['missing_branch_order'])}")
         if results['missing_length']:
@@ -232,9 +254,31 @@ class PoiseuilleModel:
         return G, results
 
     def set_poiseuille_weights_with_constrictions(
-        self, G: nx.MultiGraph, diameter_by_branch_order: dict
-    ) -> dict:
-        """Set edge weights = 1/resistance using integrated resistance with constrictions."""
+        self,
+        G: nx.MultiGraph,
+        diameter_by_branch_order: dict,
+        *,
+        prefer_edge_fwhm_baseline: bool = False,
+        constriction_factor_by_branch_order: dict[str, float] | None = None,
+    ) -> tuple[nx.MultiGraph, dict]:
+        """Set edge weights = 1/resistance using integrated resistance with constrictions.
+
+        Parameters
+        ----------
+        diameter_by_branch_order :
+            If ``prefer_edge_fwhm_baseline`` is False: maps ``branch_order`` to
+            ``{"d1": float, "d2": float}`` (passive and constricted diameters in µm).
+
+            If True: maps ``branch_order`` to a **scalar** fallback diameter (µm) used
+            only when an edge has no positive ``fwhm_diameter_um``.
+        prefer_edge_fwhm_baseline :
+            When True, per edge ``d1 = fwhm_diameter_um`` if set and positive, else the
+            scalar fallback for that ``branch_order``; ``d2 = d1 * factor`` where
+            ``factor`` comes from ``constriction_factor_by_branch_order[branch_order]``.
+        constriction_factor_by_branch_order :
+            Required when ``prefer_edge_fwhm_baseline`` is True: multiplier applied to
+            baseline ``d1`` to obtain ``d2`` (same role as d2/d1 in the manual pipeline).
+        """
         results = {
             "weights_set": 0,
             "missing_branch_order": [],
@@ -242,7 +286,16 @@ class PoiseuilleModel:
             "unknown_branch_order": [],
             "invalid_length": [],
             "invalid_diameter": [],
+            "used_fwhm_baseline": 0,
         }
+        if prefer_edge_fwhm_baseline:
+            if constriction_factor_by_branch_order is None:
+                raise ValueError(
+                    "constriction_factor_by_branch_order is required when "
+                    "prefer_edge_fwhm_baseline=True."
+                )
+        constr_map = constriction_factor_by_branch_order
+
         for u, v, key, data in G.edges(keys=True, data=True):
             branch_order = data.get("branch_order")
             if branch_order is None:
@@ -258,22 +311,50 @@ class PoiseuilleModel:
                 raise ValueError(
                     f"Edge ({u}, {v}, {key}) has non-positive length: {length}."
                 )
-            diameters = diameter_by_branch_order.get(branch_order)
-            if diameters is None:
-                raise ValueError(
-                    f"Edge ({u}, {v}, {key}) has unknown branch_order '{branch_order}'. "
-                    "No matching entry in diameter_by_branch_order."
-                )
-            if not isinstance(diameters, dict) or "d1" not in diameters or "d2" not in diameters:
-                raise ValueError(
-                    f"Invalid diameter mapping for branch_order '{branch_order}'. "
-                    "Expected dict containing 'd1' and 'd2'."
-                )
-            d1, d2 = diameters["d1"], diameters["d2"]
+
+            if prefer_edge_fwhm_baseline:
+                spec = diameter_by_branch_order.get(branch_order)
+                if spec is None:
+                    raise ValueError(
+                        f"Edge ({u}, {v}, {key}) has unknown branch_order '{branch_order}'. "
+                        "No matching entry in diameter_by_branch_order (fallback diameters)."
+                    )
+                if isinstance(spec, dict):
+                    raise ValueError(
+                        "When prefer_edge_fwhm_baseline=True, diameter_by_branch_order "
+                        f"must map to numeric fallbacks, not dict for '{branch_order}'."
+                    )
+                fallback_d1 = float(spec)
+                fwhm_d = data.get("fwhm_diameter_um")
+                if fwhm_d is not None and float(fwhm_d) > 0:
+                    d1 = float(fwhm_d)
+                    results["used_fwhm_baseline"] += 1
+                else:
+                    d1 = fallback_d1
+                factor = constr_map.get(branch_order) if constr_map is not None else None
+                if factor is None:
+                    raise ValueError(
+                        f"No constriction factor for branch_order '{branch_order}'."
+                    )
+                d2 = d1 * float(factor)
+            else:
+                diameters = diameter_by_branch_order.get(branch_order)
+                if diameters is None:
+                    raise ValueError(
+                        f"Edge ({u}, {v}, {key}) has unknown branch_order '{branch_order}'. "
+                        "No matching entry in diameter_by_branch_order."
+                    )
+                if not isinstance(diameters, dict) or "d1" not in diameters or "d2" not in diameters:
+                    raise ValueError(
+                        f"Invalid diameter mapping for branch_order '{branch_order}'. "
+                        "Expected dict containing 'd1' and 'd2'."
+                    )
+                d1, d2 = diameters["d1"], diameters["d2"]
+
             if d1 <= 0 or d2 <= 0:
                 raise ValueError(
-                    f"Invalid non-positive diameters for branch_order '{branch_order}': "
-                    f"d1={d1}, d2={d2}."
+                    f"Invalid non-positive diameters for edge ({u}, {v}, {key}) "
+                    f"branch_order '{branch_order}': d1={d1}, d2={d2}."
                 )
             try:
                 total_resistance = self.calculate_integrated_resistance(length, d1, d2)
