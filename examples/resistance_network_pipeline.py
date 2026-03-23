@@ -220,6 +220,9 @@ FWHM_DIAMETER_GUESS_UM = 4.0
 FWHM_MIN_TOTAL_EXTENT_MULTIPLIER = 3.0
 FWHM_BACKGROUND_LABEL = 0
 FWHM_JUNCTION_LABEL = -1
+# If False (default), transverse rays stop at junction-labelled voxels to avoid crossing
+# into neighbouring branches and over-estimating diameter near bifurcations.
+FWHM_ALLOW_JUNCTION_CROSSING = False
 # Transverse profile baseline for Gaussian fit: "wings" uses outer medians (less shoulder
 # bias from neighbours); "percentile" uses global 10th percentile (legacy).
 FWHM_PROFILE_BASELINE_MODE = "wings"
@@ -341,6 +344,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_min_total_extent_multiplier=FWHM_MIN_TOTAL_EXTENT_MULTIPLIER,
                             fwhm_background_label=FWHM_BACKGROUND_LABEL,
                             fwhm_junction_label=FWHM_JUNCTION_LABEL,
+                            fwhm_allow_junction_crossing=FWHM_ALLOW_JUNCTION_CROSSING,
                             fwhm_profile_baseline_mode=FWHM_PROFILE_BASELINE_MODE,
                             fwhm_profile_baseline_wing_fraction=FWHM_PROFILE_BASELINE_WING_FRACTION,
                             fwhm_constrain_fitted_baseline=FWHM_CONSTRAIN_FITTED_BASELINE,
@@ -1218,6 +1222,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 profile_baseline_mode=fwhm_profile_baseline_mode,
                 profile_baseline_wing_fraction=float(fwhm_profile_baseline_wing_fraction),
                 constrain_fitted_baseline=bool(fwhm_constrain_fitted_baseline),
+                allow_junction_crossing=bool(fwhm_allow_junction_crossing),
                 baseline_constraint_half_width_ptp=float(
                     fwhm_baseline_constraint_half_width_ptp
                 ),
