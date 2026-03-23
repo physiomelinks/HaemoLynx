@@ -450,6 +450,71 @@ def fwhm_from_profile(
     return fwhm if fwhm > 0 else None
 
 
+def _clip_profile_to_central_lobe(
+    positions_um: np.ndarray,
+    intensities: np.ndarray,
+    *,
+    min_drop_fraction_of_center: float = 0.35,
+    re_rise_fraction_of_center: float = 0.08,
+    min_points_to_clip: int = 9,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Trim a transverse profile so it stays on the central vessel lobe.
+
+    Profiles can contain a second peak when rays reach a neighbouring branch.
+    This helper keeps the segment around offset 0 and truncates each side at the
+    first clear valley->rise pattern.
+    """
+    x = np.asarray(positions_um, dtype=float).ravel()
+    y = np.asarray(intensities, dtype=float).ravel()
+    if x.size != y.size or x.size < int(min_points_to_clip):
+        return x, y
+    # Positions from _sample_transverse_profile are monotone and include offset 0.
+    i0 = int(np.argmin(np.abs(x)))
+    if i0 <= 0 or i0 >= x.size - 1:
+        return x, y
+    center = float(y[i0])
+    if not np.isfinite(center):
+        return x, y
+    min_drop = float(min_drop_fraction_of_center) * max(center, 1e-12)
+    rise_thr = float(re_rise_fraction_of_center) * max(center, 1e-12)
+
+    def _bound_right(start: int) -> int:
+        y_min = float(y[start])
+        i_min = start
+        saw_drop = False
+        for i in range(start + 1, y.size):
+            yi = float(y[i])
+            if yi < y_min:
+                y_min = yi
+                i_min = i
+            if yi <= (center - min_drop):
+                saw_drop = True
+            if saw_drop and yi >= (y_min + rise_thr):
+                return i_min
+        return y.size - 1
+
+    def _bound_left(start: int) -> int:
+        y_min = float(y[start])
+        i_min = start
+        saw_drop = False
+        for i in range(start - 1, -1, -1):
+            yi = float(y[i])
+            if yi < y_min:
+                y_min = yi
+                i_min = i
+            if yi <= (center - min_drop):
+                saw_drop = True
+            if saw_drop and yi >= (y_min + rise_thr):
+                return i_min
+        return 0
+
+    left = _bound_left(i0)
+    right = _bound_right(i0)
+    if right - left + 1 < 5:
+        return x, y
+    return x[left : right + 1], y[left : right + 1]
+
+
 def build_graph_branch_label_volume(
     G: nx.MultiGraph,
     volume_shape: tuple[int, int, int],
@@ -529,6 +594,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     constrain_fitted_baseline: bool = False,
     baseline_constraint_half_width_ptp: float = 0.35,
     allow_junction_crossing: bool = False,
+    clip_profile_to_single_vessel: bool = True,
+    clip_min_drop_fraction_of_center: float = 0.35,
+    clip_re_rise_fraction_of_center: float = 0.08,
+    branch_endpoint_exclusion_um: float = 0.0,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -570,6 +639,14 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         If True, narrow the fitted-baseline bounds around the anchor guess.
     baseline_constraint_half_width_ptp :
         Half-width of that band as a fraction of profile peak-to-peak intensity.
+    clip_profile_to_single_vessel :
+        If True, trim each sampled transverse profile to the central lobe before
+        Gaussian fitting so a second peak from a neighbouring vessel does not
+        inflate diameter.
+    branch_endpoint_exclusion_um :
+        Distance (µm) excluded from sampling near edge endpoints that are
+        bifurcation nodes (graph degree > 1). Helps avoid unstable diameters
+        right where a branch emerges from a junction.
     """
     if profile_baseline_mode not in ("wings", "percentile"):
         raise ValueError(
@@ -596,6 +673,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         raise ValueError("min_total_extent_multiplier must be >= 1.")
 
     jn = int(junction_label)
+    branch_excl = max(0.0, float(branch_endpoint_exclusion_um))
 
     for u, v, key, data in G.edges(keys=True, data=True):
         vox = data.get("voxels")
@@ -616,9 +694,17 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
         targets = np.linspace(0.0, total_len, n_samples)
         pts = _interpolate_centerline(poly, s, targets)
+        # Exclude profiles too close to bifurcation endpoints, where independent
+        # branch diameter is often not well-defined.
+        u_is_branch = int(G.degree(u)) > 1
+        v_is_branch = int(G.degree(v)) > 1
 
         diameters: list[float] = []
         for s0, center in zip(targets, pts):
+            if u_is_branch and float(s0) < branch_excl:
+                continue
+            if v_is_branch and float(total_len - s0) < branch_excl:
+                continue
             tangent = _tangent_at(poly, s, float(s0))
 
             half_extent = max(
@@ -639,8 +725,16 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 allow_junction_crossing=bool(allow_junction_crossing),
             )
             d0 = fwhm_from_profile(
-                pos,
-                prof,
+                *(
+                    _clip_profile_to_central_lobe(
+                        pos,
+                        prof,
+                        min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                        re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                    )
+                    if clip_profile_to_single_vessel
+                    else (pos, prof)
+                ),
                 profile_baseline_mode=profile_baseline_mode,
                 profile_baseline_wing_fraction=profile_baseline_wing_fraction,
                 constrain_fitted_baseline=constrain_fitted_baseline,
@@ -665,8 +759,16 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     allow_junction_crossing=bool(allow_junction_crossing),
                 )
                 d1 = fwhm_from_profile(
-                    pos,
-                    prof,
+                    *(
+                        _clip_profile_to_central_lobe(
+                            pos,
+                            prof,
+                            min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                            re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                        )
+                        if clip_profile_to_single_vessel
+                        else (pos, prof)
+                    ),
                     profile_baseline_mode=profile_baseline_mode,
                     profile_baseline_wing_fraction=profile_baseline_wing_fraction,
                     constrain_fitted_baseline=constrain_fitted_baseline,
@@ -678,7 +780,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 diameters.append(d0)
 
         if not diameters:
-            summary["edges_skipped"].append((u, v, key, "fwhm_failed"))
+            reason = "fwhm_failed"
+            if branch_excl > 0 and (u_is_branch or v_is_branch):
+                reason = "fwhm_failed_or_excluded_near_branch"
+            summary["edges_skipped"].append((u, v, key, reason))
             continue
 
         d_mean = float(np.mean(diameters))

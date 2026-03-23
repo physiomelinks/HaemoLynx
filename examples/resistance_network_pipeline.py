@@ -231,6 +231,13 @@ FWHM_PROFILE_BASELINE_WING_FRACTION = 0.2
 # shoulders still bias the optimiser).
 FWHM_CONSTRAIN_FITTED_BASELINE = False
 FWHM_BASELINE_CONSTRAINT_HALF_WIDTH_PTP = 0.35
+# Clip each transverse profile to the central vessel lobe so a second peak from a
+# neighbouring branch does not inflate diameter.
+FWHM_CLIP_PROFILE_TO_SINGLE_VESSEL = True
+FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER = 0.35
+FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER = 0.08
+# Exclude samples this close (µm) to bifurcation endpoints (degree > 1).
+FWHM_BRANCH_ENDPOINT_EXCLUSION_UM = 3.0
 
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= [
@@ -348,7 +355,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_profile_baseline_mode=FWHM_PROFILE_BASELINE_MODE,
                             fwhm_profile_baseline_wing_fraction=FWHM_PROFILE_BASELINE_WING_FRACTION,
                             fwhm_constrain_fitted_baseline=FWHM_CONSTRAIN_FITTED_BASELINE,
-                            fwhm_baseline_constraint_half_width_ptp=FWHM_BASELINE_CONSTRAINT_HALF_WIDTH_PTP) -> None:
+                            fwhm_baseline_constraint_half_width_ptp=FWHM_BASELINE_CONSTRAINT_HALF_WIDTH_PTP,
+                            fwhm_clip_profile_to_single_vessel=FWHM_CLIP_PROFILE_TO_SINGLE_VESSEL,
+                            fwhm_clip_min_drop_fraction_of_center=FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER,
+                            fwhm_clip_re_rise_fraction_of_center=FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER,
+                            fwhm_branch_endpoint_exclusion_um=FWHM_BRANCH_ENDPOINT_EXCLUSION_UM) -> None:
     image_path = Path(image_path)
     if use_ilastik_segmentation:
         unsegmented_image_path = Path(ilastik_unsegmented_image_path)
@@ -1225,6 +1236,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 allow_junction_crossing=bool(fwhm_allow_junction_crossing),
                 baseline_constraint_half_width_ptp=float(
                     fwhm_baseline_constraint_half_width_ptp
+                ),
+                clip_profile_to_single_vessel=bool(fwhm_clip_profile_to_single_vessel),
+                clip_min_drop_fraction_of_center=float(
+                    fwhm_clip_min_drop_fraction_of_center
+                ),
+                clip_re_rise_fraction_of_center=float(
+                    fwhm_clip_re_rise_fraction_of_center
+                ),
+                branch_endpoint_exclusion_um=float(
+                    fwhm_branch_endpoint_exclusion_um
                 ),
             )
             print(f"FWHM diameter measurement summary: {fwhm_summary}")
