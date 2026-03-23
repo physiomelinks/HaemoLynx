@@ -9,6 +9,10 @@ neighbour-induced shoulder on one side.
 Branch identity for clipping comes from an in-memory label volume rasterized from the graph
 (see ``build_graph_branch_label_volume``). Transverse extent follows the configured minimum
 relative to the current FWHM estimate unless truncated at another edge or volume bounds.
+
+Transverse profiles are sampled **in the physical y–x plane only** (no displacement along
+stack axis ``z`` / index 0), so diameter rays follow in-plane directions when voxel spacing
+is anisotropic with coarser ``z``.
 """
 from __future__ import annotations
 
@@ -66,7 +70,11 @@ def physical_points_to_continuous_indices(
 
 
 def _gram_schmidt_perpendicular(tangent: np.ndarray) -> np.ndarray:
-    """Unit vector perpendicular to ``tangent`` (3D)."""
+    """Unit vector perpendicular to ``tangent`` in full 3D (unused for FWHM profiles).
+
+    Transverse intensity profiles use ``_transverse_unit_in_physical_yx_plane`` so rays stay
+    in the slice (y–x) plane when ``z`` spacing is coarse.
+    """
     t = np.asarray(tangent, dtype=float).ravel()
     nrm = np.linalg.norm(t)
     if nrm < 1e-12:
@@ -87,6 +95,23 @@ def _gram_schmidt_perpendicular(tangent: np.ndarray) -> np.ndarray:
     if nn < 1e-12:
         return np.array([1.0, 0.0, 0.0], dtype=float)
     return (n / nn).astype(float)
+
+
+def _transverse_unit_in_physical_yx_plane(tangent: np.ndarray) -> np.ndarray:
+    """Unit vector perpendicular to ``tangent`` with zero component along physical ``z`` (axis 0).
+
+    Coordinates are ``(z, y, x)`` as elsewhere in this module. The returned direction lies in
+    the slice plane (varies only ``y`` and ``x``), matching typical microscopy where ``z`` is
+    the lower-resolution stack axis and diameters should be measured without stepping along ``z``.
+    """
+    t = np.asarray(tangent, dtype=float).ravel()
+    if t.size != 3:
+        raise ValueError("tangent must have length 3 (z, y, x).")
+    ty, tx = float(t[1]), float(t[2])
+    n2 = float(np.hypot(ty, tx))
+    if n2 < 1e-12:
+        return np.array([0.0, 1.0, 0.0], dtype=float)
+    return np.array([0.0, -tx / n2, ty / n2], dtype=float)
 
 
 def _arc_length_parameterize(poly_phys: np.ndarray) -> tuple[np.ndarray, float]:
@@ -213,10 +238,13 @@ def _sample_transverse_profile(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sample intensity along a line through ``center_phys``, perpendicular to ``tangent``.
 
+    The line lies in the physical y–x plane (fixed ``z``); see
+    ``_transverse_unit_in_physical_yx_plane``.
+
     Returns (positions_along_line_um, intensities).
     """
     spacing = _spacing_vec(voxel_size_xyz)
-    n_hat = _gram_schmidt_perpendicular(tangent)
+    n_hat = _transverse_unit_in_physical_yx_plane(tangent)
     center_idx = center_phys / spacing
 
     pos_plus = _max_extent_along_ray(
