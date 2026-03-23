@@ -48,6 +48,21 @@ def test_fwhm_percentile_and_wings_modes_symmetric_gaussian():
     assert abs(w_w - w_p) < 0.3
 
 
+def test_transverse_unit_in_physical_yx_plane():
+    """In-plane transverse: orthogonal to tangent, zero z (axis-0) component, unit length."""
+    t = np.array([0.0, 0.0, 1.0], dtype=float)
+    n = automated._transverse_unit_in_physical_yx_plane(t)
+    assert abs(n[0]) < 1e-9
+    assert abs(float(np.dot(t, n))) < 1e-9
+    assert abs(float(np.linalg.norm(n)) - 1.0) < 1e-9
+
+    t2 = np.array([1.0, 2.0, 3.0], dtype=float)
+    n2 = automated._transverse_unit_in_physical_yx_plane(t2)
+    assert abs(n2[0]) < 1e-9
+    assert abs(float(np.dot(t2, n2))) < 1e-9
+    assert abs(float(np.linalg.norm(n2)) - 1.0) < 1e-9
+
+
 def test_build_graph_branch_label_volume():
     G = nx.MultiGraph()
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
