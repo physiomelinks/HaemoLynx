@@ -163,6 +163,133 @@ def build_matching_multigraph(
     return G
 
 
+def build_synthetic_y_shaped_volume_and_targets(
+    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]]]:
+    """Float32 Y-shaped vessel volume + segment targets as (a, b, fwhm_um) in (z,y,x) µm.
+
+    Geometry:
+    - one stem along +x
+    - two daughter branches diverging in y at fixed z
+    """
+    vz, vy, vx = voxel_size_xyz
+    z0 = 14.0
+    y0 = 15.0
+    x_stem0 = 8.0
+    x_bif = 24.0
+    x_tip = 42.0
+    y_delta = 8.0
+
+    # stem, upper daughter, lower daughter
+    specs: list[tuple[tuple[float, float, float], tuple[float, float, float], float]] = [
+        ((z0, y0, x_stem0), (z0, y0, x_bif), 6.0),
+        ((z0, y0, x_bif), (z0, y0 + y_delta, x_tip), 4.0),
+        ((z0, y0, x_bif), (z0, y0 - y_delta, x_tip), 4.0),
+    ]
+
+    sigma_max = max(f for _, _, f in specs) / _GAUSSIAN_FWHM_FROM_SIGMA
+    pad = 4.0 * sigma_max + 2.0
+    z_max = z0 + pad
+    y_max = y0 + y_delta + pad
+    x_max = x_tip + pad
+
+    nz = int(np.ceil(z_max / vz)) + 1
+    ny = int(np.ceil(y_max / vy)) + 1
+    nx = int(np.ceil(x_max / vx)) + 1
+
+    iz = np.arange(nz, dtype=float)[:, None, None]
+    iy = np.arange(ny, dtype=float)[None, :, None]
+    ix = np.arange(nx, dtype=float)[None, None, :]
+    pz = iz * vz
+    py = iy * vy
+    px = ix * vx
+
+    vol = np.zeros((nz, ny, nx), dtype=np.float32)
+    targets: list[tuple[np.ndarray, np.ndarray, float]] = []
+    for a_tup, b_tup, fwhm in specs:
+        a = np.array(a_tup, dtype=float)
+        b = np.array(b_tup, dtype=float)
+        sigma = float(fwhm) / _GAUSSIAN_FWHM_FROM_SIGMA
+        d = _dist_point_to_segment_batch(pz, py, px, a, b)
+        tube = (_I0 * np.exp(-(d**2) / (2.0 * sigma**2))).astype(np.float32)
+        vol = np.maximum(vol, tube)
+        targets.append((a, b, float(fwhm)))
+    return vol, targets
+
+
+def build_y_shaped_matching_multigraph(
+    targets: list[tuple[np.ndarray, np.ndarray, float]],
+    voxel_size_xyz: tuple[float, float, float],
+    step_um: float = 0.25,
+) -> nx.MultiGraph:
+    """Graph for Y-shaped targets with a shared bifurcation node at the common point."""
+    vz, vy, vx = voxel_size_xyz
+    step = min(step_um, vz, vy, vx)
+    G = nx.MultiGraph()
+
+    # Node ids: 0=stem start, 1=bifurcation, 2=upper tip, 3=lower tip
+    stem_a, stem_b, _ = targets[0]
+    up_a, up_b, _ = targets[1]
+    lo_a, lo_b, _ = targets[2]
+    G.add_node(0, pos=np.asarray(stem_a, dtype=float))
+    G.add_node(1, pos=np.asarray(stem_b, dtype=float))
+    G.add_node(2, pos=np.asarray(up_b, dtype=float))
+    G.add_node(3, pos=np.asarray(lo_b, dtype=float))
+
+    edges = [
+        (0, 1, stem_a, stem_b, "B01"),
+        (1, 2, up_a, up_b, "B02"),
+        (1, 3, lo_a, lo_b, "B03"),
+    ]
+    for u, v, a, b, bo in edges:
+        a = np.asarray(a, dtype=float)
+        b = np.asarray(b, dtype=float)
+        ab = b - a
+        length = float(np.linalg.norm(ab))
+        if length <= 0:
+            continue
+        direc = ab / length
+        n = max(2, int(np.floor(length / step)) + 1)
+        tvals = np.linspace(0.0, length, n)
+        voxels = [tuple((a + t * direc).tolist()) for t in tvals]
+        G.add_edge(
+            u,
+            v,
+            weight=1.0,
+            length=length,
+            branch_order=bo,
+            voxels=voxels,
+        )
+    return G
+
+
+def build_offcenter_matching_multigraph(
+    targets: list[tuple[np.ndarray, np.ndarray, float]],
+    voxel_size_xyz: tuple[float, float, float],
+    step_um: float = 0.25,
+    *,
+    offcenter_fraction: float = 0.3,
+) -> nx.MultiGraph:
+    """Straight-vessel graph with centerlines offset in x and z by a diameter fraction.
+
+    The synthetic raw volume stays unchanged; this function intentionally perturbs graph geometry.
+    """
+    if offcenter_fraction < 0:
+        raise ValueError("offcenter_fraction must be non-negative.")
+    shifted_targets: list[tuple[np.ndarray, np.ndarray, float]] = []
+    for a, b, fwhm in targets:
+        a = np.asarray(a, dtype=float).copy()
+        b = np.asarray(b, dtype=float).copy()
+        dz = float(offcenter_fraction) * float(fwhm)
+        dx = float(offcenter_fraction) * float(fwhm)
+        a[0] += dz
+        b[0] += dz
+        a[2] += dx
+        b[2] += dx
+        shifted_targets.append((a, b, float(fwhm)))
+    return build_matching_multigraph(shifted_targets, voxel_size_xyz, step_um=step_um)
+
+
 def _iter_profile_polylines_phys(
     G: nx.MultiGraph,
     raw: np.ndarray,
@@ -523,35 +650,31 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
     fig.write_html(str(tmp_path / "synthetic_vessel_fwhm_viz.html"), include_plotlyjs="cdn")
 
 
-def _write_demo_html() -> Path:
-    repo_root = Path(__file__).resolve().parents[1]
-    out_dir = repo_root / "examples" / "plots"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "synthetic_vessel_fwhm_integration_3d.html"
-
-    voxel_size_xyz = (0.25, 0.25, 0.25)
-    raw, targets = build_synthetic_vessel_volume_and_targets(voxel_size_xyz)
+def _write_single_demo_html(
+    out_path: Path,
+    raw: np.ndarray,
+    G: nx.MultiGraph,
+    voxel_size_xyz: tuple[float, float, float],
+    title_prefix: str,
+    targets: list[tuple[np.ndarray, np.ndarray, float]],
+) -> None:
+    """Run FWHM on (raw, G) and write one Plotly HTML file."""
     with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
         raw_path = Path(tf.name)
     try:
         tifffile.imwrite(str(raw_path), raw)
-
-        G = build_matching_multigraph(targets, voxel_size_xyz, step_um=0.25)
         automated.measure_edge_diameters_fwhm_from_raw_tiff(
             G,
             raw_tiff_path=raw_path,
             voxel_size_xyz=voxel_size_xyz,
             **_DEFAULT_FWHM_MEASURE_KWARGS,
         )
-
-        pairs = [(0, 1, 0), (2, 3, 0), (4, 5, 0)]
+        pairs = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
         title_parts = []
         for (u, v, k), t in zip(pairs, targets):
             d = float(G[u][v][k]["fwhm_diameter_um"])
             title_parts.append(f"FWHM {t[2]:.1f}→{d:.2f} µm")
-        title = "Synthetic vessels: volume mesh + centerlines + transverse profile lines | " + " | ".join(
-            title_parts
-        )
+        title = title_prefix + " | " + " | ".join(title_parts)
         labels, _ = automated.build_graph_branch_label_volume(
             G,
             raw.shape,
@@ -570,9 +693,64 @@ def _write_demo_html() -> Path:
         fig.write_html(str(out_path), include_plotlyjs="cdn")
     finally:
         raw_path.unlink(missing_ok=True)
-    return out_path
+
+
+def _write_demo_html() -> list[Path]:
+    repo_root = Path(__file__).resolve().parents[1]
+    out_dir = repo_root / "examples" / "plots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    voxel_size_xyz = (0.25, 0.25, 0.25)
+
+    out_paths: list[Path] = []
+
+    # 1) Baseline straight vessels.
+    raw0, targets0 = build_synthetic_vessel_volume_and_targets(voxel_size_xyz)
+    G0 = build_matching_multigraph(targets0, voxel_size_xyz, step_um=0.25)
+    out0 = out_dir / "synthetic_vessel_fwhm_integration_3d.html"
+    _write_single_demo_html(
+        out0,
+        raw0,
+        G0,
+        voxel_size_xyz,
+        "Synthetic vessels: volume mesh + centerlines + transverse profile lines",
+        targets0,
+    )
+    out_paths.append(out0)
+
+    # 2) Y-shaped vessels.
+    raw_y, targets_y = build_synthetic_y_shaped_volume_and_targets(voxel_size_xyz)
+    Gy = build_y_shaped_matching_multigraph(targets_y, voxel_size_xyz, step_um=0.25)
+    out_y = out_dir / "synthetic_vessel_y_shape_fwhm_integration_3d.html"
+    _write_single_demo_html(
+        out_y,
+        raw_y,
+        Gy,
+        voxel_size_xyz,
+        "Synthetic Y vessels: volume mesh + centerlines + transverse profile lines",
+        targets_y,
+    )
+    out_paths.append(out_y)
+
+    # 3) Straight vessels with graph centerlines off-center in x and z (30% of target diameter).
+    raw_off, targets_off = build_synthetic_vessel_volume_and_targets(voxel_size_xyz)
+    Goff = build_offcenter_matching_multigraph(
+        targets_off, voxel_size_xyz, step_um=0.25, offcenter_fraction=0.3
+    )
+    out_off = out_dir / "synthetic_vessel_offcenter_graph_fwhm_integration_3d.html"
+    _write_single_demo_html(
+        out_off,
+        raw_off,
+        Goff,
+        voxel_size_xyz,
+        "Synthetic off-center graph: volume mesh + centerlines + transverse profile lines",
+        targets_off,
+    )
+    out_paths.append(out_off)
+
+    return out_paths
 
 
 if __name__ == "__main__":
-    path = _write_demo_html()
-    print(f"Wrote {path}")
+    paths = _write_demo_html()
+    for p in paths:
+        print(f"Wrote {p}")

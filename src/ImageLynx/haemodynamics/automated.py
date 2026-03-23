@@ -187,12 +187,14 @@ def _max_extent_along_ray(
     *,
     background_label: int,
     junction_label: int | None,
+    allow_junction_crossing: bool,
 ) -> float:
     """Positive distance along +direction until hitting another edge or the volume edge.
 
-    Voxels labeled ``assigned_label``, ``background_label`` (unpainted lumen), or
-    ``junction_label`` allow the ray to continue up to ``max_physical_extent``. Any
-    other positive label is treated as a different graph edge and truncates the line.
+    Voxels labeled ``assigned_label`` or ``background_label`` (unpainted lumen) allow
+    continuation up to ``max_physical_extent``. By default, ``junction_label`` is
+    treated as a hard stop to avoid crossing into neighbouring branches at bifurcations.
+    Any other positive label is treated as a different graph edge and truncates the line.
     """
     spacing = _spacing_vec(voxel_size_xyz)
     if step_um <= 0:
@@ -218,7 +220,9 @@ def _max_extent_along_ray(
         if lab == background_label:
             continue
         if junction_label is not None and lab == junction_label:
-            continue
+            if allow_junction_crossing:
+                continue
+            return max(0.0, (k - 1) * step_um)
         return max(0.0, (k - 1) * step_um)
     return max_physical_extent
 
@@ -235,6 +239,7 @@ def _sample_transverse_profile(
     *,
     background_label: int,
     junction_label: int | None,
+    allow_junction_crossing: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sample intensity along a line through ``center_phys``, perpendicular to ``tangent``.
 
@@ -257,6 +262,7 @@ def _sample_transverse_profile(
         transverse_step_um,
         background_label=background_label,
         junction_label=junction_label,
+        allow_junction_crossing=allow_junction_crossing,
     )
     pos_minus = _max_extent_along_ray(
         center_idx,
@@ -268,6 +274,7 @@ def _sample_transverse_profile(
         transverse_step_um,
         background_label=background_label,
         junction_label=junction_label,
+        allow_junction_crossing=allow_junction_crossing,
     )
 
     n_neg = int(np.floor(pos_minus / transverse_step_um))
@@ -521,6 +528,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     profile_baseline_wing_fraction: float = 0.2,
     constrain_fitted_baseline: bool = False,
     baseline_constraint_half_width_ptp: float = 0.35,
+    allow_junction_crossing: bool = False,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -549,8 +557,9 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         times that diameter unless truncated earlier.
     junction_label :
         Reserved value marking voxels shared by multiple edges in the rasterized volume.
-        Transverse rays may pass through these; they stop at ``background_label`` or at
-        another edge's id.
+        Transverse rays stop at this label by default to avoid crossing onto neighbouring
+        vessel branches near bifurcations. Set ``allow_junction_crossing=True`` to permit
+        traversal through junction-labeled voxels.
     min_total_extent_multiplier :
         Ensures total transverse extent >= this factor × measured FWHM when not truncated.
     profile_baseline_mode :
@@ -627,6 +636,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 voxel_size_xyz,
                 background_label=int(background_label),
                 junction_label=jn,
+                allow_junction_crossing=bool(allow_junction_crossing),
             )
             d0 = fwhm_from_profile(
                 pos,
@@ -652,6 +662,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     voxel_size_xyz,
                     background_label=int(background_label),
                     junction_label=jn,
+                    allow_junction_crossing=bool(allow_junction_crossing),
                 )
                 d1 = fwhm_from_profile(
                     pos,
