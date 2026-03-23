@@ -446,5 +446,56 @@ def visualize_volume(
     return plotter
 
 
+def visualize_volume_vedo(
+    volume: np.ndarray,
+    title: str = "Vedo 3D Volume",
+    mode: str = "iso",
+    spacing: tuple = (1.0, 1.0, 1.0),
+    vessel_color: str = "salmon",
+    background_color: str = "white",
+    alpha: float = 1.0,
+    smooth_iter: int = 0,
+):
+    """Visualize a 3D volume using Vedo (image_to_model style).
+
+    Parameters
+    ----------
+    mode:
+        'iso' for smooth surface mesh, 'lego' for raw voxel blocks.
+    spacing:
+        (z, y, x) voxel dimensions.
+    smooth_iter:
+        Iterations of Laplacian smoothing (only for 'iso' mode).
+    """
+    try:
+        import vedo
+    except ImportError as exc:
+        raise ImportError("vedo is required. Install with `pip install vedo`.")
+
+    # Vedo Volume expects (Z, Y, X) data but spacing usually maps to (X, Y, Z)
+    # in terms of how it stretches. To match ImageLynx/image_to_model convention:
+    # Transpose Z,Y,X -> X,Y,Z for internal consistency
+    vol_data = volume.transpose(2, 1, 0)
+    # Re-order spacing to match the transposed dims (x, y, z)
+    vedo_spacing = (spacing[2], spacing[1], spacing[0])
+    
+    # Auto-threshold for surface extraction
+    vmin = 0.5 if volume.dtype == bool else np.mean(volume)
+    
+    vol = vedo.Volume(vol_data, spacing=vedo_spacing)
+    
+    if mode.lower() == "lego":
+        actor = vol.legosurface(vmin=vmin).color(vessel_color).alpha(alpha)
+    else:
+        actor = vol.isosurface(vmin).color(vessel_color).alpha(alpha)
+        if smooth_iter > 0:
+            actor.smooth(niter=smooth_iter)
+    
+    plt_vedo = vedo.Plotter(title=title, bg=background_color)
+    plt_vedo.add(actor)
+    plt_vedo.show(interactive=True)
+    return plt_vedo
+
+
 # British-spelling alias used in the example script.
 visualise_skeleton = visualize_skeleton
