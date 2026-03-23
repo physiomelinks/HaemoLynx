@@ -8,6 +8,7 @@ from .plot import (
     visualize_skeleton,
     visualise_skeleton,
     visualize_volume,
+    visualize_volume_vedo,
 )
 from .vtk_io import (
     derive_pericyte_points_from_graph,
@@ -25,6 +26,7 @@ __all__ = [
     "visualize_skeleton",
     "visualise_skeleton",
     "visualize_volume",
+    "visualize_volume_vedo",
     "derive_pericyte_points_from_graph",
     "graph_to_vtk",
     "load_vtp",

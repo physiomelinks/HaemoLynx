@@ -135,6 +135,36 @@ def load_3d_h5(filepath: str | Path, dataset_name: str) -> np.ndarray:
     return simplify_to_3d(image)
 
 
+def get_tif_spacing(filepath: str | Path) -> tuple[float, float, float]:
+    """Attempt to extract (z, y, x) spacing from TIFF metadata.
+    
+    Returns (1.0, 1.0, 1.0) if metadata is missing or invalid.
+    """
+    try:
+        with tifffile.TiffFile(str(filepath)) as tif:
+            # Default to isotropic
+            x = y = z = 1.0
+            
+            # X and Y Resolution
+            # resolution is usually stored as (numerator, denominator)
+            page = tif.pages[0]
+            if 'XResolution' in page.tags:
+                val = page.tags['XResolution'].value
+                x = val[1] / val[0] if isinstance(val, tuple) else 1.0 / val
+            if 'YResolution' in page.tags:
+                val = page.tags['YResolution'].value
+                y = val[1] / val[0] if isinstance(val, tuple) else 1.0 / val
+                
+            # Z Spacing (often in ImageJ metadata)
+            ij_meta = tif.imagej_metadata
+            if ij_meta and 'spacing' in ij_meta:
+                z = float(ij_meta['spacing'])
+            
+            return (z, y, x)
+    except Exception:
+        return (1.0, 1.0, 1.0)
+
+
 def load_and_skeletonize_3d_tif(
     filepath: str,
     voxel_size: float = 1.0,

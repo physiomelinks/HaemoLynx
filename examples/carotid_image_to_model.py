@@ -59,7 +59,21 @@ OUTPUT_NODES: list[int] = []
 INPUT_P_BC = 1000 # Pa 
 OUTPUT_P_BC = 500 # Pa
 VISUALIZE_RESULTS = True
-VISUALIZE_MASK_ONLY = True
+VISUALIZE_MASK_ONLY = False
+# ---------------------------
+# Vedo Visualization Style (image_to_model style)
+# ---------------------------
+VISUALIZE_VEDO = True
+# Mode: 'lego' (exact voxels) or 'iso' (smooth surface)
+VISUALIZE_VEDO_MODE = 'iso' 
+# Smoothing iterations (only for 'iso' mode)
+VISUALIZE_VEDO_SMOOTH_ITER = 15
+# Voxel spacing [z, y, x]
+VISUALIZE_VEDO_SPACING = (1.0, 1.0, 1.0)
+# If True, attempts to read spacing from TIF metadata automatically.
+VISUALIZE_VEDO_AUTO_SPACING = True
+
+VISUALIZE_VEDO_OPACITY = 0.5
 VISUALIZE_MASK_OPACITY = 1.0
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
@@ -96,7 +110,7 @@ SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1
 
 # Sub-volume / ROI settings. 
 # SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
-SKELETON_SUB_VOLUME_PERCENTAGE = 0.05
+SKELETON_SUB_VOLUME_PERCENTAGE = 0.1
 # Center offsets for the ROI (as percentage of original dimensions, -0.5 to 0.5).
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Z = 0.0
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Y = 0.0
@@ -272,6 +286,12 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             output_p_bc=OUTPUT_P_BC, 
                             visualize_results=VISUALIZE_RESULTS, 
                             visualize_mask_only=VISUALIZE_MASK_ONLY,
+                            visualize_vedo=VISUALIZE_VEDO,
+                            visualize_vedo_mode=VISUALIZE_VEDO_MODE,
+                            visualize_vedo_smooth_iter=VISUALIZE_VEDO_SMOOTH_ITER,
+                            visualize_vedo_spacing=VISUALIZE_VEDO_SPACING,
+                            visualize_vedo_auto_spacing=VISUALIZE_VEDO_AUTO_SPACING,
+                            visualize_vedo_opacity=VISUALIZE_VEDO_OPACITY,
                             visualize_mask_opacity=VISUALIZE_MASK_OPACITY,
                             visualize_vtk=VISUALIZE_VTK) -> None:
                         
@@ -323,15 +343,36 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             )
             print(f"  ROI new shape: {image.shape}")
 
+        if visualize_mask_only:
+            print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={visualize_mask_opacity}). Close window to exit.")
+            visualization.visualize_volume(image, title="3D Pre-Otsu Intensity Image", opacity=visualize_mask_opacity)
+            print("Exiting pipeline as requested.")
+            return
+
+        if visualize_vedo:
+            print(f"Visualizing 3D volume with VEDO ({visualize_vedo_mode}, smooth={visualize_vedo_smooth_iter}).")
+            
+            # Use detected spacing if requested
+            current_spacing = visualize_vedo_spacing
+            if visualize_vedo_auto_spacing and input_format == "tif":
+                detected = io.get_tif_spacing(image_path)
+                print(f"  Auto-detected spacing (z,y,x): {detected}")
+                current_spacing = detected
+
+            visualization.visualize_volume_vedo(
+                image, 
+                title=f"Vedo 3D Image ({visualize_vedo_mode})", 
+                mode=visualize_vedo_mode,
+                spacing=current_spacing,
+                alpha=visualize_vedo_opacity,
+                smooth_iter=visualize_vedo_smooth_iter
+            )
+            print("Exiting pipeline as requested.")
+            return
+
         from skimage.filters import threshold_otsu
         threshold = threshold_otsu(image)
         binary = image > threshold
-        
-        if visualize_mask_only:
-            print(f"Visualizing 3D mask only (opacity={visualize_mask_opacity}). Close window to exit.")
-            visualization.visualize_volume(binary, title="3D Segmentation Mask", opacity=visualize_mask_opacity)
-            print("Exiting pipeline as requested.")
-            return
 
         if skeleton_prune_mask_before > 0:
             print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
@@ -602,7 +643,14 @@ if __name__ == "__main__":
         skeleton_sub_volume_offset_z=SKELETON_SUB_VOLUME_CENTER_OFFSET_Z,
         skeleton_sub_volume_offset_y=SKELETON_SUB_VOLUME_CENTER_OFFSET_Y,
         skeleton_sub_volume_offset_x=SKELETON_SUB_VOLUME_CENTER_OFFSET_X,
+        visualize_results=VISUALIZE_RESULTS,
         visualize_mask_only=VISUALIZE_MASK_ONLY,
+        visualize_vedo=VISUALIZE_VEDO,
+        visualize_vedo_mode=VISUALIZE_VEDO_MODE,
+        visualize_vedo_smooth_iter=VISUALIZE_VEDO_SMOOTH_ITER,
+        visualize_vedo_spacing=VISUALIZE_VEDO_SPACING,
+        visualize_vedo_auto_spacing=VISUALIZE_VEDO_AUTO_SPACING,
+        visualize_vedo_opacity=VISUALIZE_VEDO_OPACITY,
         visualize_mask_opacity=VISUALIZE_MASK_OPACITY
     )
 
