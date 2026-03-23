@@ -49,6 +49,10 @@ _DEFAULT_FWHM_MEASURE_KWARGS: dict = {
     "profile_baseline_wing_fraction": 0.2,
     "constrain_fitted_baseline": False,
     "baseline_constraint_half_width_ptp": 0.35,
+    "clip_profile_to_single_vessel": True,
+    "clip_min_drop_fraction_of_center": 0.35,
+    "clip_re_rise_fraction_of_center": 0.08,
+    "branch_endpoint_exclusion_um": 3.0,
 }
 
 _EDGE_LINE_COLORS = ("#00ffff", "#ffaa00", "#cc66ff")
@@ -290,6 +294,22 @@ def build_offcenter_matching_multigraph(
     return build_matching_multigraph(shifted_targets, voxel_size_xyz, step_um=step_um)
 
 
+def add_background_noise_to_synthetic_volume(
+    volume: np.ndarray,
+    *,
+    noise_sigma: float = 6.0,
+    background_offset: float = 4.0,
+    seed: int = 123,
+) -> np.ndarray:
+    """Add reproducible background noise to a synthetic raw volume."""
+    vol = np.asarray(volume, dtype=np.float32)
+    rng = np.random.default_rng(int(seed))
+    noisy = vol + float(background_offset) + rng.normal(
+        loc=0.0, scale=float(noise_sigma), size=vol.shape
+    ).astype(np.float32)
+    return np.clip(noisy, 0.0, None).astype(np.float32)
+
+
 def _iter_profile_polylines_phys(
     G: nx.MultiGraph,
     raw: np.ndarray,
@@ -312,6 +332,10 @@ def _iter_profile_polylines_phys(
     p_wing = float(measure_kwargs["profile_baseline_wing_fraction"])
     c_fb = bool(measure_kwargs["constrain_fitted_baseline"])
     c_hw = float(measure_kwargs["baseline_constraint_half_width_ptp"])
+    clip_single = bool(measure_kwargs["clip_profile_to_single_vessel"])
+    clip_drop = float(measure_kwargs["clip_min_drop_fraction_of_center"])
+    clip_rise = float(measure_kwargs["clip_re_rise_fraction_of_center"])
+    branch_excl = max(0.0, float(measure_kwargs["branch_endpoint_exclusion_um"]))
 
     out: list[tuple[tuple[int, int, int], list[tuple[np.ndarray, np.ndarray]]]] = []
 
@@ -327,9 +351,15 @@ def _iter_profile_polylines_phys(
         n_samples = max(1, int(np.floor(total_len / s_space)) + 1)
         targets = np.linspace(0.0, total_len, n_samples)
         pts = automated._interpolate_centerline(centerline, s, targets)
+        u_is_branch = int(G.degree(u)) > 1
+        v_is_branch = int(G.degree(v)) > 1
 
         segs: list[tuple[np.ndarray, np.ndarray]] = []
         for s0, center in zip(targets, pts):
+            if u_is_branch and float(s0) < branch_excl:
+                continue
+            if v_is_branch and float(total_len - s0) < branch_excl:
+                continue
             tangent = automated._tangent_at(centerline, s, float(s0))
             n_hat = automated._transverse_unit_in_physical_yx_plane(tangent)
             c = np.asarray(center, dtype=float)
@@ -348,8 +378,16 @@ def _iter_profile_polylines_phys(
                 junction_label=jn,
             )
             d0 = automated.fwhm_from_profile(
-                pos,
-                prof,
+                *(
+                    automated._clip_profile_to_central_lobe(
+                        pos,
+                        prof,
+                        min_drop_fraction_of_center=clip_drop,
+                        re_rise_fraction_of_center=clip_rise,
+                    )
+                    if clip_single
+                    else (pos, prof)
+                ),
                 profile_baseline_mode=p_mode,
                 profile_baseline_wing_fraction=p_wing,
                 constrain_fitted_baseline=c_fb,
@@ -358,7 +396,7 @@ def _iter_profile_polylines_phys(
             pos_used = pos
             if d0 is not None and d0 > 0:
                 half_extent = max(half_extent, 0.5 * mult * float(d0))
-                pos_used, _ = automated._sample_transverse_profile(
+                pos_used, prof_used = automated._sample_transverse_profile(
                     raw,
                     labels,
                     c,
@@ -370,6 +408,13 @@ def _iter_profile_polylines_phys(
                     background_label=bg,
                     junction_label=jn,
                 )
+                if clip_single:
+                    pos_used, prof_used = automated._clip_profile_to_central_lobe(
+                        pos_used,
+                        prof_used,
+                        min_drop_fraction_of_center=clip_drop,
+                        re_rise_fraction_of_center=clip_rise,
+                    )
 
             if pos_used.size == 0:
                 continue
@@ -746,6 +791,24 @@ def _write_demo_html() -> list[Path]:
         targets_off,
     )
     out_paths.append(out_off)
+
+    # 4) Off-center graph with noisy synthetic background.
+    raw_off_noisy = add_background_noise_to_synthetic_volume(
+        raw_off,
+        noise_sigma=6.0,
+        background_offset=4.0,
+        seed=123,
+    )
+    out_off_noisy = out_dir / "synthetic_vessel_offcenter_graph_noisy_fwhm_integration_3d.html"
+    _write_single_demo_html(
+        out_off_noisy,
+        raw_off_noisy,
+        Goff,
+        voxel_size_xyz,
+        "Synthetic off-center graph (noisy raw): volume mesh + centerlines + transverse profile lines",
+        targets_off,
+    )
+    out_paths.append(out_off_noisy)
 
     return out_paths
 
