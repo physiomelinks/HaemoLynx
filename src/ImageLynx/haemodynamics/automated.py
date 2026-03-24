@@ -742,23 +742,27 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 junction_label=jn,
                 allow_junction_crossing=bool(allow_junction_crossing),
             )
+            pos_fit, prof_fit = (
+                _clip_profile_to_central_lobe(
+                    pos,
+                    prof,
+                    min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                    re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                )
+                if clip_profile_to_single_vessel
+                else (pos, prof)
+            )
             d0 = fwhm_from_profile(
-                *(
-                    _clip_profile_to_central_lobe(
-                        pos,
-                        prof,
-                        min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                        re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-                    )
-                    if clip_profile_to_single_vessel
-                    else (pos, prof)
-                ),
+                pos_fit,
+                prof_fit,
                 profile_baseline_mode=profile_baseline_mode,
                 profile_baseline_wing_fraction=profile_baseline_wing_fraction,
                 constrain_fitted_baseline=constrain_fitted_baseline,
                 baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
             )
             if d0 is not None and d0 > 0:
+                # Enforce at least (min_total_extent_multiplier × estimated width)
+                # when geometry allows (other-edge/junction/volume bounds still truncate).
                 half_extent = max(
                     half_extent,
                     0.5 * mult * d0,
@@ -776,23 +780,65 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     junction_label=jn,
                     allow_junction_crossing=bool(allow_junction_crossing),
                 )
+                pos_fit, prof_fit = (
+                    _clip_profile_to_central_lobe(
+                        pos,
+                        prof,
+                        min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                        re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                    )
+                    if clip_profile_to_single_vessel
+                    else (pos, prof)
+                )
                 d1 = fwhm_from_profile(
-                    *(
-                        _clip_profile_to_central_lobe(
-                            pos,
-                            prof,
-                            min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                            re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-                        )
-                        if clip_profile_to_single_vessel
-                        else (pos, prof)
-                    ),
+                    pos_fit,
+                    prof_fit,
                     profile_baseline_mode=profile_baseline_mode,
                     profile_baseline_wing_fraction=profile_baseline_wing_fraction,
                     constrain_fitted_baseline=constrain_fitted_baseline,
                     baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
                 )
-                if d1 is not None:
+                if d1 is not None and d1 > 0:
+                    desired_half = 0.5 * mult * float(d1)
+                    # One extra pass if first estimate was low and we can still extend.
+                    if desired_half > (half_extent + float(transverse_profile_step_um)):
+                        half_extent = desired_half
+                        pos, prof = _sample_transverse_profile(
+                            raw,
+                            labels,
+                            center,
+                            tangent,
+                            int(assigned),
+                            half_extent,
+                            float(transverse_profile_step_um),
+                            voxel_size_xyz,
+                            background_label=int(background_label),
+                            junction_label=jn,
+                            allow_junction_crossing=bool(allow_junction_crossing),
+                        )
+                        pos_fit, prof_fit = (
+                            _clip_profile_to_central_lobe(
+                                pos,
+                                prof,
+                                min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                                re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                            )
+                            if clip_profile_to_single_vessel
+                            else (pos, prof)
+                        )
+                        d2 = fwhm_from_profile(
+                            pos_fit,
+                            prof_fit,
+                            profile_baseline_mode=profile_baseline_mode,
+                            profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+                            constrain_fitted_baseline=constrain_fitted_baseline,
+                            baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+                        )
+                        if d2 is not None:
+                            diameters.append(d2)
+                    else:
+                        diameters.append(d1)
+                elif d1 is not None:
                     diameters.append(d1)
             elif d0 is not None:
                 diameters.append(d0)
