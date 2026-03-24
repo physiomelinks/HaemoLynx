@@ -1363,6 +1363,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                 "set_poiseuille_weights without per-edge FWHM)."
             )
+        if (
+            do_pericyte_constriction
+            and use_probabilistic_pericyte_constriction
+            and not use_pericyte_mask_constriction
+        ):
+            raise ValueError(
+                "use_probabilistic_pericyte_constriction=True currently requires "
+                "use_pericyte_mask_constriction=True, because pericyte identities are "
+                "derived from mask components."
+            )
         if run_pericyte_resistance_comparison:
             comparison_csv_path = output_dir / f"{image_path.stem}_pericyte_resistance_comparison.csv"
             comparison_results = (
