@@ -190,6 +190,10 @@ DO_PERICYTE_CONSTRUCTION = False
 USE_PERICYTE_MASK_CONSTRICTION = False
 PERICYTE_MASK_PATH: Optional[Path] = None
 PERICYTE_MASK_H5_DATASET_NAME: Optional[str] = None
+# Optional probabilistic constriction:
+# Example: probability=0.8 means ~80% of pericytes are active per run.
+USE_PROBABILISTIC_PERICYTE_CONSTRICTION = False
+PERICYTE_CONSTRICTION_PROBABILITY = 0.8
 RUN_PERICYTE_RESISTANCE_COMPARISON = False
 PERICYTE_COMPARISON_BASELINE_SCALE = 1.0
 PERICYTE_COMPARISON_CONSTRICTED_SCALE = 0.8
@@ -337,6 +341,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_pericyte_mask_constriction=USE_PERICYTE_MASK_CONSTRICTION,
                             pericyte_mask_path=PERICYTE_MASK_PATH,
                             pericyte_mask_h5_dataset_name=PERICYTE_MASK_H5_DATASET_NAME,
+                            use_probabilistic_pericyte_constriction=USE_PROBABILISTIC_PERICYTE_CONSTRICTION,
+                            pericyte_constriction_probability=PERICYTE_CONSTRICTION_PROBABILITY,
                             run_pericyte_resistance_comparison=RUN_PERICYTE_RESISTANCE_COMPARISON,
                             pericyte_comparison_baseline_scale=PERICYTE_COMPARISON_BASELINE_SCALE,
                             pericyte_comparison_constricted_scale=PERICYTE_COMPARISON_CONSTRICTED_SCALE,
@@ -1374,6 +1380,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
                     constriction_length=40.0,
                     constriction_spacing=100.0,
+                    use_probabilistic_pericyte_constriction=bool(
+                        use_probabilistic_pericyte_constriction
+                    ),
+                    pericyte_constriction_probability=float(
+                        pericyte_constriction_probability
+                    ),
                 )
             )
             print(
@@ -1406,6 +1418,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
                     prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
                     constriction_length=40.0,
+                    use_probabilistic_constriction=bool(
+                        use_probabilistic_pericyte_constriction
+                    ),
+                    constriction_probability=float(pericyte_constriction_probability),
                 )
                 print(
                     "Results from set_poiseuille_weights_with_pericyte_mask "

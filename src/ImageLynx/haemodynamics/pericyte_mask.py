@@ -15,6 +15,10 @@ from ImageLynx.io import (
     load_3d_tif_with_voxel_size,
     resolve_image_path_with_optional_zip,
 )
+from .probability import (
+    select_active_pericyte_indices,
+    validate_active_pericyte_indices,
+)
 
 
 def _load_binary_mask_and_voxel_size(
@@ -314,6 +318,9 @@ def set_poiseuille_weights_with_pericyte_mask(
     prefer_edge_fwhm_baseline: bool = False,
     constriction_length: float = 40.0,
     num_integration_points: int = 1000,
+    use_probabilistic_constriction: bool = False,
+    constriction_probability: float = 1.0,
+    active_pericyte_indices: list[int] | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Set conductance weights using pericyte centroids from a mask volume.
 
@@ -335,10 +342,32 @@ def set_poiseuille_weights_with_pericyte_mask(
         pericyte_mask_path,
         h5_dataset_name=pericyte_mask_h5_dataset_name,
     )
-    centroids_phys = _extract_pericyte_centroids_physical(
+    all_centroids_phys = _extract_pericyte_centroids_physical(
         mask_bool,
         mask_voxel_size,
     )
+    total_pericytes = int(all_centroids_phys.shape[0])
+    if active_pericyte_indices is not None:
+        selected_indices = validate_active_pericyte_indices(
+            active_pericyte_indices,
+            total_pericytes=total_pericytes,
+        )
+        probabilistic_mode = bool(use_probabilistic_constriction)
+    elif use_probabilistic_constriction:
+        selected_indices = select_active_pericyte_indices(
+            total_pericytes=total_pericytes,
+            constriction_probability=float(constriction_probability),
+        )
+        probabilistic_mode = True
+    else:
+        selected_indices = list(range(total_pericytes))
+        probabilistic_mode = False
+
+    if selected_indices:
+        centroids_phys = all_centroids_phys[np.asarray(selected_indices, dtype=int)]
+    else:
+        centroids_phys = np.empty((0, 3), dtype=float)
+
     edge_records = _build_edge_records(graph)
     assigned_centers_by_edge, assignment_distances = _assign_centroids_to_edges(
         edge_records,
@@ -347,7 +376,11 @@ def set_poiseuille_weights_with_pericyte_mask(
 
     results: dict[str, Any] = {
         "weights_set": 0,
-        "pericyte_count": int(centroids_phys.shape[0]),
+        "pericyte_count": total_pericytes,
+        "active_pericyte_count": int(len(selected_indices)),
+        "active_pericyte_indices": [int(idx) for idx in selected_indices],
+        "probabilistic_constriction_enabled": probabilistic_mode,
+        "constriction_probability": float(constriction_probability),
         "edges_with_pericytes": int(len(assigned_centers_by_edge)),
         "used_fwhm_baseline": 0,
         "mask_voxel_size_xyz": tuple(float(v) for v in mask_voxel_size),
