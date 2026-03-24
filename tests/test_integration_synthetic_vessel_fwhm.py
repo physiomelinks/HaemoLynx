@@ -518,13 +518,6 @@ def _iter_profile_polylines_phys(
                     background_label=bg,
                     junction_label=jn,
                 )
-                if clip_single:
-                    pos_used, prof_used = automated._clip_profile_to_central_lobe(
-                        pos_used,
-                        prof_used,
-                        min_drop_fraction_of_center=clip_drop,
-                        re_rise_fraction_of_center=clip_rise,
-                    )
 
             if pos_used.size == 0:
                 continue
