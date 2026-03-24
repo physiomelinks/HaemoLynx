@@ -134,8 +134,81 @@ def _write_ground_truth_branch_csv(
             )
 
 
+def _polyline_length(points: np.ndarray) -> float:
+    """Return total Euclidean length of a polyline."""
+    if points.shape[0] < 2:
+        return 0.0
+    return float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
+
+
+def _orthogonal_unit(direction: np.ndarray) -> np.ndarray:
+    """Pick a stable unit vector orthogonal to direction."""
+    refs = (
+        np.array([0.0, 0.0, 1.0], dtype=float),
+        np.array([0.0, 1.0, 0.0], dtype=float),
+        np.array([1.0, 0.0, 0.0], dtype=float),
+    )
+    for ref in refs:
+        cand = np.cross(direction, ref)
+        n = float(np.linalg.norm(cand))
+        if n > 1e-10:
+            return cand / n
+    # Degenerate fallback (should rarely happen).
+    return np.array([0.0, 1.0, 0.0], dtype=float)
+
+
+def _curved_edge_polyline(
+    start: np.ndarray,
+    end: np.ndarray,
+    target_length: float,
+    *,
+    points: int = 96,
+    bend_sign: float = 1.0,
+) -> np.ndarray:
+    """Build a smooth curve whose arc-length approximates target_length.
+
+    Endpoints remain fixed. If target_length is close to straight distance,
+    this returns a straight segment.
+    """
+    vec = end - start
+    straight = float(np.linalg.norm(vec))
+    if straight <= 1e-12:
+        return np.repeat(start.reshape(1, 3), points, axis=0)
+
+    target = max(float(target_length), straight)
+    t = np.linspace(0.0, 1.0, points, dtype=float)
+
+    if target <= straight * 1.0001:
+        return start.reshape(1, 3) + t.reshape(-1, 1) * vec.reshape(1, 3)
+
+    direction = vec / straight
+    n1 = _orthogonal_unit(direction) * float(bend_sign)
+
+    def build(amplitude: float) -> np.ndarray:
+        offset = (amplitude * np.sin(np.pi * t)).reshape(-1, 1) * n1.reshape(1, 3)
+        return start.reshape(1, 3) + t.reshape(-1, 1) * vec.reshape(1, 3) + offset
+
+    lo = 0.0
+    hi = max(0.1, 0.05 * straight)
+    curve = build(hi)
+    while _polyline_length(curve) < target and hi < 1e6:
+        hi *= 2.0
+        curve = build(hi)
+
+    for _ in range(42):
+        mid = 0.5 * (lo + hi)
+        trial = build(mid)
+        if _polyline_length(trial) < target:
+            lo = mid
+        else:
+            hi = mid
+            curve = trial
+
+    return curve
+
+
 def _write_branch_labelled_3d_html(G: nx.MultiGraph, output_html_path: Path) -> bool:
-    """Write a rotatable 3D HTML with branch labels on each edge."""
+    """Write a rotatable 3D HTML with branch labels and curved tortuosity."""
     try:
         import plotly.graph_objects as go
     except ModuleNotFoundError:
@@ -148,7 +221,8 @@ def _write_branch_labelled_3d_html(G: nx.MultiGraph, output_html_path: Path) -> 
     output_html_path.parent.mkdir(parents=True, exist_ok=True)
     fig = go.Figure()
 
-    # Draw edges and annotate each edge midpoint with branch label.
+    # Draw edges as curved polylines so displayed arc-length reflects each
+    # edge's stored length (and therefore its tortuosity).
     line_x: list[float | None] = []
     line_y: list[float | None] = []
     line_z: list[float | None] = []
@@ -157,17 +231,29 @@ def _write_branch_labelled_3d_html(G: nx.MultiGraph, output_html_path: Path) -> 
     text_z: list[float] = []
     text_labels: list[str] = []
 
-    for u, v, _, data in G.edges(keys=True, data=True):
+    for u, v, key, data in G.edges(keys=True, data=True):
         pu = np.asarray(pos[u], dtype=float)
         pv = np.asarray(pos[v], dtype=float)
-        line_x += [float(pu[2]), float(pv[2]), None]
-        line_y += [float(pu[1]), float(pv[1]), None]
-        line_z += [float(pu[0]), float(pv[0]), None]
-        mid = 0.5 * (pu + pv)
+        edge_length = float(data.get("length", data.get("weight", np.linalg.norm(pv - pu))))
+        straight_distance = float(np.linalg.norm(pv - pu))
+        bend_sign = -1.0 if ((u + v + key) % 2 == 0) else 1.0
+        curve = _curved_edge_polyline(
+            pu,
+            pv,
+            edge_length,
+            points=96,
+            bend_sign=bend_sign,
+        )
+        line_x += [float(p[2]) for p in curve] + [None]
+        line_y += [float(p[1]) for p in curve] + [None]
+        line_z += [float(p[0]) for p in curve] + [None]
+        mid = curve[len(curve) // 2]
         text_x.append(float(mid[2]))
         text_y.append(float(mid[1]))
         text_z.append(float(mid[0]))
-        text_labels.append(str(data.get("branch_order", "Unassigned")))
+        tort = edge_length / straight_distance if straight_distance > 0 else float("nan")
+        label = str(data.get("branch_order", "Unassigned"))
+        text_labels.append(f"{label} (T={tort:.2f})")
 
     fig.add_trace(
         go.Scatter3d(
@@ -176,7 +262,7 @@ def _write_branch_labelled_3d_html(G: nx.MultiGraph, output_html_path: Path) -> 
             z=line_z,
             mode="lines",
             line=dict(color="rgba(60,60,60,0.9)", width=6),
-            name="Vessel edges",
+            name="Vessel edges (curved by tortuosity)",
         )
     )
     fig.add_trace(
@@ -188,7 +274,7 @@ def _write_branch_labelled_3d_html(G: nx.MultiGraph, output_html_path: Path) -> 
             text=text_labels,
             textposition="top center",
             textfont=dict(size=11, color="black"),
-            name="Branch labels",
+            name="Branch labels + tortuosity",
         )
     )
 
@@ -207,7 +293,7 @@ def _write_branch_labelled_3d_html(G: nx.MultiGraph, output_html_path: Path) -> 
     )
 
     fig.update_layout(
-        title="Synthetic network statistics test (branch-labelled)",
+        title="Synthetic network statistics test (tortuosity-curved edges)",
         showlegend=True,
         scene=dict(
             xaxis_title="X",
