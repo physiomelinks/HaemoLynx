@@ -10,6 +10,8 @@ from .stats import (
     compute_vessel_density,
     compute_betweenness_and_community_measurements,
     export_statistics_to_csv,
+    compute_branch_order_statistics,
+    export_branch_order_statistics_to_csv,
 )
 
 __all__ = [
@@ -23,4 +25,6 @@ __all__ = [
     "compute_vessel_density",
     "compute_betweenness_and_community_measurements",
     "export_statistics_to_csv",
+    "compute_branch_order_statistics",
+    "export_branch_order_statistics_to_csv",
 ]

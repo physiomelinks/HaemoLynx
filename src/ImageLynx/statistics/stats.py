@@ -705,3 +705,159 @@ def export_statistics_to_csv(
             writer.writerow([section, metric_clean, formatted_value, unit, notes])
 
     return output_path
+
+
+def _normalize_branch_order_tag(tag: Any) -> Optional[str]:
+    """Normalize branch-order labels to ArtN / BON / VenN where possible."""
+    if tag is None:
+        return None
+    label = str(tag).strip()
+    if not label:
+        return None
+    m = re.match(r"^(art|ven|bo|b)\s*0*(\d+)$", label, flags=re.IGNORECASE)
+    if not m:
+        return label
+    prefix = m.group(1).lower()
+    n = int(m.group(2))
+    if prefix == "art":
+        return f"Art{n}"
+    if prefix == "ven":
+        return f"Ven{n}"
+    return f"BO{n}"
+
+
+def _branch_order_sort_key(tag: str) -> tuple[int, int, str]:
+    """Sort as Art1..ArtN, BO1..BON, Ven1..VenN, then unknown labels."""
+    m = re.match(r"^(art|ven|bo)\s*(\d+)$", str(tag), flags=re.IGNORECASE)
+    if not m:
+        return (3, 0, str(tag))
+    prefix = m.group(1).lower()
+    n = int(m.group(2))
+    group = {"art": 0, "bo": 1, "ven": 2}.get(prefix, 3)
+    return (group, n, str(tag))
+
+
+def compute_branch_order_statistics(
+    G: Union[nx.Graph, nx.MultiGraph],
+    node_positions: Optional[dict] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Compute mean length/tortuosity per branch-order edge tag.
+
+    Returns a dictionary keyed by branch-order label with a compact summary.
+    """
+    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    edge_iter = G.edges(keys=True, data=True) if is_mg else G.edges(data=True)
+
+    by_tag: Dict[str, Dict[str, Any]] = {}
+    for item in edge_iter:
+        u, v = item[0], item[1]
+        data = item[-1]
+        normalized_tag = _normalize_branch_order_tag(data.get("branch_order"))
+        if not normalized_tag:
+            continue
+
+        length = data.get("length", data.get("weight", 0.0))
+        try:
+            length_f = float(length)
+        except (TypeError, ValueError):
+            continue
+        if length_f <= 0:
+            continue
+
+        if normalized_tag not in by_tag:
+            by_tag[normalized_tag] = {
+                "Branch Order": normalized_tag,
+                "Edge Count": 0,
+                "Mean Length (microns)": 0.0,
+                "Mean Tortuosity Index": "N/A (no position data)",
+                "Tortuosity Sample Count": 0,
+            }
+        rec = by_tag[normalized_tag]
+        rec["Edge Count"] += 1
+        rec["Mean Length (microns)"] += length_f
+
+        if (
+            node_positions is not None
+            and u in node_positions
+            and v in node_positions
+        ):
+            pos_u = np.array(node_positions[u], dtype=float)
+            pos_v = np.array(node_positions[v], dtype=float)
+            straight = euclidean(pos_u, pos_v)
+            if straight > 0:
+                tort = length_f / straight
+                if rec["Mean Tortuosity Index"] == "N/A (no position data)":
+                    rec["Mean Tortuosity Index"] = 0.0
+                rec["Mean Tortuosity Index"] += tort
+                rec["Tortuosity Sample Count"] += 1
+
+    for rec in by_tag.values():
+        edge_count = int(rec["Edge Count"])
+        if edge_count > 0:
+            rec["Mean Length (microns)"] = rec["Mean Length (microns)"] / edge_count
+        t_samples = int(rec["Tortuosity Sample Count"])
+        if t_samples > 0 and isinstance(rec["Mean Tortuosity Index"], (int, float)):
+            rec["Mean Tortuosity Index"] = rec["Mean Tortuosity Index"] / t_samples
+        elif t_samples == 0:
+            rec["Mean Tortuosity Index"] = "N/A (insufficient position data)"
+
+    ordered = {
+        k: by_tag[k]
+        for k in sorted(by_tag.keys(), key=_branch_order_sort_key)
+    }
+    return ordered
+
+
+def export_branch_order_statistics_to_csv(
+    branch_order_stats: Dict[str, Dict[str, Any]],
+    output_csv_path: Union[str, Path],
+) -> Path:
+    """Export per-branch-order summary statistics to readable CSV."""
+    output_path = Path(output_csv_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "Branch Order",
+                "Edge Count",
+                "Mean Length (microns)",
+                "Mean Tortuosity Index",
+                "Notes",
+            ]
+        )
+        writer.writerow(
+            [
+                "# Ordered by vessel class",
+                "",
+                "",
+                "",
+                "Art* first, then BO*, then Ven*.",
+            ]
+        )
+        for branch_tag in sorted(branch_order_stats.keys(), key=_branch_order_sort_key):
+            rec = branch_order_stats[branch_tag]
+            mean_len = rec.get("Mean Length (microns)", 0.0)
+            if isinstance(mean_len, (int, float, np.integer, np.floating)):
+                mean_len_s = f"{float(mean_len):.6g}"
+            else:
+                mean_len_s = str(mean_len)
+            mean_tort = rec.get("Mean Tortuosity Index", "N/A")
+            if isinstance(mean_tort, (int, float, np.integer, np.floating)):
+                mean_tort_s = f"{float(mean_tort):.6g}"
+                note = "Mean tortuosity is path length / straight distance."
+            else:
+                mean_tort_s = str(mean_tort)
+                note = "Tortuosity unavailable (missing/insufficient node positions)."
+            writer.writerow(
+                [
+                    branch_tag,
+                    int(rec.get("Edge Count", 0)),
+                    mean_len_s,
+                    mean_tort_s,
+                    note,
+                ]
+            )
+
+    return output_path
