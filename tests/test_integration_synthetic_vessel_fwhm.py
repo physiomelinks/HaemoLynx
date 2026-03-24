@@ -52,7 +52,8 @@ _DEFAULT_FWHM_MEASURE_KWARGS: dict = {
     "clip_profile_to_single_vessel": True,
     "clip_min_drop_fraction_of_center": 0.35,
     "clip_re_rise_fraction_of_center": 0.08,
-    "branch_endpoint_exclusion_um": 3.0,
+    "branch_endpoint_exclusion_um": 10.0,
+    "junction_proximity_exclusion_um": 10.0,
 }
 
 _EDGE_LINE_COLORS = ("#00ffff", "#ffaa00", "#cc66ff")
@@ -435,6 +436,7 @@ def _iter_profile_polylines_phys(
     clip_drop = float(measure_kwargs["clip_min_drop_fraction_of_center"])
     clip_rise = float(measure_kwargs["clip_re_rise_fraction_of_center"])
     branch_excl = max(0.0, float(measure_kwargs["branch_endpoint_exclusion_um"]))
+    junction_excl = max(0.0, float(measure_kwargs["junction_proximity_exclusion_um"]))
 
     out: list[tuple[tuple[int, int, int], list[tuple[np.ndarray, np.ndarray]]]] = []
 
@@ -452,12 +454,21 @@ def _iter_profile_polylines_phys(
         pts = automated._interpolate_centerline(centerline, s, targets)
         u_is_branch = int(G.degree(u)) > 1
         v_is_branch = int(G.degree(v)) > 1
+        junction_s: list[float] = []
+        if junction_excl > 0.0 and jn != int(bg):
+            idx_all = automated.physical_points_to_continuous_indices(centerline, voxel_size_xyz)
+            for i, row in enumerate(idx_all):
+                iz, iy, ix = automated._nearest_integer_index(row, labels.shape)
+                if int(labels[iz, iy, ix]) == jn:
+                    junction_s.append(float(s[i]))
 
         segs: list[tuple[np.ndarray, np.ndarray]] = []
         for s0, center in zip(targets, pts):
             if u_is_branch and float(s0) < branch_excl:
                 continue
             if v_is_branch and float(total_len - s0) < branch_excl:
+                continue
+            if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
                 continue
             tangent = automated._tangent_at(centerline, s, float(s0))
             n_hat = automated._transverse_unit_in_physical_yx_plane(tangent)
