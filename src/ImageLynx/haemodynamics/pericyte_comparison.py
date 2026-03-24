@@ -39,6 +39,9 @@ def _set_weights_for_factor(
     prefer_edge_fwhm_baseline: bool,
     constriction_length: float,
     constriction_spacing: float,
+    use_probabilistic_pericyte_constriction: bool,
+    pericyte_constriction_probability: float,
+    active_pericyte_indices: list[int] | None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Apply edge weights for a comparison scenario."""
     factor_map = _scale_factor_map(
@@ -58,6 +61,9 @@ def _set_weights_for_factor(
             pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
             prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
             constriction_length=constriction_length,
+            use_probabilistic_constriction=bool(use_probabilistic_pericyte_constriction),
+            constriction_probability=float(pericyte_constriction_probability),
+            active_pericyte_indices=active_pericyte_indices,
         )
 
     poiseuille_model = PoiseuilleModel(
@@ -116,6 +122,8 @@ def compare_baseline_vs_pericyte_constriction(
     prefer_edge_fwhm_baseline: bool = False,
     constriction_length: float = 40.0,
     constriction_spacing: float = 100.0,
+    use_probabilistic_pericyte_constriction: bool = False,
+    pericyte_constriction_probability: float = 1.0,
 ) -> dict[str, Any]:
     """Compare effective resistance at baseline vs constricted settings.
 
@@ -132,6 +140,7 @@ def compare_baseline_vs_pericyte_constriction(
 
     graph_baseline = deepcopy(graph)
     graph_constricted = deepcopy(graph)
+    fixed_active_pericyte_indices: list[int] | None = None
 
     graph_baseline, baseline_weight_results = _set_weights_for_factor(
         graph_baseline,
@@ -144,7 +153,13 @@ def compare_baseline_vs_pericyte_constriction(
         prefer_edge_fwhm_baseline=bool(prefer_edge_fwhm_baseline),
         constriction_length=float(constriction_length),
         constriction_spacing=float(constriction_spacing),
+        use_probabilistic_pericyte_constriction=bool(use_probabilistic_pericyte_constriction),
+        pericyte_constriction_probability=float(pericyte_constriction_probability),
+        active_pericyte_indices=None,
     )
+    if use_pericyte_mask_constriction and use_probabilistic_pericyte_constriction:
+        selected = baseline_weight_results.get("active_pericyte_indices")
+        fixed_active_pericyte_indices = [int(idx) for idx in selected] if selected else []
     baseline_resistance = _compute_two_point_resistance(
         graph_baseline,
         source_node=source_node,
@@ -162,6 +177,9 @@ def compare_baseline_vs_pericyte_constriction(
         prefer_edge_fwhm_baseline=bool(prefer_edge_fwhm_baseline),
         constriction_length=float(constriction_length),
         constriction_spacing=float(constriction_spacing),
+        use_probabilistic_pericyte_constriction=bool(use_probabilistic_pericyte_constriction),
+        pericyte_constriction_probability=float(pericyte_constriction_probability),
+        active_pericyte_indices=fixed_active_pericyte_indices,
     )
     constricted_resistance = _compute_two_point_resistance(
         graph_constricted,
@@ -244,4 +262,5 @@ def compare_baseline_vs_pericyte_constriction(
         "output_csv_path": str(output_path),
         "baseline_weight_results": baseline_weight_results,
         "constricted_weight_results": constricted_weight_results,
+        "active_pericyte_indices": fixed_active_pericyte_indices,
     }
