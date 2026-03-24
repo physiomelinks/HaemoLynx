@@ -9,6 +9,7 @@ from .stats import (
     compute_path_efficiency,
     compute_vessel_density,
     compute_betweenness_and_community_measurements,
+    export_statistics_to_csv,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "compute_path_efficiency",
     "compute_vessel_density",
     "compute_betweenness_and_community_measurements",
+    "export_statistics_to_csv",
 ]
