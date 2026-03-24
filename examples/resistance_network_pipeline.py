@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
+from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
 
 # ---------------------------
@@ -189,6 +190,9 @@ DO_PERICYTE_CONSTRUCTION = False
 USE_PERICYTE_MASK_CONSTRICTION = False
 PERICYTE_MASK_PATH: Optional[Path] = None
 PERICYTE_MASK_H5_DATASET_NAME: Optional[str] = None
+RUN_PERICYTE_RESISTANCE_COMPARISON = False
+PERICYTE_COMPARISON_BASELINE_SCALE = 1.0
+PERICYTE_COMPARISON_CONSTRICTED_SCALE = 0.8
 
 MAX_BRANCH_ORDER = 51
 DEFAULT_DIAMETER = 4.0
@@ -333,6 +337,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_pericyte_mask_constriction=USE_PERICYTE_MASK_CONSTRICTION,
                             pericyte_mask_path=PERICYTE_MASK_PATH,
                             pericyte_mask_h5_dataset_name=PERICYTE_MASK_H5_DATASET_NAME,
+                            run_pericyte_resistance_comparison=RUN_PERICYTE_RESISTANCE_COMPARISON,
+                            pericyte_comparison_baseline_scale=PERICYTE_COMPARISON_BASELINE_SCALE,
+                            pericyte_comparison_constricted_scale=PERICYTE_COMPARISON_CONSTRICTED_SCALE,
                             plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING,
                             do_skeletonize=DO_SKELETONIZE,
@@ -1349,6 +1356,36 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             print(
                 "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                 "set_poiseuille_weights without per-edge FWHM)."
+            )
+        if run_pericyte_resistance_comparison:
+            comparison_csv_path = output_dir / f"{image_path.stem}_pericyte_resistance_comparison.csv"
+            comparison_results = (
+                pericyte_comparison_haemodynamics.compare_baseline_vs_pericyte_constriction(
+                    G,
+                    diameter_by_branch_order=diameter_by_branch_order,
+                    constriction_factor_by_branch_order=constriction_by_branch_order,
+                    resistance_node_pair=resistance_node_pair,
+                    output_csv_path=comparison_csv_path,
+                    baseline_factor_scale=float(pericyte_comparison_baseline_scale),
+                    constricted_factor_scale=float(pericyte_comparison_constricted_scale),
+                    use_pericyte_mask_constriction=bool(use_pericyte_mask_constriction),
+                    pericyte_mask_path=pericyte_mask_path,
+                    pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
+                    prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
+                    constriction_length=40.0,
+                    constriction_spacing=100.0,
+                )
+            )
+            print(
+                "Pericyte resistance comparison complete: "
+                f"baseline={comparison_results['baseline_resistance']:.6f}, "
+                f"constricted={comparison_results['constricted_resistance']:.6f}, "
+                f"delta={comparison_results['delta']:.6f}, "
+                f"change={comparison_results['percent_change']:.3f}%."
+            )
+            print(
+                "Saved pericyte resistance comparison CSV to: "
+                f"{comparison_results['output_csv_path']}"
             )
         poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=40.0,
