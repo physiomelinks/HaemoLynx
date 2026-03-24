@@ -599,6 +599,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     clip_re_rise_fraction_of_center: float = 0.08,
     branch_endpoint_exclusion_um: float = 0.0,
     junction_proximity_exclusion_um: float = 0.0,
+    store_profile_debug: bool = False,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -653,6 +654,9 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         vessel meeting points along each edge. Detection uses the in-memory
         rasterized label volume: centerline points whose nearest voxel is
         ``junction_label`` are treated as meeting points.
+    store_profile_debug :
+        If True, store accepted transverse profile polylines per edge in
+        ``edge['fwhm_profile_lines_phys']`` for visualization/debugging.
     """
     if profile_baseline_mode not in ("wings", "percentile"):
         raise ValueError(
@@ -716,6 +720,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     junction_s.append(float(s[i]))
 
         diameters: list[float] = []
+        profile_lines_phys: list[np.ndarray] = []
+        profile_anchors_phys: list[np.ndarray] = []
         for s0, center in zip(targets, pts):
             if u_is_branch and float(s0) < branch_excl:
                 continue
@@ -724,6 +730,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
                 continue
             tangent = _tangent_at(poly, s, float(s0))
+            n_hat = _transverse_unit_in_physical_yx_plane(tangent)
 
             half_extent = max(
                 float(transverse_half_extent_um),
@@ -760,6 +767,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 constrain_fitted_baseline=constrain_fitted_baseline,
                 baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
             )
+            accepted_offsets: np.ndarray | None = None
             if d0 is not None and d0 > 0:
                 # Enforce at least (min_total_extent_multiplier × estimated width)
                 # when geometry allows (other-edge/junction/volume bounds still truncate).
@@ -836,12 +844,23 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         )
                         if d2 is not None:
                             diameters.append(d2)
+                            accepted_offsets = pos
                     else:
                         diameters.append(d1)
+                        accepted_offsets = pos
                 elif d1 is not None:
                     diameters.append(d1)
+                    accepted_offsets = pos
             elif d0 is not None:
                 diameters.append(d0)
+                accepted_offsets = pos
+
+            if store_profile_debug and accepted_offsets is not None and accepted_offsets.size > 0:
+                c = np.asarray(center, dtype=float)
+                profile_lines_phys.append(
+                    np.stack([c + float(o) * n_hat for o in accepted_offsets], axis=0)
+                )
+                profile_anchors_phys.append(c.copy())
 
         if not diameters:
             reason = "fwhm_failed"
@@ -853,6 +872,9 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         d_mean = float(np.mean(diameters))
         data["fwhm_diameter_um"] = d_mean
         data["fwhm_diameter_samples_um"] = diameters
+        if store_profile_debug:
+            data["fwhm_profile_lines_phys"] = profile_lines_phys
+            data["fwhm_profile_anchors_phys"] = profile_anchors_phys
         summary["edges_measured"] += 1
         summary["per_edge"].append(
             {
