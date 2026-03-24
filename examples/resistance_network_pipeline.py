@@ -21,7 +21,8 @@ root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization 
+from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
+from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
 
 # ---------------------------
 # Beginner-friendly settings
@@ -182,6 +183,12 @@ SKELETON_MIN_COMPONENT_PERCENT = 0.0
 print("TODO HARVEY CHANGE THIS ALL_DIAMS_CONST BACK TO FALSE FOR ORIGINAL RUN")
 ALL_DIAMS_CONST = True
 DO_PERICYTE_CONSTRUCTION = False
+# Optional mask-driven pericyte mode:
+# - False: keep existing artificial periodic constriction placement.
+# - True: use pericyte mask connected-component centroids as constriction centers.
+USE_PERICYTE_MASK_CONSTRICTION = False
+PERICYTE_MASK_PATH: Optional[Path] = None
+PERICYTE_MASK_H5_DATASET_NAME: Optional[str] = None
 
 MAX_BRANCH_ORDER = 51
 DEFAULT_DIAMETER = 4.0
@@ -323,6 +330,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
                             constriction_by_branch_order=CONSTRICTION_BY_BRANCH_ORDER,
                             do_pericyte_constriction=DO_PERICYTE_CONSTRUCTION,
+                            use_pericyte_mask_constriction=USE_PERICYTE_MASK_CONSTRICTION,
+                            pericyte_mask_path=PERICYTE_MASK_PATH,
+                            pericyte_mask_h5_dataset_name=PERICYTE_MASK_H5_DATASET_NAME,
                             plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING,
                             do_skeletonize=DO_SKELETONIZE,
@@ -1345,32 +1355,52 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             constriction_spacing=100.0,
         )
         if do_pericyte_constriction:
-            if use_fwhm_edge_diameters:
-                G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+            if use_pericyte_mask_constriction:
+                if pericyte_mask_path is None:
+                    raise ValueError(
+                        "pericyte_mask_path must be set when "
+                        "use_pericyte_mask_constriction=True."
+                    )
+                G, results = pericyte_mask_haemodynamics.set_poiseuille_weights_with_pericyte_mask(
                     G,
-                    diameter_by_branch_order,
-                    prefer_edge_fwhm_baseline=True,
+                    diameter_by_branch_order=diameter_by_branch_order,
                     constriction_factor_by_branch_order=constriction_by_branch_order,
+                    pericyte_mask_path=pericyte_mask_path,
+                    pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
+                    prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
+                    constriction_length=40.0,
                 )
                 print(
-                    "Results from set_poiseuille_weights_with_constrictions "
-                    f"(FWHM baseline d1, constriction factors): {results}"
+                    "Results from set_poiseuille_weights_with_pericyte_mask "
+                    f"(centroid-based d2 from mask): {results}"
                 )
             else:
-                diameter_by_branch_order_enhanced = {}
-                for branch_order, diameter in diameter_by_branch_order.items():
-                    diameter_by_branch_order_enhanced[branch_order] = {
-                        "d1": diameter,
-                        "d2": diameter * constriction_by_branch_order[branch_order],
-                    }
+                if use_fwhm_edge_diameters:
+                    G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                        G,
+                        diameter_by_branch_order,
+                        prefer_edge_fwhm_baseline=True,
+                        constriction_factor_by_branch_order=constriction_by_branch_order,
+                    )
+                    print(
+                        "Results from set_poiseuille_weights_with_constrictions "
+                        f"(FWHM baseline d1, constriction factors): {results}"
+                    )
+                else:
+                    diameter_by_branch_order_enhanced = {}
+                    for branch_order, diameter in diameter_by_branch_order.items():
+                        diameter_by_branch_order_enhanced[branch_order] = {
+                            "d1": diameter,
+                            "d2": diameter * constriction_by_branch_order[branch_order],
+                        }
 
-                G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
-                    G,
-                    diameter_by_branch_order_enhanced,
-                )
-                print(
-                    f"Results from set_poiseuille_weights_with_constrictions: {results}"
-                )
+                    G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                        G,
+                        diameter_by_branch_order_enhanced,
+                    )
+                    print(
+                        f"Results from set_poiseuille_weights_with_constrictions: {results}"
+                    )
         else:
             G, results = poiseuille_model.set_poiseuille_weights(
                 G,
