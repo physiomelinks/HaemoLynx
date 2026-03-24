@@ -120,6 +120,18 @@ HOLD_IDE_PLOTS_OPEN = True
 FINAL_RENDER_MODE = "3d"  # "2d" or "3d"
 VTK_export = True
 STATISTICS = False
+# Toggle cell-mask to vessel 3D distance measurement.
+MEASUREMENT_3D_TO_CELL_MASK = False
+CELL_MASK_PATH: Optional[Path] = None
+CELL_MASK_H5_DATASET_NAME: Optional[str] = None
+# Optional explicit vessel mask. If omitted, vessel volume is rasterized from graph
+# edges (same strategy used by automated FWHM branch-label volume generation).
+MEASUREMENT_3D_VESSEL_MASK_PATH: Optional[Path] = None
+MEASUREMENT_3D_VESSEL_MASK_H5_DATASET_NAME: Optional[str] = None
+# Optional reference image used only to define shape when rasterizing vessel volume
+# from graph edges (for example, the same raw stack used by FWHM measurement).
+MEASUREMENT_3D_REFERENCE_IMAGE_PATH: Optional[Path] = None
+MEASUREMENT_3D_REFERENCE_H5_DATASET_NAME: Optional[str] = None
 # "fast" uses bounded/approximate graph metrics to avoid long runtimes.
 # "full" restores exact, potentially much slower statistics calculations.
 STATISTICS_MODE = "fast"
@@ -353,6 +365,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             hold_ide_plots_open=HOLD_IDE_PLOTS_OPEN,
                             final_render_mode=FINAL_RENDER_MODE,
                             visualize_vtk=VISUALIZE_VTK,
+                            measurement_3d_to_cell_mask=MEASUREMENT_3D_TO_CELL_MASK,
+                            cell_mask_path=CELL_MASK_PATH,
+                            cell_mask_h5_dataset_name=CELL_MASK_H5_DATASET_NAME,
+                            measurement_3d_vessel_mask_path=MEASUREMENT_3D_VESSEL_MASK_PATH,
+                            measurement_3d_vessel_mask_h5_dataset_name=MEASUREMENT_3D_VESSEL_MASK_H5_DATASET_NAME,
+                            measurement_3d_reference_image_path=MEASUREMENT_3D_REFERENCE_IMAGE_PATH,
+                            measurement_3d_reference_h5_dataset_name=MEASUREMENT_3D_REFERENCE_H5_DATASET_NAME,
                             statistics_mode=STATISTICS_MODE,
                             use_fwhm_edge_diameters=USE_FWHM_EDGE_DIAMETERS,
                             fwhm_raw_tiff_path=FWHM_RAW_TIFF_PATH,
@@ -1485,7 +1504,40 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     else:
         print("Vessel statistics skipped.")
 
-    # 8) Also solve for flow throughout the network using the conductance matrix 
+    # 8) Optional: nearest 3D distance from objects in a cell mask to vessel edge.
+    if measurement_3d_to_cell_mask:
+        if cell_mask_path is None:
+            raise ValueError(
+                "measurement_3d_to_cell_mask=True requires cell_mask_path."
+            )
+        distance_summary = statistics.run_3d_measurement_to_cell_mask(
+            graph=G,
+            cell_mask_path=Path(cell_mask_path),
+            output_dir=output_dir,
+            image_stem=image_path.stem,
+            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            vessel_mask_path=(
+                None
+                if measurement_3d_vessel_mask_path is None
+                else Path(measurement_3d_vessel_mask_path)
+            ),
+            vessel_reference_image_path=(
+                None
+                if measurement_3d_reference_image_path is None
+                else Path(measurement_3d_reference_image_path)
+            ),
+            cell_mask_h5_dataset_name=cell_mask_h5_dataset_name,
+            vessel_mask_h5_dataset_name=measurement_3d_vessel_mask_h5_dataset_name,
+            vessel_reference_h5_dataset_name=measurement_3d_reference_h5_dataset_name,
+        )
+        print(
+            "3D cell-mask vessel-distance summary: "
+            f"{distance_summary}"
+        )
+    else:
+        print("3D cell-mask vessel-distance measurement skipped.")
+
+    # 9) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.
     print("\nSolving flow through the network...")
     flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
@@ -1500,7 +1552,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     print("Flow through the network solved")
     print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
 
-    # 9) Optional matplotlib visualization.
+    # 10) Optional matplotlib visualization.
     if visualize_results:
         print("\nGenerating visualizations...")
         valid_plot_modes = {"all", "final_only", "none"}
