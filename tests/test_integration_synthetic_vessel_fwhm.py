@@ -54,6 +54,7 @@ _DEFAULT_FWHM_MEASURE_KWARGS: dict = {
     "clip_re_rise_fraction_of_center": 0.08,
     "branch_endpoint_exclusion_um": 10.0,
     "junction_proximity_exclusion_um": 10.0,
+    "store_profile_debug": True,
 }
 
 _EDGE_LINE_COLORS = ("#00ffff", "#ffaa00", "#cc66ff")
@@ -324,7 +325,7 @@ def build_synthetic_x_junction_volume_and_targets(
     x0 = 24.0
     arm_x = 14.0
     arm_y = 8.0
-    fwhm = 5.0
+    fwhm = 2.5
     center = np.array([z0, y0, x0], dtype=float)
     tips = [
         np.array([z0, y0 - arm_y, x0 - arm_x], dtype=float),
@@ -410,123 +411,90 @@ def build_x_junction_matching_multigraph(
     return G
 
 
-def _iter_profile_polylines_phys(
+def build_synthetic_tight_zigzag_volume_and_target(
+    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]], np.ndarray]:
+    """Float32 tight zig-zag vessel volume + single target + centerline polyline (z,y,x)."""
+    vz, vy, vx = voxel_size_xyz
+    # Tight alternating lateral oscillation while progressing in +x.
+    points = np.array(
+        [
+            [14.0, 15.0, 8.0],
+            [14.0, 11.5, 12.0],
+            [14.0, 18.5, 16.0],
+            [14.0, 11.5, 20.0],
+            [14.0, 18.5, 24.0],
+            [14.0, 11.5, 28.0],
+            [14.0, 18.5, 32.0],
+            [14.0, 11.5, 36.0],
+            [14.0, 18.5, 40.0],
+        ],
+        dtype=float,
+    )
+    fwhm = 5.0
+    sigma = fwhm / _GAUSSIAN_FWHM_FROM_SIGMA
+    pad = 4.0 * sigma + 2.0
+    z_max = float(np.max(points[:, 0]) + pad)
+    y_max = float(np.max(points[:, 1]) + pad)
+    x_max = float(np.max(points[:, 2]) + pad)
+    nz = int(np.ceil(z_max / vz)) + 1
+    ny = int(np.ceil(y_max / vy)) + 1
+    nx = int(np.ceil(x_max / vx)) + 1
+
+    iz = np.arange(nz, dtype=float)[:, None, None]
+    iy = np.arange(ny, dtype=float)[None, :, None]
+    ix = np.arange(nx, dtype=float)[None, None, :]
+    pz = iz * vz
+    py = iy * vy
+    px = ix * vx
+
+    vol = np.zeros((nz, ny, nx), dtype=np.float32)
+    for a, b in zip(points[:-1], points[1:]):
+        d = _dist_point_to_segment_batch(pz, py, px, a, b)
+        tube = (_I0 * np.exp(-(d**2) / (2.0 * sigma**2))).astype(np.float32)
+        vol = np.maximum(vol, tube)
+
+    targets = [(points[0].copy(), points[-1].copy(), float(fwhm))]
+    return vol, targets, points
+
+
+def build_tight_zigzag_matching_multigraph(
+    centerline_points: np.ndarray,
+) -> nx.MultiGraph:
+    """Single-edge graph whose voxels follow the provided tight zig-zag polyline."""
+    pts = np.asarray(centerline_points, dtype=float)
+    G = nx.MultiGraph()
+    G.add_node(0, pos=pts[0].copy())
+    G.add_node(1, pos=pts[-1].copy())
+    seg = np.diff(pts, axis=0)
+    length = float(np.sum(np.linalg.norm(seg, axis=1)))
+    voxels = [tuple(p.tolist()) for p in pts]
+    G.add_edge(
+        0,
+        1,
+        weight=1.0,
+        length=length,
+        branch_order="B01",
+        voxels=voxels,
+    )
+    return G
+
+
+def _iter_profile_polylines_from_graph(
     G: nx.MultiGraph,
-    raw: np.ndarray,
-    labels: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
-    measure_kwargs: dict,
 ) -> list[tuple[tuple[int, int, int], list[tuple[np.ndarray, np.ndarray]]]]:
-    """Transverse profile polylines in physical (z,y,x) µm — same sampling as the FWHM measurer.
-
-    Each sample is ``(polyline, anchor)`` where ``anchor`` is the centerline point (offset 0 on the profile).
-    """
-    mult = float(measure_kwargs["min_total_extent_multiplier"])
-    jn = int(measure_kwargs["junction_label"])
-    bg = int(measure_kwargs["background_label"])
-    t_half = float(measure_kwargs["transverse_half_extent_um"])
-    t_step = float(measure_kwargs["transverse_profile_step_um"])
-    d_guess = float(measure_kwargs["diameter_guess_um"])
-    s_space = float(measure_kwargs["sample_spacing_along_edge_um"])
-    p_mode = measure_kwargs["profile_baseline_mode"]
-    p_wing = float(measure_kwargs["profile_baseline_wing_fraction"])
-    c_fb = bool(measure_kwargs["constrain_fitted_baseline"])
-    c_hw = float(measure_kwargs["baseline_constraint_half_width_ptp"])
-    clip_single = bool(measure_kwargs["clip_profile_to_single_vessel"])
-    clip_drop = float(measure_kwargs["clip_min_drop_fraction_of_center"])
-    clip_rise = float(measure_kwargs["clip_re_rise_fraction_of_center"])
-    branch_excl = max(0.0, float(measure_kwargs["branch_endpoint_exclusion_um"]))
-    junction_excl = max(0.0, float(measure_kwargs["junction_proximity_exclusion_um"]))
-
+    """Read profile polylines stored by the main pipeline function on edge attributes."""
     out: list[tuple[tuple[int, int, int], list[tuple[np.ndarray, np.ndarray]]]] = []
-
     for u, v, key, data in sorted(G.edges(keys=True, data=True), key=lambda t: (t[0], t[1], t[2])):
-        vox = data.get("voxels")
-        assigned = data.get("graph_edge_label_id")
-        if not vox or len(vox) < 2 or assigned is None:
+        lines = data.get("fwhm_profile_lines_phys") or []
+        anchors = data.get("fwhm_profile_anchors_phys") or []
+        if not lines:
             continue
-        centerline = np.asarray(vox, dtype=float)
-        s, total_len = automated._arc_length_parameterize(centerline)
-        if total_len <= 0:
-            continue
-        n_samples = max(1, int(np.floor(total_len / s_space)) + 1)
-        targets = np.linspace(0.0, total_len, n_samples)
-        pts = automated._interpolate_centerline(centerline, s, targets)
-        u_is_branch = int(G.degree(u)) > 1
-        v_is_branch = int(G.degree(v)) > 1
-        junction_s: list[float] = []
-        if junction_excl > 0.0 and jn != int(bg):
-            idx_all = automated.physical_points_to_continuous_indices(centerline, voxel_size_xyz)
-            for i, row in enumerate(idx_all):
-                iz, iy, ix = automated._nearest_integer_index(row, labels.shape)
-                if int(labels[iz, iy, ix]) == jn:
-                    junction_s.append(float(s[i]))
-
         segs: list[tuple[np.ndarray, np.ndarray]] = []
-        for s0, center in zip(targets, pts):
-            if u_is_branch and float(s0) < branch_excl:
-                continue
-            if v_is_branch and float(total_len - s0) < branch_excl:
-                continue
-            if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
-                continue
-            tangent = automated._tangent_at(centerline, s, float(s0))
-            n_hat = automated._transverse_unit_in_physical_yx_plane(tangent)
-            c = np.asarray(center, dtype=float)
-
-            half_extent = max(t_half, 0.5 * mult * d_guess)
-            pos, prof = automated._sample_transverse_profile(
-                raw,
-                labels,
-                c,
-                tangent,
-                int(assigned),
-                half_extent,
-                t_step,
-                voxel_size_xyz,
-                background_label=bg,
-                junction_label=jn,
-            )
-            d0 = automated.fwhm_from_profile(
-                *(
-                    automated._clip_profile_to_central_lobe(
-                        pos,
-                        prof,
-                        min_drop_fraction_of_center=clip_drop,
-                        re_rise_fraction_of_center=clip_rise,
-                    )
-                    if clip_single
-                    else (pos, prof)
-                ),
-                profile_baseline_mode=p_mode,
-                profile_baseline_wing_fraction=p_wing,
-                constrain_fitted_baseline=c_fb,
-                baseline_constraint_half_width_ptp=c_hw,
-            )
-            pos_used = pos
-            if d0 is not None and d0 > 0:
-                half_extent = max(half_extent, 0.5 * mult * float(d0))
-                pos_used, prof_used = automated._sample_transverse_profile(
-                    raw,
-                    labels,
-                    c,
-                    tangent,
-                    int(assigned),
-                    half_extent,
-                    t_step,
-                    voxel_size_xyz,
-                    background_label=bg,
-                    junction_label=jn,
-                )
-
-            if pos_used.size == 0:
-                continue
-            transect_pts = np.stack([c + float(o) * n_hat for o in pos_used], axis=0)
-            segs.append((transect_pts, c.copy()))
-
+        for line, anchor in zip(lines, anchors):
+            segs.append((np.asarray(line, dtype=float), np.asarray(anchor, dtype=float)))
         if segs:
             out.append(((u, v, key), segs))
-
     return out
 
 
@@ -689,9 +657,7 @@ def build_synthetic_fwhm_integration_figure(
             )
         )
 
-    polylines_by_edge = _iter_profile_polylines_phys(
-        G, raw, labels, voxel_size_xyz, measure_kwargs
-    )
+    polylines_by_edge = _iter_profile_polylines_from_graph(G)
     for ei, ((u, v, key), segs) in enumerate(polylines_by_edge):
         col = _PROFILE_LINE_COLORS[ei % len(_PROFILE_LINE_COLORS)]
         px: list[float | None] = []
@@ -866,6 +832,56 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
     )
 
 
+@pytest.mark.integration
+@pytest.mark.plotting
+def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
+    """Tightly zig-zagging single vessel, measured via real pipeline + HTML output."""
+    voxel_size_xyz = (0.25, 0.25, 0.25)
+    raw, targets, centerline = build_synthetic_tight_zigzag_volume_and_target(voxel_size_xyz)
+    raw_path = tmp_path / "synthetic_tight_zigzag.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    G = build_tight_zigzag_matching_multigraph(centerline)
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_xyz=voxel_size_xyz,
+        **_DEFAULT_FWHM_MEASURE_KWARGS,
+    )
+    assert summary["edges_measured"] == 1
+    assert not summary["edges_skipped"]
+
+    d = float(G[0][1][0]["fwhm_diameter_um"])
+    exp = float(targets[0][2])
+    assert abs(d - exp) < max(1.0, 0.25 * exp), (
+        f"zig-zag edge measured {d:.3f} µm vs target {exp:.3f} µm"
+    )
+
+    labels, _ = automated.build_graph_branch_label_volume(
+        G,
+        raw.shape,
+        voxel_size_xyz,
+        background_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["background_label"]),
+        junction_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["junction_label"]),
+    )
+    title = (
+        "Synthetic tight zig-zag vessel: volume mesh + centerline + transverse profile lines"
+        f" | FWHM {exp:.1f}→{d:.2f} µm"
+    )
+    fig = build_synthetic_fwhm_integration_figure(
+        G,
+        raw,
+        labels,
+        voxel_size_xyz,
+        _DEFAULT_FWHM_MEASURE_KWARGS,
+        title=title,
+    )
+    fig.write_html(
+        str(tmp_path / "synthetic_tight_zigzag_fwhm_viz.html"),
+        include_plotlyjs="cdn",
+    )
+
+
 def _write_single_demo_html(
     out_path: Path,
     raw: np.ndarray,
@@ -999,6 +1015,22 @@ def _write_demo_html() -> list[Path]:
         targets_x,
     )
     out_paths.append(out_x_noisy)
+
+    # 6) Tight zig-zag vessel.
+    raw_zig, targets_zig, centerline_zig = build_synthetic_tight_zigzag_volume_and_target(
+        voxel_size_xyz
+    )
+    Gzig = build_tight_zigzag_matching_multigraph(centerline_zig)
+    out_zig = out_dir / "synthetic_vessel_tight_zigzag_fwhm_integration_3d.html"
+    _write_single_demo_html(
+        out_zig,
+        raw_zig,
+        Gzig,
+        voxel_size_xyz,
+        "Synthetic tight zig-zag vessel: volume mesh + centerline + transverse profile lines",
+        targets_zig,
+    )
+    out_paths.append(out_zig)
 
     return out_paths
 
