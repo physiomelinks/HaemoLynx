@@ -598,6 +598,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     clip_min_drop_fraction_of_center: float = 0.35,
     clip_re_rise_fraction_of_center: float = 0.08,
     branch_endpoint_exclusion_um: float = 0.0,
+    junction_proximity_exclusion_um: float = 0.0,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -647,6 +648,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         Distance (µm) excluded from sampling near edge endpoints that are
         bifurcation nodes (graph degree > 1). Helps avoid unstable diameters
         right where a branch emerges from a junction.
+    junction_proximity_exclusion_um :
+        Distance (µm) excluded from sampling around automatically detected
+        vessel meeting points along each edge. Detection uses the in-memory
+        rasterized label volume: centerline points whose nearest voxel is
+        ``junction_label`` are treated as meeting points.
     """
     if profile_baseline_mode not in ("wings", "percentile"):
         raise ValueError(
@@ -674,6 +680,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
 
     jn = int(junction_label)
     branch_excl = max(0.0, float(branch_endpoint_exclusion_um))
+    junction_excl = max(0.0, float(junction_proximity_exclusion_um))
 
     for u, v, key, data in G.edges(keys=True, data=True):
         vox = data.get("voxels")
@@ -698,12 +705,23 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         # branch diameter is often not well-defined.
         u_is_branch = int(G.degree(u)) > 1
         v_is_branch = int(G.degree(v)) > 1
+        # Auto-detect edge-local meeting points from junction voxels and exclude
+        # nearby arc-length region.
+        junction_s: list[float] = []
+        if junction_excl > 0.0 and jn != int(background_label):
+            idx_all = physical_points_to_continuous_indices(poly, voxel_size_xyz)
+            for i, row in enumerate(idx_all):
+                iz, iy, ix = _nearest_integer_index(row, labels.shape)
+                if int(labels[iz, iy, ix]) == jn:
+                    junction_s.append(float(s[i]))
 
         diameters: list[float] = []
         for s0, center in zip(targets, pts):
             if u_is_branch and float(s0) < branch_excl:
                 continue
             if v_is_branch and float(total_len - s0) < branch_excl:
+                continue
+            if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
                 continue
             tangent = _tangent_at(poly, s, float(s0))
 

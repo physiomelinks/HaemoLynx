@@ -235,7 +235,9 @@ FWHM_CLIP_PROFILE_TO_SINGLE_VESSEL = True
 FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER = 0.35
 FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER = 0.08
 # Exclude samples this close (µm) to bifurcation endpoints (degree > 1).
-FWHM_BRANCH_ENDPOINT_EXCLUSION_UM = 3.0
+FWHM_BRANCH_ENDPOINT_EXCLUSION_UM = 10.0
+# Auto-detected junction-proximity exclusion (µm) using rasterized junction voxels.
+FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM = 10.0
 
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= [
@@ -357,7 +359,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_clip_profile_to_single_vessel=FWHM_CLIP_PROFILE_TO_SINGLE_VESSEL,
                             fwhm_clip_min_drop_fraction_of_center=FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER,
                             fwhm_clip_re_rise_fraction_of_center=FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER,
-                            fwhm_branch_endpoint_exclusion_um=FWHM_BRANCH_ENDPOINT_EXCLUSION_UM) -> None:
+                            fwhm_branch_endpoint_exclusion_um=FWHM_BRANCH_ENDPOINT_EXCLUSION_UM,
+                            fwhm_junction_proximity_exclusion_um=FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM) -> None:
     image_path = Path(image_path)
     if use_ilastik_segmentation:
         unsegmented_image_path = Path(ilastik_unsegmented_image_path)
@@ -1244,6 +1247,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 ),
                 branch_endpoint_exclusion_um=float(
                     fwhm_branch_endpoint_exclusion_um
+                ),
+                junction_proximity_exclusion_um=float(
+                    fwhm_junction_proximity_exclusion_um
                 ),
             )
             print(f"FWHM diameter measurement summary: {fwhm_summary}")
