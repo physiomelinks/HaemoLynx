@@ -40,8 +40,8 @@ _I0 = 100.0
 _DEFAULT_FWHM_MEASURE_KWARGS: dict = {
     "sample_spacing_along_edge_um": 2.0,
     "transverse_profile_step_um": 0.2,
-    "transverse_half_extent_um": 14.0,
-    "diameter_guess_um": 5.0,
+    "transverse_half_extent_um": 4.0,
+    "diameter_guess_um": None,
     "background_label": 0,
     "junction_label": -1,
     "min_total_extent_multiplier": 3.0,
@@ -55,11 +55,30 @@ _DEFAULT_FWHM_MEASURE_KWARGS: dict = {
     "branch_endpoint_exclusion_um": 10.0,
     "junction_proximity_exclusion_um": 10.0,
     "store_profile_debug": True,
+    "enforce_same_edge_locality": True,
+    "same_edge_arc_window_um": 3.0,
+    "same_edge_arc_window_multiplier": 1.0,
+    "same_edge_arc_window_min_um": 1.0,
+    "cap_half_extent_by_nonlocal_same_edge_distance": True,
+    "nonlocal_same_edge_arc_separation_um": 6.0,
+    "nonlocal_same_edge_half_extent_factor": 0.45,
+    "reject_samples_with_center_offset": True,
+    "max_fit_center_offset_um": 1.5,
+    "reject_samples_with_low_fit_r2": True,
+    "min_fit_r2": 0.85,
 }
 
 _EDGE_LINE_COLORS = ("#00ffff", "#ffaa00", "#cc66ff")
 _PROFILE_LINE_COLORS = ("#00cc88", "#ff6600", "#9933ff")
 _VOLUME_MESH_COLORS = ("#00ffff", "#ffaa00", "#cc66ff")  # match centerlines: low z → high z
+
+
+def _measure_kwargs_with_overrides(overrides: dict | None = None) -> dict:
+    """Copy default measurement kwargs and apply optional scenario-specific overrides."""
+    out = dict(_DEFAULT_FWHM_MEASURE_KWARGS)
+    if overrides:
+        out.update(overrides)
+    return out
 
 
 def _dist_point_to_segment_batch(
@@ -431,7 +450,7 @@ def build_synthetic_tight_zigzag_volume_and_target(
         ],
         dtype=float,
     )
-    fwhm = 5.0
+    fwhm = 2.5
     sigma = fwhm / _GAUSSIAN_FWHM_FROM_SIGMA
     pad = 4.0 * sigma + 2.0
     z_max = float(np.max(points[:, 0]) + pad)
@@ -460,22 +479,47 @@ def build_synthetic_tight_zigzag_volume_and_target(
 
 def build_tight_zigzag_matching_multigraph(
     centerline_points: np.ndarray,
+    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+    step_um: float = 0.25,
 ) -> nx.MultiGraph:
-    """Single-edge graph whose voxels follow the provided tight zig-zag polyline."""
+    """Single-edge graph whose voxels densely follow the tight zig-zag polyline."""
     pts = np.asarray(centerline_points, dtype=float)
+    vz, vy, vx = voxel_size_xyz
+    step = min(float(step_um), float(vz), float(vy), float(vx))
+    if step <= 0:
+        raise ValueError("step_um and voxel_size_xyz must be positive.")
+
+    dense_voxels: list[tuple[float, float, float]] = []
+    for i in range(len(pts) - 1):
+        a = pts[i]
+        b = pts[i + 1]
+        seg = b - a
+        seg_len = float(np.linalg.norm(seg))
+        if seg_len <= 1e-12:
+            continue
+        n = max(2, int(np.floor(seg_len / step)) + 1)
+        tvals = np.linspace(0.0, 1.0, n)
+        for t in tvals:
+            p = (1.0 - float(t)) * a + float(t) * b
+            p_tup = (float(p[0]), float(p[1]), float(p[2]))
+            if not dense_voxels or dense_voxels[-1] != p_tup:
+                dense_voxels.append(p_tup)
+    if not dense_voxels:
+        dense_voxels = [tuple(map(float, pts[0])), tuple(map(float, pts[-1]))]
+
     G = nx.MultiGraph()
     G.add_node(0, pos=pts[0].copy())
     G.add_node(1, pos=pts[-1].copy())
-    seg = np.diff(pts, axis=0)
+    dense_arr = np.asarray(dense_voxels, dtype=float)
+    seg = np.diff(dense_arr, axis=0)
     length = float(np.sum(np.linalg.norm(seg, axis=1)))
-    voxels = [tuple(p.tolist()) for p in pts]
     G.add_edge(
         0,
         1,
         weight=1.0,
         length=length,
         branch_order="B01",
-        voxels=voxels,
+        voxels=dense_voxels,
     )
     return G
 
@@ -779,11 +823,23 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
     G = build_x_junction_matching_multigraph(
         targets, voxel_size_xyz, step_um=0.25, offcenter_fraction=0.3
     )
+    # Keep this scenario close to the original 3x-width behavior; tortuous-vessel
+    # guards are useful for zig-zag, but too restrictive for this validation plot.
+    xj_measure_kwargs = _measure_kwargs_with_overrides(
+        {
+            "branch_endpoint_exclusion_um": 10.0,
+            "junction_proximity_exclusion_um": 10.0,
+            "enforce_same_edge_locality": False,
+            "cap_half_extent_by_nonlocal_same_edge_distance": False,
+            "reject_samples_with_center_offset": False,
+            "reject_samples_with_low_fit_r2": False,
+        }
+    )
     summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
         voxel_size_xyz=voxel_size_xyz,
-        **_DEFAULT_FWHM_MEASURE_KWARGS,
+        **xj_measure_kwargs,
     )
     # Four arms should measure unless noise/truncation causes occasional fitting loss.
     assert summary["edges_measured"] >= 3
@@ -823,7 +879,7 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
         raw_noisy,
         labels,
         voxel_size_xyz,
-        _DEFAULT_FWHM_MEASURE_KWARGS,
+        xj_measure_kwargs,
         title=title,
     )
     fig.write_html(
@@ -889,8 +945,10 @@ def _write_single_demo_html(
     voxel_size_xyz: tuple[float, float, float],
     title_prefix: str,
     targets: list[tuple[np.ndarray, np.ndarray, float]],
+    measure_kwargs_overrides: dict | None = None,
 ) -> None:
     """Run FWHM on (raw, G) and write one Plotly HTML file."""
+    measure_kwargs = _measure_kwargs_with_overrides(measure_kwargs_overrides)
     with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
         raw_path = Path(tf.name)
     try:
@@ -899,7 +957,7 @@ def _write_single_demo_html(
             G,
             raw_tiff_path=raw_path,
             voxel_size_xyz=voxel_size_xyz,
-            **_DEFAULT_FWHM_MEASURE_KWARGS,
+            **measure_kwargs,
         )
         pairs = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
         title_parts = []
@@ -919,7 +977,7 @@ def _write_single_demo_html(
             raw,
             labels,
             voxel_size_xyz,
-            _DEFAULT_FWHM_MEASURE_KWARGS,
+            measure_kwargs,
             title=title,
         )
         fig.write_html(str(out_path), include_plotlyjs="cdn")
@@ -1013,6 +1071,14 @@ def _write_demo_html() -> list[Path]:
         voxel_size_xyz,
         "Synthetic noisy X-junction + 30% off-center graph: volume mesh + centerlines + transverse profile lines",
         targets_x,
+        measure_kwargs_overrides={
+            "branch_endpoint_exclusion_um": 10.0,
+            "junction_proximity_exclusion_um": 10.0,
+            "enforce_same_edge_locality": False,
+            "cap_half_extent_by_nonlocal_same_edge_distance": False,
+            "reject_samples_with_center_offset": False,
+            "reject_samples_with_low_fit_r2": False,
+        },
     )
     out_paths.append(out_x_noisy)
 

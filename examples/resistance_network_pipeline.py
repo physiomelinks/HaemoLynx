@@ -214,7 +214,7 @@ FWHM_TRANSVERSE_PROFILE_STEP_UM = 0.25
 # Initial maximum half-length of the transverse line on each side of the center (µm);
 # may grow with measured width (see FWHM_MIN_TOTAL_EXTENT_MULTIPLIER in automated.py).
 FWHM_TRANSVERSE_HALF_EXTENT_UM = 6.0
-FWHM_DIAMETER_GUESS_UM = 4.0
+FWHM_DIAMETER_GUESS_UM = None
 FWHM_MIN_TOTAL_EXTENT_MULTIPLIER = 3.0
 FWHM_BACKGROUND_LABEL = 0
 FWHM_JUNCTION_LABEL = -1
@@ -238,6 +238,18 @@ FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER = 0.08
 FWHM_BRANCH_ENDPOINT_EXCLUSION_UM = 10.0
 # Auto-detected junction-proximity exclusion (µm) using rasterized junction voxels.
 FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM = 10.0
+# Prevent profile rays from re-entering distant parts of the same edge (zig-zag guard).
+FWHM_ENFORCE_SAME_EDGE_LOCALITY = True
+FWHM_SAME_EDGE_ARC_WINDOW_UM = 3.0
+FWHM_SAME_EDGE_ARC_WINDOW_MULTIPLIER = 1.0
+FWHM_SAME_EDGE_ARC_WINDOW_MIN_UM = 1.0
+FWHM_CAP_HALF_EXTENT_BY_NONLOCAL_SAME_EDGE_DISTANCE = True
+FWHM_NONLOCAL_SAME_EDGE_ARC_SEPARATION_UM = 6.0
+FWHM_NONLOCAL_SAME_EDGE_HALF_EXTENT_FACTOR = 0.45
+FWHM_REJECT_SAMPLES_WITH_CENTER_OFFSET = True
+FWHM_MAX_FIT_CENTER_OFFSET_UM = 1.5
+FWHM_REJECT_SAMPLES_WITH_LOW_FIT_R2 = True
+FWHM_MIN_FIT_R2 = 0.85
 
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= [
@@ -360,7 +372,18 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_clip_min_drop_fraction_of_center=FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER,
                             fwhm_clip_re_rise_fraction_of_center=FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER,
                             fwhm_branch_endpoint_exclusion_um=FWHM_BRANCH_ENDPOINT_EXCLUSION_UM,
-                            fwhm_junction_proximity_exclusion_um=FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM) -> None:
+                            fwhm_junction_proximity_exclusion_um=FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM,
+                            fwhm_enforce_same_edge_locality=FWHM_ENFORCE_SAME_EDGE_LOCALITY,
+                            fwhm_same_edge_arc_window_um=FWHM_SAME_EDGE_ARC_WINDOW_UM,
+                            fwhm_same_edge_arc_window_multiplier=FWHM_SAME_EDGE_ARC_WINDOW_MULTIPLIER,
+                            fwhm_same_edge_arc_window_min_um=FWHM_SAME_EDGE_ARC_WINDOW_MIN_UM,
+                            fwhm_cap_half_extent_by_nonlocal_same_edge_distance=FWHM_CAP_HALF_EXTENT_BY_NONLOCAL_SAME_EDGE_DISTANCE,
+                            fwhm_nonlocal_same_edge_arc_separation_um=FWHM_NONLOCAL_SAME_EDGE_ARC_SEPARATION_UM,
+                            fwhm_nonlocal_same_edge_half_extent_factor=FWHM_NONLOCAL_SAME_EDGE_HALF_EXTENT_FACTOR,
+                            fwhm_reject_samples_with_center_offset=FWHM_REJECT_SAMPLES_WITH_CENTER_OFFSET,
+                            fwhm_max_fit_center_offset_um=FWHM_MAX_FIT_CENTER_OFFSET_UM,
+                            fwhm_reject_samples_with_low_fit_r2=FWHM_REJECT_SAMPLES_WITH_LOW_FIT_R2,
+                            fwhm_min_fit_r2=FWHM_MIN_FIT_R2) -> None:
     image_path = Path(image_path)
     if use_ilastik_segmentation:
         unsegmented_image_path = Path(ilastik_unsegmented_image_path)
@@ -1227,7 +1250,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 sample_spacing_along_edge_um=float(fwhm_sample_spacing_along_edge_um),
                 transverse_profile_step_um=float(fwhm_transverse_profile_step_um),
                 transverse_half_extent_um=float(fwhm_transverse_half_extent_um),
-                diameter_guess_um=float(fwhm_diameter_guess_um),
+                diameter_guess_um=(
+                    None
+                    if fwhm_diameter_guess_um is None
+                    else float(fwhm_diameter_guess_um)
+                ),
                 background_label=int(fwhm_background_label),
                 junction_label=int(fwhm_junction_label),
                 min_total_extent_multiplier=float(fwhm_min_total_extent_multiplier),
@@ -1251,6 +1278,37 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 junction_proximity_exclusion_um=float(
                     fwhm_junction_proximity_exclusion_um
                 ),
+                enforce_same_edge_locality=bool(fwhm_enforce_same_edge_locality),
+                same_edge_arc_window_um=(
+                    None
+                    if fwhm_same_edge_arc_window_um is None
+                    else float(fwhm_same_edge_arc_window_um)
+                ),
+                same_edge_arc_window_multiplier=float(
+                    fwhm_same_edge_arc_window_multiplier
+                ),
+                same_edge_arc_window_min_um=float(
+                    fwhm_same_edge_arc_window_min_um
+                ),
+                cap_half_extent_by_nonlocal_same_edge_distance=bool(
+                    fwhm_cap_half_extent_by_nonlocal_same_edge_distance
+                ),
+                nonlocal_same_edge_arc_separation_um=float(
+                    fwhm_nonlocal_same_edge_arc_separation_um
+                ),
+                nonlocal_same_edge_half_extent_factor=float(
+                    fwhm_nonlocal_same_edge_half_extent_factor
+                ),
+                reject_samples_with_center_offset=bool(
+                    fwhm_reject_samples_with_center_offset
+                ),
+                max_fit_center_offset_um=float(
+                    fwhm_max_fit_center_offset_um
+                ),
+                reject_samples_with_low_fit_r2=bool(
+                    fwhm_reject_samples_with_low_fit_r2
+                ),
+                min_fit_r2=float(fwhm_min_fit_r2),
             )
             print(f"FWHM diameter measurement summary: {fwhm_summary}")
             if do_pericyte_constriction:
