@@ -1450,6 +1450,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         for key, value in stats.items():
             print(f"  {key}: {value}")
 
+        stats_csv_path = output_dir / f"{image_path.stem}_statistics.csv"
+        statistics.export_statistics_to_csv(stats, stats_csv_path)
+        print(f"Saved statistics CSV to: {stats_csv_path}")
+
         weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
         print("\n=== Weighted Betweenness and Communities ===")
         for model_name, model_results in weighted_measurements.items():

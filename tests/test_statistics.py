@@ -12,6 +12,7 @@ from ImageLynx.statistics import (
     compute_path_efficiency,
     compute_vessel_density,
     compute_comprehensive_vessel_statistics,
+    export_statistics_to_csv,
 )
 
 
@@ -64,3 +65,23 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
     )
     assert "Total Nodes" in s
     assert "Fractal Dimension" in s
+
+
+def test_export_statistics_to_csv(tmp_path):
+    stats = {
+        "Total Nodes": 5,
+        "Average Edge Length (microns)": 10.0,
+        "Path Efficiency Pair Coverage": 0.5,
+        "Statistics Mode": "fast",
+        "nested": {"Community Count": 2},
+    }
+    output_csv = tmp_path / "example_statistics.csv"
+    path = export_statistics_to_csv(stats, output_csv)
+
+    assert path == output_csv
+    assert output_csv.exists()
+    text = output_csv.read_text(encoding="utf-8")
+    assert "Section,Metric,Value,Unit,Notes" in text
+    assert "Average Edge Length,10,microns" in text
+    assert "Path Efficiency Pair Coverage,50.00%,,Fraction of all node-pairs included." in text
+    assert "nested,Community Count,2,," in text
