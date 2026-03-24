@@ -310,6 +310,105 @@ def add_background_noise_to_synthetic_volume(
     return np.clip(noisy, 0.0, None).astype(np.float32)
 
 
+def build_synthetic_x_junction_volume_and_targets(
+    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]]]:
+    """Float32 X-junction vessel volume + segment targets in (z,y,x) µm.
+
+    Four branches meet at one central node, forming an X in the y-x plane.
+    """
+    vz, vy, vx = voxel_size_xyz
+    z0 = 14.0
+    y0 = 15.0
+    x0 = 24.0
+    arm_x = 14.0
+    arm_y = 8.0
+    fwhm = 5.0
+    center = np.array([z0, y0, x0], dtype=float)
+    tips = [
+        np.array([z0, y0 - arm_y, x0 - arm_x], dtype=float),
+        np.array([z0, y0 + arm_y, x0 + arm_x], dtype=float),
+        np.array([z0, y0 + arm_y, x0 - arm_x], dtype=float),
+        np.array([z0, y0 - arm_y, x0 + arm_x], dtype=float),
+    ]
+    specs: list[tuple[np.ndarray, np.ndarray, float]] = [(center, t, fwhm) for t in tips]
+
+    sigma = fwhm / _GAUSSIAN_FWHM_FROM_SIGMA
+    pad = 4.0 * sigma + 2.0
+    z_max = z0 + pad
+    y_max = y0 + arm_y + pad
+    x_max = x0 + arm_x + pad
+    nz = int(np.ceil(z_max / vz)) + 1
+    ny = int(np.ceil(y_max / vy)) + 1
+    nx = int(np.ceil(x_max / vx)) + 1
+
+    iz = np.arange(nz, dtype=float)[:, None, None]
+    iy = np.arange(ny, dtype=float)[None, :, None]
+    ix = np.arange(nx, dtype=float)[None, None, :]
+    pz = iz * vz
+    py = iy * vy
+    px = ix * vx
+
+    vol = np.zeros((nz, ny, nx), dtype=np.float32)
+    targets: list[tuple[np.ndarray, np.ndarray, float]] = []
+    for a, b, fw in specs:
+        d = _dist_point_to_segment_batch(pz, py, px, a, b)
+        tube = (_I0 * np.exp(-(d**2) / (2.0 * sigma**2))).astype(np.float32)
+        vol = np.maximum(vol, tube)
+        targets.append((a.copy(), b.copy(), float(fw)))
+    return vol, targets
+
+
+def build_x_junction_matching_multigraph(
+    targets: list[tuple[np.ndarray, np.ndarray, float]],
+    voxel_size_xyz: tuple[float, float, float],
+    step_um: float = 0.25,
+    *,
+    offcenter_fraction: float = 0.0,
+) -> nx.MultiGraph:
+    """Graph for X-junction targets (shared center node + four arms), optional x/z off-center."""
+    vz, vy, vx = voxel_size_xyz
+    step = min(step_um, vz, vy, vx)
+    if offcenter_fraction < 0:
+        raise ValueError("offcenter_fraction must be non-negative.")
+
+    center = np.asarray(targets[0][0], dtype=float).copy()
+    G = nx.MultiGraph()
+    G.add_node(0, pos=center.copy())
+    branch_orders = ("B01", "B02", "B03", "B04")
+    for i, (a, b, fwhm) in enumerate(targets, start=1):
+        a = np.asarray(a, dtype=float).copy()
+        b = np.asarray(b, dtype=float).copy()
+        if offcenter_fraction > 0:
+            dz = float(offcenter_fraction) * float(fwhm)
+            dx = float(offcenter_fraction) * float(fwhm)
+            a[0] += dz
+            b[0] += dz
+            a[2] += dx
+            b[2] += dx
+        # Ensure node 0 is used as the branch root.
+        root = a
+        tip = b
+        G.add_node(i, pos=tip.copy())
+        ab = tip - root
+        length = float(np.linalg.norm(ab))
+        if length <= 0:
+            continue
+        direc = ab / length
+        n = max(2, int(np.floor(length / step)) + 1)
+        tvals = np.linspace(0.0, length, n)
+        voxels = [tuple((root + t * direc).tolist()) for t in tvals]
+        G.add_edge(
+            0,
+            i,
+            weight=1.0,
+            length=length,
+            branch_order=branch_orders[(i - 1) % len(branch_orders)],
+            voxels=voxels,
+        )
+    return G
+
+
 def _iter_profile_polylines_phys(
     G: nx.MultiGraph,
     raw: np.ndarray,
@@ -695,6 +794,74 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
     fig.write_html(str(tmp_path / "synthetic_vessel_fwhm_viz.html"), include_plotlyjs="cdn")
 
 
+@pytest.mark.integration
+@pytest.mark.plotting
+def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> None:
+    """Noisy X-junction raw volume with 30% off-center graph still yields sane diameters."""
+    voxel_size_xyz = (0.25, 0.25, 0.25)
+    raw_clean, targets = build_synthetic_x_junction_volume_and_targets(voxel_size_xyz)
+    raw_noisy = add_background_noise_to_synthetic_volume(
+        raw_clean, noise_sigma=6.0, background_offset=4.0, seed=321
+    )
+    raw_path = tmp_path / "synthetic_x_junction_noisy.tif"
+    tifffile.imwrite(str(raw_path), raw_noisy)
+
+    G = build_x_junction_matching_multigraph(
+        targets, voxel_size_xyz, step_um=0.25, offcenter_fraction=0.3
+    )
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_xyz=voxel_size_xyz,
+        **_DEFAULT_FWHM_MEASURE_KWARGS,
+    )
+    # Four arms should measure unless noise/truncation causes occasional fitting loss.
+    assert summary["edges_measured"] >= 3
+
+    pairs = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
+    expected = [t[2] for t in targets]
+    measured = []
+    for (u, v, k), exp in zip(pairs, expected):
+        d = G[u][v][k].get("fwhm_diameter_um")
+        if d is None:
+            continue
+        d = float(d)
+        measured.append(d)
+        assert np.isfinite(d)
+        assert abs(d - exp) < max(1.3, 0.3 * exp), (
+            f"edge ({u},{v},{k}): measured {d:.3f} µm vs target {exp:.3f} µm"
+        )
+    assert len(measured) >= 3
+
+    labels, _ = automated.build_graph_branch_label_volume(
+        G,
+        raw_noisy.shape,
+        voxel_size_xyz,
+        background_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["background_label"]),
+        junction_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["junction_label"]),
+    )
+    title_parts = []
+    for (u, v, k), t in zip(pairs, targets):
+        d = G[u][v][k].get("fwhm_diameter_um", float("nan"))
+        d_txt = f"{float(d):.2f}" if np.isfinite(float(d)) else "nan"
+        title_parts.append(f"FWHM {t[2]:.1f}→{d_txt} µm")
+    title = "Synthetic noisy X-junction + 30% off-center graph: volume mesh + centerlines + profiles | " + " | ".join(
+        title_parts
+    )
+    fig = build_synthetic_fwhm_integration_figure(
+        G,
+        raw_noisy,
+        labels,
+        voxel_size_xyz,
+        _DEFAULT_FWHM_MEASURE_KWARGS,
+        title=title,
+    )
+    fig.write_html(
+        str(tmp_path / "synthetic_x_junction_offcenter_noisy_fwhm_viz.html"),
+        include_plotlyjs="cdn",
+    )
+
+
 def _write_single_demo_html(
     out_path: Path,
     raw: np.ndarray,
@@ -809,6 +976,25 @@ def _write_demo_html() -> list[Path]:
         targets_off,
     )
     out_paths.append(out_off_noisy)
+
+    # 5) X-junction, noisy synthetic volume, and 30% off-center graph.
+    raw_x, targets_x = build_synthetic_x_junction_volume_and_targets(voxel_size_xyz)
+    raw_x_noisy = add_background_noise_to_synthetic_volume(
+        raw_x, noise_sigma=6.0, background_offset=4.0, seed=321
+    )
+    Gx_off = build_x_junction_matching_multigraph(
+        targets_x, voxel_size_xyz, step_um=0.25, offcenter_fraction=0.3
+    )
+    out_x_noisy = out_dir / "synthetic_vessel_x_junction_offcenter_noisy_fwhm_integration_3d.html"
+    _write_single_demo_html(
+        out_x_noisy,
+        raw_x_noisy,
+        Gx_off,
+        voxel_size_xyz,
+        "Synthetic noisy X-junction + 30% off-center graph: volume mesh + centerlines + transverse profile lines",
+        targets_x,
+    )
+    out_paths.append(out_x_noisy)
 
     return out_paths
 
