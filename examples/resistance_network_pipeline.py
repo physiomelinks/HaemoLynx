@@ -1454,6 +1454,17 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         statistics.export_statistics_to_csv(stats, stats_csv_path)
         print(f"Saved statistics CSV to: {stats_csv_path}")
 
+        branch_stats = statistics.compute_branch_order_statistics(
+            G,
+            node_positions=node_positions,
+        )
+        branch_stats_csv_path = output_dir / f"{image_path.stem}_branch_statistics.csv"
+        statistics.export_branch_order_statistics_to_csv(
+            branch_stats,
+            branch_stats_csv_path,
+        )
+        print(f"Saved branch-order statistics CSV to: {branch_stats_csv_path}")
+
         weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
         print("\n=== Weighted Betweenness and Communities ===")
         for model_name, model_results in weighted_measurements.items():
