@@ -16,6 +16,7 @@ from ImageLynx.io import (
     resolve_image_path_with_optional_zip,
 )
 from .probability import (
+    is_capillary_branch_order,
     select_active_pericyte_indices,
     validate_active_pericyte_indices,
 )
@@ -159,6 +160,9 @@ def _build_edge_records(graph: nx.Graph) -> list[_EdgeRecord]:
     else:
         edge_iter = ((u, v, 0, data) for u, v, data in graph.edges(data=True))
     for u, v, key, edge_data in edge_iter:
+        if not is_capillary_branch_order(edge_data.get("branch_order")):
+            # Rule: only capillary branches can receive pericyte assignments.
+            continue
         points = _edge_points(graph, u, v, edge_data)
         if points.shape[0] < 2:
             continue
