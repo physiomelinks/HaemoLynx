@@ -102,6 +102,7 @@ STARTING_NODES: list[int] = []
 OUTPUT_NODES: list[int] = []
 ARTERIOLE_BOUNDARY_NODES: list[int] = []
 VENULE_BOUNDARY_NODES: list[int] = []
+STRICT_BRANCH_ORDER_ASSIGNMENT = False
 
 # ---------------------------
 # Solver and output settings
@@ -133,7 +134,7 @@ VERBOSE_LOGGING = False
 DO_SKELETONIZE = True
 DO_GRAPH_BUILDING = True
 RUN_HAEMODYNAMICS = True
-DO_EQUIV_RESISTANCE_CALCULATION = False
+DO_EQUIV_RESISTANCE_CALCULATION = True
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
 SKELETON_CLOSING_RADIUS = 2
