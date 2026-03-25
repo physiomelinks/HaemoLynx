@@ -1,5 +1,6 @@
 """Plotting functions for vascular networks."""
 from typing import Optional, Tuple, Any
+import os
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,6 +45,11 @@ def _show_matplotlib_non_blocking(pause_s: float = 0.001) -> None:
     """Show matplotlib figures without blocking script execution."""
     plt.show(block=False)
     plt.pause(pause_s)
+
+
+def _is_pytest_runtime() -> bool:
+    """Return True when running under pytest."""
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
 def plot_node_degree_distribution(
@@ -457,7 +463,7 @@ def visualize_3d_plotly(
     )
     if save_html_path:
         fig.write_html(str(save_html_path), include_plotlyjs="cdn")
-    if show:
+    if show and not _is_pytest_runtime():
         fig.show()
     return fig
 
@@ -591,7 +597,7 @@ def visualize_3d_plotly_vessel_types(
     )
     if save_html_path:
         fig.write_html(str(save_html_path), include_plotlyjs="cdn")
-    if show:
+    if show and not _is_pytest_runtime():
         fig.show()
     return fig
 
