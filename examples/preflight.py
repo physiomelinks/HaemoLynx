@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Preflight validation for resistance pipeline runs."""
 from pathlib import Path
+import shutil
 
 
 def _as_path(value: object) -> Path | None:
@@ -56,6 +57,8 @@ def run_preflight_checklist(pipeline_kwargs: dict[str, object]) -> dict[str, obj
         pipeline_kwargs.get("use_ilastik_small_vessel_segmentation")
     )
     run_haemodynamics = bool(pipeline_kwargs.get("run_haemodynamics", True))
+    do_skeletonize = bool(pipeline_kwargs.get("do_skeletonize", True))
+    do_graph_building = bool(pipeline_kwargs.get("do_graph_building", True))
     do_equiv_resistance_calculation = bool(
         pipeline_kwargs.get("do_equiv_resistance_calculation")
     )
@@ -107,6 +110,28 @@ def run_preflight_checklist(pipeline_kwargs: dict[str, object]) -> dict[str, obj
                 "Main input image",
                 detail,
                 "Set INPUT_PATH / --image-path to an existing segmented image.",
+            )
+
+    # ilastik executable check when any ilastik mode is enabled
+    ilastik_required = bool(
+        use_ilastik_segmentation
+        or use_ilastik_large_vessel_segmentation
+        or use_ilastik_small_vessel_segmentation
+    )
+    ilastik_executable = pipeline_kwargs.get("ilastik_executable")
+    if ilastik_required:
+        exec_text = "" if ilastik_executable is None else str(ilastik_executable).strip()
+        exec_path = _as_path(exec_text) if exec_text else None
+        exists_as_path = bool(exec_path and exec_path.exists())
+        found_on_path = bool(exec_text and shutil.which(exec_text))
+        if exists_as_path or found_on_path:
+            source = str(exec_path) if exists_as_path else str(shutil.which(exec_text))
+            ok("Ilastik executable", source)
+        else:
+            fail(
+                "Ilastik executable",
+                str(ilastik_executable),
+                "Set ILASTIK_EXECUTABLE to a valid executable path or command available on PATH.",
             )
 
     # Large-vessel mask checks
@@ -240,9 +265,10 @@ def run_preflight_checklist(pipeline_kwargs: dict[str, object]) -> dict[str, obj
     if strict_branch_order_assignment and not (
         automated_vessel_assignment or use_small_vessel_masks_for_boundary_assignment
     ):
-        warn(
+        fail(
             "Strict branch-order assignment",
             "strict_branch_order_assignment=True without automated/mask boundary assignment; this may fail if boundary nodes are missing.",
+            "Enable AUTOMATED_VESSEL_ASSIGNMENT or USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT, or disable strict mode.",
         )
 
     # Enumerated mode checks
@@ -275,6 +301,41 @@ def run_preflight_checklist(pipeline_kwargs: dict[str, object]) -> dict[str, obj
             statistics_mode,
             "Use statistics_mode='fast' or 'full'.",
         )
+
+    # Stage reuse artifact checks when stages are disabled.
+    vtk_output_prefix = _as_path(pipeline_kwargs.get("vtk_output_prefix"))
+    if vtk_output_prefix is not None:
+        output_dir = vtk_output_prefix.parent
+        if use_ilastik_segmentation:
+            ilastik_output_dir = _as_path(pipeline_kwargs.get("ilastik_output_dir"))
+            unseg = _as_path(pipeline_kwargs.get("ilastik_unsegmented_image_path"))
+            suffix = str(pipeline_kwargs.get("ilastik_output_suffix", ".tif"))
+            if ilastik_output_dir is not None and unseg is not None:
+                image_stem = f"{unseg.stem}_segmented"
+            else:
+                image_stem = image_path.stem if image_path is not None else "input"
+        else:
+            image_stem = image_path.stem if image_path is not None else "input"
+        expected_skeleton = output_dir / f"{image_stem}_skeleton.npy"
+        expected_graph = output_dir / f"{image_stem}_graph.pkl"
+        if not do_skeletonize:
+            if expected_skeleton.exists():
+                ok("Cached skeleton artifact", str(expected_skeleton))
+            else:
+                fail(
+                    "Cached skeleton artifact",
+                    str(expected_skeleton),
+                    "Enable do_skeletonize or provide the cached skeleton file.",
+                )
+        if not do_graph_building:
+            if expected_graph.exists():
+                ok("Cached graph artifact", str(expected_graph))
+            else:
+                fail(
+                    "Cached graph artifact",
+                    str(expected_graph),
+                    "Enable do_graph_building or provide the cached graph file.",
+                )
 
     # Print checklist
     print("\n=== Preflight Checklist ===")
