@@ -143,5 +143,31 @@ def test_preflight_reports_pass_and_actionable_failures(tmp_path: Path):
     assert any("3D distance cell mask" in err for err in failing_report["errors"])
 
 
+def test_resolve_preset_inheritance_merges_parent_overrides():
+    preset_defs = {
+        "base": {
+            "description": "Base preset",
+            "overrides": {"A": 1, "B": 2},
+        },
+        "child": {
+            "extends": "base",
+            "description": "Child preset",
+            "overrides": {"B": 99, "C": 3},
+        },
+    }
+    resolved = preset_tools.resolve_preset_inheritance(preset_defs)
+    assert resolved["child"]["description"] == "Child preset"
+    assert resolved["child"]["overrides"] == {"A": 1, "B": 99, "C": 3}
+
+
+def test_resolve_preset_inheritance_detects_cycle():
+    cyclic_defs = {
+        "a": {"extends": "b", "overrides": {}},
+        "b": {"extends": "a", "overrides": {}},
+    }
+    with pytest.raises(ValueError, match="Cyclic preset inheritance"):
+        preset_tools.resolve_preset_inheritance(cyclic_defs)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([str(Path(__file__)), "-q"]))
