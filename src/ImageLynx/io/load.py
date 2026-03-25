@@ -88,6 +88,36 @@ def simplify_to_3d(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Expected 3D or 4D image, got shape {image.shape}")
 
 
+def _to_binary_volume_for_skeletonization(image: np.ndarray) -> np.ndarray:
+    """Convert loaded image volume to a boolean mask for skeletonization.
+
+    - Preserve 0/1 integer masks by using ``> 0`` so value ``1`` is foreground.
+    - Keep prior skimage conversion behavior for full-range integer images.
+    - For normalized floating masks (0..1), threshold at 0.5.
+    - For other floating data, use ``> 0`` as a conservative fallback.
+    """
+    arr = np.asarray(image)
+    if arr.dtype == bool:
+        return arr
+
+    if np.issubdtype(arr.dtype, np.integer):
+        arr_min = int(arr.min())
+        arr_max = int(arr.max())
+        if arr_min >= 0 and arr_max <= 1:
+            return arr > 0
+        return img_as_bool(arr)
+
+    if np.issubdtype(arr.dtype, np.floating):
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return np.zeros(arr.shape, dtype=bool)
+        if float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0:
+            return arr > 0.5
+        return arr > 0.0
+
+    return arr.astype(bool)
+
+
 def resolve_image_path_with_optional_zip(image_path: str | Path) -> Path:
     """Return an existing image path, extracting from a nearby zip when needed."""
     image_path = Path(image_path)
@@ -254,7 +284,8 @@ def load_and_skeletonize_3d_tif(filepath: str):
     image, voxel_size_x, voxel_size_y, voxel_size_z = load_3d_tif_with_voxel_size(filepath)
 
     print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
-    skeleton = skeletonize_3d(img_as_bool(image))
+    binary = _to_binary_volume_for_skeletonization(image)
+    skeleton = skeletonize_3d(binary)
     skeleton = binary_fill_holes(skeleton)
     return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z
 
@@ -276,7 +307,7 @@ def load_and_skeletonize_3d_h5(
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 
-    binary = image.astype(bool)
+    binary = _to_binary_volume_for_skeletonization(image)
     skeleton = skeletonize_3d(binary)
     return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z
 
