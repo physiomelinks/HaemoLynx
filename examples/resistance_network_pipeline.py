@@ -191,6 +191,7 @@ DO_PERICYTE_CONSTRUCTION = False
 USE_PERICYTE_MASK_CONSTRICTION = False
 PERICYTE_MASK_PATH: Optional[Path] = None
 PERICYTE_MASK_H5_DATASET_NAME: Optional[str] = None
+PERICYTE_MAX_ASSIGNMENT_DISTANCE_UM = 3.0
 # Optional probabilistic constriction:
 # Example: probability=0.8 means ~80% of pericytes are active per run.
 USE_PROBABILISTIC_PERICYTE_CONSTRICTION = False
@@ -342,6 +343,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_pericyte_mask_constriction=USE_PERICYTE_MASK_CONSTRICTION,
                             pericyte_mask_path=PERICYTE_MASK_PATH,
                             pericyte_mask_h5_dataset_name=PERICYTE_MASK_H5_DATASET_NAME,
+                            pericyte_max_assignment_distance_um=PERICYTE_MAX_ASSIGNMENT_DISTANCE_UM,
                             use_probabilistic_pericyte_constriction=USE_PROBABILISTIC_PERICYTE_CONSTRICTION,
                             pericyte_constriction_probability=PERICYTE_CONSTRICTION_PROBABILITY,
                             run_pericyte_resistance_comparison=RUN_PERICYTE_RESISTANCE_COMPARISON,
@@ -1378,6 +1380,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     use_pericyte_mask_constriction=bool(use_pericyte_mask_constriction),
                     pericyte_mask_path=pericyte_mask_path,
                     pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
+                    max_assignment_distance_um=(
+                        None
+                        if pericyte_max_assignment_distance_um is None
+                        else float(pericyte_max_assignment_distance_um)
+                    ),
                     prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
                     constriction_length=40.0,
                     constriction_spacing=100.0,
@@ -1417,6 +1424,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     constriction_factor_by_branch_order=constriction_by_branch_order,
                     pericyte_mask_path=pericyte_mask_path,
                     pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
+                    max_assignment_distance_um=(
+                        None
+                        if pericyte_max_assignment_distance_um is None
+                        else float(pericyte_max_assignment_distance_um)
+                    ),
                     prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
                     constriction_length=40.0,
                     use_probabilistic_constriction=bool(

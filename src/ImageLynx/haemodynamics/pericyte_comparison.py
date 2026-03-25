@@ -44,6 +44,7 @@ def _set_weights_for_factor(
     pericyte_constriction_probability: float,
     active_pericyte_indices: list[int] | None,
     active_center_indices_by_edge: dict[str, list[int]] | None,
+    max_assignment_distance_um: float | None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Apply edge weights for a comparison scenario."""
     factor_map = _scale_factor_map(
@@ -66,6 +67,7 @@ def _set_weights_for_factor(
             use_probabilistic_constriction=bool(use_probabilistic_pericyte_constriction),
             constriction_probability=float(pericyte_constriction_probability),
             active_pericyte_indices=active_pericyte_indices,
+            max_assignment_distance_um=max_assignment_distance_um,
         )
 
     if use_probabilistic_pericyte_constriction:
@@ -138,6 +140,7 @@ def compare_baseline_vs_pericyte_constriction(
     constriction_spacing: float = 100.0,
     use_probabilistic_pericyte_constriction: bool = False,
     pericyte_constriction_probability: float = 1.0,
+    max_assignment_distance_um: float | None = 3.0,
 ) -> dict[str, Any]:
     """Compare effective resistance at baseline vs constricted settings.
 
@@ -172,6 +175,7 @@ def compare_baseline_vs_pericyte_constriction(
         pericyte_constriction_probability=float(pericyte_constriction_probability),
         active_pericyte_indices=None,
         active_center_indices_by_edge=None,
+        max_assignment_distance_um=max_assignment_distance_um,
     )
     if use_pericyte_mask_constriction and use_probabilistic_pericyte_constriction:
         selected = baseline_weight_results.get("active_pericyte_indices")
@@ -204,6 +208,7 @@ def compare_baseline_vs_pericyte_constriction(
         pericyte_constriction_probability=float(pericyte_constriction_probability),
         active_pericyte_indices=fixed_active_pericyte_indices,
         active_center_indices_by_edge=fixed_active_center_indices_by_edge,
+        max_assignment_distance_um=max_assignment_distance_um,
     )
     constricted_resistance = _compute_two_point_resistance(
         graph_constricted,

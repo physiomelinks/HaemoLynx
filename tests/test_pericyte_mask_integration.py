@@ -55,7 +55,11 @@ def _build_synthetic_graph() -> nx.MultiGraph:
     return graph
 
 
-def _build_synthetic_pericyte_mask(shape: tuple[int, int, int] = (32, 32, 32)) -> np.ndarray:
+def _build_synthetic_pericyte_mask(
+    shape: tuple[int, int, int] = (32, 32, 32),
+    *,
+    y_offset_um: float = 0.0,
+) -> np.ndarray:
     """Create two synthetic bump-on-a-log pericyte volumes near the vessel."""
     mask = np.zeros(shape, dtype=np.uint8)
 
@@ -86,8 +90,9 @@ def _build_synthetic_pericyte_mask(shape: tuple[int, int, int] = (32, 32, 32)) -
         )
         mask[log_part | bump_part] = 1
 
-    add_bump_on_log(cx=10.0, cy=16.0, cz=16.0)
-    add_bump_on_log(cx=22.0, cy=16.0, cz=16.0)
+    y_center = 16.0 + float(y_offset_um)
+    add_bump_on_log(cx=10.0, cy=y_center, cz=16.0)
+    add_bump_on_log(cx=22.0, cy=y_center, cz=16.0)
     return mask
 
 
@@ -119,22 +124,26 @@ def _interpolate_point_along_polyline(points: np.ndarray, s_um: float) -> np.nda
     return points[idx] + t * (points[idx + 1] - points[idx])
 
 
-@pytest.mark.integration
-@pytest.mark.slow
-def test_synthetic_pericyte_mask_constriction_integration(tmp_path: Path):
-    """Compute resistance before/after 0.8 constriction and export 3D HTML."""
+def _run_pericyte_mask_integration_case(
+    tmp_path: Path,
+    *,
+    case_name: str,
+    y_offset_um: float,
+    expect_constriction: bool,
+) -> None:
+    """Run one synthetic pericyte-mask integration scenario."""
     tifffile = pytest.importorskip("tifffile")
     go = pytest.importorskip("plotly.graph_objects")
     measure = pytest.importorskip("skimage.measure")
 
     output_dir = REPO_ROOT / "tests" / "outputs" / "synthetic_pericyte_mask_integration"
     output_dir.mkdir(parents=True, exist_ok=True)
-    html_path = output_dir / "synthetic_pericyte_mask_graph_assignment_3d.html"
-    metrics_path = output_dir / "synthetic_pericyte_mask_resistance_summary.txt"
-    mask_path = tmp_path / "synthetic_pericyte_mask.tif"
+    html_path = output_dir / f"{case_name}_graph_assignment_3d.html"
+    metrics_path = output_dir / f"{case_name}_resistance_summary.txt"
+    mask_path = tmp_path / f"{case_name}.tif"
 
     graph_baseline = _build_synthetic_graph()
-    pericyte_mask = _build_synthetic_pericyte_mask()
+    pericyte_mask = _build_synthetic_pericyte_mask(y_offset_um=y_offset_um)
     tifffile.imwrite(str(mask_path), pericyte_mask)
 
     diameter_by_branch_order = {"B01": 5.0}
@@ -161,6 +170,8 @@ def test_synthetic_pericyte_mask_constriction_integration(tmp_path: Path):
     resistance_after = _effective_resistance_between(graph_constricted, 0, 2)
 
     summary = (
+        f"case={case_name}\n"
+        f"mask_y_offset_um={float(y_offset_um):.3f}\n"
         f"resistance_before={resistance_before:.8f}\n"
         f"resistance_after={resistance_after:.8f}\n"
         f"delta={resistance_after - resistance_before:.8f}\n"
@@ -228,7 +239,7 @@ def test_synthetic_pericyte_mask_constriction_integration(tmp_path: Path):
 
     fig.update_layout(
         title=(
-            "Synthetic pericyte mask integration "
+            f"Synthetic pericyte mask integration ({case_name}) "
             f"(R_before={resistance_before:.4f}, R_after={resistance_after:.4f})"
         ),
         scene={
@@ -242,13 +253,54 @@ def test_synthetic_pericyte_mask_constriction_integration(tmp_path: Path):
     fig.write_html(str(html_path), include_plotlyjs="cdn")
 
     assert constriction_results["pericyte_count"] >= 2
-    assert constriction_results["edges_with_pericytes"] >= 1
-    assert resistance_after > resistance_before
+    if expect_constriction:
+        assert constriction_results["eligible_pericyte_count"] >= 1
+        assert constriction_results["edges_with_pericytes"] >= 1
+        assert resistance_after > resistance_before
+    else:
+        assert constriction_results["eligible_pericyte_count"] == 0
+        assert constriction_results["edges_with_pericytes"] == 0
+        assert np.isclose(resistance_after, resistance_before)
     assert metrics_path.exists() and metrics_path.stat().st_size > 0
     assert html_path.exists() and html_path.stat().st_size > 0
 
 
+@pytest.mark.integration
+@pytest.mark.slow
+def test_synthetic_pericyte_mask_constriction_integration(tmp_path: Path):
+    """Near-edge pericyte volumes: resistance before/after + 3D HTML outputs."""
+    _run_pericyte_mask_integration_case(
+        tmp_path,
+        case_name="synthetic_pericyte_mask_near_edge",
+        y_offset_um=0.0,
+        expect_constriction=True,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_synthetic_pericyte_mask_constriction_integration_ten_um_away(tmp_path: Path):
+    """Pericyte volumes 10 um from vessel edge with same output artifacts."""
+    _run_pericyte_mask_integration_case(
+        tmp_path,
+        case_name="synthetic_pericyte_mask_ten_um_away",
+        y_offset_um=10.0,
+        expect_constriction=False,
+    )
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmpdir:
-        test_synthetic_pericyte_mask_constriction_integration(Path(tmpdir))
+        _run_pericyte_mask_integration_case(
+            Path(tmpdir),
+            case_name="synthetic_pericyte_mask_near_edge",
+            y_offset_um=0.0,
+            expect_constriction=True,
+        )
+        _run_pericyte_mask_integration_case(
+            Path(tmpdir),
+            case_name="synthetic_pericyte_mask_ten_um_away",
+            y_offset_um=10.0,
+            expect_constriction=False,
+        )
     print("Synthetic pericyte mask integration run completed.")

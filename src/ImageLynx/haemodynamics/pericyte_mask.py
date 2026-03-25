@@ -158,19 +158,18 @@ def _build_edge_records(graph: nx.Graph) -> list[_EdgeRecord]:
 def _assign_centroids_to_edges(
     edge_records: list[_EdgeRecord],
     pericyte_centroids_phys: np.ndarray,
-) -> tuple[dict[tuple[Any, Any, Any], list[float]], list[float]]:
-    """Assign each pericyte centroid to nearest edge and arc-length position."""
+) -> dict[int, tuple[tuple[Any, Any, Any], float, float]]:
+    """Project each centroid to nearest edge and return mapping by centroid index."""
     if not edge_records or pericyte_centroids_phys.size == 0:
-        return {}, []
+        return {}
     point_bank: list[np.ndarray] = []
     point_to_edge_idx: list[int] = []
     for edge_idx, record in enumerate(edge_records):
         point_bank.extend(record.points)
         point_to_edge_idx.extend([edge_idx] * record.points.shape[0])
     tree = cKDTree(np.asarray(point_bank, dtype=float))
-    assigned: dict[tuple[Any, Any, Any], list[float]] = {}
-    assignment_distances: list[float] = []
-    for centroid in np.asarray(pericyte_centroids_phys, dtype=float):
+    projections: dict[int, tuple[tuple[Any, Any, Any], float, float]] = {}
+    for centroid_idx, centroid in enumerate(np.asarray(pericyte_centroids_phys, dtype=float)):
         _, nearest_point_idx = tree.query(centroid)
         edge_idx = int(point_to_edge_idx[int(nearest_point_idx)])
         record = edge_records[edge_idx]
@@ -180,9 +179,8 @@ def _assign_centroids_to_edges(
             record.cumulative_lengths,
         )
         edge_key = (record.u, record.v, record.key)
-        assigned.setdefault(edge_key, []).append(float(s))
-        assignment_distances.append(float(dist_um))
-    return assigned, assignment_distances
+        projections[int(centroid_idx)] = (edge_key, float(s), float(dist_um))
+    return projections
 
 
 def _diameter_at_position_from_pericytes(
@@ -321,6 +319,7 @@ def set_poiseuille_weights_with_pericyte_mask(
     use_probabilistic_constriction: bool = False,
     constriction_probability: float = 1.0,
     active_pericyte_indices: list[int] | None = None,
+    max_assignment_distance_um: float | None = 3.0,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Set conductance weights using pericyte centroids from a mask volume.
 
@@ -347,36 +346,53 @@ def set_poiseuille_weights_with_pericyte_mask(
         mask_voxel_size,
     )
     total_pericytes = int(all_centroids_phys.shape[0])
+    edge_records = _build_edge_records(graph)
+    projection_by_centroid = _assign_centroids_to_edges(
+        edge_records,
+        all_centroids_phys,
+    )
+    eligible_indices: list[int] = []
+    for centroid_idx, (_, _, dist_um) in projection_by_centroid.items():
+        if max_assignment_distance_um is None or float(dist_um) <= float(max_assignment_distance_um):
+            eligible_indices.append(int(centroid_idx))
+    eligible_indices = sorted(eligible_indices)
+    eligible_set = set(eligible_indices)
+
     if active_pericyte_indices is not None:
-        selected_indices = validate_active_pericyte_indices(
+        preselected_indices = validate_active_pericyte_indices(
             active_pericyte_indices,
             total_pericytes=total_pericytes,
         )
+        selected_indices = [idx for idx in preselected_indices if idx in eligible_set]
         probabilistic_mode = bool(use_probabilistic_constriction)
     elif use_probabilistic_constriction:
-        selected_indices = select_active_pericyte_indices(
-            total_pericytes=total_pericytes,
+        selected_from_eligible = select_active_pericyte_indices(
+            total_pericytes=len(eligible_indices),
             constriction_probability=float(constriction_probability),
         )
+        selected_indices = [eligible_indices[idx] for idx in selected_from_eligible]
         probabilistic_mode = True
     else:
-        selected_indices = list(range(total_pericytes))
+        selected_indices = list(eligible_indices)
         probabilistic_mode = False
 
-    if selected_indices:
-        centroids_phys = all_centroids_phys[np.asarray(selected_indices, dtype=int)]
-    else:
-        centroids_phys = np.empty((0, 3), dtype=float)
-
-    edge_records = _build_edge_records(graph)
-    assigned_centers_by_edge, assignment_distances = _assign_centroids_to_edges(
-        edge_records,
-        centroids_phys,
-    )
+    assigned_centers_by_edge: dict[tuple[Any, Any, Any], list[float]] = {}
+    assignment_distances: list[float] = []
+    for centroid_idx in selected_indices:
+        projection = projection_by_centroid.get(int(centroid_idx))
+        if projection is None:
+            continue
+        edge_key, s_um, dist_um = projection
+        assigned_centers_by_edge.setdefault(edge_key, []).append(float(s_um))
+        assignment_distances.append(float(dist_um))
 
     results: dict[str, Any] = {
         "weights_set": 0,
         "pericyte_count": total_pericytes,
+        "eligible_pericyte_count": int(len(eligible_indices)),
+        "max_assignment_distance_um": (
+            None if max_assignment_distance_um is None else float(max_assignment_distance_um)
+        ),
         "active_pericyte_count": int(len(selected_indices)),
         "active_pericyte_indices": [int(idx) for idx in selected_indices],
         "probabilistic_constriction_enabled": probabilistic_mode,
