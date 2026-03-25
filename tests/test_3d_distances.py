@@ -575,13 +575,14 @@ def test_run_3d_measurement_to_cell_mask_generates_csvs(tmp_path: Path) -> None:
         assert "Median Delta (Centroid-Edge) (microns)" in row
         assert "Std Delta (Centroid-Edge) (microns)" in row
 
-    # Emit stable demo outputs under examples/outputs when this test runs.
-    DEMO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Keep this test self-contained and writable on all platforms.
+    demo_output_dir = tmp_path / "demo_outputs"
+    demo_output_dir.mkdir(parents=True, exist_ok=True)
     demo_result = dist3d.run_3d_measurement_to_cell_mask(
         graph=G,
         cell_mask_path=cell_path,
         vessel_mask_path=vessel_path,
-        output_dir=DEMO_OUTPUT_DIR,
+        output_dir=demo_output_dir,
         image_stem="synthetic_cells",
         voxel_size_xyz=(1.0, 1.0, 1.0),
     )
@@ -591,7 +592,7 @@ def test_run_3d_measurement_to_cell_mask_generates_csvs(tmp_path: Path) -> None:
     assert demo_summary.exists() and demo_summary.stat().st_size > 0
 
     gt_details, gt_summary = _write_precalculated_ground_truth_csvs(
-        output_dir=DEMO_OUTPUT_DIR,
+        output_dir=demo_output_dir,
         image_stem="synthetic_cells",
     )
     assert gt_details.exists() and gt_details.stat().st_size > 0

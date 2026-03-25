@@ -14,7 +14,9 @@ def _cylinder_gaussian_volume(nz: int, ny: int, nx: int, sigma: float) -> np.nda
     z = np.arange(nz, dtype=float)[:, None, None]
     y = np.arange(ny, dtype=float)[None, :, None]
     x = np.arange(nx, dtype=float)[None, None, :]
-    r2 = (y - yc) ** 2 + (z - zc) ** 2
+    # Keep intensity cylindrical (independent of x) while still materializing
+    # the full requested x extent.
+    r2 = (y - yc) ** 2 + (z - zc) ** 2 + 0.0 * (x - xc)
     return (100.0 * np.exp(-r2 / (2.0 * sigma**2))).astype(np.float32)
 
 
@@ -67,7 +69,8 @@ def test_build_graph_branch_label_volume():
     G = nx.MultiGraph()
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     G.add_node(1, pos=np.array([2.0, 0.0, 0.0]))
-    G.add_edge(0, 1, voxels=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
+    edge_voxels = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    G.add_edge(0, 1, voxels=edge_voxels)
     vol, mapping = automated.build_graph_branch_label_volume(
         G,
         (3, 3, 3),
@@ -76,14 +79,18 @@ def test_build_graph_branch_label_volume():
         junction_label=-1,
     )
     assert mapping[(0, 1, 0)] == 1
-    assert vol[0, 0, 0] == 1 and vol[0, 0, 1] == 1 and vol[0, 0, 2] == 1
+    labeled_coords = {tuple(idx) for idx in np.argwhere(vol == 1)}
+    expected_coords = {
+        tuple(np.rint(np.asarray(v, dtype=float)).astype(int)) for v in edge_voxels
+    }
+    assert labeled_coords == expected_coords
     assert G[0][1][0]["graph_edge_label_id"] == 1
 
 
 def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
-    nz, ny, nx = 11, 11, 21
+    nz, ny, nx_dim = 11, 11, 21
     sigma = 1.5
-    raw = _cylinder_gaussian_volume(nz, ny, nx, sigma)
+    raw = _cylinder_gaussian_volume(nz, ny, nx_dim, sigma)
     raw_path = tmp_path / "raw.tif"
     tifffile.imwrite(str(raw_path), raw)
 
