@@ -18,13 +18,13 @@ from .resistance import (
 )
 
 
-def _scale_factor_map(
-    constriction_factor_by_branch_order: dict[str, float],
-    scale: float,
+def _absolute_factor_map(
+    branch_orders: list[str],
+    factor_value: float,
 ) -> dict[str, float]:
     return {
-        str(branch_order): float(factor) * float(scale)
-        for branch_order, factor in constriction_factor_by_branch_order.items()
+        str(branch_order): float(factor_value)
+        for branch_order in branch_orders
     }
 
 
@@ -33,7 +33,7 @@ def _set_weights_for_factor(
     *,
     diameter_by_branch_order: dict,
     constriction_factor_by_branch_order: dict[str, float],
-    factor_scale: float,
+    factor_value: float,
     use_pericyte_mask_constriction: bool,
     pericyte_mask_path: str | Path | None,
     pericyte_mask_h5_dataset_name: str | None,
@@ -47,9 +47,10 @@ def _set_weights_for_factor(
     max_assignment_distance_um: float | None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Apply edge weights for a comparison scenario."""
-    factor_map = _scale_factor_map(
-        constriction_factor_by_branch_order=constriction_factor_by_branch_order,
-        scale=factor_scale,
+    branch_orders = [str(bo) for bo in diameter_by_branch_order.keys()]
+    factor_map = _absolute_factor_map(
+        branch_orders=branch_orders,
+        factor_value=factor_value,
     )
     if use_pericyte_mask_constriction:
         if pericyte_mask_path is None:
@@ -130,8 +131,8 @@ def compare_baseline_vs_pericyte_constriction(
     constriction_factor_by_branch_order: dict[str, float],
     resistance_node_pair: tuple[int, int],
     output_csv_path: str | Path,
-    baseline_factor_scale: float = 1.0,
-    constricted_factor_scale: float = 0.8,
+    baseline_factor_value: float = 1.0,
+    constricted_factor_value: float = 0.8,
     use_pericyte_mask_constriction: bool = False,
     pericyte_mask_path: str | Path | None = None,
     pericyte_mask_h5_dataset_name: str | None = None,
@@ -144,6 +145,10 @@ def compare_baseline_vs_pericyte_constriction(
 ) -> dict[str, Any]:
     """Compare effective resistance at baseline vs constricted settings.
 
+    Comparison factors are treated as absolute values (not scales). This means
+    ``baseline_factor_value`` and ``constricted_factor_value`` override the
+    non-comparison constriction magnitudes while comparison is running.
+
     Returns a summary dict and writes a human-readable CSV with one row per
     scenario plus a final delta row.
     """
@@ -152,8 +157,8 @@ def compare_baseline_vs_pericyte_constriction(
         raise ValueError(
             f"resistance_node_pair {resistance_node_pair} not present in graph nodes."
         )
-    if not constriction_factor_by_branch_order:
-        raise ValueError("constriction_factor_by_branch_order cannot be empty.")
+    if not diameter_by_branch_order:
+        raise ValueError("diameter_by_branch_order cannot be empty.")
 
     graph_baseline = deepcopy(graph)
     graph_constricted = deepcopy(graph)
@@ -164,7 +169,7 @@ def compare_baseline_vs_pericyte_constriction(
         graph_baseline,
         diameter_by_branch_order=diameter_by_branch_order,
         constriction_factor_by_branch_order=constriction_factor_by_branch_order,
-        factor_scale=float(baseline_factor_scale),
+        factor_value=float(baseline_factor_value),
         use_pericyte_mask_constriction=bool(use_pericyte_mask_constriction),
         pericyte_mask_path=pericyte_mask_path,
         pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
@@ -197,7 +202,7 @@ def compare_baseline_vs_pericyte_constriction(
         graph_constricted,
         diameter_by_branch_order=diameter_by_branch_order,
         constriction_factor_by_branch_order=constriction_factor_by_branch_order,
-        factor_scale=float(constricted_factor_scale),
+        factor_value=float(constricted_factor_value),
         use_pericyte_mask_constriction=bool(use_pericyte_mask_constriction),
         pericyte_mask_path=pericyte_mask_path,
         pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
@@ -233,7 +238,7 @@ def compare_baseline_vs_pericyte_constriction(
             handle,
             fieldnames=[
                 "scenario",
-                "factor_scale",
+                "factor_value",
                 "source_node",
                 "target_node",
                 "effective_resistance",
@@ -246,7 +251,7 @@ def compare_baseline_vs_pericyte_constriction(
         writer.writerow(
             {
                 "scenario": "baseline",
-                "factor_scale": float(baseline_factor_scale),
+                "factor_value": float(baseline_factor_value),
                 "source_node": int(source_node),
                 "target_node": int(target_node),
                 "effective_resistance": float(baseline_resistance),
@@ -258,7 +263,7 @@ def compare_baseline_vs_pericyte_constriction(
         writer.writerow(
             {
                 "scenario": "constricted",
-                "factor_scale": float(constricted_factor_scale),
+                "factor_value": float(constricted_factor_value),
                 "source_node": int(source_node),
                 "target_node": int(target_node),
                 "effective_resistance": float(constricted_resistance),
@@ -270,7 +275,7 @@ def compare_baseline_vs_pericyte_constriction(
         writer.writerow(
             {
                 "scenario": "summary",
-                "factor_scale": "",
+                "factor_value": "",
                 "source_node": int(source_node),
                 "target_node": int(target_node),
                 "effective_resistance": "",
@@ -286,8 +291,8 @@ def compare_baseline_vs_pericyte_constriction(
         "delta": float(delta),
         "percent_change": float(percent_change),
         "ratio": float(ratio),
-        "baseline_factor_scale": float(baseline_factor_scale),
-        "constricted_factor_scale": float(constricted_factor_scale),
+        "baseline_factor_value": float(baseline_factor_value),
+        "constricted_factor_value": float(constricted_factor_value),
         "output_csv_path": str(output_path),
         "baseline_weight_results": baseline_weight_results,
         "constricted_weight_results": constricted_weight_results,
