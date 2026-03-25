@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Default settings for the resistance network pipeline, grouped by concern."""
 import sys
 from functools import partial
 from pathlib import Path
