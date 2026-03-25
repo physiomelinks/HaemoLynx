@@ -74,6 +74,20 @@ def _extract_h5_voxel_size(dataset, h5_file) -> tuple[float, float, float]:
     return (1.0, 1.0, 1.0)
 
 
+def simplify_to_3d(image: np.ndarray) -> np.ndarray:
+    """Convert image arrays to a 3D volume.
+
+    - 3D inputs are returned unchanged.
+    - 4D inputs are reduced to the first channel/volume along axis 3.
+    """
+    image = np.asarray(image)
+    if image.ndim == 3:
+        return image
+    if image.ndim == 4:
+        return image[..., 0]
+    raise ValueError(f"Expected 3D or 4D image, got shape {image.shape}")
+
+
 def resolve_image_path_with_optional_zip(image_path: str | Path) -> Path:
     """Return an existing image path, extracting from a nearby zip when needed."""
     image_path = Path(image_path)
