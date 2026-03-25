@@ -1383,7 +1383,37 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         print(f"Saved branch-order statistics CSV to: {branch_stats_csv_path}")
 
-        weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
+        if run_haemodynamics:
+            weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
+        else:
+            weighted_measurements = {
+                "inverse_edge_weight": {
+                    "Betweenness": {
+                        "Betweenness Mean": "N/A (haemodynamics disabled)",
+                        "Betweenness Max": "N/A (haemodynamics disabled)",
+                        "Betweenness Top Nodes": "N/A (haemodynamics disabled)",
+                        "Betweenness Method": "N/A (haemodynamics disabled)",
+                    },
+                    "Communities": {
+                        "Community Count": "N/A (haemodynamics disabled)",
+                        "Largest Community Size": "N/A (haemodynamics disabled)",
+                        "Mean Community Size": "N/A (haemodynamics disabled)",
+                        "Community Method": "N/A (haemodynamics disabled)",
+                    },
+                },
+                "edge_length": {
+                    "Betweenness": statistics.compute_weighted_betweenness_summary(
+                        G,
+                        source_attr="length",
+                        inverse_source_attr=False,
+                    ),
+                    "Communities": statistics.compute_weighted_communities_summary(
+                        G,
+                        source_attr="length",
+                        inverse_source_attr=False,
+                    ),
+                },
+            }
         print("\n=== Weighted Betweenness and Communities ===")
         for model_name, model_results in weighted_measurements.items():
             print(f"  [{model_name}]")

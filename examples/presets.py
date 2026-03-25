@@ -176,12 +176,12 @@ def get_preset_definitions(root_dir: Path) -> dict[str, dict[str, object]]:
         },
         "statistics_only": {
             "description": (
-                "Skeletonize/build graph + assign vessels + compute statistics only (haemodynamics disabled)."
+                "Skeletonize/build graph + assign vessels + compute statistics with haemodynamics enabled but no equivalent-resistance solve."
             ),
             "overrides": {
                 "DO_SKELETONIZE": True,
                 "DO_GRAPH_BUILDING": True,
-                "RUN_HAEMODYNAMICS": False,
+                "RUN_HAEMODYNAMICS": True,
                 "DO_EQUIV_RESISTANCE_CALCULATION": False,
                 "DO_PERICYTE_CONSTRUCTION": False,
                 "USE_PERICYTE_MASK_CONSTRICTION": False,
@@ -197,6 +197,42 @@ def get_preset_definitions(root_dir: Path) -> dict[str, dict[str, object]]:
                 "SHOW_PLOTS_IN_IDE": False,
                 "HOLD_IDE_PLOTS_OPEN": False,
                 "INTERACTIVE_PLOTS": False,
+                "FINAL_RENDER_MODE": "3d",
+            },
+        },
+        "distance_to_mask_3d": {
+            "description": (
+                "Run 3D distance-to-mask measurement workflow with vessel assignment (no statistics)."
+            ),
+            "overrides": {
+                "DO_SKELETONIZE": True,
+                "DO_GRAPH_BUILDING": True,
+                # Ensure branch-order vessel assignment is performed via mask-driven automation.
+                "AUTOMATED_VESSEL_ASSIGNMENT": True,
+                "USE_LARGE_VESSEL_MASKS": True,
+                "USE_ILASTIK_LARGE_VESSEL_SEGMENTATION": False,
+                "USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT": True,
+                "USE_ILASTIK_SMALL_VESSEL_SEGMENTATION": False,
+                "WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML": True,
+                "RUN_HAEMODYNAMICS": False,
+                "DO_EQUIV_RESISTANCE_CALCULATION": False,
+                "STATISTICS": False,
+                "MEASUREMENT_3D_TO_CELL_MASK": True,
+                # Keep unset by default; provide per run:
+                # --set CELL_MASK_PATH='C:/path/to/cell_mask.tif'
+                "CELL_MASK_PATH": None,
+                "CELL_MASK_H5_DATASET_NAME": None,
+                "MEASUREMENT_3D_VESSEL_MASK_PATH": None,
+                "MEASUREMENT_3D_VESSEL_MASK_H5_DATASET_NAME": None,
+                "MEASUREMENT_3D_REFERENCE_IMAGE_PATH": None,
+                "MEASUREMENT_3D_REFERENCE_H5_DATASET_NAME": None,
+                "VERBOSE_LOGGING": True,
+                "VISUALIZE_RESULTS": True,
+                "SHOW_PLOTS_IN_IDE": False,
+                "HOLD_IDE_PLOTS_OPEN": False,
+                "INTERACTIVE_PLOTS": False,
+                "VTK_export": False,
+                "VISUALIZE_VTK": False,
                 "FINAL_RENDER_MODE": "3d",
             },
         },
