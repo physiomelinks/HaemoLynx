@@ -101,8 +101,19 @@ def _to_binary_volume_for_skeletonization(image: np.ndarray) -> np.ndarray:
         return arr
 
     if np.issubdtype(arr.dtype, np.integer):
-        arr_min = int(arr.min())
-        arr_max = int(arr.max())
+        values, counts = np.unique(arr, return_counts=True)
+        if values.size == 1:
+            return arr > 0
+        # Common segmentation convention.
+        if 0 in values:
+            return arr != 0
+        # Two non-zero labels often mean background/foreground without 0.
+        # Use the minority class as foreground (e.g. 1/2 encoded masks).
+        if values.size == 2:
+            fg_value = values[int(np.argmin(counts))]
+            return arr == fg_value
+        arr_min = int(values.min())
+        arr_max = int(values.max())
         if arr_min >= 0 and arr_max <= 1:
             return arr > 0
         return img_as_bool(arr)
