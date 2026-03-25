@@ -192,6 +192,8 @@ USE_PERICYTE_MASK_CONSTRICTION = False
 PERICYTE_MASK_PATH: Optional[Path] = None
 PERICYTE_MASK_H5_DATASET_NAME: Optional[str] = None
 PERICYTE_MAX_ASSIGNMENT_DISTANCE_UM = 3.0
+PERICYTE_MIN_DIAMETER_UM = 5.0
+PERICYTE_MAX_DIAMETER_UM = 12.0
 # Optional probabilistic constriction:
 # Example: probability=0.8 means ~80% of pericytes are active per run.
 USE_PROBABILISTIC_PERICYTE_CONSTRICTION = False
@@ -349,6 +351,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             pericyte_mask_path=PERICYTE_MASK_PATH,
                             pericyte_mask_h5_dataset_name=PERICYTE_MASK_H5_DATASET_NAME,
                             pericyte_max_assignment_distance_um=PERICYTE_MAX_ASSIGNMENT_DISTANCE_UM,
+                            pericyte_min_diameter_um=PERICYTE_MIN_DIAMETER_UM,
+                            pericyte_max_diameter_um=PERICYTE_MAX_DIAMETER_UM,
                             use_probabilistic_pericyte_constriction=USE_PROBABILISTIC_PERICYTE_CONSTRICTION,
                             pericyte_constriction_probability=PERICYTE_CONSTRICTION_PROBABILITY,
                             run_pericyte_resistance_comparison=RUN_PERICYTE_RESISTANCE_COMPARISON,
@@ -1393,6 +1397,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                         if pericyte_max_assignment_distance_um is None
                         else float(pericyte_max_assignment_distance_um)
                     ),
+                    min_pericyte_diameter_um=(
+                        None
+                        if pericyte_min_diameter_um is None
+                        else float(pericyte_min_diameter_um)
+                    ),
+                    max_pericyte_diameter_um=(
+                        None
+                        if pericyte_max_diameter_um is None
+                        else float(pericyte_max_diameter_um)
+                    ),
                     prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
                     constriction_length=40.0,
                     constriction_spacing=100.0,
@@ -1452,6 +1466,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                         None
                         if pericyte_max_assignment_distance_um is None
                         else float(pericyte_max_assignment_distance_um)
+                    ),
+                    min_pericyte_diameter_um=(
+                        None
+                        if pericyte_min_diameter_um is None
+                        else float(pericyte_min_diameter_um)
+                    ),
+                    max_pericyte_diameter_um=(
+                        None
+                        if pericyte_max_diameter_um is None
+                        else float(pericyte_max_diameter_um)
                     ),
                     prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
                     constriction_length=40.0,

@@ -68,6 +68,30 @@ def _extract_pericyte_centroids_physical(
     return centroids_idx * spacing
 
 
+def _extract_pericyte_component_properties(
+    mask_bool: np.ndarray,
+    voxel_size_xyz: tuple[float, float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (centroids_phys, equivalent_diameters_um) per connected component."""
+    labels, n_labels = label(mask_bool)
+    if n_labels <= 0:
+        return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
+    indices = list(range(1, n_labels + 1))
+    centroids_idx = np.asarray(center_of_mass(mask_bool, labels, indices), dtype=float)
+    if centroids_idx.ndim == 1:
+        centroids_idx = centroids_idx.reshape(1, 3)
+    spacing = np.asarray(voxel_size_xyz, dtype=float)
+    voxel_volume = float(np.prod(spacing))
+    counts = np.asarray(
+        [(labels == idx).sum() for idx in indices],
+        dtype=float,
+    )
+    component_volumes_um3 = counts * voxel_volume
+    # Equivalent sphere diameter from volume.
+    equivalent_diameters_um = ((6.0 * component_volumes_um3) / np.pi) ** (1.0 / 3.0)
+    return centroids_idx * spacing.reshape(1, 3), equivalent_diameters_um
+
+
 def _edge_points(
     graph: nx.Graph,
     u: Any,
@@ -320,6 +344,8 @@ def set_poiseuille_weights_with_pericyte_mask(
     constriction_probability: float = 1.0,
     active_pericyte_indices: list[int] | None = None,
     max_assignment_distance_um: float | None = 3.0,
+    min_pericyte_diameter_um: float | None = 5.0,
+    max_pericyte_diameter_um: float | None = 12.0,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Set conductance weights using pericyte centroids from a mask volume.
 
@@ -341,7 +367,16 @@ def set_poiseuille_weights_with_pericyte_mask(
         pericyte_mask_path,
         h5_dataset_name=pericyte_mask_h5_dataset_name,
     )
-    all_centroids_phys = _extract_pericyte_centroids_physical(
+    if (
+        min_pericyte_diameter_um is not None
+        and max_pericyte_diameter_um is not None
+        and float(min_pericyte_diameter_um) > float(max_pericyte_diameter_um)
+    ):
+        raise ValueError(
+            "min_pericyte_diameter_um cannot be greater than max_pericyte_diameter_um."
+        )
+
+    all_centroids_phys, equivalent_diameters_um = _extract_pericyte_component_properties(
         mask_bool,
         mask_voxel_size,
     )
@@ -353,7 +388,20 @@ def set_poiseuille_weights_with_pericyte_mask(
     )
     eligible_indices: list[int] = []
     for centroid_idx, (_, _, dist_um) in projection_by_centroid.items():
-        if max_assignment_distance_um is None or float(dist_um) <= float(max_assignment_distance_um):
+        diameter_um = float(equivalent_diameters_um[int(centroid_idx)])
+        passes_distance = (
+            max_assignment_distance_um is None
+            or float(dist_um) <= float(max_assignment_distance_um)
+        )
+        passes_min_diameter = (
+            min_pericyte_diameter_um is None
+            or diameter_um >= float(min_pericyte_diameter_um)
+        )
+        passes_max_diameter = (
+            max_pericyte_diameter_um is None
+            or diameter_um <= float(max_pericyte_diameter_um)
+        )
+        if passes_distance and passes_min_diameter and passes_max_diameter:
             eligible_indices.append(int(centroid_idx))
     eligible_indices = sorted(eligible_indices)
     eligible_set = set(eligible_indices)
@@ -393,8 +441,17 @@ def set_poiseuille_weights_with_pericyte_mask(
         "max_assignment_distance_um": (
             None if max_assignment_distance_um is None else float(max_assignment_distance_um)
         ),
+        "min_pericyte_diameter_um": (
+            None if min_pericyte_diameter_um is None else float(min_pericyte_diameter_um)
+        ),
+        "max_pericyte_diameter_um": (
+            None if max_pericyte_diameter_um is None else float(max_pericyte_diameter_um)
+        ),
         "active_pericyte_count": int(len(selected_indices)),
         "active_pericyte_indices": [int(idx) for idx in selected_indices],
+        "equivalent_diameter_um_mean_all": (
+            float(np.mean(equivalent_diameters_um)) if equivalent_diameters_um.size else 0.0
+        ),
         "probabilistic_constriction_enabled": probabilistic_mode,
         "constriction_probability": float(constriction_probability),
         "edges_with_pericytes": int(len(assigned_centers_by_edge)),
