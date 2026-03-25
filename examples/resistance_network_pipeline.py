@@ -197,8 +197,10 @@ PERICYTE_MAX_ASSIGNMENT_DISTANCE_UM = 3.0
 USE_PROBABILISTIC_PERICYTE_CONSTRICTION = False
 PERICYTE_CONSTRICTION_PROBABILITY = 0.8
 RUN_PERICYTE_RESISTANCE_COMPARISON = False
-PERICYTE_COMPARISON_BASELINE_SCALE = 1.0
-PERICYTE_COMPARISON_CONSTRICTED_SCALE = 0.8
+# Absolute comparison values: when comparison is enabled, these override
+# CONSTRICTION_BY_BRANCH_ORDER magnitudes for the comparison pass.
+PERICYTE_COMPARISON_BASELINE_VALUE = 1.0
+PERICYTE_COMPARISON_CONSTRICTED_VALUE = 0.8
 
 MAX_BRANCH_ORDER = 51
 DEFAULT_DIAMETER = 4.0
@@ -347,8 +349,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_probabilistic_pericyte_constriction=USE_PROBABILISTIC_PERICYTE_CONSTRICTION,
                             pericyte_constriction_probability=PERICYTE_CONSTRICTION_PROBABILITY,
                             run_pericyte_resistance_comparison=RUN_PERICYTE_RESISTANCE_COMPARISON,
-                            pericyte_comparison_baseline_scale=PERICYTE_COMPARISON_BASELINE_SCALE,
-                            pericyte_comparison_constricted_scale=PERICYTE_COMPARISON_CONSTRICTED_SCALE,
+                            pericyte_comparison_baseline_value=PERICYTE_COMPARISON_BASELINE_VALUE,
+                            pericyte_comparison_constricted_value=PERICYTE_COMPARISON_CONSTRICTED_VALUE,
                             plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING,
                             do_skeletonize=DO_SKELETONIZE,
@@ -1375,8 +1377,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     constriction_factor_by_branch_order=constriction_by_branch_order,
                     resistance_node_pair=resistance_node_pair,
                     output_csv_path=comparison_csv_path,
-                    baseline_factor_scale=float(pericyte_comparison_baseline_scale),
-                    constricted_factor_scale=float(pericyte_comparison_constricted_scale),
+                    baseline_factor_value=float(pericyte_comparison_baseline_value),
+                    constricted_factor_value=float(pericyte_comparison_constricted_value),
                     use_pericyte_mask_constriction=bool(use_pericyte_mask_constriction),
                     pericyte_mask_path=pericyte_mask_path,
                     pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
