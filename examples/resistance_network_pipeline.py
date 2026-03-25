@@ -100,6 +100,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             output_node_volumes=OUTPUT_NODE_VOLUMES,
                             arteriole_boundary_node_volumes=ARTERIOLE_BOUNDARY_NODE_VOLUMES,
                             venule_boundary_node_volumes=VENULE_BOUNDARY_NODE_VOLUMES,
+                            strict_branch_order_assignment=STRICT_BRANCH_ORDER_ASSIGNMENT,
                             starting_nodes=STARTING_NODES, 
                             output_nodes=OUTPUT_NODES, 
                             arteriole_boundary_nodes=ARTERIOLE_BOUNDARY_NODES,
@@ -970,6 +971,24 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         use_hierarchical_assignment = bool(
             arteriole_boundary_nodes and venule_boundary_nodes and output_nodes
         )
+        expects_hierarchical_assignment = bool(
+            automated_vessel_assignment or use_small_vessel_masks_for_boundary_assignment
+        )
+        if (
+            strict_branch_order_assignment
+            and expects_hierarchical_assignment
+            and not use_hierarchical_assignment
+        ):
+            raise ValueError(
+                "Strict branch-order assignment is enabled, but hierarchical "
+                "assignment prerequisites are missing. "
+                f"Need non-empty output_nodes, arteriole_boundary_nodes, and "
+                f"venule_boundary_nodes. Got counts: "
+                f"output_nodes={len(output_nodes)}, "
+                f"arteriole_boundary_nodes={len(arteriole_boundary_nodes)}, "
+                f"venule_boundary_nodes={len(venule_boundary_nodes)}. "
+                "Fix mask inputs/thresholds or disable strict_branch_order_assignment."
+            )
         if use_hierarchical_assignment:
             branch_assignment_results = graph.assign_hierarchical_branch_orders(
                 G,

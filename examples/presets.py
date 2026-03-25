@@ -214,6 +214,7 @@ def get_preset_definitions(root_dir: Path) -> dict[str, dict[str, object]]:
                 "USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT": True,
                 "USE_ILASTIK_SMALL_VESSEL_SEGMENTATION": False,
                 "WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML": True,
+                "STRICT_BRANCH_ORDER_ASSIGNMENT": True,
                 "RUN_HAEMODYNAMICS": False,
                 "DO_EQUIV_RESISTANCE_CALCULATION": False,
                 "STATISTICS": False,
