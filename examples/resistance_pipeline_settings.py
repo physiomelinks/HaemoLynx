@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Default settings for the resistance network pipeline, grouped by concern."""
 import ast
-import copy
 import sys
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
@@ -10,73 +10,97 @@ from typing import Optional
 root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ImageLynx import haemodynamics
-from presets import get_preset_definitions
+from presets import (
+    apply_settings_to_namespace as _apply_settings_to_namespace,
+    build_settings_for_preset as _build_settings_for_preset,
+    collect_base_settings,
+    collect_setting_names,
+    get_preset_definitions,
+    list_presets as _list_presets,
+    parse_cli_override as _parse_cli_override,
+)
 
 # ---------------------------
 # Input and ilastik settings
 # ---------------------------
+# Input segmented image used by the pipeline.
 INPUT_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
+# Toggle ilastik segmentation for the main input image.
 USE_ILASTIK_SEGMENTATION = False
-# INPUT_PATH is the segmented image path used when USE_ILASTIK_SEGMENTATION=False.
-# Required when USE_ILASTIK_SEGMENTATION=True: path to the raw/unsegmented image.
+# Raw image path used as ilastik input when segmentation is enabled.
 ILASTIK_UNSEGMENTED_IMAGE_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
+# Ilastik project/classifier path for main image segmentation.
 ILASTIK_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "nerve_classifier.ilp"
+# Executable name or path for ilastik headless mode.
 ILASTIK_EXECUTABLE = "ilastik.exe"
+# Output directory for ilastik-generated segmentations.
 ILASTIK_OUTPUT_DIR = root_dir / "examples" / "outputs" / "segmentations"
-# Output extension for ilastik segmentation result. Supported: ".tif", ".tiff", ".h5"
+# File suffix for ilastik segmentation outputs.
 ILASTIK_OUTPUT_SUFFIX = ".tif"
 
 # ---------------------------
 # Vessel-mask settings
 # ---------------------------
-# Do you want to use large vessel masks to determine input and output nodes?
+# Toggle use of large-vessel masks for automated start/output assignment.
 USE_LARGE_VESSEL_MASKS = False
-# Toggle large-vessel input mode:
-# - False: use pre-segmented arteriole/venule masks from LARGE_*_MASK_PATH.
-# - True: use raw arteriole and artery/venule and vein images and segment both with ilastik.
-# If true, these vessels should be the largest vessels, that will not be modelled in the graph.
+# Toggle ilastik segmentation for large-vessel masks.
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
+# Dilation size (microns) applied to large-vessel masks before node selection.
 LARGE_VESSEL_MASK_DILATION_MICRONS = 0.0
 
+# Pre-segmented large arteriole mask path.
 LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
+# Pre-segmented large venule mask path.
 LARGE_VENULE_MASK_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
+# Raw arteriole image path used when ilastik large-vessel mode is enabled.
 ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
+# Raw venule image path used when ilastik large-vessel mode is enabled.
 ILASTIK_UNSEGMENTED_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
+# Ilastik classifier path for arteriole segmentation.
 ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "arteriole_classifier.ilp"
+# Ilastik classifier path for venule segmentation.
 ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
 
-# Small-vessel masks can be used to auto-detect arteriole/venule boundary nodes
-# Do this to automatically determine terminal arteriole/venule-to-capillary transition points for automated hierarchical Art/Ven/Capillary branch ordering.
+# Toggle small-vessel masks for automated arteriole/venule boundary assignment.
 USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
+# Toggle ilastik segmentation for small-vessel masks.
 USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
+# Minimum edge-overlap fraction required for mask-based boundary assignment.
 SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
-# When small-vessel masks assign boundaries, save rotatable Plotly HTML (requires plotly).
+# Toggle writing interactive 3D HTML for small-vessel boundary labelling.
 WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML = True
+# Pre-segmented small arteriole mask path.
 SMALL_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
+# Pre-segmented small venule mask path.
 SMALL_VENULE_MASK_PATH = root_dir / "examples" / "images" / "small_venule_mask.tif"
+# Raw small-arteriole image path used when ilastik small-vessel mode is enabled.
 ILASTIK_UNSEGMENTED_SMALL_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
+# Raw small-venule image path used when ilastik small-vessel mode is enabled.
 ILASTIK_UNSEGMENTED_SMALL_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "small_venule_mask.tif"
+# Ilastik classifier path for small arteriole segmentation.
 ILASTIK_SMALL_ARTERIOLE_CLASSIFIER_PATH = ILASTIK_ARTERIOLE_CLASSIFIER_PATH
+# Ilastik classifier path for small venule segmentation.
 ILASTIK_SMALL_VENULE_CLASSIFIER_PATH = ILASTIK_VENULE_CLASSIFIER_PATH
 
 # ---------------------------
 # Boundary-node assignment
 # ---------------------------
+# Base output directory for plot artifacts.
 BASE_PLOT_DIR = root_dir / "examples" / "plots"
 if not BASE_PLOT_DIR.exists():
     BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Boundary-node assignment modes:
-# - Manual: set AUTOMATED_VESSEL_ASSIGNMENT=False and supply STARTING_NODE_COORDINATES and OUTPUT_NODE_COORDINATES.
-# - Automated: set AUTOMATED_VESSEL_ASSIGNMENT=True and use large-vessel masks.
+# Toggle automated selection of start/output nodes from masks.
 AUTOMATED_VESSEL_ASSIGNMENT = False
-# Manual node-selection methods (when AUTOMATED_VESSEL_ASSIGNMENT=False):
-# - "coordinates": choose nearest degree-1 node to each provided point
-# - "volume": choose all degree-1 nodes inside provided volume boxes
+# Method used to choose manual starting nodes.
 STARTING_NODE_SELECTION_METHOD = "coordinates"
+# Method used to choose manual output nodes.
 OUTPUT_NODE_SELECTION_METHOD = "coordinates"
+# Method used to choose manual arteriole boundary nodes.
 ARTERIOLE_BOUNDARY_SELECTION_METHOD = "coordinates"
+# Method used to choose manual venule boundary nodes.
 VENULE_BOUNDARY_SELECTION_METHOD = "coordinates"
+# Manual coordinate list for starting node selection.
 STARTING_NODE_COORDINATES = [
     (152.0, 340.0, 527.0),
     (160.0, 350.0, 545.0),  # top right
@@ -86,152 +110,171 @@ STARTING_NODE_COORDINATES = [
     (321.0, 334.0, 163.0),  # top right
 ]
 
+# Manual coordinate list for output node selection.
 OUTPUT_NODE_COORDINATES = []
+# Manual coordinate list for arteriole boundary selection.
 ARTERIOLE_BOUNDARY_NODE_COORDINATES = []
+# Manual coordinate list for venule boundary selection.
 VENULE_BOUNDARY_NODE_COORDINATES = []
 
-# Assign by volume boxes
-# - Volume boxes: set USE_VOLUME_BOXES=True and supply STARTING_NODE_VOLUMES and OUTPUT_NODE_VOLUMES.
-# - Coordinates: set USE_VOLUME_BOXES=False and supply STARTING_NODE_COORDINATES and OUTPUT_NODE_COORDINATES.
+# Toggle volume-box based boundary node selection mode.
 USE_VOLUME_BOXES = False
+# Volume boxes used to select starting nodes.
 STARTING_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+# Volume boxes used to select output nodes.
 OUTPUT_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+# Volume boxes used to select arteriole boundary nodes.
 ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+# Volume boxes used to select venule boundary nodes.
 VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+# Runtime container for selected starting node IDs.
 STARTING_NODES: list[int] = []
+# Runtime container for selected output node IDs.
 OUTPUT_NODES: list[int] = []
+# Runtime container for selected arteriole boundary node IDs.
 ARTERIOLE_BOUNDARY_NODES: list[int] = []
+# Runtime container for selected venule boundary node IDs.
 VENULE_BOUNDARY_NODES: list[int] = []
+# Enforce strict hierarchical branch-order prerequisites.
 STRICT_BRANCH_ORDER_ASSIGNMENT = False
 
 # ---------------------------
 # Solver and output settings
 # ---------------------------
+# Inlet pressure boundary condition (Pa).
 INPUT_P_BC = 4500  # Pa
+# Outlet pressure boundary condition (Pa).
 OUTPUT_P_BC = 1000  # Pa
+# Toggle final visualization output generation.
 VISUALIZE_RESULTS = True
+# Toggle interactive plotting behavior.
 INTERACTIVE_PLOTS = False
-# When True, keep saving PNGs and also display visualization windows
-# in a non-blocking way during pipeline execution.
+# Toggle showing plots in IDE windows while running.
 SHOW_PLOTS_IN_IDE = True
 
-# Control how many plots are shown interactively in the IDE while still
-# saving all configured output PNGs.
-# - "all": show every plot in the visualize_results block
-# - "final_only": show only the final edges/nodes overlay
-# - "none": do not show IDE windows (save only)
+# Select which IDE plots are displayed when SHOW_PLOTS_IN_IDE is enabled.
 IDE_PLOT_MODE = "final_only"
-# Keep matplotlib windows open at the end of the run when plotting to IDE.
+# Keep IDE matplotlib windows open at script end.
 HOLD_IDE_PLOTS_OPEN = True
+# Choose 2D or 3D rendering mode for final graph views.
 FINAL_RENDER_MODE = "3d"  # "2d" or "3d"
+# Toggle VTK export of vessels/pericytes/nodes.
 VTK_export = True
+# Toggle VTK visualization viewer launch.
 VISUALIZE_VTK = False
+# Toggle verbose logging output.
 VERBOSE_LOGGING = False
 
 # ---------------------------
 # Pipeline-stage and topology settings
 # ---------------------------
+# Toggle skeletonization step execution.
 DO_SKELETONIZE = True
+# Toggle graph-building step execution.
 DO_GRAPH_BUILDING = True
+# Toggle haemodynamics pipeline execution.
 RUN_HAEMODYNAMICS = True
+# Toggle two-point equivalent resistance calculation.
 DO_EQUIV_RESISTANCE_CALCULATION = True
+# Minimum branch length threshold used by graph operations.
 MIN_BRANCH_LENGTH = 10
+# Output path prefix used for VTK artifacts.
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
+# Closing radius used in skeleton preprocessing.
 SKELETON_CLOSING_RADIUS = 2
+# Maximum gap size for skeleton bridge operations.
 SKELETON_BRIDGE_GAP_SIZE = 3
+# Minimum branch length kept during skeleton cleaning.
 SKELETON_MIN_BRANCH_LENGTH = 3
+# Maximum distance for skeleton bridge reconnection.
 SKELETON_MAX_BRIDGE_DISTANCE = 4
+# Connectivity mode used for skeleton component analysis.
 SKELETON_COMPONENT_CONNECTIVITY = 3
+# Reconnection threshold for graph topology repair.
 GRAPH_RECONNECT_THRESHOLD = 10.0
 
-# Keep final orphan/dangling reconnect local-only to avoid creating
-# long cross-links in dense regions.
+# Final reconnect threshold for orphan/dangling nodes.
 FINAL_ORPHAN_RECONNECT_THRESHOLD = 3.0
+# Minimum stub length retained before pruning.
 MIN_STUB_LENGTH = 10.0
+# Distance threshold used for collapsing node clusters.
 CLUSTER_COLLAPSE_DISTANCE = 5.0
 
-# Keep only connected components at or above this percentage of total
-# skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
+# Minimum component size percentage to keep after skeleton cleanup.
 SKELETON_MIN_COMPONENT_PERCENT = 0.0
 
 # ---------------------------
 # Statistics and measurements
 # ---------------------------
+# Toggle global vessel statistics computation.
 STATISTICS = False
-# Toggle cell-mask to vessel 3D distance measurement.
+# Toggle 3D distance-to-cell-mask measurement.
 MEASUREMENT_3D_TO_CELL_MASK = False
+# Path to the cell mask used for 3D distance measurements.
 CELL_MASK_PATH: Optional[Path] = None
+# Optional H5 dataset name for the cell mask.
 CELL_MASK_H5_DATASET_NAME: Optional[str] = None
-# Optional explicit vessel mask. If omitted, vessel volume is rasterized from graph
-# edges (same strategy used by automated FWHM branch-label volume generation).
+# Optional explicit vessel mask path for 3D distance measurements.
 MEASUREMENT_3D_VESSEL_MASK_PATH: Optional[Path] = None
+# Optional H5 dataset name for the vessel mask.
 MEASUREMENT_3D_VESSEL_MASK_H5_DATASET_NAME: Optional[str] = None
-# Optional reference image used only to define shape when rasterizing vessel volume
-# from graph edges (for example, the same raw stack used by FWHM measurement).
+# Optional reference image path used for vessel-volume raster shape.
 MEASUREMENT_3D_REFERENCE_IMAGE_PATH: Optional[Path] = None
+# Optional H5 dataset name for the reference image.
 MEASUREMENT_3D_REFERENCE_H5_DATASET_NAME: Optional[str] = None
-# "fast" uses bounded/approximate graph metrics to avoid long runtimes.
-# "full" restores exact, potentially much slower statistics calculations.
+# Statistics execution mode ("fast" or "full").
 STATISTICS_MODE = "fast"
 
 # ---------------------------
 # Diameter and pericyte settings
 # ---------------------------
-# Vessel diameter for Poiseuille weights (manual branch-order vs automated FWHM)
-# -------------------------------------------------------------------------------
-# Manual mode (default): USE_FWHM_EDGE_DIAMETERS=False. Diameters come from
-# DIAMETER_BY_BRANCH_ORDER (built from ALL_DIAMS_CONST, DEFAULT_DIAMETER, and
-# MANUAL_*_DIAMETER_BY_BRANCH_ORDER). Used by PoiseuilleModel.set_poiseuille_weights.
-#
-# Automated mode: USE_FWHM_EDGE_DIAMETERS=True. Requires FWHM_RAW_TIFF_PATH to a
-# single-channel raw fluorescence TIFF aligned with the graph. Per-edge
-# ``fwhm_diameter_um`` comes from haemodynamics.automated (Gaussian transverse fit).
-# With DO_PERICYTE_CONSTRUCTION=False, plain Poiseuille uses that per edge (branch-order
-# fallback if no fit). With DO_PERICYTE_CONSTRUCTION=True, integrated constriction
-# uses FWHM as passive d1 and d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER (same multipliers
-# as manual mode), with scalar DIAMETER_BY_BRANCH_ORDER as fallback d1 when FWHM
-# is missing on an edge.
-#
-# Optional: set FWHM_RAW_TIFF_PATH = ILASTIK_UNSEGMENTED_IMAGE_PATH when the raw
-# stack is the same file as your unsegmented input (see top of this file).
-# HD note - manual overrides for in vivo diameters; endoneurial custom vessels not in graph.
-# -------------------------------------------------------------------------------
+# Toggle constant diameter behavior across branch orders.
 ALL_DIAMS_CONST = True
+# Toggle pericyte constriction modelling in haemodynamics.
 DO_PERICYTE_CONSTRUCTION = False
-# Optional mask-driven pericyte mode:
-# - False: keep existing artificial periodic constriction placement.
-# - True: use pericyte mask connected-component centroids as constriction centers.
+# Toggle pericyte-mask-driven constriction placement.
 USE_PERICYTE_MASK_CONSTRICTION = False
+# Path to pericyte mask used for constriction placement.
 PERICYTE_MASK_PATH: Optional[Path] = None
+# Optional H5 dataset name for the pericyte mask.
 PERICYTE_MASK_H5_DATASET_NAME: Optional[str] = None
+# Maximum distance (um) to assign pericyte centroids to vessel edges.
 PERICYTE_MAX_ASSIGNMENT_DISTANCE_UM = 3.0
+# Minimum pericyte diameter (um) used in mask workflow.
 PERICYTE_MIN_DIAMETER_UM = 5.0
+# Maximum pericyte diameter (um) used in mask workflow.
 PERICYTE_MAX_DIAMETER_UM = 12.0
-# Optional probabilistic constriction:
-# Example: probability=0.8 means ~80% of pericytes are active per run.
+# Toggle probabilistic pericyte constriction activation.
 USE_PROBABILISTIC_PERICYTE_CONSTRICTION = False
+# Activation probability used in probabilistic constriction mode.
 PERICYTE_CONSTRICTION_PROBABILITY = 0.8
+# Toggle baseline-vs-constricted pericyte resistance comparison run.
 RUN_PERICYTE_RESISTANCE_COMPARISON = False
-# Absolute comparison values: when comparison is enabled, these override
-# CONSTRICTION_BY_BRANCH_ORDER magnitudes for the comparison pass.
+# Baseline comparison multiplier used in pericyte comparison mode.
 PERICYTE_COMPARISON_BASELINE_VALUE = 1.0
+# Constricted comparison multiplier used in pericyte comparison mode.
 PERICYTE_COMPARISON_CONSTRICTED_VALUE = 0.8
-# If True and probabilistic mode is enabled, reuse the exact
-# pericyte cohort selected during comparison for the final haemodynamics solve.
+# Reuse selected probabilistic pericyte cohort from comparison in main run.
 REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN = False
 
+# Maximum branch-order index used to build diameter/constriction tables.
 MAX_BRANCH_ORDER = 51
+# Default vessel diameter used when no branch-order override is present.
 DEFAULT_DIAMETER = 4.0
 
+# Manual capillary diameter overrides keyed by branch-order label.
 MANUAL_CAPILLARY_DIAMETER_BY_BRANCH_ORDER = {
     "B01": 6.2,
     "B02": 4.0,
     "B03": 5.0,
     "B04": 5.0,
 }
+# Manual arteriole diameter overrides keyed by branch-order label.
 MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER = {}
+# Manual venule diameter overrides keyed by branch-order label.
 MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER = {}
 
+# Derived branch-order diameter lookup used by haemodynamics.
 DIAMETER_BY_BRANCH_ORDER = haemodynamics.build_diameter_by_branch_order(
     all_diams_const=ALL_DIAMS_CONST,
     max_branch_order=MAX_BRANCH_ORDER,
@@ -241,6 +284,7 @@ DIAMETER_BY_BRANCH_ORDER = haemodynamics.build_diameter_by_branch_order(
     manual_venule_diameter_by_branch_order=MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER,
 )
 
+# Derived branch-order constriction lookup used by haemodynamics.
 CONSTRICTION_BY_BRANCH_ORDER = {
     "B01": 1.0,
 }
@@ -255,55 +299,68 @@ for i in range(2, MAX_BRANCH_ORDER + 1):
 # ---------------------------
 # FWHM settings
 # ---------------------------
-# --- Toggle: False = manual branch-order diameters only; True = run FWHM pipeline ---
+# Toggle FWHM-based automated edge diameter measurement.
 USE_FWHM_EDGE_DIAMETERS = False
-# Raw single-channel 3D TIFF (required if USE_FWHM_EDGE_DIAMETERS is True).
+# Raw single-channel image path used by FWHM measurement.
 FWHM_RAW_TIFF_PATH: Optional[Path] = None
-# Interval along the vessel centerline between transverse profiles (µm).
+# Spacing (um) between sampled centerline positions for FWHM.
 FWHM_SAMPLE_SPACING_ALONG_EDGE_UM = 2.0
-# Sample spacing along each transverse line profile / line resolution (µm).
+# Step size (um) for sampling each transverse profile.
 FWHM_TRANSVERSE_PROFILE_STEP_UM = 0.25
-# Initial maximum half-length of the transverse line on each side of the center (µm);
-# may grow with measured width (see FWHM_MIN_TOTAL_EXTENT_MULTIPLIER in automated.py).
+# Initial transverse half-extent (um) sampled on either side of centerline.
 FWHM_TRANSVERSE_HALF_EXTENT_UM = 6.0
+# Optional starting diameter guess (um) for Gaussian fitting.
 FWHM_DIAMETER_GUESS_UM = None
+# Minimum total profile extent multiplier relative to fitted width.
 FWHM_MIN_TOTAL_EXTENT_MULTIPLIER = 3.0
+# Background label value used in rasterized branch label volume.
 FWHM_BACKGROUND_LABEL = 0
+# Junction label value used in rasterized branch label volume.
 FWHM_JUNCTION_LABEL = -1
-# If False (default), transverse rays stop at junction-labelled voxels to avoid crossing
-# into neighbouring branches and over-estimating diameter near bifurcations.
+# Allow profiles to pass through junction labels during FWHM sampling.
 FWHM_ALLOW_JUNCTION_CROSSING = False
-# Transverse profile baseline for Gaussian fit: "wings" uses outer medians (less shoulder
-# bias from neighbours); "percentile" uses global 10th percentile (legacy).
+# Baseline estimation mode for transverse Gaussian profile fitting.
 FWHM_PROFILE_BASELINE_MODE = "wings"
+# Wing fraction used by wing-based baseline estimation mode.
 FWHM_PROFILE_BASELINE_WING_FRACTION = 0.2
-# If True, keep the fitted baseline near the wing/percentile anchor (stricter; try if
-# shoulders still bias the optimiser).
+# Constrain fitted baseline near baseline-anchor estimate.
 FWHM_CONSTRAIN_FITTED_BASELINE = False
+# Half-width constraint for baseline fitting as fraction of profile range.
 FWHM_BASELINE_CONSTRAINT_HALF_WIDTH_PTP = 0.35
-# Clip each transverse profile to the central vessel lobe so a second peak from a
-# neighbouring branch does not inflate diameter.
+# Clip profile to single-vessel lobe to avoid neighboring-branch peaks.
 FWHM_CLIP_PROFILE_TO_SINGLE_VESSEL = True
+# Minimum center-drop fraction for profile clipping.
 FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER = 0.35
+# Re-rise fraction threshold that terminates clipped lobe.
 FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER = 0.08
-# Exclude samples this close (µm) to bifurcation endpoints (degree > 1).
+# Exclusion distance (um) from branch endpoints for sampling.
 FWHM_BRANCH_ENDPOINT_EXCLUSION_UM = 10.0
-# Auto-detected junction-proximity exclusion (µm) using rasterized junction voxels.
+# Exclusion distance (um) near detected junction voxels.
 FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM = 10.0
-# Prevent profile rays from re-entering distant parts of the same edge (zig-zag guard).
+# Enforce local same-edge sampling neighborhood guard.
 FWHM_ENFORCE_SAME_EDGE_LOCALITY = True
+# Absolute arc-window size (um) for same-edge locality checks.
 FWHM_SAME_EDGE_ARC_WINDOW_UM = 3.0
+# Arc-window multiplier used in same-edge locality checks.
 FWHM_SAME_EDGE_ARC_WINDOW_MULTIPLIER = 1.0
+# Minimum allowed arc-window size (um) for locality checks.
 FWHM_SAME_EDGE_ARC_WINDOW_MIN_UM = 1.0
+# Cap profile half-extent using nonlocal same-edge distance constraints.
 FWHM_CAP_HALF_EXTENT_BY_NONLOCAL_SAME_EDGE_DISTANCE = True
+# Arc separation (um) to classify same-edge points as nonlocal.
 FWHM_NONLOCAL_SAME_EDGE_ARC_SEPARATION_UM = 6.0
+# Scaling factor to cap half-extent from nonlocal same-edge distance.
 FWHM_NONLOCAL_SAME_EDGE_HALF_EXTENT_FACTOR = 0.45
+# Reject samples when fitted center is too far from expected center.
 FWHM_REJECT_SAMPLES_WITH_CENTER_OFFSET = True
+# Maximum allowed fitted center offset (um).
 FWHM_MAX_FIT_CENTER_OFFSET_UM = 1.5
+# Reject samples whose Gaussian fit quality is below threshold.
 FWHM_REJECT_SAMPLES_WITH_LOW_FIT_R2 = True
+# Minimum acceptable R^2 for transverse Gaussian fits.
 FWHM_MIN_FIT_R2 = 0.85
 
-# These are vessels that constrict differently (e.g. endoneurial vessels).
+# List of edge IDs that use custom edge-diameter assignment behavior.
 custom_edges = []
 
 
@@ -311,135 +368,22 @@ custom_edges = []
 # Preset system
 # ---------------------------
 PRESET_DEFINITIONS: dict[str, dict[str, object]] = get_preset_definitions(root_dir)
+VALID_SETTING_NAMES = collect_setting_names(globals(), PRESET_DEFINITIONS)
+BASE_SETTINGS_TEMPLATE = collect_base_settings(globals(), VALID_SETTING_NAMES)
 
-
-def _collect_setting_names() -> set[str]:
-    return {
-        name
-        for name in globals()
-        if (
-            (name.isupper() or name == "custom_edges")
-            and not name.startswith("_")
-            and name not in {"PRESET_DEFINITIONS"}
-        )
-    }
-
-
-VALID_SETTING_NAMES = _collect_setting_names()
-
-
-def _collect_base_settings() -> dict[str, object]:
-    base: dict[str, object] = {}
-    for name in VALID_SETTING_NAMES:
-        base[name] = copy.deepcopy(globals()[name])
-    return base
-
-
-def _recompute_derived_settings(settings: dict[str, object]) -> None:
-    settings["DIAMETER_BY_BRANCH_ORDER"] = haemodynamics.build_diameter_by_branch_order(
-        all_diams_const=bool(settings["ALL_DIAMS_CONST"]),
-        max_branch_order=int(settings["MAX_BRANCH_ORDER"]),
-        default_diameter=float(settings["DEFAULT_DIAMETER"]),
-        manual_capillary_diameter_by_branch_order=settings[
-            "MANUAL_CAPILLARY_DIAMETER_BY_BRANCH_ORDER"
-        ],
-        manual_arteriole_diameter_by_branch_order=settings[
-            "MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER"
-        ],
-        manual_venule_diameter_by_branch_order=settings[
-            "MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER"
-        ],
-    )
-    max_branch_order = int(settings["MAX_BRANCH_ORDER"])
-    constriction: dict[str, float] = {"B01": 1.0}
-    for i in range(2, max_branch_order + 1):
-        constriction[f"B{i:02d}"] = 0.8
-    constriction["Art1"] = 1.0
-    constriction["Ven1"] = 1.0
-    for i in range(2, max_branch_order + 1):
-        constriction[f"Art{i}"] = 0.8
-        constriction[f"Ven{i}"] = 0.8
-    settings["CONSTRICTION_BY_BRANCH_ORDER"] = constriction
-
-
-def list_presets() -> dict[str, str]:
-    return {
-        name: str(payload["description"])
-        for name, payload in PRESET_DEFINITIONS.items()
-    }
-
-
-def parse_cli_override(override_text: str) -> tuple[str, object]:
-    if "=" not in override_text:
-        raise ValueError(
-            f"Invalid override '{override_text}'. Use KEY=VALUE format."
-        )
-    key_text, raw_value = override_text.split("=", 1)
-    key = key_text.strip()
-    if not key:
-        raise ValueError(f"Invalid override '{override_text}': empty KEY.")
-    key = key if key == "custom_edges" else key.upper()
-    if key not in VALID_SETTING_NAMES:
-        available = ", ".join(sorted(VALID_SETTING_NAMES))
-        raise ValueError(
-            f"Unknown setting '{key}' in override '{override_text}'. "
-            f"Valid settings: {available}"
-        )
-    value = _parse_cli_value(raw_value.strip())
-    value = _coerce_path_like_value(key, value)
-    return key, value
-
-
-def _parse_cli_value(text: str) -> object:
-    lowered = text.lower()
-    if lowered in {"true", "false"}:
-        return lowered == "true"
-    if lowered in {"none", "null"}:
-        return None
-    try:
-        return ast.literal_eval(text)
-    except (SyntaxError, ValueError):
-        return text
-
-
-def _coerce_path_like_value(key: str, value: object) -> object:
-    if value is None:
-        return None
-    if isinstance(value, Path):
-        return value
-    if isinstance(value, str):
-        if key.endswith("_PATH") or key.endswith("_DIR") or key.endswith("_PREFIX"):
-            return Path(value)
-    return value
-
-
-def build_settings_for_preset(
-    preset_name: str = "default",
-    manual_overrides: dict[str, object] | None = None,
-) -> dict[str, object]:
-    if preset_name not in PRESET_DEFINITIONS:
-        available = ", ".join(sorted(PRESET_DEFINITIONS))
-        raise ValueError(
-            f"Unknown preset '{preset_name}'. Available presets: {available}"
-        )
-    settings = _collect_base_settings()
-    preset_overrides = dict(PRESET_DEFINITIONS[preset_name]["overrides"])
-    settings.update(preset_overrides)
-    if manual_overrides:
-        unknown = [k for k in manual_overrides if k not in VALID_SETTING_NAMES]
-        if unknown:
-            available = ", ".join(sorted(VALID_SETTING_NAMES))
-            raise ValueError(
-                f"Unknown manual override settings: {unknown}. "
-                f"Valid settings: {available}"
-            )
-        for key, value in manual_overrides.items():
-            settings[key] = _coerce_path_like_value(key, value)
-    _recompute_derived_settings(settings)
-    return settings
-
-
-def apply_settings_to_namespace(settings: dict[str, object], namespace: dict) -> None:
-    for key, value in settings.items():
-        if key in VALID_SETTING_NAMES:
-            namespace[key] = value
+list_presets = partial(_list_presets, preset_definitions=PRESET_DEFINITIONS)
+parse_cli_override = partial(
+    _parse_cli_override,
+    valid_setting_names=VALID_SETTING_NAMES,
+)
+build_settings_for_preset = partial(
+    _build_settings_for_preset,
+    preset_definitions=PRESET_DEFINITIONS,
+    valid_setting_names=VALID_SETTING_NAMES,
+    base_settings_template=BASE_SETTINGS_TEMPLATE,
+    haemodynamics_module=haemodynamics,
+)
+apply_settings_to_namespace = partial(
+    _apply_settings_to_namespace,
+    valid_setting_names=VALID_SETTING_NAMES,
+)
