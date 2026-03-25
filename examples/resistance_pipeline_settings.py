@@ -24,7 +24,7 @@ from presets import (
 # Input and ilastik settings
 # ---------------------------
 # Input segmented image used by the pipeline.
-INPUT_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
+INPUT_PATH = root_dir / "examples" / "images" / "brain_microvessels.tiff"
 # Toggle ilastik segmentation for the main input image.
 USE_ILASTIK_SEGMENTATION = False
 # Raw image path used as ilastik input when segmentation is enabled.
@@ -37,6 +37,10 @@ ILASTIK_EXECUTABLE = "ilastik.exe"
 ILASTIK_OUTPUT_DIR = root_dir / "examples" / "outputs" / "segmentations"
 # File suffix for ilastik segmentation outputs.
 ILASTIK_OUTPUT_SUFFIX = ".tif"
+# Optional manual voxel size override in (x, y, z) microns.
+VOXEL_SIZE_OVERRIDE_XYZ: tuple[float, float, float] | None = None
+# Policy for voxel-size resolution: "auto", "override", or "metadata_only".
+VOXEL_SIZE_POLICY = "auto"
 
 # ---------------------------
 # Vessel-mask settings
