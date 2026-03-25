@@ -201,6 +201,9 @@ RUN_PERICYTE_RESISTANCE_COMPARISON = False
 # CONSTRICTION_BY_BRANCH_ORDER magnitudes for the comparison pass.
 PERICYTE_COMPARISON_BASELINE_VALUE = 1.0
 PERICYTE_COMPARISON_CONSTRICTED_VALUE = 0.8
+# If True and probabilistic mode is enabled, reuse the exact
+# pericyte cohort selected during comparison for the final haemodynamics solve.
+REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN = False
 
 MAX_BRANCH_ORDER = 51
 DEFAULT_DIAMETER = 4.0
@@ -351,6 +354,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             run_pericyte_resistance_comparison=RUN_PERICYTE_RESISTANCE_COMPARISON,
                             pericyte_comparison_baseline_value=PERICYTE_COMPARISON_BASELINE_VALUE,
                             pericyte_comparison_constricted_value=PERICYTE_COMPARISON_CONSTRICTED_VALUE,
+                            reuse_comparison_pericyte_cohort_for_main_run=REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN,
                             plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING,
                             do_skeletonize=DO_SKELETONIZE,
@@ -1368,6 +1372,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                 "set_poiseuille_weights without per-edge FWHM)."
             )
+        comparison_active_pericyte_indices: list[int] | None = None
+        comparison_active_center_indices_by_edge: dict[str, list[int]] | None = None
         if run_pericyte_resistance_comparison:
             comparison_csv_path = output_dir / f"{image_path.stem}_pericyte_resistance_comparison.csv"
             comparison_results = (
@@ -1398,6 +1404,22 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     ),
                 )
             )
+            if (
+                reuse_comparison_pericyte_cohort_for_main_run
+                and use_probabilistic_pericyte_constriction
+            ):
+                if use_pericyte_mask_constriction:
+                    selected = comparison_results.get("active_pericyte_indices")
+                    comparison_active_pericyte_indices = (
+                        [int(idx) for idx in selected] if selected else []
+                    )
+                else:
+                    selected_map = comparison_results.get("active_center_indices_by_edge")
+                    if isinstance(selected_map, dict):
+                        comparison_active_center_indices_by_edge = {
+                            str(edge_id): [int(idx) for idx in idx_list]
+                            for edge_id, idx_list in selected_map.items()
+                        }
             print(
                 "Pericyte resistance comparison complete: "
                 f"baseline={comparison_results['baseline_resistance']:.6f}, "
@@ -1437,6 +1459,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                         use_probabilistic_pericyte_constriction
                     ),
                     constriction_probability=float(pericyte_constriction_probability),
+                    active_pericyte_indices=(
+                        comparison_active_pericyte_indices
+                        if (
+                            reuse_comparison_pericyte_cohort_for_main_run
+                            and use_probabilistic_pericyte_constriction
+                        )
+                        else None
+                    ),
                 )
                 print(
                     "Results from set_poiseuille_weights_with_pericyte_mask "
@@ -1454,6 +1484,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             constriction_length=40.0,
                             constriction_spacing=100.0,
                             constriction_probability=float(pericyte_constriction_probability),
+                            active_center_indices_by_edge=(
+                                comparison_active_center_indices_by_edge
+                                if (
+                                    reuse_comparison_pericyte_cohort_for_main_run
+                                    and use_probabilistic_pericyte_constriction
+                                )
+                                else None
+                            ),
                         )
                     )
                     print(
