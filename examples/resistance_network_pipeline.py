@@ -6,10 +6,11 @@
 """Refactored full pipeline example using ImageLynx package."""
 import logging
 import sys
+import inspect
+import ast
 import pickle
 import json
 from pathlib import Path
-from typing import Optional
 from skan import csr
 import tifffile
 import numpy as np
@@ -25,272 +26,7 @@ from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visua
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
 from ImageLynx.haemodynamics import probability as probability_haemodynamics
-
-# ---------------------------
-# Beginner-friendly settings
-# ---------------------------
-INPUT_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
-USE_ILASTIK_SEGMENTATION = False
-# INPUT_PATH is the segmented image path used when USE_ILASTIK_SEGMENTATION=False.
-# Required when USE_ILASTIK_SEGMENTATION=True: path to the raw/unsegmented image.
-ILASTIK_UNSEGMENTED_IMAGE_PATH = root_dir / "examples" / "images" / "Nerve_capillaries.tif"
-ILASTIK_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "nerve_classifier.ilp"
-ILASTIK_EXECUTABLE = "ilastik.exe"
-ILASTIK_OUTPUT_DIR = root_dir / "examples" / "outputs" / "segmentations"
-# Output extension for ilastik segmentation result. Supported: ".tif", ".tiff", ".h5"
-ILASTIK_OUTPUT_SUFFIX = ".tif"
-
-#Do you want to use large vessel masks to determine input and output nodes?
-USE_LARGE_VESSEL_MASKS = False
-# Toggle large-vessel input mode:
-# - False: use pre-segmented arteriole/venule masks from LARGE_*_MASK_PATH.
-# - True: use raw arteriole and artery/venule and vein images and segment both with ilastik.
-# If true, these vessels should be the largest vessels, that will not be modelled in the graph.
-USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
-LARGE_VESSEL_MASK_DILATION_MICRONS = 0.0
-
-LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
-LARGE_VENULE_MASK_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
-ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
-ILASTIK_UNSEGMENTED_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
-ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "arteriole_classifier.ilp"
-ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
-
-# Small-vessel masks can be used to auto-detect arteriole/venule boundary nodes
-# Do this to automatically determine terminal arteriole/venule-to-capillary transition points for automated hierarchical Art/Ven/Capillary branch ordering.
-USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
-USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
-SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
-# When small-vessel masks assign boundaries, save rotatable Plotly HTML (requires plotly).
-WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML = True
-SMALL_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
-SMALL_VENULE_MASK_PATH = root_dir / "examples" / "images" / "small_venule_mask.tif"
-ILASTIK_UNSEGMENTED_SMALL_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
-ILASTIK_UNSEGMENTED_SMALL_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "small_venule_mask.tif"
-ILASTIK_SMALL_ARTERIOLE_CLASSIFIER_PATH = ILASTIK_ARTERIOLE_CLASSIFIER_PATH
-ILASTIK_SMALL_VENULE_CLASSIFIER_PATH = ILASTIK_VENULE_CLASSIFIER_PATH
-BASE_PLOT_DIR = root_dir / "examples" / "plots" 
-if not BASE_PLOT_DIR.exists():
-    BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
-# Boundary-node assignment modes:
-# - Manual: set AUTOMATED_VESSEL_ASSIGNMENT=False and supply STARTING_NODE_COORDINATES and OUTPUT_NODE_COORDINATES.
-# - Automated: set AUTOMATED_VESSEL_ASSIGNMENT=True and use large-vessel masks.
-AUTOMATED_VESSEL_ASSIGNMENT = False
-# Manual node-selection methods (when AUTOMATED_VESSEL_ASSIGNMENT=False):
-# - "coordinates": choose nearest degree-1 node to each provided point
-# - "volume": choose all degree-1 nodes inside provided volume boxes
-STARTING_NODE_SELECTION_METHOD = "coordinates"
-OUTPUT_NODE_SELECTION_METHOD = "coordinates"
-ARTERIOLE_BOUNDARY_SELECTION_METHOD = "coordinates"
-VENULE_BOUNDARY_SELECTION_METHOD = "coordinates"
-STARTING_NODE_COORDINATES = [(152.0, 340.0, 527.0), (160.0, 350.0, 545.0), # top right
-                             (202.0, 1303.0, 132.0), (104.0, 1321.0, 133.0), #bottom left
-                             (361.0, 332.0, 120.0), (321.0, 334.0, 163.0)] #top right
-
-OUTPUT_NODE_COORDINATES = []
-ARTERIOLE_BOUNDARY_NODE_COORDINATES = []
-VENULE_BOUNDARY_NODE_COORDINATES = []
-
-#Assign by volume boxes
-# - Volume boxes: set USE_VOLUME_BOXES=True and supply STARTING_NODE_VOLUMES and OUTPUT_NODE_VOLUMES.
-# - Coordinates: set USE_VOLUME_BOXES=False and supply STARTING_NODE_COORDINATES and OUTPUT_NODE_COORDINATES.
-USE_VOLUME_BOXES = False
-STARTING_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
-OUTPUT_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
-ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
-VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
-STARTING_NODES: list[int] = []
-OUTPUT_NODES: list[int] = []
-ARTERIOLE_BOUNDARY_NODES: list[int] = []
-VENULE_BOUNDARY_NODES: list[int] = []
-# RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
-INPUT_P_BC = 4500# Pa 
-OUTPUT_P_BC = 1000 # Pa
-VISUALIZE_RESULTS = True
-INTERACTIVE_PLOTS = False
-# When True, keep saving PNGs and also display visualization windows
-# in a non-blocking way during pipeline execution.
-SHOW_PLOTS_IN_IDE = True
-
-# Control how many plots are shown interactively in the IDE while still
-# saving all configured output PNGs.
-# - "all": show every plot in the visualize_results block
-# - "final_only": show only the final edges/nodes overlay
-# - "none": do not show IDE windows (save only)
-IDE_PLOT_MODE = "final_only"
-# Keep matplotlib windows open at the end of the run when plotting to IDE.
-HOLD_IDE_PLOTS_OPEN = True
-FINAL_RENDER_MODE = "3d"  # "2d" or "3d"
-VTK_export = True
-STATISTICS = False
-# Toggle cell-mask to vessel 3D distance measurement.
-MEASUREMENT_3D_TO_CELL_MASK = False
-CELL_MASK_PATH: Optional[Path] = None
-CELL_MASK_H5_DATASET_NAME: Optional[str] = None
-# Optional explicit vessel mask. If omitted, vessel volume is rasterized from graph
-# edges (same strategy used by automated FWHM branch-label volume generation).
-MEASUREMENT_3D_VESSEL_MASK_PATH: Optional[Path] = None
-MEASUREMENT_3D_VESSEL_MASK_H5_DATASET_NAME: Optional[str] = None
-# Optional reference image used only to define shape when rasterizing vessel volume
-# from graph edges (for example, the same raw stack used by FWHM measurement).
-MEASUREMENT_3D_REFERENCE_IMAGE_PATH: Optional[Path] = None
-MEASUREMENT_3D_REFERENCE_H5_DATASET_NAME: Optional[str] = None
-# "fast" uses bounded/approximate graph metrics to avoid long runtimes.
-# "full" restores exact, potentially much slower statistics calculations.
-STATISTICS_MODE = "fast"
-VISUALIZE_VTK = False
-VERBOSE_LOGGING = False
-DO_SKELETONIZE = True
-DO_GRAPH_BUILDING = True
-DO_EQUIV_RESISTANCE_CALCULATION = False
-MIN_BRANCH_LENGTH = 10
-VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
-SKELETON_CLOSING_RADIUS = 2
-SKELETON_BRIDGE_GAP_SIZE = 3
-SKELETON_MIN_BRANCH_LENGTH = 3
-SKELETON_MAX_BRIDGE_DISTANCE = 4
-SKELETON_COMPONENT_CONNECTIVITY = 3
-GRAPH_RECONNECT_THRESHOLD = 10.0
-
-# Keep final orphan/dangling reconnect local-only to avoid creating
-# long cross-links in dense regions.
-FINAL_ORPHAN_RECONNECT_THRESHOLD = 3.0
-MIN_STUB_LENGTH = 10.0
-CLUSTER_COLLAPSE_DISTANCE = 5.0
-
-# Keep only connected components at or above this percentage of total
-# skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
-SKELETON_MIN_COMPONENT_PERCENT = 0.0
-# -----------------------------------------------------------------------------
-# Vessel diameter for Poiseuille weights (manual branch-order vs automated FWHM)
-# -----------------------------------------------------------------------------
-# Manual mode (default): USE_FWHM_EDGE_DIAMETERS=False. Diameters come from
-# DIAMETER_BY_BRANCH_ORDER (built from ALL_DIAMS_CONST, DEFAULT_DIAMETER, and
-# MANUAL_*_DIAMETER_BY_BRANCH_ORDER). Used by PoiseuilleModel.set_poiseuille_weights.
-#
-# Automated mode: USE_FWHM_EDGE_DIAMETERS=True. Requires FWHM_RAW_TIFF_PATH to a
-# single-channel raw fluorescence TIFF aligned with the graph. Per-edge
-# ``fwhm_diameter_um`` comes from haemodynamics.automated (Gaussian transverse fit).
-# With DO_PERICYTE_CONSTRUCTION=False, plain Poiseuille uses that per edge (branch-order
-# fallback if no fit). With DO_PERICYTE_CONSTRUCTION=True, integrated constriction
-# uses FWHM as passive d1 and d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER (same multipliers
-# as manual mode), with scalar DIAMETER_BY_BRANCH_ORDER as fallback d1 when FWHM
-# is missing on an edge.
-#
-# Optional: set FWHM_RAW_TIFF_PATH = ILASTIK_UNSEGMENTED_IMAGE_PATH when the raw
-# stack is the same file as your unsegmented input (see top of this file).
-#HD note - manual overrides for in vivo diameters; endoneurial custom vessels not in graph.
-# -----------------------------------------------------------------------------
-
-print("TODO HARVEY CHANGE THIS ALL_DIAMS_CONST BACK TO FALSE FOR ORIGINAL RUN")
-ALL_DIAMS_CONST = True
-DO_PERICYTE_CONSTRUCTION = False
-# Optional mask-driven pericyte mode:
-# - False: keep existing artificial periodic constriction placement.
-# - True: use pericyte mask connected-component centroids as constriction centers.
-USE_PERICYTE_MASK_CONSTRICTION = False
-PERICYTE_MASK_PATH: Optional[Path] = None
-PERICYTE_MASK_H5_DATASET_NAME: Optional[str] = None
-PERICYTE_MAX_ASSIGNMENT_DISTANCE_UM = 3.0
-PERICYTE_MIN_DIAMETER_UM = 5.0
-PERICYTE_MAX_DIAMETER_UM = 12.0
-# Optional probabilistic constriction:
-# Example: probability=0.8 means ~80% of pericytes are active per run.
-USE_PROBABILISTIC_PERICYTE_CONSTRICTION = False
-PERICYTE_CONSTRICTION_PROBABILITY = 0.8
-RUN_PERICYTE_RESISTANCE_COMPARISON = False
-# Absolute comparison values: when comparison is enabled, these override
-# CONSTRICTION_BY_BRANCH_ORDER magnitudes for the comparison pass.
-PERICYTE_COMPARISON_BASELINE_VALUE = 1.0
-PERICYTE_COMPARISON_CONSTRICTED_VALUE = 0.8
-# If True and probabilistic mode is enabled, reuse the exact
-# pericyte cohort selected during comparison for the final haemodynamics solve.
-REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN = False
-
-MAX_BRANCH_ORDER = 51
-DEFAULT_DIAMETER = 4.0
-
-MANUAL_CAPILLARY_DIAMETER_BY_BRANCH_ORDER = {
-    "B01": 6.2,
-    "B02": 4.0,
-    "B03": 5.0,
-    "B04": 5.0,
-}
-MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER = {}
-MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER = {}
-
-DIAMETER_BY_BRANCH_ORDER = haemodynamics.build_diameter_by_branch_order(
-    all_diams_const=ALL_DIAMS_CONST,
-    max_branch_order=MAX_BRANCH_ORDER,
-    default_diameter=DEFAULT_DIAMETER,
-    manual_capillary_diameter_by_branch_order=MANUAL_CAPILLARY_DIAMETER_BY_BRANCH_ORDER,
-    manual_arteriole_diameter_by_branch_order=MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER,
-    manual_venule_diameter_by_branch_order=MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER,
-)
-
-CONSTRICTION_BY_BRANCH_ORDER = {
-    "B01": 1.0,
-}
-for i in range(2, MAX_BRANCH_ORDER + 1):
-    CONSTRICTION_BY_BRANCH_ORDER[f"B{i:02d}"] = 0.8
-CONSTRICTION_BY_BRANCH_ORDER["Art1"] = 1.0
-CONSTRICTION_BY_BRANCH_ORDER["Ven1"] = 1.0
-for i in range(2, MAX_BRANCH_ORDER + 1):
-    CONSTRICTION_BY_BRANCH_ORDER[f"Art{i}"] = 0.8
-    CONSTRICTION_BY_BRANCH_ORDER[f"Ven{i}"] = 0.8
-
-# --- Toggle: False = manual branch-order diameters only; True = run FWHM pipeline ---
-USE_FWHM_EDGE_DIAMETERS = False
-# Raw single-channel 3D TIFF (required if USE_FWHM_EDGE_DIAMETERS is True).
-FWHM_RAW_TIFF_PATH: Optional[Path] = None
-# Interval along the vessel centerline between transverse profiles (µm).
-FWHM_SAMPLE_SPACING_ALONG_EDGE_UM = 2.0
-# Sample spacing along each transverse line profile / line resolution (µm).
-FWHM_TRANSVERSE_PROFILE_STEP_UM = 0.25
-# Initial maximum half-length of the transverse line on each side of the center (µm);
-# may grow with measured width (see FWHM_MIN_TOTAL_EXTENT_MULTIPLIER in automated.py).
-FWHM_TRANSVERSE_HALF_EXTENT_UM = 6.0
-FWHM_DIAMETER_GUESS_UM = None
-FWHM_MIN_TOTAL_EXTENT_MULTIPLIER = 3.0
-FWHM_BACKGROUND_LABEL = 0
-FWHM_JUNCTION_LABEL = -1
-# If False (default), transverse rays stop at junction-labelled voxels to avoid crossing
-# into neighbouring branches and over-estimating diameter near bifurcations.
-FWHM_ALLOW_JUNCTION_CROSSING = False
-# Transverse profile baseline for Gaussian fit: "wings" uses outer medians (less shoulder
-# bias from neighbours); "percentile" uses global 10th percentile (legacy).
-FWHM_PROFILE_BASELINE_MODE = "wings"
-FWHM_PROFILE_BASELINE_WING_FRACTION = 0.2
-# If True, keep the fitted baseline near the wing/percentile anchor (stricter; try if
-# shoulders still bias the optimiser).
-FWHM_CONSTRAIN_FITTED_BASELINE = False
-FWHM_BASELINE_CONSTRAINT_HALF_WIDTH_PTP = 0.35
-# Clip each transverse profile to the central vessel lobe so a second peak from a
-# neighbouring branch does not inflate diameter.
-FWHM_CLIP_PROFILE_TO_SINGLE_VESSEL = True
-FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER = 0.35
-FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER = 0.08
-# Exclude samples this close (µm) to bifurcation endpoints (degree > 1).
-FWHM_BRANCH_ENDPOINT_EXCLUSION_UM = 10.0
-# Auto-detected junction-proximity exclusion (µm) using rasterized junction voxels.
-FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM = 10.0
-# Prevent profile rays from re-entering distant parts of the same edge (zig-zag guard).
-FWHM_ENFORCE_SAME_EDGE_LOCALITY = True
-FWHM_SAME_EDGE_ARC_WINDOW_UM = 3.0
-FWHM_SAME_EDGE_ARC_WINDOW_MULTIPLIER = 1.0
-FWHM_SAME_EDGE_ARC_WINDOW_MIN_UM = 1.0
-FWHM_CAP_HALF_EXTENT_BY_NONLOCAL_SAME_EDGE_DISTANCE = True
-FWHM_NONLOCAL_SAME_EDGE_ARC_SEPARATION_UM = 6.0
-FWHM_NONLOCAL_SAME_EDGE_HALF_EXTENT_FACTOR = 0.45
-FWHM_REJECT_SAMPLES_WITH_CENTER_OFFSET = True
-FWHM_MAX_FIT_CENTER_OFFSET_UM = 1.5
-FWHM_REJECT_SAMPLES_WITH_LOW_FIT_R2 = True
-FWHM_MIN_FIT_R2 = 0.85
-
-# These are vesses that constrict differently (e.g. endoneurial vessels).
-custom_edges= [
-]  
-
+from resistance_pipeline_settings import *  # noqa: F403
 
 def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_ilastik_segmentation=USE_ILASTIK_SEGMENTATION,
@@ -338,6 +74,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             verbose_logging=VERBOSE_LOGGING,
                             do_skeletonize=DO_SKELETONIZE,
                             do_graph_building=DO_GRAPH_BUILDING,
+                            run_haemodynamics=RUN_HAEMODYNAMICS,
                             do_equiv_resistance_calculation=DO_EQUIV_RESISTANCE_CALCULATION,
                             min_branch_length=MIN_BRANCH_LENGTH,
                             min_stub_length=MIN_STUB_LENGTH,
@@ -1264,7 +1001,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "Saved vessel-type 3D visualization after branch assignment to: "
             f"{vessel_type_3d_path}"
         )
-        if use_fwhm_edge_diameters:
+        if not run_haemodynamics:
+            print(
+                "Haemodynamics disabled; skipping diameter fitting and "
+                "Poiseuille conductance assignment."
+            )
+        if run_haemodynamics and use_fwhm_edge_diameters:
             if fwhm_raw_tiff_path is None:
                 raise ValueError(
                     "use_fwhm_edge_diameters=True requires fwhm_raw_tiff_path."
@@ -1346,14 +1088,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     "Pericyte mode: passive diameter d1 from per-edge FWHM where available, "
                     "else DIAMETER_BY_BRANCH_ORDER; d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER."
                 )
-        elif not use_fwhm_edge_diameters:
+        elif run_haemodynamics and not use_fwhm_edge_diameters:
             print(
                 "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                 "set_poiseuille_weights without per-edge FWHM)."
             )
         comparison_active_pericyte_indices: list[int] | None = None
         comparison_active_center_indices_by_edge: dict[str, list[int]] | None = None
-        if run_pericyte_resistance_comparison:
+        if run_haemodynamics and run_pericyte_resistance_comparison:
             comparison_csv_path = output_dir / f"{image_path.stem}_pericyte_resistance_comparison.csv"
             comparison_results = (
                 pericyte_comparison_haemodynamics.compare_baseline_vs_pericyte_constriction(
@@ -1420,147 +1162,148 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 "Saved pericyte resistance comparison CSV to: "
                 f"{comparison_results['output_csv_path']}"
             )
-        poiseuille_model = haemodynamics.PoiseuilleModel(
-            constriction_length=40.0,
-            constriction_spacing=100.0,
-        )
-        if do_pericyte_constriction:
-            if use_pericyte_mask_constriction:
-                if pericyte_mask_path is None:
-                    raise ValueError(
-                        "pericyte_mask_path must be set when "
-                        "use_pericyte_mask_constriction=True."
-                    )
-                G, results = pericyte_mask_haemodynamics.set_poiseuille_weights_with_pericyte_mask(
-                    G,
-                    diameter_by_branch_order=diameter_by_branch_order,
-                    constriction_factor_by_branch_order=constriction_by_branch_order,
-                    pericyte_mask_path=pericyte_mask_path,
-                    pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
-                    max_assignment_distance_um=(
-                        None
-                        if pericyte_max_assignment_distance_um is None
-                        else float(pericyte_max_assignment_distance_um)
-                    ),
-                    min_pericyte_diameter_um=(
-                        None
-                        if pericyte_min_diameter_um is None
-                        else float(pericyte_min_diameter_um)
-                    ),
-                    max_pericyte_diameter_um=(
-                        None
-                        if pericyte_max_diameter_um is None
-                        else float(pericyte_max_diameter_um)
-                    ),
-                    prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
-                    constriction_length=40.0,
-                    use_probabilistic_constriction=bool(
-                        use_probabilistic_pericyte_constriction
-                    ),
-                    constriction_probability=float(pericyte_constriction_probability),
-                    active_pericyte_indices=(
-                        comparison_active_pericyte_indices
-                        if (
-                            reuse_comparison_pericyte_cohort_for_main_run
-                            and use_probabilistic_pericyte_constriction
+        if run_haemodynamics:
+            poiseuille_model = haemodynamics.PoiseuilleModel(
+                constriction_length=40.0,
+                constriction_spacing=100.0,
+            )
+            if do_pericyte_constriction:
+                if use_pericyte_mask_constriction:
+                    if pericyte_mask_path is None:
+                        raise ValueError(
+                            "pericyte_mask_path must be set when "
+                            "use_pericyte_mask_constriction=True."
                         )
-                        else None
-                    ),
-                )
-                print(
-                    "Results from set_poiseuille_weights_with_pericyte_mask "
-                    f"(centroid-based d2 from mask): {results}"
-                )
-            else:
-                if use_probabilistic_pericyte_constriction:
-                    G, results = (
-                        probability_haemodynamics
-                        .set_poiseuille_weights_with_probabilistic_periodic_constrictions(
-                            G,
-                            diameter_by_branch_order=diameter_by_branch_order,
-                            constriction_factor_by_branch_order=constriction_by_branch_order,
-                            prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
-                            constriction_length=40.0,
-                            constriction_spacing=100.0,
-                            constriction_probability=float(pericyte_constriction_probability),
-                            active_center_indices_by_edge=(
-                                comparison_active_center_indices_by_edge
-                                if (
-                                    reuse_comparison_pericyte_cohort_for_main_run
-                                    and use_probabilistic_pericyte_constriction
-                                )
-                                else None
-                            ),
-                        )
+                    G, results = pericyte_mask_haemodynamics.set_poiseuille_weights_with_pericyte_mask(
+                        G,
+                        diameter_by_branch_order=diameter_by_branch_order,
+                        constriction_factor_by_branch_order=constriction_by_branch_order,
+                        pericyte_mask_path=pericyte_mask_path,
+                        pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
+                        max_assignment_distance_um=(
+                            None
+                            if pericyte_max_assignment_distance_um is None
+                            else float(pericyte_max_assignment_distance_um)
+                        ),
+                        min_pericyte_diameter_um=(
+                            None
+                            if pericyte_min_diameter_um is None
+                            else float(pericyte_min_diameter_um)
+                        ),
+                        max_pericyte_diameter_um=(
+                            None
+                            if pericyte_max_diameter_um is None
+                            else float(pericyte_max_diameter_um)
+                        ),
+                        prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
+                        constriction_length=40.0,
+                        use_probabilistic_constriction=bool(
+                            use_probabilistic_pericyte_constriction
+                        ),
+                        constriction_probability=float(pericyte_constriction_probability),
+                        active_pericyte_indices=(
+                            comparison_active_pericyte_indices
+                            if (
+                                reuse_comparison_pericyte_cohort_for_main_run
+                                and use_probabilistic_pericyte_constriction
+                            )
+                            else None
+                        ),
                     )
                     print(
-                        "Results from probabilistic periodic constrictions "
-                        f"(active sites={results.get('active_periodic_pericyte_sites')}, "
-                        f"total sites={results.get('total_periodic_pericyte_sites')}): "
-                        f"{results}"
+                        "Results from set_poiseuille_weights_with_pericyte_mask "
+                        f"(centroid-based d2 from mask): {results}"
                     )
                 else:
-                    if use_fwhm_edge_diameters:
-                        G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
-                            G,
-                            diameter_by_branch_order,
-                            prefer_edge_fwhm_baseline=True,
-                            constriction_factor_by_branch_order=constriction_by_branch_order,
+                    if use_probabilistic_pericyte_constriction:
+                        G, results = (
+                            probability_haemodynamics
+                            .set_poiseuille_weights_with_probabilistic_periodic_constrictions(
+                                G,
+                                diameter_by_branch_order=diameter_by_branch_order,
+                                constriction_factor_by_branch_order=constriction_by_branch_order,
+                                prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
+                                constriction_length=40.0,
+                                constriction_spacing=100.0,
+                                constriction_probability=float(pericyte_constriction_probability),
+                                active_center_indices_by_edge=(
+                                    comparison_active_center_indices_by_edge
+                                    if (
+                                        reuse_comparison_pericyte_cohort_for_main_run
+                                        and use_probabilistic_pericyte_constriction
+                                    )
+                                    else None
+                                ),
+                            )
                         )
                         print(
-                            "Results from set_poiseuille_weights_with_constrictions "
-                            f"(FWHM baseline d1, constriction factors): {results}"
+                            "Results from probabilistic periodic constrictions "
+                            f"(active sites={results.get('active_periodic_pericyte_sites')}, "
+                            f"total sites={results.get('total_periodic_pericyte_sites')}): "
+                            f"{results}"
                         )
                     else:
-                        diameter_by_branch_order_enhanced = {}
-                        for branch_order, diameter in diameter_by_branch_order.items():
-                            diameter_by_branch_order_enhanced[branch_order] = {
-                                "d1": diameter,
-                                "d2": diameter * constriction_by_branch_order[branch_order],
-                            }
+                        if use_fwhm_edge_diameters:
+                            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                                G,
+                                diameter_by_branch_order,
+                                prefer_edge_fwhm_baseline=True,
+                                constriction_factor_by_branch_order=constriction_by_branch_order,
+                            )
+                            print(
+                                "Results from set_poiseuille_weights_with_constrictions "
+                                f"(FWHM baseline d1, constriction factors): {results}"
+                            )
+                        else:
+                            diameter_by_branch_order_enhanced = {}
+                            for branch_order, diameter in diameter_by_branch_order.items():
+                                diameter_by_branch_order_enhanced[branch_order] = {
+                                    "d1": diameter,
+                                    "d2": diameter * constriction_by_branch_order[branch_order],
+                                }
 
-                        G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
-                            G,
-                            diameter_by_branch_order_enhanced,
-                        )
-                        print(
-                            f"Results from set_poiseuille_weights_with_constrictions: {results}"
-                        )
-        else:
-            G, results = poiseuille_model.set_poiseuille_weights(
+                            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                                G,
+                                diameter_by_branch_order_enhanced,
+                            )
+                            print(
+                                f"Results from set_poiseuille_weights_with_constrictions: {results}"
+                            )
+            else:
+                G, results = poiseuille_model.set_poiseuille_weights(
+                    G,
+                    diameter_by_branch_order,
+                    prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
+                )
+                _diam_mode = (
+                    "per-edge FWHM (Gaussian fit) with branch-order fallback"
+                    if use_fwhm_edge_diameters
+                    else "branch-order table only"
+                )
+                print(f"Results from set_poiseuille_weights ({_diam_mode}): {results}")
+
+            G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
                 G,
-                diameter_by_branch_order,
-                prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
+                custom_edges,
+                edge_diameter=6.0,
+                use_resistance=False,
             )
-            _diam_mode = (
-                "per-edge FWHM (Gaussian fit) with branch-order fallback"
-                if use_fwhm_edge_diameters
-                else "branch-order table only"
-            )
-            print(f"Results from set_poiseuille_weights ({_diam_mode}): {results}")
 
-        G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
-            G,
-            custom_edges,
-            edge_diameter=6.0,
-            use_resistance=False,
-        )
+            print(f"Results from set_poiseuille_edge_weights: {results_2}")
+            # create list of resistances of all edges
+            conductances = []
+            # TODO DEBUG
+            for u, v, key in G.edges(keys=True):
+                conductance = G[u][v][key]['weight']
+                # print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
+                conductances.append(conductance)
 
-        print(f"Results from set_poiseuille_edge_weights: {results_2}")
-        # create list of resistances of all edges
-        conductances = []
-        # TODO DEBUG
-        for u, v, key in G.edges(keys=True):
-            conductance = G[u][v][key]['weight']
-            # print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
-            conductances.append(conductance)
-
-        # print(f"Conductances of all edges: {conductances}")
+            # print(f"Conductances of all edges: {conductances}")
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
-    if VTK_export:
+    if run_haemodynamics and VTK_export:
         vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix)
         print("\n=== VTK Export ===")
         print(f"  Vessels:   {vtk_export['vessels_path']}")
@@ -1568,22 +1311,23 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         print(f"  Nodes:     {vtk_export['nodes_path']}")
         print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
           f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
-    if visualize_vtk and VTK_export:
+    if run_haemodynamics and visualize_vtk and VTK_export:
         visualization.visualize_vtk_network(
             vtk_export["vessels_path"],
             vtk_export["pericytes_path"],
             vtk_export["nodes_path"],
             show_nodes=False,
         )
-    if visualize_vtk and not VTK_export:
+    if run_haemodynamics and visualize_vtk and not VTK_export:
         print("VTK visualization requested but VTK export is disabled. Set VTK_export=True to enable.")
-    else:
+    if run_haemodynamics and not visualize_vtk:
         print("VTK visualization skipped.") 
     # 6) Compute effective resistance between two selected nodes.
-    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
-    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-    print(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
-    if do_equiv_resistance_calculation:
+    if run_haemodynamics:
+        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+        node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+        print(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
+    if run_haemodynamics and do_equiv_resistance_calculation:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
             laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
@@ -1694,18 +1438,21 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     # 9) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.
-    print("\nSolving flow through the network...")
-    flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
-        conductance,
-        node_list,
-        input_p_bc,
-        output_p_bc,
-        starting_nodes,
-        output_nodes,
-        vtk_export,
-    )
-    print("Flow through the network solved")
-    print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
+    if run_haemodynamics:
+        print("\nSolving flow through the network...")
+        flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
+            conductance,
+            node_list,
+            input_p_bc,
+            output_p_bc,
+            starting_nodes,
+            output_nodes,
+            vtk_export,
+        )
+        print("Flow through the network solved")
+        print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
+    else:
+        print("Haemodynamics solve skipped (run_haemodynamics=False).")
 
     # 10) Optional matplotlib visualization.
     if visualize_results:
@@ -1768,10 +1515,88 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         print("Matplotlib visualizations skipped.")
 
 
+def _build_pipeline_kwargs_from_active_settings(plot_dir: Path) -> dict:
+    """Build full pipeline kwargs from current module-level settings."""
+    alias_to_settings = {
+        "image_path": "INPUT_PATH",
+        "do_pericyte_constriction": "DO_PERICYTE_CONSTRUCTION",
+    }
+    kwargs: dict = {}
+    for param_name in inspect.signature(image_to_model_pipeline).parameters:
+        if param_name == "plot_dir":
+            kwargs[param_name] = plot_dir
+            continue
+        setting_name = alias_to_settings.get(param_name, param_name.upper())
+        if setting_name in globals():
+            kwargs[param_name] = globals()[setting_name]
+    return kwargs
+
+
+def _parse_cli_literal(value_text: str) -> object:
+    lowered = value_text.strip().lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if lowered in {"none", "null"}:
+        return None
+    try:
+        return ast.literal_eval(value_text)
+    except (ValueError, SyntaxError):
+        return value_text
+
+
+def _coerce_pipeline_cli_value(param_name: str, value_text: str) -> object:
+    value = _parse_cli_literal(value_text)
+    if isinstance(value, str):
+        if (
+            param_name.endswith("_path")
+            or param_name.endswith("_dir")
+            or param_name.endswith("_prefix")
+            or param_name == "plot_dir"
+        ):
+            return Path(value)
+    return value
+
+
+def _extract_pipeline_cli_overrides(cli_namespace) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    for param_name in inspect.signature(image_to_model_pipeline).parameters:
+        dest = f"pipeline_arg__{param_name}"
+        if not hasattr(cli_namespace, dest):
+            continue
+        raw_value = getattr(cli_namespace, dest)
+        if raw_value is None:
+            continue
+        overrides[param_name] = _coerce_pipeline_cli_value(param_name, raw_value)
+    return overrides
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Resistance network pipeline example.")
+    parser.add_argument(
+        "--list-presets",
+        action="store_true",
+        help="List available presets and exit.",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default="default",
+        choices=sorted(PRESET_DEFINITIONS.keys()),  # noqa: F405
+        help="Preset profile for grouped settings.",
+    )
+    parser.add_argument(
+        "--set",
+        dest="manual_setting_overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Manual settings-file override (repeatable). "
+            "Example: --set VERBOSE_LOGGING=True --set FWHM_RAW_TIFF_PATH='C:/data/raw.tif'"
+        ),
+    )
     parser.add_argument(
         "--run-small-vessel-boundary-labelling-tests",
         action="store_true",
@@ -1792,17 +1617,70 @@ if __name__ == "__main__":
         default=None,
         help="Path to raw single-channel TIFF for FWHM (overrides FWHM_RAW_TIFF_PATH).",
     )
+
+    # Add dynamic CLI overrides for any image_to_model_pipeline(...) argument.
+    existing_option_strings = {
+        option
+        for action in parser._actions
+        for option in action.option_strings
+    }
+    for param_name in inspect.signature(image_to_model_pipeline).parameters:
+        option_name = f"--{param_name.replace('_', '-')}"
+        if option_name in existing_option_strings:
+            continue
+        parser.add_argument(
+            option_name,
+            dest=f"pipeline_arg__{param_name}",
+            default=None,
+            metavar="VALUE",
+            help=(
+                f"Override pipeline kwarg '{param_name}'. "
+                "Use Python literals for lists/dicts/tuples and True/False/None."
+            ),
+        )
+
     cli = parser.parse_args()
+    if cli.list_presets:
+        print("Available presets:")
+        for preset_name, description in list_presets().items():  # noqa: F405
+            print(f"  - {preset_name}: {description}")
+        raise SystemExit(0)
     if cli.run_small_vessel_boundary_labelling_tests:
         import pytest
 
         raise SystemExit(
             pytest.main([str(root_dir / "tests" / "test_small_vessel_mask_boundary_labelling.py"), "-q"])
         )
-    plot_dir = BASE_PLOT_DIR / "nerve"
-    pipeline_kwargs: dict = {}
+
+    manual_overrides: dict[str, object] = {}
+    for override_text in cli.manual_setting_overrides:
+        key, value = parse_cli_override(override_text)  # noqa: F405
+        manual_overrides[key] = value
     if cli.use_fwhm_edge_diameters:
-        pipeline_kwargs["use_fwhm_edge_diameters"] = True
+        manual_overrides["USE_FWHM_EDGE_DIAMETERS"] = True
     if cli.fwhm_raw_tiff is not None:
-        pipeline_kwargs["fwhm_raw_tiff_path"] = cli.fwhm_raw_tiff
-    image_to_model_pipeline(plot_dir=plot_dir, **pipeline_kwargs)
+        manual_overrides["FWHM_RAW_TIFF_PATH"] = cli.fwhm_raw_tiff
+
+    selected_settings = build_settings_for_preset(  # noqa: F405
+        preset_name=cli.preset,
+        manual_overrides=manual_overrides,
+    )
+    apply_settings_to_namespace(selected_settings, globals())  # noqa: F405
+    if manual_overrides:
+        print(
+            f"Applying preset '{cli.preset}' with manual overrides: "
+            f"{sorted(manual_overrides.keys())}"
+        )
+    else:
+        print(f"Applying preset '{cli.preset}'")
+
+    plot_dir = Path(BASE_PLOT_DIR) / "nerve"  # noqa: F405
+    pipeline_kwargs = _build_pipeline_kwargs_from_active_settings(plot_dir=plot_dir)
+    pipeline_cli_overrides = _extract_pipeline_cli_overrides(cli)
+    if pipeline_cli_overrides:
+        pipeline_kwargs.update(pipeline_cli_overrides)
+        print(
+            "Applying direct pipeline argument overrides: "
+            f"{sorted(pipeline_cli_overrides.keys())}"
+        )
+    image_to_model_pipeline(**pipeline_kwargs)
