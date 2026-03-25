@@ -2,11 +2,12 @@
 """Preset definitions for example pipelines."""
 import ast
 import copy
+import importlib.util
 from pathlib import Path
 
 
-def get_preset_definitions(root_dir: Path) -> dict[str, dict[str, object]]:
-    """Return named preset profiles and their setting overrides."""
+def _get_builtin_preset_definitions(root_dir: Path) -> dict[str, dict[str, object]]:
+    """Return built-in named preset profiles and their setting overrides."""
     return {
         "default": {
             "description": "Current baseline behavior from this settings file.",
@@ -240,6 +241,105 @@ def get_preset_definitions(root_dir: Path) -> dict[str, dict[str, object]]:
             },
         },
     }
+
+
+def _load_local_preset_definitions(root_dir: Path) -> dict[str, dict[str, object]]:
+    """Load optional user-defined presets from examples/local_presets.py."""
+    local_presets_path = root_dir / "examples" / "local_presets.py"
+    if not local_presets_path.exists():
+        return {}
+
+    spec = importlib.util.spec_from_file_location(
+        "imagelynx_local_presets",
+        local_presets_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(
+            f"Could not load local presets module from {local_presets_path}."
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    local_defs = getattr(module, "LOCAL_PRESET_DEFINITIONS", {})
+    if local_defs is None:
+        return {}
+    if not isinstance(local_defs, dict):
+        raise ValueError(
+            f"LOCAL_PRESET_DEFINITIONS in {local_presets_path} must be a dict."
+        )
+    return local_defs
+
+
+def resolve_preset_inheritance(
+    preset_definitions: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Resolve preset inheritance (`extends`) into flattened override dictionaries."""
+    resolved: dict[str, dict[str, object]] = {}
+    visiting: set[str] = set()
+
+    def _coerce_payload(name: str, payload: object) -> dict[str, object]:
+        if not isinstance(payload, dict):
+            raise ValueError(f"Preset '{name}' must be a mapping.")
+        return payload
+
+    def _normalize_parents(raw_parents: object) -> list[str]:
+        if raw_parents is None:
+            return []
+        if isinstance(raw_parents, str):
+            return [raw_parents]
+        if isinstance(raw_parents, list) and all(isinstance(x, str) for x in raw_parents):
+            return list(raw_parents)
+        raise ValueError("Preset 'extends' must be a string or list of strings.")
+
+    def _resolve(name: str) -> dict[str, object]:
+        if name in resolved:
+            return resolved[name]
+        if name in visiting:
+            raise ValueError(f"Cyclic preset inheritance detected at '{name}'.")
+        if name not in preset_definitions:
+            options = ", ".join(sorted(preset_definitions.keys()))
+            raise ValueError(
+                f"Preset '{name}' is not defined. Available presets: {options}"
+            )
+
+        visiting.add(name)
+        payload = _coerce_payload(name, preset_definitions[name])
+        parents = _normalize_parents(payload.get("extends"))
+        merged_overrides: dict[str, object] = {}
+        merged_description = str(payload.get("description", "")).strip()
+        for parent_name in parents:
+            parent = _resolve(parent_name)
+            merged_overrides.update(parent.get("overrides", {}))
+            if not merged_description:
+                merged_description = str(parent.get("description", "")).strip()
+
+        own_overrides = payload.get("overrides", {})
+        if own_overrides is None:
+            own_overrides = {}
+        if not isinstance(own_overrides, dict):
+            raise ValueError(f"Preset '{name}' key 'overrides' must be a mapping.")
+        merged_overrides.update(own_overrides)
+
+        flattened = {
+            "description": merged_description or f"Custom preset '{name}'",
+            "overrides": merged_overrides,
+        }
+        visiting.remove(name)
+        resolved[name] = flattened
+        return flattened
+
+    for preset_name in preset_definitions:
+        _resolve(preset_name)
+    return resolved
+
+
+def get_preset_definitions(root_dir: Path) -> dict[str, dict[str, object]]:
+    """Return built-in + local presets with inheritance resolved."""
+    preset_definitions = _get_builtin_preset_definitions(root_dir)
+    local_preset_definitions = _load_local_preset_definitions(root_dir)
+    if local_preset_definitions:
+        preset_definitions.update(local_preset_definitions)
+    return resolve_preset_inheritance(preset_definitions)
 
 
 def collect_setting_names(
