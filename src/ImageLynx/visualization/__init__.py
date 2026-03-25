@@ -13,6 +13,7 @@ from .vtk_io import (
     graph_to_vtk,
     visualize_vtk_network,
 )
+from .pipeline_artifacts import save_graph_snapshot
 
 __all__ = [
     "plot_node_degree_distribution",
@@ -25,4 +26,5 @@ __all__ = [
     "derive_pericyte_points_from_graph",
     "graph_to_vtk",
     "visualize_vtk_network",
+    "save_graph_snapshot",
 ]
