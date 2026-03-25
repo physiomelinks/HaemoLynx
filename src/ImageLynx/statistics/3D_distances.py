@@ -54,9 +54,9 @@ def _load_binary_mask_and_voxel_size(
     path = Path(mask_path)
     suffix = path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
-        image, vx, vy, vz = load_3d_tif_with_voxel_size(str(path))
+        image, vx, vy, vz, _voxel_meta_status = load_3d_tif_with_voxel_size(str(path))
     elif suffix == ".h5":
-        image, vx, vy, vz = load_3d_h5_with_voxel_size(
+        image, vx, vy, vz, _voxel_meta_status = load_3d_h5_with_voxel_size(
             str(path), dataset_name=h5_dataset_name
         )
     else:
@@ -79,7 +79,7 @@ def _load_volume_shape_only(
     if suffix in {".tif", ".tiff"}:
         vol = tifffile.imread(str(path))
     elif suffix == ".h5":
-        vol, _, _, _ = load_3d_h5_with_voxel_size(
+        vol, _, _, _, _ = load_3d_h5_with_voxel_size(
             str(path),
             dataset_name=h5_dataset_name,
         )

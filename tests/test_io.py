@@ -39,11 +39,19 @@ def test_load_and_skeletonize_3d_tif(tmp_path):
     img = np.random.randint(0, 255, (6, 6, 6), dtype=np.uint16)
     import tifffile
     tifffile.imwrite(f, img)
-    image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z = load_and_skeletonize_3d_tif(str(f))
+    (
+        image,
+        skeleton,
+        voxel_size_x,
+        voxel_size_y,
+        voxel_size_z,
+        voxel_meta_status,
+    ) = load_and_skeletonize_3d_tif(str(f))
     assert image.shape == (6, 6, 6)
     assert skeleton.shape == (6, 6, 6)
     assert skeleton.dtype == bool
     assert (voxel_size_x, voxel_size_y, voxel_size_z) == (1.0, 1.0, 1.0)
+    assert voxel_meta_status["status"] in {"missing", "partial"}
 
 
 def test_crop_tiff_volume_from_corners(tmp_path):

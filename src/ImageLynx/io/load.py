@@ -16,6 +16,22 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _is_valid_voxel_size_triplet(voxel_size_xyz: tuple[float, float, float]) -> bool:
+    """Return True when voxel-size tuple is finite and strictly positive."""
+    arr = np.asarray(voxel_size_xyz, dtype=float).ravel()
+    return bool(arr.size == 3 and np.all(np.isfinite(arr)) and np.all(arr > 0))
+
+
+def _default_voxel_meta_status(source: str, status: str, **extra) -> dict[str, object]:
+    """Create a normalized voxel metadata status payload."""
+    payload: dict[str, object] = {
+        "source": source,
+        "status": status,
+    }
+    payload.update(extra)
+    return payload
+
+
 def _coerce_triplet(value) -> tuple[float, float, float] | None:
     """Convert HDF5 attr values to a 3-float tuple when possible."""
     if value is None:
@@ -29,8 +45,8 @@ def _coerce_triplet(value) -> tuple[float, float, float] | None:
     return None
 
 
-def _extract_h5_voxel_size(dataset, h5_file) -> tuple[float, float, float]:
-    """Extract (x, y, z) voxel size from common HDF5 attribute conventions."""
+def _extract_h5_voxel_size(dataset, h5_file) -> tuple[tuple[float, float, float], dict[str, object]]:
+    """Extract (x, y, z) voxel size and metadata status from HDF5 attrs."""
     attrs = {}
     for source in (h5_file.attrs, dataset.attrs):
         for key in source.keys():
@@ -41,14 +57,38 @@ def _extract_h5_voxel_size(dataset, h5_file) -> tuple[float, float, float]:
         zyx = _coerce_triplet(attrs["element_size_um"])
         if zyx is not None:
             z, y, x = zyx
-            return (x, y, z)
+            voxel_size_xyz = (x, y, z)
+            if _is_valid_voxel_size_triplet(voxel_size_xyz):
+                return voxel_size_xyz, _default_voxel_meta_status(
+                    source="h5_attributes",
+                    status="complete",
+                    key_used="element_size_um",
+                    axis_order="zyx_to_xyz",
+                )
+            return (1.0, 1.0, 1.0), _default_voxel_meta_status(
+                source="h5_attributes",
+                status="invalid",
+                key_used="element_size_um",
+                fallback_applied=True,
+            )
 
     # Common generic triplet keys; assume they are already ordered (x, y, z).
     for key in ("voxel_size", "voxel_size_um", "pixelsize", "pixel_size", "resolution"):
         if key in attrs:
             xyz = _coerce_triplet(attrs[key])
             if xyz is not None:
-                return xyz
+                if _is_valid_voxel_size_triplet(xyz):
+                    return xyz, _default_voxel_meta_status(
+                        source="h5_attributes",
+                        status="complete",
+                        key_used=key,
+                    )
+                return (1.0, 1.0, 1.0), _default_voxel_meta_status(
+                    source="h5_attributes",
+                    status="invalid",
+                    key_used=key,
+                    fallback_applied=True,
+                )
 
     # Axis-specific metadata keys.
     x = y = z = None
@@ -68,10 +108,39 @@ def _extract_h5_voxel_size(dataset, h5_file) -> tuple[float, float, float]:
             z = float(np.asarray(attrs[key]).astype(float).ravel()[0])
             break
 
-    if x is not None and y is not None and z is not None:
-        return (x, y, z)
+    available_axes: list[str] = []
+    if x is not None:
+        available_axes.append("x")
+    if y is not None:
+        available_axes.append("y")
+    if z is not None:
+        available_axes.append("z")
 
-    return (1.0, 1.0, 1.0)
+    if x is not None and y is not None and z is not None:
+        voxel_size_xyz = (x, y, z)
+        if _is_valid_voxel_size_triplet(voxel_size_xyz):
+            return voxel_size_xyz, _default_voxel_meta_status(
+                source="h5_attributes",
+                status="complete",
+                key_used="axis_specific",
+                available_axes=available_axes,
+            )
+        return (1.0, 1.0, 1.0), _default_voxel_meta_status(
+            source="h5_attributes",
+            status="invalid",
+            key_used="axis_specific",
+            available_axes=available_axes,
+            fallback_applied=True,
+        )
+
+    status = "missing" if not available_axes else "partial"
+    return (1.0, 1.0, 1.0), _default_voxel_meta_status(
+        source="h5_attributes",
+        status=status,
+        key_used="axis_specific",
+        available_axes=available_axes,
+        fallback_applied=True,
+    )
 
 
 def simplify_to_3d(image: np.ndarray) -> np.ndarray:
@@ -224,8 +293,10 @@ def crop_tiff_volume_from_corners(
     }
 
 
-def load_3d_tif_with_voxel_size(filepath: str) -> tuple[np.ndarray, float, float, float]:
-    """Load 3D TIFF image and return image with voxel sizes (x, y, z)."""
+def load_3d_tif_with_voxel_size(
+    filepath: str,
+) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
+    """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status."""
     with tifffile.TiffFile(filepath) as tif:
         image = tif.asarray()
         meta = tif.imagej_metadata or {}
@@ -233,37 +304,74 @@ def load_3d_tif_with_voxel_size(filepath: str) -> tuple[np.ndarray, float, float
 
         x_res_tag = tags.get("XResolution")
         y_res_tag = tags.get("YResolution")
+        missing_axes: list[str] = []
+        invalid_axes: list[str] = []
 
         if x_res_tag:
             x_res = x_res_tag.value[0] / x_res_tag.value[1]
         else:
             print("No x resolution tag found; defaulting to 1.0")
             x_res = 1.0
+            missing_axes.append("x")
 
         if y_res_tag:
             y_res = y_res_tag.value[0] / y_res_tag.value[1]
         else:
             print("No y resolution tag found; defaulting to 1.0")
             y_res = 1.0
+            missing_axes.append("y")
 
         if "spacing" in meta:
             z_res = float(meta.get("spacing"))
         else:
             print("No z resolution (spacing) found; defaulting to 1.0")
             z_res = 1.0
+            missing_axes.append("z")
 
         voxel_size_x = 1.0 / x_res if x_res else 1.0
         voxel_size_y = 1.0 / y_res if y_res else 1.0
         voxel_size_z = z_res
 
-    return image, voxel_size_x, voxel_size_y, voxel_size_z
+    if x_res <= 0:
+        invalid_axes.append("x")
+    if y_res <= 0:
+        invalid_axes.append("y")
+    if z_res <= 0:
+        invalid_axes.append("z")
+    if not np.isfinite(voxel_size_x):
+        invalid_axes.append("x")
+    if not np.isfinite(voxel_size_y):
+        invalid_axes.append("y")
+    if not np.isfinite(voxel_size_z):
+        invalid_axes.append("z")
+    invalid_axes = sorted(set(invalid_axes))
+
+    if invalid_axes and len(invalid_axes) == 3:
+        status = "invalid"
+    elif invalid_axes:
+        status = "partial"
+    elif missing_axes and len(missing_axes) == 3:
+        status = "missing"
+    elif missing_axes:
+        status = "partial"
+    else:
+        status = "complete"
+
+    voxel_meta_status = _default_voxel_meta_status(
+        source="tiff_metadata",
+        status=status,
+        missing_axes=sorted(set(missing_axes)),
+        invalid_axes=invalid_axes,
+        fallback_applied=bool(missing_axes or invalid_axes),
+    )
+    return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
 def load_3d_h5_with_voxel_size(
     filepath: str,
     dataset_name: str | None = None,
-) -> tuple[np.ndarray, float, float, float]:
-    """Load 3D H5 image and return image with voxel sizes (x, y, z)."""
+) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
+    """Load 3D H5 image and return image + voxel size (x, y, z) + metadata status."""
     if h5py is None:
         raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
     if dataset_name is None:
@@ -282,23 +390,32 @@ def load_3d_h5_with_voxel_size(
             )
         dataset = f[dataset_name]
         image = np.array(dataset)
-        voxel_size_x, voxel_size_y, voxel_size_z = _extract_h5_voxel_size(dataset, f)
+        (
+            (voxel_size_x, voxel_size_y, voxel_size_z),
+            voxel_meta_status,
+        ) = _extract_h5_voxel_size(dataset, f)
 
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 
-    return image, voxel_size_x, voxel_size_y, voxel_size_z
+    return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
 def load_and_skeletonize_3d_tif(filepath: str):
     print("Loading and skeletonizing TIFF...")
-    image, voxel_size_x, voxel_size_y, voxel_size_z = load_3d_tif_with_voxel_size(filepath)
+    (
+        image,
+        voxel_size_x,
+        voxel_size_y,
+        voxel_size_z,
+        voxel_meta_status,
+    ) = load_3d_tif_with_voxel_size(filepath)
 
     print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
     binary = _to_binary_volume_for_skeletonization(image)
     skeleton = skeletonize_3d(binary)
     skeleton = binary_fill_holes(skeleton)
-    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z
+    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
 def load_and_skeletonize_3d_h5(
@@ -306,7 +423,13 @@ def load_and_skeletonize_3d_h5(
     dataset_name: str | None = None,
 ):
     logger.debug("Loading and skeletonizing H5...")
-    image, voxel_size_x, voxel_size_y, voxel_size_z = load_3d_h5_with_voxel_size(
+    (
+        image,
+        voxel_size_x,
+        voxel_size_y,
+        voxel_size_z,
+        voxel_meta_status,
+    ) = load_3d_h5_with_voxel_size(
         filepath,
         dataset_name=dataset_name,
     )
@@ -320,5 +443,5 @@ def load_and_skeletonize_3d_h5(
 
     binary = _to_binary_volume_for_skeletonization(image)
     skeleton = skeletonize_3d(binary)
-    return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z
+    return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
