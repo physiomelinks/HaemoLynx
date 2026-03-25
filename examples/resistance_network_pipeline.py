@@ -1663,6 +1663,11 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Run preflight checklist and exit without executing the pipeline.",
+    )
+    parser.add_argument(
         "--set",
         dest="manual_setting_overrides",
         action="append",
@@ -1806,4 +1811,7 @@ if __name__ == "__main__":
     preflight_report = run_preflight_checklist(pipeline_kwargs)
     if not preflight_report["ok"]:
         raise SystemExit(2)
+    if cli.preflight_only:
+        print("Preflight-only mode: exiting before pipeline execution.")
+        raise SystemExit(0)
     image_to_model_pipeline(**pipeline_kwargs)

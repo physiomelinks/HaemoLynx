@@ -143,6 +143,52 @@ def test_preflight_reports_pass_and_actionable_failures(tmp_path: Path):
     assert any("3D distance cell mask" in err for err in failing_report["errors"])
 
 
+def test_preflight_fails_for_missing_ilastik_executable(tmp_path: Path):
+    unsegmented = tmp_path / "unsegmented.tif"
+    classifier = tmp_path / "classifier.ilp"
+    unsegmented.write_bytes(b"dummy")
+    classifier.write_bytes(b"dummy")
+
+    kwargs = {
+        "image_path": unsegmented,
+        "use_ilastik_segmentation": True,
+        "ilastik_unsegmented_image_path": unsegmented,
+        "ilastik_classifier_path": classifier,
+        "ilastik_executable": "definitely_not_a_real_ilastik_binary_12345",
+        "final_render_mode": "3d",
+        "ide_plot_mode": "final_only",
+        "statistics_mode": "fast",
+        "run_haemodynamics": False,
+        "do_skeletonize": True,
+        "do_graph_building": True,
+    }
+    report = preflight.run_preflight_checklist(kwargs)
+    assert report["ok"] is False
+    assert any("Ilastik executable" in err for err in report["errors"])
+
+
+def test_preflight_fails_for_strict_branch_mode_without_mask_automation(tmp_path: Path):
+    image_path = tmp_path / "segmented_input.tif"
+    image_path.write_bytes(b"dummy")
+
+    kwargs = {
+        "image_path": image_path,
+        "use_ilastik_segmentation": False,
+        "final_render_mode": "3d",
+        "ide_plot_mode": "final_only",
+        "statistics_mode": "fast",
+        "run_haemodynamics": False,
+        "do_skeletonize": True,
+        "do_graph_building": True,
+        "strict_branch_order_assignment": True,
+        "automated_vessel_assignment": False,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    report = preflight.run_preflight_checklist(kwargs)
+    assert report["ok"] is False
+    assert any("Strict branch-order assignment" in err for err in report["errors"])
+
+
 def test_resolve_preset_inheritance_merges_parent_overrides():
     preset_defs = {
         "base": {
