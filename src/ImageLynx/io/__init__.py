@@ -10,6 +10,7 @@ from .load import (
 )
 from .ilastik import run_ilastik_headless_segmentation
 from .automated_vessel_assignment import load_large_vessel_masks
+from .voxel_validation import resolve_voxel_size_xyz, validate_voxel_size_xyz
 from ..preprocessing import bridge_gaps
 
 __all__ = [
@@ -23,4 +24,6 @@ __all__ = [
     "bridge_gaps",
     "run_ilastik_headless_segmentation",
     "load_large_vessel_masks",
+    "validate_voxel_size_xyz",
+    "resolve_voxel_size_xyz",
 ]
