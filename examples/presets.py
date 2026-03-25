@@ -397,3 +397,173 @@ def apply_settings_to_namespace(
     for key, value in settings.items():
         if key in valid_setting_names:
             namespace[key] = value
+
+
+def _coerce_pipeline_path_like_value(param_name: str, value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return value
+    if isinstance(value, str):
+        if (
+            param_name.endswith("_path")
+            or param_name.endswith("_dir")
+            or param_name.endswith("_prefix")
+            or param_name == "plot_dir"
+        ):
+            return Path(value)
+    return value
+
+
+def _normalize_setting_key(raw_key: str, valid_setting_names: set[str]) -> str | None:
+    if raw_key in valid_setting_names:
+        return raw_key
+    maybe_upper = raw_key.upper()
+    if maybe_upper in valid_setting_names:
+        return maybe_upper
+    return None
+
+
+def _serialize_for_yaml(value: object) -> object:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {
+            str(k): _serialize_for_yaml(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_serialize_for_yaml(v) for v in value]
+    return value
+
+
+def load_config_yaml(
+    config_path: str | Path,
+    valid_setting_names: set[str],
+    available_preset_names: set[str],
+    pipeline_param_names: set[str],
+) -> dict[str, object]:
+    """Load config YAML and split it into preset/settings/pipeline overrides."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ImportError(
+            "PyYAML is required for --config support. Install with `pip install pyyaml`."
+        ) from exc
+
+    config_path = Path(config_path)
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Config file '{config_path}' must contain a YAML mapping at top level."
+        )
+
+    preset_name = data.get("preset")
+    if preset_name is not None:
+        if not isinstance(preset_name, str):
+            raise ValueError(
+                f"Config key 'preset' must be a string in '{config_path}'."
+            )
+        if preset_name not in available_preset_names:
+            options = ", ".join(sorted(available_preset_names))
+            raise ValueError(
+                f"Unknown preset '{preset_name}' in '{config_path}'. "
+                f"Available presets: {options}"
+            )
+
+    settings_overrides: dict[str, object] = {}
+    pipeline_overrides: dict[str, object] = {}
+
+    explicit_settings = data.get("settings", {})
+    if explicit_settings is None:
+        explicit_settings = {}
+    if not isinstance(explicit_settings, dict):
+        raise ValueError(
+            f"Config key 'settings' must be a mapping in '{config_path}'."
+        )
+    for raw_key, value in explicit_settings.items():
+        key = _normalize_setting_key(str(raw_key), valid_setting_names)
+        if key is None:
+            options = ", ".join(sorted(valid_setting_names))
+            raise ValueError(
+                f"Unknown setting '{raw_key}' in config.settings of '{config_path}'. "
+                f"Valid settings: {options}"
+            )
+        settings_overrides[key] = _coerce_path_like_value(key, value)
+
+    explicit_pipeline = data.get("pipeline", {})
+    if explicit_pipeline is None:
+        explicit_pipeline = {}
+    if not isinstance(explicit_pipeline, dict):
+        raise ValueError(
+            f"Config key 'pipeline' must be a mapping in '{config_path}'."
+        )
+    for raw_key, value in explicit_pipeline.items():
+        key = str(raw_key)
+        if key not in pipeline_param_names:
+            options = ", ".join(sorted(pipeline_param_names))
+            raise ValueError(
+                f"Unknown pipeline parameter '{raw_key}' in config.pipeline of "
+                f"'{config_path}'. Valid parameters: {options}"
+            )
+        pipeline_overrides[key] = _coerce_pipeline_path_like_value(key, value)
+
+    reserved = {"preset", "settings", "pipeline"}
+    for raw_key, value in data.items():
+        if raw_key in reserved:
+            continue
+        raw_key_str = str(raw_key)
+        setting_key = _normalize_setting_key(raw_key_str, valid_setting_names)
+        if setting_key is not None:
+            settings_overrides[setting_key] = _coerce_path_like_value(
+                setting_key,
+                value,
+            )
+            continue
+        if raw_key_str in pipeline_param_names:
+            pipeline_overrides[raw_key_str] = _coerce_pipeline_path_like_value(
+                raw_key_str,
+                value,
+            )
+            continue
+        options = ", ".join(sorted(valid_setting_names | pipeline_param_names | reserved))
+        raise ValueError(
+            f"Unknown config key '{raw_key}' in '{config_path}'. "
+            f"Allowed keys: {options}"
+        )
+
+    return {
+        "preset_name": preset_name,
+        "settings_overrides": settings_overrides,
+        "pipeline_overrides": pipeline_overrides,
+    }
+
+
+def save_effective_config_yaml(
+    output_path: str | Path,
+    preset_name: str,
+    settings: dict[str, object],
+    pipeline_kwargs: dict[str, object],
+) -> Path:
+    """Write effective run configuration to a YAML file."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ImportError(
+            "PyYAML is required for --save-config support. Install with `pip install pyyaml`."
+        ) from exc
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "preset": preset_name,
+        "settings": _serialize_for_yaml(settings),
+        "pipeline": _serialize_for_yaml(pipeline_kwargs),
+    }
+    output_path.write_text(
+        yaml.safe_dump(payload, sort_keys=True, allow_unicode=False),
+        encoding="utf-8",
+    )
+    return output_path

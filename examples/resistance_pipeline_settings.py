@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Default settings for the resistance network pipeline, grouped by concern."""
-import ast
 import sys
 from functools import partial
 from pathlib import Path
@@ -16,8 +15,10 @@ from presets import (
     collect_base_settings,
     collect_setting_names,
     get_preset_definitions,
+    load_config_yaml as _load_config_yaml,
     list_presets as _list_presets,
     parse_cli_override as _parse_cli_override,
+    save_effective_config_yaml as _save_effective_config_yaml,
 )
 
 # ---------------------------
@@ -387,3 +388,9 @@ apply_settings_to_namespace = partial(
     _apply_settings_to_namespace,
     valid_setting_names=VALID_SETTING_NAMES,
 )
+load_config_yaml = partial(
+    _load_config_yaml,
+    valid_setting_names=VALID_SETTING_NAMES,
+    available_preset_names=set(PRESET_DEFINITIONS.keys()),
+)
+save_effective_config_yaml = _save_effective_config_yaml

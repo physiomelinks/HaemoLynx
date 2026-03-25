@@ -1622,6 +1622,8 @@ def _extract_pipeline_cli_overrides(cli_namespace) -> dict[str, object]:
 if __name__ == "__main__":
     import argparse
 
+    pipeline_signature = inspect.signature(image_to_model_pipeline)
+    pipeline_param_names = set(pipeline_signature.parameters.keys())
     parser = argparse.ArgumentParser(description="Resistance network pipeline example.")
     parser.add_argument(
         "--list-presets",
@@ -1631,9 +1633,24 @@ if __name__ == "__main__":
     parser.add_argument(
         "--preset",
         type=str,
-        default="default",
+        default=None,
         choices=sorted(PRESET_DEFINITIONS.keys()),  # noqa: F405
         help="Preset profile for grouped settings.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help=(
+            "Path to YAML config file with preset/settings/pipeline overrides. "
+            "CLI overrides still take precedence."
+        ),
+    )
+    parser.add_argument(
+        "--save-config",
+        type=Path,
+        default=None,
+        help="Write the effective resolved run configuration to a YAML file.",
     )
     parser.add_argument(
         "--set",
@@ -1673,7 +1690,7 @@ if __name__ == "__main__":
         for action in parser._actions
         for option in action.option_strings
     }
-    for param_name in inspect.signature(image_to_model_pipeline).parameters:
+    for param_name in pipeline_signature.parameters:
         option_name = f"--{param_name.replace('_', '-')}"
         if option_name in existing_option_strings:
             continue
@@ -1701,7 +1718,21 @@ if __name__ == "__main__":
             pytest.main([str(root_dir / "tests" / "test_small_vessel_mask_boundary_labelling.py"), "-q"])
         )
 
-    manual_overrides: dict[str, object] = {}
+    config_preset_name: str | None = None
+    config_setting_overrides: dict[str, object] = {}
+    config_pipeline_overrides: dict[str, object] = {}
+    if cli.config is not None:
+        loaded_config = load_config_yaml(  # noqa: F405
+            config_path=cli.config,
+            pipeline_param_names=pipeline_param_names,
+        )
+        config_preset_name = loaded_config["preset_name"]
+        config_setting_overrides = dict(loaded_config["settings_overrides"])
+        config_pipeline_overrides = dict(loaded_config["pipeline_overrides"])
+        print(f"Loaded config from: {cli.config}")
+
+    preset_name = cli.preset or config_preset_name or "default"
+    manual_overrides: dict[str, object] = dict(config_setting_overrides)
     for override_text in cli.manual_setting_overrides:
         key, value = parse_cli_override(override_text)  # noqa: F405
         manual_overrides[key] = value
@@ -1711,20 +1742,26 @@ if __name__ == "__main__":
         manual_overrides["FWHM_RAW_TIFF_PATH"] = cli.fwhm_raw_tiff
 
     selected_settings = build_settings_for_preset(  # noqa: F405
-        preset_name=cli.preset,
+        preset_name=preset_name,
         manual_overrides=manual_overrides,
     )
     apply_settings_to_namespace(selected_settings, globals())  # noqa: F405
     if manual_overrides:
         print(
-            f"Applying preset '{cli.preset}' with manual overrides: "
+            f"Applying preset '{preset_name}' with manual overrides: "
             f"{sorted(manual_overrides.keys())}"
         )
     else:
-        print(f"Applying preset '{cli.preset}'")
+        print(f"Applying preset '{preset_name}'")
 
     plot_dir = Path(BASE_PLOT_DIR) / "nerve"  # noqa: F405
     pipeline_kwargs = _build_pipeline_kwargs_from_active_settings(plot_dir=plot_dir)
+    if config_pipeline_overrides:
+        pipeline_kwargs.update(config_pipeline_overrides)
+        print(
+            "Applying config pipeline overrides: "
+            f"{sorted(config_pipeline_overrides.keys())}"
+        )
     pipeline_cli_overrides = _extract_pipeline_cli_overrides(cli)
     if pipeline_cli_overrides:
         pipeline_kwargs.update(pipeline_cli_overrides)
@@ -1732,4 +1769,12 @@ if __name__ == "__main__":
             "Applying direct pipeline argument overrides: "
             f"{sorted(pipeline_cli_overrides.keys())}"
         )
+    if cli.save_config is not None:
+        saved_path = save_effective_config_yaml(  # noqa: F405
+            output_path=cli.save_config,
+            preset_name=preset_name,
+            settings=selected_settings,
+            pipeline_kwargs=pipeline_kwargs,
+        )
+        print(f"Saved effective run config to: {saved_path}")
     image_to_model_pipeline(**pipeline_kwargs)
