@@ -1,9 +1,5 @@
-#Summarise by BO in statistics
-#Mean distance of object (classifier) to each capillary type and BO
-#Overall list of every vessel and its properties
-
 #!/usr/bin/env python3
-"""Refactored full pipeline example using ImageLynx package."""
+"""ImageLynx main pipeline package."""
 import logging
 import sys
 import inspect
@@ -17,9 +13,14 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 
-# Ensure package is importable when running from repo root.
+# Ensure package and sibling example modules are importable.
 root_dir = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+examples_dir = Path(__file__).resolve().parent
+src_dir = root_dir / "src"
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
