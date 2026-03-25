@@ -27,9 +27,11 @@ from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visua
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
 from ImageLynx.haemodynamics import probability as probability_haemodynamics
+from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
 from preflight import run_preflight_checklist
 from resistance_pipeline_settings import *  # noqa: F403
 from wizard import run_interactive_setup_wizard
+
 
 def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_ilastik_segmentation=USE_ILASTIK_SEGMENTATION,
@@ -38,6 +40,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             ilastik_executable=ILASTIK_EXECUTABLE,
                             ilastik_output_dir=ILASTIK_OUTPUT_DIR,
                             ilastik_output_suffix=ILASTIK_OUTPUT_SUFFIX,
+                            voxel_size_override_xyz=VOXEL_SIZE_OVERRIDE_XYZ,
+                            voxel_size_policy=VOXEL_SIZE_POLICY,
                             use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
                             use_ilastik_large_vessel_segmentation=USE_ILASTIK_LARGE_VESSEL_SEGMENTATION,
                             large_vessel_mask_dilation_microns=LARGE_VESSEL_MASK_DILATION_MICRONS,
@@ -209,25 +213,52 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     if do_skeletonize:
         if input_format in {"tif", "tiff"}:
-            image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z = io.load_and_skeletonize_3d_tif(
+            (
+                image,
+                skeleton,
+                voxel_size_x,
+                voxel_size_y,
+                voxel_size_z,
+                voxel_meta_status,
+            ) = io.load_and_skeletonize_3d_tif(
                 image_path,
             )
-            voxel_size = (
+            metadata_voxel_size = (
                 float(voxel_size_x),
                 float(voxel_size_y),
                 float(voxel_size_z),
             )
         elif input_format == "h5":
-            image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z = io.load_and_skeletonize_3d_h5(
+            (
+                image,
+                skeleton,
+                voxel_size_x,
+                voxel_size_y,
+                voxel_size_z,
+                voxel_meta_status,
+            ) = io.load_and_skeletonize_3d_h5(
                 image_path,
             )
-            voxel_size = (
+            metadata_voxel_size = (
                 float(voxel_size_x),
                 float(voxel_size_y),
                 float(voxel_size_z),
             )
         else:
             raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
+        voxel_size, voxel_size_source = resolve_voxel_size_xyz(
+            metadata_voxel_size_xyz=metadata_voxel_size,
+            metadata_status=voxel_meta_status,
+            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_policy=voxel_size_policy,
+        )
+        print(
+            "Voxel-size resolution: "
+            f"source={voxel_size_source}, "
+            f"metadata_status={voxel_meta_status.get('status')}, "
+            f"metadata={metadata_voxel_size}, "
+            f"final={voxel_size}"
+        )
         
         preprocessing.print_skeleton_connectivity_stats(
             "raw",
@@ -253,17 +284,45 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         
         # save the skeleton
         np.save(skeleton_path, skeleton)
-        voxel_meta_path.write_text(json.dumps({"voxel_size": voxel_size}))
+        voxel_meta_path.write_text(
+            json.dumps(
+                {
+                    "voxel_size": voxel_size,
+                    "voxel_size_source": voxel_size_source,
+                    "voxel_metadata_status": voxel_meta_status,
+                    "voxel_size_policy": voxel_size_policy,
+                    "voxel_size_override_xyz": voxel_size_override_xyz,
+                }
+            )
+        )
         print(f"Saved skeleton to: {skeleton_path}")
     else:
         # load the skeleton
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(image_path)
         if voxel_meta_path.exists():
-            voxel_size = tuple(json.loads(voxel_meta_path.read_text())["voxel_size"])
+            cached_voxel_meta = json.loads(voxel_meta_path.read_text())
+            metadata_voxel_size = tuple(cached_voxel_meta["voxel_size"])
+            voxel_meta_status = cached_voxel_meta.get(
+                "voxel_metadata_status",
+                {"source": "cache", "status": "unknown"},
+            )
         else:
-            voxel_size = (1.0, 1.0, 1.0)
+            metadata_voxel_size = (1.0, 1.0, 1.0)
+            voxel_meta_status = {"source": "none", "status": "missing"}
+        voxel_size, voxel_size_source = resolve_voxel_size_xyz(
+            metadata_voxel_size_xyz=metadata_voxel_size,
+            metadata_status=voxel_meta_status,
+            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_policy=voxel_size_policy,
+        )
         print(f"Loaded skeleton from: {skeleton_path}")
+        print(
+            "Voxel-size resolution (from cache/default): "
+            f"source={voxel_size_source}, "
+            f"metadata_status={voxel_meta_status.get('status')}, "
+            f"final={voxel_size}"
+        )
 
     print("Visualizing skeleton projection...")
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
