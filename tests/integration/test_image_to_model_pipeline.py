@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import pickle
 import shutil
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -151,3 +152,114 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
     assert n_nodes > 0
     assert n_edges > 0
     assert vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reuse(tmp_path):
+    """Ensure probabilistic artificial cohort is reused from comparison in final run."""
+    pytest.importorskip("pyvista")
+
+    input_tiff = tmp_path / "seven_vessel_noisy_3d_probabilistic.tif"
+    shutil.copy(FIXTURE_TIFF, input_tiff)
+
+    plot_dir = TESTS_DIR / "plots" / "plots_image_to_model_probabilistic_reuse"
+    output_dir = TESTS_DIR / "outputs" / "image_to_model_probabilistic_reuse"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vtk_prefix = output_dir / "integration_probabilistic_reuse"
+
+    pipeline = _load_pipeline_module()
+
+    # Force uniform 0.8 map for final run so comparison constrained value aligns.
+    constriction_uniform_08 = {
+        str(branch_order): 0.8 for branch_order in pipeline.DIAMETER_BY_BRANCH_ORDER.keys()
+    }
+    probabilistic_call_args: list[dict | None] = []
+
+    original_probabilistic_pipeline = (
+        pipeline.probability_haemodynamics
+        .set_poiseuille_weights_with_probabilistic_periodic_constrictions
+    )
+    original_probabilistic_compare = (
+        pipeline.pericyte_comparison_haemodynamics
+        .set_poiseuille_weights_with_probabilistic_periodic_constrictions
+    )
+
+    def _recording_probabilistic_pipeline(*args, **kwargs):
+        kwargs = dict(kwargs)
+        kwargs["constriction_length"] = 8.0
+        kwargs["constriction_spacing"] = 10.0
+        active_map = kwargs.get("active_center_indices_by_edge")
+        probabilistic_call_args.append(deepcopy(active_map) if active_map is not None else None)
+        return original_probabilistic_pipeline(*args, **kwargs)
+
+    def _recording_probabilistic_compare(*args, **kwargs):
+        kwargs = dict(kwargs)
+        kwargs["constriction_length"] = 8.0
+        kwargs["constriction_spacing"] = 10.0
+        active_map = kwargs.get("active_center_indices_by_edge")
+        probabilistic_call_args.append(deepcopy(active_map) if active_map is not None else None)
+        return original_probabilistic_compare(*args, **kwargs)
+
+    pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        _recording_probabilistic_pipeline
+    )
+    pipeline.pericyte_comparison_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        _recording_probabilistic_compare
+    )
+    try:
+        pipeline.image_to_model_pipeline(
+            image_path=input_tiff,
+            plot_dir=plot_dir,
+            vtk_output_prefix=vtk_prefix,
+            verbose_logging=False,
+            do_skeletonize=True,
+            do_graph_building=True,
+            do_equiv_resistance_calculation=False,
+            skeleton_closing_radius=1,
+            skeleton_bridge_gap_size=1,
+            skeleton_min_branch_length=3,
+            skeleton_max_bridge_distance=2,
+            skeleton_component_connectivity=3,
+            skeleton_min_component_percent=1.0,
+            starting_node_coordinates=[(5.0, 5.0, 5.0)],
+            output_node_coordinates=[(42.0, 42.0, 42.0)],
+            starting_nodes=[],
+            output_nodes=[],
+            input_p_bc=1000.0,
+            output_p_bc=500.0,
+            min_stub_length=3.0,
+            visualize_results=False,
+            visualize_vtk=False,
+            do_pericyte_constriction=True,
+            use_pericyte_mask_constriction=False,
+            use_probabilistic_pericyte_constriction=True,
+            pericyte_constriction_probability=0.8,
+            run_pericyte_resistance_comparison=True,
+            pericyte_comparison_baseline_value=1.0,
+            pericyte_comparison_constricted_value=0.8,
+            reuse_comparison_pericyte_cohort_for_main_run=True,
+            constriction_by_branch_order=constriction_uniform_08,
+        )
+    finally:
+        pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+            original_probabilistic_pipeline
+        )
+        pipeline.pericyte_comparison_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+            original_probabilistic_compare
+        )
+
+    # Expect 3 calls:
+    # 1) comparison baseline (None),
+    # 2) comparison constricted (fixed non-empty map),
+    # 3) final main run (same fixed map when reuse toggle is True).
+    assert len(probabilistic_call_args) >= 3
+    assert probabilistic_call_args[0] is None
+    assert isinstance(probabilistic_call_args[1], dict)
+    assert isinstance(probabilistic_call_args[2], dict)
+    assert probabilistic_call_args[1] == probabilistic_call_args[2]
+    assert any(len(v) > 0 for v in probabilistic_call_args[1].values())
+
+    comparison_csv = output_dir / f"{input_tiff.stem}_pericyte_resistance_comparison.csv"
+    assert comparison_csv.exists()
