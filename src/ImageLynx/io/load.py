@@ -160,8 +160,8 @@ def simplify_to_3d(image: np.ndarray) -> np.ndarray:
 def _to_binary_volume_for_skeletonization(image: np.ndarray) -> np.ndarray:
     """Convert loaded image volume to a boolean mask for skeletonization.
 
-    - Preserve 0/1 integer masks by using ``> 0`` so value ``1`` is foreground.
-    - Keep prior skimage conversion behavior for full-range integer images.
+    - Preserve low-cardinality integer label masks (e.g., 0/1, 0/255, 1/2).
+    - Keep prior skimage conversion behavior for grayscale integer images.
     - For normalized floating masks (0..1), threshold at 0.5.
     - For other floating data, use ``> 0`` as a conservative fallback.
     """
@@ -173,14 +173,25 @@ def _to_binary_volume_for_skeletonization(image: np.ndarray) -> np.ndarray:
         values, counts = np.unique(arr, return_counts=True)
         if values.size == 1:
             return arr > 0
-        # Common segmentation convention.
-        if 0 in values:
-            return arr != 0
+        # Common binary-mask conventions (e.g., 0/1 or 0/255).
+        if values.size == 2 and 0 in values:
+            fg_value = values[values != 0][0]
+            return arr == fg_value
         # Two non-zero labels often mean background/foreground without 0.
         # Use the minority class as foreground (e.g. 1/2 encoded masks).
         if values.size == 2:
             fg_value = values[int(np.argmin(counts))]
             return arr == fg_value
+        # For very small integer label sets, pick the least frequent non-zero
+        # class as foreground and treat zero as background when present.
+        if values.size <= 4:
+            nonzero_values = values[values != 0]
+            if nonzero_values.size > 0:
+                nonzero_counts = np.array(
+                    [counts[np.where(values == v)[0][0]] for v in nonzero_values]
+                )
+                fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
+                return arr == fg_value
         arr_min = int(values.min())
         arr_max = int(values.max())
         if arr_min >= 0 and arr_max <= 1:
