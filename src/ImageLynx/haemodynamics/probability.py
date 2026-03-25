@@ -7,6 +7,14 @@ import networkx as nx
 import numpy as np
 
 
+def is_capillary_branch_order(branch_order: str | None) -> bool:
+    """Return True for capillary labels (B01, B02, ...)."""
+    if branch_order is None:
+        return False
+    label = str(branch_order).strip()
+    return label.startswith("B")
+
+
 def select_active_pericyte_indices(
     total_pericytes: int,
     constriction_probability: float,
@@ -261,11 +269,15 @@ def set_poiseuille_weights_with_probabilistic_periodic_constrictions(
                 f"Edge ({u}, {v}, {key}) has non-positive diameters d1={d1}, d2={d2}."
             )
 
-        all_centers = _periodic_center_positions(
-            length=float(length),
-            constriction_length=float(constriction_length),
-            constriction_spacing=float(constriction_spacing),
-        )
+        if is_capillary_branch_order(str(branch_order)):
+            all_centers = _periodic_center_positions(
+                length=float(length),
+                constriction_length=float(constriction_length),
+                constriction_spacing=float(constriction_spacing),
+            )
+        else:
+            # Rule: pericyte placement/assignment is capillary-only.
+            all_centers = []
         results["total_periodic_pericyte_sites"] += int(len(all_centers))
         edge_id = f"{u}|{v}|{key}"
         if active_center_indices_by_edge is not None:
