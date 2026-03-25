@@ -45,6 +45,8 @@ def _set_weights_for_factor(
     active_pericyte_indices: list[int] | None,
     active_center_indices_by_edge: dict[str, list[int]] | None,
     max_assignment_distance_um: float | None,
+    min_pericyte_diameter_um: float | None,
+    max_pericyte_diameter_um: float | None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Apply edge weights for a comparison scenario."""
     branch_orders = [str(bo) for bo in diameter_by_branch_order.keys()]
@@ -69,6 +71,8 @@ def _set_weights_for_factor(
             constriction_probability=float(pericyte_constriction_probability),
             active_pericyte_indices=active_pericyte_indices,
             max_assignment_distance_um=max_assignment_distance_um,
+            min_pericyte_diameter_um=min_pericyte_diameter_um,
+            max_pericyte_diameter_um=max_pericyte_diameter_um,
         )
 
     if use_probabilistic_pericyte_constriction:
@@ -142,6 +146,8 @@ def compare_baseline_vs_pericyte_constriction(
     use_probabilistic_pericyte_constriction: bool = False,
     pericyte_constriction_probability: float = 1.0,
     max_assignment_distance_um: float | None = 3.0,
+    min_pericyte_diameter_um: float | None = 5.0,
+    max_pericyte_diameter_um: float | None = 12.0,
 ) -> dict[str, Any]:
     """Compare effective resistance at baseline vs constricted settings.
 
@@ -181,6 +187,8 @@ def compare_baseline_vs_pericyte_constriction(
         active_pericyte_indices=None,
         active_center_indices_by_edge=None,
         max_assignment_distance_um=max_assignment_distance_um,
+        min_pericyte_diameter_um=min_pericyte_diameter_um,
+        max_pericyte_diameter_um=max_pericyte_diameter_um,
     )
     if use_pericyte_mask_constriction and use_probabilistic_pericyte_constriction:
         selected = baseline_weight_results.get("active_pericyte_indices")
@@ -214,6 +222,8 @@ def compare_baseline_vs_pericyte_constriction(
         active_pericyte_indices=fixed_active_pericyte_indices,
         active_center_indices_by_edge=fixed_active_center_indices_by_edge,
         max_assignment_distance_um=max_assignment_distance_um,
+        min_pericyte_diameter_um=min_pericyte_diameter_um,
+        max_pericyte_diameter_um=max_pericyte_diameter_um,
     )
     constricted_resistance = _compute_two_point_resistance(
         graph_constricted,

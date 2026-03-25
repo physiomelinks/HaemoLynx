@@ -73,8 +73,8 @@ def _build_synthetic_pericyte_mask(
         dy = yy - cy
         dz = zz - cz
 
-        log_half_length = 2.8
-        log_radius = 1.2
+        log_half_length = 3.8
+        log_radius = 1.8
         side_offset_threshold = 0.0
         log_part = (
             (np.abs(dx) <= log_half_length)
@@ -83,9 +83,9 @@ def _build_synthetic_pericyte_mask(
         )
 
         bump_part = (
-            (dx / 1.8) ** 2
-            + ((dy - 2.0) / 1.3) ** 2
-            + (dz / 1.5) ** 2
+            (dx / 2.6) ** 2
+            + ((dy - 2.3) / 2.0) ** 2
+            + (dz / 2.3) ** 2
             <= 1.0
         )
         mask[log_part | bump_part] = 1
