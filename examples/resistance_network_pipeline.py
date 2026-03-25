@@ -26,6 +26,7 @@ from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visua
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
 from ImageLynx.haemodynamics import probability as probability_haemodynamics
+from preflight import run_preflight_checklist
 from resistance_pipeline_settings import *  # noqa: F403
 from wizard import run_interactive_setup_wizard
 
@@ -1802,4 +1803,7 @@ if __name__ == "__main__":
             pipeline_kwargs=pipeline_kwargs,
         )
         print(f"Saved effective run config to: {saved_path}")
+    preflight_report = run_preflight_checklist(pipeline_kwargs)
+    if not preflight_report["ok"]:
+        raise SystemExit(2)
     image_to_model_pipeline(**pipeline_kwargs)
