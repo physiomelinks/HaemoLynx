@@ -27,6 +27,7 @@ from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_h
 from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
 from ImageLynx.haemodynamics import probability as probability_haemodynamics
 from resistance_pipeline_settings import *  # noqa: F403
+from wizard import run_interactive_setup_wizard
 
 def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_ilastik_segmentation=USE_ILASTIK_SEGMENTATION,
@@ -1653,6 +1654,14 @@ if __name__ == "__main__":
         help="Write the effective resolved run configuration to a YAML file.",
     )
     parser.add_argument(
+        "--wizard",
+        action="store_true",
+        help=(
+            "Run interactive setup prompts for preset, image path, "
+            "mask usage, and key toggles."
+        ),
+    )
+    parser.add_argument(
         "--set",
         dest="manual_setting_overrides",
         action="append",
@@ -1741,6 +1750,16 @@ if __name__ == "__main__":
     if cli.fwhm_raw_tiff is not None:
         manual_overrides["FWHM_RAW_TIFF_PATH"] = cli.fwhm_raw_tiff
 
+    wizard_pipeline_overrides: dict[str, object] = {}
+    if cli.wizard:
+        wizard_results = run_interactive_setup_wizard(
+            default_preset=preset_name,
+            available_presets=sorted(PRESET_DEFINITIONS.keys()),  # noqa: F405
+        )
+        preset_name = wizard_results["preset_name"]
+        manual_overrides.update(wizard_results["settings_overrides"])
+        wizard_pipeline_overrides = dict(wizard_results["pipeline_overrides"])
+
     selected_settings = build_settings_for_preset(  # noqa: F405
         preset_name=preset_name,
         manual_overrides=manual_overrides,
@@ -1761,6 +1780,12 @@ if __name__ == "__main__":
         print(
             "Applying config pipeline overrides: "
             f"{sorted(config_pipeline_overrides.keys())}"
+        )
+    if wizard_pipeline_overrides:
+        pipeline_kwargs.update(wizard_pipeline_overrides)
+        print(
+            "Applying wizard pipeline overrides: "
+            f"{sorted(wizard_pipeline_overrides.keys())}"
         )
     pipeline_cli_overrides = _extract_pipeline_cli_overrides(cli)
     if pipeline_cli_overrides:
