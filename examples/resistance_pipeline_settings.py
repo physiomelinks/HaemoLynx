@@ -37,8 +37,10 @@ ILASTIK_EXECUTABLE = "ilastik.exe"
 ILASTIK_OUTPUT_DIR = root_dir / "examples" / "outputs" / "segmentations"
 # File suffix for ilastik segmentation outputs.
 ILASTIK_OUTPUT_SUFFIX = ".tif"
-# Optional manual override in (x, y, z) px/um (pixels per micron).
-VOXEL_SIZE_OVERRIDE_XYZ_PX_PER_UM: tuple[float, float, float] | None = None
+# Optional manual override with mixed units:
+#   x, y: px/um (pixels per micron)
+#   z:    um/px (microns per pixel; already spacing)
+VOXEL_SIZE_OVERRIDE_XYZ_PX_PER_UM: tuple[float, float, float] | None = [1.6862, 1.6862, 2.0]
 # Policy for voxel-size resolution: "auto", "override", or "metadata_only".
 VOXEL_SIZE_POLICY = "auto"
 

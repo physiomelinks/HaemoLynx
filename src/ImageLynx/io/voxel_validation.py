@@ -41,9 +41,13 @@ def resolve_voxel_size_xyz(
             voxel_size_override_xyz_px_per_um,
             label="voxel_size_override_xyz_px_per_um",
         )
-        # Manual override is entered as px/um; convert to um/px for pipeline use.
-        override_um_per_px_xyz = tuple(
-            1.0 / float(v) for v in override_px_per_um_xyz
+        # Manual override convention:
+        # - x, y are entered as px/um and converted to um/px
+        # - z is entered directly as um/px (already spacing)
+        override_um_per_px_xyz = (
+            1.0 / float(override_px_per_um_xyz[0]),
+            1.0 / float(override_px_per_um_xyz[1]),
+            float(override_px_per_um_xyz[2]),
         )
 
     metadata_state = str((metadata_status or {}).get("status", "missing")).lower()

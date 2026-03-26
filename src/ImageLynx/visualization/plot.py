@@ -36,7 +36,9 @@ def _projection_extent(
     """Return imshow extent for (Y, X) projection in physical units."""
     y_size, x_size = projection_shape
     vy = float(voxel_size[1])
-    vx = float(voxel_size[0])
+    # Graph overlays use axis-2 as X and axis-1 as Y (array-order mapping).
+    # Keep background extent in the same mapping to avoid image/graph drift.
+    vx = float(voxel_size[2])
     # Keep top-left origin semantics used by existing overlays.
     return (0.0, x_size * vx, y_size * vy, 0.0)
 
