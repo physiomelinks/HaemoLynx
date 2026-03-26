@@ -4,6 +4,8 @@ from typing import List, Tuple, Dict, Any, Union
 import numpy as np
 import networkx as nx
 
+from ..coords import physical_xyz_to_index_zyx, index_zyx_to_physical_xyz
+
 def add_edge_safe(G, u, v, **attr):
     return G.add_edge(u, v, **attr)
 
@@ -254,10 +256,9 @@ def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: T
             pos1 = (edge_data.get('x1', 0), edge_data.get('y1', 0), edge_data.get('z1', 0))
             pos2 = (edge_data.get('x2', 0), edge_data.get('y2', 0), edge_data.get('z2', 0))
         
-        # Calculate distance accounting for voxel size
+        # Positions here are physical coordinates (x, y, z), so do not rescale.
         diff = np.array(pos2) - np.array(pos1)
-        scaled_diff = diff * np.array(voxel_size)
-        return np.linalg.norm(scaled_diff)
+        return float(np.linalg.norm(diff))
     
     # If we have weight, use that
     if 'weight' in edge_data:
@@ -367,8 +368,8 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
     coordinates.
     """
     vs = np.asarray(voxel_size, dtype=float)
-    start_vox = np.round(np.asarray(start_pos, dtype=float) / vs).astype(int)
-    end_vox = np.round(np.asarray(end_pos, dtype=float) / vs).astype(int)
+    start_vox = physical_xyz_to_index_zyx(start_pos, vs)
+    end_vox = physical_xyz_to_index_zyx(end_pos, vs)
     
     if debug:
         print(f"       Tracing skeleton from {start_pos} (vox {start_vox}) to {end_pos} (vox {end_vox})")
@@ -398,7 +399,7 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
     if path:
         if debug:
             print(f"       Found skeleton path with {len(path)} voxels")
-        phys_path = [(np.array(p, dtype=float) * vs).tolist() for p in path]
+        phys_path = [index_zyx_to_physical_xyz(p, vs).tolist() for p in path]
         return phys_path
     else:
         if debug:

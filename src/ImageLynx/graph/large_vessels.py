@@ -19,7 +19,13 @@ def dilate_binary_mask_by_microns(
         return mask.astype(bool, copy=False)
 
     binary_mask = mask.astype(bool, copy=False)
-    distance_from_mask = distance_transform_edt(~binary_mask, sampling=voxel_size_xyz)
+    # distance_transform_edt sampling follows array axis order (z, y, x).
+    sampling_zyx = (
+        float(voxel_size_xyz[2]),
+        float(voxel_size_xyz[1]),
+        float(voxel_size_xyz[0]),
+    )
+    distance_from_mask = distance_transform_edt(~binary_mask, sampling=sampling_zyx)
     return binary_mask | (distance_from_mask <= float(dilation_microns))
 
 

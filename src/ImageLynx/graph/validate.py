@@ -3,6 +3,7 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 
+from ..coords import physical_xyz_to_index_zyx
 from ._helpers import get_line_points_3d
 
 
@@ -22,8 +23,8 @@ def validate_skeleton_connection(
     """
     try:
         vs = np.asarray(voxel_size, dtype=float)
-        p1 = np.round(np.asarray(pos1, dtype=float) / vs).astype(int)
-        p2 = np.round(np.asarray(pos2, dtype=float) / vs).astype(int)
+        p1 = physical_xyz_to_index_zyx(pos1, vs)
+        p2 = physical_xyz_to_index_zyx(pos2, vs)
         if not (
             0 <= p1[0] < skeleton_data.shape[0]
             and 0 <= p1[1] < skeleton_data.shape[1]

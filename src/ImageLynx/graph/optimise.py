@@ -6,6 +6,7 @@ import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
 
+from ..coords import indices_zyx_to_physical_xyz
 from ._helpers import add_edge_safe, calculate_path_length
 from .validate import validate_skeleton_connection
 
@@ -107,9 +108,8 @@ def optimise_graph_topology_fixed(
                         if debug:
                             logger.debug("Skipped reconnection %s-%s: no skeleton path", src, tgt)
                         continue
-                    vs_arr = np.asarray(vs, dtype=float)
                     if voxel_path:
-                        phys_path = [(np.array(p, dtype=float) * vs_arr).tolist() for p in voxel_path]
+                        phys_path = indices_zyx_to_physical_xyz(voxel_path, vs).tolist()
                     else:
                         phys_path = [src_pos.tolist(), tgt_pos.tolist()]
                     path_length = _physical_path_length(phys_path)
@@ -172,7 +172,6 @@ def reconnect_orphan_and_dangling_nodes(
         raise ValueError("This function is designed for MultiGraphs")
 
     vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
-    vs_arr = np.asarray(vs, dtype=float)
 
     valid_nodes = [n for n in G.nodes if "pos" in G.nodes[n]]
     if len(valid_nodes) < 2:
@@ -246,7 +245,7 @@ def reconnect_orphan_and_dangling_nodes(
             if not connection_valid:
                 continue
             if voxel_path:
-                phys_path = [(np.array(p, dtype=float) * vs_arr).tolist() for p in voxel_path]
+                phys_path = indices_zyx_to_physical_xyz(voxel_path, vs).tolist()
             else:
                 phys_path = [src_pos.tolist(), tgt_pos.tolist()]
         else:

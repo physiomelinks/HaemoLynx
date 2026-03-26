@@ -27,7 +27,7 @@ DEMO_HTML_PATH = REPO_ROOT / "examples" / "plots" / "small_vessel_mask_boundary_
 def _voxel_polyline_samples(
     p0: np.ndarray, p1: np.ndarray, *, count: int = 24
 ) -> list[tuple[float, float, float]]:
-    """Dense (z, y, x) samples along a segment for mask overlap scoring."""
+    """Dense physical (x, y, z) samples along a segment for mask overlap scoring."""
     t = np.linspace(0.0, 1.0, int(count), dtype=float)
     pts = (1.0 - t).reshape(-1, 1) * p0.reshape(1, 3) + t.reshape(-1, 1) * p1.reshape(1, 3)
     uniq = np.unique(np.rint(pts).astype(int), axis=0)
@@ -43,7 +43,7 @@ def build_synthetic_small_vessel_boundary_model() -> tuple[
 ]:
     """3D synthetic capillary bed: arteriole slab, gap, venule slab, with a side branch.
 
-    Node positions are physical (z, y, x) with voxel_size 1; mask voxels align with indices.
+    Node positions are physical (x, y, z) with voxel_size 1; mask voxels align with indices.
     """
     nz, ny, n_vox_x = 16, 16, 22
     shape = (nz, ny, n_vox_x)
@@ -57,7 +57,7 @@ def build_synthetic_small_vessel_boundary_model() -> tuple[
     # Main trunk at y=8, z=8 along +x through art -> capillary gap -> venule.
     trunk_xs = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0]
     for i, x in enumerate(trunk_xs):
-        G.add_node(i, pos=np.array([8.0, 8.0, x], dtype=float))
+        G.add_node(i, pos=np.array([x, 8.0, 8.0], dtype=float))
 
     for a, b in zip(range(len(trunk_xs) - 1), range(1, len(trunk_xs))):
         pa = np.asarray(G.nodes[a]["pos"], dtype=float)
@@ -67,7 +67,7 @@ def build_synthetic_small_vessel_boundary_model() -> tuple[
 
     # Side branch from arteriole interior: steps in +z while staying inside art slab.
     br = len(trunk_xs)
-    G.add_node(br, pos=np.array([12.0, 8.0, 4.0], dtype=float))
+    G.add_node(br, pos=np.array([4.0, 8.0, 12.0], dtype=float))
     pa = np.asarray(G.nodes[1]["pos"], dtype=float)
     pb = np.asarray(G.nodes[br]["pos"], dtype=float)
     G.add_edge(

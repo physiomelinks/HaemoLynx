@@ -17,6 +17,7 @@ from scipy.ndimage import binary_erosion, generate_binary_structure, label
 from scipy.spatial import cKDTree
 import tifffile
 
+from ImageLynx.coords import index_zyx_to_physical_xyz, indices_zyx_to_physical_xyz
 from ImageLynx.io import load_3d_h5_with_voxel_size, load_3d_tif_with_voxel_size
 from ImageLynx.haemodynamics.automated import build_graph_branch_label_volume
 
@@ -209,7 +210,7 @@ def compute_object_to_vessel_distances(
     boundary_idx = np.argwhere(boundary_mask)
     if boundary_idx.size == 0:
         raise ValueError("No vessel boundary voxels found.")
-    boundary_phys = boundary_idx.astype(float) * spacing.reshape(1, 3)
+    boundary_phys = indices_zyx_to_physical_xyz(boundary_idx, spacing)
     boundary_tree = cKDTree(boundary_phys)
 
     edge_tree: cKDTree | None = None
@@ -222,7 +223,7 @@ def compute_object_to_vessel_distances(
             )
         valid_edge_idx = np.argwhere(graph_edge_label_volume > 0)
         if valid_edge_idx.size > 0:
-            valid_edge_phys = valid_edge_idx.astype(float) * spacing.reshape(1, 3)
+            valid_edge_phys = indices_zyx_to_physical_xyz(valid_edge_idx, spacing)
             edge_tree = cKDTree(valid_edge_phys)
             edge_labels = graph_edge_label_volume[
                 valid_edge_idx[:, 0], valid_edge_idx[:, 1], valid_edge_idx[:, 2]
@@ -248,17 +249,20 @@ def compute_object_to_vessel_distances(
         if object_idx.size == 0:
             continue
         centroid_idx = np.mean(object_idx.astype(float), axis=0)
-        centroid_phys = centroid_idx * spacing
+        centroid_phys = index_zyx_to_physical_xyz(centroid_idx, spacing)
 
         object_region = labels == int(object_id)
         object_boundary_idx = _compute_object_boundary_indices(object_region)
-        object_boundary_phys = object_boundary_idx.astype(float) * spacing.reshape(1, 3)
+        object_boundary_phys = indices_zyx_to_physical_xyz(object_boundary_idx, spacing)
         edge_dists, edge_nearest_indices = boundary_tree.query(object_boundary_phys, k=1)
         best_object_boundary_i = int(np.argmin(edge_dists))
         best_vessel_boundary_i_from_edge = int(edge_nearest_indices[best_object_boundary_i])
         edge_to_vessel_dist = float(edge_dists[best_object_boundary_i])
         nearest_vessel_idx_from_edge = boundary_idx[best_vessel_boundary_i_from_edge].astype(float)
-        nearest_vessel_phys_from_edge = nearest_vessel_idx_from_edge * spacing
+        nearest_vessel_phys_from_edge = index_zyx_to_physical_xyz(
+            nearest_vessel_idx_from_edge,
+            spacing,
+        )
         (
             edge_nearest_edge_label_id,
             edge_nearest_branch_order,
@@ -269,7 +273,10 @@ def compute_object_to_vessel_distances(
         )
         centroid_to_vessel_dist = float(centroid_dist_arr[0])
         nearest_vessel_idx_from_centroid = boundary_idx[int(centroid_nearest_idx[0])].astype(float)
-        nearest_vessel_phys_from_centroid = nearest_vessel_idx_from_centroid * spacing
+        nearest_vessel_phys_from_centroid = index_zyx_to_physical_xyz(
+            nearest_vessel_idx_from_centroid,
+            spacing,
+        )
         (
             centroid_nearest_edge_label_id,
             centroid_nearest_branch_order,
@@ -284,15 +291,15 @@ def compute_object_to_vessel_distances(
                 centroid_y=float(centroid_idx[1]),
                 centroid_x=float(centroid_idx[2]),
                 edge_to_vessel_distance_microns=edge_to_vessel_dist,
-                edge_to_vessel_nearest_z=float(nearest_vessel_phys_from_edge[0]),
+                edge_to_vessel_nearest_z=float(nearest_vessel_phys_from_edge[2]),
                 edge_to_vessel_nearest_y=float(nearest_vessel_phys_from_edge[1]),
-                edge_to_vessel_nearest_x=float(nearest_vessel_phys_from_edge[2]),
+                edge_to_vessel_nearest_x=float(nearest_vessel_phys_from_edge[0]),
                 edge_to_vessel_nearest_graph_edge_label_id=edge_nearest_edge_label_id,
                 edge_to_vessel_nearest_branch_order=edge_nearest_branch_order,
                 centroid_to_vessel_distance_microns=centroid_to_vessel_dist,
-                centroid_to_vessel_nearest_z=float(nearest_vessel_phys_from_centroid[0]),
+                centroid_to_vessel_nearest_z=float(nearest_vessel_phys_from_centroid[2]),
                 centroid_to_vessel_nearest_y=float(nearest_vessel_phys_from_centroid[1]),
-                centroid_to_vessel_nearest_x=float(nearest_vessel_phys_from_centroid[2]),
+                centroid_to_vessel_nearest_x=float(nearest_vessel_phys_from_centroid[0]),
                 centroid_to_vessel_nearest_graph_edge_label_id=centroid_nearest_edge_label_id,
                 centroid_to_vessel_nearest_branch_order=centroid_nearest_branch_order,
             )

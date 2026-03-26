@@ -10,8 +10,8 @@ Branch identity for clipping comes from an in-memory label volume rasterized fro
 (see ``build_graph_branch_label_volume``). Transverse extent follows the configured minimum
 relative to the current FWHM estimate unless truncated at another edge or volume bounds.
 
-Transverse profiles are sampled **in the physical y–x plane only** (no displacement along
-stack axis ``z`` / index 0), so diameter rays follow in-plane directions when voxel spacing
+Transverse profiles are sampled **in the physical x–y plane only** (no displacement along
+physical ``z``), so diameter rays follow in-plane directions when voxel spacing
 is anisotropic with coarser ``z``.
 """
 from __future__ import annotations
@@ -24,6 +24,11 @@ import networkx as nx
 import tifffile
 from scipy.ndimage import map_coordinates
 from scipy.optimize import curve_fit
+
+from ImageLynx.coords import (
+    physical_xyz_to_continuous_index_zyx,
+    physical_xyz_delta_to_index_zyx_delta,
+)
 
 # FWHM of a Gaussian with standard deviation sigma (not 2*sigma^2 in the exponent).
 _GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
@@ -55,18 +60,11 @@ def physical_points_to_continuous_indices(
     points_phys: np.ndarray,
     voxel_size_xyz: tuple[float, float, float],
 ) -> np.ndarray:
-    """Convert physical (axis0, axis1, axis2) coordinates to continuous voxel indices.
-
-    Uses the same element-wise scaling as graph construction:
-    ``phys[i] = index[i] * voxel_size_xyz[i]``.
-    """
-    pts = np.asarray(points_phys, dtype=float)
-    if pts.ndim == 1:
-        pts = pts.reshape(1, 3)
+    """Convert physical (x,y,z) coordinates to continuous voxel indices (z,y,x)."""
     spacing = _spacing_vec(voxel_size_xyz)
     if np.any(spacing <= 0):
         raise ValueError("voxel_size_xyz components must be positive.")
-    return pts / spacing
+    return physical_xyz_to_continuous_index_zyx(points_phys, voxel_size_xyz)
 
 
 def _gram_schmidt_perpendicular(tangent: np.ndarray) -> np.ndarray:
@@ -98,20 +96,19 @@ def _gram_schmidt_perpendicular(tangent: np.ndarray) -> np.ndarray:
 
 
 def _transverse_unit_in_physical_yx_plane(tangent: np.ndarray) -> np.ndarray:
-    """Unit vector perpendicular to ``tangent`` with zero component along physical ``z`` (axis 0).
+    """Unit vector perpendicular to ``tangent`` in the physical x-y plane.
 
-    Coordinates are ``(z, y, x)`` as elsewhere in this module. The returned direction lies in
-    the slice plane (varies only ``y`` and ``x``), matching typical microscopy where ``z`` is
-    the lower-resolution stack axis and diameters should be measured without stepping along ``z``.
+    Coordinates are physical ``(x, y, z)``. The returned direction keeps ``z`` fixed
+    (i.e., varies only ``x`` and ``y``).
     """
     t = np.asarray(tangent, dtype=float).ravel()
     if t.size != 3:
-        raise ValueError("tangent must have length 3 (z, y, x).")
-    ty, tx = float(t[1]), float(t[2])
-    n2 = float(np.hypot(ty, tx))
+        raise ValueError("tangent must have length 3 (x, y, z).")
+    tx, ty = float(t[0]), float(t[1])
+    n2 = float(np.hypot(tx, ty))
     if n2 < 1e-12:
-        return np.array([0.0, 1.0, 0.0], dtype=float)
-    return np.array([0.0, -tx / n2, ty / n2], dtype=float)
+        return np.array([1.0, 0.0, 0.0], dtype=float)
+    return np.array([-ty / n2, tx / n2, 0.0], dtype=float)
 
 
 def _arc_length_parameterize(poly_phys: np.ndarray) -> tuple[np.ndarray, float]:
@@ -202,7 +199,6 @@ def _max_extent_along_ray(
     neighbourhood around the current sample to avoid zig-zag self-intersections.
     Any other positive label is treated as a different graph edge and truncates the line.
     """
-    spacing = _spacing_vec(voxel_size_xyz)
     if step_um <= 0:
         raise ValueError("step_um must be positive.")
     d = direction_unit / np.linalg.norm(direction_unit)
@@ -210,7 +206,7 @@ def _max_extent_along_ray(
     shape = labels.shape
     for k in range(1, n_steps + 1):
         delta_phys = d * (k * step_um)
-        idx = center_idx + delta_phys / spacing
+        idx = center_idx + physical_xyz_delta_to_index_zyx_delta(delta_phys, voxel_size_xyz)
         if (
             idx[0] < 0
             or idx[1] < 0
@@ -264,14 +260,13 @@ def _sample_transverse_profile(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sample intensity along a line through ``center_phys``, perpendicular to ``tangent``.
 
-    The line lies in the physical y–x plane (fixed ``z``); see
+    The line lies in the physical x–y plane (fixed ``z``); see
     ``_transverse_unit_in_physical_yx_plane``.
 
     Returns (positions_along_line_um, intensities).
     """
-    spacing = _spacing_vec(voxel_size_xyz)
     n_hat = _transverse_unit_in_physical_yx_plane(tangent)
-    center_idx = center_phys / spacing
+    center_idx = physical_points_to_continuous_indices(center_phys, voxel_size_xyz)
 
     pos_plus = _max_extent_along_ray(
         center_idx,
@@ -313,7 +308,7 @@ def _sample_transverse_profile(
     coords = []
     for off in offsets:
         p_phys = center_phys + off * n_hat
-        idx = p_phys / spacing
+        idx = physical_points_to_continuous_indices(p_phys, voxel_size_xyz)
         coords.append(idx)
     coord_arr = np.stack(coords, axis=1)  # (3, N)
     zc, yc, xc = coord_arr[0], coord_arr[1], coord_arr[2]
@@ -913,7 +908,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     s_here = (1.0 - t) * float(s[i]) + t * float(s[i + 1])
                     dense_pts_list.append(p)
                     dense_s_list.append(s_here)
-                    row = physical_points_to_continuous_indices(p, voxel_size_xyz)[0]
+                    row = physical_points_to_continuous_indices(p, voxel_size_xyz)
                     key_idx = _nearest_integer_index(row, labels.shape)
                     prev = same_edge_s_lookup.get(key_idx)
                     # Keep arc-length closest to current segment midpoint mapping.

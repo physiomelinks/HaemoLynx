@@ -9,6 +9,8 @@ from scipy.ndimage import distance_transform_edt, gaussian_filter
 from scipy.spatial.distance import directed_hausdorff
 from skimage.graph import route_through_array
 
+from ..coords import physical_xyz_to_index_zyx, indices_zyx_to_physical_xyz
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,9 +93,13 @@ def reconnect_secondary_loop_edges(
         valid_count = 0
         for coords in orig_voxels:
             if len(coords) >= 3:
-                x, y, z = int(coords[0]), int(coords[1]), int(coords[2])
-                if 0 <= x < sub_shape[0] and 0 <= y < sub_shape[1] and 0 <= z < sub_shape[2]:
-                    mask[x, y, z] = 1.0
+                z_idx, y_idx, x_idx = int(coords[0]), int(coords[1]), int(coords[2])
+                if (
+                    0 <= z_idx < sub_shape[0]
+                    and 0 <= y_idx < sub_shape[1]
+                    and 0 <= x_idx < sub_shape[2]
+                ):
+                    mask[z_idx, y_idx, x_idx] = 1.0
                     valid_count += 1
         if valid_count == 0:
             return np.zeros(sub_shape, dtype=float)
@@ -147,8 +153,8 @@ def reconnect_secondary_loop_edges(
             if u not in node_positions or v not in node_positions:
                 return None
             pu, pv = np.array(node_positions[u]), np.array(node_positions[v])
-            u_vox = np.round(pu / np.array(voxel_size)).astype(int)
-            v_vox = np.round(pv / np.array(voxel_size)).astype(int)
+            u_vox = physical_xyz_to_index_zyx(pu, voxel_size)
+            v_vox = physical_xyz_to_index_zyx(pv, voxel_size)
             primary_edge_data = None
             for key, edge_data in G[u][v].items():
                 if not edge_data.get("secondary", False):
@@ -162,7 +168,7 @@ def reconnect_secondary_loop_edges(
             orig_voxels = []
             for vox in orig_voxels_raw:
                 if isinstance(vox, (list, tuple, np.ndarray)) and len(vox) >= 3:
-                    vox_coords = np.round(np.array(vox) / np.array(voxel_size)).astype(int)
+                    vox_coords = physical_xyz_to_index_zyx(vox, voxel_size)
                     if np.all(vox_coords >= 0) and np.all(vox_coords < skeleton_copy.shape):
                         orig_voxels.append(vox_coords)
             if not orig_voxels:
@@ -218,8 +224,8 @@ def reconnect_secondary_loop_edges(
                     if np.any(abs_coords < 0) or np.any(abs_coords >= skeleton.shape):
                         continue
                     try:
-                        x, y, z = abs_coords.T
-                        skeleton_hits = skeleton[x, y, z]
+                        z_idx, y_idx, x_idx = abs_coords.T
+                        skeleton_hits = skeleton[z_idx, y_idx, x_idx]
                         overlap = np.sum(skeleton_hits) / path_length
                         if overlap < min_overlap:
                             continue
@@ -249,7 +255,7 @@ def reconnect_secondary_loop_edges(
                                     path_similarity,
                                 )
                             continue
-                        vox3d = (abs_coords * np.array(voxel_size)).tolist()
+                        vox3d = indices_zyx_to_physical_xyz(abs_coords, voxel_size).tolist()
                         path_length_3d = _path_length_3d(vox3d)
                         unique_voxels = len(new_set - orig_set)
                         path_novelty = unique_voxels / len(new_set)

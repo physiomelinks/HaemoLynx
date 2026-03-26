@@ -10,6 +10,7 @@ import numpy as np
 from scipy.ndimage import center_of_mass, label
 from scipy.spatial import cKDTree
 
+from ImageLynx.coords import indices_zyx_to_physical_xyz
 from ImageLynx.io import (
     load_3d_h5_with_voxel_size,
     load_3d_tif_with_voxel_size,
@@ -67,8 +68,7 @@ def _extract_pericyte_centroids_physical(
     centroids_idx = np.asarray(center_of_mass(mask_bool, labels, indices), dtype=float)
     if centroids_idx.ndim == 1:
         centroids_idx = centroids_idx.reshape(1, 3)
-    spacing = np.asarray(voxel_size_xyz, dtype=float).reshape(1, 3)
-    return centroids_idx * spacing
+    return indices_zyx_to_physical_xyz(centroids_idx, voxel_size_xyz)
 
 
 def _extract_pericyte_component_properties(
@@ -92,7 +92,8 @@ def _extract_pericyte_component_properties(
     component_volumes_um3 = counts * voxel_volume
     # Equivalent sphere diameter from volume.
     equivalent_diameters_um = ((6.0 * component_volumes_um3) / np.pi) ** (1.0 / 3.0)
-    return centroids_idx * spacing.reshape(1, 3), equivalent_diameters_um
+    centroids_phys_xyz = indices_zyx_to_physical_xyz(centroids_idx, voxel_size_xyz)
+    return centroids_phys_xyz, equivalent_diameters_um
 
 
 def _edge_points(

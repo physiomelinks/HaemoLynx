@@ -51,16 +51,16 @@ def test_fwhm_percentile_and_wings_modes_symmetric_gaussian():
 
 
 def test_transverse_unit_in_physical_yx_plane():
-    """In-plane transverse: orthogonal to tangent, zero z (axis-0) component, unit length."""
+    """In-plane transverse: orthogonal to tangent, zero z component, unit length."""
     t = np.array([0.0, 0.0, 1.0], dtype=float)
     n = automated._transverse_unit_in_physical_yx_plane(t)
-    assert abs(n[0]) < 1e-9
+    assert abs(n[2]) < 1e-9
     assert abs(float(np.dot(t, n))) < 1e-9
     assert abs(float(np.linalg.norm(n)) - 1.0) < 1e-9
 
     t2 = np.array([1.0, 2.0, 3.0], dtype=float)
     n2 = automated._transverse_unit_in_physical_yx_plane(t2)
-    assert abs(n2[0]) < 1e-9
+    assert abs(n2[2]) < 1e-9
     assert abs(float(np.dot(t2, n2))) < 1e-9
     assert abs(float(np.linalg.norm(n2)) - 1.0) < 1e-9
 
@@ -80,8 +80,14 @@ def test_build_graph_branch_label_volume():
     )
     assert mapping[(0, 1, 0)] == 1
     labeled_coords = {tuple(idx) for idx in np.argwhere(vol == 1)}
+    # edge_voxels are physical (x,y,z), label volume indices are (z,y,x)
     expected_coords = {
-        tuple(np.rint(np.asarray(v, dtype=float)).astype(int)) for v in edge_voxels
+        (
+            int(round(float(v[2]))),
+            int(round(float(v[1]))),
+            int(round(float(v[0]))),
+        )
+        for v in edge_voxels
     }
     assert labeled_coords == expected_coords
     assert G[0][1][0]["graph_edge_label_id"] == 1
@@ -95,9 +101,9 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     tifffile.imwrite(str(raw_path), raw)
 
     G = nx.MultiGraph()
-    G.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
-    G.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
-    voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
+    G.add_node(0, pos=np.array([2.0, 5.0, 5.0], dtype=float))
+    G.add_node(1, pos=np.array([18.0, 5.0, 5.0], dtype=float))
+    voxels = [(float(x), 5.0, 5.0) for x in range(2, 19)]
     G.add_edge(
         0,
         1,

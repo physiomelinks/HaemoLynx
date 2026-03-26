@@ -28,12 +28,12 @@ from ImageLynx.haemodynamics.pericyte_mask import (
 def _build_synthetic_graph() -> nx.MultiGraph:
     """Create a 2-edge centerline graph in physical units (um)."""
     graph = nx.MultiGraph()
-    graph.add_node(0, pos=np.asarray([16.0, 16.0, 4.0], dtype=float))
+    graph.add_node(0, pos=np.asarray([4.0, 16.0, 16.0], dtype=float))
     graph.add_node(1, pos=np.asarray([16.0, 16.0, 16.0], dtype=float))
-    graph.add_node(2, pos=np.asarray([16.0, 16.0, 28.0], dtype=float))
+    graph.add_node(2, pos=np.asarray([28.0, 16.0, 16.0], dtype=float))
 
-    edge0_pts = [[16.0, 16.0, float(x)] for x in range(4, 17)]
-    edge1_pts = [[16.0, 16.0, float(x)] for x in range(16, 29)]
+    edge0_pts = [[float(x), 16.0, 16.0] for x in range(4, 17)]
+    edge1_pts = [[float(x), 16.0, 16.0] for x in range(16, 29)]
     graph.add_edge(
         0,
         1,
@@ -216,9 +216,9 @@ def _run_pericyte_mask_integration_case(
         edge_pts = np.asarray(edge_data.get("voxels"), dtype=float)
         fig.add_trace(
             go.Scatter3d(
-                x=edge_pts[:, 2],
+                x=edge_pts[:, 0],
                 y=edge_pts[:, 1],
-                z=edge_pts[:, 0],
+                z=edge_pts[:, 2],
                 mode="lines",
                 line={"width": 6, "color": "royalblue"},
                 name=f"Edge {u}-{v}-{key}",
@@ -228,9 +228,9 @@ def _run_pericyte_mask_integration_case(
     if assigned_array.size:
         fig.add_trace(
             go.Scatter3d(
-                x=assigned_array[:, 2],
+                x=assigned_array[:, 0],
                 y=assigned_array[:, 1],
-                z=assigned_array[:, 0],
+                z=assigned_array[:, 2],
                 mode="markers",
                 marker={"size": 6, "color": "crimson"},
                 name="Assigned pericyte locations",

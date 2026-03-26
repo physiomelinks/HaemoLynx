@@ -91,21 +91,22 @@ def _dist_point_to_segment_batch(
     """Per-voxel distance to segment ab; p* have shape (nz, ny, nx)."""
     ab = b - a
     ab2 = float(np.dot(ab, ab)) + 1e-20
-    pa_z = pz - a[0]
+    # a/b are physical (x, y, z) while sampled grids are (z, y, x) axis arrays.
+    pa_x = px - a[0]
     pa_y = py - a[1]
-    pa_x = px - a[2]
-    t = (pa_z * ab[0] + pa_y * ab[1] + pa_x * ab[2]) / ab2
+    pa_z = pz - a[2]
+    t = (pa_x * ab[0] + pa_y * ab[1] + pa_z * ab[2]) / ab2
     t = np.clip(t, 0.0, 1.0)
-    cz = a[0] + t * ab[0]
+    cx = a[0] + t * ab[0]
     cy = a[1] + t * ab[1]
-    cx = a[2] + t * ab[2]
+    cz = a[2] + t * ab[2]
     return np.sqrt((pz - cz) ** 2 + (py - cy) ** 2 + (px - cx) ** 2)
 
 
 def build_synthetic_vessel_volume_and_targets(
     voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
 ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]]]:
-    """Float32 volume + list of (endpoint_a, endpoint_b, target_fwhm_um) in (z,y,x) µm.
+    """Float32 volume + list of (endpoint_a, endpoint_b, target_fwhm_um) in (x,y,z) µm.
 
     Three straight vessels parallel to +x with geometric FWHM 3, 5, and 8 µm (Gaussian cross-section).
 
@@ -115,7 +116,7 @@ def build_synthetic_vessel_volume_and_targets(
     background to the volume edge, producing strongly asymmetric profile lines (not a rendering
     bug). Vessels are therefore separated in *z* at a shared *y*.
     """
-    vz, vy, vx = voxel_size_xyz
+    vx, vy, vz = voxel_size_xyz
     y_center = 15.0
     z_centers = (6.0, 14.0, 22.0)
     x0, x1 = 8.0, 42.0
@@ -134,9 +135,9 @@ def build_synthetic_vessel_volume_and_targets(
     px = ix * vx
 
     specs: list[tuple[tuple[float, float, float], tuple[float, float, float], float]] = [
-        ((z_centers[0], y_center, x0), (z_centers[0], y_center, x1), 3.0),
-        ((z_centers[1], y_center, x0), (z_centers[1], y_center, x1), 5.0),
-        ((z_centers[2], y_center, x0), (z_centers[2], y_center, x1), 8.0),
+        ((x0, y_center, z_centers[0]), (x1, y_center, z_centers[0]), 3.0),
+        ((x0, y_center, z_centers[1]), (x1, y_center, z_centers[1]), 5.0),
+        ((x0, y_center, z_centers[2]), (x1, y_center, z_centers[2]), 8.0),
     ]
 
     vol = np.zeros((nz, ny, nx), dtype=np.float32)
@@ -158,9 +159,9 @@ def build_matching_multigraph(
     voxel_size_xyz: tuple[float, float, float],
     step_um: float = 0.25,
 ) -> nx.MultiGraph:
-    """Graph edges replicate centerlines; physical coords (z,y,x) match ``automated`` convention."""
-    vz, vy, vx = voxel_size_xyz
-    step = min(step_um, vz, vy, vx)
+    """Graph edges replicate centerlines; physical coords are canonical (x,y,z)."""
+    vx, vy, vz = voxel_size_xyz
+    step = min(step_um, vx, vy, vz)
     G = nx.MultiGraph()
     branch_orders = ("B01", "B02", "B03")
     node_id = 0
@@ -191,13 +192,13 @@ def build_matching_multigraph(
 def build_synthetic_y_shaped_volume_and_targets(
     voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
 ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]]]:
-    """Float32 Y-shaped vessel volume + segment targets as (a, b, fwhm_um) in (z,y,x) µm.
+    """Float32 Y-shaped vessel volume + segment targets as (a, b, fwhm_um) in (x,y,z) µm.
 
     Geometry:
     - one stem along +x
     - two daughter branches diverging in y at fixed z
     """
-    vz, vy, vx = voxel_size_xyz
+    vx, vy, vz = voxel_size_xyz
     z0 = 14.0
     y0 = 15.0
     x_stem0 = 8.0
@@ -207,9 +208,9 @@ def build_synthetic_y_shaped_volume_and_targets(
 
     # stem, upper daughter, lower daughter
     specs: list[tuple[tuple[float, float, float], tuple[float, float, float], float]] = [
-        ((z0, y0, x_stem0), (z0, y0, x_bif), 6.0),
-        ((z0, y0, x_bif), (z0, y0 + y_delta, x_tip), 4.0),
-        ((z0, y0, x_bif), (z0, y0 - y_delta, x_tip), 4.0),
+        ((x_stem0, y0, z0), (x_bif, y0, z0), 6.0),
+        ((x_bif, y0, z0), (x_tip, y0 + y_delta, z0), 4.0),
+        ((x_bif, y0, z0), (x_tip, y0 - y_delta, z0), 4.0),
     ]
 
     sigma_max = max(f for _, _, f in specs) / _GAUSSIAN_FWHM_FROM_SIGMA
@@ -248,8 +249,8 @@ def build_y_shaped_matching_multigraph(
     step_um: float = 0.25,
 ) -> nx.MultiGraph:
     """Graph for Y-shaped targets with a shared bifurcation node at the common point."""
-    vz, vy, vx = voxel_size_xyz
-    step = min(step_um, vz, vy, vx)
+    vx, vy, vz = voxel_size_xyz
+    step = min(step_um, vx, vy, vz)
     G = nx.MultiGraph()
 
     # Node ids: 0=stem start, 1=bifurcation, 2=upper tip, 3=lower tip
@@ -305,12 +306,12 @@ def build_offcenter_matching_multigraph(
     for a, b, fwhm in targets:
         a = np.asarray(a, dtype=float).copy()
         b = np.asarray(b, dtype=float).copy()
-        dz = float(offcenter_fraction) * float(fwhm)
         dx = float(offcenter_fraction) * float(fwhm)
-        a[0] += dz
-        b[0] += dz
-        a[2] += dx
-        b[2] += dx
+        dz = float(offcenter_fraction) * float(fwhm)
+        a[0] += dx
+        b[0] += dx
+        a[2] += dz
+        b[2] += dz
         shifted_targets.append((a, b, float(fwhm)))
     return build_matching_multigraph(shifted_targets, voxel_size_xyz, step_um=step_um)
 
@@ -334,23 +335,23 @@ def add_background_noise_to_synthetic_volume(
 def build_synthetic_x_junction_volume_and_targets(
     voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
 ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]]]:
-    """Float32 X-junction vessel volume + segment targets in (z,y,x) µm.
+    """Float32 X-junction vessel volume + segment targets in (x,y,z) µm.
 
     Four branches meet at one central node, forming an X in the y-x plane.
     """
-    vz, vy, vx = voxel_size_xyz
+    vx, vy, vz = voxel_size_xyz
     z0 = 14.0
     y0 = 15.0
     x0 = 24.0
     arm_x = 14.0
     arm_y = 8.0
     fwhm = 2.5
-    center = np.array([z0, y0, x0], dtype=float)
+    center = np.array([x0, y0, z0], dtype=float)
     tips = [
-        np.array([z0, y0 - arm_y, x0 - arm_x], dtype=float),
-        np.array([z0, y0 + arm_y, x0 + arm_x], dtype=float),
-        np.array([z0, y0 + arm_y, x0 - arm_x], dtype=float),
-        np.array([z0, y0 - arm_y, x0 + arm_x], dtype=float),
+        np.array([x0 - arm_x, y0 - arm_y, z0], dtype=float),
+        np.array([x0 + arm_x, y0 + arm_y, z0], dtype=float),
+        np.array([x0 - arm_x, y0 + arm_y, z0], dtype=float),
+        np.array([x0 + arm_x, y0 - arm_y, z0], dtype=float),
     ]
     specs: list[tuple[np.ndarray, np.ndarray, float]] = [(center, t, fwhm) for t in tips]
 
@@ -388,8 +389,8 @@ def build_x_junction_matching_multigraph(
     offcenter_fraction: float = 0.0,
 ) -> nx.MultiGraph:
     """Graph for X-junction targets (shared center node + four arms), optional x/z off-center."""
-    vz, vy, vx = voxel_size_xyz
-    step = min(step_um, vz, vy, vx)
+    vx, vy, vz = voxel_size_xyz
+    step = min(step_um, vx, vy, vz)
     if offcenter_fraction < 0:
         raise ValueError("offcenter_fraction must be non-negative.")
 
@@ -401,12 +402,12 @@ def build_x_junction_matching_multigraph(
         a = np.asarray(a, dtype=float).copy()
         b = np.asarray(b, dtype=float).copy()
         if offcenter_fraction > 0:
-            dz = float(offcenter_fraction) * float(fwhm)
             dx = float(offcenter_fraction) * float(fwhm)
-            a[0] += dz
-            b[0] += dz
-            a[2] += dx
-            b[2] += dx
+            dz = float(offcenter_fraction) * float(fwhm)
+            a[0] += dx
+            b[0] += dx
+            a[2] += dz
+            b[2] += dz
         # Ensure node 0 is used as the branch root.
         root = a
         tip = b
@@ -433,29 +434,29 @@ def build_x_junction_matching_multigraph(
 def build_synthetic_tight_zigzag_volume_and_target(
     voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
 ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]], np.ndarray]:
-    """Float32 tight zig-zag vessel volume + single target + centerline polyline (z,y,x)."""
-    vz, vy, vx = voxel_size_xyz
+    """Float32 tight zig-zag vessel volume + single target + centerline polyline (x,y,z)."""
+    vx, vy, vz = voxel_size_xyz
     # Tight alternating lateral oscillation while progressing in +x.
     points = np.array(
         [
-            [14.0, 15.0, 8.0],
-            [14.0, 11.5, 12.0],
-            [14.0, 18.5, 16.0],
-            [14.0, 11.5, 20.0],
-            [14.0, 18.5, 24.0],
-            [14.0, 11.5, 28.0],
-            [14.0, 18.5, 32.0],
-            [14.0, 11.5, 36.0],
-            [14.0, 18.5, 40.0],
+            [8.0, 15.0, 14.0],
+            [12.0, 11.5, 14.0],
+            [16.0, 18.5, 14.0],
+            [20.0, 11.5, 14.0],
+            [24.0, 18.5, 14.0],
+            [28.0, 11.5, 14.0],
+            [32.0, 18.5, 14.0],
+            [36.0, 11.5, 14.0],
+            [40.0, 18.5, 14.0],
         ],
         dtype=float,
     )
     fwhm = 2.5
     sigma = fwhm / _GAUSSIAN_FWHM_FROM_SIGMA
     pad = 4.0 * sigma + 2.0
-    z_max = float(np.max(points[:, 0]) + pad)
+    z_max = float(np.max(points[:, 2]) + pad)
     y_max = float(np.max(points[:, 1]) + pad)
-    x_max = float(np.max(points[:, 2]) + pad)
+    x_max = float(np.max(points[:, 0]) + pad)
     nz = int(np.ceil(z_max / vz)) + 1
     ny = int(np.ceil(y_max / vy)) + 1
     nx = int(np.ceil(x_max / vx)) + 1
@@ -484,8 +485,8 @@ def build_tight_zigzag_matching_multigraph(
 ) -> nx.MultiGraph:
     """Single-edge graph whose voxels densely follow the tight zig-zag polyline."""
     pts = np.asarray(centerline_points, dtype=float)
-    vz, vy, vx = voxel_size_xyz
-    step = min(float(step_um), float(vz), float(vy), float(vx))
+    vx, vy, vz = voxel_size_xyz
+    step = min(float(step_um), float(vx), float(vy), float(vz))
     if step <= 0:
         raise ValueError("step_um and voxel_size_xyz must be positive.")
 
@@ -672,7 +673,7 @@ def build_synthetic_fwhm_integration_figure(
 ) -> go.Figure:
     """Plotly scene: raw intensity as a triangle mesh (marching cubes), centerlines, profile lines."""
     nz, ny, nx = raw.shape
-    vz, vy, vx = voxel_size_xyz
+    vx, vy, vz = voxel_size_xyz
 
     st = _volume_stride_for_display(nz, ny, nx)
     raw_iso = np.asarray(raw[::st, ::st, ::st], dtype=np.float64)
@@ -687,9 +688,9 @@ def build_synthetic_fwhm_integration_figure(
         vox = G[u][v][key].get("voxels") or []
         if len(vox) < 2:
             continue
-        xs = [float(pt[2]) for pt in vox]
+        xs = [float(pt[0]) for pt in vox]
         ys = [float(pt[1]) for pt in vox]
-        zs = [float(pt[0]) for pt in vox]
+        zs = [float(pt[2]) for pt in vox]
         fig.add_trace(
             go.Scatter3d(
                 x=xs,
@@ -710,15 +711,15 @@ def build_synthetic_fwhm_integration_figure(
         ax, ay, az = [], [], []
         for seg, anchor in segs:
             for p in seg:
-                px.append(float(p[2]))
+                px.append(float(p[0]))
                 py.append(float(p[1]))
-                pz.append(float(p[0]))
+                pz.append(float(p[2]))
             px.append(None)
             py.append(None)
             pz.append(None)
-            ax.append(float(anchor[2]))
+            ax.append(float(anchor[0]))
             ay.append(float(anchor[1]))
-            az.append(float(anchor[0]))
+            az.append(float(anchor[2]))
         fig.add_trace(
             go.Scatter3d(
                 x=px,

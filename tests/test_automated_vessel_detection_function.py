@@ -44,7 +44,7 @@ def _write_rotatable_assignment_graph(
     if arteriole_mask.shape != venule_mask.shape:
         return
 
-    # Draw edges as 3D line segments. Stored pos is (z, y, x); plotly uses (x, y, z).
+    # Draw edges as 3D line segments. Stored pos is physical (x, y, z).
     edge_x: list[float | None] = []
     edge_y: list[float | None] = []
     edge_z: list[float | None] = []
@@ -53,26 +53,26 @@ def _write_rotatable_assignment_graph(
         for u, v, _k, _data in edge_iter:
             pu = np.asarray(pos[u], dtype=float)
             pv = np.asarray(pos[v], dtype=float)
-            edge_x += [float(pu[2]), float(pv[2]), None]
+            edge_x += [float(pu[0]), float(pv[0]), None]
             edge_y += [float(pu[1]), float(pv[1]), None]
-            edge_z += [float(pu[0]), float(pv[0]), None]
+            edge_z += [float(pu[2]), float(pv[2]), None]
     else:
         edge_iter = G.edges(data=True)
         for u, v, _data in edge_iter:
             pu = np.asarray(pos[u], dtype=float)
             pv = np.asarray(pos[v], dtype=float)
-            edge_x += [float(pu[2]), float(pv[2]), None]
+            edge_x += [float(pu[0]), float(pv[0]), None]
             edge_y += [float(pu[1]), float(pv[1]), None]
-            edge_z += [float(pu[0]), float(pv[0]), None]
+            edge_z += [float(pu[2]), float(pv[2]), None]
 
     input_set = set(input_nodes)
     output_set = set(output_nodes)
     other_nodes = [n for n in G.nodes if n not in input_set and n not in output_set]
 
     def _coords(nodes: list[int]) -> tuple[list[float], list[float], list[float]]:
-        xs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes]
+        xs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes]
         ys = [float(np.asarray(pos[n], dtype=float)[1]) for n in nodes]
-        zs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes]
+        zs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes]
         return xs, ys, zs
 
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str) -> None:
@@ -80,7 +80,7 @@ def _write_rotatable_assignment_graph(
         # occupied voxels as a semi-transparent isovalue volume.
         if not np.any(mask):
             return
-        z_scale, y_scale, x_scale = voxel_size_xyz
+        x_scale, y_scale, z_scale = voxel_size_xyz
         zz, yy, xx = np.indices(mask.shape, dtype=float)
         fig.add_trace(
             go.Volume(
@@ -205,15 +205,15 @@ def test_automated_vessel_detection(tmp_path):
     G = nx.MultiGraph()
     # Terminals intended for automated assignment.
     G.add_node(0, pos=np.array([1.0, 1.0, 1.0]))  # terminal in arteriole volume
-    G.add_node(1, pos=np.array([3.0, 1.0, 0.0]))  # terminal near arteriole volume (kept distinct from trunk nodes)
-    G.add_node(2, pos=np.array([5.0, 1.0, 1.0]))  # terminal in venule volume
+    G.add_node(1, pos=np.array([0.0, 1.0, 3.0]))  # terminal near arteriole volume (kept distinct from trunk nodes)
+    G.add_node(2, pos=np.array([1.0, 1.0, 5.0]))  # terminal in venule volume
     # Non-terminal backbone and branch nodes (degree > 1).
-    G.add_node(10, pos=np.array([2.0, 1.0, 1.0]))
-    G.add_node(11, pos=np.array([3.0, 1.0, 1.0]))
-    G.add_node(12, pos=np.array([4.0, 1.0, 1.0]))
-    G.add_node(20, pos=np.array([3.0, 2.0, 1.0]))  # branch junction
-    G.add_node(21, pos=np.array([3.0, 3.0, 1.0]))  # branch terminal
-    G.add_node(22, pos=np.array([4.0, 4.0, 1.0]))  # branch terminal (kept away from venule dilation)
+    G.add_node(10, pos=np.array([1.0, 1.0, 2.0]))
+    G.add_node(11, pos=np.array([1.0, 1.0, 3.0]))
+    G.add_node(12, pos=np.array([1.0, 1.0, 4.0]))
+    G.add_node(20, pos=np.array([1.0, 2.0, 3.0]))  # branch junction
+    G.add_node(21, pos=np.array([1.0, 3.0, 3.0]))  # branch terminal
+    G.add_node(22, pos=np.array([1.0, 4.0, 4.0]))  # branch terminal (kept away from venule dilation)
 
     # Main trunk traversing both vessel volumes.
     G.add_edge(0, 10, length=1.0, weight=1.0)
@@ -289,17 +289,17 @@ def test_automated_vessel_detection(tmp_path):
 def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
     """Overlapping cylinders: cross-section midline distance is evaluated first."""
     G = nx.MultiGraph()
-    G.add_node(0, pos=np.array([6.0, 6.0, 2.0]))   # overlapping terminal
-    G.add_node(1, pos=np.array([6.0, 6.0, 12.0]))  # junction
-    G.add_node(2, pos=np.array([6.0, 8.0, 12.0]))  # second terminal
+    G.add_node(0, pos=np.array([2.0, 6.0, 6.0]))   # overlapping terminal
+    G.add_node(1, pos=np.array([12.0, 6.0, 6.0]))  # junction
+    G.add_node(2, pos=np.array([12.0, 8.0, 6.0]))  # second terminal
     G.add_edge(
         0,
         1,
         length=10.0,
         weight=10.0,
-        voxels=[(6.0, 6.0, float(x)) for x in range(2, 13)],
+        voxels=[(float(x), 6.0, 6.0) for x in range(2, 13)],
     )
-    G.add_edge(1, 2, length=2.0, weight=2.0, voxels=[(6.0, 6.0, 12.0), (6.0, 8.0, 12.0)])
+    G.add_edge(1, 2, length=2.0, weight=2.0, voxels=[(12.0, 6.0, 6.0), (12.0, 8.0, 6.0)])
 
     shape = (16, 16, 24)
     arteriole_mask = _parallel_cylinder_mask_along_x(

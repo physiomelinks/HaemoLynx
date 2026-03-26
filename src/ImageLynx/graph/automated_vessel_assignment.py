@@ -7,6 +7,8 @@ from typing import Any
 import networkx as nx
 import numpy as np
 
+from ..coords import physical_xyz_to_index_zyx, index_zyx_to_physical_xyz
+
 
 def _sort_nodes(nodes: set[Any]) -> list[Any]:
     return sorted(nodes, key=lambda n: (str(type(n)), str(n)))
@@ -40,7 +42,7 @@ def _position_to_mask_index(
     if len(mask_shape) != 3:
         raise ValueError(f"Expected a 3D mask shape, got {mask_shape}.")
 
-    voxel_index = np.rint(position_xyz / voxel_size).astype(int)
+    voxel_index = physical_xyz_to_index_zyx(position_xyz, voxel_size_xyz)
     if np.any(voxel_index < 0):
         return None
     if np.any(voxel_index >= np.asarray(mask_shape, dtype=int)):
@@ -96,8 +98,8 @@ def _mask_midpoint_physical(
     points_zyx = np.argwhere(mask.astype(bool, copy=False))
     if points_zyx.size == 0:
         return np.asarray([np.inf, np.inf, np.inf], dtype=float)
-    voxel_size = np.asarray(voxel_size_xyz, dtype=float)
-    return np.mean(points_zyx.astype(float), axis=0) * voxel_size
+    midpoint_zyx = np.mean(points_zyx.astype(float), axis=0)
+    return index_zyx_to_physical_xyz(midpoint_zyx, voxel_size_xyz)
 
 
 def _mask_principal_axis(mask: np.ndarray) -> int:
@@ -117,8 +119,7 @@ def _cross_section_midpoint_physical(
     if points_zyx.size == 0 or intersection_point is None:
         return np.asarray([np.inf, np.inf, np.inf], dtype=float)
     axis = _mask_principal_axis(mask)
-    voxel_size = np.asarray(voxel_size_xyz, dtype=float)
-    intersection_index = np.rint(intersection_point / voxel_size).astype(int)
+    intersection_index = physical_xyz_to_index_zyx(intersection_point, voxel_size_xyz)
     target_slice = int(intersection_index[axis])
     slice_coords = points_zyx[:, axis]
     in_slice = points_zyx[slice_coords == target_slice]
@@ -131,7 +132,8 @@ def _cross_section_midpoint_physical(
         in_slice = points_zyx[slice_coords == nearest_slice]
     if in_slice.size == 0:
         return np.asarray([np.inf, np.inf, np.inf], dtype=float)
-    return np.mean(in_slice.astype(float), axis=0) * voxel_size
+    midpoint_zyx = np.mean(in_slice.astype(float), axis=0)
+    return index_zyx_to_physical_xyz(midpoint_zyx, voxel_size_xyz)
 
 
 def _overlap_fraction_and_intersection(
@@ -587,7 +589,7 @@ def write_automated_vessel_assignment_3d_html(
     output_html_path = Path(output_html_path)
     output_html_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Edges from node positions; graph positions are stored as (z, y, x).
+    # Edges from node positions stored as (x, y, z).
     edge_x: list[float | None] = []
     edge_y: list[float | None] = []
     edge_z: list[float | None] = []
@@ -596,26 +598,26 @@ def write_automated_vessel_assignment_3d_html(
         for u, v, _k, _data in edge_iter:
             pu = np.asarray(pos[u], dtype=float)
             pv = np.asarray(pos[v], dtype=float)
-            edge_x += [float(pu[2]), float(pv[2]), None]
+            edge_x += [float(pu[0]), float(pv[0]), None]
             edge_y += [float(pu[1]), float(pv[1]), None]
-            edge_z += [float(pu[0]), float(pv[0]), None]
+            edge_z += [float(pu[2]), float(pv[2]), None]
     else:
         edge_iter = G.edges(data=True)
         for u, v, _data in edge_iter:
             pu = np.asarray(pos[u], dtype=float)
             pv = np.asarray(pos[v], dtype=float)
-            edge_x += [float(pu[2]), float(pv[2]), None]
+            edge_x += [float(pu[0]), float(pv[0]), None]
             edge_y += [float(pu[1]), float(pv[1]), None]
-            edge_z += [float(pu[0]), float(pv[0]), None]
+            edge_z += [float(pu[2]), float(pv[2]), None]
 
     input_set = set(input_nodes)
     output_set = set(output_nodes)
     other_nodes = [n for n in G.nodes if n not in input_set and n not in output_set]
 
     def _coords(nodes: list[Any]) -> tuple[list[float], list[float], list[float]]:
-        xs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
+        xs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
         ys = [float(np.asarray(pos[n], dtype=float)[1]) for n in nodes if n in pos]
-        zs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
+        zs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
         return xs, ys, zs
 
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
@@ -754,9 +756,9 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
 
     def _push_edge(kind: str, pu: np.ndarray, pv: np.ndarray) -> None:
         lx, ly, lz = segs[kind]
-        lx += [float(pu[2]), float(pv[2]), None]
+        lx += [float(pu[0]), float(pv[0]), None]
         ly += [float(pu[1]), float(pv[1]), None]
-        lz += [float(pu[0]), float(pv[0]), None]
+        lz += [float(pu[2]), float(pv[2]), None]
 
     if isinstance(G, nx.MultiGraph):
         for u, v, _k, edge_data in G.edges(keys=True, data=True):
@@ -786,9 +788,9 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
             _push_edge(kind, pu, pv)
 
     def _coords(nodes: list[Any]) -> tuple[list[float], list[float], list[float]]:
-        xs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
+        xs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
         ys = [float(np.asarray(pos[n], dtype=float)[1]) for n in nodes if n in pos]
-        zs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
+        zs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
         return xs, ys, zs
 
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:

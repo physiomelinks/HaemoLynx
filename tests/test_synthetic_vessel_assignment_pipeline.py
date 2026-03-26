@@ -84,24 +84,24 @@ def build_synthetic_integrated_vessel_model() -> tuple[
     G = nx.MultiGraph()
     # Terminals sit in low-y large-mask band; interior trunk at y=8 inside small-mask band only.
     xs = [1.0, 3.0, 5.0, 8.0, 11.0, 13.0, 16.0]
-    G.add_node(0, pos=np.array([8.0, 4.0, xs[0]], dtype=float))
+    G.add_node(0, pos=np.array([xs[0], 4.0, 8.0], dtype=float))
     for i, x in enumerate(xs[1:-1], start=1):
-        G.add_node(i, pos=np.array([8.0, 8.0, x], dtype=float))
-    G.add_node(6, pos=np.array([8.0, 4.0, xs[-1]], dtype=float))
+        G.add_node(i, pos=np.array([x, 8.0, 8.0], dtype=float))
+    G.add_node(6, pos=np.array([xs[-1], 4.0, 8.0], dtype=float))
 
     # Connector (0→1): unique voxels after np.unique must be mostly inside small art (y≥7), else node 1
     # becomes a false arteriole boundary. Short low-y leg + many distinct in-slab lattice points.
     p0 = np.asarray(G.nodes[0]["pos"], dtype=float)
     p1 = np.asarray(G.nodes[1]["pos"], dtype=float)
     v01_u: list[tuple[float, float, float]] = [
-        (8.0, 4.0, 1.0),
-        (8.0, 5.0, 1.0),
-        (8.0, 6.0, 1.0),
-        (8.0, 7.0, 1.0),
-        (8.0, 7.0, 2.0),
-        (8.0, 8.0, 1.0),
-        (8.0, 8.0, 2.0),
-        (8.0, 8.0, 3.0),
+        (1.0, 4.0, 8.0),
+        (1.0, 5.0, 8.0),
+        (1.0, 6.0, 8.0),
+        (1.0, 7.0, 8.0),
+        (2.0, 7.0, 8.0),
+        (1.0, 8.0, 8.0),
+        (2.0, 8.0, 8.0),
+        (3.0, 8.0, 8.0),
     ]
     G.add_edge(
         0,
@@ -125,7 +125,7 @@ def build_synthetic_integrated_vessel_model() -> tuple[
     # Bent trunk→terminal (5→6): majority in small venule band before dropping to low-y large venule.
     p5 = np.asarray(G.nodes[5]["pos"], dtype=float)
     p6 = np.asarray(G.nodes[6]["pos"], dtype=float)
-    p_mid_out = np.array([8.0, 7.0, 15.0], dtype=float)
+    p_mid_out = np.array([15.0, 7.0, 8.0], dtype=float)
     v56 = _voxel_polyline_samples(p5, p_mid_out, count=22) + _voxel_polyline_samples(
         p_mid_out, p6, count=14
     )
@@ -198,7 +198,7 @@ def write_integrated_vessel_pipeline_3d_html(
     def add_volume(mask: np.ndarray, *, name: str, color: str, opacity: float) -> None:
         if not np.any(mask):
             return
-        zs, ys, xs = voxel_size_xyz
+        xs, ys, zs = voxel_size_xyz
         zz, yy, xx = np.indices(mask.shape, dtype=float)
         fig.add_trace(
             go.Volume(
@@ -252,9 +252,9 @@ def write_integrated_vessel_pipeline_3d_html(
 
     def push(kind: str, pu: np.ndarray, pv: np.ndarray) -> None:
         lx, ly, lz = segs[kind]
-        lx += [float(pu[2]), float(pv[2]), None]
+        lx += [float(pu[0]), float(pv[0]), None]
         ly += [float(pu[1]), float(pv[1]), None]
-        lz += [float(pu[0]), float(pv[0]), None]
+        lz += [float(pu[2]), float(pv[2]), None]
 
     for u, v, k, data in G.edges(keys=True, data=True):
         if u not in pos or v not in pos:
@@ -293,9 +293,9 @@ def write_integrated_vessel_pipeline_3d_html(
         )
 
     def coords(nodes: list[int]) -> tuple[list[float], list[float], list[float]]:
-        xs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
+        xs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
         ys = [float(np.asarray(pos[n], dtype=float)[1]) for n in nodes if n in pos]
-        zs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
+        zs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
         return xs, ys, zs
 
     in_s, out_s = set(input_nodes), set(output_nodes)

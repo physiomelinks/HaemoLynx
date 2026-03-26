@@ -172,18 +172,18 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
         path = d.get("voxels", [])
         if len(path) > 1:
             path = np.array(path)
-            plt.plot(path[:, 2], path[:, 1], color="cyan", linewidth=0.5)
-            graph_x_vals.extend(path[:, 2].astype(float).tolist())
+            plt.plot(path[:, 0], path[:, 1], color="cyan", linewidth=0.5)
+            graph_x_vals.extend(path[:, 0].astype(float).tolist())
             graph_y_vals.extend(path[:, 1].astype(float).tolist())
     if pos:
         coords = np.array(list(pos.values()))
-        plt.scatter(coords[:, 2], coords[:, 1], c="red", s=3)
-        graph_x_vals.extend(coords[:, 2].astype(float).tolist())
+        plt.scatter(coords[:, 0], coords[:, 1], c="red", s=3)
+        graph_x_vals.extend(coords[:, 0].astype(float).tolist())
         graph_y_vals.extend(coords[:, 1].astype(float).tolist())
         if label_nodes:
             for node_id, node_pos in pos.items():
                 plt.text(
-                    float(node_pos[2]) + 1.0,
+                    float(node_pos[0]) + 1.0,
                     float(node_pos[1]) + 1.0,
                     str(node_id),
                     color="yellow",
@@ -192,11 +192,11 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
         if show_coordinates_degree_1:
             for node_id, node_pos in pos.items():
                 if G.degree(node_id) == 1:
-                    x = float(node_pos[2])
+                    x = float(node_pos[0])
                     y = float(node_pos[1])
-                    z = float(node_pos[0])
+                    z = float(node_pos[2])
                     plt.text(
-                        float(node_pos[2]) + 1.0,
+                        float(node_pos[0]) + 1.0,
                         float(node_pos[1]) + 1.0,
                         f"({x:.1f}, {y:.1f}, {z:.1f})",
                         color="blue",
@@ -326,7 +326,7 @@ def visualize_geometry_with_branch_orders(
         color = color_mapping.get(bo, "gray")
         for path in paths:
             ax.plot(
-                path[:, 2], path[:, 1],
+                path[:, 0], path[:, 1],
                 color=color,
                 linewidth=edge_linewidth,
                 alpha=alpha,
@@ -334,7 +334,7 @@ def visualize_geometry_with_branch_orders(
     pos = nx.get_node_attributes(G, "pos")
     if pos:
         coords = np.array(list(pos.values()))
-        ax.scatter(coords[:, 2], coords[:, 1], c=node_color, s=node_size)
+        ax.scatter(coords[:, 0], coords[:, 1], c=node_color, s=node_size)
     if show_legend and legend_orders:
         handles = [
             plt.Line2D(
@@ -430,7 +430,7 @@ def visualize_geometry_with_edge_weights(
                 path_arr = np.array(path)
                 color = cmap(norm(weight))
                 ax.plot(
-                    path_arr[:, 2], path_arr[:, 1],
+                    path_arr[:, 0], path_arr[:, 1],
                     color=color,
                     linewidth=edge_linewidth,
                     alpha=alpha,
@@ -438,7 +438,7 @@ def visualize_geometry_with_edge_weights(
     pos = nx.get_node_attributes(G, "pos")
     if pos:
         coords = np.array(list(pos.values()))
-        ax.scatter(coords[:, 2], coords[:, 1], c=node_color, s=node_size)
+        ax.scatter(coords[:, 0], coords[:, 1], c=node_color, s=node_size)
     if show_legend:
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
@@ -475,8 +475,7 @@ def visualize_3d_plotly(
     """Interactive 3D graph rendering using Plotly.
 
     Uses edge voxel polylines when present, otherwise falls back to node-to-node
-    straight segments. Coordinates are interpreted as (z, y, x) in graph
-    metadata and mapped to Plotly axes as (x, y, z).
+    straight segments. Coordinates are interpreted as (x, y, z) throughout.
     """
     pos = nx.get_node_attributes(G, "pos")
     if not pos:
@@ -488,39 +487,37 @@ def visualize_3d_plotly(
             voxels = edge_data.get("voxels", [])
             if len(voxels) > 1:
                 for pt in voxels:
-                    # Stored as (z, y, x)
-                    edge_x.append(float(pt[2]))
+                    edge_x.append(float(pt[0]))
                     edge_y.append(float(pt[1]))
-                    edge_z.append(float(pt[0]))
+                    edge_z.append(float(pt[2]))
                 edge_x.append(None)
                 edge_y.append(None)
                 edge_z.append(None)
             elif u in pos and v in pos:
                 pu, pv = pos[u], pos[v]
-                edge_x += [float(pu[2]), float(pv[2]), None]
+                edge_x += [float(pu[0]), float(pv[0]), None]
                 edge_y += [float(pu[1]), float(pv[1]), None]
-                edge_z += [float(pu[0]), float(pv[0]), None]
+                edge_z += [float(pu[2]), float(pv[2]), None]
     else:
         for u, v, edge_data in G.edges(data=True):
             voxels = edge_data.get("voxels", [])
             if len(voxels) > 1:
                 for pt in voxels:
-                    edge_x.append(float(pt[2]))
+                    edge_x.append(float(pt[0]))
                     edge_y.append(float(pt[1]))
-                    edge_z.append(float(pt[0]))
+                    edge_z.append(float(pt[2]))
                 edge_x.append(None)
                 edge_y.append(None)
                 edge_z.append(None)
             elif u in pos and v in pos:
                 pu, pv = pos[u], pos[v]
-                edge_x += [float(pu[2]), float(pv[2]), None]
+                edge_x += [float(pu[0]), float(pv[0]), None]
                 edge_y += [float(pu[1]), float(pv[1]), None]
-                edge_z += [float(pu[0]), float(pv[0]), None]
+                edge_z += [float(pu[2]), float(pv[2]), None]
 
-    # Stored as (z, y, x) -> plot as (x, y, z)
-    node_x = [float(p[2]) for p in pos.values()]
+    node_x = [float(p[0]) for p in pos.values()]
     node_y = [float(p[1]) for p in pos.values()]
-    node_z = [float(p[0]) for p in pos.values()]
+    node_z = [float(p[2]) for p in pos.values()]
     fig = go.Figure()
     fig.add_trace(go.Scatter3d(
         x=edge_x, y=edge_y, z=edge_z,
@@ -605,18 +602,18 @@ def visualize_3d_plotly_vessel_types(
             voxels = edge_data.get("voxels", [])
             if len(voxels) > 1:
                 for pt in voxels:
-                    per_type_coords[vessel_type]["x"].append(float(pt[2]))
+                    per_type_coords[vessel_type]["x"].append(float(pt[0]))
                     per_type_coords[vessel_type]["y"].append(float(pt[1]))
-                    per_type_coords[vessel_type]["z"].append(float(pt[0]))
+                    per_type_coords[vessel_type]["z"].append(float(pt[2]))
                 per_type_coords[vessel_type]["x"].append(None)
                 per_type_coords[vessel_type]["y"].append(None)
                 per_type_coords[vessel_type]["z"].append(None)
                 per_type_counts[vessel_type] += 1
             elif u in pos and v in pos:
                 pu, pv = pos[u], pos[v]
-                per_type_coords[vessel_type]["x"] += [float(pu[2]), float(pv[2]), None]
+                per_type_coords[vessel_type]["x"] += [float(pu[0]), float(pv[0]), None]
                 per_type_coords[vessel_type]["y"] += [float(pu[1]), float(pv[1]), None]
-                per_type_coords[vessel_type]["z"] += [float(pu[0]), float(pv[0]), None]
+                per_type_coords[vessel_type]["z"] += [float(pu[2]), float(pv[2]), None]
                 per_type_counts[vessel_type] += 1
     else:
         for u, v, edge_data in G.edges(data=True):
@@ -624,23 +621,23 @@ def visualize_3d_plotly_vessel_types(
             voxels = edge_data.get("voxels", [])
             if len(voxels) > 1:
                 for pt in voxels:
-                    per_type_coords[vessel_type]["x"].append(float(pt[2]))
+                    per_type_coords[vessel_type]["x"].append(float(pt[0]))
                     per_type_coords[vessel_type]["y"].append(float(pt[1]))
-                    per_type_coords[vessel_type]["z"].append(float(pt[0]))
+                    per_type_coords[vessel_type]["z"].append(float(pt[2]))
                 per_type_coords[vessel_type]["x"].append(None)
                 per_type_coords[vessel_type]["y"].append(None)
                 per_type_coords[vessel_type]["z"].append(None)
                 per_type_counts[vessel_type] += 1
             elif u in pos and v in pos:
                 pu, pv = pos[u], pos[v]
-                per_type_coords[vessel_type]["x"] += [float(pu[2]), float(pv[2]), None]
+                per_type_coords[vessel_type]["x"] += [float(pu[0]), float(pv[0]), None]
                 per_type_coords[vessel_type]["y"] += [float(pu[1]), float(pv[1]), None]
-                per_type_coords[vessel_type]["z"] += [float(pu[0]), float(pv[0]), None]
+                per_type_coords[vessel_type]["z"] += [float(pu[2]), float(pv[2]), None]
                 per_type_counts[vessel_type] += 1
 
-    node_x = [float(p[2]) for p in pos.values()]
+    node_x = [float(p[0]) for p in pos.values()]
     node_y = [float(p[1]) for p in pos.values()]
-    node_z = [float(p[0]) for p in pos.values()]
+    node_z = [float(p[2]) for p in pos.values()]
 
     fig = go.Figure()
     for vessel_type in ("arteriole", "capillary", "venule", "unknown"):
