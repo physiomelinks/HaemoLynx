@@ -36,7 +36,7 @@ def _projection_extent(
     """Return imshow extent for (Y, X) projection in physical units."""
     y_size, x_size = projection_shape
     vy = float(voxel_size[1])
-    vx = float(voxel_size[2])
+    vx = float(voxel_size[0])
     # Keep top-left origin semantics used by existing overlays.
     return (0.0, x_size * vx, y_size * vy, 0.0)
 

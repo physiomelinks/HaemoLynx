@@ -621,7 +621,7 @@ def write_automated_vessel_assignment_3d_html(
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
         if not np.any(mask):
             return
-        z_scale, y_scale, x_scale = voxel_size_xyz
+        x_scale, y_scale, z_scale = voxel_size_xyz
         zz, yy, xx = np.indices(mask.shape, dtype=float)
         fig.add_trace(
             go.Volume(
@@ -794,7 +794,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
         if not np.any(mask):
             return
-        z_scale, y_scale, x_scale = voxel_size_xyz
+        x_scale, y_scale, z_scale = voxel_size_xyz
         zz, yy, xx = np.indices(mask.shape, dtype=float)
         fig.add_trace(
             go.Volume(
