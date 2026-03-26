@@ -21,7 +21,7 @@ def validate_voxel_size_xyz(
 def resolve_voxel_size_xyz(
     metadata_voxel_size_xyz: tuple[float, float, float],
     metadata_status: dict[str, object] | None,
-    voxel_size_override_xyz,
+    voxel_size_override_xyz_px_per_um,
     voxel_size_policy: str,
 ) -> tuple[tuple[float, float, float], str]:
     """Resolve final voxel size from metadata and optional manual override."""
@@ -35,22 +35,26 @@ def resolve_voxel_size_xyz(
         metadata_voxel_size_xyz,
         label="metadata voxel size",
     )
-    override_xyz = None
-    if voxel_size_override_xyz is not None:
-        override_xyz = validate_voxel_size_xyz(
-            voxel_size_override_xyz,
-            label="voxel_size_override_xyz",
+    override_um_per_px_xyz = None
+    if voxel_size_override_xyz_px_per_um is not None:
+        override_px_per_um_xyz = validate_voxel_size_xyz(
+            voxel_size_override_xyz_px_per_um,
+            label="voxel_size_override_xyz_px_per_um",
+        )
+        # Manual override is entered as px/um; convert to um/px for pipeline use.
+        override_um_per_px_xyz = tuple(
+            1.0 / float(v) for v in override_px_per_um_xyz
         )
 
     metadata_state = str((metadata_status or {}).get("status", "missing")).lower()
     metadata_is_reliable = metadata_state == "complete"
 
     if policy == "override":
-        if override_xyz is None:
+        if override_um_per_px_xyz is None:
             raise ValueError(
-                "voxel_size_policy='override' requires voxel_size_override_xyz."
+                "voxel_size_policy='override' requires voxel_size_override_xyz_px_per_um."
             )
-        return override_xyz, "manual_override"
+        return override_um_per_px_xyz, "manual_override"
     if policy == "metadata_only":
         if not metadata_is_reliable:
             raise ValueError(
@@ -61,7 +65,7 @@ def resolve_voxel_size_xyz(
 
     if metadata_is_reliable:
         return metadata_voxel_size_xyz, "metadata"
-    if override_xyz is not None:
-        return override_xyz, "manual_override"
+    if override_um_per_px_xyz is not None:
+        return override_um_per_px_xyz, "manual_override"
     return metadata_voxel_size_xyz, "metadata_fallback"
 

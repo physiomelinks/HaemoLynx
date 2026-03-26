@@ -40,7 +40,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             ilastik_executable=ILASTIK_EXECUTABLE,
                             ilastik_output_dir=ILASTIK_OUTPUT_DIR,
                             ilastik_output_suffix=ILASTIK_OUTPUT_SUFFIX,
-                            voxel_size_override_xyz=VOXEL_SIZE_OVERRIDE_XYZ,
+                            voxel_size_override_xyz_px_per_um=VOXEL_SIZE_OVERRIDE_XYZ_PX_PER_UM,
                             voxel_size_policy=VOXEL_SIZE_POLICY,
                             use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
                             use_ilastik_large_vessel_segmentation=USE_ILASTIK_LARGE_VESSEL_SEGMENTATION,
@@ -249,7 +249,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(
             metadata_voxel_size_xyz=metadata_voxel_size,
             metadata_status=voxel_meta_status,
-            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_override_xyz_px_per_um=voxel_size_override_xyz_px_per_um,
             voxel_size_policy=voxel_size_policy,
         )
         print(
@@ -291,7 +291,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     "voxel_size_source": voxel_size_source,
                     "voxel_metadata_status": voxel_meta_status,
                     "voxel_size_policy": voxel_size_policy,
-                    "voxel_size_override_xyz": voxel_size_override_xyz,
+                    "voxel_size_override_xyz_px_per_um": voxel_size_override_xyz_px_per_um,
                 }
             )
         )
@@ -313,7 +313,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(
             metadata_voxel_size_xyz=metadata_voxel_size,
             metadata_status=voxel_meta_status,
-            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_override_xyz_px_per_um=voxel_size_override_xyz_px_per_um,
             voxel_size_policy=voxel_size_policy,
         )
         print(f"Loaded skeleton from: {skeleton_path}")
