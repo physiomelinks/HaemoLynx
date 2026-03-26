@@ -1195,6 +1195,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         print(graph.format_degree2_diagnostics_report(degree2_diag))
 
+        # Final cleanup: remove isolated nodes (degree 0) left after topology
+        # operations so they do not propagate into boundary selection/statistics.
+        nodes_before_isolated_cleanup = G.number_of_nodes()
+        G = graph.remove_isolated_nodes(G)
+        isolated_removed = nodes_before_isolated_cleanup - G.number_of_nodes()
+        if isolated_removed:
+            print(f"Removed {isolated_removed} isolated degree-0 node(s).")
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")

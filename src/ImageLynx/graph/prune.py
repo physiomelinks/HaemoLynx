@@ -95,3 +95,12 @@ def remove_edges_for_self_connected_nodes(G: Union[nx.Graph, nx.MultiGraph]) -> 
     self_loops = list(nx.selfloop_edges(G_pruned, keys=True)) if isinstance(G_pruned, nx.MultiGraph) else list(nx.selfloop_edges(G_pruned))
     G_pruned.remove_edges_from(self_loops)
     return G_pruned
+
+
+def remove_isolated_nodes(G: Union[nx.Graph, nx.MultiGraph]) -> Union[nx.Graph, nx.MultiGraph]:
+    """Remove degree-0 nodes from the graph."""
+    G_pruned = G.copy()
+    isolated_nodes = [n for n in G_pruned.nodes() if G_pruned.degree(n) == 0]
+    if isolated_nodes:
+        G_pruned.remove_nodes_from(isolated_nodes)
+    return G_pruned

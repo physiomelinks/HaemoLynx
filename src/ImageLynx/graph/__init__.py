@@ -10,7 +10,11 @@ from .degree2 import (
     smart_multigraph_degree2_removal,
     merge_edges_with_topology_improvement,
 )
-from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
+from .prune import (
+    prune_vascular_stubs,
+    remove_edges_for_self_connected_nodes,
+    remove_isolated_nodes,
+)
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
 from .collapse import collapse_node_clusters
 from .branch_order import assign_branch_orders, assign_hierarchical_branch_orders
@@ -82,6 +86,7 @@ __all__ = [
     "dilate_binary_mask_by_microns",
     "dilate_large_vessel_masks_by_microns",
     "remove_edges_for_self_connected_nodes",
+    "remove_isolated_nodes",
     "add_edge_safe",
     "has_edge_safe",
     "remove_edge_safe",
