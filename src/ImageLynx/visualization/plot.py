@@ -36,9 +36,7 @@ def _projection_extent(
     """Return imshow extent for (Y, X) projection in physical units."""
     y_size, x_size = projection_shape
     vy = float(voxel_size[1])
-    # Graph overlays use axis-2 as X and axis-1 as Y (array-order mapping).
-    # Keep background extent in the same mapping to avoid image/graph drift.
-    vx = float(voxel_size[2])
+    vx = float(voxel_size[0])
     # Keep top-left origin semantics used by existing overlays.
     return (0.0, x_size * vx, y_size * vy, 0.0)
 
@@ -154,6 +152,7 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
                               save_path: Optional[str] = None,
                               show_coordinates_degree_1: bool = False,
                               voxel_size: Optional[Tuple[float, float, float]] = None,
+                              show_debug_dual_axes: bool = False,
                               show: bool = True,
                               show_after_save: bool = False,
                               block: bool = False) -> None:
@@ -167,14 +166,20 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
     extent = _projection_extent(projection.shape, resolved_voxel_size)
     plt.figure(figsize=(10, 10))
     plt.imshow(projection, cmap="gray", extent=extent)
+    graph_x_vals: list[float] = []
+    graph_y_vals: list[float] = []
     for u, v, d in G.edges(data=True):
         path = d.get("voxels", [])
         if len(path) > 1:
             path = np.array(path)
             plt.plot(path[:, 2], path[:, 1], color="cyan", linewidth=0.5)
+            graph_x_vals.extend(path[:, 2].astype(float).tolist())
+            graph_y_vals.extend(path[:, 1].astype(float).tolist())
     if pos:
         coords = np.array(list(pos.values()))
         plt.scatter(coords[:, 2], coords[:, 1], c="red", s=3)
+        graph_x_vals.extend(coords[:, 2].astype(float).tolist())
+        graph_y_vals.extend(coords[:, 1].astype(float).tolist())
         if label_nodes:
             for node_id, node_pos in pos.items():
                 plt.text(
@@ -198,7 +203,46 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
                         fontsize=3,
                     )
     plt.title("Overlay: Edges and Nodes on Z-Projection")
-    plt.axis("off")
+    ax = plt.gca()
+    if show_debug_dual_axes:
+        # Bottom/left: image extent coordinates.
+        ax.set_xlabel("Image X (um)")
+        ax.set_ylabel("Image Y (um)")
+        ax.tick_params(axis="both", labelsize=8)
+
+        # Top/right: graph coordinate range to compare mappings.
+        if graph_x_vals and graph_y_vals:
+            img_x_min, img_x_max = float(extent[0]), float(extent[1])
+            img_y_min, img_y_max = float(extent[3]), float(extent[2])
+            gx_min, gx_max = float(np.min(graph_x_vals)), float(np.max(graph_x_vals))
+            gy_min, gy_max = float(np.min(graph_y_vals)), float(np.max(graph_y_vals))
+
+            x_den = img_x_max - img_x_min
+            y_den = img_y_max - img_y_min
+            gx_den = gx_max - gx_min
+            gy_den = gy_max - gy_min
+            if x_den > 0 and y_den > 0 and gx_den > 0 and gy_den > 0:
+                def _img_to_graph_x(x):
+                    return gx_min + ((x - img_x_min) / x_den) * gx_den
+
+                def _graph_to_img_x(gx):
+                    return img_x_min + ((gx - gx_min) / gx_den) * x_den
+
+                def _img_to_graph_y(y):
+                    return gy_min + ((y - img_y_min) / y_den) * gy_den
+
+                def _graph_to_img_y(gy):
+                    return img_y_min + ((gy - gy_min) / gy_den) * y_den
+
+                secax_x = ax.secondary_xaxis("top", functions=(_img_to_graph_x, _graph_to_img_x))
+                secax_x.set_xlabel("Graph X (um)")
+                secax_x.tick_params(labelsize=8)
+
+                secax_y = ax.secondary_yaxis("right", functions=(_img_to_graph_y, _graph_to_img_y))
+                secax_y.set_ylabel("Graph Y (um)")
+                secax_y.tick_params(labelsize=8)
+    else:
+        plt.axis("off")
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         if show and show_after_save:

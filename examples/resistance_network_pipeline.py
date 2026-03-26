@@ -640,7 +640,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G, image, output_dir, plot_dir, image_path.stem,
             "build_graph_segment_skan_stitched_loops",
         )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "build_graph_segment_skan_stitched_loops.png")
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            show_debug_dual_axes=True,
+            save_path=plot_dir / "build_graph_segment_skan_stitched_loops.png",
+        )
         G = graph.reconnect_secondary_loop_edges(
             G,
             skeleton,
@@ -651,7 +657,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G, image, output_dir, plot_dir, image_path.stem,
             "reconnect_secondary_loop_edges",
         )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "reconnect_secondary_loop_edges.png")
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            show_debug_dual_axes=True,
+            save_path=plot_dir / "reconnect_secondary_loop_edges.png",
+        )
         
         G, _ = graph.optimise_graph_topology_fixed(
             G,
@@ -665,7 +677,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G, image, output_dir, plot_dir, image_path.stem,
             "optimise_graph_topology_fixed",
         )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "optimise_graph_topology_fixed.png")
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            show_debug_dual_axes=True,
+            save_path=plot_dir / "optimise_graph_topology_fixed.png",
+        )
         degree2_pass1_max_degree = 4
         degree2_pass2_max_degree = 8
         G = graph.smart_multigraph_degree2_removal(
@@ -678,7 +696,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G, image, output_dir, plot_dir, image_path.stem,
             "smart_multigraph_degree2_removal_pass1",
         )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal.png")
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            show_debug_dual_axes=True,
+            save_path=plot_dir / "smart_multigraph_degree2_removal.png",
+        )
         degree2_diag = graph.diagnose_degree2_nodes(
             G, max_degree=degree2_pass1_max_degree
         )
@@ -693,7 +717,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G, image, output_dir, plot_dir, image_path.stem,
             "collapse_node_clusters",
         )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "collapse_node_clusters.png")
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            show_debug_dual_axes=True,
+            save_path=plot_dir / "collapse_node_clusters.png",
+        )
 
         # Collapsing clusters can create new degree-2 pass-through nodes;
         # run a second degree-2 cleanup pass with a higher threshold since
@@ -708,14 +738,26 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G, image, output_dir, plot_dir, image_path.stem,
             "smart_multigraph_degree2_removal_post_collapse",
         )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal_post_collapse.png")
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            show_debug_dual_axes=True,
+            save_path=plot_dir / "smart_multigraph_degree2_removal_post_collapse.png",
+        )
 
         G = graph.prune_vascular_stubs(G, debug=verbose_logging, min_stub_length=min_stub_length)
         visualization.save_graph_snapshot(
             G, image, output_dir, plot_dir, image_path.stem,
             "prune_vascular_stubs",
         )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "prune_vascular_stubs.png")
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            show_debug_dual_axes=True,
+            save_path=plot_dir / "prune_vascular_stubs.png",
+        )
         degree2_diag = graph.diagnose_degree2_nodes(
             G, max_degree=degree2_pass2_max_degree
         )
@@ -735,6 +777,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             image,
             G,
             label_nodes=True,
+            show_debug_dual_axes=True,
             save_path=plot_dir / "smart_multigraph_degree2_removal_post_prune.png",
         )
         degree2_diag = graph.diagnose_degree2_nodes(
@@ -770,6 +813,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             image,
             G,
             label_nodes=True,
+            show_debug_dual_axes=True,
             save_path=plot_dir / "reconnect_orphan_and_dangling_nodes.png",
         )
 
@@ -787,6 +831,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             image,
             G,
             label_nodes=True,
+            show_debug_dual_axes=True,
             save_path=plot_dir / "smart_multigraph_degree2_removal_post_orphan_reconnect.png",
         )
         degree2_diag = graph.diagnose_degree2_nodes(
