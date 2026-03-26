@@ -92,7 +92,6 @@ def prune_vascular_stubs(
 def remove_edges_for_self_connected_nodes(G: Union[nx.Graph, nx.MultiGraph]) -> Union[nx.Graph, nx.MultiGraph]:
     """Remove edges for nodes that are connected to themselves with no nodes in between."""
     G_pruned = G.copy()
-    for node in G_pruned.nodes():
-        if node in G_pruned.neighbors(node):
-            G_pruned.remove_edge(node, node)
+    self_loops = list(nx.selfloop_edges(G_pruned, keys=True)) if isinstance(G_pruned, nx.MultiGraph) else list(nx.selfloop_edges(G_pruned))
+    G_pruned.remove_edges_from(self_loops)
     return G_pruned

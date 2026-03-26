@@ -14,6 +14,7 @@ from ImageLynx.graph import (
     smart_multigraph_degree2_removal,
     merge_edges_with_topology_improvement,
     prune_vascular_stubs,
+    remove_edges_for_self_connected_nodes,
     assign_branch_orders,
     select_boundary_nodes_by_method,
     select_terminal_nodes_from_large_vessel_masks,
@@ -81,6 +82,21 @@ def test_trivial_remove_all_degree2_nodes(simple_graph):
 def test_prune_vascular_stubs(simple_graph):
     G = prune_vascular_stubs(simple_graph.copy(), min_stub_length=0.5)
     assert G.number_of_nodes() >= 1
+
+
+def test_remove_edges_for_self_connected_nodes_removes_all_multigraph_loops():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))
+
+    G.add_edge(0, 0, weight=1.0, length=1.0)
+    G.add_edge(0, 0, weight=2.0, length=2.0)
+    G.add_edge(0, 1, weight=3.0, length=3.0)
+
+    out = remove_edges_for_self_connected_nodes(G)
+
+    assert out.number_of_edges(0, 0) == 0
+    assert out.number_of_edges(0, 1) == 1
 
 
 def test_assign_branch_orders(multigraph_with_branch_order):
