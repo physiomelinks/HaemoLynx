@@ -47,7 +47,7 @@ if not BASE_PLOT_DIR.exists():
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
 # end of the image.
-EDGE_PERCENT = 10.0
+EDGE_PERCENT = 25.0
 END_PERCENT = 25.0
 # For 3D skeletons this is usually the y-axis in (z, y, x).
 NODE_EDGE_AXIS = 0
@@ -63,7 +63,7 @@ VISUALIZE_MASK_ONLY = False
 # ---------------------------
 # Vedo Visualization Style (image_to_model style)
 # ---------------------------
-VISUALIZE_VEDO = True
+VISUALIZE_VEDO = False
 # Mode: 'lego' (exact voxels) or 'iso' (smooth surface)
 VISUALIZE_VEDO_MODE = 'iso' 
 # Smoothing iterations (only for 'iso' mode)
@@ -74,6 +74,8 @@ VISUALIZE_VEDO_SPACING = (1.0, 1.0, 1.0)
 VISUALIZE_VEDO_AUTO_SPACING = True
 
 VISUALIZE_VEDO_OPACITY = 0.5
+VISUALIZE_OVERLAY_PREVIEW = True
+
 VISUALIZE_MASK_OPACITY = 1.0
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
@@ -110,7 +112,8 @@ SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1
 
 # Sub-volume / ROI settings. 
 # SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
-SKELETON_SUB_VOLUME_PERCENTAGE = 0.1
+SKELETON_SUB_VOLUME_PERCENTAGE = 0.2
+
 # Center offsets for the ROI (as percentage of original dimensions, -0.5 to 0.5).
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Z = 0.0
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Y = 0.0
@@ -287,6 +290,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             visualize_results=VISUALIZE_RESULTS, 
                             visualize_mask_only=VISUALIZE_MASK_ONLY,
                             visualize_vedo=VISUALIZE_VEDO,
+                            visualize_overlay_preview=VISUALIZE_OVERLAY_PREVIEW,
                             visualize_vedo_mode=VISUALIZE_VEDO_MODE,
                             visualize_vedo_smooth_iter=VISUALIZE_VEDO_SMOOTH_ITER,
                             visualize_vedo_spacing=VISUALIZE_VEDO_SPACING,
@@ -372,7 +376,8 @@ def carotid_image_to_model(image_path=INPUT_PATH,
 
         from skimage.filters import threshold_otsu
         threshold = threshold_otsu(image)
-        binary = image > threshold
+        binary_raw = image > threshold
+        binary = binary_raw.copy()
 
         if skeleton_prune_mask_before > 0:
             print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
@@ -409,6 +414,12 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             skeleton,
             component_connectivity=skeleton_component_connectivity,
         )
+
+        if visualize_overlay_preview:
+            print(f"Visualizing 3D overlay PREVIEW (mask opacity=0.3). Close window to exit.")
+            visualization.visualize_overlay(binary_raw, skeleton, title="3D Skeleton Overlay Preview", vessel_opacity=0.3)
+            print("Exiting pipeline as requested (Preview Mode).")
+            return
         
         # save the skeleton
         np.save(skeleton_path, skeleton)
@@ -646,6 +657,7 @@ if __name__ == "__main__":
         visualize_results=VISUALIZE_RESULTS,
         visualize_mask_only=VISUALIZE_MASK_ONLY,
         visualize_vedo=VISUALIZE_VEDO,
+        visualize_overlay_preview=VISUALIZE_OVERLAY_PREVIEW,
         visualize_vedo_mode=VISUALIZE_VEDO_MODE,
         visualize_vedo_smooth_iter=VISUALIZE_VEDO_SMOOTH_ITER,
         visualize_vedo_spacing=VISUALIZE_VEDO_SPACING,

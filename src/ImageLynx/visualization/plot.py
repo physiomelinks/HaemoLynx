@@ -497,5 +497,82 @@ def visualize_volume_vedo(
     return plt_vedo
 
 
+    if show:
+        plotter.show()
+    return plotter
+
+
+def visualize_overlay(
+    volume: np.ndarray,
+    skeleton: np.ndarray,
+    title: str = "3D Skeleton Overlay",
+    background_color: str = "black",
+    vessel_color: str = "salmon",
+    skeleton_color: str = "cyan",
+    vessel_opacity: float = 0.3,
+    skeleton_point_size: float = 5.0,
+    show: bool = True,
+) -> Any:
+    """Visualize a 3D skeleton overlaid on its parent volume mesh."""
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise ImportError("pyvista is required for 3D overlay. Install with `pip install pyvista`.")
+
+    plotter = pv.Plotter(title=title)
+    plotter.set_background(background_color)
+
+    # 1. Add Vessel Surface
+    vol_transposed = volume.transpose(2, 1, 0)
+    grid = pv.ImageData()
+    grid.dimensions = np.array(vol_transposed.shape) + 1
+    # Half-voxel offset ensures voxel center (integer) aligns with surface center
+    grid.origin = (-0.5, -0.5, -0.5)
+    grid.spacing = (1, 1, 1)
+    grid.cell_data["values"] = vol_transposed.flatten(order="F")
+    surface = grid.ctp().contour([0.5], scalars="values")
+    
+    plotter.add_mesh(surface, color=vessel_color, opacity=vessel_opacity, smooth_shading=True, label="Vessel Mask")
+
+    # 2. Add Skeleton Points
+    coords = np.argwhere(skeleton).astype(float)
+    if coords.size > 0:
+        xyz = coords[:, [2, 1, 0]]
+        cloud = pv.PolyData(xyz)
+        plotter.add_mesh(cloud, color=skeleton_color, point_size=skeleton_point_size, render_points_as_spheres=True, label="Skeleton Centerline")
+
+    plotter.add_axes()
+    plotter.add_legend()
+    if show:
+        plotter.show()
+    return plotter
+
+
+def visualize_volume_rendering(
+    volume: np.ndarray,
+    title: str = "3D Volume Rendering",
+    cmap: str = "bone",
+    opacity: str = "linear",
+    show: bool = True,
+) -> Any:
+    """Visualize a 3D volume using direct volume rendering (ray casting)."""
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise ImportError("pyvista is required for volume rendering. Install with `pip install pyvista`.")
+
+    vol_transposed = volume.transpose(2, 1, 0)
+    grid = pv.ImageData()
+    grid.dimensions = np.array(vol_transposed.shape) + 1
+    grid.cell_data["values"] = vol_transposed.flatten(order="F")
+
+    plotter = pv.Plotter(title=title)
+    plotter.add_volume(grid, scalars="values", cmap=cmap, opacity=opacity, blending="composite")
+    plotter.add_axes()
+    if show:
+        plotter.show()
+    return plotter
+
+
 # British-spelling alias used in the example script.
 visualise_skeleton = visualize_skeleton
