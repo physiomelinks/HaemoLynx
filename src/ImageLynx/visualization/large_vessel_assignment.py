@@ -71,7 +71,7 @@ def visualize_3d_plotly_large_vessel_assignment(
     save_html_path: str | None = None,
     show: bool = False,
 ) -> go.Figure:
-    """Render final graph + large-vessel volumes + assigned input/output nodes."""
+    """Render graph + large-vessel volumes + I/O nodes + vessel/branch labels."""
     pos = nx.get_node_attributes(G, "pos")
     if not pos:
         raise ValueError("Graph has no node positions ('pos').")
@@ -123,44 +123,99 @@ def visualize_3d_plotly_large_vessel_assignment(
             )
         )
 
-    edge_x: list[float | None] = []
-    edge_y: list[float | None] = []
-    edge_z: list[float | None] = []
+    def _empty_line_lists() -> tuple[list[float | None], list[float | None], list[float | None]]:
+        return [], [], []
+
+    edge_segments: dict[str, tuple[list[float | None], list[float | None], list[float | None]]] = {
+        "arteriole": _empty_line_lists(),
+        "capillary": _empty_line_lists(),
+        "venule": _empty_line_lists(),
+    }
+    branch_label_x: list[float] = []
+    branch_label_y: list[float] = []
+    branch_label_z: list[float] = []
+    branch_label_text: list[str] = []
+
+    def _normalize_edge_vessel_type(edge_data: dict[str, Any]) -> str:
+        branch_order = edge_data.get("branch_order")
+        if branch_order is not None:
+            bo = str(branch_order).strip()
+            if bo.startswith("Art"):
+                return "arteriole"
+            if bo.startswith("Ven"):
+                return "venule"
+            if bo.startswith("B"):
+                return "capillary"
+        vessel_type = edge_data.get("vessel_type")
+        if vessel_type is None:
+            vessel_type = edge_data.get("mask_vessel_type")
+        vt = str(vessel_type).strip().lower() if vessel_type is not None else ""
+        if vt in {"arteriole", "venule", "capillary"}:
+            return vt
+        if vt in {"art", "arterial"}:
+            return "arteriole"
+        if vt in {"ven", "venous"}:
+            return "venule"
+        return "capillary"
+
+    def _push_segment(kind: str, xs: list[float], ys: list[float], zs: list[float]) -> None:
+        lx, ly, lz = edge_segments[kind]
+        for x, y, z in zip(xs, ys, zs):
+            lx.append(float(x))
+            ly.append(float(y))
+            lz.append(float(z))
+        lx.append(None)
+        ly.append(None)
+        lz.append(None)
+
+    def _add_branch_label(edge_data: dict[str, Any], pts_xyz: np.ndarray) -> None:
+        branch_order = edge_data.get("branch_order")
+        if branch_order is None or pts_xyz.size == 0:
+            return
+        mid_idx = int(pts_xyz.shape[0] // 2)
+        mid = pts_xyz[mid_idx]
+        branch_label_x.append(float(mid[0]))
+        branch_label_y.append(float(mid[1]))
+        branch_label_z.append(float(mid[2]))
+        branch_label_text.append(str(branch_order))
+
     if isinstance(G, nx.MultiGraph):
         edge_iter = G.edges(keys=True, data=True)
         for u, v, _k, edge_data in edge_iter:
+            kind = _normalize_edge_vessel_type(edge_data)
             voxels = edge_data.get("voxels", [])
             if len(voxels) > 1:
-                for pt in voxels:
-                    edge_x.append(float(pt[0]))
-                    edge_y.append(float(pt[1]))
-                    edge_z.append(float(pt[2]))
-                edge_x.append(None)
-                edge_y.append(None)
-                edge_z.append(None)
+                pts = np.asarray(voxels, dtype=float)
+                _push_segment(kind, pts[:, 0].tolist(), pts[:, 1].tolist(), pts[:, 2].tolist())
+                _add_branch_label(edge_data, pts)
             else:
                 pu = np.asarray(pos[u], dtype=float)
                 pv = np.asarray(pos[v], dtype=float)
-                edge_x += [float(pu[0]), float(pv[0]), None]
-                edge_y += [float(pu[1]), float(pv[1]), None]
-                edge_z += [float(pu[2]), float(pv[2]), None]
+                _push_segment(
+                    kind,
+                    [float(pu[0]), float(pv[0])],
+                    [float(pu[1]), float(pv[1])],
+                    [float(pu[2]), float(pv[2])],
+                )
+                _add_branch_label(edge_data, np.vstack([pu, pv]))
     else:
         for u, v, edge_data in G.edges(data=True):
+            kind = _normalize_edge_vessel_type(edge_data)
             voxels = edge_data.get("voxels", [])
             if len(voxels) > 1:
-                for pt in voxels:
-                    edge_x.append(float(pt[0]))
-                    edge_y.append(float(pt[1]))
-                    edge_z.append(float(pt[2]))
-                edge_x.append(None)
-                edge_y.append(None)
-                edge_z.append(None)
+                pts = np.asarray(voxels, dtype=float)
+                _push_segment(kind, pts[:, 0].tolist(), pts[:, 1].tolist(), pts[:, 2].tolist())
+                _add_branch_label(edge_data, pts)
             else:
                 pu = np.asarray(pos[u], dtype=float)
                 pv = np.asarray(pos[v], dtype=float)
-                edge_x += [float(pu[0]), float(pv[0]), None]
-                edge_y += [float(pu[1]), float(pv[1]), None]
-                edge_z += [float(pu[2]), float(pv[2]), None]
+                _push_segment(
+                    kind,
+                    [float(pu[0]), float(pv[0])],
+                    [float(pu[1]), float(pv[1])],
+                    [float(pu[2]), float(pv[2])],
+                )
+                _add_branch_label(edge_data, np.vstack([pu, pv]))
 
     input_set = set(input_nodes)
     output_set = set(output_nodes)
@@ -196,16 +251,41 @@ def visualize_3d_plotly_large_vessel_assignment(
         color="#FF3EA5",
         fig=fig,
     )
-    fig.add_trace(
-        go.Scatter3d(
-            x=edge_x,
-            y=edge_y,
-            z=edge_z,
-            mode="lines",
-            line=dict(color="rgba(0, 200, 255, 0.7)", width=5),
-            name="Edges",
+    vessel_styles = {
+        "arteriole": dict(color="rgba(0, 220, 120, 0.9)", name="Edges (arteriole)"),
+        "capillary": dict(color="rgba(0, 200, 255, 0.75)", name="Edges (capillary)"),
+        "venule": dict(color="rgba(255, 62, 165, 0.9)", name="Edges (venule)"),
+    }
+    for kind in ("arteriole", "capillary", "venule"):
+        ex, ey, ez = edge_segments[kind]
+        if not ex:
+            continue
+        style = vessel_styles[kind]
+        fig.add_trace(
+            go.Scatter3d(
+                x=ex,
+                y=ey,
+                z=ez,
+                mode="lines",
+                line=dict(color=style["color"], width=5),
+                name=style["name"],
+            )
         )
-    )
+    if branch_label_text:
+        fig.add_trace(
+            go.Scatter3d(
+                x=branch_label_x,
+                y=branch_label_y,
+                z=branch_label_z,
+                mode="markers+text",
+                marker=dict(size=2, color="rgba(255,255,255,0.35)"),
+                text=branch_label_text,
+                textposition="top center",
+                textfont=dict(size=9, color="#FFFFFF"),
+                name="Branch order labels",
+                hovertemplate="Branch %{text}<extra></extra>",
+            )
+        )
 
     if other_nodes:
         ox, oy, oz, oid = _coords_with_ids(other_nodes)

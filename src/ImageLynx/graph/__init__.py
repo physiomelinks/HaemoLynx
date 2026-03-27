@@ -33,6 +33,7 @@ from .large_vessels import (
     dilate_binary_mask_by_microns,
     dilate_large_vessel_masks_by_microns,
     exclude_smaller_overlapping_large_vessel_components,
+    exclude_smaller_overlapping_small_vessel_components,
 )
 from ._helpers import (
     add_edge_safe,
@@ -90,6 +91,7 @@ __all__ = [
     "dilate_binary_mask_by_microns",
     "dilate_large_vessel_masks_by_microns",
     "exclude_smaller_overlapping_large_vessel_components",
+    "exclude_smaller_overlapping_small_vessel_components",
     "remove_edges_for_self_connected_nodes",
     "remove_terminal_terminal_edges",
     "remove_isolated_nodes",

@@ -32,6 +32,10 @@ from ImageLynx.haemodynamics import probability as probability_haemodynamics
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
 from preflight import run_preflight_checklist
 from resistance_pipeline_settings import *  # noqa: F403
+from cached_clean_large_masks import (
+    load_cleaned_mask_cache,
+    save_cleaned_mask_cache,
+)
 from settings_persistence import (
     persist_automated_io_assignment_to_settings_file,
     persist_small_vessel_boundary_assignment_to_settings_file,
@@ -54,12 +58,17 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_small_vessel_masks_for_boundary_assignment=USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT,
                             use_ilastik_small_vessel_segmentation=USE_ILASTIK_SMALL_VESSEL_SEGMENTATION,
                             small_vessel_mask_min_overlap_fraction=SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION,
+                            small_vessel_boundary_assignment_fast_mode=SMALL_VESSEL_BOUNDARY_ASSIGNMENT_FAST_MODE,
+                            small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode=SMALL_VESSEL_BOUNDARY_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE,
+                            small_vessel_overlap_parallel_workers=SMALL_VESSEL_OVERLAP_PARALLEL_WORKERS,
+                            small_vessel_3d_volume_downsample_stride=SMALL_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE,
                             write_small_vessel_boundary_labelling_3d_html=WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML,
                             automated_vessel_assignment=AUTOMATED_VESSEL_ASSIGNMENT,
                             automated_vessel_assignment_fast_mode=AUTOMATED_VESSEL_ASSIGNMENT_FAST_MODE,
                             automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode=AUTOMATED_VESSEL_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE,
                             automated_vessel_overlap_parallel_workers=AUTOMATED_VESSEL_OVERLAP_PARALLEL_WORKERS,
                             large_vessel_3d_volume_downsample_stride=LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE,
+                            write_fast_mode_preassignment_large_vessel_debug_3d_html=WRITE_FAST_MODE_PREASSIGNMENT_LARGE_VESSEL_DEBUG_3D_HTML,
                             auto_persist_automated_io_assignment_to_settings=AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS,
                             auto_persist_small_vessel_boundary_assignment_to_settings=AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
@@ -347,6 +356,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     print("Visualizing skeleton projection...")
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
     print("Skeleton projection saved.")
+    mask_cache_path = output_dir / f"{image_path.stem}_cleaned_mask_cache.pkl"
+    cached_mask_payload = load_cleaned_mask_cache(
+        mask_cache_path,
+        expected_image_shape_zyx=tuple(int(v) for v in image.shape),
+    )
+    if cached_mask_payload is not None:
+        print(f"Loaded cleaned mask cache for visualization from: {mask_cache_path}")
 
     if use_ilastik_large_vessel_segmentation and not use_large_vessel_masks:
         raise ValueError(
@@ -671,6 +687,32 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "manual arteriole/venule boundary-node selection remains available."
         )
 
+    large_viz_arteriole_mask = large_arteriole_mask
+    large_viz_venule_mask = large_venule_mask
+    small_viz_arteriole_mask = small_arteriole_mask
+    small_viz_venule_mask = small_venule_mask
+    if cached_mask_payload is not None:
+        if large_viz_arteriole_mask is None or large_viz_venule_mask is None:
+            cached_large_arteriole = cached_mask_payload.get("large_arteriole_mask")
+            cached_large_venule = cached_mask_payload.get("large_venule_mask")
+            if cached_large_arteriole is not None and cached_large_venule is not None:
+                large_viz_arteriole_mask = np.asarray(cached_large_arteriole, dtype=bool)
+                large_viz_venule_mask = np.asarray(cached_large_venule, dtype=bool)
+                print(
+                    "Using cached cleaned large-vessel masks for visualization "
+                    "because live large-vessel masks are unavailable."
+                )
+        if small_viz_arteriole_mask is None or small_viz_venule_mask is None:
+            cached_small_arteriole = cached_mask_payload.get("small_arteriole_mask")
+            cached_small_venule = cached_mask_payload.get("small_venule_mask")
+            if cached_small_arteriole is not None and cached_small_venule is not None:
+                small_viz_arteriole_mask = np.asarray(cached_small_arteriole, dtype=bool)
+                small_viz_venule_mask = np.asarray(cached_small_venule, dtype=bool)
+                print(
+                    "Using cached cleaned small-vessel masks for visualization "
+                    "because live small-vessel masks are unavailable."
+                )
+
     if do_graph_building:
         # 3) Convert skeleton to graph.
         print("Building skan Skeleton object...")
@@ -990,31 +1032,32 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         assignment_large_arteriole_mask = large_arteriole_mask
         assignment_large_venule_mask = large_venule_mask
         if automated_vessel_assignment_fast_mode:
-            pre_assignment_before_cleanup_html_path = (
-                plot_dir / "pre_assignment_large_vessel_masks_before_overlap_cleanup_3d.html"
-            )
-            print(
-                "Rendering fast-mode pre-assignment debug view (before overlap cleanup)..."
-            )
-            visualization.visualize_3d_plotly_large_vessel_assignment(
-                G,
-                large_arteriole_mask=large_arteriole_mask,
-                large_venule_mask=large_venule_mask,
-                input_nodes=[],
-                output_nodes=[],
-                voxel_size_xyz=tuple(float(v) for v in voxel_size),
-                volume_downsample_stride=1,
-                title=(
-                    "Pre-Assignment Debug View (Fast Mode, Before Overlap Cleanup): "
-                    "Large-Vessel Masks + Graph"
-                ),
-                save_html_path=str(pre_assignment_before_cleanup_html_path),
-                show=False,
-            )
-            print(
-                "Saved fast-mode pre-assignment (before cleanup) large-vessel "
-                f"debug 3D visualization to: {pre_assignment_before_cleanup_html_path}"
-            )
+            if write_fast_mode_preassignment_large_vessel_debug_3d_html:
+                pre_assignment_before_cleanup_html_path = (
+                    plot_dir / "pre_assignment_large_vessel_masks_before_overlap_cleanup_3d.html"
+                )
+                print(
+                    "Rendering fast-mode pre-assignment debug view (before overlap cleanup)..."
+                )
+                visualization.visualize_3d_plotly_large_vessel_assignment(
+                    G,
+                    large_arteriole_mask=large_arteriole_mask,
+                    large_venule_mask=large_venule_mask,
+                    input_nodes=[],
+                    output_nodes=[],
+                    voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                    volume_downsample_stride=int(large_vessel_3d_volume_downsample_stride),
+                    title=(
+                        "Pre-Assignment Debug View (Fast Mode, Before Overlap Cleanup): "
+                        "Large-Vessel Masks + Graph"
+                    ),
+                    save_html_path=str(pre_assignment_before_cleanup_html_path),
+                    show=False,
+                )
+                print(
+                    "Saved fast-mode pre-assignment (before cleanup) large-vessel "
+                    f"debug 3D visualization to: {pre_assignment_before_cleanup_html_path}"
+                )
             cleaned_arteriole_mask, cleaned_venule_mask = (
                 graph.exclude_smaller_overlapping_large_vessel_components(
                     large_arteriole_mask,
@@ -1044,31 +1087,34 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             if cleaned_arteriole_mask is not None and cleaned_venule_mask is not None:
                 assignment_large_arteriole_mask = cleaned_arteriole_mask
                 assignment_large_venule_mask = cleaned_venule_mask
-            pre_assignment_after_cleanup_html_path = (
-                plot_dir / "pre_assignment_large_vessel_masks_after_overlap_cleanup_3d.html"
-            )
-            print(
-                "Rendering fast-mode pre-assignment debug view (after overlap cleanup)..."
-            )
-            visualization.visualize_3d_plotly_large_vessel_assignment(
-                G,
-                large_arteriole_mask=assignment_large_arteriole_mask,
-                large_venule_mask=assignment_large_venule_mask,
-                input_nodes=[],
-                output_nodes=[],
-                voxel_size_xyz=tuple(float(v) for v in voxel_size),
-                volume_downsample_stride=1,
-                title=(
-                    "Pre-Assignment Debug View (Fast Mode, After Overlap Cleanup): "
-                    "Large-Vessel Masks + Graph"
-                ),
-                save_html_path=str(pre_assignment_after_cleanup_html_path),
-                show=False,
-            )
-            print(
-                "Saved fast-mode pre-assignment (after cleanup) large-vessel "
-                f"debug 3D visualization to: {pre_assignment_after_cleanup_html_path}"
-            )
+            if write_fast_mode_preassignment_large_vessel_debug_3d_html:
+                pre_assignment_after_cleanup_html_path = (
+                    plot_dir / "pre_assignment_large_vessel_masks_after_overlap_cleanup_3d.html"
+                )
+                print(
+                    "Rendering fast-mode pre-assignment debug view (after overlap cleanup)..."
+                )
+                visualization.visualize_3d_plotly_large_vessel_assignment(
+                    G,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
+                    input_nodes=[],
+                    output_nodes=[],
+                    voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                    volume_downsample_stride=int(large_vessel_3d_volume_downsample_stride),
+                    title=(
+                        "Pre-Assignment Debug View (Fast Mode, After Overlap Cleanup): "
+                        "Large-Vessel Masks + Graph"
+                    ),
+                    save_html_path=str(pre_assignment_after_cleanup_html_path),
+                    show=False,
+                )
+                print(
+                    "Saved fast-mode pre-assignment (after cleanup) large-vessel "
+                    f"debug 3D visualization to: {pre_assignment_after_cleanup_html_path}"
+                )
+        large_viz_arteriole_mask = assignment_large_arteriole_mask
+        large_viz_venule_mask = assignment_large_venule_mask
         auto_start_nodes, auto_output_nodes = (
             graph.select_terminal_nodes_from_large_vessel_masks(
                 G,
@@ -1119,6 +1165,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             f"{len(starting_node_coordinates)} input coordinates from arteriole-mask overlap "
             f"and {len(output_node_coordinates)} output coordinates from venule-mask overlap."
         )
+    elif cached_mask_payload is not None:
+        cached_large_arteriole = cached_mask_payload.get("large_arteriole_mask")
+        cached_large_venule = cached_mask_payload.get("large_venule_mask")
+        if cached_large_arteriole is not None and cached_large_venule is not None:
+            large_viz_arteriole_mask = np.asarray(cached_large_arteriole, dtype=bool)
+            large_viz_venule_mask = np.asarray(cached_large_venule, dtype=bool)
+            print(
+                "Automated assignment disabled: reusing cached cleaned large-vessel "
+                "masks for final large-vessel assignment visualization."
+            )
 
     starting_nodes[:] = []
     output_nodes[:] = []
@@ -1185,7 +1241,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             assigned_output_nodes=[int(node_id) for node_id in output_nodes],
         )
     if automated_vessel_assignment:
-        if large_arteriole_mask is None or large_venule_mask is None:
+        if large_viz_arteriole_mask is None or large_viz_venule_mask is None:
             raise ValueError(
                 "automated_vessel_assignment=True requires large arteriole/venule masks "
                 "for visualization."
@@ -1193,8 +1249,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         final_assignment_html_path = plot_dir / "final_graph_large_vessel_assignment_3d.html"
         visualization.visualize_3d_plotly_large_vessel_assignment(
             G,
-            large_arteriole_mask=large_arteriole_mask,
-            large_venule_mask=large_venule_mask,
+            large_arteriole_mask=large_viz_arteriole_mask,
+            large_venule_mask=large_viz_venule_mask,
             input_nodes=list(starting_nodes),
             output_nodes=list(output_nodes),
             voxel_size_xyz=tuple(float(v) for v in voxel_size),
@@ -1259,13 +1315,47 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 "use_small_vessel_masks_for_boundary_assignment=True requires "
                 "small_arteriole_mask_path and small_venule_mask_path."
             )
+        apply_small_overlap_cleanup_prepass = bool(
+            small_vessel_boundary_assignment_fast_mode
+            or small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode
+        )
+        if small_vessel_boundary_assignment_fast_mode:
+            print(
+                "Small-vessel boundary assignment fast mode enabled: "
+                "removing overlap voxels from smaller overlapping components "
+                "before edge classification."
+            )
+        elif apply_small_overlap_cleanup_prepass:
+            print(
+                "Small-vessel boundary assignment: overlap cleanup pre-pass "
+                "enabled in normal mode."
+            )
+        assignment_small_arteriole_mask = small_arteriole_mask
+        assignment_small_venule_mask = small_venule_mask
+        if apply_small_overlap_cleanup_prepass:
+            cleaned_small_arteriole_mask, cleaned_small_venule_mask = (
+                graph.exclude_smaller_overlapping_small_vessel_components(
+                    small_arteriole_mask,
+                    small_venule_mask,
+                )
+            )
+            if (
+                cleaned_small_arteriole_mask is not None
+                and cleaned_small_venule_mask is not None
+            ):
+                assignment_small_arteriole_mask = cleaned_small_arteriole_mask
+                assignment_small_venule_mask = cleaned_small_venule_mask
+        small_viz_arteriole_mask = assignment_small_arteriole_mask
+        small_viz_venule_mask = assignment_small_venule_mask
         inferred_boundary_results = graph.infer_boundary_nodes_from_small_vessel_masks(
             G,
-            small_arteriole_mask=small_arteriole_mask,
-            small_venule_mask=small_venule_mask,
+            small_arteriole_mask=assignment_small_arteriole_mask,
+            small_venule_mask=assignment_small_venule_mask,
             voxel_size_xyz=tuple(float(v) for v in voxel_size),
             minimum_overlap_fraction=float(small_vessel_mask_min_overlap_fraction),
             allow_overlap=False,
+            exclude_smaller_overlapping_volumes=False,
+            overlap_parallel_workers=int(small_vessel_overlap_parallel_workers),
         )
         arteriole_boundary_nodes[:] = list(
             inferred_boundary_results["arteriole_boundary_nodes"]
@@ -1298,12 +1388,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             Path(plot_dir).mkdir(parents=True, exist_ok=True)
             ok = graph.write_small_vessel_mask_boundary_labelling_3d_html(
                 G,
-                small_arteriole_mask=small_arteriole_mask,
-                small_venule_mask=small_venule_mask,
+                small_arteriole_mask=small_viz_arteriole_mask,
+                small_venule_mask=small_viz_venule_mask,
                 arteriole_boundary_nodes=arteriole_boundary_nodes,
                 venule_boundary_nodes=venule_boundary_nodes,
                 voxel_size_xyz=tuple(float(v) for v in voxel_size),
                 output_html_path=boundary_html,
+                volume_downsample_stride=int(small_vessel_3d_volume_downsample_stride),
             )
             if ok:
                 print(f"Saved interactive 3D small-vessel boundary view: {boundary_html}")
@@ -1311,6 +1402,43 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 print(
                     "Small-vessel boundary 3D HTML not written (install plotly to enable)."
                 )
+    elif (
+        write_small_vessel_boundary_labelling_3d_html
+        and small_viz_arteriole_mask is not None
+        and small_viz_venule_mask is not None
+        and (arteriole_boundary_nodes or venule_boundary_nodes)
+    ):
+        boundary_html = Path(plot_dir) / "small_vessel_mask_boundary_labelling_3d.html"
+        Path(plot_dir).mkdir(parents=True, exist_ok=True)
+        ok = graph.write_small_vessel_mask_boundary_labelling_3d_html(
+            G,
+            small_arteriole_mask=small_viz_arteriole_mask,
+            small_venule_mask=small_viz_venule_mask,
+            arteriole_boundary_nodes=arteriole_boundary_nodes,
+            venule_boundary_nodes=venule_boundary_nodes,
+            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            output_html_path=boundary_html,
+            volume_downsample_stride=int(small_vessel_3d_volume_downsample_stride),
+        )
+        if ok:
+            print(
+                "Saved interactive 3D small-vessel boundary view from "
+                f"cached/loaded masks: {boundary_html}"
+            )
+        else:
+            print(
+                "Small-vessel boundary 3D HTML not written (install plotly to enable)."
+            )
+    cache_saved = save_cleaned_mask_cache(
+        mask_cache_path,
+        image_shape_zyx=tuple(int(v) for v in image.shape),
+        large_arteriole_mask=large_viz_arteriole_mask,
+        large_venule_mask=large_viz_venule_mask,
+        small_arteriole_mask=small_viz_arteriole_mask,
+        small_venule_mask=small_viz_venule_mask,
+    )
+    if cache_saved:
+        print(f"Saved cleaned mask cache for visualization reuse to: {mask_cache_path}")
     if automated_vessel_assignment:
         print(
             f"Selected {len(starting_nodes)} STARTING_NODES and {len(output_nodes)} "
@@ -1417,6 +1545,27 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "Saved vessel-type 3D visualization after branch assignment to: "
             f"{vessel_type_3d_path}"
         )
+        if large_viz_arteriole_mask is not None and large_viz_venule_mask is not None:
+            final_assignment_html_path = plot_dir / "final_graph_large_vessel_assignment_3d.html"
+            visualization.visualize_3d_plotly_large_vessel_assignment(
+                G,
+                large_arteriole_mask=large_viz_arteriole_mask,
+                large_venule_mask=large_viz_venule_mask,
+                input_nodes=list(starting_nodes),
+                output_nodes=list(output_nodes),
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                volume_downsample_stride=int(large_vessel_3d_volume_downsample_stride),
+                title=(
+                    "Final Graph with Automated Large-Vessel Assignment "
+                    "(Vessel Types + Branch Orders, 3D)"
+                ),
+                save_html_path=str(final_assignment_html_path),
+                show=show_plots_in_ide or interactive_plots,
+            )
+            print(
+                "Saved final automated large-vessel assignment 3D visualization to: "
+                f"{final_assignment_html_path}"
+            )
         if not run_haemodynamics:
             print(
                 "Haemodynamics disabled; skipping diameter fitting and "

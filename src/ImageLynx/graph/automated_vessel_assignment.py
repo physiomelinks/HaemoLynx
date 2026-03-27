@@ -10,7 +10,10 @@ import networkx as nx
 import numpy as np
 
 from ..coords import physical_xyz_to_index_zyx, index_zyx_to_physical_xyz
-from .large_vessels import exclude_smaller_overlapping_large_vessel_components
+from .large_vessels import (
+    exclude_smaller_overlapping_large_vessel_components,
+    exclude_smaller_overlapping_small_vessel_components,
+)
 
 
 def _sort_nodes(nodes: set[Any]) -> list[Any]:
@@ -719,6 +722,37 @@ def _sample_overlap_fraction(
     return _sample_overlap_fraction_from_valid_indices(valid_indices_zyx, mask)
 
 
+def _downsample_binary_mask_max(mask: np.ndarray, stride: int) -> np.ndarray:
+    """Downsample a 3D binary mask via block max-pooling."""
+    if stride <= 1:
+        return mask.astype(bool, copy=False)
+
+    z, y, x = mask.shape
+    pad_z = (-z) % stride
+    pad_y = (-y) % stride
+    pad_x = (-x) % stride
+    if pad_z or pad_y or pad_x:
+        padded = np.pad(
+            mask.astype(bool, copy=False),
+            ((0, pad_z), (0, pad_y), (0, pad_x)),
+            mode="constant",
+            constant_values=False,
+        )
+    else:
+        padded = mask.astype(bool, copy=False)
+
+    z2, y2, x2 = padded.shape
+    pooled = padded.reshape(
+        z2 // stride,
+        stride,
+        y2 // stride,
+        stride,
+        x2 // stride,
+        stride,
+    )
+    return np.max(pooled, axis=(1, 3, 5))
+
+
 def infer_boundary_nodes_from_small_vessel_masks(
     G: nx.Graph,
     small_arteriole_mask: np.ndarray,
@@ -727,6 +761,8 @@ def infer_boundary_nodes_from_small_vessel_masks(
     voxel_size_xyz: tuple[float, float, float],
     minimum_overlap_fraction: float = 0.5,
     allow_overlap: bool = False,
+    exclude_smaller_overlapping_volumes: bool = False,
+    overlap_parallel_workers: int = 0,
 ) -> dict[str, Any]:
     """Label mask-overlapping edges/nodes and infer arteriole/venule boundaries.
 
@@ -749,6 +785,19 @@ def infer_boundary_nodes_from_small_vessel_masks(
 
     arteriole_mask = small_arteriole_mask.astype(bool, copy=False)
     venule_mask = small_venule_mask.astype(bool, copy=False)
+    if exclude_smaller_overlapping_volumes:
+        cleaned_arteriole, cleaned_venule = (
+            exclude_smaller_overlapping_small_vessel_components(
+                arteriole_mask,
+                venule_mask,
+            )
+        )
+        if cleaned_arteriole is None or cleaned_venule is None:
+            raise RuntimeError(
+                "Internal error: expected cleaned masks when small masks are provided."
+            )
+        arteriole_mask = cleaned_arteriole
+        venule_mask = cleaned_venule
     union_bbox = _combine_bboxes_zyx(
         [_nonzero_bbox_slices_zyx(arteriole_mask), _nonzero_bbox_slices_zyx(venule_mask)]
     )
@@ -773,6 +822,7 @@ def infer_boundary_nodes_from_small_vessel_masks(
     overlap_edges = 0
     edge_samples_cache: dict[tuple[Any, Any, int], np.ndarray] = {}
     edge_valid_indices_cache: dict[tuple[Any, Any, int], np.ndarray] = {}
+    edge_attr_by_id: dict[tuple[Any, Any, int], dict[str, Any]] = {}
     total_edges = int(G.number_of_edges())
     processed_edges = 0
     start_time_s = time.perf_counter()
@@ -782,83 +832,47 @@ def infer_boundary_nodes_from_small_vessel_masks(
     )
     progress_stride = max(1, total_edges // 10) if total_edges > 0 else 1
 
+    edge_records: list[
+        tuple[tuple[Any, Any, int], np.ndarray, np.ndarray, dict[str, Any]]
+    ] = []
     if isinstance(G, nx.MultiGraph):
         edge_iter = G.edges(keys=True, data=True)
         for u, v, key, edge_data in edge_iter:
-            processed_edges += 1
-            if processed_edges % progress_stride == 0 or processed_edges == total_edges:
-                elapsed = time.perf_counter() - start_time_s
-                print(
-                    "Small-vessel boundary assignment progress: "
-                    f"{processed_edges}/{total_edges} edges ({elapsed:.1f}s elapsed)."
-                )
             if u not in node_positions or v not in node_positions:
                 continue
-            pu = np.asarray(node_positions[u], dtype=float)
-            pv = np.asarray(node_positions[v], dtype=float)
             edge_id = _edge_id(u, v, key)
-            samples = edge_samples_cache.get(edge_id)
-            if samples is None:
-                samples = _edge_sample_points_from_data(edge_data, (pu, pv))
-                edge_samples_cache[edge_id] = samples
-            valid_indices_zyx = edge_valid_indices_cache.get(edge_id)
-            if valid_indices_zyx is None:
-                _, valid_indices_zyx = _sample_points_to_valid_indices_zyx(
-                    samples,
-                    voxel_size_xyz=voxel_size_xyz,
-                    mask_shape=arteriole_mask.shape,
+            edge_records.append(
+                (
+                    edge_id,
+                    np.asarray(node_positions[u], dtype=float),
+                    np.asarray(node_positions[v], dtype=float),
+                    edge_data,
                 )
-                edge_valid_indices_cache[edge_id] = valid_indices_zyx
-            if valid_indices_zyx.size == 0:
-                continue
-            if union_bbox is not None and not _indices_intersect_bbox_zyx(
-                valid_indices_zyx, union_bbox
-            ):
-                continue
-            arteriole_fraction = _sample_overlap_fraction_from_valid_indices(
-                valid_indices_zyx,
-                arteriole_mask,
             )
-            venule_fraction = _sample_overlap_fraction_from_valid_indices(
-                valid_indices_zyx,
-                venule_mask,
-            )
-            in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
-            in_venule = venule_fraction >= float(minimum_overlap_fraction)
-            if in_arteriole and in_venule:
-                overlap_edges += 1
-                if allow_overlap:
-                    arteriole_edges.add(edge_id)
-                    venule_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "overlap"
-                elif arteriole_fraction >= venule_fraction:
-                    arteriole_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "arteriole"
-                else:
-                    venule_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "venule"
-                continue
-            if in_arteriole:
-                arteriole_edges.add(edge_id)
-                edge_data["mask_vessel_type"] = "arteriole"
-            elif in_venule:
-                venule_edges.add(edge_id)
-                edge_data["mask_vessel_type"] = "venule"
     else:
         edge_iter = G.edges(data=True)
         for u, v, edge_data in edge_iter:
-            processed_edges += 1
-            if processed_edges % progress_stride == 0 or processed_edges == total_edges:
-                elapsed = time.perf_counter() - start_time_s
-                print(
-                    "Small-vessel boundary assignment progress: "
-                    f"{processed_edges}/{total_edges} edges ({elapsed:.1f}s elapsed)."
-                )
             if u not in node_positions or v not in node_positions:
                 continue
-            pu = np.asarray(node_positions[u], dtype=float)
-            pv = np.asarray(node_positions[v], dtype=float)
             edge_id = (u, v, 0) if u <= v else (v, u, 0)
+            edge_records.append(
+                (
+                    edge_id,
+                    np.asarray(node_positions[u], dtype=float),
+                    np.asarray(node_positions[v], dtype=float),
+                    edge_data,
+                )
+            )
+
+    def _classify_edge(
+        edge_id: tuple[Any, Any, int],
+        pu: np.ndarray,
+        pv: np.ndarray,
+        edge_data: dict[str, Any],
+        *,
+        use_cache: bool,
+    ) -> tuple[tuple[Any, Any, int], str | None, bool]:
+        if use_cache:
             samples = edge_samples_cache.get(edge_id)
             if samples is None:
                 samples = _edge_sample_points_from_data(edge_data, (pu, pv))
@@ -871,41 +885,84 @@ def infer_boundary_nodes_from_small_vessel_masks(
                     mask_shape=arteriole_mask.shape,
                 )
                 edge_valid_indices_cache[edge_id] = valid_indices_zyx
-            if valid_indices_zyx.size == 0:
-                continue
-            if union_bbox is not None and not _indices_intersect_bbox_zyx(
-                valid_indices_zyx, union_bbox
-            ):
-                continue
-            arteriole_fraction = _sample_overlap_fraction_from_valid_indices(
-                valid_indices_zyx,
-                arteriole_mask,
+        else:
+            samples = _edge_sample_points_from_data(edge_data, (pu, pv))
+            _, valid_indices_zyx = _sample_points_to_valid_indices_zyx(
+                samples,
+                voxel_size_xyz=voxel_size_xyz,
+                mask_shape=arteriole_mask.shape,
             )
-            venule_fraction = _sample_overlap_fraction_from_valid_indices(
-                valid_indices_zyx,
-                venule_mask,
+        if valid_indices_zyx.size == 0:
+            return edge_id, None, False
+        if union_bbox is not None and not _indices_intersect_bbox_zyx(valid_indices_zyx, union_bbox):
+            return edge_id, None, False
+
+        arteriole_fraction = _sample_overlap_fraction_from_valid_indices(
+            valid_indices_zyx,
+            arteriole_mask,
+        )
+        venule_fraction = _sample_overlap_fraction_from_valid_indices(
+            valid_indices_zyx,
+            venule_mask,
+        )
+        in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
+        in_venule = venule_fraction >= float(minimum_overlap_fraction)
+        if in_arteriole and in_venule:
+            if allow_overlap:
+                return edge_id, "overlap", True
+            if arteriole_fraction >= venule_fraction:
+                return edge_id, "arteriole", True
+            return edge_id, "venule", True
+        if in_arteriole:
+            return edge_id, "arteriole", False
+        if in_venule:
+            return edge_id, "venule", False
+        return edge_id, None, False
+
+    worker_count = int(overlap_parallel_workers)
+    if worker_count > 0 and len(edge_records) > 1:
+        results: list[tuple[tuple[Any, Any, int], str | None, bool]] = []
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(_classify_edge, edge_id, pu, pv, edge_data, use_cache=False)
+                for edge_id, pu, pv, edge_data in edge_records
+            ]
+            for done_idx, future in enumerate(as_completed(futures), start=1):
+                results.append(future.result())
+                if done_idx % progress_stride == 0 or done_idx == len(edge_records):
+                    elapsed = time.perf_counter() - start_time_s
+                    print(
+                        "Small-vessel boundary assignment progress: "
+                        f"{done_idx}/{len(edge_records)} edges ({elapsed:.1f}s elapsed)."
+                    )
+    else:
+        results = []
+        for processed_edges, (edge_id, pu, pv, edge_data) in enumerate(edge_records, start=1):
+            results.append(
+                _classify_edge(edge_id, pu, pv, edge_data, use_cache=True)
             )
-            in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
-            in_venule = venule_fraction >= float(minimum_overlap_fraction)
-            if in_arteriole and in_venule:
-                overlap_edges += 1
-                if allow_overlap:
-                    arteriole_edges.add(edge_id)
-                    venule_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "overlap"
-                elif arteriole_fraction >= venule_fraction:
-                    arteriole_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "arteriole"
-                else:
-                    venule_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "venule"
-                continue
-            if in_arteriole:
-                arteriole_edges.add(edge_id)
-                edge_data["mask_vessel_type"] = "arteriole"
-            elif in_venule:
-                venule_edges.add(edge_id)
-                edge_data["mask_vessel_type"] = "venule"
+            if processed_edges % progress_stride == 0 or processed_edges == len(edge_records):
+                elapsed = time.perf_counter() - start_time_s
+                print(
+                    "Small-vessel boundary assignment progress: "
+                    f"{processed_edges}/{len(edge_records)} edges ({elapsed:.1f}s elapsed)."
+                )
+
+    for edge_id, _pu, _pv, edge_data in edge_records:
+        edge_attr_by_id[edge_id] = edge_data
+    for edge_id, vessel_type, was_overlap in results:
+        if vessel_type is None:
+            continue
+        if was_overlap:
+            overlap_edges += 1
+        if vessel_type == "arteriole":
+            arteriole_edges.add(edge_id)
+        elif vessel_type == "venule":
+            venule_edges.add(edge_id)
+        elif vessel_type == "overlap":
+            arteriole_edges.add(edge_id)
+            venule_edges.add(edge_id)
+        edge_attr_by_id[edge_id]["mask_vessel_type"] = vessel_type
 
     arteriole_nodes: set[Any] = set()
     venule_nodes: set[Any] = set()
@@ -1136,6 +1193,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
     voxel_size_xyz: tuple[float, float, float],
     output_html_path: str | Path,
     title: str = "Small Vessel Mask Boundary Labelling (3D)",
+    volume_downsample_stride: int = 1,
 ) -> bool:
     """Write interactive 3D HTML: small-vessel masks, mask-labelled edges, boundary nodes."""
     try:
@@ -1154,6 +1212,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
 
     output_html_path = Path(output_html_path)
     output_html_path.parent.mkdir(parents=True, exist_ok=True)
+    stride = max(1, int(volume_downsample_stride))
 
     def _empty_line_lists() -> tuple[list[float | None], list[float | None], list[float | None]]:
         return [], [], []
@@ -1212,16 +1271,22 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
         x_scale, y_scale, z_scale = voxel_size_xyz
         z_slice, y_slice, x_slice = bbox
         cropped = mask_bool[z_slice, y_slice, x_slice]
-        zz, yy, xx = np.indices(cropped.shape, dtype=float)
-        xx = xx + float(x_slice.start)
-        yy = yy + float(y_slice.start)
-        zz = zz + float(z_slice.start)
+        downsampled = _downsample_binary_mask_max(cropped, stride)
+        if not np.any(downsampled):
+            downsampled = cropped
+            effective_stride = 1
+        else:
+            effective_stride = stride
+        zz, yy, xx = np.indices(downsampled.shape, dtype=float)
+        xx = (xx * float(effective_stride)) + float(x_slice.start)
+        yy = (yy * float(effective_stride)) + float(y_slice.start)
+        zz = (zz * float(effective_stride)) + float(z_slice.start)
         fig.add_trace(
             go.Volume(
                 x=(xx * float(x_scale)).ravel(),
                 y=(yy * float(y_scale)).ravel(),
                 z=(zz * float(z_scale)).ravel(),
-                value=cropped.astype(float).ravel(),
+                value=downsampled.astype(float).ravel(),
                 isomin=0.5,
                 isomax=1.0,
                 opacity=0.12,

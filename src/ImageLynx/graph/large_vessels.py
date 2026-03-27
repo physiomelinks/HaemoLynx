@@ -78,14 +78,42 @@ def exclude_smaller_overlapping_large_vessel_components(
             "large_arteriole_mask and large_venule_mask must share a shape. "
             f"Got {large_arteriole_mask.shape} and {large_venule_mask.shape}."
         )
+    return _exclude_smaller_overlapping_mask_components(
+        large_arteriole_mask,
+        large_venule_mask,
+    )
 
-    arteriole_mask = large_arteriole_mask.astype(bool, copy=False)
-    venule_mask = large_venule_mask.astype(bool, copy=False)
+
+def exclude_smaller_overlapping_small_vessel_components(
+    small_arteriole_mask: np.ndarray | None,
+    small_venule_mask: np.ndarray | None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Small-vessel equivalent of overlap cleanup used for large-vessel masks."""
+    if small_arteriole_mask is None or small_venule_mask is None:
+        return small_arteriole_mask, small_venule_mask
+
+    if small_arteriole_mask.shape != small_venule_mask.shape:
+        raise ValueError(
+            "small_arteriole_mask and small_venule_mask must share a shape. "
+            f"Got {small_arteriole_mask.shape} and {small_venule_mask.shape}."
+        )
+    return _exclude_smaller_overlapping_mask_components(
+        small_arteriole_mask,
+        small_venule_mask,
+    )
+
+
+def _exclude_smaller_overlapping_mask_components(
+    arteriole_mask_raw: np.ndarray,
+    venule_mask_raw: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Remove overlap voxels from the smaller component in each overlap pair."""
+    arteriole_mask = arteriole_mask_raw.astype(bool, copy=False)
+    venule_mask = venule_mask_raw.astype(bool, copy=False)
     overlap = arteriole_mask & venule_mask
     if not np.any(overlap):
         return arteriole_mask, venule_mask
 
-    # 26-connectivity for 3D component labelling.
     structure = np.ones((3, 3, 3), dtype=np.uint8)
     arteriole_labels, _ = label(arteriole_mask, structure=structure)
     venule_labels, _ = label(venule_mask, structure=structure)
@@ -116,7 +144,6 @@ def exclude_smaller_overlapping_large_vessel_components(
                 (int(arteriole_label), int(venule_label))
             )
         else:
-            # Deterministic tie-break for reproducible output.
             overlap_pairs_to_remove_from_venule.append(
                 (int(arteriole_label), int(venule_label))
             )
@@ -138,7 +165,6 @@ def exclude_smaller_overlapping_large_vessel_components(
         )
         cleaned_venule_mask[pair_overlap] = False
 
-    # Safety pass: guarantee no shared voxels remain after pairwise cleanup.
     remaining_overlap = cleaned_arteriole_mask & cleaned_venule_mask
     if np.any(remaining_overlap):
         cleaned_venule_mask[remaining_overlap] = False
