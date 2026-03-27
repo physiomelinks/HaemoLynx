@@ -8,10 +8,34 @@ import networkx as nx
 import numpy as np
 
 from ..coords import physical_xyz_to_index_zyx, index_zyx_to_physical_xyz
+from .large_vessels import exclude_smaller_overlapping_large_vessel_components
 
 
 def _sort_nodes(nodes: set[Any]) -> list[Any]:
     return sorted(nodes, key=lambda n: (str(type(n)), str(n)))
+
+
+def filter_io_nodes_to_terminal_degree1(
+    G: nx.Graph,
+    input_nodes: list[Any],
+    output_nodes: list[Any],
+) -> tuple[list[Any], list[Any], list[Any], list[Any]]:
+    """Keep only degree-1 nodes in input/output assignments.
+
+    Returns:
+        (filtered_input_nodes, filtered_output_nodes, dropped_input_nodes, dropped_output_nodes)
+    """
+    degree1_nodes = {node_id for node_id, degree in G.degree() if int(degree) == 1}
+    dropped_input_nodes = [node_id for node_id in input_nodes if node_id not in degree1_nodes]
+    dropped_output_nodes = [node_id for node_id in output_nodes if node_id not in degree1_nodes]
+    filtered_input_nodes = [node_id for node_id in input_nodes if node_id in degree1_nodes]
+    filtered_output_nodes = [node_id for node_id in output_nodes if node_id in degree1_nodes]
+    return (
+        filtered_input_nodes,
+        filtered_output_nodes,
+        dropped_input_nodes,
+        dropped_output_nodes,
+    )
 
 
 def _edge_id(u: Any, v: Any, key: int) -> tuple[Any, Any, int]:
@@ -286,8 +310,14 @@ def select_terminal_nodes_from_large_vessel_masks(
     *,
     voxel_size_xyz: tuple[float, float, float],
     allow_overlap: bool = False,
+    exclude_smaller_overlapping_volumes: bool = False,
 ) -> tuple[list[Any], list[Any]]:
-    """Assign degree-1 nodes to input/output groups by vessel-mask overlap."""
+    """Assign degree-1 nodes to input/output groups by vessel-mask overlap.
+
+    When `exclude_smaller_overlapping_volumes=True`, overlapping large-vessel
+    components are pre-cleaned so the smaller component is removed before node
+    assignment.
+    """
     if large_arteriole_mask.shape != large_venule_mask.shape:
         raise ValueError(
             "large_arteriole_mask and large_venule_mask must share a shape. "
@@ -296,6 +326,19 @@ def select_terminal_nodes_from_large_vessel_masks(
 
     arteriole_mask = large_arteriole_mask.astype(bool, copy=False)
     venule_mask = large_venule_mask.astype(bool, copy=False)
+    if exclude_smaller_overlapping_volumes:
+        cleaned_arteriole, cleaned_venule = (
+            exclude_smaller_overlapping_large_vessel_components(
+                arteriole_mask,
+                venule_mask,
+            )
+        )
+        if cleaned_arteriole is None or cleaned_venule is None:
+            raise RuntimeError(
+                "Internal error: expected cleaned masks when large masks are provided."
+            )
+        arteriole_mask = cleaned_arteriole
+        venule_mask = cleaned_venule
     terminal_nodes = _terminal_nodes_with_positions(G)
     if not terminal_nodes:
         return [], []
@@ -334,7 +377,14 @@ def select_terminal_nodes_from_large_vessel_masks(
     if not allow_overlap:
         output_nodes -= starting_nodes
 
-    return _sort_nodes(starting_nodes), _sort_nodes(output_nodes)
+    filtered_inputs, filtered_outputs, _dropped_inputs, _dropped_outputs = (
+        filter_io_nodes_to_terminal_degree1(
+            G,
+            _sort_nodes(starting_nodes),
+            _sort_nodes(output_nodes),
+        )
+    )
+    return filtered_inputs, filtered_outputs
 
 
 def _edge_sample_points_from_data(

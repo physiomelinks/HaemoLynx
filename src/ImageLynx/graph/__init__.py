@@ -21,6 +21,7 @@ from .branch_order import assign_branch_orders, assign_hierarchical_branch_order
 from .boundaries import select_boundary_terminal_nodes, select_boundary_nodes_by_method
 from .automated_vessel_assignment import (
     compute_overlapping_terminal_assignment_metrics,
+    filter_io_nodes_to_terminal_degree1,
     infer_boundary_nodes_from_small_vessel_masks,
     resolve_overlapping_terminal_node_assignment,
     select_terminal_nodes_from_large_vessel_masks,
@@ -30,6 +31,7 @@ from .automated_vessel_assignment import (
 from .large_vessels import (
     dilate_binary_mask_by_microns,
     dilate_large_vessel_masks_by_microns,
+    exclude_smaller_overlapping_large_vessel_components,
 )
 from ._helpers import (
     add_edge_safe,
@@ -78,6 +80,7 @@ __all__ = [
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
     "compute_overlapping_terminal_assignment_metrics",
+    "filter_io_nodes_to_terminal_degree1",
     "infer_boundary_nodes_from_small_vessel_masks",
     "resolve_overlapping_terminal_node_assignment",
     "select_terminal_nodes_from_large_vessel_masks",
@@ -85,6 +88,7 @@ __all__ = [
     "write_small_vessel_mask_boundary_labelling_3d_html",
     "dilate_binary_mask_by_microns",
     "dilate_large_vessel_masks_by_microns",
+    "exclude_smaller_overlapping_large_vessel_components",
     "remove_edges_for_self_connected_nodes",
     "remove_isolated_nodes",
     "add_edge_safe",

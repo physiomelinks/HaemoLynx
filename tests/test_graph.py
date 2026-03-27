@@ -1,7 +1,16 @@
 """Tests for graph module."""
+import sys
+from pathlib import Path
+
 import pytest
 import numpy as np
 import networkx as nx
+
+# Allow running this file directly without editable install.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from ImageLynx.graph import (
     build_graph_segment_skan_stitched_loops,
@@ -18,6 +27,8 @@ from ImageLynx.graph import (
     assign_branch_orders,
     select_boundary_nodes_by_method,
     select_terminal_nodes_from_large_vessel_masks,
+    exclude_smaller_overlapping_large_vessel_components,
+    filter_io_nodes_to_terminal_degree1,
     diagnose_degree2_nodes,
     format_degree2_diagnostics_report,
 )
@@ -261,4 +272,81 @@ def test_select_terminal_nodes_from_large_vessel_masks_excludes_overlap():
     )
     assert start_nodes == [0]
     assert out_nodes == [1]
+
+
+def test_exclude_smaller_overlapping_large_vessel_components_venule_inside_arteriole():
+    arteriole_mask = np.zeros((12, 12, 12), dtype=bool)
+    venule_mask = np.zeros((12, 12, 12), dtype=bool)
+    arteriole_mask[2:10, 2:10, 2:10] = True
+    venule_mask[5:7, 5:7, 5:7] = True
+
+    cleaned_arteriole, cleaned_venule = exclude_smaller_overlapping_large_vessel_components(
+        arteriole_mask, venule_mask
+    )
+
+    assert np.array_equal(cleaned_arteriole, arteriole_mask)
+    assert not np.any(cleaned_venule)
+
+
+def test_exclude_smaller_overlapping_large_vessel_components_arteriole_inside_venule():
+    arteriole_mask = np.zeros((12, 12, 12), dtype=bool)
+    venule_mask = np.zeros((12, 12, 12), dtype=bool)
+    venule_mask[2:10, 2:10, 2:10] = True
+    arteriole_mask[5:7, 5:7, 5:7] = True
+
+    cleaned_arteriole, cleaned_venule = exclude_smaller_overlapping_large_vessel_components(
+        arteriole_mask, venule_mask
+    )
+
+    assert not np.any(cleaned_arteriole)
+    assert np.array_equal(cleaned_venule, venule_mask)
+
+
+def test_select_terminal_nodes_exclude_smaller_overlapping_volumes_flag():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([5.0, 5.0, 5.0]))  # inside overlap, should become input
+    G.add_node(1, pos=np.array([5.0, 5.0, 6.0]))  # still in large arteriole mask
+    G.add_node(2, pos=np.array([5.0, 5.0, 4.0]))  # connector
+    G.add_edge(0, 2, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+
+    arteriole_mask = np.zeros((12, 12, 12), dtype=bool)
+    venule_mask = np.zeros((12, 12, 12), dtype=bool)
+    arteriole_mask[2:10, 2:10, 2:10] = True
+    venule_mask[5:7, 5:7, 5:8] = True
+
+    start_nodes, out_nodes = select_terminal_nodes_from_large_vessel_masks(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        allow_overlap=False,
+        exclude_smaller_overlapping_volumes=True,
+    )
+    # Small overlapping venule component is removed; remaining large arteriole
+    # mask keeps both terminal nodes as inputs.
+    assert start_nodes == [0, 1]
+    assert out_nodes == []
+
+
+def test_filter_io_nodes_to_terminal_degree1():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))  # degree 1
+    G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))  # degree 2
+    G.add_node(2, pos=np.array([2.0, 0.0, 0.0]))  # degree 1
+    G.add_edge(0, 1, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+
+    filtered_in, filtered_out, dropped_in, dropped_out = (
+        filter_io_nodes_to_terminal_degree1(
+            G,
+            input_nodes=[0, 1],
+            output_nodes=[2, 1],
+        )
+    )
+    assert filtered_in == [0]
+    assert filtered_out == [2]
+    assert dropped_in == [1]
+    assert dropped_out == [1]
+
 

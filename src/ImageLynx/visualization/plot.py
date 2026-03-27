@@ -522,7 +522,7 @@ def visualize_3d_plotly(
     fig.add_trace(go.Scatter3d(
         x=edge_x, y=edge_y, z=edge_z,
         mode="lines",
-        line=dict(color="cyan", width=2),
+        line=dict(color="black", width=2),
         name="Edges",
     ))
     fig.add_trace(go.Scatter3d(

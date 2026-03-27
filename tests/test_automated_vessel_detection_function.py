@@ -1,6 +1,7 @@
 """Tests for automated terminal-node vessel assignment."""
 from __future__ import annotations
 
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -65,6 +66,10 @@ def _write_rotatable_assignment_graph(
             edge_y += [float(pu[1]), float(pv[1]), None]
             edge_z += [float(pu[2]), float(pv[2]), None]
 
+    # Enforce terminal-only visual IO labels to avoid ambiguous debug plots.
+    input_nodes = [n for n in input_nodes if int(G.degree(n)) == 1]
+    output_nodes = [n for n in output_nodes if int(G.degree(n)) == 1]
+
     input_set = set(input_nodes)
     output_set = set(output_nodes)
     other_nodes = [n for n in G.nodes if n not in input_set and n not in output_set]
@@ -115,6 +120,10 @@ def _write_rotatable_assignment_graph(
 
     if other_nodes:
         ox, oy, oz = _coords(other_nodes)
+        other_text = [
+            f"node={int(n)}<br>degree={int(G.degree(n))}<br>role=other"
+            for n in other_nodes
+        ]
         fig.add_trace(
             go.Scatter3d(
                 x=ox,
@@ -123,10 +132,16 @@ def _write_rotatable_assignment_graph(
                 mode="markers",
                 marker=dict(size=5, color="#9E9E9E"),
                 name="Other Nodes",
+                text=other_text,
+                hovertemplate="%{text}<extra></extra>",
             )
         )
     if input_nodes:
         ix, iy, iz = _coords(input_nodes)
+        input_text = [
+            f"node={int(n)}<br>degree={int(G.degree(n))}<br>role=input"
+            for n in input_nodes
+        ]
         fig.add_trace(
             go.Scatter3d(
                 x=ix,
@@ -135,10 +150,16 @@ def _write_rotatable_assignment_graph(
                 mode="markers",
                 marker=dict(size=8, color="#00FF7F"),
                 name="Input Nodes",
+                text=input_text,
+                hovertemplate="%{text}<extra></extra>",
             )
         )
     if output_nodes:
         ox, oy, oz = _coords(output_nodes)
+        output_text = [
+            f"node={int(n)}<br>degree={int(G.degree(n))}<br>role=output"
+            for n in output_nodes
+        ]
         fig.add_trace(
             go.Scatter3d(
                 x=ox,
@@ -147,6 +168,8 @@ def _write_rotatable_assignment_graph(
                 mode="markers",
                 marker=dict(size=8, color="#FF3EA5"),
                 name="Output Nodes",
+                text=output_text,
+                hovertemplate="%{text}<extra></extra>",
             )
         )
     fig.update_layout(
@@ -351,7 +374,69 @@ def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
     )
 
 
+def test_large_vessel_overlap_exclusion_assignment_graph(tmp_path):
+    """Write overlap-assignment debug HTML from large-vessel test geometry."""
+    G = nx.MultiGraph()
+    # Arrange a clear terminal-connector-terminal chain in Z so visuals are unambiguous.
+    G.add_node(0, pos=np.array([5.0, 5.0, 4.0]))  # degree-1 terminal (lower)
+    G.add_node(1, pos=np.array([5.0, 5.0, 6.0]))  # degree-1 terminal (upper)
+    G.add_node(2, pos=np.array([5.0, 5.0, 5.0]))  # degree-2 connector (middle)
+    G.add_edge(0, 2, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+
+    arteriole_mask = np.zeros((12, 12, 12), dtype=bool)
+    venule_mask = np.zeros((12, 12, 12), dtype=bool)
+    arteriole_mask[2:10, 2:10, 2:10] = True
+    venule_mask[5:7, 5:7, 5:8] = True
+
+    start_nodes, out_nodes = select_terminal_nodes_from_large_vessel_masks(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        allow_overlap=False,
+        exclude_smaller_overlapping_volumes=True,
+    )
+    assert start_nodes == [0, 1]
+    assert out_nodes == []
+
+    html_path = tmp_path / "large_vessel_overlap_exclusion_assignment.html"
+    if os.environ.get("IMAGELYNX_WRITE_TEST_PLOTLY", "").strip().lower() in {"1", "true", "yes"}:
+        html_path = (
+            Path(__file__).resolve().parents[1]
+            / "tests"
+            / "outputs"
+            / "overlap_assignment"
+            / "large_vessel_overlap_exclusion_assignment.html"
+        )
+    _write_rotatable_assignment_graph(
+        G=G,
+        input_nodes=start_nodes,
+        output_nodes=out_nodes,
+        arteriole_mask=arteriole_mask,
+        venule_mask=venule_mask,
+        html_path=html_path,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        title="Large-vessel Overlap Exclusion Assignment",
+        annotation_lines=[
+            "Green nodes are assigned inputs (degree-1 only).",
+            "Middle node is the degree-2 connector; end nodes are degree-1 terminals.",
+            f"Node degrees: 0->{int(G.degree(0))}, 1->{int(G.degree(1))}, 2->{int(G.degree(2))}.",
+        ],
+    )
+
+
 if __name__ == "__main__":
     import pytest
 
-    raise SystemExit(pytest.main([__file__, "-q"]))
+    os.environ["IMAGELYNX_WRITE_TEST_PLOTLY"] = "1"
+    raise SystemExit(
+        pytest.main(
+            [
+                __file__,
+                "-q",
+                "-k",
+                "test_large_vessel_overlap_exclusion_assignment_graph",
+            ]
+        )
+    )

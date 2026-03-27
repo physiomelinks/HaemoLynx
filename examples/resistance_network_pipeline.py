@@ -880,6 +880,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             show=show_plots_in_ide or interactive_plots,
         )
         print(f"Saved interactive 3D final graph to: {final_graph_3d_path}")
+        visualization.visualize_edges_and_nodes(
+            image,
+            G,
+            label_nodes=True,
+            show_debug_dual_axes=True,
+            save_path=plot_dir / "final_graph.png",
+        )
+        print(f"Saved final graph PNG to: {plot_dir / 'final_graph.png'}")
     else:
         visualization.visualize_edges_and_nodes(
             image,
@@ -906,6 +914,19 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 allow_overlap=False,
             )
         )
+        auto_start_nodes, auto_output_nodes, dropped_auto_start_nodes, dropped_auto_output_nodes = (
+            graph.filter_io_nodes_to_terminal_degree1(
+                G,
+                auto_start_nodes,
+                auto_output_nodes,
+            )
+        )
+        if dropped_auto_start_nodes or dropped_auto_output_nodes:
+            print(
+                "Filtered non-terminal nodes before automated-assignment visualization: "
+                f"dropped_inputs={dropped_auto_start_nodes}, "
+                f"dropped_outputs={dropped_auto_output_nodes}."
+            )
         if not auto_start_nodes:
             raise ValueError(
                 "automated_vessel_assignment=True found no terminal nodes in the "
@@ -976,8 +997,24 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             volume_boxes=output_node_volumes,
             exclude_nodes=start_nodes,
         )
+    # Enforce terminal-only I/O assignment.
+    start_nodes, out_nodes, dropped_start_nodes, dropped_out_nodes = (
+        graph.filter_io_nodes_to_terminal_degree1(G, start_nodes, out_nodes)
+    )
+    if dropped_start_nodes or dropped_out_nodes:
+        print(
+            "Filtered non-terminal boundary nodes from I/O assignment: "
+            f"dropped_inputs={dropped_start_nodes}, dropped_outputs={dropped_out_nodes}."
+        )
     starting_nodes.extend(start_nodes)
     output_nodes.extend(out_nodes)
+    invalid_start_nodes = [node_id for node_id in starting_nodes if int(G.degree(node_id)) != 1]
+    invalid_output_nodes = [node_id for node_id in output_nodes if int(G.degree(node_id)) != 1]
+    if invalid_start_nodes or invalid_output_nodes:
+        raise ValueError(
+            "I/O assignment contains non-terminal nodes after filtering: "
+            f"invalid_inputs={invalid_start_nodes}, invalid_outputs={invalid_output_nodes}."
+        )
     used_nodes = set(starting_nodes) | set(output_nodes)
     if arteriole_boundary_node_coordinates or arteriole_boundary_node_volumes:
         art_boundary = graph.select_boundary_nodes_by_method(
