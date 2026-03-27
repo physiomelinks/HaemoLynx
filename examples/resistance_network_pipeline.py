@@ -56,6 +56,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             small_vessel_mask_min_overlap_fraction=SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION,
                             write_small_vessel_boundary_labelling_3d_html=WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML,
                             automated_vessel_assignment=AUTOMATED_VESSEL_ASSIGNMENT,
+                            automated_vessel_overlap_parallel_workers=AUTOMATED_VESSEL_OVERLAP_PARALLEL_WORKERS,
                             auto_persist_automated_io_assignment_to_settings=AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS,
                             auto_persist_small_vessel_boundary_assignment_to_settings=AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
@@ -974,6 +975,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 large_venule_mask=large_venule_mask,
                 voxel_size_xyz=tuple(float(v) for v in voxel_size),
                 allow_overlap=False,
+                overlap_parallel_workers=int(automated_vessel_overlap_parallel_workers),
             )
         )
         auto_start_nodes, auto_output_nodes, dropped_auto_start_nodes, dropped_auto_output_nodes = (

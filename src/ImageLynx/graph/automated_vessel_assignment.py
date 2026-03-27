@@ -1,6 +1,7 @@
 """Automatic terminal-node assignment from arteriole/venule masks."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import time
 from typing import Any
@@ -87,6 +88,101 @@ def _nonzero_bbox_slices_zyx(mask: np.ndarray) -> tuple[slice, slice, slice] | N
         slice(int(mins[1]), int(maxs[1])),
         slice(int(mins[2]), int(maxs[2])),
     )
+
+
+def _point_in_bbox_zyx(index_zyx: tuple[int, int, int], bbox: tuple[slice, slice, slice]) -> bool:
+    z, y, x = index_zyx
+    z_slice, y_slice, x_slice = bbox
+    return (
+        int(z_slice.start) <= z < int(z_slice.stop)
+        and int(y_slice.start) <= y < int(y_slice.stop)
+        and int(x_slice.start) <= x < int(x_slice.stop)
+    )
+
+
+def _combine_bboxes_zyx(
+    bboxes: list[tuple[slice, slice, slice] | None],
+) -> tuple[slice, slice, slice] | None:
+    """Return a union bbox from multiple optional bboxes."""
+    valid = [bbox for bbox in bboxes if bbox is not None]
+    if not valid:
+        return None
+    z_min = min(int(bbox[0].start) for bbox in valid)
+    y_min = min(int(bbox[1].start) for bbox in valid)
+    x_min = min(int(bbox[2].start) for bbox in valid)
+    z_max = max(int(bbox[0].stop) for bbox in valid)
+    y_max = max(int(bbox[1].stop) for bbox in valid)
+    x_max = max(int(bbox[2].stop) for bbox in valid)
+    return (slice(z_min, z_max), slice(y_min, y_max), slice(x_min, x_max))
+
+
+def _sample_points_to_valid_indices_zyx(
+    sample_points: np.ndarray,
+    *,
+    voxel_size_xyz: tuple[float, float, float],
+    mask_shape: tuple[int, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert sample points (x,y,z) to valid rounded indices and points."""
+    points = np.asarray(sample_points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or points.size == 0:
+        return np.empty((0, 3), dtype=float), np.empty((0, 3), dtype=int)
+
+    vx, vy, vz = np.asarray(voxel_size_xyz, dtype=float)
+    if vx <= 0 or vy <= 0 or vz <= 0:
+        raise ValueError(
+            f"voxel_size_xyz must be three positive values, got {voxel_size_xyz}."
+        )
+
+    indices_zyx = np.rint(
+        np.column_stack(
+            [
+                points[:, 2] / vz,
+                points[:, 1] / vy,
+                points[:, 0] / vx,
+            ]
+        )
+    ).astype(int)
+    shape = np.asarray(mask_shape, dtype=int)
+    valid_index_mask = np.all(indices_zyx >= 0, axis=1) & np.all(
+        indices_zyx < shape.reshape(1, 3),
+        axis=1,
+    )
+    if not np.any(valid_index_mask):
+        return np.empty((0, 3), dtype=float), np.empty((0, 3), dtype=int)
+
+    return points[valid_index_mask], indices_zyx[valid_index_mask]
+
+
+def _sample_overlap_fraction_from_valid_indices(
+    valid_indices_zyx: np.ndarray,
+    mask: np.ndarray,
+) -> float:
+    if valid_indices_zyx.size == 0:
+        return 0.0
+    in_mask_mask = mask[
+        valid_indices_zyx[:, 0],
+        valid_indices_zyx[:, 1],
+        valid_indices_zyx[:, 2],
+    ].astype(bool)
+    return float(np.count_nonzero(in_mask_mask)) / float(valid_indices_zyx.shape[0])
+
+
+def _indices_intersect_bbox_zyx(
+    indices_zyx: np.ndarray,
+    bbox: tuple[slice, slice, slice],
+) -> bool:
+    if indices_zyx.size == 0:
+        return False
+    z_slice, y_slice, x_slice = bbox
+    in_bbox = (
+        (indices_zyx[:, 0] >= int(z_slice.start))
+        & (indices_zyx[:, 0] < int(z_slice.stop))
+        & (indices_zyx[:, 1] >= int(y_slice.start))
+        & (indices_zyx[:, 1] < int(y_slice.stop))
+        & (indices_zyx[:, 2] >= int(x_slice.start))
+        & (indices_zyx[:, 2] < int(x_slice.stop))
+    )
+    return bool(np.any(in_bbox))
 
 
 def _terminal_edge_sample_points(
@@ -254,35 +350,14 @@ def _overlap_fraction_and_intersection(
     voxel_size_xyz: tuple[float, float, float],
     node_pos: np.ndarray,
 ) -> tuple[float, np.ndarray | None]:
-    points = np.asarray(sample_points, dtype=float)
-    if points.ndim != 2 or points.shape[1] != 3 or points.size == 0:
-        return 0.0, None
-
-    vx, vy, vz = np.asarray(voxel_size_xyz, dtype=float)
-    if vx <= 0 or vy <= 0 or vz <= 0:
-        raise ValueError(
-            f"voxel_size_xyz must be three positive values, got {voxel_size_xyz}."
-        )
-
-    indices_zyx = np.rint(
-        np.column_stack(
-            [
-                points[:, 2] / vz,
-                points[:, 1] / vy,
-                points[:, 0] / vx,
-            ]
-        )
-    ).astype(int)
-    shape = np.asarray(mask.shape, dtype=int)
-    valid_index_mask = np.all(indices_zyx >= 0, axis=1) & np.all(
-        indices_zyx < shape.reshape(1, 3),
-        axis=1,
+    valid_points, valid_indices_zyx = _sample_points_to_valid_indices_zyx(
+        sample_points,
+        voxel_size_xyz=voxel_size_xyz,
+        mask_shape=mask.shape,
     )
-    if not np.any(valid_index_mask):
+    if valid_points.size == 0 or valid_indices_zyx.size == 0:
         return 0.0, None
 
-    valid_points = points[valid_index_mask]
-    valid_indices_zyx = indices_zyx[valid_index_mask]
     in_mask_mask = mask[
         valid_indices_zyx[:, 0],
         valid_indices_zyx[:, 1],
@@ -308,6 +383,7 @@ def resolve_overlapping_terminal_node_assignment(
     max_sample_points: int = 25,
     arteriole_geometry: dict[str, Any] | None = None,
     venule_geometry: dict[str, Any] | None = None,
+    terminal_sample_points: np.ndarray | None = None,
 ) -> str:
     """Resolve input/output assignment for a terminal node in both masks.
 
@@ -327,6 +403,7 @@ def resolve_overlapping_terminal_node_assignment(
         max_sample_points=max_sample_points,
         arteriole_geometry=arteriole_geometry,
         venule_geometry=venule_geometry,
+        terminal_sample_points=terminal_sample_points,
     )
     arteriole_overlap = float(metrics["arteriole_overlap_fraction"])
     venule_overlap = float(metrics["venule_overlap_fraction"])
@@ -363,14 +440,18 @@ def compute_overlapping_terminal_assignment_metrics(
     max_sample_points: int = 25,
     arteriole_geometry: dict[str, Any] | None = None,
     venule_geometry: dict[str, Any] | None = None,
+    terminal_sample_points: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Compute overlap and midpoint-distance metrics for overlap resolution."""
-    samples = _terminal_edge_sample_points(
-        G,
-        node_id,
-        node_pos,
-        max_sample_points=max_sample_points,
-    )
+    if terminal_sample_points is None:
+        samples = _terminal_edge_sample_points(
+            G,
+            node_id,
+            node_pos,
+            max_sample_points=max_sample_points,
+        )
+    else:
+        samples = np.asarray(terminal_sample_points, dtype=float)
     arteriole_overlap, arteriole_intersection = _overlap_fraction_and_intersection(
         samples, large_arteriole_mask, voxel_size_xyz, node_pos
     )
@@ -435,6 +516,7 @@ def select_terminal_nodes_from_large_vessel_masks(
     voxel_size_xyz: tuple[float, float, float],
     allow_overlap: bool = False,
     exclude_smaller_overlapping_volumes: bool = False,
+    overlap_parallel_workers: int = 0,
 ) -> tuple[list[Any], list[Any]]:
     """Assign degree-1 nodes to input/output groups by vessel-mask overlap.
 
@@ -476,9 +558,14 @@ def select_terminal_nodes_from_large_vessel_masks(
     # Precompute mask geometry once to avoid repeated full-volume scans.
     arteriole_geometry = _prepare_mask_geometry(arteriole_mask)
     venule_geometry = _prepare_mask_geometry(venule_mask)
+    arteriole_bbox = _nonzero_bbox_slices_zyx(arteriole_mask)
+    venule_bbox = _nonzero_bbox_slices_zyx(venule_mask)
+    union_bbox = _combine_bboxes_zyx([arteriole_bbox, venule_bbox])
 
     starting_nodes: set[Any] = set()
     output_nodes: set[Any] = set()
+    overlap_candidates: list[tuple[Any, np.ndarray]] = []
+    overlap_samples_cache: dict[Any, np.ndarray] = {}
     progress_stride = max(1, len(terminal_nodes) // 10)
     for idx, (node_id, node_pos) in enumerate(terminal_nodes, start=1):
         if idx % progress_stride == 0 or idx == len(terminal_nodes):
@@ -495,9 +582,32 @@ def select_terminal_nodes_from_large_vessel_masks(
         )
         if index_zyx is None:
             continue
+        if union_bbox is not None and not _point_in_bbox_zyx(index_zyx, union_bbox):
+            # Fast reject for terminals that cannot overlap either mask.
+            continue
         in_arteriole = bool(arteriole_mask[index_zyx])
         in_venule = bool(venule_mask[index_zyx])
         if in_arteriole and in_venule and not allow_overlap:
+            overlap_candidates.append((node_id, node_pos))
+            overlap_samples_cache[node_id] = _terminal_edge_sample_points(
+                G,
+                node_id,
+                node_pos,
+            )
+            continue
+        if in_arteriole:
+            starting_nodes.add(node_id)
+        if in_venule:
+            output_nodes.add(node_id)
+
+    if overlap_candidates and not allow_overlap:
+        print(
+            "Automated large-vessel overlap-resolution: "
+            f"{len(overlap_candidates)} overlap terminal(s)."
+        )
+
+        def _resolve_one(candidate: tuple[Any, np.ndarray]) -> tuple[Any, str]:
+            node_id, node_pos = candidate
             assignment = resolve_overlapping_terminal_node_assignment(
                 G,
                 node_id,
@@ -507,16 +617,21 @@ def select_terminal_nodes_from_large_vessel_masks(
                 voxel_size_xyz=voxel_size_xyz,
                 arteriole_geometry=arteriole_geometry,
                 venule_geometry=venule_geometry,
+                terminal_sample_points=overlap_samples_cache.get(node_id),
             )
+            return node_id, assignment
+
+        if overlap_parallel_workers > 0 and len(overlap_candidates) > 1:
+            with ThreadPoolExecutor(max_workers=int(overlap_parallel_workers)) as executor:
+                resolved = list(executor.map(_resolve_one, overlap_candidates))
+        else:
+            resolved = [_resolve_one(candidate) for candidate in overlap_candidates]
+
+        for node_id, assignment in resolved:
             if assignment == "input":
                 starting_nodes.add(node_id)
             else:
                 output_nodes.add(node_id)
-            continue
-        if in_arteriole:
-            starting_nodes.add(node_id)
-        if in_venule:
-            output_nodes.add(node_id)
 
     if not allow_overlap:
         output_nodes -= starting_nodes
@@ -561,40 +676,12 @@ def _sample_overlap_fraction(
     voxel_size_xyz: tuple[float, float, float],
 ) -> float:
     """Return fraction of valid edge sample points that fall inside a mask."""
-    points = np.asarray(sample_points, dtype=float)
-    if points.ndim != 2 or points.shape[1] != 3 or points.size == 0:
-        return 0.0
-
-    vx, vy, vz = np.asarray(voxel_size_xyz, dtype=float)
-    if vx <= 0 or vy <= 0 or vz <= 0:
-        raise ValueError(
-            f"voxel_size_xyz must be three positive values, got {voxel_size_xyz}."
-        )
-
-    indices_zyx = np.rint(
-        np.column_stack(
-            [
-                points[:, 2] / vz,
-                points[:, 1] / vy,
-                points[:, 0] / vx,
-            ]
-        )
-    ).astype(int)
-    shape = np.asarray(mask.shape, dtype=int)
-    valid_index_mask = np.all(indices_zyx >= 0, axis=1) & np.all(
-        indices_zyx < shape.reshape(1, 3),
-        axis=1,
+    _, valid_indices_zyx = _sample_points_to_valid_indices_zyx(
+        sample_points,
+        voxel_size_xyz=voxel_size_xyz,
+        mask_shape=mask.shape,
     )
-    if not np.any(valid_index_mask):
-        return 0.0
-
-    valid_indices_zyx = indices_zyx[valid_index_mask]
-    in_mask_mask = mask[
-        valid_indices_zyx[:, 0],
-        valid_indices_zyx[:, 1],
-        valid_indices_zyx[:, 2],
-    ].astype(bool)
-    return float(np.count_nonzero(in_mask_mask)) / float(valid_indices_zyx.shape[0])
+    return _sample_overlap_fraction_from_valid_indices(valid_indices_zyx, mask)
 
 
 def infer_boundary_nodes_from_small_vessel_masks(
@@ -627,6 +714,9 @@ def infer_boundary_nodes_from_small_vessel_masks(
 
     arteriole_mask = small_arteriole_mask.astype(bool, copy=False)
     venule_mask = small_venule_mask.astype(bool, copy=False)
+    union_bbox = _combine_bboxes_zyx(
+        [_nonzero_bbox_slices_zyx(arteriole_mask), _nonzero_bbox_slices_zyx(venule_mask)]
+    )
     node_positions = nx.get_node_attributes(G, "pos")
     if not node_positions:
         raise ValueError("Graph has no node positions ('pos').")
@@ -646,6 +736,8 @@ def infer_boundary_nodes_from_small_vessel_masks(
     arteriole_edges: set[tuple[Any, Any, int]] = set()
     venule_edges: set[tuple[Any, Any, int]] = set()
     overlap_edges = 0
+    edge_samples_cache: dict[tuple[Any, Any, int], np.ndarray] = {}
+    edge_valid_indices_cache: dict[tuple[Any, Any, int], np.ndarray] = {}
     total_edges = int(G.number_of_edges())
     processed_edges = 0
     start_time_s = time.perf_counter()
@@ -669,20 +761,35 @@ def infer_boundary_nodes_from_small_vessel_masks(
                 continue
             pu = np.asarray(node_positions[u], dtype=float)
             pv = np.asarray(node_positions[v], dtype=float)
-            samples = _edge_sample_points_from_data(edge_data, (pu, pv))
-            arteriole_fraction = _sample_overlap_fraction(
-                samples,
+            edge_id = _edge_id(u, v, key)
+            samples = edge_samples_cache.get(edge_id)
+            if samples is None:
+                samples = _edge_sample_points_from_data(edge_data, (pu, pv))
+                edge_samples_cache[edge_id] = samples
+            valid_indices_zyx = edge_valid_indices_cache.get(edge_id)
+            if valid_indices_zyx is None:
+                _, valid_indices_zyx = _sample_points_to_valid_indices_zyx(
+                    samples,
+                    voxel_size_xyz=voxel_size_xyz,
+                    mask_shape=arteriole_mask.shape,
+                )
+                edge_valid_indices_cache[edge_id] = valid_indices_zyx
+            if valid_indices_zyx.size == 0:
+                continue
+            if union_bbox is not None and not _indices_intersect_bbox_zyx(
+                valid_indices_zyx, union_bbox
+            ):
+                continue
+            arteriole_fraction = _sample_overlap_fraction_from_valid_indices(
+                valid_indices_zyx,
                 arteriole_mask,
-                voxel_size_xyz=voxel_size_xyz,
             )
-            venule_fraction = _sample_overlap_fraction(
-                samples,
+            venule_fraction = _sample_overlap_fraction_from_valid_indices(
+                valid_indices_zyx,
                 venule_mask,
-                voxel_size_xyz=voxel_size_xyz,
             )
             in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
             in_venule = venule_fraction >= float(minimum_overlap_fraction)
-            edge_id = _edge_id(u, v, key)
             if in_arteriole and in_venule:
                 overlap_edges += 1
                 if allow_overlap:
@@ -716,20 +823,35 @@ def infer_boundary_nodes_from_small_vessel_masks(
                 continue
             pu = np.asarray(node_positions[u], dtype=float)
             pv = np.asarray(node_positions[v], dtype=float)
-            samples = _edge_sample_points_from_data(edge_data, (pu, pv))
-            arteriole_fraction = _sample_overlap_fraction(
-                samples,
+            edge_id = (u, v, 0) if u <= v else (v, u, 0)
+            samples = edge_samples_cache.get(edge_id)
+            if samples is None:
+                samples = _edge_sample_points_from_data(edge_data, (pu, pv))
+                edge_samples_cache[edge_id] = samples
+            valid_indices_zyx = edge_valid_indices_cache.get(edge_id)
+            if valid_indices_zyx is None:
+                _, valid_indices_zyx = _sample_points_to_valid_indices_zyx(
+                    samples,
+                    voxel_size_xyz=voxel_size_xyz,
+                    mask_shape=arteriole_mask.shape,
+                )
+                edge_valid_indices_cache[edge_id] = valid_indices_zyx
+            if valid_indices_zyx.size == 0:
+                continue
+            if union_bbox is not None and not _indices_intersect_bbox_zyx(
+                valid_indices_zyx, union_bbox
+            ):
+                continue
+            arteriole_fraction = _sample_overlap_fraction_from_valid_indices(
+                valid_indices_zyx,
                 arteriole_mask,
-                voxel_size_xyz=voxel_size_xyz,
             )
-            venule_fraction = _sample_overlap_fraction(
-                samples,
+            venule_fraction = _sample_overlap_fraction_from_valid_indices(
+                valid_indices_zyx,
                 venule_mask,
-                voxel_size_xyz=voxel_size_xyz,
             )
             in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
             in_venule = venule_fraction >= float(minimum_overlap_fraction)
-            edge_id = (u, v, 0) if u <= v else (v, u, 0)
             if in_arteriole and in_venule:
                 overlap_edges += 1
                 if allow_overlap:

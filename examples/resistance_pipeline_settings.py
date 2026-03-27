@@ -49,6 +49,9 @@ VOXEL_SIZE_POLICY = "auto"
 # ---------------------------
 # Toggle automated selection of start/output nodes from masks.
 AUTOMATED_VESSEL_ASSIGNMENT = True
+# Worker count for parallel overlap resolution in automated large-vessel I/O
+# assignment. Set 0 to run serially.
+AUTOMATED_VESSEL_OVERLAP_PARALLEL_WORKERS = 0
 # Persist automated STARTING_NODES/OUTPUT_NODES into this settings file and
 # automatically set AUTOMATED_VESSEL_ASSIGNMENT=False for the next run.
 AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS = False
