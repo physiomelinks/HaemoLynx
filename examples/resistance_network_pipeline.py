@@ -945,26 +945,6 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
             for node_id in auto_output_nodes
         ]
-        automated_assignment_html_path = plot_dir / "automated_vessel_assignment_3d.html"
-        wrote_assignment_html = graph.write_automated_vessel_assignment_3d_html(
-            G,
-            large_arteriole_mask=large_arteriole_mask,
-            large_venule_mask=large_venule_mask,
-            input_nodes=auto_start_nodes,
-            output_nodes=auto_output_nodes,
-            voxel_size_xyz=tuple(float(v) for v in voxel_size),
-            output_html_path=automated_assignment_html_path,
-        )
-        if wrote_assignment_html:
-            print(
-                "Saved automated vessel-assignment 3D visualization to: "
-                f"{automated_assignment_html_path}"
-            )
-        else:
-            print(
-                "Skipped automated vessel-assignment 3D visualization "
-                "(plotly is not installed)."
-            )
         print(
             "Automated vessel assignment selected "
             f"{len(starting_node_coordinates)} input coordinates from arteriole-mask overlap "
@@ -1014,6 +994,28 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         raise ValueError(
             "I/O assignment contains non-terminal nodes after filtering: "
             f"invalid_inputs={invalid_start_nodes}, invalid_outputs={invalid_output_nodes}."
+        )
+    if automated_vessel_assignment:
+        if large_arteriole_mask is None or large_venule_mask is None:
+            raise ValueError(
+                "automated_vessel_assignment=True requires large arteriole/venule masks "
+                "for visualization."
+            )
+        final_assignment_html_path = plot_dir / "final_graph_large_vessel_assignment_3d.html"
+        visualization.visualize_3d_plotly_large_vessel_assignment(
+            G,
+            large_arteriole_mask=large_arteriole_mask,
+            large_venule_mask=large_venule_mask,
+            input_nodes=list(starting_nodes),
+            output_nodes=list(output_nodes),
+            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            title="Final Graph with Automated Large-Vessel Assignment (3D)",
+            save_html_path=str(final_assignment_html_path),
+            show=show_plots_in_ide or interactive_plots,
+        )
+        print(
+            "Saved final automated large-vessel assignment 3D visualization to: "
+            f"{final_assignment_html_path}"
         )
     used_nodes = set(starting_nodes) | set(output_nodes)
     if arteriole_boundary_node_coordinates or arteriole_boundary_node_volumes:

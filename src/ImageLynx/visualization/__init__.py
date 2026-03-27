@@ -14,6 +14,7 @@ from .vtk_io import (
     visualize_vtk_network,
 )
 from .pipeline_artifacts import save_graph_snapshot
+from .large_vessel_assignment import visualize_3d_plotly_large_vessel_assignment
 
 __all__ = [
     "plot_node_degree_distribution",
@@ -27,4 +28,5 @@ __all__ = [
     "graph_to_vtk",
     "visualize_vtk_network",
     "save_graph_snapshot",
+    "visualize_3d_plotly_large_vessel_assignment",
 ]

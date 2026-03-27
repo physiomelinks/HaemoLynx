@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preset definitions for example pipelines."""
+"""Preset definitions."""
 import ast
 import copy
 import importlib.util

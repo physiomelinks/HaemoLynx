@@ -48,16 +48,16 @@ VOXEL_SIZE_POLICY = "auto"
 # Vessel-mask settings
 # ---------------------------
 # Toggle use of large-vessel masks for automated start/output assignment.
-USE_LARGE_VESSEL_MASKS = False
+USE_LARGE_VESSEL_MASKS = True
 # Toggle ilastik segmentation for large-vessel masks.
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 # Dilation size (microns) applied to large-vessel masks before node selection.
 LARGE_VESSEL_MASK_DILATION_MICRONS = 0.0
 
 # Pre-segmented large arteriole mask path.
-LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
+LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "brain_large_arterioles.tiff"
 # Pre-segmented large venule mask path.
-LARGE_VENULE_MASK_PATH = root_dir / "examples" / "images" / "large_venule_mask.tif"
+LARGE_VENULE_MASK_PATH = root_dir / "examples" / "images" / "brain_large_venules.tiff"
 # Raw arteriole image path used when ilastik large-vessel mode is enabled.
 ILASTIK_UNSEGMENTED_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "large_arteriole_mask.tif"
 # Raw venule image path used when ilastik large-vessel mode is enabled.
