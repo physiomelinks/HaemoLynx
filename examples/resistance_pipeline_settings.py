@@ -49,6 +49,9 @@ VOXEL_SIZE_POLICY = "auto"
 # ---------------------------
 # Toggle automated selection of start/output nodes from masks.
 AUTOMATED_VESSEL_ASSIGNMENT = True
+# Persist automated STARTING_NODES/OUTPUT_NODES into this settings file and
+# automatically set AUTOMATED_VESSEL_ASSIGNMENT=False for the next run.
+AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS = False
 # Toggle use of large-vessel masks for automated start/output assignment.
 USE_LARGE_VESSEL_MASKS = True
 # Toggle ilastik segmentation for large-vessel masks.

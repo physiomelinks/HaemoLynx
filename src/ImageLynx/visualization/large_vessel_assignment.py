@@ -10,6 +10,20 @@ import plotly.graph_objects as go
 from .plot import _is_pytest_runtime
 
 
+def _nonzero_bbox_slices_zyx(mask: np.ndarray) -> tuple[slice, slice, slice] | None:
+    """Return tight z/y/x bounding slices for nonzero mask voxels."""
+    coords = np.argwhere(mask.astype(bool, copy=False))
+    if coords.size == 0:
+        return None
+    mins = coords.min(axis=0).astype(int)
+    maxs = coords.max(axis=0).astype(int) + 1
+    return (
+        slice(int(mins[0]), int(maxs[0])),
+        slice(int(mins[1]), int(maxs[1])),
+        slice(int(mins[2]), int(maxs[2])),
+    )
+
+
 def visualize_3d_plotly_large_vessel_assignment(
     G: nx.Graph,
     *,
@@ -33,20 +47,27 @@ def visualize_3d_plotly_large_vessel_assignment(
         )
 
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: go.Figure) -> None:
-        if not np.any(mask):
+        mask_bool = mask.astype(bool, copy=False)
+        bbox = _nonzero_bbox_slices_zyx(mask_bool)
+        if bbox is None:
             return
         x_scale, y_scale, z_scale = (
             float(voxel_size_xyz[0]),
             float(voxel_size_xyz[1]),
             float(voxel_size_xyz[2]),
         )
-        zz, yy, xx = np.indices(mask.shape, dtype=float)
+        z_slice, y_slice, x_slice = bbox
+        cropped = mask_bool[z_slice, y_slice, x_slice]
+        zz, yy, xx = np.indices(cropped.shape, dtype=float)
+        xx = xx + float(x_slice.start)
+        yy = yy + float(y_slice.start)
+        zz = zz + float(z_slice.start)
         fig.add_trace(
             go.Volume(
                 x=(xx * x_scale).ravel(),
                 y=(yy * y_scale).ravel(),
                 z=(zz * z_scale).ravel(),
-                value=mask.astype(float).ravel(),
+                value=cropped.astype(float).ravel(),
                 isomin=0.5,
                 isomax=1.0,
                 opacity=0.12,

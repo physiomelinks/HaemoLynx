@@ -22,6 +22,8 @@ if str(src_dir) not in sys.path:
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
+SETTINGS_FILE_PATH = examples_dir / "resistance_pipeline_settings.py"
+
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
@@ -30,6 +32,7 @@ from ImageLynx.haemodynamics import probability as probability_haemodynamics
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
 from preflight import run_preflight_checklist
 from resistance_pipeline_settings import *  # noqa: F403
+from settings_persistence import persist_automated_io_assignment_to_settings_file
 from wizard import run_interactive_setup_wizard
 
 
@@ -50,6 +53,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             small_vessel_mask_min_overlap_fraction=SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION,
                             write_small_vessel_boundary_labelling_3d_html=WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML,
                             automated_vessel_assignment=AUTOMATED_VESSEL_ASSIGNMENT,
+                            auto_persist_automated_io_assignment_to_settings=AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
                             large_venule_mask_path=LARGE_VENULE_MASK_PATH,
                             small_arteriole_mask_path=SMALL_ARTERIOLE_MASK_PATH,
@@ -945,6 +949,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     auto_start_nodes: list[int] = []
     auto_output_nodes: list[int] = []
     if automated_vessel_assignment:
+        print("Starting automated input/output assignment from large vessel masks...")
         if large_arteriole_mask is None or large_venule_mask is None:
             raise ValueError(
                 "automated_vessel_assignment=True requires arteriole and venule masks. "
@@ -1039,6 +1044,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         raise ValueError(
             "I/O assignment contains non-terminal nodes after filtering: "
             f"invalid_inputs={invalid_start_nodes}, invalid_outputs={invalid_output_nodes}."
+        )
+    if automated_vessel_assignment and auto_persist_automated_io_assignment_to_settings:
+        persist_automated_io_assignment_to_settings_file(
+            settings_file_path=SETTINGS_FILE_PATH,
+            assigned_start_nodes=[int(node_id) for node_id in starting_nodes],
+            assigned_output_nodes=[int(node_id) for node_id in output_nodes],
         )
     if automated_vessel_assignment:
         if large_arteriole_mask is None or large_venule_mask is None:
