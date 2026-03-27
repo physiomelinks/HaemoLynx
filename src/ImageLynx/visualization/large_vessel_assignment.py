@@ -24,6 +24,40 @@ def _nonzero_bbox_slices_zyx(mask: np.ndarray) -> tuple[slice, slice, slice] | N
     )
 
 
+def _downsample_binary_mask_max(
+    mask: np.ndarray,
+    stride: int,
+) -> np.ndarray:
+    """Downsample a 3D binary mask via block max-pooling."""
+    if stride <= 1:
+        return mask.astype(bool, copy=False)
+
+    z, y, x = mask.shape
+    pad_z = (-z) % stride
+    pad_y = (-y) % stride
+    pad_x = (-x) % stride
+    if pad_z or pad_y or pad_x:
+        padded = np.pad(
+            mask.astype(bool, copy=False),
+            ((0, pad_z), (0, pad_y), (0, pad_x)),
+            mode="constant",
+            constant_values=False,
+        )
+    else:
+        padded = mask.astype(bool, copy=False)
+
+    z2, y2, x2 = padded.shape
+    pooled = padded.reshape(
+        z2 // stride,
+        stride,
+        y2 // stride,
+        stride,
+        x2 // stride,
+        stride,
+    )
+    return np.max(pooled, axis=(1, 3, 5))
+
+
 def visualize_3d_plotly_large_vessel_assignment(
     G: nx.Graph,
     *,
@@ -32,6 +66,7 @@ def visualize_3d_plotly_large_vessel_assignment(
     input_nodes: list[Any],
     output_nodes: list[Any],
     voxel_size_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    volume_downsample_stride: int = 1,
     title: str = "Final Graph with Automated Large-Vessel Assignment (3D)",
     save_html_path: str | None = None,
     show: bool = False,
@@ -46,6 +81,8 @@ def visualize_3d_plotly_large_vessel_assignment(
             f"Got {large_arteriole_mask.shape} and {large_venule_mask.shape}."
         )
 
+    stride = max(1, int(volume_downsample_stride))
+
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: go.Figure) -> None:
         mask_bool = mask.astype(bool, copy=False)
         bbox = _nonzero_bbox_slices_zyx(mask_bool)
@@ -58,16 +95,23 @@ def visualize_3d_plotly_large_vessel_assignment(
         )
         z_slice, y_slice, x_slice = bbox
         cropped = mask_bool[z_slice, y_slice, x_slice]
-        zz, yy, xx = np.indices(cropped.shape, dtype=float)
-        xx = xx + float(x_slice.start)
-        yy = yy + float(y_slice.start)
-        zz = zz + float(z_slice.start)
+        downsampled = _downsample_binary_mask_max(cropped, stride)
+        if not np.any(downsampled):
+            # Safety fallback for very sparse masks.
+            downsampled = cropped
+            effective_stride = 1
+        else:
+            effective_stride = stride
+        zz, yy, xx = np.indices(downsampled.shape, dtype=float)
+        xx = (xx * float(effective_stride)) + float(x_slice.start)
+        yy = (yy * float(effective_stride)) + float(y_slice.start)
+        zz = (zz * float(effective_stride)) + float(z_slice.start)
         fig.add_trace(
             go.Volume(
                 x=(xx * x_scale).ravel(),
                 y=(yy * y_scale).ravel(),
                 z=(zz * z_scale).ravel(),
-                value=cropped.astype(float).ravel(),
+                value=downsampled.astype(float).ravel(),
                 isomin=0.5,
                 isomax=1.0,
                 opacity=0.12,

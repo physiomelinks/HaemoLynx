@@ -1,7 +1,7 @@
 """Automatic terminal-node assignment from arteriole/venule masks."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import time
 from typing import Any
@@ -219,8 +219,13 @@ def _terminal_edge_sample_points(
     if edge_voxels is None:
         return np.asarray([node_pos], dtype=float)
 
+    if edge_voxels.shape[0] <= max_sample_points:
+        samples = edge_voxels
+        samples = np.vstack([samples, node_pos.reshape(1, 3)])
+        return np.unique(samples, axis=0)
+
     distances = np.linalg.norm(edge_voxels - node_pos.reshape(1, 3), axis=1)
-    nearest_idx = np.argsort(distances)[: max_sample_points]
+    nearest_idx = np.argpartition(distances, max_sample_points - 1)[:max_sample_points]
     samples = edge_voxels[nearest_idx]
     samples = np.vstack([samples, node_pos.reshape(1, 3)])
     return np.unique(samples, axis=0)
@@ -521,8 +526,8 @@ def select_terminal_nodes_from_large_vessel_masks(
     """Assign degree-1 nodes to input/output groups by vessel-mask overlap.
 
     When `exclude_smaller_overlapping_volumes=True`, overlapping large-vessel
-    components are pre-cleaned so the smaller component is removed before node
-    assignment.
+    components are pre-cleaned by removing only overlap voxels from the smaller
+    component in each overlap pair before node assignment.
     """
     if large_arteriole_mask.shape != large_venule_mask.shape:
         raise ValueError(
@@ -555,9 +560,10 @@ def select_terminal_nodes_from_large_vessel_masks(
         f"processing {len(terminal_nodes)} terminal node(s)."
     )
 
-    # Precompute mask geometry once to avoid repeated full-volume scans.
-    arteriole_geometry = _prepare_mask_geometry(arteriole_mask)
-    venule_geometry = _prepare_mask_geometry(venule_mask)
+    # Defer expensive overlap geometry preparation until we actually find
+    # overlap candidates that require tie-break resolution.
+    arteriole_geometry: dict[str, Any] | None = None
+    venule_geometry: dict[str, Any] | None = None
     arteriole_bbox = _nonzero_bbox_slices_zyx(arteriole_mask)
     venule_bbox = _nonzero_bbox_slices_zyx(venule_mask)
     union_bbox = _combine_bboxes_zyx([arteriole_bbox, venule_bbox])
@@ -565,10 +571,9 @@ def select_terminal_nodes_from_large_vessel_masks(
     starting_nodes: set[Any] = set()
     output_nodes: set[Any] = set()
     overlap_candidates: list[tuple[Any, np.ndarray]] = []
-    overlap_samples_cache: dict[Any, np.ndarray] = {}
     progress_stride = max(1, len(terminal_nodes) // 10)
     for idx, (node_id, node_pos) in enumerate(terminal_nodes, start=1):
-        if idx % progress_stride == 0 or idx == len(terminal_nodes):
+        if idx == 1 or idx % progress_stride == 0 or idx == len(terminal_nodes):
             elapsed = time.perf_counter() - start_time_s
             print(
                 "Automated large-vessel assignment progress: "
@@ -589,11 +594,6 @@ def select_terminal_nodes_from_large_vessel_masks(
         in_venule = bool(venule_mask[index_zyx])
         if in_arteriole and in_venule and not allow_overlap:
             overlap_candidates.append((node_id, node_pos))
-            overlap_samples_cache[node_id] = _terminal_edge_sample_points(
-                G,
-                node_id,
-                node_pos,
-            )
             continue
         if in_arteriole:
             starting_nodes.add(node_id)
@@ -605,9 +605,16 @@ def select_terminal_nodes_from_large_vessel_masks(
             "Automated large-vessel overlap-resolution: "
             f"{len(overlap_candidates)} overlap terminal(s)."
         )
+        arteriole_geometry = _prepare_mask_geometry(arteriole_mask)
+        venule_geometry = _prepare_mask_geometry(venule_mask)
 
         def _resolve_one(candidate: tuple[Any, np.ndarray]) -> tuple[Any, str]:
             node_id, node_pos = candidate
+            terminal_sample_points = _terminal_edge_sample_points(
+                G,
+                node_id,
+                node_pos,
+            )
             assignment = resolve_overlapping_terminal_node_assignment(
                 G,
                 node_id,
@@ -617,15 +624,43 @@ def select_terminal_nodes_from_large_vessel_masks(
                 voxel_size_xyz=voxel_size_xyz,
                 arteriole_geometry=arteriole_geometry,
                 venule_geometry=venule_geometry,
-                terminal_sample_points=overlap_samples_cache.get(node_id),
+                terminal_sample_points=terminal_sample_points,
             )
             return node_id, assignment
 
+        overlap_stride = max(1, len(overlap_candidates) // 10)
         if overlap_parallel_workers > 0 and len(overlap_candidates) > 1:
+            resolved: list[tuple[Any, str]] = []
             with ThreadPoolExecutor(max_workers=int(overlap_parallel_workers)) as executor:
-                resolved = list(executor.map(_resolve_one, overlap_candidates))
+                futures = [executor.submit(_resolve_one, candidate) for candidate in overlap_candidates]
+                for done_idx, future in enumerate(as_completed(futures), start=1):
+                    resolved.append(future.result())
+                    if (
+                        done_idx == 1
+                        or done_idx % overlap_stride == 0
+                        or done_idx == len(overlap_candidates)
+                    ):
+                        elapsed = time.perf_counter() - start_time_s
+                        print(
+                            "Automated large-vessel overlap-resolution progress: "
+                            f"{done_idx}/{len(overlap_candidates)} overlap terminals "
+                            f"({elapsed:.1f}s elapsed)."
+                        )
         else:
-            resolved = [_resolve_one(candidate) for candidate in overlap_candidates]
+            resolved = []
+            for done_idx, candidate in enumerate(overlap_candidates, start=1):
+                resolved.append(_resolve_one(candidate))
+                if (
+                    done_idx == 1
+                    or done_idx % overlap_stride == 0
+                    or done_idx == len(overlap_candidates)
+                ):
+                    elapsed = time.perf_counter() - start_time_s
+                    print(
+                        "Automated large-vessel overlap-resolution progress: "
+                        f"{done_idx}/{len(overlap_candidates)} overlap terminals "
+                        f"({elapsed:.1f}s elapsed)."
+                    )
 
         for node_id, assignment in resolved:
             if assignment == "input":

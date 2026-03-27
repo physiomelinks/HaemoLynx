@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from .load import (
+    _to_binary_volume_for_skeletonization,
     load_3d_h5_with_voxel_size,
     load_3d_tif_with_voxel_size,
     resolve_image_path_with_optional_zip,
@@ -13,18 +14,28 @@ from .load import (
 
 
 def _load_mask_image(mask_path: Path) -> tuple[np.ndarray, tuple[float, float, float]]:
-    """Load a mask image and return (image, voxel_size_xyz)."""
+    """Load a mask image, binarize like main input, and return voxel size."""
     suffix = mask_path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
         image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
             str(mask_path)
         )
-        return image, (float(voxel_x), float(voxel_y), float(voxel_z))
+        binary_mask = _to_binary_volume_for_skeletonization(image)
+        return binary_mask.astype(bool, copy=False), (
+            float(voxel_x),
+            float(voxel_y),
+            float(voxel_z),
+        )
     if suffix == ".h5":
         image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
             str(mask_path)
         )
-        return image, (float(voxel_x), float(voxel_y), float(voxel_z))
+        binary_mask = _to_binary_volume_for_skeletonization(image)
+        return binary_mask.astype(bool, copy=False), (
+            float(voxel_x),
+            float(voxel_y),
+            float(voxel_z),
+        )
     raise ValueError(
         f"Unsupported mask format '{suffix}' for {mask_path}. "
         "Supported formats: .tif, .tiff, .h5"

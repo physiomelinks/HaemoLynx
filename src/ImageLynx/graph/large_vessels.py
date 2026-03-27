@@ -63,12 +63,12 @@ def exclude_smaller_overlapping_large_vessel_components(
     large_arteriole_mask: np.ndarray | None,
     large_venule_mask: np.ndarray | None,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Remove smaller overlapping connected components between large-vessel masks.
+    """Remove overlap voxels from the smaller component in each overlap pair.
 
     For each overlapping arteriole/venule component pair, the smaller full
-    component is removed. This is intended to suppress segmentation leakage where
-    a small fragment of one class sits inside a much larger component of the
-    opposite class.
+    component is identified, and only the voxels in the *overlap region* are
+    removed from that smaller component. This suppresses class-leakage overlap
+    while preserving non-overlapping parts of the component.
     """
     if large_arteriole_mask is None or large_venule_mask is None:
         return large_arteriole_mask, large_venule_mask
@@ -100,26 +100,47 @@ def exclude_smaller_overlapping_large_vessel_components(
         axis=0,
     )
 
-    remove_arteriole_labels: set[int] = set()
-    remove_venule_labels: set[int] = set()
+    overlap_pairs_to_remove_from_arteriole: list[tuple[int, int]] = []
+    overlap_pairs_to_remove_from_venule: list[tuple[int, int]] = []
     for arteriole_label, venule_label in overlapping_pairs:
         if arteriole_label == 0 or venule_label == 0:
             continue
         arteriole_size = int(arteriole_sizes[int(arteriole_label)])
         venule_size = int(venule_sizes[int(venule_label)])
         if arteriole_size < venule_size:
-            remove_arteriole_labels.add(int(arteriole_label))
+            overlap_pairs_to_remove_from_arteriole.append(
+                (int(arteriole_label), int(venule_label))
+            )
         elif venule_size < arteriole_size:
-            remove_venule_labels.add(int(venule_label))
+            overlap_pairs_to_remove_from_venule.append(
+                (int(arteriole_label), int(venule_label))
+            )
         else:
             # Deterministic tie-break for reproducible output.
-            remove_venule_labels.add(int(venule_label))
+            overlap_pairs_to_remove_from_venule.append(
+                (int(arteriole_label), int(venule_label))
+            )
 
     cleaned_arteriole_mask = arteriole_mask.copy()
     cleaned_venule_mask = venule_mask.copy()
-    for component_label in remove_arteriole_labels:
-        cleaned_arteriole_mask[arteriole_labels == component_label] = False
-    for component_label in remove_venule_labels:
-        cleaned_venule_mask[venule_labels == component_label] = False
+    for arteriole_label, venule_label in overlap_pairs_to_remove_from_arteriole:
+        pair_overlap = (
+            overlap
+            & (arteriole_labels == int(arteriole_label))
+            & (venule_labels == int(venule_label))
+        )
+        cleaned_arteriole_mask[pair_overlap] = False
+    for arteriole_label, venule_label in overlap_pairs_to_remove_from_venule:
+        pair_overlap = (
+            overlap
+            & (arteriole_labels == int(arteriole_label))
+            & (venule_labels == int(venule_label))
+        )
+        cleaned_venule_mask[pair_overlap] = False
+
+    # Safety pass: guarantee no shared voxels remain after pairwise cleanup.
+    remaining_overlap = cleaned_arteriole_mask & cleaned_venule_mask
+    if np.any(remaining_overlap):
+        cleaned_venule_mask[remaining_overlap] = False
 
     return cleaned_arteriole_mask, cleaned_venule_mask

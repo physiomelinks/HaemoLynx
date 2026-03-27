@@ -49,9 +49,17 @@ VOXEL_SIZE_POLICY = "auto"
 # ---------------------------
 # Toggle automated selection of start/output nodes from masks.
 AUTOMATED_VESSEL_ASSIGNMENT = True
+# Fast mode for automated large-vessel I/O assignment: remove overlap voxels
+# from the smaller component in each arteriole/venule overlap pair before
+# terminal assignment (non-overlapping component regions are preserved).
+AUTOMATED_VESSEL_ASSIGNMENT_FAST_MODE = True
+# Apply overlap-cleanup pre-pass in normal mode (fast mode off). This applies
+# the same "remove overlap voxels from smaller component" logic before terminal
+# assignment.
+AUTOMATED_VESSEL_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE = True
 # Worker count for parallel overlap resolution in automated large-vessel I/O
 # assignment. Set 0 to run serially.
-AUTOMATED_VESSEL_OVERLAP_PARALLEL_WORKERS = 0
+AUTOMATED_VESSEL_OVERLAP_PARALLEL_WORKERS = 8
 # Persist automated STARTING_NODES/OUTPUT_NODES into this settings file and
 # automatically set AUTOMATED_VESSEL_ASSIGNMENT=False for the next run.
 AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS = False
@@ -60,7 +68,10 @@ USE_LARGE_VESSEL_MASKS = True
 # Toggle ilastik segmentation for large-vessel masks.
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 # Dilation size (microns) applied to large-vessel masks before node selection.
-LARGE_VESSEL_MASK_DILATION_MICRONS = 0.0
+LARGE_VESSEL_MASK_DILATION_MICRONS = 5.0
+# Downsample stride used for 3D large-vessel volume rendering in Plotly.
+# 1 = full resolution, 2/3/4 progressively faster but coarser.
+LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
 
 # Pre-segmented large arteriole mask path.
 LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "brain_large_arterioles.tiff"
@@ -184,9 +195,9 @@ VERBOSE_LOGGING = False
 # Pipeline-stage and topology settings
 # ---------------------------
 # Toggle skeletonization step execution.
-DO_SKELETONIZE = True
+DO_SKELETONIZE = False
 # Toggle graph-building step execution.
-DO_GRAPH_BUILDING = True
+DO_GRAPH_BUILDING = False
 # Toggle haemodynamics pipeline execution.
 RUN_HAEMODYNAMICS = True
 # Toggle two-point equivalent resistance calculation.
