@@ -459,15 +459,31 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             and voxel_match_main_vs_venule
             and voxel_match_arteriole_vs_venule
         ):
-            error_message = (
-                "Voxel-size mismatch detected across input image and large-vessel masks. "
-                f"main={main_voxel_size_xyz}, "
-                f"arteriole={arteriole_voxel_size_xyz}, "
-                f"venule={venule_voxel_size_xyz}. "
-                "All three must match exactly in x, y, and z."
-            )
-            print(error_message)
-            raise ValueError(error_message)
+            if str(voxel_size_source).strip().lower() == "manual_override":
+                print(
+                    "Voxel-size mismatch detected for large-vessel masks while manual "
+                    "override is active. Using manual override voxel units for large "
+                    f"masks: main={main_voxel_size_xyz}, "
+                    f"arteriole(original)={arteriole_voxel_size_xyz}, "
+                    f"venule(original)={venule_voxel_size_xyz}."
+                )
+                large_arteriole_mask_voxel_size = tuple(main_voxel_size_xyz)
+                large_venule_mask_voxel_size = tuple(main_voxel_size_xyz)
+                arteriole_voxel_size_xyz = tuple(main_voxel_size_xyz)
+                venule_voxel_size_xyz = tuple(main_voxel_size_xyz)
+                voxel_match_main_vs_arteriole = True
+                voxel_match_main_vs_venule = True
+                voxel_match_arteriole_vs_venule = True
+            else:
+                error_message = (
+                    "Voxel-size mismatch detected across input image and large-vessel masks. "
+                    f"main={main_voxel_size_xyz}, "
+                    f"arteriole={arteriole_voxel_size_xyz}, "
+                    f"venule={venule_voxel_size_xyz}. "
+                    "All three must match exactly in x, y, and z."
+                )
+                print(error_message)
+                raise ValueError(error_message)
         print(
             "Voxel-size check passed. Arteriole and venule masks are aligned "
             "to the same physical voxel units as the main image."
@@ -604,13 +620,26 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 atol=0.0,
             )
         ):
-            raise ValueError(
-                "Voxel-size mismatch detected across input image and small-vessel masks. "
-                f"main={main_voxel_size_xyz}, "
-                f"small_arteriole={small_arteriole_voxel_size_xyz}, "
-                f"small_venule={small_venule_voxel_size_xyz}. "
-                "All must match exactly in x, y, and z."
-            )
+            if str(voxel_size_source).strip().lower() == "manual_override":
+                print(
+                    "Voxel-size mismatch detected for small-vessel masks while manual "
+                    "override is active. Using manual override voxel units for small "
+                    f"masks: main={main_voxel_size_xyz}, "
+                    f"small_arteriole(original)={small_arteriole_voxel_size_xyz}, "
+                    f"small_venule(original)={small_venule_voxel_size_xyz}."
+                )
+                small_arteriole_mask_voxel_size = tuple(main_voxel_size_xyz)
+                small_venule_mask_voxel_size = tuple(main_voxel_size_xyz)
+                small_arteriole_voxel_size_xyz = tuple(main_voxel_size_xyz)
+                small_venule_voxel_size_xyz = tuple(main_voxel_size_xyz)
+            else:
+                raise ValueError(
+                    "Voxel-size mismatch detected across input image and small-vessel masks. "
+                    f"main={main_voxel_size_xyz}, "
+                    f"small_arteriole={small_arteriole_voxel_size_xyz}, "
+                    f"small_venule={small_venule_voxel_size_xyz}. "
+                    "All must match exactly in x, y, and z."
+                )
         print(
             "Loaded small-vessel masks for boundary assignment: "
             f"arteriole={small_arteriole_mask.shape}, venule={small_venule_mask.shape}, "
