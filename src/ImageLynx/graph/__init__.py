@@ -15,6 +15,7 @@ from .prune import (
     remove_edges_for_self_connected_nodes,
     remove_isolated_nodes,
 )
+from .terminal_edges import remove_terminal_terminal_edges
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
 from .collapse import collapse_node_clusters
 from .branch_order import assign_branch_orders, assign_hierarchical_branch_orders
@@ -90,6 +91,7 @@ __all__ = [
     "dilate_large_vessel_masks_by_microns",
     "exclude_smaller_overlapping_large_vessel_components",
     "remove_edges_for_self_connected_nodes",
+    "remove_terminal_terminal_edges",
     "remove_isolated_nodes",
     "add_edge_safe",
     "has_edge_safe",

@@ -868,6 +868,22 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         print(graph.format_degree2_diagnostics_report(degree2_diag))
 
+        # Remove tiny disconnected fragments represented by a single
+        # edge with degree-1 terminal nodes on both endpoints.
+        G, removed_terminal_terminal_edges = graph.remove_terminal_terminal_edges(
+            G,
+            debug=verbose_logging,
+            return_removed_count=True,
+        )
+        print(
+            "Removed "
+            f"{removed_terminal_terminal_edges} edge(s) with degree-1 terminals on both ends."
+        )
+        visualization.save_graph_snapshot(
+            G, image, output_dir, plot_dir, image_path.stem,
+            "remove_terminal_terminal_edges",
+        )
+
         # Final cleanup: remove isolated nodes (degree 0) left after topology
         # operations so they do not propagate into boundary selection/statistics.
         nodes_before_isolated_cleanup = G.number_of_nodes()
