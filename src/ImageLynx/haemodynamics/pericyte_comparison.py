@@ -111,21 +111,37 @@ def _set_weights_for_factor(
     )
 
 
-def _compute_two_point_resistance(
+def _resolve_resistance_pairs(
     graph: nx.MultiGraph,
-    source_node: int,
-    target_node: int,
-) -> float:
-    conductance, _ = build_conductance_matrix_from_graph(graph)
-    laplacian = calc_laplacian_from_conductance_matrix(conductance)
-    return float(
-        calc_two_point_from_laplacian_matrix_nodeID(
-            laplacian,
-            graph,
-            source_node,
-            target_node,
+    *,
+    resistance_node_pair: tuple[int, int] | None,
+    resistance_node_pairs: list[tuple[int, int]] | None,
+) -> list[tuple[int, int]]:
+    """Return validated resistance node pairs for comparison runs."""
+    if resistance_node_pairs is not None and len(resistance_node_pairs) > 0:
+        resolved_pairs = [(int(src), int(dst)) for src, dst in resistance_node_pairs]
+    elif resistance_node_pair is not None:
+        resolved_pairs = [(int(resistance_node_pair[0]), int(resistance_node_pair[1]))]
+    else:
+        raise ValueError(
+            "Provide resistance_node_pair or non-empty resistance_node_pairs."
         )
-    )
+
+    unique_pairs: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for src, dst in resolved_pairs:
+        pair = (int(src), int(dst))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        unique_pairs.append(pair)
+
+    for pair in unique_pairs:
+        source_node, target_node = pair
+        if source_node not in graph.nodes or target_node not in graph.nodes:
+            raise ValueError(f"resistance pair {pair} not present in graph nodes.")
+
+    return unique_pairs
 
 
 def compare_baseline_vs_pericyte_constriction(
@@ -133,7 +149,8 @@ def compare_baseline_vs_pericyte_constriction(
     *,
     diameter_by_branch_order: dict,
     constriction_factor_by_branch_order: dict[str, float],
-    resistance_node_pair: tuple[int, int],
+    resistance_node_pair: tuple[int, int] | None = None,
+    resistance_node_pairs: list[tuple[int, int]] | None = None,
     output_csv_path: str | Path,
     baseline_factor_value: float = 1.0,
     constricted_factor_value: float = 0.8,
@@ -158,11 +175,11 @@ def compare_baseline_vs_pericyte_constriction(
     Returns a summary dict and writes a human-readable CSV with one row per
     scenario plus a final delta row.
     """
-    source_node, target_node = resistance_node_pair
-    if source_node not in graph.nodes or target_node not in graph.nodes:
-        raise ValueError(
-            f"resistance_node_pair {resistance_node_pair} not present in graph nodes."
-        )
+    resolved_pairs = _resolve_resistance_pairs(
+        graph,
+        resistance_node_pair=resistance_node_pair,
+        resistance_node_pairs=resistance_node_pairs,
+    )
     if not diameter_by_branch_order:
         raise ValueError("diameter_by_branch_order cannot be empty.")
 
@@ -200,11 +217,8 @@ def compare_baseline_vs_pericyte_constriction(
                 str(edge_id): [int(idx) for idx in idx_list]
                 for edge_id, idx_list in selected_map.items()
             }
-    baseline_resistance = _compute_two_point_resistance(
-        graph_baseline,
-        source_node=source_node,
-        target_node=target_node,
-    )
+    baseline_conductance, _ = build_conductance_matrix_from_graph(graph_baseline)
+    baseline_laplacian = calc_laplacian_from_conductance_matrix(baseline_conductance)
 
     graph_constricted, constricted_weight_results = _set_weights_for_factor(
         graph_constricted,
@@ -225,20 +239,60 @@ def compare_baseline_vs_pericyte_constriction(
         min_pericyte_diameter_um=min_pericyte_diameter_um,
         max_pericyte_diameter_um=max_pericyte_diameter_um,
     )
-    constricted_resistance = _compute_two_point_resistance(
-        graph_constricted,
-        source_node=source_node,
-        target_node=target_node,
-    )
+    constricted_conductance, _ = build_conductance_matrix_from_graph(graph_constricted)
+    constricted_laplacian = calc_laplacian_from_conductance_matrix(constricted_conductance)
 
-    delta = float(constricted_resistance - baseline_resistance)
-    percent_change = (
-        float((delta / baseline_resistance) * 100.0) if baseline_resistance != 0 else float("inf")
+    pair_results: list[dict[str, Any]] = []
+    for source_node, target_node in resolved_pairs:
+        baseline_resistance = float(
+            calc_two_point_from_laplacian_matrix_nodeID(
+                baseline_laplacian,
+                graph_baseline,
+                source_node,
+                target_node,
+            )
+        )
+        constricted_resistance = float(
+            calc_two_point_from_laplacian_matrix_nodeID(
+                constricted_laplacian,
+                graph_constricted,
+                source_node,
+                target_node,
+            )
+        )
+        delta = float(constricted_resistance - baseline_resistance)
+        percent_change = (
+            float((delta / baseline_resistance) * 100.0)
+            if baseline_resistance != 0
+            else float("inf")
+        )
+        ratio = (
+            float(constricted_resistance / baseline_resistance)
+            if baseline_resistance != 0
+            else float("inf")
+        )
+        pair_results.append(
+            {
+                "source_node": int(source_node),
+                "target_node": int(target_node),
+                "baseline_resistance": float(baseline_resistance),
+                "constricted_resistance": float(constricted_resistance),
+                "delta": float(delta),
+                "percent_change": float(percent_change),
+                "ratio": float(ratio),
+            }
+        )
+
+    aggregate_delta = float(sum(result["delta"] for result in pair_results))
+    aggregate_percent_change = (
+        float(sum(result["percent_change"] for result in pair_results) / len(pair_results))
+        if pair_results
+        else float("nan")
     )
-    ratio = (
-        float(constricted_resistance / baseline_resistance)
-        if baseline_resistance != 0
-        else float("inf")
+    aggregate_ratio = (
+        float(sum(result["ratio"] for result in pair_results) / len(pair_results))
+        if pair_results
+        else float("nan")
     )
 
     output_path = Path(output_csv_path)
@@ -258,49 +312,57 @@ def compare_baseline_vs_pericyte_constriction(
             ],
         )
         writer.writeheader()
+        for result in pair_results:
+            writer.writerow(
+                {
+                    "scenario": "baseline",
+                    "factor_value": float(baseline_factor_value),
+                    "source_node": int(result["source_node"]),
+                    "target_node": int(result["target_node"]),
+                    "effective_resistance": float(result["baseline_resistance"]),
+                    "delta_vs_baseline": 0.0,
+                    "percent_change_vs_baseline": 0.0,
+                    "ratio_vs_baseline": 1.0,
+                }
+            )
+            writer.writerow(
+                {
+                    "scenario": "constricted",
+                    "factor_value": float(constricted_factor_value),
+                    "source_node": int(result["source_node"]),
+                    "target_node": int(result["target_node"]),
+                    "effective_resistance": float(result["constricted_resistance"]),
+                    "delta_vs_baseline": float(result["delta"]),
+                    "percent_change_vs_baseline": float(result["percent_change"]),
+                    "ratio_vs_baseline": float(result["ratio"]),
+                }
+            )
         writer.writerow(
             {
-                "scenario": "baseline",
-                "factor_value": float(baseline_factor_value),
-                "source_node": int(source_node),
-                "target_node": int(target_node),
-                "effective_resistance": float(baseline_resistance),
-                "delta_vs_baseline": 0.0,
-                "percent_change_vs_baseline": 0.0,
-                "ratio_vs_baseline": 1.0,
-            }
-        )
-        writer.writerow(
-            {
-                "scenario": "constricted",
-                "factor_value": float(constricted_factor_value),
-                "source_node": int(source_node),
-                "target_node": int(target_node),
-                "effective_resistance": float(constricted_resistance),
-                "delta_vs_baseline": float(delta),
-                "percent_change_vs_baseline": float(percent_change),
-                "ratio_vs_baseline": float(ratio),
-            }
-        )
-        writer.writerow(
-            {
-                "scenario": "summary",
+                "scenario": "summary_all_pairs",
                 "factor_value": "",
-                "source_node": int(source_node),
-                "target_node": int(target_node),
+                "source_node": "",
+                "target_node": "",
                 "effective_resistance": "",
-                "delta_vs_baseline": float(delta),
-                "percent_change_vs_baseline": float(percent_change),
-                "ratio_vs_baseline": float(ratio),
+                "delta_vs_baseline": float(aggregate_delta),
+                "percent_change_vs_baseline": float(aggregate_percent_change),
+                "ratio_vs_baseline": float(aggregate_ratio),
             }
         )
 
+    first_result = pair_results[0]
     return {
-        "baseline_resistance": float(baseline_resistance),
-        "constricted_resistance": float(constricted_resistance),
-        "delta": float(delta),
-        "percent_change": float(percent_change),
-        "ratio": float(ratio),
+        "baseline_resistance": float(first_result["baseline_resistance"]),
+        "constricted_resistance": float(first_result["constricted_resistance"]),
+        "delta": float(first_result["delta"]),
+        "percent_change": float(first_result["percent_change"]),
+        "ratio": float(first_result["ratio"]),
+        "pair_results": pair_results,
+        "pair_count": int(len(pair_results)),
+        "aggregate_delta": float(aggregate_delta),
+        "aggregate_percent_change": float(aggregate_percent_change),
+        "aggregate_ratio": float(aggregate_ratio),
+        "resistance_node_pairs": resolved_pairs,
         "baseline_factor_value": float(baseline_factor_value),
         "constricted_factor_value": float(constricted_factor_value),
         "output_csv_path": str(output_path),

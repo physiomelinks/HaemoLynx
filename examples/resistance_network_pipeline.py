@@ -964,6 +964,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     auto_start_nodes: list[int] = []
     auto_output_nodes: list[int] = []
+    resistance_node_pairs: list[tuple[int, int]] = []
     if automated_vessel_assignment:
         print("Starting automated input/output assignment from large vessel masks...")
         apply_overlap_cleanup_prepass = bool(
@@ -1331,8 +1332,25 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     print(f"Venule boundary nodes are: {venule_boundary_nodes}")
 
     if starting_nodes and output_nodes:
-        resistance_node_pair = (starting_nodes[0], output_nodes[0])
-        print(f"Auto-selected resistance node pair: {resistance_node_pair}")
+        resistance_node_pairs = haemodynamics.find_connected_start_output_pairs(
+            G,
+            starting_nodes,
+            output_nodes,
+        )
+        if not resistance_node_pairs:
+            raise ValueError(
+                "No connected STARTING_NODES -> OUTPUT_NODES pairs found in the graph. "
+                "Equivalent resistance requires connected node pairs."
+            )
+        resistance_node_pair = resistance_node_pairs[0]
+        print(
+            "Auto-selected default resistance node pair for single-pair APIs: "
+            f"{resistance_node_pair}"
+        )
+        print(
+            "Connected STARTING_NODES -> OUTPUT_NODES pairs for equivalent "
+            f"resistance testing: {len(resistance_node_pairs)}"
+        )
     else:
         if automated_vessel_assignment:
             raise ValueError(
@@ -1501,6 +1519,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     diameter_by_branch_order=diameter_by_branch_order,
                     constriction_factor_by_branch_order=constriction_by_branch_order,
                     resistance_node_pair=resistance_node_pair,
+                    resistance_node_pairs=resistance_node_pairs,
                     output_csv_path=comparison_csv_path,
                     baseline_factor_value=float(pericyte_comparison_baseline_value),
                     constricted_factor_value=float(pericyte_comparison_constricted_value),
@@ -1720,30 +1739,38 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         print("VTK visualization requested but VTK export is disabled. Set VTK_export=True to enable.")
     if run_haemodynamics and not visualize_vtk:
         print("VTK visualization skipped.") 
-    # 6) Compute effective resistance between two selected nodes.
+    # 6) Compute effective resistance between connected start/output node pairs.
     if run_haemodynamics:
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
         node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
         print(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
     if run_haemodynamics and do_equiv_resistance_calculation:
-        source_node, target_node = resistance_node_pair
-        if source_node in node_to_idx and target_node in node_to_idx:
-            laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-            two_point_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
-                laplacian,
-                G,
-                source_node,
-                target_node,
-            )
-            print(
-                f"\nEffective resistance between nodes {source_node} and "
-                f"{target_node}: {two_point_resistance}"
-            )
-        else:
-            print(
-                f"\nSkipped two-point resistance: nodes {resistance_node_pair} "
-                "are not both present in the graph."
-            )
+        laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+        tested_pair_count = 0
+        skipped_pair_count = 0
+        for source_node, target_node in resistance_node_pairs:
+            if source_node in node_to_idx and target_node in node_to_idx:
+                two_point_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+                    laplacian,
+                    G,
+                    source_node,
+                    target_node,
+                )
+                print(
+                    f"\nEffective resistance between nodes {source_node} and "
+                    f"{target_node}: {two_point_resistance}"
+                )
+                tested_pair_count += 1
+            else:
+                print(
+                    f"\nSkipped two-point resistance: nodes {(source_node, target_node)} "
+                    "are not both present in the graph."
+                )
+                skipped_pair_count += 1
+        print(
+            "Two-point resistance testing summary: "
+            f"tested_pairs={tested_pair_count}, skipped_pairs={skipped_pair_count}."
+        )
 
     # 7) Compute and print vessel statistics.
     print("\nComputing vessel statistics...")
