@@ -1927,7 +1927,7 @@ if __name__ == "__main__":
         config_pipeline_overrides = dict(loaded_config["pipeline_overrides"])
         print(f"Loaded config from: {cli.config}")
 
-    preset_name = cli.preset or config_preset_name or "default"
+    preset_name = cli.preset or config_preset_name or "none"
     manual_overrides: dict[str, object] = dict(config_setting_overrides)
     for override_text in cli.manual_setting_overrides:
         key, value = parse_cli_override(override_text)  # noqa: F405

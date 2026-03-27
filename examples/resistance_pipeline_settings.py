@@ -47,6 +47,8 @@ VOXEL_SIZE_POLICY = "auto"
 # ---------------------------
 # Vessel-mask settings
 # ---------------------------
+# Toggle automated selection of start/output nodes from masks.
+AUTOMATED_VESSEL_ASSIGNMENT = True
 # Toggle use of large-vessel masks for automated start/output assignment.
 USE_LARGE_VESSEL_MASKS = True
 # Toggle ilastik segmentation for large-vessel masks.
@@ -96,8 +98,6 @@ BASE_PLOT_DIR = root_dir / "examples" / "plots"
 if not BASE_PLOT_DIR.exists():
     BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Toggle automated selection of start/output nodes from masks.
-AUTOMATED_VESSEL_ASSIGNMENT = False
 # Method used to choose manual starting nodes.
 STARTING_NODE_SELECTION_METHOD = "coordinates"
 # Method used to choose manual output nodes.

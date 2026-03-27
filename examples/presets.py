@@ -13,6 +13,12 @@ def _get_builtin_preset_definitions(root_dir: Path) -> dict[str, dict[str, objec
             "description": "Current baseline behavior from this settings file.",
             "overrides": {},
         },
+        "none": {
+            "description": (
+                "No preset overrides; leaves settings exactly as configured."
+            ),
+            "overrides": {},
+        },
         "quick_debug": {
             "description": (
                 "Fast iteration mode: disables heavy outputs/analysis and keeps logs concise."
