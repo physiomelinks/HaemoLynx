@@ -166,11 +166,22 @@ def visualize_3d_plotly_large_vessel_assignment(
     output_set = set(output_nodes)
     other_nodes = [n for n in G.nodes if n not in input_set and n not in output_set]
 
-    def _coords(nodes: list[Any]) -> tuple[list[float], list[float], list[float]]:
-        xs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
-        ys = [float(np.asarray(pos[n], dtype=float)[1]) for n in nodes if n in pos]
-        zs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
-        return xs, ys, zs
+    def _coords_with_ids(
+        nodes: list[Any],
+    ) -> tuple[list[float], list[float], list[float], list[str]]:
+        xs: list[float] = []
+        ys: list[float] = []
+        zs: list[float] = []
+        node_ids: list[str] = []
+        for node_id in nodes:
+            if node_id not in pos:
+                continue
+            node_pos = np.asarray(pos[node_id], dtype=float)
+            xs.append(float(node_pos[0]))
+            ys.append(float(node_pos[1]))
+            zs.append(float(node_pos[2]))
+            node_ids.append(str(node_id))
+        return xs, ys, zs, node_ids
 
     fig = go.Figure()
     _add_volume_trace(
@@ -197,7 +208,7 @@ def visualize_3d_plotly_large_vessel_assignment(
     )
 
     if other_nodes:
-        ox, oy, oz = _coords(other_nodes)
+        ox, oy, oz, oid = _coords_with_ids(other_nodes)
         fig.add_trace(
             go.Scatter3d(
                 x=ox,
@@ -206,10 +217,12 @@ def visualize_3d_plotly_large_vessel_assignment(
                 mode="markers",
                 marker=dict(size=4, color="#9E9E9E"),
                 name="Other nodes",
+                customdata=oid,
+                hovertemplate="Node %{customdata}<extra></extra>",
             )
         )
     if input_nodes:
-        ix, iy, iz = _coords(input_nodes)
+        ix, iy, iz, iid = _coords_with_ids(input_nodes)
         fig.add_trace(
             go.Scatter3d(
                 x=ix,
@@ -218,10 +231,12 @@ def visualize_3d_plotly_large_vessel_assignment(
                 mode="markers",
                 marker=dict(size=9, color="#00FF7F"),
                 name="Input nodes",
+                customdata=iid,
+                hovertemplate="Input node %{customdata}<extra></extra>",
             )
         )
     if output_nodes:
-        ox, oy, oz = _coords(output_nodes)
+        ox, oy, oz, oid = _coords_with_ids(output_nodes)
         fig.add_trace(
             go.Scatter3d(
                 x=ox,
@@ -230,6 +245,8 @@ def visualize_3d_plotly_large_vessel_assignment(
                 mode="markers",
                 marker=dict(size=9, color="#FF3EA5"),
                 name="Output nodes",
+                customdata=oid,
+                hovertemplate="Output node %{customdata}<extra></extra>",
             )
         )
 
