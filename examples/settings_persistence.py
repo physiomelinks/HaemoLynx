@@ -78,3 +78,63 @@ def persist_automated_io_assignment_to_settings_file(
         f"{len(assigned_output_nodes)} OUTPUT_NODES to {settings_file_path}."
     )
     return True
+
+
+def persist_small_vessel_boundary_assignment_to_settings_file(
+    *,
+    settings_file_path: Path,
+    assigned_arteriole_boundary_nodes: list[int],
+    assigned_venule_boundary_nodes: list[int],
+) -> bool:
+    """Persist small-vessel boundary nodes and disable auto boundary assignment."""
+    if not settings_file_path.exists():
+        print(
+            "Could not persist small-vessel boundary assignment: settings file not found at "
+            f"{settings_file_path}."
+        )
+        return False
+
+    arteriole_nodes_literal = repr(
+        [int(node_id) for node_id in assigned_arteriole_boundary_nodes]
+    )
+    venule_nodes_literal = repr(
+        [int(node_id) for node_id in assigned_venule_boundary_nodes]
+    )
+    updated_text = settings_file_path.read_text(encoding="utf-8")
+
+    updated_text, ok_arteriole = _replace_settings_assignment(
+        updated_text,
+        "ARTERIOLE_BOUNDARY_NODES",
+        arteriole_nodes_literal,
+    )
+    updated_text, ok_venule = _replace_settings_assignment(
+        updated_text,
+        "VENULE_BOUNDARY_NODES",
+        venule_nodes_literal,
+    )
+    updated_text, ok_small_mask_flag = _replace_settings_assignment(
+        updated_text,
+        "USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT",
+        "False",
+    )
+
+    if not (ok_arteriole and ok_venule and ok_small_mask_flag):
+        print(
+            "Could not persist small-vessel boundary assignment because one or more "
+            "settings keys were not found "
+            "(required: ARTERIOLE_BOUNDARY_NODES, VENULE_BOUNDARY_NODES, "
+            "USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT)."
+        )
+        return False
+
+    settings_file_path.write_text(updated_text, encoding="utf-8")
+    print(
+        "Persisted small-vessel boundary assignment to settings file and set "
+        "USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT=False for next run."
+    )
+    print(
+        f"Persisted {len(assigned_arteriole_boundary_nodes)} "
+        f"ARTERIOLE_BOUNDARY_NODES and {len(assigned_venule_boundary_nodes)} "
+        f"VENULE_BOUNDARY_NODES to {settings_file_path}."
+    )
+    return True

@@ -32,7 +32,10 @@ from ImageLynx.haemodynamics import probability as probability_haemodynamics
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
 from preflight import run_preflight_checklist
 from resistance_pipeline_settings import *  # noqa: F403
-from settings_persistence import persist_automated_io_assignment_to_settings_file
+from settings_persistence import (
+    persist_automated_io_assignment_to_settings_file,
+    persist_small_vessel_boundary_assignment_to_settings_file,
+)
 from wizard import run_interactive_setup_wizard
 
 
@@ -54,6 +57,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             write_small_vessel_boundary_labelling_3d_html=WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML,
                             automated_vessel_assignment=AUTOMATED_VESSEL_ASSIGNMENT,
                             auto_persist_automated_io_assignment_to_settings=AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS,
+                            auto_persist_small_vessel_boundary_assignment_to_settings=AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS,
                             large_arteriole_mask_path=LARGE_ARTERIOLE_MASK_PATH,
                             large_venule_mask_path=LARGE_VENULE_MASK_PATH,
                             small_arteriole_mask_path=SMALL_ARTERIOLE_MASK_PATH,
@@ -164,6 +168,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_reject_samples_with_low_fit_r2=FWHM_REJECT_SAMPLES_WITH_LOW_FIT_R2,
                             fwhm_min_fit_r2=FWHM_MIN_FIT_R2) -> None:
     image_path = Path(image_path)
+    preconfigured_starting_nodes = [int(node_id) for node_id in starting_nodes]
+    preconfigured_output_nodes = [int(node_id) for node_id in output_nodes]
+    preconfigured_arteriole_boundary_nodes = [
+        int(node_id) for node_id in arteriole_boundary_nodes
+    ]
+    preconfigured_venule_boundary_nodes = [
+        int(node_id) for node_id in venule_boundary_nodes
+    ]
     if use_ilastik_segmentation:
         unsegmented_image_path = Path(ilastik_unsegmented_image_path)
         unsegmented_image_path = io.resolve_image_path_with_optional_zip(unsegmented_image_path)
@@ -1005,28 +1017,42 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     output_nodes[:] = []
     arteriole_boundary_nodes[:] = []
     venule_boundary_nodes[:] = []
+    used_preconfigured_io_nodes = False
     if automated_vessel_assignment:
         # Use direct terminal-node overlap assignment from vessel masks.
         start_nodes = auto_start_nodes
         out_nodes = [node_id for node_id in auto_output_nodes if node_id not in set(start_nodes)]
     else:
-        start_nodes = graph.select_boundary_nodes_by_method(
-            G,
-            image.shape,
-            method=starting_node_selection_method,
-            node_role="input",
-            coordinates=starting_node_coordinates,
-            volume_boxes=starting_node_volumes,
-        )
-        out_nodes = graph.select_boundary_nodes_by_method(
-            G,
-            image.shape,
-            method=output_node_selection_method,
-            node_role="output",
-            coordinates=output_node_coordinates,
-            volume_boxes=output_node_volumes,
-            exclude_nodes=start_nodes,
-        )
+        if preconfigured_starting_nodes or preconfigured_output_nodes:
+            used_preconfigured_io_nodes = True
+            start_nodes = list(preconfigured_starting_nodes)
+            out_nodes = [
+                node_id
+                for node_id in preconfigured_output_nodes
+                if node_id not in set(start_nodes)
+            ]
+            print(
+                "Using preconfigured STARTING_NODES/OUTPUT_NODES from settings "
+                "because automated_vessel_assignment=False."
+            )
+        else:
+            start_nodes = graph.select_boundary_nodes_by_method(
+                G,
+                image.shape,
+                method=starting_node_selection_method,
+                node_role="input",
+                coordinates=starting_node_coordinates,
+                volume_boxes=starting_node_volumes,
+            )
+            out_nodes = graph.select_boundary_nodes_by_method(
+                G,
+                image.shape,
+                method=output_node_selection_method,
+                node_role="output",
+                coordinates=output_node_coordinates,
+                volume_boxes=output_node_volumes,
+                exclude_nodes=start_nodes,
+            )
     # Enforce terminal-only I/O assignment.
     start_nodes, out_nodes, dropped_start_nodes, dropped_out_nodes = (
         graph.filter_io_nodes_to_terminal_degree1(G, start_nodes, out_nodes)
@@ -1086,6 +1112,17 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         arteriole_boundary_nodes.extend(art_boundary)
         used_nodes.update(arteriole_boundary_nodes)
+    elif preconfigured_arteriole_boundary_nodes:
+        filtered_art_boundary = [
+            node_id for node_id in preconfigured_arteriole_boundary_nodes
+            if node_id in G.nodes and node_id not in used_nodes
+        ]
+        arteriole_boundary_nodes.extend(filtered_art_boundary)
+        used_nodes.update(arteriole_boundary_nodes)
+        print(
+            "Using preconfigured ARTERIOLE_BOUNDARY_NODES from settings "
+            "because mask/coordinate boundary assignment was not requested."
+        )
 
     if venule_boundary_node_coordinates or venule_boundary_node_volumes:
         ven_boundary = graph.select_boundary_nodes_by_method(
@@ -1098,6 +1135,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             exclude_nodes=list(used_nodes),
         )
         venule_boundary_nodes.extend(ven_boundary)
+    elif preconfigured_venule_boundary_nodes:
+        filtered_ven_boundary = [
+            node_id for node_id in preconfigured_venule_boundary_nodes
+            if node_id in G.nodes and node_id not in used_nodes
+        ]
+        venule_boundary_nodes.extend(filtered_ven_boundary)
+        print(
+            "Using preconfigured VENULE_BOUNDARY_NODES from settings "
+            "because mask/coordinate boundary assignment was not requested."
+        )
     if use_small_vessel_masks_for_boundary_assignment:
         if small_arteriole_mask is None or small_venule_mask is None:
             raise ValueError(
@@ -1128,6 +1175,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             f"venule_edges={inferred_boundary_results['venule_edge_count']}, "
             f"overlap_edges={inferred_boundary_results['overlap_edge_count']}."
         )
+        if auto_persist_small_vessel_boundary_assignment_to_settings:
+            persist_small_vessel_boundary_assignment_to_settings_file(
+                settings_file_path=SETTINGS_FILE_PATH,
+                assigned_arteriole_boundary_nodes=[
+                    int(node_id) for node_id in arteriole_boundary_nodes
+                ],
+                assigned_venule_boundary_nodes=[
+                    int(node_id) for node_id in venule_boundary_nodes
+                ],
+            )
         if write_small_vessel_boundary_labelling_3d_html:
             boundary_html = Path(plot_dir) / "small_vessel_mask_boundary_labelling_3d.html"
             Path(plot_dir).mkdir(parents=True, exist_ok=True)
@@ -1150,6 +1207,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         print(
             f"Selected {len(starting_nodes)} STARTING_NODES and {len(output_nodes)} "
             "OUTPUT_NODES directly from terminal-node overlap with vessel masks."
+        )
+    elif used_preconfigured_io_nodes:
+        print(
+            f"Selected {len(starting_nodes)} STARTING_NODES and {len(output_nodes)} "
+            "OUTPUT_NODES from preconfigured settings node IDs."
         )
     else:
         print(

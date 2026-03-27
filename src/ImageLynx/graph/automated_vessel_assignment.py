@@ -561,22 +561,40 @@ def _sample_overlap_fraction(
     voxel_size_xyz: tuple[float, float, float],
 ) -> float:
     """Return fraction of valid edge sample points that fall inside a mask."""
-    valid_count = 0
-    in_mask_count = 0
-    for point in sample_points:
-        idx = _position_to_mask_index(
-            point,
-            voxel_size_xyz=voxel_size_xyz,
-            mask_shape=mask.shape,
-        )
-        if idx is None:
-            continue
-        valid_count += 1
-        if bool(mask[idx]):
-            in_mask_count += 1
-    if valid_count == 0:
+    points = np.asarray(sample_points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or points.size == 0:
         return 0.0
-    return float(in_mask_count) / float(valid_count)
+
+    vx, vy, vz = np.asarray(voxel_size_xyz, dtype=float)
+    if vx <= 0 or vy <= 0 or vz <= 0:
+        raise ValueError(
+            f"voxel_size_xyz must be three positive values, got {voxel_size_xyz}."
+        )
+
+    indices_zyx = np.rint(
+        np.column_stack(
+            [
+                points[:, 2] / vz,
+                points[:, 1] / vy,
+                points[:, 0] / vx,
+            ]
+        )
+    ).astype(int)
+    shape = np.asarray(mask.shape, dtype=int)
+    valid_index_mask = np.all(indices_zyx >= 0, axis=1) & np.all(
+        indices_zyx < shape.reshape(1, 3),
+        axis=1,
+    )
+    if not np.any(valid_index_mask):
+        return 0.0
+
+    valid_indices_zyx = indices_zyx[valid_index_mask]
+    in_mask_mask = mask[
+        valid_indices_zyx[:, 0],
+        valid_indices_zyx[:, 1],
+        valid_indices_zyx[:, 2],
+    ].astype(bool)
+    return float(np.count_nonzero(in_mask_mask)) / float(valid_indices_zyx.shape[0])
 
 
 def infer_boundary_nodes_from_small_vessel_masks(
@@ -628,10 +646,25 @@ def infer_boundary_nodes_from_small_vessel_masks(
     arteriole_edges: set[tuple[Any, Any, int]] = set()
     venule_edges: set[tuple[Any, Any, int]] = set()
     overlap_edges = 0
+    total_edges = int(G.number_of_edges())
+    processed_edges = 0
+    start_time_s = time.perf_counter()
+    print(
+        "Small-vessel boundary assignment: "
+        f"processing {total_edges} edge(s)."
+    )
+    progress_stride = max(1, total_edges // 10) if total_edges > 0 else 1
 
     if isinstance(G, nx.MultiGraph):
         edge_iter = G.edges(keys=True, data=True)
         for u, v, key, edge_data in edge_iter:
+            processed_edges += 1
+            if processed_edges % progress_stride == 0 or processed_edges == total_edges:
+                elapsed = time.perf_counter() - start_time_s
+                print(
+                    "Small-vessel boundary assignment progress: "
+                    f"{processed_edges}/{total_edges} edges ({elapsed:.1f}s elapsed)."
+                )
             if u not in node_positions or v not in node_positions:
                 continue
             pu = np.asarray(node_positions[u], dtype=float)
@@ -672,6 +705,13 @@ def infer_boundary_nodes_from_small_vessel_masks(
     else:
         edge_iter = G.edges(data=True)
         for u, v, edge_data in edge_iter:
+            processed_edges += 1
+            if processed_edges % progress_stride == 0 or processed_edges == total_edges:
+                elapsed = time.perf_counter() - start_time_s
+                print(
+                    "Small-vessel boundary assignment progress: "
+                    f"{processed_edges}/{total_edges} edges ({elapsed:.1f}s elapsed)."
+                )
             if u not in node_positions or v not in node_positions:
                 continue
             pu = np.asarray(node_positions[u], dtype=float)
@@ -748,6 +788,13 @@ def infer_boundary_nodes_from_small_vessel_masks(
 
     arteriole_boundary_nodes = _boundary_nodes_for(arteriole_edges, arteriole_nodes)
     venule_boundary_nodes = _boundary_nodes_for(venule_edges, venule_nodes)
+    total_elapsed = time.perf_counter() - start_time_s
+    print(
+        "Small-vessel boundary assignment complete: "
+        f"arteriole_boundary_nodes={len(arteriole_boundary_nodes)}, "
+        f"venule_boundary_nodes={len(venule_boundary_nodes)}, "
+        f"elapsed={total_elapsed:.1f}s."
+    )
 
     return {
         "arteriole_boundary_nodes": arteriole_boundary_nodes,

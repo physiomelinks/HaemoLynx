@@ -74,6 +74,9 @@ ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule
 
 # Toggle small-vessel masks for automated arteriole/venule boundary assignment.
 USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
+# Persist small-vessel-derived ARTERIOLE_BOUNDARY_NODES/VENULE_BOUNDARY_NODES
+# into this settings file and disable small-vessel boundary automation next run.
+AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS = False
 # Toggle ilastik segmentation for small-vessel masks.
 USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
 # Minimum edge-overlap fraction required for mask-based boundary assignment.
