@@ -1,5 +1,9 @@
-"""Hemodynamics: viscosity, resistance, Poiseuille weights, network resistance."""
-from .poiseuille import PoiseuilleModel
+"""Haemodynamics: viscosity, resistance, Poiseuille weights, network resistance."""
+from . import automated
+from .poiseuille import (
+    PoiseuilleModel,
+    build_diameter_by_branch_order,
+)
 from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
@@ -8,7 +12,9 @@ from .resistance import (
 )
 
 __all__ = [
+    "automated",
     "PoiseuilleModel",
+    "build_diameter_by_branch_order",
     "build_conductance_matrix_from_graph",
     "calc_laplacian_from_conductance_matrix",
     "calc_two_point_from_laplacian_matrix_nodeID",

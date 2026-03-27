@@ -1,4 +1,6 @@
 """Vessel network statistics."""
+import importlib
+
 from .stats import (
     compute_comprehensive_vessel_statistics,
     compute_basic_statistics,
@@ -8,7 +10,14 @@ from .stats import (
     compute_fractal_dimension,
     compute_path_efficiency,
     compute_vessel_density,
+    compute_betweenness_and_community_measurements,
+    export_statistics_to_csv,
+    compute_branch_order_statistics,
+    export_branch_order_statistics_to_csv,
 )
+
+_dist3d = importlib.import_module(".3D_distances", __name__)
+run_3d_measurement_to_cell_mask = _dist3d.run_3d_measurement_to_cell_mask
 
 __all__ = [
     "compute_comprehensive_vessel_statistics",
@@ -19,4 +28,9 @@ __all__ = [
     "compute_fractal_dimension",
     "compute_path_efficiency",
     "compute_vessel_density",
+    "compute_betweenness_and_community_measurements",
+    "export_statistics_to_csv",
+    "compute_branch_order_statistics",
+    "export_branch_order_statistics_to_csv",
+    "run_3d_measurement_to_cell_mask",
 ]
