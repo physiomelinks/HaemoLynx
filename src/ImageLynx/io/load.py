@@ -5,19 +5,87 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from skimage.filters import threshold_otsu
-from scipy.ndimage import binary_fill_holes, distance_transform_edt
 from skimage.util import img_as_bool
-from skimage.morphology import remove_small_objects, skeletonize_3d
-
-from ..preprocessing.skeleton import bridge_gaps, close_binary_mask
-
+from skimage.morphology import  skeletonize_3d
+from scipy.ndimage import binary_fill_holes
 try:
     import h5py
 except ImportError:
     h5py = None
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_triplet(value) -> tuple[float, float, float] | None:
+    """Convert HDF5 attr values to a 3-float tuple when possible."""
+    if value is None:
+        return None
+    arr = np.asarray(value).astype(float).ravel()
+    if arr.size == 1:
+        v = float(arr[0])
+        return (v, v, v)
+    if arr.size >= 3:
+        return (float(arr[0]), float(arr[1]), float(arr[2]))
+    return None
+
+
+def _extract_h5_voxel_size(dataset, h5_file) -> tuple[float, float, float]:
+    """Extract (x, y, z) voxel size from common HDF5 attribute conventions."""
+    attrs = {}
+    for source in (h5_file.attrs, dataset.attrs):
+        for key in source.keys():
+            attrs[str(key).lower()] = source[key]
+
+    # Most common in microscopy exports: element_size_um is usually stored as (z, y, x).
+    if "element_size_um" in attrs:
+        zyx = _coerce_triplet(attrs["element_size_um"])
+        if zyx is not None:
+            z, y, x = zyx
+            return (x, y, z)
+
+    # Common generic triplet keys; assume they are already ordered (x, y, z).
+    for key in ("voxel_size", "voxel_size_um", "pixelsize", "pixel_size", "resolution"):
+        if key in attrs:
+            xyz = _coerce_triplet(attrs[key])
+            if xyz is not None:
+                return xyz
+
+    # Axis-specific metadata keys.
+    x = y = z = None
+    x_keys = ("voxel_size_x", "x_voxel_size", "spacing_x", "x_spacing", "resolution_x")
+    y_keys = ("voxel_size_y", "y_voxel_size", "spacing_y", "y_spacing", "resolution_y")
+    z_keys = ("voxel_size_z", "z_voxel_size", "spacing_z", "z_spacing", "resolution_z", "spacing")
+    for key in x_keys:
+        if key in attrs:
+            x = float(np.asarray(attrs[key]).astype(float).ravel()[0])
+            break
+    for key in y_keys:
+        if key in attrs:
+            y = float(np.asarray(attrs[key]).astype(float).ravel()[0])
+            break
+    for key in z_keys:
+        if key in attrs:
+            z = float(np.asarray(attrs[key]).astype(float).ravel()[0])
+            break
+
+    if x is not None and y is not None and z is not None:
+        return (x, y, z)
+
+    return (1.0, 1.0, 1.0)
+
+
+def simplify_to_3d(image: np.ndarray) -> np.ndarray:
+    """Convert image arrays to a 3D volume.
+
+    - 3D inputs are returned unchanged.
+    - 4D inputs are reduced to the first channel/volume along axis 3.
+    """
+    image = np.asarray(image)
+    if image.ndim == 3:
+        return image
+    if image.ndim == 4:
+        return image[..., 0]
+    raise ValueError(f"Expected 3D or 4D image, got shape {image.shape}")
 
 
 def resolve_image_path_with_optional_zip(image_path: str | Path) -> Path:
@@ -84,9 +152,6 @@ def crop_tiff_volume_from_corners(
     input_path = Path(input_path)
     output_path = Path(output_path)
     volume = tifffile.imread(str(input_path))
-    if volume.ndim != 3:
-        volume = simplify_to_3d(np.asarray(volume))
-
     shape = np.asarray(volume.shape, dtype=int)
     a = np.asarray(corner_a, dtype=float)
     b = np.asarray(corner_b, dtype=float)
@@ -118,92 +183,100 @@ def crop_tiff_volume_from_corners(
     }
 
 
-def load_and_skeletonize_3d_tif(
-    filepath: str,
-    voxel_size: float = 1.0,
-    closing_radius: int = 3,
-    bridge_gap_size: int = 4,
-):
-    """Load a TIFF stack, threshold, fill holes, close gaps, and skeletonize.
+def load_3d_tif_with_voxel_size(filepath: str) -> tuple[np.ndarray, float, float, float]:
+    """Load 3D TIFF image and return image with voxel sizes (x, y, z)."""
+    with tifffile.TiffFile(filepath) as tif:
+        image = tif.asarray()
+        meta = tif.imagej_metadata or {}
+        tags = tif.pages[0].tags
 
-    Parameters
-    ----------
-    filepath:
-        Path to the TIFF file.
-    voxel_size:
-        Isotropic voxel size (unused in the skeleton but available for callers).
-    closing_radius:
-        Radius (in voxels) for the morphological closing step applied to the
-        binary mask before skeletonization.  Closing seals concavities and
-        bridges between nearby vessel blobs without permanently expanding
-        boundaries.  Set to 0 to skip.
-    bridge_gap_size:
-        Maximum gap (in voxels) filled by the distance-transform dilation step
-        after closing and hole-filling.
-    """
-    logger.debug("Loading and skeletonizing TIFF...")
-    image = tifffile.imread(filepath)
-    threshold = threshold_otsu(image)
-    binary = image > threshold
-    if closing_radius > 0:
-        logger.debug("Applying morphological closing (radius=%d)…", closing_radius)
-        binary = close_binary_mask(binary, radius=closing_radius)
-    filled = binary_fill_holes(binary)
-    bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
-    skeleton = skeletonize_3d(img_as_bool(bridged))
-    return image, skeleton.astype(bool)
+        x_res_tag = tags.get("XResolution")
+        y_res_tag = tags.get("YResolution")
+
+        if x_res_tag:
+            x_res = x_res_tag.value[0] / x_res_tag.value[1]
+        else:
+            print("No x resolution tag found; defaulting to 1.0")
+            x_res = 1.0
+
+        if y_res_tag:
+            y_res = y_res_tag.value[0] / y_res_tag.value[1]
+        else:
+            print("No y resolution tag found; defaulting to 1.0")
+            y_res = 1.0
+
+        if "spacing" in meta:
+            z_res = float(meta.get("spacing"))
+        else:
+            print("No z resolution (spacing) found; defaulting to 1.0")
+            z_res = 1.0
+
+        voxel_size_x = 1.0 / x_res if x_res else 1.0
+        voxel_size_y = 1.0 / y_res if y_res else 1.0
+        voxel_size_z = z_res
+
+    return image, voxel_size_x, voxel_size_y, voxel_size_z
+
+
+def load_3d_h5_with_voxel_size(
+    filepath: str,
+    dataset_name: str | None = None,
+) -> tuple[np.ndarray, float, float, float]:
+    """Load 3D H5 image and return image with voxel sizes (x, y, z)."""
+    if h5py is None:
+        raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
+    if dataset_name is None:
+        path = Path(filepath)
+        if path.suffix != ".h5":
+            raise ValueError(f"Expected a .h5 file, got: {filepath}")
+        dataset_name = path.stem
+        logger.debug("Auto-parsed dataset name: %s", dataset_name)
+
+    with h5py.File(filepath, "r") as f:
+        if dataset_name not in f:
+            available = list(f.keys())
+            raise KeyError(
+                f"Dataset '{dataset_name}' not found in {filepath}. "
+                f"Available datasets: {available}"
+            )
+        dataset = f[dataset_name]
+        image = np.array(dataset)
+        voxel_size_x, voxel_size_y, voxel_size_z = _extract_h5_voxel_size(dataset, f)
+
+    if image.ndim != 3:
+        raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
+
+    return image, voxel_size_x, voxel_size_y, voxel_size_z
+
+
+def load_and_skeletonize_3d_tif(filepath: str):
+    print("Loading and skeletonizing TIFF...")
+    image, voxel_size_x, voxel_size_y, voxel_size_z = load_3d_tif_with_voxel_size(filepath)
+
+    print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
+    skeleton = skeletonize_3d(img_as_bool(image))
+    skeleton = binary_fill_holes(skeleton)
+    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z
 
 
 def load_and_skeletonize_3d_h5(
     filepath: str,
-    dataset_name: str,
-    voxel_size: float = 1.0,
-    closing_radius: int = 3,
-    bridge_gap_size: int = 4,
+    dataset_name: str | None = None,
 ):
-    """Load an HDF5 dataset, simplify to 3D, then skeletonize.
-
-    Parameters
-    ----------
-    closing_radius:
-        Radius for the morphological closing step.  Set to 0 to skip.
-    bridge_gap_size:
-        Maximum gap filled by the distance-transform dilation step.
-    """
-    if h5py is None:
-        raise ImportError("h5py is required for HDF5 support. Install with: pip install h5py")
     logger.debug("Loading and skeletonizing H5...")
-    with h5py.File(filepath, "r") as f:
-        if dataset_name not in f:
-            available = list(f.keys())
-            raise ValueError(
-                f"Dataset '{dataset_name}' not found. Available: {available}"
-            )
-        image = np.array(f[dataset_name][:])
-    logger.debug("Original image shape: %s", image.shape)
-    image = simplify_to_3d(image)
-    logger.debug("Simplified image shape: %s", image.shape)
-    threshold = threshold_otsu(image)
-    binary = image > threshold
-    if closing_radius > 0:
-        logger.debug("Applying morphological closing (radius=%d)…", closing_radius)
-        binary = close_binary_mask(binary, radius=closing_radius)
-    filled = binary_fill_holes(binary)
-    bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
-    skeleton = skeletonize_3d(img_as_bool(bridged))
-    return image, skeleton
-
-
-def simplify_to_3d(image: np.ndarray) -> np.ndarray:
-    """Reduce image to 3D by taking first spatial/channel slice."""
-    if image.ndim == 3:
-        return image
-    if image.ndim < 3:
-        raise ValueError(f"Image has {image.ndim} dimensions. Need at least 3D.")
-    logger.warning(
-        "Image has %d dimensions. Taking first 3 spatial + first channel.",
-        image.ndim,
+    image, voxel_size_x, voxel_size_y, voxel_size_z = load_3d_h5_with_voxel_size(
+        filepath,
+        dataset_name=dataset_name,
     )
-    if image.ndim == 6:
-        return image[:, :, :, 0, 0, 0]
-    return image[:, :, :, 0]
+
+    logger.debug("Original image shape: %s", image.shape)
+    logger.debug("Simplified image shape: %s", image.shape)
+
+    # Ensure image is (X, Y, Z)
+    if image.ndim != 3:
+        raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
+
+    binary = image.astype(bool)
+    skeleton = skeletonize_3d(binary)
+    return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z
+

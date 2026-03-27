@@ -46,7 +46,7 @@ from scipy.spatial.distance import directed_hausdorff
 from scipy import ndimage
 
 # the below is for the new ImageLynx package
-from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization
+from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 
 # %%
 #User input

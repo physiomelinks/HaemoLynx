@@ -1,9 +1,9 @@
-"""Tests for hemodynamics module."""
+"""Tests for haemodynamics module."""
 import pytest
 import numpy as np
 import networkx as nx
 
-from ImageLynx.hemodynamics import (
+from ImageLynx.haemodynamics import (
     PoiseuilleModel,
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
@@ -41,6 +41,41 @@ def test_set_poiseuille_weights_with_constrictions(multigraph_with_branch_order)
     out_graph, res = MODEL.set_poiseuille_weights_with_constrictions(G, config)
     assert isinstance(out_graph, nx.MultiGraph)
     assert res["weights_set"] >= 0
+
+
+def test_set_poiseuille_weights_with_constrictions_fwhm_baseline(multigraph_with_branch_order):
+    G = multigraph_with_branch_order.copy()
+    G[0][1][0]["fwhm_diameter_um"] = 4.0
+    out_graph, res = MODEL.set_poiseuille_weights_with_constrictions(
+        G,
+        {"BO1": 10.0},
+        prefer_edge_fwhm_baseline=True,
+        constriction_factor_by_branch_order={"BO1": 0.8},
+    )
+    assert isinstance(out_graph, nx.MultiGraph)
+    assert res["weights_set"] == 1
+    assert res["used_fwhm_baseline"] == 1
+    assert out_graph[0][1][0]["weight"] > 0
+
+
+def test_set_poiseuille_weights_with_constrictions_fwhm_fallback(multigraph_with_branch_order):
+    G = multigraph_with_branch_order.copy()
+    out_graph, res = MODEL.set_poiseuille_weights_with_constrictions(
+        G,
+        {"BO1": 10.0},
+        prefer_edge_fwhm_baseline=True,
+        constriction_factor_by_branch_order={"BO1": 0.5},
+    )
+    assert res["used_fwhm_baseline"] == 0
+    assert res["weights_set"] == 1
+    w_fallback = out_graph[0][1][0]["weight"]
+
+    G2 = multigraph_with_branch_order.copy()
+    G2, _ = MODEL.set_poiseuille_weights_with_constrictions(
+        G2,
+        {"BO1": {"d1": 10.0, "d2": 5.0}},
+    )
+    assert np.isclose(w_fallback, G2[0][1][0]["weight"])
 
 
 def test_set_poiseuille_edge_weights(multigraph_with_branch_order):

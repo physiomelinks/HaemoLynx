@@ -24,6 +24,26 @@ from ._helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _compute_skeleton_overlap(
+    voxels: List, skeleton_data: np.ndarray
+) -> float:
+    """Fraction of voxel path coordinates that lie on the skeleton."""
+    if not voxels or skeleton_data is None or skeleton_data.size == 0:
+        return 0.0
+    shape = skeleton_data.shape
+    on_skeleton = 0
+    total = 0
+    for v in voxels:
+        coords = tuple(int(round(c)) for c in v)
+        if all(0 <= coords[i] < shape[i] for i in range(len(coords))):
+            total += 1
+            if skeleton_data[coords]:
+                on_skeleton += 1
+        else:
+            total += 1
+    return on_skeleton / total if total > 0 else 0.0
+
+
 def _should_replace_existing_simple_edge(
     G: nx.Graph,
     n1: Any,
@@ -237,6 +257,7 @@ def merge_edges_with_topology_improvement(
     pos2: np.ndarray,
     skeleton_data,
     debug: bool = False,
+    voxel_size: tuple = (1.0, 1.0, 1.0),
 ) -> List:
     """Merge two edges while improving straight segments using skeleton."""
     if skeleton_data is None or skeleton_data.size == 0:
@@ -247,20 +268,20 @@ def merge_edges_with_topology_improvement(
         return merge_curved_edges(voxels1, voxels2, node_pos, debug)
     if is_curved1 and not is_curved2:
         improved_voxels2 = improve_straight_edge_with_skeleton(
-            node_pos, pos2, skeleton_data, debug
+            node_pos, pos2, skeleton_data, debug, voxel_size=voxel_size
         )
         if improved_voxels2:
             return merge_curved_edges(voxels1, improved_voxels2, node_pos, debug)
         return merge_curved_edges(voxels1, voxels2, node_pos, debug)
     if not is_curved1 and is_curved2:
         improved_voxels1 = improve_straight_edge_with_skeleton(
-            pos1, node_pos, skeleton_data, debug
+            pos1, node_pos, skeleton_data, debug, voxel_size=voxel_size
         )
         if improved_voxels1:
             return merge_curved_edges(improved_voxels1, voxels2, node_pos, debug)
         return merge_curved_edges(voxels1, voxels2, node_pos, debug)
     improved_full_path = improve_straight_path_with_skeleton(
-        pos1, pos2, skeleton_data, debug
+        pos1, pos2, skeleton_data, debug, voxel_size=voxel_size
     )
     if improved_full_path:
         return improved_full_path
@@ -278,62 +299,78 @@ def smart_multigraph_degree2_removal(
     if not isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         raise ValueError("This function is designed for MultiGraphs")
 
+    vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
+
     total_removed = 0
     for iteration in range(max_iterations):
-        degree2_nodes = [n for n in G.nodes() if G.degree[n] == 2]
-        if not degree2_nodes:
-            break
         removed_this_iter = 0
-        for node in degree2_nodes:
+
+        for node in list(G.nodes()):
             if not G.has_node(node) or G.degree[node] != 2:
                 continue
-            neighbors = list(G.neighbors(node))
-            if len(neighbors) != 2:
+
+            edges = list(G.edges(node, keys=True, data=True))
+            if len(edges) != 2:
                 continue
-            n1, n2 = neighbors
+
+            _, n1, k1, d1 = edges[0]
+            _, n2, k2, d2 = edges[1]
+
+            # Degenerate case: both incident edges point to the same neighbor.
+            # Removing the node here can collapse/erase valid parallel paths.
+            if n1 == n2:
+                continue
+
             if G.degree[n1] >= max_degree or G.degree[n2] >= max_degree:
                 continue
+
             node_pos = G.nodes[node].get("pos", None)
             n1_pos = G.nodes[n1].get("pos", None)
             n2_pos = G.nodes[n2].get("pos", None)
             if node_pos is None or n1_pos is None or n2_pos is None:
                 continue
-            edges_to_n1 = list(G[node][n1].values()) if G.has_edge(node, n1) else []
-            edges_to_n2 = list(G[node][n2].values()) if G.has_edge(node, n2) else []
-            if not edges_to_n1 or not edges_to_n2:
+
+            voxels1 = d1.get("voxels", [])
+            voxels2 = d2.get("voxels", [])
+
+            merged_voxels = merge_edges_with_topology_improvement(
+                voxels1,
+                voxels2,
+                np.array(n1_pos),
+                np.array(node_pos),
+                np.array(n2_pos),
+                skeleton_data,
+                debug,
+                voxel_size=vs,
+            )
+            merged_attrs = {
+                "weight": d1.get("weight", 0) + d2.get("weight", 0),
+                "length": calculate_path_length(merged_voxels),
+                "voxels": merged_voxels,
+                "merged": True,
+                "original_edges": 2,
+            }
+
+            # Decide whether a replacement edge is acceptable BEFORE deleting
+            # the degree-2 node; otherwise a "reject" decision would erase the
+            # original vessel segment.
+            should_add, replace_key = should_add_merged_edge(
+                G, n1, n2, merged_voxels, merged_attrs, debug
+            )
+            if not should_add:
                 continue
+
             G.remove_node(node)
-            for edge1_data in edges_to_n1:
-                for edge2_data in edges_to_n2:
-                    voxels1 = edge1_data.get("voxels", [])
-                    voxels2 = edge2_data.get("voxels", [])
-                    merged_voxels = merge_edges_with_topology_improvement(
-                        voxels1,
-                        voxels2,
-                        np.array(n1_pos),
-                        np.array(node_pos),
-                        np.array(n2_pos),
-                        skeleton_data,
-                        debug,
-                    )
-                    merged_attrs = {
-                        "weight": edge1_data.get("weight", 0) + edge2_data.get("weight", 0),
-                        "length": calculate_path_length(merged_voxels),
-                        "voxels": merged_voxels,
-                        "merged": True,
-                        "original_edges": 2,
-                    }
-                    should_add, replace_key = should_add_merged_edge(
-                        G, n1, n2, merged_voxels, merged_attrs, debug
-                    )
-                    if should_add:
-                        if replace_key is not None:
-                            G.remove_edge(n1, n2, key=replace_key)
-                        G.add_edge(n1, n2, **merged_attrs)
+            if replace_key is not None:
+                G.remove_edge(n1, n2, key=replace_key)
+            G.add_edge(n1, n2, **merged_attrs)
+
             removed_this_iter += 1
             total_removed += 1
+
         if removed_this_iter == 0:
             break
+
     if debug:
         logger.info("Smart removal: %d removed", total_removed)
     return G

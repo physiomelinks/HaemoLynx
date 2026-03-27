@@ -20,7 +20,7 @@ root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization 
+from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 
 # ---------------------------
 # Beginner-friendly settings
@@ -156,7 +156,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         elif input_format == "h5":
             if not H5_DATASET_NAME:
                 raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
-            image, skeleton = io.load_and_skeletonize_3d_h5(
+            image, skeleton, _voxel_size_x, _voxel_size_y, _voxel_size_z = io.load_and_skeletonize_3d_h5(
                 image_path,
                 H5_DATASET_NAME,
                 closing_radius=skeleton_closing_radius,
@@ -283,7 +283,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
     #HD note - eventually add in probability of pericyte contraction?
     if starting_nodes:
         graph.assign_branch_orders(G, starting_nodes)
-        poiseuille_model = hemodynamics.PoiseuilleModel(
+        poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=40.0,
             constriction_spacing=100.0,
         )
@@ -321,14 +321,14 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         )
 
     # 6) Compute effective resistance between two selected nodes.
-    conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
+    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
     if do_resistance_calculation:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
-            laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-            two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+            laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+            two_point_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
                 laplacian,
                 G,
                 source_node,
@@ -358,7 +358,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
 
     # 8) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.
-    flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
+    flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
         input_p_bc,

@@ -16,6 +16,9 @@ from ImageLynx.graph import (
     prune_vascular_stubs,
     assign_branch_orders,
     select_boundary_nodes_by_method,
+    select_terminal_nodes_from_large_vessel_masks,
+    diagnose_degree2_nodes,
+    format_degree2_diagnostics_report,
 )
 from ImageLynx.graph._helpers import (
     get_line_points_3d,
@@ -117,6 +120,14 @@ def test_smart_multigraph_degree2_removal(simple_graph):
     assert isinstance(G2, nx.MultiGraph)
 
 
+def test_degree2_diagnostics(simple_graph):
+    report = diagnose_degree2_nodes(simple_graph, max_degree=4)
+    assert "total_degree2" in report
+    assert "reason_counts" in report
+    text = format_degree2_diagnostics_report(report)
+    assert "Degree-2 diagnostics" in text
+
+
 def test_build_graph_requires_skan(tiny_skeleton):
     pytest.importorskip("skan")
     from skan import csr
@@ -186,3 +197,52 @@ def test_select_boundary_nodes_by_method_degree_1_from_starting():
         exclude_nodes=[0],
     )
     assert nodes == [3]
+
+
+def test_select_terminal_nodes_from_large_vessel_masks():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([1.0, 1.0, 1.0]))
+    G.add_node(1, pos=np.array([8.0, 8.0, 8.0]))
+    G.add_node(2, pos=np.array([5.0, 5.0, 5.0]))
+    G.add_edge(0, 2, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+
+    arteriole_mask = np.zeros((10, 10, 10), dtype=bool)
+    venule_mask = np.zeros((10, 10, 10), dtype=bool)
+    arteriole_mask[1, 1, 1] = True
+    venule_mask[8, 8, 8] = True
+
+    start_nodes, out_nodes = select_terminal_nodes_from_large_vessel_masks(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+    assert start_nodes == [0]
+    assert out_nodes == [1]
+
+
+def test_select_terminal_nodes_from_large_vessel_masks_excludes_overlap():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([4.0, 4.0, 4.0]))
+    G.add_node(1, pos=np.array([5.0, 5.0, 5.0]))
+    G.add_node(2, pos=np.array([4.5, 4.5, 4.5]))
+    G.add_edge(0, 2, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+
+    arteriole_mask = np.zeros((10, 10, 10), dtype=bool)
+    venule_mask = np.zeros((10, 10, 10), dtype=bool)
+    arteriole_mask[4, 4, 4] = True
+    venule_mask[4, 4, 4] = True
+    venule_mask[5, 5, 5] = True
+
+    start_nodes, out_nodes = select_terminal_nodes_from_large_vessel_masks(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        allow_overlap=False,
+    )
+    assert start_nodes == [0]
+    assert out_nodes == [1]
+

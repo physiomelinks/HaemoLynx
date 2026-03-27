@@ -11,14 +11,19 @@ def validate_skeleton_connection(
     pos1: np.ndarray,
     pos2: np.ndarray,
     max_gap: float = 3.0,
+    voxel_size: Tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> Tuple[bool, Optional[List]]:
     """
     Validate that there's a skeleton path between two positions.
     Returns (is_valid, voxel_path or None).
+
+    Positions are in physical units; *voxel_size* converts them to array
+    indices for skeleton look-ups.
     """
     try:
-        p1 = np.round(pos1).astype(int)
-        p2 = np.round(pos2).astype(int)
+        vs = np.asarray(voxel_size, dtype=float)
+        p1 = np.round(np.asarray(pos1, dtype=float) / vs).astype(int)
+        p2 = np.round(np.asarray(pos2, dtype=float) / vs).astype(int)
         if not (
             0 <= p1[0] < skeleton_data.shape[0]
             and 0 <= p1[1] < skeleton_data.shape[1]

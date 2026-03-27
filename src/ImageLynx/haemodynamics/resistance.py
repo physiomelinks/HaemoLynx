@@ -154,7 +154,6 @@ def solve_flow_from_conductance_matrix(
         "pressure": pressure,
     }
 
-
     vessels_path = Path(vtk_export["vessels_path"])
     vessels = pv.read(str(vessels_path))
     edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
@@ -208,5 +207,3 @@ def solve_flow_from_conductance_matrix(
     flow_result["flow_signed"] = flow_signed
     flow_result["flow_abs"] = flow_abs
     return flow_result, vtk_export
-
-
