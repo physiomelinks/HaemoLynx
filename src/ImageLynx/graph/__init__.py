@@ -37,6 +37,10 @@ from .large_vessels import (
     exclude_smaller_overlapping_large_vessel_components,
     exclude_smaller_overlapping_small_vessel_components,
 )
+from .mask_component_volume import (
+    remove_small_mask_components_by_volume,
+    remove_small_vessel_components_by_volume,
+)
 from ._helpers import (
     add_edge_safe,
     has_edge_safe,
@@ -96,6 +100,8 @@ __all__ = [
     "dilate_large_vessel_masks_by_microns",
     "exclude_smaller_overlapping_large_vessel_components",
     "exclude_smaller_overlapping_small_vessel_components",
+    "remove_small_mask_components_by_volume",
+    "remove_small_vessel_components_by_volume",
     "remove_edges_for_self_connected_nodes",
     "remove_terminal_terminal_edges",
     "remove_isolated_nodes",

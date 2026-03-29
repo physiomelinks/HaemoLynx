@@ -72,6 +72,9 @@ USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 # Maximum dilation distance (microns) for progressive large-vessel assignment.
 # Assignment runs at 0 microns first, then in 5-micron increments up to this max.
 LARGE_VESSEL_MASK_DILATION_MICRONS = 50
+# Minimum connected-component volume (um^3) kept in large-vessel masks before
+# overlap cleanup/assignment. Set 0 to disable component-volume filtering.
+LARGE_VESSEL_MIN_COMPONENT_VOLUME_UM3 = 200.0
 # Downsample stride used for 3D large-vessel volume rendering in Plotly.
 # 1 = full resolution, 2/3/4 progressively faster but coarser.
 LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
@@ -104,6 +107,9 @@ SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
 # Maximum dilation distance (microns) for progressive small-vessel boundary assignment.
 # Assignment runs at 0 microns first, then in 5-micron increments up to this max.
 SMALL_VESSEL_MASK_DILATION_MICRONS = 0
+# Minimum connected-component volume (um^3) kept in small-vessel masks before
+# overlap cleanup/edge classification. Set 0 to disable component-volume filtering.
+SMALL_VESSEL_MIN_COMPONENT_VOLUME_UM3 = 200.0
 # Fast mode for small-vessel boundary assignment: pre-clean overlap voxels from
 # smaller overlapping components before edge classification.
 SMALL_VESSEL_BOUNDARY_ASSIGNMENT_FAST_MODE = False

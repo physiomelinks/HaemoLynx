@@ -272,10 +272,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
                             use_ilastik_large_vessel_segmentation=USE_ILASTIK_LARGE_VESSEL_SEGMENTATION,
                             large_vessel_mask_dilation_microns=LARGE_VESSEL_MASK_DILATION_MICRONS,
+                            large_vessel_min_component_volume_um3=LARGE_VESSEL_MIN_COMPONENT_VOLUME_UM3,
                             use_small_vessel_masks_for_boundary_assignment=USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT,
                             use_ilastik_small_vessel_segmentation=USE_ILASTIK_SMALL_VESSEL_SEGMENTATION,
                             small_vessel_mask_min_overlap_fraction=SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION,
                             small_vessel_mask_dilation_microns=SMALL_VESSEL_MASK_DILATION_MICRONS,
+                            small_vessel_min_component_volume_um3=SMALL_VESSEL_MIN_COMPONENT_VOLUME_UM3,
                             small_vessel_boundary_assignment_fast_mode=SMALL_VESSEL_BOUNDARY_ASSIGNMENT_FAST_MODE,
                             small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode=SMALL_VESSEL_BOUNDARY_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE,
                             small_vessel_overlap_parallel_workers=SMALL_VESSEL_OVERLAP_PARALLEL_WORKERS,
@@ -1251,6 +1253,27 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             )
         assignment_large_arteriole_mask = large_arteriole_mask
         assignment_large_venule_mask = large_venule_mask
+        if float(large_vessel_min_component_volume_um3) > 0:
+            (
+                assignment_large_arteriole_mask,
+                assignment_large_venule_mask,
+                large_component_volume_stats,
+            ) = graph.remove_small_vessel_components_by_volume(
+                assignment_large_arteriole_mask,
+                assignment_large_venule_mask,
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                min_component_volume_um3=float(large_vessel_min_component_volume_um3),
+            )
+            arteriole_stats = large_component_volume_stats.get("arteriole") or {}
+            venule_stats = large_component_volume_stats.get("venule") or {}
+            print(
+                "Large-vessel component-volume filtering: "
+                f"threshold={float(large_vessel_min_component_volume_um3):.3f} um^3, "
+                f"removed_components(arteriole={int(arteriole_stats.get('removed_component_count', 0))}, "
+                f"venule={int(venule_stats.get('removed_component_count', 0))}), "
+                f"removed_volume_um3(arteriole={float(arteriole_stats.get('removed_volume_um3', 0.0)):.3f}, "
+                f"venule={float(venule_stats.get('removed_volume_um3', 0.0)):.3f})."
+            )
         if automated_vessel_assignment_fast_mode:
             if write_fast_mode_preassignment_large_vessel_debug_3d_html:
                 pre_assignment_before_cleanup_html_path = (
@@ -1261,8 +1284,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 )
                 visualization.visualize_3d_plotly_large_vessel_assignment(
                     G,
-                    large_arteriole_mask=large_arteriole_mask,
-                    large_venule_mask=large_venule_mask,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
                     input_nodes=[],
                     output_nodes=[],
                     voxel_size_xyz=tuple(float(v) for v in voxel_size),
@@ -1280,15 +1303,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 )
             cleaned_arteriole_mask, cleaned_venule_mask = (
                 graph.exclude_smaller_overlapping_large_vessel_components(
-                    large_arteriole_mask,
-                    large_venule_mask,
+                    assignment_large_arteriole_mask,
+                    assignment_large_venule_mask,
                 )
             )
             overlap_before_cleanup = int(
                 np.count_nonzero(
                     np.logical_and(
-                        large_arteriole_mask.astype(bool, copy=False),
-                        large_venule_mask.astype(bool, copy=False),
+                        assignment_large_arteriole_mask.astype(bool, copy=False),
+                        assignment_large_venule_mask.astype(bool, copy=False),
                     )
                 )
             )
@@ -1552,11 +1575,32 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             )
         assignment_small_arteriole_mask = small_arteriole_mask
         assignment_small_venule_mask = small_venule_mask
+        if float(small_vessel_min_component_volume_um3) > 0:
+            (
+                assignment_small_arteriole_mask,
+                assignment_small_venule_mask,
+                small_component_volume_stats,
+            ) = graph.remove_small_vessel_components_by_volume(
+                assignment_small_arteriole_mask,
+                assignment_small_venule_mask,
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                min_component_volume_um3=float(small_vessel_min_component_volume_um3),
+            )
+            small_arteriole_stats = small_component_volume_stats.get("arteriole") or {}
+            small_venule_stats = small_component_volume_stats.get("venule") or {}
+            print(
+                "Small-vessel component-volume filtering: "
+                f"threshold={float(small_vessel_min_component_volume_um3):.3f} um^3, "
+                f"removed_components(arteriole={int(small_arteriole_stats.get('removed_component_count', 0))}, "
+                f"venule={int(small_venule_stats.get('removed_component_count', 0))}), "
+                f"removed_volume_um3(arteriole={float(small_arteriole_stats.get('removed_volume_um3', 0.0)):.3f}, "
+                f"venule={float(small_venule_stats.get('removed_volume_um3', 0.0)):.3f})."
+            )
         if apply_small_overlap_cleanup_prepass:
             cleaned_small_arteriole_mask, cleaned_small_venule_mask = (
                 graph.exclude_smaller_overlapping_small_vessel_components(
-                    small_arteriole_mask,
-                    small_venule_mask,
+                    assignment_small_arteriole_mask,
+                    assignment_small_venule_mask,
                 )
             )
             if (

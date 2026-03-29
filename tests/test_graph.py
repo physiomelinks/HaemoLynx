@@ -28,6 +28,7 @@ from ImageLynx.graph import (
     select_boundary_nodes_by_method,
     select_terminal_nodes_from_large_vessel_masks,
     exclude_smaller_overlapping_large_vessel_components,
+    remove_small_vessel_components_by_volume,
     filter_io_nodes_to_terminal_degree1,
     diagnose_degree2_nodes,
     format_degree2_diagnostics_report,
@@ -348,5 +349,49 @@ def test_filter_io_nodes_to_terminal_degree1():
     assert filtered_out == [2]
     assert dropped_in == [1]
     assert dropped_out == [1]
+
+
+def test_remove_small_vessel_components_by_volume_filters_small_components():
+    arteriole_mask = np.zeros((20, 20, 20), dtype=bool)
+    venule_mask = np.zeros((20, 20, 20), dtype=bool)
+
+    # Small components (size=1 and size=2 voxels) should be removed.
+    arteriole_mask[1, 1, 1] = True
+    venule_mask[2, 2, 2] = True
+    venule_mask[2, 2, 3] = True
+
+    # Larger components should be retained.
+    arteriole_mask[10:12, 10:12, 10:12] = True  # 8 voxels
+    venule_mask[14:16, 14:16, 14:16] = True  # 8 voxels
+
+    cleaned_arteriole, cleaned_venule, stats = remove_small_vessel_components_by_volume(
+        arteriole_mask,
+        venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        min_component_volume_um3=3.0,
+    )
+
+    assert int(np.count_nonzero(cleaned_arteriole)) == 8
+    assert int(np.count_nonzero(cleaned_venule)) == 8
+    assert int(stats["arteriole"]["removed_component_count"]) == 1
+    assert int(stats["venule"]["removed_component_count"]) == 1
+
+
+def test_remove_small_vessel_components_by_volume_disabled_at_zero_threshold():
+    arteriole_mask = np.zeros((6, 6, 6), dtype=bool)
+    venule_mask = np.zeros((6, 6, 6), dtype=bool)
+    arteriole_mask[1, 1, 1] = True
+    venule_mask[4, 4, 4] = True
+
+    cleaned_arteriole, cleaned_venule, stats = remove_small_vessel_components_by_volume(
+        arteriole_mask,
+        venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        min_component_volume_um3=0.0,
+    )
+
+    assert np.array_equal(cleaned_arteriole, arteriole_mask)
+    assert np.array_equal(cleaned_venule, venule_mask)
+    assert float(stats["threshold_um3"]) == 0.0
 
 
