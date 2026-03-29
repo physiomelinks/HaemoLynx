@@ -4,6 +4,8 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
+from numpy import true_divide
+
 # Ensure package is importable when running from repo root.
 root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -68,7 +70,7 @@ USE_LARGE_VESSEL_MASKS = True
 # Toggle ilastik segmentation for large-vessel masks.
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 # Dilation size (microns) applied to large-vessel masks before node selection.
-LARGE_VESSEL_MASK_DILATION_MICRONS = 5.0
+LARGE_VESSEL_MASK_DILATION_MICRONS = 30
 # Downsample stride used for 3D large-vessel volume rendering in Plotly.
 # 1 = full resolution, 2/3/4 progressively faster but coarser.
 LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
@@ -98,6 +100,9 @@ AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS = False
 USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
 # Minimum edge-overlap fraction required for mask-based boundary assignment.
 SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
+# Maximum dilation (microns) for progressive small-vessel boundary assignment.
+# Assignment runs at 0 microns first, then in 5-micron increments up to this max.
+SMALL_VESSEL_MASK_DILATION_MICRONS = 0
 # Fast mode for small-vessel boundary assignment: pre-clean overlap voxels from
 # smaller overlapping components before edge classification.
 SMALL_VESSEL_BOUNDARY_ASSIGNMENT_FAST_MODE = False
@@ -169,13 +174,13 @@ ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[fl
 # Volume boxes used to select venule boundary nodes.
 VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 # Runtime container for selected starting node IDs.
-STARTING_NODES: list[int] = [1126, 1173, 1218, 1296, 1376, 1421, 567]
+STARTING_NODES: list[int] = [1084, 1226, 1454, 147, 327, 472, 539, 567, 598, 661, 852, 894]
 # Runtime container for selected output node IDs.
-OUTPUT_NODES: list[int] = [1100, 1223, 1452, 1468, 1477, 1529, 1538, 1542, 1575, 692, 745, 777, 883, 907]
+OUTPUT_NODES: list[int] = [1022, 1048, 1095, 1100, 1120, 1126, 1173, 1218, 1223, 1225, 1239, 1296, 1299, 1376, 1407, 1421, 1452, 1455, 1468, 1477, 1529, 1538, 1542, 1575, 214, 340, 397, 416, 429, 463, 474, 475, 513, 525, 555, 561, 583, 627, 672, 692, 708, 740, 745, 759, 777, 798, 807, 829, 843, 844, 883, 896, 907, 959, 990]
 # Runtime container for selected arteriole boundary node IDs.
-ARTERIOLE_BOUNDARY_NODES: list[int] = [606, ]
+ARTERIOLE_BOUNDARY_NODES: list[int] = [485, 1090, 1092, 761]
 # Runtime container for selected venule boundary node IDs.
-VENULE_BOUNDARY_NODES: list[int] = [485, 1090, 1092, 761]
+VENULE_BOUNDARY_NODES: list[int] = [606]
 # Enforce strict hierarchical branch-order prerequisites.
 STRICT_BRANCH_ORDER_ASSIGNMENT = False
 
@@ -290,13 +295,27 @@ USE_PROBABILISTIC_PERICYTE_CONSTRICTION = False
 # Activation probability used in probabilistic constriction mode.
 PERICYTE_CONSTRICTION_PROBABILITY = 0.8
 # Toggle baseline-vs-constricted pericyte resistance comparison run.
-RUN_PERICYTE_RESISTANCE_COMPARISON = False
+RUN_PERICYTE_RESISTANCE_COMPARISON = True
 # Baseline comparison multiplier used in pericyte comparison mode.
 PERICYTE_COMPARISON_BASELINE_VALUE = 1.0
 # Constricted comparison multiplier used in pericyte comparison mode.
-PERICYTE_COMPARISON_CONSTRICTED_VALUE = 0.8
+PERICYTE_COMPARISON_CONSTRICTED_VALUE = 1.30
 # Reuse selected probabilistic pericyte cohort from comparison in main run.
 REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN = False
+# Toggle Alice pericyte-dilation x inlet-pressure sweep on main pipeline runs.
+RUN_ALICE_PAPER_SWEEP = True
+# Output directory for Alice sweep CSV and generated curve plots.
+ALICE_PAPER_OUTPUT_DIR = root_dir / "examples" / "outputs" / "alice_paper"
+# Dilation sweep range (%) for Alice sweep.
+ALICE_PERICYTE_DILATION_MIN_PERCENT = 1
+ALICE_PERICYTE_DILATION_MAX_PERCENT = 30
+ALICE_PERICYTE_DILATION_STEP_PERCENT = 1
+# Inlet-pressure sweep range (Pa) for Alice sweep.
+ALICE_INLET_PRESSURE_MIN_PA = 4500
+ALICE_INLET_PRESSURE_MAX_PA = 3000
+ALICE_INLET_PRESSURE_STEP_PA = 500
+# Optional edge list using custom sweep diameter handling.
+ALICE_CUSTOM_EDGES_FOR_SWEEP: list[tuple[int, int]] = []
 
 # Maximum branch-order index used to build diameter/constriction tables.
 MAX_BRANCH_ORDER = 51

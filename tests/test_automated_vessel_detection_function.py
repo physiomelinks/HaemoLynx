@@ -18,6 +18,7 @@ if str(SRC_DIR) not in sys.path:
 from ImageLynx.graph import (
     compute_overlapping_terminal_assignment_metrics,
     dilate_large_vessel_masks_by_microns,
+    select_terminal_nodes_from_large_vessel_masks_progressive_dilation,
     select_terminal_nodes_from_large_vessel_masks,
 )
 
@@ -424,6 +425,44 @@ def test_large_vessel_overlap_exclusion_assignment_graph(tmp_path):
             f"Node degrees: 0->{int(G.degree(0))}, 1->{int(G.degree(1))}, 2->{int(G.degree(2))}.",
         ],
     )
+
+
+def test_progressive_dilation_assignment_locks_earlier_nodes():
+    """Nodes assigned early remain fixed across later dilation steps."""
+    G = nx.MultiGraph()
+    # Terminal near arteriole and venule volumes with staged overlap behavior.
+    G.add_node(0, pos=np.array([1.0, 1.0, 1.0]))   # near arteriole at 0 microns
+    G.add_node(1, pos=np.array([7.0, 1.0, 1.0]))   # outside both at 0, venule at +5, arteriole at +10
+    G.add_node(2, pos=np.array([9.0, 1.0, 1.0]))   # venule at 0 microns
+    # Internal connector nodes to keep terminals degree-1.
+    G.add_node(10, pos=np.array([2.0, 1.0, 1.0]))
+    G.add_node(11, pos=np.array([7.0, 1.0, 1.0]))
+    G.add_edge(0, 10, length=1.0, weight=1.0)
+    G.add_edge(10, 11, length=5.0, weight=5.0)
+    G.add_edge(11, 2, length=2.0, weight=2.0)
+    G.add_edge(1, 10, length=5.0, weight=5.0)
+
+    arteriole_mask = np.zeros((12, 12, 12), dtype=bool)
+    venule_mask = np.zeros((12, 12, 12), dtype=bool)
+    arteriole_mask[1, 1, 1] = True
+    venule_mask[1, 1, 9] = True
+
+    # At max dilation=10 with 5-micron steps:
+    # - node 0 is input at 0 microns
+    # - node 2 is output at 0 microns
+    # - node 1 becomes newly output at 5 microns
+    #   (and must remain output, even though arteriole reaches it at 10 microns)
+    start_nodes, out_nodes = select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        max_dilation_microns=10.0,
+        dilation_step_microns=5.0,
+        allow_overlap=False,
+    )
+    assert start_nodes == [0]
+    assert out_nodes == [1, 2]
 
 
 if __name__ == "__main__":

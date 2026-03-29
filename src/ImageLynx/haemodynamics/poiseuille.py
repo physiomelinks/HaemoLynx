@@ -299,9 +299,8 @@ class PoiseuilleModel:
         for u, v, key, data in G.edges(keys=True, data=True):
             branch_order = data.get("branch_order")
             if branch_order is None:
-                raise ValueError(
-                    f"Edge ({u}, {v}, {key}) missing required 'branch_order' attribute."
-                )
+                results["missing_branch_order"].append((u, v, key))
+                continue
             length = data.get("length")
             if length is None:
                 raise ValueError(
@@ -363,6 +362,12 @@ class PoiseuilleModel:
                 results["weights_set"] += 1
             except Exception as e:
                 raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
+        if results["missing_branch_order"]:
+            print(
+                "Ignored edges missing branch_order "
+                f"({len(results['missing_branch_order'])}): "
+                f"{results['missing_branch_order']}"
+            )
         return G, results
 
     def set_poiseuille_edge_weights(

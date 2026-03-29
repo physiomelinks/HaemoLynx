@@ -127,7 +127,7 @@ PERICYTE_DILATION_MIN_PERCENT = 1
 PERICYTE_DILATION_MAX_PERCENT = 30
 PERICYTE_DILATION_STEP_PERCENT = 1
 INLET_PRESSURE_MIN_PA = 4500
-INLET_PRESSURE_MAX_PA = 6000
+INLET_PRESSURE_MAX_PA = 3000
 INLET_PRESSURE_STEP_PA = 500
 ALICE_PAPER_OUTPUT_DIR = root_dir / "examples" / "outputs" / "alice_paper"
 VISUALIZE_VTK = False
@@ -379,8 +379,28 @@ def _run_alice_pericyte_dilation_pressure_sweep(
         constriction_spacing=constriction_spacing_um,
     )
 
-    dilation_values = list(range(min_dilation_percent, max_dilation_percent + 1, dilation_step_percent))
-    inlet_pressures = list(range(min_inlet_pressure_pa, max_inlet_pressure_pa + 1, inlet_pressure_step_pa))
+    if int(dilation_step_percent) <= 0:
+        raise ValueError(
+            f"dilation_step_percent must be > 0, got {dilation_step_percent}."
+        )
+    if int(inlet_pressure_step_pa) <= 0:
+        raise ValueError(
+            f"inlet_pressure_step_pa must be > 0, got {inlet_pressure_step_pa}."
+        )
+    dilation_values = list(
+        range(
+            int(min_dilation_percent),
+            int(max_dilation_percent) + 1,
+            int(dilation_step_percent),
+        )
+    )
+    inlet_start = int(min_inlet_pressure_pa)
+    inlet_stop = int(max_inlet_pressure_pa)
+    inlet_step = int(inlet_pressure_step_pa)
+    if inlet_start <= inlet_stop:
+        inlet_pressures = list(range(inlet_start, inlet_stop + 1, inlet_step))
+    else:
+        inlet_pressures = list(range(inlet_start, inlet_stop - 1, -inlet_step))
 
     for dilation_percent in dilation_values:
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)

@@ -17,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
 
 from ImageLynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks,
+    infer_boundary_nodes_from_small_vessel_masks_progressive_dilation,
     write_small_vessel_mask_boundary_labelling_3d_html,
 )
 
@@ -140,6 +141,47 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
         webbrowser.open_new_tab(html_tmp.resolve().as_uri())
     except OSError:
         pass
+
+
+def test_progressive_small_vessel_boundary_assignment_locks_earlier_nodes():
+    """Boundary nodes assigned earlier remain fixed across later dilation steps."""
+    G = nx.MultiGraph()
+    # 0-1-2-3 trunk with degree-1 terminals at 0 and 3.
+    G.add_node(0, pos=np.array([1.0, 1.0, 1.0], dtype=float))
+    G.add_node(1, pos=np.array([3.0, 1.0, 1.0], dtype=float))
+    G.add_node(2, pos=np.array([5.0, 1.0, 1.0], dtype=float))
+    G.add_node(3, pos=np.array([7.0, 1.0, 1.0], dtype=float))
+    for u, v in [(0, 1), (1, 2), (2, 3)]:
+        pu = np.asarray(G.nodes[u]["pos"], dtype=float)
+        pv = np.asarray(G.nodes[v]["pos"], dtype=float)
+        G.add_edge(
+            u,
+            v,
+            voxels=_voxel_polyline_samples(pu, pv, count=24),
+            length=float(np.linalg.norm(pv - pu)),
+            weight=1.0,
+        )
+
+    art_mask = np.zeros((12, 12, 12), dtype=bool)
+    ven_mask = np.zeros((12, 12, 12), dtype=bool)
+    art_mask[1, 1, 1] = True
+    ven_mask[1, 1, 7] = True
+
+    result = infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
+        G,
+        small_arteriole_mask=art_mask,
+        small_venule_mask=ven_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        max_dilation_microns=10.0,
+        dilation_step_microns=5.0,
+        minimum_overlap_fraction=0.5,
+        allow_overlap=False,
+    )
+
+    # Initial step labels node 1 as arteriole boundary and node 2 as venule boundary.
+    # Later dilation increases overlap but must not reassign these boundary nodes.
+    assert result["arteriole_boundary_nodes"] == [1]
+    assert result["venule_boundary_nodes"] == [2]
 
 
 if __name__ == "__main__":

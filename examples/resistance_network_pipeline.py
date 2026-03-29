@@ -6,6 +6,7 @@ import inspect
 import ast
 import pickle
 import json
+import importlib.util
 from pathlib import Path
 from skan import csr
 import tifffile
@@ -43,6 +44,222 @@ from settings_persistence import (
 from wizard import run_interactive_setup_wizard
 
 
+def _solve_pressure_and_boundary_flow(
+    conductance: np.ndarray,
+    node_list: list[int],
+    input_p_bc: float,
+    output_p_bc: float,
+    starting_nodes: list[int],
+    output_nodes: list[int],
+) -> dict[str, object]:
+    """Solve pressure field and aggregate source/sink flow for BC node sets."""
+    if not starting_nodes:
+        raise ValueError("starting_nodes cannot be empty for Alice sweep.")
+    if not output_nodes:
+        raise ValueError("output_nodes cannot be empty for Alice sweep.")
+
+    n_nodes = conductance.shape[0]
+    if conductance.ndim != 2 or conductance.shape[1] != n_nodes:
+        raise ValueError("conductance must be a square matrix.")
+    if len(node_list) != n_nodes:
+        raise ValueError("node_list length must match conductance matrix dimensions.")
+
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    missing_start = [n for n in starting_nodes if n not in node_to_idx]
+    missing_out = [n for n in output_nodes if n not in node_to_idx]
+    if missing_start or missing_out:
+        raise ValueError(
+            "Boundary nodes missing from node_list "
+            f"(missing_starting={missing_start}, missing_output={missing_out})."
+        )
+
+    laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+    pressure = np.zeros(n_nodes, dtype=float)
+    bc_idx_to_p: dict[int, float] = {}
+    for node_id in starting_nodes:
+        bc_idx_to_p[node_to_idx[node_id]] = float(input_p_bc)
+    for node_id in output_nodes:
+        idx = node_to_idx[node_id]
+        existing = bc_idx_to_p.get(idx)
+        if existing is not None and not np.isclose(existing, float(output_p_bc)):
+            raise ValueError(
+                f"Node {node_id} receives conflicting BC pressures {existing} and {output_p_bc}."
+            )
+        bc_idx_to_p[idx] = float(output_p_bc)
+
+    known_idx = np.array(sorted(bc_idx_to_p.keys()), dtype=int)
+    pressure[known_idx] = np.array([bc_idx_to_p[idx] for idx in known_idx], dtype=float)
+    unknown_idx = np.array(sorted(set(range(n_nodes)).difference(set(known_idx))), dtype=int)
+    if unknown_idx.size:
+        l_uu = laplacian[np.ix_(unknown_idx, unknown_idx)]
+        l_uk = laplacian[np.ix_(unknown_idx, known_idx)]
+        rhs = -l_uk @ pressure[known_idx]
+        try:
+            pressure[unknown_idx] = np.linalg.solve(l_uu, rhs)
+        except np.linalg.LinAlgError:
+            pressure[unknown_idx] = np.linalg.lstsq(l_uu, rhs, rcond=None)[0]
+
+    total_inlet_flow = 0.0
+    for node_id in starting_nodes:
+        i = node_to_idx[node_id]
+        total_inlet_flow += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
+
+    total_outlet_flow = 0.0
+    for node_id in output_nodes:
+        i = node_to_idx[node_id]
+        total_outlet_flow += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
+
+    pressure_drop = float(input_p_bc - output_p_bc)
+    equivalent_resistance = np.inf if np.isclose(total_inlet_flow, 0.0) else pressure_drop / total_inlet_flow
+    return {
+        "pressure": pressure,
+        "total_inlet_flow": float(total_inlet_flow),
+        "total_outlet_flow": float(total_outlet_flow),
+        "equivalent_resistance": float(equivalent_resistance),
+    }
+
+
+def _load_alicepaper_module():
+    """Load AlicePaper.py from repository root."""
+    module_path = root_dir / "AlicePaper.py"
+    if not module_path.exists():
+        raise FileNotFoundError(f"AlicePaper module not found at: {module_path}")
+    spec = importlib.util.spec_from_file_location("AlicePaper", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load module spec for: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_alice_pericyte_dilation_pressure_sweep(
+    graph_with_branch_orders: nx.MultiGraph,
+    *,
+    diameter_by_branch_order: dict,
+    starting_nodes: list[int],
+    output_nodes: list[int],
+    output_p_bc: float,
+    output_dir: Path,
+    custom_edges_for_sweep: list | None = None,
+    constriction_length_um: float = 40.0,
+    constriction_spacing_um: float = 100.0,
+    min_dilation_percent: int = 1,
+    max_dilation_percent: int = 30,
+    dilation_step_percent: int = 1,
+    min_inlet_pressure_pa: int = 4500,
+    max_inlet_pressure_pa: int = 6000,
+    inlet_pressure_step_pa: int = 500,
+) -> dict[str, object]:
+    """Sweep pericyte dilation and inlet pressure; compute flow/resistance curves."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, object]] = []
+    custom_edges_for_sweep = [] if custom_edges_for_sweep is None else list(custom_edges_for_sweep)
+
+    poiseuille_model = haemodynamics.PoiseuilleModel(
+        constriction_length=constriction_length_um,
+        constriction_spacing=constriction_spacing_um,
+    )
+    dilation_step = int(dilation_step_percent)
+    inlet_step = int(inlet_pressure_step_pa)
+    if dilation_step <= 0:
+        raise ValueError(f"dilation_step_percent must be > 0, got {dilation_step_percent}.")
+    if inlet_step <= 0:
+        raise ValueError(f"inlet_pressure_step_pa must be > 0, got {inlet_pressure_step_pa}.")
+
+    dilation_values = list(
+        range(
+            int(min_dilation_percent),
+            int(max_dilation_percent) + 1,
+            dilation_step,
+        )
+    )
+    inlet_start = int(min_inlet_pressure_pa)
+    inlet_stop = int(max_inlet_pressure_pa)
+    if inlet_start <= inlet_stop:
+        inlet_pressures = list(range(inlet_start, inlet_stop + 1, inlet_step))
+    else:
+        inlet_pressures = list(range(inlet_start, inlet_stop - 1, -inlet_step))
+
+    for dilation_percent in dilation_values:
+        dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
+        G_sweep = graph_with_branch_orders.copy()
+        for _, _, _, edge_data in G_sweep.edges(keys=True, data=True):
+            fwhm_d = edge_data.get("fwhm_diameter_um")
+            if fwhm_d is not None and float(fwhm_d) > 0:
+                edge_data["fwhm_diameter_um"] = float(fwhm_d) * dilation_factor
+
+        scaled_diameter_by_branch_order = {
+            branch_order: float(diameter_um) * dilation_factor
+            for branch_order, diameter_um in diameter_by_branch_order.items()
+        }
+        G_sweep, _ = poiseuille_model.set_poiseuille_weights(
+            G_sweep,
+            scaled_diameter_by_branch_order,
+            prefer_edge_fwhm_diameter=True,
+        )
+        if custom_edges_for_sweep:
+            G_sweep, _ = poiseuille_model.set_poiseuille_edge_weights(
+                G_sweep,
+                custom_edges_for_sweep,
+                edge_diameter=6.0 * dilation_factor,
+                use_resistance=False,
+            )
+
+        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G_sweep)
+        for inlet_pressure_pa in inlet_pressures:
+            solve_result = _solve_pressure_and_boundary_flow(
+                conductance=conductance,
+                node_list=node_list,
+                input_p_bc=float(inlet_pressure_pa),
+                output_p_bc=float(output_p_bc),
+                starting_nodes=starting_nodes,
+                output_nodes=output_nodes,
+            )
+            results.append(
+                {
+                    "dilation_percent": int(dilation_percent),
+                    "dilation_factor": float(dilation_factor),
+                    "inlet_pressure_pa": int(inlet_pressure_pa),
+                    "outlet_pressure_pa": float(output_p_bc),
+                    "total_inlet_flow": float(solve_result["total_inlet_flow"]),
+                    "total_outlet_flow": float(solve_result["total_outlet_flow"]),
+                    "flow_balance_error": float(
+                        float(solve_result["total_inlet_flow"])
+                        + float(solve_result["total_outlet_flow"])
+                    ),
+                    "equivalent_resistance": float(solve_result["equivalent_resistance"]),
+                }
+            )
+
+    sweep_csv_path = output_dir / "alice_pericyte_dilation_pressure_sweep.csv"
+    header = [
+        "dilation_percent",
+        "dilation_factor",
+        "inlet_pressure_pa",
+        "outlet_pressure_pa",
+        "total_inlet_flow",
+        "total_outlet_flow",
+        "flow_balance_error",
+        "equivalent_resistance",
+    ]
+    with sweep_csv_path.open("w", encoding="utf-8", newline="") as handle:
+        import csv
+
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(results)
+    print(f"Saved Alice pressure+dilation sweep CSV to: {sweep_csv_path}")
+
+    alicepaper = _load_alicepaper_module()
+    plot_outputs = alicepaper.graph(results, output_dir=output_dir)
+    print(f"Alice paper curve plots saved to: {plot_outputs}")
+    return {
+        "results": results,
+        "csv_path": str(sweep_csv_path),
+        "plot_outputs": plot_outputs,
+    }
+
+
 def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_ilastik_segmentation=USE_ILASTIK_SEGMENTATION,
                             ilastik_unsegmented_image_path=ILASTIK_UNSEGMENTED_IMAGE_PATH,
@@ -58,6 +275,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             use_small_vessel_masks_for_boundary_assignment=USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT,
                             use_ilastik_small_vessel_segmentation=USE_ILASTIK_SMALL_VESSEL_SEGMENTATION,
                             small_vessel_mask_min_overlap_fraction=SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION,
+                            small_vessel_mask_dilation_microns=SMALL_VESSEL_MASK_DILATION_MICRONS,
                             small_vessel_boundary_assignment_fast_mode=SMALL_VESSEL_BOUNDARY_ASSIGNMENT_FAST_MODE,
                             small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode=SMALL_VESSEL_BOUNDARY_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE,
                             small_vessel_overlap_parallel_workers=SMALL_VESSEL_OVERLAP_PARALLEL_WORKERS,
@@ -98,6 +316,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             pericyte_comparison_baseline_value=PERICYTE_COMPARISON_BASELINE_VALUE,
                             pericyte_comparison_constricted_value=PERICYTE_COMPARISON_CONSTRICTED_VALUE,
                             reuse_comparison_pericyte_cohort_for_main_run=REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN,
+                            run_alice_paper_sweep=RUN_ALICE_PAPER_SWEEP,
+                            alice_paper_output_dir=ALICE_PAPER_OUTPUT_DIR,
+                            alice_pericyte_dilation_min_percent=ALICE_PERICYTE_DILATION_MIN_PERCENT,
+                            alice_pericyte_dilation_max_percent=ALICE_PERICYTE_DILATION_MAX_PERCENT,
+                            alice_pericyte_dilation_step_percent=ALICE_PERICYTE_DILATION_STEP_PERCENT,
+                            alice_inlet_pressure_min_pa=ALICE_INLET_PRESSURE_MIN_PA,
+                            alice_inlet_pressure_max_pa=ALICE_INLET_PRESSURE_MAX_PA,
+                            alice_inlet_pressure_step_pa=ALICE_INLET_PRESSURE_STEP_PA,
+                            alice_custom_edges_for_sweep=ALICE_CUSTOM_EDGES_FOR_SWEEP,
                             plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING,
                             do_skeletonize=DO_SKELETONIZE,
@@ -525,17 +752,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "to the same physical voxel units as the main image."
         )
         if large_vessel_mask_dilation_microns > 0:
-            large_arteriole_mask, large_venule_mask = (
-                graph.dilate_large_vessel_masks_by_microns(
-                    large_arteriole_mask=large_arteriole_mask,
-                    large_venule_mask=large_venule_mask,
-                    dilation_microns=large_vessel_mask_dilation_microns,
-                    voxel_size_xyz=main_voxel_size_xyz,
-                )
-            )
             print(
-                "Dilated large-vessel masks by "
-                f"{float(large_vessel_mask_dilation_microns):.3f} microns."
+                "Configured automated large-vessel assignment dilation max: "
+                f"{float(large_vessel_mask_dilation_microns):.3f} microns "
+                "(applied as progressive 5-micron steps during assignment only)."
             )
     else:
         print("Large-vessel masks disabled; skipping arteriole/venule mask loading.")
@@ -1113,14 +1333,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     "Saved fast-mode pre-assignment (after cleanup) large-vessel "
                     f"debug 3D visualization to: {pre_assignment_after_cleanup_html_path}"
                 )
-        large_viz_arteriole_mask = assignment_large_arteriole_mask
-        large_viz_venule_mask = assignment_large_venule_mask
         auto_start_nodes, auto_output_nodes = (
-            graph.select_terminal_nodes_from_large_vessel_masks(
+            graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
                 G,
                 large_arteriole_mask=assignment_large_arteriole_mask,
                 large_venule_mask=assignment_large_venule_mask,
                 voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                max_dilation_microns=float(large_vessel_mask_dilation_microns),
+                dilation_step_microns=5.0,
                 allow_overlap=False,
                 exclude_smaller_overlapping_volumes=(
                     apply_overlap_cleanup_prepass
@@ -1345,13 +1565,19 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             ):
                 assignment_small_arteriole_mask = cleaned_small_arteriole_mask
                 assignment_small_venule_mask = cleaned_small_venule_mask
-        small_viz_arteriole_mask = assignment_small_arteriole_mask
-        small_viz_venule_mask = assignment_small_venule_mask
-        inferred_boundary_results = graph.infer_boundary_nodes_from_small_vessel_masks(
+        if float(small_vessel_mask_dilation_microns) > 0:
+            print(
+                "Configured small-vessel boundary-assignment dilation max: "
+                f"{float(small_vessel_mask_dilation_microns):.3f} microns "
+                "(applied as progressive 5-micron steps during assignment only)."
+            )
+        inferred_boundary_results = graph.infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
             G,
             small_arteriole_mask=assignment_small_arteriole_mask,
             small_venule_mask=assignment_small_venule_mask,
             voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            max_dilation_microns=float(small_vessel_mask_dilation_microns),
+            dilation_step_microns=5.0,
             minimum_overlap_fraction=float(small_vessel_mask_min_overlap_fraction),
             allow_overlap=False,
             exclude_smaller_overlapping_volumes=False,
@@ -2055,6 +2281,28 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         print("Flow through the network solved")
         print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
+        if run_alice_paper_sweep:
+            print("\nRunning Alice pericyte-dilation x inlet-pressure sweep...")
+            sweep_outputs = _run_alice_pericyte_dilation_pressure_sweep(
+                G,
+                diameter_by_branch_order=diameter_by_branch_order,
+                starting_nodes=starting_nodes,
+                output_nodes=output_nodes,
+                output_p_bc=float(output_p_bc),
+                output_dir=Path(alice_paper_output_dir),
+                custom_edges_for_sweep=list(alice_custom_edges_for_sweep),
+                min_dilation_percent=int(alice_pericyte_dilation_min_percent),
+                max_dilation_percent=int(alice_pericyte_dilation_max_percent),
+                dilation_step_percent=int(alice_pericyte_dilation_step_percent),
+                min_inlet_pressure_pa=int(alice_inlet_pressure_min_pa),
+                max_inlet_pressure_pa=int(alice_inlet_pressure_max_pa),
+                inlet_pressure_step_pa=int(alice_inlet_pressure_step_pa),
+            )
+            print(
+                "Completed Alice sweep: "
+                f"rows={len(sweep_outputs['results'])}, "
+                f"csv={sweep_outputs['csv_path']}"
+            )
     else:
         print("Haemodynamics solve skipped (run_haemodynamics=False).")
 

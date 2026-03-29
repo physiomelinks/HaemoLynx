@@ -242,13 +242,13 @@ def visualize_3d_plotly_large_vessel_assignment(
     _add_volume_trace(
         large_arteriole_mask.astype(bool, copy=False),
         name="Large arteriole mask",
-        color="#00FF7F",
+        color="#FF3B30",
         fig=fig,
     )
     _add_volume_trace(
         large_venule_mask.astype(bool, copy=False),
         name="Large venule mask",
-        color="#FF3EA5",
+        color="#2ECC71",
         fig=fig,
     )
     vessel_styles = {
