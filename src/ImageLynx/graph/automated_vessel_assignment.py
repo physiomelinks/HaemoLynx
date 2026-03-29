@@ -8,10 +8,10 @@ from typing import Any
 
 import networkx as nx
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 from ..coords import physical_xyz_to_index_zyx, index_zyx_to_physical_xyz
 from .large_vessels import (
-    dilate_large_vessel_masks_by_microns,
     exclude_smaller_overlapping_large_vessel_components,
     exclude_smaller_overlapping_small_vessel_components,
 )
@@ -523,6 +523,7 @@ def select_terminal_nodes_from_large_vessel_masks(
     large_venule_mask: np.ndarray,
     *,
     voxel_size_xyz: tuple[float, float, float],
+    terminal_node_ids: set[Any] | None = None,
     allow_overlap: bool = False,
     exclude_smaller_overlapping_volumes: bool = False,
     overlap_parallel_workers: int = 0,
@@ -555,6 +556,13 @@ def select_terminal_nodes_from_large_vessel_masks(
         arteriole_mask = cleaned_arteriole
         venule_mask = cleaned_venule
     terminal_nodes = _terminal_nodes_with_positions(G)
+    if terminal_node_ids is not None:
+        allowed = set(terminal_node_ids)
+        terminal_nodes = [
+            (node_id, node_pos)
+            for node_id, node_pos in terminal_nodes
+            if node_id in allowed
+        ]
     if not terminal_nodes:
         return [], []
 
@@ -765,6 +773,14 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
 
     base_arteriole_mask = large_arteriole_mask.astype(bool, copy=False)
     base_venule_mask = large_venule_mask.astype(bool, copy=False)
+    arteriole_distance_from_mask = _distance_from_mask_microns(
+        base_arteriole_mask,
+        voxel_size_xyz=voxel_size_xyz,
+    )
+    venule_distance_from_mask = _distance_from_mask_microns(
+        base_venule_mask,
+        voxel_size_xyz=voxel_size_xyz,
+    )
 
     print(
         "Automated large-vessel progressive assignment: "
@@ -782,24 +798,23 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
             step_arteriole_mask = base_arteriole_mask
             step_venule_mask = base_venule_mask
         else:
-            dilated_arteriole, dilated_venule = dilate_large_vessel_masks_by_microns(
-                large_arteriole_mask=base_arteriole_mask,
-                large_venule_mask=base_venule_mask,
+            step_arteriole_mask = _dilated_mask_from_cached_distance(
+                base_arteriole_mask,
+                arteriole_distance_from_mask,
                 dilation_microns=float(dilation_microns),
-                voxel_size_xyz=voxel_size_xyz,
             )
-            if dilated_arteriole is None or dilated_venule is None:
-                raise RuntimeError(
-                    "Internal error: dilation unexpectedly returned None masks."
-                )
-            step_arteriole_mask = dilated_arteriole
-            step_venule_mask = dilated_venule
+            step_venule_mask = _dilated_mask_from_cached_distance(
+                base_venule_mask,
+                venule_distance_from_mask,
+                dilation_microns=float(dilation_microns),
+            )
 
         step_inputs, step_outputs = select_terminal_nodes_from_large_vessel_masks(
             G,
             large_arteriole_mask=step_arteriole_mask,
             large_venule_mask=step_venule_mask,
             voxel_size_xyz=voxel_size_xyz,
+            terminal_node_ids=remaining_terminal_ids,
             allow_overlap=allow_overlap,
             exclude_smaller_overlapping_volumes=exclude_smaller_overlapping_volumes,
             overlap_parallel_workers=overlap_parallel_workers,
@@ -869,6 +884,34 @@ def _sample_overlap_fraction(
         mask_shape=mask.shape,
     )
     return _sample_overlap_fraction_from_valid_indices(valid_indices_zyx, mask)
+
+
+def _distance_from_mask_microns(
+    mask: np.ndarray,
+    *,
+    voxel_size_xyz: tuple[float, float, float],
+) -> np.ndarray:
+    """Compute physical EDT distance from binary mask (in microns)."""
+    binary_mask = mask.astype(bool, copy=False)
+    sampling_zyx = (
+        float(voxel_size_xyz[2]),
+        float(voxel_size_xyz[1]),
+        float(voxel_size_xyz[0]),
+    )
+    return distance_transform_edt(~binary_mask, sampling=sampling_zyx)
+
+
+def _dilated_mask_from_cached_distance(
+    base_mask: np.ndarray,
+    distance_from_mask: np.ndarray,
+    *,
+    dilation_microns: float,
+) -> np.ndarray:
+    """Apply dilation threshold using a cached EDT distance volume."""
+    dilation = float(dilation_microns)
+    if dilation <= 0:
+        return base_mask.astype(bool, copy=False)
+    return base_mask.astype(bool, copy=False) | (distance_from_mask <= dilation)
 
 
 def _downsample_binary_mask_max(mask: np.ndarray, stride: int) -> np.ndarray:
@@ -1212,6 +1255,14 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
 
     base_arteriole_mask = small_arteriole_mask.astype(bool, copy=False)
     base_venule_mask = small_venule_mask.astype(bool, copy=False)
+    arteriole_distance_from_mask = _distance_from_mask_microns(
+        base_arteriole_mask,
+        voxel_size_xyz=voxel_size_xyz,
+    )
+    venule_distance_from_mask = _distance_from_mask_microns(
+        base_venule_mask,
+        voxel_size_xyz=voxel_size_xyz,
+    )
     latest_result: dict[str, Any] = {
         "arteriole_edge_count": 0,
         "venule_edge_count": 0,
@@ -1235,18 +1286,16 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
             step_arteriole_mask = base_arteriole_mask
             step_venule_mask = base_venule_mask
         else:
-            dilated_arteriole, dilated_venule = dilate_large_vessel_masks_by_microns(
-                large_arteriole_mask=base_arteriole_mask,
-                large_venule_mask=base_venule_mask,
+            step_arteriole_mask = _dilated_mask_from_cached_distance(
+                base_arteriole_mask,
+                arteriole_distance_from_mask,
                 dilation_microns=float(dilation_microns),
-                voxel_size_xyz=voxel_size_xyz,
             )
-            if dilated_arteriole is None or dilated_venule is None:
-                raise RuntimeError(
-                    "Internal error: dilation unexpectedly returned None masks."
-                )
-            step_arteriole_mask = dilated_arteriole
-            step_venule_mask = dilated_venule
+            step_venule_mask = _dilated_mask_from_cached_distance(
+                base_venule_mask,
+                venule_distance_from_mask,
+                dilation_microns=float(dilation_microns),
+            )
 
         step_result = infer_boundary_nodes_from_small_vessel_masks(
             G,
