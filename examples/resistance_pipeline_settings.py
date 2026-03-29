@@ -50,7 +50,7 @@ VOXEL_SIZE_POLICY = "auto"
 # Vessel-mask settings
 # ---------------------------
 # Toggle automated selection of start/output nodes from masks.
-AUTOMATED_VESSEL_ASSIGNMENT =  False
+AUTOMATED_VESSEL_ASSIGNMENT =  True
 # Fast mode for automated large-vessel I/O assignment: remove overlap voxels
 # from the smaller component in each arteriole/venule overlap pair before
 # terminal assignment (non-overlapping component regions are preserved).
@@ -69,8 +69,9 @@ AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS = True
 USE_LARGE_VESSEL_MASKS = True
 # Toggle ilastik segmentation for large-vessel masks.
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
-# Dilation size (microns) applied to large-vessel masks before node selection.
-LARGE_VESSEL_MASK_DILATION_MICRONS = 30
+# Maximum dilation distance (microns) for progressive large-vessel assignment.
+# Assignment runs at 0 microns first, then in 5-micron increments up to this max.
+LARGE_VESSEL_MASK_DILATION_MICRONS = 50
 # Downsample stride used for 3D large-vessel volume rendering in Plotly.
 # 1 = full resolution, 2/3/4 progressively faster but coarser.
 LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
@@ -100,7 +101,7 @@ AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS = False
 USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
 # Minimum edge-overlap fraction required for mask-based boundary assignment.
 SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
-# Maximum dilation (microns) for progressive small-vessel boundary assignment.
+# Maximum dilation distance (microns) for progressive small-vessel boundary assignment.
 # Assignment runs at 0 microns first, then in 5-micron increments up to this max.
 SMALL_VESSEL_MASK_DILATION_MICRONS = 0
 # Fast mode for small-vessel boundary assignment: pre-clean overlap voxels from
