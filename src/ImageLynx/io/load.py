@@ -385,21 +385,39 @@ def load_3d_h5_with_voxel_size(
     """Load 3D H5 image and return image + voxel size (x, y, z) + metadata status."""
     if h5py is None:
         raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
-    if dataset_name is None:
-        path = Path(filepath)
-        if path.suffix != ".h5":
-            raise ValueError(f"Expected a .h5 file, got: {filepath}")
-        dataset_name = path.stem
-        logger.debug("Auto-parsed dataset name: %s", dataset_name)
+    path = Path(filepath)
+    if dataset_name is None and path.suffix not in {".h5", ".hdf5"}:
+        raise ValueError(f"Expected a .h5/.hdf5 file, got: {filepath}")
 
     with h5py.File(filepath, "r") as f:
-        if dataset_name not in f:
-            available = list(f.keys())
+        available = list(f.keys())
+        selected_name = dataset_name
+
+        if selected_name is None:
+            # Robust autodetection for common H5 layouts:
+            # 1) stem-matching dataset, 2) common canonical names,
+            # 3) single top-level dataset fallback.
+            candidates = [path.stem, "data", "image", "volume"]
+            for candidate in candidates:
+                if candidate in f:
+                    selected_name = candidate
+                    break
+            if selected_name is None and len(available) == 1:
+                selected_name = available[0]
+            if selected_name is None:
+                raise KeyError(
+                    f"Could not auto-select dataset in {filepath}. "
+                    f"Available datasets: {available}. "
+                    "Please pass dataset_name explicitly."
+                )
+            logger.debug("Auto-selected H5 dataset name: %s", selected_name)
+
+        if selected_name not in f:
             raise KeyError(
-                f"Dataset '{dataset_name}' not found in {filepath}. "
+                f"Dataset '{selected_name}' not found in {filepath}. "
                 f"Available datasets: {available}"
             )
-        dataset = f[dataset_name]
+        dataset = f[selected_name]
         image = np.array(dataset)
         (
             (voxel_size_x, voxel_size_y, voxel_size_z),
