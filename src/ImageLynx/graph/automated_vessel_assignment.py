@@ -1499,7 +1499,7 @@ def write_automated_vessel_assignment_3d_html(
                 y=iy,
                 z=iz,
                 mode="markers",
-                marker=dict(size=8, color="#00FF7F"),
+                marker=dict(size=8, color="#FF3B30"),
                 name="Input Nodes",
             )
         )
@@ -1511,7 +1511,7 @@ def write_automated_vessel_assignment_3d_html(
                 y=oy,
                 z=oz,
                 mode="markers",
-                marker=dict(size=8, color="#FF3EA5"),
+                marker=dict(size=8, color="#2ECC71"),
                 name="Output Nodes",
             )
         )
@@ -1694,7 +1694,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
                 y=a_y,
                 z=a_z,
                 mode="lines",
-                line=dict(color="rgba(0, 220, 120, 0.9)", width=5),
+                line=dict(color="rgba(255, 59, 48, 0.9)", width=5),
                 name="Edges (arteriole mask)",
             )
         )
@@ -1706,7 +1706,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
                 y=v_y,
                 z=v_z,
                 mode="lines",
-                line=dict(color="rgba(255, 62, 165, 0.9)", width=5),
+                line=dict(color="rgba(46, 204, 113, 0.9)", width=5),
                 name="Edges (venule mask)",
             )
         )

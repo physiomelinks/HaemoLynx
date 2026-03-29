@@ -50,7 +50,7 @@ VOXEL_SIZE_POLICY = "auto"
 # Vessel-mask settings
 # ---------------------------
 # Toggle automated selection of start/output nodes from masks.
-AUTOMATED_VESSEL_ASSIGNMENT =  True
+AUTOMATED_VESSEL_ASSIGNMENT =  False
 # Fast mode for automated large-vessel I/O assignment: remove overlap voxels
 # from the smaller component in each arteriole/venule overlap pair before
 # terminal assignment (non-overlapping component regions are preserved).
@@ -175,9 +175,9 @@ ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[fl
 # Volume boxes used to select venule boundary nodes.
 VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 # Runtime container for selected starting node IDs.
-STARTING_NODES: list[int] = [1084, 1226, 1454, 147, 327, 472, 539, 567, 598, 661, 852, 894]
+STARTING_NODES: list[int] = [1022, 1084, 1120, 1126, 1173, 118, 1218, 1226, 1296, 1376, 1379, 1421, 1454, 1455, 147, 1514, 221, 36, 395, 397, 453, 472, 477, 508, 539, 555, 567, 598, 605, 619, 622, 635, 650, 661, 745, 758, 852, 894, 896]
 # Runtime container for selected output node IDs.
-OUTPUT_NODES: list[int] = [1022, 1048, 1095, 1100, 1120, 1126, 1173, 1218, 1223, 1225, 1239, 1296, 1299, 1376, 1407, 1421, 1452, 1455, 1468, 1477, 1529, 1538, 1542, 1575, 214, 340, 397, 416, 429, 463, 474, 475, 513, 525, 555, 561, 583, 627, 672, 692, 708, 740, 745, 759, 777, 798, 807, 829, 843, 844, 883, 896, 907, 959, 990]
+OUTPUT_NODES: list[int] = [1048, 1079, 1095, 1100, 1223, 1225, 1239, 1299, 1407, 143, 1452, 1468, 1477, 1513, 1529, 1538, 1542, 1575, 1592, 167, 1938, 214, 2186, 248, 278, 299, 301, 320, 322, 327, 331, 340, 347, 353, 362, 365, 374, 416, 429, 430, 437, 463, 474, 475, 476, 512, 513, 525, 526, 536, 556, 561, 583, 613, 627, 672, 692, 708, 740, 759, 777, 782, 798, 807, 829, 843, 844, 873, 883, 907, 959, 990]
 # Runtime container for selected arteriole boundary node IDs.
 ARTERIOLE_BOUNDARY_NODES: list[int] = [485, 1090, 1092, 761]
 # Runtime container for selected venule boundary node IDs.

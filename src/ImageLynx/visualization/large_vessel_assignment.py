@@ -252,9 +252,9 @@ def visualize_3d_plotly_large_vessel_assignment(
         fig=fig,
     )
     vessel_styles = {
-        "arteriole": dict(color="rgba(0, 220, 120, 0.9)", name="Edges (arteriole)"),
+        "arteriole": dict(color="rgba(255, 59, 48, 0.9)", name="Edges (arteriole)"),
         "capillary": dict(color="rgba(0, 200, 255, 0.75)", name="Edges (capillary)"),
-        "venule": dict(color="rgba(255, 62, 165, 0.9)", name="Edges (venule)"),
+        "venule": dict(color="rgba(46, 204, 113, 0.9)", name="Edges (venule)"),
     }
     for kind in ("arteriole", "capillary", "venule"):
         ex, ey, ez = edge_segments[kind]
@@ -309,7 +309,7 @@ def visualize_3d_plotly_large_vessel_assignment(
                 y=iy,
                 z=iz,
                 mode="markers",
-                marker=dict(size=9, color="#00FF7F"),
+                marker=dict(size=9, color="#FF3B30"),
                 name="Input nodes",
                 customdata=iid,
                 hovertemplate="Input node %{customdata}<extra></extra>",
@@ -323,7 +323,7 @@ def visualize_3d_plotly_large_vessel_assignment(
                 y=oy,
                 z=oz,
                 mode="markers",
-                marker=dict(size=9, color="#FF3EA5"),
+                marker=dict(size=9, color="#2ECC71"),
                 name="Output nodes",
                 customdata=oid,
                 hovertemplate="Output node %{customdata}<extra></extra>",

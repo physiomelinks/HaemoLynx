@@ -559,8 +559,8 @@ def visualize_3d_plotly_vessel_types(
 
     Mapping:
     - Art* -> arteriole (red)
-    - B*   -> capillary (green)
-    - Ven* -> venule (blue)
+    - B*   -> capillary (blue)
+    - Ven* -> venule (green)
     """
     pos = nx.get_node_attributes(G, "pos")
     if not pos:
@@ -578,8 +578,8 @@ def visualize_3d_plotly_vessel_types(
 
     type_to_color = {
         "arteriole": "#d62728",  # red
-        "capillary": "#2ca02c",  # green
-        "venule": "#1f77b4",  # blue
+        "capillary": "#1f77b4",  # blue
+        "venule": "#2ca02c",  # green
         "unknown": "#7f7f7f",
     }
     type_to_label = {
