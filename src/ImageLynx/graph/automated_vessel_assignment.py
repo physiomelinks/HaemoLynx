@@ -607,7 +607,7 @@ def select_terminal_nodes_from_large_vessel_masks(
     if overlap_candidates and not allow_overlap:
         print(
             "Automated large-vessel overlap-resolution: "
-            f"{len(overlap_candidates)} overlap terminal(s)."
+            f"{len(overlap_candidates)} overlap terminal(s) requiring tie-break."
         )
         arteriole_geometry = _prepare_mask_geometry(arteriole_mask)
         venule_geometry = _prepare_mask_geometry(venule_mask)
@@ -647,7 +647,7 @@ def select_terminal_nodes_from_large_vessel_masks(
                         elapsed = time.perf_counter() - start_time_s
                         print(
                             "Automated large-vessel overlap-resolution progress: "
-                            f"{done_idx}/{len(overlap_candidates)} overlap terminals "
+                            f"{done_idx}/{len(overlap_candidates)} tie-break terminal(s) "
                             f"({elapsed:.1f}s elapsed)."
                         )
         else:
@@ -662,7 +662,7 @@ def select_terminal_nodes_from_large_vessel_masks(
                     elapsed = time.perf_counter() - start_time_s
                     print(
                         "Automated large-vessel overlap-resolution progress: "
-                        f"{done_idx}/{len(overlap_candidates)} overlap terminals "
+                        f"{done_idx}/{len(overlap_candidates)} tie-break terminal(s) "
                         f"({elapsed:.1f}s elapsed)."
                     )
 
@@ -684,7 +684,7 @@ def select_terminal_nodes_from_large_vessel_masks(
     )
     total_elapsed = time.perf_counter() - start_time_s
     print(
-        "Automated large-vessel assignment complete: "
+        "Automated large-vessel assignment complete (step candidate totals): "
         f"inputs={len(filtered_inputs)}, outputs={len(filtered_outputs)}, "
         f"elapsed={total_elapsed:.1f}s."
     )
@@ -827,6 +827,8 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
             "Automated large-vessel progressive assignment step "
             f"{step_idx}/{len(schedule)} "
             f"(dilation={float(dilation_microns):.3f} microns): "
+            f"step_total_inputs={len(step_inputs)}, "
+            f"step_total_outputs={len(step_outputs)}, "
             f"new_inputs={len(newly_assigned_inputs)}, "
             f"new_outputs={len(newly_assigned_outputs)}, "
             f"remaining_terminals={len(remaining_terminal_ids)}."
