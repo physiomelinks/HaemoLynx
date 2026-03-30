@@ -71,6 +71,28 @@ def _is_arteriole_branch_order(branch_order: object, arteriole_branch_prefix: st
     return str(branch_order).startswith(str(arteriole_branch_prefix))
 
 
+def _build_pericyte_factor_by_branch_order(
+    diameter_by_branch_order: Mapping[object, float],
+    *,
+    pericyte_percent: float,
+    pericyte_branch_prefix: str,
+) -> dict[object, float]:
+    """Build constriction factors by branch order for pericyte-targeted branches."""
+    factor = 1.0 + (float(pericyte_percent) / 100.0)
+    if factor <= 0.0:
+        raise ValueError(
+            f"pericyte_percent yields non-positive diameter factor: {pericyte_percent}."
+        )
+
+    out: dict[object, float] = {}
+    for branch_order in diameter_by_branch_order.keys():
+        if _is_capillary_branch_order(branch_order, pericyte_branch_prefix):
+            out[branch_order] = factor
+        else:
+            out[branch_order] = 1.0
+    return out
+
+
 def _scale_passive_capillary_edge_fwhm_diameters(
     graph_with_branch_orders,
     *,
@@ -412,5 +434,257 @@ def passive_arteriole_diameter_beforeafter(
     return {
         "flow_change_plot_path": str(flow_change_plot_path),
         "arteriole_diameter_delta_um": float(arteriole_diameter_delta_um),
+        "rows": rows,
+    }
+
+
+def pericyte_constriction_dilation_spacing_beforeafter(
+    *,
+    graph_with_branch_orders,
+    diameter_by_branch_order: Mapping[object, float],
+    solve_pressure_and_boundary_flow: Callable[..., Mapping[str, object]],
+    starting_nodes: Sequence[int],
+    output_nodes: Sequence[int],
+    inlet_pressures_pa: Sequence[int],
+    output_p_bc: float,
+    pericyte_percent: float,
+    pericyte_spacing_delta_um: float,
+    output_dir: Path | str,
+    constriction_length_um: float = 40.0,
+    baseline_constriction_spacing_um: float = 100.0,
+    pericyte_branch_prefix: str = "B",
+) -> dict:
+    """Compare flow/resistance before/after pericyte change at two spacings.
+
+    The function runs two spacing scenarios:
+    1) baseline spacing
+    2) baseline spacing shifted by pericyte_spacing_delta_um
+
+    For each spacing scenario, it computes baseline (no pericyte modification) and
+    pericyte-modified networks using a signed pericyte_percent:
+    - positive -> dilation
+    - negative -> constriction
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    spacing_after_um = float(baseline_constriction_spacing_um) + float(pericyte_spacing_delta_um)
+    if spacing_after_um <= 0.0:
+        raise ValueError(
+            "pericyte_spacing_delta_um yields non-positive spacing; "
+            f"baseline={baseline_constriction_spacing_um}, delta={pericyte_spacing_delta_um}."
+        )
+
+    from ImageLynx import haemodynamics
+
+    pericyte_factor_by_branch_order = _build_pericyte_factor_by_branch_order(
+        diameter_by_branch_order,
+        pericyte_percent=float(pericyte_percent),
+        pericyte_branch_prefix=pericyte_branch_prefix,
+    )
+
+    spacing_scenarios = [
+        ("baseline_spacing", float(baseline_constriction_spacing_um)),
+        ("shifted_spacing", float(spacing_after_um)),
+    ]
+
+    rows: list[dict[str, float | str]] = []
+    for spacing_label, spacing_um in spacing_scenarios:
+        model = haemodynamics.PoiseuilleModel(
+            constriction_length=float(constriction_length_um),
+            constriction_spacing=float(spacing_um),
+        )
+
+        graph_baseline = graph_with_branch_orders.copy()
+        graph_modified = graph_with_branch_orders.copy()
+        graph_baseline, _ = model.set_poiseuille_weights_with_constrictions(
+            graph_baseline,
+            diameter_by_branch_order,
+            prefer_edge_fwhm_baseline=True,
+            constriction_factor_by_branch_order={
+                branch_order: 1.0 for branch_order in diameter_by_branch_order.keys()
+            },
+        )
+        graph_modified, _ = model.set_poiseuille_weights_with_constrictions(
+            graph_modified,
+            diameter_by_branch_order,
+            prefer_edge_fwhm_baseline=True,
+            constriction_factor_by_branch_order=pericyte_factor_by_branch_order,
+        )
+
+        baseline_conductance, baseline_node_list = haemodynamics.build_conductance_matrix_from_graph(
+            graph_baseline
+        )
+        modified_conductance, modified_node_list = haemodynamics.build_conductance_matrix_from_graph(
+            graph_modified
+        )
+
+        for inlet_pressure_pa in inlet_pressures_pa:
+            baseline = solve_pressure_and_boundary_flow(
+                conductance=baseline_conductance,
+                node_list=baseline_node_list,
+                input_p_bc=float(inlet_pressure_pa),
+                output_p_bc=float(output_p_bc),
+                starting_nodes=list(starting_nodes),
+                output_nodes=list(output_nodes),
+            )
+            modified = solve_pressure_and_boundary_flow(
+                conductance=modified_conductance,
+                node_list=modified_node_list,
+                input_p_bc=float(inlet_pressure_pa),
+                output_p_bc=float(output_p_bc),
+                starting_nodes=list(starting_nodes),
+                output_nodes=list(output_nodes),
+            )
+            baseline_flow = float(baseline["total_inlet_flow"])
+            modified_flow = float(modified["total_inlet_flow"])
+            baseline_resistance = float(baseline["equivalent_resistance"])
+            modified_resistance = float(modified["equivalent_resistance"])
+            rows.append(
+                {
+                    "spacing_label": spacing_label,
+                    "spacing_um": float(spacing_um),
+                    "inlet_pressure_pa": float(inlet_pressure_pa),
+                    "baseline_total_inlet_flow": baseline_flow,
+                    "modified_total_inlet_flow": modified_flow,
+                    "flow_delta": float(modified_flow - baseline_flow),
+                    "baseline_equivalent_resistance": baseline_resistance,
+                    "modified_equivalent_resistance": modified_resistance,
+                    "resistance_delta": float(modified_resistance - baseline_resistance),
+                }
+            )
+
+    flow_resistance_plot_path = output_path / "alice_pericyte_beforeafter_spacing_flow_resistance.png"
+
+    x_baseline = [
+        float(r["inlet_pressure_pa"]) for r in rows if str(r["spacing_label"]) == "baseline_spacing"
+    ]
+    y_flow_base_before = [
+        float(r["baseline_total_inlet_flow"])
+        for r in rows
+        if str(r["spacing_label"]) == "baseline_spacing"
+    ]
+    y_flow_base_after = [
+        float(r["modified_total_inlet_flow"])
+        for r in rows
+        if str(r["spacing_label"]) == "baseline_spacing"
+    ]
+    y_res_base_before = [
+        float(r["baseline_equivalent_resistance"])
+        for r in rows
+        if str(r["spacing_label"]) == "baseline_spacing"
+    ]
+    y_res_base_after = [
+        float(r["modified_equivalent_resistance"])
+        for r in rows
+        if str(r["spacing_label"]) == "baseline_spacing"
+    ]
+
+    x_shifted = [
+        float(r["inlet_pressure_pa"]) for r in rows if str(r["spacing_label"]) == "shifted_spacing"
+    ]
+    y_flow_shift_before = [
+        float(r["baseline_total_inlet_flow"])
+        for r in rows
+        if str(r["spacing_label"]) == "shifted_spacing"
+    ]
+    y_flow_shift_after = [
+        float(r["modified_total_inlet_flow"])
+        for r in rows
+        if str(r["spacing_label"]) == "shifted_spacing"
+    ]
+    y_res_shift_before = [
+        float(r["baseline_equivalent_resistance"])
+        for r in rows
+        if str(r["spacing_label"]) == "shifted_spacing"
+    ]
+    y_res_shift_after = [
+        float(r["modified_equivalent_resistance"])
+        for r in rows
+        if str(r["spacing_label"]) == "shifted_spacing"
+    ]
+
+    fig, (ax_flow, ax_res) = plt.subplots(2, 1, figsize=(9, 9), sharex=True)
+    ax_flow.plot(
+        x_baseline,
+        y_flow_base_before,
+        marker="o",
+        linewidth=2.0,
+        label="Baseline spacing: before pericyte change",
+    )
+    ax_flow.plot(
+        x_baseline,
+        y_flow_base_after,
+        marker="o",
+        linewidth=2.0,
+        label="Baseline spacing: after pericyte change",
+    )
+    ax_flow.plot(
+        x_shifted,
+        y_flow_shift_before,
+        marker="o",
+        linewidth=2.0,
+        linestyle="--",
+        label="Shifted spacing: before pericyte change",
+    )
+    ax_flow.plot(
+        x_shifted,
+        y_flow_shift_after,
+        marker="o",
+        linewidth=2.0,
+        linestyle="--",
+        label="Shifted spacing: after pericyte change",
+    )
+    ax_flow.set_ylabel("Total inlet flow")
+    ax_flow.set_title("Pericyte Before/After Flow at Baseline vs Shifted Spacing")
+    ax_flow.grid(True, alpha=0.3)
+    ax_flow.legend()
+
+    ax_res.plot(
+        x_baseline,
+        y_res_base_before,
+        marker="o",
+        linewidth=2.0,
+        label="Baseline spacing: before pericyte change",
+    )
+    ax_res.plot(
+        x_baseline,
+        y_res_base_after,
+        marker="o",
+        linewidth=2.0,
+        label="Baseline spacing: after pericyte change",
+    )
+    ax_res.plot(
+        x_shifted,
+        y_res_shift_before,
+        marker="o",
+        linewidth=2.0,
+        linestyle="--",
+        label="Shifted spacing: before pericyte change",
+    )
+    ax_res.plot(
+        x_shifted,
+        y_res_shift_after,
+        marker="o",
+        linewidth=2.0,
+        linestyle="--",
+        label="Shifted spacing: after pericyte change",
+    )
+    ax_res.set_xlabel("Inlet pressure (Pa)")
+    ax_res.set_ylabel("Equivalent resistance")
+    ax_res.set_title("Pericyte Before/After Resistance at Baseline vs Shifted Spacing")
+    ax_res.grid(True, alpha=0.3)
+    ax_res.legend()
+
+    fig.tight_layout()
+    fig.savefig(flow_resistance_plot_path, dpi=200)
+    plt.close(fig)
+
+    return {
+        "flow_resistance_plot_path": str(flow_resistance_plot_path),
+        "pericyte_percent": float(pericyte_percent),
+        "baseline_constriction_spacing_um": float(baseline_constriction_spacing_um),
+        "pericyte_spacing_delta_um": float(pericyte_spacing_delta_um),
+        "shifted_constriction_spacing_um": float(spacing_after_um),
         "rows": rows,
     }
