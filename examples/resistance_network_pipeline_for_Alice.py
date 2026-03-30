@@ -133,6 +133,9 @@ RUN_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER = True
 PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT = PERICYTE_DILATION_MAX_PERCENT
 RUN_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER = False
 PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM = 0.5
+RUN_PERICYTE_SPACING_BEFOREAFTER = False
+PERICYTE_BEFOREAFTER_PERCENT = -20.0
+PERICYTE_SPACING_DELTA_UM = 20.0
 ALICE_PAPER_OUTPUT_DIR = root_dir / "examples" / "outputs" / "alice_paper"
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
@@ -377,6 +380,9 @@ def _run_alice_pericyte_dilation_pressure_sweep(
     capillary_passive_dilation_percent: float | None = None,
     run_passive_arteriole_diameter_beforeafter: bool = RUN_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER,
     arteriole_passive_diameter_delta_um: float = PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM,
+    run_pericyte_spacing_beforeafter: bool = RUN_PERICYTE_SPACING_BEFOREAFTER,
+    pericyte_beforeafter_percent: float = PERICYTE_BEFOREAFTER_PERCENT,
+    pericyte_spacing_delta_um: float = PERICYTE_SPACING_DELTA_UM,
 ) -> dict:
     """Sweep pericyte dilation and inlet pressure; compute flow/resistance curves."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -487,6 +493,7 @@ def _run_alice_pericyte_dilation_pressure_sweep(
     plot_outputs = alicepaper.graph(results, output_dir=output_dir)
     capillary_flow_change_outputs = None
     arteriole_flow_change_outputs = None
+    pericyte_spacing_beforeafter_outputs = None
     if run_passive_capillary_diameter_beforeafter:
         capillary_percent = (
             float(max_dilation_percent)
@@ -518,6 +525,23 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             arteriole_diameter_delta_um=float(arteriole_passive_diameter_delta_um),
             output_dir=output_dir,
         )
+    if run_pericyte_spacing_beforeafter:
+        pericyte_spacing_beforeafter_outputs = (
+            alicepaper.pericyte_constriction_dilation_spacing_beforeafter(
+                graph_with_branch_orders=graph_with_branch_orders,
+                diameter_by_branch_order=diameter_by_branch_order,
+                solve_pressure_and_boundary_flow=_solve_pressure_and_boundary_flow,
+                starting_nodes=starting_nodes,
+                output_nodes=output_nodes,
+                inlet_pressures_pa=inlet_pressures,
+                output_p_bc=output_p_bc,
+                pericyte_percent=float(pericyte_beforeafter_percent),
+                pericyte_spacing_delta_um=float(pericyte_spacing_delta_um),
+                output_dir=output_dir,
+                constriction_length_um=float(constriction_length_um),
+                baseline_constriction_spacing_um=float(constriction_spacing_um),
+            )
+        )
     print(f"Alice paper curve plots saved to: {plot_outputs}")
     if capillary_flow_change_outputs is not None:
         print(
@@ -529,12 +553,18 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             "Alice arteriole-only passive diameter change flow-change plot saved to: "
             f"{arteriole_flow_change_outputs}"
         )
+    if pericyte_spacing_beforeafter_outputs is not None:
+        print(
+            "Alice pericyte before/after spacing comparison plots saved to: "
+            f"{pericyte_spacing_beforeafter_outputs}"
+        )
     return {
         "results": results,
         "csv_path": str(sweep_csv_path),
         "plot_outputs": plot_outputs,
         "capillary_flow_change_outputs": capillary_flow_change_outputs,
         "arteriole_flow_change_outputs": arteriole_flow_change_outputs,
+        "pericyte_spacing_beforeafter_outputs": pericyte_spacing_beforeafter_outputs,
     }
 
 
@@ -1837,6 +1867,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         arteriole_passive_diameter_delta_um=float(
             PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM
         ),
+        run_pericyte_spacing_beforeafter=bool(RUN_PERICYTE_SPACING_BEFOREAFTER),
+        pericyte_beforeafter_percent=float(PERICYTE_BEFOREAFTER_PERCENT),
+        pericyte_spacing_delta_um=float(PERICYTE_SPACING_DELTA_UM),
     )
     print(
         "Completed Alice sweep: "

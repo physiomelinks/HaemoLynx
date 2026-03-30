@@ -153,6 +153,9 @@ def _run_alice_pericyte_dilation_pressure_sweep(
     capillary_passive_dilation_percent: float | None = None,
     run_passive_arteriole_diameter_beforeafter: bool = False,
     arteriole_passive_diameter_delta_um: float = 0.0,
+    run_pericyte_spacing_beforeafter: bool = False,
+    pericyte_beforeafter_percent: float = -20.0,
+    pericyte_spacing_delta_um: float = 0.0,
 ) -> dict[str, object]:
     """Sweep pericyte dilation and inlet pressure; compute flow/resistance curves."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -258,6 +261,7 @@ def _run_alice_pericyte_dilation_pressure_sweep(
     plot_outputs = alicepaper.graph(results, output_dir=output_dir)
     capillary_flow_change_outputs = None
     arteriole_flow_change_outputs = None
+    pericyte_spacing_beforeafter_outputs = None
     if run_passive_capillary_diameter_beforeafter:
         capillary_percent = (
             float(max_dilation_percent)
@@ -289,6 +293,23 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             arteriole_diameter_delta_um=float(arteriole_passive_diameter_delta_um),
             output_dir=output_dir,
         )
+    if run_pericyte_spacing_beforeafter:
+        pericyte_spacing_beforeafter_outputs = (
+            alicepaper.pericyte_constriction_dilation_spacing_beforeafter(
+                graph_with_branch_orders=graph_with_branch_orders,
+                diameter_by_branch_order=diameter_by_branch_order,
+                solve_pressure_and_boundary_flow=_solve_pressure_and_boundary_flow,
+                starting_nodes=starting_nodes,
+                output_nodes=output_nodes,
+                inlet_pressures_pa=inlet_pressures,
+                output_p_bc=output_p_bc,
+                pericyte_percent=float(pericyte_beforeafter_percent),
+                pericyte_spacing_delta_um=float(pericyte_spacing_delta_um),
+                output_dir=output_dir,
+                constriction_length_um=float(constriction_length_um),
+                baseline_constriction_spacing_um=float(constriction_spacing_um),
+            )
+        )
     print(f"Alice paper curve plots saved to: {plot_outputs}")
     if capillary_flow_change_outputs is not None:
         print(
@@ -300,12 +321,18 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             "Alice arteriole-only passive diameter change flow-change plot saved to: "
             f"{arteriole_flow_change_outputs}"
         )
+    if pericyte_spacing_beforeafter_outputs is not None:
+        print(
+            "Alice pericyte before/after spacing comparison plots saved to: "
+            f"{pericyte_spacing_beforeafter_outputs}"
+        )
     return {
         "results": results,
         "csv_path": str(sweep_csv_path),
         "plot_outputs": plot_outputs,
         "capillary_flow_change_outputs": capillary_flow_change_outputs,
         "arteriole_flow_change_outputs": arteriole_flow_change_outputs,
+        "pericyte_spacing_beforeafter_outputs": pericyte_spacing_beforeafter_outputs,
     }
 
 
@@ -381,6 +408,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             alice_passive_capillary_diameter_beforeafter_percent=ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT,
                             run_alice_passive_arteriole_diameter_beforeafter=RUN_ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER,
                             alice_passive_arteriole_diameter_beforeafter_delta_um=ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM,
+                            run_alice_pericyte_spacing_beforeafter=RUN_ALICE_PERICYTE_SPACING_BEFOREAFTER,
+                            alice_pericyte_beforeafter_percent=ALICE_PERICYTE_BEFOREAFTER_PERCENT,
+                            alice_pericyte_spacing_delta_um=ALICE_PERICYTE_SPACING_DELTA_UM,
                             alice_custom_edges_for_sweep=ALICE_CUSTOM_EDGES_FOR_SWEEP,
                             plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING,
@@ -2484,6 +2514,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 arteriole_passive_diameter_delta_um=float(
                     alice_passive_arteriole_diameter_beforeafter_delta_um
                 ),
+                run_pericyte_spacing_beforeafter=bool(
+                    run_alice_pericyte_spacing_beforeafter
+                ),
+                pericyte_beforeafter_percent=float(alice_pericyte_beforeafter_percent),
+                pericyte_spacing_delta_um=float(alice_pericyte_spacing_delta_um),
             )
             print(
                 "Completed Alice sweep: "
