@@ -61,29 +61,57 @@ def _downsample_binary_mask_max(
 def visualize_3d_plotly_large_vessel_assignment(
     G: nx.Graph,
     *,
-    large_arteriole_mask: np.ndarray,
-    large_venule_mask: np.ndarray,
+    large_arteriole_mask: np.ndarray | None,
+    large_venule_mask: np.ndarray | None,
+    small_arteriole_mask: np.ndarray | None = None,
+    small_venule_mask: np.ndarray | None = None,
     input_nodes: list[Any],
     output_nodes: list[Any],
+    arteriole_boundary_nodes: list[Any] | None = None,
+    venule_boundary_nodes: list[Any] | None = None,
     voxel_size_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
     volume_downsample_stride: int = 1,
     title: str = "Final Graph with Automated Large-Vessel Assignment (3D)",
     save_html_path: str | None = None,
     show: bool = False,
 ) -> go.Figure:
-    """Render graph + large-vessel volumes + I/O nodes + vessel/branch labels."""
+    """Render graph + large/small vessel volumes + I/O nodes + vessel/branch labels."""
     pos = nx.get_node_attributes(G, "pos")
     if not pos:
         raise ValueError("Graph has no node positions ('pos').")
+    if large_arteriole_mask is None or large_venule_mask is None:
+        raise ValueError(
+            "large_arteriole_mask and large_venule_mask are required for this view."
+        )
     if large_arteriole_mask.shape != large_venule_mask.shape:
         raise ValueError(
             "large_arteriole_mask and large_venule_mask must share a shape. "
             f"Got {large_arteriole_mask.shape} and {large_venule_mask.shape}."
         )
+    if (small_arteriole_mask is None) != (small_venule_mask is None):
+        raise ValueError(
+            "small_arteriole_mask and small_venule_mask must be both set or both None."
+        )
+    if (
+        small_arteriole_mask is not None
+        and small_venule_mask is not None
+        and small_arteriole_mask.shape != small_venule_mask.shape
+    ):
+        raise ValueError(
+            "small_arteriole_mask and small_venule_mask must share a shape. "
+            f"Got {small_arteriole_mask.shape} and {small_venule_mask.shape}."
+        )
 
     stride = max(1, int(volume_downsample_stride))
 
-    def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: go.Figure) -> None:
+    def _add_volume_trace(
+        mask: np.ndarray,
+        *,
+        name: str,
+        color: str,
+        opacity: float,
+        fig: go.Figure,
+    ) -> None:
         mask_bool = mask.astype(bool, copy=False)
         bbox = _nonzero_bbox_slices_zyx(mask_bool)
         if bbox is None:
@@ -114,7 +142,7 @@ def visualize_3d_plotly_large_vessel_assignment(
                 value=downsampled.astype(float).ravel(),
                 isomin=0.5,
                 isomax=1.0,
-                opacity=0.12,
+                opacity=float(opacity),
                 surface_count=1,
                 caps=dict(x_show=False, y_show=False, z_show=False),
                 colorscale=[[0.0, color], [1.0, color]],
@@ -219,7 +247,12 @@ def visualize_3d_plotly_large_vessel_assignment(
 
     input_set = set(input_nodes)
     output_set = set(output_nodes)
-    other_nodes = [n for n in G.nodes if n not in input_set and n not in output_set]
+    art_boundary_set = set(arteriole_boundary_nodes or [])
+    ven_boundary_set = set(venule_boundary_nodes or [])
+    boundary_set = art_boundary_set | ven_boundary_set
+    other_nodes = [
+        n for n in G.nodes if n not in input_set and n not in output_set and n not in boundary_set
+    ]
 
     def _coords_with_ids(
         nodes: list[Any],
@@ -242,15 +275,32 @@ def visualize_3d_plotly_large_vessel_assignment(
     _add_volume_trace(
         large_arteriole_mask.astype(bool, copy=False),
         name="Large arteriole mask",
-        color="#FF3B30",
+        color="#B71C1C",
+        opacity=0.22,
         fig=fig,
     )
     _add_volume_trace(
         large_venule_mask.astype(bool, copy=False),
         name="Large venule mask",
-        color="#2ECC71",
+        color="#1B5E20",
+        opacity=0.22,
         fig=fig,
     )
+    if small_arteriole_mask is not None and small_venule_mask is not None:
+        _add_volume_trace(
+            small_arteriole_mask.astype(bool, copy=False),
+            name="Small arteriole mask",
+            color="#FF3B30",
+            opacity=0.12,
+            fig=fig,
+        )
+        _add_volume_trace(
+            small_venule_mask.astype(bool, copy=False),
+            name="Small venule mask",
+            color="#2ECC71",
+            opacity=0.12,
+            fig=fig,
+        )
     vessel_styles = {
         "arteriole": dict(color="rgba(255, 59, 48, 0.9)", name="Edges (arteriole)"),
         "capillary": dict(color="rgba(0, 200, 255, 0.75)", name="Edges (capillary)"),
@@ -327,6 +377,20 @@ def visualize_3d_plotly_large_vessel_assignment(
                 name="Output nodes",
                 customdata=oid,
                 hovertemplate="Output node %{customdata}<extra></extra>",
+            )
+        )
+    if boundary_set:
+        bx, by, bz, bid = _coords_with_ids(sorted(boundary_set))
+        fig.add_trace(
+            go.Scatter3d(
+                x=bx,
+                y=by,
+                z=bz,
+                mode="markers",
+                marker=dict(size=8, color="#000000"),
+                name="Boundary nodes",
+                customdata=bid,
+                hovertemplate="Boundary node %{customdata}<extra></extra>",
             )
         )
 

@@ -59,6 +59,9 @@ AUTOMATED_VESSEL_ASSIGNMENT_FAST_MODE = True
 # the same "remove overlap voxels from smaller component" logic before terminal
 # assignment.
 AUTOMATED_VESSEL_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE = True
+# Master switch for large-vessel overlap-cleanup pre-pass.
+# If False, overlap cleanup is disabled even when fast mode is enabled.
+AUTOMATED_VESSEL_ASSIGNMENT_ENABLE_OVERLAP_CLEANUP = True
 # Worker count for parallel overlap resolution in automated large-vessel I/O
 # assignment. Set 0 to run serially.
 AUTOMATED_VESSEL_OVERLAP_PARALLEL_WORKERS = 8
@@ -74,7 +77,7 @@ USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 LARGE_VESSEL_MASK_DILATION_MICRONS = 50
 # Minimum connected-component volume (um^3) kept in large-vessel masks before
 # overlap cleanup/assignment. Set 0 to disable component-volume filtering.
-LARGE_VESSEL_MIN_COMPONENT_VOLUME_UM3 = 200.0
+LARGE_VESSEL_MIN_COMPONENT_VOLUME_UM3 = 50.0
 # Downsample stride used for 3D large-vessel volume rendering in Plotly.
 # 1 = full resolution, 2/3/4 progressively faster but coarser.
 LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
@@ -96,38 +99,41 @@ ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "art
 ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
 
 # Toggle small-vessel masks for automated arteriole/venule boundary assignment.
-USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
+USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = True
 # Persist small-vessel-derived ARTERIOLE_BOUNDARY_NODES/VENULE_BOUNDARY_NODES
 # into this settings file and disable small-vessel boundary automation next run.
-AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS = False
+AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS = True
 # Toggle ilastik segmentation for small-vessel masks.
 USE_ILASTIK_SMALL_VESSEL_SEGMENTATION = False
 # Minimum edge-overlap fraction required for mask-based boundary assignment.
-SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.5
+SMALL_VESSEL_MASK_MIN_OVERLAP_FRACTION = 0.8
 # Maximum dilation distance (microns) for progressive small-vessel boundary assignment.
 # Assignment runs at 0 microns first, then in 5-micron increments up to this max.
-SMALL_VESSEL_MASK_DILATION_MICRONS = 0
+SMALL_VESSEL_MASK_DILATION_MICRONS = 50
 # Minimum connected-component volume (um^3) kept in small-vessel masks before
 # overlap cleanup/edge classification. Set 0 to disable component-volume filtering.
-SMALL_VESSEL_MIN_COMPONENT_VOLUME_UM3 = 200.0
+SMALL_VESSEL_MIN_COMPONENT_VOLUME_UM3 = 50.0
 # Fast mode for small-vessel boundary assignment: pre-clean overlap voxels from
 # smaller overlapping components before edge classification.
-SMALL_VESSEL_BOUNDARY_ASSIGNMENT_FAST_MODE = False
+SMALL_VESSEL_BOUNDARY_ASSIGNMENT_FAST_MODE = True
 # Apply overlap-cleanup pre-pass in normal mode (fast mode off) for
 # small-vessel boundary assignment.
 SMALL_VESSEL_BOUNDARY_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE = False
+# Master switch for small-vessel overlap-cleanup pre-pass.
+# If False, overlap cleanup is disabled even when fast mode is enabled.
+SMALL_VESSEL_BOUNDARY_ASSIGNMENT_ENABLE_OVERLAP_CLEANUP = True
 # Worker count for parallel edge overlap checks in small-vessel boundary
 # assignment. Set 0 to run serially.
-SMALL_VESSEL_OVERLAP_PARALLEL_WORKERS = 0
+SMALL_VESSEL_OVERLAP_PARALLEL_WORKERS = 8
 # Downsample stride used for 3D small-vessel volume rendering in Plotly.
 # 1 = full resolution, 2/3/4 progressively faster but coarser.
-SMALL_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 2
+SMALL_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
 # Toggle writing interactive 3D HTML for small-vessel boundary labelling.
 WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML = True
 # Pre-segmented small arteriole mask path.
-SMALL_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
+SMALL_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "brain_small_arterioles.tiff"
 # Pre-segmented small venule mask path.
-SMALL_VENULE_MASK_PATH = root_dir / "examples" / "images" / "small_venule_mask.tif"
+SMALL_VENULE_MASK_PATH = root_dir / "examples" / "images" / "brain_small_venules.tiff"
 # Raw small-arteriole image path used when ilastik small-vessel mode is enabled.
 ILASTIK_UNSEGMENTED_SMALL_ARTERIOLE_IMAGE_PATH = root_dir / "examples" / "images" / "small_arteriole_mask.tif"
 # Raw small-venule image path used when ilastik small-vessel mode is enabled.
@@ -181,13 +187,13 @@ ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[fl
 # Volume boxes used to select venule boundary nodes.
 VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 # Runtime container for selected starting node IDs.
-STARTING_NODES: list[int] = [1022, 1084, 1120, 1126, 1173, 118, 1218, 1226, 1296, 1376, 1379, 1421, 1454, 1455, 147, 1514, 221, 36, 395, 397, 453, 472, 477, 508, 539, 555, 567, 598, 605, 619, 622, 635, 650, 661, 745, 758, 852, 894, 896]
+STARTING_NODES: list[int] = [1022, 1084, 1120, 1126, 1173, 118, 1218, 1226, 1239, 1296, 1376, 1421, 1454, 1455, 1514, 221, 395, 397, 453, 477, 539, 555, 598, 605, 622, 661, 758, 798, 852, 894, 896]
 # Runtime container for selected output node IDs.
-OUTPUT_NODES: list[int] = [1048, 1079, 1095, 1100, 1223, 1225, 1239, 1299, 1407, 143, 1452, 1468, 1477, 1513, 1529, 1538, 1542, 1575, 1592, 167, 1938, 214, 2186, 248, 278, 299, 301, 320, 322, 327, 331, 340, 347, 353, 362, 365, 374, 416, 429, 430, 437, 463, 474, 475, 476, 512, 513, 525, 526, 536, 556, 561, 583, 613, 627, 672, 692, 708, 740, 759, 777, 782, 798, 807, 829, 843, 844, 873, 883, 907, 959, 990]
+OUTPUT_NODES: list[int] = [1048, 1079, 1095, 1100, 1223, 1225, 1299, 1407, 1452, 1468, 1477, 1513, 1529, 1538, 1542, 1575, 1592, 167, 1938, 2186, 248, 278, 299, 301, 320, 322, 327, 331, 340, 347, 353, 362, 365, 374, 416, 429, 430, 437, 463, 474, 475, 476, 508, 513, 525, 526, 536, 556, 561, 567, 583, 613, 627, 635, 672, 692, 708, 740, 745, 759, 777, 782, 807, 829, 843, 844, 873, 883, 907, 959, 990]
 # Runtime container for selected arteriole boundary node IDs.
-ARTERIOLE_BOUNDARY_NODES: list[int] = [485, 1090, 1092, 761]
+ARTERIOLE_BOUNDARY_NODES: list[int] = [1037, 1047, 1051, 1061, 1085, 1092, 1109, 1165, 1166, 1171, 1240, 132, 1366, 164, 171, 172, 1732, 192, 207, 256, 273, 309, 31, 311, 363, 366, 426, 436, 443, 484, 485, 501, 521, 522, 534, 549, 572, 634, 647, 651, 669, 690, 695, 7, 75, 760, 794, 828, 831, 851, 875, 897, 991]
 # Runtime container for selected venule boundary node IDs.
-VENULE_BOUNDARY_NODES: list[int] = [606]
+VENULE_BOUNDARY_NODES: list[int] = [1000, 1001, 1035, 105, 1090, 1157, 1158, 1228, 1453, 1476, 1495, 1496, 1508, 152, 1533, 1567, 1568, 168, 179, 189, 194, 211, 23, 247, 259, 268, 279, 285, 290, 293, 297, 298, 342, 35, 352, 354, 355, 364, 389, 408, 412, 418, 445, 446, 448, 450, 454, 461, 464, 48, 489, 496, 502, 509, 52, 524, 528, 541, 545, 56, 579, 584, 585, 586, 587, 590, 591, 592, 606, 607, 609, 610, 611, 615, 649, 660, 691, 73, 761, 772, 790, 797, 819, 842, 99]
 # Enforce strict hierarchical branch-order prerequisites.
 STRICT_BRANCH_ORDER_ASSIGNMENT = False
 
@@ -282,7 +288,7 @@ STATISTICS_MODE = "fast"
 # Diameter and pericyte settings
 # ---------------------------
 # Toggle constant diameter behavior across branch orders.
-ALL_DIAMS_CONST = True
+ALL_DIAMS_CONST = False
 # Toggle pericyte constriction modelling in haemodynamics.
 DO_PERICYTE_CONSTRUCTION = False
 # Toggle pericyte-mask-driven constriction placement.
@@ -427,16 +433,16 @@ FWHM_REJECT_SAMPLES_WITH_LOW_FIT_R2 = True
 # Minimum acceptable R^2 for transverse Gaussian fits.
 FWHM_MIN_FIT_R2 = 0.85
 # Number of edge-level workers for automated FWHM fitting (None/<=1 => sequential).
-FWHM_EDGE_PARALLEL_WORKERS: Optional[int] = None
+FWHM_EDGE_PARALLEL_WORKERS: Optional[int] = 8
 # Number of edges bundled per worker task (reduces scheduler overhead).
 FWHM_EDGE_PARALLEL_BATCH_SIZE = 16
 # Branch-order class bounds handling mode for fitted diameters.
 FWHM_DIAMETER_BOUNDS_MODE = "reject"  # one of: off, reject, clamp
 # Plausible diameter ranges (um) by vessel class for sample/edge filtering.
 FWHM_DIAMETER_BOUNDS_BY_VESSEL_CLASS_UM: dict[str, tuple[float, float]] = {
-    "capillary": (2.0, 15.0),
-    "arteriole": (5.0, 80.0),
-    "venule": (5.0, 120.0),
+    "capillary": (2.0, 8.0),
+    "arteriole": (5.0, 20.0),
+    "venule": (5.0, 20.0),
     "default": (1.0, 150.0),
 }
 

@@ -113,6 +113,7 @@ def _exclude_smaller_overlapping_mask_components(
     overlap = arteriole_mask & venule_mask
     if not np.any(overlap):
         return arteriole_mask, venule_mask
+    initial_overlap_voxels = int(np.count_nonzero(overlap))
 
     structure = np.ones((3, 3, 3), dtype=np.uint8)
     arteriole_labels, _ = label(arteriole_mask, structure=structure)
@@ -165,8 +166,15 @@ def _exclude_smaller_overlapping_mask_components(
         )
         cleaned_venule_mask[pair_overlap] = False
 
-    remaining_overlap = cleaned_arteriole_mask & cleaned_venule_mask
-    if np.any(remaining_overlap):
-        cleaned_venule_mask[remaining_overlap] = False
+    remaining_overlap_voxels = int(
+        np.count_nonzero(cleaned_arteriole_mask & cleaned_venule_mask)
+    )
+    removed_overlap_voxels = int(initial_overlap_voxels - remaining_overlap_voxels)
+    print(
+        "Mask overlap cleanup summary: "
+        f"initial_overlap_voxels={initial_overlap_voxels}, "
+        f"removed_overlap_voxels={removed_overlap_voxels}, "
+        f"remaining_overlap_voxels={remaining_overlap_voxels}."
+    )
 
     return cleaned_arteriole_mask, cleaned_venule_mask
