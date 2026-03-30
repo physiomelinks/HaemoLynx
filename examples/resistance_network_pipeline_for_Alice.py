@@ -129,6 +129,10 @@ PERICYTE_DILATION_STEP_PERCENT = 1
 INLET_PRESSURE_MIN_PA = 4500
 INLET_PRESSURE_MAX_PA = 3000
 INLET_PRESSURE_STEP_PA = 500
+RUN_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER = True
+PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT = PERICYTE_DILATION_MAX_PERCENT
+RUN_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER = False
+PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM = 0.5
 ALICE_PAPER_OUTPUT_DIR = root_dir / "examples" / "outputs" / "alice_paper"
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
@@ -369,6 +373,10 @@ def _run_alice_pericyte_dilation_pressure_sweep(
     min_inlet_pressure_pa: int = INLET_PRESSURE_MIN_PA,
     max_inlet_pressure_pa: int = INLET_PRESSURE_MAX_PA,
     inlet_pressure_step_pa: int = INLET_PRESSURE_STEP_PA,
+    run_passive_capillary_diameter_beforeafter: bool = RUN_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER,
+    capillary_passive_dilation_percent: float | None = None,
+    run_passive_arteriole_diameter_beforeafter: bool = RUN_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER,
+    arteriole_passive_diameter_delta_um: float = PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM,
 ) -> dict:
     """Sweep pericyte dilation and inlet pressure; compute flow/resistance curves."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -477,11 +485,56 @@ def _run_alice_pericyte_dilation_pressure_sweep(
 
     alicepaper = _load_alicepaper_module()
     plot_outputs = alicepaper.graph(results, output_dir=output_dir)
+    capillary_flow_change_outputs = None
+    arteriole_flow_change_outputs = None
+    if run_passive_capillary_diameter_beforeafter:
+        capillary_percent = (
+            float(max_dilation_percent)
+            if capillary_passive_dilation_percent is None
+            else float(capillary_passive_dilation_percent)
+        )
+        capillary_flow_change_outputs = alicepaper.passive_capillary_diameter_beforeafter(
+            graph_with_branch_orders=graph_with_branch_orders,
+            diameter_by_branch_order=diameter_by_branch_order,
+            poiseuille_model=poiseuille_model,
+            solve_pressure_and_boundary_flow=_solve_pressure_and_boundary_flow,
+            starting_nodes=starting_nodes,
+            output_nodes=output_nodes,
+            inlet_pressures_pa=inlet_pressures,
+            output_p_bc=output_p_bc,
+            capillary_dilation_percent=capillary_percent,
+            output_dir=output_dir,
+        )
+    if run_passive_arteriole_diameter_beforeafter:
+        arteriole_flow_change_outputs = alicepaper.passive_arteriole_diameter_beforeafter(
+            graph_with_branch_orders=graph_with_branch_orders,
+            diameter_by_branch_order=diameter_by_branch_order,
+            poiseuille_model=poiseuille_model,
+            solve_pressure_and_boundary_flow=_solve_pressure_and_boundary_flow,
+            starting_nodes=starting_nodes,
+            output_nodes=output_nodes,
+            inlet_pressures_pa=inlet_pressures,
+            output_p_bc=output_p_bc,
+            arteriole_diameter_delta_um=float(arteriole_passive_diameter_delta_um),
+            output_dir=output_dir,
+        )
     print(f"Alice paper curve plots saved to: {plot_outputs}")
+    if capillary_flow_change_outputs is not None:
+        print(
+            "Alice capillary-only passive dilation flow-change plot saved to: "
+            f"{capillary_flow_change_outputs}"
+        )
+    if arteriole_flow_change_outputs is not None:
+        print(
+            "Alice arteriole-only passive diameter change flow-change plot saved to: "
+            f"{arteriole_flow_change_outputs}"
+        )
     return {
         "results": results,
         "csv_path": str(sweep_csv_path),
         "plot_outputs": plot_outputs,
+        "capillary_flow_change_outputs": capillary_flow_change_outputs,
+        "arteriole_flow_change_outputs": arteriole_flow_change_outputs,
     }
 
 
@@ -1772,6 +1825,18 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         output_nodes=output_nodes,
         output_p_bc=output_p_bc,
         output_dir=Path(ALICE_PAPER_OUTPUT_DIR),
+        run_passive_capillary_diameter_beforeafter=bool(
+            RUN_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER
+        ),
+        capillary_passive_dilation_percent=float(
+            PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT
+        ),
+        run_passive_arteriole_diameter_beforeafter=bool(
+            RUN_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER
+        ),
+        arteriole_passive_diameter_delta_um=float(
+            PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM
+        ),
     )
     print(
         "Completed Alice sweep: "

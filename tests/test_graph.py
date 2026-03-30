@@ -227,6 +227,25 @@ def test_select_boundary_nodes_by_method_degree_1_from_starting():
     assert nodes == [3]
 
 
+def test_select_boundary_nodes_by_method_coordinates_non_terminal_allowed():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([5.0, 0.0, 0.0]))  # internal candidate
+    G.add_node(2, pos=np.array([10.0, 0.0, 0.0]))
+    G.add_edge(0, 1, length=1.0, weight=1.0)
+    G.add_edge(1, 2, length=1.0, weight=1.0)
+
+    nodes = select_boundary_nodes_by_method(
+        G,
+        (20, 20, 20),
+        method="coordinates",
+        node_role="input",
+        coordinates=[(5.0, 0.0, 0.0)],
+        terminal_only=False,
+    )
+    assert nodes == [1]
+
+
 def test_select_terminal_nodes_from_large_vessel_masks():
     G = nx.MultiGraph()
     G.add_node(0, pos=np.array([1.0, 1.0, 1.0]))

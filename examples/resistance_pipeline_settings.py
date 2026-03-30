@@ -327,6 +327,14 @@ ALICE_PERICYTE_DILATION_STEP_PERCENT = 1
 ALICE_INLET_PRESSURE_MIN_PA = 4500
 ALICE_INLET_PRESSURE_MAX_PA = 3000
 ALICE_INLET_PRESSURE_STEP_PA = 500
+# Toggle capillary-only passive diameter before/after flow plot.
+RUN_ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER = True
+# Passive capillary diameter increase (%) used for before/after comparison.
+ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT = ALICE_PERICYTE_DILATION_MAX_PERCENT
+# Toggle arteriole-only passive diameter before/after flow plot.
+RUN_ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER = False
+# Signed arteriole diameter change (um): + dilates, - constricts.
+ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM = 0.5
 # Optional edge list using custom sweep diameter handling.
 ALICE_CUSTOM_EDGES_FOR_SWEEP: list[tuple[int, int]] = []
 

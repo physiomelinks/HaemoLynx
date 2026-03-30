@@ -182,6 +182,8 @@ def test_progressive_small_vessel_boundary_assignment_locks_earlier_nodes():
     # Later dilation increases overlap but must not reassign these boundary nodes.
     assert result["arteriole_boundary_nodes"] == [1]
     assert result["venule_boundary_nodes"] == [2]
+    assert G.nodes[1].get("mask_vessel_type") == "arteriole"
+    assert G.nodes[2].get("mask_vessel_type") == "venule"
 
 
 if __name__ == "__main__":
