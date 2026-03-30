@@ -1633,7 +1633,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         arteriole_boundary_nodes.extend(art_boundary)
         used_nodes.update(arteriole_boundary_nodes)
-    elif preconfigured_arteriole_boundary_nodes:
+    elif (
+        preconfigured_arteriole_boundary_nodes
+        and not use_small_vessel_masks_for_boundary_assignment
+    ):
         filtered_art_boundary = [
             node_id for node_id in preconfigured_arteriole_boundary_nodes
             if node_id in G.nodes and node_id not in used_nodes
@@ -1657,7 +1660,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             exclude_nodes=list(used_nodes),
         )
         venule_boundary_nodes.extend(ven_boundary)
-    elif preconfigured_venule_boundary_nodes:
+    elif (
+        preconfigured_venule_boundary_nodes
+        and not use_small_vessel_masks_for_boundary_assignment
+    ):
         filtered_ven_boundary = [
             node_id for node_id in preconfigured_venule_boundary_nodes
             if node_id in G.nodes and node_id not in used_nodes
@@ -1673,6 +1679,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 "use_small_vessel_masks_for_boundary_assignment=True requires "
                 "small_arteriole_mask_path and small_venule_mask_path."
             )
+        if arteriole_boundary_nodes or venule_boundary_nodes:
+            print(
+                "Small-vessel boundary assignment enabled: overriding existing "
+                "arteriole/venule boundary node selections."
+            )
+        arteriole_boundary_nodes[:] = []
+        venule_boundary_nodes[:] = []
         cleanup_enabled_for_small = bool(
             small_vessel_boundary_assignment_enable_overlap_cleanup
         )
