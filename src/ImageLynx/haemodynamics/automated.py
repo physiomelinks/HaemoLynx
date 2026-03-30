@@ -16,6 +16,7 @@ is anisotropic with coarser ``z``.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Literal
 
@@ -32,6 +33,62 @@ from ImageLynx.coords import (
 
 # FWHM of a Gaussian with standard deviation sigma (not 2*sigma^2 in the exponent).
 _GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
+_DEFAULT_DIAMETER_BOUNDS_BY_CLASS_UM: dict[str, tuple[float, float]] = {
+    "capillary": (2.0, 15.0),
+    "arteriole": (5.0, 80.0),
+    "venule": (5.0, 120.0),
+    "default": (1.0, 150.0),
+}
+
+
+def _classify_branch_order(branch_order: Any) -> str:
+    """Map branch-order labels to vessel classes used by diameter bounds."""
+    if branch_order is None:
+        return "default"
+    label = str(branch_order).strip().lower()
+    if label.startswith("b"):
+        return "capillary"
+    if label.startswith("art"):
+        return "arteriole"
+    if label.startswith("ven"):
+        return "venule"
+    return "default"
+
+
+def _resolve_diameter_bounds_for_branch_order(
+    branch_order: Any,
+    bounds_by_class_um: dict[str, tuple[float, float]] | None,
+) -> tuple[float, float] | None:
+    """Return (lo, hi) diameter bounds for the given branch-order label."""
+    if bounds_by_class_um is None:
+        return None
+    vessel_class = _classify_branch_order(branch_order)
+    candidate = bounds_by_class_um.get(vessel_class, bounds_by_class_um.get("default"))
+    if candidate is None:
+        return None
+    lo, hi = float(candidate[0]), float(candidate[1])
+    if lo <= 0 or hi <= 0 or lo > hi:
+        raise ValueError(
+            f"Invalid diameter bounds for class '{vessel_class}': ({lo}, {hi})."
+        )
+    return lo, hi
+
+
+def _apply_diameter_bounds(
+    diameter_um: float | None,
+    bounds_um: tuple[float, float] | None,
+    mode: Literal["off", "reject", "clamp"],
+) -> tuple[float | None, bool]:
+    """Apply optional bounds to a diameter, returning (value, touched)."""
+    if diameter_um is None or bounds_um is None or mode == "off":
+        return diameter_um, False
+    lo, hi = float(bounds_um[0]), float(bounds_um[1])
+    d = float(diameter_um)
+    if lo <= d <= hi:
+        return d, False
+    if mode == "reject":
+        return None, True
+    return float(np.clip(d, lo, hi)), True
 
 
 def load_single_channel_tiff_volume(path: str | Path) -> np.ndarray:
@@ -201,12 +258,15 @@ def _max_extent_along_ray(
     """
     if step_um <= 0:
         raise ValueError("step_um must be positive.")
-    d = direction_unit / np.linalg.norm(direction_unit)
+    nrm = float(np.linalg.norm(direction_unit))
+    if nrm <= 1e-12:
+        return 0.0
+    d = np.asarray(direction_unit, dtype=float) / nrm
     n_steps = int(np.ceil(max_physical_extent / step_um))
     shape = labels.shape
+    delta_idx_step = physical_xyz_delta_to_index_zyx_delta(d * float(step_um), voxel_size_xyz)
     for k in range(1, n_steps + 1):
-        delta_phys = d * (k * step_um)
-        idx = center_idx + physical_xyz_delta_to_index_zyx_delta(delta_phys, voxel_size_xyz)
+        idx = center_idx + float(k) * delta_idx_step
         if (
             idx[0] < 0
             or idx[1] < 0
@@ -253,6 +313,7 @@ def _sample_transverse_profile(
     *,
     background_label: int,
     junction_label: int | None,
+    center_idx: np.ndarray | None = None,
     allow_junction_crossing: bool = False,
     same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None,
     same_edge_s0_um: float | None = None,
@@ -266,10 +327,14 @@ def _sample_transverse_profile(
     Returns (positions_along_line_um, intensities).
     """
     n_hat = _transverse_unit_in_physical_yx_plane(tangent)
-    center_idx = physical_points_to_continuous_indices(center_phys, voxel_size_xyz)
+    c_idx = (
+        physical_points_to_continuous_indices(center_phys, voxel_size_xyz)
+        if center_idx is None
+        else np.asarray(center_idx, dtype=float).ravel()
+    )
 
     pos_plus = _max_extent_along_ray(
-        center_idx,
+        c_idx,
         n_hat,
         assigned_label,
         labels,
@@ -284,7 +349,7 @@ def _sample_transverse_profile(
         same_edge_arc_window_um=same_edge_arc_window_um,
     )
     pos_minus = _max_extent_along_ray(
-        center_idx,
+        c_idx,
         -n_hat,
         assigned_label,
         labels,
@@ -305,12 +370,8 @@ def _sample_transverse_profile(
     if offsets.size == 0:
         offsets = np.array([0.0], dtype=float)
 
-    coords = []
-    for off in offsets:
-        p_phys = center_phys + off * n_hat
-        idx = physical_points_to_continuous_indices(p_phys, voxel_size_xyz)
-        coords.append(idx)
-    coord_arr = np.stack(coords, axis=1)  # (3, N)
+    delta_idx_per_um = physical_xyz_delta_to_index_zyx_delta(n_hat, voxel_size_xyz)
+    coord_arr = c_idx[:, None] + delta_idx_per_um[:, None] * offsets[None, :]
     zc, yc, xc = coord_arr[0], coord_arr[1], coord_arr[2]
     vals = map_coordinates(
         raw,
@@ -736,6 +797,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     max_fit_center_offset_um: float = 1.5,
     reject_samples_with_low_fit_r2: bool = True,
     min_fit_r2: float = 0.85,
+    edge_parallel_workers: int | None = None,
+    edge_parallel_batch_size: int = 16,
+    diameter_bounds_by_vessel_class_um: dict[str, tuple[float, float]] | None = None,
+    diameter_bounds_mode: Literal["off", "reject", "clamp"] = "reject",
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -823,6 +888,15 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         If True, discard samples with poor Gaussian fit quality.
     min_fit_r2 :
         Minimum accepted R² for Gaussian fit.
+    edge_parallel_workers :
+        Number of worker threads for edge-level FWHM fitting. ``None``/``<=1``
+        runs sequentially.
+    edge_parallel_batch_size :
+        Number of edges processed per submitted worker task.
+    diameter_bounds_by_vessel_class_um :
+        Optional bounds by vessel class (capillary/arteriole/venule/default).
+    diameter_bounds_mode :
+        ``off``, ``reject``, or ``clamp`` for applying branch-order class bounds.
     """
     if profile_baseline_mode not in ("wings", "percentile"):
         raise ValueError(
@@ -842,6 +916,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         "edges_measured": 0,
         "edges_skipped": [],
         "per_edge": [],
+        "bounds_rejected_samples": 0,
+        "bounds_clamped_samples": 0,
+        "bounds_rejected_edges": 0,
+        "bounds_clamped_edges": 0,
     }
 
     mult = float(min_total_extent_multiplier)
@@ -853,31 +931,44 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     junction_excl = max(0.0, float(junction_proximity_exclusion_um))
     d_guess0 = 0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
 
-    for u, v, key, data in G.edges(keys=True, data=True):
+    if sample_spacing_along_edge_um <= 0:
+        raise ValueError("sample_spacing_along_edge_um must be positive.")
+    if edge_parallel_batch_size <= 0:
+        raise ValueError("edge_parallel_batch_size must be >= 1.")
+    if diameter_bounds_mode not in ("off", "reject", "clamp"):
+        raise ValueError(
+            f"diameter_bounds_mode must be 'off', 'reject', or 'clamp', got {diameter_bounds_mode!r}."
+        )
+    bounds_map = (
+        dict(diameter_bounds_by_vessel_class_um)
+        if diameter_bounds_by_vessel_class_um is not None
+        else dict(_DEFAULT_DIAMETER_BOUNDS_BY_CLASS_UM)
+    )
+
+    degree_map = {node_id: int(G.degree(node_id)) for node_id in G.nodes()}
+
+    def _measure_single_edge(
+        u: Any,
+        v: Any,
+        key: Any,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
         vox = data.get("voxels")
         assigned = data.get("graph_edge_label_id")
         if not vox or len(vox) < 2 or assigned is None:
-            summary["edges_skipped"].append((u, v, key, "no_voxels_or_label"))
-            continue
+            return {"edge": (u, v, key), "skip_reason": "no_voxels_or_label"}
 
         poly = np.asarray(vox, dtype=float)
         s, total_len = _arc_length_parameterize(poly)
         if total_len <= 0:
-            summary["edges_skipped"].append((u, v, key, "zero_length"))
-            continue
-
-        if sample_spacing_along_edge_um <= 0:
-            raise ValueError("sample_spacing_along_edge_um must be positive.")
+            return {"edge": (u, v, key), "skip_reason": "zero_length"}
 
         n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
         targets = np.linspace(0.0, total_len, n_samples)
         pts = _interpolate_centerline(poly, s, targets)
-        # Exclude profiles too close to bifurcation endpoints, where independent
-        # branch diameter is often not well-defined.
-        u_is_branch = int(G.degree(u)) > 1
-        v_is_branch = int(G.degree(v)) > 1
-        # Auto-detect edge-local meeting points from junction voxels and exclude
-        # nearby arc-length region.
+        u_is_branch = degree_map.get(u, 0) > 1
+        v_is_branch = degree_map.get(v, 0) > 1
+
         junction_s: list[float] = []
         if junction_excl > 0.0 and jn != int(background_label):
             idx_all = physical_points_to_continuous_indices(poly, voxel_size_xyz)
@@ -885,13 +976,12 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 iz, iy, ix = _nearest_integer_index(row, labels.shape)
                 if int(labels[iz, iy, ix]) == jn:
                     junction_s.append(float(s[i]))
+
         same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None
         dense_poly: np.ndarray | None = None
         dense_s: np.ndarray | None = None
         if enforce_same_edge_locality:
             same_edge_s_lookup = {}
-            # Dense arc-length lookup so curved/zig-zag edges are covered between sparse
-            # control points; otherwise non-local same-edge re-entry can go undetected.
             ds_lookup = max(0.1, 0.5 * float(np.min(np.asarray(voxel_size_xyz, dtype=float))))
             dense_pts_list: list[np.ndarray] = []
             dense_s_list: list[float] = []
@@ -904,23 +994,29 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 n_sub = max(1, int(np.ceil(seg_len / ds_lookup)))
                 for j in range(n_sub + 1):
                     t = float(j) / float(n_sub)
-                    p = (1.0 - t) * p0 + t * p1
-                    s_here = (1.0 - t) * float(s[i]) + t * float(s[i + 1])
-                    dense_pts_list.append(p)
-                    dense_s_list.append(s_here)
-                    row = physical_points_to_continuous_indices(p, voxel_size_xyz)
-                    key_idx = _nearest_integer_index(row, labels.shape)
-                    prev = same_edge_s_lookup.get(key_idx)
-                    # Keep arc-length closest to current segment midpoint mapping.
-                    if prev is None or abs(prev - s_here) > 0.5 * ds_lookup:
-                        same_edge_s_lookup[key_idx] = s_here
+                    dense_pts_list.append((1.0 - t) * p0 + t * p1)
+                    dense_s_list.append((1.0 - t) * float(s[i]) + t * float(s[i + 1]))
             if dense_pts_list:
                 dense_poly = np.asarray(dense_pts_list, dtype=float)
                 dense_s = np.asarray(dense_s_list, dtype=float)
+                dense_idx = physical_points_to_continuous_indices(dense_poly, voxel_size_xyz)
+                for idx_row, s_here in zip(dense_idx, dense_s):
+                    key_idx = _nearest_integer_index(idx_row, labels.shape)
+                    prev = same_edge_s_lookup.get(key_idx)
+                    if prev is None or abs(prev - float(s_here)) > 0.5 * ds_lookup:
+                        same_edge_s_lookup[key_idx] = float(s_here)
+
+        branch_bounds = _resolve_diameter_bounds_for_branch_order(
+            data.get("branch_order"),
+            bounds_map,
+        )
 
         diameters: list[float] = []
         profile_lines_phys: list[np.ndarray] = []
         profile_anchors_phys: list[np.ndarray] = []
+        bounds_rejected_samples = 0
+        bounds_clamped_samples = 0
+
         for s0, center in zip(targets, pts):
             if u_is_branch and float(s0) < branch_excl:
                 continue
@@ -928,8 +1024,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 continue
             if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
                 continue
+
             tangent = _tangent_at(poly, s, float(s0))
             n_hat = _transverse_unit_in_physical_yx_plane(tangent)
+            center_idx = physical_points_to_continuous_indices(center, voxel_size_xyz)
             if same_edge_arc_window_um is None:
                 local_arc_window = max(
                     float(same_edge_arc_window_min_um),
@@ -939,10 +1037,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             else:
                 local_arc_window = float(same_edge_arc_window_um)
 
-            half_extent = max(
-                float(transverse_half_extent_um),
-                0.5 * mult * d_guess0,
-            )
+            half_extent = max(float(transverse_half_extent_um), 0.5 * mult * d_guess0)
             if cap_half_extent_by_nonlocal_same_edge_distance and len(poly) > 2:
                 arc_sep = max(0.0, float(nonlocal_same_edge_arc_separation_um))
                 ref_pts = dense_poly if dense_poly is not None else poly
@@ -950,12 +1045,16 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 nonlocal_mask = np.abs(ref_s - float(s0)) >= arc_sep
                 if np.any(nonlocal_mask):
                     center_arr = np.asarray(center, dtype=float)
-                    # Conservative cap using the closer of 3D and in-plane (y-x) nonlocal distances.
                     d_nonlocal_3d = float(
                         np.min(np.linalg.norm(ref_pts[nonlocal_mask] - center_arr, axis=1))
                     )
                     d_nonlocal_yx = float(
-                        np.min(np.linalg.norm(ref_pts[nonlocal_mask][:, 1:3] - center_arr[1:3], axis=1))
+                        np.min(
+                            np.linalg.norm(
+                                ref_pts[nonlocal_mask][:, 1:3] - center_arr[1:3],
+                                axis=1,
+                            )
+                        )
                     )
                     d_nonlocal = min(d_nonlocal_3d, d_nonlocal_yx)
                     if np.isfinite(d_nonlocal) and d_nonlocal > 0:
@@ -963,69 +1062,20 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                             half_extent,
                             float(nonlocal_same_edge_half_extent_factor) * d_nonlocal,
                         )
-            pos, prof = _sample_transverse_profile(
-                raw,
-                labels,
-                center,
-                tangent,
-                int(assigned),
-                half_extent,
-                float(transverse_profile_step_um),
-                voxel_size_xyz,
-                background_label=int(background_label),
-                junction_label=jn,
-                allow_junction_crossing=bool(allow_junction_crossing),
-                same_edge_s_lookup=same_edge_s_lookup,
-                same_edge_s0_um=float(s0),
-                same_edge_arc_window_um=local_arc_window,
-            )
-            pos_fit, prof_fit = (
-                _clip_profile_to_central_lobe(
-                    pos,
-                    prof,
-                    min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                    re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-                )
-                if clip_profile_to_single_vessel
-                else (pos, prof)
-            )
-            d0, x0_0, r2_0 = _fwhm_gaussian_fit_with_diagnostics(
-                pos_fit,
-                prof_fit,
-                profile_baseline_mode=profile_baseline_mode,
-                profile_baseline_wing_fraction=profile_baseline_wing_fraction,
-                constrain_fitted_baseline=constrain_fitted_baseline,
-                baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
-            )
-            if d0 is not None:
-                if reject_samples_with_center_offset and x0_0 is not None and abs(float(x0_0)) > float(max_fit_center_offset_um):
-                    d0 = None
-                if reject_samples_with_low_fit_r2 and r2_0 is not None and float(r2_0) < float(min_fit_r2):
-                    d0 = None
-            accepted_offsets: np.ndarray | None = None
-            if d0 is not None and d0 > 0:
-                # Enforce at least (min_total_extent_multiplier × estimated width)
-                # when geometry allows (other-edge/junction/volume bounds still truncate).
-                half_extent = max(
-                    half_extent,
-                    0.5 * mult * d0,
-                )
-                if same_edge_arc_window_um is None:
-                    local_arc_window = max(
-                        float(same_edge_arc_window_min_um),
-                        float(same_edge_arc_window_multiplier) * float(d0),
-                    )
+
+            def _fit_profile_at_extent(current_half_extent: float) -> tuple[np.ndarray, np.ndarray, float | None]:
                 pos, prof = _sample_transverse_profile(
                     raw,
                     labels,
                     center,
                     tangent,
                     int(assigned),
-                    half_extent,
+                    current_half_extent,
                     float(transverse_profile_step_um),
                     voxel_size_xyz,
                     background_label=int(background_label),
                     junction_label=jn,
+                    center_idx=center_idx,
                     allow_junction_crossing=bool(allow_junction_crossing),
                     same_edge_s_lookup=same_edge_s_lookup,
                     same_edge_s0_um=float(s0),
@@ -1041,7 +1091,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     if clip_profile_to_single_vessel
                     else (pos, prof)
                 )
-                d1, x0_1, r2_1 = _fwhm_gaussian_fit_with_diagnostics(
+                d_fit, x0_fit, r2_fit = _fwhm_gaussian_fit_with_diagnostics(
                     pos_fit,
                     prof_fit,
                     profile_baseline_mode=profile_baseline_mode,
@@ -1049,14 +1099,35 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     constrain_fitted_baseline=constrain_fitted_baseline,
                     baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
                 )
-                if d1 is not None:
-                    if reject_samples_with_center_offset and x0_1 is not None and abs(float(x0_1)) > float(max_fit_center_offset_um):
-                        d1 = None
-                    if reject_samples_with_low_fit_r2 and r2_1 is not None and float(r2_1) < float(min_fit_r2):
-                        d1 = None
+                if d_fit is not None:
+                    if (
+                        reject_samples_with_center_offset
+                        and x0_fit is not None
+                        and abs(float(x0_fit)) > float(max_fit_center_offset_um)
+                    ):
+                        d_fit = None
+                    if (
+                        reject_samples_with_low_fit_r2
+                        and r2_fit is not None
+                        and float(r2_fit) < float(min_fit_r2)
+                    ):
+                        d_fit = None
+                return pos, prof, d_fit
+
+            accepted_offsets: np.ndarray | None = None
+            pos0, _, d0 = _fit_profile_at_extent(half_extent)
+            if d0 is not None and d0 > 0:
+                half_extent = max(half_extent, 0.5 * mult * float(d0))
+                if same_edge_arc_window_um is None:
+                    local_arc_window = max(
+                        float(same_edge_arc_window_min_um),
+                        float(same_edge_arc_window_multiplier) * float(d0),
+                    )
+                pos1, _, d1 = _fit_profile_at_extent(half_extent)
+                accepted_offsets = pos1
+                candidate = d1 if (d1 is not None and d1 > 0) else d0
                 if d1 is not None and d1 > 0:
                     desired_half = 0.5 * mult * float(d1)
-                    # One extra pass if first estimate was low and we can still extend.
                     if desired_half > (half_extent + float(transverse_profile_step_um)):
                         half_extent = desired_half
                         if same_edge_arc_window_um is None:
@@ -1064,85 +1135,133 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                                 float(same_edge_arc_window_min_um),
                                 float(same_edge_arc_window_multiplier) * float(d1),
                             )
-                        pos, prof = _sample_transverse_profile(
-                            raw,
-                            labels,
-                            center,
-                            tangent,
-                            int(assigned),
-                            half_extent,
-                            float(transverse_profile_step_um),
-                            voxel_size_xyz,
-                            background_label=int(background_label),
-                            junction_label=jn,
-                            allow_junction_crossing=bool(allow_junction_crossing),
-                            same_edge_s_lookup=same_edge_s_lookup,
-                            same_edge_s0_um=float(s0),
-                            same_edge_arc_window_um=local_arc_window,
-                        )
-                        pos_fit, prof_fit = (
-                            _clip_profile_to_central_lobe(
-                                pos,
-                                prof,
-                                min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                                re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-                            )
-                            if clip_profile_to_single_vessel
-                            else (pos, prof)
-                        )
-                        d2, x0_2, r2_2 = _fwhm_gaussian_fit_with_diagnostics(
-                            pos_fit,
-                            prof_fit,
-                            profile_baseline_mode=profile_baseline_mode,
-                            profile_baseline_wing_fraction=profile_baseline_wing_fraction,
-                            constrain_fitted_baseline=constrain_fitted_baseline,
-                            baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
-                        )
+                        pos2, _, d2 = _fit_profile_at_extent(half_extent)
+                        accepted_offsets = pos2
                         if d2 is not None:
-                            if reject_samples_with_center_offset and x0_2 is not None and abs(float(x0_2)) > float(max_fit_center_offset_um):
-                                d2 = None
-                            if reject_samples_with_low_fit_r2 and r2_2 is not None and float(r2_2) < float(min_fit_r2):
-                                d2 = None
-                        if d2 is not None:
-                            diameters.append(d2)
-                            accepted_offsets = pos
-                    else:
-                        diameters.append(d1)
-                        accepted_offsets = pos
-                elif d1 is not None:
-                    diameters.append(d1)
-                    accepted_offsets = pos
-            elif d0 is not None:
-                diameters.append(d0)
-                accepted_offsets = pos
+                            candidate = d2
+            else:
+                accepted_offsets = pos0
+                candidate = d0
 
-            if store_profile_debug and accepted_offsets is not None and accepted_offsets.size > 0:
-                c = np.asarray(center, dtype=float)
-                profile_lines_phys.append(
-                    np.stack([c + float(o) * n_hat for o in accepted_offsets], axis=0)
-                )
-                profile_anchors_phys.append(c.copy())
+            candidate, touched = _apply_diameter_bounds(
+                candidate,
+                branch_bounds,
+                diameter_bounds_mode,
+            )
+            if touched:
+                if candidate is None:
+                    bounds_rejected_samples += 1
+                else:
+                    bounds_clamped_samples += 1
+            if candidate is not None and candidate > 0:
+                diameters.append(float(candidate))
+                if (
+                    store_profile_debug
+                    and accepted_offsets is not None
+                    and accepted_offsets.size > 0
+                ):
+                    c = np.asarray(center, dtype=float)
+                    profile_lines_phys.append(
+                        np.stack([c + float(o) * n_hat for o in accepted_offsets], axis=0)
+                    )
+                    profile_anchors_phys.append(c.copy())
 
         if not diameters:
             reason = "fwhm_failed"
             if branch_excl > 0 and (u_is_branch or v_is_branch):
                 reason = "fwhm_failed_or_excluded_near_branch"
-            summary["edges_skipped"].append((u, v, key, reason))
+            return {
+                "edge": (u, v, key),
+                "skip_reason": reason,
+                "bounds_rejected_samples": int(bounds_rejected_samples),
+                "bounds_clamped_samples": int(bounds_clamped_samples),
+            }
+
+        d_med = float(np.median(diameters))
+        d_med_bounded, touched_edge = _apply_diameter_bounds(
+            d_med,
+            branch_bounds,
+            diameter_bounds_mode,
+        )
+        if touched_edge and d_med_bounded is None:
+            return {
+                "edge": (u, v, key),
+                "skip_reason": "edge_diameter_out_of_bounds",
+                "bounds_rejected_samples": int(bounds_rejected_samples),
+                "bounds_clamped_samples": int(bounds_clamped_samples),
+                "bounds_rejected_edge": 1,
+                "bounds_clamped_edge": 0,
+            }
+        return {
+            "edge": (u, v, key),
+            "skip_reason": None,
+            "graph_edge_label_id": int(assigned),
+            "fwhm_diameter_um": float(d_med_bounded if d_med_bounded is not None else d_med),
+            "fwhm_diameter_samples_um": diameters,
+            "fwhm_profile_lines_phys": profile_lines_phys,
+            "fwhm_profile_anchors_phys": profile_anchors_phys,
+            "bounds_rejected_samples": int(bounds_rejected_samples),
+            "bounds_clamped_samples": int(bounds_clamped_samples),
+            "bounds_rejected_edge": int(touched_edge and d_med_bounded is None),
+            "bounds_clamped_edge": int(
+                touched_edge and d_med_bounded is not None and d_med_bounded != d_med
+            ),
+        }
+
+    def _process_batch(
+        edge_batch: list[tuple[Any, Any, Any, dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        return [_measure_single_edge(u, v, key, data) for (u, v, key, data) in edge_batch]
+
+    sorted_edges = sorted(G.edges(keys=True, data=True), key=lambda t: (t[0], t[1], t[2]))
+    batch_size = int(edge_parallel_batch_size)
+    batches: list[list[tuple[Any, Any, Any, dict[str, Any]]]] = [
+        sorted_edges[i : i + batch_size]
+        for i in range(0, len(sorted_edges), batch_size)
+    ]
+    worker_count = 1 if edge_parallel_workers is None else int(edge_parallel_workers)
+
+    edge_results_by_key: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    if worker_count <= 1 or len(batches) <= 1:
+        for batch in batches:
+            for item in _process_batch(batch):
+                edge_results_by_key[tuple(item["edge"])] = item
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(_process_batch, batch) for batch in batches]
+            for fut in as_completed(futures):
+                for item in fut.result():
+                    edge_results_by_key[tuple(item["edge"])] = item
+
+    for u, v, key, data in sorted_edges:
+        result = edge_results_by_key.get((u, v, key))
+        if result is None:
+            summary["edges_skipped"].append((u, v, key, "edge_result_missing"))
+            continue
+        summary["bounds_rejected_samples"] += int(result.get("bounds_rejected_samples", 0))
+        summary["bounds_clamped_samples"] += int(result.get("bounds_clamped_samples", 0))
+        summary["bounds_rejected_edges"] += int(result.get("bounds_rejected_edge", 0))
+        summary["bounds_clamped_edges"] += int(result.get("bounds_clamped_edge", 0))
+        skip_reason = result.get("skip_reason")
+        if skip_reason:
+            summary["edges_skipped"].append((u, v, key, str(skip_reason)))
             continue
 
-        d_mean = float(np.mean(diameters))
-        data["fwhm_diameter_um"] = d_mean
-        data["fwhm_diameter_samples_um"] = diameters
+        d_med = float(result["fwhm_diameter_um"])
+        samples = [float(x) for x in result["fwhm_diameter_samples_um"]]
+        data["fwhm_diameter_um"] = d_med
+        data["fwhm_diameter_samples_um"] = samples
         if store_profile_debug:
-            data["fwhm_profile_lines_phys"] = profile_lines_phys
-            data["fwhm_profile_anchors_phys"] = profile_anchors_phys
+            data["fwhm_profile_lines_phys"] = result.get("fwhm_profile_lines_phys", [])
+            data["fwhm_profile_anchors_phys"] = result.get("fwhm_profile_anchors_phys", [])
         summary["edges_measured"] += 1
         summary["per_edge"].append(
             {
                 "edge": (u, v, key),
-                "graph_edge_label_id": int(assigned),
-                "fwhm_diameter_um": d_mean,
-                "n_samples": len(diameters),
+                "graph_edge_label_id": int(result["graph_edge_label_id"]),
+                "fwhm_diameter_um": d_med,
+                "n_samples": len(samples),
+                "aggregation": "median",
             }
         )
 

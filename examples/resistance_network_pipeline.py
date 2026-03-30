@@ -408,7 +408,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_reject_samples_with_center_offset=FWHM_REJECT_SAMPLES_WITH_CENTER_OFFSET,
                             fwhm_max_fit_center_offset_um=FWHM_MAX_FIT_CENTER_OFFSET_UM,
                             fwhm_reject_samples_with_low_fit_r2=FWHM_REJECT_SAMPLES_WITH_LOW_FIT_R2,
-                            fwhm_min_fit_r2=FWHM_MIN_FIT_R2) -> None:
+                            fwhm_min_fit_r2=FWHM_MIN_FIT_R2,
+                            fwhm_edge_parallel_workers=FWHM_EDGE_PARALLEL_WORKERS,
+                            fwhm_edge_parallel_batch_size=FWHM_EDGE_PARALLEL_BATCH_SIZE,
+                            fwhm_diameter_bounds_mode=FWHM_DIAMETER_BOUNDS_MODE,
+                            fwhm_diameter_bounds_by_vessel_class_um=FWHM_DIAMETER_BOUNDS_BY_VESSEL_CLASS_UM) -> None:
     image_path = Path(image_path)
     preconfigured_starting_nodes = [int(node_id) for node_id in starting_nodes]
     preconfigured_output_nodes = [int(node_id) for node_id in output_nodes]
@@ -1916,6 +1920,21 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     fwhm_reject_samples_with_low_fit_r2
                 ),
                 min_fit_r2=float(fwhm_min_fit_r2),
+                edge_parallel_workers=(
+                    None
+                    if fwhm_edge_parallel_workers is None
+                    else int(fwhm_edge_parallel_workers)
+                ),
+                edge_parallel_batch_size=int(fwhm_edge_parallel_batch_size),
+                diameter_bounds_mode=str(fwhm_diameter_bounds_mode),
+                diameter_bounds_by_vessel_class_um=(
+                    None
+                    if fwhm_diameter_bounds_by_vessel_class_um is None
+                    else {
+                        str(k): (float(v[0]), float(v[1]))
+                        for k, v in fwhm_diameter_bounds_by_vessel_class_um.items()
+                    }
+                ),
             )
             print(f"FWHM diameter measurement summary: {fwhm_summary}")
             if do_pericyte_constriction:

@@ -426,6 +426,19 @@ FWHM_MAX_FIT_CENTER_OFFSET_UM = 1.5
 FWHM_REJECT_SAMPLES_WITH_LOW_FIT_R2 = True
 # Minimum acceptable R^2 for transverse Gaussian fits.
 FWHM_MIN_FIT_R2 = 0.85
+# Number of edge-level workers for automated FWHM fitting (None/<=1 => sequential).
+FWHM_EDGE_PARALLEL_WORKERS: Optional[int] = None
+# Number of edges bundled per worker task (reduces scheduler overhead).
+FWHM_EDGE_PARALLEL_BATCH_SIZE = 16
+# Branch-order class bounds handling mode for fitted diameters.
+FWHM_DIAMETER_BOUNDS_MODE = "reject"  # one of: off, reject, clamp
+# Plausible diameter ranges (um) by vessel class for sample/edge filtering.
+FWHM_DIAMETER_BOUNDS_BY_VESSEL_CLASS_UM: dict[str, tuple[float, float]] = {
+    "capillary": (2.0, 15.0),
+    "arteriole": (5.0, 80.0),
+    "venule": (5.0, 120.0),
+    "default": (1.0, 150.0),
+}
 
 # List of edge IDs that use custom edge-diameter assignment behavior.
 custom_edges = []
