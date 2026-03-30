@@ -50,7 +50,7 @@ VOXEL_SIZE_POLICY = "auto"
 # Vessel-mask settings
 # ---------------------------
 # Toggle automated selection of start/output nodes from masks.
-AUTOMATED_VESSEL_ASSIGNMENT =  False
+AUTOMATED_VESSEL_ASSIGNMENT =  True
 # Fast mode for automated large-vessel I/O assignment: remove overlap voxels
 # from the smaller component in each arteriole/venule overlap pair before
 # terminal assignment (non-overlapping component regions are preserved).
@@ -228,9 +228,9 @@ VERBOSE_LOGGING = False
 # Pipeline-stage and topology settings
 # ---------------------------
 # Toggle skeletonization step execution.
-DO_SKELETONIZE = False
+DO_SKELETONIZE = True
 # Toggle graph-building step execution.
-DO_GRAPH_BUILDING = False
+DO_GRAPH_BUILDING = True
 # Toggle haemodynamics pipeline execution.
 RUN_HAEMODYNAMICS = True
 # Toggle two-point equivalent resistance calculation.

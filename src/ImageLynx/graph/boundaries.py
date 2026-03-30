@@ -50,6 +50,13 @@ def _terminal_nodes_with_positions(G: nx.Graph) -> tuple[list[Any], dict[Any, np
     return terminals, pos
 
 
+def _all_nodes_with_positions(G: nx.Graph) -> tuple[list[Any], dict[Any, np.ndarray]]:
+    node_pos = nx.get_node_attributes(G, "pos")
+    nodes = [node for node in G.nodes() if node in node_pos]
+    pos = {node: np.asarray(node_pos[node], dtype=float) for node in nodes}
+    return nodes, pos
+
+
 def _normalize_point(point: Iterable[float], *, name: str) -> np.ndarray:
     arr = np.asarray(tuple(point), dtype=float)
     if arr.shape != (3,):
@@ -75,13 +82,19 @@ def select_boundary_nodes_by_method(
     exclude_nodes: Iterable[Any] | None = None,
     starting_nodes_for_distance: Iterable[Any] | None = None,
     distance_from_starting_node: float = 0.0,
+    terminal_only: bool = True,
 ) -> list[Any]:
     """Select boundary nodes for one role using the specified method."""
     if node_role not in {"input", "output"}:
         raise ValueError("node_role must be 'input' or 'output'.")
 
-    terminals, pos = _terminal_nodes_with_positions(G)
-    if not terminals:
+    terminals, terminal_pos = _terminal_nodes_with_positions(G)
+    all_nodes, all_pos = _all_nodes_with_positions(G)
+    if not all_nodes:
+        return []
+    candidates = terminals if bool(terminal_only) else all_nodes
+    pos = terminal_pos if bool(terminal_only) else all_pos
+    if not candidates:
         return []
 
     method_norm = str(method).strip().lower()
@@ -98,7 +111,7 @@ def select_boundary_nodes_by_method(
         for idx, point in enumerate(points):
             target = _normalize_point(point, name=f"coordinates[{idx}]")
             nearest = min(
-                terminals,
+                candidates,
                 key=lambda node_id: float(np.linalg.norm(pos[node_id] - target)),
             )
             selected.append(nearest)
@@ -119,7 +132,7 @@ def select_boundary_nodes_by_method(
             hi = np.maximum(corner_a, corner_b)
             normalized_boxes.append((lo, hi))
         selected = []
-        for node_id in terminals:
+        for node_id in candidates:
             p = pos[node_id]
             if any(np.all(p >= lo) and np.all(p <= hi) for lo, hi in normalized_boxes):
                 selected.append(node_id)

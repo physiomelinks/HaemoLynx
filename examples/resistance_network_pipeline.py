@@ -1545,6 +1545,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             node_role="input",
             coordinates=arteriole_boundary_node_coordinates,
             volume_boxes=arteriole_boundary_node_volumes,
+            terminal_only=False,
             exclude_nodes=list(used_nodes),
         )
         arteriole_boundary_nodes.extend(art_boundary)
@@ -1569,6 +1570,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             node_role="output",
             coordinates=venule_boundary_node_coordinates,
             volume_boxes=venule_boundary_node_volumes,
+            terminal_only=False,
             exclude_nodes=list(used_nodes),
         )
         venule_boundary_nodes.extend(ven_boundary)

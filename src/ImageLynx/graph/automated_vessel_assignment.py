@@ -1250,8 +1250,15 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
     assigned_venule_boundary: set[Any] = set()
     assigned_arteriole_nodes: set[Any] = set()
     assigned_venule_nodes: set[Any] = set()
+    assigned_arteriole_edges: set[tuple[Any, Any, int]] = set()
+    assigned_venule_edges: set[tuple[Any, Any, int]] = set()
     remaining_boundary_nodes = set(all_nodes)
     remaining_label_nodes = set(all_nodes)
+    if isinstance(G, nx.MultiGraph):
+        all_edge_ids = {_edge_id(u, v, key) for u, v, key in G.edges(keys=True)}
+    else:
+        all_edge_ids = {(u, v, 0) if u <= v else (v, u, 0) for u, v in G.edges()}
+    remaining_label_edges = set(all_edge_ids)
 
     base_arteriole_mask = small_arteriole_mask.astype(bool, copy=False)
     base_venule_mask = small_venule_mask.astype(bool, copy=False)
@@ -1275,6 +1282,17 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
         f"{len(schedule)} step(s), max_dilation={float(max_dilation_microns):.3f} microns, "
         f"step={float(dilation_step_microns):.3f} microns."
     )
+    def _iter_edge_attr_items() -> list[tuple[tuple[Any, Any, int], dict[str, Any]]]:
+        if isinstance(G, nx.MultiGraph):
+            return [
+                (_edge_id(u, v, key), edge_data)
+                for u, v, key, edge_data in G.edges(keys=True, data=True)
+            ]
+        return [
+            (((u, v, 0) if u <= v else (v, u, 0)), edge_data)
+            for u, v, edge_data in G.edges(data=True)
+        ]
+
     for step_idx, dilation_microns in enumerate(schedule, start=1):
         if not remaining_boundary_nodes and not remaining_label_nodes:
             print(
@@ -1327,6 +1345,27 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
             assigned_venule_nodes.add(node_id)
             remaining_label_nodes.discard(node_id)
 
+        step_new_arteriole_edges = 0
+        step_new_venule_edges = 0
+        for edge_id, edge_data in _iter_edge_attr_items():
+            if edge_id not in remaining_label_edges:
+                continue
+            vessel_type = edge_data.get("mask_vessel_type")
+            if vessel_type == "arteriole":
+                assigned_arteriole_edges.add(edge_id)
+                remaining_label_edges.discard(edge_id)
+                step_new_arteriole_edges += 1
+            elif vessel_type == "venule":
+                if edge_id not in assigned_arteriole_edges:
+                    assigned_venule_edges.add(edge_id)
+                remaining_label_edges.discard(edge_id)
+                step_new_venule_edges += 1
+            elif vessel_type == "overlap":
+                # Preserve deterministic single-label edge assignment under overlap.
+                assigned_arteriole_edges.add(edge_id)
+                remaining_label_edges.discard(edge_id)
+                step_new_arteriole_edges += 1
+
         step_arteriole_boundary = [
             node_id
             for node_id in step_result.get("arteriole_boundary_nodes", [])
@@ -1351,8 +1390,40 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
             f"(dilation={float(dilation_microns):.3f} microns): "
             f"new_arteriole_boundary={len(step_arteriole_boundary)}, "
             f"new_venule_boundary={len(step_venule_boundary)}, "
+            f"new_arteriole_edges={step_new_arteriole_edges}, "
+            f"new_venule_edges={step_new_venule_edges}, "
             f"remaining_boundary_nodes={len(remaining_boundary_nodes)}."
         )
+
+    # Reapply locked assignments so graph labels reflect returned progressive results.
+    for _, attrs in G.nodes(data=True):
+        attrs.pop("mask_vessel_type", None)
+    if isinstance(G, nx.MultiGraph):
+        edge_attr_by_id = {
+            _edge_id(u, v, key): edge_data
+            for u, v, key, edge_data in G.edges(keys=True, data=True)
+        }
+    else:
+        edge_attr_by_id = {
+            ((u, v, 0) if u <= v else (v, u, 0)): edge_data
+            for u, v, edge_data in G.edges(data=True)
+        }
+    for edge_data in edge_attr_by_id.values():
+        edge_data.pop("mask_vessel_type", None)
+    for edge_id in assigned_arteriole_edges:
+        edge_data = edge_attr_by_id.get(edge_id)
+        if edge_data is not None:
+            edge_data["mask_vessel_type"] = "arteriole"
+    for edge_id in (assigned_venule_edges - assigned_arteriole_edges):
+        edge_data = edge_attr_by_id.get(edge_id)
+        if edge_data is not None:
+            edge_data["mask_vessel_type"] = "venule"
+    for node_id in assigned_arteriole_nodes:
+        if node_id in G.nodes:
+            G.nodes[node_id]["mask_vessel_type"] = "arteriole"
+    for node_id in (assigned_venule_nodes - assigned_arteriole_nodes):
+        if node_id in G.nodes:
+            G.nodes[node_id]["mask_vessel_type"] = "venule"
 
     return {
         "arteriole_boundary_nodes": _sort_nodes(assigned_arteriole_boundary),
