@@ -148,6 +148,7 @@ def visualize_3d_plotly_large_vessel_assignment(
                 colorscale=[[0.0, color], [1.0, color]],
                 showscale=False,
                 name=name,
+                hoverinfo="skip",
             )
         )
 
@@ -397,6 +398,7 @@ def visualize_3d_plotly_large_vessel_assignment(
     fig.update_layout(
         title=title,
         showlegend=True,
+        hovermode="closest",
         scene=dict(
             xaxis_title="X",
             yaxis_title="Y",

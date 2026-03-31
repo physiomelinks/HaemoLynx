@@ -18,7 +18,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 dist3d = importlib.import_module("ImageLynx.statistics.3D_distances")
-DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "synthetic_3d_distances"
+DEMO_OUTPUT_DIR = REPO_ROOT / "tests" / "outputs" / "synthetic_3d_distances"
 
 
 def _line_voxels(

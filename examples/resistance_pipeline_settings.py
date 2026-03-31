@@ -50,7 +50,7 @@ VOXEL_SIZE_POLICY = "auto"
 # Vessel-mask settings
 # ---------------------------
 # Toggle automated selection of start/output nodes from masks.
-AUTOMATED_VESSEL_ASSIGNMENT =  False
+AUTOMATED_VESSEL_ASSIGNMENT = False
 # Fast mode for automated large-vessel I/O assignment: remove overlap voxels
 # from the smaller component in each arteriole/venule overlap pair before
 # terminal assignment (non-overlapping component regions are preserved).
@@ -65,6 +65,24 @@ AUTOMATED_VESSEL_ASSIGNMENT_ENABLE_OVERLAP_CLEANUP = True
 # Worker count for parallel overlap resolution in automated large-vessel I/O
 # assignment. Set 0 to run serially.
 AUTOMATED_VESSEL_OVERLAP_PARALLEL_WORKERS = 8
+# Use legacy large-vessel terminal assignment path. Set False to use the
+# confidence-based robust assignment mode with unresolved-node QC output.
+AUTOMATED_VESSEL_ASSIGNMENT_USE_LEGACY_MODE = True
+# Minimum score-gap margin required to keep an automated I/O assignment.
+AUTOMATED_VESSEL_CONFIDENCE_MARGIN = 0.08
+# Minimum confidence required to keep an automated I/O assignment.
+AUTOMATED_VESSEL_MIN_CONFIDENCE = 0.12
+# Topology-consistency penalty weight for implausible local assignments.
+AUTOMATED_VESSEL_TOPOLOGY_PENALTY = 0.12
+# Quality gate: max arteriole/venule mask overlap fraction before
+# conservative mode is auto-enabled.
+AUTOMATED_VESSEL_QUALITY_MAX_OVERLAP_FRACTION = 0.20
+# Quality gate: minimum terminal coverage by either large-vessel mask.
+AUTOMATED_VESSEL_QUALITY_MIN_TERMINAL_COVERAGE = 0.20
+# Quality gate: maximum connected-component count allowed per large-vessel mask.
+AUTOMATED_VESSEL_QUALITY_MAX_COMPONENT_COUNT = 12
+# Conservative-mode cap for progressive dilation in robust assignment.
+AUTOMATED_VESSEL_CONSERVATIVE_MAX_DILATION_MICRONS = 15.0
 # Persist automated STARTING_NODES/OUTPUT_NODES into this settings file and
 # automatically set AUTOMATED_VESSEL_ASSIGNMENT=False for the next run.
 AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS = True
@@ -97,9 +115,8 @@ ILASTIK_UNSEGMENTED_VENULE_IMAGE_PATH = root_dir / "examples" / "images" / "larg
 ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "arteriole_classifier.ilp"
 # Ilastik classifier path for venule segmentation.
 ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
-
 # Toggle small-vessel masks for automated arteriole/venule boundary assignment.
-USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
+USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = True
 # Persist small-vessel-derived ARTERIOLE_BOUNDARY_NODES/VENULE_BOUNDARY_NODES
 # into this settings file and disable small-vessel boundary automation next run.
 AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS = True
@@ -125,9 +142,60 @@ SMALL_VESSEL_BOUNDARY_ASSIGNMENT_ENABLE_OVERLAP_CLEANUP = True
 # Worker count for parallel edge overlap checks in small-vessel boundary
 # assignment. Set 0 to run serially.
 SMALL_VESSEL_OVERLAP_PARALLEL_WORKERS = 8
+# Enable robust type-locked continuity bridging for small vessel masks.
+# Allowed bridge categories are strictly same-type:
+# (small venule -> large/small venule) and
+# (small arteriole -> large/small arteriole).
+SMALL_VESSEL_MASK_CONTINUITY_ENABLE = True
+# Permit continuity links from small components to large same-type masks.
+SMALL_VESSEL_MASK_CONTINUITY_ALLOW_SMALL_TO_LARGE = True
+# Permit continuity links between small components of the same type.
+SMALL_VESSEL_MASK_CONTINUITY_ALLOW_SMALL_TO_SMALL = True
+# Restrict continuity to cylinder-to-cylinder links only.
+SMALL_VESSEL_MASK_CONTINUITY_ENFORCE_CYLINDER_ONLY = True
+# Minimum component cylindricality required for bridge endpoints.
+SMALL_VESSEL_MASK_CONTINUITY_MIN_CYLINDRICALITY = 0.45
+# Maximum principal-axis angle (degrees) between connected cylinders.
+SMALL_VESSEL_MASK_CONTINUITY_MAX_AXIS_ANGLE_DEGREES = 45.0
+# Minimum cosine alignment for endpoint-facing check (towards each other).
+# 0.82 ~= cos(35deg); increase for stricter head-to-head orientation.
+SMALL_VESSEL_MASK_CONTINUITY_MIN_FACING_COSINE = 0.82
+# Maximum allowed endpoint radius ratio between connected cylinders.
+SMALL_VESSEL_MASK_CONTINUITY_MAX_RADIUS_RATIO = 3.0
+# Maximum allowed endpoint-to-endpoint bridge length in microns.
+SMALL_VESSEL_MASK_CONTINUITY_MAX_BRIDGE_DISTANCE_MICRONS = 35.0
+# Max distance from same-type vessel corridor allowed for bridge voxels.
+SMALL_VESSEL_MASK_CONTINUITY_CORRIDOR_MAX_DISTANCE_MICRONS = 12.0
+# Minimum distance from opposite-type masks for accepted bridge voxels.
+SMALL_VESSEL_MASK_CONTINUITY_OPPOSITE_EXCLUSION_DISTANCE_MICRONS = 3.0
+# Redefine small masks from tangential near-contact to large-vessel masks.
+SMALL_VESSEL_TANGENTIAL_REDEFINITION_ENABLE = True
+# Endpoints farther than this from large-mask boundary are ignored.
+SMALL_VESSEL_TANGENTIAL_REDEFINITION_MAX_CONTACT_DISTANCE_MICRONS = 12.0
+# Endpoint must be this close (microns) for reassignment acceptance.
+SMALL_VESSEL_TANGENTIAL_REDEFINITION_TOUCH_DISTANCE_MICRONS = 3.0
+# Tangency threshold: |dot(axis, boundary_normal)| must be <= this value.
+SMALL_VESSEL_TANGENTIAL_REDEFINITION_TANGENCY_COSINE_MAX = 0.35
+# Minimum score margin required to switch between arteriole/venule classes.
+SMALL_VESSEL_TANGENTIAL_REDEFINITION_MARGIN = 0.10
+# Reassign a mislabelled middle small-volume component when both endpoints face
+# nearby same-type neighbors on either side.
+SMALL_VESSEL_SANDWICH_REASSIGN_ENABLE = True
+# Max endpoint-to-neighbor distance (microns) for sandwich reassignment support.
+SMALL_VESSEL_SANDWICH_REASSIGN_MAX_ENDPOINT_DISTANCE_MICRONS = 12.0
+# Minimum facing cosine for endpoint neighbor support in sandwich reassignment.
+SMALL_VESSEL_SANDWICH_REASSIGN_MIN_FACING_COSINE = 0.82
+# Max axis-angle difference (degrees) allowed for sandwich reassignment support.
+SMALL_VESSEL_SANDWICH_REASSIGN_MAX_AXIS_ANGLE_DEGREES = 45.0
 # Downsample stride used for 3D small-vessel volume rendering in Plotly.
 # 1 = full resolution, 2/3/4 progressively faster but coarser.
 SMALL_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
+# Optional fallback: when small-vessel boundary assignment is enabled but masks are
+# unavailable at runtime, select boundary nodes by graph hop distance from
+# STARTING_NODES/OUTPUT_NODES.
+SMALL_VESSEL_BOUNDARY_FALLBACK_TO_HOP_DISTANCE = True
+# Number of edges (graph hops) away from STARTING_NODES/OUTPUT_NODES for fallback.
+SMALL_VESSEL_BOUNDARY_FALLBACK_HOP_DISTANCE = 1
 # Toggle writing interactive 3D HTML for small-vessel boundary labelling.
 WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML = True
 # Pre-segmented small arteriole mask path.
@@ -187,13 +255,13 @@ ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[fl
 # Volume boxes used to select venule boundary nodes.
 VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 # Runtime container for selected starting node IDs.
-STARTING_NODES: list[int] = [1018, 1029, 1038, 106, 108, 1145, 1165, 1234, 1333, 1368, 1374, 1403, 1499, 1505, 1509, 1535, 1537, 1576, 1600, 1604, 1644, 1655, 1698, 1721, 1786, 1872, 1962, 1990, 2035, 2038, 2044, 2121, 2152, 2301, 2313, 2387, 2501, 2503, 2517, 2520, 2559, 2587, 2633, 2735, 2796, 2869, 3218, 3230, 3239, 3388, 3898, 3966, 3969, 408, 410, 4146, 4149, 4157, 4355, 441, 4445, 4552, 476, 4760, 523, 528, 540, 549, 558, 609, 617, 636, 696, 738, 758, 796, 864, 865, 940, 963]
+STARTING_NODES: list[int] = [1018, 1029, 1038, 106, 108, 1145, 1165, 1234, 1333, 1368, 1374, 1403, 1499, 1505, 1509, 1535, 1537, 1576, 1600, 1604, 1627, 1644, 1655, 1698, 1721, 1786, 1962, 1990, 2121, 2152, 2301, 2313, 2387, 2501, 2503, 2517, 2520, 2559, 2587, 2633, 2735, 2796, 2869, 3218, 408, 410, 441, 476, 523, 528, 540, 549, 558, 609, 617, 636, 696, 738, 758, 796, 864, 865, 940, 963]
 # Runtime container for selected output node IDs.
-OUTPUT_NODES: list[int] = [1005, 1012, 1049, 1057, 1068, 1081, 1096, 1134, 1138, 1219, 1228, 1258, 1264, 1283, 1297, 1338, 1348, 1366, 1373, 1516, 1560, 1561, 1575, 1594, 1623, 1625, 178, 1825, 1861, 1871, 1877, 1893, 1965, 1986, 2012, 2021, 2055, 2065, 2103, 2168, 220, 2279, 2288, 2340, 2355, 2386, 2389, 2423, 2458, 2461, 2464, 2482, 2529, 2536, 2651, 2652, 279, 284, 2856, 2858, 2886, 2918, 2920, 2996, 3027, 3058, 306, 3068, 307, 3071, 308, 3159, 318, 3207, 328, 3306, 3329, 3342, 3377, 3386, 3390, 3497, 3499, 3501, 3510, 3514, 3517, 355, 371, 374, 383, 3832, 3845, 387, 4071, 4085, 4228, 4292, 4299, 433, 434, 4396, 452, 4631, 467, 469, 4711, 4722, 486, 488, 4882, 4886, 492, 4965, 5063, 5096, 519, 529, 534, 544, 566, 567, 569, 595, 618, 641, 644, 650, 658, 669, 670, 671, 672, 755, 763, 835, 919, 939, 974, 976]
+OUTPUT_NODES: list[int] = [1005, 1012, 1049, 1057, 1068, 1081, 1096, 1134, 1138, 1219, 1228, 1258, 1264, 1283, 1297, 1338, 1348, 1366, 1373, 1516, 1560, 1561, 1575, 1594, 1623, 178, 1825, 1861, 1871, 1877, 1893, 1965, 1986, 2012, 2021, 2055, 2065, 2103, 2168, 220, 2279, 2288, 2340, 2386, 2389, 2423, 2458, 2461, 2464, 2482, 2536, 2651, 2652, 279, 284, 2856, 2858, 2918, 2920, 2996, 3027, 306, 307, 308, 318, 3207, 328, 3329, 3342, 3497, 3499, 3501, 3510, 3514, 3517, 355, 371, 374, 383, 3832, 3845, 387, 4071, 4085, 4292, 4299, 433, 434, 452, 467, 469, 4711, 4722, 486, 488, 4882, 4886, 492, 4965, 5063, 519, 529, 534, 544, 566, 567, 569, 595, 618, 641, 644, 650, 658, 669, 670, 671, 672, 755, 763, 835, 919, 939, 974, 976]
 # Runtime container for selected arteriole boundary node IDs.
-ARTERIOLE_BOUNDARY_NODES: list[int] = [1229, 1460, 1500, 2274, 252, 2699, 477, 55]
+ARTERIOLE_BOUNDARY_NODES: list[int] = [107, 149, 151, 218, 278, 342, 372, 424, 436, 442, 446, 449, 473, 477, 517, 518, 542, 571, 665, 686, 735, 937, 1106, 1286, 1334, 1369, 1372, 1385, 1386, 1400, 1402, 1500, 1567, 1571, 1577, 1601, 1615, 1699, 1891, 2028, 2150, 2151, 2248, 2302, 2324, 2362, 2505, 2585, 2809, 3010]
 # Runtime container for selected venule boundary node IDs.
-VENULE_BOUNDARY_NODES: list[int] = [1076, 1094, 151, 1577, 1627, 427, 572, 578, 601, 610, 652]
+VENULE_BOUNDARY_NODES: list[int] = [47, 69, 103, 113, 115, 151, 179, 199, 263, 283, 286, 288, 289, 305, 353, 369, 372, 375, 376, 386, 393, 409, 424, 435, 461, 468, 470, 487, 498, 505, 514, 518, 520, 525, 535, 568, 571, 601, 610, 651, 673, 812, 836, 873, 923, 1013, 1022, 1058, 1076, 1082, 1131, 1229, 1332, 1372, 1386, 1395, 1577, 1624, 1669, 1817, 1819, 1832, 1944, 1987, 2008, 2058, 2060, 2118, 2212, 2237, 2248, 2286, 2372, 2390, 2459, 2477, 2537, 2781, 2857, 2919, 2921, 2998, 3340, 3513, 3516, 3679, 4068, 4087, 4285, 4294, 4521]
 # Enforce strict hierarchical branch-order prerequisites.
 STRICT_BRANCH_ORDER_ASSIGNMENT = False
 
@@ -236,7 +304,7 @@ RUN_HAEMODYNAMICS = True
 # Toggle two-point equivalent resistance calculation.
 DO_EQUIV_RESISTANCE_CALCULATION = True
 # Minimum branch length threshold used by graph operations.
-MIN_BRANCH_LENGTH = 10
+MIN_BRANCH_LENGTH = 15
 # Output path prefix used for VTK artifacts.
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
 # Closing radius used in skeleton preprocessing.
@@ -258,6 +326,16 @@ FINAL_ORPHAN_RECONNECT_THRESHOLD = 3.0
 MIN_STUB_LENGTH = 10.0
 # Distance threshold used for collapsing node clusters.
 CLUSTER_COLLAPSE_DISTANCE = 5.0
+# Toggle graph element removal within user-defined volumes.
+REMOVE_GRAPH_ELEMENTS_IN_VOLUMES = True
+# Axis-aligned volume boxes used for graph-element removal.
+# Each entry is ((x_min, y_min, z_min), (x_max, y_max, z_max)).
+# Also accepts shorthand:
+# - single box as [(x_min, y_min, z_min), (x_max, y_max, z_max)]
+# - per-box flat tuple (x_min, y_min, z_min, x_max, y_max, z_max)
+GRAPH_ELEMENT_REMOVAL_VOLUMES: list[
+    tuple[tuple[float, float, float], tuple[float, float, float]]
+] = [(0, 250, 130), (350, 620, 200)]
 
 # Minimum component size percentage to keep after skeleton cleanup.
 SKELETON_MIN_COMPONENT_PERCENT = 0.0
@@ -307,40 +385,59 @@ PERICYTE_MAX_DIAMETER_UM = 12.0
 USE_PROBABILISTIC_PERICYTE_CONSTRICTION = False
 # Activation probability used in probabilistic constriction mode.
 PERICYTE_CONSTRICTION_PROBABILITY = 0.8
+# Periodic constriction segment length (um) used by haemodynamics models.
+PERICYTE_CONSTRICTION_LENGTH_UM = 40.0
+# Inter-pericyte spacing (um) used by periodic constriction models.
+PERICYTE_CONSTRICTION_SPACING_UM = 60.0
 # Toggle baseline-vs-constricted pericyte resistance comparison run.
 RUN_PERICYTE_RESISTANCE_COMPARISON = True
 # Baseline comparison multiplier used in pericyte comparison mode.
-PERICYTE_COMPARISON_BASELINE_VALUE = 1.0
+PERICYTE_COMPARISON_BASELINE_VALUE = 1.08
 # Constricted comparison multiplier used in pericyte comparison mode.
-PERICYTE_COMPARISON_CONSTRICTED_VALUE = 1.30
+PERICYTE_COMPARISON_CONSTRICTED_VALUE = 1.38
+# Toggle baseline-vs-dilated arteriole resistance comparison run.
+RUN_ARTERIOLE_RESISTANCE_COMPARISON = False
+# Baseline arteriole whole-vessel diameter multiplier for arteriole comparison.
+ARTERIOLE_COMPARISON_BASELINE_VALUE = 1.0
+# Dilated arteriole whole-vessel diameter multiplier for arteriole comparison.
+ARTERIOLE_COMPARISON_DILATED_VALUE = 1.2
+# Branch-order prefix used to identify arteriole vessels in arteriole comparison.
+ARTERIOLE_COMPARISON_BRANCH_PREFIX = "Art"
 # Reuse selected probabilistic pericyte cohort from comparison in main run.
 REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN = False
 # Toggle Alice pericyte-dilation x inlet-pressure sweep on main pipeline runs.
 RUN_ALICE_PAPER_SWEEP = True
 # Output directory for Alice sweep CSV and generated curve plots.
-ALICE_PAPER_OUTPUT_DIR = root_dir / "examples" / "outputs" / "alice_paper"
+ALICE_PAPER_OUTPUT_DIR = root_dir / "examples" / "outputs" 
 # Dilation sweep range (%) for Alice sweep.
 ALICE_PERICYTE_DILATION_MIN_PERCENT = 1
-ALICE_PERICYTE_DILATION_MAX_PERCENT = 30
+ALICE_PERICYTE_DILATION_MAX_PERCENT = 38
 ALICE_PERICYTE_DILATION_STEP_PERCENT = 1
 # Inlet-pressure sweep range (Pa) for Alice sweep.
 ALICE_INLET_PRESSURE_MIN_PA = 4500
-ALICE_INLET_PRESSURE_MAX_PA = 3000
+ALICE_INLET_PRESSURE_MAX_PA = 2000
 ALICE_INLET_PRESSURE_STEP_PA = 500
+# Constriction length (um) used in Alice haemodynamics sweep modelling.
+ALICE_CONSTRICTION_LENGTH_UM = PERICYTE_CONSTRICTION_LENGTH_UM
+# Constriction spacing (um) used in Alice haemodynamics sweep modelling.
+ALICE_CONSTRICTION_SPACING_UM = PERICYTE_CONSTRICTION_SPACING_UM
 # Toggle capillary-only passive diameter before/after flow plot.
 RUN_ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER = True
 # Passive capillary diameter increase (%) used for before/after comparison.
 ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT = ALICE_PERICYTE_DILATION_MAX_PERCENT
 # Toggle arteriole-only passive diameter before/after flow plot.
-RUN_ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER = False
+RUN_ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER = True
 # Signed arteriole diameter change (um): + dilates, - constricts.
-ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM = 0.5
+ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM = 2
+# When True, arteriole comparison uses d1/d2 constriction integrator with
+# fixed CONSTRICTION_BY_BRANCH_ORDER factors before/after arteriole scaling.
+ARTERIOLE_COMPARISON_USE_CONSTRICTION_INTEGRATOR = False
 # Toggle pericyte constriction/dilation before/after comparison at two spacings.
-RUN_ALICE_PERICYTE_SPACING_BEFOREAFTER = False
+RUN_ALICE_PERICYTE_SPACING_BEFOREAFTER = True
 # Signed pericyte diameter percent change: + dilation, - constriction.
-ALICE_PERICYTE_BEFOREAFTER_PERCENT = -20.0
+ALICE_PERICYTE_BEFOREAFTER_PERCENT = 38.0
 # Signed spacing shift (um) applied after baseline spacing for recomparison.
-ALICE_PERICYTE_SPACING_DELTA_UM = 20.0
+ALICE_PERICYTE_SPACING_DELTA_UM = 30.0
 # Optional edge list using custom sweep diameter handling.
 ALICE_CUSTOM_EDGES_FOR_SWEEP: list[tuple[int, int]] = []
 
@@ -357,7 +454,11 @@ MANUAL_CAPILLARY_DIAMETER_BY_BRANCH_ORDER = {
     "B04": 5.0,
 }
 # Manual arteriole diameter overrides keyed by branch-order label.
-MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER = {}
+MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER = {
+    "Art1": 10.0,
+    "Art2": 8.0,
+    "Art3": 8.0
+}
 # Manual venule diameter overrides keyed by branch-order label.
 MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER = {}
 

@@ -320,3 +320,116 @@ def visualize_vtk_network(
     if show:
         plotter.show()
     return plotter
+
+
+def write_flow_vtk_plotly_html(
+    vessels_flow_path: str | Path,
+    output_html_path: str | Path,
+    *,
+    flow_field: str = "flow_abs",
+    title: str = "Flow Network (VTK)",
+    n_color_bins: int = 8,
+    show: bool = False,
+) -> str:
+    """Write a Plotly HTML of vessel flow from flow-annotated VTK cells."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError as exc:
+        raise ImportError(
+            "plotly is required for flow HTML export. Install with `pip install plotly`."
+        ) from exc
+
+    vessels = pv.read(str(vessels_flow_path))
+    flow_values = np.asarray(vessels.cell_data.get(flow_field, []), dtype=float)
+    if flow_values.size != vessels.n_cells:
+        raise ValueError(
+            f"Flow field '{flow_field}' missing or invalid in vessels VTK: {vessels_flow_path}"
+        )
+
+    finite_flow = flow_values[np.isfinite(flow_values)]
+    if finite_flow.size == 0:
+        finite_flow = np.array([0.0], dtype=float)
+    f_min = float(np.min(finite_flow))
+    f_max = float(np.max(finite_flow))
+    bins = max(int(n_color_bins), 2)
+    edges = np.linspace(f_min, f_max, bins + 1)
+    if np.isclose(f_min, f_max):
+        edges = np.linspace(f_min - 1e-12, f_max + 1e-12, bins + 1)
+
+    # Discrete colors from low->high flow.
+    colors = [
+        "#440154",
+        "#482878",
+        "#3e4989",
+        "#31688e",
+        "#26828e",
+        "#1f9e89",
+        "#35b779",
+        "#6ece58",
+        "#b5de2b",
+        "#fde725",
+    ]
+    if bins > len(colors):
+        repeats = int(np.ceil(float(bins) / float(len(colors))))
+        colors = (colors * repeats)[:bins]
+    else:
+        colors = colors[:bins]
+
+    coords_by_bin: list[dict[str, list[float | None]]] = [
+        {"x": [], "y": [], "z": []} for _ in range(bins)
+    ]
+    counts_by_bin = [0 for _ in range(bins)]
+
+    for ii in range(vessels.n_cells):
+        flow_val = float(flow_values[ii])
+        if not np.isfinite(flow_val):
+            continue
+        bin_idx = int(np.searchsorted(edges, flow_val, side="right") - 1)
+        bin_idx = max(0, min(bin_idx, bins - 1))
+        cell = vessels.get_cell(ii)
+        points = np.asarray(cell.points, dtype=float)
+        if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 3:
+            continue
+        for point in points:
+            coords_by_bin[bin_idx]["x"].append(float(point[0]))
+            coords_by_bin[bin_idx]["y"].append(float(point[1]))
+            coords_by_bin[bin_idx]["z"].append(float(point[2]))
+        coords_by_bin[bin_idx]["x"].append(None)
+        coords_by_bin[bin_idx]["y"].append(None)
+        coords_by_bin[bin_idx]["z"].append(None)
+        counts_by_bin[bin_idx] += 1
+
+    fig = go.Figure()
+    for idx in range(bins):
+        coords = coords_by_bin[idx]
+        if not coords["x"]:
+            continue
+        lo = float(edges[idx])
+        hi = float(edges[idx + 1])
+        fig.add_trace(
+            go.Scatter3d(
+                x=coords["x"],
+                y=coords["y"],
+                z=coords["z"],
+                mode="lines",
+                line=dict(color=colors[idx], width=3),
+                name=f"{flow_field}: [{lo:.3g}, {hi:.3g}] (n={counts_by_bin[idx]})",
+            )
+        )
+
+    fig.update_layout(
+        title=title,
+        showlegend=True,
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Z",
+            aspectmode="data",
+        ),
+    )
+    out = Path(output_html_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(str(out), include_plotlyjs="cdn")
+    if show:
+        fig.show()
+    return str(out)

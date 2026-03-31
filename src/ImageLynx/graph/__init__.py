@@ -31,6 +31,10 @@ from .automated_vessel_assignment import (
     write_automated_vessel_assignment_3d_html,
     write_small_vessel_mask_boundary_labelling_3d_html,
 )
+from .confidence_vessel_assignment import (
+    assess_large_vessel_assignment_quality,
+    select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence,
+)
 from .large_vessels import (
     dilate_binary_mask_by_microns,
     dilate_large_vessel_masks_by_microns,
@@ -40,6 +44,15 @@ from .large_vessels import (
 from .mask_component_volume import (
     remove_small_mask_components_by_volume,
     remove_small_vessel_components_by_volume,
+)
+from .boundary_node_fallback import (
+    select_nodes_at_hop_distance,
+    seed_edges_have_full_mask_coverage,
+)
+from .remove_volume import remove_graph_elements_in_volumes
+from .mask_continuity import (
+    enforce_small_vessel_mask_continuity,
+    redefine_small_masks_from_large_tangential_contact,
 )
 from ._helpers import (
     add_edge_safe,
@@ -95,12 +108,19 @@ __all__ = [
     "select_terminal_nodes_from_large_vessel_masks",
     "write_automated_vessel_assignment_3d_html",
     "write_small_vessel_mask_boundary_labelling_3d_html",
+    "assess_large_vessel_assignment_quality",
+    "select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence",
     "dilate_binary_mask_by_microns",
     "dilate_large_vessel_masks_by_microns",
     "exclude_smaller_overlapping_large_vessel_components",
     "exclude_smaller_overlapping_small_vessel_components",
     "remove_small_mask_components_by_volume",
     "remove_small_vessel_components_by_volume",
+    "select_nodes_at_hop_distance",
+    "seed_edges_have_full_mask_coverage",
+    "remove_graph_elements_in_volumes",
+    "enforce_small_vessel_mask_continuity",
+    "redefine_small_masks_from_large_tangential_contact",
     "remove_edges_for_self_connected_nodes",
     "remove_terminal_terminal_edges",
     "remove_isolated_nodes",

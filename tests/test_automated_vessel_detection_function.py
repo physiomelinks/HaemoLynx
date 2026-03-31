@@ -16,8 +16,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from ImageLynx.graph import (
+    assess_large_vessel_assignment_quality,
     compute_overlapping_terminal_assignment_metrics,
     dilate_large_vessel_masks_by_microns,
+    select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence,
     select_terminal_nodes_from_large_vessel_masks_progressive_dilation,
     select_terminal_nodes_from_large_vessel_masks,
 )
@@ -463,6 +465,115 @@ def test_progressive_dilation_assignment_locks_earlier_nodes():
     )
     assert start_nodes == [0]
     assert out_nodes == [1, 2]
+
+
+def test_confidence_mode_replaces_exact_tie_with_unresolved():
+    """Equal arteriole/venule evidence should be flagged unresolved."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([2.0, 2.0, 2.0]))  # terminal in overlap
+    G.add_node(1, pos=np.array([3.0, 2.0, 2.0]))  # connector
+    G.add_edge(0, 1, length=1.0, weight=1.0, voxels=[(2.0, 2.0, 2.0), (3.0, 2.0, 2.0)])
+
+    arteriole_mask = np.zeros((8, 8, 8), dtype=bool)
+    venule_mask = np.zeros((8, 8, 8), dtype=bool)
+    arteriole_mask[1:4, 1:4, 1:4] = True
+    venule_mask[1:4, 1:4, 1:4] = True
+
+    result = select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        max_dilation_microns=0.0,
+        confidence_margin=0.05,
+        minimum_confidence=0.05,
+        topology_penalty=0.0,
+    )
+    assert result["input_nodes"] == []
+    assert result["output_nodes"] == []
+    assert result["unresolved_nodes"] == [0]
+    assert result["node_confidence"][0]["reason"] in {"exact_tie", "low_score_gap"}
+
+
+def test_confidence_mode_topology_penalty_biases_label():
+    """Topology support should penalize physiologically implausible labels."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([2.0, 2.0, 2.0]))   # terminal candidate
+    G.add_node(1, pos=np.array([3.0, 2.0, 2.0]))   # neighbor junction
+    G.add_node(2, pos=np.array([4.0, 2.0, 2.0]))   # distal terminal
+    G.add_edge(
+        0,
+        1,
+        length=1.0,
+        weight=1.0,
+        branch_order="Ven1",
+        vessel_type="venule",
+        voxels=[(2.0, 2.0, 2.0), (3.0, 2.0, 2.0)],
+    )
+    G.add_edge(1, 2, length=1.0, weight=1.0, branch_order="Ven2", vessel_type="venule")
+
+    arteriole_mask = np.zeros((8, 8, 8), dtype=bool)
+    venule_mask = np.zeros((8, 8, 8), dtype=bool)
+    arteriole_mask[1:4, 1:4, 1:4] = True
+    venule_mask[1:4, 1:4, 1:4] = True
+
+    result = select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        max_dilation_microns=0.0,
+        confidence_margin=0.0,
+        minimum_confidence=0.01,
+        topology_penalty=0.2,
+    )
+    assert 0 in result["output_nodes"]
+    assert 0 not in result["input_nodes"]
+    assert result["node_confidence"][0]["decision"] == "output"
+
+
+def test_quality_gate_can_trigger_conservative_mode():
+    """High overlap/fragmentation should trigger conservative robust mode."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([2.0, 2.0, 2.0]))
+    G.add_node(1, pos=np.array([3.0, 2.0, 2.0]))
+    G.add_edge(0, 1, length=1.0, weight=1.0)
+
+    arteriole_mask = np.zeros((16, 16, 16), dtype=bool)
+    venule_mask = np.zeros((16, 16, 16), dtype=bool)
+    # Deliberately make heavy overlap and many disconnected fragments.
+    arteriole_mask[2:6, 2:6, 2:6] = True
+    venule_mask[2:6, 2:6, 2:6] = True
+    for idx in range(8, 15):
+        arteriole_mask[idx, idx % 16, 1] = True
+        venule_mask[idx, idx % 16, 2] = True
+
+    quality = assess_large_vessel_assignment_quality(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        quality_max_overlap_fraction=0.05,
+        quality_min_terminal_coverage=0.9,
+        quality_max_component_count=2,
+    )
+    assert quality["poor_quality"] is True
+
+    result = select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence(
+        G,
+        large_arteriole_mask=arteriole_mask,
+        large_venule_mask=venule_mask,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        max_dilation_microns=50.0,
+        confidence_margin=0.08,
+        minimum_confidence=0.12,
+        quality_max_overlap_fraction=0.05,
+        quality_min_terminal_coverage=0.9,
+        quality_max_component_count=2,
+        conservative_max_dilation_microns=15.0,
+    )
+    assert result["conservative_mode"] is True
+    assert result["effective_max_dilation_microns"] <= 15.0
 
 
 if __name__ == "__main__":

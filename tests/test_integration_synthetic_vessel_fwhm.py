@@ -4,7 +4,7 @@ The pytest case writes ``synthetic_vessel_fwhm_viz.html`` under pytest’s ``tmp
 as a marching-cubes mesh, vessel centerlines, and the transverse polylines used for FWHM sampling — same
 logic as ``measure_edge_diameters_fwhm_from_raw_tiff``). Skip plotting I/O with ``-m "not plotting"``.
 
-Run as a script to write the same style figure under ``examples/plots/``::
+Run as a script to write the same style figure under ``tests/plots/``::
 
     python tests/test_integration_synthetic_vessel_fwhm.py
 """
@@ -988,7 +988,7 @@ def _write_single_demo_html(
 
 def _write_demo_html() -> list[Path]:
     repo_root = Path(__file__).resolve().parents[1]
-    out_dir = repo_root / "examples" / "plots"
+    out_dir = repo_root / "tests" / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
     voxel_size_xyz = (0.25, 0.25, 0.25)
 

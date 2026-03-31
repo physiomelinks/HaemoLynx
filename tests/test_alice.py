@@ -189,7 +189,7 @@ def test_alice_graphing_on_synthetic_network(tmp_path: Path):
 
 
 if __name__ == "__main__":
-    demo_output_dir = REPO_ROOT / "examples" / "outputs" / "synthetic_alice_test"
+    demo_output_dir = REPO_ROOT / "tests" / "outputs" / "synthetic_alice_test"
     demo_output_dir.mkdir(parents=True, exist_ok=True)
     sweep = _run_synthetic_alice_graphing(
         demo_output_dir,

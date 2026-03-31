@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import networkx as nx
 
 from .pericyte_mask import set_poiseuille_weights_with_pericyte_mask
@@ -350,6 +351,61 @@ def compare_baseline_vs_pericyte_constriction(
             }
         )
 
+    plot_path = output_path.with_name(f"{output_path.stem}_before_after_resistance.png")
+    baseline_values = [float(result["baseline_resistance"]) for result in pair_results]
+    constricted_values = [float(result["constricted_resistance"]) for result in pair_results]
+    baseline_mean = float(sum(baseline_values) / len(baseline_values)) if baseline_values else 0.0
+    constricted_mean = (
+        float(sum(constricted_values) / len(constricted_values)) if constricted_values else 0.0
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    x_baseline = 0.0
+    x_after = 1.0
+    for baseline_res, constricted_res in zip(baseline_values, constricted_values):
+        ax.plot(
+            [x_baseline, x_after],
+            [baseline_res, constricted_res],
+            color="0.75",
+            linewidth=1.0,
+            zorder=1,
+        )
+    ax.scatter(
+        [x_baseline] * len(baseline_values),
+        baseline_values,
+        color="tab:blue",
+        s=28,
+        alpha=0.9,
+        zorder=3,
+        label="Input-output pair (before)",
+    )
+    ax.scatter(
+        [x_after] * len(constricted_values),
+        constricted_values,
+        color="tab:orange",
+        s=28,
+        alpha=0.9,
+        zorder=3,
+        label="Input-output pair (after)",
+    )
+    ax.bar(
+        [x_baseline, x_after],
+        [baseline_mean, constricted_mean],
+        width=0.35,
+        color=["tab:blue", "tab:orange"],
+        alpha=0.25,
+        zorder=2,
+        label="Mean resistance",
+    )
+    ax.set_xticks([x_baseline, x_after], labels=["Before", "After"])
+    ax.set_ylabel("Effective resistance")
+    ax.set_title("Pericyte Comparison: Before/After Resistance by Pair and Mean")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=200)
+    plt.close(fig)
+
     first_result = pair_results[0]
     return {
         "baseline_resistance": float(first_result["baseline_resistance"]),
@@ -366,6 +422,7 @@ def compare_baseline_vs_pericyte_constriction(
         "baseline_factor_value": float(baseline_factor_value),
         "constricted_factor_value": float(constricted_factor_value),
         "output_csv_path": str(output_path),
+        "output_plot_path": str(plot_path),
         "baseline_weight_results": baseline_weight_results,
         "constricted_weight_results": constricted_weight_results,
         "active_pericyte_indices": fixed_active_pericyte_indices,

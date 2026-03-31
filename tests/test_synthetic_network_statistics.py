@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "synthetic_network_statistics"
+DEMO_OUTPUT_DIR = REPO_ROOT / "tests" / "outputs" / "synthetic_network_statistics"
 
 from ImageLynx.graph import assign_hierarchical_branch_orders, calculate_edge_length
 from ImageLynx.statistics import (
@@ -413,7 +413,7 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
     html_path = out_dir / f"{image_stem}_branch_labelled_3d.html"
     assert _write_branch_labelled_3d_html(G, html_path)
 
-    # Also emit a stable demo copy under examples/outputs for easy inspection
+    # Also emit a stable demo copy under tests/outputs for easy inspection
     # when running this test file directly.
     DEMO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     demo_stats_csv = DEMO_OUTPUT_DIR / f"{image_stem}_statistics.csv"

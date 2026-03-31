@@ -27,6 +27,7 @@ SETTINGS_FILE_PATH = examples_dir / "resistance_pipeline_settings.py"
 
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
+from ImageLynx.haemodynamics import arteriole_comparison as arteriole_comparison_haemodynamics
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
 from ImageLynx.haemodynamics import probability as probability_haemodynamics
@@ -141,8 +142,8 @@ def _run_alice_pericyte_dilation_pressure_sweep(
     output_p_bc: float,
     output_dir: Path,
     custom_edges_for_sweep: list | None = None,
-    constriction_length_um: float = 40.0,
-    constriction_spacing_um: float = 100.0,
+    constriction_length_um: float = ALICE_CONSTRICTION_LENGTH_UM,
+    constriction_spacing_um: float = ALICE_CONSTRICTION_SPACING_UM,
     min_dilation_percent: int = 1,
     max_dilation_percent: int = 30,
     dilation_step_percent: int = 1,
@@ -358,13 +359,43 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode=SMALL_VESSEL_BOUNDARY_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE,
                             small_vessel_boundary_assignment_enable_overlap_cleanup=SMALL_VESSEL_BOUNDARY_ASSIGNMENT_ENABLE_OVERLAP_CLEANUP,
                             small_vessel_overlap_parallel_workers=SMALL_VESSEL_OVERLAP_PARALLEL_WORKERS,
+                            small_vessel_mask_continuity_enable=SMALL_VESSEL_MASK_CONTINUITY_ENABLE,
+                            small_vessel_mask_continuity_allow_small_to_large=SMALL_VESSEL_MASK_CONTINUITY_ALLOW_SMALL_TO_LARGE,
+                            small_vessel_mask_continuity_allow_small_to_small=SMALL_VESSEL_MASK_CONTINUITY_ALLOW_SMALL_TO_SMALL,
+                            small_vessel_mask_continuity_enforce_cylinder_only=SMALL_VESSEL_MASK_CONTINUITY_ENFORCE_CYLINDER_ONLY,
+                            small_vessel_mask_continuity_min_cylindricality=SMALL_VESSEL_MASK_CONTINUITY_MIN_CYLINDRICALITY,
+                            small_vessel_mask_continuity_max_axis_angle_degrees=SMALL_VESSEL_MASK_CONTINUITY_MAX_AXIS_ANGLE_DEGREES,
+                            small_vessel_mask_continuity_min_facing_cosine=SMALL_VESSEL_MASK_CONTINUITY_MIN_FACING_COSINE,
+                            small_vessel_mask_continuity_max_radius_ratio=SMALL_VESSEL_MASK_CONTINUITY_MAX_RADIUS_RATIO,
+                            small_vessel_mask_continuity_max_bridge_distance_microns=SMALL_VESSEL_MASK_CONTINUITY_MAX_BRIDGE_DISTANCE_MICRONS,
+                            small_vessel_mask_continuity_corridor_max_distance_microns=SMALL_VESSEL_MASK_CONTINUITY_CORRIDOR_MAX_DISTANCE_MICRONS,
+                            small_vessel_mask_continuity_opposite_exclusion_distance_microns=SMALL_VESSEL_MASK_CONTINUITY_OPPOSITE_EXCLUSION_DISTANCE_MICRONS,
+                            small_vessel_tangential_redefinition_enable=SMALL_VESSEL_TANGENTIAL_REDEFINITION_ENABLE,
+                            small_vessel_tangential_redefinition_max_contact_distance_microns=SMALL_VESSEL_TANGENTIAL_REDEFINITION_MAX_CONTACT_DISTANCE_MICRONS,
+                            small_vessel_tangential_redefinition_touch_distance_microns=SMALL_VESSEL_TANGENTIAL_REDEFINITION_TOUCH_DISTANCE_MICRONS,
+                            small_vessel_tangential_redefinition_tangency_cosine_max=SMALL_VESSEL_TANGENTIAL_REDEFINITION_TANGENCY_COSINE_MAX,
+                            small_vessel_tangential_redefinition_margin=SMALL_VESSEL_TANGENTIAL_REDEFINITION_MARGIN,
+                            small_vessel_sandwich_reassign_enable=SMALL_VESSEL_SANDWICH_REASSIGN_ENABLE,
+                            small_vessel_sandwich_reassign_max_endpoint_distance_microns=SMALL_VESSEL_SANDWICH_REASSIGN_MAX_ENDPOINT_DISTANCE_MICRONS,
+                            small_vessel_sandwich_reassign_min_facing_cosine=SMALL_VESSEL_SANDWICH_REASSIGN_MIN_FACING_COSINE,
+                            small_vessel_sandwich_reassign_max_axis_angle_degrees=SMALL_VESSEL_SANDWICH_REASSIGN_MAX_AXIS_ANGLE_DEGREES,
                             small_vessel_3d_volume_downsample_stride=SMALL_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE,
+                            small_vessel_boundary_fallback_to_hop_distance=SMALL_VESSEL_BOUNDARY_FALLBACK_TO_HOP_DISTANCE,
+                            small_vessel_boundary_fallback_hop_distance=SMALL_VESSEL_BOUNDARY_FALLBACK_HOP_DISTANCE,
                             write_small_vessel_boundary_labelling_3d_html=WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML,
                             automated_vessel_assignment=AUTOMATED_VESSEL_ASSIGNMENT,
                             automated_vessel_assignment_fast_mode=AUTOMATED_VESSEL_ASSIGNMENT_FAST_MODE,
                             automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode=AUTOMATED_VESSEL_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE,
                             automated_vessel_assignment_enable_overlap_cleanup=AUTOMATED_VESSEL_ASSIGNMENT_ENABLE_OVERLAP_CLEANUP,
                             automated_vessel_overlap_parallel_workers=AUTOMATED_VESSEL_OVERLAP_PARALLEL_WORKERS,
+                            automated_vessel_assignment_use_legacy_mode=AUTOMATED_VESSEL_ASSIGNMENT_USE_LEGACY_MODE,
+                            automated_vessel_confidence_margin=AUTOMATED_VESSEL_CONFIDENCE_MARGIN,
+                            automated_vessel_min_confidence=AUTOMATED_VESSEL_MIN_CONFIDENCE,
+                            automated_vessel_topology_penalty=AUTOMATED_VESSEL_TOPOLOGY_PENALTY,
+                            automated_vessel_quality_max_overlap_fraction=AUTOMATED_VESSEL_QUALITY_MAX_OVERLAP_FRACTION,
+                            automated_vessel_quality_min_terminal_coverage=AUTOMATED_VESSEL_QUALITY_MIN_TERMINAL_COVERAGE,
+                            automated_vessel_quality_max_component_count=AUTOMATED_VESSEL_QUALITY_MAX_COMPONENT_COUNT,
+                            automated_vessel_conservative_max_dilation_microns=AUTOMATED_VESSEL_CONSERVATIVE_MAX_DILATION_MICRONS,
                             large_vessel_3d_volume_downsample_stride=LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE,
                             write_fast_mode_preassignment_large_vessel_debug_3d_html=WRITE_FAST_MODE_PREASSIGNMENT_LARGE_VESSEL_DEBUG_3D_HTML,
                             auto_persist_automated_io_assignment_to_settings=AUTO_PERSIST_AUTOMATED_IO_ASSIGNMENT_TO_SETTINGS,
@@ -392,9 +423,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             pericyte_max_diameter_um=PERICYTE_MAX_DIAMETER_UM,
                             use_probabilistic_pericyte_constriction=USE_PROBABILISTIC_PERICYTE_CONSTRICTION,
                             pericyte_constriction_probability=PERICYTE_CONSTRICTION_PROBABILITY,
+                            pericyte_constriction_length_um=PERICYTE_CONSTRICTION_LENGTH_UM,
+                            pericyte_constriction_spacing_um=PERICYTE_CONSTRICTION_SPACING_UM,
                             run_pericyte_resistance_comparison=RUN_PERICYTE_RESISTANCE_COMPARISON,
                             pericyte_comparison_baseline_value=PERICYTE_COMPARISON_BASELINE_VALUE,
                             pericyte_comparison_constricted_value=PERICYTE_COMPARISON_CONSTRICTED_VALUE,
+                            run_arteriole_resistance_comparison=RUN_ARTERIOLE_RESISTANCE_COMPARISON,
+                            arteriole_comparison_baseline_value=ARTERIOLE_COMPARISON_BASELINE_VALUE,
+                            arteriole_comparison_dilated_value=ARTERIOLE_COMPARISON_DILATED_VALUE,
+                            arteriole_comparison_branch_prefix=ARTERIOLE_COMPARISON_BRANCH_PREFIX,
+                            arteriole_comparison_use_constriction_integrator=ARTERIOLE_COMPARISON_USE_CONSTRICTION_INTEGRATOR,
                             reuse_comparison_pericyte_cohort_for_main_run=REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN,
                             run_alice_paper_sweep=RUN_ALICE_PAPER_SWEEP,
                             alice_paper_output_dir=ALICE_PAPER_OUTPUT_DIR,
@@ -404,6 +442,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             alice_inlet_pressure_min_pa=ALICE_INLET_PRESSURE_MIN_PA,
                             alice_inlet_pressure_max_pa=ALICE_INLET_PRESSURE_MAX_PA,
                             alice_inlet_pressure_step_pa=ALICE_INLET_PRESSURE_STEP_PA,
+                            alice_constriction_length_um=ALICE_CONSTRICTION_LENGTH_UM,
+                            alice_constriction_spacing_um=ALICE_CONSTRICTION_SPACING_UM,
                             run_alice_passive_capillary_diameter_beforeafter=RUN_ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER,
                             alice_passive_capillary_diameter_beforeafter_percent=ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT,
                             run_alice_passive_arteriole_diameter_beforeafter=RUN_ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER,
@@ -421,6 +461,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             min_branch_length=MIN_BRANCH_LENGTH,
                             min_stub_length=MIN_STUB_LENGTH,
                             cluster_collapse_distance=CLUSTER_COLLAPSE_DISTANCE,
+                            remove_graph_elements_in_volumes=REMOVE_GRAPH_ELEMENTS_IN_VOLUMES,
+                            graph_element_removal_volumes=GRAPH_ELEMENT_REMOVAL_VOLUMES,
                             vtk_output_prefix=VTK_OUTPUT_PREFIX,
                             skeleton_closing_radius=SKELETON_CLOSING_RADIUS,
                             skeleton_bridge_gap_size=SKELETON_BRIDGE_GAP_SIZE,
@@ -993,10 +1035,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             f"min_overlap_fraction={float(small_vessel_mask_min_overlap_fraction):.3f}"
         )
     else:
-        print(
-            "Small-vessel-mask boundary assignment disabled; "
-            "manual arteriole/venule boundary-node selection remains available."
-        )
+        if use_small_vessel_masks_for_boundary_assignment:
+            print(
+                "Small-vessel boundary assignment is enabled, but small-vessel masks "
+                "were not loaded. Fallback/manual boundary selection may be used."
+            )
+        else:
+            print(
+                "Small-vessel-mask boundary assignment disabled; "
+                "manual arteriole/venule boundary-node selection remains available."
+            )
 
     large_viz_arteriole_mask = large_arteriole_mask
     large_viz_venule_mask = large_venule_mask
@@ -1265,6 +1313,33 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         if isolated_removed:
             print(f"Removed {isolated_removed} isolated degree-0 node(s).")
 
+        if bool(remove_graph_elements_in_volumes):
+            G, removal_stats = graph.remove_graph_elements_in_volumes(
+                G,
+                graph_element_removal_volumes,
+                remove_nodes=True,
+                remove_edges=True,
+                remove_isolated_nodes_after=True,
+            )
+            print(
+                "Graph volume-removal applied after construction/optimisation: "
+                f"volumes={int(removal_stats['configured_volume_count'])}, "
+                f"removed_edges={int(removal_stats['removed_edges'])}, "
+                f"removed_nodes={int(removal_stats['removed_nodes'])}, "
+                f"removed_isolated_nodes={int(removal_stats['removed_isolated_nodes'])}."
+            )
+            visualization.save_graph_snapshot(
+                G, image, output_dir, plot_dir, image_path.stem,
+                "remove_graph_elements_in_volumes",
+            )
+            visualization.visualize_edges_and_nodes(
+                image,
+                G,
+                label_nodes=True,
+                show_debug_dual_axes=True,
+                save_path=plot_dir / "remove_graph_elements_in_volumes.png",
+            )
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")
@@ -1277,6 +1352,21 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         with graph_path.open("rb") as f:
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
+        if bool(remove_graph_elements_in_volumes):
+            G, removal_stats = graph.remove_graph_elements_in_volumes(
+                G,
+                graph_element_removal_volumes,
+                remove_nodes=True,
+                remove_edges=True,
+                remove_isolated_nodes_after=True,
+            )
+            print(
+                "Graph volume-removal applied to loaded graph: "
+                f"volumes={int(removal_stats['configured_volume_count'])}, "
+                f"removed_edges={int(removal_stats['removed_edges'])}, "
+                f"removed_nodes={int(removal_stats['removed_nodes'])}, "
+                f"removed_isolated_nodes={int(removal_stats['removed_isolated_nodes'])}."
+            )
 
     # Store physical voxel-unit metadata used for skeleton/graph geometry and mask alignment.
     G.graph["image_voxel_size_xyz"] = tuple(float(v) for v in voxel_size)
@@ -1321,14 +1411,17 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     if automated_vessel_assignment:
         print("Starting automated input/output assignment from large vessel masks...")
         cleanup_enabled_for_large = bool(automated_vessel_assignment_enable_overlap_cleanup)
+        use_legacy_large_vessel_assignment = bool(automated_vessel_assignment_use_legacy_mode)
+        effective_assignment_fast_mode = bool(automated_vessel_assignment_fast_mode)
+        effective_max_large_vessel_dilation_microns = float(large_vessel_mask_dilation_microns)
         apply_overlap_cleanup_prepass = bool(
             cleanup_enabled_for_large
             and (
-                automated_vessel_assignment_fast_mode
+                effective_assignment_fast_mode
                 or automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode
             )
         )
-        if automated_vessel_assignment_fast_mode:
+        if effective_assignment_fast_mode:
             if cleanup_enabled_for_large:
                 print(
                     "Automated large-vessel assignment fast mode enabled: "
@@ -1375,7 +1468,37 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 f"removed_volume_um3(arteriole={float(arteriole_stats.get('removed_volume_um3', 0.0)):.3f}, "
                 f"venule={float(venule_stats.get('removed_volume_um3', 0.0)):.3f})."
             )
-        if automated_vessel_assignment_fast_mode:
+        if not use_legacy_large_vessel_assignment:
+            quality_metrics = graph.assess_large_vessel_assignment_quality(
+                G,
+                large_arteriole_mask=assignment_large_arteriole_mask,
+                large_venule_mask=assignment_large_venule_mask,
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                quality_max_overlap_fraction=float(automated_vessel_quality_max_overlap_fraction),
+                quality_min_terminal_coverage=float(automated_vessel_quality_min_terminal_coverage),
+                quality_max_component_count=int(automated_vessel_quality_max_component_count),
+            )
+            print(
+                "Robust large-vessel quality gate: "
+                f"overlap_fraction={float(quality_metrics['overlap_fraction']):.4f}, "
+                f"terminal_coverage={float(quality_metrics['terminal_coverage']):.4f}, "
+                f"component_count(arteriole={int(quality_metrics['arteriole_component_count'])}, "
+                f"venule={int(quality_metrics['venule_component_count'])}), "
+                f"poor_quality={bool(quality_metrics['poor_quality'])}."
+            )
+            if bool(quality_metrics["poor_quality"]):
+                effective_assignment_fast_mode = False
+                apply_overlap_cleanup_prepass = False
+                effective_max_large_vessel_dilation_microns = min(
+                    float(effective_max_large_vessel_dilation_microns),
+                    float(automated_vessel_conservative_max_dilation_microns),
+                )
+                print(
+                    "Robust large-vessel assignment switched to conservative mode: "
+                    "disabling overlap-cleanup pre-pass and reducing max dilation "
+                    f"to {float(effective_max_large_vessel_dilation_microns):.3f} microns."
+                )
+        if effective_assignment_fast_mode:
             if write_fast_mode_preassignment_large_vessel_debug_3d_html:
                 pre_assignment_before_cleanup_html_path = (
                     plot_dir / "pre_assignment_large_vessel_masks_before_overlap_cleanup_3d.html"
@@ -1457,22 +1580,55 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     "Saved fast-mode pre-assignment (after cleanup) large-vessel "
                     f"debug 3D visualization to: {pre_assignment_after_cleanup_html_path}"
                 )
-        auto_start_nodes, auto_output_nodes = (
-            graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
-                G,
-                large_arteriole_mask=assignment_large_arteriole_mask,
-                large_venule_mask=assignment_large_venule_mask,
-                voxel_size_xyz=tuple(float(v) for v in voxel_size),
-                max_dilation_microns=float(large_vessel_mask_dilation_microns),
-                dilation_step_microns=5.0,
-                allow_overlap=False,
-                exclude_smaller_overlapping_volumes=(
-                    apply_overlap_cleanup_prepass
-                    and not automated_vessel_assignment_fast_mode
-                ),
-                overlap_parallel_workers=int(automated_vessel_overlap_parallel_workers),
+        if use_legacy_large_vessel_assignment:
+            auto_start_nodes, auto_output_nodes = (
+                graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+                    G,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
+                    voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                    max_dilation_microns=float(effective_max_large_vessel_dilation_microns),
+                    dilation_step_microns=5.0,
+                    allow_overlap=False,
+                    exclude_smaller_overlapping_volumes=(
+                        apply_overlap_cleanup_prepass and not effective_assignment_fast_mode
+                    ),
+                    overlap_parallel_workers=int(automated_vessel_overlap_parallel_workers),
+                )
             )
-        )
+        else:
+            robust_assignment = (
+                graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence(
+                    G,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
+                    voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                    max_dilation_microns=float(effective_max_large_vessel_dilation_microns),
+                    dilation_step_microns=5.0,
+                    confidence_margin=float(automated_vessel_confidence_margin),
+                    minimum_confidence=float(automated_vessel_min_confidence),
+                    topology_penalty=float(automated_vessel_topology_penalty),
+                    quality_max_overlap_fraction=float(automated_vessel_quality_max_overlap_fraction),
+                    quality_min_terminal_coverage=float(automated_vessel_quality_min_terminal_coverage),
+                    quality_max_component_count=int(automated_vessel_quality_max_component_count),
+                    conservative_max_dilation_microns=float(
+                        automated_vessel_conservative_max_dilation_microns
+                    ),
+                )
+            )
+            auto_start_nodes = list(robust_assignment["input_nodes"])
+            auto_output_nodes = list(robust_assignment["output_nodes"])
+            unresolved_nodes = list(robust_assignment["unresolved_nodes"])
+            if unresolved_nodes:
+                print(
+                    "Robust large-vessel assignment unresolved terminals (manual QC suggested): "
+                    f"{unresolved_nodes}"
+                )
+            print(
+                "Robust large-vessel assignment confidence mode: "
+                f"conservative_mode={bool(robust_assignment['conservative_mode'])}, "
+                f"effective_max_dilation={float(robust_assignment['effective_max_dilation_microns']):.3f} microns."
+            )
         auto_start_nodes, auto_output_nodes, dropped_auto_start_nodes, dropped_auto_output_nodes = (
             graph.filter_io_nodes_to_terminal_degree1(
                 G,
@@ -1751,6 +1907,116 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             ):
                 assignment_small_arteriole_mask = cleaned_small_arteriole_mask
                 assignment_small_venule_mask = cleaned_small_venule_mask
+        if bool(small_vessel_tangential_redefinition_enable):
+            redefinition_result = graph.redefine_small_masks_from_large_tangential_contact(
+                small_arteriole_mask=assignment_small_arteriole_mask,
+                small_venule_mask=assignment_small_venule_mask,
+                large_arteriole_mask=large_arteriole_mask,
+                large_venule_mask=large_venule_mask,
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                enable_redefinition=True,
+                max_contact_distance_microns=float(
+                    small_vessel_tangential_redefinition_max_contact_distance_microns
+                ),
+                touch_distance_microns=float(
+                    small_vessel_tangential_redefinition_touch_distance_microns
+                ),
+                tangency_cosine_max=float(
+                    small_vessel_tangential_redefinition_tangency_cosine_max
+                ),
+                reassignment_margin=float(
+                    small_vessel_tangential_redefinition_margin
+                ),
+                opposite_exclusion_distance_microns=float(
+                    small_vessel_mask_continuity_opposite_exclusion_distance_microns
+                ),
+                enable_sandwiched_component_reassignment=bool(
+                    small_vessel_sandwich_reassign_enable
+                ),
+                sandwiched_max_endpoint_distance_microns=float(
+                    small_vessel_sandwich_reassign_max_endpoint_distance_microns
+                ),
+                sandwiched_min_facing_cosine=float(
+                    small_vessel_sandwich_reassign_min_facing_cosine
+                ),
+                sandwiched_max_axis_angle_degrees=float(
+                    small_vessel_sandwich_reassign_max_axis_angle_degrees
+                ),
+            )
+            assignment_small_arteriole_mask = np.asarray(
+                redefinition_result["small_arteriole_mask"], dtype=bool
+            )
+            assignment_small_venule_mask = np.asarray(
+                redefinition_result["small_venule_mask"], dtype=bool
+            )
+            redefinition_stats = redefinition_result["stats"]
+            print(
+                "Small-vessel tangential redefinition applied: "
+                f"reassigned_to_arteriole={int(redefinition_stats['reassigned_to_arteriole'])}, "
+                f"reassigned_to_venule={int(redefinition_stats['reassigned_to_venule'])}, "
+                f"sandwich_flips(art={int(redefinition_stats['sandwiched_flips_to_arteriole'])}, "
+                f"ven={int(redefinition_stats['sandwiched_flips_to_venule'])}), "
+                f"unresolved={int(redefinition_stats['unresolved_components'])}/"
+                f"{int(redefinition_stats['component_count'])} components."
+            )
+        if bool(small_vessel_mask_continuity_enable):
+            continuity_result = graph.enforce_small_vessel_mask_continuity(
+                small_arteriole_mask=assignment_small_arteriole_mask,
+                small_venule_mask=assignment_small_venule_mask,
+                large_arteriole_mask=(
+                    None if large_arteriole_mask is None else large_arteriole_mask
+                ),
+                large_venule_mask=(
+                    None if large_venule_mask is None else large_venule_mask
+                ),
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                enable_continuity=True,
+                allow_small_to_large=bool(
+                    small_vessel_mask_continuity_allow_small_to_large
+                ),
+                allow_small_to_small=bool(
+                    small_vessel_mask_continuity_allow_small_to_small
+                ),
+                enforce_cylinder_only=bool(
+                    small_vessel_mask_continuity_enforce_cylinder_only
+                ),
+                min_cylindricality=float(
+                    small_vessel_mask_continuity_min_cylindricality
+                ),
+                max_axis_angle_degrees=float(
+                    small_vessel_mask_continuity_max_axis_angle_degrees
+                ),
+                min_facing_cosine=float(
+                    small_vessel_mask_continuity_min_facing_cosine
+                ),
+                max_radius_ratio=float(
+                    small_vessel_mask_continuity_max_radius_ratio
+                ),
+                max_bridge_distance_microns=float(
+                    small_vessel_mask_continuity_max_bridge_distance_microns
+                ),
+                corridor_max_distance_microns=float(
+                    small_vessel_mask_continuity_corridor_max_distance_microns
+                ),
+                opposite_exclusion_distance_microns=float(
+                    small_vessel_mask_continuity_opposite_exclusion_distance_microns
+                ),
+            )
+            assignment_small_arteriole_mask = np.asarray(
+                continuity_result["small_arteriole_mask"], dtype=bool
+            )
+            assignment_small_venule_mask = np.asarray(
+                continuity_result["small_venule_mask"], dtype=bool
+            )
+            continuity_stats = continuity_result["stats"]
+            print(
+                "Small-vessel continuity bridging applied "
+                f"(cylinder_only={bool(small_vessel_mask_continuity_enforce_cylinder_only)}): "
+                f"arteriole accepted={int(continuity_stats['arteriole']['accepted_bridges'])}/"
+                f"{int(continuity_stats['arteriole']['attempted_bridges'])}, "
+                f"venule accepted={int(continuity_stats['venule']['accepted_bridges'])}/"
+                f"{int(continuity_stats['venule']['attempted_bridges'])}."
+            )
         if float(small_vessel_mask_dilation_microns) > 0:
             print(
                 "Configured small-vessel boundary-assignment dilation max: "
@@ -1785,6 +2051,74 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             f"venule_edges={inferred_boundary_results['venule_edge_count']}, "
             f"overlap_edges={inferred_boundary_results['overlap_edge_count']}."
         )
+        fallback_enabled = bool(small_vessel_boundary_fallback_to_hop_distance)
+        fallback_hops = int(small_vessel_boundary_fallback_hop_distance)
+        if fallback_enabled and fallback_hops < 1:
+            raise ValueError(
+                "small_vessel_boundary_fallback_hop_distance must be >= 1 when "
+                "SMALL_VESSEL_BOUNDARY_FALLBACK_TO_HOP_DISTANCE=True."
+            )
+        exclude_io_nodes = set(starting_nodes) | set(output_nodes)
+        (
+            arteriole_seed_edges_covered,
+            arteriole_uncovered_edge_count,
+            arteriole_seed_edge_count,
+        ) = graph.seed_edges_have_full_mask_coverage(
+            G,
+            list(starting_nodes),
+            assignment_small_arteriole_mask,
+        )
+        (
+            venule_seed_edges_covered,
+            venule_uncovered_edge_count,
+            venule_seed_edge_count,
+        ) = graph.seed_edges_have_full_mask_coverage(
+            G,
+            list(output_nodes),
+            assignment_small_venule_mask,
+        )
+        fallback_arteriole_needed = not arteriole_seed_edges_covered
+        fallback_venule_needed = not venule_seed_edges_covered
+        if fallback_enabled and (fallback_arteriole_needed or fallback_venule_needed):
+            print(
+                "Small-vessel mask boundary assignment missed immediate seed-edge mask "
+                "coverage on at least one side; "
+                f"applying hop-distance fallback ({fallback_hops} edges)."
+            )
+            if fallback_arteriole_needed:
+                print(
+                    "Arteriole immediate-edge mask coverage miss: "
+                    f"{arteriole_uncovered_edge_count}/{arteriole_seed_edge_count} seed edges "
+                    "without small-arteriole mask overlap."
+                )
+                fallback_art = graph.select_nodes_at_hop_distance(
+                    G,
+                    list(starting_nodes),
+                    fallback_hops,
+                    exclude_nodes=exclude_io_nodes,
+                )
+                arteriole_boundary_nodes[:] = fallback_art
+                print(
+                    "Fallback arteriole boundary nodes selected from STARTING_NODES: "
+                    f"{len(arteriole_boundary_nodes)} nodes at {fallback_hops} hops."
+                )
+            if fallback_venule_needed:
+                print(
+                    "Venule immediate-edge mask coverage miss: "
+                    f"{venule_uncovered_edge_count}/{venule_seed_edge_count} seed edges "
+                    "without small-venule mask overlap."
+                )
+                fallback_ven = graph.select_nodes_at_hop_distance(
+                    G,
+                    list(output_nodes),
+                    fallback_hops,
+                    exclude_nodes=exclude_io_nodes,
+                )
+                venule_boundary_nodes[:] = fallback_ven
+                print(
+                    "Fallback venule boundary nodes selected from OUTPUT_NODES: "
+                    f"{len(venule_boundary_nodes)} nodes at {fallback_hops} hops."
+                )
         if auto_persist_small_vessel_boundary_assignment_to_settings:
             persist_small_vessel_boundary_assignment_to_settings_file(
                 settings_file_path=SETTINGS_FILE_PATH,
@@ -2135,8 +2469,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                         else float(pericyte_max_diameter_um)
                     ),
                     prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
-                    constriction_length=40.0,
-                    constriction_spacing=100.0,
+                    constriction_length=float(pericyte_constriction_length_um),
+                    constriction_spacing=float(pericyte_constriction_spacing_um),
                     use_probabilistic_pericyte_constriction=bool(
                         use_probabilistic_pericyte_constriction
                     ),
@@ -2172,10 +2506,52 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 "Saved pericyte resistance comparison CSV to: "
                 f"{comparison_results['output_csv_path']}"
             )
+            print(
+                "Saved pericyte resistance before/after plot to: "
+                f"{comparison_results['output_plot_path']}"
+            )
+        if run_haemodynamics and run_arteriole_resistance_comparison:
+            arteriole_comparison_csv_path = (
+                output_dir / f"{image_path.stem}_arteriole_resistance_comparison.csv"
+            )
+            arteriole_comparison_results = (
+                arteriole_comparison_haemodynamics.compare_baseline_vs_arteriole_dilation(
+                    G,
+                    diameter_by_branch_order=diameter_by_branch_order,
+                    resistance_node_pair=resistance_node_pair,
+                    resistance_node_pairs=resistance_node_pairs,
+                    output_csv_path=arteriole_comparison_csv_path,
+                    baseline_factor_value=float(arteriole_comparison_baseline_value),
+                    dilated_factor_value=float(arteriole_comparison_dilated_value),
+                    arteriole_branch_prefix=str(arteriole_comparison_branch_prefix),
+                    prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
+                    use_constriction_integrator=bool(
+                        arteriole_comparison_use_constriction_integrator
+                    ),
+                    constriction_factor_by_branch_order=constriction_by_branch_order,
+                    constriction_length=float(pericyte_constriction_length_um),
+                    constriction_spacing=float(pericyte_constriction_spacing_um),
+                )
+            )
+            print(
+                "Arteriole resistance comparison complete: "
+                f"baseline={arteriole_comparison_results['baseline_resistance']:.6f}, "
+                f"dilated={arteriole_comparison_results['dilated_resistance']:.6f}, "
+                f"delta={arteriole_comparison_results['delta']:.6f}, "
+                f"change={arteriole_comparison_results['percent_change']:.3f}%."
+            )
+            print(
+                "Saved arteriole resistance comparison CSV to: "
+                f"{arteriole_comparison_results['output_csv_path']}"
+            )
+            print(
+                "Saved arteriole resistance before/after plot to: "
+                f"{arteriole_comparison_results['output_plot_path']}"
+            )
         if run_haemodynamics:
             poiseuille_model = haemodynamics.PoiseuilleModel(
-                constriction_length=40.0,
-                constriction_spacing=100.0,
+                constriction_length=float(pericyte_constriction_length_um),
+                constriction_spacing=float(pericyte_constriction_spacing_um),
             )
             if do_pericyte_constriction:
                 if use_pericyte_mask_constriction:
@@ -2206,7 +2582,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             else float(pericyte_max_diameter_um)
                         ),
                         prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
-                        constriction_length=40.0,
+                        constriction_length=float(pericyte_constriction_length_um),
                         use_probabilistic_constriction=bool(
                             use_probabilistic_pericyte_constriction
                         ),
@@ -2233,8 +2609,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                                 diameter_by_branch_order=diameter_by_branch_order,
                                 constriction_factor_by_branch_order=constriction_by_branch_order,
                                 prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
-                                constriction_length=40.0,
-                                constriction_spacing=100.0,
+                                constriction_length=float(pericyte_constriction_length_um),
+                                constriction_spacing=float(pericyte_constriction_spacing_um),
                                 constriction_probability=float(pericyte_constriction_probability),
                                 active_center_indices_by_edge=(
                                     comparison_active_center_indices_by_edge
@@ -2499,6 +2875,18 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         print("Flow through the network solved")
         print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
+        flow_plotly_html_path = Path(plot_dir) / "flow_network_plotly.html"
+        try:
+            flow_html = visualization.write_flow_vtk_plotly_html(
+                vtk_export["vessels_path"],
+                flow_plotly_html_path,
+                flow_field="flow_abs",
+                title="Flow Network (Plotly)",
+                show=show_plots_in_ide or interactive_plots,
+            )
+            print(f"Flow Plotly HTML saved to: {flow_html}")
+        except Exception as exc:
+            print(f"Skipped flow Plotly HTML export: {exc}")
         if run_alice_paper_sweep:
             print("\nRunning Alice pericyte-dilation x inlet-pressure sweep...")
             sweep_outputs = _run_alice_pericyte_dilation_pressure_sweep(
@@ -2515,6 +2903,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 min_inlet_pressure_pa=int(alice_inlet_pressure_min_pa),
                 max_inlet_pressure_pa=int(alice_inlet_pressure_max_pa),
                 inlet_pressure_step_pa=int(alice_inlet_pressure_step_pa),
+                constriction_length_um=float(alice_constriction_length_um),
+                constriction_spacing_um=float(alice_constriction_spacing_um),
                 run_passive_capillary_diameter_beforeafter=bool(
                     run_alice_passive_capillary_diameter_beforeafter
                 ),
@@ -2655,6 +3045,34 @@ def _extract_pipeline_cli_overrides(cli_namespace) -> dict[str, object]:
             continue
         overrides[param_name] = _coerce_pipeline_cli_value(param_name, raw_value)
     return overrides
+
+
+def _apply_standard_output_layout(
+    pipeline_kwargs: dict[str, object],
+    *,
+    output_subdir: str = "nerve",
+) -> dict[str, object]:
+    """Route pipeline outputs to outputs/<subdir> and plots/<subdir>."""
+    subdir_name = str(output_subdir).strip() or "nerve"
+    outputs_dir = root_dir / "examples" / "outputs" / subdir_name
+    plots_dir = root_dir / "examples" / "plots" / subdir_name
+    segmentations_dir = outputs_dir / "segmentations"
+    alice_dir = outputs_dir / "alice_paper"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    segmentations_dir.mkdir(parents=True, exist_ok=True)
+    alice_dir.mkdir(parents=True, exist_ok=True)
+
+    existing_vtk_prefix = Path(
+        pipeline_kwargs.get("vtk_output_prefix", outputs_dir / "resistance_network")
+    )
+    vtk_prefix_name = existing_vtk_prefix.name or "resistance_network"
+
+    pipeline_kwargs["plot_dir"] = plots_dir
+    pipeline_kwargs["vtk_output_prefix"] = outputs_dir / vtk_prefix_name
+    pipeline_kwargs["ilastik_output_dir"] = segmentations_dir
+    pipeline_kwargs["alice_paper_output_dir"] = alice_dir
+    return pipeline_kwargs
 
 
 if __name__ == "__main__":
@@ -2817,6 +3235,10 @@ if __name__ == "__main__":
 
     plot_dir = Path(BASE_PLOT_DIR) / "nerve"  # noqa: F405
     pipeline_kwargs = _build_pipeline_kwargs_from_active_settings(plot_dir=plot_dir)
+    pipeline_kwargs = _apply_standard_output_layout(
+        pipeline_kwargs,
+        output_subdir="nerve",
+    )
     if config_pipeline_overrides:
         pipeline_kwargs.update(config_pipeline_overrides)
         print(
@@ -2836,6 +3258,10 @@ if __name__ == "__main__":
             "Applying direct pipeline argument overrides: "
             f"{sorted(pipeline_cli_overrides.keys())}"
         )
+    pipeline_kwargs = _apply_standard_output_layout(
+        pipeline_kwargs,
+        output_subdir="nerve",
+    )
     if cli.save_config is not None:
         saved_path = save_effective_config_yaml(  # noqa: F405
             output_path=cli.save_config,
