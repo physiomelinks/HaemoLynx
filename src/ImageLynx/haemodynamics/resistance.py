@@ -62,6 +62,87 @@ def calc_two_point_from_laplacian_matrix_nodeID(
     return R
 
 
+def solve_pressure_and_boundary_flow(
+    *,
+    conductance: np.ndarray,
+    node_list: list,
+    input_p_bc: float,
+    output_p_bc: float,
+    starting_nodes: list,
+    output_nodes: list,
+) -> dict[str, float]:
+    """Solve nodal pressures and aggregate source/sink boundary flows.
+
+    This is the lightweight solver path without VTK side effects, suitable for
+    pairwise comparison utilities and plotting.
+    """
+    if conductance.ndim != 2 or conductance.shape[0] != conductance.shape[1]:
+        raise ValueError("conductance must be a square matrix")
+    n_nodes = conductance.shape[0]
+    if len(node_list) != n_nodes:
+        raise ValueError(
+            f"node_list length ({len(node_list)}) must match matrix size ({n_nodes})"
+        )
+    if not starting_nodes:
+        raise ValueError("starting_nodes cannot be empty")
+    if not output_nodes:
+        raise ValueError("output_nodes cannot be empty")
+
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    missing_in = [n for n in starting_nodes if n not in node_to_idx]
+    missing_out = [n for n in output_nodes if n not in node_to_idx]
+    if missing_in or missing_out:
+        raise ValueError(
+            "Boundary-condition nodes missing from node_list. "
+            f"missing_starting={missing_in}, missing_output={missing_out}"
+        )
+
+    pressure = np.zeros(n_nodes, dtype=float)
+    laplacian = calc_laplacian_from_conductance_matrix(conductance)
+
+    bc_idx_to_p: dict[int, float] = {}
+    for node_id in starting_nodes:
+        bc_idx_to_p[node_to_idx[node_id]] = float(input_p_bc)
+    for node_id in output_nodes:
+        idx = node_to_idx[node_id]
+        if idx in bc_idx_to_p and bc_idx_to_p[idx] != float(output_p_bc):
+            raise ValueError(
+                f"Node {node_id} receives conflicting BC pressures "
+                f"{bc_idx_to_p[idx]} and {output_p_bc}"
+            )
+        bc_idx_to_p[idx] = float(output_p_bc)
+
+    known_idx = np.array(sorted(bc_idx_to_p.keys()), dtype=int)
+    pressure[known_idx] = np.array([bc_idx_to_p[idx] for idx in known_idx], dtype=float)
+    unknown_idx = np.array(
+        sorted(set(range(n_nodes)).difference(set(known_idx))),
+        dtype=int,
+    )
+    if unknown_idx.size:
+        l_uu = laplacian[np.ix_(unknown_idx, unknown_idx)]
+        l_uk = laplacian[np.ix_(unknown_idx, known_idx)]
+        rhs = -l_uk @ pressure[known_idx]
+        try:
+            pressure[unknown_idx] = np.linalg.solve(l_uu, rhs)
+        except np.linalg.LinAlgError:
+            pressure[unknown_idx] = np.linalg.lstsq(l_uu, rhs, rcond=None)[0]
+
+    total_inlet_flow = 0.0
+    for node_id in starting_nodes:
+        i = node_to_idx[node_id]
+        total_inlet_flow += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
+
+    total_outlet_flow = 0.0
+    for node_id in output_nodes:
+        i = node_to_idx[node_id]
+        total_outlet_flow += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
+
+    return {
+        "total_inlet_flow": float(total_inlet_flow),
+        "total_outlet_flow": float(total_outlet_flow),
+    }
+
+
 def solve_flow_from_conductance_matrix(
     conductance: np.ndarray,
     node_list: list,

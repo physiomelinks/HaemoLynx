@@ -14,6 +14,7 @@ from presets import (
     apply_settings_to_namespace as _apply_settings_to_namespace,
     build_settings_for_preset as _build_settings_for_preset,
     collect_base_settings,
+    collect_current_settings_snapshot as _collect_current_settings_snapshot,
     collect_setting_names,
     get_preset_definitions,
     load_config_yaml as _load_config_yaml,
@@ -107,10 +108,6 @@ LARGE_VESSEL_OPPOSITE_ATTACHED_MAX_DISTANCE_MICRONS = 3.0
 # Downsample stride used for 3D large-vessel volume rendering in Plotly.
 # 1 = full resolution, 2/3/4 progressively faster but coarser.
 LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
-# Write fast-mode pre-assignment large-vessel debug HTML views (before/after
-# overlap cleanup). Disabled by default because these renders can be RAM-heavy.
-WRITE_FAST_MODE_PREASSIGNMENT_LARGE_VESSEL_DEBUG_3D_HTML = False
-
 # Pre-segmented large arteriole mask path.
 LARGE_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "brain_large_arterioles.tiff"
 # Pre-segmented large venule mask path.
@@ -210,8 +207,6 @@ SMALL_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
 SMALL_VESSEL_BOUNDARY_FALLBACK_TO_HOP_DISTANCE = True
 # Number of edges (graph hops) away from STARTING_NODES/OUTPUT_NODES for fallback.
 SMALL_VESSEL_BOUNDARY_FALLBACK_HOP_DISTANCE = 1
-# Toggle writing interactive 3D HTML for small-vessel boundary labelling.
-WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML = True
 # Pre-segmented small arteriole mask path.
 SMALL_ARTERIOLE_MASK_PATH = root_dir / "examples" / "images" / "brain_small_arterioles.tiff"
 # Pre-segmented small venule mask path.
@@ -228,11 +223,6 @@ ILASTIK_SMALL_VENULE_CLASSIFIER_PATH = ILASTIK_VENULE_CLASSIFIER_PATH
 # ---------------------------
 # Boundary-node assignment
 # ---------------------------
-# Base output directory for plot artifacts.
-BASE_PLOT_DIR = root_dir / "examples" / "plots"
-if not BASE_PLOT_DIR.exists():
-    BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
-
 # Method used to choose manual starting nodes.
 STARTING_NODE_SELECTION_METHOD = "coordinates"
 # Method used to choose manual output nodes.
@@ -269,13 +259,13 @@ ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[fl
 # Volume boxes used to select venule boundary nodes.
 VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 # Runtime container for selected starting node IDs.
-STARTING_NODES: list[int] = [1018, 1029, 1145, 1234, 1403, 1499, 1505, 1535, 1537, 1576, 1600, 1604, 1627, 1644, 145, 1655, 1698, 1721, 1786, 1962, 2121, 2503, 2517, 2587, 2633, 540, 558, 609, 617, 796, 963, 738]
+STARTING_NODES: list[int] = [1018, 1029, 1145, 1234, 1403, 1499, 1366, 1505, 1535, 1537, 1600, 1604, 1627, 1644, 145, 1655, 1698, 1721, 1786, 1962, 2121, 2503, 2517, 2587, 2633, 540, 558, 609, 617, 796, 963]
 # Runtime container for selected output node IDs.
-OUTPUT_NODES: list[int] = [1005, 1049, 1068, 1134, 1258, 1264, 1366, 1560, 1561, 1594, 1623,  1861, 1871, 1877, 1893, 1965, 2012, 2021, 2065, 2103, 2279, 2288, 2389, 2461, 2464, 2482, 2536, 2652, 2918, 2920, 2996, 307, 3497, 3499, 3510, 433, 467, 4722, 486, 4886, 492, 4965, 5063, 569, 595, 641, 650, 669, 672,  763, 835, 939, 974, 976]
+OUTPUT_NODES: list[int] = [1005, 1049, 1068, 1134, 1258, 1264, 1560, 1561, 1594, 1623,  1861, 1877, 1893, 1965, 2012, 2021, 2065, 2103, 2279, 2288, 2389, 2461, 2464, 2482, 2536, 2652, 2918, 2920, 2996, 307, 3497, 3499, 3510, 433, 467, 4722, 486, 4886, 492, 4965, 5063, 569, 595, 641, 650, 669, 672,  763, 835, 939, 974, 976]
 # Runtime container for selected arteriole boundary node IDs.
-ARTERIOLE_BOUNDARY_NODES: list[int] = [652, 278, 342, 424, 442, 449, 477, 518, 571, 665, 937, 1106, 1286, 1334, 1094, 1402, 1500, 1567, 1571, 1577, 1601, 1615, 1699, 1891, 2150, 2248, 2362, 2505]
+ARTERIOLE_BOUNDARY_NODES: list[int] = [459, 652, 278, 342, 424, 442, 449, 517, 409, 477, 518, 571, 665, 937, 1460, 61, 1106, 1286, 1334, 1094, 1402, 1567, 1571, 1577, 1601, 440, 1699, 1891, 2150, 2248, 2362, 2505, 548]
 # Runtime container for selected venule boundary node IDs.
-VENULE_BOUNDARY_NODES: list[int] = [115, 151, 263, 283, 286, 353, 386, 409, 461, 468, 470, 498, 505, 525, 568, 571, 601, 610, 673, 735, 836, 873, 923, 1022, 1058, 1076, 1131, 1229, 1332, 1372, 1395, 1577, 1624, 1669, 1817, 1819, 1832, 1944, 2008, 2058, 2118, 2212, 2248, 2286, 2372, 2390, 2477, 2537, 2781, 2857, 2919, 2921, 4068, 4087, 4285, 4521]
+VENULE_BOUNDARY_NODES: list[int] = [115, 151, 263, 283, 286, 353, 386,  461, 468, 470, 498, 505, 525, 568, 571, 601, 610, 673, 735, 836, 873, 923, 1022, 1058, 1076, 1131, 1229, 1332, 1372, 1395, 1577, 1624, 1669, 1817, 1819, 1832, 1944, 2008, 2058, 2118, 2212, 2248, 2286, 2372, 2390, 2477, 2537, 2781, 2857, 2919, 2921, 4068, 4087, 4285, 4521]
 # Enforce strict hierarchical branch-order prerequisites.
 STRICT_BRANCH_ORDER_ASSIGNMENT = False
 
@@ -286,25 +276,47 @@ STRICT_BRANCH_ORDER_ASSIGNMENT = False
 INPUT_P_BC = 4500  # Pa
 # Outlet pressure boundary condition (Pa).
 OUTPUT_P_BC = 1000  # Pa
-# Toggle final visualization output generation.
-VISUALIZE_RESULTS = True
-# Toggle interactive plotting behavior.
-INTERACTIVE_PLOTS = False
-# Toggle showing plots in IDE windows while running.
-SHOW_PLOTS_IN_IDE = True
+# Toggle verbose logging output.
+VERBOSE_LOGGING = False
 
-# Select which IDE plots are displayed when SHOW_PLOTS_IN_IDE is enabled.
+# ---------------------------
+# Graphing and visualization settings
+# ---------------------------
+# Base output directory for graph/plot artifacts.
+BASE_PLOT_DIR = root_dir / "examples" / "plots"
+if not BASE_PLOT_DIR.exists():
+    BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
+# Auto-save effective YAML config every run using input-name + timestamp.
+AUTO_SAVE_EFFECTIVE_CONFIG_EACH_RUN = False
+# Output directory for per-run auto-saved effective YAML configs.
+AUTO_SAVE_EFFECTIVE_CONFIG_DIR = root_dir / "examples" / "outputs" / "configs"
+# Auto-load YAML config every run (unless CLI --config is provided).
+AUTO_LOAD_CONFIG_EACH_RUN = False
+# YAML config path used when AUTO_LOAD_CONFIG_EACH_RUN is enabled.
+AUTO_LOAD_CONFIG_PATH: Optional[Path] = None
+
+# Master switch for final network visualization outputs.
+VISUALIZE_RESULTS = True
+# Enable interactive plotting (Plotly interaction, zoom/pan, hover).
+INTERACTIVE_PLOTS = False
+# Show generated plots in IDE windows during execution.
+SHOW_PLOTS_IN_IDE = True
+# IDE display mode when SHOW_PLOTS_IN_IDE=True ("all", "final_only", etc.).
 IDE_PLOT_MODE = "final_only"
 # Keep IDE matplotlib windows open at script end.
 HOLD_IDE_PLOTS_OPEN = True
-# Choose 2D or 3D rendering mode for final graph views.
+# Final network render style ("2d" or "3d").
 FINAL_RENDER_MODE = "3d"  # "2d" or "3d"
-# Toggle VTK export of vessels/pericytes/nodes.
+# Export network/pericyte geometry to VTK files.
 VTK_export = True
-# Toggle VTK visualization viewer launch.
+# Launch VTK viewer after export.
 VISUALIZE_VTK = False
-# Toggle verbose logging output.
-VERBOSE_LOGGING = False
+# Graph function: write large-vessel fast-mode before/after overlap-cleanup
+# debug 3D HTML (RAM-heavy on large masks).
+WRITE_FAST_MODE_PREASSIGNMENT_LARGE_VESSEL_DEBUG_3D_HTML = False
+# Graph function: write interactive 3D HTML showing small-vessel boundary
+# labelling results (arteriole/venule assignments).
+WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML = True
 
 # ---------------------------
 # Pipeline-stage and topology settings
@@ -403,58 +415,6 @@ PERICYTE_CONSTRICTION_PROBABILITY = 0.8
 PERICYTE_CONSTRICTION_LENGTH_UM = 40.0
 # Inter-pericyte spacing (um) used by periodic constriction models.
 PERICYTE_CONSTRICTION_SPACING_UM = 60.0
-# Toggle baseline-vs-constricted pericyte resistance comparison run.
-RUN_PERICYTE_RESISTANCE_COMPARISON = True
-# Baseline comparison multiplier used in pericyte comparison mode.
-PERICYTE_COMPARISON_BASELINE_VALUE = 1.08
-# Constricted comparison multiplier used in pericyte comparison mode.
-PERICYTE_COMPARISON_CONSTRICTED_VALUE = 1.38
-# Toggle baseline-vs-dilated arteriole resistance comparison run.
-RUN_ARTERIOLE_RESISTANCE_COMPARISON = False
-# Baseline arteriole whole-vessel diameter multiplier for arteriole comparison.
-ARTERIOLE_COMPARISON_BASELINE_VALUE = 1.0
-# Dilated arteriole whole-vessel diameter multiplier for arteriole comparison.
-ARTERIOLE_COMPARISON_DILATED_VALUE = 1.2
-# Branch-order prefix used to identify arteriole vessels in arteriole comparison.
-ARTERIOLE_COMPARISON_BRANCH_PREFIX = "Art"
-# Reuse selected probabilistic pericyte cohort from comparison in main run.
-REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN = False
-# Toggle Alice pericyte-dilation x inlet-pressure sweep on main pipeline runs.
-RUN_ALICE_PAPER_SWEEP = True
-# Output directory for Alice sweep CSV and generated curve plots.
-ALICE_PAPER_OUTPUT_DIR = root_dir / "examples" / "outputs" 
-# Dilation sweep range (%) for Alice sweep.
-ALICE_PERICYTE_DILATION_MIN_PERCENT = 1
-ALICE_PERICYTE_DILATION_MAX_PERCENT = 38
-ALICE_PERICYTE_DILATION_STEP_PERCENT = 1
-# Inlet-pressure sweep range (Pa) for Alice sweep.
-ALICE_INLET_PRESSURE_MIN_PA = 4500
-ALICE_INLET_PRESSURE_MAX_PA = 2000
-ALICE_INLET_PRESSURE_STEP_PA = 500
-# Constriction length (um) used in Alice haemodynamics sweep modelling.
-ALICE_CONSTRICTION_LENGTH_UM = PERICYTE_CONSTRICTION_LENGTH_UM
-# Constriction spacing (um) used in Alice haemodynamics sweep modelling.
-ALICE_CONSTRICTION_SPACING_UM = PERICYTE_CONSTRICTION_SPACING_UM
-# Toggle capillary-only passive diameter before/after flow plot.
-RUN_ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER = True
-# Passive capillary diameter increase (%) used for before/after comparison.
-ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT = ALICE_PERICYTE_DILATION_MAX_PERCENT
-# Toggle arteriole-only passive diameter before/after flow plot.
-RUN_ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER = True
-# Signed arteriole diameter change (um): + dilates, - constricts.
-ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM = 2
-# When True, arteriole comparison uses d1/d2 constriction integrator with
-# fixed CONSTRICTION_BY_BRANCH_ORDER factors before/after arteriole scaling.
-ARTERIOLE_COMPARISON_USE_CONSTRICTION_INTEGRATOR = False
-# Toggle pericyte constriction/dilation before/after comparison at two spacings.
-RUN_ALICE_PERICYTE_SPACING_BEFOREAFTER = True
-# Signed pericyte diameter percent change: + dilation, - constriction.
-ALICE_PERICYTE_BEFOREAFTER_PERCENT = 38.0
-# Signed spacing shift (um) applied after baseline spacing for recomparison.
-ALICE_PERICYTE_SPACING_DELTA_UM = 30.0
-# Optional edge list using custom sweep diameter handling.
-ALICE_CUSTOM_EDGES_FOR_SWEEP: list[tuple[int, int]] = []
-
 # Maximum branch-order index used to build diameter/constriction tables.
 MAX_BRANCH_ORDER = 51
 # Default vessel diameter used when no branch-order override is present.
@@ -474,7 +434,116 @@ MANUAL_ARTERIOLE_DIAMETER_BY_BRANCH_ORDER = {
     "Art3": 8.0
 }
 # Manual venule diameter overrides keyed by branch-order label.
-MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER = {}
+MANUAL_VENULE_DIAMETER_BY_BRANCH_ORDER = {
+    "Ven1": 10.0,
+    "Ven2": 8.0,
+    "Ven3": 8.0
+}
+
+
+# ---------------------------
+# Resistance comparison runs (with optional graphs)
+# ---------------------------
+# Comparison function: run baseline vs constricted pericyte resistance.
+RUN_PERICYTE_RESISTANCE_COMPARISON = True
+# Baseline pericyte comparison multiplier.
+PERICYTE_COMPARISON_BASELINE_VALUE = 1.08
+# Constricted pericyte comparison multiplier.
+PERICYTE_COMPARISON_CONSTRICTED_VALUE = 1.38
+# Comparison function: run baseline vs dilated arteriole resistance.
+RUN_ARTERIOLE_RESISTANCE_COMPARISON = True
+# Baseline arteriole whole-vessel diameter multiplier.
+ARTERIOLE_COMPARISON_BASELINE_VALUE = 1.0
+# Dilated arteriole whole-vessel diameter multiplier.
+ARTERIOLE_COMPARISON_DILATED_VALUE = 1.2
+# Branch-order prefix identifying arteriole vessels in comparison.
+ARTERIOLE_COMPARISON_BRANCH_PREFIX = "Art"
+# Comparison function: run baseline vs dilated passive capillary resistance.
+RUN_CAPILLARY_RESISTANCE_COMPARISON = True
+# Baseline capillary whole-vessel diameter multiplier.
+CAPILLARY_COMPARISON_BASELINE_VALUE = 1.0
+# Dilated capillary whole-vessel diameter multiplier.
+CAPILLARY_COMPARISON_DILATED_VALUE = 1.2
+# Branch-order prefix identifying capillary vessels in comparison.
+CAPILLARY_COMPARISON_BRANCH_PREFIX = "B"
+# When True, capillary comparison uses d1/d2 constriction integrator with
+# fixed CONSTRICTION_BY_BRANCH_ORDER factors before/after capillary scaling.
+CAPILLARY_COMPARISON_USE_CONSTRICTION_INTEGRATOR = False
+# Reuse selected probabilistic pericyte cohort from comparison in main run.
+REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN = False
+
+# ---------------------------
+# Alice graph functions 
+# ---------------------------
+# Graph function 1: pericyte-dilation (%) x inlet-pressure (Pa) sweep curves.
+RUN_ALICE_PAPER_SWEEP = True
+# Output directory for Alice sweep CSV and generated curve plots.
+ALICE_PAPER_OUTPUT_DIR = root_dir / "examples" / "outputs" 
+# Dilation sweep range (%) for Alice sweep.
+ALICE_PERICYTE_DILATION_MIN_PERCENT = 1
+ALICE_PERICYTE_DILATION_MAX_PERCENT = 38
+ALICE_PERICYTE_DILATION_STEP_PERCENT = 1
+# Inlet-pressure sweep range (Pa) for Alice sweep.
+ALICE_INLET_PRESSURE_MIN_PA = 4500
+ALICE_INLET_PRESSURE_MAX_PA = 2000
+ALICE_INLET_PRESSURE_STEP_PA = 500
+# Constriction length (um) used in Alice haemodynamics sweep modelling.
+ALICE_CONSTRICTION_LENGTH_UM = PERICYTE_CONSTRICTION_LENGTH_UM
+# Constriction spacing (um) used in Alice haemodynamics sweep modelling.
+ALICE_CONSTRICTION_SPACING_UM = PERICYTE_CONSTRICTION_SPACING_UM
+# Graph function 2: capillary-only passive diameter before/after flow plot.
+RUN_ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER = True
+# Graph function 3: arteriole-only dilation sweep curves (Alice style).
+RUN_ALICE_ARTERIOLE_DILATION_SWEEP_PLOTS = True
+# Arteriole-only sweep dilation range (%) for Alice-style curves.
+ALICE_ARTERIOLE_SWEEP_MIN_DILATION_PERCENT = ALICE_PERICYTE_DILATION_MIN_PERCENT
+ALICE_ARTERIOLE_SWEEP_MAX_DILATION_PERCENT = ALICE_PERICYTE_DILATION_MAX_PERCENT
+ALICE_ARTERIOLE_SWEEP_DILATION_STEP_PERCENT = ALICE_PERICYTE_DILATION_STEP_PERCENT
+# Arteriole-only sweep inlet-pressure range (Pa).
+ALICE_ARTERIOLE_SWEEP_MIN_INLET_PRESSURE_PA = ALICE_INLET_PRESSURE_MIN_PA
+ALICE_ARTERIOLE_SWEEP_MAX_INLET_PRESSURE_PA = ALICE_INLET_PRESSURE_MAX_PA
+ALICE_ARTERIOLE_SWEEP_INLET_PRESSURE_STEP_PA = ALICE_INLET_PRESSURE_STEP_PA
+# Graph function 4: passive capillary-only dilation sweep curves (Alice style).
+RUN_ALICE_PASSIVE_CAPILLARY_DILATION_SWEEP_PLOTS = True
+# Passive capillary-only sweep dilation range (%) for Alice-style curves.
+ALICE_PASSIVE_CAPILLARY_SWEEP_MIN_DILATION_PERCENT = ALICE_PERICYTE_DILATION_MIN_PERCENT
+ALICE_PASSIVE_CAPILLARY_SWEEP_MAX_DILATION_PERCENT = ALICE_PERICYTE_DILATION_MAX_PERCENT
+ALICE_PASSIVE_CAPILLARY_SWEEP_DILATION_STEP_PERCENT = ALICE_PERICYTE_DILATION_STEP_PERCENT
+# Passive capillary-only sweep inlet-pressure range (Pa).
+ALICE_PASSIVE_CAPILLARY_SWEEP_MIN_INLET_PRESSURE_PA = ALICE_INLET_PRESSURE_MIN_PA
+ALICE_PASSIVE_CAPILLARY_SWEEP_MAX_INLET_PRESSURE_PA = ALICE_INLET_PRESSURE_MAX_PA
+ALICE_PASSIVE_CAPILLARY_SWEEP_INLET_PRESSURE_STEP_PA = ALICE_INLET_PRESSURE_STEP_PA
+# Passive capillary diameter increase (%) used for before/after comparison.
+ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT = ALICE_PERICYTE_DILATION_MAX_PERCENT
+# Graph function 5: arteriole-only passive diameter before/after flow plot.
+RUN_ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER = True
+# Signed arteriole diameter change (um): + dilates, - constricts.
+ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM = 2
+# Graph function 6: pericyte-spacing (um) x inlet-pressure (Pa) sweep curves.
+RUN_ALICE_PERICYTE_SPACING_SWEEP_PLOTS = True
+# Spacing sweep range (um) for Alice pericyte-spacing curves.
+ALICE_PERICYTE_SPACING_SWEEP_MIN_UM = 30
+ALICE_PERICYTE_SPACING_SWEEP_MAX_UM = 120
+ALICE_PERICYTE_SPACING_SWEEP_STEP_UM = 10
+# Inlet-pressure sweep range (Pa) for pericyte-spacing curves.
+ALICE_PERICYTE_SPACING_SWEEP_MIN_INLET_PRESSURE_PA = ALICE_INLET_PRESSURE_MIN_PA
+ALICE_PERICYTE_SPACING_SWEEP_MAX_INLET_PRESSURE_PA = ALICE_INLET_PRESSURE_MAX_PA
+ALICE_PERICYTE_SPACING_SWEEP_INLET_PRESSURE_STEP_PA = ALICE_INLET_PRESSURE_STEP_PA
+# When True, arteriole comparison uses d1/d2 constriction integrator with
+# fixed CONSTRICTION_BY_BRANCH_ORDER factors before/after arteriole scaling.
+ARTERIOLE_COMPARISON_USE_CONSTRICTION_INTEGRATOR = False
+# Graph function 7: pericyte constriction/dilation before/after at two spacings.
+RUN_ALICE_PERICYTE_SPACING_BEFOREAFTER = True
+# Signed pericyte diameter percent change: + dilation, - constriction.
+ALICE_PERICYTE_BEFOREAFTER_PERCENT = -20.0
+# Fixed pericyte diameter percent change applied during spacing sweep.
+ALICE_PERICYTE_SPACING_SWEEP_PERCENT = ALICE_PERICYTE_BEFOREAFTER_PERCENT
+# Signed spacing shift (um) applied after baseline spacing for recomparison.
+ALICE_PERICYTE_SPACING_DELTA_UM = 30.0
+# Optional edge list using custom sweep diameter handling.
+ALICE_CUSTOM_EDGES_FOR_SWEEP: list[tuple[int, int]] = []
+
+
 
 # Derived branch-order diameter lookup used by haemodynamics.
 DIAMETER_BY_BRANCH_ORDER = haemodynamics.build_diameter_by_branch_order(
@@ -606,5 +675,10 @@ load_config_yaml = partial(
     _load_config_yaml,
     valid_setting_names=VALID_SETTING_NAMES,
     available_preset_names=set(PRESET_DEFINITIONS.keys()),
+)
+collect_current_settings_snapshot = partial(
+    _collect_current_settings_snapshot,
+    valid_setting_names=VALID_SETTING_NAMES,
+    haemodynamics_module=haemodynamics,
 )
 save_effective_config_yaml = _save_effective_config_yaml

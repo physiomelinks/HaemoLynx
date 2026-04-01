@@ -1,4 +1,4 @@
-"""Utilities to compare baseline vs arteriole-dilated haemodynamics."""
+"""Utilities to compare baseline vs passive capillary-dilated haemodynamics."""
 from __future__ import annotations
 
 import csv
@@ -49,14 +49,14 @@ def _resolve_resistance_pairs(
     return unique_pairs
 
 
-def _is_arteriole_branch_order(branch_order: object, arteriole_branch_prefix: str) -> bool:
-    return str(branch_order).startswith(str(arteriole_branch_prefix))
+def _is_capillary_branch_order(branch_order: object, capillary_branch_prefix: str) -> bool:
+    return str(branch_order).startswith(str(capillary_branch_prefix))
 
 
-def _scaled_arteriole_diameter_map(
+def _scaled_capillary_diameter_map(
     diameter_by_branch_order: dict,
     *,
-    arteriole_branch_prefix: str,
+    capillary_branch_prefix: str,
     factor_value: float,
 ) -> dict:
     factor = float(factor_value)
@@ -64,17 +64,17 @@ def _scaled_arteriole_diameter_map(
         raise ValueError(f"factor_value must be > 0, got {factor_value}.")
     out = {}
     for branch_order, diameter_um in diameter_by_branch_order.items():
-        if _is_arteriole_branch_order(branch_order, arteriole_branch_prefix):
+        if _is_capillary_branch_order(branch_order, capillary_branch_prefix):
             out[branch_order] = float(diameter_um) * factor
         else:
             out[branch_order] = float(diameter_um)
     return out
 
 
-def _scale_arteriole_fwhm_edges_in_place(
+def _scale_capillary_fwhm_edges_in_place(
     graph: nx.MultiGraph,
     *,
-    arteriole_branch_prefix: str,
+    capillary_branch_prefix: str,
     factor_value: float,
 ) -> None:
     factor = float(factor_value)
@@ -82,7 +82,7 @@ def _scale_arteriole_fwhm_edges_in_place(
         raise ValueError(f"factor_value must be > 0, got {factor_value}.")
     for _, _, _, edge_data in graph.edges(keys=True, data=True):
         branch_order = edge_data.get("branch_order")
-        if not _is_arteriole_branch_order(branch_order, arteriole_branch_prefix):
+        if not _is_capillary_branch_order(branch_order, capillary_branch_prefix):
             continue
         fwhm_d = edge_data.get("fwhm_diameter_um")
         if fwhm_d is None:
@@ -92,7 +92,7 @@ def _scale_arteriole_fwhm_edges_in_place(
         edge_data["fwhm_diameter_um"] = float(fwhm_d) * factor
 
 
-def compare_baseline_vs_arteriole_dilation(
+def compare_baseline_vs_passive_capillary_dilation(
     graph: nx.MultiGraph,
     *,
     diameter_by_branch_order: dict,
@@ -101,7 +101,7 @@ def compare_baseline_vs_arteriole_dilation(
     output_csv_path: str | Path,
     baseline_factor_value: float = 1.0,
     dilated_factor_value: float = 1.2,
-    arteriole_branch_prefix: str = "Art",
+    capillary_branch_prefix: str = "B",
     prefer_edge_fwhm_diameter: bool = False,
     use_constriction_integrator: bool = False,
     constriction_factor_by_branch_order: dict[str, float] | None = None,
@@ -110,13 +110,7 @@ def compare_baseline_vs_arteriole_dilation(
     constriction_length: float = 40.0,
     constriction_spacing: float = 100.0,
 ) -> dict[str, Any]:
-    """Compare resistance at baseline vs arteriole whole-vessel dilation.
-
-    When ``use_constriction_integrator=True``, the d1/d2 periodic constriction
-    integrator is used for both scenarios with the *same*
-    ``constriction_factor_by_branch_order`` map, so pericyte effects stay fixed
-    while arteriole passive diameters are scaled by baseline/dilated factors.
-    """
+    """Compare resistance at baseline vs passive capillary whole-vessel dilation."""
     resolved_pairs = _resolve_resistance_pairs(
         graph,
         resistance_node_pair=resistance_node_pair,
@@ -128,25 +122,25 @@ def compare_baseline_vs_arteriole_dilation(
     graph_baseline = deepcopy(graph)
     graph_dilated = deepcopy(graph)
     if bool(prefer_edge_fwhm_diameter):
-        _scale_arteriole_fwhm_edges_in_place(
+        _scale_capillary_fwhm_edges_in_place(
             graph_baseline,
-            arteriole_branch_prefix=arteriole_branch_prefix,
+            capillary_branch_prefix=capillary_branch_prefix,
             factor_value=float(baseline_factor_value),
         )
-        _scale_arteriole_fwhm_edges_in_place(
+        _scale_capillary_fwhm_edges_in_place(
             graph_dilated,
-            arteriole_branch_prefix=arteriole_branch_prefix,
+            capillary_branch_prefix=capillary_branch_prefix,
             factor_value=float(dilated_factor_value),
         )
 
-    diameter_map_baseline = _scaled_arteriole_diameter_map(
+    diameter_map_baseline = _scaled_capillary_diameter_map(
         diameter_by_branch_order,
-        arteriole_branch_prefix=arteriole_branch_prefix,
+        capillary_branch_prefix=capillary_branch_prefix,
         factor_value=float(baseline_factor_value),
     )
-    diameter_map_dilated = _scaled_arteriole_diameter_map(
+    diameter_map_dilated = _scaled_capillary_diameter_map(
         diameter_by_branch_order,
-        arteriole_branch_prefix=arteriole_branch_prefix,
+        capillary_branch_prefix=capillary_branch_prefix,
         factor_value=float(dilated_factor_value),
     )
 
@@ -349,9 +343,6 @@ def compare_baseline_vs_arteriole_dilation(
             }
         )
 
-    plot_path = output_path.with_name(f"{output_path.stem}_before_after_resistance.png")
-    baseline_values = [float(result["baseline_resistance"]) for result in pair_results]
-    dilated_values = [float(result["dilated_resistance"]) for result in pair_results]
     def _mean_sem(values: list[float]) -> tuple[float, float]:
         n = len(values)
         if n == 0:
@@ -362,6 +353,10 @@ def compare_baseline_vs_arteriole_dilation(
         variance = float(sum((v - mean) ** 2 for v in values) / (n - 1))
         sem = float((variance ** 0.5) / (n ** 0.5))
         return mean, sem
+
+    plot_path = output_path.with_name(f"{output_path.stem}_before_after_resistance.png")
+    baseline_values = [float(result["baseline_resistance"]) for result in pair_results]
+    dilated_values = [float(result["dilated_resistance"]) for result in pair_results]
     baseline_mean, baseline_sem = _mean_sem(baseline_values)
     dilated_mean, dilated_sem = _mean_sem(dilated_values)
     input_change_percent = 0.0
@@ -416,8 +411,8 @@ def compare_baseline_vs_arteriole_dilation(
     ax.set_xticks([x_before, x_after], labels=["Before", "After"])
     ax.set_ylabel("Effective resistance")
     ax.set_title(
-        "Arteriole Comparison: Paired Before/After by Input-Output Pair\n"
-        f"Input arteriole diameter change: {input_change_percent:+.1f}%"
+        "Capillary Comparison: Paired Before/After Resistance by Input-Output Pair\n"
+        f"Input capillary diameter change: {input_change_percent:+.1f}%"
     )
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
@@ -478,8 +473,8 @@ def compare_baseline_vs_arteriole_dilation(
     ax_flow.set_xticks([x_before, x_after], labels=["Before", "After"])
     ax_flow.set_ylabel("Total inlet flow")
     ax_flow.set_title(
-        "Arteriole Comparison: Paired Before/After Flow by Input-Output Pair\n"
-        f"Input arteriole diameter change: {input_change_percent:+.1f}%"
+        "Capillary Comparison: Paired Before/After Flow by Input-Output Pair\n"
+        f"Input capillary diameter change: {input_change_percent:+.1f}%"
     )
     ax_flow.grid(True, axis="y", alpha=0.3)
     ax_flow.legend()

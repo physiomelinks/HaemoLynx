@@ -16,6 +16,7 @@ from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
     calc_two_point_from_laplacian_matrix_nodeID,
+    solve_pressure_and_boundary_flow,
 )
 
 
@@ -163,6 +164,8 @@ def compare_baseline_vs_pericyte_constriction(
     constriction_spacing: float = 100.0,
     use_probabilistic_pericyte_constriction: bool = False,
     pericyte_constriction_probability: float = 1.0,
+    input_p_bc: float = 5000.0,
+    output_p_bc: float = 2000.0,
     max_assignment_distance_um: float | None = 3.0,
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
@@ -218,7 +221,7 @@ def compare_baseline_vs_pericyte_constriction(
                 str(edge_id): [int(idx) for idx in idx_list]
                 for edge_id, idx_list in selected_map.items()
             }
-    baseline_conductance, _ = build_conductance_matrix_from_graph(graph_baseline)
+    baseline_conductance, baseline_node_list = build_conductance_matrix_from_graph(graph_baseline)
     baseline_laplacian = calc_laplacian_from_conductance_matrix(baseline_conductance)
 
     graph_constricted, constricted_weight_results = _set_weights_for_factor(
@@ -240,7 +243,7 @@ def compare_baseline_vs_pericyte_constriction(
         min_pericyte_diameter_um=min_pericyte_diameter_um,
         max_pericyte_diameter_um=max_pericyte_diameter_um,
     )
-    constricted_conductance, _ = build_conductance_matrix_from_graph(graph_constricted)
+    constricted_conductance, constricted_node_list = build_conductance_matrix_from_graph(graph_constricted)
     constricted_laplacian = calc_laplacian_from_conductance_matrix(constricted_conductance)
 
     pair_results: list[dict[str, Any]] = []
@@ -272,6 +275,22 @@ def compare_baseline_vs_pericyte_constriction(
             if baseline_resistance != 0
             else float("inf")
         )
+        baseline_flow_result = solve_pressure_and_boundary_flow(
+            conductance=baseline_conductance,
+            node_list=baseline_node_list,
+            input_p_bc=float(input_p_bc),
+            output_p_bc=float(output_p_bc),
+            starting_nodes=[int(source_node)],
+            output_nodes=[int(target_node)],
+        )
+        constricted_flow_result = solve_pressure_and_boundary_flow(
+            conductance=constricted_conductance,
+            node_list=constricted_node_list,
+            input_p_bc=float(input_p_bc),
+            output_p_bc=float(output_p_bc),
+            starting_nodes=[int(source_node)],
+            output_nodes=[int(target_node)],
+        )
         pair_results.append(
             {
                 "source_node": int(source_node),
@@ -281,6 +300,10 @@ def compare_baseline_vs_pericyte_constriction(
                 "delta": float(delta),
                 "percent_change": float(percent_change),
                 "ratio": float(ratio),
+                "baseline_total_inlet_flow": float(baseline_flow_result["total_inlet_flow"]),
+                "constricted_total_inlet_flow": float(
+                    constricted_flow_result["total_inlet_flow"]
+                ),
             }
         )
 
@@ -366,6 +389,12 @@ def compare_baseline_vs_pericyte_constriction(
         return mean, sem
     baseline_mean, baseline_sem = _mean_sem(baseline_values)
     constricted_mean, constricted_sem = _mean_sem(constricted_values)
+    input_change_percent = 0.0
+    if baseline_factor_value != 0:
+        input_change_percent = (
+            (float(constricted_factor_value) - float(baseline_factor_value))
+            / float(baseline_factor_value)
+        ) * 100.0
 
     fig, ax = plt.subplots(figsize=(8, 5))
     x_baseline = 0.0
@@ -411,12 +440,79 @@ def compare_baseline_vs_pericyte_constriction(
     )
     ax.set_xticks([x_baseline, x_after], labels=["Before", "After"])
     ax.set_ylabel("Effective resistance")
-    ax.set_title("Pericyte Comparison: Paired Before/After by Input-Output Pair")
+    ax.set_title(
+        "Pericyte Comparison: Paired Before/After by Input-Output Pair\n"
+        f"Input pericyte factor change: {input_change_percent:+.1f}%"
+    )
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     fig.tight_layout()
     fig.savefig(plot_path, dpi=200)
     plt.close(fig)
+
+    flow_plot_path = output_path.with_name(f"{output_path.stem}_before_after_flow.png")
+    baseline_flow_values = [
+        float(result["baseline_total_inlet_flow"]) for result in pair_results
+    ]
+    constricted_flow_values = [
+        float(result["constricted_total_inlet_flow"]) for result in pair_results
+    ]
+    baseline_flow_mean, baseline_flow_sem = _mean_sem(baseline_flow_values)
+    constricted_flow_mean, constricted_flow_sem = _mean_sem(constricted_flow_values)
+
+    fig_flow, ax_flow = plt.subplots(figsize=(8, 5))
+    for baseline_flow, constricted_flow in zip(
+        baseline_flow_values, constricted_flow_values
+    ):
+        ax_flow.plot(
+            [x_baseline, x_after],
+            [baseline_flow, constricted_flow],
+            color="tab:red",
+            linewidth=1.8,
+            alpha=0.9,
+            zorder=1,
+        )
+    ax_flow.scatter(
+        [x_baseline] * len(baseline_flow_values),
+        baseline_flow_values,
+        color="tab:blue",
+        s=90,
+        alpha=0.9,
+        zorder=3,
+        label="Before",
+    )
+    ax_flow.scatter(
+        [x_after] * len(constricted_flow_values),
+        constricted_flow_values,
+        color="tab:red",
+        s=90,
+        alpha=0.9,
+        zorder=3,
+        label="After",
+    )
+    ax_flow.bar(
+        [x_baseline, x_after],
+        [baseline_flow_mean, constricted_flow_mean],
+        yerr=[baseline_flow_sem, constricted_flow_sem],
+        width=0.35,
+        color=["tab:blue", "tab:red"],
+        alpha=0.25,
+        ecolor="black",
+        capsize=6,
+        zorder=2,
+        label="Mean ± SEM",
+    )
+    ax_flow.set_xticks([x_baseline, x_after], labels=["Before", "After"])
+    ax_flow.set_ylabel("Total inlet flow")
+    ax_flow.set_title(
+        "Pericyte Comparison: Paired Before/After Flow by Input-Output Pair\n"
+        f"Input pericyte factor change: {input_change_percent:+.1f}%"
+    )
+    ax_flow.grid(True, axis="y", alpha=0.3)
+    ax_flow.legend()
+    fig_flow.tight_layout()
+    fig_flow.savefig(flow_plot_path, dpi=200)
+    plt.close(fig_flow)
 
     first_result = pair_results[0]
     return {
@@ -435,6 +531,7 @@ def compare_baseline_vs_pericyte_constriction(
         "constricted_factor_value": float(constricted_factor_value),
         "output_csv_path": str(output_path),
         "output_plot_path": str(plot_path),
+        "output_flow_plot_path": str(flow_plot_path),
         "baseline_weight_results": baseline_weight_results,
         "constricted_weight_results": constricted_weight_results,
         "active_pericyte_indices": fixed_active_pericyte_indices,

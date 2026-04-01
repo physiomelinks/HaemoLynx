@@ -7,6 +7,7 @@ import ast
 import pickle
 import json
 import time
+from datetime import datetime
 import importlib.util
 from pathlib import Path
 from skan import csr
@@ -29,6 +30,7 @@ SETTINGS_FILE_PATH = examples_dir / "resistance_pipeline_settings.py"
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from ImageLynx.haemodynamics import arteriole_comparison as arteriole_comparison_haemodynamics
+from ImageLynx.haemodynamics import capillary_comparison as capillary_comparison_haemodynamics
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
 from ImageLynx.haemodynamics import probability as probability_haemodynamics
@@ -152,9 +154,31 @@ def _run_alice_pericyte_dilation_pressure_sweep(
     max_inlet_pressure_pa: int = 6000,
     inlet_pressure_step_pa: int = 500,
     run_passive_capillary_diameter_beforeafter: bool = True,
+    run_arteriole_dilation_sweep_plots: bool = True,
+    run_passive_capillary_dilation_sweep_plots: bool = True,
+    arteriole_sweep_min_dilation_percent: int = 1,
+    arteriole_sweep_max_dilation_percent: int = 30,
+    arteriole_sweep_dilation_step_percent: int = 1,
+    arteriole_sweep_min_inlet_pressure_pa: int = 4500,
+    arteriole_sweep_max_inlet_pressure_pa: int = 6000,
+    arteriole_sweep_inlet_pressure_step_pa: int = 500,
+    passive_capillary_sweep_min_dilation_percent: int = 1,
+    passive_capillary_sweep_max_dilation_percent: int = 30,
+    passive_capillary_sweep_dilation_step_percent: int = 1,
+    passive_capillary_sweep_min_inlet_pressure_pa: int = 4500,
+    passive_capillary_sweep_max_inlet_pressure_pa: int = 6000,
+    passive_capillary_sweep_inlet_pressure_step_pa: int = 500,
     capillary_passive_dilation_percent: float | None = None,
     run_passive_arteriole_diameter_beforeafter: bool = False,
     arteriole_passive_diameter_delta_um: float = 0.0,
+    run_pericyte_spacing_sweep_plots: bool = False,
+    pericyte_spacing_sweep_min_um: int = 30,
+    pericyte_spacing_sweep_max_um: int = 120,
+    pericyte_spacing_sweep_step_um: int = 10,
+    pericyte_spacing_sweep_min_inlet_pressure_pa: int = 4500,
+    pericyte_spacing_sweep_max_inlet_pressure_pa: int = 6000,
+    pericyte_spacing_sweep_inlet_pressure_step_pa: int = 500,
+    pericyte_spacing_sweep_percent: float = 0.0,
     run_pericyte_spacing_beforeafter: bool = False,
     pericyte_beforeafter_percent: float = -20.0,
     pericyte_spacing_delta_um: float = 0.0,
@@ -168,26 +192,34 @@ def _run_alice_pericyte_dilation_pressure_sweep(
         constriction_length=constriction_length_um,
         constriction_spacing=constriction_spacing_um,
     )
-    dilation_step = int(dilation_step_percent)
-    inlet_step = int(inlet_pressure_step_pa)
-    if dilation_step <= 0:
-        raise ValueError(f"dilation_step_percent must be > 0, got {dilation_step_percent}.")
-    if inlet_step <= 0:
-        raise ValueError(f"inlet_pressure_step_pa must be > 0, got {inlet_pressure_step_pa}.")
+    def _build_sweep_values(
+        *,
+        min_value: int,
+        max_value: int,
+        step_value: int,
+        name: str,
+    ) -> list[int]:
+        step = int(step_value)
+        if step <= 0:
+            raise ValueError(f"{name} step must be > 0, got {step_value}.")
+        start = int(min_value)
+        stop = int(max_value)
+        if start <= stop:
+            return list(range(start, stop + 1, step))
+        return list(range(start, stop - 1, -step))
 
-    dilation_values = list(
-        range(
-            int(min_dilation_percent),
-            int(max_dilation_percent) + 1,
-            dilation_step,
-        )
+    dilation_values = _build_sweep_values(
+        min_value=int(min_dilation_percent),
+        max_value=int(max_dilation_percent),
+        step_value=int(dilation_step_percent),
+        name="pericyte sweep dilation",
     )
-    inlet_start = int(min_inlet_pressure_pa)
-    inlet_stop = int(max_inlet_pressure_pa)
-    if inlet_start <= inlet_stop:
-        inlet_pressures = list(range(inlet_start, inlet_stop + 1, inlet_step))
-    else:
-        inlet_pressures = list(range(inlet_start, inlet_stop - 1, -inlet_step))
+    inlet_pressures = _build_sweep_values(
+        min_value=int(min_inlet_pressure_pa),
+        max_value=int(max_inlet_pressure_pa),
+        step_value=int(inlet_pressure_step_pa),
+        name="pericyte sweep inlet pressure",
+    )
 
     for dilation_percent in dilation_values:
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
@@ -261,6 +293,262 @@ def _run_alice_pericyte_dilation_pressure_sweep(
 
     alicepaper = _load_alicepaper_module()
     plot_outputs = alicepaper.graph(results, output_dir=output_dir)
+    arteriole_sweep_plot_outputs = None
+    passive_capillary_sweep_plot_outputs = None
+    pericyte_spacing_sweep_plot_outputs = None
+
+    def _run_selective_dilation_sweep(
+        *,
+        branch_prefix: str,
+        record_key: str,
+        dilation_values_local: list[int],
+        inlet_pressures_local: list[int],
+    ) -> list[dict[str, object]]:
+        selective_results: list[dict[str, object]] = []
+        for dilation_percent in dilation_values_local:
+            dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
+            G_sweep = graph_with_branch_orders.copy()
+            for _, _, _, edge_data in G_sweep.edges(keys=True, data=True):
+                branch_order = str(edge_data.get("branch_order", ""))
+                if not branch_order.startswith(branch_prefix):
+                    continue
+                fwhm_d = edge_data.get("fwhm_diameter_um")
+                if fwhm_d is not None and float(fwhm_d) > 0:
+                    edge_data["fwhm_diameter_um"] = float(fwhm_d) * dilation_factor
+
+            scaled_diameter_by_branch_order: dict[object, float] = {}
+            for branch_order, diameter_um in diameter_by_branch_order.items():
+                bo = str(branch_order)
+                if bo.startswith(branch_prefix):
+                    scaled_diameter_by_branch_order[branch_order] = (
+                        float(diameter_um) * dilation_factor
+                    )
+                else:
+                    scaled_diameter_by_branch_order[branch_order] = float(diameter_um)
+
+            G_sweep, _ = poiseuille_model.set_poiseuille_weights(
+                G_sweep,
+                scaled_diameter_by_branch_order,
+                prefer_edge_fwhm_diameter=True,
+            )
+            if custom_edges_for_sweep:
+                G_sweep, _ = poiseuille_model.set_poiseuille_edge_weights(
+                    G_sweep,
+                    custom_edges_for_sweep,
+                    edge_diameter=6.0 * dilation_factor,
+                    use_resistance=False,
+                )
+
+            conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G_sweep)
+            for inlet_pressure_pa in inlet_pressures_local:
+                solve_result = _solve_pressure_and_boundary_flow(
+                    conductance=conductance,
+                    node_list=node_list,
+                    input_p_bc=float(inlet_pressure_pa),
+                    output_p_bc=float(output_p_bc),
+                    starting_nodes=starting_nodes,
+                    output_nodes=output_nodes,
+                )
+                selective_results.append(
+                    {
+                        record_key: int(dilation_percent),
+                        "dilation_percent": int(dilation_percent),
+                        "dilation_factor": float(dilation_factor),
+                        "inlet_pressure_pa": int(inlet_pressure_pa),
+                        "outlet_pressure_pa": float(output_p_bc),
+                        "total_inlet_flow": float(solve_result["total_inlet_flow"]),
+                        "total_outlet_flow": float(solve_result["total_outlet_flow"]),
+                        "flow_balance_error": float(
+                            float(solve_result["total_inlet_flow"])
+                            + float(solve_result["total_outlet_flow"])
+                        ),
+                        "equivalent_resistance": float(solve_result["equivalent_resistance"]),
+                    }
+                )
+        return selective_results
+
+    if run_arteriole_dilation_sweep_plots:
+        arteriole_dilation_values = _build_sweep_values(
+            min_value=int(arteriole_sweep_min_dilation_percent),
+            max_value=int(arteriole_sweep_max_dilation_percent),
+            step_value=int(arteriole_sweep_dilation_step_percent),
+            name="arteriole sweep dilation",
+        )
+        arteriole_inlet_pressures = _build_sweep_values(
+            min_value=int(arteriole_sweep_min_inlet_pressure_pa),
+            max_value=int(arteriole_sweep_max_inlet_pressure_pa),
+            step_value=int(arteriole_sweep_inlet_pressure_step_pa),
+            name="arteriole sweep inlet pressure",
+        )
+        arteriole_records = _run_selective_dilation_sweep(
+            branch_prefix="Art",
+            record_key="arteriole_dilation_percent",
+            dilation_values_local=arteriole_dilation_values,
+            inlet_pressures_local=arteriole_inlet_pressures,
+        )
+        arteriole_sweep_csv_path = output_dir / "alice_arteriole_dilation_pressure_sweep.csv"
+        with arteriole_sweep_csv_path.open("w", encoding="utf-8", newline="") as handle:
+            import csv
+
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "arteriole_dilation_percent",
+                    "dilation_percent",
+                    "dilation_factor",
+                    "inlet_pressure_pa",
+                    "outlet_pressure_pa",
+                    "total_inlet_flow",
+                    "total_outlet_flow",
+                    "flow_balance_error",
+                    "equivalent_resistance",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(arteriole_records)
+        arteriole_sweep_plot_outputs = alicepaper.graph_arteriole_dilation(
+            arteriole_records,
+            output_dir=output_dir,
+        )
+
+    if run_passive_capillary_dilation_sweep_plots:
+        passive_capillary_dilation_values = _build_sweep_values(
+            min_value=int(passive_capillary_sweep_min_dilation_percent),
+            max_value=int(passive_capillary_sweep_max_dilation_percent),
+            step_value=int(passive_capillary_sweep_dilation_step_percent),
+            name="passive capillary sweep dilation",
+        )
+        passive_capillary_inlet_pressures = _build_sweep_values(
+            min_value=int(passive_capillary_sweep_min_inlet_pressure_pa),
+            max_value=int(passive_capillary_sweep_max_inlet_pressure_pa),
+            step_value=int(passive_capillary_sweep_inlet_pressure_step_pa),
+            name="passive capillary sweep inlet pressure",
+        )
+        capillary_records = _run_selective_dilation_sweep(
+            branch_prefix="B",
+            record_key="capillary_dilation_percent",
+            dilation_values_local=passive_capillary_dilation_values,
+            inlet_pressures_local=passive_capillary_inlet_pressures,
+        )
+        capillary_sweep_csv_path = (
+            output_dir / "alice_passive_capillary_dilation_pressure_sweep.csv"
+        )
+        with capillary_sweep_csv_path.open("w", encoding="utf-8", newline="") as handle:
+            import csv
+
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "capillary_dilation_percent",
+                    "dilation_percent",
+                    "dilation_factor",
+                    "inlet_pressure_pa",
+                    "outlet_pressure_pa",
+                    "total_inlet_flow",
+                    "total_outlet_flow",
+                    "flow_balance_error",
+                    "equivalent_resistance",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(capillary_records)
+        passive_capillary_sweep_plot_outputs = alicepaper.graph_passive_capillary_dilation(
+            capillary_records,
+            output_dir=output_dir,
+        )
+    if run_pericyte_spacing_sweep_plots:
+        pericyte_spacing_values = _build_sweep_values(
+            min_value=int(pericyte_spacing_sweep_min_um),
+            max_value=int(pericyte_spacing_sweep_max_um),
+            step_value=int(pericyte_spacing_sweep_step_um),
+            name="pericyte spacing sweep",
+        )
+        pericyte_spacing_inlet_pressures = _build_sweep_values(
+            min_value=int(pericyte_spacing_sweep_min_inlet_pressure_pa),
+            max_value=int(pericyte_spacing_sweep_max_inlet_pressure_pa),
+            step_value=int(pericyte_spacing_sweep_inlet_pressure_step_pa),
+            name="pericyte spacing sweep inlet pressure",
+        )
+        pericyte_spacing_factor = 1.0 + (float(pericyte_spacing_sweep_percent) / 100.0)
+        if pericyte_spacing_factor <= 0.0:
+            raise ValueError(
+                "pericyte_spacing_sweep_percent produces non-positive factor; "
+                f"got percent={pericyte_spacing_sweep_percent}."
+            )
+        pericyte_factor_by_branch_order = {
+            branch_order: (
+                pericyte_spacing_factor
+                if str(branch_order).startswith("B")
+                else 1.0
+            )
+            for branch_order in diameter_by_branch_order.keys()
+        }
+        pericyte_spacing_records: list[dict[str, object]] = []
+        for spacing_um in pericyte_spacing_values:
+            spacing_model = haemodynamics.PoiseuilleModel(
+                constriction_length=float(constriction_length_um),
+                constriction_spacing=float(spacing_um),
+            )
+            G_sweep = graph_with_branch_orders.copy()
+            G_sweep, _ = spacing_model.set_poiseuille_weights_with_constrictions(
+                G_sweep,
+                diameter_by_branch_order,
+                prefer_edge_fwhm_baseline=True,
+                constriction_factor_by_branch_order=pericyte_factor_by_branch_order,
+            )
+            conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G_sweep)
+            for inlet_pressure_pa in pericyte_spacing_inlet_pressures:
+                solve_result = _solve_pressure_and_boundary_flow(
+                    conductance=conductance,
+                    node_list=node_list,
+                    input_p_bc=float(inlet_pressure_pa),
+                    output_p_bc=float(output_p_bc),
+                    starting_nodes=starting_nodes,
+                    output_nodes=output_nodes,
+                )
+                pericyte_spacing_records.append(
+                    {
+                        "pericyte_spacing_um": float(spacing_um),
+                        "pericyte_percent": float(pericyte_spacing_sweep_percent),
+                        "inlet_pressure_pa": int(inlet_pressure_pa),
+                        "outlet_pressure_pa": float(output_p_bc),
+                        "total_inlet_flow": float(solve_result["total_inlet_flow"]),
+                        "total_outlet_flow": float(solve_result["total_outlet_flow"]),
+                        "flow_balance_error": float(
+                            float(solve_result["total_inlet_flow"])
+                            + float(solve_result["total_outlet_flow"])
+                        ),
+                        "equivalent_resistance": float(solve_result["equivalent_resistance"]),
+                    }
+                )
+        pericyte_spacing_sweep_csv_path = output_dir / "alice_pericyte_spacing_pressure_sweep.csv"
+        with pericyte_spacing_sweep_csv_path.open("w", encoding="utf-8", newline="") as handle:
+            import csv
+
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "pericyte_spacing_um",
+                    "pericyte_percent",
+                    "inlet_pressure_pa",
+                    "outlet_pressure_pa",
+                    "total_inlet_flow",
+                    "total_outlet_flow",
+                    "flow_balance_error",
+                    "equivalent_resistance",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(pericyte_spacing_records)
+        pericyte_spacing_sweep_plot_outputs = alicepaper.graph_pericyte_spacing(
+            pericyte_spacing_records,
+            output_dir=output_dir,
+        )
+    else:
+        print(
+            "Skipping Alice pericyte-spacing sweep plots "
+            "(run_pericyte_spacing_sweep_plots=False)."
+        )
     capillary_flow_change_outputs = None
     arteriole_flow_change_outputs = None
     pericyte_spacing_beforeafter_outputs = None
@@ -313,25 +601,49 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             )
         )
     print(f"Alice paper curve plots saved to: {plot_outputs}")
+    print("Alice pericyte-dilation sweep plot mode: mode=passive")
     if capillary_flow_change_outputs is not None:
         print(
             "Alice capillary-only passive dilation flow-change plot saved to: "
             f"{capillary_flow_change_outputs}"
         )
+    if arteriole_sweep_plot_outputs is not None:
+        print(
+            "Alice arteriole-only dilation sweep plots saved to: "
+            f"{arteriole_sweep_plot_outputs}"
+        )
+        print("Alice arteriole-only dilation sweep plot mode: mode=passive")
+    if passive_capillary_sweep_plot_outputs is not None:
+        print(
+            "Alice passive capillary-only dilation sweep plots saved to: "
+            f"{passive_capillary_sweep_plot_outputs}"
+        )
+        print("Alice passive capillary-only dilation sweep plot mode: mode=passive")
+    if pericyte_spacing_sweep_plot_outputs is not None:
+        print(
+            "Alice pericyte-spacing sweep plots saved to: "
+            f"{pericyte_spacing_sweep_plot_outputs}"
+        )
+        print("Alice pericyte-spacing sweep plot mode: mode=d1d2")
     if arteriole_flow_change_outputs is not None:
         print(
             "Alice arteriole-only passive diameter change flow-change plot saved to: "
             f"{arteriole_flow_change_outputs}"
         )
+        print("Alice arteriole passive before/after plot mode: mode=passive")
     if pericyte_spacing_beforeafter_outputs is not None:
         print(
             "Alice pericyte before/after spacing comparison plots saved to: "
             f"{pericyte_spacing_beforeafter_outputs}"
         )
+        print("Alice pericyte spacing before/after plot mode: mode=d1d2")
     return {
         "results": results,
         "csv_path": str(sweep_csv_path),
         "plot_outputs": plot_outputs,
+        "arteriole_sweep_plot_outputs": arteriole_sweep_plot_outputs,
+        "passive_capillary_sweep_plot_outputs": passive_capillary_sweep_plot_outputs,
+        "pericyte_spacing_sweep_plot_outputs": pericyte_spacing_sweep_plot_outputs,
         "capillary_flow_change_outputs": capillary_flow_change_outputs,
         "arteriole_flow_change_outputs": arteriole_flow_change_outputs,
         "pericyte_spacing_beforeafter_outputs": pericyte_spacing_beforeafter_outputs,
@@ -439,6 +751,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             arteriole_comparison_dilated_value=ARTERIOLE_COMPARISON_DILATED_VALUE,
                             arteriole_comparison_branch_prefix=ARTERIOLE_COMPARISON_BRANCH_PREFIX,
                             arteriole_comparison_use_constriction_integrator=ARTERIOLE_COMPARISON_USE_CONSTRICTION_INTEGRATOR,
+                            run_capillary_resistance_comparison=RUN_CAPILLARY_RESISTANCE_COMPARISON,
+                            capillary_comparison_baseline_value=CAPILLARY_COMPARISON_BASELINE_VALUE,
+                            capillary_comparison_dilated_value=CAPILLARY_COMPARISON_DILATED_VALUE,
+                            capillary_comparison_branch_prefix=CAPILLARY_COMPARISON_BRANCH_PREFIX,
+                            capillary_comparison_use_constriction_integrator=CAPILLARY_COMPARISON_USE_CONSTRICTION_INTEGRATOR,
                             reuse_comparison_pericyte_cohort_for_main_run=REUSE_COMPARISON_PERICYTE_COHORT_FOR_MAIN_RUN,
                             run_alice_paper_sweep=RUN_ALICE_PAPER_SWEEP,
                             alice_paper_output_dir=ALICE_PAPER_OUTPUT_DIR,
@@ -448,12 +765,34 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             alice_inlet_pressure_min_pa=ALICE_INLET_PRESSURE_MIN_PA,
                             alice_inlet_pressure_max_pa=ALICE_INLET_PRESSURE_MAX_PA,
                             alice_inlet_pressure_step_pa=ALICE_INLET_PRESSURE_STEP_PA,
+                            run_alice_arteriole_dilation_sweep_plots=RUN_ALICE_ARTERIOLE_DILATION_SWEEP_PLOTS,
+                            alice_arteriole_sweep_min_dilation_percent=ALICE_ARTERIOLE_SWEEP_MIN_DILATION_PERCENT,
+                            alice_arteriole_sweep_max_dilation_percent=ALICE_ARTERIOLE_SWEEP_MAX_DILATION_PERCENT,
+                            alice_arteriole_sweep_dilation_step_percent=ALICE_ARTERIOLE_SWEEP_DILATION_STEP_PERCENT,
+                            alice_arteriole_sweep_min_inlet_pressure_pa=ALICE_ARTERIOLE_SWEEP_MIN_INLET_PRESSURE_PA,
+                            alice_arteriole_sweep_max_inlet_pressure_pa=ALICE_ARTERIOLE_SWEEP_MAX_INLET_PRESSURE_PA,
+                            alice_arteriole_sweep_inlet_pressure_step_pa=ALICE_ARTERIOLE_SWEEP_INLET_PRESSURE_STEP_PA,
+                            run_alice_passive_capillary_dilation_sweep_plots=RUN_ALICE_PASSIVE_CAPILLARY_DILATION_SWEEP_PLOTS,
+                            alice_passive_capillary_sweep_min_dilation_percent=ALICE_PASSIVE_CAPILLARY_SWEEP_MIN_DILATION_PERCENT,
+                            alice_passive_capillary_sweep_max_dilation_percent=ALICE_PASSIVE_CAPILLARY_SWEEP_MAX_DILATION_PERCENT,
+                            alice_passive_capillary_sweep_dilation_step_percent=ALICE_PASSIVE_CAPILLARY_SWEEP_DILATION_STEP_PERCENT,
+                            alice_passive_capillary_sweep_min_inlet_pressure_pa=ALICE_PASSIVE_CAPILLARY_SWEEP_MIN_INLET_PRESSURE_PA,
+                            alice_passive_capillary_sweep_max_inlet_pressure_pa=ALICE_PASSIVE_CAPILLARY_SWEEP_MAX_INLET_PRESSURE_PA,
+                            alice_passive_capillary_sweep_inlet_pressure_step_pa=ALICE_PASSIVE_CAPILLARY_SWEEP_INLET_PRESSURE_STEP_PA,
                             alice_constriction_length_um=ALICE_CONSTRICTION_LENGTH_UM,
                             alice_constriction_spacing_um=ALICE_CONSTRICTION_SPACING_UM,
                             run_alice_passive_capillary_diameter_beforeafter=RUN_ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER,
                             alice_passive_capillary_diameter_beforeafter_percent=ALICE_PASSIVE_CAPILLARY_DIAMETER_BEFOREAFTER_PERCENT,
                             run_alice_passive_arteriole_diameter_beforeafter=RUN_ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER,
                             alice_passive_arteriole_diameter_beforeafter_delta_um=ALICE_PASSIVE_ARTERIOLE_DIAMETER_BEFOREAFTER_DELTA_UM,
+                            run_alice_pericyte_spacing_sweep_plots=RUN_ALICE_PERICYTE_SPACING_SWEEP_PLOTS,
+                            alice_pericyte_spacing_sweep_min_um=ALICE_PERICYTE_SPACING_SWEEP_MIN_UM,
+                            alice_pericyte_spacing_sweep_max_um=ALICE_PERICYTE_SPACING_SWEEP_MAX_UM,
+                            alice_pericyte_spacing_sweep_step_um=ALICE_PERICYTE_SPACING_SWEEP_STEP_UM,
+                            alice_pericyte_spacing_sweep_min_inlet_pressure_pa=ALICE_PERICYTE_SPACING_SWEEP_MIN_INLET_PRESSURE_PA,
+                            alice_pericyte_spacing_sweep_max_inlet_pressure_pa=ALICE_PERICYTE_SPACING_SWEEP_MAX_INLET_PRESSURE_PA,
+                            alice_pericyte_spacing_sweep_inlet_pressure_step_pa=ALICE_PERICYTE_SPACING_SWEEP_INLET_PRESSURE_STEP_PA,
+                            alice_pericyte_spacing_sweep_percent=ALICE_PERICYTE_SPACING_SWEEP_PERCENT,
                             run_alice_pericyte_spacing_beforeafter=RUN_ALICE_PERICYTE_SPACING_BEFOREAFTER,
                             alice_pericyte_beforeafter_percent=ALICE_PERICYTE_BEFOREAFTER_PERCENT,
                             alice_pericyte_spacing_delta_um=ALICE_PERICYTE_SPACING_DELTA_UM,
@@ -2763,6 +3102,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     pericyte_constriction_probability=float(
                         pericyte_constriction_probability
                     ),
+                    input_p_bc=float(input_p_bc),
+                    output_p_bc=float(output_p_bc),
                 )
             )
             if (
@@ -2796,6 +3137,11 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 "Saved pericyte resistance before/after plot to: "
                 f"{comparison_results['output_plot_path']}"
             )
+            print(
+                "Saved pericyte flow before/after plot to: "
+                f"{comparison_results['output_flow_plot_path']}"
+            )
+            print("Pericyte resistance comparison plot mode: mode=d1d2")
         if run_haemodynamics and run_arteriole_resistance_comparison:
             arteriole_comparison_csv_path = (
                 output_dir / f"{image_path.stem}_arteriole_resistance_comparison.csv"
@@ -2817,6 +3163,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     constriction_factor_by_branch_order=constriction_by_branch_order,
                     constriction_length=float(pericyte_constriction_length_um),
                     constriction_spacing=float(pericyte_constriction_spacing_um),
+                    input_p_bc=float(input_p_bc),
+                    output_p_bc=float(output_p_bc),
                 )
             )
             print(
@@ -2833,6 +3181,66 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             print(
                 "Saved arteriole resistance before/after plot to: "
                 f"{arteriole_comparison_results['output_plot_path']}"
+            )
+            print(
+                "Saved arteriole flow before/after plot to: "
+                f"{arteriole_comparison_results['output_flow_plot_path']}"
+            )
+            print(
+                "Arteriole resistance comparison plot mode: mode="
+                f"{'d1d2' if bool(arteriole_comparison_use_constriction_integrator) else 'passive'}"
+            )
+        if run_haemodynamics and run_capillary_resistance_comparison:
+            capillary_comparison_csv_path = (
+                output_dir / f"{image_path.stem}_capillary_resistance_comparison.csv"
+            )
+            capillary_comparison_results = (
+                capillary_comparison_haemodynamics.compare_baseline_vs_passive_capillary_dilation(
+                    G,
+                    diameter_by_branch_order=diameter_by_branch_order,
+                    resistance_node_pair=resistance_node_pair,
+                    resistance_node_pairs=resistance_node_pairs,
+                    output_csv_path=capillary_comparison_csv_path,
+                    baseline_factor_value=float(capillary_comparison_baseline_value),
+                    dilated_factor_value=float(capillary_comparison_dilated_value),
+                    capillary_branch_prefix=str(capillary_comparison_branch_prefix),
+                    prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
+                    use_constriction_integrator=bool(
+                        capillary_comparison_use_constriction_integrator
+                    ),
+                    constriction_factor_by_branch_order=(
+                        constriction_by_branch_order
+                        if bool(capillary_comparison_use_constriction_integrator)
+                        else None
+                    ),
+                    constriction_length=float(pericyte_constriction_length_um),
+                    constriction_spacing=float(pericyte_constriction_spacing_um),
+                    input_p_bc=float(input_p_bc),
+                    output_p_bc=float(output_p_bc),
+                )
+            )
+            print(
+                "Capillary resistance comparison complete: "
+                f"baseline={capillary_comparison_results['baseline_resistance']:.6f}, "
+                f"dilated={capillary_comparison_results['dilated_resistance']:.6f}, "
+                f"delta={capillary_comparison_results['delta']:.6f}, "
+                f"change={capillary_comparison_results['percent_change']:.3f}%."
+            )
+            print(
+                "Saved capillary resistance comparison CSV to: "
+                f"{capillary_comparison_results['output_csv_path']}"
+            )
+            print(
+                "Saved capillary resistance before/after plot to: "
+                f"{capillary_comparison_results['output_plot_path']}"
+            )
+            print(
+                "Saved capillary flow before/after plot to: "
+                f"{capillary_comparison_results['output_flow_plot_path']}"
+            )
+            print(
+                "Capillary resistance comparison plot mode: mode="
+                f"{'d1d2' if bool(capillary_comparison_use_constriction_integrator) else 'passive'}"
             )
         if run_haemodynamics:
             poiseuille_model = haemodynamics.PoiseuilleModel(
@@ -2975,8 +3383,10 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
+    vtk_export_payload: dict[str, object] = {}
     if run_haemodynamics and VTK_export:
         vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix)
+        vtk_export_payload = dict(vtk_export)
         print("\n=== VTK Export ===")
         print(f"  Vessels:   {vtk_export['vessels_path']}")
         print(f"  Pericytes: {vtk_export['pericytes_path']}")
@@ -3157,7 +3567,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             output_p_bc,
             starting_nodes,
             output_nodes,
-            vtk_export,
+            vtk_export_payload,
         )
         print("Flow through the network solved")
         print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
@@ -3175,6 +3585,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             print(f"Skipped flow Plotly HTML export: {exc}")
         if run_alice_paper_sweep:
             print("\nRunning Alice pericyte-dilation x inlet-pressure sweep...")
+            print(
+                "Alice sweep toggles: "
+                f"spacing_sweep={bool(run_alice_pericyte_spacing_sweep_plots)}, "
+                f"spacing_beforeafter={bool(run_alice_pericyte_spacing_beforeafter)}, "
+                f"output_dir={Path(alice_paper_output_dir)}"
+            )
             sweep_outputs = _run_alice_pericyte_dilation_pressure_sweep(
                 G,
                 diameter_by_branch_order=diameter_by_branch_order,
@@ -3194,6 +3610,48 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 run_passive_capillary_diameter_beforeafter=bool(
                     run_alice_passive_capillary_diameter_beforeafter
                 ),
+                run_arteriole_dilation_sweep_plots=bool(
+                    run_alice_arteriole_dilation_sweep_plots
+                ),
+                arteriole_sweep_min_dilation_percent=int(
+                    alice_arteriole_sweep_min_dilation_percent
+                ),
+                arteriole_sweep_max_dilation_percent=int(
+                    alice_arteriole_sweep_max_dilation_percent
+                ),
+                arteriole_sweep_dilation_step_percent=int(
+                    alice_arteriole_sweep_dilation_step_percent
+                ),
+                arteriole_sweep_min_inlet_pressure_pa=int(
+                    alice_arteriole_sweep_min_inlet_pressure_pa
+                ),
+                arteriole_sweep_max_inlet_pressure_pa=int(
+                    alice_arteriole_sweep_max_inlet_pressure_pa
+                ),
+                arteriole_sweep_inlet_pressure_step_pa=int(
+                    alice_arteriole_sweep_inlet_pressure_step_pa
+                ),
+                run_passive_capillary_dilation_sweep_plots=bool(
+                    run_alice_passive_capillary_dilation_sweep_plots
+                ),
+                passive_capillary_sweep_min_dilation_percent=int(
+                    alice_passive_capillary_sweep_min_dilation_percent
+                ),
+                passive_capillary_sweep_max_dilation_percent=int(
+                    alice_passive_capillary_sweep_max_dilation_percent
+                ),
+                passive_capillary_sweep_dilation_step_percent=int(
+                    alice_passive_capillary_sweep_dilation_step_percent
+                ),
+                passive_capillary_sweep_min_inlet_pressure_pa=int(
+                    alice_passive_capillary_sweep_min_inlet_pressure_pa
+                ),
+                passive_capillary_sweep_max_inlet_pressure_pa=int(
+                    alice_passive_capillary_sweep_max_inlet_pressure_pa
+                ),
+                passive_capillary_sweep_inlet_pressure_step_pa=int(
+                    alice_passive_capillary_sweep_inlet_pressure_step_pa
+                ),
                 capillary_passive_dilation_percent=float(
                     alice_passive_capillary_diameter_beforeafter_percent
                 ),
@@ -3202,6 +3660,30 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 ),
                 arteriole_passive_diameter_delta_um=float(
                     alice_passive_arteriole_diameter_beforeafter_delta_um
+                ),
+                run_pericyte_spacing_sweep_plots=bool(
+                    run_alice_pericyte_spacing_sweep_plots
+                ),
+                pericyte_spacing_sweep_min_um=int(
+                    alice_pericyte_spacing_sweep_min_um
+                ),
+                pericyte_spacing_sweep_max_um=int(
+                    alice_pericyte_spacing_sweep_max_um
+                ),
+                pericyte_spacing_sweep_step_um=int(
+                    alice_pericyte_spacing_sweep_step_um
+                ),
+                pericyte_spacing_sweep_min_inlet_pressure_pa=int(
+                    alice_pericyte_spacing_sweep_min_inlet_pressure_pa
+                ),
+                pericyte_spacing_sweep_max_inlet_pressure_pa=int(
+                    alice_pericyte_spacing_sweep_max_inlet_pressure_pa
+                ),
+                pericyte_spacing_sweep_inlet_pressure_step_pa=int(
+                    alice_pericyte_spacing_sweep_inlet_pressure_step_pa
+                ),
+                pericyte_spacing_sweep_percent=float(
+                    alice_pericyte_spacing_sweep_percent
                 ),
                 run_pericyte_spacing_beforeafter=bool(
                     run_alice_pericyte_spacing_beforeafter
@@ -3361,6 +3843,25 @@ def _apply_standard_output_layout(
     return pipeline_kwargs
 
 
+def _sanitize_config_stem(value: object) -> str:
+    """Build filesystem-safe config filename stem from a path-like value."""
+    if value is None:
+        return "run"
+    stem = Path(str(value)).stem.strip()
+    if not stem:
+        return "run"
+    safe_stem = "".join(ch if (ch.isalnum() or ch in {"_", "-"}) else "_" for ch in stem)
+    safe_stem = safe_stem.strip("_")
+    return safe_stem or "run"
+
+
+def _build_auto_config_output_path(input_path: object) -> Path:
+    """Create auto-save YAML path: <input_stem>_<YYYYMMDD_HHMMSS>.yaml."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = _sanitize_config_stem(input_path)
+    return Path(AUTO_SAVE_EFFECTIVE_CONFIG_DIR) / f"{stem}_{timestamp}.yaml"  # noqa: F405
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -3476,15 +3977,30 @@ if __name__ == "__main__":
     config_preset_name: str | None = None
     config_setting_overrides: dict[str, object] = {}
     config_pipeline_overrides: dict[str, object] = {}
-    if cli.config is not None:
+    effective_config_path: Path | None = cli.config
+    if (
+        effective_config_path is None
+        and AUTO_LOAD_CONFIG_EACH_RUN  # noqa: F405
+        and AUTO_LOAD_CONFIG_PATH is not None  # noqa: F405
+    ):
+        effective_config_path = Path(AUTO_LOAD_CONFIG_PATH)  # noqa: F405
+    if (
+        effective_config_path is None
+        and AUTO_LOAD_CONFIG_EACH_RUN  # noqa: F405
+        and AUTO_LOAD_CONFIG_PATH is None  # noqa: F405
+    ):
+        raise ValueError(
+            "AUTO_LOAD_CONFIG_EACH_RUN=True but AUTO_LOAD_CONFIG_PATH is not set."
+        )
+    if effective_config_path is not None:
         loaded_config = load_config_yaml(  # noqa: F405
-            config_path=cli.config,
+            config_path=effective_config_path,
             pipeline_param_names=pipeline_param_names,
         )
         config_preset_name = loaded_config["preset_name"]
         config_setting_overrides = dict(loaded_config["settings_overrides"])
         config_pipeline_overrides = dict(loaded_config["pipeline_overrides"])
-        print(f"Loaded config from: {cli.config}")
+        print(f"Loaded config from: {effective_config_path}")
 
     preset_name = cli.preset or config_preset_name or "none"
     manual_overrides: dict[str, object] = dict(config_setting_overrides)
@@ -3548,14 +4064,26 @@ if __name__ == "__main__":
         pipeline_kwargs,
         output_subdir="nerve",
     )
+    effective_settings_snapshot = collect_current_settings_snapshot(globals())  # noqa: F405
     if cli.save_config is not None:
         saved_path = save_effective_config_yaml(  # noqa: F405
             output_path=cli.save_config,
             preset_name=preset_name,
-            settings=selected_settings,
+            settings=effective_settings_snapshot,
             pipeline_kwargs=pipeline_kwargs,
         )
         print(f"Saved effective run config to: {saved_path}")
+    if AUTO_SAVE_EFFECTIVE_CONFIG_EACH_RUN:  # noqa: F405
+        auto_save_path = _build_auto_config_output_path(
+            pipeline_kwargs.get("image_path", INPUT_PATH)  # noqa: F405
+        )
+        auto_saved_path = save_effective_config_yaml(  # noqa: F405
+            output_path=auto_save_path,
+            preset_name=preset_name,
+            settings=effective_settings_snapshot,
+            pipeline_kwargs=pipeline_kwargs,
+        )
+        print(f"Auto-saved effective run config to: {auto_saved_path}")
     preflight_report = run_preflight_checklist(pipeline_kwargs)
     if not preflight_report["ok"]:
         raise SystemExit(2)

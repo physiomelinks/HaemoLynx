@@ -505,6 +505,19 @@ def apply_settings_to_namespace(
             namespace[key] = value
 
 
+def collect_current_settings_snapshot(
+    namespace: dict,
+    valid_setting_names: set[str],
+    haemodynamics_module,
+) -> dict[str, object]:
+    """Copy current namespace settings and rebuild derived lookups."""
+    snapshot: dict[str, object] = {}
+    for key in valid_setting_names:
+        snapshot[key] = copy.deepcopy(namespace[key])
+    recompute_derived_settings(snapshot, haemodynamics_module)
+    return snapshot
+
+
 def _coerce_pipeline_path_like_value(param_name: str, value: object) -> object:
     if value is None:
         return None
