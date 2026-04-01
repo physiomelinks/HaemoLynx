@@ -59,6 +59,212 @@ def graph(records: Iterable[dict], output_dir: Path | str) -> dict:
     }
 
 
+def graph_arteriole_dilation(records: Iterable[dict], output_dir: Path | str) -> dict:
+    """Plot resistance/flow curves vs arteriole dilation for each inlet pressure.
+
+    Expected per-record fields:
+    - inlet_pressure_pa
+    - equivalent_resistance
+    - total_inlet_flow
+    - arteriole_dilation_percent (preferred) or dilation_percent (fallback)
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    grouped: dict[int, list[dict]] = {}
+    for row in records:
+        pressure = int(row["inlet_pressure_pa"])
+        grouped.setdefault(pressure, []).append(row)
+
+    def _dilation_percent(row: dict) -> int:
+        if "arteriole_dilation_percent" in row:
+            return int(row["arteriole_dilation_percent"])
+        if "dilation_percent" in row:
+            return int(row["dilation_percent"])
+        raise KeyError(
+            "Each record must include 'arteriole_dilation_percent' "
+            "or 'dilation_percent'."
+        )
+
+    for pressure_rows in grouped.values():
+        pressure_rows.sort(key=_dilation_percent)
+
+    resistance_plot_path = output_path / "alice_resistance_vs_arteriole_dilation.png"
+    flow_plot_path = output_path / "alice_flow_vs_arteriole_dilation.png"
+
+    fig_res, ax_res = plt.subplots(figsize=(8, 5))
+    for pressure in sorted(grouped.keys()):
+        rows = grouped[pressure]
+        x = [_dilation_percent(r) for r in rows]
+        y = [float(r["equivalent_resistance"]) for r in rows]
+        ax_res.plot(x, y, marker="o", linewidth=2.0, label=f"{pressure} Pa inlet")
+    ax_res.set_xlabel("Arteriole dilation (%)")
+    ax_res.set_ylabel("Equivalent resistance")
+    ax_res.set_title("Resistance vs Arteriole Dilation")
+    ax_res.grid(True, alpha=0.3)
+    ax_res.legend()
+    fig_res.tight_layout()
+    fig_res.savefig(resistance_plot_path, dpi=200)
+    plt.close(fig_res)
+
+    fig_flow, ax_flow = plt.subplots(figsize=(8, 5))
+    for pressure in sorted(grouped.keys()):
+        rows = grouped[pressure]
+        x = [_dilation_percent(r) for r in rows]
+        y = [float(r["total_inlet_flow"]) for r in rows]
+        ax_flow.plot(x, y, marker="o", linewidth=2.0, label=f"{pressure} Pa inlet")
+    ax_flow.set_xlabel("Arteriole dilation (%)")
+    ax_flow.set_ylabel("Total inlet flow")
+    ax_flow.set_title("Flow vs Arteriole Dilation")
+    ax_flow.grid(True, alpha=0.3)
+    ax_flow.legend()
+    fig_flow.tight_layout()
+    fig_flow.savefig(flow_plot_path, dpi=200)
+    plt.close(fig_flow)
+
+    return {
+        "resistance_plot_path": str(resistance_plot_path),
+        "flow_plot_path": str(flow_plot_path),
+    }
+
+
+def graph_passive_capillary_dilation(records: Iterable[dict], output_dir: Path | str) -> dict:
+    """Plot resistance/flow curves vs passive capillary dilation for each inlet pressure.
+
+    Expected per-record fields:
+    - inlet_pressure_pa
+    - equivalent_resistance
+    - total_inlet_flow
+    - capillary_dilation_percent (preferred) or dilation_percent (fallback)
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    grouped: dict[int, list[dict]] = {}
+    for row in records:
+        pressure = int(row["inlet_pressure_pa"])
+        grouped.setdefault(pressure, []).append(row)
+
+    def _dilation_percent(row: dict) -> int:
+        if "capillary_dilation_percent" in row:
+            return int(row["capillary_dilation_percent"])
+        if "dilation_percent" in row:
+            return int(row["dilation_percent"])
+        raise KeyError(
+            "Each record must include 'capillary_dilation_percent' "
+            "or 'dilation_percent'."
+        )
+
+    for pressure_rows in grouped.values():
+        pressure_rows.sort(key=_dilation_percent)
+
+    resistance_plot_path = output_path / "alice_resistance_vs_passive_capillary_dilation.png"
+    flow_plot_path = output_path / "alice_flow_vs_passive_capillary_dilation.png"
+
+    fig_res, ax_res = plt.subplots(figsize=(8, 5))
+    for pressure in sorted(grouped.keys()):
+        rows = grouped[pressure]
+        x = [_dilation_percent(r) for r in rows]
+        y = [float(r["equivalent_resistance"]) for r in rows]
+        ax_res.plot(x, y, marker="o", linewidth=2.0, label=f"{pressure} Pa inlet")
+    ax_res.set_xlabel("Passive capillary dilation (%)")
+    ax_res.set_ylabel("Equivalent resistance")
+    ax_res.set_title("Resistance vs Passive Capillary Dilation")
+    ax_res.grid(True, alpha=0.3)
+    ax_res.legend()
+    fig_res.tight_layout()
+    fig_res.savefig(resistance_plot_path, dpi=200)
+    plt.close(fig_res)
+
+    fig_flow, ax_flow = plt.subplots(figsize=(8, 5))
+    for pressure in sorted(grouped.keys()):
+        rows = grouped[pressure]
+        x = [_dilation_percent(r) for r in rows]
+        y = [float(r["total_inlet_flow"]) for r in rows]
+        ax_flow.plot(x, y, marker="o", linewidth=2.0, label=f"{pressure} Pa inlet")
+    ax_flow.set_xlabel("Passive capillary dilation (%)")
+    ax_flow.set_ylabel("Total inlet flow")
+    ax_flow.set_title("Flow vs Passive Capillary Dilation")
+    ax_flow.grid(True, alpha=0.3)
+    ax_flow.legend()
+    fig_flow.tight_layout()
+    fig_flow.savefig(flow_plot_path, dpi=200)
+    plt.close(fig_flow)
+
+    return {
+        "resistance_plot_path": str(resistance_plot_path),
+        "flow_plot_path": str(flow_plot_path),
+    }
+
+
+def graph_pericyte_spacing(records: Iterable[dict], output_dir: Path | str) -> dict:
+    """Plot resistance/flow curves vs pericyte spacing for each inlet pressure.
+
+    Expected per-record fields:
+    - inlet_pressure_pa
+    - equivalent_resistance
+    - total_inlet_flow
+    - pericyte_spacing_um (preferred) or spacing_um (fallback)
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    grouped: dict[int, list[dict]] = {}
+    for row in records:
+        pressure = int(row["inlet_pressure_pa"])
+        grouped.setdefault(pressure, []).append(row)
+
+    def _spacing_um(row: dict) -> float:
+        if "pericyte_spacing_um" in row:
+            return float(row["pericyte_spacing_um"])
+        if "spacing_um" in row:
+            return float(row["spacing_um"])
+        raise KeyError(
+            "Each record must include 'pericyte_spacing_um' or 'spacing_um'."
+        )
+
+    for pressure_rows in grouped.values():
+        pressure_rows.sort(key=_spacing_um)
+
+    resistance_plot_path = output_path / "alice_resistance_vs_pericyte_spacing.png"
+    flow_plot_path = output_path / "alice_flow_vs_pericyte_spacing.png"
+
+    fig_res, ax_res = plt.subplots(figsize=(8, 5))
+    for pressure in sorted(grouped.keys()):
+        rows = grouped[pressure]
+        x = [_spacing_um(r) for r in rows]
+        y = [float(r["equivalent_resistance"]) for r in rows]
+        ax_res.plot(x, y, marker="o", linewidth=2.0, label=f"{pressure} Pa inlet")
+    ax_res.set_xlabel("Pericyte spacing (um)")
+    ax_res.set_ylabel("Equivalent resistance")
+    ax_res.set_title("Resistance vs Pericyte Spacing")
+    ax_res.grid(True, alpha=0.3)
+    ax_res.legend()
+    fig_res.tight_layout()
+    fig_res.savefig(resistance_plot_path, dpi=200)
+    plt.close(fig_res)
+
+    fig_flow, ax_flow = plt.subplots(figsize=(8, 5))
+    for pressure in sorted(grouped.keys()):
+        rows = grouped[pressure]
+        x = [_spacing_um(r) for r in rows]
+        y = [float(r["total_inlet_flow"]) for r in rows]
+        ax_flow.plot(x, y, marker="o", linewidth=2.0, label=f"{pressure} Pa inlet")
+    ax_flow.set_xlabel("Pericyte spacing (um)")
+    ax_flow.set_ylabel("Total inlet flow")
+    ax_flow.set_title("Flow vs Pericyte Spacing")
+    ax_flow.grid(True, alpha=0.3)
+    ax_flow.legend()
+    fig_flow.tight_layout()
+    fig_flow.savefig(flow_plot_path, dpi=200)
+    plt.close(fig_flow)
+
+    return {
+        "resistance_plot_path": str(resistance_plot_path),
+        "flow_plot_path": str(flow_plot_path),
+    }
+
+
 def _is_capillary_branch_order(branch_order: object, capillary_branch_prefix: str) -> bool:
     if branch_order is None:
         return False
@@ -636,7 +842,10 @@ def pericyte_constriction_dilation_spacing_beforeafter(
         label="Shifted spacing: after pericyte change",
     )
     ax_flow.set_ylabel("Total inlet flow")
-    ax_flow.set_title("Pericyte Before/After Flow at Baseline vs Shifted Spacing")
+    ax_flow.set_title(
+        "Pericyte Before/After Flow at Baseline vs Shifted Spacing\n"
+        f"Input pericyte diameter change: {float(pericyte_percent):+.1f}%"
+    )
     ax_flow.grid(True, alpha=0.3)
     ax_flow.legend()
 
@@ -672,7 +881,10 @@ def pericyte_constriction_dilation_spacing_beforeafter(
     )
     ax_res.set_xlabel("Inlet pressure (Pa)")
     ax_res.set_ylabel("Equivalent resistance")
-    ax_res.set_title("Pericyte Before/After Resistance at Baseline vs Shifted Spacing")
+    ax_res.set_title(
+        "Pericyte Before/After Resistance at Baseline vs Shifted Spacing\n"
+        f"Input pericyte diameter change: {float(pericyte_percent):+.1f}%"
+    )
     ax_res.grid(True, alpha=0.3)
     ax_res.legend()
 
