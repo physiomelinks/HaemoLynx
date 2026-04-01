@@ -331,44 +331,64 @@ def compare_baseline_vs_arteriole_dilation(
     plot_path = output_path.with_name(f"{output_path.stem}_before_after_resistance.png")
     baseline_values = [float(result["baseline_resistance"]) for result in pair_results]
     dilated_values = [float(result["dilated_resistance"]) for result in pair_results]
-    baseline_mean = float(sum(baseline_values) / len(baseline_values)) if baseline_values else 0.0
-    dilated_mean = float(sum(dilated_values) / len(dilated_values)) if dilated_values else 0.0
+    def _mean_sem(values: list[float]) -> tuple[float, float]:
+        n = len(values)
+        if n == 0:
+            return 0.0, 0.0
+        mean = float(sum(values) / n)
+        if n < 2:
+            return mean, 0.0
+        variance = float(sum((v - mean) ** 2 for v in values) / (n - 1))
+        sem = float((variance ** 0.5) / (n ** 0.5))
+        return mean, sem
+    baseline_mean, baseline_sem = _mean_sem(baseline_values)
+    dilated_mean, dilated_sem = _mean_sem(dilated_values)
 
     fig, ax = plt.subplots(figsize=(8, 5))
     x_before = 0.0
     x_after = 1.0
     for baseline_res, dilated_res in zip(baseline_values, dilated_values):
-        ax.plot([x_before, x_after], [baseline_res, dilated_res], color="0.75", linewidth=1.0, zorder=1)
+        ax.plot(
+            [x_before, x_after],
+            [baseline_res, dilated_res],
+            color="tab:red",
+            linewidth=1.8,
+            alpha=0.9,
+            zorder=1,
+        )
     ax.scatter(
         [x_before] * len(baseline_values),
         baseline_values,
         color="tab:blue",
-        s=28,
+        s=90,
         alpha=0.9,
         zorder=3,
-        label="Input-output pair (before)",
+        label="Before",
     )
     ax.scatter(
         [x_after] * len(dilated_values),
         dilated_values,
-        color="tab:orange",
-        s=28,
+        color="tab:red",
+        s=90,
         alpha=0.9,
         zorder=3,
-        label="Input-output pair (after)",
+        label="After",
     )
     ax.bar(
         [x_before, x_after],
         [baseline_mean, dilated_mean],
+        yerr=[baseline_sem, dilated_sem],
         width=0.35,
-        color=["tab:blue", "tab:orange"],
+        color=["tab:blue", "tab:red"],
         alpha=0.25,
+        ecolor="black",
+        capsize=6,
         zorder=2,
-        label="Mean resistance",
+        label="Mean ± SEM",
     )
     ax.set_xticks([x_before, x_after], labels=["Before", "After"])
     ax.set_ylabel("Effective resistance")
-    ax.set_title("Arteriole Comparison: Before/After Resistance by Pair and Mean")
+    ax.set_title("Arteriole Comparison: Paired Before/After by Input-Output Pair")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     fig.tight_layout()

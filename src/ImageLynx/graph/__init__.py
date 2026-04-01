@@ -40,6 +40,7 @@ from .large_vessels import (
     dilate_large_vessel_masks_by_microns,
     exclude_smaller_overlapping_large_vessel_components,
     exclude_smaller_overlapping_small_vessel_components,
+    remove_small_opposite_attached_large_vessel_components,
 )
 from .mask_component_volume import (
     remove_small_mask_components_by_volume,
@@ -114,6 +115,7 @@ __all__ = [
     "dilate_large_vessel_masks_by_microns",
     "exclude_smaller_overlapping_large_vessel_components",
     "exclude_smaller_overlapping_small_vessel_components",
+    "remove_small_opposite_attached_large_vessel_components",
     "remove_small_mask_components_by_volume",
     "remove_small_vessel_components_by_volume",
     "select_nodes_at_hop_distance",

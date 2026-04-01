@@ -515,9 +515,11 @@ def visualize_3d_plotly(
                 edge_y += [float(pu[1]), float(pv[1]), None]
                 edge_z += [float(pu[2]), float(pv[2]), None]
 
-    node_x = [float(p[0]) for p in pos.values()]
-    node_y = [float(p[1]) for p in pos.values()]
-    node_z = [float(p[2]) for p in pos.values()]
+    ordered_nodes = list(pos.keys())
+    node_x = [float(pos[n][0]) for n in ordered_nodes]
+    node_y = [float(pos[n][1]) for n in ordered_nodes]
+    node_z = [float(pos[n][2]) for n in ordered_nodes]
+    node_ids = [str(n) for n in ordered_nodes]
     fig = go.Figure()
     fig.add_trace(go.Scatter3d(
         x=edge_x, y=edge_y, z=edge_z,
@@ -635,9 +637,11 @@ def visualize_3d_plotly_vessel_types(
                 per_type_coords[vessel_type]["z"] += [float(pu[2]), float(pv[2]), None]
                 per_type_counts[vessel_type] += 1
 
-    node_x = [float(p[0]) for p in pos.values()]
-    node_y = [float(p[1]) for p in pos.values()]
-    node_z = [float(p[2]) for p in pos.values()]
+    ordered_nodes = list(pos.keys())
+    node_x = [float(np.asarray(pos[n], dtype=float)[0]) for n in ordered_nodes]
+    node_y = [float(np.asarray(pos[n], dtype=float)[1]) for n in ordered_nodes]
+    node_z = [float(np.asarray(pos[n], dtype=float)[2]) for n in ordered_nodes]
+    node_ids = [str(n) for n in ordered_nodes]
 
     fig = go.Figure()
     for vessel_type in ("arteriole", "capillary", "venule", "unknown"):
@@ -663,6 +667,21 @@ def visualize_3d_plotly_vessel_types(
             mode="markers",
             marker=dict(size=3, color="black"),
             name="Nodes",
+            customdata=node_ids,
+            hovertemplate="<b>Node %{customdata}</b><extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter3d(
+            x=node_x,
+            y=node_y,
+            z=node_z,
+            mode="markers",
+            marker=dict(size=10, color="rgba(0,0,0,0.0)"),
+            name="Node IDs (hover)",
+            showlegend=False,
+            customdata=node_ids,
+            hovertemplate="<b>Node %{customdata}</b><extra></extra>",
         )
     )
     fig.update_layout(

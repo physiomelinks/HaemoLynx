@@ -1498,7 +1498,14 @@ def write_automated_vessel_assignment_3d_html(
         zs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
         return xs, ys, zs
 
-    def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
+    def _add_volume_trace(
+        mask: np.ndarray,
+        *,
+        name: str,
+        color: str,
+        fig: Any,
+        opacity: float = 0.12,
+    ) -> None:
         mask_bool = mask.astype(bool, copy=False)
         bbox = _nonzero_bbox_slices_zyx(mask_bool)
         if bbox is None:
@@ -1605,6 +1612,8 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
     *,
     small_arteriole_mask: np.ndarray,
     small_venule_mask: np.ndarray,
+    large_arteriole_mask: np.ndarray | None = None,
+    large_venule_mask: np.ndarray | None = None,
     arteriole_boundary_nodes: list[Any],
     venule_boundary_nodes: list[Any],
     voxel_size_xyz: tuple[float, float, float],
@@ -1626,6 +1635,19 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
             "small_arteriole_mask and small_venule_mask must share a shape. "
             f"Got {small_arteriole_mask.shape} and {small_venule_mask.shape}."
         )
+    if (large_arteriole_mask is None) != (large_venule_mask is None):
+        raise ValueError(
+            "large_arteriole_mask and large_venule_mask must both be set or both None."
+        )
+    if (
+        large_arteriole_mask is not None
+        and large_venule_mask is not None
+        and large_arteriole_mask.shape != large_venule_mask.shape
+    ):
+        raise ValueError(
+            "large_arteriole_mask and large_venule_mask must share a shape. "
+            f"Got {large_arteriole_mask.shape} and {large_venule_mask.shape}."
+        )
 
     output_html_path = Path(output_html_path)
     output_html_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1641,38 +1663,53 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
         "overlap": _empty_line_lists(),
     }
 
-    def _push_edge(kind: str, pu: np.ndarray, pv: np.ndarray) -> None:
+    def _push_polyline(kind: str, pts_xyz: np.ndarray) -> None:
         lx, ly, lz = segs[kind]
-        lx += [float(pu[0]), float(pv[0]), None]
-        ly += [float(pu[1]), float(pv[1]), None]
-        lz += [float(pu[2]), float(pv[2]), None]
+        if pts_xyz.ndim != 2 or pts_xyz.shape[0] == 0 or pts_xyz.shape[1] < 3:
+            return
+        lx.extend(float(v) for v in pts_xyz[:, 0].tolist())
+        ly.extend(float(v) for v in pts_xyz[:, 1].tolist())
+        lz.extend(float(v) for v in pts_xyz[:, 2].tolist())
+        lx.append(None)
+        ly.append(None)
+        lz.append(None)
 
     if isinstance(G, nx.MultiGraph):
         for u, v, _k, edge_data in G.edges(keys=True, data=True):
             if u not in pos or v not in pos:
                 continue
-            pu = np.asarray(pos[u], dtype=float)
-            pv = np.asarray(pos[v], dtype=float)
             vt = edge_data.get("mask_vessel_type")
             kind = (
                 vt
                 if vt in ("arteriole", "venule", "overlap")
                 else "capillary"
             )
-            _push_edge(kind, pu, pv)
+            voxels = edge_data.get("voxels", [])
+            if len(voxels) > 1:
+                pts = np.asarray(voxels, dtype=float)
+                _push_polyline(kind, pts)
+            else:
+                pu = np.asarray(pos[u], dtype=float)
+                pv = np.asarray(pos[v], dtype=float)
+                _push_polyline(kind, np.vstack([pu, pv]))
     else:
         for u, v, edge_data in G.edges(data=True):
             if u not in pos or v not in pos:
                 continue
-            pu = np.asarray(pos[u], dtype=float)
-            pv = np.asarray(pos[v], dtype=float)
             vt = edge_data.get("mask_vessel_type")
             kind = (
                 vt
                 if vt in ("arteriole", "venule", "overlap")
                 else "capillary"
             )
-            _push_edge(kind, pu, pv)
+            voxels = edge_data.get("voxels", [])
+            if len(voxels) > 1:
+                pts = np.asarray(voxels, dtype=float)
+                _push_polyline(kind, pts)
+            else:
+                pu = np.asarray(pos[u], dtype=float)
+                pv = np.asarray(pos[v], dtype=float)
+                _push_polyline(kind, np.vstack([pu, pv]))
 
     def _coords(nodes: list[Any]) -> tuple[list[float], list[float], list[float]]:
         xs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
@@ -1680,7 +1717,14 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
         zs = [float(np.asarray(pos[n], dtype=float)[2]) for n in nodes if n in pos]
         return xs, ys, zs
 
-    def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
+    def _add_volume_trace(
+        mask: np.ndarray,
+        *,
+        name: str,
+        color: str,
+        fig: Any,
+        opacity: float = 0.12,
+    ) -> None:
         mask_bool = mask.astype(bool, copy=False)
         bbox = _nonzero_bbox_slices_zyx(mask_bool)
         if bbox is None:
@@ -1706,7 +1750,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
                 value=downsampled.astype(float).ravel(),
                 isomin=0.5,
                 isomax=1.0,
-                opacity=0.12,
+                opacity=float(opacity),
                 surface_count=1,
                 caps=dict(x_show=False, y_show=False, z_show=False),
                 colorscale=[[0.0, color], [1.0, color]],
@@ -1732,17 +1776,34 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
             neutral_nodes.append(n)
 
     fig = go.Figure()
+    if large_arteriole_mask is not None and large_venule_mask is not None:
+        _add_volume_trace(
+            large_arteriole_mask.astype(bool, copy=False),
+            name="Large arteriole mask",
+            color="#B71C1C",
+            fig=fig,
+            opacity=0.22,
+        )
+        _add_volume_trace(
+            large_venule_mask.astype(bool, copy=False),
+            name="Large venule mask",
+            color="#1B5E20",
+            fig=fig,
+            opacity=0.22,
+        )
     _add_volume_trace(
         small_arteriole_mask.astype(bool, copy=False),
         name="Small arteriole mask",
-        color="#00FF7F",
+        color="#FF3B30",
         fig=fig,
+        opacity=0.12,
     )
     _add_volume_trace(
         small_venule_mask.astype(bool, copy=False),
         name="Small venule mask",
-        color="#FF3EA5",
+        color="#2ECC71",
         fig=fig,
+        opacity=0.12,
     )
 
     cap_x, cap_y, cap_z = segs["capillary"]
@@ -1753,7 +1814,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
                 y=cap_y,
                 z=cap_z,
                 mode="lines",
-                line=dict(color="rgba(0, 200, 255, 0.45)", width=3),
+                line=dict(color="rgba(0, 200, 255, 0.75)", width=5),
                 name="Edges (capillary / unlabelled)",
             )
         )
@@ -1814,7 +1875,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
                 y=iy,
                 z=iz,
                 mode="markers",
-                marker=dict(size=6, color="#00CC66"),
+                marker=dict(size=6, color="#FF3B30"),
                 name="Nodes (arteriole interior)",
             )
         )
@@ -1826,7 +1887,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
                 y=vy,
                 z=vz,
                 mode="markers",
-                marker=dict(size=6, color="#E040A0"),
+                marker=dict(size=6, color="#2ECC71"),
                 name="Nodes (venule interior)",
             )
         )
@@ -1838,7 +1899,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
                 y=by,
                 z=bz,
                 mode="markers",
-                marker=dict(size=11, color="#00FF7F", symbol="diamond", line=dict(width=1, color="#004422")),
+                marker=dict(size=8, color="#000000"),
                 name="Arteriole boundary",
             )
         )
@@ -1850,7 +1911,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
                 y=by,
                 z=bz,
                 mode="markers",
-                marker=dict(size=11, color="#FF3EA5", symbol="diamond", line=dict(width=1, color="#440022")),
+                marker=dict(size=8, color="#000000"),
                 name="Venule boundary",
             )
         )

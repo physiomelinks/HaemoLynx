@@ -58,7 +58,7 @@ AUTOMATED_VESSEL_ASSIGNMENT_FAST_MODE = True
 # Apply overlap-cleanup pre-pass in normal mode (fast mode off). This applies
 # the same "remove overlap voxels from smaller component" logic before terminal
 # assignment.
-AUTOMATED_VESSEL_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE = True
+AUTOMATED_VESSEL_ASSIGNMENT_APPLY_OVERLAP_CLEANUP_IN_NORMAL_MODE = False
 # Master switch for large-vessel overlap-cleanup pre-pass.
 # If False, overlap cleanup is disabled even when fast mode is enabled.
 AUTOMATED_VESSEL_ASSIGNMENT_ENABLE_OVERLAP_CLEANUP = True
@@ -92,10 +92,18 @@ USE_LARGE_VESSEL_MASKS = True
 USE_ILASTIK_LARGE_VESSEL_SEGMENTATION = False
 # Maximum dilation distance (microns) for progressive large-vessel assignment.
 # Assignment runs at 0 microns first, then in 5-micron increments up to this max.
-LARGE_VESSEL_MASK_DILATION_MICRONS = 50
+LARGE_VESSEL_MASK_DILATION_MICRONS = 25
 # Minimum connected-component volume (um^3) kept in large-vessel masks before
 # overlap cleanup/assignment. Set 0 to disable component-volume filtering.
-LARGE_VESSEL_MIN_COMPONENT_VOLUME_UM3 = 50.0
+LARGE_VESSEL_MIN_COMPONENT_VOLUME_UM3 = 200
+# Remove tiny opposite-type large-vessel components that sit right outside the
+# other large-vessel mask (helps suppress small mislabelled attachments).
+LARGE_VESSEL_REMOVE_SMALL_OPPOSITE_ATTACHED_COMPONENTS = True
+# Max physical component volume (um^3) eligible for opposite-attached cleanup.
+LARGE_VESSEL_OPPOSITE_ATTACHED_MAX_COMPONENT_VOLUME_UM3 = 250.0
+# Max distance (microns) from opposite mask to consider a tiny component
+# "attached near surface" and removable.
+LARGE_VESSEL_OPPOSITE_ATTACHED_MAX_DISTANCE_MICRONS = 3.0
 # Downsample stride used for 3D large-vessel volume rendering in Plotly.
 # 1 = full resolution, 2/3/4 progressively faster but coarser.
 LARGE_VESSEL_3D_VOLUME_DOWNSAMPLE_STRIDE = 4
@@ -116,7 +124,7 @@ ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "art
 # Ilastik classifier path for venule segmentation.
 ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
 # Toggle small-vessel masks for automated arteriole/venule boundary assignment.
-USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = True
+USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
 # Persist small-vessel-derived ARTERIOLE_BOUNDARY_NODES/VENULE_BOUNDARY_NODES
 # into this settings file and disable small-vessel boundary automation next run.
 AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS = True
@@ -178,6 +186,12 @@ SMALL_VESSEL_TANGENTIAL_REDEFINITION_TOUCH_DISTANCE_MICRONS = 3.0
 SMALL_VESSEL_TANGENTIAL_REDEFINITION_TANGENCY_COSINE_MAX = 0.35
 # Minimum score margin required to switch between arteriole/venule classes.
 SMALL_VESSEL_TANGENTIAL_REDEFINITION_MARGIN = 0.10
+# Worker count for parallel per-component tangential reassignment scoring.
+# Set 0 to run serially.
+SMALL_VESSEL_TANGENTIAL_REDEFINITION_PARALLEL_WORKERS = 8
+# Optional GPU acceleration for EDT-heavy mask-continuity/redefinition steps.
+# Requires cupy + cupyx; automatically falls back to CPU if unavailable.
+USE_GPU_MASK_CONTINUITY_ACCELERATION = False
 # Reassign a mislabelled middle small-volume component when both endpoints face
 # nearby same-type neighbors on either side.
 SMALL_VESSEL_SANDWICH_REASSIGN_ENABLE = True
@@ -255,13 +269,13 @@ ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[fl
 # Volume boxes used to select venule boundary nodes.
 VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 # Runtime container for selected starting node IDs.
-STARTING_NODES: list[int] = [1018, 1029, 1038, 106, 108, 1145, 1165, 1234, 1333, 1368, 1374, 1403, 1499, 1505, 1509, 1535, 1537, 1576, 1600, 1604, 1627, 1644, 1655, 1698, 1721, 1786, 1962, 1990, 2121, 2152, 2301, 2313, 2387, 2501, 2503, 2517, 2520, 2559, 2587, 2633, 2735, 2796, 2869, 3218, 408, 410, 441, 476, 523, 528, 540, 549, 558, 609, 617, 636, 696, 738, 758, 796, 864, 865, 940, 963]
+STARTING_NODES: list[int] = [1018, 1029, 1145, 1234, 1403, 1499, 1505, 1535, 1537, 1576, 1600, 1604, 1627, 1644, 145, 1655, 1698, 1721, 1786, 1962, 2121, 2503, 2517, 2587, 2633, 540, 558, 609, 617, 796, 963, 738]
 # Runtime container for selected output node IDs.
-OUTPUT_NODES: list[int] = [1005, 1012, 1049, 1057, 1068, 1081, 1096, 1134, 1138, 1219, 1228, 1258, 1264, 1283, 1297, 1338, 1348, 1366, 1373, 1516, 1560, 1561, 1575, 1594, 1623, 178, 1825, 1861, 1871, 1877, 1893, 1965, 1986, 2012, 2021, 2055, 2065, 2103, 2168, 220, 2279, 2288, 2340, 2386, 2389, 2423, 2458, 2461, 2464, 2482, 2536, 2651, 2652, 279, 284, 2856, 2858, 2918, 2920, 2996, 3027, 306, 307, 308, 318, 3207, 328, 3329, 3342, 3497, 3499, 3501, 3510, 3514, 3517, 355, 371, 374, 383, 3832, 3845, 387, 4071, 4085, 4292, 4299, 433, 434, 452, 467, 469, 4711, 4722, 486, 488, 4882, 4886, 492, 4965, 5063, 519, 529, 534, 544, 566, 567, 569, 595, 618, 641, 644, 650, 658, 669, 670, 671, 672, 755, 763, 835, 919, 939, 974, 976]
+OUTPUT_NODES: list[int] = [1005, 1049, 1068, 1134, 1258, 1264, 1366, 1560, 1561, 1594, 1623,  1861, 1871, 1877, 1893, 1965, 2012, 2021, 2065, 2103, 2279, 2288, 2389, 2461, 2464, 2482, 2536, 2652, 2918, 2920, 2996, 307, 3497, 3499, 3510, 433, 467, 4722, 486, 4886, 492, 4965, 5063, 569, 595, 641, 650, 669, 672,  763, 835, 939, 974, 976]
 # Runtime container for selected arteriole boundary node IDs.
-ARTERIOLE_BOUNDARY_NODES: list[int] = [107, 149, 151, 218, 278, 342, 372, 424, 436, 442, 446, 449, 473, 477, 517, 518, 542, 571, 665, 686, 735, 937, 1106, 1286, 1334, 1369, 1372, 1385, 1386, 1400, 1402, 1500, 1567, 1571, 1577, 1601, 1615, 1699, 1891, 2028, 2150, 2151, 2248, 2302, 2324, 2362, 2505, 2585, 2809, 3010]
+ARTERIOLE_BOUNDARY_NODES: list[int] = [652, 278, 342, 424, 442, 449, 477, 518, 571, 665, 937, 1106, 1286, 1334, 1094, 1402, 1500, 1567, 1571, 1577, 1601, 1615, 1699, 1891, 2150, 2248, 2362, 2505]
 # Runtime container for selected venule boundary node IDs.
-VENULE_BOUNDARY_NODES: list[int] = [47, 69, 103, 113, 115, 151, 179, 199, 263, 283, 286, 288, 289, 305, 353, 369, 372, 375, 376, 386, 393, 409, 424, 435, 461, 468, 470, 487, 498, 505, 514, 518, 520, 525, 535, 568, 571, 601, 610, 651, 673, 812, 836, 873, 923, 1013, 1022, 1058, 1076, 1082, 1131, 1229, 1332, 1372, 1386, 1395, 1577, 1624, 1669, 1817, 1819, 1832, 1944, 1987, 2008, 2058, 2060, 2118, 2212, 2237, 2248, 2286, 2372, 2390, 2459, 2477, 2537, 2781, 2857, 2919, 2921, 2998, 3340, 3513, 3516, 3679, 4068, 4087, 4285, 4294, 4521]
+VENULE_BOUNDARY_NODES: list[int] = [115, 151, 263, 283, 286, 353, 386, 409, 461, 468, 470, 498, 505, 525, 568, 571, 601, 610, 673, 735, 836, 873, 923, 1022, 1058, 1076, 1131, 1229, 1332, 1372, 1395, 1577, 1624, 1669, 1817, 1819, 1832, 1944, 2008, 2058, 2118, 2212, 2248, 2286, 2372, 2390, 2477, 2537, 2781, 2857, 2919, 2921, 4068, 4087, 4285, 4521]
 # Enforce strict hierarchical branch-order prerequisites.
 STRICT_BRANCH_ORDER_ASSIGNMENT = False
 

@@ -354,10 +354,18 @@ def compare_baseline_vs_pericyte_constriction(
     plot_path = output_path.with_name(f"{output_path.stem}_before_after_resistance.png")
     baseline_values = [float(result["baseline_resistance"]) for result in pair_results]
     constricted_values = [float(result["constricted_resistance"]) for result in pair_results]
-    baseline_mean = float(sum(baseline_values) / len(baseline_values)) if baseline_values else 0.0
-    constricted_mean = (
-        float(sum(constricted_values) / len(constricted_values)) if constricted_values else 0.0
-    )
+    def _mean_sem(values: list[float]) -> tuple[float, float]:
+        n = len(values)
+        if n == 0:
+            return 0.0, 0.0
+        mean = float(sum(values) / n)
+        if n < 2:
+            return mean, 0.0
+        variance = float(sum((v - mean) ** 2 for v in values) / (n - 1))
+        sem = float((variance ** 0.5) / (n ** 0.5))
+        return mean, sem
+    baseline_mean, baseline_sem = _mean_sem(baseline_values)
+    constricted_mean, constricted_sem = _mean_sem(constricted_values)
 
     fig, ax = plt.subplots(figsize=(8, 5))
     x_baseline = 0.0
@@ -366,40 +374,44 @@ def compare_baseline_vs_pericyte_constriction(
         ax.plot(
             [x_baseline, x_after],
             [baseline_res, constricted_res],
-            color="0.75",
-            linewidth=1.0,
+            color="tab:red",
+            linewidth=1.8,
+            alpha=0.9,
             zorder=1,
         )
     ax.scatter(
         [x_baseline] * len(baseline_values),
         baseline_values,
         color="tab:blue",
-        s=28,
+        s=90,
         alpha=0.9,
         zorder=3,
-        label="Input-output pair (before)",
+        label="Before",
     )
     ax.scatter(
         [x_after] * len(constricted_values),
         constricted_values,
-        color="tab:orange",
-        s=28,
+        color="tab:red",
+        s=90,
         alpha=0.9,
         zorder=3,
-        label="Input-output pair (after)",
+        label="After",
     )
     ax.bar(
         [x_baseline, x_after],
         [baseline_mean, constricted_mean],
+        yerr=[baseline_sem, constricted_sem],
         width=0.35,
-        color=["tab:blue", "tab:orange"],
+        color=["tab:blue", "tab:red"],
         alpha=0.25,
+        ecolor="black",
+        capsize=6,
         zorder=2,
-        label="Mean resistance",
+        label="Mean ± SEM",
     )
     ax.set_xticks([x_baseline, x_after], labels=["Before", "After"])
     ax.set_ylabel("Effective resistance")
-    ax.set_title("Pericyte Comparison: Before/After Resistance by Pair and Mean")
+    ax.set_title("Pericyte Comparison: Paired Before/After by Input-Output Pair")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend()
     fig.tight_layout()

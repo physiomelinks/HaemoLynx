@@ -111,11 +111,11 @@ def visualize_3d_plotly_large_vessel_assignment(
         color: str,
         opacity: float,
         fig: go.Figure,
-    ) -> None:
+    ) -> bool:
         mask_bool = mask.astype(bool, copy=False)
         bbox = _nonzero_bbox_slices_zyx(mask_bool)
         if bbox is None:
-            return
+            return False
         x_scale, y_scale, z_scale = (
             float(voxel_size_xyz[0]),
             float(voxel_size_xyz[1]),
@@ -151,6 +151,7 @@ def visualize_3d_plotly_large_vessel_assignment(
                 hoverinfo="skip",
             )
         )
+        return True
 
     def _empty_line_lists() -> tuple[list[float | None], list[float | None], list[float | None]]:
         return [], [], []
@@ -273,35 +274,40 @@ def visualize_3d_plotly_large_vessel_assignment(
         return xs, ys, zs, node_ids
 
     fig = go.Figure()
-    _add_volume_trace(
+    volume_trace_indices: list[int] = []
+    if _add_volume_trace(
         large_arteriole_mask.astype(bool, copy=False),
         name="Large arteriole mask",
         color="#B71C1C",
         opacity=0.22,
         fig=fig,
-    )
-    _add_volume_trace(
+    ):
+        volume_trace_indices.append(len(fig.data) - 1)
+    if _add_volume_trace(
         large_venule_mask.astype(bool, copy=False),
         name="Large venule mask",
         color="#1B5E20",
         opacity=0.22,
         fig=fig,
-    )
+    ):
+        volume_trace_indices.append(len(fig.data) - 1)
     if small_arteriole_mask is not None and small_venule_mask is not None:
-        _add_volume_trace(
+        if _add_volume_trace(
             small_arteriole_mask.astype(bool, copy=False),
             name="Small arteriole mask",
             color="#FF3B30",
             opacity=0.12,
             fig=fig,
-        )
-        _add_volume_trace(
+        ):
+            volume_trace_indices.append(len(fig.data) - 1)
+        if _add_volume_trace(
             small_venule_mask.astype(bool, copy=False),
             name="Small venule mask",
             color="#2ECC71",
             opacity=0.12,
             fig=fig,
-        )
+        ):
+            volume_trace_indices.append(len(fig.data) - 1)
     vessel_styles = {
         "arteriole": dict(color="rgba(255, 59, 48, 0.9)", name="Edges (arteriole)"),
         "capillary": dict(color="rgba(0, 200, 255, 0.75)", name="Edges (capillary)"),
@@ -394,11 +400,50 @@ def visualize_3d_plotly_large_vessel_assignment(
                 hovertemplate="Boundary node %{customdata}<extra></extra>",
             )
         )
+    # Add an invisible hover hitbox over all nodes so node ids are easy to inspect.
+    all_nodes = list(G.nodes)
+    if all_nodes:
+        hx, hy, hz, hid = _coords_with_ids(all_nodes)
+        fig.add_trace(
+            go.Scatter3d(
+                x=hx,
+                y=hy,
+                z=hz,
+                mode="markers",
+                marker=dict(size=11, color="rgba(0,0,0,0.0)"),
+                name="Node IDs (hover)",
+                showlegend=False,
+                customdata=hid,
+                hovertemplate="<b>Node %{customdata}</b><extra></extra>",
+            )
+        )
 
     fig.update_layout(
         title=title,
         showlegend=True,
         hovermode="closest",
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="right",
+                x=0.01,
+                y=1.08,
+                showactive=True,
+                buttons=[
+                    dict(
+                        label="Show all",
+                        method="restyle",
+                        args=[{"visible": True}, volume_trace_indices],
+                    ),
+                    dict(
+                        label="Hide volumes",
+                        method="restyle",
+                        args=[{"visible": "legendonly"}, volume_trace_indices],
+                    ),
+                ],
+            )
+        ],
+        hoverlabel=dict(bgcolor="rgba(20,20,20,0.9)", font=dict(color="#FFFFFF")),
         scene=dict(
             xaxis_title="X",
             yaxis_title="Y",
