@@ -210,6 +210,10 @@ class PoiseuilleModel:
                 results['invalid_diameter'].append((u, v, key, branch_order, diameter))
                 continue
 
+            # Persist the exact diameter assigned for this edge so downstream
+            # exports/tests can validate the pipeline's chosen vessel size directly.
+            G[u][v][key]["assigned_diameter_um"] = float(diameter)
+
             # Get pre-calculated viscosity for this diameter
             viscosity = diameter_viscosity_map.get(diameter, None)
             if viscosity is None:
