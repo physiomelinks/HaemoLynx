@@ -97,7 +97,7 @@ def test_graph_to_vtk_orients_reversed_voxel_paths(tmp_path):
     reversed_voxels = [(10.0, 0.0, 0.0), (9.0, 0.0, 0.0), (8.0, 0.0, 0.0), (7.0, 0.0, 0.0),
                        (6.0, 0.0, 0.0), (5.0, 0.0, 0.0), (4.0, 0.0, 0.0), (3.0, 0.0, 0.0),
                        (2.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
-    G.add_edge(0, 1, voxels=reversed_voxels, branch_order="BO1", weight=1.0)
+    G.add_edge(0, 1, voxels=reversed_voxels, branch_order="BO1", resistance=1.0)
 
     out = graph_to_vtk(G, tmp_path / "reversed_path")
     vessels = pv.read(out["vessels_path"])

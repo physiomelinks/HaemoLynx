@@ -113,7 +113,29 @@ class PoiseuilleModel:
         integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
         return float(integ(resistances, dx=dx))
 
-    def set_poiseuille_weights(
+    @staticmethod
+    def _validate_resistance_value(resistance: float, *, context: str) -> float:
+        value = float(resistance)
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{context} produced invalid resistance value: {value}")
+        return value
+
+    def _set_edge_resistance(
+        self,
+        G: nx.MultiGraph,
+        u: int,
+        v: int,
+        key: int,
+        resistance: float,
+        *,
+        context: str,
+    ) -> None:
+        G[u][v][key]["resistance"] = self._validate_resistance_value(
+            resistance,
+            context=context,
+        )
+
+    def set_poiseuille_resistances(
         self,
         G: nx.MultiGraph,
         diameter_by_branch_order: dict,
@@ -121,8 +143,8 @@ class PoiseuilleModel:
         prefer_edge_fwhm_diameter: bool = False,
     ) -> tuple[nx.MultiGraph, dict]:
         """
-        Set edge weights using the inverse of Poiseuille's law with calculated viscosity.
-        Weight = (π * diameter^4) / (128 * viscosity * length)
+        Set edge resistances using Poiseuille's law with calculated viscosity.
+        Resistance = (128 * viscosity * length) / (π * diameter^4)
         Where viscosity = 1 / diameter^1.647
 
         Parameters:
@@ -138,13 +160,13 @@ class PoiseuilleModel:
 
         Returns:
         --------
-        dict : Summary of weight assignments
+        dict : Summary of resistance assignments
         """
         import numpy as np
 
         PI = np.pi
         results = {
-            'weights_set': 0,
+            'resistances_set': 0,
             'missing_branch_order': [],
             'missing_length': [],
             'unknown_branch_order': [],
@@ -154,8 +176,8 @@ class PoiseuilleModel:
             'used_fwhm_edge_diameter': 0,
         }
 
-        print(f"=== Poiseuille Weight Calculation (Branch Order Based) ===")
-        print(f"Formula: Weight = (π * diameter^4) / (128 * viscosity * length)")
+        print(f"=== Poiseuille Resistance Calculation (Branch Order Based) ===")
+        print(f"Formula: Resistance = (128 * viscosity * length) / (π * diameter^4)")
         print(f"Viscosity calculation: μ = 1 / diameter^1.647")
         print(f"Units: diameter and length in micrometers (μm)")
         print()
@@ -220,25 +242,25 @@ class PoiseuilleModel:
                 # Fallback calculation if not in map
                 viscosity = 1.0 / (diameter ** 1.647)
 
-            # Calculate weight using inverse Poiseuille's law
-            # Weight = (π * diameter^4) / (128 * viscosity * length)
-            weight = (PI * diameter**4) / (128.0 * viscosity * length)
+            resistance = (128.0 * viscosity * length) / (PI * diameter**4)
+            self._set_edge_resistance(
+                G,
+                u,
+                v,
+                key,
+                resistance,
+                context=f"Edge ({u}, {v}, {key}) Poiseuille branch-order assignment",
+            )
 
-            # Store old weight for comparison
-            old_weight = data.get('weight', None)
-
-            # Set new weight
-            G[u][v][key]['weight'] = weight
-
-            results['weights_set'] += 1
+            results['resistances_set'] += 1
 
             logger.debug(f"Edge ({u}, {v}, {key}): {branch_order}, "
                         f"diameter={diameter}μm, length={length:.3f}μm, "
-                        f"viscosity={viscosity:.6f}, weight={weight:.6f}")
+                        f"viscosity={viscosity:.6f}, resistance={resistance:.6f}")
 
         # Print summary
         print(f"=== Summary ===")
-        print(f"Weights successfully set: {results['weights_set']}")
+        print(f"Resistances successfully set: {results['resistances_set']}")
         if prefer_edge_fwhm_diameter:
             print(
                 f"Edges using per-edge fwhm_diameter_um: "
@@ -257,7 +279,7 @@ class PoiseuilleModel:
 
         return G, results
 
-    def set_poiseuille_weights_with_constrictions(
+    def set_poiseuille_resistances_with_constrictions(
         self,
         G: nx.MultiGraph,
         diameter_by_branch_order: dict,
@@ -265,7 +287,7 @@ class PoiseuilleModel:
         prefer_edge_fwhm_baseline: bool = False,
         constriction_factor_by_branch_order: dict[str, float] | None = None,
     ) -> tuple[nx.MultiGraph, dict]:
-        """Set edge weights = 1/resistance using integrated resistance with constrictions.
+        """Set edge resistances using integrated resistance with constrictions.
 
         Parameters
         ----------
@@ -284,7 +306,7 @@ class PoiseuilleModel:
             baseline ``d1`` to obtain ``d2`` (same role as d2/d1 in the manual pipeline).
         """
         results = {
-            "weights_set": 0,
+            "resistances_set": 0,
             "missing_branch_order": [],
             "missing_length": [],
             "unknown_branch_order": [],
@@ -362,21 +384,27 @@ class PoiseuilleModel:
                 )
             try:
                 total_resistance = self.calculate_integrated_resistance(length, d1, d2)
-                weight = 1.0 / total_resistance
-                G[u][v][key]["weight"] = weight
-                results["weights_set"] += 1
+                self._set_edge_resistance(
+                    G,
+                    u,
+                    v,
+                    key,
+                    total_resistance,
+                    context=f"Edge ({u}, {v}, {key}) integrated constriction assignment",
+                )
+                results["resistances_set"] += 1
             except Exception as e:
                 raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
         return G, results
 
-    def set_poiseuille_edge_weights(
+    def set_poiseuille_edge_resistances(
         self,
         G: nx.MultiGraph,
         custom_edges,
         edge_diameter: float,
         use_resistance: bool = True,
     ) -> dict:
-        """Set weights for specified edges. use_resistance=True -> weight=resistance."""
+        """Set explicit edge resistances for specified edges."""
         results = {
             "updated": [],
             "not_found": [],
@@ -408,20 +436,27 @@ class PoiseuilleModel:
                     continue
                 if vessel_length <= 0:
                     continue
-                if use_resistance:
-                    new_weight = (128.0 * viscosity * vessel_length) / (
-                        np.pi * edge_diameter ** 4
+                if not use_resistance:
+                    raise ValueError(
+                        "set_poiseuille_edge_resistances no longer supports conductance "
+                        "assignment. Use resistance only."
                     )
-                else:
-                    new_weight = (np.pi * edge_diameter ** 4) / (
-                        128.0 * viscosity * vessel_length
-                    )
-                G[u_actual][v_actual][key]["weight"] = new_weight
+                new_resistance = (128.0 * viscosity * vessel_length) / (
+                    np.pi * edge_diameter ** 4
+                )
+                self._set_edge_resistance(
+                    G,
+                    u_actual,
+                    v_actual,
+                    key,
+                    new_resistance,
+                    context=f"Edge ({u_actual}, {v_actual}, {key}) custom edge override",
+                )
                 results["updated"].append(
                     {
                         "edge": (u_actual, v_actual, key),
                         "vessel_length": vessel_length,
-                        "new_weight": new_weight,
+                        "new_resistance": new_resistance,
                     }
                 )
         return G, results

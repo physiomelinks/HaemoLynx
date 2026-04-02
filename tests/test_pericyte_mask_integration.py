@@ -21,7 +21,7 @@ from ImageLynx.haemodynamics import (
     calc_two_point_from_laplacian_matrix_nodeID,
 )
 from ImageLynx.haemodynamics.pericyte_mask import (
-    set_poiseuille_weights_with_pericyte_mask,
+    set_poiseuille_resistances_with_pericyte_mask,
 )
 
 
@@ -39,7 +39,7 @@ def _build_synthetic_graph() -> nx.MultiGraph:
         1,
         key=0,
         length=12.0,
-        weight=1.0,
+        resistance=1.0,
         branch_order="B01",
         voxels=edge0_pts,
     )
@@ -48,7 +48,7 @@ def _build_synthetic_graph() -> nx.MultiGraph:
         2,
         key=0,
         length=12.0,
-        weight=1.0,
+        resistance=1.0,
         branch_order="B01",
         voxels=edge1_pts,
     )
@@ -147,7 +147,7 @@ def _run_pericyte_mask_integration_case(
     tifffile.imwrite(str(mask_path), pericyte_mask)
 
     diameter_by_branch_order = {"B01": 5.0}
-    graph_baseline, baseline_results = set_poiseuille_weights_with_pericyte_mask(
+    graph_baseline, baseline_results = set_poiseuille_resistances_with_pericyte_mask(
         graph_baseline,
         diameter_by_branch_order=diameter_by_branch_order,
         constriction_factor_by_branch_order={"B01": 1.0},
@@ -155,11 +155,11 @@ def _run_pericyte_mask_integration_case(
         prefer_edge_fwhm_baseline=False,
         constriction_length=8.0,
     )
-    assert baseline_results["weights_set"] > 0
+    assert baseline_results["resistances_set"] > 0
     resistance_before = _effective_resistance_between(graph_baseline, 0, 2)
 
     graph_constricted = graph_baseline.copy()
-    graph_constricted, constriction_results = set_poiseuille_weights_with_pericyte_mask(
+    graph_constricted, constriction_results = set_poiseuille_resistances_with_pericyte_mask(
         graph_constricted,
         diameter_by_branch_order=diameter_by_branch_order,
         constriction_factor_by_branch_order={"B01": 0.8},
