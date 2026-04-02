@@ -308,30 +308,30 @@ def visualize_geometry_with_edge_weights(
     show_after_save: bool = False,
     block: bool = False,
 ):
-    """Plot network colored by edge weight."""
+    """Plot network colored by edge resistance."""
     projection = np.max(image, axis=0)
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
     extent = _projection_extent(projection.shape, resolved_voxel_size)
-    edge_weights = {}
+    edge_resistances = {}
     edge_paths = {}
-    weights_list = []
+    resistance_values = []
     for u, v, key, data in G.edges(keys=True, data=True):
-        weight = data.get("weight")
+        resistance = data.get("resistance", data.get("weight"))
         path = data.get("voxels", [])
-        if weight is not None:
-            proc = 1.0 / weight if use_inverse else weight
-            if use_inverse and weight == 0:
+        if resistance is not None:
+            proc = 1.0 / resistance if use_inverse else resistance
+            if use_inverse and resistance == 0:
                 proc = None
             else:
-                weights_list.append(proc)
+                resistance_values.append(proc)
         else:
             proc = None
-        edge_weights[(u, v, key)] = proc
+        edge_resistances[(u, v, key)] = proc
         edge_paths[(u, v, key)] = path
-    if not weights_list:
+    if not resistance_values:
         return None, None, None, None
-    data_min = min(weights_list)
-    data_max = max(weights_list)
+    data_min = min(resistance_values)
+    data_max = max(resistance_values)
     vmin = min_weight if min_weight is not None else data_min
     vmax = max_weight if max_weight is not None else data_max
     cmap = plt.get_cmap(color_palette)
@@ -340,12 +340,12 @@ def visualize_geometry_with_edge_weights(
     norm = Normalize(vmin=vmin, vmax=vmax)
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     ax.imshow(projection, cmap=background_cmap, extent=extent)
-    for (u, v, key), weight in edge_weights.items():
-        if weight is not None:
+    for (u, v, key), resistance in edge_resistances.items():
+        if resistance is not None:
             path = edge_paths[(u, v, key)]
             if len(path) > 1:
                 path_arr = np.array(path)
-                color = cmap(norm(weight))
+                color = cmap(norm(resistance))
                 ax.plot(
                     path_arr[:, 2], path_arr[:, 1],
                     color=color,
@@ -360,8 +360,8 @@ def visualize_geometry_with_edge_weights(
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
-        cbar.set_label("1/Weight" if use_inverse else "Edge Weight", rotation=270)
-    ax.set_title("Network Geometry Colored by Edge Weight")
+        cbar.set_label("Conductance (1/Resistance)" if use_inverse else "Edge Resistance", rotation=270)
+    ax.set_title("Network Geometry Colored by Edge Resistance")
     ax.axis("off")
     plt.tight_layout()
     if save_path:

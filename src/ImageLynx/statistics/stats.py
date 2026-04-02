@@ -496,12 +496,12 @@ def compute_betweenness_and_community_measurements(
     G: Union[nx.Graph, nx.MultiGraph],
 ) -> Dict[str, Dict[str, Any]]:
     """Compute weighted betweenness/community using two edge distance models."""
-    inverse_weight_results = {
+    resistance_results = {
         "Betweenness": compute_weighted_betweenness_summary(
-            G, source_attr="weight", inverse_source_attr=True
+            G, source_attr="resistance", inverse_source_attr=False
         ),
         "Communities": compute_weighted_communities_summary(
-            G, source_attr="weight", inverse_source_attr=True
+            G, source_attr="resistance", inverse_source_attr=False
         ),
     }
     edge_length_results = {
@@ -513,7 +513,7 @@ def compute_betweenness_and_community_measurements(
         ),
     }
     return {
-        "inverse_edge_weight": inverse_weight_results,
+        "edge_resistance": resistance_results,
         "edge_length": edge_length_results,
     }
 

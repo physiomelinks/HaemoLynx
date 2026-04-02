@@ -101,7 +101,7 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     G.add_edge(
         0,
         1,
-        weight=1.0,
+        resistance=1.0,
         length=16.0,
         branch_order="B01",
         voxels=voxels,
@@ -126,23 +126,23 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     assert abs(d - expected) < 0.35
 
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
-    G2, res = model.set_poiseuille_weights(
+    G2, res = model.set_poiseuille_resistances(
         G,
         {"B01": 99.0},
         prefer_edge_fwhm_diameter=True,
     )
     assert res["used_fwhm_edge_diameter"] == 1
-    w = G2[0][1][0]["weight"]
+    r = G2[0][1][0]["resistance"]
     visc = 1.0 / (d**1.647)
-    expect_w = (np.pi * d**4) / (128.0 * visc * 16.0)
-    assert abs(w - expect_w) < expect_w * 0.05
+    expect_r = (128.0 * visc * 16.0) / (np.pi * d**4)
+    assert abs(r - expect_r) < expect_r * 0.05
 
 
-def test_set_poiseuille_weights_prefers_fwhm_optional(multigraph_with_branch_order):
+def test_set_poiseuille_resistances_prefers_fwhm_optional(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     G[0][1][0]["fwhm_diameter_um"] = 2.0
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
-    _, res = model.set_poiseuille_weights(
+    _, res = model.set_poiseuille_resistances(
         G,
         {"BO1": 20.0},
         prefer_edge_fwhm_diameter=True,
@@ -150,5 +150,5 @@ def test_set_poiseuille_weights_prefers_fwhm_optional(multigraph_with_branch_ord
     assert res["used_fwhm_edge_diameter"] == 1
     d_used = 2.0
     visc = 1.0 / (d_used**1.647)
-    expect = (np.pi * d_used**4) / (128.0 * visc * 5.0)
-    assert abs(G[0][1][0]["weight"] - expect) < 1e-6
+    expect = (128.0 * visc * 5.0) / (np.pi * d_used**4)
+    assert abs(G[0][1][0]["resistance"] - expect) < 1e-6

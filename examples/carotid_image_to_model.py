@@ -288,14 +288,14 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             constriction_spacing=100.0,
         )
         if constrict_at_pericytes:
-            poiseuille_model.set_poiseuille_edge_weights(
+            poiseuille_model.set_poiseuille_edge_resistances(
                 G,
                 custom_edges,
                 edge_diameter=6.0,
-                use_resistance=False,
+                use_resistance=True,
             )
         else:
-            poiseuille_model.set_poiseuille_weights_with_constrictions(
+            poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
                 diameter_by_branch_order,
             )

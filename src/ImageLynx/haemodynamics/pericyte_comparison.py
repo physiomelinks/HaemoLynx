@@ -8,9 +8,9 @@ from typing import Any
 
 import networkx as nx
 
-from .pericyte_mask import set_poiseuille_weights_with_pericyte_mask
+from .pericyte_mask import set_poiseuille_resistances_with_pericyte_mask
 from .poiseuille import PoiseuilleModel
-from .probability import set_poiseuille_weights_with_probabilistic_periodic_constrictions
+from .probability import set_poiseuille_resistances_with_probabilistic_periodic_constrictions
 from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
@@ -28,7 +28,7 @@ def _absolute_factor_map(
     }
 
 
-def _set_weights_for_factor(
+def _set_resistances_for_factor(
     graph: nx.MultiGraph,
     *,
     diameter_by_branch_order: dict,
@@ -48,7 +48,7 @@ def _set_weights_for_factor(
     min_pericyte_diameter_um: float | None,
     max_pericyte_diameter_um: float | None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
-    """Apply edge weights for a comparison scenario."""
+    """Apply edge resistances for a comparison scenario."""
     branch_orders = [str(bo) for bo in diameter_by_branch_order.keys()]
     factor_map = _absolute_factor_map(
         branch_orders=branch_orders,
@@ -59,7 +59,7 @@ def _set_weights_for_factor(
             raise ValueError(
                 "pericyte_mask_path is required when use_pericyte_mask_constriction=True."
             )
-        return set_poiseuille_weights_with_pericyte_mask(
+        return set_poiseuille_resistances_with_pericyte_mask(
             graph,
             diameter_by_branch_order=diameter_by_branch_order,
             constriction_factor_by_branch_order=factor_map,
@@ -76,7 +76,7 @@ def _set_weights_for_factor(
         )
 
     if use_probabilistic_pericyte_constriction:
-        return set_poiseuille_weights_with_probabilistic_periodic_constrictions(
+        return set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
             graph,
             diameter_by_branch_order=diameter_by_branch_order,
             constriction_factor_by_branch_order=factor_map,
@@ -92,7 +92,7 @@ def _set_weights_for_factor(
         constriction_spacing=float(constriction_spacing),
     )
     if prefer_edge_fwhm_baseline:
-        return poiseuille_model.set_poiseuille_weights_with_constrictions(
+        return poiseuille_model.set_poiseuille_resistances_with_constrictions(
             graph,
             diameter_by_branch_order,
             prefer_edge_fwhm_baseline=True,
@@ -105,7 +105,7 @@ def _set_weights_for_factor(
             "d1": float(diameter),
             "d2": float(diameter) * float(factor_map[str(branch_order)]),
         }
-    return poiseuille_model.set_poiseuille_weights_with_constrictions(
+    return poiseuille_model.set_poiseuille_resistances_with_constrictions(
         graph,
         enhanced_diameters,
     )
@@ -171,7 +171,7 @@ def compare_baseline_vs_pericyte_constriction(
     fixed_active_pericyte_indices: list[int] | None = None
     fixed_active_center_indices_by_edge: dict[str, list[int]] | None = None
 
-    graph_baseline, baseline_weight_results = _set_weights_for_factor(
+    graph_baseline, baseline_weight_results = _set_resistances_for_factor(
         graph_baseline,
         diameter_by_branch_order=diameter_by_branch_order,
         constriction_factor_by_branch_order=constriction_factor_by_branch_order,
@@ -206,7 +206,7 @@ def compare_baseline_vs_pericyte_constriction(
         target_node=target_node,
     )
 
-    graph_constricted, constricted_weight_results = _set_weights_for_factor(
+    graph_constricted, constricted_weight_results = _set_resistances_for_factor(
         graph_constricted,
         diameter_by_branch_order=diameter_by_branch_order,
         constriction_factor_by_branch_order=constriction_factor_by_branch_order,
