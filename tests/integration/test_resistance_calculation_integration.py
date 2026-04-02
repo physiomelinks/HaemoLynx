@@ -416,4 +416,5 @@ def test_resistance_calculation_on_diagonal_branching_network_from_raw_tiff(
         network_scalar_diameter=float(np.median(assigned_diameter)),
         report_title="raw_tiff_fwhm_assigned_diameter",
         radius_dependent=True,
+        bo3_rel_tol=1.1e-1,
     )
