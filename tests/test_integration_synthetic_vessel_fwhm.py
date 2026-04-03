@@ -33,6 +33,7 @@ from skimage.measure import marching_cubes
 
 from ImageLynx.haemodynamics import automated
 
+TEST_PLOT_DIR = _repo_root / "tests" / "plots" / "synthetic_vessel_fwhm"
 _GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
 _I0 = 100.0
 
@@ -805,7 +806,11 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
         _DEFAULT_FWHM_MEASURE_KWARGS,
         title=title,
     )
-    fig.write_html(str(tmp_path / "synthetic_vessel_fwhm_viz.html"), include_plotlyjs="cdn")
+    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    fig.write_html(
+        str(TEST_PLOT_DIR / "synthetic_vessel_fwhm_viz.html"),
+        include_plotlyjs="cdn",
+    )
 
 
 @pytest.mark.integration
@@ -882,8 +887,9 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
         xj_measure_kwargs,
         title=title,
     )
+    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     fig.write_html(
-        str(tmp_path / "synthetic_x_junction_offcenter_noisy_fwhm_viz.html"),
+        str(TEST_PLOT_DIR / "synthetic_x_junction_offcenter_noisy_fwhm_viz.html"),
         include_plotlyjs="cdn",
     )
 
@@ -932,8 +938,9 @@ def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
         _DEFAULT_FWHM_MEASURE_KWARGS,
         title=title,
     )
+    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     fig.write_html(
-        str(tmp_path / "synthetic_tight_zigzag_fwhm_viz.html"),
+        str(TEST_PLOT_DIR / "synthetic_tight_zigzag_fwhm_viz.html"),
         include_plotlyjs="cdn",
     )
 
