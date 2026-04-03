@@ -512,6 +512,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT,
                             graph_reconnect_threshold=GRAPH_RECONNECT_THRESHOLD,
                             final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
+                            smoothing_options=None,
+                            smoothing_method="bspline",
                             starting_node_selection_method=STARTING_NODE_SELECTION_METHOD,
                             output_node_selection_method=OUTPUT_NODE_SELECTION_METHOD,
                             arteriole_boundary_selection_method=ARTERIOLE_BOUNDARY_SELECTION_METHOD,
@@ -1181,9 +1183,13 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         print(graph.format_degree2_diagnostics_report(degree2_diag))
 
+        smoothing_opts = dict(smoothing_options or {})
+        if "method" not in smoothing_opts and smoothing_method is not None:
+            smoothing_opts["method"] = smoothing_method
         smooth_stats = graph.smooth_graph_edge_centerlines_continuous(
             G,
             skeleton_data=skeleton,
+            smoothing_options=smoothing_opts,
             voxel_size=voxel_size,
             chaikin_iterations=2,
             max_distance_vox=1.0,
