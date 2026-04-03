@@ -545,8 +545,8 @@ def test_resistance_calculation_on_diagonal_branching_network_from_mask(
     input_tiff = tmp_path / "diag_branching_segmentation_mask.tif"
     tifffile.imwrite(str(input_tiff), (mask.astype(np.uint8) * 255))
 
-    output_dir = tmp_path / "pipeline_outputs_mask"
-    plot_dir = tmp_path / "pipeline_plots_mask"
+    output_dir = TESTS_DIR / "outputs" / "integration_diagonal_branching" / "mask"
+    plot_dir = TESTS_DIR / "plots" / "integration_diagonal_branching" / "mask"
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_dir.mkdir(parents=True, exist_ok=True)
     vtk_prefix = output_dir / "diag_resistance_mask"
@@ -595,8 +595,8 @@ def test_resistance_calculation_on_diagonal_branching_network_from_raw_tiff(
     tifffile.imwrite(str(input_tiff), (mask.astype(np.uint8) * 255))
     tifffile.imwrite(str(raw_tiff), raw)
 
-    output_dir = tmp_path / "pipeline_outputs_raw"
-    plot_dir = tmp_path / "pipeline_plots_raw"
+    output_dir = TESTS_DIR / "outputs" / "integration_diagonal_branching" / "raw"
+    plot_dir = TESTS_DIR / "plots" / "integration_diagonal_branching" / "raw"
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_dir.mkdir(parents=True, exist_ok=True)
     vtk_prefix = output_dir / "diag_resistance_raw"
