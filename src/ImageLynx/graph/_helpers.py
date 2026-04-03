@@ -1,8 +1,9 @@
 """Internal helpers for graph operations."""
-from typing import List, Tuple, Dict, Any, Union
+from typing import List, Tuple, Dict, Any, Union, Optional
 
 import numpy as np
 import networkx as nx
+from scipy.interpolate import splprep, splev
 from scipy.spatial import cKDTree
 
 def add_edge_safe(G, u, v, **attr):
@@ -667,6 +668,47 @@ def chaikin_smooth_polyline(points: Any, iterations: int = 2) -> np.ndarray:
     return out
 
 
+def bspline_smooth_polyline(points: Any, smoothness: float = 0.75) -> np.ndarray:
+    """
+    Smooth a polyline in continuous space using a parametric B-spline.
+
+    Returns the same number of points and preserves endpoints exactly.
+    """
+    arr = np.asarray(points, dtype=float)
+    if arr.ndim != 2 or arr.shape[0] < 4:
+        return arr
+
+    # Remove consecutive duplicates to prevent spline fitting failures.
+    dedup = [arr[0]]
+    for i in range(1, arr.shape[0]):
+        if not np.allclose(arr[i], arr[i - 1], atol=1e-12):
+            dedup.append(arr[i])
+    fit_arr = np.asarray(dedup, dtype=float)
+    if fit_arr.shape[0] < 4:
+        return arr.copy()
+
+    n_points = arr.shape[0]
+    deltas = np.linalg.norm(np.diff(fit_arr, axis=0), axis=1)
+    cumulative = np.concatenate(([0.0], np.cumsum(deltas)))
+    total = float(cumulative[-1])
+    if total <= 1e-12:
+        return arr.copy()
+
+    u = cumulative / total
+    k = min(3, fit_arr.shape[0] - 1)
+    try:
+        s_val = max(float(smoothness), 0.0) * float(fit_arr.shape[0])
+        tck, _ = splprep(fit_arr.T, u=u, s=s_val, k=k)
+        u_new = np.linspace(0.0, 1.0, n_points)
+        x_new, y_new, z_new = splev(u_new, tck)
+        out = np.column_stack((x_new, y_new, z_new))
+        out[0] = arr[0]
+        out[-1] = arr[-1]
+        return out
+    except Exception:
+        return arr.copy()
+
+
 def _blend_polyline(original: np.ndarray, smoothed: np.ndarray, alpha: float) -> np.ndarray:
     """Blend original and smoothed polylines with fixed endpoints."""
     alpha = float(np.clip(alpha, 0.0, 1.0))
@@ -701,20 +743,48 @@ def smooth_graph_edge_centerlines_continuous(
     G: Union[nx.Graph, nx.MultiGraph],
     skeleton_data: Any,
     *,
+    smoothing_options: Optional[Dict[str, Any]] = None,
     voxel_size: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+    smoothing_method: str = "bspline",
     chaikin_iterations: int = 2,
+    bspline_smoothness: float = 0.75,
     max_distance_vox: float = 1.0,
     debug: bool = False,
 ) -> Dict[str, int]:
     """
-    Smooth all edge centerlines in physical space with Chaikin + skeleton guard.
+    Smooth all edge centerlines in physical space with configurable method.
 
     Smoothing is accepted only when every generated point remains within
     ``max_distance_vox * min(voxel_size)`` of skeleton support in physical space.
     """
+    options = dict(smoothing_options or {})
+    method = str(options.get("method", smoothing_method)).strip().lower()
+    bspline_smoothness = float(options.get("s", bspline_smoothness))
+    max_distance_vox = float(options.get("max_vox_dist_from_skel", max_distance_vox))
+    if bspline_smoothness < 0.0:
+        bspline_smoothness = 0.0
+    if max_distance_vox <= 0.0:
+        max_distance_vox = 1.0
+
+    if method not in {"chaikin", "bspline"}:
+        raise ValueError(
+            f"Unsupported smoothing_method='{method}'. "
+            "Expected 'chaikin' or 'bspline'."
+        )
+
+    def _make_candidate(original_points: np.ndarray, iterations: int) -> np.ndarray:
+        if method == "chaikin":
+            return chaikin_smooth_polyline(original_points, iterations=iterations)
+        return bspline_smooth_polyline(original_points, smoothness=bspline_smoothness)
+
     skeleton_array = parse_skeleton_data(skeleton_data)
     if skeleton_array is None:
-        return {"smoothed_edges": 0, "fallback_edges": 0, "skipped_edges": 0}
+        return {
+            "method": method,
+            "smoothed_edges": 0,
+            "fallback_edges": 0,
+            "skipped_edges": 0,
+        }
 
     skeleton_tree, _ = _skeleton_kdtree_physical(skeleton_array, voxel_size)
     max_distance_phys = float(max_distance_vox) * float(np.min(np.asarray(voxel_size, dtype=float)))
@@ -735,8 +805,13 @@ def smooth_graph_edge_centerlines_continuous(
             accepted = None
             was_relaxed = False
 
-            for iters in range(int(chaikin_iterations), -1, -1):
-                candidate = chaikin_smooth_polyline(original, iterations=iters)
+            iteration_candidates = (
+                range(int(chaikin_iterations), -1, -1)
+                if method == "chaikin"
+                else [0]
+            )
+            for iters in iteration_candidates:
+                candidate = _make_candidate(original, iters)
                 if _polyline_within_skeleton_distance(candidate, skeleton_tree, max_distance_phys):
                     accepted = candidate
                     break
@@ -772,8 +847,13 @@ def smooth_graph_edge_centerlines_continuous(
             accepted = None
             was_relaxed = False
 
-            for iters in range(int(chaikin_iterations), -1, -1):
-                candidate = chaikin_smooth_polyline(original, iterations=iters)
+            iteration_candidates = (
+                range(int(chaikin_iterations), -1, -1)
+                if method == "chaikin"
+                else [0]
+            )
+            for iters in iteration_candidates:
+                candidate = _make_candidate(original, iters)
                 if _polyline_within_skeleton_distance(candidate, skeleton_tree, max_distance_phys):
                     accepted = candidate
                     break
@@ -800,11 +880,12 @@ def smooth_graph_edge_centerlines_continuous(
     if debug:
         print(
             "Continuous centerline smoothing: "
-            "smoothed="
+            f"method={method}, smoothed="
             f"{smoothed_edges}, relaxed={relaxed_edges}, "
             f"fallback={fallback_edges}, skipped={skipped_edges}"
         )
     return {
+        "method": method,
         "smoothed_edges": smoothed_edges,
         "relaxed_edges": relaxed_edges,
         "fallback_edges": fallback_edges,

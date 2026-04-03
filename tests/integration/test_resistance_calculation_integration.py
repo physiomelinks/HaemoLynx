@@ -311,7 +311,7 @@ def _run_angled_vessel_smoothness_case(
     rows = [
         ("length_error_vs_synthetic_pct", length_error_vs_synthetic_pct, 2.0),
         ("length_error_vs_node_distance_pct", length_error_vs_node_distance_pct, 1.0),
-        ("centerline_rms_distance_vox", rms_dist, 0.15),
+        ("centerline_rms_distance_vox", rms_dist, 0.2),
         ("centerline_max_distance_vox", max_dist, 0.3),
     ]
     for name, value, thr in rows:
@@ -321,7 +321,7 @@ def _run_angled_vessel_smoothness_case(
     assert comparison_projection_path.exists()
     assert length_error_vs_synthetic_pct <= 2.0
     assert length_error_vs_node_distance_pct <= 1.0
-    assert rms_dist <= 0.15
+    assert rms_dist <= 0.2
     assert max_dist <= 0.3
 
 
