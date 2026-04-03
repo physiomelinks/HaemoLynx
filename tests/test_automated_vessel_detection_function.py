@@ -200,7 +200,7 @@ def _parallel_cylinder_mask_along_x(
     return mask & (xx >= int(x_start)) & (xx <= int(x_end))
 
 
-def test_automated_vessel_detection(_tmp_path):
+def test_automated_vessel_detection(tmp_path):
     """Assign degree-1 nodes via mask overlap, with and without dilation."""
     TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     # Build a richer graph with multiple degree>1 pass-through/junction nodes.
@@ -289,7 +289,7 @@ def test_automated_vessel_detection(_tmp_path):
     )
 
 
-def test_overlap_resolution_prefers_cross_section_midline_distance(_tmp_path):
+def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
     """Overlapping cylinders: cross-section midline distance is evaluated first."""
     TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     G = nx.MultiGraph()

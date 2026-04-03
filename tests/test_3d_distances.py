@@ -19,6 +19,7 @@ if str(SRC_DIR) not in sys.path:
 
 dist3d = importlib.import_module("ImageLynx.statistics.3D_distances")
 DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "synthetic_3d_distances"
+TEST_PLOT_DIR = REPO_ROOT / "tests" / "plots" / "3d_distances"
 
 
 def _line_voxels(
@@ -615,7 +616,8 @@ def test_3d_distances_rotatable_html_scene(tmp_path: Path) -> None:
     )
     assert result["object_count"] == 2
 
-    html_tmp = tmp_path / "synthetic_cells_vessel_distances_3d.html"
+    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    html_tmp = TEST_PLOT_DIR / "synthetic_cells_vessel_distances_3d.html"
     assert _write_3d_distances_scene_html(
         cell_mask=cell_mask.astype(bool),
         vessel_mask=vessel_mask.astype(bool),
@@ -733,7 +735,8 @@ def test_microglia_like_3d_distances_rotatable_html_scene(tmp_path: Path) -> Non
     )
     assert result["object_count"] == 2
 
-    html_tmp = tmp_path / "synthetic_microglia_like_cells_vessel_distances_3d.html"
+    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    html_tmp = TEST_PLOT_DIR / "synthetic_microglia_like_cells_vessel_distances_3d.html"
     assert _write_3d_distances_scene_html(
         cell_mask=cell_mask.astype(bool),
         vessel_mask=vessel_mask.astype(bool),

@@ -1330,13 +1330,19 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             print(f"Results from set_poiseuille_edge_resistances: {results_2}")
             # create list of resistances of all edges
             resistances = []
-            # TODO DEBUG
+            skipped_missing_resistance = 0
             for u, v, key in G.edges(keys=True):
-                resistance = G[u][v][key]["resistance"]
-                # print(f"Resistance of edge ({u}, {v}, {key}): {resistance}")
+                resistance = G[u][v][key].get("resistance")
+                if resistance is None:
+                    skipped_missing_resistance += 1
+                    continue
                 resistances.append(resistance)
 
-            # print(f"Resistances of all edges: {resistances}")
+            if skipped_missing_resistance > 0:
+                print(
+                    "Skipped edges without branch-order resistance assignment: "
+                    f"{skipped_missing_resistance}"
+                )
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.

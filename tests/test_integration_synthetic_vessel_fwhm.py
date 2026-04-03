@@ -1,6 +1,6 @@
 """Integration: synthetic 3D vessel TIFF + matching graph, real FWHM diameters, Plotly HTML.
 
-The pytest case writes ``synthetic_vessel_fwhm_viz.html`` under pytest’s ``tmp_path`` (intensity
+The pytest case writes ``synthetic_vessel_fwhm_viz.html`` under ``tests/plots/synthetic_vessel_fwhm`` (intensity
 as a marching-cubes mesh, vessel centerlines, and the transverse polylines used for FWHM sampling — same
 logic as ``measure_edge_diameters_fwhm_from_raw_tiff``). Skip plotting I/O with ``-m "not plotting"``.
 
