@@ -184,9 +184,9 @@ def solve_flow_from_conductance_matrix(
         if v_idx is not None:
             edge_p_v[ii] = pressure[v_idx]
     pressure_drop = edge_p_u - edge_p_v
-    if not np.all(np.isfinite(edge_resistance)) or np.any(edge_resistance <= 0.0):
-        raise ValueError("All VTK resistance values must be finite and > 0 for flow export.")
-    edge_conductance = 1.0 / edge_resistance
+    valid_resistance = np.isfinite(edge_resistance) & (edge_resistance > 0.0)
+    edge_conductance = np.full(vessels.n_cells, np.nan, dtype=float)
+    edge_conductance[valid_resistance] = 1.0 / edge_resistance[valid_resistance]
     flow_signed = edge_conductance * pressure_drop
     flow_abs = np.abs(flow_signed)
 
