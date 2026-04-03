@@ -29,6 +29,8 @@ from .large_vessels import (
 )
 from ._helpers import (
     add_edge_safe,
+    physical_point_to_voxel_index,
+    physical_points_to_voxel_indices,
     has_edge_safe,
     remove_edge_safe,
     get_all_edge_data,
@@ -50,6 +52,8 @@ from ._helpers import (
     parse_skeleton_data,
     find_nearest_skeleton_voxel,
     astar_skeleton_path,
+    chaikin_smooth_polyline,
+    smooth_graph_edge_centerlines_continuous,
     are_paths_similar,
     should_add_merged_edge,
 )
@@ -83,6 +87,8 @@ __all__ = [
     "dilate_large_vessel_masks_by_microns",
     "remove_edges_for_self_connected_nodes",
     "add_edge_safe",
+    "physical_point_to_voxel_index",
+    "physical_points_to_voxel_indices",
     "has_edge_safe",
     "remove_edge_safe",
     "get_all_edge_data",
@@ -105,6 +111,8 @@ __all__ = [
     "parse_skeleton_data",
     "find_nearest_skeleton_voxel",
     "astar_skeleton_path",
+    "chaikin_smooth_polyline",
+    "smooth_graph_edge_centerlines_continuous",
     "are_paths_similar",
     "should_add_merged_edge",
 ]
