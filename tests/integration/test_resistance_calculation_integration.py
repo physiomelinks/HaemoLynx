@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter
@@ -12,6 +13,7 @@ import tifffile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+TESTS_DIR = REPO_ROOT / "tests"
 PIPELINE_PATH = REPO_ROOT / "examples" / "resistance_network_pipeline.py"
 
 INPUT_PRESSURE_PA = 1000.0
@@ -105,6 +107,222 @@ def _build_diagonal_synthetic_raw(mask: np.ndarray) -> np.ndarray:
         raw = raw / float(np.max(raw))
     raw = (raw * 4095.0).astype(np.uint16)
     return raw
+
+
+def _build_single_angled_vessel_mask(
+    *,
+    angle_deg: float,
+    shape: tuple[int, int, int] = (96, 96, 96),
+    start_zyx: tuple[float, float, float] = (48.0, 18.0, 18.0),
+    vessel_length_vox: float = 60.0,
+    radius_vox: float = 2.5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Create one smooth cylindrical vessel at a prescribed in-plane angle."""
+    mask = np.zeros(shape, dtype=bool)
+    theta = np.deg2rad(float(angle_deg))
+    direction_zyx = np.asarray([0.0, np.sin(theta), np.cos(theta)], dtype=float)
+    direction_zyx /= float(np.linalg.norm(direction_zyx))
+    p0 = np.asarray(start_zyx, dtype=float)
+    p1 = p0 + float(vessel_length_vox) * direction_zyx
+
+    def draw_tube(
+        p0_xyz: np.ndarray,
+        p1_xyz: np.ndarray,
+        radius: float,
+    ) -> None:
+        seg_len = float(np.linalg.norm(p1_xyz - p0_xyz))
+        n_samples = int(np.ceil(seg_len * 2.0)) + 1
+        r = int(np.ceil(radius))
+        zz_max, yy_max, xx_max = np.asarray(mask.shape) - 1
+        for t in np.linspace(0.0, 1.0, n_samples, dtype=float):
+            p = (1.0 - t) * p0_xyz + t * p1_xyz
+            zc, yc, xc = p
+            z0 = max(0, int(np.floor(zc - r)))
+            z1 = min(zz_max, int(np.ceil(zc + r)))
+            y0 = max(0, int(np.floor(yc - r)))
+            y1 = min(yy_max, int(np.ceil(yc + r)))
+            x0 = max(0, int(np.floor(xc - r)))
+            x1 = min(xx_max, int(np.ceil(xc + r)))
+            zz, yy, xx = np.ogrid[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1]
+            inside = (zz - zc) ** 2 + (yy - yc) ** 2 + (xx - xc) ** 2 <= radius**2
+            mask[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1] |= inside
+
+    draw_tube(p0, p1, float(radius_vox))
+    return mask, p0, p1
+
+
+def _polyline_points_for_cell(vessels, cell_idx: int) -> np.ndarray:
+    """Extract ordered polyline points for one vessel cell."""
+    extracted = vessels.extract_cells([int(cell_idx)])
+    pts = np.asarray(extracted.points, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] != 3:
+        raise AssertionError("Expected a polyline cell with >=2 ordered points.")
+    return pts
+
+
+def _distance_point_to_segment(point: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    ab = b - a
+    denom = float(np.dot(ab, ab))
+    if denom <= 0.0:
+        return float(np.linalg.norm(point - a))
+    t = float(np.dot(point - a, ab) / denom)
+    t = float(np.clip(t, 0.0, 1.0))
+    proj = a + t * ab
+    return float(np.linalg.norm(point - proj))
+
+
+def _run_angled_vessel_smoothness_case(
+    *,
+    angle_deg: float,
+    case_name: str,
+) -> None:
+    pv = pytest.importorskip("pyvista")
+    pipeline = _load_pipeline_module()
+
+    mask, p0_truth, p1_truth = _build_single_angled_vessel_mask(angle_deg=angle_deg)
+    assert int(np.count_nonzero(mask)) > 0
+    synthetic_length = float(np.linalg.norm(p1_truth - p0_truth))
+
+    tmp_root = TESTS_DIR / "outputs" / "integration_angled_vessels"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    input_tiff = tmp_root / f"{case_name}_segmentation.tif"
+    tifffile.imwrite(str(input_tiff), (mask.astype(np.uint8) * 255))
+
+    plot_dir = TESTS_DIR / "plots" / "integration_angled_vessels" / case_name
+    output_dir = TESTS_DIR / "outputs" / "integration_angled_vessels" / case_name
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vtk_prefix = output_dir / f"{case_name}_network"
+    flow_vtp_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    nodes_vtp_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
+
+    kwargs = _base_pipeline_kwargs(
+        image_path=input_tiff,
+        plot_dir=plot_dir,
+        vtk_prefix=vtk_prefix,
+    )
+    kwargs["starting_node_coordinates"] = [tuple(float(v) for v in p0_truth)]
+    kwargs["output_node_coordinates"] = [tuple(float(v) for v in p1_truth)]
+
+    pipeline.image_to_model_pipeline(
+        do_skeletonize=True,
+        do_graph_building=True,
+        run_haemodynamics=True,
+        use_fwhm_edge_diameters=False,
+        diameter_by_branch_order=_branch_order_diameters_from_radius(DESIGN_RADIUS_VOX),
+        **kwargs,
+    )
+    assert flow_vtp_path.exists()
+    assert nodes_vtp_path.exists()
+    assert (plot_dir / "skeleton_projection.png").exists()
+
+    vessels = pv.read(str(flow_vtp_path))
+    nodes = pv.read(str(nodes_vtp_path))
+    assert vessels.n_cells >= 1
+    assert nodes.n_points >= 2
+
+    sized = vessels.compute_cell_sizes(length=True, area=False, volume=False)
+    lengths = np.asarray(sized.cell_data["Length"], dtype=float)
+    primary_idx = int(np.argmax(lengths))
+    pipeline_length = float(lengths[primary_idx])
+
+    edge_u = np.asarray(vessels.cell_data["edge_u"], dtype=int)
+    edge_v = np.asarray(vessels.cell_data["edge_v"], dtype=int)
+    node_ids = np.asarray(nodes.point_data["node_id"], dtype=int)
+    node_points = np.asarray(nodes.points, dtype=float)
+    node_map = {int(node_ids[i]): node_points[i] for i in range(len(node_ids))}
+
+    u = int(edge_u[primary_idx])
+    v = int(edge_v[primary_idx])
+    assert u in node_map and v in node_map
+    a = np.asarray(node_map[u], dtype=float)
+    b = np.asarray(node_map[v], dtype=float)
+    node_to_node_distance = float(np.linalg.norm(b - a))
+
+    polyline_points = _polyline_points_for_cell(vessels, primary_idx)
+    dists = np.asarray(
+        [_distance_point_to_segment(p, a, b) for p in polyline_points],
+        dtype=float,
+    )
+    rms_dist = float(np.sqrt(np.mean(dists**2)))
+    max_dist = float(np.max(dists))
+
+    length_error_vs_synthetic_pct = _percent_error(pipeline_length, synthetic_length)
+    length_error_vs_node_distance_pct = _percent_error(
+        pipeline_length,
+        node_to_node_distance,
+    )
+
+    projection_yx = np.max(mask.astype(np.uint8), axis=0)
+    projection_xz = np.max(mask.astype(np.uint8), axis=1)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5), dpi=180)
+
+    # View 1: YX plane (max over Z), plotted as X vs Y.
+    axes[0].imshow(projection_yx, cmap="gray")
+    axes[0].plot(
+        polyline_points[:, 2],
+        polyline_points[:, 1],
+        color="deepskyblue",
+        linewidth=2.0,
+        label="pipeline_centerline",
+    )
+    axes[0].plot(
+        [a[2], b[2]],
+        [a[1], b[1]],
+        color="tomato",
+        linewidth=1.8,
+        linestyle="--",
+        label="straight_reference_line",
+    )
+    axes[0].set_title("YX projection (max over Z)")
+    axes[0].axis("off")
+    axes[0].legend(loc="upper right", fontsize=7)
+
+    # View 2: XZ plane (max over Y), plotted as X vs Z.
+    axes[1].imshow(projection_xz, cmap="gray")
+    axes[1].plot(
+        polyline_points[:, 2],
+        polyline_points[:, 0],
+        color="deepskyblue",
+        linewidth=2.0,
+        label="pipeline_centerline",
+    )
+    axes[1].plot(
+        [a[2], b[2]],
+        [a[0], b[0]],
+        color="tomato",
+        linewidth=1.8,
+        linestyle="--",
+        label="straight_reference_line",
+    )
+    axes[1].set_title("XZ projection (max over Y)")
+    axes[1].axis("off")
+    axes[1].legend(loc="upper right", fontsize=7)
+
+    fig.suptitle(f"{case_name}: centerline vs straight reference")
+    fig.tight_layout()
+    comparison_projection_path = plot_dir / "centerline_vs_straight_reference_projection.png"
+    fig.savefig(comparison_projection_path, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"\nAngled vessel smoothness metrics - {case_name}:")
+    print("| metric | value | threshold | pass |")
+    print("|---|---:|---:|:---:|")
+    rows = [
+        ("length_error_vs_synthetic_pct", length_error_vs_synthetic_pct, 2.0),
+        ("length_error_vs_node_distance_pct", length_error_vs_node_distance_pct, 1.0),
+        ("centerline_rms_distance_vox", rms_dist, 0.15),
+        ("centerline_max_distance_vox", max_dist, 0.3),
+    ]
+    for name, value, thr in rows:
+        status = "yes" if value <= thr else "no"
+        print(f"| {name} | {value:.4f} | {thr:.4f} | {status} |")
+
+    assert comparison_projection_path.exists()
+    assert length_error_vs_synthetic_pct <= 2.0
+    assert length_error_vs_node_distance_pct <= 1.0
+    assert rms_dist <= 0.15
+    assert max_dist <= 0.3
 
 
 def _branch_order_diameters_from_radius(radius_vox: float) -> dict[str, float]:
@@ -417,4 +635,22 @@ def test_resistance_calculation_on_diagonal_branching_network_from_raw_tiff(
         report_title="raw_tiff_fwhm_assigned_diameter",
         radius_dependent=True,
         bo3_rel_tol=1.1e-1,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_angled_vessel_smoothness_33deg() -> None:
+    _run_angled_vessel_smoothness_case(
+        angle_deg=33.0,
+        case_name="angled_vessel_33deg",
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_angled_vessel_smoothness_45deg() -> None:
+    _run_angled_vessel_smoothness_case(
+        angle_deg=45.0,
+        case_name="angled_vessel_45deg",
     )
