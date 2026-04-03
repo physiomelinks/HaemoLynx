@@ -3,7 +3,7 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 
-from ._helpers import get_line_points_3d
+from ._helpers import get_line_points_3d, physical_point_to_voxel_index
 
 
 def validate_skeleton_connection(
@@ -21,9 +21,14 @@ def validate_skeleton_connection(
     indices for skeleton look-ups.
     """
     try:
-        vs = np.asarray(voxel_size, dtype=float)
-        p1 = np.round(np.asarray(pos1, dtype=float) / vs).astype(int)
-        p2 = np.round(np.asarray(pos2, dtype=float) / vs).astype(int)
+        p1 = np.asarray(
+            physical_point_to_voxel_index(pos1, voxel_size, clip_shape=skeleton_data.shape),
+            dtype=int,
+        )
+        p2 = np.asarray(
+            physical_point_to_voxel_index(pos2, voxel_size, clip_shape=skeleton_data.shape),
+            dtype=int,
+        )
         if not (
             0 <= p1[0] < skeleton_data.shape[0]
             and 0 <= p1[1] < skeleton_data.shape[1]

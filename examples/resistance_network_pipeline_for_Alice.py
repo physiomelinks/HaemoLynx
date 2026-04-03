@@ -1181,6 +1181,16 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         print(graph.format_degree2_diagnostics_report(degree2_diag))
 
+        smooth_stats = graph.smooth_graph_edge_centerlines_continuous(
+            G,
+            skeleton_data=skeleton,
+            voxel_size=voxel_size,
+            chaikin_iterations=2,
+            max_distance_vox=1.0,
+            debug=verbose_logging,
+        )
+        print(f"Continuous centerline smoothing summary: {smooth_stats}")
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")

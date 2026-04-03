@@ -9,6 +9,8 @@ from scipy.ndimage import distance_transform_edt, gaussian_filter
 from scipy.spatial.distance import directed_hausdorff
 from skimage.graph import route_through_array
 
+from ._helpers import physical_point_to_voxel_index, physical_points_to_voxel_indices
+
 logger = logging.getLogger(__name__)
 
 
@@ -147,8 +149,14 @@ def reconnect_secondary_loop_edges(
             if u not in node_positions or v not in node_positions:
                 return None
             pu, pv = np.array(node_positions[u]), np.array(node_positions[v])
-            u_vox = np.round(pu / np.array(voxel_size)).astype(int)
-            v_vox = np.round(pv / np.array(voxel_size)).astype(int)
+            u_vox = np.asarray(
+                physical_point_to_voxel_index(pu, voxel_size, clip_shape=skeleton_copy.shape),
+                dtype=int,
+            )
+            v_vox = np.asarray(
+                physical_point_to_voxel_index(pv, voxel_size, clip_shape=skeleton_copy.shape),
+                dtype=int,
+            )
             primary_edge_data = None
             for key, edge_data in G[u][v].items():
                 if not edge_data.get("secondary", False):
@@ -160,9 +168,18 @@ def reconnect_secondary_loop_edges(
             if not orig_voxels_raw:
                 return None
             orig_voxels = []
-            for vox in orig_voxels_raw:
-                if isinstance(vox, (list, tuple, np.ndarray)) and len(vox) >= 3:
-                    vox_coords = np.round(np.array(vox) / np.array(voxel_size)).astype(int)
+            raw_points = [
+                np.asarray(vox, dtype=float)[:3]
+                for vox in orig_voxels_raw
+                if isinstance(vox, (list, tuple, np.ndarray)) and len(vox) >= 3
+            ]
+            if raw_points:
+                converted = physical_points_to_voxel_indices(
+                    raw_points,
+                    voxel_size,
+                    clip_shape=skeleton_copy.shape,
+                )
+                for vox_coords in converted:
                     if np.all(vox_coords >= 0) and np.all(vox_coords < skeleton_copy.shape):
                         orig_voxels.append(vox_coords)
             if not orig_voxels:
