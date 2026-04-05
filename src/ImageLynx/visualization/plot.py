@@ -396,6 +396,7 @@ def visualize_volume(
     vessel_color: str = "salmon",
     opacity: float = 1.0,
     show: bool = True,
+    save_path: str | None = None,
 ) -> Any:
     """Visualize a 3D binary volume as a smooth surface mesh using PyVista.
 
@@ -407,6 +408,8 @@ def visualize_volume(
         Window title.
     vessel_color:
         Color of the rendered vessel surface.
+    save_path:
+        Optional path to save a screenshot of the visualization.
     """
     try:
         import pyvista as pv
@@ -430,7 +433,7 @@ def visualize_volume(
     # Note: contour filter requires point data, so we convert cell data to point data (ctp)
     surface = grid.ctp().contour([0.5], scalars="values")
 
-    plotter = pv.Plotter(title=title)
+    plotter = pv.Plotter(title=title, off_screen=(not show))
     plotter.set_background(background_color)
     plotter.add_mesh(
         surface,
@@ -443,6 +446,10 @@ def visualize_volume(
     
     if show:
         plotter.show()
+    
+    if save_path:
+        plotter.screenshot(save_path)
+    
     return plotter
 
 
@@ -455,6 +462,7 @@ def visualize_volume_vedo(
     background_color: str = "white",
     alpha: float = 1.0,
     smooth_iter: int = 0,
+    show: bool = True,
 ):
     """Visualize a 3D volume using Vedo (image_to_model style).
 
@@ -466,6 +474,8 @@ def visualize_volume_vedo(
         (z, y, x) voxel dimensions.
     smooth_iter:
         Iterations of Laplacian smoothing (only for 'iso' mode).
+    show:
+        Whether to immediately display the visualization window.
     """
     try:
         import vedo
@@ -491,9 +501,10 @@ def visualize_volume_vedo(
         if smooth_iter > 0:
             actor.smooth(niter=smooth_iter)
     
-    plt_vedo = vedo.Plotter(title=title, bg=background_color)
+    plt_vedo = vedo.Plotter(title=title, bg=background_color, offscreen=not show)
     plt_vedo.add(actor)
-    plt_vedo.show(interactive=True)
+    if show:
+        plt_vedo.show(interactive=True)
     return plt_vedo
 
 

@@ -11,6 +11,8 @@ from ImageLynx.visualization import (
     visualize_edges_and_nodes,
     visualize_geometry_with_branch_orders,
     visualize_geometry_with_edge_weights,
+    visualize_volume_vedo,
+    visualize_overlay,
 )
 from ImageLynx.visualization._helpers import (
     sort_branch_orders_numerically,
@@ -69,3 +71,24 @@ def test_visualize_geometry_with_edge_weights(multigraph_with_branch_order):
         G[u][v][k]["voxels"] = [(0, 0, 0), (5, 0, 0)]
     result = visualize_geometry_with_edge_weights(img, G)
     assert result[2] is not None
+
+
+@pytest.mark.plotting
+def test_visualize_volume_vedo():
+    pytest.importorskip("vedo")
+    img = np.zeros((10, 10, 10), dtype=bool)
+    img[2:8, 2:8, 2:8] = True
+    plt = visualize_volume_vedo(img, title="Test", show=False)
+    assert plt is not None
+
+
+@pytest.mark.plotting
+def test_visualize_overlay():
+    pytest.importorskip("pyvista")
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    skeleton = np.zeros((10, 10, 10), dtype=bool)
+    skeleton[5, 5, 5] = True
+    plt = visualize_overlay(mask, skeleton, title="Test", show=False)
+    assert plt is not None
+

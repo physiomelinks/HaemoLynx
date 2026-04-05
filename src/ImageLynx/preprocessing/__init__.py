@@ -9,8 +9,16 @@ from .skeleton import (
     skeletonize_3d,
     rescale_and_skeletonize_3d,
     keep_largest_mask_components,
+    fill_holes_3d,
 )
-from .image import crop_roi
+from .image import (
+    crop_roi,
+    smooth_probability_map,
+    median_filter_image,
+    morphological_opening,
+    hysteresis_threshold,
+    calculate_entropy_map,
+)
 
 __all__ = [
     "bridge_gaps",
@@ -22,5 +30,11 @@ __all__ = [
     "skeletonize_3d",
     "rescale_and_skeletonize_3d",
     "keep_largest_mask_components",
+    "fill_holes_3d",
     "crop_roi",
+    "smooth_probability_map",
+    "median_filter_image",
+    "morphological_opening",
+    "hysteresis_threshold",
+    "calculate_entropy_map",
 ]

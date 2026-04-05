@@ -1,8 +1,104 @@
 """Image-level operations: ROI cropping, smoothing, and pre-processing."""
 import logging
 import numpy as np
+from scipy.ndimage import gaussian_filter, median_filter
+from skimage.filters import apply_hysteresis_threshold
+from skimage.morphology import opening, binary_opening, ball
 
 logger = logging.getLogger(__name__)
+
+def smooth_probability_map(image: np.ndarray, sigma: float = 1.0) -> np.ndarray:
+    """Apply Gaussian smoothing to a probability map to reduce noise.
+
+    Parameters
+    ----------
+    image:
+        Input 3D array (z, y, x) of probabilities.
+    sigma:
+        Standard deviation for Gaussian kernel.
+    """
+    logger.info("Smoothing probability map with sigma=%.2f", sigma)
+    return gaussian_filter(image.astype(np.float32), sigma=sigma)
+
+def median_filter_image(image: np.ndarray, size: int = 3) -> np.ndarray:
+    """Apply median filter to a 3D volume to reduce noise.
+
+    Parameters
+    ----------
+    image:
+        Input 3D array (z, y, x).
+    size:
+        Size of the median filter window (e.g., 3 for 3x3x3).
+    """
+    logger.info("Applying median filter with size=%d", size)
+    return median_filter(image.astype(np.float32), size=size)
+
+def morphological_opening(image: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Apply morphological opening to a 3D volume.
+
+    Parameters
+    ----------
+    image:
+        Input 3D array (z, y, x).
+    radius:
+        Radius of the ball-shaped structuring element.
+    """
+    logger.info("Applying morphological opening with radius=%d", radius)
+    footprint = ball(radius)
+    if image.dtype == bool:
+        return binary_opening(image, footprint=footprint)
+    else:
+        return opening(image, footprint=footprint)
+
+def hysteresis_threshold(
+    image: np.ndarray, low: float = 0.3, high: float = 0.7
+) -> np.ndarray:
+    """Apply hysteresis thresholding to a probability map.
+
+    Pixels above 'high' are seeds. Any pixel above 'low' that is connected 
+    to a seed is kept.
+
+    Parameters
+    ----------
+    image:
+        Input 3D array (z, y, x) of probabilities.
+    low:
+        Lower threshold for connectivity.
+    high:
+        Upper threshold for seeds.
+    """
+    logger.info("Applying hysteresis thresholding (low=%.2f, high=%.2f)", low, high)
+    return apply_hysteresis_threshold(image, low, high)
+
+def calculate_entropy_map(probability_volume: np.ndarray) -> np.ndarray:
+    """Calculate voxel-wise Shannon entropy from a multi-channel probability volume.
+
+    Assumes shape is (Z, Y, X, C) or (Z, C, Y, X). Automatically detects the channel axis.
+
+    Parameters
+    ----------
+    probability_volume:
+        Input 4D array of probabilities.
+    """
+    # Detect channel axis (smallest dimension)
+    dims = np.array(probability_volume.shape)
+    c_axis = int(np.argmin(dims))
+    n_classes = dims[c_axis]
+    
+    logger.info("Calculating Shannon entropy map (channel axis=%d, classes=%d)", c_axis, n_classes)
+    
+    # Add a tiny epsilon to prevent log2(0) errors
+    epsilon = 1e-10
+    prob_safe = np.clip(probability_volume, epsilon, 1.0)
+    
+    # Calculate entropy: -sum(p * log2(p))
+    entropy_map = -np.sum(prob_safe * np.log2(prob_safe), axis=c_axis)
+    
+    # Normalize entropy between 0 and 1
+    max_entropy = np.log2(n_classes)
+    normalized_entropy = entropy_map / max_entropy
+    
+    return normalized_entropy
 
 def crop_roi(
     image: np.ndarray,
@@ -28,32 +124,43 @@ def crop_roi(
         logger.warning("sub_volume_percentage must be between 0 and 1. Using full volume.")
         return image
 
-    orig_shape = image.shape
-    # Calculate target dimensions
-    target_dims = [max(1, int(dim * sub_volume_percentage)) for dim in orig_shape]
+    orig_shape = np.array(image.shape)
     
-    # Calculate centers and offsets in voxel units
-    centers = [dim / 2.0 for dim in orig_shape]
-    voxel_offsets = [
-        int(orig_shape[0] * offset_z),
-        int(orig_shape[1] * offset_y),
-        int(orig_shape[2] * offset_x)
-    ]
+    # Identify the channel dimension (smallest dim, typically size 2 for Ilastik)
+    # Spatial dims are usually much larger.
+    if image.ndim == 4:
+        c_axis = int(np.argmin(orig_shape))
+        spatial_axes = [i for i in range(4) if i != c_axis]
+        logger.info("4D Crop: Identified channel axis %d, spatial axes %s", c_axis, spatial_axes)
+    else:
+        spatial_axes = list(range(min(3, image.ndim)))
+        c_axis = None
+
+    # Calculate target dimensions for spatial dims
+    target_dims = {}
+    for ax in spatial_axes:
+        target_dims[ax] = max(1, int(orig_shape[ax] * sub_volume_percentage))
     
-    sub_centers = [center + offset for center, offset in zip(centers, voxel_offsets)]
+    # Calculate centers and offsets for spatial dims
+    offsets = [offset_z, offset_y, offset_x]
     
-    # Calculate slice bounds
-    starts = [max(0, int(center - target / 2.0)) for center, target in zip(sub_centers, target_dims)]
-    ends = [min(orig, start + target) for orig, start, target in zip(orig_shape, starts, target_dims)]
+    slices = [slice(None)] * image.ndim
+    for i, ax in enumerate(spatial_axes):
+        center = orig_shape[ax] / 2.0
+        offset_voxels = int(orig_shape[ax] * offsets[i])
+        sub_center = center + offset_voxels
+        
+        start = max(0, int(sub_center - target_dims[ax] / 2.0))
+        end = min(orig_shape[ax], start + target_dims[ax])
+        
+        # Alignment check
+        if end - start < target_dims[ax]:
+            if end == orig_shape[ax]:
+                start = max(0, orig_shape[ax] - target_dims[ax])
+            end = min(orig_shape[ax], start + target_dims[ax])
+            
+        slices[ax] = slice(start, end)
     
-    # Final alignment check to preserve target size if possible
-    for i in range(3):
-        if ends[i] - starts[i] < target_dims[i]:
-            # Try to expand 'start' if 'end' hit the boundary
-            if ends[i] == orig_shape[i]:
-                starts[i] = max(0, orig_shape[i] - target_dims[i])
-            # Re-check 'end' if 'start' hit the boundary
-            ends[i] = min(orig_shape[i], starts[i] + target_dims[i])
-    
-    logger.info("Cropped ROI: %s -> %s", orig_shape, image[starts[0]:ends[0], starts[1]:ends[1], starts[2]:ends[2]].shape)
-    return image[starts[0]:ends[0], starts[1]:ends[1], starts[2]:ends[2]]
+    cropped = image[tuple(slices)]
+    logger.info("Cropped ROI: %s -> %s", tuple(orig_shape), cropped.shape)
+    return cropped

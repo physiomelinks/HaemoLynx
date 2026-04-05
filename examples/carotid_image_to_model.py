@@ -30,7 +30,9 @@ from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visual
 
 # Ilastik configuration settings
 RUN_ILASTIK = False
-ILASTIK_OUTPUT_PROBABILITIES = False # Set to True for Probabilities, False for Simple Segmentation
+ILASTIK_OUTPUT_PROBABILITIES = True # Set to True for Probabilities, False for Simple Segmentation
+# The channel index in the probability map that corresponds to vessels (usually 0 or 1).
+ILASTIK_VESSEL_CHANNEL = 0
 ILASTIK_BINARY_PATH = "/home/dsas627/Desktop/ilastik-1.4.1rc2-gpu-Linux/run_ilastik.sh"
 ILASTIK_PROJECT_PATH = root_dir / "examples" / "images" / "cb_wky_2x2x2_A.ilp"
 RAW_IMAGE_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_input_images"
@@ -85,8 +87,8 @@ DO_RESISTANCE_CALCULATION = True
 CONSTRICT_AT_PERICYTES = False
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
-SKELETON_CLOSING_RADIUS = 2
-SKELETON_BRIDGE_GAP_SIZE = 3
+SKELETON_CLOSING_RADIUS = 1
+SKELETON_BRIDGE_GAP_SIZE = 1
 SKELETON_MIN_BRANCH_LENGTH = 3
 SKELETON_MAX_BRIDGE_DISTANCE = 0
 SKELETON_COMPONENT_CONNECTIVITY = 3
@@ -108,16 +110,49 @@ SKELETON_PADDED_SLICING_PADDING = 3
 
 # Prune the binary mask to keep only the largest N connected components BEFORE skeletonization.
 # This speeds up skeletonization by removing noise fragments. Set to 0 to disable.
-SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1 
+SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1
 
 # Sub-volume / ROI settings. 
 # SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
-SKELETON_SUB_VOLUME_PERCENTAGE = 0.2
+SKELETON_SUB_VOLUME_PERCENTAGE = 0.25
 
 # Center offsets for the ROI (as percentage of original dimensions, -0.5 to 0.5).
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Z = 0.0
 SKELETON_SUB_VOLUME_CENTER_OFFSET_Y = 0.0
 SKELETON_SUB_VOLUME_CENTER_OFFSET_X = 0.0
+
+# ---------------------------
+# Probability Map Post-processing settings (Added 30/03/2026)
+# ---------------------------
+# Median filter window size (e.g., 3 for 3x3x3). 0 to disable.
+MEDIAN_FILTER_SIZE = 7
+
+# Smoothing of probability maps before thresholding. 0.0 to disable.
+PROBABILITY_SMOOTHING_SIGMA = 0.0
+
+# Morphological opening radius (applied to probability map before thresholding). 0 to disable.
+MORPHOLOGICAL_OPENING_RADIUS = 1
+
+# If True, uses Hysteresis thresholding instead of global Otsu.
+ENABLE_HYSTERESIS_THRESHOLD = True
+# Lower threshold for connectivity (keeps voxels if they connect to a 'high' seed).
+HYSTERESIS_THRESHOLD_LOW = 1.0
+# Upper threshold for seeds (defines definitely-vessel voxels).
+HYSTERESIS_THRESHOLD_HIGH = 0.0
+
+# Enable filling internal holes in the binary mask.
+ENABLE_HOLE_FILLING = True
+
+# ---------------------------
+# Shannon Entropy settings (Added 30/03/2026)
+# ---------------------------
+# If True, uses Shannon Entropy to identify and reject uncertain voxels.
+ENABLE_SHANNON_ENTROPY = True
+# Voxels with normalized entropy above this threshold are forced to background.
+SHANNON_ENTROPY_THRESHOLD = 0.95
+
+# Visualize the post-processed binary mask and exit (Added 30/03/2026)
+VISUALIZE_POST_PROCESSED_MASK = True
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
@@ -297,7 +332,18 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             visualize_vedo_auto_spacing=VISUALIZE_VEDO_AUTO_SPACING,
                             visualize_vedo_opacity=VISUALIZE_VEDO_OPACITY,
                             visualize_mask_opacity=VISUALIZE_MASK_OPACITY,
-                            visualize_vtk=VISUALIZE_VTK) -> None:
+                            visualize_vtk=VISUALIZE_VTK,
+                            median_filter_size=MEDIAN_FILTER_SIZE,
+                            probability_smoothing_sigma=PROBABILITY_SMOOTHING_SIGMA,
+                            morphological_opening_radius=MORPHOLOGICAL_OPENING_RADIUS,
+                            enable_hysteresis_threshold=ENABLE_HYSTERESIS_THRESHOLD,
+                            hysteresis_threshold_low=HYSTERESIS_THRESHOLD_LOW,
+                            hysteresis_threshold_high=HYSTERESIS_THRESHOLD_HIGH,
+                            enable_hole_filling=ENABLE_HOLE_FILLING,
+                            visualize_post_processed_mask=VISUALIZE_POST_PROCESSED_MASK,
+                            ilastik_vessel_channel=ILASTIK_VESSEL_CHANNEL,
+                            enable_shannon_entropy=ENABLE_SHANNON_ENTROPY,
+                            shannon_entropy_threshold=SHANNON_ENTROPY_THRESHOLD) -> None:
                         
     # get image format from image_path
     input_format = image_path.suffix[1:].lower()
@@ -333,7 +379,9 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
 
-        # 1.5) Sub-volume / ROI Cropping
+        print(f"Loaded image shape: {image.shape}")
+
+        # 1.5) Sub-volume / ROI Cropping (Supports 4D)
         if 0 < skeleton_sub_volume_percentage < 1.0 or skeleton_sub_volume_offset_z != 0 or \
            skeleton_sub_volume_offset_y != 0 or skeleton_sub_volume_offset_x != 0:
             
@@ -346,6 +394,39 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                 offset_x=skeleton_sub_volume_offset_x
             )
             print(f"  ROI new shape: {image.shape}")
+
+        entropy_map = None
+        if image.ndim == 4:
+            # Calculate entropy before extracting the vessel channel
+            if enable_shannon_entropy:
+                entropy_map = preprocessing.calculate_entropy_map(image)
+
+            # Ilastik exports can be (Z, C, Y, X), (C, Z, Y, X), or (Z, Y, X, C).
+            # We identify the channel dimension as the smallest dimension (typically 2).
+            # Confocal spatial dims are normally > 100.
+            dims = np.array(image.shape)
+            c_axis = np.argmin(dims)
+            print(f"Detected 4D image. Assuming channel is at axis {c_axis} (size {dims[c_axis]}).")
+            
+            if c_axis == 0:
+                image = image[ilastik_vessel_channel, :, :, :]
+            elif c_axis == 1:
+                image = image[:, ilastik_vessel_channel, :, :]
+            elif c_axis == 2:
+                image = image[:, :, ilastik_vessel_channel, :]
+            else:
+                image = image[:, :, :, ilastik_vessel_channel]
+                
+            print(f"Extracted vessel channel {ilastik_vessel_channel}. New spatial shape: {image.shape}")
+
+            # Apply entropy refinement if enabled
+            if entropy_map is not None:
+                uncertain_mask = entropy_map > shannon_entropy_threshold
+                print(f"Applying Shannon Entropy Refinement (threshold={shannon_entropy_threshold})...")
+                print(f"  Rejecting {uncertain_mask.sum()} uncertain voxels.")
+                image[uncertain_mask] = 0.0 # Set vessel probability to 0 for uncertain voxels
+        
+        print(f"Image probability range: min={image.min():.4f}, max={image.max():.4f}, mean={image.mean():.4f}")
 
         if visualize_mask_only:
             print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={visualize_mask_opacity}). Close window to exit.")
@@ -374,10 +455,38 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             print("Exiting pipeline as requested.")
             return
 
-        from skimage.filters import threshold_otsu
-        threshold = threshold_otsu(image)
-        binary_raw = image > threshold
+        # 1.6) Probability Smoothing
+        if median_filter_size > 0:
+            print(f"Applying median filter (size={median_filter_size})...")
+            image = preprocessing.median_filter_image(image, size=median_filter_size)
+
+        if morphological_opening_radius > 0:
+            print(f"Applying morphological opening (radius={morphological_opening_radius})...")
+            image = preprocessing.morphological_opening(image, radius=morphological_opening_radius)
+
+        if probability_smoothing_sigma > 0:
+            image = preprocessing.smooth_probability_map(image, sigma=probability_smoothing_sigma)
+
+        # 1.7) Thresholding
+        if enable_hysteresis_threshold:
+            binary_raw = preprocessing.hysteresis_threshold(
+                image, low=hysteresis_threshold_low, high=hysteresis_threshold_high
+            )
+        else:
+            from skimage.filters import threshold_otsu
+            threshold = threshold_otsu(image)
+            binary_raw = image > threshold
+        
         binary = binary_raw.copy()
+
+        # 1.8) Hole Filling
+        if enable_hole_filling:
+            binary = preprocessing.skeleton.fill_holes_3d(binary)
+
+        if skeleton_closing_radius > 0:
+            binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
+        if skeleton_bridge_gap_size > 0:
+            binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
 
         if skeleton_prune_mask_before > 0:
             print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
@@ -385,10 +494,25 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                 binary, n_components=skeleton_prune_mask_before, connectivity=skeleton_component_connectivity
             )
 
-        if skeleton_closing_radius > 0:
-            binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
-        if skeleton_bridge_gap_size > 0:
-            binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
+        if visualize_post_processed_mask:
+            mask_plot_path = plot_dir / "post_processed_mask.png"
+            print(f"Visualizing post-processed binary mask with Vedo (opacity=0.5). Voxel count: {binary.sum()}. Saving to {mask_plot_path}. Close window to exit.")
+            
+            # Use detected spacing if requested
+            current_spacing = visualize_vedo_spacing
+            if visualize_vedo_auto_spacing and input_format == "tif":
+                current_spacing = io.get_tif_spacing(image_path)
+
+            visualization.visualize_volume_vedo(
+                binary, 
+                title="3D Post-Processed Binary Mask (Vedo)", 
+                mode=visualize_vedo_mode,
+                spacing=current_spacing,
+                alpha=0.5,
+                smooth_iter=visualize_vedo_smooth_iter
+            )
+            print("Exiting pipeline as requested after post-processed mask visualization.")
+            return
         
         if skeleton_downsample_factor > 1.0:
             print(f"Applying downsampled skeletonization (factor={skeleton_downsample_factor})...")
@@ -464,7 +588,14 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             debug=verbose_logging,
         )
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal.png")
-        G = graph.prune_vascular_stubs(G, debug=verbose_logging)
+
+        # Detect spacing for accurate pruning
+        current_spacing = (1.0, 1.0, 1.0)
+        if input_format == "tif":
+            current_spacing = io.get_tif_spacing(image_path)
+            print(f"  Using detected spacing for pruning (z,y,x): {current_spacing}")
+
+        G = graph.prune_vascular_stubs(G, debug=verbose_logging, voxel_size=current_spacing)
 
         # remove any nodes that are connected to themselves with no nodes in between
         G = graph.remove_edges_for_self_connected_nodes(G)
@@ -638,9 +769,10 @@ if __name__ == "__main__":
             output_dir=ILASTIK_OUTPUT_DIR,
             output_probabilities=ILASTIK_OUTPUT_PROBABILITIES
         )
+        print(f"Acquired Ilastik output: {target_input_mask_path}")
     else:
-        # Fallback if we aren't running Ilastik (use pre-segmented mask)
-        target_input_mask_path = root_dir / "examples" / "images" / "ilastik_batch_processing_output_images" / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_seg.tiff"
+        # Use the newly generated probabilities file
+        target_input_mask_path = ILASTIK_OUTPUT_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_probs.tiff"
 
     # 2. Run the Network Pipeline
     carotid_image_to_model(
@@ -663,7 +795,18 @@ if __name__ == "__main__":
         visualize_vedo_spacing=VISUALIZE_VEDO_SPACING,
         visualize_vedo_auto_spacing=VISUALIZE_VEDO_AUTO_SPACING,
         visualize_vedo_opacity=VISUALIZE_VEDO_OPACITY,
-        visualize_mask_opacity=VISUALIZE_MASK_OPACITY
+        visualize_mask_opacity=VISUALIZE_MASK_OPACITY,
+        median_filter_size=MEDIAN_FILTER_SIZE,
+        probability_smoothing_sigma=PROBABILITY_SMOOTHING_SIGMA,
+        morphological_opening_radius=MORPHOLOGICAL_OPENING_RADIUS,
+        enable_hysteresis_threshold=ENABLE_HYSTERESIS_THRESHOLD,
+        hysteresis_threshold_low=HYSTERESIS_THRESHOLD_LOW,
+        hysteresis_threshold_high=HYSTERESIS_THRESHOLD_HIGH,
+        enable_hole_filling=ENABLE_HOLE_FILLING,
+        visualize_post_processed_mask=VISUALIZE_POST_PROCESSED_MASK,
+        ilastik_vessel_channel=ILASTIK_VESSEL_CHANNEL,
+        enable_shannon_entropy=ENABLE_SHANNON_ENTROPY,
+        shannon_entropy_threshold=SHANNON_ENTROPY_THRESHOLD
     )
 
     ### // NOTES TO SELF FOR LATER // ###

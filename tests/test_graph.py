@@ -20,6 +20,7 @@ from ImageLynx.graph import (
 from ImageLynx.graph._helpers import (
     get_line_points_3d,
     calculate_path_length,
+    calculate_voxel_path_length,
     calculate_edge_length,
     add_edge_safe,
     get_all_edge_data,
@@ -35,7 +36,30 @@ def test_get_line_points_3d():
 
 def test_calculate_path_length():
     voxels = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+    # Default isotropic
     assert calculate_path_length(voxels) == 2.0
+    # Anisotropic (Z, Y, X)
+    assert calculate_path_length(voxels, voxel_size=(2.0, 1.0, 1.0)) == 4.0
+
+
+def test_calculate_voxel_path_length():
+    voxels = [(0, 0, 0), (0, 1, 0), (0, 2, 0)]
+    assert calculate_voxel_path_length(voxels) == 2.0
+    assert calculate_voxel_path_length(voxels, voxel_size=(1.0, 2.0, 1.0)) == 4.0
+
+
+def test_calculate_edge_length():
+    # 1. Using actual voxels
+    edge_data = {"voxels": [(0, 0, 0), (1, 0, 0), (2, 0, 0)]}
+    assert calculate_edge_length(1, 2, edge_data, voxel_size=(2.0, 1.0, 1.0)) == 4.0
+
+    # 2. Using pos attribute
+    edge_data2 = {"pos": [(0, 0, 0), (2, 0, 0)]}
+    assert calculate_edge_length(1, 2, edge_data2, voxel_size=(2.0, 1.0, 1.0)) == 4.0
+
+    # 3. Using pre-calculated length
+    edge_data3 = {"length": 5.5}
+    assert calculate_edge_length(1, 2, edge_data3) == 5.5
 
 
 def test_validate_skeleton_connection(tiny_skeleton):

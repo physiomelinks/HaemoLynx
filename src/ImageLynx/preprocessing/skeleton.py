@@ -6,6 +6,7 @@ from scipy.ndimage import (
     binary_dilation,
     binary_erosion,
     binary_closing,
+    binary_fill_holes,
     distance_transform_edt,
     generate_binary_structure,
     label,
@@ -204,6 +205,18 @@ def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
         return binary
     struct = generate_binary_structure(binary.ndim, 1)
     return binary_closing(binary.astype(bool), structure=struct, iterations=radius)
+
+
+def fill_holes_3d(binary: np.ndarray) -> np.ndarray:
+    """Fill internal holes in a 3D binary mask.
+
+    Parameters
+    ----------
+    binary:
+        Input boolean 3D array.
+    """
+    logger.info("Filling holes in 3D binary mask.")
+    return binary_fill_holes(binary)
 
 
 def skeletonize_3d(img: np.ndarray) -> np.ndarray:

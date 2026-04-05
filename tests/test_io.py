@@ -10,8 +10,8 @@ from ImageLynx.io import (
     load_and_skeletonize_3d_h5,
     bridge_gaps,
     simplify_to_3d,
+    get_tif_spacing
 )
-
 
 def test_bridge_gaps():
     arr = np.zeros((5, 5, 5), dtype=bool)
@@ -63,3 +63,29 @@ def test_crop_tiff_volume_from_corners(tmp_path):
     assert out.shape == (3, 4, 6)
     assert tuple(info["source_shape"]) == (10, 8, 6)
     assert tuple(info["cropped_shape"]) == (3, 4, 6)
+
+
+def test_get_tif_spacing(tmp_path):
+    import tifffile
+    f = tmp_path / "test_spacing.tif"
+    img = np.zeros((2, 2, 2), dtype=np.uint8)
+    
+    # Test setting specific spacing (Z, Y, X) = (2.0, 0.5, 0.5)
+    # tifffile uses resolution = (1/X, 1/Y) in cm/inch etc.
+    # spacing tag is for Z.
+    tifffile.imwrite(
+        f,
+        img,
+        resolution=(2.0, 2.0), # 1/0.5
+        metadata={'spacing': 2.0},
+        imagej=True
+    )
+    
+    spacing = get_tif_spacing(str(f))
+    assert spacing == (2.0, 0.5, 0.5)
+    
+    # Test fallback to defaults
+    f2 = tmp_path / "test_no_spacing.tif"
+    tifffile.imwrite(f2, img)
+    spacing_default = get_tif_spacing(str(f2))
+    assert spacing_default == (1.0, 1.0, 1.0)
