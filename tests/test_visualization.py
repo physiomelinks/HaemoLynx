@@ -13,6 +13,7 @@ from ImageLynx.visualization import (
     visualize_geometry_with_edge_weights,
     visualize_volume_vedo,
     visualize_overlay,
+    visualize_overlay_vedo,
 )
 from ImageLynx.visualization._helpers import (
     sort_branch_orders_numerically,
@@ -90,5 +91,16 @@ def test_visualize_overlay():
     skeleton = np.zeros((10, 10, 10), dtype=bool)
     skeleton[5, 5, 5] = True
     plt = visualize_overlay(mask, skeleton, title="Test", show=False)
+    assert plt is not None
+
+
+@pytest.mark.plotting
+def test_visualize_overlay_vedo():
+    pytest.importorskip("vedo")
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    skeleton = np.zeros((10, 10, 10), dtype=bool)
+    skeleton[5, 5, 5] = True
+    plt = visualize_overlay_vedo(mask, skeleton, title="Test", show=False)
     assert plt is not None
 

@@ -65,7 +65,7 @@ VISUALIZE_MASK_ONLY = False
 # ---------------------------
 # Vedo Visualization Style (image_to_model style)
 # ---------------------------
-VISUALIZE_VEDO = False
+VISUALIZE_VEDO = True
 # Mode: 'lego' (exact voxels) or 'iso' (smooth surface)
 VISUALIZE_VEDO_MODE = 'iso' 
 # Smoothing iterations (only for 'iso' mode)
@@ -152,7 +152,7 @@ ENABLE_SHANNON_ENTROPY = True
 SHANNON_ENTROPY_THRESHOLD = 0.95
 
 # Visualize the post-processed binary mask and exit (Added 30/03/2026)
-VISUALIZE_POST_PROCESSED_MASK = True
+VISUALIZE_POST_PROCESSED_MASK = False
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
@@ -429,32 +429,29 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         print(f"Image probability range: min={image.min():.4f}, max={image.max():.4f}, mean={image.mean():.4f}")
 
         if visualize_mask_only:
-            print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={visualize_mask_opacity}). Close window to exit.")
-            visualization.visualize_volume(image, title="3D Pre-Otsu Intensity Image", opacity=visualize_mask_opacity)
+            if visualize_vedo:
+                print(f"Visualizing 3D volume with VEDO ({visualize_vedo_mode}, smooth={visualize_vedo_smooth_iter}).")
+
+                # Use detected spacing if requested
+                current_spacing = visualize_vedo_spacing
+                if visualize_vedo_auto_spacing and input_format == "tif":
+                    detected = io.get_tif_spacing(image_path)
+                    print(f"  Auto-detected spacing (z,y,x): {detected}")
+                    current_spacing = detected
+
+                visualization.visualize_volume_vedo(
+                    image,
+                    title=f"Vedo 3D Image ({visualize_vedo_mode})",
+                    mode=visualize_vedo_mode,
+                    spacing=current_spacing,
+                    alpha=visualize_vedo_opacity,
+                    smooth_iter=visualize_vedo_smooth_iter
+                )
+            else:
+                print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={visualize_mask_opacity}). Close window to exit.")
+                visualization.visualize_volume(image, title="3D Pre-Otsu Intensity Image", opacity=visualize_mask_opacity)
             print("Exiting pipeline as requested.")
             return
-
-        if visualize_vedo:
-            print(f"Visualizing 3D volume with VEDO ({visualize_vedo_mode}, smooth={visualize_vedo_smooth_iter}).")
-            
-            # Use detected spacing if requested
-            current_spacing = visualize_vedo_spacing
-            if visualize_vedo_auto_spacing and input_format == "tif":
-                detected = io.get_tif_spacing(image_path)
-                print(f"  Auto-detected spacing (z,y,x): {detected}")
-                current_spacing = detected
-
-            visualization.visualize_volume_vedo(
-                image, 
-                title=f"Vedo 3D Image ({visualize_vedo_mode})", 
-                mode=visualize_vedo_mode,
-                spacing=current_spacing,
-                alpha=visualize_vedo_opacity,
-                smooth_iter=visualize_vedo_smooth_iter
-            )
-            print("Exiting pipeline as requested.")
-            return
-
         # 1.6) Probability Smoothing
         if median_filter_size > 0:
             print(f"Applying median filter (size={median_filter_size})...")
@@ -541,7 +538,24 @@ def carotid_image_to_model(image_path=INPUT_PATH,
 
         if visualize_overlay_preview:
             print(f"Visualizing 3D overlay PREVIEW (mask opacity=0.3). Close window to exit.")
-            visualization.visualize_overlay(binary_raw, skeleton, title="3D Skeleton Overlay Preview", vessel_opacity=0.3)
+            
+            current_spacing = visualize_vedo_spacing
+            if visualize_vedo_auto_spacing and input_format == "tif":
+                current_spacing = io.get_tif_spacing(image_path)
+
+            if visualize_vedo:
+                visualization.visualize_overlay_vedo(
+                    binary, 
+                    skeleton, 
+                    title="3D Skeleton Overlay Preview (Vedo)", 
+                    alpha=0.3,
+                    mode=visualize_vedo_mode,
+                    smooth_iter=visualize_vedo_smooth_iter,
+                    spacing=current_spacing,
+                    separate_windows=True
+                )
+            else:
+                visualization.visualize_overlay(binary, skeleton, title="3D Skeleton Overlay Preview", vessel_opacity=0.3)
             print("Exiting pipeline as requested (Preview Mode).")
             return
         

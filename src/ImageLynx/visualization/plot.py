@@ -508,9 +508,83 @@ def visualize_volume_vedo(
     return plt_vedo
 
 
-    if show:
-        plotter.show()
-    return plotter
+def visualize_overlay_vedo(
+    volume: np.ndarray,
+    skeleton: np.ndarray,
+    title: str = "3D Skeleton Overlay (Vedo)",
+    mode: str = "iso",
+    spacing: tuple = (1.0, 1.0, 1.0),
+    vessel_color: str = "salmon",
+    skeleton_color: str = "cyan",
+    background_color: str = "white",
+    alpha: float = 0.3,
+    smooth_iter: int = 0,
+    skeleton_point_size: float = 5.0,
+    show: bool = True,
+    separate_windows: bool = False,
+):
+    """Visualize a 3D skeleton overlaid on its parent volume mesh using Vedo."""
+    try:
+        import vedo
+    except ImportError as exc:
+        raise ImportError("vedo is required. Install with `pip install vedo`.")
+
+    vol_data = volume.transpose(2, 1, 0)
+    vedo_spacing = (spacing[2], spacing[1], spacing[0])
+    
+    vmin = 0.5 if volume.dtype == bool else np.mean(volume)
+    
+    vol = vedo.Volume(vol_data, spacing=vedo_spacing)
+    
+    if mode.lower() == "lego":
+        actor = vol.legosurface(vmin=vmin).color(vessel_color).alpha(alpha)
+    else:
+        actor = vol.isosurface(vmin).color(vessel_color).alpha(alpha)
+        if smooth_iter > 0:
+            actor.smooth(niter=smooth_iter)
+            
+    coords = np.argwhere(skeleton).astype(float)
+    if coords.size > 0:
+        xyz = coords[:, [2, 1, 0]]
+        xyz = xyz * np.array(vedo_spacing)
+        pts = vedo.Points(xyz, r=skeleton_point_size).color(skeleton_color).alpha(0.75)
+    else:
+        pts = None
+
+    if separate_windows:
+        # Window 1: Mask only (30% opacity)
+        actor_mask = actor.clone().alpha(0.3)
+        plt1 = vedo.Plotter(title="1. Post-Processed Mask", bg=background_color, offscreen=not show, pos=(0, 0))
+        plt1.add(actor_mask)
+        
+        # Window 2: Skeleton only
+        plt2 = vedo.Plotter(title="2. Skeleton Only", bg=background_color, offscreen=not show, pos=(500, 0))
+        if pts is not None:
+            pts_skel = pts.clone().alpha(0.75)
+            plt2.add(pts_skel)
+            
+        # Window 3: Overlay
+        plt3 = vedo.Plotter(title="3. Overlay", bg=background_color, offscreen=not show, pos=(1000, 0))
+        plt3.add(actor)
+        if pts is not None:
+            plt3.add(pts)
+            
+        if show:
+            plt1.show(interactive=False)
+            plt2.show(interactive=False)
+            plt3.show(interactive=True)
+            
+        return [plt1, plt2, plt3]
+        
+    else:
+        plt_vedo = vedo.Plotter(title=title, bg=background_color, offscreen=not show)
+        plt_vedo.add(actor)
+        if pts is not None:
+            plt_vedo.add(pts)
+
+        if show:
+            plt_vedo.show(interactive=True)
+        return plt_vedo
 
 
 def visualize_overlay(
@@ -532,6 +606,9 @@ def visualize_overlay(
 
     plotter = pv.Plotter(title=title)
     plotter.set_background(background_color)
+    
+    # Enable depth peeling for correct transparency rendering
+    plotter.enable_depth_peeling()
 
     # 1. Add Vessel Surface
     vol_transposed = volume.transpose(2, 1, 0)
@@ -549,8 +626,13 @@ def visualize_overlay(
     coords = np.argwhere(skeleton).astype(float)
     if coords.size > 0:
         xyz = coords[:, [2, 1, 0]]
-        cloud = pv.PolyData(xyz)
-        plotter.add_mesh(cloud, color=skeleton_color, point_size=skeleton_point_size, render_points_as_spheres=True, label="Skeleton Centerline")
+        plotter.add_points(
+            xyz, 
+            color=skeleton_color, 
+            point_size=skeleton_point_size, 
+            render_points_as_spheres=True, 
+            label="Skeleton Centerline"
+        )
 
     plotter.add_axes()
     plotter.add_legend()

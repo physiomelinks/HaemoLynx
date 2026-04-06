@@ -9,6 +9,7 @@ from .plot import (
     visualise_skeleton,
     visualize_volume,
     visualize_overlay,
+    visualize_overlay_vedo,
     visualize_volume_rendering,
     visualize_volume_vedo,
 )
