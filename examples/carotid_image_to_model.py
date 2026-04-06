@@ -97,6 +97,19 @@ SKELETON_COMPONENT_CONNECTIVITY = 3
 SKELETON_MIN_COMPONENT_PERCENT = 5.0
 
 # ---------------------------
+# Skeleton Bundle Cleanup settings (Added 06/04/2026)
+# ---------------------------
+# Window size used to detect dense skeleton "bundles" (must be odd).
+SKELETON_BUNDLE_SCAN_SIZE = 9
+# Density threshold (0 to 1) above which a region is collapsed into a single hub.
+# Lower values are more aggressive at removing tangled "blobs".
+SKELETON_BUNDLE_DENSITY_FRACTION = 0.025
+# Maximum number of paths to keep when reconnecting a collapsed hub.
+SKELETON_BUNDLE_MAX_CONNECTIONS = 5
+# Minimum spacing between hub centers. 0 to disable.
+SKELETON_BUNDLE_HUB_MIN_SPACING = 0
+
+# ---------------------------
 # Advanced Efficiency settings (Added 19/03/2026)
 # ---------------------------
 # Downsample factor for 3D skeletonization (e.g. 2.0 reduces each dimension by half).
@@ -111,6 +124,10 @@ SKELETON_PADDED_SLICING_PADDING = 3
 # Prune the binary mask to keep only the largest N connected components BEFORE skeletonization.
 # This speeds up skeletonization by removing noise fragments. Set to 0 to disable.
 SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1
+
+# If True, keeps only the single largest connected component of the final mathematical graph.
+# This ensures zero "floating islands" exist before flow solving.
+GRAPH_KEEP_LARGEST_COMPONENT_ONLY = True
 
 # Sub-volume / ROI settings. 
 # SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
@@ -343,7 +360,12 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             visualize_post_processed_mask=VISUALIZE_POST_PROCESSED_MASK,
                             ilastik_vessel_channel=ILASTIK_VESSEL_CHANNEL,
                             enable_shannon_entropy=ENABLE_SHANNON_ENTROPY,
-                            shannon_entropy_threshold=SHANNON_ENTROPY_THRESHOLD) -> None:
+                            shannon_entropy_threshold=SHANNON_ENTROPY_THRESHOLD,
+                            graph_keep_largest_component_only=GRAPH_KEEP_LARGEST_COMPONENT_ONLY,
+                            bundle_scan_size=SKELETON_BUNDLE_SCAN_SIZE,
+                            bundle_density_fraction=SKELETON_BUNDLE_DENSITY_FRACTION,
+                            bundle_max_connections=SKELETON_BUNDLE_MAX_CONNECTIONS,
+                            bundle_hub_min_spacing=SKELETON_BUNDLE_HUB_MIN_SPACING) -> None:
                         
     # get image format from image_path
     input_format = image_path.suffix[1:].lower()
@@ -529,6 +551,10 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             max_bridge_distance=skeleton_max_bridge_distance,
             component_connectivity=skeleton_component_connectivity,
             min_component_fraction=skeleton_min_component_percent / 100.0,
+            bundle_scan_size=bundle_scan_size,
+            bundle_density_fraction=bundle_density_fraction,
+            bundle_max_connections_per_hub=bundle_max_connections,
+            bundle_hub_min_spacing=bundle_hub_min_spacing,
         )
         preprocessing.print_skeleton_connectivity_stats(
             "cleaned",
@@ -636,6 +662,16 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         with graph_path.open("rb") as f:
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
+
+    # Final Graph Cleanup: Keep only the largest connected component to remove floating islands.
+    if graph_keep_largest_component_only:
+        import networkx as nx
+        n_before = G.number_of_nodes()
+        largest_cc = max(nx.connected_components(G), key=len)
+        G = G.subgraph(largest_cc).copy()
+        n_after = G.number_of_nodes()
+        if n_after < n_before:
+            print(f"Final Graph Pruning: Removed {n_before - n_after} nodes in floating islands. Keeping largest component ({n_after} nodes).")
 
     starting_nodes[:] = []
     output_nodes[:] = []
@@ -820,7 +856,12 @@ if __name__ == "__main__":
         visualize_post_processed_mask=VISUALIZE_POST_PROCESSED_MASK,
         ilastik_vessel_channel=ILASTIK_VESSEL_CHANNEL,
         enable_shannon_entropy=ENABLE_SHANNON_ENTROPY,
-        shannon_entropy_threshold=SHANNON_ENTROPY_THRESHOLD
+        shannon_entropy_threshold=SHANNON_ENTROPY_THRESHOLD,
+        graph_keep_largest_component_only=GRAPH_KEEP_LARGEST_COMPONENT_ONLY,
+        bundle_scan_size=SKELETON_BUNDLE_SCAN_SIZE,
+        bundle_density_fraction=SKELETON_BUNDLE_DENSITY_FRACTION,
+        bundle_max_connections=SKELETON_BUNDLE_MAX_CONNECTIONS,
+        bundle_hub_min_spacing=SKELETON_BUNDLE_HUB_MIN_SPACING
     )
 
     ### // NOTES TO SELF FOR LATER // ###
