@@ -165,7 +165,7 @@ SKELETON_MIN_COMPONENT_PERCENT = 0.0
 # -----------------------------------------------------------------------------
 # Manual mode (default): USE_FWHM_EDGE_DIAMETERS=False. Diameters come from
 # DIAMETER_BY_BRANCH_ORDER (built from ALL_DIAMS_CONST, DEFAULT_DIAMETER, and
-# MANUAL_*_DIAMETER_BY_BRANCH_ORDER). Used by PoiseuilleModel.set_poiseuille_weights.
+# MANUAL_*_DIAMETER_BY_BRANCH_ORDER). Used by PoiseuilleModel.set_poiseuille_resistances.
 #
 # Automated mode: USE_FWHM_EDGE_DIAMETERS=True. Requires FWHM_RAW_TIFF_PATH to a
 # single-channel raw fluorescence TIFF aligned with the graph. Per-edge
@@ -431,18 +431,18 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             for branch_order, diameter_um in diameter_by_branch_order.items()
         }
 
-        G_sweep, _ = poiseuille_model.set_poiseuille_weights(
+        G_sweep, _ = poiseuille_model.set_poiseuille_resistances(
             G_sweep,
             scaled_diameter_by_branch_order,
             prefer_edge_fwhm_diameter=True,
         )
 
         if custom_edges:
-            G_sweep, _ = poiseuille_model.set_poiseuille_edge_weights(
+            G_sweep, _ = poiseuille_model.set_poiseuille_edge_resistances(
                 G_sweep,
                 custom_edges,
                 edge_diameter=6.0 * dilation_factor,
-                use_resistance=False,
+                use_resistance=True,
             )
 
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G_sweep)
@@ -615,6 +615,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT,
                             graph_reconnect_threshold=GRAPH_RECONNECT_THRESHOLD,
                             final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
+                            smoothing_options=None,
+                            smoothing_method="bspline",
                             starting_node_selection_method=STARTING_NODE_SELECTION_METHOD,
                             output_node_selection_method=OUTPUT_NODE_SELECTION_METHOD,
                             arteriole_boundary_selection_method=ARTERIOLE_BOUNDARY_SELECTION_METHOD,
@@ -1306,6 +1308,20 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         if isolated_removed:
             print(f"Removed {isolated_removed} isolated degree-0 node(s).")
 
+        smoothing_opts = dict(smoothing_options or {})
+        if "method" not in smoothing_opts and smoothing_method is not None:
+            smoothing_opts["method"] = smoothing_method
+        smooth_stats = graph.smooth_graph_edge_centerlines_continuous(
+            G,
+            skeleton_data=skeleton,
+            smoothing_options=smoothing_opts,
+            voxel_size=voxel_size,
+            chaikin_iterations=2,
+            max_distance_vox=1.0,
+            debug=verbose_logging,
+        )
+        print(f"Continuous centerline smoothing summary: {smooth_stats}")
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")
@@ -1663,7 +1679,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         elif not use_fwhm_edge_diameters:
             print(
                 "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
-                "set_poiseuille_weights without per-edge FWHM)."
+                "set_poiseuille_resistances without per-edge FWHM)."
             )
         poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=40.0,
@@ -1671,14 +1687,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         if do_pericyte_constriction:
             if use_fwhm_edge_diameters:
-                G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                G, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                     G,
                     diameter_by_branch_order,
                     prefer_edge_fwhm_baseline=True,
                     constriction_factor_by_branch_order=constriction_by_branch_order,
                 )
                 print(
-                    "Results from set_poiseuille_weights_with_constrictions "
+                    "Results from set_poiseuille_resistances_with_constrictions "
                     f"(FWHM baseline d1, constriction factors): {results}"
                 )
             else:
@@ -1689,15 +1705,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                         "d2": diameter * constriction_by_branch_order[branch_order],
                     }
 
-                G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                G, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                     G,
                     diameter_by_branch_order_enhanced,
                 )
                 print(
-                    f"Results from set_poiseuille_weights_with_constrictions: {results}"
+                    f"Results from set_poiseuille_resistances_with_constrictions: {results}"
                 )
         else:
-            G, results = poiseuille_model.set_poiseuille_weights(
+            G, results = poiseuille_model.set_poiseuille_resistances(
                 G,
                 diameter_by_branch_order,
                 prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
@@ -1707,25 +1723,31 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 if use_fwhm_edge_diameters
                 else "branch-order table only"
             )
-            print(f"Results from set_poiseuille_weights ({_diam_mode}): {results}")
+            print(f"Results from set_poiseuille_resistances ({_diam_mode}): {results}")
 
-        G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
+        G, results_2 = poiseuille_model.set_poiseuille_edge_resistances(
             G,
             custom_edges,
             edge_diameter=6.0,
-            use_resistance=False,
+            use_resistance=True,
         )
 
-        print(f"Results from set_poiseuille_edge_weights: {results_2}")
+        print(f"Results from set_poiseuille_edge_resistances: {results_2}")
         # create list of resistances of all edges
-        conductances = []
-        # TODO DEBUG
+        resistances = []
+        skipped_missing_resistance = 0
         for u, v, key in G.edges(keys=True):
-            conductance = G[u][v][key]['weight']
-            # print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
-            conductances.append(conductance)
+            resistance = G[u][v][key].get("resistance")
+            if resistance is None:
+                skipped_missing_resistance += 1
+                continue
+            resistances.append(resistance)
 
-        # print(f"Conductances of all edges: {conductances}")
+        if skipped_missing_resistance > 0:
+            print(
+                "Skipped edges without branch-order resistance assignment: "
+                f"{skipped_missing_resistance}"
+            )
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
@@ -1816,15 +1838,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             for metric_name, metric_values in model_results.items():
                 print(f"    {metric_name}: {metric_values}")
 
-        inv_weight_path = output_dir / f"{image_path.stem}_betweenness_communities_inverse_weight.json"
-        inv_weight_path.write_text(
-            json.dumps(weighted_measurements["inverse_edge_weight"], indent=2)
+        resistance_path = output_dir / f"{image_path.stem}_betweenness_communities_edge_resistance.json"
+        resistance_path.write_text(
+            json.dumps(weighted_measurements["edge_resistance"], indent=2)
         )
         length_path = output_dir / f"{image_path.stem}_betweenness_communities_edge_length.json"
         length_path.write_text(
             json.dumps(weighted_measurements["edge_length"], indent=2)
         )
-        print(f"Saved inverse-weight stats to: {inv_weight_path}")
+        print(f"Saved resistance-weighted stats to: {resistance_path}")
         print(f"Saved edge-length stats to: {length_path}")
     else:
         print("Vessel statistics skipped.")

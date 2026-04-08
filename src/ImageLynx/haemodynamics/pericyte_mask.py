@@ -278,6 +278,17 @@ def _integrated_resistance_from_centroid_constrictions(
     return float(integ(resistance_per_length, x=positions))
 
 
+def _validate_positive_resistance(
+    resistance: float,
+    *,
+    edge_id: tuple[Any, Any, Any],
+) -> float:
+    value = float(resistance)
+    if not np.isfinite(value) or value <= 0.0:
+        raise ValueError(f"Invalid resistance for edge {edge_id}: {value}.")
+    return value
+
+
 def _resolve_d1_d2_for_edge(
     *,
     edge_data: dict[str, Any],
@@ -337,7 +348,7 @@ def _resolve_d1_d2_for_edge(
     return d1, d2, used_fwhm_baseline
 
 
-def set_poiseuille_weights_with_pericyte_mask(
+def set_poiseuille_resistances_with_pericyte_mask(
     graph: nx.MultiGraph,
     *,
     diameter_by_branch_order: dict,
@@ -354,7 +365,7 @@ def set_poiseuille_weights_with_pericyte_mask(
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
-    """Set conductance weights using pericyte centroids from a mask volume.
+    """Set edge resistances using pericyte centroids from a mask volume.
 
     Each connected component in ``pericyte_mask_path`` is treated as one pericyte.
     The component centroid is projected to the nearest graph edge and used as a
@@ -442,7 +453,7 @@ def set_poiseuille_weights_with_pericyte_mask(
         assignment_distances.append(float(dist_um))
 
     results: dict[str, Any] = {
-        "weights_set": 0,
+        "resistances_set": 0,
         "pericyte_count": total_pericytes,
         "eligible_pericyte_count": int(len(eligible_indices)),
         "max_assignment_distance_um": (
@@ -506,8 +517,11 @@ def set_poiseuille_weights_with_pericyte_mask(
             constriction_length=float(constriction_length),
             num_points=int(num_integration_points),
         )
-        graph[u][v][key]["weight"] = 1.0 / float(total_resistance)
+        graph[u][v][key]["resistance"] = _validate_positive_resistance(
+            total_resistance,
+            edge_id=(u, v, key),
+        )
         graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in centers]
-        results["weights_set"] += 1
+        results["resistances_set"] += 1
     return graph, results

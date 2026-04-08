@@ -209,11 +209,11 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
 
     original_probabilistic_pipeline = (
         pipeline.probability_haemodynamics
-        .set_poiseuille_weights_with_probabilistic_periodic_constrictions
+        .set_poiseuille_resistances_with_probabilistic_periodic_constrictions
     )
     original_probabilistic_compare = (
         pipeline.pericyte_comparison_haemodynamics
-        .set_poiseuille_weights_with_probabilistic_periodic_constrictions
+        .set_poiseuille_resistances_with_probabilistic_periodic_constrictions
     )
 
     def _recording_probabilistic_pipeline(*args, **kwargs):
@@ -232,10 +232,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
         probabilistic_call_args.append(deepcopy(active_map) if active_map is not None else None)
         return original_probabilistic_compare(*args, **kwargs)
 
-    pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+    pipeline.probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
         _recording_probabilistic_pipeline
     )
-    pipeline.pericyte_comparison_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+    pipeline.pericyte_comparison_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
         _recording_probabilistic_compare
     )
     try:
@@ -277,10 +277,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
             constriction_by_branch_order=constriction_uniform_08,
         )
     finally:
-        pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        pipeline.probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
             original_probabilistic_pipeline
         )
-        pipeline.pericyte_comparison_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        pipeline.pericyte_comparison_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
             original_probabilistic_compare
         )
 

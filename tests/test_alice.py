@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+TEST_PLOT_DIR = REPO_ROOT / "tests" / "plots" / "synthetic_alice_graphing"
 
 
 def _load_alice_pipeline_module():
@@ -177,8 +178,9 @@ def _assert_sweep_outputs_valid(
 
 def test_alice_graphing_on_synthetic_network(tmp_path: Path):
     """Run a reduced sweep and verify CSV + flow/resistance curve plots."""
+    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     sweep = _run_synthetic_alice_graphing(
-        tmp_path,
+        TEST_PLOT_DIR,
         min_dilation_percent=1,
         max_dilation_percent=3,
     )

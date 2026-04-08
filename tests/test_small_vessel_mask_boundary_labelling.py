@@ -23,6 +23,7 @@ from ImageLynx.graph import (
 
 # Checked-in interactive demo (regenerated when this test runs).
 DEMO_HTML_PATH = REPO_ROOT / "examples" / "plots" / "small_vessel_mask_boundary_labelling_demo_3d.html"
+TEST_PLOT_DIR = REPO_ROOT / "tests" / "plots" / "small_vessel_mask_boundary_labelling"
 
 
 def _voxel_polyline_samples(
@@ -108,7 +109,8 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
     assert G.nodes[2]["mask_vessel_type"] == "arteriole"
     assert G.nodes[4]["mask_vessel_type"] == "venule"
 
-    html_tmp = tmp_path / "small_vessel_mask_boundary_labelling_3d.html"
+    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    html_tmp = TEST_PLOT_DIR / "small_vessel_mask_boundary_labelling_3d.html"
     ok = write_small_vessel_mask_boundary_labelling_3d_html(
         G,
         small_arteriole_mask=art_mask,

@@ -152,24 +152,22 @@ def collapse_node_clusters(
 
 def _patch_voxel_endpoint(data: dict, old_pos: np.ndarray, new_pos: np.ndarray) -> dict:
     """Return a shallow copy of *data* with the voxel path endpoint closest to
-    *old_pos* replaced by *new_pos* (as integer tuple)."""
+    *old_pos* replaced by *new_pos* (continuous coordinates)."""
     data = dict(data)
     voxels = data.get("voxels")
     if not voxels or len(voxels) < 2:
         return data
 
-    new_voxel = tuple(np.round(new_pos).astype(int))
-    old_voxel = tuple(np.round(old_pos).astype(int))
+    new_point = tuple(np.asarray(new_pos, dtype=float).tolist())
 
     voxels = list(voxels)
-    start_key = tuple(np.round(np.asarray(voxels[0])).astype(int))
-    end_key = tuple(np.round(np.asarray(voxels[-1])).astype(int))
+    start_pt = np.asarray(voxels[0], dtype=float)
+    end_pt = np.asarray(voxels[-1], dtype=float)
 
-    if start_key == old_voxel or np.linalg.norm(np.asarray(voxels[0], dtype=float) - old_pos) < \
-            np.linalg.norm(np.asarray(voxels[-1], dtype=float) - old_pos):
-        voxels[0] = new_voxel
+    if np.linalg.norm(start_pt - old_pos) <= np.linalg.norm(end_pt - old_pos):
+        voxels[0] = new_point
     else:
-        voxels[-1] = new_voxel
+        voxels[-1] = new_point
 
     data["voxels"] = voxels
     return data

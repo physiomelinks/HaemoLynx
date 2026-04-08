@@ -33,6 +33,7 @@ from ImageLynx.graph import (
 DEMO_HTML_PATH = (
     REPO_ROOT / "examples" / "plots" / "synthetic_vessel_assignment_pipeline_3d.html"
 )
+TEST_PLOT_DIR = REPO_ROOT / "tests" / "plots" / "synthetic_vessel_assignment_pipeline"
 
 
 def _voxel_polyline_samples(
@@ -465,7 +466,8 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         u, v, key = eid
         assert G[u][v][key]["branch_order"].startswith("B")
 
-    html_tmp = tmp_path / "synthetic_vessel_assignment_pipeline_3d.html"
+    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    html_tmp = TEST_PLOT_DIR / "synthetic_vessel_assignment_pipeline_3d.html"
     assert write_integrated_vessel_pipeline_3d_html(
         G,
         large_arteriole_mask=large_art,

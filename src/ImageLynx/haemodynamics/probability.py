@@ -129,6 +129,17 @@ def _integrated_resistance_from_centers(
     return float(integ(resistance_per_length, x=positions))
 
 
+def _validate_positive_resistance(
+    resistance: float,
+    *,
+    edge_id: tuple[Any, Any, Any],
+) -> float:
+    value = float(resistance)
+    if not np.isfinite(value) or value <= 0.0:
+        raise ValueError(f"Invalid resistance for edge {edge_id}: {value}.")
+    return value
+
+
 def _periodic_center_positions(
     length: float,
     constriction_length: float,
@@ -198,7 +209,7 @@ def _resolve_d1_d2_for_edge(
     return d1, d1 * float(factor), used_fwhm_baseline
 
 
-def set_poiseuille_weights_with_probabilistic_periodic_constrictions(
+def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
     graph: nx.MultiGraph,
     *,
     diameter_by_branch_order: dict,
@@ -236,7 +247,7 @@ def set_poiseuille_weights_with_probabilistic_periodic_constrictions(
 
     generator = rng if rng is not None else np.random.default_rng()
     results: dict[str, Any] = {
-        "weights_set": 0,
+        "resistances_set": 0,
         "used_fwhm_baseline": 0,
         "total_periodic_pericyte_sites": 0,
         "active_periodic_pericyte_sites": 0,
@@ -306,9 +317,12 @@ def set_poiseuille_weights_with_probabilistic_periodic_constrictions(
             constriction_length=float(constriction_length),
             num_points=int(num_integration_points),
         )
-        graph[u][v][key]["weight"] = 1.0 / float(total_resistance)
+        graph[u][v][key]["resistance"] = _validate_positive_resistance(
+            total_resistance,
+            edge_id=(u, v, key),
+        )
         graph[u][v][key]["pericyte_count_assigned"] = int(len(active_centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in active_centers]
-        results["weights_set"] += 1
+        results["resistances_set"] += 1
 
     return graph, results

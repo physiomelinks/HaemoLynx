@@ -153,8 +153,11 @@ def reconnect_secondary_loop_edges(
             if u not in node_positions or v not in node_positions:
                 return None
             pu, pv = np.array(node_positions[u]), np.array(node_positions[v])
-            u_vox = physical_xyz_to_index_zyx(pu, voxel_size)
-            v_vox = physical_xyz_to_index_zyx(pv, voxel_size)
+            u_vox = np.asarray(physical_xyz_to_index_zyx(pu, voxel_size), dtype=int)
+            v_vox = np.asarray(physical_xyz_to_index_zyx(pv, voxel_size), dtype=int)
+            # Clamp candidate endpoints to valid array bounds for robust subvolume slicing.
+            u_vox = np.clip(u_vox, 0, np.asarray(skeleton_copy.shape, dtype=int) - 1)
+            v_vox = np.clip(v_vox, 0, np.asarray(skeleton_copy.shape, dtype=int) - 1)
             primary_edge_data = None
             for key, edge_data in G[u][v].items():
                 if not edge_data.get("secondary", False):
@@ -168,7 +171,12 @@ def reconnect_secondary_loop_edges(
             orig_voxels = []
             for vox in orig_voxels_raw:
                 if isinstance(vox, (list, tuple, np.ndarray)) and len(vox) >= 3:
-                    vox_coords = physical_xyz_to_index_zyx(vox, voxel_size)
+                    vox_coords = np.asarray(
+                        physical_xyz_to_index_zyx(vox, voxel_size), dtype=int
+                    )
+                    vox_coords = np.clip(
+                        vox_coords, 0, np.asarray(skeleton_copy.shape, dtype=int) - 1
+                    )
                     if np.all(vox_coords >= 0) and np.all(vox_coords < skeleton_copy.shape):
                         orig_voxels.append(vox_coords)
             if not orig_voxels:
