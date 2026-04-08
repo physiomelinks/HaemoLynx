@@ -116,6 +116,8 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             skeleton_max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE, 
                             skeleton_component_connectivity=SKELETON_COMPONENT_CONNECTIVITY, 
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT, 
+                            smoothing_options=None,
+                            smoothing_method="bspline",
                             edge_percent=EDGE_PERCENT, 
                             end_percent=END_PERCENT, 
                             node_edge_axis=NODE_EDGE_AXIS, 
@@ -239,7 +241,21 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         #     debug=VERBOSE_LOGGING,
         # )
         # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
-    
+
+        smoothing_opts = dict(smoothing_options or {})
+        if "method" not in smoothing_opts and smoothing_method is not None:
+            smoothing_opts["method"] = smoothing_method
+        smooth_stats = graph.smooth_graph_edge_centerlines_continuous(
+            G,
+            skeleton_data=skeleton,
+            smoothing_options=smoothing_opts,
+            voxel_size=tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0))),
+            chaikin_iterations=2,
+            max_distance_vox=1.0,
+            debug=verbose_logging,
+        )
+        print(f"Continuous centerline smoothing summary: {smooth_stats}")
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")

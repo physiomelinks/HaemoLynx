@@ -198,6 +198,11 @@ class PoiseuilleModel:
 
         print()
 
+        # Initialize as unset so downstream logic can explicitly skip
+        # non-haemodynamic edges (e.g. missing branch_order).
+        for u, v, key in G.edges(keys=True):
+            G[u][v][key]["resistance"] = None
+
         for u, v, key, data in G.edges(keys=True, data=True):
             # Check for branch order
             branch_order = data.get('branch_order', None)

@@ -91,6 +91,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT,
                             graph_reconnect_threshold=GRAPH_RECONNECT_THRESHOLD,
                             final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
+                            smoothing_options=None,
+                            smoothing_method="bspline",
                             starting_node_selection_method=STARTING_NODE_SELECTION_METHOD,
                             output_node_selection_method=OUTPUT_NODE_SELECTION_METHOD,
                             arteriole_boundary_selection_method=ARTERIOLE_BOUNDARY_SELECTION_METHOD,
@@ -735,6 +737,20 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         print(graph.format_degree2_diagnostics_report(degree2_diag))
 
+        smoothing_opts = dict(smoothing_options or {})
+        if "method" not in smoothing_opts and smoothing_method is not None:
+            smoothing_opts["method"] = smoothing_method
+        smooth_stats = graph.smooth_graph_edge_centerlines_continuous(
+            G,
+            skeleton_data=skeleton,
+            smoothing_options=smoothing_opts,
+            voxel_size=voxel_size,
+            chaikin_iterations=2,
+            max_distance_vox=1.0,
+            debug=verbose_logging,
+        )
+        print(f"Continuous centerline smoothing summary: {smooth_stats}")
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")
@@ -1314,13 +1330,19 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             print(f"Results from set_poiseuille_edge_resistances: {results_2}")
             # create list of resistances of all edges
             resistances = []
-            # TODO DEBUG
+            skipped_missing_resistance = 0
             for u, v, key in G.edges(keys=True):
-                resistance = G[u][v][key]["resistance"]
-                # print(f"Resistance of edge ({u}, {v}, {key}): {resistance}")
+                resistance = G[u][v][key].get("resistance")
+                if resistance is None:
+                    skipped_missing_resistance += 1
+                    continue
                 resistances.append(resistance)
 
-            # print(f"Resistances of all edges: {resistances}")
+            if skipped_missing_resistance > 0:
+                print(
+                    "Skipped edges without branch-order resistance assignment: "
+                    f"{skipped_missing_resistance}"
+                )
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.

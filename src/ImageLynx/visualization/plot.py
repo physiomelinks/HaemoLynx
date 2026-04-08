@@ -41,6 +41,50 @@ def _projection_extent(
     return (0.0, x_size * vx, y_size * vy, 0.0)
 
 
+def _projection_extent_xz(
+    projection_shape: Tuple[int, int],
+    voxel_size: Tuple[float, float, float],
+) -> Tuple[float, float, float, float]:
+    """Return imshow extent for (Z, X) projection in physical units."""
+    z_size, x_size = projection_shape
+    vz = float(voxel_size[0])
+    vx = float(voxel_size[2])
+    return (0.0, x_size * vx, z_size * vz, 0.0)
+
+
+def _compute_two_angle_projections(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return YX and XZ max projections for 2D/3D images."""
+    if image.ndim == 3:
+        projection_yx = np.max(image, axis=0)
+        projection_xz = np.max(image, axis=1)
+        return projection_yx, projection_xz
+    if image.ndim == 2:
+        projection = image
+        return projection, projection
+    raise ValueError(f"Expected 2D or 3D image, got shape {image.shape}")
+
+
+def _two_angle_figure(
+    projection_yx: np.ndarray,
+    projection_xz: np.ndarray,
+    *,
+    voxel_size: Tuple[float, float, float],
+    figsize: Tuple[float, float],
+    dpi: Optional[int] = None,
+    cmap: str = "gray",
+) -> Tuple[Any, np.ndarray]:
+    """Create a two-angle subplot figure and draw both projection backgrounds."""
+    subplot_kwargs = {"figsize": figsize}
+    if dpi is not None:
+        subplot_kwargs["dpi"] = dpi
+    fig, axes = plt.subplots(1, 2, **subplot_kwargs)
+    extent_yx = _projection_extent(projection_yx.shape, voxel_size)
+    extent_xz = _projection_extent_xz(projection_xz.shape, voxel_size)
+    axes[0].imshow(projection_yx, cmap=cmap, extent=extent_yx)
+    axes[1].imshow(projection_xz, cmap=cmap, extent=extent_xz)
+    return fig, axes
+
+
 def _show_matplotlib_non_blocking(pause_s: float = 0.001) -> None:
     """Show matplotlib figures without blocking script execution."""
     plt.show(block=False)
@@ -118,29 +162,42 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
                               show: bool = True,
                               show_after_save: bool = False,
                               block: bool = False) -> None:
-    """Overlay edges and nodes on Z-projection of image.
+    """Overlay edges and nodes on YX/XZ projections of image.
 
     Set label_nodes=True to draw node IDs.
     """
-    projection = np.max(image, axis=0)
+    projection_yx, projection_xz = _compute_two_angle_projections(image)
     pos = nx.get_node_attributes(G, "pos")
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
-    extent = _projection_extent(projection.shape, resolved_voxel_size)
-    plt.figure(figsize=(10, 10))
-    plt.imshow(projection, cmap="gray", extent=extent)
+    fig, axes = _two_angle_figure(
+        projection_yx,
+        projection_xz,
+        voxel_size=resolved_voxel_size,
+        figsize=(14, 6),
+        cmap="gray",
+    )
     for u, v, d in G.edges(data=True):
         path = d.get("voxels", [])
         if len(path) > 1:
-            path = np.array(path)
-            plt.plot(path[:, 2], path[:, 1], color="cyan", linewidth=0.5)
+            path_arr = np.array(path, dtype=float)
+            axes[0].plot(path_arr[:, 2], path_arr[:, 1], color="cyan", linewidth=0.5)
+            axes[1].plot(path_arr[:, 2], path_arr[:, 0], color="cyan", linewidth=0.5)
     if pos:
         coords = np.array(list(pos.values()))
-        plt.scatter(coords[:, 2], coords[:, 1], c="red", s=3)
+        axes[0].scatter(coords[:, 2], coords[:, 1], c="red", s=3)
+        axes[1].scatter(coords[:, 2], coords[:, 0], c="red", s=3)
         if label_nodes:
             for node_id, node_pos in pos.items():
-                plt.text(
+                axes[0].text(
                     float(node_pos[2]) + 1.0,
                     float(node_pos[1]) + 1.0,
+                    str(node_id),
+                    color="yellow",
+                    fontsize=3,
+                )
+                axes[1].text(
+                    float(node_pos[2]) + 1.0,
+                    float(node_pos[0]) + 1.0,
                     str(node_id),
                     color="yellow",
                     fontsize=3,
@@ -151,31 +208,42 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
                     x = float(node_pos[2])
                     y = float(node_pos[1])
                     z = float(node_pos[0])
-                    plt.text(
+                    axes[0].text(
                         float(node_pos[2]) + 1.0,
                         float(node_pos[1]) + 1.0,
                         f"({x:.1f}, {y:.1f}, {z:.1f})",
                         color="blue",
                         fontsize=3,
                     )
-    plt.title("Overlay: Edges and Nodes on Z-Projection")
-    plt.axis("off")
+                    axes[1].text(
+                        float(node_pos[2]) + 1.0,
+                        float(node_pos[0]) + 1.0,
+                        f"({x:.1f}, {y:.1f}, {z:.1f})",
+                        color="blue",
+                        fontsize=3,
+                    )
+    axes[0].set_title("YX projection (max over Z)")
+    axes[1].set_title("XZ projection (max over Y)")
+    axes[0].axis("off")
+    axes[1].axis("off")
+    fig.suptitle("Overlay: Edges and Nodes")
+    fig.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
         if show and show_after_save:
             if block:
                 plt.show()
             else:
                 _show_matplotlib_non_blocking()
         else:
-            plt.close()
+            plt.close(fig)
     elif show:
         if block:
             plt.show()
         else:
             _show_matplotlib_non_blocking()
     else:
-        plt.close()
+        plt.close(fig)
 
 
 def visualize_geometry_with_branch_orders(
@@ -199,9 +267,8 @@ def visualize_geometry_with_branch_orders(
     block: bool = False,
 ):
     """Plot network colored by branch order."""
-    projection = np.max(image, axis=0)
+    projection_yx, projection_xz = _compute_two_angle_projections(image)
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
-    extent = _projection_extent(projection.shape, resolved_voxel_size)
     all_branch_orders = set()
     edge_branch_orders = {}
     edge_paths = {}
@@ -232,8 +299,15 @@ def visualize_geometry_with_branch_orders(
     legend_orders, legend_counts = group_branch_orders_for_legend(
         branch_orders, group_above, actual_edge_counts
     )
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    ax.imshow(projection, cmap=background_cmap, extent=extent)
+    subplot_figsize = (float(figsize[0]) * 1.8, float(figsize[1]))
+    fig, axes = _two_angle_figure(
+        projection_yx,
+        projection_xz,
+        voxel_size=resolved_voxel_size,
+        figsize=subplot_figsize,
+        dpi=dpi,
+        cmap=background_cmap,
+    )
     for bo in branch_orders:
         paths = [
             np.array(edge_paths[(u, v, k)])
@@ -242,8 +316,14 @@ def visualize_geometry_with_branch_orders(
         ]
         color = color_mapping.get(bo, "gray")
         for path in paths:
-            ax.plot(
+            axes[0].plot(
                 path[:, 2], path[:, 1],
+                color=color,
+                linewidth=edge_linewidth,
+                alpha=alpha,
+            )
+            axes[1].plot(
+                path[:, 2], path[:, 0],
                 color=color,
                 linewidth=edge_linewidth,
                 alpha=alpha,
@@ -251,7 +331,8 @@ def visualize_geometry_with_branch_orders(
     pos = nx.get_node_attributes(G, "pos")
     if pos:
         coords = np.array(list(pos.values()))
-        ax.scatter(coords[:, 2], coords[:, 1], c=node_color, s=node_size)
+        axes[0].scatter(coords[:, 2], coords[:, 1], c=node_color, s=node_size)
+        axes[1].scatter(coords[:, 2], coords[:, 0], c=node_color, s=node_size)
     if show_legend and legend_orders:
         handles = [
             plt.Line2D(
@@ -262,12 +343,15 @@ def visualize_geometry_with_branch_orders(
             for bo in legend_orders
             if bo in color_mapping
         ]
-        ax.legend(handles=handles, title="Branch Orders", loc="upper right")
-    ax.set_title("Network Geometry with Branch Order Colors")
-    ax.axis("off")
-    plt.tight_layout()
+        axes[0].legend(handles=handles, title="Branch Orders", loc="upper right")
+    axes[0].set_title("YX projection (max over Z)")
+    axes[1].set_title("XZ projection (max over Y)")
+    axes[0].axis("off")
+    axes[1].axis("off")
+    fig.suptitle("Network Geometry with Branch Order Colors")
+    fig.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         if show and show_after_save:
             if block:
                 plt.show()
@@ -282,7 +366,7 @@ def visualize_geometry_with_branch_orders(
             _show_matplotlib_non_blocking()
     else:
         plt.close(fig)
-    return fig, ax, color_mapping
+    return fig, axes[0], color_mapping
 
 
 def visualize_geometry_with_edge_weights(
@@ -309,9 +393,8 @@ def visualize_geometry_with_edge_weights(
     block: bool = False,
 ):
     """Plot network colored by edge resistance."""
-    projection = np.max(image, axis=0)
+    projection_yx, projection_xz = _compute_two_angle_projections(image)
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
-    extent = _projection_extent(projection.shape, resolved_voxel_size)
     edge_resistances = {}
     edge_paths = {}
     resistance_values = []
@@ -338,16 +421,29 @@ def visualize_geometry_with_edge_weights(
     if reverse_gradient:
         cmap = cmap.reversed()
     norm = Normalize(vmin=vmin, vmax=vmax)
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    ax.imshow(projection, cmap=background_cmap, extent=extent)
+    subplot_figsize = (float(figsize[0]) * 1.8, float(figsize[1]))
+    fig, axes = _two_angle_figure(
+        projection_yx,
+        projection_xz,
+        voxel_size=resolved_voxel_size,
+        figsize=subplot_figsize,
+        dpi=dpi,
+        cmap=background_cmap,
+    )
     for (u, v, key), resistance in edge_resistances.items():
         if resistance is not None:
             path = edge_paths[(u, v, key)]
             if len(path) > 1:
                 path_arr = np.array(path)
                 color = cmap(norm(resistance))
-                ax.plot(
+                axes[0].plot(
                     path_arr[:, 2], path_arr[:, 1],
+                    color=color,
+                    linewidth=edge_linewidth,
+                    alpha=alpha,
+                )
+                axes[1].plot(
+                    path_arr[:, 2], path_arr[:, 0],
                     color=color,
                     linewidth=edge_linewidth,
                     alpha=alpha,
@@ -355,17 +451,21 @@ def visualize_geometry_with_edge_weights(
     pos = nx.get_node_attributes(G, "pos")
     if pos:
         coords = np.array(list(pos.values()))
-        ax.scatter(coords[:, 2], coords[:, 1], c=node_color, s=node_size)
+        axes[0].scatter(coords[:, 2], coords[:, 1], c=node_color, s=node_size)
+        axes[1].scatter(coords[:, 2], coords[:, 0], c=node_color, s=node_size)
     if show_legend:
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
-        cbar = plt.colorbar(sm, ax=ax, shrink=0.8, aspect=20)
+        cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), shrink=0.8, aspect=24)
         cbar.set_label("Conductance (1/Resistance)" if use_inverse else "Edge Resistance", rotation=270)
-    ax.set_title("Network Geometry Colored by Edge Resistance")
-    ax.axis("off")
-    plt.tight_layout()
+    axes[0].set_title("YX projection (max over Z)")
+    axes[1].set_title("XZ projection (max over Y)")
+    axes[0].axis("off")
+    axes[1].axis("off")
+    fig.suptitle("Network Geometry Colored by Edge Resistance")
+    fig.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         if show and show_after_save:
             if block:
                 plt.show()
@@ -380,7 +480,7 @@ def visualize_geometry_with_edge_weights(
             _show_matplotlib_non_blocking()
     else:
         plt.close(fig)
-    return fig, ax, (vmin, vmax), cmap
+    return fig, axes[0], (vmin, vmax), cmap
 
 
 def visualize_3d_plotly(
@@ -645,22 +745,27 @@ def visualize_skeleton(
             f"Expected 2D or 3D skeleton, got shape {skeleton.shape}"
         )
 
-    # 2D skeleton or headless save → matplotlib Z-projection fallback.
+    # 2D skeleton or headless save → matplotlib projection fallback.
     if skeleton.ndim == 2 or save_path is not None:
-        projection = (
-            np.max(skeleton, axis=0).astype(float)
-            if skeleton.ndim == 3
-            else skeleton.astype(float)
+        projection_yx, projection_xz = _compute_two_angle_projections(
+            skeleton.astype(float)
         )
         resolved_voxel_size = voxel_size or (1.0, 1.0, 1.0)
-        extent = _projection_extent(projection.shape, resolved_voxel_size)
-        fig, ax = plt.subplots(figsize=(10, 10))
-        ax.imshow(projection, cmap="gray", interpolation="nearest", extent=extent)
-        ax.set_title(
-            f"Skeleton Z-projection  —  shape: {skeleton.shape}  "
+        fig, axes = _two_angle_figure(
+            projection_yx,
+            projection_xz,
+            voxel_size=resolved_voxel_size,
+            figsize=(14, 6),
+            cmap="gray",
+        )
+        axes[0].set_title("YX projection (max over Z)")
+        axes[1].set_title("XZ projection (max over Y)")
+        axes[0].axis("off")
+        axes[1].axis("off")
+        fig.suptitle(
+            f"Skeleton projections  —  shape: {skeleton.shape}  "
             f"voxels: {int(skeleton.sum())}"
         )
-        ax.axis("off")
         fig.tight_layout()
         if save_path:
             fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
