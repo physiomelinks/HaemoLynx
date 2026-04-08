@@ -5,7 +5,9 @@ import importlib.util
 import pickle
 from pathlib import Path
 
+import numpy as np
 import pytest
+import tifffile
 
 from ImageLynx.io import crop_tiff_volume_from_corners
 
@@ -27,9 +29,30 @@ def _load_pipeline_module():
     return module
 
 
+def _write_zsplit_large_vessel_masks(
+    out_dir: Path,
+    shape_zyx: tuple[int, ...],
+    *,
+    stem: str,
+) -> tuple[Path, Path]:
+    """Half-volume Z split: arteriole low-Z, venule high-Z (disjoint, no fast-mode overlap)."""
+    z, y, x = (int(v) for v in shape_zyx[:3])
+    art = np.zeros((z, y, x), dtype=np.uint8)
+    ven = np.zeros((z, y, x), dtype=np.uint8)
+    split = max(1, z // 2)
+    art[:split, :, :] = 1
+    ven[split:, :, :] = 1
+    out_dir.mkdir(parents=True, exist_ok=True)
+    art_path = out_dir / f"{stem}_dummy_art.tif"
+    ven_path = out_dir / f"{stem}_dummy_ven.tif"
+    tifffile.imwrite(art_path, art)
+    tifffile.imwrite(ven_path, ven)
+    return art_path, ven_path
+
+
 @pytest.mark.integration
 @pytest.mark.slow
-def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
+def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half(tmp_path):
     """Crop Nerve TIFF then run full pipeline with range-based checks."""
     pytest.importorskip("pyvista")
     tifffile = pytest.importorskip("tifffile")
@@ -54,7 +77,10 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
     assert cropped_tiff.exists()
     assert tuple(crop_info["cropped_shape"]) == (z - z_start, y - y_start, x)
     cropped_z, cropped_y, cropped_x = tuple(crop_info["cropped_shape"])
-    y_band = max(1, int(0.2 * cropped_y))
+    shape_zyx = tuple(int(v) for v in tifffile.imread(cropped_tiff).shape[:3])
+    art_path, ven_path = _write_zsplit_large_vessel_masks(
+        tmp_path / "nerve_masks", shape_zyx, stem="nerve"
+    )
 
     plot_dir = REPO_ROOT / "tests" / "plots" / "plots_nerve"
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +93,14 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
         plot_dir=plot_dir,
         vtk_output_prefix=vtk_prefix,
         verbose_logging=False,
+        use_ilastik_segmentation=False,
+        use_large_vessel_masks=True,
+        use_ilastik_large_vessel_segmentation=False,
+        automated_vessel_assignment=True,
+        automated_vessel_assignment_use_legacy_mode=True,
+        large_vessel_mask_dilation_microns=40.0,
+        large_arteriole_mask_path=art_path,
+        large_venule_mask_path=ven_path,
         do_skeletonize=True,
         do_graph_building=True,
         do_equiv_resistance_calculation=False,
@@ -76,10 +110,6 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
         skeleton_max_bridge_distance=2,
         skeleton_component_connectivity=3,
         skeleton_min_component_percent=1.0,
-        starting_node_selection_method="volume",
-        output_node_selection_method="volume",
-        starting_node_volumes=[((0.0, 0.0, 0.0), (float(cropped_x - 1), float(y_band - 1), float(cropped_z - 1)))],
-        output_node_volumes=[((0.0, float(cropped_y - y_band), 0.0), (float(cropped_x - 1), float(cropped_y - 1), float(cropped_z - 1)))],
         starting_nodes=[],
         output_nodes=[],
         input_p_bc=1000.0,

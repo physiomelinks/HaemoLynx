@@ -122,7 +122,7 @@ def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
 
 def skeletonize_3d(img: np.ndarray) -> np.ndarray:
     """Safe 3D skeletonization wrapper."""
-    return skeletonize(img.astype(bool), method="lee")
+    return skeletonize(img.astype(bool), method="lee").astype(bool)
 
 def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None:
     """Set voxels along the straight line from *start* to *end* to True."""

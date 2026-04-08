@@ -982,17 +982,6 @@ def _attempt_cylinder_bridge(
             return False, np.zeros(shape, dtype=bool), "source_not_cylindrical"
         if float(target["linearity"]) < float(min_cylindricality):
             return False, np.zeros(shape, dtype=bool), "target_not_cylindrical"
-        angle = _axis_angle_deg(
-            np.asarray(source["principal_axis_zyx"], dtype=float),
-            np.asarray(target["principal_axis_zyx"], dtype=float),
-        )
-        if angle > float(max_axis_angle_degrees):
-            return False, np.zeros(shape, dtype=bool), "axis_mismatch"
-        src_r = max(1e-6, float(source["median_radius_microns"]))
-        tgt_r = max(1e-6, float(target["median_radius_microns"]))
-        ratio = max(src_r, tgt_r) / min(src_r, tgt_r)
-        if ratio > float(max_radius_ratio):
-            return False, np.zeros(shape, dtype=bool), "radius_ratio_mismatch"
 
     source_endpoints = source["endpoints_zyx"]
     target_endpoints = target["endpoints_zyx"]
@@ -1034,6 +1023,18 @@ def _attempt_cylinder_bridge(
         facing_threshold = float(min_facing_cosine)
         if source_facing < facing_threshold or target_facing < facing_threshold:
             return False, np.zeros(shape, dtype=bool), "endpoint_facing_mismatch"
+
+        angle = _axis_angle_deg(
+            np.asarray(source["principal_axis_zyx"], dtype=float),
+            np.asarray(target["principal_axis_zyx"], dtype=float),
+        )
+        if angle > float(max_axis_angle_degrees):
+            return False, np.zeros(shape, dtype=bool), "axis_mismatch"
+        src_r = max(1e-6, float(source["median_radius_microns"]))
+        tgt_r = max(1e-6, float(target["median_radius_microns"]))
+        ratio = max(src_r, tgt_r) / min(src_r, tgt_r)
+        if ratio > float(max_radius_ratio):
+            return False, np.zeros(shape, dtype=bool), "radius_ratio_mismatch"
 
     line_zyx = _line_indices_zyx(p0_best, p1_best)
     line_zyx = _clip_indices_to_shape(line_zyx, shape)
@@ -1279,20 +1280,8 @@ def _enforce_type_locked_continuity_for_small_mask(
             continue
         source = small_desc[source_id]
         for target in source_candidates[int(source_id)]:
-            # Necessary-condition prefilters to avoid expensive line sampling.
-            if enforce_cylinder_only:
-                source_axis = np.asarray(source["principal_axis_zyx"], dtype=float)
-                target_axis = np.asarray(target["principal_axis_zyx"], dtype=float)
-                axis_angle = _axis_angle_deg(source_axis, target_axis)
-                if axis_angle > float(max_axis_angle_degrees):
-                    prefiltered_out_count += 1
-                    continue
-                src_r = max(1e-6, float(source["median_radius_microns"]))
-                tgt_r = max(1e-6, float(target["median_radius_microns"]))
-                ratio = max(src_r, tgt_r) / min(src_r, tgt_r)
-                if ratio > float(max_radius_ratio):
-                    prefiltered_out_count += 1
-                    continue
+            # Cheap endpoint-distance prefilter; axis/facing/radius checks run in
+            # `_attempt_cylinder_bridge` so rejection reasons match actual gates.
             endpoint_dist = _min_endpoint_distance_microns(
                 source,
                 target,
@@ -1300,6 +1289,9 @@ def _enforce_type_locked_continuity_for_small_mask(
             )
             if endpoint_dist > float(max_bridge_distance_microns):
                 prefiltered_out_count += 1
+                rejected_reasons["bridge_too_long"] = int(
+                    rejected_reasons.get("bridge_too_long", 0) + 1
+                )
                 continue
 
             attempted += 1

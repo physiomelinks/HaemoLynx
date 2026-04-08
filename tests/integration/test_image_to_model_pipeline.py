@@ -7,7 +7,9 @@ import shutil
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 import pytest
+import tifffile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +29,29 @@ def _load_pipeline_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _write_corner_large_vessel_masks(
+    out_dir: Path,
+    shape_zyx: tuple[int, ...],
+    *,
+    stem: str,
+) -> tuple[Path, Path]:
+    """Non-overlapping corner masks matching *shape_zyx* (Z, Y, X) for automated I/O."""
+    z, y, x = (int(v) for v in shape_zyx[:3])
+    art = np.zeros((z, y, x), dtype=np.uint8)
+    ven = np.zeros((z, y, x), dtype=np.uint8)
+    fz = max(1, z // 3)
+    fy = max(1, y // 3)
+    fx = max(1, x // 3)
+    art[:fz, :fy, :fx] = 1
+    ven[-fz:, -fy:, -fx:] = 1
+    out_dir.mkdir(parents=True, exist_ok=True)
+    art_path = out_dir / f"{stem}_dummy_art.tif"
+    ven_path = out_dir / f"{stem}_dummy_ven.tif"
+    tifffile.imwrite(art_path, art)
+    tifffile.imwrite(ven_path, ven)
+    return art_path, ven_path
 
 
 @pytest.mark.integration
@@ -50,6 +75,10 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
         plot_dir=plot_dir,
         vtk_output_prefix=vtk_prefix,
         verbose_logging=False,
+        use_ilastik_segmentation=False,
+        use_large_vessel_masks=False,
+        use_ilastik_large_vessel_segmentation=False,
+        automated_vessel_assignment=False,
         do_skeletonize=True,
         do_graph_building=True,
         do_equiv_resistance_calculation=False,
@@ -92,8 +121,8 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
     n_edges = graph.number_of_edges()
     print(f"[integration_static] n_nodes={n_nodes}, n_edges={n_edges}")
 
-    assert n_nodes == 11, f"Expected 11 nodes, got {n_nodes}"
-    assert n_edges == 10, f"Expected 10 edges, got {n_edges}"
+    assert n_nodes == 9, f"Expected 9 graph nodes, got {n_nodes}"
+    assert n_edges == 8, f"Expected 8 graph edges, got {n_edges}"
 
 
 @pytest.mark.integration
@@ -117,6 +146,10 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
         plot_dir=plot_dir,
         vtk_output_prefix=vtk_prefix,
         verbose_logging=False,
+        use_ilastik_segmentation=False,
+        use_large_vessel_masks=False,
+        use_ilastik_large_vessel_segmentation=False,
+        automated_vessel_assignment=False,
         do_skeletonize=True,
         do_graph_building=True,
         do_equiv_resistance_calculation=False,
@@ -211,6 +244,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
             plot_dir=plot_dir,
             vtk_output_prefix=vtk_prefix,
             verbose_logging=False,
+            use_ilastik_segmentation=False,
+            use_large_vessel_masks=False,
+            use_ilastik_large_vessel_segmentation=False,
+            automated_vessel_assignment=False,
             do_skeletonize=True,
             do_graph_building=True,
             do_equiv_resistance_calculation=False,
@@ -264,7 +301,7 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
+def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture(tmp_path):
     """Run full pipeline against committed H5 fixture with bundled vessels."""
     pytest.importorskip("pyvista")
     h5py = pytest.importorskip("h5py")
@@ -283,18 +320,24 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     previous_dataset_name = getattr(pipeline, "H5_DATASET_NAME", None)
     pipeline.H5_DATASET_NAME = "data"
     with h5py.File(input_h5, "r") as handle:
-        shape = tuple(int(v) for v in handle["data"].shape)
-    z_max = max(0, shape[0] - 1)
-    y_max = max(0, shape[1] - 1)
-    x_max = max(0, shape[2] - 1)
-    input_x_hi = max(0, int(round(0.2 * x_max)))
-    output_x_lo = max(0, int(round(0.8 * x_max)))
+        shape_zyx = tuple(int(v) for v in handle["data"].shape)
+    art_path, ven_path = _write_corner_large_vessel_masks(
+        tmp_path / "h5_masks", shape_zyx, stem="h5_bundle"
+    )
     try:
         pipeline.image_to_model_pipeline(
             image_path=input_h5,
             plot_dir=plot_dir,
             vtk_output_prefix=vtk_prefix,
             verbose_logging=False,
+            use_ilastik_segmentation=False,
+            use_large_vessel_masks=True,
+            use_ilastik_large_vessel_segmentation=False,
+            automated_vessel_assignment=True,
+            automated_vessel_assignment_use_legacy_mode=True,
+            large_vessel_mask_dilation_microns=40.0,
+            large_arteriole_mask_path=art_path,
+            large_venule_mask_path=ven_path,
             do_skeletonize=True,
             do_graph_building=True,
             do_equiv_resistance_calculation=False,
@@ -304,20 +347,6 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
             skeleton_max_bridge_distance=2,
             skeleton_component_connectivity=3,
             skeleton_min_component_percent=1.0,
-            starting_node_selection_method="volume",
-            output_node_selection_method="volume",
-            starting_node_volumes=[
-                (
-                    (0.0, 0.0, 0.0),
-                    (float(z_max), float(y_max), float(input_x_hi)),
-                )
-            ],
-            output_node_volumes=[
-                (
-                    (0.0, 0.0, float(output_x_lo)),
-                    (float(z_max), float(y_max), float(x_max)),
-                )
-            ],
             starting_nodes=[],
             output_nodes=[],
             input_p_bc=1000.0,

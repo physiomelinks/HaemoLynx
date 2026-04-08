@@ -470,14 +470,20 @@ def test_progressive_dilation_assignment_locks_earlier_nodes():
 def test_confidence_mode_replaces_exact_tie_with_unresolved():
     """Equal arteriole/venule evidence should be flagged unresolved."""
     G = nx.MultiGraph()
-    G.add_node(0, pos=np.array([2.0, 2.0, 2.0]))  # terminal in overlap
-    G.add_node(1, pos=np.array([3.0, 2.0, 2.0]))  # connector
+    G.add_node(0, pos=np.array([2.0, 2.0, 2.0]))  # terminal in overlap (exact tie)
+    G.add_node(1, pos=np.array([3.0, 2.0, 2.0]))  # connector (degree 2)
+    G.add_node(2, pos=np.array([4.0, 2.0, 2.0]))  # interior (degree 2)
+    G.add_node(3, pos=np.array([5.0, 2.0, 2.0]))  # distal terminal: venule-only, not in overlap
     G.add_edge(0, 1, length=1.0, weight=1.0, voxels=[(2.0, 2.0, 2.0), (3.0, 2.0, 2.0)])
+    G.add_edge(1, 2, length=1.0, weight=1.0, voxels=[(3.0, 2.0, 2.0), (4.0, 2.0, 2.0)])
+    G.add_edge(2, 3, length=1.0, weight=1.0, voxels=[(4.0, 2.0, 2.0), (5.0, 2.0, 2.0)])
 
     arteriole_mask = np.zeros((8, 8, 8), dtype=bool)
     venule_mask = np.zeros((8, 8, 8), dtype=bool)
     arteriole_mask[1:4, 1:4, 1:4] = True
     venule_mask[1:4, 1:4, 1:4] = True
+    # x = 4 slice: venule only (clear venule output for node 3, no arteriole tie).
+    venule_mask[1:4, 1:4, 4:6] = True
 
     result = select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence(
         G,
@@ -490,7 +496,7 @@ def test_confidence_mode_replaces_exact_tie_with_unresolved():
         topology_penalty=0.0,
     )
     assert result["input_nodes"] == []
-    assert result["output_nodes"] == []
+    assert result["output_nodes"] == [3]
     assert result["unresolved_nodes"] == [0]
     assert result["node_confidence"][0]["reason"] in {"exact_tie", "low_score_gap"}
 

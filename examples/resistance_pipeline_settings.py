@@ -259,9 +259,9 @@ ARTERIOLE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[fl
 # Volume boxes used to select venule boundary nodes.
 VENULE_BOUNDARY_NODE_VOLUMES: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
 # Runtime container for selected starting node IDs.
-STARTING_NODES: list[int] = [1018, 1029, 1145, 1234, 1403, 1499, 1366, 1505, 1535, 1537, 1600, 1604, 1627, 1644, 145, 1655, 1698, 1721, 1786, 1962, 2121, 2503, 2517, 2587, 2633, 540, 558, 609, 617, 796, 963]
+STARTING_NODES: list[int] = [0, 10, 101, 106, 110, 12, 120, 123, 127, 14, 18, 2, 20, 21, 23, 25, 27, 29, 38, 4, 40, 42, 44, 46, 47, 53, 55, 57, 6, 67, 8, 82, 88, 93, 98]
 # Runtime container for selected output node IDs.
-OUTPUT_NODES: list[int] = [1005, 1049, 1068, 1134, 1258, 1264, 1560, 1561, 1594, 1623,  1861, 1877, 1893, 1965, 2012, 2021, 2065, 2103, 2279, 2288, 2389, 2461, 2464, 2482, 2536, 2652, 2918, 2920, 2996, 307, 3497, 3499, 3510, 433, 467, 4722, 486, 4886, 492, 4965, 5063, 569, 595, 641, 650, 669, 672,  763, 835, 939, 974, 976]
+OUTPUT_NODES: list[int] = [114, 118, 121, 125, 135, 136, 138, 139, 141, 145, 146, 152, 153]
 # Runtime container for selected arteriole boundary node IDs.
 ARTERIOLE_BOUNDARY_NODES: list[int] = [459, 652, 278, 342, 424, 442, 449, 517, 409, 477, 518, 571, 665, 937, 1460, 61, 1106, 1286, 1334, 1094, 1402, 1567, 1571, 1577, 1601, 440, 1699, 1891, 2150, 2248, 2362, 2505, 548]
 # Runtime container for selected venule boundary node IDs.

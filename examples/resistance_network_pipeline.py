@@ -223,20 +223,25 @@ def _run_alice_pericyte_dilation_pressure_sweep(
 
     for dilation_percent in dilation_values:
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
+        if dilation_factor <= 0.0:
+            raise ValueError(
+                "alice_pericyte_dilation_percent produces non-positive factor; "
+                f"got percent={dilation_percent}."
+            )
         G_sweep = graph_with_branch_orders.copy()
-        for _, _, _, edge_data in G_sweep.edges(keys=True, data=True):
-            fwhm_d = edge_data.get("fwhm_diameter_um")
-            if fwhm_d is not None and float(fwhm_d) > 0:
-                edge_data["fwhm_diameter_um"] = float(fwhm_d) * dilation_factor
-
-        scaled_diameter_by_branch_order = {
-            branch_order: float(diameter_um) * dilation_factor
-            for branch_order, diameter_um in diameter_by_branch_order.items()
+        pericyte_factor_by_branch_order = {
+            branch_order: (
+                dilation_factor
+                if str(branch_order).startswith("B")
+                else 1.0
+            )
+            for branch_order in diameter_by_branch_order.keys()
         }
-        G_sweep, _ = poiseuille_model.set_poiseuille_weights(
+        G_sweep, _ = poiseuille_model.set_poiseuille_weights_with_constrictions(
             G_sweep,
-            scaled_diameter_by_branch_order,
-            prefer_edge_fwhm_diameter=True,
+            diameter_by_branch_order,
+            prefer_edge_fwhm_baseline=True,
+            constriction_factor_by_branch_order=pericyte_factor_by_branch_order,
         )
         if custom_edges_for_sweep:
             G_sweep, _ = poiseuille_model.set_poiseuille_edge_weights(
@@ -601,7 +606,7 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             )
         )
     print(f"Alice paper curve plots saved to: {plot_outputs}")
-    print("Alice pericyte-dilation sweep plot mode: mode=passive")
+    print("Alice pericyte-dilation sweep plot mode: mode=d1d2")
     if capillary_flow_change_outputs is not None:
         print(
             "Alice capillary-only passive dilation flow-change plot saved to: "
