@@ -532,17 +532,11 @@ def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: T
     if 'length' in edge_data:
         return edge_data['length']
     
-    # If we have coordinate information, calculate Euclidean distance.
-    # In this codebase, edge/node coordinates are stored in physical units.
-    if 'pos' in edge_data or ('x' in edge_data and 'y' in edge_data):
-        if 'pos' in edge_data:
-            pos1, pos2 = edge_data['pos']
-        else:
-            pos1 = (edge_data.get('x1', 0), edge_data.get('y1', 0), edge_data.get('z1', 0))
-            pos2 = (edge_data.get('x2', 0), edge_data.get('y2', 0), edge_data.get('z2', 0))
-        # Positions here are physical coordinates (x, y, z), so do not rescale.
-        diff = np.array(pos2) - np.array(pos1)
-        return float(np.linalg.norm(diff))
+    # Prefer topological/path length from the stored voxel polyline.
+    # This intentionally avoids straight-line endpoint distance fallback.
+    voxels = edge_data.get('voxels')
+    if voxels and len(voxels) >= 2:
+        return float(calculate_path_length(voxels))
     
     # If we have weight, use that
     if 'weight' in edge_data:
