@@ -1214,6 +1214,99 @@ def infer_boundary_nodes_from_small_vessel_masks(
     }
 
 
+def _recompute_small_vessel_boundary_state_from_edge_labels(
+    G: nx.Graph,
+    *,
+    allow_overlap: bool,
+    minimum_overlap_fraction: float,
+) -> dict[str, Any]:
+    """Rebuild boundary/node labelling from current edge ``mask_vessel_type`` values."""
+    arteriole_edges: set[tuple[Any, Any, int]] = set()
+    venule_edges: set[tuple[Any, Any, int]] = set()
+    overlap_edge_count = 0
+    if isinstance(G, nx.MultiGraph):
+        for u, v, key, attrs in G.edges(keys=True, data=True):
+            vt = attrs.get("mask_vessel_type")
+            if vt is None:
+                continue
+            eid = _edge_id(u, v, key)
+            if vt == "arteriole":
+                arteriole_edges.add(eid)
+            elif vt == "venule":
+                venule_edges.add(eid)
+            elif vt == "overlap":
+                overlap_edge_count += 1
+                arteriole_edges.add(eid)
+                venule_edges.add(eid)
+    else:
+        for u, v, attrs in G.edges(data=True):
+            vt = attrs.get("mask_vessel_type")
+            if vt is None:
+                continue
+            eid = (u, v, 0) if u <= v else (v, u, 0)
+            if vt == "arteriole":
+                arteriole_edges.add(eid)
+            elif vt == "venule":
+                venule_edges.add(eid)
+            elif vt == "overlap":
+                overlap_edge_count += 1
+                arteriole_edges.add(eid)
+                venule_edges.add(eid)
+
+    arteriole_nodes: set[Any] = set()
+    venule_nodes: set[Any] = set()
+    for u, v, key in arteriole_edges:
+        arteriole_nodes.add(u)
+        arteriole_nodes.add(v)
+    for u, v, key in venule_edges:
+        venule_nodes.add(u)
+        venule_nodes.add(v)
+
+    if not allow_overlap:
+        overlapping_nodes = arteriole_nodes & venule_nodes
+        venule_nodes -= overlapping_nodes
+
+    for node_id in G.nodes:
+        G.nodes[node_id].pop("mask_vessel_type", None)
+    for node_id in arteriole_nodes:
+        if node_id in G.nodes:
+            G.nodes[node_id]["mask_vessel_type"] = "arteriole"
+    for node_id in venule_nodes:
+        if node_id in G.nodes and G.nodes[node_id].get("mask_vessel_type") != "arteriole":
+            G.nodes[node_id]["mask_vessel_type"] = "venule"
+
+    def _boundary_nodes_for(
+        edge_ids: set[tuple[Any, Any, int]], labeled_nodes: set[Any]
+    ) -> list[Any]:
+        boundaries: set[Any] = set()
+        for node_id in labeled_nodes:
+            incident_all: set[tuple[Any, Any, int]] = set()
+            if isinstance(G, nx.MultiGraph):
+                for nu, nv, nkey in G.edges(node_id, keys=True):
+                    incident_all.add(_edge_id(nu, nv, nkey))
+            else:
+                for nu, nv in G.edges(node_id):
+                    edge_id = (nu, nv, 0) if nu <= nv else (nv, nu, 0)
+                    incident_all.add(edge_id)
+            if any(eid not in edge_ids for eid in incident_all):
+                boundaries.add(node_id)
+        return _sort_nodes(boundaries)
+
+    arteriole_boundary_nodes = _boundary_nodes_for(arteriole_edges, arteriole_nodes)
+    venule_boundary_nodes = _boundary_nodes_for(venule_edges, venule_nodes)
+
+    return {
+        "arteriole_boundary_nodes": arteriole_boundary_nodes,
+        "venule_boundary_nodes": venule_boundary_nodes,
+        "arteriole_nodes": _sort_nodes(arteriole_nodes),
+        "venule_nodes": _sort_nodes(venule_nodes),
+        "arteriole_edge_count": len(arteriole_edges),
+        "venule_edge_count": len(venule_edges),
+        "overlap_edge_count": overlap_edge_count,
+        "minimum_overlap_fraction": float(minimum_overlap_fraction),
+    }
+
+
 def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
     G: nx.Graph,
     small_arteriole_mask: np.ndarray,
@@ -1229,11 +1322,14 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
 ) -> dict[str, Any]:
     """Infer boundary nodes over progressive dilation steps without reassignment.
 
-    Assignment steps always include 0 microns first, followed by fixed dilation
-    increments (default: 5 microns) up to `max_dilation_microns`.
+    Assignment steps always include 0 microns first. When the next scheduled
+    dilation exceeds 1 micron, an extra 1 micron step is inserted so sparse masks
+    can label nearest-vessel edges before large dilations smear the capillary gap.
 
-    Nodes assigned to arteriole/venule boundary groups at earlier steps are
-    locked and cannot be reassigned in subsequent steps.
+    Edge ``mask_vessel_type`` labels from the first step where any edge is
+    classified are locked (including explicit "unlabeled" gaps); later dilations
+    cannot reassign locked edges. Boundary nodes from merged edge labels are
+    accumulated across steps.
     """
     if small_arteriole_mask.shape != small_venule_mask.shape:
         raise ValueError(
@@ -1244,6 +1340,15 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
         max_dilation_microns=max_dilation_microns,
         dilation_step_microns=dilation_step_microns,
     )
+    if (
+        len(schedule) >= 2
+        and float(schedule[0]) == 0.0
+        and float(schedule[1]) > 1.0
+        and float(max_dilation_microns) >= 1.0
+    ):
+        schedule = sorted({float(s) for s in schedule} | {1.0})
+
+    locked_edge_vessel_type: dict[tuple[Any, Any, int], str | None] = {}
 
     all_nodes = set(G.nodes)
     assigned_arteriole_boundary: set[Any] = set()
@@ -1315,7 +1420,7 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
                 dilation_microns=float(dilation_microns),
             )
 
-        step_result = infer_boundary_nodes_from_small_vessel_masks(
+        infer_boundary_nodes_from_small_vessel_masks(
             G,
             small_arteriole_mask=step_arteriole_mask,
             small_venule_mask=step_venule_mask,
@@ -1324,6 +1429,29 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
             allow_overlap=allow_overlap,
             exclude_smaller_overlapping_volumes=exclude_smaller_overlapping_volumes,
             overlap_parallel_workers=overlap_parallel_workers,
+        )
+        inferred_types: dict[tuple[Any, Any, int], str | None] = {}
+        for edge_id, edge_data in _iter_edge_attr_items():
+            inferred_types[edge_id] = edge_data.get("mask_vessel_type")
+
+        for edge_id, edge_data in _iter_edge_attr_items():
+            if edge_id in locked_edge_vessel_type:
+                lock_val = locked_edge_vessel_type[edge_id]
+                if lock_val is None:
+                    edge_data.pop("mask_vessel_type", None)
+                else:
+                    edge_data["mask_vessel_type"] = lock_val
+
+        labeled_any = any(v is not None for v in inferred_types.values())
+        if labeled_any:
+            for edge_id, vt in inferred_types.items():
+                if edge_id not in locked_edge_vessel_type:
+                    locked_edge_vessel_type[edge_id] = vt
+
+        step_result = _recompute_small_vessel_boundary_state_from_edge_labels(
+            G,
+            allow_overlap=allow_overlap,
+            minimum_overlap_fraction=minimum_overlap_fraction,
         )
         latest_result = step_result
 

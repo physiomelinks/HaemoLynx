@@ -14,6 +14,7 @@ from .prune import (
     prune_vascular_stubs,
     remove_edges_for_self_connected_nodes,
     remove_isolated_nodes,
+    remove_components_without_connected_io,
 )
 from .terminal_edges import remove_terminal_terminal_edges
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
@@ -79,6 +80,9 @@ from ._helpers import (
     astar_skeleton_path,
     are_paths_similar,
     should_add_merged_edge,
+    snap_edge_endpoints_to_node_positions,
+    diagnose_edge_endpoint_node_alignment,
+    diagnose_edge_endpoint_skeleton_alignment,
 )
 
 __all__ = [
@@ -126,6 +130,7 @@ __all__ = [
     "remove_edges_for_self_connected_nodes",
     "remove_terminal_terminal_edges",
     "remove_isolated_nodes",
+    "remove_components_without_connected_io",
     "add_edge_safe",
     "has_edge_safe",
     "remove_edge_safe",
@@ -149,4 +154,7 @@ __all__ = [
     "astar_skeleton_path",
     "are_paths_similar",
     "should_add_merged_edge",
+    "snap_edge_endpoints_to_node_positions",
+    "diagnose_edge_endpoint_node_alignment",
+    "diagnose_edge_endpoint_skeleton_alignment",
 ]

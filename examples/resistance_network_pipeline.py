@@ -812,6 +812,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             min_stub_length=MIN_STUB_LENGTH,
                             cluster_collapse_distance=CLUSTER_COLLAPSE_DISTANCE,
                             remove_graph_elements_in_volumes=REMOVE_GRAPH_ELEMENTS_IN_VOLUMES,
+                            remove_disconnected_io_components_after_final_assignment=False,
+                            endpoint_snap_max_distance=3.0,
+                            endpoint_alignment_tolerance=1e-6,
+                            fail_on_unaligned_edge_endpoints=False,
+                            endpoint_snap_reference_mode="skeleton",
+                            endpoint_skeleton_search_radius_voxels=10,
                             graph_element_removal_volumes=GRAPH_ELEMENT_REMOVAL_VOLUMES,
                             vtk_output_prefix=VTK_OUTPUT_PREFIX,
                             skeleton_closing_radius=SKELETON_CLOSING_RADIUS,
@@ -1720,6 +1726,65 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 f"removed_isolated_nodes={int(removal_stats['removed_isolated_nodes'])}."
             )
 
+    # Ensure every edge polyline is oriented/snap-aligned to its incident nodes.
+    endpoint_repair_stats = graph.snap_edge_endpoints_to_node_positions(
+        G,
+        update_length=True,
+        update_weight_if_matches_length=True,
+        max_snap_distance=float(endpoint_snap_max_distance)
+        if endpoint_snap_max_distance is not None
+        else None,
+        reference_skeleton_data=skeleton,
+        voxel_size=voxel_size,
+        prefer_skeleton_reference=str(endpoint_snap_reference_mode).strip().lower() == "skeleton",
+        skeleton_search_radius_voxels=int(endpoint_skeleton_search_radius_voxels),
+        atol=float(endpoint_alignment_tolerance),
+    )
+    print(
+        "Endpoint-node alignment repair: "
+        f"snapped={int(endpoint_repair_stats.get('edges_snapped', 0))}, "
+        f"reoriented={int(endpoint_repair_stats.get('edges_reoriented', 0))}, "
+        f"skeleton_ref_endpoints={int(endpoint_repair_stats.get('endpoints_using_skeleton_reference', 0))}, "
+        f"skipped_distance={int(endpoint_repair_stats.get('edges_skipped_distance', 0))}, "
+        f"edges_seen={int(endpoint_repair_stats.get('edges_seen', 0))}."
+    )
+    endpoint_alignment_diag = graph.diagnose_edge_endpoint_node_alignment(
+        G,
+        atol=float(endpoint_alignment_tolerance),
+        sample_limit=20,
+    )
+    print(
+        "Endpoint-node alignment check: "
+        f"misaligned_edges={int(endpoint_alignment_diag.get('misaligned_edges', 0))}, "
+        f"max_misalignment={float(endpoint_alignment_diag.get('max_misalignment', 0.0)):.6g}, "
+        f"edges_missing_node_pos={int(endpoint_alignment_diag.get('edges_missing_node_pos', 0))}."
+    )
+    endpoint_skeleton_diag = graph.diagnose_edge_endpoint_skeleton_alignment(
+        G,
+        skeleton,
+        voxel_size=voxel_size,
+        max_search_radius_voxels=2,
+        sample_limit=20,
+    )
+    print(
+        "Endpoint-skeleton alignment check: "
+        f"off_skeleton_endpoints={int(endpoint_skeleton_diag.get('off_skeleton_endpoints', 0))}, "
+        f"max_distance_to_skeleton={float(endpoint_skeleton_diag.get('max_distance_to_skeleton', 0.0)):.6g}."
+    )
+    if bool(fail_on_unaligned_edge_endpoints) and (
+        int(endpoint_alignment_diag.get("misaligned_edges", 0)) > 0
+        or int(endpoint_alignment_diag.get("edges_missing_node_pos", 0)) > 0
+        or int(endpoint_skeleton_diag.get("off_skeleton_endpoints", 0)) > 0
+    ):
+        raise ValueError(
+            "Edge endpoint-node alignment check failed: "
+            f"misaligned_edges={int(endpoint_alignment_diag.get('misaligned_edges', 0))}, "
+            f"edges_missing_node_pos={int(endpoint_alignment_diag.get('edges_missing_node_pos', 0))}, "
+            f"off_skeleton_endpoints={int(endpoint_skeleton_diag.get('off_skeleton_endpoints', 0))}, "
+            f"sample_node_mismatch={endpoint_alignment_diag.get('sample_misaligned_edges', [])}, "
+            f"sample_off_skeleton={endpoint_skeleton_diag.get('sample_off_skeleton_endpoints', [])}."
+        )
+
     # Store physical voxel-unit metadata used for skeleton/graph geometry and mask alignment.
     G.graph["image_voxel_size_xyz"] = tuple(float(v) for v in voxel_size)
     if large_arteriole_mask is not None and large_venule_mask is not None:
@@ -2130,6 +2195,33 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "I/O assignment contains non-terminal nodes after filtering: "
             f"invalid_inputs={invalid_start_nodes}, invalid_outputs={invalid_output_nodes}."
         )
+    if bool(remove_disconnected_io_components_after_final_assignment):
+        G, io_prune_stats = graph.remove_components_without_connected_io(
+            G,
+            starting_nodes,
+            output_nodes,
+        )
+        if int(io_prune_stats["removed_components"]) > 0:
+            starting_nodes[:] = [int(node_id) for node_id in starting_nodes if node_id in G.nodes]
+            output_nodes[:] = [int(node_id) for node_id in output_nodes if node_id in G.nodes]
+            arteriole_boundary_nodes[:] = [
+                int(node_id) for node_id in arteriole_boundary_nodes if node_id in G.nodes
+            ]
+            venule_boundary_nodes[:] = [
+                int(node_id) for node_id in venule_boundary_nodes if node_id in G.nodes
+            ]
+            print(
+                "Removed disconnected graph component(s) lacking STARTING_NODES or "
+                "OUTPUT_NODES after final assignment: "
+                f"removed_components={int(io_prune_stats['removed_components'])}, "
+                f"removed_nodes={int(io_prune_stats['removed_nodes'])}, "
+                f"remaining_nodes={int(io_prune_stats['remaining_nodes'])}."
+            )
+            if not starting_nodes or not output_nodes:
+                raise ValueError(
+                    "After removing disconnected components without both STARTING_NODES "
+                    "and OUTPUT_NODES, no valid boundary nodes remained."
+                )
     if automated_vessel_assignment and auto_persist_automated_io_assignment_to_settings:
         persist_automated_io_assignment_to_settings_file(
             settings_file_path=SETTINGS_FILE_PATH,

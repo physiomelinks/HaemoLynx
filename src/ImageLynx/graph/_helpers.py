@@ -1,5 +1,5 @@
 """Internal helpers for graph operations."""
-from typing import List, Tuple, Dict, Any, Union
+from typing import List, Tuple, Dict, Any, Union, Optional
 
 import numpy as np
 import networkx as nx
@@ -235,6 +235,242 @@ def calculate_path_length(voxels):
         return 0.0
     arr = np.array(voxels, dtype=float)
     return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
+
+
+def snap_edge_endpoints_to_node_positions(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    update_length: bool = True,
+    update_weight_if_matches_length: bool = True,
+    max_snap_distance: Optional[float] = None,
+    reference_skeleton_data: Optional[np.ndarray] = None,
+    voxel_size: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+    prefer_skeleton_reference: bool = False,
+    skeleton_search_radius_voxels: int = 10,
+    atol: float = 1e-6,
+) -> Dict[str, int]:
+    """Align edge voxel-path endpoints to incident node positions.
+
+    Topology edits can leave edge voxel paths slightly detached from node ``pos``.
+    This routine orients each path to best match ``(u, v)``, snaps first/last
+    points to node positions, and optionally updates edge length.
+    """
+    stats = {
+        "edges_seen": 0,
+        "edges_snapped": 0,
+        "edges_reoriented": 0,
+        "edges_skipped_distance": 0,
+        "endpoints_using_skeleton_reference": 0,
+    }
+    skeleton_array = (
+        parse_skeleton_data(reference_skeleton_data)
+        if (prefer_skeleton_reference and reference_skeleton_data is not None)
+        else None
+    )
+    is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    edge_iter = G.edges(keys=True, data=True) if is_multi else (
+        (u, v, 0, data) for u, v, data in G.edges(data=True)
+    )
+
+    for u, v, _, data in edge_iter:
+        stats["edges_seen"] += 1
+        voxels = data.get("voxels")
+        if not voxels or len(voxels) < 2:
+            continue
+        if "pos" not in G.nodes[u] or "pos" not in G.nodes[v]:
+            continue
+
+        pts = np.asarray(voxels, dtype=float)
+        if pts.ndim != 2 or pts.shape[0] < 2:
+            continue
+
+        u_pos = np.asarray(G.nodes[u]["pos"], dtype=float)
+        v_pos = np.asarray(G.nodes[v]["pos"], dtype=float)
+        if u_pos.size < 3 or v_pos.size < 3:
+            continue
+        u3 = u_pos[:3]
+        v3 = v_pos[:3]
+
+        u_target = u3
+        v_target = v3
+        if skeleton_array is not None:
+            u_idx = physical_xyz_to_index_zyx(u3, voxel_size)
+            v_idx = physical_xyz_to_index_zyx(v3, voxel_size)
+            u_nearest = find_nearest_skeleton_voxel(
+                skeleton_array,
+                u_idx,
+                max_search_radius=int(skeleton_search_radius_voxels),
+            )
+            v_nearest = find_nearest_skeleton_voxel(
+                skeleton_array,
+                v_idx,
+                max_search_radius=int(skeleton_search_radius_voxels),
+            )
+            if u_nearest is not None:
+                u_target = np.asarray(index_zyx_to_physical_xyz(u_nearest, voxel_size), dtype=float)[:3]
+                stats["endpoints_using_skeleton_reference"] += 1
+            if v_nearest is not None:
+                v_target = np.asarray(index_zyx_to_physical_xyz(v_nearest, voxel_size), dtype=float)[:3]
+                stats["endpoints_using_skeleton_reference"] += 1
+
+        direct_start = float(np.linalg.norm(pts[0] - u_target))
+        direct_end = float(np.linalg.norm(pts[-1] - v_target))
+        flipped_start = float(np.linalg.norm(pts[0] - v_target))
+        flipped_end = float(np.linalg.norm(pts[-1] - u_target))
+        direct_cost = direct_start + direct_end
+        flipped_cost = flipped_start + flipped_end
+        use_flipped = flipped_cost < direct_cost
+        if use_flipped:
+            cand_start_dist = flipped_start
+            cand_end_dist = flipped_end
+        else:
+            cand_start_dist = direct_start
+            cand_end_dist = direct_end
+        if max_snap_distance is not None:
+            if max(cand_start_dist, cand_end_dist) > float(max_snap_distance):
+                stats["edges_skipped_distance"] += 1
+                continue
+        if use_flipped:
+            pts = pts[::-1].copy()
+            stats["edges_reoriented"] += 1
+
+        before_start = pts[0].copy()
+        before_end = pts[-1].copy()
+        pts[0] = u_target
+        pts[-1] = v_target
+
+        snapped = not (
+            np.allclose(before_start, u_target, atol=atol)
+            and np.allclose(before_end, v_target, atol=atol)
+        )
+        if not snapped:
+            continue
+
+        data["voxels"] = pts.tolist()
+        if update_length:
+            new_length = calculate_path_length(data["voxels"])
+            old_length = data.get("length", None)
+            data["length"] = new_length
+            if (
+                update_weight_if_matches_length
+                and old_length is not None
+                and np.isfinite(old_length)
+                and np.isfinite(data.get("weight", np.nan))
+                and np.isclose(float(data["weight"]), float(old_length), atol=max(atol, 1e-9))
+            ):
+                data["weight"] = new_length
+        stats["edges_snapped"] += 1
+
+    return stats
+
+
+def diagnose_edge_endpoint_node_alignment(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    atol: float = 1e-6,
+    sample_limit: int = 20,
+) -> Dict[str, Any]:
+    """Report edges whose voxel endpoints do not align with incident nodes."""
+    stats: Dict[str, Any] = {
+        "edges_seen": 0,
+        "edges_with_voxels": 0,
+        "edges_missing_node_pos": 0,
+        "misaligned_edges": 0,
+        "max_misalignment": 0.0,
+        "sample_misaligned_edges": [],
+    }
+    is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    edge_iter = G.edges(keys=True, data=True) if is_multi else (
+        (u, v, 0, data) for u, v, data in G.edges(data=True)
+    )
+
+    for u, v, k, data in edge_iter:
+        stats["edges_seen"] += 1
+        voxels = data.get("voxels")
+        if not voxels or len(voxels) < 2:
+            continue
+        stats["edges_with_voxels"] += 1
+        if "pos" not in G.nodes[u] or "pos" not in G.nodes[v]:
+            stats["edges_missing_node_pos"] += 1
+            continue
+
+        pts = np.asarray(voxels, dtype=float)
+        if pts.ndim != 2 or pts.shape[0] < 2:
+            continue
+        u3 = np.asarray(G.nodes[u]["pos"], dtype=float)[:3]
+        v3 = np.asarray(G.nodes[v]["pos"], dtype=float)[:3]
+        if u3.size < 3 or v3.size < 3:
+            stats["edges_missing_node_pos"] += 1
+            continue
+
+        direct = float(np.linalg.norm(pts[0] - u3) + np.linalg.norm(pts[-1] - v3))
+        flipped = float(np.linalg.norm(pts[0] - v3) + np.linalg.norm(pts[-1] - u3))
+        mismatch = min(direct, flipped)
+        if mismatch > float(atol):
+            stats["misaligned_edges"] += 1
+            if mismatch > float(stats["max_misalignment"]):
+                stats["max_misalignment"] = mismatch
+            if len(stats["sample_misaligned_edges"]) < int(sample_limit):
+                stats["sample_misaligned_edges"].append((int(u), int(v), int(k), mismatch))
+    return stats
+
+
+def diagnose_edge_endpoint_skeleton_alignment(
+    G: Union[nx.Graph, nx.MultiGraph],
+    skeleton_data: np.ndarray,
+    *,
+    voxel_size: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+    max_search_radius_voxels: int = 2,
+    sample_limit: int = 20,
+) -> Dict[str, Any]:
+    """Report how well edge endpoints lie on the provided skeleton."""
+    skeleton_array = parse_skeleton_data(skeleton_data)
+    if skeleton_array is None:
+        raise ValueError("skeleton_data could not be parsed into a 3D array")
+
+    stats: Dict[str, Any] = {
+        "edges_seen": 0,
+        "endpoints_seen": 0,
+        "off_skeleton_endpoints": 0,
+        "max_distance_to_skeleton": 0.0,
+        "sample_off_skeleton_endpoints": [],
+    }
+    is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    edge_iter = G.edges(keys=True, data=True) if is_multi else (
+        (u, v, 0, data) for u, v, data in G.edges(data=True)
+    )
+
+    for u, v, k, data in edge_iter:
+        stats["edges_seen"] += 1
+        voxels = data.get("voxels")
+        if not voxels or len(voxels) < 2:
+            continue
+        pts = np.asarray(voxels, dtype=float)
+        if pts.ndim != 2 or pts.shape[0] < 2:
+            continue
+
+        for endpoint in (pts[0], pts[-1]):
+            stats["endpoints_seen"] += 1
+            endpoint_idx = physical_xyz_to_index_zyx(endpoint, voxel_size)
+            nearest = find_nearest_skeleton_voxel(
+                skeleton_array,
+                endpoint_idx,
+                max_search_radius=int(max_search_radius_voxels),
+            )
+            if nearest is None:
+                stats["off_skeleton_endpoints"] += 1
+                if len(stats["sample_off_skeleton_endpoints"]) < int(sample_limit):
+                    stats["sample_off_skeleton_endpoints"].append((int(u), int(v), int(k), None))
+                continue
+            nearest_phys = np.asarray(index_zyx_to_physical_xyz(nearest, voxel_size), dtype=float)
+            dist = float(np.linalg.norm(np.asarray(endpoint, dtype=float) - nearest_phys))
+            if dist > float(stats["max_distance_to_skeleton"]):
+                stats["max_distance_to_skeleton"] = dist
+            if dist > 1e-6:
+                stats["off_skeleton_endpoints"] += 1
+                if len(stats["sample_off_skeleton_endpoints"]) < int(sample_limit):
+                    stats["sample_off_skeleton_endpoints"].append((int(u), int(v), int(k), dist))
+    return stats
 
 
 def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: Tuple[float, float, float] = (1, 1, 1)) -> float:

@@ -354,6 +354,9 @@ MIN_STUB_LENGTH = 10.0
 CLUSTER_COLLAPSE_DISTANCE = 5.0
 # Toggle graph element removal within user-defined volumes.
 REMOVE_GRAPH_ELEMENTS_IN_VOLUMES = True
+# Remove disconnected graph components after final I/O assignment when they do
+# not contain at least one STARTING_NODE and one OUTPUT_NODE.
+REMOVE_DISCONNECTED_IO_COMPONENTS_AFTER_FINAL_ASSIGNMENT = False
 # Axis-aligned volume boxes used for graph-element removal.
 # Each entry is ((x_min, y_min, z_min), (x_max, y_max, z_max)).
 # Also accepts shorthand:

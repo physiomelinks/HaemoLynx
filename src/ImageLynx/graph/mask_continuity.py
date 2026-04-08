@@ -256,6 +256,79 @@ def _local_signed_gradient(
     return np.asarray([gz, gy, gx], dtype=float)
 
 
+def _unit_normal_from_signed_distance(
+    signed_distance: np.ndarray,
+    *,
+    index_zyx: tuple[int, int, int],
+    sampling_zyx: tuple[float, float, float],
+) -> np.ndarray | None:
+    """Unit outward normal from a signed distance field; robust to flat plateaus."""
+    z0, y0, x0 = int(index_zyx[0]), int(index_zyx[1]), int(index_zyx[2])
+    sh = signed_distance.shape
+
+    g0 = _local_signed_gradient(
+        signed_distance,
+        index_zyx=(z0, y0, x0),
+        sampling_zyx=sampling_zyx,
+    )
+    n0 = float(np.linalg.norm(g0))
+    if n0 > 1e-9:
+        return g0 / n0
+
+    acc = np.zeros(3, dtype=float)
+    weight = 0
+    for dz in range(-2, 3):
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                zz, yy, xx = z0 + dz, y0 + dy, x0 + dx
+                if not (
+                    0 <= zz < int(sh[0]) and 0 <= yy < int(sh[1]) and 0 <= xx < int(sh[2])
+                ):
+                    continue
+                g = _local_signed_gradient(
+                    signed_distance,
+                    index_zyx=(zz, yy, xx),
+                    sampling_zyx=sampling_zyx,
+                )
+                gn = float(np.linalg.norm(g))
+                if gn > 1e-9:
+                    acc += g / gn
+                    weight += 1
+    if weight > 0:
+        acc /= float(weight)
+        an = float(np.linalg.norm(acc))
+        if an > 1e-9:
+            return acc / an
+
+    best_vec = None
+    best_abs = float("inf")
+    for dz in range(-2, 3):
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                zz, yy, xx = z0 + dz, y0 + dy, x0 + dx
+                if not (
+                    0 <= zz < int(sh[0]) and 0 <= yy < int(sh[1]) and 0 <= xx < int(sh[2])
+                ):
+                    continue
+                val = abs(float(signed_distance[zz, yy, xx]))
+                if val < best_abs:
+                    best_abs = val
+                    best_vec = (dz, dy, dx)
+    if best_vec is not None and (best_vec[0] != 0 or best_vec[1] != 0 or best_vec[2] != 0):
+        vec = np.asarray(
+            [
+                float(best_vec[0]) * float(sampling_zyx[0]),
+                float(best_vec[1]) * float(sampling_zyx[1]),
+                float(best_vec[2]) * float(sampling_zyx[2]),
+            ],
+            dtype=float,
+        )
+        vn = float(np.linalg.norm(vec))
+        if vn > 1e-9:
+            return vec / vn
+    return None
+
+
 def _evaluate_endpoint_tangency_to_large_mask(
     endpoint_zyx: np.ndarray,
     axis_zyx: np.ndarray,
@@ -298,13 +371,12 @@ def _evaluate_endpoint_tangency_to_large_mask(
             "tangency_cosine": float(1.0),
             "distance_to_opposite_large_microns": float(distance_to_opposite_large[z, y, x]),
         }
-    normal = _local_signed_gradient(
+    normal_hat = _unit_normal_from_signed_distance(
         signed_distance_to_large,
         index_zyx=(z, y, x),
         sampling_zyx=sampling_zyx,
     )
-    n_norm = float(np.linalg.norm(normal))
-    if n_norm <= 1e-9:
+    if normal_hat is None:
         return {
             "valid": False,
             "reason": "undefined_boundary_normal",
@@ -313,7 +385,6 @@ def _evaluate_endpoint_tangency_to_large_mask(
             "tangency_cosine": float(1.0),
             "distance_to_opposite_large_microns": float(distance_to_opposite_large[z, y, x]),
         }
-    normal_hat = normal / n_norm
     axis = np.asarray(axis_zyx, dtype=float)
     axis_norm = float(np.linalg.norm(axis))
     if axis_norm <= 1e-9:
@@ -321,6 +392,14 @@ def _evaluate_endpoint_tangency_to_large_mask(
     else:
         axis_hat = axis / axis_norm
     tangency_cos = float(abs(np.dot(axis_hat, normal_hat)))
+    if tangency_cos > float(tangency_cosine_max) and float(d_large) <= float(
+        max_contact_distance_microns
+    ):
+        normal_plane = normal_hat - axis_hat * float(np.dot(normal_hat, axis_hat))
+        plane_norm = float(np.linalg.norm(normal_plane))
+        if plane_norm > 1e-9:
+            normal_hat = normal_plane / plane_norm
+            tangency_cos = float(abs(np.dot(axis_hat, normal_hat)))
     if tangency_cos > float(tangency_cosine_max):
         return {
             "valid": False,
@@ -416,6 +495,71 @@ def _best_neighbor_for_endpoint(
     return best
 
 
+def _segment_bridges_distinct_peer_components(
+    seg_comp_id: int,
+    *,
+    descriptors_seg: dict[int, dict[str, Any]],
+    descriptors_peer: dict[int, dict[str, Any]],
+    max_endpoint_distance_microns: float,
+    max_axis_angle_degrees: float,
+    sampling_zyx: tuple[float, float, float],
+) -> bool:
+    """Endpoints of segment component ``seg`` adjoin two distinct peer-mask components."""
+    desc = descriptors_seg[int(seg_comp_id)]
+    end_a = np.asarray(desc["endpoints_zyx"][0], dtype=float)
+    end_b = np.asarray(desc["endpoints_zyx"][1], dtype=float)
+    mid = np.mean(desc["coords_zyx"], axis=0).astype(float)
+    seg_vec = end_b - end_a
+    seg_norm = float(np.linalg.norm(seg_vec))
+    if seg_norm <= 1e-9:
+        return False
+    seg_hat = seg_vec / seg_norm
+    pa = float(np.dot(end_a - mid, seg_hat))
+    pb = float(np.dot(end_b - mid, seg_hat))
+    if pa * pb >= 0.0:
+        return False
+
+    spacing = np.asarray(sampling_zyx, dtype=float)
+
+    def dist_microns(p: np.ndarray, q: np.ndarray) -> float:
+        return float(np.linalg.norm((p - q) * spacing))
+
+    peer_pts: list[tuple[int, np.ndarray]] = []
+    for pid, pdesc in descriptors_peer.items():
+        ea, eb = pdesc["endpoints_zyx"]
+        peer_pts.append((int(pid), np.asarray(ea, dtype=float)))
+        peer_pts.append((int(pid), np.asarray(eb, dtype=float)))
+
+    best_a: tuple[float, int] | None = None
+    best_b: tuple[float, int] | None = None
+    for pid, pt in peer_pts:
+        d_a = dist_microns(end_a, pt)
+        if d_a <= float(max_endpoint_distance_microns) and (
+            best_a is None or d_a < best_a[0]
+        ):
+            best_a = (d_a, pid)
+        d_b = dist_microns(end_b, pt)
+        if d_b <= float(max_endpoint_distance_microns) and (
+            best_b is None or d_b < best_b[0]
+        ):
+            best_b = (d_b, pid)
+
+    if best_a is None or best_b is None:
+        return False
+    if int(best_a[1]) == int(best_b[1]):
+        return False
+
+    seg_axis = np.asarray(desc["principal_axis_zyx"], dtype=float)
+    for pid in (int(best_a[1]), int(best_b[1])):
+        pax = np.asarray(descriptors_peer[int(pid)]["principal_axis_zyx"], dtype=float)
+        if _axis_angle_deg(seg_axis, pax) > float(max_axis_angle_degrees):
+            return False
+    return True
+
+
+_MERGED_VENULE_COMP_ID_BASE = 1_000_000
+
+
 def _reassign_sandwiched_components(
     *,
     arteriole_mask: np.ndarray,
@@ -426,35 +570,49 @@ def _reassign_sandwiched_components(
     max_axis_angle_degrees: float,
     parallel_workers: int = 0,
 ) -> dict[str, Any]:
-    all_small = arteriole_mask.astype(bool, copy=False) | venule_mask.astype(bool, copy=False)
+    """Sandwich detection uses separate CC on each mask so thin gaps still split labels."""
+    art_b = arteriole_mask.astype(bool, copy=False)
+    ven_b = venule_mask.astype(bool, copy=False)
     sampling_zyx = _voxel_size_xyz_to_sampling_zyx(voxel_size_xyz)
-    labeled, comp_count = _connected_components(all_small)
-    descriptors = _component_descriptors(
-        all_small,
+    labeled_art, count_art = _connected_components(art_b)
+    descriptors_art = _component_descriptors(
+        art_b,
         None,
-        labeled=labeled,
-        count=comp_count,
+        labeled=labeled_art,
+        count=count_art,
     )
-    component_type: dict[int, str] = {}
-    for comp_id, desc in descriptors.items():
-        coords = desc["coords_zyx"]
-        art_frac = float(
-            np.count_nonzero(arteriole_mask[coords[:, 0], coords[:, 1], coords[:, 2]])
-        ) / float(max(1, coords.shape[0]))
-        component_type[int(comp_id)] = "arteriole" if art_frac >= 0.5 else "venule"
+    labeled_ven, count_ven = _connected_components(ven_b)
+    descriptors_ven = _component_descriptors(
+        ven_b,
+        None,
+        labeled=labeled_ven,
+        count=count_ven,
+    )
+
+    merged_desc: dict[int, dict[str, Any]] = {}
+    id_kind: dict[int, str] = {}
+    for k, d in descriptors_art.items():
+        nid = int(k)
+        merged_desc[nid] = d
+        id_kind[nid] = "arteriole"
+    for k, d in descriptors_ven.items():
+        nid = int(_MERGED_VENULE_COMP_ID_BASE + int(k))
+        merged_desc[nid] = d
+        id_kind[nid] = "venule"
+
     endpoint_lookup_by_type: dict[str, dict[str, Any]] = {}
     spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
     for vessel_type in ("arteriole", "venule"):
         endpoint_points: list[np.ndarray] = []
         endpoint_component_ids: list[int] = []
-        for comp_id, desc in descriptors.items():
-            if component_type.get(int(comp_id), "") != vessel_type:
+        for nid, desc in merged_desc.items():
+            if id_kind[nid] != vessel_type:
                 continue
             end_a, end_b = desc["endpoints_zyx"]
             endpoint_points.append(np.asarray(end_a, dtype=float))
-            endpoint_component_ids.append(int(comp_id))
+            endpoint_component_ids.append(int(nid))
             endpoint_points.append(np.asarray(end_b, dtype=float))
-            endpoint_component_ids.append(int(comp_id))
+            endpoint_component_ids.append(int(nid))
         if not endpoint_points:
             endpoint_lookup_by_type[vessel_type] = {
                 "tree": None,
@@ -469,20 +627,42 @@ def _reassign_sandwiched_components(
             "endpoint_component_ids": np.asarray(endpoint_component_ids, dtype=int),
         }
 
-    def _evaluate_one_component(comp_id: int) -> tuple[int, str | None]:
-        desc = descriptors[int(comp_id)]
-        current_type = component_type.get(int(comp_id), "")
-        if current_type not in {"arteriole", "venule"}:
-            return int(comp_id), None
-        target_type = "venule" if current_type == "arteriole" else "arteriole"
+    def _evaluate_one_component(comp_merged_id: int) -> tuple[int, str | None]:
+        kind = id_kind.get(int(comp_merged_id))
+        if kind is None:
+            return int(comp_merged_id), None
+        desc = merged_desc[int(comp_merged_id)]
+        if kind == "arteriole":
+            raw_id = int(comp_merged_id)
+            if _segment_bridges_distinct_peer_components(
+                raw_id,
+                descriptors_seg=descriptors_art,
+                descriptors_peer=descriptors_ven,
+                max_endpoint_distance_microns=max_endpoint_distance_microns,
+                max_axis_angle_degrees=max_axis_angle_degrees,
+                sampling_zyx=sampling_zyx,
+            ):
+                return int(comp_merged_id), "venule"
+        elif kind == "venule":
+            raw_id = int(comp_merged_id) - int(_MERGED_VENULE_COMP_ID_BASE)
+            if _segment_bridges_distinct_peer_components(
+                raw_id,
+                descriptors_seg=descriptors_ven,
+                descriptors_peer=descriptors_art,
+                max_endpoint_distance_microns=max_endpoint_distance_microns,
+                max_axis_angle_degrees=max_axis_angle_degrees,
+                sampling_zyx=sampling_zyx,
+            ):
+                return int(comp_merged_id), "arteriole"
+        target_type = "venule" if kind == "arteriole" else "arteriole"
         axis = np.asarray(desc["principal_axis_zyx"], dtype=float)
         end_a, end_b = desc["endpoints_zyx"]
         support_a = _best_neighbor_for_endpoint(
-            current_component_id=int(comp_id),
+            current_component_id=int(comp_merged_id),
             endpoint_zyx=np.asarray(end_a, dtype=int),
             current_axis_zyx=axis,
             target_type=target_type,
-            descriptors=descriptors,
+            descriptors=merged_desc,
             endpoint_lookup_by_type=endpoint_lookup_by_type,
             max_endpoint_distance_microns=max_endpoint_distance_microns,
             min_facing_cosine=min_facing_cosine,
@@ -490,11 +670,11 @@ def _reassign_sandwiched_components(
             sampling_zyx=sampling_zyx,
         )
         support_b = _best_neighbor_for_endpoint(
-            current_component_id=int(comp_id),
+            current_component_id=int(comp_merged_id),
             endpoint_zyx=np.asarray(end_b, dtype=int),
             current_axis_zyx=axis,
             target_type=target_type,
-            descriptors=descriptors,
+            descriptors=merged_desc,
             endpoint_lookup_by_type=endpoint_lookup_by_type,
             max_endpoint_distance_microns=max_endpoint_distance_microns,
             min_facing_cosine=min_facing_cosine,
@@ -502,14 +682,13 @@ def _reassign_sandwiched_components(
             sampling_zyx=sampling_zyx,
         )
         if support_a is None or support_b is None:
-            return int(comp_id), None
-        # Prefer true "middle between two labeled volumes": different neighbors at each end.
+            return int(comp_merged_id), None
         if int(support_a["component_id"]) == int(support_b["component_id"]):
-            return int(comp_id), None
-        return int(comp_id), str(target_type)
+            return int(comp_merged_id), None
+        return int(comp_merged_id), str(target_type)
 
     flips: dict[int, str] = {}
-    component_ids = sorted(int(cid) for cid in descriptors.keys())
+    component_ids = sorted(int(cid) for cid in merged_desc.keys())
     worker_count = int(parallel_workers)
     if worker_count > 0 and len(component_ids) > 1:
         results: list[tuple[int, str | None]] = []
@@ -531,12 +710,20 @@ def _reassign_sandwiched_components(
                 continue
             flips[int(decided_comp_id)] = str(target_type)
 
-    out_art = arteriole_mask.astype(bool, copy=False).copy()
-    out_ven = venule_mask.astype(bool, copy=False).copy()
+    out_art = art_b.copy()
+    out_ven = ven_b.copy()
     flip_to_art = 0
     flip_to_ven = 0
-    for comp_id, new_type in flips.items():
-        coords = np.argwhere(labeled == int(comp_id))
+    for comp_merged_id, new_type in flips.items():
+        kind = id_kind.get(int(comp_merged_id))
+        if kind == "arteriole":
+            raw = int(comp_merged_id)
+            coords = np.argwhere(labeled_art == raw)
+        elif kind == "venule":
+            raw = int(comp_merged_id) - int(_MERGED_VENULE_COMP_ID_BASE)
+            coords = np.argwhere(labeled_ven == raw)
+        else:
+            continue
         if coords.size == 0:
             continue
         if new_type == "arteriole":
@@ -552,7 +739,7 @@ def _reassign_sandwiched_components(
         "small_arteriole_mask": out_art,
         "small_venule_mask": out_ven,
         "stats": {
-            "component_count": int(comp_count),
+            "component_count": int(count_art + count_ven),
             "sandwiched_flips_to_arteriole": int(flip_to_art),
             "sandwiched_flips_to_venule": int(flip_to_ven),
         },
