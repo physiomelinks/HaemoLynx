@@ -189,7 +189,7 @@ def graph_to_vtk(
     edge_v: List[int] = []
     edge_key: List[int] = []
     branch_order: List[str] = []
-    weights: List[float] = []
+    resistances: List[float] = []
     assigned_diameter_um: List[float] = []
     calculated_diameter_um: List[float] = []
 
@@ -228,8 +228,8 @@ def graph_to_vtk(
         edge_v.append(int(v) if isinstance(v, (int, np.integer)) else -1)
         edge_key.append(int(k) if isinstance(k, (int, np.integer)) else 0)
         branch_order.append(str(data.get("branch_order", "No_BO")))
-        w = data.get("weight")
-        weights.append(float(w) if w is not None else np.nan)
+        resistance = data.get("resistance")
+        resistances.append(float(resistance) if resistance is not None else np.nan)
         d_assigned = data.get("assigned_diameter_um")
         d_fwhm = data.get("fwhm_diameter_um")
         assigned_diameter_um.append(
@@ -245,7 +245,7 @@ def graph_to_vtk(
         vessel_mesh.cell_data["edge_v"] = np.asarray(edge_v, dtype=np.int64)
         vessel_mesh.cell_data["edge_key"] = np.asarray(edge_key, dtype=np.int64)
         vessel_mesh.cell_data["branch_order"] = np.asarray(branch_order)
-        vessel_mesh.cell_data["weight"] = np.asarray(weights, dtype=float)
+        vessel_mesh.cell_data["resistance"] = np.asarray(resistances, dtype=float)
         vessel_mesh.cell_data["assigned_diameter_um"] = np.asarray(
             assigned_diameter_um,
             dtype=float,

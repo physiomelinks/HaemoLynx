@@ -1113,7 +1113,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         elif run_haemodynamics and not use_fwhm_edge_diameters:
             print(
                 "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
-                "set_poiseuille_weights without per-edge FWHM)."
+                "set_poiseuille_resistances without per-edge FWHM)."
             )
         comparison_active_pericyte_indices: list[int] | None = None
         comparison_active_center_indices_by_edge: dict[str, list[int]] | None = None
@@ -1196,7 +1196,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             "pericyte_mask_path must be set when "
                             "use_pericyte_mask_constriction=True."
                         )
-                    G, results = pericyte_mask_haemodynamics.set_poiseuille_weights_with_pericyte_mask(
+                    G, results = pericyte_mask_haemodynamics.set_poiseuille_resistances_with_pericyte_mask(
                         G,
                         diameter_by_branch_order=diameter_by_branch_order,
                         constriction_factor_by_branch_order=constriction_by_branch_order,
@@ -1233,14 +1233,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                         ),
                     )
                     print(
-                        "Results from set_poiseuille_weights_with_pericyte_mask "
+                        "Results from set_poiseuille_resistances_with_pericyte_mask "
                         f"(centroid-based d2 from mask): {results}"
                     )
                 else:
                     if use_probabilistic_pericyte_constriction:
                         G, results = (
                             probability_haemodynamics
-                            .set_poiseuille_weights_with_probabilistic_periodic_constrictions(
+                            .set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
                                 G,
                                 diameter_by_branch_order=diameter_by_branch_order,
                                 constriction_factor_by_branch_order=constriction_by_branch_order,
@@ -1266,14 +1266,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                         )
                     else:
                         if use_fwhm_edge_diameters:
-                            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                            G, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                                 G,
                                 diameter_by_branch_order,
                                 prefer_edge_fwhm_baseline=True,
                                 constriction_factor_by_branch_order=constriction_by_branch_order,
                             )
                             print(
-                                "Results from set_poiseuille_weights_with_constrictions "
+                                "Results from set_poiseuille_resistances_with_constrictions "
                                 f"(FWHM baseline d1, constriction factors): {results}"
                             )
                         else:
@@ -1284,15 +1284,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                                     "d2": diameter * constriction_by_branch_order[branch_order],
                                 }
 
-                            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                            G, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                                 G,
                                 diameter_by_branch_order_enhanced,
                             )
                             print(
-                                f"Results from set_poiseuille_weights_with_constrictions: {results}"
+                                f"Results from set_poiseuille_resistances_with_constrictions: {results}"
                             )
             else:
-                G, results = poiseuille_model.set_poiseuille_weights(
+                G, results = poiseuille_model.set_poiseuille_resistances(
                     G,
                     diameter_by_branch_order,
                     prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
@@ -1302,25 +1302,25 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     if use_fwhm_edge_diameters
                     else "branch-order table only"
                 )
-                print(f"Results from set_poiseuille_weights ({_diam_mode}): {results}")
+                print(f"Results from set_poiseuille_resistances ({_diam_mode}): {results}")
 
-            G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
+            G, results_2 = poiseuille_model.set_poiseuille_edge_resistances(
                 G,
                 custom_edges,
                 edge_diameter=6.0,
-                use_resistance=False,
+                use_resistance=True,
             )
 
-            print(f"Results from set_poiseuille_edge_weights: {results_2}")
+            print(f"Results from set_poiseuille_edge_resistances: {results_2}")
             # create list of resistances of all edges
-            conductances = []
+            resistances = []
             # TODO DEBUG
             for u, v, key in G.edges(keys=True):
-                conductance = G[u][v][key]['weight']
-                # print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
-                conductances.append(conductance)
+                resistance = G[u][v][key]["resistance"]
+                # print(f"Resistance of edge ({u}, {v}, {key}): {resistance}")
+                resistances.append(resistance)
 
-            # print(f"Conductances of all edges: {conductances}")
+            # print(f"Resistances of all edges: {resistances}")
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
@@ -1409,7 +1409,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
         else:
             weighted_measurements = {
-                "inverse_edge_weight": {
+                "edge_resistance": {
                     "Betweenness": {
                         "Betweenness Mean": "N/A (haemodynamics disabled)",
                         "Betweenness Max": "N/A (haemodynamics disabled)",
@@ -1442,15 +1442,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             for metric_name, metric_values in model_results.items():
                 print(f"    {metric_name}: {metric_values}")
 
-        inv_weight_path = output_dir / f"{image_path.stem}_betweenness_communities_inverse_weight.json"
-        inv_weight_path.write_text(
-            json.dumps(weighted_measurements["inverse_edge_weight"], indent=2)
+        resistance_path = output_dir / f"{image_path.stem}_betweenness_communities_edge_resistance.json"
+        resistance_path.write_text(
+            json.dumps(weighted_measurements["edge_resistance"], indent=2)
         )
         length_path = output_dir / f"{image_path.stem}_betweenness_communities_edge_length.json"
         length_path.write_text(
             json.dumps(weighted_measurements["edge_length"], indent=2)
         )
-        print(f"Saved inverse-weight stats to: {inv_weight_path}")
+        print(f"Saved resistance-weighted stats to: {resistance_path}")
         print(f"Saved edge-length stats to: {length_path}")
     else:
         print("Vessel statistics skipped.")

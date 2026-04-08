@@ -6,9 +6,9 @@ import pyvista as pv
 
 
 def build_conductance_matrix_from_graph(
-    G: nx.Graph, weight_attr: str = "weight"
+    G: nx.Graph, resistance_attr: str = "resistance"
 ) -> tuple[np.ndarray, list]:
-    """Build symmetric conductance matrix from graph edge weights.
+    """Build symmetric conductance matrix from graph edge resistances.
 
     Returns:
         A tuple of (conductance_matrix, node_list) where matrix indices map to
@@ -19,14 +19,18 @@ def build_conductance_matrix_from_graph(
     conductance = np.zeros((len(node_list), len(node_list)), dtype=float)
 
     for u, v, data in G.edges(data=True):
-        edge_weight = data.get(weight_attr)
-        if edge_weight is None or edge_weight <= 0:
+        edge_resistance = data.get(resistance_attr)
+        if edge_resistance is None:
             continue
+        edge_resistance = float(edge_resistance)
+        if (not np.isfinite(edge_resistance)) or edge_resistance <= 0:
+            continue
+        edge_conductance = 1.0 / edge_resistance
         i = node_to_idx[u]
         j = node_to_idx[v]
         # Sum conductance for parallel edges.
-        conductance[i, j] += edge_weight
-        conductance[j, i] += edge_weight
+        conductance[i, j] += edge_conductance
+        conductance[j, i] += edge_conductance
 
     return conductance, node_list
 
@@ -158,14 +162,14 @@ def solve_flow_from_conductance_matrix(
     vessels = pv.read(str(vessels_path))
     edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
     edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
-    edge_weight = np.asarray(vessels.cell_data.get("weight", []), dtype=float)
+    edge_resistance = np.asarray(vessels.cell_data.get("resistance", []), dtype=float)
     if len(edge_u) != vessels.n_cells or len(edge_v) != vessels.n_cells:
         raise ValueError(
             "VTK vessels file is missing edge_u/edge_v cell arrays needed for flow export."
         )
-    if len(edge_weight) != vessels.n_cells:
+    if len(edge_resistance) != vessels.n_cells:
         raise ValueError(
-            "VTK vessels file is missing weight cell array needed for flow export."
+            "VTK vessels file is missing resistance cell array needed for flow export."
         )
 
     edge_p_u = np.full(vessels.n_cells, np.nan, dtype=float)
@@ -180,7 +184,10 @@ def solve_flow_from_conductance_matrix(
         if v_idx is not None:
             edge_p_v[ii] = pressure[v_idx]
     pressure_drop = edge_p_u - edge_p_v
-    flow_signed = edge_weight * pressure_drop
+    if not np.all(np.isfinite(edge_resistance)) or np.any(edge_resistance <= 0.0):
+        raise ValueError("All VTK resistance values must be finite and > 0 for flow export.")
+    edge_conductance = 1.0 / edge_resistance
+    flow_signed = edge_conductance * pressure_drop
     flow_abs = np.abs(flow_signed)
 
     vessels.cell_data["pressure_u"] = edge_p_u

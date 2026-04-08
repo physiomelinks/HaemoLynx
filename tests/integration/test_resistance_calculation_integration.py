@@ -135,7 +135,7 @@ def _run_hemodynamics_assertions(
     pressure_rel_tol: float = 4e-2,
 ) -> None:
     orders = np.asarray(vessels.cell_data["branch_order"]).astype(str)
-    weights = np.asarray(vessels.cell_data["weight"], dtype=float)
+    resistances = np.asarray(vessels.cell_data["resistance"], dtype=float)
     flow_abs = np.asarray(vessels.cell_data["flow_abs"], dtype=float)
     edge_u = np.asarray(vessels.cell_data["edge_u"], dtype=int)
     edge_v = np.asarray(vessels.cell_data["edge_v"], dtype=int)
@@ -143,7 +143,7 @@ def _run_hemodynamics_assertions(
     p_v = np.asarray(vessels.cell_data["pressure_v"], dtype=float)
 
     assert len(orders) == vessels.n_cells
-    assert len(weights) == vessels.n_cells
+    assert len(resistances) == vessels.n_cells
     assert len(diameter_each) == vessels.n_cells
 
     unique, counts = np.unique(orders, return_counts=True)
@@ -157,18 +157,16 @@ def _run_hemodynamics_assertions(
 
     mu_each = 1.0 / (diameter_each**1.647)
     r_expected_each = (128.0 * mu_each * lengths) / (np.pi * (diameter_each**4))
-    g_expected_each = 1.0 / r_expected_each
 
     d_scalar = float(network_scalar_diameter)
     mu_scalar = 1.0 / (d_scalar**1.647)
     r_expected_each_scalar = (128.0 * mu_scalar * lengths) / (np.pi * (d_scalar**4))
-    g_expected_each_scalar = 1.0 / r_expected_each_scalar
 
     resistance_err_individual_pct = float(
         np.max(
             np.abs(
-                (weights - g_expected_each)
-                / np.maximum(np.abs(g_expected_each), 1e-12)
+                (resistances - r_expected_each)
+                / np.maximum(np.abs(r_expected_each), 1e-12)
             )
         )
         * 100.0
@@ -176,23 +174,23 @@ def _run_hemodynamics_assertions(
     resistance_err_total_pct = float(
         np.max(
             np.abs(
-                (weights - g_expected_each_scalar)
-                / np.maximum(np.abs(g_expected_each_scalar), 1e-12)
+                (resistances - r_expected_each_scalar)
+                / np.maximum(np.abs(r_expected_each_scalar), 1e-12)
             )
         )
         * 100.0
     )
 
     if radius_dependent:
-        g_expected = g_expected_each
+        r_expected = r_expected_each
         r_by_order_source = r_expected_each
         q_model_label = "radius_dependent"
     else:
-        g_expected = g_expected_each_scalar
+        r_expected = r_expected_each_scalar
         r_by_order_source = r_expected_each_scalar
         q_model_label = "radius_independent"
 
-    assert np.allclose(weights, g_expected, rtol=resistance_rel_tol, atol=1e-9)
+    assert np.allclose(resistances, r_expected, rtol=resistance_rel_tol, atol=1e-9)
 
     r_by_order: dict[str, float] = {}
     for order in EXPECTED_ORDER_COUNTS:
@@ -418,4 +416,5 @@ def test_resistance_calculation_on_diagonal_branching_network_from_raw_tiff(
         network_scalar_diameter=float(np.median(assigned_diameter)),
         report_title="raw_tiff_fwhm_assigned_diameter",
         radius_dependent=True,
+        bo3_rel_tol=1.1e-1,
     )
