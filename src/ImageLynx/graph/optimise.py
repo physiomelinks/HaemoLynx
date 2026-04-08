@@ -117,8 +117,8 @@ def optimise_graph_topology_fixed(
                         G,
                         src,
                         tgt,
-                        weight=max(dist, 1e-6),
-                        length=path_length if path_length > 0 else dist,
+                        weight=max(path_length, 1e-6),
+                        length=path_length,
                         voxels=phys_path,
                         reconnected=True,
                         validated=True,
@@ -135,13 +135,15 @@ def optimise_graph_topology_fixed(
                                 conservative_threshold,
                             )
                         continue
+                    straight_path = [src_pos.tolist(), tgt_pos.tolist()]
+                    path_length = _physical_path_length(straight_path)
                     add_edge_safe(
                         G,
                         src,
                         tgt,
-                        weight=max(dist, 1e-6),
-                        length=dist,
-                        voxels=[src_pos.tolist(), tgt_pos.tolist()],
+                        weight=max(path_length, 1e-6),
+                        length=path_length,
+                        voxels=straight_path,
                         reconnected=True,
                         conservative=True,
                     )
@@ -253,7 +255,7 @@ def reconnect_orphan_and_dangling_nodes(
 
         length = _physical_path_length(phys_path)
         if length <= 0:
-            length = float(np.linalg.norm(tgt_pos - src_pos))
+            continue
         add_edge_safe(
             G,
             src,

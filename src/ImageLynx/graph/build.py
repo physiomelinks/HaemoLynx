@@ -193,15 +193,20 @@ def build_graph_segment_skan_stitched_loops(
                     continue
                 src_pos = np.array(G.nodes[src]["pos"])
                 tgt_pos = np.array(G.nodes[tgt]["pos"])
+                reconnect_path = [
+                    src_pos.tolist(),
+                    tgt_pos.tolist(),
+                ]
+                reconnect_arr = np.asarray(reconnect_path, dtype=float)
+                reconnect_length = float(
+                    np.sum(np.linalg.norm(np.diff(reconnect_arr, axis=0), axis=1))
+                )
                 G.add_edge(
                     src,
                     tgt,
-                    weight=max(dist, 1e-6),
-                    length=dist,
-                    voxels=[
-                        src_pos.tolist(),
-                        tgt_pos.tolist(),
-                    ],
+                    weight=max(reconnect_length, 1e-6),
+                    length=reconnect_length,
+                    voxels=reconnect_path,
                     reconnected=True,
                 )
                 reconnected += 1
