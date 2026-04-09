@@ -417,12 +417,12 @@ def passive_capillary_diameter_beforeafter(
         capillary_branch_prefix=capillary_branch_prefix,
     )
 
-    baseline_graph, _ = poiseuille_model.set_poiseuille_weights(
+    baseline_graph, _ = poiseuille_model.set_poiseuille_resistances(
         baseline_graph,
         baseline_diameter_by_branch_order,
         prefer_edge_fwhm_diameter=True,
     )
-    dilated_graph, _ = poiseuille_model.set_poiseuille_weights(
+    dilated_graph, _ = poiseuille_model.set_poiseuille_resistances(
         dilated_graph,
         dilated_diameter_by_branch_order,
         prefer_edge_fwhm_diameter=True,
@@ -547,12 +547,12 @@ def passive_arteriole_diameter_beforeafter(
         arteriole_branch_prefix=arteriole_branch_prefix,
     )
 
-    baseline_graph, _ = poiseuille_model.set_poiseuille_weights(
+    baseline_graph, _ = poiseuille_model.set_poiseuille_resistances(
         baseline_graph,
         baseline_diameter_by_branch_order,
         prefer_edge_fwhm_diameter=True,
     )
-    shifted_graph, _ = poiseuille_model.set_poiseuille_weights(
+    shifted_graph, _ = poiseuille_model.set_poiseuille_resistances(
         shifted_graph,
         shifted_diameter_by_branch_order,
         prefer_edge_fwhm_diameter=True,
@@ -703,7 +703,7 @@ def pericyte_constriction_dilation_spacing_beforeafter(
 
         graph_baseline = graph_with_branch_orders.copy()
         graph_modified = graph_with_branch_orders.copy()
-        graph_baseline, _ = model.set_poiseuille_weights_with_constrictions(
+        graph_baseline, _ = model.set_poiseuille_resistances_with_constrictions(
             graph_baseline,
             diameter_by_branch_order,
             prefer_edge_fwhm_baseline=True,
@@ -711,7 +711,7 @@ def pericyte_constriction_dilation_spacing_beforeafter(
                 branch_order: 1.0 for branch_order in diameter_by_branch_order.keys()
             },
         )
-        graph_modified, _ = model.set_poiseuille_weights_with_constrictions(
+        graph_modified, _ = model.set_poiseuille_resistances_with_constrictions(
             graph_modified,
             diameter_by_branch_order,
             prefer_edge_fwhm_baseline=True,

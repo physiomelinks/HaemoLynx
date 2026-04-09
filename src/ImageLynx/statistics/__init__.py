@@ -15,6 +15,11 @@ from .stats import (
     compute_branch_order_statistics,
     export_branch_order_statistics_to_csv,
 )
+from .topology import (
+    summarize_junction_types,
+    annotate_edge_direction_from_signed_attribute,
+    summarize_junction_types_from_signed_flow,
+)
 
 _dist3d = importlib.import_module(".3D_distances", __name__)
 run_3d_measurement_to_cell_mask = _dist3d.run_3d_measurement_to_cell_mask
@@ -32,5 +37,8 @@ __all__ = [
     "export_statistics_to_csv",
     "compute_branch_order_statistics",
     "export_branch_order_statistics_to_csv",
+    "summarize_junction_types",
+    "annotate_edge_direction_from_signed_attribute",
+    "summarize_junction_types_from_signed_flow",
     "run_3d_measurement_to_cell_mask",
 ]

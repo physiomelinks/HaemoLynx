@@ -1,7 +1,7 @@
 """3D visualization for automated large-vessel input/output assignment."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import networkx as nx
 import numpy as np
@@ -451,6 +451,236 @@ def visualize_3d_plotly_large_vessel_assignment(
             aspectmode="data",
         ),
     )
+    if save_html_path:
+        fig.write_html(str(save_html_path), include_plotlyjs="cdn")
+    if show and not _is_pytest_runtime():
+        fig.show()
+    return fig
+
+
+def _edge_direction_sign_from_attributes(
+    edge_data: dict[str, Any],
+    *,
+    signed_flow_attr: str,
+    direction_attr: str,
+    positive_flow_means_u_to_v: bool,
+) -> Optional[int]:
+    """Infer edge direction sign (+1 for u->v, -1 for v->u, None unknown)."""
+    flow_val = edge_data.get(signed_flow_attr)
+    if flow_val is not None:
+        try:
+            flow_float = float(flow_val)
+            if np.isfinite(flow_float) and flow_float != 0.0:
+                if flow_float > 0.0:
+                    return 1 if positive_flow_means_u_to_v else -1
+                return -1 if positive_flow_means_u_to_v else 1
+        except (TypeError, ValueError):
+            pass
+
+    dir_val = edge_data.get(direction_attr)
+    if dir_val is None:
+        return None
+    text = str(dir_val).strip().lower()
+    if text in {"u_to_v", "uv", "forward", "fwd", "+"}:
+        return 1
+    if text in {"v_to_u", "vu", "reverse", "rev", "-"}:
+        return -1
+    return None
+
+
+def _edge_points_xyz(
+    u: Any, v: Any, edge_data: dict[str, Any], pos: dict[Any, Any]
+) -> Optional[np.ndarray]:
+    """Return edge polyline points in xyz coordinates."""
+    voxels = edge_data.get("voxels", [])
+    if len(voxels) > 1:
+        pts = np.asarray(voxels, dtype=float)
+        if pts.ndim == 2 and pts.shape[1] >= 3:
+            return pts[:, :3]
+    if u not in pos or v not in pos:
+        return None
+    pu = np.asarray(pos[u], dtype=float).reshape(1, 3)
+    pv = np.asarray(pos[v], dtype=float).reshape(1, 3)
+    return np.vstack([pu, pv])
+
+
+def _polyline_length(points: np.ndarray) -> float:
+    """Return Euclidean polyline length."""
+    if points.shape[0] < 2:
+        return 0.0
+    return float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
+
+
+def _edge_arrow_anchor_and_vector(
+    points: np.ndarray,
+    *,
+    direction_sign: int,
+    arrow_length: float,
+    lateral_offset: float,
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Compute a nearby arrow anchor and direction vector for an edge."""
+    if points.shape[0] < 2:
+        return None
+    if direction_sign < 0:
+        points = points[::-1, :]
+
+    mid_idx = int(points.shape[0] // 2)
+    lo = max(0, mid_idx - 1)
+    hi = min(points.shape[0] - 1, mid_idx + 1)
+    tangent = points[hi] - points[lo]
+    tangent_norm = float(np.linalg.norm(tangent))
+    if tangent_norm <= 1e-12:
+        tangent = points[-1] - points[0]
+        tangent_norm = float(np.linalg.norm(tangent))
+    if tangent_norm <= 1e-12:
+        return None
+    tangent_unit = tangent / tangent_norm
+
+    # Offset arrow laterally so it is visible next to the edge.
+    ref = np.array([0.0, 0.0, 1.0], dtype=float)
+    lateral = np.cross(tangent_unit, ref)
+    lat_norm = float(np.linalg.norm(lateral))
+    if lat_norm <= 1e-12:
+        ref = np.array([0.0, 1.0, 0.0], dtype=float)
+        lateral = np.cross(tangent_unit, ref)
+        lat_norm = float(np.linalg.norm(lateral))
+    if lat_norm <= 1e-12:
+        return None
+    lateral_unit = lateral / lat_norm
+
+    anchor = points[mid_idx] + (lateral_offset * lateral_unit)
+    vector = tangent_unit * float(arrow_length)
+    return anchor, vector
+
+
+def visualize_3d_plotly_large_vessel_assignment_flow_direction(
+    G: nx.Graph,
+    *,
+    large_arteriole_mask: np.ndarray | None,
+    large_venule_mask: np.ndarray | None,
+    small_arteriole_mask: np.ndarray | None = None,
+    small_venule_mask: np.ndarray | None = None,
+    input_nodes: list[Any],
+    output_nodes: list[Any],
+    arteriole_boundary_nodes: list[Any] | None = None,
+    venule_boundary_nodes: list[Any] | None = None,
+    voxel_size_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    volume_downsample_stride: int = 1,
+    signed_flow_attr: str = "flow_signed",
+    direction_attr: str = "edge_direction",
+    positive_flow_means_u_to_v: bool = True,
+    arrow_color: str = "#FFD54F",
+    arrow_length_scale: float = 0.18,
+    arrow_offset_scale: float = 0.08,
+    title: str = "Final Graph with Flow Direction (3D)",
+    save_html_path: str | None = None,
+    show: bool = False,
+) -> go.Figure:
+    """Render final large/small-vessel assignment view with edge direction arrows.
+
+    Direction source priority:
+    1) ``signed_flow_attr`` numeric sign (default ``flow_signed``)
+    2) ``direction_attr`` string labels (e.g., ``u_to_v`` / ``v_to_u``)
+    """
+    pos = nx.get_node_attributes(G, "pos")
+    if not pos:
+        raise ValueError("Graph has no node positions ('pos').")
+
+    fig = visualize_3d_plotly_large_vessel_assignment(
+        G,
+        large_arteriole_mask=large_arteriole_mask,
+        large_venule_mask=large_venule_mask,
+        small_arteriole_mask=small_arteriole_mask,
+        small_venule_mask=small_venule_mask,
+        input_nodes=input_nodes,
+        output_nodes=output_nodes,
+        arteriole_boundary_nodes=arteriole_boundary_nodes,
+        venule_boundary_nodes=venule_boundary_nodes,
+        voxel_size_xyz=voxel_size_xyz,
+        volume_downsample_stride=volume_downsample_stride,
+        title=title,
+        save_html_path=None,
+        show=False,
+    )
+
+    edge_iter = (
+        G.edges(keys=True, data=True)
+        if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+        else G.edges(data=True)
+    )
+
+    directed_points: list[np.ndarray] = []
+    direction_signs: list[int] = []
+    for edge_item in edge_iter:
+        u = edge_item[0]
+        v = edge_item[1]
+        edge_data = edge_item[-1]
+        points = _edge_points_xyz(u, v, edge_data, pos)
+        if points is None:
+            continue
+        direction_sign = _edge_direction_sign_from_attributes(
+            edge_data,
+            signed_flow_attr=signed_flow_attr,
+            direction_attr=direction_attr,
+            positive_flow_means_u_to_v=positive_flow_means_u_to_v,
+        )
+        if direction_sign is None:
+            continue
+        directed_points.append(points)
+        direction_signs.append(int(direction_sign))
+
+    edge_lengths = [_polyline_length(pts) for pts in directed_points]
+    valid_lengths = [float(v) for v in edge_lengths if v > 0]
+    base_len = float(np.median(valid_lengths)) if valid_lengths else 1.0
+    arrow_length = max(0.25, base_len * float(arrow_length_scale))
+    lateral_offset = max(0.10, base_len * float(arrow_offset_scale))
+
+    arrow_x: list[float] = []
+    arrow_y: list[float] = []
+    arrow_z: list[float] = []
+    arrow_u: list[float] = []
+    arrow_v: list[float] = []
+    arrow_w: list[float] = []
+
+    for points, direction_sign in zip(directed_points, direction_signs):
+        result = _edge_arrow_anchor_and_vector(
+            points,
+            direction_sign=direction_sign,
+            arrow_length=arrow_length,
+            lateral_offset=lateral_offset,
+        )
+        if result is None:
+            continue
+        anchor, vector = result
+        arrow_x.append(float(anchor[0]))
+        arrow_y.append(float(anchor[1]))
+        arrow_z.append(float(anchor[2]))
+        arrow_u.append(float(vector[0]))
+        arrow_v.append(float(vector[1]))
+        arrow_w.append(float(vector[2]))
+
+    if arrow_x:
+        fig.add_trace(
+            go.Cone(
+                x=arrow_x,
+                y=arrow_y,
+                z=arrow_z,
+                u=arrow_u,
+                v=arrow_v,
+                w=arrow_w,
+                anchor="tail",
+                sizemode="absolute",
+                sizeref=max(arrow_length * 0.8, 0.1),
+                colorscale=[[0.0, arrow_color], [1.0, arrow_color]],
+                cmin=0.0,
+                cmax=1.0,
+                showscale=False,
+                name=f"Flow direction arrows ({len(arrow_x)})",
+                hoverinfo="skip",
+            )
+        )
+
+    fig.update_layout(title=title)
     if save_html_path:
         fig.write_html(str(save_html_path), include_plotlyjs="cdn")
     if show and not _is_pytest_runtime():

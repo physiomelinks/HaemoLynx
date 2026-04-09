@@ -15,7 +15,10 @@ from .vtk_io import (
     write_flow_vtk_plotly_html,
 )
 from .pipeline_artifacts import save_graph_snapshot
-from .large_vessel_assignment import visualize_3d_plotly_large_vessel_assignment
+from .large_vessel_assignment import (
+    visualize_3d_plotly_large_vessel_assignment,
+    visualize_3d_plotly_large_vessel_assignment_flow_direction,
+)
 
 __all__ = [
     "plot_node_degree_distribution",
@@ -31,4 +34,5 @@ __all__ = [
     "write_flow_vtk_plotly_html",
     "save_graph_snapshot",
     "visualize_3d_plotly_large_vessel_assignment",
+    "visualize_3d_plotly_large_vessel_assignment_flow_direction",
 ]

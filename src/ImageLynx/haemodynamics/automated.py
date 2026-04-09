@@ -91,6 +91,27 @@ def _apply_diameter_bounds(
     return float(np.clip(d, lo, hi)), True
 
 
+def _trimmed_median(values: list[float], trim_fraction: float) -> float:
+    """Robust median after symmetric tail trimming."""
+    arr = np.asarray(values, dtype=float).ravel()
+    if arr.size == 0:
+        raise ValueError("trimmed median requires at least one value.")
+    if not np.isfinite(arr).all():
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            raise ValueError("trimmed median received no finite values.")
+    frac = float(trim_fraction)
+    if frac <= 0.0:
+        return float(np.median(arr))
+    if frac >= 0.5:
+        raise ValueError("trim_fraction must be < 0.5.")
+    arr = np.sort(arr)
+    k = int(np.floor(frac * float(arr.size)))
+    if k > 0 and (2 * k) < arr.size:
+        arr = arr[k : arr.size - k]
+    return float(np.median(arr))
+
+
 def load_single_channel_tiff_volume(path: str | Path) -> np.ndarray:
     """Load a 3D TIFF as float32. Single channel / single signal expected."""
     path = Path(path)
@@ -784,6 +805,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     clip_min_drop_fraction_of_center: float = 0.35,
     clip_re_rise_fraction_of_center: float = 0.08,
     branch_endpoint_exclusion_um: float = 0.0,
+    terminal_endpoint_exclusion_um: float = 0.0,
     junction_proximity_exclusion_um: float = 0.0,
     store_profile_debug: bool = False,
     enforce_same_edge_locality: bool = True,
@@ -799,6 +821,9 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     min_fit_r2: float = 0.85,
     edge_parallel_workers: int | None = None,
     edge_parallel_batch_size: int = 16,
+    min_valid_cross_section_span_um: float = 0.0,
+    min_valid_profile_count_per_edge: int = 1,
+    diameter_aggregation_trim_fraction: float = 0.1,
     diameter_bounds_by_vessel_class_um: dict[str, tuple[float, float]] | None = None,
     diameter_bounds_mode: Literal["off", "reject", "clamp"] = "reject",
 ) -> dict[str, Any]:
@@ -928,8 +953,16 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
 
     jn = int(junction_label)
     branch_excl = max(0.0, float(branch_endpoint_exclusion_um))
+    terminal_excl = max(0.0, float(terminal_endpoint_exclusion_um))
     junction_excl = max(0.0, float(junction_proximity_exclusion_um))
     d_guess0 = 0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
+    min_profile_span_um = max(0.0, float(min_valid_cross_section_span_um))
+    min_profile_count = int(min_valid_profile_count_per_edge)
+    if min_profile_count < 1:
+        raise ValueError("min_valid_profile_count_per_edge must be >= 1.")
+    trim_fraction = float(diameter_aggregation_trim_fraction)
+    if not (0.0 <= trim_fraction < 0.5):
+        raise ValueError("diameter_aggregation_trim_fraction must be in [0.0, 0.5).")
 
     if sample_spacing_along_edge_um <= 0:
         raise ValueError("sample_spacing_along_edge_um must be positive.")
@@ -968,6 +1001,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         pts = _interpolate_centerline(poly, s, targets)
         u_is_branch = degree_map.get(u, 0) > 1
         v_is_branch = degree_map.get(v, 0) > 1
+        u_is_terminal = degree_map.get(u, 0) == 1
+        v_is_terminal = degree_map.get(v, 0) == 1
 
         junction_s: list[float] = []
         if junction_excl > 0.0 and jn != int(background_label):
@@ -1021,6 +1056,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             if u_is_branch and float(s0) < branch_excl:
                 continue
             if v_is_branch and float(total_len - s0) < branch_excl:
+                continue
+            if u_is_terminal and float(s0) < terminal_excl:
+                continue
+            if v_is_terminal and float(total_len - s0) < terminal_excl:
                 continue
             if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
                 continue
@@ -1091,6 +1130,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     if clip_profile_to_single_vessel
                     else (pos, prof)
                 )
+                if float(np.ptp(pos_fit)) < float(min_profile_span_um):
+                    return pos, prof, None
                 d_fit, x0_fit, r2_fit = _fwhm_gaussian_fit_with_diagnostics(
                     pos_fit,
                     prof_fit,
@@ -1176,8 +1217,15 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 "bounds_rejected_samples": int(bounds_rejected_samples),
                 "bounds_clamped_samples": int(bounds_clamped_samples),
             }
+        if len(diameters) < min_profile_count:
+            return {
+                "edge": (u, v, key),
+                "skip_reason": "insufficient_valid_profiles",
+                "bounds_rejected_samples": int(bounds_rejected_samples),
+                "bounds_clamped_samples": int(bounds_clamped_samples),
+            }
 
-        d_med = float(np.median(diameters))
+        d_med = _trimmed_median(diameters, trim_fraction)
         d_med_bounded, touched_edge = _apply_diameter_bounds(
             d_med,
             branch_bounds,
@@ -1198,6 +1246,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             "graph_edge_label_id": int(assigned),
             "fwhm_diameter_um": float(d_med_bounded if d_med_bounded is not None else d_med),
             "fwhm_diameter_samples_um": diameters,
+            "fwhm_aggregation": (
+                f"trimmed_median(trim={trim_fraction:.3f})"
+                if trim_fraction > 0
+                else "median"
+            ),
             "fwhm_profile_lines_phys": profile_lines_phys,
             "fwhm_profile_anchors_phys": profile_anchors_phys,
             "bounds_rejected_samples": int(bounds_rejected_samples),
@@ -1261,7 +1314,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 "graph_edge_label_id": int(result["graph_edge_label_id"]),
                 "fwhm_diameter_um": d_med,
                 "n_samples": len(samples),
-                "aggregation": "median",
+                "aggregation": str(result.get("fwhm_aggregation", "median")),
             }
         )
 

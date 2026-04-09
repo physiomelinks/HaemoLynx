@@ -158,7 +158,7 @@ def compare_baseline_vs_passive_capillary_dilation(
         }
         if bool(prefer_edge_fwhm_diameter):
             graph_baseline, baseline_weight_results = (
-                poiseuille_model.set_poiseuille_weights_with_constrictions(
+                poiseuille_model.set_poiseuille_resistances_with_constrictions(
                     graph_baseline,
                     diameter_map_baseline,
                     prefer_edge_fwhm_baseline=True,
@@ -166,7 +166,7 @@ def compare_baseline_vs_passive_capillary_dilation(
                 )
             )
             graph_dilated, dilated_weight_results = (
-                poiseuille_model.set_poiseuille_weights_with_constrictions(
+                poiseuille_model.set_poiseuille_resistances_with_constrictions(
                     graph_dilated,
                     diameter_map_dilated,
                     prefer_edge_fwhm_baseline=True,
@@ -189,24 +189,24 @@ def compare_baseline_vs_passive_capillary_dilation(
                 for branch_order, diameter_um in diameter_map_dilated.items()
             }
             graph_baseline, baseline_weight_results = (
-                poiseuille_model.set_poiseuille_weights_with_constrictions(
+                poiseuille_model.set_poiseuille_resistances_with_constrictions(
                     graph_baseline,
                     baseline_enhanced,
                 )
             )
             graph_dilated, dilated_weight_results = (
-                poiseuille_model.set_poiseuille_weights_with_constrictions(
+                poiseuille_model.set_poiseuille_resistances_with_constrictions(
                     graph_dilated,
                     dilated_enhanced,
                 )
             )
     else:
-        graph_baseline, baseline_weight_results = poiseuille_model.set_poiseuille_weights(
+        graph_baseline, baseline_weight_results = poiseuille_model.set_poiseuille_resistances(
             graph_baseline,
             diameter_map_baseline,
             prefer_edge_fwhm_diameter=bool(prefer_edge_fwhm_diameter),
         )
-        graph_dilated, dilated_weight_results = poiseuille_model.set_poiseuille_weights(
+        graph_dilated, dilated_weight_results = poiseuille_model.set_poiseuille_resistances(
             graph_dilated,
             diameter_map_dilated,
             prefer_edge_fwhm_diameter=bool(prefer_edge_fwhm_diameter),

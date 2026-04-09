@@ -123,6 +123,62 @@ def _solve_pressure_and_boundary_flow(
     }
 
 
+def _check_boundary_coordinate_unit_consistency(
+    G: nx.MultiGraph,
+    *,
+    coordinate_sets: dict[str, list[tuple[float, float, float]]],
+    mode: str = "warn",
+    max_fraction_of_graph_diagonal: float = 0.25,
+) -> None:
+    """Warn/error if manual boundary coordinates look inconsistent with node units."""
+    mode_norm = str(mode).strip().lower()
+    if mode_norm == "off":
+        return
+    if mode_norm not in {"warn", "error"}:
+        raise ValueError(
+            "boundary coordinate unit-check mode must be one of: off, warn, error. "
+            f"Got {mode!r}."
+        )
+    node_pos = nx.get_node_attributes(G, "pos")
+    if not node_pos:
+        return
+    node_points = np.asarray(list(node_pos.values()), dtype=float)
+    if node_points.ndim != 2 or node_points.shape[1] != 3 or node_points.shape[0] == 0:
+        return
+    span = np.ptp(node_points, axis=0)
+    graph_diag = float(np.linalg.norm(span))
+    if not np.isfinite(graph_diag) or graph_diag <= 1e-12:
+        return
+    threshold = float(max_fraction_of_graph_diagonal) * graph_diag
+    if threshold <= 0:
+        return
+    problems: list[str] = []
+    for role, coords in coordinate_sets.items():
+        if not coords:
+            continue
+        pts = np.asarray(coords, dtype=float)
+        if pts.ndim != 2 or pts.shape[1] != 3:
+            continue
+        dists = np.linalg.norm(node_points[None, :, :] - pts[:, None, :], axis=2)
+        nearest = np.min(dists, axis=1)
+        median_nearest = float(np.median(nearest))
+        if median_nearest > threshold:
+            problems.append(
+                f"{role}: median nearest-node distance={median_nearest:.3f} "
+                f"(threshold={threshold:.3f}, graph_diag={graph_diag:.3f})"
+            )
+    if not problems:
+        return
+    message = (
+        "Boundary coordinate/unit consistency check indicates manual boundary "
+        "coordinates may be in a different unit system than graph node positions. "
+        + " | ".join(problems)
+    )
+    if mode_norm == "error":
+        raise ValueError(message)
+    print(f"Warning: {message}")
+
+
 def _load_alicepaper_module():
     """Load AlicePaper.py from repository root."""
     module_path = root_dir / "AlicePaper.py"
@@ -237,7 +293,7 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             )
             for branch_order in diameter_by_branch_order.keys()
         }
-        G_sweep, _ = poiseuille_model.set_poiseuille_weights_with_constrictions(
+        G_sweep, _ = poiseuille_model.set_poiseuille_resistances_with_constrictions(
             G_sweep,
             diameter_by_branch_order,
             prefer_edge_fwhm_baseline=True,
@@ -331,7 +387,7 @@ def _run_alice_pericyte_dilation_pressure_sweep(
                 else:
                     scaled_diameter_by_branch_order[branch_order] = float(diameter_um)
 
-            G_sweep, _ = poiseuille_model.set_poiseuille_weights(
+            G_sweep, _ = poiseuille_model.set_poiseuille_resistances(
                 G_sweep,
                 scaled_diameter_by_branch_order,
                 prefer_edge_fwhm_diameter=True,
@@ -495,7 +551,7 @@ def _run_alice_pericyte_dilation_pressure_sweep(
                 constriction_spacing=float(spacing_um),
             )
             G_sweep = graph_with_branch_orders.copy()
-            G_sweep, _ = spacing_model.set_poiseuille_weights_with_constrictions(
+            G_sweep, _ = spacing_model.set_poiseuille_resistances_with_constrictions(
                 G_sweep,
                 diameter_by_branch_order,
                 prefer_edge_fwhm_baseline=True,
@@ -830,10 +886,18 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
                             smoothing_options=None,
                             smoothing_method="bspline",
+                            preserve_single_path_geometry=True,
+                            single_path_geometry_max_tortuosity=1.08,
+                            single_path_geometry_max_rms_distance_vox=0.35,
+                            single_path_geometry_max_distance_vox=0.8,
                             starting_node_selection_method=STARTING_NODE_SELECTION_METHOD,
                             output_node_selection_method=OUTPUT_NODE_SELECTION_METHOD,
                             arteriole_boundary_selection_method=ARTERIOLE_BOUNDARY_SELECTION_METHOD,
                             venule_boundary_selection_method=VENULE_BOUNDARY_SELECTION_METHOD,
+                            starting_node_coordinate_order=STARTING_NODE_COORDINATE_ORDER,
+                            output_node_coordinate_order=OUTPUT_NODE_COORDINATE_ORDER,
+                            arteriole_boundary_coordinate_order=ARTERIOLE_BOUNDARY_COORDINATE_ORDER,
+                            venule_boundary_coordinate_order=VENULE_BOUNDARY_COORDINATE_ORDER,
                             starting_node_coordinates=STARTING_NODE_COORDINATES,
                             output_node_coordinates=OUTPUT_NODE_COORDINATES,
                             arteriole_boundary_node_coordinates=ARTERIOLE_BOUNDARY_NODE_COORDINATES,
@@ -842,6 +906,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             output_node_volumes=OUTPUT_NODE_VOLUMES,
                             arteriole_boundary_node_volumes=ARTERIOLE_BOUNDARY_NODE_VOLUMES,
                             venule_boundary_node_volumes=VENULE_BOUNDARY_NODE_VOLUMES,
+                            boundary_coordinate_unit_check_mode=BOUNDARY_COORDINATE_UNIT_CHECK_MODE,
+                            boundary_coordinate_unit_check_max_fraction_of_diagonal=BOUNDARY_COORDINATE_UNIT_CHECK_MAX_FRACTION_OF_DIAGONAL,
                             strict_branch_order_assignment=STRICT_BRANCH_ORDER_ASSIGNMENT,
                             starting_nodes=STARTING_NODES, 
                             output_nodes=OUTPUT_NODES, 
@@ -882,6 +948,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_clip_min_drop_fraction_of_center=FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER,
                             fwhm_clip_re_rise_fraction_of_center=FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER,
                             fwhm_branch_endpoint_exclusion_um=FWHM_BRANCH_ENDPOINT_EXCLUSION_UM,
+                            fwhm_terminal_endpoint_exclusion_um=FWHM_TERMINAL_ENDPOINT_EXCLUSION_UM,
                             fwhm_junction_proximity_exclusion_um=FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM,
                             fwhm_enforce_same_edge_locality=FWHM_ENFORCE_SAME_EDGE_LOCALITY,
                             fwhm_same_edge_arc_window_um=FWHM_SAME_EDGE_ARC_WINDOW_UM,
@@ -896,6 +963,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             fwhm_min_fit_r2=FWHM_MIN_FIT_R2,
                             fwhm_edge_parallel_workers=FWHM_EDGE_PARALLEL_WORKERS,
                             fwhm_edge_parallel_batch_size=FWHM_EDGE_PARALLEL_BATCH_SIZE,
+                            fwhm_min_valid_cross_section_span_um=FWHM_MIN_VALID_CROSS_SECTION_SPAN_UM,
+                            fwhm_min_valid_profile_count_per_edge=FWHM_MIN_VALID_PROFILE_COUNT_PER_EDGE,
+                            fwhm_diameter_aggregation_trim_fraction=FWHM_DIAMETER_AGGREGATION_TRIM_FRACTION,
                             fwhm_diameter_bounds_mode=FWHM_DIAMETER_BOUNDS_MODE,
                             fwhm_diameter_bounds_by_vessel_class_um=FWHM_DIAMETER_BOUNDS_BY_VESSEL_CLASS_UM) -> None:
     image_path = Path(image_path)
@@ -1167,16 +1237,27 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         large_venule_mask_path=effective_large_venule_mask_path,
     )
     if large_arteriole_mask is not None and large_venule_mask is not None:
+        shape_mismatch = False
         if large_arteriole_mask.shape != image.shape:
-            raise ValueError(
-                "large_arteriole_mask shape does not match input image shape: "
-                f"{large_arteriole_mask.shape} != {image.shape}"
+            shape_mismatch = True
+            print(
+                "Warning: large_arteriole_mask shape does not match input image shape; "
+                f"disabling large-vessel masks for this run "
+                f"({large_arteriole_mask.shape} != {image.shape})."
             )
         if large_venule_mask.shape != image.shape:
-            raise ValueError(
-                "large_venule_mask shape does not match input image shape: "
-                f"{large_venule_mask.shape} != {image.shape}"
+            shape_mismatch = True
+            print(
+                "Warning: large_venule_mask shape does not match input image shape; "
+                f"disabling large-vessel masks for this run "
+                f"({large_venule_mask.shape} != {image.shape})."
             )
+        if shape_mismatch:
+            large_arteriole_mask = None
+            large_venule_mask = None
+            large_arteriole_mask_voxel_size = None
+            large_venule_mask_voxel_size = None
+    if large_arteriole_mask is not None and large_venule_mask is not None:
         print(
             "Loaded large-vessel masks: "
             f"arteriole={large_arteriole_mask.shape}, "
@@ -1651,15 +1732,23 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
         # Remove tiny disconnected fragments represented by a single
         # edge with degree-1 terminal nodes on both endpoints.
-        G, removed_terminal_terminal_edges = graph.remove_terminal_terminal_edges(
-            G,
-            debug=verbose_logging,
-            return_removed_count=True,
-        )
-        print(
-            "Removed "
-            f"{removed_terminal_terminal_edges} edge(s) with degree-1 terminals on both ends."
-        )
+        if G.number_of_edges() > 1:
+            G, removed_terminal_terminal_edges = graph.remove_terminal_terminal_edges(
+                G,
+                debug=verbose_logging,
+                return_removed_count=True,
+            )
+            print(
+                "Removed "
+                f"{removed_terminal_terminal_edges} edge(s) with degree-1 terminals on both ends."
+            )
+        else:
+            # Keep single-edge graphs so one-vessel synthetic/integration cases
+            # are not fully pruned before boundary assignment and export.
+            removed_terminal_terminal_edges = 0
+            print(
+                "Skipped terminal-terminal edge removal for single-edge graph."
+            )
         visualization.save_graph_snapshot(
             G, image, output_dir, plot_dir, image_path.stem,
             "remove_terminal_terminal_edges",
@@ -1764,6 +1853,23 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         f"skipped_distance={int(endpoint_repair_stats.get('edges_skipped_distance', 0))}, "
         f"edges_seen={int(endpoint_repair_stats.get('edges_seen', 0))}."
     )
+    if bool(preserve_single_path_geometry):
+        min_voxel_size = float(np.min(np.asarray(voxel_size, dtype=float)))
+        straightening_stats = graph.regularize_isolated_near_straight_edges(
+            G,
+            max_component_edges=1,
+            min_points=3,
+            max_tortuosity=float(single_path_geometry_max_tortuosity),
+            max_rms_distance=float(single_path_geometry_max_rms_distance_vox) * min_voxel_size,
+            max_max_distance=float(single_path_geometry_max_distance_vox) * min_voxel_size,
+        )
+        print(
+            "Single-path geometry regularization: "
+            f"regularized={int(straightening_stats.get('regularized_edges', 0))}, "
+            f"eligible={int(straightening_stats.get('eligible_edges', 0))}, "
+            f"edges_seen={int(straightening_stats.get('edges_seen', 0))}, "
+            f"components_seen={int(straightening_stats.get('components_seen', 0))}."
+        )
     endpoint_alignment_diag = graph.diagnose_edge_endpoint_node_alignment(
         G,
         atol=float(endpoint_alignment_tolerance),
@@ -2176,6 +2282,46 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 "because automated_vessel_assignment=False."
             )
         else:
+            def _normalize_boundary_coords_for_check(
+                coords: list[tuple[float, float, float]] | list | tuple,
+                order: str,
+            ) -> list[tuple[float, float, float]]:
+                out: list[tuple[float, float, float]] = []
+                order_norm = str(order).strip().lower()
+                for c in (coords or []):
+                    arr = np.asarray(c, dtype=float).ravel()
+                    if arr.shape != (3,):
+                        continue
+                    if order_norm == "zyx":
+                        arr = arr[[2, 1, 0]]
+                    out.append((float(arr[0]), float(arr[1]), float(arr[2])))
+                return out
+
+            _check_boundary_coordinate_unit_consistency(
+                G,
+                coordinate_sets={
+                    "starting_nodes": _normalize_boundary_coords_for_check(
+                        starting_node_coordinates,
+                        starting_node_coordinate_order,
+                    ),
+                    "output_nodes": _normalize_boundary_coords_for_check(
+                        output_node_coordinates,
+                        output_node_coordinate_order,
+                    ),
+                    "arteriole_boundary_nodes": _normalize_boundary_coords_for_check(
+                        arteriole_boundary_node_coordinates,
+                        arteriole_boundary_coordinate_order,
+                    ),
+                    "venule_boundary_nodes": _normalize_boundary_coords_for_check(
+                        venule_boundary_node_coordinates,
+                        venule_boundary_coordinate_order,
+                    ),
+                },
+                mode=str(boundary_coordinate_unit_check_mode),
+                max_fraction_of_graph_diagonal=float(
+                    boundary_coordinate_unit_check_max_fraction_of_diagonal
+                ),
+            )
             start_nodes = graph.select_boundary_nodes_by_method(
                 G,
                 image.shape,
@@ -2183,6 +2329,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 node_role="input",
                 coordinates=starting_node_coordinates,
                 volume_boxes=starting_node_volumes,
+                coordinate_order=starting_node_coordinate_order,
             )
             out_nodes = graph.select_boundary_nodes_by_method(
                 G,
@@ -2192,6 +2339,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 coordinates=output_node_coordinates,
                 volume_boxes=output_node_volumes,
                 exclude_nodes=start_nodes,
+                coordinate_order=output_node_coordinate_order,
             )
     # Enforce terminal-only I/O assignment.
     start_nodes, out_nodes, dropped_start_nodes, dropped_out_nodes = (
@@ -2290,6 +2438,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             volume_boxes=arteriole_boundary_node_volumes,
             terminal_only=False,
             exclude_nodes=list(used_nodes),
+            coordinate_order=arteriole_boundary_coordinate_order,
         )
         arteriole_boundary_nodes.extend(art_boundary)
         used_nodes.update(arteriole_boundary_nodes)
@@ -2318,6 +2467,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             volume_boxes=venule_boundary_node_volumes,
             terminal_only=False,
             exclude_nodes=list(used_nodes),
+            coordinate_order=venule_boundary_coordinate_order,
         )
         venule_boundary_nodes.extend(ven_boundary)
     elif (
@@ -3113,6 +3263,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 branch_endpoint_exclusion_um=float(
                     fwhm_branch_endpoint_exclusion_um
                 ),
+                terminal_endpoint_exclusion_um=float(
+                    fwhm_terminal_endpoint_exclusion_um
+                ),
                 junction_proximity_exclusion_um=float(
                     fwhm_junction_proximity_exclusion_um
                 ),
@@ -3153,6 +3306,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     else int(fwhm_edge_parallel_workers)
                 ),
                 edge_parallel_batch_size=int(fwhm_edge_parallel_batch_size),
+                min_valid_cross_section_span_um=float(
+                    fwhm_min_valid_cross_section_span_um
+                ),
+                min_valid_profile_count_per_edge=int(
+                    fwhm_min_valid_profile_count_per_edge
+                ),
+                diameter_aggregation_trim_fraction=float(
+                    fwhm_diameter_aggregation_trim_fraction
+                ),
                 diameter_bounds_mode=str(fwhm_diameter_bounds_mode),
                 diameter_bounds_by_vessel_class_um=(
                     None

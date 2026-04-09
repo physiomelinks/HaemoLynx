@@ -521,6 +521,108 @@ def diagnose_edge_endpoint_skeleton_alignment(
     return stats
 
 
+def regularize_isolated_near_straight_edges(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    max_component_edges: int = 1,
+    min_points: int = 3,
+    max_tortuosity: float = 1.08,
+    max_rms_distance: float = 0.35,
+    max_max_distance: float = 0.8,
+    atol: float = 1e-9,
+) -> Dict[str, int]:
+    """Straighten isolated near-linear edges while preserving topology.
+
+    This targets synthetic single-vessel staircase paths where voxel-walk
+    discretization inflates path length. The correction only applies when an
+    edge is already near-straight under strict geometric thresholds.
+    """
+    stats: Dict[str, int] = {
+        "components_seen": 0,
+        "edges_seen": 0,
+        "eligible_edges": 0,
+        "regularized_edges": 0,
+        "skipped_missing_voxels": 0,
+        "skipped_missing_node_pos": 0,
+        "skipped_not_straight_enough": 0,
+    }
+    if G.number_of_edges() == 0:
+        return stats
+
+    work_graph = G.to_undirected(as_view=True)
+    is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    for component_nodes in nx.connected_components(work_graph):
+        sub = work_graph.subgraph(component_nodes)
+        stats["components_seen"] += 1
+        if sub.number_of_edges() > int(max_component_edges):
+            continue
+
+        if is_multi:
+            edge_iter = list(G.subgraph(component_nodes).edges(keys=True, data=True))
+        else:
+            edge_iter = [(u, v, 0, data) for u, v, data in G.subgraph(component_nodes).edges(data=True)]
+
+        for u, v, _k, data in edge_iter:
+            stats["edges_seen"] += 1
+            voxels = data.get("voxels")
+            if not voxels or len(voxels) < int(min_points):
+                stats["skipped_missing_voxels"] += 1
+                continue
+            if "pos" not in G.nodes[u] or "pos" not in G.nodes[v]:
+                stats["skipped_missing_node_pos"] += 1
+                continue
+
+            pts = np.asarray(voxels, dtype=float)
+            if pts.ndim != 2 or pts.shape[1] < 3:
+                stats["skipped_missing_voxels"] += 1
+                continue
+            pts = pts[:, :3]
+            a = np.asarray(G.nodes[u]["pos"], dtype=float)[:3]
+            b = np.asarray(G.nodes[v]["pos"], dtype=float)[:3]
+            if a.size < 3 or b.size < 3:
+                stats["skipped_missing_node_pos"] += 1
+                continue
+
+            ab = b - a
+            chord = float(np.linalg.norm(ab))
+            if not np.isfinite(chord) or chord <= float(atol):
+                stats["skipped_not_straight_enough"] += 1
+                continue
+
+            path_len = float(calculate_path_length(pts.tolist()))
+            if not np.isfinite(path_len) or path_len <= float(atol):
+                stats["skipped_not_straight_enough"] += 1
+                continue
+            tortuosity = path_len / chord
+
+            t = np.clip(((pts - a) @ ab) / float(np.dot(ab, ab)), 0.0, 1.0)
+            proj = a + np.outer(t, ab)
+            dists = np.linalg.norm(pts - proj, axis=1)
+            rms_dist = float(np.sqrt(np.mean(dists**2)))
+            max_dist = float(np.max(dists))
+
+            if (
+                tortuosity > float(max_tortuosity)
+                or rms_dist > float(max_rms_distance)
+                or max_dist > float(max_max_distance)
+            ):
+                stats["skipped_not_straight_enough"] += 1
+                continue
+
+            stats["eligible_edges"] += 1
+            n_pts = int(pts.shape[0])
+            if n_pts < 2:
+                stats["skipped_not_straight_enough"] += 1
+                continue
+            straight_pts = np.linspace(a, b, n_pts, endpoint=True)
+            data["voxels"] = straight_pts.tolist()
+            data["length"] = chord
+            data["weight"] = max(chord, 1e-6)
+            stats["regularized_edges"] += 1
+
+    return stats
+
+
 def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: Tuple[float, float, float] = (1, 1, 1)) -> float:
     """
     Calculate the length of an edge between two nodes.

@@ -4,7 +4,7 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-from numpy import true_divide
+from numpy import True_, true_divide
 
 # Ensure package is importable when running from repo root.
 root_dir = Path(__file__).resolve().parents[1]
@@ -51,7 +51,7 @@ VOXEL_SIZE_POLICY = "auto"
 # Vessel-mask settings
 # ---------------------------
 # Toggle automated selection of start/output nodes from masks.
-AUTOMATED_VESSEL_ASSIGNMENT = False
+AUTOMATED_VESSEL_ASSIGNMENT = True
 # Fast mode for automated large-vessel I/O assignment: remove overlap voxels
 # from the smaller component in each arteriole/venule overlap pair before
 # terminal assignment (non-overlapping component regions are preserved).
@@ -121,7 +121,7 @@ ILASTIK_ARTERIOLE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "art
 # Ilastik classifier path for venule segmentation.
 ILASTIK_VENULE_CLASSIFIER_PATH = root_dir / "examples" / "classifiers" / "venule_classifier.ilp"
 # Toggle small-vessel masks for automated arteriole/venule boundary assignment.
-USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = False
+USE_SMALL_VESSEL_MASKS_FOR_BOUNDARY_ASSIGNMENT = True
 # Persist small-vessel-derived ARTERIOLE_BOUNDARY_NODES/VENULE_BOUNDARY_NODES
 # into this settings file and disable small-vessel boundary automation next run.
 AUTO_PERSIST_SMALL_VESSEL_BOUNDARY_ASSIGNMENT_TO_SETTINGS = True
@@ -227,10 +227,18 @@ ILASTIK_SMALL_VENULE_CLASSIFIER_PATH = ILASTIK_VENULE_CLASSIFIER_PATH
 STARTING_NODE_SELECTION_METHOD = "coordinates"
 # Method used to choose manual output nodes.
 OUTPUT_NODE_SELECTION_METHOD = "coordinates"
+# Coordinate order for manual starting-node coordinates: "xyz" or "zyx".
+STARTING_NODE_COORDINATE_ORDER = "xyz"
+# Coordinate order for manual output-node coordinates: "xyz" or "zyx".
+OUTPUT_NODE_COORDINATE_ORDER = "xyz"
 # Method used to choose manual arteriole boundary nodes.
 ARTERIOLE_BOUNDARY_SELECTION_METHOD = "coordinates"
 # Method used to choose manual venule boundary nodes.
 VENULE_BOUNDARY_SELECTION_METHOD = "coordinates"
+# Coordinate order for arteriole-boundary manual coordinates: "xyz" or "zyx".
+ARTERIOLE_BOUNDARY_COORDINATE_ORDER = "xyz"
+# Coordinate order for venule-boundary manual coordinates: "xyz" or "zyx".
+VENULE_BOUNDARY_COORDINATE_ORDER = "xyz"
 # Manual coordinate list for starting node selection.
 STARTING_NODE_COORDINATES = [
     (152.0, 340.0, 527.0),
@@ -266,6 +274,10 @@ OUTPUT_NODES: list[int] = [114, 118, 121, 125, 135, 136, 138, 139, 141, 145, 146
 ARTERIOLE_BOUNDARY_NODES: list[int] = [459, 652, 278, 342, 424, 442, 449, 517, 409, 477, 518, 571, 665, 937, 1460, 61, 1106, 1286, 1334, 1094, 1402, 1567, 1571, 1577, 1601, 440, 1699, 1891, 2150, 2248, 2362, 2505, 548]
 # Runtime container for selected venule boundary node IDs.
 VENULE_BOUNDARY_NODES: list[int] = [115, 151, 263, 283, 286, 353, 386,  461, 468, 470, 498, 505, 525, 568, 571, 601, 610, 673, 735, 836, 873, 923, 1022, 1058, 1076, 1131, 1229, 1332, 1372, 1395, 1577, 1624, 1669, 1817, 1819, 1832, 1944, 2008, 2058, 2118, 2212, 2248, 2286, 2372, 2390, 2477, 2537, 2781, 2857, 2919, 2921, 4068, 4087, 4285, 4521]
+# Boundary coordinate unit-consistency check mode: "off", "warn", or "error".
+BOUNDARY_COORDINATE_UNIT_CHECK_MODE = "warn"
+# Warn/error when median nearest-node mismatch exceeds this fraction of graph diagonal.
+BOUNDARY_COORDINATE_UNIT_CHECK_MAX_FRACTION_OF_DIAGONAL = 0.25
 # Enforce strict hierarchical branch-order prerequisites.
 STRICT_BRANCH_ORDER_ASSIGNMENT = False
 
@@ -322,9 +334,9 @@ WRITE_SMALL_VESSEL_BOUNDARY_LABELLING_3D_HTML = True
 # Pipeline-stage and topology settings
 # ---------------------------
 # Toggle skeletonization step execution.
-DO_SKELETONIZE = False
+DO_SKELETONIZE = True
 # Toggle graph-building step execution.
-DO_GRAPH_BUILDING = False
+DO_GRAPH_BUILDING = True
 # Toggle haemodynamics pipeline execution.
 RUN_HAEMODYNAMICS = True
 # Toggle two-point equivalent resistance calculation.
@@ -609,6 +621,8 @@ FWHM_CLIP_MIN_DROP_FRACTION_OF_CENTER = 0.35
 FWHM_CLIP_RE_RISE_FRACTION_OF_CENTER = 0.08
 # Exclusion distance (um) from branch endpoints for sampling.
 FWHM_BRANCH_ENDPOINT_EXCLUSION_UM = 10.0
+# Exclusion distance (um) from terminal endpoints for sampling.
+FWHM_TERMINAL_ENDPOINT_EXCLUSION_UM = 0.0
 # Exclusion distance (um) near detected junction voxels.
 FWHM_JUNCTION_PROXIMITY_EXCLUSION_UM = 10.0
 # Enforce local same-edge sampling neighborhood guard.
@@ -637,6 +651,12 @@ FWHM_MIN_FIT_R2 = 0.85
 FWHM_EDGE_PARALLEL_WORKERS: Optional[int] = 8
 # Number of edges bundled per worker task (reduces scheduler overhead).
 FWHM_EDGE_PARALLEL_BATCH_SIZE = 16
+# Minimum accepted profile span (um) for a sample fit.
+FWHM_MIN_VALID_CROSS_SECTION_SPAN_UM = 0.0
+# Minimum accepted valid sample count per edge.
+FWHM_MIN_VALID_PROFILE_COUNT_PER_EDGE = 1
+# Trim fraction per tail for robust sample aggregation on each edge.
+FWHM_DIAMETER_AGGREGATION_TRIM_FRACTION = 0.0
 # Branch-order class bounds handling mode for fitted diameters.
 FWHM_DIAMETER_BOUNDS_MODE = "reject"  # one of: off, reject, clamp
 # Plausible diameter ranges (um) by vessel class for sample/edge filtering.

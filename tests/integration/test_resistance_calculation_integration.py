@@ -505,6 +505,8 @@ def _base_pipeline_kwargs(
         plot_dir=plot_dir,
         vtk_output_prefix=vtk_prefix,
         verbose_logging=False,
+        voxel_size_policy="override",
+        voxel_size_override_xyz_px_per_um=(1.0, 1.0, 1.0),
         do_equiv_resistance_calculation=False,
         do_pericyte_constriction=False,
         skeleton_closing_radius=0,

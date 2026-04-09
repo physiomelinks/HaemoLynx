@@ -64,6 +64,25 @@ def _normalize_point(point: Iterable[float], *, name: str) -> np.ndarray:
     return arr
 
 
+def _normalize_point_with_order(
+    point: Iterable[float],
+    *,
+    name: str,
+    coordinate_order: str,
+) -> np.ndarray:
+    arr = _normalize_point(point, name=name)
+    order = str(coordinate_order).strip().lower()
+    if order == "xyz":
+        return arr
+    if order == "zyx":
+        # Convert user-provided (z, y, x) into internal (x, y, z).
+        return arr[[2, 1, 0]]
+    raise ValueError(
+        "coordinate_order must be 'xyz' or 'zyx', "
+        f"got {coordinate_order!r}."
+    )
+
+
 def _sort_nodes(nodes: Iterable[Any]) -> list[Any]:
     return sorted(set(nodes), key=lambda n: (str(type(n)), str(n)))
 
@@ -83,6 +102,7 @@ def select_boundary_nodes_by_method(
     starting_nodes_for_distance: Iterable[Any] | None = None,
     distance_from_starting_node: float = 0.0,
     terminal_only: bool = True,
+    coordinate_order: str = "xyz",
 ) -> list[Any]:
     """Select boundary nodes for one role using the specified method."""
     if node_role not in {"input", "output"}:
@@ -108,10 +128,20 @@ def select_boundary_nodes_by_method(
         if not points:
             return []
         selected = []
+        available = [node_id for node_id in candidates if node_id not in excluded]
+        if not available:
+            return []
         for idx, point in enumerate(points):
-            target = _normalize_point(point, name=f"coordinates[{idx}]")
+            target = _normalize_point_with_order(
+                point,
+                name=f"coordinates[{idx}]",
+                coordinate_order=coordinate_order,
+            )
+            pool = [node_id for node_id in available if node_id not in selected]
+            if not pool:
+                break
             nearest = min(
-                candidates,
+                pool,
                 key=lambda node_id: float(np.linalg.norm(pos[node_id] - target)),
             )
             selected.append(nearest)
@@ -126,8 +156,16 @@ def select_boundary_nodes_by_method(
                 raise ValueError(
                     "Each volume box must contain exactly two corner points."
                 )
-            corner_a = _normalize_point(corners[0], name=f"volume_boxes[{idx}][0]")
-            corner_b = _normalize_point(corners[1], name=f"volume_boxes[{idx}][1]")
+            corner_a = _normalize_point_with_order(
+                corners[0],
+                name=f"volume_boxes[{idx}][0]",
+                coordinate_order=coordinate_order,
+            )
+            corner_b = _normalize_point_with_order(
+                corners[1],
+                name=f"volume_boxes[{idx}][1]",
+                coordinate_order=coordinate_order,
+            )
             lo = np.minimum(corner_a, corner_b)
             hi = np.maximum(corner_a, corner_b)
             normalized_boxes.append((lo, hi))
