@@ -387,6 +387,62 @@ def run_ilastik_segmentation(ilastik_bin=ILASTIK_BINARY_PATH,
     return result_path
 
 
+
+def _preview_raw_volume(image, image_path, input_format, vis_config):
+    if vis_config.visualize_vedo:
+        print(f"Visualizing 3D volume with VEDO ({vis_config.visualize_vedo_mode}, smooth={vis_config.visualize_vedo_smooth_iter}).")
+        current_spacing = vis_config.visualize_vedo_spacing
+        if vis_config.visualize_vedo_auto_spacing and input_format == "tif":
+            detected = io.get_tif_spacing(image_path)
+            print(f"  Auto-detected spacing (z,y,x): {detected}")
+            current_spacing = detected
+
+        visualization.visualize_volume_vedo(
+            image,
+            title=f"Vedo 3D Image ({vis_config.visualize_vedo_mode})",
+            mode=vis_config.visualize_vedo_mode,
+            spacing=current_spacing,
+            alpha=vis_config.visualize_vedo_opacity,
+            smooth_iter=vis_config.visualize_vedo_smooth_iter
+        )
+    else:
+        print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={vis_config.visualize_mask_opacity}). Close window to exit.")
+        visualization.visualize_volume(image, title="3D Pre-Otsu Intensity Image", opacity=vis_config.visualize_mask_opacity)
+    print("Exiting pipeline as requested.")
+    import sys
+    sys.exit(0)
+
+def _preview_post_processed_mask(binary, image_path, input_format, vis_config, pipeline_config):
+    mask_plot_path = pipeline_config.plot_dir / "post_processed_mask.png"
+    print(f"Visualizing post-processed binary mask with Vedo (opacity=0.5). Voxel count: {binary.sum()}. Saving to {mask_plot_path}. Close window to exit.")
+    
+    current_spacing = vis_config.visualize_vedo_spacing
+    if vis_config.visualize_vedo_auto_spacing and input_format == "tif":
+        current_spacing = io.get_tif_spacing(image_path)
+
+    visualization.visualize_volume_vedo(
+        binary, 
+        title="3D Post-Processed Binary Mask (Vedo)", 
+        mode=vis_config.visualize_vedo_mode,
+        spacing=current_spacing,
+        alpha=0.5,
+        smooth_iter=vis_config.visualize_vedo_smooth_iter
+    )
+    print("Exiting pipeline as requested after post-processed mask visualization.")
+    import sys
+    sys.exit(0)
+
+def _visualize_final_results(G, image, starting_nodes, vis_config):
+    visualization.plot_node_degree_distribution(G)
+    visualization.visualize_edges_and_nodes(image, G)
+    
+    if starting_nodes:
+        visualization.visualize_geometry_with_branch_orders(
+            image,
+            G,
+            group_above=8,
+        )
+
 def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config):
     if input_format == "tif":
         image = io.load_3d_tif(image_path)
@@ -442,27 +498,7 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     print(f"Image probability range: min={image.min():.4f}, max={image.max():.4f}, mean={image.mean():.4f}")
 
     if vis_config.visualize_mask_only:
-        if vis_config.visualize_vedo:
-            print(f"Visualizing 3D volume with VEDO ({vis_config.visualize_vedo_mode}, smooth={vis_config.visualize_vedo_smooth_iter}).")
-            current_spacing = vis_config.visualize_vedo_spacing
-            if vis_config.visualize_vedo_auto_spacing and input_format == "tif":
-                detected = io.get_tif_spacing(image_path)
-                print(f"  Auto-detected spacing (z,y,x): {detected}")
-                current_spacing = detected
-
-            visualization.visualize_volume_vedo(
-                image,
-                title=f"Vedo 3D Image ({vis_config.visualize_vedo_mode})",
-                mode=vis_config.visualize_vedo_mode,
-                spacing=current_spacing,
-                alpha=vis_config.visualize_vedo_opacity,
-                smooth_iter=vis_config.visualize_vedo_smooth_iter
-            )
-        else:
-            print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={vis_config.visualize_mask_opacity}). Close window to exit.")
-            visualization.visualize_volume(image, title="3D Pre-Otsu Intensity Image", opacity=vis_config.visualize_mask_opacity)
-        print("Exiting pipeline as requested.")
-        sys.exit(0)
+        _preview_raw_volume(image, image_path, input_format, vis_config)
 
     if pre_config.median_filter_size > 0:
         print(f"Applying median filter (size={pre_config.median_filter_size})...")
@@ -501,23 +537,7 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
         )
 
     if vis_config.visualize_post_processed_mask:
-        mask_plot_path = pipeline_config.plot_dir / "post_processed_mask.png"
-        print(f"Visualizing post-processed binary mask with Vedo (opacity=0.5). Voxel count: {binary.sum()}. Saving to {mask_plot_path}. Close window to exit.")
-        
-        current_spacing = vis_config.visualize_vedo_spacing
-        if vis_config.visualize_vedo_auto_spacing and input_format == "tif":
-            current_spacing = io.get_tif_spacing(image_path)
-
-        visualization.visualize_volume_vedo(
-            binary, 
-            title="3D Post-Processed Binary Mask (Vedo)", 
-            mode=vis_config.visualize_vedo_mode,
-            spacing=current_spacing,
-            alpha=0.5,
-            smooth_iter=vis_config.visualize_vedo_smooth_iter
-        )
-        print("Exiting pipeline as requested after post-processed mask visualization.")
-        sys.exit(0)
+        _preview_post_processed_mask(binary, image_path, input_format, vis_config, pipeline_config)
     
     return image, binary
 
@@ -675,8 +695,7 @@ def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resis
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "pre_vtk.png")
     
     vtk_export = visualization.graph_to_vtk(G, pipeline_config.vtk_output_prefix)
-    print("
-=== VTK Export ===")
+    print("\n=== VTK Export ===")
     print(f"  Vessels:   {vtk_export['vessels_path']}")
     print(f"  Pericytes: {vtk_export['pericytes_path']}")
     print(f"  Nodes:     {vtk_export['nodes_path']}")
@@ -705,14 +724,12 @@ def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resis
                 target_node,
             )
             print(
-                f"
-Effective resistance between nodes {source_node} and "
+                f"\nEffective resistance between nodes {source_node} and "
                 f"{target_node}: {two_point_resistance}"
             )
         else:
             print(
-                f"
-Skipped two-point resistance: nodes {resistance_node_pair} "
+                f"\nSkipped two-point resistance: nodes {resistance_node_pair} "
                 "are not both present in the graph."
             )
 
@@ -723,8 +740,7 @@ Skipped two-point resistance: nodes {resistance_node_pair} "
         image_dimensions=image.shape,
     )
 
-    print("
-=== Statistics ===")
+    print("\n=== Statistics ===")
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
@@ -741,15 +757,7 @@ Skipped two-point resistance: nodes {resistance_node_pair} "
     print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
 
     if vis_config.visualize_results:
-        visualization.plot_node_degree_distribution(G)
-        visualization.visualize_edges_and_nodes(image, G)
-        
-        if starting_nodes:
-            visualization.visualize_geometry_with_branch_orders(
-                image,
-                G,
-                group_above=8,
-            )
+        _visualize_final_results(G, image, starting_nodes, vis_config)
 
 def carotid_image_to_model(image_path: Path | str, 
                            pre_config: PreprocessingConfig = None,
@@ -817,6 +825,7 @@ def carotid_image_to_model(image_path: Path | str,
 
     starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_config)
     _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config)
+    
 if __name__ == "__main__":
     plot_dir = BASE_PLOT_DIR / "carotid"
     
