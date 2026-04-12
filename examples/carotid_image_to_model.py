@@ -1,9 +1,3 @@
-#Ability to compare datasets - Dave's suggestion
-#Summarise by BO in statistics
-#Resistance should be from start of arteriole to end of venule
-#Mean distance of object (classifier) to each capillary type and BO
-#Overall list of every vessel and its properties
-
 #!/usr/bin/env python3
 """Refactored full pipeline example using ImageLynx package."""
 import logging
@@ -56,9 +50,6 @@ END_PERCENT = 25.0
 NODE_EDGE_AXIS = 0
 STARTING_NODES: list[int] = []
 OUTPUT_NODES: list[int] = []
-# TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
-# TODO automate the selection of resistance node pairs
-# RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
 INPUT_P_BC = 1000 # Pa 
 OUTPUT_P_BC = 500 # Pa
 VISUALIZE_RESULTS = False
@@ -171,9 +162,6 @@ SHANNON_ENTROPY_THRESHOLD = 0.95
 
 # Visualize the post-processed binary mask and exit (Added 30/03/2026)
 VISUALIZE_POST_PROCESSED_MASK = False
-# TODO these diameters etc should be automated 
-#HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
-#HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
 """Configuration defaults for diameter maps."""
 
 # Diameter by branch order (dict with d1 and d2 for pericyte constriction simulation)
@@ -926,7 +914,3 @@ if __name__ == "__main__":
         pipeline_config=pipeline_config
     )
 
-    ### // NOTES TO SELF FOR LATER // ###
-
-    ### Run through current image-to-model functionality with CB binary-mask and add fixes/
-    ### features on the fly
