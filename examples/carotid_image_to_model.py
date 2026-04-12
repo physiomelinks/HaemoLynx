@@ -386,6 +386,371 @@ def run_ilastik_segmentation(ilastik_bin=ILASTIK_BINARY_PATH,
         
     return result_path
 
+
+def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config):
+    if input_format == "tif":
+        image = io.load_3d_tif(image_path)
+    elif input_format == "h5":
+        if not H5_DATASET_NAME:
+            raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
+        image = io.load_3d_h5(image_path, H5_DATASET_NAME)
+    else:
+        raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
+
+    print(f"Loaded image shape: {image.shape}")
+
+    # 1.5) Sub-volume / ROI Cropping (Supports 4D)
+    if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or        skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
+        
+        print(f"Applying ROI crop (sub-volume={skel_config.sub_volume_percentage})...")
+        image = preprocessing.crop_roi(
+            image,
+            sub_volume_percentage=skel_config.sub_volume_percentage,
+            offset_z=skel_config.sub_volume_offset_z,
+            offset_y=skel_config.sub_volume_offset_y,
+            offset_x=skel_config.sub_volume_offset_x
+        )
+        print(f"  ROI new shape: {image.shape}")
+
+    entropy_map = None
+    if image.ndim == 4:
+        # Calculate entropy before extracting the vessel channel
+        if pre_config.enable_shannon_entropy:
+            entropy_map = preprocessing.calculate_entropy_map(image)
+
+        dims = np.array(image.shape)
+        c_axis = np.argmin(dims)
+        print(f"Detected 4D image. Assuming channel is at axis {c_axis} (size {dims[c_axis]}).")
+        
+        if c_axis == 0:
+            image = image[pre_config.ilastik_vessel_channel, :, :, :]
+        elif c_axis == 1:
+            image = image[:, pre_config.ilastik_vessel_channel, :, :]
+        elif c_axis == 2:
+            image = image[:, :, pre_config.ilastik_vessel_channel, :]
+        else:
+            image = image[:, :, :, pre_config.ilastik_vessel_channel]
+            
+        print(f"Extracted vessel channel {pre_config.ilastik_vessel_channel}. New spatial shape: {image.shape}")
+
+        if entropy_map is not None:
+            uncertain_mask = entropy_map > pre_config.shannon_entropy_threshold
+            print(f"Applying Shannon Entropy Refinement (threshold={pre_config.shannon_entropy_threshold})...")
+            print(f"  Rejecting {uncertain_mask.sum()} uncertain voxels.")
+            image[uncertain_mask] = 0.0
+
+    print(f"Image probability range: min={image.min():.4f}, max={image.max():.4f}, mean={image.mean():.4f}")
+
+    if vis_config.visualize_mask_only:
+        if vis_config.visualize_vedo:
+            print(f"Visualizing 3D volume with VEDO ({vis_config.visualize_vedo_mode}, smooth={vis_config.visualize_vedo_smooth_iter}).")
+            current_spacing = vis_config.visualize_vedo_spacing
+            if vis_config.visualize_vedo_auto_spacing and input_format == "tif":
+                detected = io.get_tif_spacing(image_path)
+                print(f"  Auto-detected spacing (z,y,x): {detected}")
+                current_spacing = detected
+
+            visualization.visualize_volume_vedo(
+                image,
+                title=f"Vedo 3D Image ({vis_config.visualize_vedo_mode})",
+                mode=vis_config.visualize_vedo_mode,
+                spacing=current_spacing,
+                alpha=vis_config.visualize_vedo_opacity,
+                smooth_iter=vis_config.visualize_vedo_smooth_iter
+            )
+        else:
+            print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={vis_config.visualize_mask_opacity}). Close window to exit.")
+            visualization.visualize_volume(image, title="3D Pre-Otsu Intensity Image", opacity=vis_config.visualize_mask_opacity)
+        print("Exiting pipeline as requested.")
+        sys.exit(0)
+
+    if pre_config.median_filter_size > 0:
+        print(f"Applying median filter (size={pre_config.median_filter_size})...")
+        image = preprocessing.median_filter_image(image, size=pre_config.median_filter_size)
+
+    if pre_config.morphological_opening_radius > 0:
+        print(f"Applying morphological opening (radius={pre_config.morphological_opening_radius})...")
+        image = preprocessing.morphological_opening(image, radius=pre_config.morphological_opening_radius)
+
+    if pre_config.probability_smoothing_sigma > 0:
+        image = preprocessing.smooth_probability_map(image, sigma=pre_config.probability_smoothing_sigma)
+
+    if pre_config.enable_hysteresis_threshold:
+        binary_raw = preprocessing.hysteresis_threshold(
+            image, low=pre_config.hysteresis_threshold_low, high=pre_config.hysteresis_threshold_high
+        )
+    else:
+        from skimage.filters import threshold_otsu
+        threshold = threshold_otsu(image)
+        binary_raw = image > threshold
+    
+    binary = binary_raw.copy()
+
+    if pre_config.enable_hole_filling:
+        binary = preprocessing.skeleton.fill_holes_3d(binary)
+
+    if skel_config.closing_radius > 0:
+        binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.closing_radius)
+    if skel_config.bridge_gap_size > 0:
+        binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skel_config.bridge_gap_size)
+
+    if skel_config.prune_mask_before > 0:
+        print(f"Pruning binary mask to keep largest {skel_config.prune_mask_before} components...")
+        binary = preprocessing.skeleton.keep_largest_mask_components(
+            binary, n_components=skel_config.prune_mask_before, connectivity=skel_config.component_connectivity
+        )
+
+    if vis_config.visualize_post_processed_mask:
+        mask_plot_path = pipeline_config.plot_dir / "post_processed_mask.png"
+        print(f"Visualizing post-processed binary mask with Vedo (opacity=0.5). Voxel count: {binary.sum()}. Saving to {mask_plot_path}. Close window to exit.")
+        
+        current_spacing = vis_config.visualize_vedo_spacing
+        if vis_config.visualize_vedo_auto_spacing and input_format == "tif":
+            current_spacing = io.get_tif_spacing(image_path)
+
+        visualization.visualize_volume_vedo(
+            binary, 
+            title="3D Post-Processed Binary Mask (Vedo)", 
+            mode=vis_config.visualize_vedo_mode,
+            spacing=current_spacing,
+            alpha=0.5,
+            smooth_iter=vis_config.visualize_vedo_smooth_iter
+        )
+        print("Exiting pipeline as requested after post-processed mask visualization.")
+        sys.exit(0)
+    
+    return image, binary
+
+def _run_skeletonization_phase(binary, skel_config):
+    if skel_config.downsample_factor > 1.0:
+        print(f"Applying downsampled skeletonization (factor={skel_config.downsample_factor})...")
+        skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skel_config.downsample_factor)
+    else:
+        skeleton = preprocessing.skeleton.skeletonize_3d(binary)
+    
+    preprocessing.print_skeleton_connectivity_stats(
+        "raw",
+        skeleton,
+        component_connectivity=skel_config.component_connectivity,
+    )
+
+    skeleton = preprocessing.preprocess_skeleton_for_graph(
+        skeleton,
+        min_branch_length=skel_config.min_branch_length,
+        max_bridge_distance=skel_config.max_bridge_distance,
+        component_connectivity=skel_config.component_connectivity,
+        min_component_fraction=skel_config.min_component_percent / 100.0,
+        bundle_scan_size=skel_config.bundle_scan_size,
+        bundle_density_fraction=skel_config.bundle_density_fraction,
+        bundle_max_connections_per_hub=skel_config.bundle_max_connections,
+        bundle_hub_min_spacing=skel_config.bundle_hub_min_spacing,
+    )
+    preprocessing.print_skeleton_connectivity_stats(
+        "cleaned",
+        skeleton,
+        component_connectivity=skel_config.component_connectivity,
+    )
+    return skeleton
+
+def _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config):
+    print(f"Visualizing 3D overlay PREVIEW with optimized graph (mask opacity=0.3). Close window to exit.")
+    
+    current_spacing = vis_config.visualize_vedo_spacing
+    if vis_config.visualize_vedo_auto_spacing and input_format == "tif":
+        current_spacing = io.get_tif_spacing(image_path)
+
+    if vis_config.visualize_vedo:
+        visualization.visualize_overlay_vedo(
+            binary, 
+            skeleton, 
+            title="3D Skeleton & Graph Overlay Preview (Vedo)", 
+            alpha=0.3,
+            mode=vis_config.visualize_vedo_mode,
+            smooth_iter=vis_config.visualize_vedo_smooth_iter,
+            spacing=current_spacing,
+            separate_windows=True,
+            G=G
+        )
+    else:
+        visualization.visualize_overlay(binary, skeleton, title="3D Skeleton Overlay Preview", vessel_opacity=0.3)
+    print("Exiting pipeline as requested (Preview Mode).")
+    sys.exit(0)
+
+def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_config, graph_config, pipeline_config):
+    sk = csr.Skeleton(skeleton)
+
+    G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
+        sk,
+        skeleton,
+        debug=pipeline_config.verbose_logging,
+        use_padded_slicing=skel_config.use_padded_slicing,
+        padding=skel_config.padded_slicing_padding,
+    )
+    G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=pipeline_config.verbose_logging)
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "reconnect_secondary_loop_edges.png")
+    
+    G, _ = graph.optimise_graph_topology_fixed(
+        G,
+        voxel_loops,
+        loop_edges,
+        skeleton_data=skeleton,
+        debug=pipeline_config.verbose_logging,
+    )
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "optimise_graph_topology_fixed.png")
+    
+    G = graph.smart_multigraph_degree2_removal(
+        G,
+        skeleton,
+        debug=pipeline_config.verbose_logging,
+    )
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "smart_multigraph_degree2_removal.png")
+
+    current_spacing = (1.0, 1.0, 1.0)
+    if input_format == "tif":
+        current_spacing = io.get_tif_spacing(image_path)
+        print(f"  Using detected spacing for pruning (z,y,x): {current_spacing}")
+
+    G = graph.prune_vascular_stubs(G, debug=pipeline_config.verbose_logging, voxel_size=current_spacing)
+    G = graph.remove_edges_for_self_connected_nodes(G)
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "prune_vascular_stubs.png")
+    
+    if graph_config.keep_largest_component_only:
+        n_before = G.number_of_nodes()
+        largest_cc = max(nx.connected_components(G), key=len)
+        G = G.subgraph(largest_cc).copy()
+        n_after = G.number_of_nodes()
+        if n_after < n_before:
+            print(f"Final Graph Pruning: Removed {n_before - n_after} nodes in floating islands. Keeping largest component ({n_after} nodes).")
+            
+    return G
+
+def _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_config):
+    starting_nodes = []
+    output_nodes = []
+    start_nodes, out_nodes = graph.select_boundary_terminal_nodes(
+        G,
+        image.shape,
+        edge_percent=graph_config.edge_percent,
+        end_percent=graph_config.end_percent,
+        axis=graph_config.node_edge_axis,
+    )
+    starting_nodes.extend(start_nodes)
+    output_nodes.extend(out_nodes)
+    print(
+        f"Auto-selected {len(starting_nodes)} STARTING_NODES "
+        f"(top {graph_config.edge_percent}%) and {len(output_nodes)} OUTPUT_NODES "
+        f"(bottom {graph_config.end_percent}%) along axis {graph_config.node_edge_axis}."
+    )
+    print(f"Starting nodes are: {starting_nodes}")
+    print(f"Output nodes are: {output_nodes}")
+
+    if starting_nodes and output_nodes:
+        resistance_node_pair = (starting_nodes[0], output_nodes[0])
+        print(f"Auto-selected resistance node_pair: {resistance_node_pair}")
+    else:
+        raise ValueError(f"No starting or output nodes found in input {graph_config.edge_percent}% or output {graph_config.end_percent}%")
+
+    if starting_nodes:
+        graph.assign_branch_orders(G, starting_nodes)
+        poiseuille_model = hemodynamics.PoiseuilleModel(
+            constriction_length=40.0,
+            constriction_spacing=100.0,
+        )
+        if hemo_config.constrict_at_pericytes:
+            poiseuille_model.set_poiseuille_edge_weights(
+                G,
+                custom_edges,
+                edge_diameter=6.0,
+                use_resistance=False,
+            )
+        else:
+            poiseuille_model.set_poiseuille_weights_with_constrictions(
+                G,
+                hemo_config.diameter_by_branch_order,
+            )
+            
+    return starting_nodes, output_nodes, resistance_node_pair
+
+def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config):
+    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "pre_vtk.png")
+    
+    vtk_export = visualization.graph_to_vtk(G, pipeline_config.vtk_output_prefix)
+    print("
+=== VTK Export ===")
+    print(f"  Vessels:   {vtk_export['vessels_path']}")
+    print(f"  Pericytes: {vtk_export['pericytes_path']}")
+    print(f"  Nodes:     {vtk_export['nodes_path']}")
+    print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
+          f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
+          
+    if vis_config.visualize_vtk:
+        visualization.visualize_vtk_network(
+            vtk_export["vessels_path"],
+            vtk_export["pericytes_path"],
+            vtk_export["nodes_path"],
+            show_nodes=False,
+        )
+
+    conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+
+    if pipeline_config.do_resistance_calculation:
+        source_node, target_node = resistance_node_pair
+        if source_node in node_to_idx and target_node in node_to_idx:
+            laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+            two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+                laplacian,
+                G,
+                source_node,
+                target_node,
+            )
+            print(
+                f"
+Effective resistance between nodes {source_node} and "
+                f"{target_node}: {two_point_resistance}"
+            )
+        else:
+            print(
+                f"
+Skipped two-point resistance: nodes {resistance_node_pair} "
+                "are not both present in the graph."
+            )
+
+    node_positions = nx.get_node_attributes(G, "pos")
+    stats = statistics.compute_comprehensive_vessel_statistics(
+        G,
+        node_positions=node_positions,
+        image_dimensions=image.shape,
+    )
+
+    print("
+=== Statistics ===")
+    for key, value in stats.items():
+        print(f"  {key}: {value}")
+
+    flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
+        conductance,
+        node_list,
+        hemo_config.input_p_bc,
+        hemo_config.output_p_bc,
+        starting_nodes,
+        output_nodes,
+        vtk_export,
+    )
+    print("Flow through the network solved")
+    print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
+
+    if vis_config.visualize_results:
+        visualization.plot_node_degree_distribution(G)
+        visualization.visualize_edges_and_nodes(image, G)
+        
+        if starting_nodes:
+            visualization.visualize_geometry_with_branch_orders(
+                image,
+                G,
+                group_above=8,
+            )
+
 def carotid_image_to_model(image_path: Path | str, 
                            pre_config: PreprocessingConfig = None,
                            skel_config: SkeletonConfig = None,
@@ -400,504 +765,58 @@ def carotid_image_to_model(image_path: Path | str,
     if vis_config is None: vis_config = VisualizationConfig()
     if pipeline_config is None: pipeline_config = PipelineConfig()
 
-    # Unpack configurations for backward compatibility within the function body
-    diameter_by_branch_order = hemo_config.diameter_by_branch_order
-    plot_dir = pipeline_config.plot_dir if pipeline_config.plot_dir is not None else Path("plots")
-    verbose_logging = pipeline_config.verbose_logging
-    do_skeletonize = pipeline_config.do_skeletonize
-    do_graph_building = pipeline_config.do_graph_building
-    do_resistance_calculation = pipeline_config.do_resistance_calculation
-    constrict_at_pericytes = hemo_config.constrict_at_pericytes
-    min_branch_length = pipeline_config.min_branch_length
-    vtk_output_prefix = pipeline_config.vtk_output_prefix if pipeline_config.vtk_output_prefix is not None else Path("outputs/resistance_network")
-    skeleton_closing_radius = skel_config.closing_radius
-    skeleton_bridge_gap_size = skel_config.bridge_gap_size
-    skeleton_min_branch_length = skel_config.min_branch_length
-    skeleton_max_bridge_distance = skel_config.max_bridge_distance
-    skeleton_component_connectivity = skel_config.component_connectivity
-    skeleton_min_component_percent = skel_config.min_component_percent
-    skeleton_downsample_factor = skel_config.downsample_factor
-    skeleton_use_padded_slicing = skel_config.use_padded_slicing
-    skeleton_padded_slicing_padding = skel_config.padded_slicing_padding
-    skeleton_prune_mask_before = skel_config.prune_mask_before
-    skeleton_sub_volume_percentage = skel_config.sub_volume_percentage
-    skeleton_sub_volume_offset_z = skel_config.sub_volume_offset_z
-    skeleton_sub_volume_offset_y = skel_config.sub_volume_offset_y
-    skeleton_sub_volume_offset_x = skel_config.sub_volume_offset_x
-    edge_percent = graph_config.edge_percent
-    end_percent = graph_config.end_percent
-    node_edge_axis = graph_config.node_edge_axis
-    starting_nodes = graph_config.starting_nodes
-    output_nodes = graph_config.output_nodes
-    input_p_bc = hemo_config.input_p_bc
-    output_p_bc = hemo_config.output_p_bc
-    visualize_results = vis_config.visualize_results
-    visualize_mask_only = vis_config.visualize_mask_only
-    visualize_vedo = vis_config.visualize_vedo
-    visualize_overlay_preview = vis_config.visualize_overlay_preview
-    visualize_vedo_mode = vis_config.visualize_vedo_mode
-    visualize_vedo_smooth_iter = vis_config.visualize_vedo_smooth_iter
-    visualize_vedo_spacing = vis_config.visualize_vedo_spacing
-    visualize_vedo_auto_spacing = vis_config.visualize_vedo_auto_spacing
-    visualize_vedo_opacity = vis_config.visualize_vedo_opacity
-    visualize_mask_opacity = vis_config.visualize_mask_opacity
-    visualize_vtk = vis_config.visualize_vtk
-    median_filter_size = pre_config.median_filter_size
-    probability_smoothing_sigma = pre_config.probability_smoothing_sigma
-    morphological_opening_radius = pre_config.morphological_opening_radius
-    enable_hysteresis_threshold = pre_config.enable_hysteresis_threshold
-    hysteresis_threshold_low = pre_config.hysteresis_threshold_low
-    hysteresis_threshold_high = pre_config.hysteresis_threshold_high
-    enable_hole_filling = pre_config.enable_hole_filling
-    visualize_post_processed_mask = vis_config.visualize_post_processed_mask
-    ilastik_vessel_channel = pre_config.ilastik_vessel_channel
-    enable_shannon_entropy = pre_config.enable_shannon_entropy
-    shannon_entropy_threshold = pre_config.shannon_entropy_threshold
-    graph_keep_largest_component_only = graph_config.keep_largest_component_only
-    bundle_scan_size = skel_config.bundle_scan_size
-    bundle_density_fraction = skel_config.bundle_density_fraction
-    bundle_max_connections = skel_config.bundle_max_connections
-    bundle_hub_min_spacing = skel_config.bundle_hub_min_spacing
-                        
-    # get image format from image_path
+    image_path = Path(image_path)
     input_format = image_path.suffix[1:].lower()
     if input_format not in ["tif", "tiff", "h5"]:
         raise ValueError(f"Invalid image format: {input_format}")
-
-    # Canonicalize format for later checks
     if input_format == "tiff":
         input_format = "tif"
 
-    image_path = Path(image_path)
-    vtk_output_prefix = Path(vtk_output_prefix)
+    if pipeline_config.plot_dir is None:
+        pipeline_config.plot_dir = Path("plots")
+    if pipeline_config.vtk_output_prefix is None:
+        pipeline_config.vtk_output_prefix = Path("outputs/resistance_network")
 
     logging.basicConfig(
-        level=logging.DEBUG if verbose_logging else logging.INFO,
+        level=logging.DEBUG if pipeline_config.verbose_logging else logging.INFO,
         format="[%(levelname)s] %(message)s",
     )
 
-    # 1) Load image and skeletonize.
     skeleton_path = image_path.with_name(f"{image_path.stem}_skeleton.npy")
     graph_path = image_path.with_name(f"{image_path.stem}_graph.pkl")
-    projection_path = plot_dir / "skeleton_projection.png"
-    if not plot_dir.exists():
-        plot_dir.mkdir(parents=True, exist_ok=True)
+    projection_path = pipeline_config.plot_dir / "skeleton_projection.png"
+    if not pipeline_config.plot_dir.exists():
+        pipeline_config.plot_dir.mkdir(parents=True, exist_ok=True)
 
-    if do_skeletonize:
-        if input_format == "tif":
-            image = io.load_3d_tif(image_path)
-        elif input_format == "h5":
-            if not H5_DATASET_NAME:
-                raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
-            image = io.load_3d_h5(image_path, H5_DATASET_NAME)
-        else:
-            raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
-
-        print(f"Loaded image shape: {image.shape}")
-
-        # 1.5) Sub-volume / ROI Cropping (Supports 4D)
-        if 0 < skeleton_sub_volume_percentage < 1.0 or skeleton_sub_volume_offset_z != 0 or \
-           skeleton_sub_volume_offset_y != 0 or skeleton_sub_volume_offset_x != 0:
-            
-            print(f"Applying ROI crop (sub-volume={skeleton_sub_volume_percentage})...")
-            image = preprocessing.crop_roi(
-                image,
-                sub_volume_percentage=skeleton_sub_volume_percentage,
-                offset_z=skeleton_sub_volume_offset_z,
-                offset_y=skeleton_sub_volume_offset_y,
-                offset_x=skeleton_sub_volume_offset_x
-            )
-            print(f"  ROI new shape: {image.shape}")
-
-        entropy_map = None
-        if image.ndim == 4:
-            # Calculate entropy before extracting the vessel channel
-            if enable_shannon_entropy:
-                entropy_map = preprocessing.calculate_entropy_map(image)
-
-            # Ilastik exports can be (Z, C, Y, X), (C, Z, Y, X), or (Z, Y, X, C).
-            # We identify the channel dimension as the smallest dimension (typically 2).
-            # Confocal spatial dims are normally > 100.
-            dims = np.array(image.shape)
-            c_axis = np.argmin(dims)
-            print(f"Detected 4D image. Assuming channel is at axis {c_axis} (size {dims[c_axis]}).")
-            
-            if c_axis == 0:
-                image = image[ilastik_vessel_channel, :, :, :]
-            elif c_axis == 1:
-                image = image[:, ilastik_vessel_channel, :, :]
-            elif c_axis == 2:
-                image = image[:, :, ilastik_vessel_channel, :]
-            else:
-                image = image[:, :, :, ilastik_vessel_channel]
-                
-            print(f"Extracted vessel channel {ilastik_vessel_channel}. New spatial shape: {image.shape}")
-
-            # Apply entropy refinement if enabled
-            if entropy_map is not None:
-                uncertain_mask = entropy_map > shannon_entropy_threshold
-                print(f"Applying Shannon Entropy Refinement (threshold={shannon_entropy_threshold})...")
-                print(f"  Rejecting {uncertain_mask.sum()} uncertain voxels.")
-                image[uncertain_mask] = 0.0 # Set vessel probability to 0 for uncertain voxels
-        
-        print(f"Image probability range: min={image.min():.4f}, max={image.max():.4f}, mean={image.mean():.4f}")
-
-        if visualize_mask_only:
-            if visualize_vedo:
-                print(f"Visualizing 3D volume with VEDO ({visualize_vedo_mode}, smooth={visualize_vedo_smooth_iter}).")
-
-                # Use detected spacing if requested
-                current_spacing = visualize_vedo_spacing
-                if visualize_vedo_auto_spacing and input_format == "tif":
-                    detected = io.get_tif_spacing(image_path)
-                    print(f"  Auto-detected spacing (z,y,x): {detected}")
-                    current_spacing = detected
-
-                visualization.visualize_volume_vedo(
-                    image,
-                    title=f"Vedo 3D Image ({visualize_vedo_mode})",
-                    mode=visualize_vedo_mode,
-                    spacing=current_spacing,
-                    alpha=visualize_vedo_opacity,
-                    smooth_iter=visualize_vedo_smooth_iter
-                )
-            else:
-                print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={visualize_mask_opacity}). Close window to exit.")
-                visualization.visualize_volume(image, title="3D Pre-Otsu Intensity Image", opacity=visualize_mask_opacity)
-            print("Exiting pipeline as requested.")
-            return
-        # 1.6) Probability Smoothing
-        if median_filter_size > 0:
-            print(f"Applying median filter (size={median_filter_size})...")
-            image = preprocessing.median_filter_image(image, size=median_filter_size)
-
-        if morphological_opening_radius > 0:
-            print(f"Applying morphological opening (radius={morphological_opening_radius})...")
-            image = preprocessing.morphological_opening(image, radius=morphological_opening_radius)
-
-        if probability_smoothing_sigma > 0:
-            image = preprocessing.smooth_probability_map(image, sigma=probability_smoothing_sigma)
-
-        # 1.7) Thresholding
-        if enable_hysteresis_threshold:
-            binary_raw = preprocessing.hysteresis_threshold(
-                image, low=hysteresis_threshold_low, high=hysteresis_threshold_high
-            )
-        else:
-            from skimage.filters import threshold_otsu
-            threshold = threshold_otsu(image)
-            binary_raw = image > threshold
-        
-        binary = binary_raw.copy()
-
-        # 1.8) Hole Filling
-        if enable_hole_filling:
-            binary = preprocessing.skeleton.fill_holes_3d(binary)
-
-        if skeleton_closing_radius > 0:
-            binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
-        if skeleton_bridge_gap_size > 0:
-            binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
-
-        if skeleton_prune_mask_before > 0:
-            print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
-            binary = preprocessing.skeleton.keep_largest_mask_components(
-                binary, n_components=skeleton_prune_mask_before, connectivity=skeleton_component_connectivity
-            )
-
-        if visualize_post_processed_mask:
-            mask_plot_path = plot_dir / "post_processed_mask.png"
-            print(f"Visualizing post-processed binary mask with Vedo (opacity=0.5). Voxel count: {binary.sum()}. Saving to {mask_plot_path}. Close window to exit.")
-            
-            # Use detected spacing if requested
-            current_spacing = visualize_vedo_spacing
-            if visualize_vedo_auto_spacing and input_format == "tif":
-                current_spacing = io.get_tif_spacing(image_path)
-
-            visualization.visualize_volume_vedo(
-                binary, 
-                title="3D Post-Processed Binary Mask (Vedo)", 
-                mode=visualize_vedo_mode,
-                spacing=current_spacing,
-                alpha=0.5,
-                smooth_iter=visualize_vedo_smooth_iter
-            )
-            print("Exiting pipeline as requested after post-processed mask visualization.")
-            return
-        
-        if skeleton_downsample_factor > 1.0:
-            print(f"Applying downsampled skeletonization (factor={skeleton_downsample_factor})...")
-            skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skeleton_downsample_factor)
-        else:
-            skeleton = preprocessing.skeleton.skeletonize_3d(binary)
-        
-        preprocessing.print_skeleton_connectivity_stats(
-            "raw",
-            skeleton,
-            component_connectivity=skeleton_component_connectivity,
-        )
-
-        skeleton = preprocessing.preprocess_skeleton_for_graph(
-            skeleton,
-            min_branch_length=skeleton_min_branch_length,
-            max_bridge_distance=skeleton_max_bridge_distance,
-            component_connectivity=skeleton_component_connectivity,
-            min_component_fraction=skeleton_min_component_percent / 100.0,
-            bundle_scan_size=bundle_scan_size,
-            bundle_density_fraction=bundle_density_fraction,
-            bundle_max_connections_per_hub=bundle_max_connections,
-            bundle_hub_min_spacing=bundle_hub_min_spacing,
-        )
-        preprocessing.print_skeleton_connectivity_stats(
-            "cleaned",
-            skeleton,
-            component_connectivity=skeleton_component_connectivity,
-        )
-
-        # save the skeleton
+    if pipeline_config.do_skeletonize:
+        image, binary = _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config)
+        skeleton = _run_skeletonization_phase(binary, skel_config)
         np.save(skeleton_path, skeleton)
     else:
-        # load the skeleton
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(image_path)
 
-    # Optional interactive skeleton viewer (disabled by default for debug runs).
-    if visualize_results:
+    if vis_config.visualize_results:
         visualization.visualize_skeleton(skeleton, save_path=projection_path)
 
-    if do_graph_building:
-        # 3) Convert skeleton to graph.
-        sk = csr.Skeleton(skeleton)
-
-        G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
-            sk,
-            skeleton,
-            debug=verbose_logging,
-            use_padded_slicing=skeleton_use_padded_slicing,
-            padding=skeleton_padded_slicing_padding,
-        )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
-        G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=verbose_logging)
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "reconnect_secondary_loop_edges.png")
+    if pipeline_config.do_graph_building:
+        G = _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_config, graph_config, pipeline_config)
         
-        G, _ = graph.optimise_graph_topology_fixed(
-            G,
-            voxel_loops,
-            loop_edges,
-            skeleton_data=skeleton,
-            debug=verbose_logging,
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "optimise_graph_topology_fixed.png")
-        # Use only the topology-aware degree-2 removal path here. The legacy
-        # simple/trivial passes can collapse curved paths into straight shortcuts
-        # before smart merging has a chance to preserve topology.
-        G = graph.smart_multigraph_degree2_removal(
-            G,
-            skeleton,
-            debug=verbose_logging,
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal.png")
-
-        # Detect spacing for accurate pruning
-        current_spacing = (1.0, 1.0, 1.0)
-        if input_format == "tif":
-            current_spacing = io.get_tif_spacing(image_path)
-            print(f"  Using detected spacing for pruning (z,y,x): {current_spacing}")
-
-        G = graph.prune_vascular_stubs(G, debug=verbose_logging, voxel_size=current_spacing)
-
-        # remove any nodes that are connected to themselves with no nodes in between
-        G = graph.remove_edges_for_self_connected_nodes(G)
-
-        # Visualize node labels for debugging/verification of auto-selected boundary nodes.
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "prune_vascular_stubs.png")
-        
-        # G = graph.smart_multigraph_degree2_removal(
-        #     G,
-        #     skeleton,
-        #     debug=VERBOSE_LOGGING,
-        # )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
-    
-        if visualize_overlay_preview and 'binary' in locals():
-            print(f"Visualizing 3D overlay PREVIEW with optimized graph (mask opacity=0.3). Close window to exit.")
-            
-            current_spacing = visualize_vedo_spacing
-            if visualize_vedo_auto_spacing and input_format == "tif":
-                current_spacing = io.get_tif_spacing(image_path)
-
-            if visualize_vedo:
-                visualization.visualize_overlay_vedo(
-                    binary, 
-                    skeleton, 
-                    title="3D Skeleton & Graph Overlay Preview (Vedo)", 
-                    alpha=0.3,
-                    mode=visualize_vedo_mode,
-                    smooth_iter=visualize_vedo_smooth_iter,
-                    spacing=current_spacing,
-                    separate_windows=True,
-                    G=G
-                )
-            else:
-                visualization.visualize_overlay(binary, skeleton, title="3D Skeleton Overlay Preview", vessel_opacity=0.3)
-            print("Exiting pipeline as requested (Preview Mode).")
-            return
+        if vis_config.visualize_overlay_preview and pipeline_config.do_skeletonize:
+            _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config)
 
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")
     else:
         if not graph_path.exists():
-            raise FileNotFoundError(
-                f"Graph file not found at {graph_path}. "
-                "Set DO_GRAPH_BUILDING=True to generate it first."
-            )
+            raise FileNotFoundError(f"Graph file not found at {graph_path}. Set DO_GRAPH_BUILDING=True to generate it first.")
         with graph_path.open("rb") as f:
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
 
-    # Final Graph Cleanup: Keep only the largest connected component to remove floating islands.
-    if graph_keep_largest_component_only:
-        import networkx as nx
-        n_before = G.number_of_nodes()
-        largest_cc = max(nx.connected_components(G), key=len)
-        G = G.subgraph(largest_cc).copy()
-        n_after = G.number_of_nodes()
-        if n_after < n_before:
-            print(f"Final Graph Pruning: Removed {n_before - n_after} nodes in floating islands. Keeping largest component ({n_after} nodes).")
-
-    starting_nodes[:] = []
-    output_nodes[:] = []
-    start_nodes, out_nodes = graph.select_boundary_terminal_nodes(
-        G,
-        image.shape,
-        edge_percent=edge_percent,
-        end_percent=end_percent,
-        axis=node_edge_axis,
-    )
-    starting_nodes.extend(start_nodes)
-    output_nodes.extend(out_nodes)
-    print(
-        f"Auto-selected {len(starting_nodes)} STARTING_NODES "
-        f"(top {edge_percent}%) and {len(output_nodes)} OUTPUT_NODES "
-        f"(bottom {end_percent}%) along axis {node_edge_axis}."
-    )
-    print(f"Starting nodes are: {starting_nodes}")
-    print(f"Output nodes are: {output_nodes}")
-
-    if starting_nodes and output_nodes:
-        resistance_node_pair = (starting_nodes[0], output_nodes[0])
-        print(f"Auto-selected resistance node_pair: {resistance_node_pair}")
-    else:
-        raise ValueError(f"No starting or output nodes found in input {edge_percent}% or output {end_percent}%")
-
-    # 4) Add branch orders and hemodynamic edge weights.
-    #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
-    #HD note - eventually add in probability of pericyte contraction?
-    if starting_nodes:
-        graph.assign_branch_orders(G, starting_nodes)
-        poiseuille_model = hemodynamics.PoiseuilleModel(
-            constriction_length=40.0,
-            constriction_spacing=100.0,
-        )
-        if constrict_at_pericytes:
-            poiseuille_model.set_poiseuille_edge_weights(
-                G,
-                custom_edges,
-                edge_diameter=6.0,
-                use_resistance=False,
-            )
-        else:
-            poiseuille_model.set_poiseuille_weights_with_constrictions(
-                G,
-                diameter_by_branch_order,
-            )
-
-    # visualize pre vtk
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "pre_vtk.png")
-    # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
-    # FA I have no idea if pericyte location is correct. AI did that part.
-    # FA I don't fully understand how pericyte location is currently determined?
-    vtk_export = visualization.graph_to_vtk(G, vtk_output_prefix)
-    print("\n=== VTK Export ===")
-    print(f"  Vessels:   {vtk_export['vessels_path']}")
-    print(f"  Pericytes: {vtk_export['pericytes_path']}")
-    print(f"  Nodes:     {vtk_export['nodes_path']}")
-    print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
-          f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
-    if visualize_vtk:
-        visualization.visualize_vtk_network(
-            vtk_export["vessels_path"],
-            vtk_export["pericytes_path"],
-            vtk_export["nodes_path"],
-            show_nodes=False,
-        )
-
-    # 6) Compute effective resistance between two selected nodes.
-    conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
-    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-
-    if do_resistance_calculation:
-        source_node, target_node = resistance_node_pair
-        if source_node in node_to_idx and target_node in node_to_idx:
-            laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-            two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
-                laplacian,
-                G,
-                source_node,
-                target_node,
-            )
-            print(
-                f"\nEffective resistance between nodes {source_node} and "
-                f"{target_node}: {two_point_resistance}"
-            )
-        else:
-            print(
-                f"\nSkipped two-point resistance: nodes {resistance_node_pair} "
-                "are not both present in the graph."
-            )
-
-    # 7) Compute and print vessel statistics.
-    node_positions = nx.get_node_attributes(G, "pos")
-    stats = statistics.compute_comprehensive_vessel_statistics(
-        G,
-        node_positions=node_positions,
-        image_dimensions=image.shape,
-    )
-
-    print("\n=== Statistics ===")
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
-
-    # 8) Also solve for flow throughout the network using the conductance matrix 
-    # and the input and output pressures.
-    flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
-        conductance,
-        node_list,
-        input_p_bc,
-        output_p_bc,
-        starting_nodes,
-        output_nodes,
-        vtk_export,
-    )
-    print("Flow through the network solved")
-    print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
-
-    # 9) Optional matplotlib visualization.
-    if visualize_results:
-        visualization.plot_node_degree_distribution(G)
-        visualization.visualize_edges_and_nodes(image, G)
-        # visualization.interactive_3d_graph(G)
-        #HD note - need visualisation of pericyte localisations (ie based upon constriction data)
-        
-        if starting_nodes:
-            visualization.visualize_geometry_with_branch_orders(
-                image,
-                G,
-                group_above=8,
-            )
-
-
+    starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_config)
+    _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config)
 if __name__ == "__main__":
     plot_dir = BASE_PLOT_DIR / "carotid"
     
