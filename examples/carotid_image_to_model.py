@@ -60,7 +60,7 @@ OUTPUT_NODES: list[int] = []
 # RESISTANCE_NODE_PAIR = (426, 509)  # (source_node_id, target_node_id)
 INPUT_P_BC = 1000 # Pa 
 OUTPUT_P_BC = 500 # Pa
-VISUALIZE_RESULTS = True
+VISUALIZE_RESULTS = False
 VISUALIZE_MASK_ONLY = False
 # ---------------------------
 # Vedo Visualization Style (image_to_model style)
@@ -76,7 +76,7 @@ VISUALIZE_VEDO_SPACING = (1.0, 1.0, 1.0)
 VISUALIZE_VEDO_AUTO_SPACING = True
 
 VISUALIZE_VEDO_OPACITY = 0.5
-VISUALIZE_OVERLAY_PREVIEW = True
+VISUALIZE_OVERLAY_PREVIEW = False
 
 VISUALIZE_MASK_OPACITY = 1.0
 VISUALIZE_VTK = False
@@ -114,7 +114,7 @@ SKELETON_BUNDLE_HUB_MIN_SPACING = 0
 # ---------------------------
 # Downsample factor for 3D skeletonization (e.g. 2.0 reduces each dimension by half).
 # Set to 1.0 to disable downsampling.
-SKELETON_DOWNSAMPLE_FACTOR = 1.0 
+SKELETON_DOWNSAMPLE_FACTOR = 1.0
 
 # Enable local padded slicing for much faster loop detection on large skeletons.
 SKELETON_USE_PADDED_SLICING = True
@@ -153,9 +153,9 @@ MORPHOLOGICAL_OPENING_RADIUS = 1
 # If True, uses Hysteresis thresholding instead of global Otsu.
 ENABLE_HYSTERESIS_THRESHOLD = True
 # Lower threshold for connectivity (keeps voxels if they connect to a 'high' seed).
-HYSTERESIS_THRESHOLD_LOW = 1.0
+HYSTERESIS_THRESHOLD_LOW = 0.2
 # Upper threshold for seeds (defines definitely-vessel voxels).
-HYSTERESIS_THRESHOLD_HIGH = 0.0
+HYSTERESIS_THRESHOLD_HIGH = 0.4
 
 # Enable filling internal holes in the binary mask.
 ENABLE_HOLE_FILLING = True
@@ -562,29 +562,6 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             component_connectivity=skeleton_component_connectivity,
         )
 
-        if visualize_overlay_preview:
-            print(f"Visualizing 3D overlay PREVIEW (mask opacity=0.3). Close window to exit.")
-            
-            current_spacing = visualize_vedo_spacing
-            if visualize_vedo_auto_spacing and input_format == "tif":
-                current_spacing = io.get_tif_spacing(image_path)
-
-            if visualize_vedo:
-                visualization.visualize_overlay_vedo(
-                    binary, 
-                    skeleton, 
-                    title="3D Skeleton Overlay Preview (Vedo)", 
-                    alpha=0.3,
-                    mode=visualize_vedo_mode,
-                    smooth_iter=visualize_vedo_smooth_iter,
-                    spacing=current_spacing,
-                    separate_windows=True
-                )
-            else:
-                visualization.visualize_overlay(binary, skeleton, title="3D Skeleton Overlay Preview", vessel_opacity=0.3)
-            print("Exiting pipeline as requested (Preview Mode).")
-            return
-        
         # save the skeleton
         np.save(skeleton_path, skeleton)
     else:
@@ -650,6 +627,30 @@ def carotid_image_to_model(image_path=INPUT_PATH,
         # )
         # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
     
+        if visualize_overlay_preview and 'binary' in locals():
+            print(f"Visualizing 3D overlay PREVIEW with optimized graph (mask opacity=0.3). Close window to exit.")
+            
+            current_spacing = visualize_vedo_spacing
+            if visualize_vedo_auto_spacing and input_format == "tif":
+                current_spacing = io.get_tif_spacing(image_path)
+
+            if visualize_vedo:
+                visualization.visualize_overlay_vedo(
+                    binary, 
+                    skeleton, 
+                    title="3D Skeleton & Graph Overlay Preview (Vedo)", 
+                    alpha=0.3,
+                    mode=visualize_vedo_mode,
+                    smooth_iter=visualize_vedo_smooth_iter,
+                    spacing=current_spacing,
+                    separate_windows=True,
+                    G=G
+                )
+            else:
+                visualization.visualize_overlay(binary, skeleton, title="3D Skeleton Overlay Preview", vessel_opacity=0.3)
+            print("Exiting pipeline as requested (Preview Mode).")
+            return
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")

@@ -522,6 +522,7 @@ def visualize_overlay_vedo(
     skeleton_point_size: float = 5.0,
     show: bool = True,
     separate_windows: bool = False,
+    G: Optional[nx.Graph] = None,
 ):
     """Visualize a 3D skeleton overlaid on its parent volume mesh using Vedo."""
     try:
@@ -551,6 +552,21 @@ def visualize_overlay_vedo(
     else:
         pts = None
 
+    graph_actors = []
+    if G is not None:
+        for u, v, d in G.edges(data=True):
+            path = d.get("voxels", [])
+            if len(path) > 1:
+                path = np.array(path)
+                path_xyz = path[:, [2, 1, 0]] * np.array(vedo_spacing)
+                graph_actors.append(vedo.Line(path_xyz).color("yellow").lw(2))
+        
+        pos = nx.get_node_attributes(G, "pos")
+        if pos:
+            nodes_coords = np.array(list(pos.values()))
+            nodes_xyz = nodes_coords[:, [2, 1, 0]] * np.array(vedo_spacing)
+            graph_actors.append(vedo.Points(nodes_xyz, r=skeleton_point_size * 2.0).color("red"))
+
     if separate_windows:
         # Window 1: Mask only (30% opacity)
         actor_mask = actor.clone().alpha(0.3)
@@ -569,18 +585,31 @@ def visualize_overlay_vedo(
         if pts is not None:
             plt3.add(pts)
             
-        if show:
-            plt1.show(interactive=False)
-            plt2.show(interactive=False)
-            plt3.show(interactive=True)
+        plts = [plt1, plt2, plt3]
+        
+        if G is not None:
+            # Window 4: Graph nodes and edges
+            plt4 = vedo.Plotter(title="4. Optimized Graph", bg=background_color, offscreen=not show, pos=(1500, 0))
+            plt4.add(actor.clone().alpha(0.1)) # faint mask for context
+            for ga in graph_actors:
+                plt4.add(ga)
+            plts.append(plt4)
             
-        return [plt1, plt2, plt3]
+        if show:
+            for p in plts[:-1]:
+                p.show(interactive=False)
+            plts[-1].show(interactive=True)
+            
+        return plts
         
     else:
         plt_vedo = vedo.Plotter(title=title, bg=background_color, offscreen=not show)
         plt_vedo.add(actor)
         if pts is not None:
             plt_vedo.add(pts)
+        if G is not None:
+            for ga in graph_actors:
+                plt_vedo.add(ga)
 
         if show:
             plt_vedo.show(interactive=True)
