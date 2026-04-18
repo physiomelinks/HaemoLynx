@@ -22,3 +22,4 @@ examples/plots/
 tests/outputs/
 tests/plots/
 *.pkl
+REMINDERS.md
