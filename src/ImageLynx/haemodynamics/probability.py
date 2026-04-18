@@ -1,0 +1,328 @@
+"""Probability helpers for stochastic pericyte constriction."""
+from __future__ import annotations
+
+from typing import Any, Iterable
+
+import networkx as nx
+import numpy as np
+
+
+def is_capillary_branch_order(branch_order: str | None) -> bool:
+    """Return True for capillary labels (B01, B02, ...)."""
+    if branch_order is None:
+        return False
+    label = str(branch_order).strip()
+    return label.startswith("B")
+
+
+def select_active_pericyte_indices(
+    total_pericytes: int,
+    constriction_probability: float,
+    *,
+    rng: np.random.Generator | None = None,
+) -> list[int]:
+    """Randomly select pericyte indices that are active for constriction.
+
+    Parameters
+    ----------
+    total_pericytes:
+        Number of pericytes available.
+    constriction_probability:
+        Activation probability in [0, 1]. Example: 0.8 means 80% expected active.
+    rng:
+        Optional random generator. If omitted, uses a fresh default RNG so each
+        pipeline run naturally produces a different cohort.
+    """
+    if total_pericytes < 0:
+        raise ValueError(f"total_pericytes must be >= 0, got {total_pericytes}.")
+    if not (0.0 <= float(constriction_probability) <= 1.0):
+        raise ValueError(
+            "constriction_probability must be in [0, 1], "
+            f"got {constriction_probability}."
+        )
+    if total_pericytes == 0:
+        return []
+    generator = rng if rng is not None else np.random.default_rng()
+    active_mask = generator.random(total_pericytes) < float(constriction_probability)
+    return np.flatnonzero(active_mask).astype(int).tolist()
+
+
+def validate_active_pericyte_indices(
+    active_pericyte_indices: Iterable[int] | None,
+    *,
+    total_pericytes: int,
+) -> list[int]:
+    """Validate and normalize a caller-supplied active cohort."""
+    if active_pericyte_indices is None:
+        return []
+    out: list[int] = []
+    for idx in active_pericyte_indices:
+        idx_int = int(idx)
+        if idx_int < 0 or idx_int >= int(total_pericytes):
+            raise ValueError(
+                f"Active pericyte index {idx_int} outside valid range "
+                f"[0, {int(total_pericytes) - 1}]."
+            )
+        out.append(idx_int)
+    return sorted(set(out))
+
+
+def _diameter_at_position_from_centers(
+    position: float,
+    d1: float,
+    d2: float,
+    constriction_centers: list[float],
+    constriction_length: float,
+) -> float:
+    """Piecewise linear constriction around each selected center."""
+    if not constriction_centers or constriction_length <= 0:
+        return float(d1)
+    half_window = float(constriction_length) / 2.0
+    ramp_width = float(constriction_length) / 4.0
+    plateau_half = float(constriction_length) / 4.0
+    diameter = float(d1)
+    for center in constriction_centers:
+        distance_from_center = abs(float(position) - float(center))
+        if distance_from_center >= half_window:
+            continue
+        if distance_from_center <= plateau_half:
+            local_diameter = float(d2)
+        else:
+            if ramp_width <= 0:
+                local_diameter = float(d1)
+            else:
+                alpha = (distance_from_center - plateau_half) / ramp_width
+                local_diameter = float(d2 + (d1 - d2) * alpha)
+        diameter = min(diameter, local_diameter)
+    return diameter
+
+
+def _integrated_resistance_from_centers(
+    *,
+    length: float,
+    d1: float,
+    d2: float,
+    constriction_centers: list[float],
+    constriction_length: float,
+    num_points: int,
+) -> float:
+    if length <= 0:
+        return float("inf")
+    positions = np.linspace(0.0, float(length), int(num_points))
+    diameters = np.asarray(
+        [
+            _diameter_at_position_from_centers(
+                position=pos,
+                d1=d1,
+                d2=d2,
+                constriction_centers=constriction_centers,
+                constriction_length=constriction_length,
+            )
+            for pos in positions
+        ],
+        dtype=float,
+    )
+    diameters = np.clip(diameters, a_min=1e-9, a_max=None)
+    viscosity = 1.0 / (diameters ** 1.647)
+    resistance_per_length = (128.0 * viscosity) / (np.pi * (diameters ** 4))
+    integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+    return float(integ(resistance_per_length, x=positions))
+
+
+def _validate_positive_resistance(
+    resistance: float,
+    *,
+    edge_id: tuple[Any, Any, Any],
+) -> float:
+    value = float(resistance)
+    if not np.isfinite(value) or value <= 0.0:
+        raise ValueError(f"Invalid resistance for edge {edge_id}: {value}.")
+    return value
+
+
+def _periodic_center_positions(
+    length: float,
+    constriction_length: float,
+    constriction_spacing: float,
+) -> list[float]:
+    if length <= 0 or constriction_length <= 0 or constriction_spacing <= 0:
+        return []
+    positions: list[float] = []
+    sample_pos = float(constriction_length) / 2.0
+    while sample_pos <= float(length):
+        positions.append(float(sample_pos))
+        sample_pos += float(constriction_spacing)
+    return positions
+
+
+def _resolve_d1_d2_for_edge(
+    *,
+    edge_data: dict[str, Any],
+    branch_order: str,
+    diameter_by_branch_order: dict,
+    constriction_factor_by_branch_order: dict[str, float] | None,
+    prefer_edge_fwhm_baseline: bool,
+) -> tuple[float, float, bool]:
+    used_fwhm_baseline = False
+    if prefer_edge_fwhm_baseline:
+        spec = diameter_by_branch_order.get(branch_order)
+        if spec is None:
+            raise ValueError(
+                f"No fallback baseline diameter for branch_order '{branch_order}'."
+            )
+        if isinstance(spec, dict):
+            raise ValueError(
+                "With prefer_edge_fwhm_baseline=True, diameter_by_branch_order must "
+                f"map '{branch_order}' to a numeric fallback baseline diameter."
+            )
+        d1 = float(spec)
+        fwhm_d = edge_data.get("fwhm_diameter_um")
+        if fwhm_d is not None and float(fwhm_d) > 0:
+            d1 = float(fwhm_d)
+            used_fwhm_baseline = True
+        factor = None
+        if constriction_factor_by_branch_order is not None:
+            factor = constriction_factor_by_branch_order.get(branch_order)
+        if factor is None:
+            raise ValueError(
+                f"No constriction factor for branch_order '{branch_order}'."
+            )
+        return d1, d1 * float(factor), used_fwhm_baseline
+
+    spec = diameter_by_branch_order.get(branch_order)
+    if spec is None:
+        raise ValueError(f"No diameter mapping for branch_order '{branch_order}'.")
+    if isinstance(spec, dict):
+        if "d1" not in spec or "d2" not in spec:
+            raise ValueError(
+                f"Invalid diameter mapping for '{branch_order}'. Expected keys d1/d2."
+            )
+        return float(spec["d1"]), float(spec["d2"]), used_fwhm_baseline
+    d1 = float(spec)
+    factor = None
+    if constriction_factor_by_branch_order is not None:
+        factor = constriction_factor_by_branch_order.get(branch_order)
+    if factor is None:
+        raise ValueError(
+            f"No constriction factor for branch_order '{branch_order}'."
+        )
+    return d1, d1 * float(factor), used_fwhm_baseline
+
+
+def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
+    graph: nx.MultiGraph,
+    *,
+    diameter_by_branch_order: dict,
+    constriction_factor_by_branch_order: dict[str, float] | None,
+    prefer_edge_fwhm_baseline: bool = False,
+    constriction_length: float = 40.0,
+    constriction_spacing: float = 100.0,
+    constriction_probability: float = 1.0,
+    active_center_indices_by_edge: dict[str, list[int]] | None = None,
+    num_integration_points: int = 1000,
+    rng: np.random.Generator | None = None,
+) -> tuple[nx.MultiGraph, dict[str, Any]]:
+    """Apply periodic constrictions with random per-center activation.
+
+    If ``active_center_indices_by_edge`` is provided, those fixed center indices
+    are used per edge (no re-sampling). Edge keys use format ``"u|v|key"``.
+    """
+    if num_integration_points < 3:
+        raise ValueError(
+            f"num_integration_points must be >= 3, got {num_integration_points}."
+        )
+    if constriction_spacing <= 0:
+        raise ValueError(
+            f"constriction_spacing must be > 0, got {constriction_spacing}."
+        )
+    if constriction_length <= 0:
+        raise ValueError(
+            f"constriction_length must be > 0, got {constriction_length}."
+        )
+    if not (0.0 <= float(constriction_probability) <= 1.0):
+        raise ValueError(
+            "constriction_probability must be in [0, 1], "
+            f"got {constriction_probability}."
+        )
+
+    generator = rng if rng is not None else np.random.default_rng()
+    results: dict[str, Any] = {
+        "resistances_set": 0,
+        "used_fwhm_baseline": 0,
+        "total_periodic_pericyte_sites": 0,
+        "active_periodic_pericyte_sites": 0,
+        "constriction_probability": float(constriction_probability),
+        "active_center_indices_by_edge": {},
+    }
+
+    for u, v, key, edge_data in graph.edges(keys=True, data=True):
+        branch_order = edge_data.get("branch_order")
+        if branch_order is None:
+            raise ValueError(
+                f"Edge ({u}, {v}, {key}) missing required 'branch_order'."
+            )
+        length = edge_data.get("length")
+        if length is None or float(length) <= 0:
+            raise ValueError(
+                f"Edge ({u}, {v}, {key}) has invalid length: {length}."
+            )
+        d1, d2, used_fwhm = _resolve_d1_d2_for_edge(
+            edge_data=edge_data,
+            branch_order=str(branch_order),
+            diameter_by_branch_order=diameter_by_branch_order,
+            constriction_factor_by_branch_order=constriction_factor_by_branch_order,
+            prefer_edge_fwhm_baseline=bool(prefer_edge_fwhm_baseline),
+        )
+        if used_fwhm:
+            results["used_fwhm_baseline"] += 1
+        if d1 <= 0 or d2 <= 0:
+            raise ValueError(
+                f"Edge ({u}, {v}, {key}) has non-positive diameters d1={d1}, d2={d2}."
+            )
+
+        if is_capillary_branch_order(str(branch_order)):
+            all_centers = _periodic_center_positions(
+                length=float(length),
+                constriction_length=float(constriction_length),
+                constriction_spacing=float(constriction_spacing),
+            )
+        else:
+            # Rule: pericyte placement/assignment is capillary-only.
+            all_centers = []
+        results["total_periodic_pericyte_sites"] += int(len(all_centers))
+        edge_id = f"{u}|{v}|{key}"
+        if active_center_indices_by_edge is not None:
+            fixed = active_center_indices_by_edge.get(edge_id, [])
+            active_indices = validate_active_pericyte_indices(
+                fixed,
+                total_pericytes=len(all_centers),
+            )
+        else:
+            active_indices = select_active_pericyte_indices(
+                total_pericytes=len(all_centers),
+                constriction_probability=float(constriction_probability),
+                rng=generator,
+            )
+        active_centers = [all_centers[ii] for ii in active_indices]
+        results["active_periodic_pericyte_sites"] += int(len(active_centers))
+        results["active_center_indices_by_edge"][edge_id] = [
+            int(ii) for ii in active_indices
+        ]
+
+        total_resistance = _integrated_resistance_from_centers(
+            length=float(length),
+            d1=float(d1),
+            d2=float(d2),
+            constriction_centers=active_centers,
+            constriction_length=float(constriction_length),
+            num_points=int(num_integration_points),
+        )
+        graph[u][v][key]["resistance"] = _validate_positive_resistance(
+            total_resistance,
+            edge_id=(u, v, key),
+        )
+        graph[u][v][key]["pericyte_count_assigned"] = int(len(active_centers))
+        graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in active_centers]
+        results["resistances_set"] += 1
+
+    return graph, results
