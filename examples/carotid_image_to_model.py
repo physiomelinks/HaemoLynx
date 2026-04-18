@@ -26,8 +26,6 @@ from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visual
 # Ilastik configuration settings
 RUN_ILASTIK = False
 ILASTIK_OUTPUT_PROBABILITIES = True # Set to True for Probabilities, False for Simple Segmentation
-# The channel index in the probability map that corresponds to vessels (usually 0 or 1).
-ILASTIK_VESSEL_CHANNEL = 0
 ILASTIK_BINARY_PATH = "/home/dsas627/Desktop/ilastik-1.4.1rc2-gpu-Linux/run_ilastik.sh"
 ILASTIK_PROJECT_PATH = root_dir / "examples" / "images" / "cb_wky_2x2x2_A.ilp"
 RAW_IMAGE_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_input_images"
@@ -38,130 +36,8 @@ RAW_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vessels.tif"
 FRANGI_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map.tif"
 
 INPUT_PATH = None
-BASE_PLOT_DIR = root_dir / "examples" / "plots" 
-if not BASE_PLOT_DIR.exists():
-    BASE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
 H5_DATASET_NAME = None  # For h5 input, e.g. "data"
-# STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
-# end of the image.
-EDGE_PERCENT = 25.0
-END_PERCENT = 25.0
-# For 3D skeletons this is usually the y-axis in (z, y, x).
-NODE_EDGE_AXIS = 0
-STARTING_NODES: list[int] = []
-OUTPUT_NODES: list[int] = []
-INPUT_P_BC = 1000 # Pa 
-OUTPUT_P_BC = 500 # Pa
-VISUALIZE_RESULTS = False
-VISUALIZE_MASK_ONLY = False
-# ---------------------------
-# Vedo Visualization Style (image_to_model style)
-# ---------------------------
-VISUALIZE_VEDO = True
-# Mode: 'lego' (exact voxels) or 'iso' (smooth surface)
-VISUALIZE_VEDO_MODE = 'iso' 
-# Smoothing iterations (only for 'iso' mode)
-VISUALIZE_VEDO_SMOOTH_ITER = 15
-# Voxel spacing [z, y, x]
-VISUALIZE_VEDO_SPACING = (1.0, 1.0, 1.0)
-# If True, attempts to read spacing from TIF metadata automatically.
-VISUALIZE_VEDO_AUTO_SPACING = True
 
-VISUALIZE_VEDO_OPACITY = 0.5
-VISUALIZE_OVERLAY_PREVIEW = False
-
-VISUALIZE_MASK_OPACITY = 1.0
-VISUALIZE_VTK = False
-VERBOSE_LOGGING = False
-DO_SKELETONIZE = True
-DO_GRAPH_BUILDING = True
-DO_RESISTANCE_CALCULATION = True
-CONSTRICT_AT_PERICYTES = False
-MIN_BRANCH_LENGTH = 10
-VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
-SKELETON_CLOSING_RADIUS = 1
-SKELETON_BRIDGE_GAP_SIZE = 1
-SKELETON_MIN_BRANCH_LENGTH = 3
-SKELETON_MAX_BRIDGE_DISTANCE = 0
-SKELETON_COMPONENT_CONNECTIVITY = 3
-# Keep only connected components at or above this percentage of total
-# skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
-SKELETON_MIN_COMPONENT_PERCENT = 5.0
-
-# ---------------------------
-# Skeleton Bundle Cleanup settings (Added 06/04/2026)
-# ---------------------------
-# Window size used to detect dense skeleton "bundles" (must be odd).
-SKELETON_BUNDLE_SCAN_SIZE = 9
-# Density threshold (0 to 1) above which a region is collapsed into a single hub.
-# Lower values are more aggressive at removing tangled "blobs".
-SKELETON_BUNDLE_DENSITY_FRACTION = 0.025
-# Maximum number of paths to keep when reconnecting a collapsed hub.
-SKELETON_BUNDLE_MAX_CONNECTIONS = 5
-# Minimum spacing between hub centers. 0 to disable.
-SKELETON_BUNDLE_HUB_MIN_SPACING = 0
-
-# ---------------------------
-# Advanced Efficiency settings (Added 19/03/2026)
-# ---------------------------
-# Downsample factor for 3D skeletonization (e.g. 2.0 reduces each dimension by half).
-# Set to 1.0 to disable downsampling.
-SKELETON_DOWNSAMPLE_FACTOR = 1.0
-
-# Enable local padded slicing for much faster loop detection on large skeletons.
-SKELETON_USE_PADDED_SLICING = True
-# Voxel padding for the local slicing crops.
-SKELETON_PADDED_SLICING_PADDING = 3
-
-# Prune the binary mask to keep only the largest N connected components BEFORE skeletonization.
-# This speeds up skeletonization by removing noise fragments. Set to 0 to disable.
-SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1
-
-# If True, keeps only the single largest connected component of the final mathematical graph.
-# This ensures zero "floating islands" exist before flow solving.
-GRAPH_KEEP_LARGEST_COMPONENT_ONLY = True
-
-# Sub-volume / ROI settings. 
-# SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
-SKELETON_SUB_VOLUME_PERCENTAGE = 0.25
-
-# Center offsets for the ROI (as percentage of original dimensions, -0.5 to 0.5).
-SKELETON_SUB_VOLUME_CENTER_OFFSET_Z = 0.0
-SKELETON_SUB_VOLUME_CENTER_OFFSET_Y = 0.0
-SKELETON_SUB_VOLUME_CENTER_OFFSET_X = 0.0
-
-# ---------------------------
-# Probability Map Post-processing settings (Added 30/03/2026)
-# ---------------------------
-# Median filter window size (e.g., 3 for 3x3x3). 0 to disable.
-MEDIAN_FILTER_SIZE = 7
-
-# Smoothing of probability maps before thresholding. 0.0 to disable.
-PROBABILITY_SMOOTHING_SIGMA = 0.0
-
-# Morphological opening radius (applied to probability map before thresholding). 0 to disable.
-MORPHOLOGICAL_OPENING_RADIUS = 1
-
-# If True, uses Hysteresis thresholding instead of global Otsu.
-ENABLE_HYSTERESIS_THRESHOLD = True
-# Lower threshold for connectivity (keeps voxels if they connect to a 'high' seed).
-HYSTERESIS_THRESHOLD_LOW = 0.2
-# Upper threshold for seeds (defines definitely-vessel voxels).
-HYSTERESIS_THRESHOLD_HIGH = 0.4
-
-# Enable filling internal holes in the binary mask.
-ENABLE_HOLE_FILLING = True
-
-# ---------------------------
-# Shannon Entropy settings (Added 30/03/2026)
-# ---------------------------
-# If True, uses Shannon Entropy to identify and reject uncertain voxels.
-ENABLE_SHANNON_ENTROPY = True
-# Voxels with normalized entropy above this threshold are forced to background.
-SHANNON_ENTROPY_THRESHOLD = 0.95
-
-# Visualize the post-processed binary mask and exit (Added 30/03/2026)
-VISUALIZE_POST_PROCESSED_MASK = False
 """Configuration defaults for diameter maps."""
 
 # Diameter by branch order (dict with d1 and d2 for pericyte constriction simulation)
@@ -187,6 +63,7 @@ custom_edges= []
 
 @dataclass
 class PreprocessingConfig:
+    """Configuration for probability map noise removal, smoothing, and binary thresholding."""
     median_filter_size: int = 7
     probability_smoothing_sigma: float = 0.0
     morphological_opening_radius: int = 1
@@ -200,6 +77,7 @@ class PreprocessingConfig:
 
 @dataclass
 class SkeletonConfig:
+    """Configuration for 3D skeletonization, artifact pruning, and topological cleanup."""
     closing_radius: int = 1
     bridge_gap_size: int = 1
     min_branch_length: int = 3
@@ -221,6 +99,7 @@ class SkeletonConfig:
 
 @dataclass
 class GraphConfig:
+    """Configuration for mathematical graph generation and boundary node selection."""
     keep_largest_component_only: bool = True
     edge_percent: float = 25.0
     end_percent: float = 25.0
@@ -230,6 +109,7 @@ class GraphConfig:
 
 @dataclass
 class HemodynamicsConfig:
+    """Configuration for fluid dynamics simulation, pressures, and vessel diameters."""
     constrict_at_pericytes: bool = False
     input_p_bc: float = 1000.0
     output_p_bc: float = 500.0
@@ -237,6 +117,7 @@ class HemodynamicsConfig:
 
 @dataclass
 class VisualizationConfig:
+    """Configuration for 3D/2D visualization tools and interactive previews."""
     visualize_results: bool = False
     visualize_mask_only: bool = False
     visualize_vedo: bool = True
@@ -252,13 +133,14 @@ class VisualizationConfig:
 
 @dataclass
 class PipelineConfig:
+    """Top-level configuration for enabling/disabling major pipeline phases and I/O paths."""
     do_skeletonize: bool = True
     do_graph_building: bool = True
     do_resistance_calculation: bool = True
     verbose_logging: bool = False
     min_branch_length: int = 10
-    vtk_output_prefix: Path = None
-    plot_dir: Path = None
+    vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
+    plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid" 
 
 class IlastikClassifier():
     """Wrapper for the Ilastik headless engine to perform pixel classification."""
@@ -377,6 +259,7 @@ def run_ilastik_segmentation(ilastik_bin=ILASTIK_BINARY_PATH,
 
 
 def _preview_raw_volume(image, image_path, input_format, vis_config):
+    """Helper function to visualize the raw 3D image volume before any processing."""
     if vis_config.visualize_vedo:
         print(f"Visualizing 3D volume with VEDO ({vis_config.visualize_vedo_mode}, smooth={vis_config.visualize_vedo_smooth_iter}).")
         current_spacing = vis_config.visualize_vedo_spacing
@@ -401,6 +284,7 @@ def _preview_raw_volume(image, image_path, input_format, vis_config):
     sys.exit(0)
 
 def _preview_post_processed_mask(binary, image_path, input_format, vis_config, pipeline_config):
+    """Helper function to visualize the fully cleaned binary mask before skeletonization."""
     mask_plot_path = pipeline_config.plot_dir / "post_processed_mask.png"
     print(f"Visualizing post-processed binary mask with Vedo (opacity=0.5). Voxel count: {binary.sum()}. Saving to {mask_plot_path}. Close window to exit.")
     
@@ -421,6 +305,7 @@ def _preview_post_processed_mask(binary, image_path, input_format, vis_config, p
     sys.exit(0)
 
 def _visualize_final_results(G, image, starting_nodes, vis_config):
+    """Helper function to generate final 2D summary plots (node degree, branch orders)."""
     visualization.plot_node_degree_distribution(G)
     visualization.visualize_edges_and_nodes(image, G)
     
@@ -432,6 +317,11 @@ def _visualize_final_results(G, image, starting_nodes, vis_config):
         )
 
 def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config):
+    """
+    Phase 1: Loads the image, handles 4D channels/entropy, crops the ROI,
+    removes noise, and applies hysteresis thresholding to generate a binary mask.
+    """
+    # Load the 3D or 4D volume into a numpy array based on file format
     if input_format == "tif":
         image = io.load_3d_tif(image_path)
     elif input_format == "h5":
@@ -443,7 +333,7 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
 
     print(f"Loaded image shape: {image.shape}")
 
-    # 1.5) Sub-volume / ROI Cropping (Supports 4D)
+    # Slice the array into a smaller sub-volume to speed up testing/debugging
     if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or        skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
         
         print(f"Applying ROI crop (sub-volume={skel_config.sub_volume_percentage})...")
@@ -457,8 +347,10 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
         print(f"  ROI new shape: {image.shape}")
 
     entropy_map = None
+    # If the image is 4D (e.g., from Ilastik with multiple probability channels)
     if image.ndim == 4:
         # Calculate entropy before extracting the vessel channel
+        # Calculate Shannon Entropy to identify voxels where the model was highly uncertain
         if pre_config.enable_shannon_entropy:
             entropy_map = preprocessing.calculate_entropy_map(image)
 
@@ -466,6 +358,7 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
         c_axis = np.argmin(dims)
         print(f"Detected 4D image. Assuming channel is at axis {c_axis} (size {dims[c_axis]}).")
         
+        # Extract only the specific channel containing our target vessel probabilities
         if c_axis == 0:
             image = image[pre_config.ilastik_vessel_channel, :, :, :]
         elif c_axis == 1:
@@ -478,6 +371,7 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
         print(f"Extracted vessel channel {pre_config.ilastik_vessel_channel}. New spatial shape: {image.shape}")
 
         if entropy_map is not None:
+            # Force the probability of uncertain voxels to 0.0 (background)
             uncertain_mask = entropy_map > pre_config.shannon_entropy_threshold
             print(f"Applying Shannon Entropy Refinement (threshold={pre_config.shannon_entropy_threshold})...")
             print(f"  Rejecting {uncertain_mask.sum()} uncertain voxels.")
@@ -488,18 +382,23 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     if vis_config.visualize_mask_only:
         _preview_raw_volume(image, image_path, input_format, vis_config)
 
+    # Apply a 3D median filter to remove isolated salt-and-pepper noise peaks
     if pre_config.median_filter_size > 0:
         print(f"Applying median filter (size={pre_config.median_filter_size})...")
         image = preprocessing.median_filter_image(image, size=pre_config.median_filter_size)
 
+    # Apply morphological opening to break thin webbing between close vessels
     if pre_config.morphological_opening_radius > 0:
         print(f"Applying morphological opening (radius={pre_config.morphological_opening_radius})...")
         image = preprocessing.morphological_opening(image, radius=pre_config.morphological_opening_radius)
 
+    # Apply Gaussian smoothing to soften edges (kept minimal to prevent bloating)
     if pre_config.probability_smoothing_sigma > 0:
         image = preprocessing.smooth_probability_map(image, sigma=pre_config.probability_smoothing_sigma)
 
+    # Convert the continuous 0.0-1.0 probability map into a strict True/False binary mask
     if pre_config.enable_hysteresis_threshold:
+        # Hysteresis uses a high threshold for confident seeds, and a low threshold to trace faint connected branches
         binary_raw = preprocessing.hysteresis_threshold(
             image, low=pre_config.hysteresis_threshold_low, high=pre_config.hysteresis_threshold_high
         )
@@ -510,14 +409,18 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     
     binary = binary_raw.copy()
 
+    # Fill internal hollow cavities inside vessels to prevent artificial loops during skeletonization
     if pre_config.enable_hole_filling:
         binary = preprocessing.skeleton.fill_holes_3d(binary)
 
+    # Smooth the bumpy outer walls of the binary mask to prevent hairy skeletons
     if skel_config.closing_radius > 0:
         binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.closing_radius)
+    # Draw localized bridges across tiny gaps between broken vessel segments
     if skel_config.bridge_gap_size > 0:
         binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skel_config.bridge_gap_size)
 
+    # Delete all floating background noise blobs, keeping only the largest interconnected structures
     if skel_config.prune_mask_before > 0:
         print(f"Pruning binary mask to keep largest {skel_config.prune_mask_before} components...")
         binary = preprocessing.skeleton.keep_largest_mask_components(
@@ -530,6 +433,11 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     return image, binary
 
 def _run_skeletonization_phase(binary, skel_config):
+    """
+    Phase 2: Converts the solid binary mask into a 1D centerline skeleton,
+    then runs topological cleanup (bundle collapsing, stub removal).
+    """
+    # Convert the thick 3D tubes into 1-voxel-wide centerlines
     if skel_config.downsample_factor > 1.0:
         print(f"Applying downsampled skeletonization (factor={skel_config.downsample_factor})...")
         skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skel_config.downsample_factor)
@@ -542,6 +450,8 @@ def _run_skeletonization_phase(binary, skel_config):
         component_connectivity=skel_config.component_connectivity,
     )
 
+    # Clean the skeleton topology: remove tiny stubs, collapse dense spiderweb bundles into clean hubs,
+    # and filter out floating fragments based on their volume percentage.
     skeleton = preprocessing.preprocess_skeleton_for_graph(
         skeleton,
         min_branch_length=skel_config.min_branch_length,
@@ -561,6 +471,7 @@ def _run_skeletonization_phase(binary, skel_config):
     return skeleton
 
 def _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config):
+    """Helper function to launch the 4-panel Vedo verification viewer."""
     print(f"Visualizing 3D overlay PREVIEW with optimized graph (mask opacity=0.3). Close window to exit.")
     
     current_spacing = vis_config.visualize_vedo_spacing
@@ -585,8 +496,14 @@ def _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config):
     sys.exit(0)
 
 def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_config, graph_config, pipeline_config):
+    """
+    Phase 3: Extracts a mathematical graph (nodes/edges) from the physical skeleton,
+    and rigorously optimizes the topology (merging close nodes, removing degree-2 paths).
+    """
+    # Trace the voxel centerline to identify mathematical Nodes (intersections) and Edges (vessel paths)
     sk = csr.Skeleton(skeleton)
 
+    # Build the networkx MultiGraph. Crucially, detect and stitch tiny 1-voxel circular artifacts (voxel loops) so the graph doesn't shatter.
     G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
         sk,
         skeleton,
@@ -594,9 +511,11 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
         use_padded_slicing=skel_config.use_padded_slicing,
         padding=skel_config.padded_slicing_padding,
     )
+    # Ensure any branches that touched the stitched loop are properly reconnected to the new central hub node
     G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=pipeline_config.verbose_logging)
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "reconnect_secondary_loop_edges.png")
     
+    # Merge nodes that are physically right next to each other, and resolve "triangle" intersections into clean "Y" bifurcations
     G, _ = graph.optimise_graph_topology_fixed(
         G,
         voxel_loops,
@@ -606,6 +525,7 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     )
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "optimise_graph_topology_fixed.png")
     
+    # Delete redundant middle nodes sitting on straight lines, merging their edges, without destroying the physical curvature of the vessel
     G = graph.smart_multigraph_degree2_removal(
         G,
         skeleton,
@@ -613,15 +533,19 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     )
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "smart_multigraph_degree2_removal.png")
 
+    # Automatically detect the physical image resolution to accurately calculate vessel lengths in microns
     current_spacing = (1.0, 1.0, 1.0)
     if input_format == "tif":
         current_spacing = io.get_tif_spacing(image_path)
         print(f"  Using detected spacing for pruning (z,y,x): {current_spacing}")
 
+    # Delete dead-end branches (stubs) that are physically shorter than the minimum branch length threshold
     G = graph.prune_vascular_stubs(G, debug=pipeline_config.verbose_logging, voxel_size=current_spacing)
+    # Delete impossible edges that start and end on the exact same node with no other connections
     G = graph.remove_edges_for_self_connected_nodes(G)
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "prune_vascular_stubs.png")
     
+    # Final safety net: delete any floating graph islands that were accidentally severed during the topological optimization steps
     if graph_config.keep_largest_component_only:
         n_before = G.number_of_nodes()
         largest_cc = max(nx.connected_components(G), key=len)
@@ -633,8 +557,13 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     return G
 
 def _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_config):
+    """
+    Phase 4: Selects inlet/outlet nodes, calculates branch hierarchies,
+    and assigns physical resistance weights based on Poiseuille's law.
+    """
     starting_nodes = []
     output_nodes = []
+    # Auto-detect Inlet (start) and Outlet (output) nodes by finding dead-ends at the physical boundaries of the image volume
     start_nodes, out_nodes = graph.select_boundary_terminal_nodes(
         G,
         image.shape,
@@ -659,7 +588,9 @@ def _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_con
         raise ValueError(f"No starting or output nodes found in input {graph_config.edge_percent}% or output {graph_config.end_percent}%")
 
     if starting_nodes:
+        # Crawl the network from the inlets to assign a Branch Order (e.g. BO1, BO2) to every vessel based on bifurcations passed
         graph.assign_branch_orders(G, starting_nodes)
+        # Initialize the hemodynamics solver to calculate physical flow resistance using Poiseuille's Law
         poiseuille_model = hemodynamics.PoiseuilleModel(
             constriction_length=40.0,
             constriction_spacing=100.0,
@@ -680,8 +611,13 @@ def _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_con
     return starting_nodes, output_nodes, resistance_node_pair
 
 def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config):
+    """
+    Phase 5: Builds the Laplacian matrix, solves the flow equations,
+    calculates comprehensive statistics, and exports all data to VTK files.
+    """
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "pre_vtk.png")
     
+    # Export the geometric network to standardized VTK PolyData files for viewing in ParaView
     vtk_export = visualization.graph_to_vtk(G, pipeline_config.vtk_output_prefix)
     print("\n=== VTK Export ===")
     print(f"  Vessels:   {vtk_export['vessels_path']}")
@@ -698,9 +634,11 @@ def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resis
             show_nodes=False,
         )
 
+    # Convert the networkx graph into a massive symmetric Conductance Matrix representing flow ease between all nodes
     conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
+    # Optional: Calculate the exact effective mathematical resistance between a single specific inlet and outlet pair
     if pipeline_config.do_resistance_calculation:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
@@ -722,6 +660,7 @@ def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resis
             )
 
     node_positions = nx.get_node_attributes(G, "pos")
+    # Calculate physical and topological statistics (e.g. total length, mean tortuosity, degree distribution)
     stats = statistics.compute_comprehensive_vessel_statistics(
         G,
         node_positions=node_positions,
@@ -732,6 +671,7 @@ def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resis
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
+    # Inject boundary pressures and solve the system of linear equations to find pressure at every node and flow in every edge
     flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
@@ -754,6 +694,11 @@ def carotid_image_to_model(image_path: Path | str,
                            hemo_config: HemodynamicsConfig = None,
                            vis_config: VisualizationConfig = None,
                            pipeline_config: PipelineConfig = None) -> None:
+    """
+    Main orchestrator for the ImageLynx Carotid Pipeline.
+    This pipeline executes image preprocessing, skeletonization, topological graph optimization,
+    and hemodynamic simulation in sequential order using the provided configurations.
+    """
     if pre_config is None: pre_config = PreprocessingConfig()
     if skel_config is None: skel_config = SkeletonConfig()
     if graph_config is None: graph_config = GraphConfig()
@@ -815,8 +760,6 @@ def carotid_image_to_model(image_path: Path | str,
     _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config)
     
 if __name__ == "__main__":
-    plot_dir = BASE_PLOT_DIR / "carotid"
-    
     # 1. Run Ilastik Segmentation (if enabled)
     if RUN_ILASTIK:
         # Example using explicit kwargs for clarity
@@ -834,75 +777,13 @@ if __name__ == "__main__":
         target_input_mask_path = ILASTIK_OUTPUT_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_probs.tiff"
 
     # 2. Run the Network Pipeline
-    pre_config = PreprocessingConfig(
-        median_filter_size=MEDIAN_FILTER_SIZE,
-        probability_smoothing_sigma=PROBABILITY_SMOOTHING_SIGMA,
-        morphological_opening_radius=MORPHOLOGICAL_OPENING_RADIUS,
-        enable_hysteresis_threshold=ENABLE_HYSTERESIS_THRESHOLD,
-        hysteresis_threshold_low=HYSTERESIS_THRESHOLD_LOW,
-        hysteresis_threshold_high=HYSTERESIS_THRESHOLD_HIGH,
-        enable_hole_filling=ENABLE_HOLE_FILLING,
-        ilastik_vessel_channel=ILASTIK_VESSEL_CHANNEL,
-        enable_shannon_entropy=ENABLE_SHANNON_ENTROPY,
-        shannon_entropy_threshold=SHANNON_ENTROPY_THRESHOLD,
-    )
-    skel_config = SkeletonConfig(
-        closing_radius=SKELETON_CLOSING_RADIUS,
-        bridge_gap_size=SKELETON_BRIDGE_GAP_SIZE,
-        min_branch_length=SKELETON_MIN_BRANCH_LENGTH,
-        max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE,
-        component_connectivity=SKELETON_COMPONENT_CONNECTIVITY,
-        min_component_percent=SKELETON_MIN_COMPONENT_PERCENT,
-        downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
-        use_padded_slicing=SKELETON_USE_PADDED_SLICING,
-        padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING,
-        prune_mask_before=SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION,
-        sub_volume_percentage=SKELETON_SUB_VOLUME_PERCENTAGE,
-        sub_volume_offset_z=SKELETON_SUB_VOLUME_CENTER_OFFSET_Z,
-        sub_volume_offset_y=SKELETON_SUB_VOLUME_CENTER_OFFSET_Y,
-        sub_volume_offset_x=SKELETON_SUB_VOLUME_CENTER_OFFSET_X,
-        bundle_scan_size=SKELETON_BUNDLE_SCAN_SIZE,
-        bundle_density_fraction=SKELETON_BUNDLE_DENSITY_FRACTION,
-        bundle_max_connections=SKELETON_BUNDLE_MAX_CONNECTIONS,
-        bundle_hub_min_spacing=SKELETON_BUNDLE_HUB_MIN_SPACING,
-    )
-    graph_config = GraphConfig(
-        keep_largest_component_only=GRAPH_KEEP_LARGEST_COMPONENT_ONLY,
-        edge_percent=EDGE_PERCENT,
-        end_percent=END_PERCENT,
-        node_edge_axis=NODE_EDGE_AXIS,
-        starting_nodes=STARTING_NODES,
-        output_nodes=OUTPUT_NODES,
-    )
-    hemo_config = HemodynamicsConfig(
-        constrict_at_pericytes=CONSTRICT_AT_PERICYTES,
-        input_p_bc=INPUT_P_BC,
-        output_p_bc=OUTPUT_P_BC,
-        diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
-    )
-    vis_config = VisualizationConfig(
-        visualize_results=VISUALIZE_RESULTS,
-        visualize_mask_only=VISUALIZE_MASK_ONLY,
-        visualize_vedo=VISUALIZE_VEDO,
-        visualize_overlay_preview=VISUALIZE_OVERLAY_PREVIEW,
-        visualize_vedo_mode=VISUALIZE_VEDO_MODE,
-        visualize_vedo_smooth_iter=VISUALIZE_VEDO_SMOOTH_ITER,
-        visualize_vedo_spacing=VISUALIZE_VEDO_SPACING,
-        visualize_vedo_auto_spacing=VISUALIZE_VEDO_AUTO_SPACING,
-        visualize_vedo_opacity=VISUALIZE_VEDO_OPACITY,
-        visualize_mask_opacity=VISUALIZE_MASK_OPACITY,
-        visualize_vtk=VISUALIZE_VTK,
-        visualize_post_processed_mask=VISUALIZE_POST_PROCESSED_MASK,
-    )
-    pipeline_config = PipelineConfig(
-        do_skeletonize=DO_SKELETONIZE,
-        do_graph_building=DO_GRAPH_BUILDING,
-        do_resistance_calculation=DO_RESISTANCE_CALCULATION,
-        verbose_logging=VERBOSE_LOGGING,
-        min_branch_length=MIN_BRANCH_LENGTH,
-        vtk_output_prefix=VTK_OUTPUT_PREFIX,
-        plot_dir=plot_dir,
-    )
+    # Pipeline Configurations are now fully self-contained in their dataclasses at the top of the file.
+    pre_config = PreprocessingConfig()
+    skel_config = SkeletonConfig()
+    graph_config = GraphConfig()
+    hemo_config = HemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
+    vis_config = VisualizationConfig()
+    pipeline_config = PipelineConfig()
 
     carotid_image_to_model(
         image_path=target_input_mask_path,
