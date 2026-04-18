@@ -3,7 +3,7 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 
-from ._helpers import get_line_points_3d
+from ._helpers import get_line_points_3d, physical_point_to_voxel_index
 
 
 def validate_skeleton_connection(
@@ -11,14 +11,24 @@ def validate_skeleton_connection(
     pos1: np.ndarray,
     pos2: np.ndarray,
     max_gap: float = 3.0,
+    voxel_size: Tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> Tuple[bool, Optional[List]]:
     """
     Validate that there's a skeleton path between two positions.
     Returns (is_valid, voxel_path or None).
+
+    Positions are in physical units; *voxel_size* converts them to array
+    indices for skeleton look-ups.
     """
     try:
-        p1 = np.round(pos1).astype(int)
-        p2 = np.round(pos2).astype(int)
+        p1 = np.asarray(
+            physical_point_to_voxel_index(pos1, voxel_size, clip_shape=skeleton_data.shape),
+            dtype=int,
+        )
+        p2 = np.asarray(
+            physical_point_to_voxel_index(pos2, voxel_size, clip_shape=skeleton_data.shape),
+            dtype=int,
+        )
         if not (
             0 <= p1[0] < skeleton_data.shape[0]
             and 0 <= p1[1] < skeleton_data.shape[1]
