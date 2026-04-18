@@ -123,6 +123,10 @@ def load_3d_tif(filepath: str | Path) -> np.ndarray:
     return tifffile.imread(str(filepath))
 
 
+def load_3d_tif_with_voxel_size(filepath, voxel_size=1.0):
+    return load_3d_tif(filepath), voxel_size, voxel_size, voxel_size
+
+
 def load_3d_h5(filepath: str | Path, dataset_name: str) -> np.ndarray:
     """Load a 3D HDF5 volume."""
     if h5py is None:
@@ -133,6 +137,10 @@ def load_3d_h5(filepath: str | Path, dataset_name: str) -> np.ndarray:
             raise ValueError(f"Dataset '{dataset_name}' not found. Available: {available}")
         image = np.array(f[dataset_name][:])
     return simplify_to_3d(image)
+
+
+def load_3d_h5_with_voxel_size(filepath, dataset_name, voxel_size=1.0):
+    return load_3d_h5(filepath, dataset_name), voxel_size, voxel_size, voxel_size
 
 
 def get_tif_spacing(filepath: str | Path) -> tuple[float, float, float]:

@@ -34,7 +34,7 @@ H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # end of the image.
 SET_INPUT_NODE_METHOD = "coordinates" # "coordinates" or "edge_percent"
 SET_OUTPUT_NODE_METHOD = "degree_1_from_starting" # "coordinates" or "edge_percent"
-DISTANCE_FROM_STARTING_NODE = 300.0
+DISTANCE_FROM_STARTING_NODE = 0.0
 EDGE_PERCENT = 10.0
 END_PERCENT = 10.0
 # For 3D skeletons this is usually the y-axis in (z, y, x).
@@ -159,7 +159,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             input_p_bc=INPUT_P_BC, 
                             output_p_bc=OUTPUT_P_BC, 
                             visualize_results=VISUALIZE_RESULTS, 
-                            visualize_vtk=VISUALIZE_VTK) -> None:
+                            visualize_vtk=VISUALIZE_VTK,
+                            run_haemodynamics=True,
+                            **kwargs) -> None:
     image_path = Path(image_path)
     image_path = io.resolve_image_path_with_optional_zip(image_path)
     # get image format from image_path
@@ -266,14 +268,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         # remove any nodes that are connected to themselves with no nodes in between
         G = graph.remove_edges_for_self_connected_nodes(G)
 
+        # Apply graph smoothing for more accurate lengths and better visuals
+        print("\nApplying graph edge smoothing...")
+        smooth_stats = graph.smooth_graph_edge_centerlines_continuous(
+            G,
+            skeleton,
+            debug=verbose_logging,
+        )
+        print(f"Smoothing complete: {smooth_stats}")
         
-        # G = graph.smart_multigraph_degree2_removal(
-        #     G,
-        #     skeleton,
-        #     debug=VERBOSE_LOGGING,
-        # )
-        # visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=PLOT_DIR / "smart_multigraph_degree2_removal_REPEAT.png")
-    
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         print(f"Saved graph to: {graph_path}")

@@ -190,6 +190,8 @@ def graph_to_vtk(
     edge_key: List[int] = []
     branch_order: List[str] = []
     weights: List[float] = []
+    resistances: List[float] = []
+    assigned_diameters: List[float] = []
 
     is_multigraph = isinstance(graph, nx.MultiGraph)
     edge_iter: Iterable[Any]
@@ -226,8 +228,21 @@ def graph_to_vtk(
         edge_v.append(int(v) if isinstance(v, (int, np.integer)) else -1)
         edge_key.append(int(k) if isinstance(k, (int, np.integer)) else 0)
         branch_order.append(str(data.get("branch_order", "No_BO")))
+        
         w = data.get("weight")
         weights.append(float(w) if w is not None else np.nan)
+        
+        r = data.get("resistance")
+        resistances.append(float(r) if r is not None else np.nan)
+        
+        d = data.get("assigned_diameter_um")
+        if d is None:
+            d = data.get("fwhm_diameter_um")
+        if d is None:
+            d = data.get("diameter")
+        if d is None:
+            d = data.get("diameter_um")
+        assigned_diameters.append(float(d) if d is not None else np.nan)
 
     vessel_mesh = pv.PolyData()
     vessel_mesh.points = np.asarray(all_points, dtype=float) if all_points else np.empty((0, 3), dtype=float)
@@ -238,6 +253,8 @@ def graph_to_vtk(
         vessel_mesh.cell_data["edge_key"] = np.asarray(edge_key, dtype=np.int64)
         vessel_mesh.cell_data["branch_order"] = np.asarray(branch_order)
         vessel_mesh.cell_data["weight"] = np.asarray(weights, dtype=float)
+        vessel_mesh.cell_data["resistance"] = np.asarray(resistances, dtype=float)
+        vessel_mesh.cell_data["assigned_diameter_um"] = np.asarray(assigned_diameters, dtype=float)
     vessel_mesh.save(vessel_path)
 
     pericyte = derive_pericyte_points_from_graph(
