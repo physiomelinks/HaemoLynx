@@ -162,7 +162,8 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     pytest.importorskip("h5py")
 
     input_h5 = FIXTURE_H5
-    assert input_h5.exists(), f"Missing H5 fixture: {input_h5}"
+    if not input_h5.exists():
+        pytest.skip(f"Missing H5 fixture: {input_h5}")
 
     plot_dir = TESTS_DIR / "plots" / "plots_image_to_model_h5_bundle"
     output_dir = TESTS_DIR / "outputs" / "image_to_model_h5_bundle"
