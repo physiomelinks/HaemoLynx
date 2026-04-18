@@ -43,7 +43,7 @@ The pipeline's behavior is controlled by several structured `Config` dataclasses
   * `closing_radius`: Smooths the bumpy outer walls of the binary mask to prevent "hairy" skeletons.
 * **`GraphConfig`:** Controls mathematical edge pruning.
   * `keep_largest_component_only`: Ensures only the single main interconnected network is kept, deleting any floating "island" fragments.
-* **`HemodynamicsConfig`:** Sets the physical boundary conditions for the flow simulation.
+* **`HaemodynamicsConfig`:** Sets the physical boundary conditions for the flow simulation.
   * `input_p_bc` / `output_p_bc`: The pressure (in Pascals) applied to the automatically detected inlet and outlet nodes.
 * **`PipelineConfig`:** Allows you to toggle entire phases on or off. 
   * For example, if you already built the graph and just want to tweak the pressures, set `do_skeletonize=False` and `do_graph_building=False`. The script will instantly load the saved `.pkl` graph and run the flow solver.
@@ -56,7 +56,7 @@ Because 3D networks are complex, the script includes interactive 3D [Vedo](https
 
 * **`visualize_mask_only = True`**: Pops up a 3D window showing the cleaned binary mask *before* the heavy skeletonization step begins. Useful for tuning your thresholds.
 * **`visualize_overlay_preview = True`**: A powerful 4-panel checkpoint window showing the raw image, the binary mask, the raw skeleton, and the mathematically optimized graph overlaid on top of each other. 
-  * *Note: Closing this preview window will intentionally halt the script (`sys.exit`) so you can inspect intermediate results without waiting for the hemodynamics solver.*
+  * *Note: Closing this preview window will intentionally halt the script (`sys.exit`) so you can inspect intermediate results without waiting for the haemodynamics solver.*
 
 ---
 

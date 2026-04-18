@@ -1,9 +1,9 @@
-"""Tests for hemodynamics module."""
+"""Tests for haemodynamics module."""
 import pytest
 import numpy as np
 import networkx as nx
 
-from ImageLynx.hemodynamics import (
+from ImageLynx.haemodynamics import (
     PoiseuilleModel,
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,

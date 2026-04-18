@@ -1,4 +1,4 @@
-"""Hemodynamics: viscosity, resistance, Poiseuille weights, network resistance."""
+"""Haemodynamics: viscosity, resistance, Poiseuille weights, network resistance."""
 from .poiseuille import PoiseuilleModel
 from .resistance import (
     build_conductance_matrix_from_graph,

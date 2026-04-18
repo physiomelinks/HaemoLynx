@@ -7,7 +7,7 @@
 - Mean distance of object (classifier) to each capillary type and BO
 - Overall list of every vessel and its properties
 
-## Hemodynamics & Resistance
+## Haemodynamics & Resistance
 - **HD note:** Eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
 - Automate the selection of resistance node pairs (e.g. `RESISTANCE_NODE_PAIR = (426, 509)`)
 - Diameters etc. should be automated.

@@ -17,7 +17,7 @@ root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from ImageLynx import graph, hemodynamics, io, preprocessing, statistics, visualization 
+from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization 
 
 # ---------------------------
 # Beginner-friendly settings
@@ -108,7 +108,7 @@ class GraphConfig:
     output_nodes: list = field(default_factory=list)
 
 @dataclass
-class HemodynamicsConfig:
+class HaemodynamicsConfig:
     """Configuration for fluid dynamics simulation, pressures, and vessel diameters."""
     constrict_at_pericytes: bool = False
     input_p_bc: float = 1000.0
@@ -556,7 +556,7 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
             
     return G
 
-def _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_config):
+def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config):
     """
     Phase 4: Selects inlet/outlet nodes, calculates branch hierarchies,
     and assigns physical resistance weights based on Poiseuille's law.
@@ -590,8 +590,8 @@ def _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_con
     if starting_nodes:
         # Crawl the network from the inlets to assign a Branch Order (e.g. BO1, BO2) to every vessel based on bifurcations passed
         graph.assign_branch_orders(G, starting_nodes)
-        # Initialize the hemodynamics solver to calculate physical flow resistance using Poiseuille's Law
-        poiseuille_model = hemodynamics.PoiseuilleModel(
+        # Initialize the haemodynamics solver to calculate physical flow resistance using Poiseuille's Law
+        poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=40.0,
             constriction_spacing=100.0,
         )
@@ -610,7 +610,7 @@ def _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_con
             
     return starting_nodes, output_nodes, resistance_node_pair
 
-def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config):
+def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config):
     """
     Phase 5: Builds the Laplacian matrix, solves the flow equations,
     calculates comprehensive statistics, and exports all data to VTK files.
@@ -635,15 +635,15 @@ def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resis
         )
 
     # Convert the networkx graph into a massive symmetric Conductance Matrix representing flow ease between all nodes
-    conductance, node_list = hemodynamics.build_conductance_matrix_from_graph(G)
+    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
     # Optional: Calculate the exact effective mathematical resistance between a single specific inlet and outlet pair
     if pipeline_config.do_resistance_calculation:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
-            laplacian = hemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-            two_point_resistance = hemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+            laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+            two_point_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
                 laplacian,
                 G,
                 source_node,
@@ -672,7 +672,7 @@ def _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resis
         print(f"  {key}: {value}")
 
     # Inject boundary pressures and solve the system of linear equations to find pressure at every node and flow in every edge
-    flow, vtk_export = hemodynamics.solve_flow_from_conductance_matrix(
+    flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
         hemo_config.input_p_bc,
@@ -691,7 +691,7 @@ def carotid_image_to_model(image_path: Path | str,
                            pre_config: PreprocessingConfig = None,
                            skel_config: SkeletonConfig = None,
                            graph_config: GraphConfig = None,
-                           hemo_config: HemodynamicsConfig = None,
+                           hemo_config: HaemodynamicsConfig = None,
                            vis_config: VisualizationConfig = None,
                            pipeline_config: PipelineConfig = None) -> None:
     """
@@ -702,7 +702,7 @@ def carotid_image_to_model(image_path: Path | str,
     if pre_config is None: pre_config = PreprocessingConfig()
     if skel_config is None: skel_config = SkeletonConfig()
     if graph_config is None: graph_config = GraphConfig()
-    if hemo_config is None: hemo_config = HemodynamicsConfig()
+    if hemo_config is None: hemo_config = HaemodynamicsConfig()
     if vis_config is None: vis_config = VisualizationConfig()
     if pipeline_config is None: pipeline_config = PipelineConfig()
 
@@ -756,8 +756,8 @@ def carotid_image_to_model(image_path: Path | str,
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
 
-    starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_hemodynamics(G, image, hemo_config, graph_config)
-    _export_and_solve_hemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config)
+    starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config)
+    _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config)
     
 if __name__ == "__main__":
     # 1. Run Ilastik Segmentation (if enabled)
@@ -781,7 +781,7 @@ if __name__ == "__main__":
     pre_config = PreprocessingConfig()
     skel_config = SkeletonConfig()
     graph_config = GraphConfig()
-    hemo_config = HemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
+    hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
     vis_config = VisualizationConfig()
     pipeline_config = PipelineConfig()
 
