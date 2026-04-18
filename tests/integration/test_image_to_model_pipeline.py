@@ -162,8 +162,7 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     pytest.importorskip("h5py")
 
     input_h5 = FIXTURE_H5
-    if not input_h5.exists():
-        pytest.skip(f"Missing H5 fixture: {input_h5}")
+    assert input_h5.exists(), f"Missing H5 fixture: {input_h5}"
 
     plot_dir = TESTS_DIR / "plots" / "plots_image_to_model_h5_bundle"
     output_dir = TESTS_DIR / "outputs" / "image_to_model_h5_bundle"
@@ -225,5 +224,5 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     n_edges = graph.number_of_edges()
     print(f"[integration_h5_bundle] n_nodes={n_nodes}, n_edges={n_edges}")
 
-    assert n_nodes == 10, f"Expected 10 nodes, got {n_nodes}"
-    assert n_edges == 9, f"Expected 9 edges, got {n_edges}"
+    assert n_nodes == 12, f"Expected 12 nodes, got {n_nodes}"
+    assert n_edges == 11, f"Expected 11 edges, got {n_edges}"
