@@ -559,7 +559,7 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
 def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config):
     """
     Phase 4: Selects inlet/outlet nodes, calculates branch hierarchies,
-    and assigns physical resistance weights based on Poiseuille's law.
+    and assigns physical resistances based on Poiseuille's law.
     """
     starting_nodes = []
     output_nodes = []
@@ -596,16 +596,19 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             constriction_spacing=100.0,
         )
         if hemo_config.constrict_at_pericytes:
-            poiseuille_model.set_poiseuille_edge_weights(
-                G,
-                custom_edges,
-                edge_diameter=6.0,
-                use_resistance=False,
-            )
-        else:
-            poiseuille_model.set_poiseuille_weights_with_constrictions(
+            poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
                 hemo_config.diameter_by_branch_order,
+            )
+        else:
+            # For non-constricted mode, extract d1 from the config dicts
+            simple_diameters = {
+                k: (v["d1"] if isinstance(v, dict) else v)
+                for k, v in hemo_config.diameter_by_branch_order.items()
+            }
+            poiseuille_model.set_poiseuille_resistances(
+                G,
+                simple_diameters,
             )
             
     return starting_nodes, output_nodes, resistance_node_pair

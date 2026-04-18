@@ -337,7 +337,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     else:
         raise ValueError(f"No starting or output nodes found in input {edge_percent}% or output {end_percent}%")
 
-    # 4) Add branch orders and hemodynamic edge weights.
+    # 4) Add branch orders and hemodynamic edge resistances.
     #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
     #HD note - eventually add in probability of pericyte contraction?
     if starting_nodes:
@@ -354,34 +354,34 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     "d2": diameter * constriction_by_branch_order[branch_order],
                 }
 
-            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+            G, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
                 diameter_by_branch_order_enhanced,
             )
         else:
-            G, results = poiseuille_model.set_poiseuille_weights(
+            G, results = poiseuille_model.set_poiseuille_resistances(
                 G,
                 diameter_by_branch_order,
             )
-        print(f"Results from set_poiseuille_weights_with_constrictions: {results}")
+        print(f"Results from set_poiseuille_resistances_with_constrictions: {results}")
 
-        G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
+        G, results_2 = poiseuille_model.set_poiseuille_edge_resistances(
             G,
             custom_edges,
             edge_diameter=6.0,
-            use_resistance=False,
         )
 
-        print(f"Results from set_poiseuille_edge_weights: {results_2}")
+        print(f"Results from set_poiseuille_edge_resistances: {results_2}")
         # create list of resistances of all edges
-        conductances = []
+        resistances = []
         # TODO DEBUG
         for u, v, key in G.edges(keys=True):
-            conductance = G[u][v][key]['weight']
-            # print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
-            conductances.append(conductance)
+            res_val = G[u][v][key].get("resistance")
+            # print(f"Resistance of edge ({u}, {v}, {key}): {res_val}")
+            if res_val is not None:
+                resistances.append(res_val)
 
-        # print(f"Conductances of all edges: {conductances}")
+        # print(f"Resistances of all edges: {resistances}")
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.

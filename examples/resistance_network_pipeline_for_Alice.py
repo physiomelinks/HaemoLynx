@@ -154,7 +154,7 @@ CLUSTER_COLLAPSE_DISTANCE = 5.0
 # skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
 SKELETON_MIN_COMPONENT_PERCENT = 0.0
 # -----------------------------------------------------------------------------
-# Vessel diameter for Poiseuille weights (manual branch-order vs automated FWHM)
+# Vessel diameter for Poiseuille resistances (manual branch-order vs automated FWHM)
 # -----------------------------------------------------------------------------
 # Manual mode (default): USE_FWHM_EDGE_DIAMETERS=False. Diameters come from
 # DIAMETER_BY_BRANCH_ORDER (built from ALL_DIAMS_CONST, DEFAULT_DIAMETER, and
@@ -408,7 +408,6 @@ def _run_alice_pericyte_dilation_pressure_sweep(
                 G_sweep,
                 custom_edges,
                 edge_diameter=6.0 * dilation_factor,
-                use_resistance=True,
             )
 
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G_sweep)
@@ -1394,7 +1393,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             "arteriole/venule masks."
         )
 
-    # 4) Add branch orders and hemodynamic edge weights.
+    # 4) Add branch orders and hemodynamic edge resistances.
     #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
     #HD note - eventually add in probability of pericyte contraction?
     if starting_nodes:

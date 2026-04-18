@@ -31,8 +31,8 @@ def simple_graph():
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))
     G.add_node(2, pos=np.array([2.0, 0.0, 0.0]))
-    G.add_edge(0, 1, weight=1.0, length=1.0, voxels=[(0, 0, 0), (1, 0, 0)])
-    G.add_edge(1, 2, weight=1.0, length=1.0, voxels=[(1, 0, 0), (2, 0, 0)])
+    G.add_edge(0, 1, resistance=1.0, length=1.0, voxels=[(0, 0, 0), (1, 0, 0)])
+    G.add_edge(1, 2, resistance=1.0, length=1.0, voxels=[(1, 0, 0), (2, 0, 0)])
     return G
 
 
@@ -42,7 +42,7 @@ def multigraph_with_branch_order():
     G = nx.MultiGraph()
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     G.add_node(1, pos=np.array([5.0, 0.0, 0.0]))
-    G.add_edge(0, 1, weight=1.0, length=5.0, branch_order="BO1", voxels=[(0, 0, 0), (5, 0, 0)])
+    G.add_edge(0, 1, resistance=1.0, length=5.0, branch_order="BO1", voxels=[(0, 0, 0), (5, 0, 0)])
     return G
 
 
