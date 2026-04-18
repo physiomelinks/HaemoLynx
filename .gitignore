@@ -8,3 +8,17 @@ build/
 dist/
 examples/images/nerve_capillaries.tif
 examples/images/images_archive.zip
+
+# Large data formats and test outputs
+*.tif
+*.tiff
+*.h5
+*.hdf5
+*.ilp
+*.zip
+examples/outputs/
+examples/outputs_CB_results/
+examples/plots/
+tests/outputs/
+tests/plots/
+*.pkl
