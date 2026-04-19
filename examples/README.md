@@ -22,11 +22,14 @@ python examples/carotid_image_to_model.py
 ```
 
 ### 2. Inputs and Outputs
-* **Input:** Out of the box, it looks for a pre-classified `.tif` or `.h5` file (e.g., `C1-CB3-WKY-CB-A-2x2x2_vesselness_map_probs.tiff`).
+* **Inputs:** 
+  * **Raw or Segmented Volumes:** Out of the box, it accepts `.tif`, `.tiff`, `.h5`, or `.hdf5` files containing 3D image volumes or 4D/5D multi-channel data (e.g., `vesselness_map_probs.tiff`). Voxel sizes are automatically extracted from the file metadata when available.
+  * **Auxiliary Masks (Optional):** It can also accept large-vessel or cell-boundary masks (`.tif` or `.h5`) to automate inlet/outlet assignments and distance measurements.
 * **Outputs:** 
-  * **3D Models:** Exported as `.vtp` files in `examples/outputs/resistance_network/`. You can view these in [ParaView](https://www.paraview.org/).
-  * **Plots:** 2D network projections and degree distributions end up in `examples/plots/carotid/`.
-  * **Graph Data:** The cleaned-up network is saved as a Python pickle (`_graph.pkl`) right next to your input image, so you don't have to rebuild it from scratch next time.
+  * **3D Models:** The solved physical network is exported as interactive `.vtp` (PolyData) files in `examples/outputs/resistance_network/`. Open these in [ParaView](https://www.paraview.org/) to visualize pressure gradients and flow velocities.
+  * **Plots & Diagnostics:** 2D skeleton projections, degree distributions, and interactive 3D HTML diagnostic plots are saved to `examples/plots/carotid/`.
+  * **Statistical Reports:** Comprehensive vessel statistics, distance metrics, and branch-order summaries are exported as `.csv` files.
+  * **Graph Data:** The fully optimized mathematical network is cached as a Python pickle (`_graph.pkl`) and the skeleton as a `.npy` file next to your input image, saving you from repeating the heavy processing steps on future runs.
 
 ---
 
@@ -62,11 +65,13 @@ Visualizing 3D networks can be tough, so we've wired up [Vedo](https://vedo.embl
 
 ## Using Ilastik (Optional)
 
-If you want to run headless Ilastik pixel classification before the pipeline starts:
+If you want to run headless Ilastik pixel classification before the pipeline starts, you can configure the paths at the top of `carotid_image_to_model.py`:
 
-1. Set `RUN_ILASTIK = True` at the top of the script.
-2. Point `ILASTIK_BINARY_PATH` to your `run_ilastik.sh`.
-3. Point `ILASTIK_PROJECT_PATH` to your trained `.ilp` model.
-4. Make sure `RAW_IMAGE_PATH` points to your raw intensity volume.
+1. Set `RUN_ILASTIK = True`.
+2. Point `ILASTIK_BINARY_PATH` to your local Ilastik installation (e.g., `run_ilastik.sh` or `ilastik.exe`).
+3. Point `ILASTIK_PROJECT_PATH` to the trained model included in this repository (e.g., `examples/images/cb_wky_2x2x2_A.ilp`).
+4. **Multi-Channel Inputs:** This specific Ilastik model requires two input features. You must provide *both*:
+   * `RAW_IMAGE_PATH`: Point this to your raw intensity volume (e.g., `..._vessels.tif`).
+   * `FRANGI_IMAGE_PATH`: Point this to your pre-computed vesselness map (e.g., `..._vesselness_map.tif`).
 
-The script will handle the Ilastik run, grab the probability map, and feed it straight into the pipeline.
+The script will automatically feed both images into Ilastik, generate the probability map, and seamlessly pass the result directly into the main pipeline.
