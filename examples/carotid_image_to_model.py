@@ -92,7 +92,7 @@ class SkeletonConfig:
     use_padded_slicing: bool = True
     padded_slicing_padding: int = 3
     prune_mask_before: int = 1
-    sub_volume_percentage: float = 0.25
+    sub_volume_percentage: float = 0.5
     sub_volume_offset_z: float = 0.0
     sub_volume_offset_y: float = 0.0
     sub_volume_offset_x: float = 0.0

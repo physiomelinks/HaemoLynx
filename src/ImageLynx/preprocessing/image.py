@@ -35,7 +35,8 @@ def smooth_probability_map(image: np.ndarray, sigma: float = 1.0) -> np.ndarray:
             smooth_probability_map,
             depth=depth,
             boundary="reflect",
-            sigma=sigma
+            sigma=sigma,
+            dtype=np.float32
         )
 
     ndimage = get_ndimage()
@@ -65,7 +66,8 @@ def median_filter_image(image: np.ndarray, size: int = 3) -> np.ndarray:
             median_filter_image,
             depth=depth,
             boundary="reflect",
-            size=size
+            size=size,
+            dtype=np.float32
         )
 
     ndimage = get_ndimage()
@@ -95,11 +97,12 @@ def morphological_opening(image: np.ndarray, radius: int = 1) -> np.ndarray:
             morphological_opening,
             depth=depth,
             boundary="reflect",
-            radius=radius
+            radius=radius,
+            dtype=image.dtype
         )
 
     morphology = get_morphology()
-    footprint = morphology.ball(radius)
+    footprint = to_gpu(morphology.ball(radius))
     img_gpu = to_gpu(image)
     if image.dtype == bool:
         res_gpu = morphology.binary_opening(img_gpu, footprint=footprint)
@@ -138,7 +141,8 @@ def hysteresis_threshold(
             depth=5, # Overlap to help connectivity
             boundary=0,
             low=low,
-            high=high
+            high=high,
+            dtype=bool
         )
 
     filters = get_filters()
