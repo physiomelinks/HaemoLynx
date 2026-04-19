@@ -105,7 +105,10 @@ class PoiseuilleModel:
         
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
         diameter_viscosity_map = {}
-        for branch_order, diameter in diameter_by_branch_order.items():
+        for branch_order, val in diameter_by_branch_order.items():
+            # Support both float and dict {"d1": ..., "d2": ...}
+            diameter = val["d1"] if isinstance(val, dict) else val
+            
             if diameter <= 0:
                 print(f"Warning: Invalid diameter {diameter} for {branch_order}")
                 continue
@@ -144,7 +147,13 @@ class PoiseuilleModel:
                     diameter = float(fwhm_d)
                     results['used_fwhm_edge_diameter'] += 1
             if diameter is None:
-                diameter = diameter_by_branch_order.get(branch_order, None)
+                val = diameter_by_branch_order.get(branch_order)
+                if val is None:
+                    # Try fallback to DEFAULT
+                    val = diameter_by_branch_order.get("DEFAULT")
+                
+                if val is not None:
+                    diameter = val["d1"] if isinstance(val, dict) else val
             
             if diameter is None:
                 results['unknown_branch_order'].append((u, v, key, branch_order))

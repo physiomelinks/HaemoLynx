@@ -12,3 +12,4 @@ pytest
 pyvista
 vedo
 pyyaml
+dask[array]

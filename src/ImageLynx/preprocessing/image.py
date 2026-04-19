@@ -5,6 +5,13 @@ from ._backend import get_ndimage, get_filters, get_morphology, to_gpu, to_cpu
 
 logger = logging.getLogger(__name__)
 
+def _is_dask_array(arr):
+    try:
+        import dask.array as da
+        return isinstance(arr, da.Array)
+    except ImportError:
+        return False
+
 def smooth_probability_map(image: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     """Apply Gaussian smoothing to a probability map to reduce noise.
 
@@ -15,7 +22,22 @@ def smooth_probability_map(image: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     sigma:
         Standard deviation for Gaussian kernel.
     """
+    if sigma <= 0:
+        return image
+        
     logger.info("Smoothing probability map with sigma=%.2f", sigma)
+    
+    if _is_dask_array(image):
+        import dask.array as da
+        # Use 4*sigma depth for better Gaussian approximation at boundaries
+        depth = int(np.ceil(4 * sigma))
+        return image.map_overlap(
+            smooth_probability_map,
+            depth=depth,
+            boundary="reflect",
+            sigma=sigma
+        )
+
     ndimage = get_ndimage()
     img_gpu = to_gpu(image.astype(np.float32))
     res_gpu = ndimage.gaussian_filter(img_gpu, sigma=sigma)
@@ -31,7 +53,21 @@ def median_filter_image(image: np.ndarray, size: int = 3) -> np.ndarray:
     size:
         Size of the median filter window (e.g., 3 for 3x3x3).
     """
+    if size <= 0:
+        return image
+        
     logger.info("Applying median filter with size=%d", size)
+    
+    if _is_dask_array(image):
+        import dask.array as da
+        depth = size // 2 + 1
+        return image.map_overlap(
+            median_filter_image,
+            depth=depth,
+            boundary="reflect",
+            size=size
+        )
+
     ndimage = get_ndimage()
     img_gpu = to_gpu(image.astype(np.float32))
     res_gpu = ndimage.median_filter(img_gpu, size=size)
@@ -47,7 +83,21 @@ def morphological_opening(image: np.ndarray, radius: int = 1) -> np.ndarray:
     radius:
         Radius of the ball-shaped structuring element.
     """
+    if radius <= 0:
+        return image
+        
     logger.info("Applying morphological opening with radius=%d", radius)
+    
+    if _is_dask_array(image):
+        import dask.array as da
+        depth = radius + 1
+        return image.map_overlap(
+            morphological_opening,
+            depth=depth,
+            boundary="reflect",
+            radius=radius
+        )
+
     morphology = get_morphology()
     footprint = morphology.ball(radius)
     img_gpu = to_gpu(image)
@@ -75,6 +125,22 @@ def hysteresis_threshold(
         Upper threshold for seeds.
     """
     logger.info("Applying hysteresis thresholding (low=%.2f, high=%.2f)", low, high)
+    
+    if _is_dask_array(image):
+        # Hysteresis is a global operation (connected components).
+        # map_overlap might not be perfect for VERY long vessels, 
+        # but for typical chunks and vessel sizes it should work okay.
+        # Alternatively, we could compute it here if it's the last step.
+        logger.warning("Applying Hysteresis Thresholding to Dask array - results may differ slightly at chunk boundaries.")
+        import dask.array as da
+        return image.map_overlap(
+            hysteresis_threshold,
+            depth=5, # Overlap to help connectivity
+            boundary=0,
+            low=low,
+            high=high
+        )
+
     filters = get_filters()
     img_gpu = to_gpu(image)
     res_gpu = filters.apply_hysteresis_threshold(img_gpu, low, high)
@@ -90,6 +156,24 @@ def calculate_entropy_map(probability_volume: np.ndarray) -> np.ndarray:
     probability_volume:
         Input 4D array of probabilities.
     """
+    if _is_dask_array(probability_volume):
+        import dask.array as da
+        
+        # Detect channel axis
+        dims = np.array(probability_volume.shape)
+        c_axis = int(np.argmin(dims))
+        n_classes = dims[c_axis]
+        
+        logger.info("Calculating Shannon entropy map (Dask) (channel axis=%d, classes=%d)", c_axis, n_classes)
+        
+        epsilon = 1e-10
+        # Use da functions for lazy evaluation
+        prob_safe = da.clip(probability_volume, epsilon, 1.0)
+        entropy_map = -da.sum(prob_safe * da.log2(prob_safe), axis=c_axis)
+        
+        max_entropy = np.log2(n_classes)
+        return entropy_map / max_entropy
+
     # Detect channel axis (smallest dimension)
     dims = np.array(probability_volume.shape)
     c_axis = int(np.argmin(dims))

@@ -12,6 +12,10 @@ import numpy as np
 import networkx as nx
 from dataclasses import dataclass, field
 
+# Setup logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 # Ensure package is importable when running from repo root.
 root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -42,15 +46,15 @@ H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 
 # Diameter by branch order (dict with d1 and d2 for pericyte constriction simulation)
 DIAMETER_BY_BRANCH_ORDER = {
-    "BO1": {"d1": 4.0, "d2": 4.0},
-    "BO2": {"d1": 4.0, "d2": 4.0},
-    "BO3": {"d1": 4.0, "d2": 4.0},
-    "BO4": {"d1": 4.0, "d2": 4.0},
-    "BO5": {"d1": 4.0, "d2": 4.0},
-    "BO6": {"d1": 4.0, "d2": 4.0},
-    "BO7": {"d1": 4.0, "d2": 4.0},
-    "BO8": {"d1": 4.0, "d2": 4.0},
-    "BO9": {"d1": 4.0, "d2": 4.0},
+    "B01": {"d1": 4.0, "d2": 4.0},
+    "B02": {"d1": 4.0, "d2": 4.0},
+    "B03": {"d1": 4.0, "d2": 4.0},
+    "B04": {"d1": 4.0, "d2": 4.0},
+    "B05": {"d1": 4.0, "d2": 4.0},
+    "B06": {"d1": 4.0, "d2": 4.0},
+    "B07": {"d1": 4.0, "d2": 4.0},
+    "B08": {"d1": 4.0, "d2": 4.0},
+    "B09": {"d1": 4.0, "d2": 4.0},
     "DEFAULT": {"d1": 4.0, "d2": 4.0},
 }
 
@@ -321,20 +325,27 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     Phase 1: Loads the image, handles 4D channels/entropy, crops the ROI,
     removes noise, and applies hysteresis thresholding to generate a binary mask.
     """
-    # Load the 3D or 4D volume into a numpy array based on file format
+    # Load the 3D or 4D volume using lazy loading to save memory
     if input_format == "tif":
-        image = io.load_3d_tif(image_path)
+        image = io.load_3d_tif(image_path, lazy=True)
     elif input_format == "h5":
         if not H5_DATASET_NAME:
             raise ValueError("Set H5_DATASET_NAME when INPUT_FORMAT is 'h5'.")
-        image = io.load_3d_h5(image_path, H5_DATASET_NAME)
+        image = io.load_3d_h5(image_path, H5_DATASET_NAME, lazy=True)
     else:
         raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
+
+    is_lazy = preprocessing.image._is_dask_array(image)
+    if is_lazy:
+        import dask.array as da
+        logger.info("Using Dask for lazy out-of-core preprocessing.")
 
     print(f"Loaded image shape: {image.shape}")
 
     # Slice the array into a smaller sub-volume to speed up testing/debugging
-    if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or        skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
+    # (Virtual operation if image is a Dask array)
+    if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or \
+       skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
         
         print(f"Applying ROI crop (sub-volume={skel_config.sub_volume_percentage})...")
         image = preprocessing.crop_roi(
@@ -350,7 +361,6 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     # If the image is 4D (e.g., from Ilastik with multiple probability channels)
     if image.ndim == 4:
         # Calculate entropy before extracting the vessel channel
-        # Calculate Shannon Entropy to identify voxels where the model was highly uncertain
         if pre_config.enable_shannon_entropy:
             entropy_map = preprocessing.calculate_entropy_map(image)
 
@@ -372,55 +382,73 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
 
         if entropy_map is not None:
             # Force the probability of uncertain voxels to 0.0 (background)
-            uncertain_mask = entropy_map > pre_config.shannon_entropy_threshold
             print(f"Applying Shannon Entropy Refinement (threshold={pre_config.shannon_entropy_threshold})...")
-            print(f"  Rejecting {uncertain_mask.sum()} uncertain voxels.")
-            image[uncertain_mask] = 0.0
+            if is_lazy:
+                image = da.where(entropy_map > pre_config.shannon_entropy_threshold, 0.0, image)
+            else:
+                uncertain_mask = entropy_map > pre_config.shannon_entropy_threshold
+                print(f"  Rejecting {uncertain_mask.sum()} uncertain voxels.")
+                image[uncertain_mask] = 0.0
 
-    print(f"Image probability range: min={image.min():.4f}, max={image.max():.4f}, mean={image.mean():.4f}")
+    if not is_lazy:
+        print(f"Image probability range: min={image.min():.4f}, max={image.max():.4f}, mean={image.mean():.4f}")
 
     if vis_config.visualize_mask_only:
-        _preview_raw_volume(image, image_path, input_format, vis_config)
+        # We must compute for visualization
+        preview_img = image.compute() if is_lazy else image
+        _preview_raw_volume(preview_img, image_path, input_format, vis_config)
 
-    # Apply a 3D median filter to remove isolated salt-and-pepper noise peaks
+    # Apply a 3D median filter to remove noise
     if pre_config.median_filter_size > 0:
         print(f"Applying median filter (size={pre_config.median_filter_size})...")
         image = preprocessing.median_filter_image(image, size=pre_config.median_filter_size)
 
-    # Apply morphological opening to break thin webbing between close vessels
+    # Apply morphological opening to break thin webbing
     if pre_config.morphological_opening_radius > 0:
         print(f"Applying morphological opening (radius={pre_config.morphological_opening_radius})...")
         image = preprocessing.morphological_opening(image, radius=pre_config.morphological_opening_radius)
 
-    # Apply Gaussian smoothing to soften edges (kept minimal to prevent bloating)
+    # Apply Gaussian smoothing to soften edges
     if pre_config.probability_smoothing_sigma > 0:
         image = preprocessing.smooth_probability_map(image, sigma=pre_config.probability_smoothing_sigma)
 
-    # Convert the continuous 0.0-1.0 probability map into a strict True/False binary mask
+    # Convert the continuous 0.0-1.0 probability map into a binary mask
     if pre_config.enable_hysteresis_threshold:
-        # Hysteresis uses a high threshold for confident seeds, and a low threshold to trace faint connected branches
         binary_raw = preprocessing.hysteresis_threshold(
             image, low=pre_config.hysteresis_threshold_low, high=pre_config.hysteresis_threshold_high
         )
     else:
+        # Otsu thresholding requires the whole image in memory to calculate the histogram
+        if is_lazy:
+            print("Calculating global Otsu threshold (computing volume)...")
+            image = image.compute()
+            is_lazy = False
+            
         from skimage.filters import threshold_otsu
         threshold = threshold_otsu(image)
         binary_raw = image > threshold
     
-    binary = binary_raw.copy()
+    # Final Materialization: Compute the Dask task graph into a real NumPy array
+    # before starting the topological operations (Skeletonization).
+    if is_lazy:
+        print("Computing final preprocessing task graph (Materializing volume)...")
+        binary = binary_raw.compute()
+    else:
+        binary = binary_raw.copy()
 
-    # Fill internal hollow cavities inside vessels to prevent artificial loops during skeletonization
+    # Fill internal hollow cavities inside vessels
     if pre_config.enable_hole_filling:
         binary = preprocessing.skeleton.fill_holes_3d(binary)
 
-    # Smooth the bumpy outer walls of the binary mask to prevent hairy skeletons
+    # Smooth the bumpy outer walls
     if skel_config.closing_radius > 0:
         binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.closing_radius)
-    # Draw localized bridges across tiny gaps between broken vessel segments
+    
+    # Draw localized bridges across tiny gaps
     if skel_config.bridge_gap_size > 0:
         binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skel_config.bridge_gap_size)
 
-    # Delete all floating background noise blobs, keeping only the largest interconnected structures
+    # Delete all floating background noise blobs
     if skel_config.prune_mask_before > 0:
         print(f"Pruning binary mask to keep largest {skel_config.prune_mask_before} components...")
         binary = preprocessing.skeleton.keep_largest_mask_components(
@@ -430,7 +458,8 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     if vis_config.visualize_post_processed_mask:
         _preview_post_processed_mask(binary, image_path, input_format, vis_config, pipeline_config)
     
-    return image, binary
+    # Return the materialized image and binary mask
+    return (image.compute() if preprocessing.image._is_dask_array(image) else image), binary
 
 def _run_skeletonization_phase(binary, skel_config):
     """

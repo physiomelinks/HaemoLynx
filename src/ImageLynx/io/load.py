@@ -118,19 +118,48 @@ def crop_tiff_volume_from_corners(
     }
 
 
-def load_3d_tif(filepath: str | Path) -> np.ndarray:
-    """Load a 3D TIFF volume."""
+def load_3d_tif(filepath: str | Path, lazy: bool = False) -> np.ndarray:
+    """Load a 3D TIFF volume.
+    
+    If lazy=True, returns a memory-mapped array or dask array if possible.
+    """
+    if lazy:
+        try:
+            import dask.array as da
+            # Using dask.array.from_array with tifffile.memmap for lazy loading
+            mmap = tifffile.memmap(str(filepath))
+            return da.from_array(mmap, chunks="auto")
+        except Exception as e:
+            logger.warning("Lazy TIFF loading failed, falling back to in-memory: %s", e)
+    
     return tifffile.imread(str(filepath))
 
 
-def load_3d_tif_with_voxel_size(filepath, voxel_size=1.0):
-    return load_3d_tif(filepath), voxel_size, voxel_size, voxel_size
+def load_3d_tif_with_voxel_size(filepath, voxel_size=1.0, lazy: bool = False):
+    return load_3d_tif(filepath, lazy=lazy), voxel_size, voxel_size, voxel_size
 
 
-def load_3d_h5(filepath: str | Path, dataset_name: str) -> np.ndarray:
-    """Load a 3D HDF5 volume."""
+def load_3d_h5(filepath: str | Path, dataset_name: str, lazy: bool = False) -> np.ndarray:
+    """Load a 3D HDF5 volume.
+    
+    If lazy=True, returns a dask array wrapper around the H5 dataset.
+    """
     if h5py is None:
         raise ImportError("h5py is required for HDF5 support. Install with: pip install h5py")
+    
+    if lazy:
+        try:
+            import dask.array as da
+            # We don't close the file because dask needs it open
+            f = h5py.File(str(filepath), "r")
+            if dataset_name not in f:
+                available = list(f.keys())
+                raise ValueError(f"Dataset '{dataset_name}' not found. Available: {available}")
+            ds = f[dataset_name]
+            return da.from_array(ds, chunks="auto")
+        except Exception as e:
+            logger.warning("Lazy H5 loading failed, falling back to in-memory: %s", e)
+
     with h5py.File(str(filepath), "r") as f:
         if dataset_name not in f:
             available = list(f.keys())
