@@ -1,73 +1,72 @@
-# ImageLynx Carotid Pipeline Example
+# ImageLynx Carotid Pipeline
 
-This directory contains the `carotid_image_to_model.py` script, an end-to-end pipeline designed to convert 3D image volumes (such as micro-CT or light-sheet microscopy of vascular networks) into mathematical graphs, and simulate haemodynamic flow (blood pressure and resistance) through the network.
+This folder contains `carotid_image_to_model.py`. It's an end-to-end pipeline that takes 3D image volumes (like micro-CT or light-sheet microscopy scans of blood vessels), turns them into mathematical graphs, and runs haemodynamic flow simulations (calculating blood pressure and resistance) across the network.
 
-## Pipeline Overview
+## How it works
 
-The script processes data through four main phases:
+The pipeline runs in four main steps:
 
-1. **Image Preprocessing:** Loads 3D or 4D probability maps (e.g., from Ilastik), applies noise reduction (median filters), and thresholds the data into a clean, solid binary mask representing the vessels.
-2. **Skeletonization:** Converts the thick 3D binary tubes into a 1D centerline skeleton, pruning tiny artifacts and collapsing dense "spiderweb" bundles.
-3. **Graph Extraction & Topological Optimization:** Extracts a mathematical network (Nodes and Edges) from the skeleton. It rigorously cleans the topology by merging adjacent nodes, resolving "triangle" intersections into clean bifurcations, and removing redundant degree-2 points.
-4. **Haemodynamic Simulation:** Automatically identifies boundary inlets and outlets, calculates physical resistance weights using Poiseuille's law, and solves the system of linear equations to determine pressure at every node and flow in every edge.
+1. **Image Preprocessing:** Takes raw 3D/4D probability maps (e.g., from Ilastik), runs median filters to drop noise, and thresholds the data to get a clean binary mask of the vessels.
+2. **Skeletonization:** Thins out the 3D binary tubes into 1D centerlines. It also prunes small artifacts and collapses messy "spiderweb" loops.
+3. **Graph Extraction & Optimization:** Builds a mathematical network (nodes and edges) from the skeleton. It merges nodes that are too close, cleans up branching points, and removes unnecessary degree-2 nodes.
+4. **Haemodynamic Simulation:** Finds the inlets and outlets, calculates physical resistance for each segment using Poiseuille's law, and solves the linear equations to get pressure and flow everywhere.
 
 ---
 
 ## Quick Start
 
-### 1. Execute the Pipeline
-You can run the script directly from your terminal:
+### 1. Running the pipeline
+Just run the script directly from your terminal:
 ```bash
 python examples/carotid_image_to_model.py
 ```
 
-### 2. Expected Inputs and Outputs
-* **Input:** By default, the script looks for a pre-classified `.tif` or `.h5` file (e.g., `C1-CB3-WKY-CB-A-2x2x2_vesselness_map_probs.tiff`).
-* **Output:** 
-  * **3D Models:** The final solved network is exported as `.vtp` files (PolyData) in the `examples/outputs/resistance_network/` directory. These can be opened and analyzed in [ParaView](https://www.paraview.org/).
-  * **2D Plots:** Degree distributions and 2D projections of the network are saved as `.png` files in `examples/plots/carotid/`.
-  * **Graph Data:** The optimized mathematical network is saved as a serialized Python object (`_graph.pkl`) next to your input image to save time on future runs.
+### 2. Inputs and Outputs
+* **Input:** Out of the box, it looks for a pre-classified `.tif` or `.h5` file (e.g., `C1-CB3-WKY-CB-A-2x2x2_vesselness_map_probs.tiff`).
+* **Outputs:** 
+  * **3D Models:** Exported as `.vtp` files in `examples/outputs/resistance_network/`. You can view these in [ParaView](https://www.paraview.org/).
+  * **Plots:** 2D network projections and degree distributions end up in `examples/plots/carotid/`.
+  * **Graph Data:** The cleaned-up network is saved as a Python pickle (`_graph.pkl`) right next to your input image, so you don't have to rebuild it from scratch next time.
 
 ---
 
-## Configuring the Pipeline (Dataclasses)
+## Configuration
 
-The pipeline's behavior is controlled by several structured `Config` dataclasses instantiated at the very bottom of the script. You can modify these to tune the pipeline for your specific dataset:
+Everything is driven by Dataclass configs at the bottom of the script. Tweak these to fit your dataset:
 
-* **`PreprocessingConfig`:** Controls how the raw image is turned into a binary mask.
-  * `enable_hysteresis_threshold`: Uses high/low thresholds to confidently identify vessels while preserving faint connections.
-  * `median_filter_size`: Size of the 3D median filter used to remove salt-and-pepper noise.
-  * `enable_shannon_entropy`: If your input is a 4D probability map from Ilastik, this uses Shannon Entropy to automatically reject voxels where the ML model was uncertain.
-* **`SkeletonConfig`:** Controls the structural extraction of the network.
-  * `downsample_factor`: Increase this (e.g., `2.0`) to drastically speed up skeletonization on massive volumes by shrinking the image first.
-  * `closing_radius`: Smooths the bumpy outer walls of the binary mask to prevent "hairy" skeletons.
-* **`GraphConfig`:** Controls mathematical edge pruning.
-  * `keep_largest_component_only`: Ensures only the single main interconnected network is kept, deleting any floating "island" fragments.
-* **`HaemodynamicsConfig`:** Sets the physical boundary conditions for the flow simulation.
-  * `input_p_bc` / `output_p_bc`: The pressure (in Pascals) applied to the automatically detected inlet and outlet nodes.
-* **`PipelineConfig`:** Allows you to toggle entire phases on or off. 
-  * For example, if you already built the graph and just want to tweak the pressures, set `do_skeletonize=False` and `do_graph_building=False`. The script will instantly load the saved `.pkl` graph and run the flow solver.
-
----
-
-## Interactive Visualization & Debugging Checkpoints
-
-Because 3D networks are complex, the script includes interactive 3D [Vedo](https://vedo.embl.es/) visualizations to help you debug the data at critical checkpoints. You can enable these inside the `VisualizationConfig`:
-
-* **`visualize_mask_only = True`**: Pops up a 3D window showing the cleaned binary mask *before* the heavy skeletonization step begins. Useful for tuning your thresholds.
-* **`visualize_overlay_preview = True`**: A powerful 4-panel checkpoint window showing the raw image, the binary mask, the raw skeleton, and the mathematically optimized graph overlaid on top of each other. 
-  * *Note: Closing this preview window will intentionally halt the script (`sys.exit`) so you can inspect intermediate results without waiting for the haemodynamics solver.*
+* **`PreprocessingConfig`:** How we go from raw image to binary mask.
+  * `enable_hysteresis_threshold`: Uses high/low thresholds to grab faint capillaries connected to confident main vessels.
+  * `median_filter_size`: 3D filter size to kill salt-and-pepper noise.
+  * `enable_shannon_entropy`: (For Ilastik 4D outputs) Drops voxels where the ML model wasn't confident.
+* **`SkeletonConfig`:** How we extract the structure.
+  * `downsample_factor`: Crank this up (e.g., `2.0`) to massively speed up skeletonization on huge volumes.
+  * `closing_radius`: Smooths out bumpy vessel walls so the skeleton doesn't get "hairy".
+* **`GraphConfig`:** Mathematical cleanup.
+  * `keep_largest_component_only`: Drops disconnected floating islands of vessels.
+* **`HaemodynamicsConfig`:** Physics parameters.
+  * `input_p_bc` / `output_p_bc`: Inlet and outlet pressures in Pascals.
+* **`PipelineConfig`:** Toggle whole phases. 
+  * If you just want to re-run the flow solver with new pressures, set `do_skeletonize=False` and `do_graph_building=False`. It'll just load your `.pkl` and solve.
 
 ---
 
-## Advanced: Running with Ilastik (Optional)
+## 3D Visualization & Debugging
 
-The script includes an optional wrapper to run headless pixel classification using Ilastik *before* the main pipeline starts. 
+Visualizing 3D networks can be tough, so we've wired up [Vedo](https://vedo.embl.es/) for interactive checkpoints. Enable these in `VisualizationConfig`:
 
-To enable this:
+* **`visualize_mask_only = True`**: Pops up the cleaned 3D binary mask before skeletonization starts. Great for dialing in your thresholds.
+* **`visualize_overlay_preview = True`**: Gives you a 4-panel view showing the raw image, binary mask, raw skeleton, and final optimized graph stacked together. 
+  * *Note: Closing this preview window will kill the script (`sys.exit`) so you can tweak things without waiting for the haemodynamics solver to finish.*
+
+---
+
+## Using Ilastik (Optional)
+
+If you want to run headless Ilastik pixel classification before the pipeline starts:
+
 1. Set `RUN_ILASTIK = True` at the top of the script.
-2. Update `ILASTIK_BINARY_PATH` to point to your local `run_ilastik.sh` executable.
-3. Update `ILASTIK_PROJECT_PATH` to point to your trained `.ilp` model file. 
-4. Ensure `RAW_IMAGE_PATH` points to your raw intensity volume.
+2. Point `ILASTIK_BINARY_PATH` to your `run_ilastik.sh`.
+3. Point `ILASTIK_PROJECT_PATH` to your trained `.ilp` model.
+4. Make sure `RAW_IMAGE_PATH` points to your raw intensity volume.
 
-The script will automatically pass the raw image to Ilastik, generate the probability map, and feed it directly into the `carotid_image_to_model` pipeline.
+The script will handle the Ilastik run, grab the probability map, and feed it straight into the pipeline.
