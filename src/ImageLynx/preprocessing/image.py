@@ -1,9 +1,7 @@
 """Image-level operations: ROI cropping, smoothing, and pre-processing."""
 import logging
 import numpy as np
-from scipy.ndimage import gaussian_filter, median_filter
-from skimage.filters import apply_hysteresis_threshold
-from skimage.morphology import opening, binary_opening, ball
+from ._backend import get_ndimage, get_filters, get_morphology, to_gpu, to_cpu
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +16,10 @@ def smooth_probability_map(image: np.ndarray, sigma: float = 1.0) -> np.ndarray:
         Standard deviation for Gaussian kernel.
     """
     logger.info("Smoothing probability map with sigma=%.2f", sigma)
-    return gaussian_filter(image.astype(np.float32), sigma=sigma)
+    ndimage = get_ndimage()
+    img_gpu = to_gpu(image.astype(np.float32))
+    res_gpu = ndimage.gaussian_filter(img_gpu, sigma=sigma)
+    return to_cpu(res_gpu)
 
 def median_filter_image(image: np.ndarray, size: int = 3) -> np.ndarray:
     """Apply median filter to a 3D volume to reduce noise.
@@ -31,7 +32,10 @@ def median_filter_image(image: np.ndarray, size: int = 3) -> np.ndarray:
         Size of the median filter window (e.g., 3 for 3x3x3).
     """
     logger.info("Applying median filter with size=%d", size)
-    return median_filter(image.astype(np.float32), size=size)
+    ndimage = get_ndimage()
+    img_gpu = to_gpu(image.astype(np.float32))
+    res_gpu = ndimage.median_filter(img_gpu, size=size)
+    return to_cpu(res_gpu)
 
 def morphological_opening(image: np.ndarray, radius: int = 1) -> np.ndarray:
     """Apply morphological opening to a 3D volume.
@@ -44,11 +48,14 @@ def morphological_opening(image: np.ndarray, radius: int = 1) -> np.ndarray:
         Radius of the ball-shaped structuring element.
     """
     logger.info("Applying morphological opening with radius=%d", radius)
-    footprint = ball(radius)
+    morphology = get_morphology()
+    footprint = morphology.ball(radius)
+    img_gpu = to_gpu(image)
     if image.dtype == bool:
-        return binary_opening(image, footprint=footprint)
+        res_gpu = morphology.binary_opening(img_gpu, footprint=footprint)
     else:
-        return opening(image, footprint=footprint)
+        res_gpu = morphology.opening(img_gpu, footprint=footprint)
+    return to_cpu(res_gpu)
 
 def hysteresis_threshold(
     image: np.ndarray, low: float = 0.3, high: float = 0.7
@@ -68,7 +75,10 @@ def hysteresis_threshold(
         Upper threshold for seeds.
     """
     logger.info("Applying hysteresis thresholding (low=%.2f, high=%.2f)", low, high)
-    return apply_hysteresis_threshold(image, low, high)
+    filters = get_filters()
+    img_gpu = to_gpu(image)
+    res_gpu = filters.apply_hysteresis_threshold(img_gpu, low, high)
+    return to_cpu(res_gpu)
 
 def calculate_entropy_map(probability_volume: np.ndarray) -> np.ndarray:
     """Calculate voxel-wise Shannon entropy from a multi-channel probability volume.

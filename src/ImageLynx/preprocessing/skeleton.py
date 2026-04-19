@@ -2,19 +2,8 @@
 import logging
 
 import numpy as np
-from scipy.ndimage import (
-    binary_dilation,
-    binary_erosion,
-    binary_closing,
-    binary_fill_holes,
-    distance_transform_edt,
-    generate_binary_structure,
-    label,
-    maximum_filter,
-    uniform_filter,
-)
-from skimage.morphology import remove_small_objects, skeletonize
-from skimage.transform import resize
+from ._backend import get_ndimage, get_morphology, get_transform, to_gpu, to_cpu
+
 logger = logging.getLogger(__name__)
 
 def rescale_and_skeletonize_3d(
@@ -50,17 +39,21 @@ def rescale_and_skeletonize_3d(
     small_skel = skeletonize_3d(small_vol)
 
     # 3. Upscale back to original size
-    thick_skel = resize(
-        small_skel.astype(float),
+    transform = get_transform()
+    thick_skel_gpu = transform.resize(
+        to_gpu(small_skel.astype(float)),
         binary_volume.shape,
         order=0,
         preserve_range=True,
         anti_aliasing=False,
     ) > 0.5
+    thick_skel = to_cpu(thick_skel_gpu)
 
     # 3.5 Expansion pass to ensure robustness during final thinning
-    struct = generate_binary_structure(binary_volume.ndim, 1)
-    thick_skel = binary_dilation(thick_skel, structure=struct)
+    ndimage = get_ndimage()
+    struct = ndimage.generate_binary_structure(binary_volume.ndim, 1)
+    thick_skel_gpu = ndimage.binary_dilation(to_gpu(thick_skel), structure=to_gpu(struct))
+    thick_skel = to_cpu(thick_skel_gpu)
     
     # 4. Final thinning pass
     return skeletonize_3d(thick_skel)
@@ -85,9 +78,13 @@ def keep_largest_mask_components(
     if not binary_mask.any():
         return binary_mask
 
+    ndimage = get_ndimage()
     conn = _resolve_component_connectivity(binary_mask.ndim, connectivity)
-    struct = generate_binary_structure(binary_mask.ndim, conn)
-    labeled, n_found = label(binary_mask, structure=struct)
+    struct = ndimage.generate_binary_structure(binary_mask.ndim, conn)
+    
+    binary_gpu = to_gpu(binary_mask)
+    labeled_gpu, n_found = ndimage.label(binary_gpu, structure=to_gpu(struct))
+    labeled = to_cpu(labeled_gpu)
 
     if n_found <= n_components:
         return binary_mask
@@ -118,9 +115,14 @@ def _filter_components_by_total_fraction(
     if total_voxels == 0 or min_component_fraction <= 0.0:
         return skeleton_bool
 
+    ndimage = get_ndimage()
     conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
-    structure = generate_binary_structure(skeleton_bool.ndim, conn)
-    labeled, n_components = label(skeleton_bool, structure=structure)
+    structure = ndimage.generate_binary_structure(skeleton_bool.ndim, conn)
+    
+    skeleton_gpu = to_gpu(skeleton_bool)
+    labeled_gpu, n_components = ndimage.label(skeleton_gpu, structure=to_gpu(structure))
+    labeled = to_cpu(labeled_gpu)
+    
     if n_components == 0:
         return skeleton_bool
 
@@ -149,9 +151,15 @@ def print_skeleton_connectivity_stats(
     """Print concise connectivity diagnostics for a 2D/3D skeleton."""
     skeleton_bool = skeleton.astype(bool)
     voxel_count = int(skeleton_bool.sum())
+    
+    ndimage = get_ndimage()
     conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
-    structure = generate_binary_structure(skeleton_bool.ndim, conn)
-    labeled, n_components = label(skeleton_bool, structure=structure)
+    structure = ndimage.generate_binary_structure(skeleton_bool.ndim, conn)
+    
+    skeleton_gpu = to_gpu(skeleton_bool)
+    labeled_gpu, n_components = ndimage.label(skeleton_gpu, structure=to_gpu(structure))
+    labeled = to_cpu(labeled_gpu)
+    
     if n_components == 0:
         print(f"[skeleton:{name}] empty skeleton (0 foreground voxels).")
         return
@@ -177,9 +185,12 @@ def bridge_gaps(binary_skeleton: np.ndarray, max_gap: int = 4) -> np.ndarray:
     set to foreground.  Equivalent to morphological dilation with radius
     *max_gap*.
     """
-    dist = distance_transform_edt(~binary_skeleton)
-    fill_mask = (dist <= max_gap) & (~binary_skeleton)
-    return binary_skeleton | fill_mask
+    ndimage = get_ndimage()
+    skeleton_gpu = to_gpu(binary_skeleton)
+    dist_gpu = ndimage.distance_transform_edt(~skeleton_gpu)
+    fill_mask_gpu = (dist_gpu <= max_gap) & (~skeleton_gpu)
+    res_gpu = skeleton_gpu | fill_mask_gpu
+    return to_cpu(res_gpu)
 
 
 def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
@@ -199,12 +210,14 @@ def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
         Number of erosion/dilation iterations.  Larger values bridge wider
         gaps but risk merging genuinely distinct structures.
     """
-    from scipy.ndimage import binary_closing, generate_binary_structure
-
     if radius <= 0:
         return binary
-    struct = generate_binary_structure(binary.ndim, 1)
-    return binary_closing(binary.astype(bool), structure=struct, iterations=radius)
+    
+    ndimage = get_ndimage()
+    struct = ndimage.generate_binary_structure(binary.ndim, 1)
+    binary_gpu = to_gpu(binary.astype(bool))
+    res_gpu = ndimage.binary_closing(binary_gpu, structure=to_gpu(struct), iterations=radius)
+    return to_cpu(res_gpu)
 
 
 def fill_holes_3d(binary: np.ndarray) -> np.ndarray:
@@ -216,12 +229,16 @@ def fill_holes_3d(binary: np.ndarray) -> np.ndarray:
         Input boolean 3D array.
     """
     logger.info("Filling holes in 3D binary mask.")
-    return binary_fill_holes(binary)
+    ndimage = get_ndimage()
+    res_gpu = ndimage.binary_fill_holes(to_gpu(binary))
+    return to_cpu(res_gpu)
 
 
 def skeletonize_3d(img: np.ndarray) -> np.ndarray:
     """Safe 3D skeletonization wrapper."""
-    return skeletonize(img.astype(bool))
+    morphology = get_morphology()
+    res_gpu = morphology.skeletonize(to_gpu(img.astype(bool)))
+    return to_cpu(res_gpu)
 
 def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None:
     """Set voxels along the straight line from *start* to *end* to True."""
@@ -283,16 +300,25 @@ def skeletonize_voxel_bundles_into_paths(
         hub_min_spacing = max(1, int(min(scan) / 2))
 
     base_skeleton = skeletonize_3d(mask)
-    density = uniform_filter(mask.astype(np.float32), size=scan, mode="constant")
-    dense_volume = density >= density_fraction
+    
+    ndimage = get_ndimage()
+    mask_gpu = to_gpu(mask.astype(np.float32))
+    density_gpu = ndimage.uniform_filter(mask_gpu, size=scan, mode="constant")
+    
+    dense_volume_gpu = density_gpu >= density_fraction
+    dense_volume = to_cpu(dense_volume_gpu)
     if not dense_volume.any():
         return base_skeleton.astype(bool)
 
-    peak_map = dense_volume & (density == maximum_filter(density, size=scan, mode="nearest"))
+    max_filter_gpu = ndimage.maximum_filter(density_gpu, size=scan, mode="nearest")
+    peak_map_gpu = dense_volume_gpu & (density_gpu == max_filter_gpu)
+    peak_map = to_cpu(peak_map_gpu)
+    
     peak_coords = np.argwhere(peak_map)
     if peak_coords.size == 0:
         return base_skeleton.astype(bool)
 
+    density = to_cpu(density_gpu)
     order = np.argsort(density[tuple(peak_coords.T)])[::-1]
     selected_hubs: list[np.ndarray] = []
     for idx in order:
@@ -303,7 +329,7 @@ def skeletonize_voxel_bundles_into_paths(
     result = base_skeleton.astype(bool).copy()
     shape = np.array(mask.shape)
     half_window = np.array(scan) // 2
-    structure = generate_binary_structure(mask.ndim, 1)
+    struct = ndimage.generate_binary_structure(mask.ndim, 1)
 
     for hub in selected_hubs:
         lo = np.maximum(hub - half_window, 0)
@@ -324,7 +350,9 @@ def skeletonize_voxel_bundles_into_paths(
         center = (local_mask_coords[nearest] + lo).astype(int)
         center_t = tuple(center.tolist())
 
-        shell = binary_dilation(local_dense, structure=structure) & ~local_dense
+        local_dense_gpu = to_gpu(local_dense)
+        shell_gpu = ndimage.binary_dilation(local_dense_gpu, structure=to_gpu(struct)) & ~local_dense_gpu
+        shell = to_cpu(shell_gpu)
         boundary_points = np.argwhere(result & shell)
 
         result[local_dense] = False
@@ -378,12 +406,16 @@ def connect_skeleton_components(
         Maximum voxel distance allowed for bridging.  Isolated fragments
         further away than this are left untouched.
     """
-    from scipy.ndimage import label
     from scipy.spatial import cKDTree
 
+    ndimage = get_ndimage()
     conn = _resolve_component_connectivity(skeleton.ndim, component_connectivity)
-    structure = generate_binary_structure(skeleton.ndim, conn)
-    labeled, n_components = label(skeleton, structure=structure)
+    structure = ndimage.generate_binary_structure(skeleton.ndim, conn)
+    
+    skeleton_gpu = to_gpu(skeleton)
+    labeled_gpu, n_components = ndimage.label(skeleton_gpu, structure=to_gpu(structure))
+    labeled = to_cpu(labeled_gpu)
+    
     if n_components <= 1:
         return skeleton
 
@@ -460,8 +492,9 @@ def preprocess_skeleton_for_graph(
     bundle_hub_min_spacing:
         Minimum spacing between neighboring dense hub centers.
     """
+    morphology = get_morphology()
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
-    cleaned = remove_small_objects(
+    cleaned = morphology.remove_small_objects(
         skeleton_image.astype(bool),
         min_size=min_branch_length,
         connectivity=conn,
