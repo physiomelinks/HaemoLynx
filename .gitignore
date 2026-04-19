@@ -23,3 +23,5 @@ tests/outputs/
 tests/plots/
 *.pkl
 REMINDERS.md
+image_to_model
+image_to_model.py
