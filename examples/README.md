@@ -1,6 +1,6 @@
 # ImageLynx Carotid Pipeline Example
 
-This directory contains the `carotid_image_to_model.py` script, an end-to-end pipeline designed to convert 3D image volumes (such as micro-CT or light-sheet microscopy of vascular networks) into mathematical graphs, and simulate hemodynamic flow (blood pressure and resistance) through the network.
+This directory contains the `carotid_image_to_model.py` script, an end-to-end pipeline designed to convert 3D image volumes (such as micro-CT or light-sheet microscopy of vascular networks) into mathematical graphs, and simulate haemodynamic flow (blood pressure and resistance) through the network.
 
 ## Pipeline Overview
 
@@ -9,7 +9,7 @@ The script processes data through four main phases:
 1. **Image Preprocessing:** Loads 3D or 4D probability maps (e.g., from Ilastik), applies noise reduction (median filters), and thresholds the data into a clean, solid binary mask representing the vessels.
 2. **Skeletonization:** Converts the thick 3D binary tubes into a 1D centerline skeleton, pruning tiny artifacts and collapsing dense "spiderweb" bundles.
 3. **Graph Extraction & Topological Optimization:** Extracts a mathematical network (Nodes and Edges) from the skeleton. It rigorously cleans the topology by merging adjacent nodes, resolving "triangle" intersections into clean bifurcations, and removing redundant degree-2 points.
-4. **Hemodynamic Simulation:** Automatically identifies boundary inlets and outlets, calculates physical resistance weights using Poiseuille's law, and solves the system of linear equations to determine pressure at every node and flow in every edge.
+4. **Haemodynamic Simulation:** Automatically identifies boundary inlets and outlets, calculates physical resistance weights using Poiseuille's law, and solves the system of linear equations to determine pressure at every node and flow in every edge.
 
 ---
 
