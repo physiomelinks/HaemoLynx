@@ -22,6 +22,7 @@ examples/plots/
 tests/outputs/
 tests/plots/
 *.pkl
+*.npy
 REMINDERS.md
 image_to_model
 image_to_model.py
