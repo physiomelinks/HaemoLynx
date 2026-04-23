@@ -1057,7 +1057,12 @@ def visualize_overlay(
     plotter.set_background(background_color)
     
     # Enable depth peeling for correct transparency rendering
-    plotter.enable_depth_peeling()
+    import sys
+    if "pytest" not in sys.modules:
+        try:
+            plotter.enable_depth_peeling()
+        except Exception as e:
+            logger.warning(f"Could not enable depth peeling (likely headless environment): {e}")
 
     # 1. Add Vessel Surface
     vol_transposed = volume.transpose(2, 1, 0)

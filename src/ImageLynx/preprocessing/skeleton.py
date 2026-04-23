@@ -461,6 +461,8 @@ def preprocess_skeleton_for_graph(
     bundle_density_fraction: float = 0.35,
     bundle_max_connections_per_hub: int = 8,
     bundle_hub_min_spacing: int | None = None,
+    closing_radius: int = 0,
+    bridge_gap_size: int = 0,
 ) -> np.ndarray:
     """Remove small objects, re-skeletonize, and reconnect isolated fragments.
 
@@ -491,8 +493,19 @@ def preprocess_skeleton_for_graph(
         Max directional links retained when reconnecting paths to each hub.
     bundle_hub_min_spacing:
         Minimum spacing between neighboring dense hub centers.
+    closing_radius:
+        Optional morphological closing radius.
+    bridge_gap_size:
+        Optional gap bridging distance.
     """
     morphology = get_morphology()
+
+    if closing_radius > 0:
+        skeleton_image = close_binary_mask(skeleton_image, radius=closing_radius)
+        
+    if bridge_gap_size > 0:
+        skeleton_image = bridge_gaps(skeleton_image, max_gap=bridge_gap_size)
+
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
     cleaned = morphology.remove_small_objects(
         skeleton_image.astype(bool),

@@ -39,7 +39,7 @@ def test_load_and_skeletonize_3d_tif(tmp_path):
     img = np.random.randint(0, 255, (6, 6, 6), dtype=np.uint16)
     import tifffile
     tifffile.imwrite(f, img)
-    image, skeleton = load_and_skeletonize_3d_tif(str(f))
+    image, skeleton, vx, vy, vz = load_and_skeletonize_3d_tif(str(f))
     assert image.shape == (6, 6, 6)
     assert skeleton.shape == (6, 6, 6)
     assert skeleton.dtype == bool

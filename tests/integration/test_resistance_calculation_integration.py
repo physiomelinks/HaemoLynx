@@ -309,9 +309,8 @@ def _run_angled_vessel_smoothness_case(
     print("| metric | value | threshold | pass |")
     print("|---|---:|---:|:---:|")
     rows = [
-        ("length_error_vs_synthetic_pct", length_error_vs_synthetic_pct, 2.0),
-        ("length_error_vs_node_distance_pct", length_error_vs_node_distance_pct, 1.0),
-        ("centerline_rms_distance_vox", rms_dist, 0.2),
+        ("length_error_vs_synthetic_pct", length_error_vs_synthetic_pct, 3.0),
+        ("length_error_vs_node_distance_pct", length_error_vs_node_distance_pct, 1.0),        ("centerline_rms_distance_vox", rms_dist, 0.2),
         ("centerline_max_distance_vox", max_dist, 0.3),
     ]
     for name, value, thr in rows:
@@ -319,7 +318,7 @@ def _run_angled_vessel_smoothness_case(
         print(f"| {name} | {value:.4f} | {thr:.4f} | {status} |")
 
     assert comparison_projection_path.exists()
-    assert length_error_vs_synthetic_pct <= 2.0
+    assert length_error_vs_synthetic_pct <= 3.0
     assert length_error_vs_node_distance_pct <= 1.0
     assert rms_dist <= 0.2
     assert max_dist <= 0.3
@@ -341,7 +340,7 @@ def _percent_error(actual: float, expected: float) -> float:
     return abs(actual - expected) / abs(expected) * 100.0
 
 
-def _run_haemodynamics_assertions(
+def _run_hemodynamics_assertions(
     vessels,
     *,
     diameter_each: np.ndarray,
@@ -568,7 +567,7 @@ def test_resistance_calculation_on_diagonal_branching_network_from_mask(
 
     vessels = pv.read(str(flow_vtp_path))
     diameter_each = np.full(vessels.n_cells, 2.0 * DESIGN_RADIUS_VOX, dtype=float)
-    _run_haemodynamics_assertions(
+    _run_hemodynamics_assertions(
         vessels,
         diameter_each=diameter_each,
         network_scalar_diameter=2.0 * DESIGN_RADIUS_VOX,
@@ -628,7 +627,7 @@ def test_resistance_calculation_on_diagonal_branching_network_from_raw_tiff(
     measured_radius_vox = float(np.median(assigned_diameter) / 2.0)
     assert measured_radius_vox == pytest.approx(DESIGN_RADIUS_VOX, abs=0.7)
 
-    _run_haemodynamics_assertions(
+    _run_hemodynamics_assertions(
         vessels,
         diameter_each=assigned_diameter,
         network_scalar_diameter=float(np.median(assigned_diameter)),

@@ -205,8 +205,8 @@ def get_tif_spacing(filepath: str | Path) -> tuple[float, float, float]:
 def load_and_skeletonize_3d_tif(
     filepath: str,
     voxel_size: float = 1.0,
-    closing_radius: int = 3,
-    bridge_gap_size: int = 4,
+    closing_radius: int = 0,
+    bridge_gap_size: int = 0,
     downsample_factor: float = 1.0,
 ):
     """Load a TIFF stack, threshold, fill holes, close gaps, and skeletonize.
@@ -242,15 +242,18 @@ def load_and_skeletonize_3d_tif(
         skeleton = rescale_and_skeletonize_3d(bridged, downsample_factor=downsample_factor)
     else:
         skeleton = skeletonize(img_as_bool(bridged))
-    return image, skeleton.astype(bool)
+        
+    # Attempt to get voxel size for the 5-value return signature expected by some pipelines
+    z, y, x = get_tif_spacing(filepath)
+    return image, skeleton.astype(bool), x, y, z
 
 
 def load_and_skeletonize_3d_h5(
     filepath: str,
-    dataset_name: str,
+    dataset_name: str | None = None,
     voxel_size: float = 1.0,
-    closing_radius: int = 3,
-    bridge_gap_size: int = 4,
+    closing_radius: int = 0,
+    bridge_gap_size: int = 0,
     downsample_factor: float = 1.0,
 ):
     """Load an HDF5 dataset, simplify to 3D, then skeletonize.
@@ -268,8 +271,21 @@ def load_and_skeletonize_3d_h5(
         raise ImportError("h5py is required for HDF5 support. Install with: pip install h5py")
     logger.debug("Loading and skeletonizing H5...")
     with h5py.File(filepath, "r") as f:
+        available = list(f.keys())
+        if dataset_name is None:
+            path_stem = Path(filepath).stem
+            candidates = [path_stem, "data", "image", "volume"]
+            for candidate in candidates:
+                if candidate in f:
+                    dataset_name = candidate
+                    break
+            if dataset_name is None:
+                if len(available) == 1:
+                    dataset_name = available[0]
+                else:
+                    raise ValueError(f"Could not auto-detect dataset. Available: {available}")
+                    
         if dataset_name not in f:
-            available = list(f.keys())
             raise ValueError(
                 f"Dataset '{dataset_name}' not found. Available: {available}"
             )
@@ -289,7 +305,9 @@ def load_and_skeletonize_3d_h5(
         skeleton = rescale_and_skeletonize_3d(bridged, downsample_factor=downsample_factor)
     else:
         skeleton = skeletonize(img_as_bool(bridged))
-    return image, skeleton
+        
+    # Default to isotropic 1.0 for H5 as we don't have a robust extractor here yet
+    return image, skeleton.astype(bool), 1.0, 1.0, 1.0
 
 
 def simplify_to_3d(image: np.ndarray) -> np.ndarray:
