@@ -33,6 +33,11 @@ markers = [
     "plotting: marks tests that create figures",
     "integration: marks integration tests",
 ]
+filterwarnings = [
+    "ignore:.*stored as RGB with separate component planes.*:DeprecationWarning:tifffile",
+    "ignore:FigureCanvasAgg is non-interactive.*:UserWarning:matplotlib",
+    "ignore:This figure includes Axes that are not compatible with tight_layout.*:UserWarning:matplotlib",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

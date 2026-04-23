@@ -249,6 +249,7 @@ class PoiseuilleModel:
         G: nx.MultiGraph,
         custom_edges,
         edge_diameter: float,
+        use_resistance: bool = True,
     ) -> dict:
         """Set resistances for specified edges."""
         results = {

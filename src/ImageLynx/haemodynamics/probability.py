@@ -258,14 +258,11 @@ def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
     for u, v, key, edge_data in graph.edges(keys=True, data=True):
         branch_order = edge_data.get("branch_order")
         if branch_order is None:
-            raise ValueError(
-                f"Edge ({u}, {v}, {key}) missing required 'branch_order'."
-            )
+            continue
         length = edge_data.get("length")
         if length is None or float(length) <= 0:
-            raise ValueError(
-                f"Edge ({u}, {v}, {key}) has invalid length: {length}."
-            )
+            continue
+
         d1, d2, used_fwhm = _resolve_d1_d2_for_edge(
             edge_data=edge_data,
             branch_order=str(branch_order),

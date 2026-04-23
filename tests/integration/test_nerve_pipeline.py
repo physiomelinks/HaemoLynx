@@ -53,6 +53,8 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
     )
     assert cropped_tiff.exists()
     assert tuple(crop_info["cropped_shape"]) == (z - z_start, y - y_start, x)
+    cropped_z, cropped_y, cropped_x = tuple(crop_info["cropped_shape"])
+    y_band = max(1, int(0.2 * cropped_y))
 
     plot_dir = REPO_ROOT / "tests" / "plots" / "plots_nerve"
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -74,24 +76,26 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
         skeleton_max_bridge_distance=2,
         skeleton_component_connectivity=3,
         skeleton_min_component_percent=1.0,
-        set_input_node_method="edge_percent",
-        set_output_node_method="edge_percent",
-        edge_percent=30.0,
-        end_percent=20.0,
-        node_edge_axis=1,
+        starting_node_selection_method="volume",
+        output_node_selection_method="volume",
+        starting_node_volumes=[((0.0, 0.0, 0.0), (float(cropped_z - 1), float(y_band - 1), float(cropped_x - 1)))],
+        output_node_volumes=[((0.0, float(cropped_y - y_band), 0.0), (float(cropped_z - 1), float(cropped_y - 1), float(cropped_x - 1)))],
         starting_nodes=[],
         output_nodes=[],
         input_p_bc=1000.0,
         output_p_bc=500.0,
         min_stub_length=3.0,
+        final_render_mode="2d",
         visualize_results=False,
         visualize_vtk=False,
     )
 
     graph_path = output_dir / f"{cropped_tiff.stem}_graph.pkl"
     vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
+    final_graph_projection_path = plot_dir / "final_graph.png"
     assert graph_path.exists()
     assert vessels_flow_path.exists()
+    assert final_graph_projection_path.exists()
 
     with graph_path.open("rb") as fh:
         graph = pickle.load(fh)
