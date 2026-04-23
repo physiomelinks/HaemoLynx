@@ -1,3 +1,0 @@
-# Optional GPU acceleration for ImageLynx
-cupy-cuda12x
-cucim
