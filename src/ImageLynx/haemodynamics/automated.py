@@ -707,6 +707,269 @@ def build_graph_branch_label_volume(
     return labels, edge_key_to_label
 
 
+def _measure_single_edge_fwhm(
+    u, v, key, data,
+    raw, labels, voxel_size_xyz,
+    sample_spacing_along_edge_um,
+    transverse_profile_step_um,
+    transverse_half_extent_um,
+    G_degrees, # Pass degrees as a dict to avoid thread-safety issues with nx.Graph
+    diameter_guess_um=0.0,
+    background_label=0,
+    junction_label=-1,
+    min_total_extent_multiplier=3.0,
+    profile_baseline_mode="wings",
+    profile_baseline_wing_fraction=0.2,
+    constrain_fitted_baseline=False,
+    baseline_constraint_half_width_ptp=0.35,
+    allow_junction_crossing=False,
+    clip_profile_to_single_vessel=True,
+    clip_min_drop_fraction_of_center=0.35,
+    clip_re_rise_fraction_of_center=0.08,
+    branch_endpoint_exclusion_um=0.0,
+    junction_proximity_exclusion_um=0.0,
+    store_profile_debug=False,
+    enforce_same_edge_locality=True,
+    same_edge_arc_window_um=None,
+    same_edge_arc_window_multiplier=1.0,
+    same_edge_arc_window_min_um=1.0,
+    cap_half_extent_by_nonlocal_same_edge_distance=True,
+    nonlocal_same_edge_arc_separation_um=6.0,
+    nonlocal_same_edge_half_extent_factor=0.45,
+    reject_samples_with_center_offset=True,
+    max_fit_center_offset_um=1.5,
+    reject_samples_with_low_fit_r2=True,
+    min_fit_r2=0.85,
+):
+    """Inner logic for measuring FWHM of a single edge."""
+    vox = data.get("voxels")
+    assigned = data.get("graph_edge_label_id")
+    if not vox or len(vox) < 2 or assigned is None:
+        return (u, v, key), {"skipped": "no_voxels_or_label"}
+
+    poly = np.asarray(vox, dtype=float)
+    s, total_len = _arc_length_parameterize(poly)
+    if total_len <= 0:
+        return (u, v, key), {"skipped": "zero_length"}
+
+    n_samples = max(1, int(np.floor(total_len / float(sample_spacing_along_edge_um))) + 1)
+    targets = np.linspace(0.0, total_len, n_samples)
+    pts = _interpolate_centerline(poly, s, targets)
+
+    u_is_branch = int(G_degrees.get(u, 0)) > 1
+    v_is_branch = int(G_degrees.get(v, 0)) > 1
+    jn = int(junction_label)
+    bg = int(background_label)
+    mult = float(min_total_extent_multiplier)
+    branch_excl = float(branch_endpoint_exclusion_um)
+    junction_excl = float(junction_proximity_exclusion_um)
+
+    junction_s: list[float] = []
+    if junction_excl > 0.0 and jn != bg:
+        idx_all = physical_points_to_continuous_indices(poly, voxel_size_xyz)
+        for i, row in enumerate(idx_all):
+            iz, iy, ix = _nearest_integer_index(row, labels.shape)
+            if int(labels[iz, iy, ix]) == jn:
+                junction_s.append(float(s[i]))
+
+    same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None
+    dense_poly: np.ndarray | None = None
+    dense_s: np.ndarray | None = None
+    if enforce_same_edge_locality:
+        same_edge_s_lookup = {}
+        ds_lookup = max(0.1, 0.5 * float(np.min(np.asarray(voxel_size_xyz, dtype=float))))
+        dense_pts_list: list[np.ndarray] = []
+        dense_s_list: list[float] = []
+        for i in range(len(poly) - 1):
+            p0 = poly[i]
+            p1 = poly[i + 1]
+            seg_len = float(np.linalg.norm(p1 - p0))
+            if seg_len <= 1e-12:
+                continue
+            n_sub = max(1, int(np.ceil(seg_len / ds_lookup)))
+            for j in range(n_sub + 1):
+                t = float(j) / float(n_sub)
+                p = (1.0 - t) * p0 + t * p1
+                s_here = (1.0 - t) * float(s[i]) + t * float(s[i + 1])
+                dense_pts_list.append(p)
+                dense_s_list.append(s_here)
+                row = physical_points_to_continuous_indices(p, voxel_size_xyz)[0]
+                key_idx = _nearest_integer_index(row, labels.shape)
+                prev = same_edge_s_lookup.get(key_idx)
+                if prev is None or abs(prev - s_here) > 0.5 * ds_lookup:
+                    same_edge_s_lookup[key_idx] = s_here
+        if dense_pts_list:
+            dense_poly = np.asarray(dense_pts_list, dtype=float)
+            dense_s = np.asarray(dense_s_list, dtype=float)
+
+    diameters: list[float] = []
+    profile_lines_phys: list[np.ndarray] = []
+    profile_anchors_phys: list[np.ndarray] = []
+
+    for s0, center in zip(targets, pts):
+        if u_is_branch and float(s0) < branch_excl:
+            continue
+        if v_is_branch and float(total_len - s0) < branch_excl:
+            continue
+        if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
+            continue
+
+        tangent = _tangent_at(poly, s, float(s0))
+        n_hat = _transverse_unit_in_physical_yx_plane(tangent)
+        if same_edge_arc_window_um is None:
+            local_arc_window = max(
+                float(same_edge_arc_window_min_um),
+                float(same_edge_arc_window_multiplier)
+                * max(float(sample_spacing_along_edge_um), float(transverse_profile_step_um)),
+            )
+        else:
+            local_arc_window = float(same_edge_arc_window_um)
+
+        half_extent = max(float(transverse_half_extent_um), 0.5 * mult * float(diameter_guess_um))
+
+        if cap_half_extent_by_nonlocal_same_edge_distance and len(poly) > 2:
+            arc_sep = max(0.0, float(nonlocal_same_edge_arc_separation_um))
+            ref_pts = dense_poly if dense_poly is not None else poly
+            ref_s = dense_s if dense_s is not None else s
+            nonlocal_mask = np.abs(ref_s - float(s0)) >= arc_sep
+            if np.any(nonlocal_mask):
+                center_arr = np.asarray(center, dtype=float)
+                d_nonlocal_3d = float(np.min(np.linalg.norm(ref_pts[nonlocal_mask] - center_arr, axis=1)))
+                d_nonlocal_yx = float(np.min(np.linalg.norm(ref_pts[nonlocal_mask][:, 1:3] - center_arr[1:3], axis=1)))
+                d_nonlocal = min(d_nonlocal_3d, d_nonlocal_yx)
+                if np.isfinite(d_nonlocal) and d_nonlocal > 0:
+                    half_extent = min(half_extent, float(nonlocal_same_edge_half_extent_factor) * d_nonlocal)
+
+        pos, prof = _sample_transverse_profile(
+            raw, labels, center, tangent, int(assigned), half_extent,
+            float(transverse_profile_step_um), voxel_size_xyz,
+            background_label=bg, junction_label=jn,
+            allow_junction_crossing=bool(allow_junction_crossing),
+            same_edge_s_lookup=same_edge_s_lookup, same_edge_s0_um=float(s0),
+            same_edge_arc_window_um=local_arc_window,
+        )
+        pos_fit, prof_fit = (
+            _clip_profile_to_central_lobe(
+                pos, prof,
+                min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+            ) if clip_profile_to_single_vessel else (pos, prof)
+        )
+        d0, x0_0, r2_0 = _fwhm_gaussian_fit_with_diagnostics(
+            pos_fit, prof_fit,
+            profile_baseline_mode=profile_baseline_mode,
+            profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+            constrain_fitted_baseline=constrain_fitted_baseline,
+            baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+        )
+
+        if d0 is not None:
+            if reject_samples_with_center_offset and x0_0 is not None and abs(float(x0_0)) > float(max_fit_center_offset_um):
+                d0 = None
+            if reject_samples_with_low_fit_r2 and r2_0 is not None and float(r2_0) < float(min_fit_r2):
+                d0 = None
+
+        accepted_offsets: np.ndarray | None = None
+        if d0 is not None and d0 > 0:
+            half_extent = max(half_extent, 0.5 * mult * d0)
+            if same_edge_arc_window_um is None:
+                local_arc_window = max(float(same_edge_arc_window_min_um), float(same_edge_arc_window_multiplier) * float(d0))
+            pos, prof = _sample_transverse_profile(
+                raw, labels, center, tangent, int(assigned), half_extent,
+                float(transverse_profile_step_um), voxel_size_xyz,
+                background_label=bg, junction_label=jn,
+                allow_junction_crossing=bool(allow_junction_crossing),
+                same_edge_s_lookup=same_edge_s_lookup, same_edge_s0_um=float(s0),
+                same_edge_arc_window_um=local_arc_window,
+            )
+            pos_fit, prof_fit = (
+                _clip_profile_to_central_lobe(
+                    pos, prof,
+                    min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                    re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                ) if clip_profile_to_single_vessel else (pos, prof)
+            )
+            d1, x0_1, r2_1 = _fwhm_gaussian_fit_with_diagnostics(
+                pos_fit, prof_fit,
+                profile_baseline_mode=profile_baseline_mode,
+                profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+                constrain_fitted_baseline=constrain_fitted_baseline,
+                baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+            )
+            if d1 is not None:
+                if reject_samples_with_center_offset and x0_1 is not None and abs(float(x0_1)) > float(max_fit_center_offset_um):
+                    d1 = None
+                if reject_samples_with_low_fit_r2 and r2_1 is not None and float(r2_1) < float(min_fit_r2):
+                    d1 = None
+            if d1 is not None and d1 > 0:
+                desired_half = 0.5 * mult * float(d1)
+                if desired_half > (half_extent + float(transverse_profile_step_um)):
+                    half_extent = desired_half
+                    if same_edge_arc_window_um is None:
+                        local_arc_window = max(float(same_edge_arc_window_min_um), float(same_edge_arc_window_multiplier) * float(d1))
+                    pos, prof = _sample_transverse_profile(
+                        raw, labels, center, tangent, int(assigned), half_extent,
+                        float(transverse_profile_step_um), voxel_size_xyz,
+                        background_label=bg, junction_label=jn,
+                        allow_junction_crossing=bool(allow_junction_crossing),
+                        same_edge_s_lookup=same_edge_s_lookup, same_edge_s0_um=float(s0),
+                        same_edge_arc_window_um=local_arc_window,
+                    )
+                    pos_fit, prof_fit = (
+                        _clip_profile_to_central_lobe(
+                            pos, prof,
+                            min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                            re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                        ) if clip_profile_to_single_vessel else (pos, prof)
+                    )
+                    d2, x0_2, r2_2 = _fwhm_gaussian_fit_with_diagnostics(
+                        pos_fit, prof_fit,
+                        profile_baseline_mode=profile_baseline_mode,
+                        profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+                        constrain_fitted_baseline=constrain_fitted_baseline,
+                        baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+                    )
+                    if d2 is not None:
+                        if reject_samples_with_center_offset and x0_2 is not None and abs(float(x0_2)) > float(max_fit_center_offset_um):
+                            d2 = None
+                        if reject_samples_with_low_fit_r2 and r2_2 is not None and float(r2_2) < float(min_fit_r2):
+                            d2 = None
+                    if d2 is not None:
+                        diameters.append(d2)
+                        accepted_offsets = pos
+                else:
+                    diameters.append(d1)
+                    accepted_offsets = pos
+            elif d1 is not None:
+                diameters.append(d1)
+                accepted_offsets = pos
+        elif d0 is not None:
+            diameters.append(d0)
+            accepted_offsets = pos
+
+        if store_profile_debug and accepted_offsets is not None and accepted_offsets.size > 0:
+            c = np.asarray(center, dtype=float)
+            profile_lines_phys.append(np.stack([c + float(o) * n_hat for o in accepted_offsets], axis=0))
+            profile_anchors_phys.append(c.copy())
+
+    if not diameters:
+        reason = "fwhm_failed"
+        if branch_excl > 0 and (u_is_branch or v_is_branch):
+            reason = "fwhm_failed_or_excluded_near_branch"
+        return (u, v, key), {"skipped": reason}
+
+    d_mean = float(np.mean(diameters))
+    res = {
+        "fwhm_diameter_um": d_mean,
+        "fwhm_diameter_samples_um": diameters,
+    }
+    if store_profile_debug:
+        res["fwhm_profile_lines_phys"] = profile_lines_phys
+        res["fwhm_profile_anchors_phys"] = profile_anchors_phys
+    
+    return (u, v, key), res
+
+
 def measure_edge_diameters_fwhm_from_raw_tiff(
     G: nx.MultiGraph,
     *,
@@ -858,297 +1121,70 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     junction_excl = max(0.0, float(junction_proximity_exclusion_um))
     d_guess0 = 0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
 
-    for u, v, key, data in G.edges(keys=True, data=True):
-        vox = data.get("voxels")
-        assigned = data.get("graph_edge_label_id")
-        if not vox or len(vox) < 2 or assigned is None:
-            summary["edges_skipped"].append((u, v, key, "no_voxels_or_label"))
-            continue
+    from joblib import Parallel, delayed
 
-        poly = np.asarray(vox, dtype=float)
-        s, total_len = _arc_length_parameterize(poly)
-        if total_len <= 0:
-            summary["edges_skipped"].append((u, v, key, "zero_length"))
-            continue
+    sorted_edges = sorted(G.edges(keys=True, data=True), key=lambda t: (t[0], t[1], t[2]))
+    G_degrees = dict(G.degree())
 
-        if sample_spacing_along_edge_um <= 0:
-            raise ValueError("sample_spacing_along_edge_um must be positive.")
+    print(f"Parallelizing FWHM diameter measurement for {len(sorted_edges)} edges using all CPU cores...")
 
-        n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
-        targets = np.linspace(0.0, total_len, n_samples)
-        pts = _interpolate_centerline(poly, s, targets)
-        # Exclude profiles too close to bifurcation endpoints, where independent
-        # branch diameter is often not well-defined.
-        u_is_branch = int(G.degree(u)) > 1
-        v_is_branch = int(G.degree(v)) > 1
-        # Auto-detect edge-local meeting points from junction voxels and exclude
-        # nearby arc-length region.
-        junction_s: list[float] = []
-        if junction_excl > 0.0 and jn != int(background_label):
-            idx_all = physical_points_to_continuous_indices(poly, voxel_size_xyz)
-            for i, row in enumerate(idx_all):
-                iz, iy, ix = _nearest_integer_index(row, labels.shape)
-                if int(labels[iz, iy, ix]) == jn:
-                    junction_s.append(float(s[i]))
-        same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None
-        dense_poly: np.ndarray | None = None
-        dense_s: np.ndarray | None = None
-        if enforce_same_edge_locality:
-            same_edge_s_lookup = {}
-            # Dense arc-length lookup so curved/zig-zag edges are covered between sparse
-            # control points; otherwise non-local same-edge re-entry can go undetected.
-            ds_lookup = max(0.1, 0.5 * float(np.min(np.asarray(voxel_size_xyz, dtype=float))))
-            dense_pts_list: list[np.ndarray] = []
-            dense_s_list: list[float] = []
-            for i in range(len(poly) - 1):
-                p0 = poly[i]
-                p1 = poly[i + 1]
-                seg_len = float(np.linalg.norm(p1 - p0))
-                if seg_len <= 1e-12:
-                    continue
-                n_sub = max(1, int(np.ceil(seg_len / ds_lookup)))
-                for j in range(n_sub + 1):
-                    t = float(j) / float(n_sub)
-                    p = (1.0 - t) * p0 + t * p1
-                    s_here = (1.0 - t) * float(s[i]) + t * float(s[i + 1])
-                    dense_pts_list.append(p)
-                    dense_s_list.append(s_here)
-                    row = physical_points_to_continuous_indices(p, voxel_size_xyz)[0]
-                    key_idx = _nearest_integer_index(row, labels.shape)
-                    prev = same_edge_s_lookup.get(key_idx)
-                    # Keep arc-length closest to current segment midpoint mapping.
-                    if prev is None or abs(prev - s_here) > 0.5 * ds_lookup:
-                        same_edge_s_lookup[key_idx] = s_here
-            if dense_pts_list:
-                dense_poly = np.asarray(dense_pts_list, dtype=float)
-                dense_s = np.asarray(dense_s_list, dtype=float)
-
-        diameters: list[float] = []
-        profile_lines_phys: list[np.ndarray] = []
-        profile_anchors_phys: list[np.ndarray] = []
-        for s0, center in zip(targets, pts):
-            if u_is_branch and float(s0) < branch_excl:
-                continue
-            if v_is_branch and float(total_len - s0) < branch_excl:
-                continue
-            if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
-                continue
-            tangent = _tangent_at(poly, s, float(s0))
-            n_hat = _transverse_unit_in_physical_yx_plane(tangent)
-            if same_edge_arc_window_um is None:
-                local_arc_window = max(
-                    float(same_edge_arc_window_min_um),
-                    float(same_edge_arc_window_multiplier)
-                    * max(float(sample_spacing_along_edge_um), float(transverse_profile_step_um)),
-                )
-            else:
-                local_arc_window = float(same_edge_arc_window_um)
-
-            half_extent = max(
-                float(transverse_half_extent_um),
-                0.5 * mult * d_guess0,
-            )
-            if cap_half_extent_by_nonlocal_same_edge_distance and len(poly) > 2:
-                arc_sep = max(0.0, float(nonlocal_same_edge_arc_separation_um))
-                ref_pts = dense_poly if dense_poly is not None else poly
-                ref_s = dense_s if dense_s is not None else s
-                nonlocal_mask = np.abs(ref_s - float(s0)) >= arc_sep
-                if np.any(nonlocal_mask):
-                    center_arr = np.asarray(center, dtype=float)
-                    # Conservative cap using the closer of 3D and in-plane (y-x) nonlocal distances.
-                    d_nonlocal_3d = float(
-                        np.min(np.linalg.norm(ref_pts[nonlocal_mask] - center_arr, axis=1))
-                    )
-                    d_nonlocal_yx = float(
-                        np.min(np.linalg.norm(ref_pts[nonlocal_mask][:, 1:3] - center_arr[1:3], axis=1))
-                    )
-                    d_nonlocal = min(d_nonlocal_3d, d_nonlocal_yx)
-                    if np.isfinite(d_nonlocal) and d_nonlocal > 0:
-                        half_extent = min(
-                            half_extent,
-                            float(nonlocal_same_edge_half_extent_factor) * d_nonlocal,
-                        )
-            pos, prof = _sample_transverse_profile(
-                raw,
-                labels,
-                center,
-                tangent,
-                int(assigned),
-                half_extent,
-                float(transverse_profile_step_um),
-                voxel_size_xyz,
-                background_label=int(background_label),
-                junction_label=jn,
-                allow_junction_crossing=bool(allow_junction_crossing),
-                same_edge_s_lookup=same_edge_s_lookup,
-                same_edge_s0_um=float(s0),
-                same_edge_arc_window_um=local_arc_window,
-            )
-            pos_fit, prof_fit = (
-                _clip_profile_to_central_lobe(
-                    pos,
-                    prof,
-                    min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                    re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-                )
-                if clip_profile_to_single_vessel
-                else (pos, prof)
-            )
-            d0, x0_0, r2_0 = _fwhm_gaussian_fit_with_diagnostics(
-                pos_fit,
-                prof_fit,
-                profile_baseline_mode=profile_baseline_mode,
-                profile_baseline_wing_fraction=profile_baseline_wing_fraction,
-                constrain_fitted_baseline=constrain_fitted_baseline,
-                baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
-            )
-            if d0 is not None:
-                if reject_samples_with_center_offset and x0_0 is not None and abs(float(x0_0)) > float(max_fit_center_offset_um):
-                    d0 = None
-                if reject_samples_with_low_fit_r2 and r2_0 is not None and float(r2_0) < float(min_fit_r2):
-                    d0 = None
-            accepted_offsets: np.ndarray | None = None
-            if d0 is not None and d0 > 0:
-                # Enforce at least (min_total_extent_multiplier × estimated width)
-                # when geometry allows (other-edge/junction/volume bounds still truncate).
-                half_extent = max(
-                    half_extent,
-                    0.5 * mult * d0,
-                )
-                if same_edge_arc_window_um is None:
-                    local_arc_window = max(
-                        float(same_edge_arc_window_min_um),
-                        float(same_edge_arc_window_multiplier) * float(d0),
-                    )
-                pos, prof = _sample_transverse_profile(
-                    raw,
-                    labels,
-                    center,
-                    tangent,
-                    int(assigned),
-                    half_extent,
-                    float(transverse_profile_step_um),
-                    voxel_size_xyz,
-                    background_label=int(background_label),
-                    junction_label=jn,
-                    allow_junction_crossing=bool(allow_junction_crossing),
-                    same_edge_s_lookup=same_edge_s_lookup,
-                    same_edge_s0_um=float(s0),
-                    same_edge_arc_window_um=local_arc_window,
-                )
-                pos_fit, prof_fit = (
-                    _clip_profile_to_central_lobe(
-                        pos,
-                        prof,
-                        min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                        re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-                    )
-                    if clip_profile_to_single_vessel
-                    else (pos, prof)
-                )
-                d1, x0_1, r2_1 = _fwhm_gaussian_fit_with_diagnostics(
-                    pos_fit,
-                    prof_fit,
-                    profile_baseline_mode=profile_baseline_mode,
-                    profile_baseline_wing_fraction=profile_baseline_wing_fraction,
-                    constrain_fitted_baseline=constrain_fitted_baseline,
-                    baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
-                )
-                if d1 is not None:
-                    if reject_samples_with_center_offset and x0_1 is not None and abs(float(x0_1)) > float(max_fit_center_offset_um):
-                        d1 = None
-                    if reject_samples_with_low_fit_r2 and r2_1 is not None and float(r2_1) < float(min_fit_r2):
-                        d1 = None
-                if d1 is not None and d1 > 0:
-                    desired_half = 0.5 * mult * float(d1)
-                    # One extra pass if first estimate was low and we can still extend.
-                    if desired_half > (half_extent + float(transverse_profile_step_um)):
-                        half_extent = desired_half
-                        if same_edge_arc_window_um is None:
-                            local_arc_window = max(
-                                float(same_edge_arc_window_min_um),
-                                float(same_edge_arc_window_multiplier) * float(d1),
-                            )
-                        pos, prof = _sample_transverse_profile(
-                            raw,
-                            labels,
-                            center,
-                            tangent,
-                            int(assigned),
-                            half_extent,
-                            float(transverse_profile_step_um),
-                            voxel_size_xyz,
-                            background_label=int(background_label),
-                            junction_label=jn,
-                            allow_junction_crossing=bool(allow_junction_crossing),
-                            same_edge_s_lookup=same_edge_s_lookup,
-                            same_edge_s0_um=float(s0),
-                            same_edge_arc_window_um=local_arc_window,
-                        )
-                        pos_fit, prof_fit = (
-                            _clip_profile_to_central_lobe(
-                                pos,
-                                prof,
-                                min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                                re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-                            )
-                            if clip_profile_to_single_vessel
-                            else (pos, prof)
-                        )
-                        d2, x0_2, r2_2 = _fwhm_gaussian_fit_with_diagnostics(
-                            pos_fit,
-                            prof_fit,
-                            profile_baseline_mode=profile_baseline_mode,
-                            profile_baseline_wing_fraction=profile_baseline_wing_fraction,
-                            constrain_fitted_baseline=constrain_fitted_baseline,
-                            baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
-                        )
-                        if d2 is not None:
-                            if reject_samples_with_center_offset and x0_2 is not None and abs(float(x0_2)) > float(max_fit_center_offset_um):
-                                d2 = None
-                            if reject_samples_with_low_fit_r2 and r2_2 is not None and float(r2_2) < float(min_fit_r2):
-                                d2 = None
-                        if d2 is not None:
-                            diameters.append(d2)
-                            accepted_offsets = pos
-                    else:
-                        diameters.append(d1)
-                        accepted_offsets = pos
-                elif d1 is not None:
-                    diameters.append(d1)
-                    accepted_offsets = pos
-            elif d0 is not None:
-                diameters.append(d0)
-                accepted_offsets = pos
-
-            if store_profile_debug and accepted_offsets is not None and accepted_offsets.size > 0:
-                c = np.asarray(center, dtype=float)
-                profile_lines_phys.append(
-                    np.stack([c + float(o) * n_hat for o in accepted_offsets], axis=0)
-                )
-                profile_anchors_phys.append(c.copy())
-
-        if not diameters:
-            reason = "fwhm_failed"
-            if branch_excl > 0 and (u_is_branch or v_is_branch):
-                reason = "fwhm_failed_or_excluded_near_branch"
-            summary["edges_skipped"].append((u, v, key, reason))
-            continue
-
-        d_mean = float(np.mean(diameters))
-        data["fwhm_diameter_um"] = d_mean
-        data["fwhm_diameter_samples_um"] = diameters
-        if store_profile_debug:
-            data["fwhm_profile_lines_phys"] = profile_lines_phys
-            data["fwhm_profile_anchors_phys"] = profile_anchors_phys
-        summary["edges_measured"] += 1
-        summary["per_edge"].append(
-            {
-                "edge": (u, v, key),
-                "graph_edge_label_id": int(assigned),
-                "fwhm_diameter_um": d_mean,
-                "n_samples": len(diameters),
-            }
+    results_list = Parallel(n_jobs=-1)(
+        delayed(_measure_single_edge_fwhm)(
+            u, v, key, data,
+            raw, labels, voxel_size_xyz,
+            sample_spacing_along_edge_um,
+            transverse_profile_step_um,
+            transverse_half_extent_um,
+            G_degrees,
+            diameter_guess_um=d_guess0,
+            background_label=background_label,
+            junction_label=junction_label,
+            min_total_extent_multiplier=min_total_extent_multiplier,
+            profile_baseline_mode=profile_baseline_mode,
+            profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+            constrain_fitted_baseline=constrain_fitted_baseline,
+            baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+            allow_junction_crossing=allow_junction_crossing,
+            clip_profile_to_single_vessel=clip_profile_to_single_vessel,
+            clip_min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+            clip_re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+            branch_endpoint_exclusion_um=branch_endpoint_exclusion_um,
+            junction_proximity_exclusion_um=junction_proximity_exclusion_um,
+            store_profile_debug=store_profile_debug,
+            enforce_same_edge_locality=enforce_same_edge_locality,
+            same_edge_arc_window_um=same_edge_arc_window_um,
+            same_edge_arc_window_multiplier=same_edge_arc_window_multiplier,
+            same_edge_arc_window_min_um=same_edge_arc_window_min_um,
+            cap_half_extent_by_nonlocal_same_edge_distance=cap_half_extent_by_nonlocal_same_edge_distance,
+            nonlocal_same_edge_arc_separation_um=nonlocal_same_edge_arc_separation_um,
+            nonlocal_same_edge_half_extent_factor=nonlocal_same_edge_half_extent_factor,
+            reject_samples_with_center_offset=reject_samples_with_center_offset,
+            max_fit_center_offset_um=max_fit_center_offset_um,
+            reject_samples_with_low_fit_r2=reject_samples_with_low_fit_r2,
+            min_fit_r2=min_fit_r2,
         )
+        for u, v, key, data in sorted_edges
+    )
+
+    for (u, v, key), res in results_list:
+        if "skipped" in res:
+            summary["edges_skipped"].append((u, v, key, res["skipped"]))
+            continue
+
+        d_mean = res["fwhm_diameter_um"]
+        data = G[u][v][key]
+        data["fwhm_diameter_um"] = d_mean
+        data["fwhm_diameter_samples_um"] = res["fwhm_diameter_samples_um"]
+        if store_profile_debug:
+            data["fwhm_profile_lines_phys"] = res["fwhm_profile_lines_phys"]
+            data["fwhm_profile_anchors_phys"] = res["fwhm_profile_anchors_phys"]
+
+        summary["edges_measured"] += 1
+        summary["per_edge"].append({
+            "edge": (u, v, key),
+            "graph_edge_label_id": data.get("graph_edge_label_id"),
+            "fwhm_diameter_um": d_mean,
+            "n_samples": len(res["fwhm_diameter_samples_um"]),
+        })
 
     return summary

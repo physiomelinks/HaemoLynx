@@ -19,6 +19,30 @@ def _physical_path_length(points) -> float:
     return float(calculate_path_length(points))
 
 
+def _find_reconnection_candidates_batch(
+    src_batch, G_node_attrs, G_edge_presence,
+    target_nodes, target_coords, tree, reconnect_threshold
+):
+    """Find reconnection pairs for a batch of source nodes using a KD-tree."""
+    candidates = []
+    for src in src_batch:
+        if src not in G_node_attrs:
+            continue
+        src_pos = np.array(G_node_attrs[src]["pos"], dtype=float)
+        idxs = tree.query_ball_point(src_pos, reconnect_threshold)
+        for idx in idxs:
+            tgt = target_nodes[idx]
+            if tgt == src:
+                continue
+            # Note: G_edge_presence is a set of sorted node pairs for fast check
+            if tuple(sorted([src, tgt])) in G_edge_presence:
+                continue
+            dist = float(np.linalg.norm(src_pos - target_coords[idx]))
+            if dist <= reconnect_threshold:
+                candidates.append((dist, src, tgt))
+    return candidates
+
+
 def optimise_graph_topology_fixed(
     G,
     voxel_loops,

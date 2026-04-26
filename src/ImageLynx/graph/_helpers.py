@@ -743,6 +743,58 @@ def _polyline_within_skeleton_distance(
     return bool(np.all(np.asarray(dists, dtype=float) <= float(max_distance)))
 
 
+def _smooth_single_edge_centerline(
+    id_tuple, data, 
+    method, bspline_smoothness, chaikin_iterations,
+    skeleton_tree, max_distance_phys
+):
+    """Inner logic for smoothing a single graph edge centerline."""
+    voxels = data.get("voxels")
+    if not voxels or len(voxels) < 3:
+        return id_tuple, {"status": "skipped"}
+        
+    original = np.asarray(voxels, dtype=float)
+    accepted = None
+    was_relaxed = False
+
+    def _make_candidate(original_points, iterations):
+        if method == "chaikin":
+            return chaikin_smooth_polyline(original_points, iterations=iterations)
+        return bspline_smooth_polyline(original_points, smoothness=bspline_smoothness)
+
+    iteration_candidates = (
+        range(int(chaikin_iterations), -1, -1)
+        if method == "chaikin"
+        else [0]
+    )
+    for iters in iteration_candidates:
+        candidate = _make_candidate(original, iters)
+        if _polyline_within_skeleton_distance(candidate, skeleton_tree, max_distance_phys):
+            accepted = candidate
+            break
+
+        # If still outside, relax smoothing strength (continuous blend).
+        for alpha in (0.8, 0.6, 0.4, 0.2, 0.1, 0.05):
+            relaxed = _blend_polyline(original, candidate, alpha)
+            if _polyline_within_skeleton_distance(relaxed, skeleton_tree, max_distance_phys):
+                accepted = relaxed
+                was_relaxed = True
+                break
+        if accepted is not None:
+            break
+
+    if accepted is not None and not np.allclose(accepted, original, atol=1e-8):
+        new_len = calculate_path_length(accepted.tolist())
+        return id_tuple, {
+            "status": "smoothed",
+            "voxels": accepted.tolist(),
+            "length": new_len,
+            "was_relaxed": was_relaxed
+        }
+    else:
+        return id_tuple, {"status": "fallback"}
+
+
 def smooth_graph_edge_centerlines_continuous(
     G: Union[nx.Graph, nx.MultiGraph],
     skeleton_data: Any,
@@ -793,93 +845,51 @@ def smooth_graph_edge_centerlines_continuous(
     skeleton_tree, _ = _skeleton_kdtree_physical(skeleton_array, voxel_size)
     max_distance_phys = float(max_distance_vox) * float(np.min(np.asarray(voxel_size, dtype=float)))
 
+    from joblib import Parallel, delayed
+
+    # Prepare iterator based on graph type
+    is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    if is_multi:
+        edge_iter = list(G.edges(keys=True, data=True))
+    else:
+        edge_iter = list(G.edges(data=True))
+
+    print(f"Parallelizing centerline smoothing for {len(edge_iter)} edges using all CPU cores...")
+
+    results = Parallel(n_jobs=-1)(
+        delayed(_smooth_single_edge_centerline)(
+            (edge[0], edge[1], edge[2]) if is_multi else (edge[0], edge[1], None),
+            edge[-1], # data dict
+            method, bspline_smoothness, chaikin_iterations,
+            skeleton_tree, max_distance_phys
+        )
+        for edge in edge_iter
+    )
+
     smoothed_edges = 0
     relaxed_edges = 0
     fallback_edges = 0
     skipped_edges = 0
 
-    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
-        edge_iter = list(G.edges(keys=True, data=True))
-        for u, v, key, data in edge_iter:
-            voxels = data.get("voxels")
-            if not voxels or len(voxels) < 3:
-                skipped_edges += 1
-                continue
-            original = np.asarray(voxels, dtype=float)
-            accepted = None
-            was_relaxed = False
-
-            iteration_candidates = (
-                range(int(chaikin_iterations), -1, -1)
-                if method == "chaikin"
-                else [0]
-            )
-            for iters in iteration_candidates:
-                candidate = _make_candidate(original, iters)
-                if _polyline_within_skeleton_distance(candidate, skeleton_tree, max_distance_phys):
-                    accepted = candidate
-                    break
-
-                # If still outside, relax smoothing strength (continuous blend).
-                for alpha in (0.8, 0.6, 0.4, 0.2, 0.1, 0.05):
-                    relaxed = _blend_polyline(original, candidate, alpha)
-                    if _polyline_within_skeleton_distance(relaxed, skeleton_tree, max_distance_phys):
-                        accepted = relaxed
-                        was_relaxed = True
-                        break
-                if accepted is not None:
-                    break
-
-            if accepted is not None and not np.allclose(accepted, original, atol=1e-8):
-                new_len = calculate_path_length(accepted.tolist())
-                data["voxels"] = accepted.tolist()
-                data["length"] = new_len
-                data["weight"] = max(new_len, 1e-6)
-                smoothed_edges += 1
-                if was_relaxed:
-                    relaxed_edges += 1
-            else:
-                fallback_edges += 1
-    else:
-        edge_iter = list(G.edges(data=True))
-        for u, v, data in edge_iter:
-            voxels = data.get("voxels")
-            if not voxels or len(voxels) < 3:
-                skipped_edges += 1
-                continue
-            original = np.asarray(voxels, dtype=float)
-            accepted = None
-            was_relaxed = False
-
-            iteration_candidates = (
-                range(int(chaikin_iterations), -1, -1)
-                if method == "chaikin"
-                else [0]
-            )
-            for iters in iteration_candidates:
-                candidate = _make_candidate(original, iters)
-                if _polyline_within_skeleton_distance(candidate, skeleton_tree, max_distance_phys):
-                    accepted = candidate
-                    break
-                for alpha in (0.8, 0.6, 0.4, 0.2, 0.1, 0.05):
-                    relaxed = _blend_polyline(original, candidate, alpha)
-                    if _polyline_within_skeleton_distance(relaxed, skeleton_tree, max_distance_phys):
-                        accepted = relaxed
-                        was_relaxed = True
-                        break
-                if accepted is not None:
-                    break
-
-            if accepted is not None and not np.allclose(accepted, original, atol=1e-8):
-                new_len = calculate_path_length(accepted.tolist())
-                data["voxels"] = accepted.tolist()
-                data["length"] = new_len
-                data["weight"] = max(new_len, 1e-6)
-                smoothed_edges += 1
-                if was_relaxed:
-                    relaxed_edges += 1
-            else:
-                fallback_edges += 1
+    for id_tuple, res in results:
+        status = res["status"]
+        if status == "skipped":
+            skipped_edges += 1
+            continue
+        if status == "fallback":
+            fallback_edges += 1
+            continue
+        
+        # Apply the smoothed data to the graph
+        u, v, key = id_tuple
+        data = G[u][v][key] if is_multi else G[u][v]
+        data["voxels"] = res["voxels"]
+        data["length"] = res["length"]
+        data["weight"] = max(res["length"], 1e-6)
+        
+        smoothed_edges += 1
+        if res.get("was_relaxed"):
+            relaxed_edges += 1
 
     if debug:
         print(
