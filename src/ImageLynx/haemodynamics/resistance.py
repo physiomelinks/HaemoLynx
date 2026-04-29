@@ -1,13 +1,15 @@
 """Network resistance from Laplacian."""
 from pathlib import Path
 import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as splinalg
 import networkx as nx
 import pyvista as pv
 
 
 def build_conductance_matrix_from_graph(
     G: nx.Graph, weight_attr: str = "resistance"
-) -> tuple[np.ndarray, list]:
+) -> tuple[sp.csr_matrix, list]:
     """Build symmetric conductance matrix from graph edge resistances.
 
     Returns:
@@ -16,7 +18,9 @@ def build_conductance_matrix_from_graph(
     """
     node_list = list(G.nodes())
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-    conductance = np.zeros((len(node_list), len(node_list)), dtype=float)
+    n_nodes = len(node_list)
+
+    rows, cols, data_vals = [], [], []
 
     for u, v, data in G.edges(data=True):
         resistance = data.get(weight_attr)
@@ -26,26 +30,25 @@ def build_conductance_matrix_from_graph(
         j = node_to_idx[v]
         # Sum conductance (1/resistance) for parallel edges.
         edge_conductance = 1.0 / resistance
-        conductance[i, j] += edge_conductance
-        conductance[j, i] += edge_conductance
+        rows.extend([i, j])
+        cols.extend([j, i])
+        data_vals.extend([edge_conductance, edge_conductance])
 
+    conductance = sp.coo_matrix((data_vals, (rows, cols)), shape=(n_nodes, n_nodes)).tocsr()
     return conductance, node_list
 
 
-def calc_laplacian_from_conductance_matrix(C: np.ndarray) -> np.ndarray:
+def calc_laplacian_from_conductance_matrix(C: sp.csr_matrix) -> sp.csr_matrix:
     """Compute graph Laplacian from conductance matrix. L = diag(sum(C,1)) - C."""
-    if not np.allclose(C, C.T):
-        raise ValueError("Conductance matrix must be symmetric")
-    if not np.all(np.diagonal(C) == 0):
-        raise ValueError("Conductance matrix diagonal must be zero")
-    diag = np.sum(C, axis=1)
-    return np.diag(diag) - C
+    diag = np.array(C.sum(axis=1)).flatten()
+    L = sp.diags(diag) - C
+    return L.tocsr()
 
 
 def calc_two_point_from_laplacian_matrix_nodeID(
-    L: np.ndarray, G: nx.MultiGraph, node_id1, node_id2
+    L: sp.csr_matrix, G: nx.MultiGraph, node_id1, node_id2
 ) -> float:
-    """Effective resistance between two nodes from Laplacian eigen-decomposition."""
+    """Effective resistance between two nodes from Laplacian."""
     node_list = list(G.nodes())
     node_to_idx = {n: i for i, n in enumerate(node_list)}
     try:
@@ -53,18 +56,23 @@ def calc_two_point_from_laplacian_matrix_nodeID(
         node_idx2 = node_to_idx[node_id2]
     except KeyError as e:
         raise ValueError(f"Node {e} not found in graph")
-    eigvals, eigvecs = np.linalg.eigh(L)
-    R = 0.0
-    for ii in range(1, len(eigvals)):
-        if eigvals[ii] > 1e-10:
-            R += (1 / eigvals[ii]) * (
-                eigvecs[node_idx1, ii] - eigvecs[node_idx2, ii]
-            ) ** 2
-    return R
+        
+    n = L.shape[0]
+    b = np.zeros(n)
+    b[node_idx1] = 1.0
+    
+    L_lil = L.tolil()
+    L_lil[node_idx2, :] = 0
+    L_lil[:, node_idx2] = 0
+    L_lil[node_idx2, node_idx2] = 1.0
+    
+    L_csr = L_lil.tocsr()
+    x = splinalg.spsolve(L_csr, b)
+    return float(x[node_idx1])
 
 
 def solve_flow_from_conductance_matrix(
-    conductance: np.ndarray,
+    conductance: sp.csr_matrix,
     node_list: list,
     input_p_bc: float,
     output_p_bc: float,
@@ -78,7 +86,7 @@ def solve_flow_from_conductance_matrix(
     The returned vtk_export is updated with flow arrays on vessel cell_data and
     a new `_flow.vtp` output path.
     """
-    if conductance.ndim != 2 or conductance.shape[0] != conductance.shape[1]:
+    if len(conductance.shape) != 2 or conductance.shape[0] != conductance.shape[1]:
         raise ValueError("conductance must be a square matrix")
     n_nodes = conductance.shape[0]
     if len(node_list) != n_nodes:
@@ -128,26 +136,21 @@ def solve_flow_from_conductance_matrix(
         sorted(set(range(n_nodes)).difference(set(known_idx))), dtype=int
     )
 
-    # Heuristic dense-solve estimate using cubic complexity.
     n_free = int(len(unknown_idx))
-    alpha = 2.5e-9
-    t_est = alpha * (max(n_free, 1) ** 3)
     print(
-        "[flow-solve] Runtime estimate (heuristic): "
-        f"t_est = alpha * n_free^3 = {alpha:.2e} * {n_free}^3 = {t_est:.3f} s "
-        f"(n={n_nodes}, n_free={n_free})"
+        f"[flow-solve] Solving sparse matrix with {n_nodes} nodes, {n_free} degrees of freedom..."
     )
 
     if n_free > 0:
-        l_uu = laplacian[np.ix_(unknown_idx, unknown_idx)]
-        l_uk = laplacian[np.ix_(unknown_idx, known_idx)]
+        l_uu = laplacian[unknown_idx, :][:, unknown_idx]
+        l_uk = laplacian[unknown_idx, :][:, known_idx]
         p_k = pressure[known_idx]
-        rhs = -l_uk @ p_k
+        rhs = -l_uk.dot(p_k)
         try:
-            p_u = np.linalg.solve(l_uu, rhs)
-        except np.linalg.LinAlgError:
+            p_u = splinalg.spsolve(l_uu, rhs)
+        except Exception:
             # Fallback for singular/ill-conditioned systems.
-            p_u = np.linalg.lstsq(l_uu, rhs, rcond=None)[0]
+            p_u = splinalg.lsqr(l_uu, rhs)[0]
         pressure[unknown_idx] = p_u
 
     flow_result = {

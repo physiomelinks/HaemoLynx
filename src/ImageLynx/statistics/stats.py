@@ -349,8 +349,16 @@ def compute_betweenness_summary(
         return {"Betweenness Mean": 0.0, "Betweenness Max": 0.0}
 
     if n_nodes <= max_nodes_exact:
-        bet = nx.betweenness_centrality(G)
-        method = "exact"
+        try:
+            import igraph as ig
+            ig_G = ig.Graph.from_networkx(G)
+            bet_vals = ig_G.betweenness(directed=False)
+            node_names = ig_G.vs["_nx_name"]
+            bet = dict(zip(node_names, bet_vals))
+            method = "exact_igraph"
+        except ImportError:
+            bet = nx.betweenness_centrality(G)
+            method = "exact"
     else:
         k = min(approx_k, n_nodes)
         bet = nx.betweenness_centrality(G, k=k, seed=seed)
@@ -436,8 +444,17 @@ def compute_weighted_betweenness_summary(
         return {"Betweenness Mean": 0.0, "Betweenness Max": 0.0}
 
     if n_nodes <= max_nodes_exact:
-        bet = nx.betweenness_centrality(G_s, weight="analysis_weight")
-        method = "exact_weighted"
+        try:
+            import igraph as ig
+            ig_G = ig.Graph.from_networkx(G_s)
+            weights = ig_G.es["analysis_weight"]
+            bet_vals = ig_G.betweenness(directed=False, weights=weights)
+            node_names = ig_G.vs["_nx_name"]
+            bet = dict(zip(node_names, bet_vals))
+            method = "exact_weighted_igraph"
+        except ImportError:
+            bet = nx.betweenness_centrality(G_s, weight="analysis_weight")
+            method = "exact_weighted"
     else:
         k = min(approx_k, n_nodes)
         bet = nx.betweenness_centrality(

@@ -308,23 +308,25 @@ def _solve_pressure_and_boundary_flow(
     pressure[known_idx] = np.array([bc_idx_to_p[idx] for idx in known_idx], dtype=float)
     unknown_idx = np.array(sorted(set(range(n_nodes)).difference(set(known_idx))), dtype=int)
     if unknown_idx.size:
-        l_uu = laplacian[np.ix_(unknown_idx, unknown_idx)]
-        l_uk = laplacian[np.ix_(unknown_idx, known_idx)]
-        rhs = -l_uk @ pressure[known_idx]
+        import scipy.sparse.linalg as splinalg
+        l_uu = laplacian[unknown_idx, :][:, unknown_idx]
+        l_uk = laplacian[unknown_idx, :][:, known_idx]
+        p_k = pressure[known_idx]
+        rhs = -l_uk.dot(p_k)
         try:
-            pressure[unknown_idx] = np.linalg.solve(l_uu, rhs)
-        except np.linalg.LinAlgError:
-            pressure[unknown_idx] = np.linalg.lstsq(l_uu, rhs, rcond=None)[0]
+            pressure[unknown_idx] = splinalg.spsolve(l_uu, rhs)
+        except Exception:
+            pressure[unknown_idx] = splinalg.lsqr(l_uu, rhs)[0]
 
     total_inlet_flow = 0.0
     for node_id in starting_nodes:
         i = node_to_idx[node_id]
-        total_inlet_flow += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
+        total_inlet_flow += float(conductance[i, :].dot(pressure[i] - pressure)[0])
 
     total_outlet_flow = 0.0
     for node_id in output_nodes:
         i = node_to_idx[node_id]
-        total_outlet_flow += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
+        total_outlet_flow += float(conductance[i, :].dot(pressure[i] - pressure)[0])
 
     pressure_drop = float(input_p_bc - output_p_bc)
     if np.isclose(total_inlet_flow, 0.0):

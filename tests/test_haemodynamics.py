@@ -53,10 +53,12 @@ def test_set_poiseuille_edge_resistances(multigraph_with_branch_order):
 
 
 def test_calc_laplacian_from_conductance_matrix():
-    C = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
+    import scipy.sparse as sp
+    C = sp.csr_matrix([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype=float)
     L = calc_laplacian_from_conductance_matrix(C)
-    assert np.allclose(L, L.T)
-    assert np.allclose(np.sum(L, axis=1), 0)
+    L_dense = L.toarray()
+    assert np.allclose(L_dense, L_dense.T)
+    assert np.allclose(np.sum(L_dense, axis=1), 0)
 
 
 def test_build_conductance_matrix_from_graph():
@@ -75,11 +77,12 @@ def test_build_conductance_matrix_from_graph():
     i2 = node_to_idx[2]
 
     assert C.shape == (3, 3)
-    assert np.allclose(C, C.T)
+    C_dense = C.toarray()
+    assert np.allclose(C_dense, C_dense.T)
     # 1/1.5 + 1/2.5 = 0.666... + 0.4 = 1.0666...
-    assert np.isclose(C[i0, i1], 1.0666666666666667)
-    assert np.isclose(C[i1, i2], 1.0)
-    assert np.isclose(C[i0, i2], 0.0)
+    assert np.isclose(C_dense[i0, i1], 1.0666666666666667)
+    assert np.isclose(C_dense[i1, i2], 1.0)
+    assert np.isclose(C_dense[i0, i2], 0.0)
 
 
 def test_calc_two_point_from_laplacian_matrix_nodeID():
@@ -87,9 +90,8 @@ def test_calc_two_point_from_laplacian_matrix_nodeID():
     G.add_nodes_from([0, 1, 2])
     G.add_edge(0, 1, resistance=1)
     G.add_edge(1, 2, resistance=1)
-    C = np.zeros((3, 3))
-    C[0, 1] = C[1, 0] = 1
-    C[1, 2] = C[2, 1] = 1
+    import scipy.sparse as sp
+    C = sp.csr_matrix([[0., 1., 0.], [1., 0., 1.], [0., 1., 0.]])
     L = calc_laplacian_from_conductance_matrix(C)
     R = calc_two_point_from_laplacian_matrix_nodeID(L, G, 0, 2)
     assert R > 0

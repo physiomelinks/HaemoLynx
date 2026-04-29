@@ -14,3 +14,4 @@ vedo
 pyyaml
 dask[array]
 joblib
+python-igraph
