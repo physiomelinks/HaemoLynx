@@ -5,6 +5,7 @@ import numpy as np
 import networkx as nx
 from scipy.interpolate import splprep, splev
 from scipy.spatial import cKDTree
+from numba import jit
 
 def add_edge_safe(G, u, v, **attr):
     return G.add_edge(u, v, **attr)
@@ -200,6 +201,16 @@ def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
     
     return merged_attrs
 
+@jit(nopython=True, cache=True)
+def _numba_calculate_voxel_path_length(arr: np.ndarray, vsize: np.ndarray) -> float:
+    total = 0.0
+    for i in range(arr.shape[0] - 1):
+        dx = (arr[i+1, 0] - arr[i, 0]) * vsize[0]
+        dy = (arr[i+1, 1] - arr[i, 1]) * vsize[1]
+        dz = (arr[i+1, 2] - arr[i, 2]) * vsize[2]
+        total += (dx*dx + dy*dy + dz*dz)**0.5
+    return total
+
 def calculate_voxel_path_length(voxels, voxel_size=(1.0, 1.0, 1.0)):
     """
     Calculate the actual length along a voxel path, accounting for voxel size.
@@ -209,7 +220,19 @@ def calculate_voxel_path_length(voxels, voxel_size=(1.0, 1.0, 1.0)):
 
     arr = np.array(voxels, dtype=float)
     vsize = np.array(voxel_size, dtype=float)
-    return float(np.sum(np.linalg.norm(np.diff(arr, axis=0) * vsize, axis=1)))
+    return _numba_calculate_voxel_path_length(arr, vsize)
+
+@jit(nopython=True, cache=True)
+def _numba_validate_voxel_path_continuity(arr: np.ndarray) -> float:
+    max_gap = 0.0
+    for i in range(arr.shape[0] - 1):
+        dx = arr[i+1, 0] - arr[i, 0]
+        dy = arr[i+1, 1] - arr[i, 1]
+        dz = arr[i+1, 2] - arr[i, 2]
+        gap = (dx*dx + dy*dy + dz*dz)**0.5
+        if gap > max_gap:
+            max_gap = gap
+    return max_gap
 
 def validate_voxel_path_continuity(voxels):
     """
@@ -218,7 +241,7 @@ def validate_voxel_path_continuity(voxels):
     if len(voxels) < 2:
         return 0.0
     arr = np.array(voxels, dtype=float)
-    return float(np.max(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
+    return _numba_validate_voxel_path_continuity(arr)
 
 def merge_edge_voxels_at_node(voxels1: List, voxels2: List, node_pos: Any) -> List:
     """Concatenate two edge voxel paths at the removed node with orientation."""
@@ -614,21 +637,29 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
     return None
 
 
+@jit(nopython=True, cache=True)
 def _chaikin_once(points: np.ndarray) -> np.ndarray:
     """Apply one Chaikin subdivision pass while preserving endpoints."""
     if points.shape[0] <= 2:
         return points.copy()
-    out = [points[0]]
+    
+    n_out = 2 * (points.shape[0] - 1) + 2
+    out = np.empty((n_out, points.shape[1]), dtype=points.dtype)
+    out[0] = points[0]
+    
+    idx = 1
     for i in range(points.shape[0] - 1):
         p0 = points[i]
         p1 = points[i + 1]
-        q = 0.75 * p0 + 0.25 * p1
-        r = 0.25 * p0 + 0.75 * p1
-        out.extend([q, r])
-    out.append(points[-1])
-    return np.asarray(out, dtype=float)
+        out[idx] = 0.75 * p0 + 0.25 * p1
+        out[idx+1] = 0.25 * p0 + 0.75 * p1
+        idx += 2
+        
+    out[idx] = points[-1]
+    return out
 
 
+@jit(nopython=True, cache=True)
 def _resample_polyline(points: np.ndarray, n_points: int) -> np.ndarray:
     """Resample polyline to a fixed number of points by arc length."""
     if points.shape[0] <= 1 or n_points <= 1:
@@ -636,20 +667,31 @@ def _resample_polyline(points: np.ndarray, n_points: int) -> np.ndarray:
     if points.shape[0] == n_points:
         return points.copy()
 
-    deltas = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    cumulative = np.concatenate(([0.0], np.cumsum(deltas)))
-    total = float(cumulative[-1])
+    deltas = np.empty(points.shape[0] - 1, dtype=np.float64)
+    for i in range(points.shape[0] - 1):
+        dx = points[i+1, 0] - points[i, 0]
+        dy = points[i+1, 1] - points[i, 1]
+        dz = points[i+1, 2] - points[i, 2]
+        deltas[i] = (dx*dx + dy*dy + dz*dz)**0.5
+
+    cumulative = np.empty(points.shape[0], dtype=np.float64)
+    cumulative[0] = 0.0
+    for i in range(1, points.shape[0]):
+        cumulative[i] = cumulative[i-1] + deltas[i-1]
+
+    total = cumulative[-1]
+    out = np.empty((n_points, 3), dtype=np.float64)
+    
     if total <= 1e-12:
-        out = np.repeat(points[:1], n_points, axis=0)
-        out[0] = points[0]
+        for i in range(n_points):
+            out[i] = points[0]
         out[-1] = points[-1]
         return out
 
     targets = np.linspace(0.0, total, n_points)
-    x = np.interp(targets, cumulative, points[:, 0])
-    y = np.interp(targets, cumulative, points[:, 1])
-    z = np.interp(targets, cumulative, points[:, 2])
-    out = np.column_stack((x, y, z))
+    out[:, 0] = np.interp(targets, cumulative, points[:, 0])
+    out[:, 1] = np.interp(targets, cumulative, points[:, 1])
+    out[:, 2] = np.interp(targets, cumulative, points[:, 2])
     out[0] = points[0]
     out[-1] = points[-1]
     return out

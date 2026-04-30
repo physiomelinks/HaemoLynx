@@ -327,6 +327,9 @@ def _sample_transverse_profile(
     return offsets, np.asarray(vals, dtype=float)
 
 
+from numba import jit
+
+@jit(nopython=True, cache=True)
 def _gaussian_fluorescence_1d(
     x: np.ndarray,
     baseline: float,
@@ -339,9 +342,10 @@ def _gaussian_fluorescence_1d(
     return baseline + amplitude * np.exp(-0.5 * ((x - float(x0)) / sig) ** 2)
 
 
+@jit(nopython=True, cache=True)
 def robust_baseline_from_profile_wings(
-    x_sorted: np.ndarray,
-    y_sorted: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
     wing_fraction: float = 0.2,
 ) -> float:
     """Baseline guess from outer ``wing_fraction`` of the line (by position).
@@ -349,12 +353,6 @@ def robust_baseline_from_profile_wings(
     Uses the **minimum** of the left-wing and right-wing intensity medians so a
     neighbour-induced shoulder on **one** side does not raise the whole baseline.
     """
-    if wing_fraction <= 0.0 or wing_fraction >= 0.5:
-        raise ValueError("wing_fraction must be in (0, 0.5).")
-    x = np.asarray(x_sorted, dtype=float).ravel()
-    y = np.asarray(y_sorted, dtype=float).ravel()
-    if x.size == 0:
-        raise ValueError("empty profile")
     x_min = float(x[0])
     x_max = float(x[-1])
     span = x_max - x_min
