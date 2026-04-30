@@ -84,12 +84,12 @@ def build_graph_segment_skan_stitched_loops(
                                 local_graph.add_edge(global_pt, global_nb)
                     
                     logger.info(
-                        "Local voxel graph built for comp %d: %d nodes, %d edges. Running cycle_basis...",
+                        "Local voxel graph built for comp %d: %d nodes, %d edges. Running biconnected_components...",
                         comp_id, local_graph.number_of_nodes(), local_graph.number_of_edges(),
                     )
                     try:
-                        comp_loops = nx.cycle_basis(local_graph)
-                        logger.info("cycle_basis complete for comp %d: found %d loops", comp_id, len(comp_loops))
+                        comp_loops = [list(c) for c in nx.biconnected_components(local_graph) if len(c) >= 3]
+                        logger.info("biconnected_components complete for comp %d: found %d loop clusters", comp_id, len(comp_loops))
                         voxel_loops.extend(comp_loops)
                     except Exception as e:
                         logger.warning("Local loop detection failed for comp %d: %s", comp_id, e)
@@ -119,12 +119,12 @@ def build_graph_segment_skan_stitched_loops(
                         voxel_graph.add_edges_from(batch_edges)
                 
                 logger.info(
-                    "Voxel graph built: %d nodes, %d edges. Running cycle_basis...",
+                    "Voxel graph built: %d nodes, %d edges. Running biconnected_components...",
                     voxel_graph.number_of_nodes(), voxel_graph.number_of_edges(),
                 )
                 try:
-                    voxel_loops = nx.cycle_basis(voxel_graph)
-                    logger.info("cycle_basis complete: found %d loops", len(voxel_loops))
+                    voxel_loops = [list(c) for c in nx.biconnected_components(voxel_graph) if len(c) >= 3]
+                    logger.info("biconnected_components complete: found %d loop clusters", len(voxel_loops))
                 except Exception as e:
                     logger.warning("Loop detection failed: %s", e)
                     voxel_loops = []
