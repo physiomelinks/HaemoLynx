@@ -8,15 +8,16 @@ The speedups evaluated include:
 3. **C-Backed Libraries (`scipy.sparse` & `python-igraph`):** Replacing pure-Python NetworkX traversals and dense NumPy arrays for solving Poiseuille flow and Centrality.
 4. **Numba JIT (`@numba.jit`):** Just-In-Time compilation of pure-Python 3D geometric math loops into optimized C-level machine instructions.
 5. **Direct Skan Integration:** Utilizing `skan`'s internal memory buffers and `igraph` for near-instant voxel-level loop detection (replacing the $O(V^3)$ `cycle_basis` bottleneck).
+6. **Iterative Sparse Solvers:** Implementing Conjugate Gradient (`cg`) with Incomplete LU preconditioning to drop flow-solver RAM usage and solve massive networks that would otherwise crash direct solvers.
 
 ---
 
 ## 1. Sub-Volume Benchmark (25% Crop)
 
 ### Total Pipeline Runtimes:
-*   **Without Speedups (Pure Python on `devel_dale`):** ~24.95 seconds
-*   **With All Speedups (Dask, Joblib, C-Backed, Numba, Direct Skan):** ~22.47 seconds
-*   **Percentage Difference:** ~10% faster (2.48 seconds reduction)
+*   **Without Speedups (Pure Python on `devel_dale`):** ~25.61 seconds
+*   **With All Speedups (Dask, Joblib, C-Backed, Numba, Direct Skan, Iterative Solver):** ~22.65 seconds
+*   **Percentage Difference:** ~11.5% faster (2.96 seconds reduction)
 
 ### Analysis of the Sub-Volume Results
 The total execution time of the script on this specific test case saw a modest decrease of roughly 10%. 
