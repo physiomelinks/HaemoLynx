@@ -45,6 +45,36 @@ def calc_laplacian_from_conductance_matrix(C: sp.csr_matrix) -> sp.csr_matrix:
     return L.tocsr()
 
 
+def _solve_system_smart(A: sp.csr_matrix, b: np.ndarray, iterative_threshold: int = 50000) -> np.ndarray:
+    """Solve Ax=b using direct solver for small systems and iterative for large ones."""
+    n = A.shape[0]
+    
+    # Direct solver (spsolve) is very fast for small to medium systems
+    if n < iterative_threshold:
+        try:
+            return splinalg.spsolve(A, b)
+        except Exception:
+            # Fallback to least squares if singular
+            return splinalg.lsqr(A, b)[0]
+
+    # Iterative solver (CG) for massive systems to save RAM
+    # Use Incomplete LU factorization as a preconditioner
+    print(f"[flow-solve] Using iterative solver (CG) with ILU preconditioning for {n} variables...")
+    try:
+        # ilu can fail if matrix is singular, so we use a small fill_factor
+        ilu = splinalg.spilu(A.tocsc(), drop_tol=1e-4, fill_factor=10)
+        M = splinalg.LinearOperator(A.shape, ilu.solve)
+        x, info = splinalg.cg(A, b, M=M, tol=1e-8, maxiter=1000)
+        if info == 0:
+            return x
+        else:
+            print(f"[flow-solve] Warning: Iterative solver did not converge (info={info}). Falling back to lsqr.")
+            return splinalg.lsqr(A, b)[0]
+    except Exception as e:
+        print(f"[flow-solve] Preconditioning failed: {e}. Falling back to lsqr.")
+        return splinalg.lsqr(A, b)[0]
+
+
 def calc_two_point_from_laplacian_matrix_nodeID(
     L: sp.csr_matrix, G: nx.MultiGraph, node_id1, node_id2
 ) -> float:
@@ -67,7 +97,7 @@ def calc_two_point_from_laplacian_matrix_nodeID(
     L_lil[node_idx2, node_idx2] = 1.0
     
     L_csr = L_lil.tocsr()
-    x = splinalg.spsolve(L_csr, b)
+    x = _solve_system_smart(L_csr, b)
     return float(x[node_idx1])
 
 
@@ -146,12 +176,8 @@ def solve_flow_from_conductance_matrix(
         l_uk = laplacian[unknown_idx, :][:, known_idx]
         p_k = pressure[known_idx]
         rhs = -l_uk.dot(p_k)
-        try:
-            p_u = splinalg.spsolve(l_uu, rhs)
-        except Exception:
-            # Fallback for singular/ill-conditioned systems.
-            p_u = splinalg.lsqr(l_uu, rhs)[0]
-        pressure[unknown_idx] = p_u
+        
+        pressure[unknown_idx] = _solve_system_smart(l_uu, rhs)
 
     flow_result = {
         "node_list": node_list,

@@ -14,6 +14,8 @@ from typing import Optional
 from skan import csr
 import tifffile
 import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as splinalg
 import networkx as nx
 import matplotlib.pyplot as plt
 
@@ -261,8 +263,33 @@ custom_edges= [
 ]  
 
 
+def _solve_system_smart(A: sp.csr_matrix, b: np.ndarray, iterative_threshold: int = 50000) -> np.ndarray:
+    """Solve Ax=b using direct solver for small systems and iterative for large ones."""
+    n = A.shape[0]
+    import scipy.sparse.linalg as splinalg
+    
+    # Direct solver (spsolve) is very fast for small to medium systems
+    if n < iterative_threshold:
+        try:
+            return splinalg.spsolve(A, b)
+        except Exception:
+            return splinalg.lsqr(A, b)[0]
+
+    # Iterative solver (CG) for massive systems to save RAM
+    try:
+        ilu = splinalg.spilu(A.tocsc(), drop_tol=1e-4, fill_factor=10)
+        M = splinalg.LinearOperator(A.shape, ilu.solve)
+        x, info = splinalg.cg(A, b, M=M, tol=1e-8, maxiter=1000)
+        if info == 0:
+            return x
+        else:
+            return splinalg.lsqr(A, b)[0]
+    except Exception:
+        return splinalg.lsqr(A, b)[0]
+
+
 def _solve_pressure_and_boundary_flow(
-    conductance: np.ndarray,
+    conductance: sp.csr_matrix,
     node_list: list[int],
     input_p_bc: float,
     output_p_bc: float,
@@ -276,7 +303,7 @@ def _solve_pressure_and_boundary_flow(
         raise ValueError("output_nodes cannot be empty for flow/resistance sweep.")
 
     n_nodes = conductance.shape[0]
-    if conductance.ndim != 2 or conductance.shape[1] != n_nodes:
+    if len(conductance.shape) != 2 or conductance.shape[1] != n_nodes:
         raise ValueError("conductance must be a square matrix.")
     if len(node_list) != n_nodes:
         raise ValueError("node_list length must match conductance matrix dimensions.")
@@ -308,15 +335,12 @@ def _solve_pressure_and_boundary_flow(
     pressure[known_idx] = np.array([bc_idx_to_p[idx] for idx in known_idx], dtype=float)
     unknown_idx = np.array(sorted(set(range(n_nodes)).difference(set(known_idx))), dtype=int)
     if unknown_idx.size:
-        import scipy.sparse.linalg as splinalg
         l_uu = laplacian[unknown_idx, :][:, unknown_idx]
         l_uk = laplacian[unknown_idx, :][:, known_idx]
         p_k = pressure[known_idx]
         rhs = -l_uk.dot(p_k)
-        try:
-            pressure[unknown_idx] = splinalg.spsolve(l_uu, rhs)
-        except Exception:
-            pressure[unknown_idx] = splinalg.lsqr(l_uu, rhs)[0]
+        
+        pressure[unknown_idx] = _solve_system_smart(l_uu, rhs)
 
     total_inlet_flow = 0.0
     for node_id in starting_nodes:

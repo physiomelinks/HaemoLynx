@@ -814,7 +814,7 @@ if __name__ == "__main__":
     skel_config = SkeletonConfig()
     graph_config = GraphConfig()
     hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
-    vis_config = VisualizationConfig()
+    vis_config = VisualizationConfig(visualize_overlay_preview=False)
     pipeline_config = PipelineConfig()
 
     carotid_image_to_model(
