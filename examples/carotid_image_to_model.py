@@ -808,10 +808,19 @@ if __name__ == "__main__":
         # Use the newly generated probabilities file
         target_input_mask_path = ILASTIK_OUTPUT_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_probs.tiff"
 
+    import argparse
+    parser = argparse.ArgumentParser(description="ImageLynx Carotid Pipeline")
+    parser.add_argument("--sub-volume", type=float, default=None, help="Override sub_volume_percentage (0.0 to 1.0)")
+    args = parser.parse_args()
+
     # 2. Run the Network Pipeline
     # Pipeline Configurations are now fully self-contained in their dataclasses at the top of the file.
     pre_config = PreprocessingConfig()
     skel_config = SkeletonConfig()
+    
+    if args.sub_volume is not None:
+        skel_config.sub_volume_percentage = args.sub_volume
+
     graph_config = GraphConfig()
     hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
     vis_config = VisualizationConfig(visualize_overlay_preview=False)
