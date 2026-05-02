@@ -26,3 +26,8 @@ tests/plots/
 REMINDERS.md
 image_to_model
 image_to_model.py
+
+# Benchmarking artifacts
+benchmark_scaling_results.csv
+plot_benchmark.py
+scaling_performance_plot.png
