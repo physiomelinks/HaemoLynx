@@ -95,3 +95,57 @@ def test_calc_two_point_from_laplacian_matrix_nodeID():
     L = calc_laplacian_from_conductance_matrix(C)
     R = calc_two_point_from_laplacian_matrix_nodeID(L, G, 0, 2)
     assert R > 0
+
+def test_solve_system_smart_routing(monkeypatch):
+    from ImageLynx.haemodynamics.resistance import _solve_system_smart
+    import scipy.sparse as sp
+    import numpy as np
+    
+    A = sp.csr_matrix([[2.0, -1.0], [-1.0, 2.0]])
+    b = np.array([1.0, 0.0])
+    
+    # Test direct solver path
+    x = _solve_system_smart(A, b, iterative_threshold=50000)
+    assert np.allclose(x, [0.66666667, 0.33333333])
+    
+    # Test iterative solver path
+    x_iter = _solve_system_smart(A, b, iterative_threshold=1)
+    assert np.allclose(x_iter, [0.66666667, 0.33333333])
+
+
+def test_solve_system_smart_singular_fallback():
+    from ImageLynx.haemodynamics.resistance import _solve_system_smart
+    import scipy.sparse as sp
+    import numpy as np
+    
+    # Singular matrix
+    A = sp.csr_matrix([[1.0, 1.0], [1.0, 1.0]])
+    b = np.array([1.0, 0.0])
+    
+    # Direct solver singular fallback
+    x = _solve_system_smart(A, b, iterative_threshold=50000)
+    assert x is not None  # Should not crash
+    
+    # Iterative solver singular fallback
+    x_iter = _solve_system_smart(A, b, iterative_threshold=1)
+    assert x_iter is not None  # Should not crash
+
+
+def test_solve_system_smart_preconditioner_failure(monkeypatch):
+    from ImageLynx.haemodynamics.resistance import _solve_system_smart
+    import scipy.sparse as sp
+    import scipy.sparse.linalg as splinalg
+    import numpy as np
+    
+    A = sp.csr_matrix([[2.0, -1.0], [-1.0, 2.0]])
+    b = np.array([1.0, 0.0])
+    
+    def mock_spilu(*args, **kwargs):
+        raise RuntimeError("Mock spilu failure")
+        
+    monkeypatch.setattr(splinalg, "spilu", mock_spilu)
+    
+    # Should fall back to lsqr and not crash
+    x = _solve_system_smart(A, b, iterative_threshold=1)
+    assert np.allclose(x, [0.66666667, 0.33333333])
+

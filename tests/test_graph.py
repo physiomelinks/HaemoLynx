@@ -210,3 +210,70 @@ def test_select_boundary_nodes_by_method_degree_1_from_starting():
         exclude_nodes=[0],
     )
     assert nodes == [3]
+
+def test_validate_voxel_path_continuity():
+    from ImageLynx.graph._helpers import validate_voxel_path_continuity
+    
+    voxels = [(0, 0, 0), (1, 0, 0), (3, 0, 0)] # Gap of 2
+    gap = validate_voxel_path_continuity(voxels)
+    assert np.isclose(gap, 2.0)
+    
+    voxels_continuous = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+    assert np.isclose(validate_voxel_path_continuity(voxels_continuous), 1.0)
+
+
+def test_chaikin_and_resample():
+    from ImageLynx.graph._helpers import _chaikin_once, _resample_polyline
+    points = np.array([[0.0, 0.0, 0.0], [5.0, 5.0, 0.0], [10.0, 0.0, 0.0]])
+    
+    smoothed = _chaikin_once(points)
+    assert smoothed[0].tolist() == [0.0, 0.0, 0.0]
+    assert smoothed[-1].tolist() == [10.0, 0.0, 0.0]
+    assert len(smoothed) > 3
+    
+    resampled = _resample_polyline(smoothed, 5)
+    assert resampled.shape == (5, 3)
+    assert resampled[0].tolist() == [0.0, 0.0, 0.0]
+    assert resampled[-1].tolist() == [10.0, 0.0, 0.0]
+
+
+def test_direct_skan_loop_extraction():
+    pytest.importorskip("skan")
+    from skan import csr
+    import networkx as nx
+    
+    # Create a 3D block with a known loop
+    data = np.zeros((10, 10, 10), dtype=bool)
+    data[1, 1, 1:4] = True
+    data[1, 3, 1:4] = True
+    data[1, 1:4, 1] = True
+    data[1, 1:4, 3] = True
+    
+    sk = csr.Skeleton(data)
+    
+    G, loops, loop_edges = build_graph_segment_skan_stitched_loops(
+        sk, data, debug=True
+    )
+    
+    assert len(loops) >= 1
+    assert len(loops[0]) == 8 # The loop has 8 voxels
+    # Test fallback by patching igraph to raise ImportError
+    import sys
+    import builtins
+    
+    real_import = builtins.__import__
+    def mock_import(name, *args, **kwargs):
+        if name == "igraph":
+            raise ImportError("Mocked missing igraph")
+        return real_import(name, *args, **kwargs)
+        
+    try:
+        builtins.__import__ = mock_import
+        # Call it again
+        G2, loops2, loop_edges2 = build_graph_segment_skan_stitched_loops(
+            sk, data, debug=True
+        )
+        assert len(loops2) == 0 # Graceful fallback returns empty
+    finally:
+        builtins.__import__ = real_import
+
