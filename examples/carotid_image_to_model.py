@@ -120,6 +120,12 @@ class HaemodynamicsConfig:
     diameter_by_branch_order: dict = field(default_factory=dict)
 
 @dataclass
+class PerfusionConfig:
+    """Configuration for steady-state tissue diffusion modeling."""
+    do_perfusion_modeling: bool = True
+    grid_resolution_xyz: tuple[float, float, float] = (10.0, 10.0, 10.0) # micrometers
+
+@dataclass
 class VisualizationConfig:
     """Configuration for 3D/2D visualization tools and interactive previews."""
     visualize_results: bool = False
@@ -501,9 +507,10 @@ def _run_skeletonization_phase(binary, skel_config):
     )
     return skeleton
 
-def _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config):
+def _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config, perf_config=None):
     """Helper function to launch the 4-panel Vedo verification viewer."""
     print(f"Visualizing 3D overlay PREVIEW with optimized graph (mask opacity=0.3). Close window to exit.")
+    import sys
     
     current_spacing = vis_config.visualize_vedo_spacing
     if vis_config.visualize_vedo_auto_spacing and input_format == "tif":
@@ -519,8 +526,10 @@ def _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config):
             smooth_iter=vis_config.visualize_vedo_smooth_iter,
             spacing=current_spacing,
             separate_windows=True,
-            G=G
+            G=G,
+            perf_config=perf_config
         )
+        sys.exit(0)
     else:
         visualization.visualize_overlay(binary, skeleton, title="3D Skeleton Overlay Preview", vessel_opacity=0.3)
     print("Exiting pipeline as requested (Preview Mode).")
@@ -726,6 +735,7 @@ def carotid_image_to_model(image_path: Path | str,
                            skel_config: SkeletonConfig = None,
                            graph_config: GraphConfig = None,
                            hemo_config: HaemodynamicsConfig = None,
+                           perf_config: PerfusionConfig = None,
                            vis_config: VisualizationConfig = None,
                            pipeline_config: PipelineConfig = None) -> None:
     """
@@ -737,6 +747,7 @@ def carotid_image_to_model(image_path: Path | str,
     if skel_config is None: skel_config = SkeletonConfig()
     if graph_config is None: graph_config = GraphConfig()
     if hemo_config is None: hemo_config = HaemodynamicsConfig()
+    if perf_config is None: perf_config = PerfusionConfig()
     if vis_config is None: vis_config = VisualizationConfig()
     if pipeline_config is None: pipeline_config = PipelineConfig()
 
@@ -778,7 +789,7 @@ def carotid_image_to_model(image_path: Path | str,
         G = _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_config, graph_config, pipeline_config)
         
         if vis_config.visualize_overlay_preview and pipeline_config.do_skeletonize:
-            _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config)
+            _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config, perf_config)
 
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
@@ -827,6 +838,7 @@ if __name__ == "__main__":
     hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
     vis_config = VisualizationConfig(visualize_overlay_preview=False)
     pipeline_config = PipelineConfig()
+    perf_config = PerfusionConfig()
 
     carotid_image_to_model(
         image_path=target_input_mask_path,
@@ -834,6 +846,7 @@ if __name__ == "__main__":
         skel_config=skel_config,
         graph_config=graph_config,
         hemo_config=hemo_config,
+        perf_config=perf_config,
         vis_config=vis_config,
         pipeline_config=pipeline_config
     )

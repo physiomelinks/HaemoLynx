@@ -943,6 +943,7 @@ def visualize_overlay_vedo(
     show: bool = True,
     separate_windows: bool = False,
     G: Optional[nx.Graph] = None,
+    perf_config = None,
 ):
     """Visualize a 3D skeleton overlaid on its parent volume mesh using Vedo."""
     try:
@@ -973,6 +974,7 @@ def visualize_overlay_vedo(
         pts = None
 
     graph_actors = []
+    grid_actor = None
     if G is not None:
         for u, v, d in G.edges(data=True):
             path = d.get("voxels", [])
@@ -986,6 +988,49 @@ def visualize_overlay_vedo(
             nodes_coords = np.array(list(pos.values()))
             nodes_xyz = nodes_coords[:, [2, 1, 0]] * np.array(vedo_spacing)
             graph_actors.append(vedo.Points(nodes_xyz, r=skeleton_point_size * 2.0).color("red"))
+
+            # -- PERFUSION GRID GENERATION --
+            if perf_config is not None and perf_config.do_perfusion_modeling:
+                try:
+                    # Find spatial bounds of the network
+                    min_xyz = np.min(nodes_xyz, axis=0)
+                    max_xyz = np.max(nodes_xyz, axis=0)
+                    
+                    # Read resolution (in physical units e.g., micrometers)
+                    res_xyz = np.array(perf_config.grid_resolution_xyz)
+                    
+                    # Expand bounds slightly to encapsulate the vessels
+                    min_xyz -= res_xyz
+                    max_xyz += res_xyz
+                    
+                    # Calculate number of blocks needed in each dimension
+                    dims = np.ceil((max_xyz - min_xyz) / res_xyz).astype(int)
+                    
+                    # Create a Vedo Box acting as the bounding volume for the grid
+                    print(f"Generating 3D Tissue Perfusion Grid ({dims[0]}x{dims[1]}x{dims[2]} blocks) at resolution {res_xyz}µm...")
+                    
+                    # Create a visually pleasing 3D grid wireframe
+                    grid_actor = vedo.Grid(
+                        pos=(min_xyz + max_xyz)/2.0, 
+                        normal=(0,0,1), 
+                        sx=max_xyz[0]-min_xyz[0], 
+                        sy=max_xyz[1]-min_xyz[1], 
+                        resx=dims[0], 
+                        resy=dims[1]
+                    ).wireframe().color("gray").alpha(0.2)
+                    
+                    # We can also add a 3D bounding box for clarity
+                    bbox = vedo.Box(
+                        pos=(min_xyz + max_xyz)/2.0,
+                        length=max_xyz[0]-min_xyz[0],
+                        width=max_xyz[1]-min_xyz[1],
+                        height=max_xyz[2]-min_xyz[2]
+                    ).wireframe().color("white").alpha(0.5).lw(1)
+                    
+                    graph_actors.append(grid_actor)
+                    graph_actors.append(bbox)
+                except Exception as e:
+                    print(f"Warning: Failed to generate perfusion grid visualization: {e}")
 
     if separate_windows:
         # Window 1: Mask only (30% opacity)
