@@ -975,6 +975,7 @@ def visualize_overlay_vedo(
 
     graph_actors = []
     grid_actor = None
+    bbox = None
     if G is not None:
         for u, v, d in G.edges(data=True):
             path = d.get("voxels", [])
@@ -989,62 +990,57 @@ def visualize_overlay_vedo(
             nodes_xyz = nodes_coords[:, [2, 1, 0]] * np.array(vedo_spacing)
             graph_actors.append(vedo.Points(nodes_xyz, r=skeleton_point_size * 2.0).color("red"))
 
-            # -- PERFUSION GRID GENERATION --
+            # -- PERFUSION GRID GENERATION (3D LATTICE) --
             if perf_config is not None and perf_config.do_perfusion_modeling:
                 try:
-                    # Find spatial bounds of the network
-                    min_xyz = np.min(nodes_xyz, axis=0)
-                    max_xyz = np.max(nodes_xyz, axis=0)
+                    # Find spatial bounds of the network in world coordinates
+                    center = (np.min(nodes_xyz, axis=0) + np.max(nodes_xyz, axis=0)) / 2.0
+                    size_xyz = np.max(nodes_xyz, axis=0) - np.min(nodes_xyz, axis=0)
                     
-                    # Read resolution (in physical units e.g., micrometers)
+                    # Pad slightly
                     res_xyz = np.array(perf_config.grid_resolution_xyz)
+                    min_xyz = np.min(nodes_xyz, axis=0) - res_xyz * 0.5
+                    max_xyz = np.max(nodes_xyz, axis=0) + res_xyz * 0.5
                     
-                    # Expand bounds slightly to encapsulate the vessels
-                    min_xyz -= res_xyz
-                    max_xyz += res_xyz
-                    
-                    # Calculate number of blocks needed in each dimension
+                    # Calculate number of subdivisions
                     dims = np.ceil((max_xyz - min_xyz) / res_xyz).astype(int)
                     
-                    # Create a Vedo Box acting as the bounding volume for the grid
-                    print(f"Generating 3D Tissue Perfusion Grid ({dims[0]}x{dims[1]}x{dims[2]} blocks) at resolution {res_xyz}µm...")
+                    print(f"Generating 3D Tissue Perfusion Lattice ({dims[0]}x{dims[1]}x{dims[2]} blocks) at resolution {res_xyz}µm...")
                     
-                    # Create a visually pleasing 3D grid wireframe using 3 orthogonal planes
-                    center = (min_xyz + max_xyz) / 2.0
-                    size_xyz = max_xyz - min_xyz
+                    grid_lines = []
+                    x_coords = np.linspace(min_xyz[0], max_xyz[0], dims[0] + 1)
+                    y_coords = np.linspace(min_xyz[1], max_xyz[1], dims[1] + 1)
+                    z_coords = np.linspace(min_xyz[2], max_xyz[2], dims[2] + 1)
                     
-                    # 1. XY Plane (Horizontal)
-                    grid_xy = vedo.Grid(
-                        pos=center, 
-                        s=(size_xyz[0], size_xyz[1]), 
-                        res=(dims[0], dims[1])
-                    ).wireframe().color("gray").alpha(0.15)
+                    # X-direction lines (varying Y and Z)
+                    for y in y_coords:
+                        for z in z_coords:
+                            grid_lines.append(vedo.Line((min_xyz[0], y, z), (max_xyz[0], y, z)).c('gray').alpha(0.1))
                     
-                    # 2. YZ Plane (Vertical/Side)
-                    grid_yz = vedo.Grid(
-                        pos=center,
-                        s=(size_xyz[1], size_xyz[2]),
-                        res=(dims[1], dims[2])
-                    ).rotate_y(90).wireframe().color("gray").alpha(0.15)
+                    # Y-direction lines (varying X and Z)
+                    for x in x_coords:
+                        for z in z_coords:
+                            grid_lines.append(vedo.Line((x, min_xyz[1], z), (x, max_xyz[1], z)).c('gray').alpha(0.1))
+                            
+                    # Z-direction lines (varying X and Y)
+                    for x in x_coords:
+                        for y in y_coords:
+                            grid_lines.append(vedo.Line((x, y, min_xyz[2]), (x, y, max_xyz[2])).c('gray').alpha(0.1))
                     
-                    # 3. XZ Plane (Vertical/Front)
-                    grid_xz = vedo.Grid(
-                        pos=center,
-                        s=(size_xyz[0], size_xyz[2]),
-                        res=(dims[0], dims[2])
-                    ).rotate_x(90).wireframe().color("gray").alpha(0.15)
+                    grid_actor = vedo.Assembly(grid_lines)
                     
-                    # We can also add a 3D bounding box for clarity
+                    # Add a 3D bounding box for clarity
                     bbox = vedo.Box(
-                        pos=center,
-                        length=size_xyz[0],
-                        width=size_xyz[1],
-                        height=size_xyz[2]
+                        pos=(min_xyz + max_xyz)/2.0,
+                        length=max_xyz[0]-min_xyz[0],
+                        width=max_xyz[1]-min_xyz[1],
+                        height=max_xyz[2]-min_xyz[2]
                     ).wireframe().color("white").alpha(0.4).lw(1)
                     
-                    graph_actors.extend([grid_xy, grid_yz, grid_xz, bbox])
+                    graph_actors.append(grid_actor)
+                    graph_actors.append(bbox)
                 except Exception as e:
-                    print(f"Warning: Failed to generate perfusion grid visualization: {e}")
+                    print(f"Warning: Failed to generate perfusion lattice visualization: {e}")
 
     if separate_windows:
         # Window 1: Mask only (30% opacity)
@@ -1066,6 +1062,11 @@ def visualize_overlay_vedo(
             
         plts = [plt1, plt2, plt3]
         
+        # Add grid to Overlay window if it exists
+        if grid_actor is not None:
+            plt3.add(grid_actor)
+            plt3.add(bbox)
+
         if G is not None:
             # Window 4: Graph nodes and edges
             plt4 = vedo.Plotter(title="4. Optimized Graph", bg=background_color, offscreen=not show, pos=(1500, 0))
