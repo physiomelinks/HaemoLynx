@@ -6,6 +6,7 @@ from .resistance import (
     calc_two_point_from_laplacian_matrix_nodeID,
     solve_flow_from_conductance_matrix,
 )
+from .perfusion import PerfusionGrid, map_vessels_to_grid
 from .automated import *
 
 __all__ = [
@@ -15,4 +16,6 @@ __all__ = [
     "calc_laplacian_from_conductance_matrix",
     "calc_two_point_from_laplacian_matrix_nodeID",
     "solve_flow_from_conductance_matrix",
+    "PerfusionGrid",
+    "map_vessels_to_grid",
 ]

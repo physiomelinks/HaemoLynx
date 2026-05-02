@@ -654,7 +654,7 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             
     return starting_nodes, output_nodes, resistance_node_pair
 
-def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config):
+def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config=None):
     """
     Phase 5: Builds the Laplacian matrix, solves the flow equations,
     calculates comprehensive statistics, and exports all data to VTK files.
@@ -727,6 +727,17 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
     )
     print("Flow through the network solved")
     print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
+
+    # Phase 6: Perfusion Modeling (Step 2 - Spatial Coupling)
+    if perf_config and perf_config.do_perfusion_modeling:
+        print("\n=== Perfusion Modeling (Step 2: Spatial Coupling) ===")
+        # 1. Generate the mathematical grid
+        grid = haemodynamics.PerfusionGrid(G, perf_config.grid_resolution_xyz)
+        
+        # 2. Map the 1D vessels to the 3D grid
+        # This identifies which tissue blocks are perfused by which vessels
+        cell_mapping = haemodynamics.map_vessels_to_grid(G, grid)
+        print(f"  Spatial coupling complete. vessels mapped to grid.")
 
     if vis_config.visualize_results:
         _visualize_final_results(G, image, starting_nodes, vis_config)
@@ -803,7 +814,7 @@ def carotid_image_to_model(image_path: Path | str,
         print(f"Loaded graph from: {graph_path}")
 
     starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config)
-    _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config)
+    _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config)
     
 if __name__ == "__main__":
     # 1. Run Ilastik Segmentation (if enabled)
