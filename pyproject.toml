@@ -37,6 +37,7 @@ filterwarnings = [
     "ignore:.*stored as RGB with separate component planes.*:DeprecationWarning:tifffile",
     "ignore:FigureCanvasAgg is non-interactive.*:UserWarning:matplotlib",
     "ignore:This figure includes Axes that are not compatible with tight_layout.*:UserWarning:matplotlib",
+    "ignore::scipy.sparse.linalg.MatrixRankWarning",
 ]
 
 [tool.setuptools.packages.find]
