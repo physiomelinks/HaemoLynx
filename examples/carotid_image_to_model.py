@@ -743,16 +743,40 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
     print("Flow through the network solved")
     print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
 
-    # Phase 6: Perfusion Modeling (Step 2 - Spatial Coupling)
+    # Write flow back into the NetworkX Graph
+    import pyvista as pv
+    vessels = pv.read(vtk_export['vessels_path'])
+    edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
+    edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
+    edge_key = np.asarray(vessels.cell_data.get("edge_key", []))
+    flow_abs = np.asarray(vessels.cell_data.get("flow_abs", []))
+    
+    for i in range(vessels.n_cells):
+        u, v, k = int(edge_u[i]), int(edge_v[i]), int(edge_key[i])
+        if G.has_edge(u, v, key=k):
+            G[u][v][k]["flow_abs"] = flow_abs[i]
+
+    # Phase 6: Perfusion Modeling
     if perf_config and perf_config.do_perfusion_modeling:
-        print("\n=== Perfusion Modeling (Step 2: Spatial Coupling) ===")
+        print("\n=== Perfusion Modeling ===")
         # 1. Generate the mathematical grid
         grid = haemodynamics.PerfusionGrid(G, perf_config.grid_resolution_xyz)
         
         # 2. Map the 1D vessels to the 3D grid
         # This identifies which tissue blocks are perfused by which vessels
         cell_mapping = haemodynamics.map_vessels_to_grid(G, grid)
-        print(f"  Spatial coupling complete. vessels mapped to grid.")
+        
+        # 3. Build Advection-Diffusion-Reaction (ADR) Matrix
+        A, b_adv, D_diag = haemodynamics.build_adr_matrix(grid, cell_mapping, perf_config)
+        
+        # 4. Solve the Non-Linear Steady-State Perfusion field
+        C_steady = haemodynamics.solve_perfusion_steady_state(grid, A, b_adv, perf_config)
+        
+        # Calculate statistics
+        mean_c = np.mean(C_steady)
+        max_c = np.max(C_steady)
+        min_c = np.min(C_steady)
+        print(f"  Perfusion solve complete. Mean tissue O2: {mean_c:.4e} mmol/L (Min: {min_c:.4e}, Max: {max_c:.4e})")
 
     if vis_config.visualize_results:
         _visualize_final_results(G, image, starting_nodes, vis_config)
@@ -863,7 +887,7 @@ if __name__ == "__main__":
 
     graph_config = GraphConfig()
     hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
-    vis_config = VisualizationConfig(visualize_overlay_preview=True)
+    vis_config = VisualizationConfig(visualize_overlay_preview=False)
     pipeline_config = PipelineConfig()
     perf_config = PerfusionConfig()
 

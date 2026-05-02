@@ -279,7 +279,7 @@ def _solve_system_smart(A: sp.csr_matrix, b: np.ndarray, iterative_threshold: in
     try:
         ilu = splinalg.spilu(A.tocsc(), drop_tol=1e-4, fill_factor=10)
         M = splinalg.LinearOperator(A.shape, ilu.solve)
-        x, info = splinalg.cg(A, b, M=M, tol=1e-8, maxiter=1000)
+        x, info = splinalg.cg(A, b, M=M, rtol=1e-8, maxiter=1000)
         if info == 0:
             return x
         else:
