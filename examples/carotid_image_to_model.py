@@ -124,7 +124,22 @@ class PerfusionConfig:
     """Configuration for steady-state tissue diffusion modeling."""
     do_perfusion_modeling: bool = True
     grid_resolution_xyz: tuple[float, float, float] = (10.0, 10.0, 10.0) # micrometers
-    grid_opacity: float = 0.6 # 0.0 to 1.0
+    grid_opacity: float = 0.3 # 0.0 to 1.0
+
+    # Physiological Constants (from CellML Blueprints)
+    # -----------------------------------------------
+    # sigma_diff: Diffusion coefficient of O2 in tissue (m^2/s)
+    sigma_diff: float = 1.5e-9 
+
+    # M_max: Maximum metabolic consumption rate (mmol / L / s)
+    M_max: float = 0.05
+
+    # k_reduce: Metabolic reduction constant for hypoxic zones (per mmol)
+    k_reduce: float = 0.1
+
+    # C_arterial: Oxygen concentration entering the network (mmol / L)
+    C_arterial: float = 0.13
+
 
 @dataclass
 class VisualizationConfig:
