@@ -8,8 +8,8 @@ from pathlib import Path
 # Configuration
 TEST_VOLUMES = np.arange(0.1, 1.1, 0.1)
 BRANCHES = [
-    {"name": "devel_dale", "label": "Original Pipeline"},
-    {"name": "devel_dale_cb_pipeline_speedup", "label": "Optimized Pipeline (All Speedups)"}
+    {"name": "devel_dale_cb_pipeline_speedup", "label": "Optimized Pipeline (All Speedups)"},
+    {"name": "devel_dale", "label": "Original Pipeline"}
 ]
 OUTPUT_FILE = "benchmark_scaling_results.csv"
 
