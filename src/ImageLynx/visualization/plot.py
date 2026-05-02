@@ -1012,11 +1012,8 @@ def visualize_overlay_vedo(
                     # Create a visually pleasing 3D grid wireframe
                     grid_actor = vedo.Grid(
                         pos=(min_xyz + max_xyz)/2.0, 
-                        normal=(0,0,1), 
-                        sx=max_xyz[0]-min_xyz[0], 
-                        sy=max_xyz[1]-min_xyz[1], 
-                        resx=dims[0], 
-                        resy=dims[1]
+                        s=(max_xyz[0]-min_xyz[0], max_xyz[1]-min_xyz[1]), 
+                        res=(dims[0], dims[1])
                     ).wireframe().color("gray").alpha(0.2)
                     
                     # We can also add a 3D bounding box for clarity
