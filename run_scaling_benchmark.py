@@ -2,6 +2,7 @@ import numpy as np
 import subprocess
 import time
 import csv
+import re
 from pathlib import Path
 
 # Configuration
@@ -16,7 +17,7 @@ def run_benchmark():
     # Initialize CSV
     with open(OUTPUT_FILE, mode='w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(["Branch", "Sub_Volume", "Runtime_Seconds"])
+        writer.writerow(["Branch", "Sub_Volume", "Nodes", "Edges", "Runtime_Seconds"])
 
     for branch in BRANCHES:
         branch_name = branch["name"]
@@ -44,17 +45,23 @@ def run_benchmark():
             duration = end_time - start_time
             
             if result.returncode == 0:
-                print(f"Success! Runtime: {duration:.2f} seconds.")
+                # Parse stdout for nodes and edges
+                nodes_match = re.search(r"Total Nodes:\s*(\d+)", result.stdout)
+                edges_match = re.search(r"Total Edges:\s*(\d+)", result.stdout)
+                nodes = int(nodes_match.group(1)) if nodes_match else 0
+                edges = int(edges_match.group(1)) if edges_match else 0
+
+                print(f"Success! Runtime: {duration:.2f}s | Nodes: {nodes} | Edges: {edges}")
                 # Save immediately so data isn't lost if a larger run crashes
                 with open(OUTPUT_FILE, mode='a', newline='') as f:
                     writer = csv.writer(f)
-                    writer.writerow([label, vol, duration])
+                    writer.writerow([label, vol, nodes, edges, duration])
             else:
                 print(f"FAILED or CRASHED. Returning inf and aborting remaining tests for {label}.")
                 print(f"Error Log:\n{result.stderr[-1000:]}") # Print tail of error
                 with open(OUTPUT_FILE, mode='a', newline='') as f:
                     writer = csv.writer(f)
-                    writer.writerow([label, vol, float('inf')])
+                    writer.writerow([label, vol, 0, 0, float('inf')])
                 break  # Skip the rest of the volumes for this branch
 
                     
