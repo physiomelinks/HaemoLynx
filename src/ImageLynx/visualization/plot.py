@@ -1009,23 +1009,40 @@ def visualize_overlay_vedo(
                     # Create a Vedo Box acting as the bounding volume for the grid
                     print(f"Generating 3D Tissue Perfusion Grid ({dims[0]}x{dims[1]}x{dims[2]} blocks) at resolution {res_xyz}µm...")
                     
-                    # Create a visually pleasing 3D grid wireframe
-                    grid_actor = vedo.Grid(
-                        pos=(min_xyz + max_xyz)/2.0, 
-                        s=(max_xyz[0]-min_xyz[0], max_xyz[1]-min_xyz[1]), 
+                    # Create a visually pleasing 3D grid wireframe using 3 orthogonal planes
+                    center = (min_xyz + max_xyz) / 2.0
+                    size_xyz = max_xyz - min_xyz
+                    
+                    # 1. XY Plane (Horizontal)
+                    grid_xy = vedo.Grid(
+                        pos=center, 
+                        s=(size_xyz[0], size_xyz[1]), 
                         res=(dims[0], dims[1])
-                    ).wireframe().color("gray").alpha(0.2)
+                    ).wireframe().color("gray").alpha(0.15)
+                    
+                    # 2. YZ Plane (Vertical/Side)
+                    grid_yz = vedo.Grid(
+                        pos=center,
+                        s=(size_xyz[1], size_xyz[2]),
+                        res=(dims[1], dims[2])
+                    ).rotate_y(90).wireframe().color("gray").alpha(0.15)
+                    
+                    # 3. XZ Plane (Vertical/Front)
+                    grid_xz = vedo.Grid(
+                        pos=center,
+                        s=(size_xyz[0], size_xyz[2]),
+                        res=(dims[0], dims[2])
+                    ).rotate_x(90).wireframe().color("gray").alpha(0.15)
                     
                     # We can also add a 3D bounding box for clarity
                     bbox = vedo.Box(
-                        pos=(min_xyz + max_xyz)/2.0,
-                        length=max_xyz[0]-min_xyz[0],
-                        width=max_xyz[1]-min_xyz[1],
-                        height=max_xyz[2]-min_xyz[2]
-                    ).wireframe().color("white").alpha(0.5).lw(1)
+                        pos=center,
+                        length=size_xyz[0],
+                        width=size_xyz[1],
+                        height=size_xyz[2]
+                    ).wireframe().color("white").alpha(0.4).lw(1)
                     
-                    graph_actors.append(grid_actor)
-                    graph_actors.append(bbox)
+                    graph_actors.extend([grid_xy, grid_yz, grid_xz, bbox])
                 except Exception as e:
                     print(f"Warning: Failed to generate perfusion grid visualization: {e}")
 
