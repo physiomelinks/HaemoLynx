@@ -888,6 +888,7 @@ def smooth_graph_edge_centerlines_continuous(
     max_distance_phys = float(max_distance_vox) * float(np.min(np.asarray(voxel_size, dtype=float)))
 
     from joblib import Parallel, delayed
+    from tqdm import tqdm
 
     # Prepare iterator based on graph type
     is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
@@ -898,15 +899,19 @@ def smooth_graph_edge_centerlines_continuous(
 
     print(f"Parallelizing centerline smoothing for {len(edge_iter)} edges using all CPU cores...")
 
-    results = Parallel(n_jobs=-1)(
-        delayed(_smooth_single_edge_centerline)(
-            (edge[0], edge[1], edge[2]) if is_multi else (edge[0], edge[1], None),
-            edge[-1], # data dict
-            method, bspline_smoothness, chaikin_iterations,
-            skeleton_tree, max_distance_phys
-        )
-        for edge in edge_iter
-    )
+    results = list(tqdm(
+        Parallel(n_jobs=-1, return_as="generator")(
+            delayed(_smooth_single_edge_centerline)(
+                (edge[0], edge[1], edge[2]) if is_multi else (edge[0], edge[1], None),
+                edge[-1], # data dict
+                method, bspline_smoothness, chaikin_iterations,
+                skeleton_tree, max_distance_phys
+            )
+            for edge in edge_iter
+        ),
+        total=len(edge_iter),
+        desc="Centerline Smoothing"
+    ))
 
     smoothed_edges = 0
     relaxed_edges = 0

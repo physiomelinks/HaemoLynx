@@ -432,7 +432,9 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     # before starting the topological operations (Skeletonization).
     if is_lazy:
         print("Computing final preprocessing task graph (Materializing volume)...")
-        binary = binary_raw.compute()
+        from dask.diagnostics import ProgressBar
+        with ProgressBar():
+            binary = binary_raw.compute()
     else:
         binary = binary_raw.copy()
 

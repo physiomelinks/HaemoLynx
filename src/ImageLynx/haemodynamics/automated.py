@@ -1120,49 +1120,54 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     d_guess0 = 0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
 
     from joblib import Parallel, delayed
+    from tqdm import tqdm
 
     sorted_edges = sorted(G.edges(keys=True, data=True), key=lambda t: (t[0], t[1], t[2]))
     G_degrees = dict(G.degree())
 
     print(f"Parallelizing FWHM diameter measurement for {len(sorted_edges)} edges using all CPU cores...")
 
-    results_list = Parallel(n_jobs=-1)(
-        delayed(_measure_single_edge_fwhm)(
-            u, v, key, data,
-            raw, labels, voxel_size_xyz,
-            sample_spacing_along_edge_um,
-            transverse_profile_step_um,
-            transverse_half_extent_um,
-            G_degrees,
-            diameter_guess_um=d_guess0,
-            background_label=background_label,
-            junction_label=junction_label,
-            min_total_extent_multiplier=min_total_extent_multiplier,
-            profile_baseline_mode=profile_baseline_mode,
-            profile_baseline_wing_fraction=profile_baseline_wing_fraction,
-            constrain_fitted_baseline=constrain_fitted_baseline,
-            baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
-            allow_junction_crossing=allow_junction_crossing,
-            clip_profile_to_single_vessel=clip_profile_to_single_vessel,
-            clip_min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-            clip_re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-            branch_endpoint_exclusion_um=branch_endpoint_exclusion_um,
-            junction_proximity_exclusion_um=junction_proximity_exclusion_um,
-            store_profile_debug=store_profile_debug,
-            enforce_same_edge_locality=enforce_same_edge_locality,
-            same_edge_arc_window_um=same_edge_arc_window_um,
-            same_edge_arc_window_multiplier=same_edge_arc_window_multiplier,
-            same_edge_arc_window_min_um=same_edge_arc_window_min_um,
-            cap_half_extent_by_nonlocal_same_edge_distance=cap_half_extent_by_nonlocal_same_edge_distance,
-            nonlocal_same_edge_arc_separation_um=nonlocal_same_edge_arc_separation_um,
-            nonlocal_same_edge_half_extent_factor=nonlocal_same_edge_half_extent_factor,
-            reject_samples_with_center_offset=reject_samples_with_center_offset,
-            max_fit_center_offset_um=max_fit_center_offset_um,
-            reject_samples_with_low_fit_r2=reject_samples_with_low_fit_r2,
-            min_fit_r2=min_fit_r2,
-        )
-        for u, v, key, data in sorted_edges
-    )
+    results_list = list(tqdm(
+        Parallel(n_jobs=-1, return_as="generator")(
+            delayed(_measure_single_edge_fwhm)(
+                u, v, key, data,
+                raw, labels, voxel_size_xyz,
+                sample_spacing_along_edge_um,
+                transverse_profile_step_um,
+                transverse_half_extent_um,
+                G_degrees,
+                diameter_guess_um=d_guess0,
+                background_label=background_label,
+                junction_label=junction_label,
+                min_total_extent_multiplier=min_total_extent_multiplier,
+                profile_baseline_mode=profile_baseline_mode,
+                profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+                constrain_fitted_baseline=constrain_fitted_baseline,
+                baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+                allow_junction_crossing=allow_junction_crossing,
+                clip_profile_to_single_vessel=clip_profile_to_single_vessel,
+                clip_min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
+                clip_re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                branch_endpoint_exclusion_um=branch_endpoint_exclusion_um,
+                junction_proximity_exclusion_um=junction_proximity_exclusion_um,
+                store_profile_debug=store_profile_debug,
+                enforce_same_edge_locality=enforce_same_edge_locality,
+                same_edge_arc_window_um=same_edge_arc_window_um,
+                same_edge_arc_window_multiplier=same_edge_arc_window_multiplier,
+                same_edge_arc_window_min_um=same_edge_arc_window_min_um,
+                cap_half_extent_by_nonlocal_same_edge_distance=cap_half_extent_by_nonlocal_same_edge_distance,
+                nonlocal_same_edge_arc_separation_um=nonlocal_same_edge_arc_separation_um,
+                nonlocal_same_edge_half_extent_factor=nonlocal_same_edge_half_extent_factor,
+                reject_samples_with_center_offset=reject_samples_with_center_offset,
+                max_fit_center_offset_um=max_fit_center_offset_um,
+                reject_samples_with_low_fit_r2=reject_samples_with_low_fit_r2,
+                min_fit_r2=min_fit_r2,
+            )
+            for u, v, key, data in sorted_edges
+        ),
+        total=len(sorted_edges),
+        desc="FWHM Measurement"
+    ))
 
     for (u, v, key), res in results_list:
         if "skipped" in res:
