@@ -778,6 +778,11 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
         min_c = np.min(C_steady)
         print(f"  Perfusion solve complete. Mean tissue O2: {mean_c:.4e} mmol/L (Min: {min_c:.4e}, Max: {max_c:.4e})")
 
+        # 5. Export to VTK
+        vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
+        visualization.export_perfusion_grid_to_vti(grid, C_steady, vti_path)
+        print(f"  Saved 3D Perfusion Field to: {vti_path}")
+
     if vis_config.visualize_results:
         _visualize_final_results(G, image, starting_nodes, vis_config)
 

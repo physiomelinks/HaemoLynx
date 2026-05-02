@@ -20,6 +20,7 @@ from .vtk_io import (
     graph_to_vtk,
     load_vtp,
     visualize_vtk_network,
+    export_perfusion_grid_to_vti,
 )
 
 __all__ = [
@@ -40,5 +41,6 @@ __all__ = [
     "graph_to_vtk",
     "load_vtp",
     "visualize_vtk_network",
+    "export_perfusion_grid_to_vti",
     "save_graph_snapshot",
 ]

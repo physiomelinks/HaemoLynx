@@ -343,3 +343,52 @@ def load_vtp(filepath: str | Path) -> Any:
             "Install with `pip install pyvista`."
         ) from exc
     return pv.read(str(filepath))
+
+def export_perfusion_grid_to_vti(
+    grid, 
+    concentration_array: np.ndarray, 
+    output_path: str | Path,
+    array_name: str = "O2_Concentration"
+) -> str:
+    """
+    Export the 3D perfusion grid and its calculated concentration to a VTK ImageData (.vti) file.
+    
+    Args:
+        grid: PerfusionGrid object containing dims, res, and min_xyz
+        concentration_array: 1D numpy array of solved concentrations
+        output_path: Where to save the .vti file
+        array_name: Name of the scalar field in ParaView
+        
+    Returns:
+        str: Path to the saved file
+    """
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise ImportError("pyvista is required for VTK export. Install with `pip install pyvista`.") from exc
+
+    output_path = Path(output_path)
+    if output_path.suffix != ".vti":
+        output_path = output_path.with_suffix(".vti")
+        
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # PyVista dimensions are nodes (points). Cell dimensions are dims - 1.
+    # Since we want our data on the cells (blocks), point dimensions = cell dimensions + 1
+    nx_dim, ny_dim, nz_dim = grid.dims
+    
+    vti = pv.ImageData()
+    vti.dimensions = (nx_dim + 1, ny_dim + 1, nz_dim + 1)
+    vti.spacing = tuple(grid.res)
+    vti.origin = tuple(grid.min_xyz)
+    
+    # Reshape the 1D array to 3D. 
+    # Our linear index was: idx = x + y*nx + z*nx*ny
+    # This corresponds to Fortran order 'F' when reshaping.
+    volume_data = concentration_array.reshape((nx_dim, ny_dim, nz_dim), order='F')
+    
+    # PyVista expects cell data to be flattened in Fortran order as well
+    vti.cell_data[array_name] = volume_data.flatten(order='F')
+    
+    vti.save(str(output_path))
+    return str(output_path)
