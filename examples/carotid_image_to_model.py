@@ -124,6 +124,7 @@ class PerfusionConfig:
     """Configuration for steady-state tissue diffusion modeling."""
     do_perfusion_modeling: bool = True
     grid_resolution_xyz: tuple[float, float, float] = (10.0, 10.0, 10.0) # micrometers
+    grid_opacity: float = 0.6 # 0.0 to 1.0
 
 @dataclass
 class VisualizationConfig:
@@ -836,7 +837,7 @@ if __name__ == "__main__":
 
     graph_config = GraphConfig()
     hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
-    vis_config = VisualizationConfig(visualize_overlay_preview=False)
+    vis_config = VisualizationConfig(visualize_overlay_preview=True)
     pipeline_config = PipelineConfig()
     perf_config = PerfusionConfig()
 

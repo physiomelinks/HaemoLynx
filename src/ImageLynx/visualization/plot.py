@@ -1013,19 +1013,20 @@ def visualize_overlay_vedo(
                     z_coords = np.linspace(min_xyz[2], max_xyz[2], dims[2] + 1)
                     
                     # X-direction lines (varying Y and Z)
+                    alpha_val = getattr(perf_config, 'grid_opacity', 0.2)
                     for y in y_coords:
                         for z in z_coords:
-                            grid_lines.append(vedo.Line((min_xyz[0], y, z), (max_xyz[0], y, z)).c('gray').alpha(0.1))
+                            grid_lines.append(vedo.Line((min_xyz[0], y, z), (max_xyz[0], y, z)).c('gray').alpha(alpha_val))
                     
                     # Y-direction lines (varying X and Z)
                     for x in x_coords:
                         for z in z_coords:
-                            grid_lines.append(vedo.Line((x, min_xyz[1], z), (x, max_xyz[1], z)).c('gray').alpha(0.1))
+                            grid_lines.append(vedo.Line((x, min_xyz[1], z), (x, max_xyz[1], z)).c('gray').alpha(alpha_val))
                             
                     # Z-direction lines (varying X and Y)
                     for x in x_coords:
                         for y in y_coords:
-                            grid_lines.append(vedo.Line((x, y, min_xyz[2]), (x, y, max_xyz[2])).c('gray').alpha(0.1))
+                            grid_lines.append(vedo.Line((x, y, min_xyz[2]), (x, y, max_xyz[2])).c('gray').alpha(alpha_val))
                     
                     grid_actor = vedo.Assembly(grid_lines)
                     
@@ -1035,7 +1036,7 @@ def visualize_overlay_vedo(
                         length=max_xyz[0]-min_xyz[0],
                         width=max_xyz[1]-min_xyz[1],
                         height=max_xyz[2]-min_xyz[2]
-                    ).wireframe().color("white").alpha(0.4).lw(1)
+                    ).wireframe().color("white").alpha(alpha_val * 2.0).lw(1)
                     
                     graph_actors.append(grid_actor)
                     graph_actors.append(bbox)
