@@ -114,7 +114,7 @@ class GraphConfig:
 @dataclass
 class HaemodynamicsConfig:
     """Configuration for fluid dynamics simulation, pressures, and vessel diameters."""
-    constrict_at_pericytes: bool = False
+    constrict_at_pericytes: bool = True
     input_p_bc: float = 1000.0
     output_p_bc: float = 500.0
     diameter_by_branch_order: dict = field(default_factory=dict)
@@ -644,8 +644,23 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         raise ValueError(f"No starting or output nodes found in input {graph_config.edge_percent}% or output {graph_config.end_percent}%")
 
     if starting_nodes:
-        # Crawl the network from the inlets to assign a Branch Order (e.g. BO1, BO2) to every vessel based on bifurcations passed
-        graph.assign_branch_orders(G, starting_nodes)
+        # Crawl the network from the inlets to assign a Branch Order (e.g. B01, B02) to every vessel based on bifurcations passed
+        # 1. Capture the BFS results to see exactly how deep this network goes
+        bo_results = graph.assign_branch_orders(G, starting_nodes)
+        unique_branch_orders = bo_results["branch_order_counts"].keys()
+
+        # 2. Extract the current dictionary and the user's intended default fallback
+        current_diam_dict = hemo_config.diameter_by_branch_order
+        default_diam_vals = current_diam_dict.get("DEFAULT", {"d1": 4.0, "d2": 4.0})
+
+        # 3. Smart-fill: Automatically generate config entries for missing branches
+        for bo_label in unique_branch_orders:
+            if bo_label not in current_diam_dict:
+                current_diam_dict[bo_label] = default_diam_vals
+                
+        # 4. Save the safely expanded dictionary back to the config
+        hemo_config.diameter_by_branch_order = current_diam_dict
+
         # Initialize the haemodynamics solver to calculate physical flow resistance using Poiseuille's Law
         poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=40.0,
