@@ -46,15 +46,6 @@ H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 
 # Diameter by branch order (dict with d1 and d2 for pericyte constriction simulation)
 DIAMETER_BY_BRANCH_ORDER = {
-    "B01": {"d1": 4.0, "d2": 4.0},
-    "B02": {"d1": 4.0, "d2": 4.0},
-    "B03": {"d1": 4.0, "d2": 4.0},
-    "B04": {"d1": 4.0, "d2": 4.0},
-    "B05": {"d1": 4.0, "d2": 4.0},
-    "B06": {"d1": 4.0, "d2": 4.0},
-    "B07": {"d1": 4.0, "d2": 4.0},
-    "B08": {"d1": 4.0, "d2": 4.0},
-    "B09": {"d1": 4.0, "d2": 4.0},
     "DEFAULT": {"d1": 4.0, "d2": 4.0},
 }
 
@@ -647,16 +638,54 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         # Crawl the network from the inlets to assign a Branch Order (e.g. B01, B02) to every vessel based on bifurcations passed
         # 1. Capture the BFS results to see exactly how deep this network goes
         bo_results = graph.assign_branch_orders(G, starting_nodes)
-        unique_branch_orders = bo_results["branch_order_counts"].keys()
+        unique_branch_orders = list(bo_results["branch_order_counts"].keys())
+        
+        print(f"Auto-detected {len(unique_branch_orders)} unique branch orders in the network:")
+        print(f"  {sorted(unique_branch_orders)}")
 
         # 2. Extract the current dictionary and the user's intended default fallback
         current_diam_dict = hemo_config.diameter_by_branch_order
         default_diam_vals = current_diam_dict.get("DEFAULT", {"d1": 4.0, "d2": 4.0})
 
-        # 3. Smart-fill: Automatically generate config entries for missing branches
+        # 3. Smart-fill using U-Shaped Murray's Law
+        import re
+        
+        # Find the deepest branch generation to locate the "middle" (capillary bed)
+        all_generations = []
+        for bo_label in unique_branch_orders:
+            match = re.search(r'\d+', bo_label)
+            if match:
+                all_generations.append(int(match.group()))
+                
+        max_n = max(all_generations) if all_generations else 1
+        mid_n = max_n / 2.0  # The deepest capillary bed is assumed to be in the exact middle
+        
+        # Define baseline capillary diameter
+        min_cap_d1 = default_diam_vals.get("d1", 4.0)
+        min_cap_d2 = default_diam_vals.get("d2", 2.0)
+
         for bo_label in unique_branch_orders:
             if bo_label not in current_diam_dict:
-                current_diam_dict[bo_label] = default_diam_vals
+                try:
+                    match = re.search(r'\d+', bo_label)
+                    if match:
+                        n = int(match.group())
+                        
+                        # Calculate generations away from the capillary bed
+                        dist_from_cap = abs(n - mid_n)
+                        
+                        # Apply Murray's Law scaling: d_parent = d_child * 2^(1/3)
+                        scaling_factor = 2.0 ** (dist_from_cap / 3.0)
+                        
+                        calculated_d1 = min_cap_d1 * scaling_factor
+                        calculated_d2 = min_cap_d2 * scaling_factor
+                        
+                        current_diam_dict[bo_label] = {"d1": calculated_d1, "d2": calculated_d2}
+                    else:
+                        current_diam_dict[bo_label] = default_diam_vals
+                except Exception as e:
+                    print(f"Warning: Could not apply Murray's law to {bo_label}: {e}")
+                    current_diam_dict[bo_label] = default_diam_vals
                 
         # 4. Save the safely expanded dictionary back to the config
         hemo_config.diameter_by_branch_order = current_diam_dict
