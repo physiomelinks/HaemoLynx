@@ -647,22 +647,34 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         current_diam_dict = hemo_config.diameter_by_branch_order
         default_diam_vals = current_diam_dict.get("DEFAULT", {"d1": 4.0, "d2": 4.0})
 
-        # 3. Smart-fill using U-Shaped Murray's Law
+        # 3. Smart-fill using 3-Point Boundary Fitted Exponential Scaling
         import re
         
-        # Find the deepest branch generation to locate the "middle" (capillary bed)
+        # Define your three biological anchor points
+        D_start_d1, D_start_d2 = 15.0, 15.0  # Arterial Inlet (B01)
+        D_mid_d1,   D_mid_d2   = 4.0,  2.0   # Capillary Bed (Middle)
+        D_end_d1,   D_end_d2   = 20.0, 20.0  # Venous Outlet (Max Branch)
+        
+        # Find the network boundaries
         all_generations = []
         for bo_label in unique_branch_orders:
             match = re.search(r'\d+', bo_label)
             if match:
                 all_generations.append(int(match.group()))
                 
-        max_n = max(all_generations) if all_generations else 1
-        mid_n = max_n / 2.0  # The deepest capillary bed is assumed to be in the exact middle
+        n_start = min(all_generations) if all_generations else 1
+        n_end = max(all_generations) if all_generations else 1
+        n_mid = (n_start + n_end) / 2.0  
         
-        # Define baseline capillary diameter
-        min_cap_d1 = default_diam_vals.get("d1", 4.0)
-        min_cap_d2 = default_diam_vals.get("d2", 2.0)
+        # Calculate the custom exponential scaling factors
+        delta_art = max(n_mid - n_start, 1e-6) # Prevent division by zero
+        delta_ven = max(n_end - n_mid, 1e-6)
+        
+        factor_art_d1 = (D_start_d1 / D_mid_d1) ** (1.0 / delta_art)
+        factor_art_d2 = (D_start_d2 / D_mid_d2) ** (1.0 / delta_art)
+        
+        factor_ven_d1 = (D_end_d1 / D_mid_d1) ** (1.0 / delta_ven)
+        factor_ven_d2 = (D_end_d2 / D_mid_d2) ** (1.0 / delta_ven)
 
         for bo_label in unique_branch_orders:
             if bo_label not in current_diam_dict:
@@ -671,20 +683,22 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
                     if match:
                         n = int(match.group())
                         
-                        # Calculate generations away from the capillary bed
-                        dist_from_cap = abs(n - mid_n)
+                        if n <= n_mid:
+                            # We are on the arterial side (shrinking)
+                            dist = n_mid - n
+                            calc_d1 = D_mid_d1 * (factor_art_d1 ** dist)
+                            calc_d2 = D_mid_d2 * (factor_art_d2 ** dist)
+                        else:
+                            # We are on the venous side (expanding)
+                            dist = n - n_mid
+                            calc_d1 = D_mid_d1 * (factor_ven_d1 ** dist)
+                            calc_d2 = D_mid_d2 * (factor_ven_d2 ** dist)
                         
-                        # Apply Murray's Law scaling: d_parent = d_child * 2^(1/3)
-                        scaling_factor = 2.0 ** (dist_from_cap / 3.0)
-                        
-                        calculated_d1 = min_cap_d1 * scaling_factor
-                        calculated_d2 = min_cap_d2 * scaling_factor
-                        
-                        current_diam_dict[bo_label] = {"d1": calculated_d1, "d2": calculated_d2}
+                        current_diam_dict[bo_label] = {"d1": calc_d1, "d2": calc_d2}
                     else:
                         current_diam_dict[bo_label] = default_diam_vals
                 except Exception as e:
-                    print(f"Warning: Could not apply Murray's law to {bo_label}: {e}")
+                    print(f"Warning: Could not apply boundary-fitted law to {bo_label}: {e}")
                     current_diam_dict[bo_label] = default_diam_vals
                 
         # 4. Save the safely expanded dictionary back to the config
