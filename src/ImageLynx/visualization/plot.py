@@ -981,13 +981,15 @@ def visualize_overlay_vedo(
             path = d.get("voxels", [])
             if len(path) > 1:
                 path = np.array(path)
-                path_xyz = path[:, [2, 1, 0]] * np.array(vedo_spacing)
+                # Graph path voxels are natively physical [z, y, x]
+                path_xyz = path[:, [2, 1, 0]]
                 graph_actors.append(vedo.Line(path_xyz).color("yellow").lw(2))
         
         pos = nx.get_node_attributes(G, "pos")
         if pos:
             nodes_coords = np.array(list(pos.values()))
-            nodes_xyz = nodes_coords[:, [2, 1, 0]] * np.array(vedo_spacing)
+            # Graph nodes are natively physical [z, y, x]
+            nodes_xyz = nodes_coords[:, [2, 1, 0]]
             graph_actors.append(vedo.Points(nodes_xyz, r=skeleton_point_size * 2.0).color("red"))
 
             # -- PERFUSION GRID GENERATION (3D LATTICE) --

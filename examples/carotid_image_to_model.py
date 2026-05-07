@@ -106,8 +106,8 @@ class GraphConfig:
 class HaemodynamicsConfig:
     """Configuration for fluid dynamics simulation, pressures, and vessel diameters."""
     constrict_at_pericytes: bool = True
-    input_p_bc: float = 1000.0
-    output_p_bc: float = 500.0
+    input_p_bc: float = 13.332e3 ### Pa (MAP of 70 mmHg to 100 mmHg = MAP of 9.333 kPa to 13.332 kPa)
+    output_p_bc: float = 0.27e3 ### Pa (CVP of 2 mmHg to 8 mmHg = CVP of 0.267 kPa to 1.067 kPa)
     diameter_by_branch_order: dict = field(default_factory=dict)
 
 @dataclass
@@ -950,7 +950,7 @@ if __name__ == "__main__":
 
     graph_config = GraphConfig()
     hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
-    vis_config = VisualizationConfig(visualize_overlay_preview=False)
+    vis_config = VisualizationConfig(visualize_overlay_preview=True)
     pipeline_config = PipelineConfig()
     perf_config = PerfusionConfig()
 

@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 class PerfusionGrid:
     """
     A 3D structured grid for tissue diffusion modeling.
-    Coordinates are stored in [x, y, z] to match typical physiological modeling conventions.
+    Coordinates are natively handled in [z, y, x] to perfectly align with ImageLynx graph conventions
+    and VTK exports without flipping.
     """
     def __init__(self, G: nx.MultiGraph, grid_resolution_xyz: Tuple[float, float, float]):
         # 1. Get physical bounds from graph nodes
@@ -17,14 +18,15 @@ class PerfusionGrid:
         if not pos:
             raise ValueError("Graph G must have 'pos' attributes (z, y, x).")
             
-        nodes_zyx = np.array(list(pos.values()))
         # ImageLynx convention: pos is [z, y, x] in physical units (micrometers)
-        nodes_xyz = nodes_zyx[:, [2, 1, 0]]
+        nodes_zyx = np.array(list(pos.values()))
         
-        self.res = np.array(grid_resolution_xyz, dtype=float)
+        # We assume resolution is passed as (x,y,z), so we flip it to (z,y,x) to match
+        self.res = np.array([grid_resolution_xyz[2], grid_resolution_xyz[1], grid_resolution_xyz[0]], dtype=float)
+        
         # Pad by half resolution to ensure all nodes are inside
-        self.min_xyz = np.min(nodes_xyz, axis=0) - self.res * 0.5
-        self.max_xyz = np.max(nodes_xyz, axis=0) + self.res * 0.5
+        self.min_xyz = np.min(nodes_zyx, axis=0) - self.res * 0.5  # min_xyz is actually min_zyx here
+        self.max_xyz = np.max(nodes_zyx, axis=0) + self.res * 0.5  # max_xyz is actually max_zyx here
         
         self.dims = np.ceil((self.max_xyz - self.min_xyz) / self.res).astype(int)
         self.n_cells = int(np.prod(self.dims))
@@ -32,38 +34,39 @@ class PerfusionGrid:
         # Calculate volumes for the CellML blueprint
         self.cell_volume = float(np.prod(self.res))
         
-        logger.info(f"Generated 3D Perfusion Grid: {self.dims[0]}x{self.dims[1]}x{self.dims[2]} "
-                    f"({self.n_cells} cells) at resolution {grid_resolution_xyz}µm")
+        logger.info(f"Generated 3D Perfusion Grid: {self.dims[0]}x{self.dims[1]}x{self.dims[2]} (ZYX) "
+                    f"({self.n_cells} cells) at resolution {self.res}µm")
 
     def get_cell_index(self, xyz: np.ndarray) -> int:
-        """Map a physical point to a linear grid index."""
+        """Map a physical point (z,y,x) to a linear grid index."""
         return _numba_get_linear_index(xyz, self.min_xyz, self.res, self.dims)
 
     def get_xyz_from_index(self, index: int) -> np.ndarray:
-        """Map a linear index back to physical center-of-cell XYZ coordinates."""
-        # index = x + y*nx + z*nx*ny
-        nx, ny = self.dims[0], self.dims[1]
-        iz = index // (nx * ny)
-        iy = (index % (nx * ny)) // nx
-        ix = index % nx
+        """Map a linear index back to physical center-of-cell (z,y,x) coordinates."""
+        # index = z + y*nz + x*nz*ny
+        nz, ny = self.dims[0], self.dims[1]
+        ix = index // (nz * ny)
+        iy = (index % (nz * ny)) // nz
+        iz = index % nz
         
-        indices = np.array([ix, iy, iz], dtype=float)
+        indices = np.array([iz, iy, ix], dtype=float)
         return self.min_xyz + (indices + 0.5) * self.res
 
 @jit(nopython=True, cache=True)
 def _numba_get_linear_index(pos_xyz, min_xyz, res, dims):
+    # pos_xyz and min_xyz are actually (z, y, x)
     rel = pos_xyz - min_xyz
-    idx_x = int(rel[0] / res[0])
+    idx_z = int(rel[0] / res[0])
     idx_y = int(rel[1] / res[1])
-    idx_z = int(rel[2] / res[2])
+    idx_x = int(rel[2] / res[2])
     
-    if idx_x < 0 or idx_x >= dims[0] or \
+    if idx_z < 0 or idx_z >= dims[0] or \
        idx_y < 0 or idx_y >= dims[1] or \
-       idx_z < 0 or idx_z >= dims[2]:
+       idx_x < 0 or idx_x >= dims[2]:
         return -1
         
-    # Linear index (x fastest)
-    return idx_x + idx_y * dims[0] + idx_z * dims[0] * dims[1]
+    # Linear index (z fastest)
+    return idx_z + idx_y * dims[0] + idx_x * dims[0] * dims[1]
 
 def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List[Dict[str, Any]]]:
     """
@@ -74,9 +77,6 @@ def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List
     """
     cell_to_vessels = {}
     
-    # Get spacing from graph metadata to convert voxels to physical
-    spacing = np.array(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
-
     for u, v, key, data in G.edges(keys=True, data=True):
         voxels = data.get("voxels")
         flow = data.get("flow_abs", 0.0)
@@ -85,22 +85,18 @@ def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List
         if voxels is None or len(voxels) < 2:
             continue
             
-        # Convert voxels (zyx image) to physical xyz
-        vox_arr = np.array(voxels, dtype=float)
-        # Apply spacing to match physical scale of G.nodes['pos']
-        vox_phys_xyz = np.zeros_like(vox_arr)
-        vox_phys_xyz[:, 0] = vox_arr[:, 2] * spacing[2] # x
-        vox_phys_xyz[:, 1] = vox_arr[:, 1] * spacing[1] # y
-        vox_phys_xyz[:, 2] = vox_arr[:, 0] * spacing[0] # z
+        # ImageLynx edges store 'voxels' natively in physical ZYX space from build.py!
+        # No spacing multiplication needed here.
+        vox_phys_zyx = np.array(voxels, dtype=float)
         
         # Incremental length per voxel segment
         # In a real model, we'd use line-plane intersection, but for high-res microscopy,
         # point-sampling the voxels is a robust and fast approximation.
         len_per_vox = edge_len / (len(voxels) - 1) if len(voxels) > 1 else 0.0
 
-        for i in range(len(vox_phys_xyz)):
-            xyz = vox_phys_xyz[i]
-            idx = grid.get_cell_index(xyz)
+        for i in range(len(vox_phys_zyx)):
+            zyx = vox_phys_zyx[i]
+            idx = grid.get_cell_index(zyx)
             
             if idx != -1:
                 if idx not in cell_to_vessels:
