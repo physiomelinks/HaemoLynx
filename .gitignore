@@ -31,3 +31,8 @@ image_to_model.py
 benchmark_scaling_results.csv
 plot_benchmark.py
 scaling_performance_plot.png
+
+# Documentation and references
+Dale_s_Masters_Thesis.pdf
+hypothesis_testing_methods.md
+examples/GE_diffusion_model_examples/
