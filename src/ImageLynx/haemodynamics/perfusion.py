@@ -248,6 +248,9 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, b_adv: np.ndarray,
         if info != 0:
             logger.warning(f"CG Solver did not converge perfectly at iteration {iteration} (info={info})")
             
+        # Prevent non-physical negative concentrations which cause Picard oscillation
+        C_new = np.maximum(C_new, 0.0)
+        
         # 4. Check convergence
         diff = np.linalg.norm(C_new - C) / (np.linalg.norm(C_new) + 1e-12)
         logger.debug(f"  Iteration {iteration+1}: Relative change = {diff:.6e}")
