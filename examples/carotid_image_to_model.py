@@ -109,6 +109,15 @@ class HaemodynamicsConfig:
     input_p_bc: float = 13.332e3 ### Pa (MAP of 70 mmHg to 100 mmHg = MAP of 9.333 kPa to 13.332 kPa)
     output_p_bc: float = 0.27e3 ### Pa (CVP of 2 mmHg to 8 mmHg = CVP of 0.267 kPa to 1.067 kPa)
     diameter_by_branch_order: dict = field(default_factory=dict)
+    
+    # --- Sphincter / Constriction Configuration ---
+    constriction_mode: str = "sphincter"  # Options: "sphincter" or "periodic"
+    sphincter_length_um: float = 5.0      # Physical length of the pinched region
+    
+    # Severity modifiers (1.0 = no constriction, 0.5 = 50% constriction)
+    intimal_cushion_constriction_ratio: float = 0.60
+    pre_capillary_constriction_ratio: float = 0.50
+    pre_capillary_topological_offset: int = 1
 
 @dataclass
 class PerfusionConfig:
@@ -699,12 +708,23 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
                             # We are on the arterial side (shrinking)
                             dist = n_mid - n
                             calc_d1 = D_mid_d1 * (factor_art_d1 ** dist)
-                            calc_d2 = D_mid_d2 * (factor_art_d2 ** dist)
                         else:
                             # We are on the venous side (expanding)
                             dist = n - n_mid
                             calc_d1 = D_mid_d1 * (factor_ven_d1 ** dist)
-                            calc_d2 = D_mid_d2 * (factor_ven_d2 ** dist)
+                            
+                        # Apply Physiological Sphincter Constrictions (d2)
+                        # By default, vessels are unconstricted (d2 = d1)
+                        calc_d2 = calc_d1
+                        
+                        # (i) Intimal Cushion at the origin of the carotid (B01)
+                        if n == 1:
+                            calc_d2 = calc_d1 * hemo_config.intimal_cushion_constriction_ratio
+                            
+                        # (ii) Pre-Capillary Sphincters at the origin of capillary beds
+                        # We define the transition zone (n_mid) as the start of the capillary beds
+                        elif n == int(n_mid) or n == int(n_mid) - hemo_config.pre_capillary_topological_offset:
+                            calc_d2 = calc_d1 * hemo_config.pre_capillary_constriction_ratio
                         
                         current_diam_dict[bo_label] = {"d1": calc_d1, "d2": calc_d2}
                     else:
@@ -735,8 +755,9 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
 
         # Initialize the haemodynamics solver to calculate physical flow resistance using Poiseuille's Law
         poiseuille_model = haemodynamics.PoiseuilleModel(
-            constriction_length=40.0,
-            constriction_spacing=100.0,
+            constriction_length=hemo_config.sphincter_length_um,
+            constriction_spacing=100.0, # Not used in sphincter mode
+            mode=hemo_config.constriction_mode
         )
         if hemo_config.constrict_at_pericytes:
             poiseuille_model.set_poiseuille_resistances_with_constrictions(
@@ -980,7 +1001,7 @@ if __name__ == "__main__":
         skel_config.sub_volume_percentage = args.sub_volume
 
     graph_config = GraphConfig()
-    hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
+    hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=True)
     vis_config = VisualizationConfig(visualize_overlay_preview=False)
     pipeline_config = PipelineConfig()
     perf_config = PerfusionConfig()
