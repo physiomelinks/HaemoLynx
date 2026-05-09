@@ -13,6 +13,12 @@ The pipeline utilizes a two-stage sequential physics engine. Stage 1 solves the 
 **Vessel Geometry & Resistance Calculation:**
 Rather than relying on theoretical branching hierarchies (e.g., Murray's Law), the model measures the true physical biological radius ($r$) directly from the source image. The algorithm casts orthogonal 3D rays from the vessel centerline through the machine-learning generated continuous probability field (Ilastik). By fitting a 1D Gaussian curve to this noise-free, normalized gradient ($0.0 - 1.0$), the algorithm extracts the Full-Width-at-Half-Maximum (FWHM) diameter with sub-voxel precision. These direct physical measurements are exclusively used to determine the Hagen-Poiseuille resistance.
 
+**Physiological Pre-Capillary Sphincter Modeling:**
+To simulate localized vasoconstriction (such as sympathetic tone in SHR models), the pipeline employs a highly targeted "Sphincter" integration logic rather than uniform or periodic constrictions. Based on topological branch-order generation:
+1.  **Intimal Cushion (Systemic Inflow):** A mathematically defined localized pinch is applied exclusively to `B01` (Inlet) nodes to restrict total system perfusion prior to capillary distribution.
+2.  **Pre-Capillary Sphincters:** By dynamically calculating the topological center (`n_mid`) of the network (representing the capillary bed), the algorithm applies localized $5.0 \mu m$ pinches exclusively at the transitional arterioles just prior to capillary distribution.
+3.  **Unrestricted Capillary/Venous Shunting:** Deep capillaries and collecting veins remain entirely unconstricted (utilizing the pure FWHM measurements). This forces the mathematical flow solver to naturally shunt blood through large-diameter AVAs when pre-capillary sphincters are constricted.
+
 **The System of Governing Equations:**
 The vascular network is modeled as a 1D directed graph (hydraulic circuit).
 *   **Hagen-Poiseuille Resistance:** $R_{ij} = \frac{8 \mu L_{ij}}{\pi r_{ij}^4}$

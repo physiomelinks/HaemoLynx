@@ -112,11 +112,11 @@ class HaemodynamicsConfig:
     
     # --- Sphincter / Constriction Configuration ---
     constriction_mode: str = "sphincter"  # Options: "sphincter" or "periodic"
-    sphincter_length_um: float = 5.0      # Physical length of the pinched region
+    sphincter_length_um: float = 5.0      # Physical length of the pinched region (um)
     
     # Severity modifiers (1.0 = no constriction, 0.5 = 50% constriction)
-    intimal_cushion_constriction_ratio: float = 0.60
-    pre_capillary_constriction_ratio: float = 0.50
+    intimal_cushion_constriction_ratio: float = 1.0
+    pre_capillary_constriction_ratio: float = 1.0
     pre_capillary_topological_offset: int = 1
 
 @dataclass

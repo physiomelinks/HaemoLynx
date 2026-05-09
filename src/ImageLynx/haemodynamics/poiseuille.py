@@ -9,25 +9,43 @@ logger = logging.getLogger(__name__)
 class PoiseuilleModel:
     """Encapsulates Poiseuille computations and constriction settings."""
 
-    def __init__(self, constriction_length: float, constriction_spacing: float) -> None:
+    def __init__(self, constriction_length: float, constriction_spacing: float, mode: str = "periodic") -> None:
         self.constriction_length = constriction_length
         self.constriction_spacing = constriction_spacing
+        self.mode = mode
 
     def get_diameter_at_position(
         self, position: float, length: float, d1: float, d2: float
     ) -> float:
-        """Diameter at position along vessel. Periodic constriction pattern."""
+        """Diameter at position along vessel. Supports periodic or localized sphincter pattern."""
         if length <= 0:
             return d1
-        phase = position % self.constriction_spacing
-        if phase < self.constriction_length:
-            # Ramp: 0-10 d1->d2, 10-30 d2, 30-40 d2->d1
-            if phase < 10:
-                return d1 + (d2 - d1) * (phase / 10)
-            if phase < 30:
+            
+        if self.mode == "sphincter":
+            # Sphincter model: a single constriction exactly at the origin of the vessel
+            # 0 to 1/4 length: ramp down, 1/4 to 3/4: hold d2, 3/4 to full: ramp up
+            if position > self.constriction_length:
+                return d1
+            
+            # Divide the sphincter length into sections
+            ramp_len = self.constriction_length * 0.25
+            if position < ramp_len:
+                return d1 + (d2 - d1) * (position / ramp_len)
+            if position < self.constriction_length - ramp_len:
                 return d2
-            return d2 + (d1 - d2) * ((phase - 30) / 10)
-        return d1
+            return d2 + (d1 - d2) * ((position - (self.constriction_length - ramp_len)) / ramp_len)
+            
+        else:
+            # Periodic model (default)
+            phase = position % self.constriction_spacing
+            if phase < self.constriction_length:
+                # Ramp: 0-10 d1->d2, 10-30 d2, 30-40 d2->d1
+                if phase < 10:
+                    return d1 + (d2 - d1) * (phase / 10)
+                if phase < 30:
+                    return d2
+                return d2 + (d1 - d2) * ((phase - 30) / 10)
+            return d1
 
     @staticmethod
     def calculate_viscosity(diameter: float) -> float:
@@ -199,7 +217,9 @@ class PoiseuilleModel:
         return G, results
 
     def set_poiseuille_resistances_with_constrictions(
-        self, G: nx.MultiGraph, diameter_by_branch_order: dict
+        self, G: nx.MultiGraph, diameter_by_branch_order: dict,
+        *,
+        prefer_edge_fwhm_baseline: bool = False,
     ) -> dict:
         """Set edge resistances using integrated resistance with constrictions."""
         results = {
@@ -209,6 +229,7 @@ class PoiseuilleModel:
             "unknown_branch_order": [],
             "invalid_length": [],
             "invalid_diameter": [],
+            "used_fwhm_baseline": 0,
         }
         for u, v, key, data in G.edges(keys=True, data=True):
             branch_order = data.get("branch_order")
@@ -239,12 +260,27 @@ class PoiseuilleModel:
                     f"Invalid diameter mapping for branch_order '{branch_order}'. "
                     "Expected dict containing 'd1' and 'd2'."
                 )
-            d1, d2 = diameters["d1"], diameters["d2"]
-            if d1 <= 0 or d2 <= 0:
+                
+            d1_dict, d2_dict = diameters["d1"], diameters["d2"]
+            if d1_dict <= 0 or d2_dict <= 0:
                 raise ValueError(
                     f"Invalid non-positive diameters for branch_order '{branch_order}': "
-                    f"d1={d1}, d2={d2}."
+                    f"d1={d1_dict}, d2={d2_dict}."
                 )
+                
+            # If prefer_edge_fwhm_baseline is True, we grab d1 from the image measurement.
+            # We then scale d2 by the exact same ratio defined in the dictionary.
+            d1 = d1_dict
+            d2 = d2_dict
+            
+            if prefer_edge_fwhm_baseline:
+                fwhm_d = data.get("fwhm_diameter_um")
+                if fwhm_d is not None and float(fwhm_d) > 0:
+                    d1 = float(fwhm_d)
+                    constriction_ratio = d2_dict / d1_dict
+                    d2 = d1 * constriction_ratio
+                    results["used_fwhm_baseline"] += 1
+            
             try:
                 total_resistance = self.calculate_integrated_resistance(length, d1, d2)
                 G[u][v][key]["resistance"] = total_resistance
