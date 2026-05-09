@@ -592,6 +592,18 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     G = graph.remove_edges_for_self_connected_nodes(G)
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "prune_vascular_stubs.png")
     
+    # Smooth the physical 3D paths (voxels) of all edges using B-Splines to ensure realistic biological curvature
+    print("Smoothing all edge centerlines in parallel using Joblib and B-Splines...")
+    smooth_stats = graph.smooth_graph_edge_centerlines_continuous(
+        G,
+        skeleton,
+        smoothing_method="bspline",
+        bspline_smoothness=0.75,
+        debug=pipeline_config.verbose_logging,
+        voxel_size=current_spacing
+    )
+    print(f"Continuous centerline smoothing summary: {smooth_stats}")
+
     # Final safety net: delete any floating graph islands that were accidentally severed during the topological optimization steps
     if graph_config.keep_largest_component_only:
         n_before = G.number_of_nodes()
