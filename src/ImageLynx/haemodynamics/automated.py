@@ -1095,7 +1095,13 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             f"profile_baseline_mode must be 'wings' or 'percentile', got {profile_baseline_mode!r}."
         )
 
-    raw = load_single_channel_tiff_volume(raw_tiff_path)
+    if isinstance(raw_tiff_path, np.ndarray):
+        raw = raw_tiff_path
+    else:
+        raw = load_single_channel_tiff_volume(raw_tiff_path)
+
+    print(f"  FWHM Analyzer loaded volume shape: {raw.shape}")
+
     labels, _ = build_graph_branch_label_volume(
         G,
         raw.shape,

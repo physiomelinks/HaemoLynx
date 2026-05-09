@@ -83,7 +83,7 @@ class SkeletonConfig:
     use_padded_slicing: bool = True
     padded_slicing_padding: int = 3
     prune_mask_before: int = 1
-    sub_volume_percentage: float = 0.25
+    sub_volume_percentage: float = 0.15
     sub_volume_offset_z: float = 0.0
     sub_volume_offset_y: float = 0.0
     sub_volume_offset_x: float = 0.0
@@ -615,7 +615,7 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
             
     return G
 
-def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config):
+def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format):
     """
     Phase 4: Selects inlet/outlet nodes, calculates branch hierarchies,
     and assigns physical resistances based on Poiseuille's law.
@@ -715,6 +715,23 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
                 
         # 4. Save the safely expanded dictionary back to the config
         hemo_config.diameter_by_branch_order = current_diam_dict
+        
+        # 5. Automatically measure exact physical vessel diameters from the raw image
+        print("Measuring exact physical vessel diameters using 3D FWHM ray-casting...")
+        
+        # Use the detected spacing (or default)
+        fwhm_spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+        
+        # We pass the pre-loaded, pre-cropped 3D `image` array directly into the FWHM algorithm.
+        stats_dict = haemodynamics.measure_edge_diameters_fwhm_from_raw_tiff(
+            G,
+            raw_tiff_path=image,  # We pass the numpy array directly (the backend has been patched to handle this)
+            voxel_size_xyz=fwhm_spacing,
+            sample_spacing_along_edge_um=2.0,
+            transverse_profile_step_um=0.5,
+            transverse_half_extent_um=15.0,
+        )
+        print(f"FWHM measurement complete. Processed {len(stats_dict)} edges.")
 
         # Initialize the haemodynamics solver to calculate physical flow resistance using Poiseuille's Law
         poiseuille_model = haemodynamics.PoiseuilleModel(
@@ -725,6 +742,7 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
                 hemo_config.diameter_by_branch_order,
+                prefer_edge_fwhm_baseline=True,
             )
         else:
             # For non-constricted mode, extract d1 from the config dicts
@@ -735,6 +753,7 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             poiseuille_model.set_poiseuille_resistances(
                 G,
                 simple_diameters,
+                prefer_edge_fwhm_diameter=True,
             )
             
     return starting_nodes, output_nodes, resistance_node_pair
@@ -927,7 +946,7 @@ def carotid_image_to_model(image_path: Path | str,
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
 
-    starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config)
+    starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format)
     _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config)
     
 if __name__ == "__main__":
@@ -962,7 +981,7 @@ if __name__ == "__main__":
 
     graph_config = GraphConfig()
     hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=False)
-    vis_config = VisualizationConfig(visualize_overlay_preview=True)
+    vis_config = VisualizationConfig(visualize_overlay_preview=False)
     pipeline_config = PipelineConfig()
     perf_config = PerfusionConfig()
 
