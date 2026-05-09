@@ -10,6 +10,9 @@ The pipeline utilizes a two-stage sequential physics engine. Stage 1 solves the 
 
 ### 1.1 1D Hemodynamics (Flow & Pressure)
 
+**Vessel Geometry & Resistance Calculation:**
+Rather than relying on theoretical branching hierarchies (e.g., Murray's Law), the model measures the true physical biological radius ($r$) directly from the source image. The algorithm casts orthogonal 3D rays from the vessel centerline through the machine-learning generated continuous probability field (Ilastik). By fitting a 1D Gaussian curve to this noise-free, normalized gradient ($0.0 - 1.0$), the algorithm extracts the Full-Width-at-Half-Maximum (FWHM) diameter with sub-voxel precision. These direct physical measurements are exclusively used to determine the Hagen-Poiseuille resistance.
+
 **The System of Governing Equations:**
 The vascular network is modeled as a 1D directed graph (hydraulic circuit).
 *   **Hagen-Poiseuille Resistance:** $R_{ij} = \frac{8 \mu L_{ij}}{\pi r_{ij}^4}$
@@ -76,9 +79,9 @@ To quantitatively answer this hypothesis by comparing WKY (normotensive) and SHR
 5.  **Vessel Network Length Across Branch Points:**
     *   *Concept:* Calculate the total physical length of the vascular network and the average physical segment lengths between bifurcations.
     *   *Rationale:* Quantifies vascular expansion or pruning. An increase in total capillary length alongside a decrease in cross-sectional area indicates a specific type of structural reconfiguration under hypertension.
-6.  **Vessel Tortuosity:**
-    *   *Concept:* Calculate the tortuosity index (ratio of actual physical path length to the straight-line Euclidean distance between nodes) for all vessel segments, specifically focusing on those within the glomus tissue.
-    *   *Rationale:* Hypertension often induces tortuous, "corkscrew" vessel remodeling due to sustained high pressure and endothelial stress. Measuring this provides a direct metric of structural degradation.
+6.  **Vessel Tortuosity & True Biological Length:**
+    *   *Concept:* Calculate the tortuosity index (ratio of actual physical path length to the straight-line Euclidean distance between nodes) for all vessel segments.
+    *   *Rationale:* Hypertension often induces tortuous, "corkscrew" vessel remodeling due to sustained high pressure and endothelial stress. Measuring this provides a direct metric of structural degradation. To ensure mathematical accuracy and prevent "stair-stepping" artifacts from artificially inflating the measured lengths of rasterized voxels, the pipeline utilizes a multi-core continuous B-spline smoothing algorithm on all centerlines prior to measuring. This guarantees that tortuosity calculations trace realistic biological curvature.
 
 ### Hypothesis 2: Does the perfusion profile of the CB change due to changes involved in hypertension?
 To answer this hypothesis, static morphology is bypassed to utilize the pipeline's fluid dynamics and mass transport modeling capabilities.
