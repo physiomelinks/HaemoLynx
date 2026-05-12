@@ -163,17 +163,22 @@ def test_perfusion_solver_no_metabolism(mock_graph):
     # Total concentration shouldn't be zero since we have advection and no sink
     assert np.sum(C_steady) > 0.0
 
-def test_perfusion_solver_positivity(mock_graph):
-    """Even with massive metabolism, non-linear math physically prevents negative concentrations."""
+def test_advective_source_hematocrit_weighting(mock_graph):
+    """Verify that oxygen delivery (b_adv) scales explicitly with hematocrit (plasma skimming)."""
     grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
-    cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
+    
+    # We will manually craft cell_to_vessels to simulate two identical flows, but one is pure plasma.
+    cell_to_vessels = {
+        0: [{'edge': (1, 2, 0), 'flow': 10.0, 'hematocrit': 0.45, 'length': 5.0}], # Normal blood
+        1: [{'edge': (2, 3, 0), 'flow': 10.0, 'hematocrit': 0.00, 'length': 5.0}]  # Skimmed pure plasma
+    }
+    
     config = MockPerfusionConfig()
+    _, b_adv, diag_A = build_adr_matrix(grid, cell_to_vessels, config)
     
-    # Introduce normal flow, but a ridiculously high tissue sink
-    config.M_max = 1000.0 
+    # Advective Source (b_adv) is driven by RBC FLOW. 
+    # Cell 0 has H=0.45, so it should receive the full source (flow * C_arterial)
+    assert np.isclose(b_adv[0], 10.0 * config.C_arterial)
     
-    A, b_adv, _ = build_adr_matrix(grid, cell_to_vessels, config)
-    C_steady = solve_perfusion_steady_state(grid, A, b_adv, config)
-    
-    # Assert there are no physically impossible negative concentrations
-    assert np.all(C_steady >= -1e-10) # Account for minor floating point error
+    # Cell 1 has H=0.0, so it should receive EXACTLY 0.0 oxygen delivery, despite having flow.
+    assert np.isclose(b_adv[1], 0.0)

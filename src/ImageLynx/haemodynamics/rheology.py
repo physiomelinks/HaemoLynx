@@ -268,20 +268,26 @@ def solve_coupled_flow_and_hematocrit(
             elif len(out_edges) == 1:
                 # Direct pass-through
                 v, k, data = out_edges[0][1], out_edges[0][2], out_edges[0][3]
+                u = node
+                G[u][v][k]["hematocrit"] = h_mix
                 data["hematocrit"] = h_mix
                 node_h_in[v] += h_mix * data["flow_abs"]
                 node_q_in[v] += data["flow_abs"]
             elif len(out_edges) == 2:
                 # Bifurcation -> Plasma Skimming
                 e1, e2 = out_edges[0], out_edges[1]
-                q1, d1 = e1[3]["flow_abs"], e1[3].get("assigned_diameter_um", 5.0)
-                q2, d2 = e2[3]["flow_abs"], e2[3].get("assigned_diameter_um", 5.0)
+                q1 = e1[3]["flow_abs"]
+                d1 = e1[3].get("assigned_diameter_um", e1[3].get("fwhm_diameter_um", 5.0))
+                q2 = e2[3]["flow_abs"]
+                d2 = e2[3].get("assigned_diameter_um", e2[3].get("fwhm_diameter_um", 5.0))
                 
                 h1, h2 = calculate_phase_separation_hematocrit(
                     q1 + q2, h_mix, q1, d1, q2, d2
                 )
                 
+                G[node][e1[1]][e1[2]]["hematocrit"] = h1
                 e1[3]["hematocrit"] = h1
+                G[node][e2[1]][e2[2]]["hematocrit"] = h2
                 e2[3]["hematocrit"] = h2
                 
                 node_h_in[e1[1]] += h1 * q1
@@ -292,6 +298,7 @@ def solve_coupled_flow_and_hematocrit(
             else:
                 # Trifurcation+ -> Just proportional mixing (Phase separation equations only work for Y-splits)
                 for _, v, k, data in out_edges:
+                    G[node][v][k]["hematocrit"] = h_mix
                     data["hematocrit"] = h_mix
                     node_h_in[v] += h_mix * data["flow_abs"]
                     node_q_in[v] += data["flow_abs"]
@@ -300,7 +307,10 @@ def solve_coupled_flow_and_hematocrit(
         for u, v, key, data in G.edges(keys=True, data=True):
             # The DAG data dictionary is a reference to the G data dictionary, so hematocrit is already updated
             h = data["hematocrit"]
-            d = data.get("assigned_diameter_um", 5.0)
+            d = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
+            if d is None or d <= 0:
+                d = 5.0
+                
             mu_app = calculate_pries_secomb_viscosity(d, h)
             data["viscosity"] = mu_app
             
