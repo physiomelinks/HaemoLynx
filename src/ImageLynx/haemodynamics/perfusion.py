@@ -114,6 +114,7 @@ def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List
                     cell_to_vessels[idx].append({
                         'edge': (u, v, key),
                         'flow': flow,
+                        'hematocrit': data.get("hematocrit", 0.45),
                         'length': len_per_vox
                     })
                     
@@ -154,10 +155,15 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     # Advection source terms (Vessel coupling)
     for idx, vessels in cell_to_vessels.items():
         total_q = sum(v['flow'] for v in vessels)
-        # Add advective washout to diagonal
+        # Weight the oxygen delivery by the hematocrit (RBC concentration)
+        # If the vessel was skimmed (H_D near 0), it delivers almost no oxygen despite having flow.
+        # We assume standard C_arterial is calibrated for H_D = 0.45, so we scale by (H_D / 0.45)
+        total_q_o2 = sum(v['flow'] * (v.get('hematocrit', 0.45) / 0.45) for v in vessels)
+        
+        # Add advective washout to diagonal (washout is driven by total bulk flow)
         diag_A[idx] += total_q
-        # Add advective source to RHS
-        b_adv[idx] += total_q * perf_config.C_arterial
+        # Add advective source to RHS (source is driven by RBC flow)
+        b_adv[idx] += total_q_o2 * perf_config.C_arterial
 
     # Build diffusion matrix (Standard 7-point stencil)
     # Using Numba for speed is possible, but vectorized construction is also fast.

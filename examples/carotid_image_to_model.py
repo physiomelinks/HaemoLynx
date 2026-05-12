@@ -841,6 +841,21 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
         print(f"  {key}: {value}")
 
     # Inject boundary pressures and solve the system of linear equations to find pressure at every node and flow in every edge
+    print("Running Iterative Flow-Hematocrit solver (Phase Separation and Fåhræus–Lindqvist effect)...")
+    import ImageLynx.haemodynamics.rheology as rheo
+    G, final_pressure = rheo.solve_coupled_flow_and_hematocrit(
+        G,
+        starting_nodes,
+        output_nodes,
+        hemo_config.input_p_bc,
+        hemo_config.output_p_bc,
+        systemic_hematocrit=0.45,
+        max_iterations=15
+    )
+    
+    # We still need to export the final flow data to VTK
+    # Let's rebuild the final conductance matrix now that the iterative solver updated all the resistances
+    conductance, _ = haemodynamics.build_conductance_matrix_from_graph(G)
     flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
@@ -850,11 +865,31 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
         output_nodes,
         vtk_export,
     )
-    print("Flow through the network solved")
+    
+    # Now manually inject hematocrit and viscosity into the VTK file
+    import pyvista as pv
+    vessels = pv.read(vtk_export['vessels_path'])
+    edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
+    edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
+    edge_k = np.asarray(vessels.cell_data.get("edge_k", np.zeros_like(edge_u)))
+    
+    hematocrit_array = np.full(vessels.n_cells, 0.45, dtype=float)
+    viscosity_array = np.full(vessels.n_cells, 1.2, dtype=float)
+    
+    for ii in range(vessels.n_cells):
+        u, v, k = int(edge_u[ii]), int(edge_v[ii]), int(edge_k[ii])
+        if G.has_edge(u, v, k):
+            hematocrit_array[ii] = G[u][v][k].get("hematocrit", 0.45)
+            viscosity_array[ii] = G[u][v][k].get("viscosity", 1.2)
+            
+    vessels.cell_data["hematocrit"] = hematocrit_array
+    vessels.cell_data["viscosity"] = viscosity_array
+    vessels.save(vtk_export['vessels_path'])
+    
+    print("Flow through the network solved and VTK updated with Rheology fields.")
     print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
 
-    # Write flow back into the NetworkX Graph
-    import pyvista as pv
+    # Write flow back into the NetworkX Graph (flow is actually already in G from the solver, but we'll do this for redundancy)
     vessels = pv.read(vtk_export['vessels_path'])
     edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
     edge_v = np.asarray(vessels.cell_data.get("edge_v", []))

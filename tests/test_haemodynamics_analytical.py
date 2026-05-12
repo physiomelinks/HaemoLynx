@@ -14,6 +14,10 @@ from ImageLynx.haemodynamics.perfusion import (
     build_adr_matrix,
     solve_perfusion_steady_state
 )
+from ImageLynx.haemodynamics.rheology import (
+    calculate_pries_secomb_viscosity,
+    calculate_phase_separation_hematocrit
+)
 
 @dataclass
 class MockPerfusionConfig:
@@ -246,3 +250,71 @@ def test_analytical_radial_point_source():
     # In a perfect continuous infinite domain, ratio is 2.0. 
     # Discrete Cartesian grid introduces minor discretization errors near origin.
     assert 1.5 < ratio < 2.5
+
+
+# --- Part 3: Empirical Rheology Tests ---
+
+def test_rheology_hematocrit_mass_conservation():
+    """Verify that RBC flux is conserved during phase separation."""
+    q_in, h_in = 10.0, 0.45
+    # Symmetrical split
+    q_out1, d_out1 = 5.0, 10.0
+    q_out2, d_out2 = 5.0, 10.0
+    
+    h_out1, h_out2 = calculate_phase_separation_hematocrit(
+        q_in, h_in, q_out1, d_out1, q_out2, d_out2
+    )
+    
+    # RBC Flux in = RBC Flux out
+    flux_in = q_in * h_in
+    flux_out = (q_out1 * h_out1) + (q_out2 * h_out2)
+    assert np.isclose(flux_in, flux_out, atol=1e-8)
+    
+    # Symmetrical bifurcation should result in identical hematocrit
+    assert np.isclose(h_out1, h_out2, atol=1e-8)
+
+
+def test_rheology_plasma_skimming_effect():
+    """Verify that RBCs disproportionately favor the larger/faster branch (Plasma Skimming)."""
+    q_in, h_in = 10.0, 0.45
+    
+    # Asymmetrical split: Branch 1 is a massive AVA, Branch 2 is a tiny capillary
+    q_out1, d_out1 = 9.0, 20.0
+    q_out2, d_out2 = 1.0, 5.0
+    
+    h_out1, h_out2 = calculate_phase_separation_hematocrit(
+        q_in, h_in, q_out1, d_out1, q_out2, d_out2
+    )
+    
+    # The AVA (Branch 1) should "skim" the RBCs, resulting in a higher hematocrit than the inlet
+    assert h_out1 > h_in
+    # The Capillary (Branch 2) should receive mostly plasma, dropping its hematocrit significantly
+    assert h_out2 < h_in
+    
+    # Mass must still be strictly conserved
+    flux_in = q_in * h_in
+    flux_out = (q_out1 * h_out1) + (q_out2 * h_out2)
+    assert np.isclose(flux_in, flux_out, atol=1e-8)
+
+
+def test_rheology_fahraeus_lindqvist_curve():
+    """Verify the Pries-Secomb viscosity follows the expected biological diameter curve."""
+    # Test a massive artery (100 um), a medium vessel (30 um), and a small vessel (10 um)
+    # The Fåhræus–Lindqvist effect states apparent viscosity DROPS as diameter decreases
+    # due to the cell-free plasma layer forming near the walls.
+    
+    visc_100 = calculate_pries_secomb_viscosity(100.0, 0.45)
+    visc_30 = calculate_pries_secomb_viscosity(30.0, 0.45)
+    visc_10 = calculate_pries_secomb_viscosity(10.0, 0.45)
+    
+    # Assert viscosity decreases with diameter
+    assert visc_100 > visc_30
+    assert visc_30 > visc_10
+    
+    # However, when the vessel gets too small (approaching RBC size of ~5-8um), 
+    # RBCs must deform to squeeze through, causing viscosity to suddenly spike back up (the inversion point).
+    visc_6 = calculate_pries_secomb_viscosity(6.0, 0.45)
+    visc_3 = calculate_pries_secomb_viscosity(3.0, 0.45)
+    
+    assert visc_10 < visc_6
+    assert visc_6 < visc_3
