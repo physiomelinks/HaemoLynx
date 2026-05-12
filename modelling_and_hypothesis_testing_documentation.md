@@ -129,3 +129,29 @@ To better address the presented hypotheses and elevate the model from a basic ap
 *   **The Limitation:** CFM imaging only captures physically patent vessels. Hypertension and sympathetic tone cause micro-capillaries to collapse entirely, meaning anatomical capacity does not equal functional capacity.
 *   **The Improvement:** Add a "Virtual Pruning" step that systematically removes network edges from the control graph that fall below a specific diameter/pressure threshold.
 *   **Hypothesis Impact:** Simulates the functional morphology under high sympathetic tone, allowing a direct comparison between maximum anatomical capacity and restricted functional reality.
+
+---
+
+## 4. Model Validation & Testing Strategies
+
+To guarantee mathematical accuracy, the pipeline implements a rigorous suite of automated integration and analytical physics tests (via `pytest`). These validate the complex hemodynamics and perfusion engines against known theoretical benchmarks:
+
+### 4.1 Structural & Mechanic Validation
+These tests ensure the 3D grid, matrix builders, and non-linear solver bounds function correctly without catastrophic mathematical failure.
+*   **Geometric Mapping:** Proves that physical `ZYX` coordinates map flawlessly to the linear discrete `PerfusionGrid` arrays, and that 1D physical line segments deposit their advective flow specifically into the exact 3D voxels they intersect.
+*   **ADR Sparse Matrix Integrity:** Verifies the physical structure of the 7-Point Stencil Laplacian. It asserts that central tissue nodes contain exactly 7 non-zero connectivity elements (itself + 6 neighbors), preventing isolated grid blocks.
+*   **Picard Iteration Bounds:** Subjects the non-linear solver to extreme biological boundaries. It proves that zero inlet flow results in exactly $0.0$ steady-state tissue concentration, and that ridiculously massive metabolic sinks mathematically cannot force tissue oxygen into non-physical negative concentrations.
+
+### 4.2 Analytical Physics Benchmarking
+These tests compare the numerical sparse-matrix solvers against exact mathematical formulas for simplified physical geometries.
+*   **Poiseuille Flow (Series & Parallel):** Creates test networks of differing radii and forces boundary pressures. Proves the numerical flow solver perfectly matches the analytical series ($R_{eq} = R_1 + R_2$) and parallel ($1/R_{eq} = 1/R_1 + 1/R_2$) conductance formulas.
+*   **1D Pure Diffusion:** Turns off metabolism and advection. Proves the 3D finite difference Laplacian matrix produces a flawless, straight-line linear concentration gradient along a single axis.
+*   **Parabolic Reaction-Diffusion:** Forces the non-linear metabolic sink into a constant zero-order rate. Proves the steady-state solver's spatial output perfectly traces the exact theoretical mathematical parabola.
+*   **Radial Point Source:** Places a single advective source in the center of the grid. Proves the spatial diffusion radiating outward strictly conforms to the expected inverse-radius curve ($C(r) \propto 1/r$).
+
+### 4.3 Non-Newtonian Rheology Validation
+These tests validate the Pries-Secomb empirical math and its integration into the iterative flow solver.
+*   **Fåhræus–Lindqvist Curve:** Empirically tests the viscosity equations across massive arteries ($100 \mu m$) down to extreme capillaries ($3 \mu m$), confirming that viscosity correctly drops as vessels shrink, and then correctly spikes at the $8 \mu m$ inversion point where RBCs must deform.
+*   **Plasma Skimming Mechanics & Mass Conservation:** Forces an asymmetric bifurcation (e.g., a $20 \mu m$ AVA vs a $5 \mu m$ capillary). Asserts that the AVA mathematically "steals" the RBCs, driving capillary hematocrit near zero, while strictly proving that total RBC flux is perfectly conserved across the node.
+*   **Coupled Solver Convergence & Safety:** Builds a mock Direct Acyclic Graph (DAG) and intentionally introduces an infinite fluid loop via impossible pressures. Asserts that the topological sorter safely catches the cycle and prevents a fatal crash.
+*   **Hematocrit-Weighted Perfusion:** Creates two identical tissue cells with equal volumetric blood flow, assigning one to receive pure skimmed plasma ($H=0.0$). Asserts that the Advective Source mathematically starves the plasma-filled cell of oxygen, proving the downstream physiological impact of upstream plasma skimming.
