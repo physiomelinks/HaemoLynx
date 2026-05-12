@@ -19,9 +19,14 @@ To simulate localized vasoconstriction (such as sympathetic tone in SHR models),
 2.  **Pre-Capillary Sphincters:** By dynamically calculating the topological center (`n_mid`) of the network (representing the capillary bed), the algorithm applies localized $5.0 \mu m$ pinches exclusively at the transitional arterioles just prior to capillary distribution.
 3.  **Unrestricted Capillary/Venous Shunting:** Deep capillaries and collecting veins remain entirely unconstricted (utilizing the pure FWHM measurements). This forces the mathematical flow solver to naturally shunt blood through large-diameter AVAs when pre-capillary sphincters are constricted.
 
+**Non-Newtonian In-Vivo Rheology (Plasma Skimming):**
+The pipeline explicitly resolves the Newtonian assumption by simulating blood as a biphasic suspension (Red Blood Cells + Plasma). The engine utilizes the empirical **Pries-Secomb Model**:
+1.  **Fåhræus–Lindqvist Effect:** Blood viscosity ($\mu$) is dynamically calculated per-vessel based on its physical diameter and local hematocrit, simulating the drop in viscosity in micro-capillaries and the extreme spike when diameters approach RBC dimensions ($<7 \mu m$).
+2.  **Plasma Skimming (Phase Separation):** The pipeline employs a highly iterative Flow-Hematocrit solver. It builds a Directed Acyclic Graph (DAG) based on solved pressure gradients, traverses the network, and applies logistic skimming equations at every bifurcation. RBCs disproportionately favor faster/larger branches (AVAs), leaving slower capillaries with near-pure plasma. Flow and hematocrit are solved iteratively until steady-state convergence.
+
 **The System of Governing Equations:**
 The vascular network is modeled as a 1D directed graph (hydraulic circuit).
-*   **Hagen-Poiseuille Resistance:** $R_{ij} = \frac{8 \mu L_{ij}}{\pi r_{ij}^4}$
+*   **Hagen-Poiseuille Resistance:** $R_{ij} = \frac{8 \mu_{app}(d, H_D) L_{ij}}{\pi r_{ij}^4}$ (where $\mu_{app}$ is the dynamic apparent viscosity).
 *   **Conductance:** $G_{ij} = \frac{1}{R_{ij}}$
 *   **Ohm's Law for Fluids:** $Q_{ij} = G_{ij} (P_i - P_j)$
 *   **Kirchhoff's Current Law (Mass Conservation):** $\sum_{j \in \mathcal{N}(i)} G_{ij} (P_i - P_j) = 0$
@@ -30,23 +35,23 @@ The vascular network is modeled as a 1D directed graph (hydraulic circuit).
 The pipeline constructs a global, sparse Laplacian conductance matrix ($A\mathbf{P} = \mathbf{b}$). The linear system is solved dynamically:
 *   **Small Networks ($N < 50k$):** UMFPACK Direct Matrix Inversion (`scipy.sparse.linalg.spsolve`).
 *   **Massive Networks ($N \geq 50k$):** Preconditioned Conjugate Gradient (`cg`) utilizing an Incomplete LU (ILU) preconditioner to dramatically reduce RAM footprint and ensure convergence.
+*   **Iterative Coupling:** The flow matrix is wrapped in a non-linear `while` loop that recalculates hematocrit ($H_D$) and viscosity ($\mu_{app}$) until the maximum flow delta drops below $1\times10^{-4}$.
 
 **Inputs, Outputs, and Boundary Conditions:**
-*   **Inputs:** Vascular graph topology, physical segment lengths ($L$), measured radii ($r$), and blood dynamic viscosity ($\mu$).
+*   **Inputs:** Vascular graph topology, physical segment lengths ($L$), measured FWHM radii ($r$), and systemic baseline hematocrit ($H_{sys} \approx 0.45$).
 *   **Boundary Conditions (Dirichlet):** Fixed physiological pressure constraints are applied at mathematically identified root nodes. Default configurations map Arterial Inlets to Mean Arterial Pressure (MAP $\approx 13.3$ kPa) and Venous Outlets to Central Venous Pressure (CVP $\approx 0.27$ kPa).
-*   **Outputs:** Nodal pressures ($P$), Volumetric flow rates ($Q$), and Wall Shear Stress ($\tau$).
+*   **Outputs:** Nodal pressures ($P$), Volumetric flow rates ($Q$), Wall Shear Stress ($\tau$), Local Hematocrit ($H_D$), and Apparent Viscosity ($\mu_{app}$).
 
 **Associated Assumptions:**
-1.  **Newtonian Fluid:** Blood viscosity ($\mu$) is assumed constant regardless of vessel diameter or shear rate (ignoring the Fåhræus–Lindqvist effect).
-2.  **Laminar Flow:** Fluid mechanics are governed entirely by viscous forces (Reynolds number $\ll 1$); inertial forces and pulsatility are ignored (steady-state flow).
-3.  **Rigid Cylinders:** Vessel walls are assumed perfectly inelastic and perfectly circular.
+1.  **Laminar Flow:** Fluid mechanics are governed entirely by viscous forces (Reynolds number $\ll 1$); inertial forces and pulsatility are ignored (steady-state flow).
+2.  **Rigid Cylinders:** Vessel walls are assumed perfectly inelastic and perfectly circular.
 
 ### 1.2 3D Tissue Perfusion (Oxygen Transport)
 
 **The System of Governing Equations:**
 Oxygen delivery is modeled using the steady-state Advection-Diffusion-Reaction (ADR) equation mathematically mapped onto a 3D Cartesian grid.
 *   **The ADR Equation:** $D \nabla^2 C(\mathbf{x}) + S_{adv}(\mathbf{x}) - M(C(\mathbf{x})) = 0$
-*   **Advective Source:** $S_{adv} = \frac{Q \cdot C_{arterial}}{V_{cell}}$ (Oxygen injected by the 1D vessels).
+*   **Advective Source:** $S_{adv} \propto Q \cdot H_D$ (Oxygen injected by the 1D vessels is explicitly weighted by the local hematocrit concentration, ensuring skimmed plasma vessels do not deliver oxygen).
 *   **Metabolic Sink:** $M(C) = M_{max} \left( 1 - e^{-k_{reduce} \cdot C} \right)$ (Non-linear cellular consumption).
 
 **Computational Solver:**
@@ -105,27 +110,22 @@ To answer this hypothesis, static morphology is bypassed to utilize the pipeline
 
 To better address the presented hypotheses and elevate the model from a basic approximation to a highly rigorous, biologically representative simulation, the following areas of improvement should be targeted to address the baseline assumptions outlined in Section 1.
 
-### 3.1 Resolving the Newtonian Assumption (Plasma Skimming)
-*   **The Limitation:** Assuming constant viscosity ignores blood hematocrit distribution. At bifurcations (especially AVAs), Red Blood Cells (RBCs) disproportionately favor the wider, faster branch.
-*   **The Improvement:** Integrate a Non-Newtonian Rheology Model (e.g., Pries-Secomb) into the fluid dynamics solver to calculate unequal hematocrit splitting at junctions.
-*   **Hypothesis Impact:** Validates whether plasma skimming structurally starves hyperplastic capillary beds of actual oxygen delivery, despite increased physical vascularization.
-
-### 3.2 Resolving the Dissolved Oxygen Assumption (The Bohr Effect)
+### 3.1 Resolving the Dissolved Oxygen Assumption (The Bohr Effect)
 *   **The Limitation:** The current ADR matrix assumes dissolved $O_2$. In reality, $O_2$ release from hemoglobin follows a highly non-linear, S-shaped curve dependent on partial pressure ($PO_2$).
 *   **The Improvement:** Update the Picard Iteration solver to convert concentration to partial pressure. The advective source term from the vessels must release oxygen governed by the Hill equation for hemoglobin saturation.
 *   **Hypothesis Impact:** Ensures oxygen is delivered realistically based on the localized hypoxic gradients of the glomus clusters, rather than linearly dumping into the tissue.
 
-### 3.3 Resolving the Permeability Assumption (Endothelial Barriers)
+### 3.2 Resolving the Permeability Assumption (Endothelial Barriers)
 *   **The Limitation:** Oxygen flux is currently unrestricted by the physical barrier of the endothelial wall.
 *   **The Improvement:** Implement the permeability ($perm_{O2}$) and surface area ($2\pi r L$) variables. Oxygen flux must be calculated as $Permeability \times Area \times (PO_{2\_vessel} - PO_{2\_tissue})$.
 *   **Hypothesis Impact:** Directly tests if endothelial dysfunction or wall thickening (common in hypertension) acts as a physical diffusion barrier contributing to the hypoxic state of the CB.
 
-### 3.4 Multi-Species Coupling ($CO_2$ and pH)
+### 3.3 Multi-Species Coupling ($CO_2$ and pH)
 *   **The Limitation:** The model currently only solves for Oxygen transport.
 *   **The Improvement:** Expand the ADR matrix builder to simultaneously solve for three coupled fields: $O_2$ (consumption), $CO_2$ (production), and $H^+$ ions.
 *   **Hypothesis Impact:** Glomus cells are stimulated by hypoxia, hypercapnia, and acidity. Because $CO_2$ diffuses roughly 20 times faster than $O_2$, the "Hypoxic Core" of a hyperplastic cluster may also act as a highly acidic "Hypercapnic Core". Modeling all three provides the complete chemosensory stimulus profile.
 
-### 3.5 Modeling Capillary Collapse (Structural vs. Functional Vasculature)
+### 3.4 Modeling Capillary Collapse (Structural vs. Functional Vasculature)
 *   **The Limitation:** CFM imaging only captures physically patent vessels. Hypertension and sympathetic tone cause micro-capillaries to collapse entirely, meaning anatomical capacity does not equal functional capacity.
 *   **The Improvement:** Add a "Virtual Pruning" step that systematically removes network edges from the control graph that fall below a specific diameter/pressure threshold.
 *   **Hypothesis Impact:** Simulates the functional morphology under high sympathetic tone, allowing a direct comparison between maximum anatomical capacity and restricted functional reality.
