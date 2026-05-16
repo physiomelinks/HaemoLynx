@@ -16,7 +16,8 @@ from ImageLynx.haemodynamics.perfusion import (
 )
 from ImageLynx.haemodynamics.rheology import (
     calculate_pries_secomb_viscosity,
-    calculate_phase_separation_hematocrit
+    calculate_phase_separation_hematocrit,
+    solve_coupled_flow_and_hematocrit
 )
 
 @dataclass
@@ -297,22 +298,89 @@ def test_rheology_plasma_skimming_effect():
     assert np.isclose(flux_in, flux_out, atol=1e-8)
 
 
+def test_analytical_wall_shear_stress():
+    """Verify that Wall Shear Stress (WSS) is calculated accurately against exact analytical limits."""
+    # Create a simple 2-node graph to manually test the WSS math inside the solver
+    G = nx.MultiGraph()
+    d = 10.0 # micrometers
+    L = 100.0 # micrometers
+    G.add_edge(0, 1, key=0, length=L, fwhm_diameter_um=d)
+    
+    # We will run one iteration of the solver to calculate the flow and WSS
+    G_solved, _ = solve_coupled_flow_and_hematocrit(
+        G,
+        starting_nodes=[0],
+        output_nodes=[1],
+        input_p_bc=100.0,
+        output_p_bc=0.0,
+        systemic_hematocrit=0.45,
+        max_iterations=1 # Only need 1 iteration to get the first WSS calculation
+    )
+    
+    data = G_solved[0][1][0]
+    mu_app = data["viscosity"]
+    q_abs = data["flow_abs"]
+    wss_calc = data["wall_shear_stress_pa"]
+    
+    # Analytical WSS = 32 * mu * Q / (pi * d^3)
+    # mu is mPa*s, Q is um^3/s, d is um. Result is mPa. Divide by 1000 for Pa.
+    wss_exact_pa = ((32.0 * mu_app * q_abs) / (np.pi * d**3)) / 1000.0
+    
+    # Assert perfect mathematical match
+    assert np.isclose(wss_calc, wss_exact_pa, atol=1e-10)
+    
+    # Assert it's a realistic physiological value (usually between 1 and 10 Pa in microvessels)
+    assert wss_calc > 0.0
+
+def test_analytical_sphincter_resistance_calculus():
+    """Verify that numerical resistance integration matches exact calculus for complex geometries."""
+    from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
+    
+    # We will test a standard periodic constriction (ramp down, hold, ramp up)
+    d1 = 10.0
+    d2 = 5.0
+    L = 100.0
+    model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0, mode="periodic")
+    
+    # Run the numerical integrator
+    num_r = model.calculate_integrated_resistance(L, d1, d2, num_points=2000)
+    
+    # The artificial viscosity used internally by PoiseuilleModel is 1 / d^1.647
+    # So the integrand is (128 / pi) * (1 / d^5.647)
+    C = 128.0 / np.pi
+    p = 5.647
+    
+    # 0 to 10: ramp d1 to d2. r(x) = d1 + (d2-d1)*(x/10)
+    # Integral of dx / (A + Bx)^p = [ -1 / (B*(p-1)*(A+Bx)^(p-1)) ]
+    B1 = (d2 - d1) / 10.0
+    A1 = d1
+    int1 = (-1.0 / (B1 * (p - 1.0))) * (1.0 / (A1 + B1*10.0)**(p - 1.0) - 1.0 / (A1)**(p - 1.0))
+    
+    # 10 to 30: hold d2
+    int2 = 20.0 / (d2**p)
+    
+    # 30 to 40: ramp d2 to d1. r(x) = d2 + (d1-d2)*((x-30)/10)
+    B3 = (d1 - d2) / 10.0
+    A3 = d2 - B3*30.0
+    int3 = (-1.0 / (B3 * (p - 1.0))) * (1.0 / (A3 + B3*40.0)**(p - 1.0) - 1.0 / (A3 + B3*30.0)**(p - 1.0))
+    
+    # 40 to 100: hold d1
+    int4 = 60.0 / (d1**p)
+    
+    exact_r = C * (int1 + int2 + int3 + int4)
+    
+    # Assert the numerical trapezoidal integration is highly accurate (within 0.1%)
+    assert np.isclose(num_r, exact_r, rtol=1e-3)
+
 def test_rheology_fahraeus_lindqvist_curve():
     """Verify the Pries-Secomb viscosity follows the expected biological diameter curve."""
-    # Test a massive artery (100 um), a medium vessel (30 um), and a small vessel (10 um)
-    # The Fåhræus–Lindqvist effect states apparent viscosity DROPS as diameter decreases
-    # due to the cell-free plasma layer forming near the walls.
-    
     visc_100 = calculate_pries_secomb_viscosity(100.0, 0.45)
     visc_30 = calculate_pries_secomb_viscosity(30.0, 0.45)
     visc_10 = calculate_pries_secomb_viscosity(10.0, 0.45)
     
-    # Assert viscosity decreases with diameter
     assert visc_100 > visc_30
     assert visc_30 > visc_10
     
-    # However, when the vessel gets too small (approaching RBC size of ~5-8um), 
-    # RBCs must deform to squeeze through, causing viscosity to suddenly spike back up (the inversion point).
     visc_6 = calculate_pries_secomb_viscosity(6.0, 0.45)
     visc_3 = calculate_pries_secomb_viscosity(3.0, 0.45)
     

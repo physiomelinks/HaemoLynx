@@ -115,9 +115,29 @@ class HaemodynamicsConfig:
     sphincter_length_um: float = 5.0      # Physical length of the pinched region (um)
     
     # Severity modifiers (1.0 = no constriction, 0.5 = 50% constriction)
-    intimal_cushion_constriction_ratio: float = 1.0
-    pre_capillary_constriction_ratio: float = 1.0
+    intimal_cushion_constriction_ratio: float = 0.60
+    pre_capillary_constriction_ratio: float = 0.50
     pre_capillary_topological_offset: int = 1
+
+    def __post_init__(self):
+        """Validates configuration bounds to prevent mathematical crashes in the physics engines."""
+        if self.input_p_bc <= self.output_p_bc:
+            raise ValueError(f"Input pressure ({self.input_p_bc}) must be strictly greater than Output pressure ({self.output_p_bc}).")
+
+        if self.constriction_mode not in ("sphincter", "periodic"):
+            raise ValueError(f"constriction_mode must be 'sphincter' or 'periodic', got: {self.constriction_mode}")
+
+        if self.sphincter_length_um < 0.0:
+            raise ValueError("sphincter_length_um cannot be negative.")
+
+        # Prevent 0.0 constriction ratios (which means diameter=0 -> infinite resistance -> matrix crash)
+        if self.intimal_cushion_constriction_ratio <= 0.01:
+            print(f"Warning: intimal_cushion_constriction_ratio {self.intimal_cushion_constriction_ratio} is too low. Clamping to 0.01 to prevent singularities.")
+            self.intimal_cushion_constriction_ratio = 0.01
+
+        if self.pre_capillary_constriction_ratio <= 0.01:
+            print(f"Warning: pre_capillary_constriction_ratio {self.pre_capillary_constriction_ratio} is too low. Clamping to 0.01 to prevent singularities.")
+            self.pre_capillary_constriction_ratio = 0.01
 
 @dataclass
 class PerfusionConfig:
@@ -875,15 +895,18 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
     
     hematocrit_array = np.full(vessels.n_cells, 0.45, dtype=float)
     viscosity_array = np.full(vessels.n_cells, 1.2, dtype=float)
+    wss_array = np.zeros(vessels.n_cells, dtype=float)
     
     for ii in range(vessels.n_cells):
         u, v, k = int(edge_u[ii]), int(edge_v[ii]), int(edge_k[ii])
         if G.has_edge(u, v, k):
             hematocrit_array[ii] = G[u][v][k].get("hematocrit", 0.45)
             viscosity_array[ii] = G[u][v][k].get("viscosity", 1.2)
+            wss_array[ii] = G[u][v][k].get("wall_shear_stress_pa", 0.0)
             
     vessels.cell_data["hematocrit"] = hematocrit_array
     vessels.cell_data["viscosity"] = viscosity_array
+    vessels.cell_data["wall_shear_stress_pa"] = wss_array
     vessels.save(vtk_export['vessels_path'])
     
     print("Flow through the network solved and VTK updated with Rheology fields.")

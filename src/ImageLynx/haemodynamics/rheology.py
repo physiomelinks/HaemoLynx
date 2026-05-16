@@ -314,8 +314,26 @@ def solve_coupled_flow_and_hematocrit(
             mu_app = calculate_pries_secomb_viscosity(d, h)
             data["viscosity"] = mu_app
             
-            length = data.get("length", 10.0)
-            data["resistance"] = (128.0 * mu_app * length) / (np.pi * d**4)
+            # To preserve the complex geometric integration of sphincters/pericytes,
+            # we scale the resistance by the ratio of the new in-vivo viscosity to the old artificial viscosity,
+            # rather than overwriting it with a straight-tube approximation.
+            if "original_resistance" not in data:
+                # Save the base resistance from Phase 4
+                data["original_resistance"] = data.get("resistance", (128.0 * 1.0 * data.get("length", 10.0)) / (np.pi * d**4))
+                
+            # The old viscosity formula used in poiseuille.py was: 1.0 / d^1.647
+            mu_old = 1.0 / (d ** 1.647)
+            
+            # Scale the resistance geometrically
+            data["resistance"] = data["original_resistance"] * (mu_app / mu_old)
+            
+            # WSS = (32 * mu * Q) / (pi * D^3)
+            # Units: mu is in mPa*s (cP), Q is in um^3/s, D is in um
+            # To get WSS in Pa: (mPa*s * um^3/s) / um^3 = mPa. So WSS is in mPa.
+            # Convert mPa to Pa by dividing by 1000.
+            q_abs = data.get("flow_abs", 0.0)
+            wss_mPa = (32.0 * mu_app * q_abs) / (np.pi * d**3)
+            data["wall_shear_stress_pa"] = wss_mPa / 1000.0
             
         iteration += 1
 
