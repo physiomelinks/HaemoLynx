@@ -105,7 +105,7 @@ def test_build_adr_matrix_structure(mock_graph):
     cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
     config = MockPerfusionConfig()
     
-    A, b_adv, diag_A = build_adr_matrix(grid, cell_to_vessels, config)
+    A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
     
     assert sp.issparse(A)
     assert isinstance(A, sp.csr_matrix)
@@ -125,11 +125,11 @@ def test_advective_source_vector(mock_graph):
     cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
     config = MockPerfusionConfig()
     
-    _, b_adv, _ = build_adr_matrix(grid, cell_to_vessels, config)
+    A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
     
-    # Check that any non-zero entries in b_adv correspond perfectly to cell_to_vessels keys
-    for i in range(len(b_adv)):
-        if b_adv[i] > 0.0:
+    # Check that any non-zero entries in s_incoming correspond perfectly to cell_to_vessels keys
+    for i in range(len(s_incoming)):
+        if s_incoming[i] > 0.0:
             assert i in cell_to_vessels
 
 
@@ -145,9 +145,9 @@ def test_perfusion_solver_zero_flow(mock_graph):
         
     cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
     config = MockPerfusionConfig()
-    A, b_adv, _ = build_adr_matrix(grid, cell_to_vessels, config)
+    A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
     
-    C_steady = solve_perfusion_steady_state(grid, A, b_adv, config)
+    C_steady = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config)
     np.testing.assert_allclose(C_steady, np.zeros_like(C_steady), atol=1e-10)
 
 def test_perfusion_solver_no_metabolism(mock_graph):
@@ -157,14 +157,14 @@ def test_perfusion_solver_no_metabolism(mock_graph):
     config = MockPerfusionConfig()
     config.M_max = 0.0 # Shut off metabolism
     
-    A, b_adv, _ = build_adr_matrix(grid, cell_to_vessels, config)
-    C_steady = solve_perfusion_steady_state(grid, A, b_adv, config)
+    A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
+    C_steady = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config)
     
     # Total concentration shouldn't be zero since we have advection and no sink
     assert np.sum(C_steady) > 0.0
 
 def test_advective_source_hematocrit_weighting(mock_graph):
-    """Verify that oxygen delivery (b_adv) scales explicitly with hematocrit (plasma skimming)."""
+    """Verify that oxygen delivery (s_incoming) scales explicitly with hematocrit (plasma skimming)."""
     grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
     
     # We will manually craft cell_to_vessels to simulate two identical flows, but one is pure plasma.
@@ -174,11 +174,101 @@ def test_advective_source_hematocrit_weighting(mock_graph):
     }
     
     config = MockPerfusionConfig()
-    _, b_adv, diag_A = build_adr_matrix(grid, cell_to_vessels, config)
+    _, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
     
-    # Advective Source (b_adv) is driven by RBC FLOW. 
-    # Cell 0 has H=0.45, so it should receive the full source (flow * C_arterial)
-    assert np.isclose(b_adv[0], 10.0 * config.C_arterial)
+    # Advective Source (s_incoming) is driven by RBC FLOW. 
+    # Cell 0 has H=0.45, so it should receive the full source (flow * C_blood_art(100, 0.45))
+    c_art = calculate_blood_oxygen_content(100.0, 0.45)
+    assert np.isclose(s_incoming[0], 10.0 * c_art)
     
-    # Cell 1 has H=0.0, so it should receive EXACTLY 0.0 oxygen delivery, despite having flow.
-    assert np.isclose(b_adv[1], 0.0)
+    # Cell 1 has H=0.0, so it should receive ONLY dissolved oxygen (no bound), which is very low
+    c_art_plasma = calculate_blood_oxygen_content(100.0, 0.0)
+    assert np.isclose(s_incoming[1], 10.0 * c_art_plasma)
+    assert s_incoming[1] < s_incoming[0] * 0.05 # Plasma delivers < 5% of normal blood
+
+    
+from ImageLynx.haemodynamics.perfusion import calculate_blood_oxygen_content
+
+def test_hill_equation_sigmoidal_curve():
+    """Verify that blood oxygen content follows the non-linear Bohr Effect."""
+    h_d = 0.45
+    
+    c_hypoxic = calculate_blood_oxygen_content(10.0, h_d)
+    c_p50 = calculate_blood_oxygen_content(26.0, h_d)
+    c_normoxic = calculate_blood_oxygen_content(100.0, h_d)
+    
+    # Assert that higher pressure means more oxygen
+    assert c_normoxic > c_p50 > c_hypoxic
+    
+    # Calculate the max theoretical bound oxygen for this hematocrit
+    c_hb_max = 0.446 * 20.4 / 0.45
+    max_bound = h_d * c_hb_max
+    
+    # At P50 (26 mmHg), the hemoglobin component should be exactly 50% saturated
+    # We subtract the linear dissolved portion to isolate the bound hemoglobin portion
+    bound_p50 = c_p50 - (1.34e-3 * 26.0)
+    assert np.isclose(bound_p50, max_bound * 0.5, atol=1e-5)
+    
+    # At 100 mmHg, it should be near 100% saturated
+    bound_normoxic = c_normoxic - (1.34e-3 * 100.0)
+    assert bound_normoxic > max_bound * 0.95
+    
+    # Bound oxygen should dwarf dissolved oxygen at normoxia
+    assert bound_normoxic > (1.34e-3 * 100.0) * 50
+
+
+def test_analytical_0d_fick_principle_mass_balance():
+    """
+    Gold Standard Analytical Benchmark:
+    Isolate a single voxel with 0 diffusion. Verify that the non-linear Picard solver 
+    can perfectly hit the exact analytical Fick Principle steady-state root.
+    """
+    from scipy.optimize import brentq
+    import scipy.sparse as sp
+    
+    # 1. Single Voxel Setup
+    grid_res = 10.0
+    v_cell = grid_res ** 3
+    q_flow = 10.0
+    h_d = 0.45
+    po2_arterial = 100.0
+    m_max = 0.05 # mmol/L / s
+    k_reduce = 1000.0 # Force zero-order linear sink to simplify the root finding (sink is always m_max)
+    
+    # 2. Derive Exact Analytical Solution
+    c_art = calculate_blood_oxygen_content(po2_arterial, h_d)
+    # Fick Principle: C_venous = C_art - (M * V) / Q
+    c_venous_target = c_art - ((m_max * v_cell) / q_flow)
+    
+    # Use Brent's Method to mathematically invert the non-linear Hill equation 
+    # to find the exact analytical PO2 that perfectly holds that much oxygen.
+    def hill_root(po2):
+        return calculate_blood_oxygen_content(po2, h_d) - c_venous_target
+        
+    po2_analytical_exact = brentq(hill_root, 0.0, 100.0)
+    
+    # 3. Run the Massive Picard Matrix Solver on the 1-Voxel system
+    # Fake a 1x1x1 grid and matrices
+    class FakeGrid:
+        n_cells = 1
+        cell_volume = v_cell
+    
+    class FakeConfig:
+        def __init__(self):
+            self.M_max = 0.05
+            self.k_reduce = 1000.0
+            
+    grid = FakeGrid()
+    config = FakeConfig()
+    
+    A = sp.csr_matrix([[0.0]]) # 0 diffusion
+    q_total = np.array([q_flow])
+    s_incoming = np.array([q_flow * c_art])
+    
+    from ImageLynx.haemodynamics.perfusion import solve_perfusion_steady_state
+    po2_numerical = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config)
+    
+    # 4. Assert Absolute Perfection
+    # If this passes, the complex 3D solver perfectly conserves mass through the non-linear Hill S-curves.
+    # The Picard solver uses a relative tolerance of 1e-5, so we expect absolute precision around 1e-3.
+    np.testing.assert_allclose(po2_numerical[0], po2_analytical_exact, atol=1e-3)

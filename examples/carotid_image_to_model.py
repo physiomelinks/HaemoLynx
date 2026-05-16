@@ -912,20 +912,20 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
         cell_mapping = haemodynamics.map_vessels_to_grid(G, grid)
         
         # 3. Build Advection-Diffusion-Reaction (ADR) Matrix
-        A, b_adv, D_diag = haemodynamics.build_adr_matrix(grid, cell_mapping, perf_config)
+        A, q_total, s_incoming = haemodynamics.build_adr_matrix(grid, cell_mapping, perf_config)
         
         # 4. Solve the Non-Linear Steady-State Perfusion field
-        C_steady = haemodynamics.solve_perfusion_steady_state(grid, A, b_adv, perf_config)
+        PO2_steady = haemodynamics.solve_perfusion_steady_state(grid, A, q_total, s_incoming, perf_config)
         
         # Calculate statistics
-        mean_c = np.mean(C_steady)
-        max_c = np.max(C_steady)
-        min_c = np.min(C_steady)
-        print(f"  Perfusion solve complete. Mean tissue O2: {mean_c:.4e} mmol/L (Min: {min_c:.4e}, Max: {max_c:.4e})")
+        mean_c = np.mean(PO2_steady)
+        max_c = np.max(PO2_steady)
+        min_c = np.min(PO2_steady)
+        print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
 
         # 5. Export to VTK
         vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
-        visualization.export_perfusion_grid_to_vti(grid, C_steady, vti_path)
+        visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
         print(f"  Saved 3D Perfusion Field to: {vti_path}")
 
     if vis_config.visualize_results:

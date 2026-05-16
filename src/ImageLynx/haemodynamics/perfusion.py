@@ -6,6 +6,45 @@ from typing import Optional, Dict, List, Tuple, Any
 
 logger = logging.getLogger(__name__)
 
+def calculate_blood_oxygen_content(po2_mmHg: float, hematocrit: float) -> float:
+    """
+    Calculates total oxygen content in blood (mmol/L) using the Hill Equation.
+    Includes both dissolved plasma O2 and non-linear hemoglobin-bound O2.
+    
+    Parameters:
+    -----------
+    po2_mmHg : float
+        Partial pressure of oxygen in mmHg.
+    hematocrit : float
+        Volume fraction of red blood cells (e.g., 0.45).
+        
+    Returns:
+    --------
+    float
+        Total oxygen concentration in mmol/L.
+    """
+    if po2_mmHg <= 0.0:
+        return 0.0
+        
+    # Constants for physiological human/rat blood
+    alpha_o2 = 1.34e-3  # Solubility of O2 in plasma (mmol/L per mmHg)
+    p50 = 26.0          # PO2 at which Hb is 50% saturated (mmHg)
+    hill_n = 2.7        # Hill coefficient (curve steepness)
+    
+    # Max O2 carrying capacity of RBCs (approx 20.4 ml O2 / 100ml blood at H=1.0)
+    # 1 ml O2 / 100ml = 0.446 mmol/L
+    c_hb_max = 0.446 * 20.4 / 0.45 # Scale to pure RBC
+    
+    # 1. Linear Dissolved O2 (Henry's Law)
+    dissolved = alpha_o2 * po2_mmHg
+    
+    # 2. Non-Linear Bound O2 (Hill Equation)
+    saturation = (po2_mmHg ** hill_n) / ((po2_mmHg ** hill_n) + (p50 ** hill_n))
+    bound = hematocrit * c_hb_max * saturation
+    
+    return float(dissolved + bound)
+
+
 class PerfusionGrid:
     """
     A 3D structured grid for tissue diffusion modeling.
@@ -124,11 +163,11 @@ def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List
 
 def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[str, Any]]], perf_config) -> Tuple[Any, np.ndarray, np.ndarray]:
     """
-    Step 4: Build the Advection-Diffusion-Reaction (ADR) sparse matrix.
+    Step 4: Build the pure Diffusion sparse matrix and Advection vectors.
     Returns:
-        A: scipy.sparse.csr_matrix (Constant LHS matrix for Diffusion and Advection)
-        b_adv: np.ndarray (Constant RHS vector for Advection source terms)
-        D_diag: np.ndarray (Main diagonal of D, used for reference if needed)
+        A: scipy.sparse.csr_matrix (Constant LHS matrix for Diffusion ONLY)
+        q_total: np.ndarray (Total bulk flow through each voxel)
+        s_incoming: np.ndarray (Fixed arterial oxygen content entering each voxel)
     """
     import scipy.sparse as sp
     
@@ -144,31 +183,30 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     D_y = sigma_diff_um2_s * (res[0] * res[2]) / res[1]
     D_z = sigma_diff_um2_s * (res[0] * res[1]) / res[2]
     
-    # Pre-allocate sparse matrix components
-    rows = []
-    cols = []
-    data = []
-    
-    b_adv = np.zeros(N, dtype=np.float64)
+    rows, cols, data = [], [], []
     diag_A = np.zeros(N, dtype=np.float64)
+    q_total = np.zeros(N, dtype=np.float64)
+    s_incoming = np.zeros(N, dtype=np.float64)
     
-    # Advection source terms (Vessel coupling)
+    po2_arterial = 100.0 # mmHg
+    
+    # Advection arrays (Vessel coupling)
     for idx, vessels in cell_to_vessels.items():
         total_q = sum(v['flow'] for v in vessels)
-        # Weight the oxygen delivery by the hematocrit (RBC concentration)
-        # If the vessel was skimmed (H_D near 0), it delivers almost no oxygen despite having flow.
-        # We assume standard C_arterial is calibrated for H_D = 0.45, so we scale by (H_D / 0.45)
-        total_q_o2 = sum(v['flow'] * (v.get('hematocrit', 0.45) / 0.45) for v in vessels)
+        q_total[idx] = total_q
         
-        # Add advective washout to diagonal (washout is driven by total bulk flow)
-        diag_A[idx] += total_q
-        # Add advective source to RHS (source is driven by RBC flow)
-        b_adv[idx] += total_q_o2 * perf_config.C_arterial
+        # Calculate exactly how much oxygen is delivered to this cell based on the Hill Equation
+        # S_incoming = Sum( Q * C_blood_arterial )
+        total_o2_flux = 0.0
+        for v in vessels:
+            h = v.get('hematocrit', 0.45)
+            c_art = calculate_blood_oxygen_content(po2_arterial, h)
+            total_o2_flux += v['flow'] * c_art
+            
+        s_incoming[idx] = total_o2_flux
 
     # Build diffusion matrix (Standard 7-point stencil)
-    # Using Numba for speed is possible, but vectorized construction is also fast.
-    # We will build it directly.
-    logger.info("Building 3D Advection-Diffusion sparse matrix...")
+    logger.info("Building 3D Diffusion sparse matrix...")
     
     # x-direction edges
     idx_x = np.arange(N).reshape((nz, ny, nx))
@@ -201,67 +239,100 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     cols.extend(all_indices)
     data.extend(diag_A)
     
-    # Prevent completely disconnected, non-perfused cells from being strictly singular
-    # by adding a tiny regularization factor to the diagonal if needed.
-    # However, ILU can often handle it if there's connection to perfused cells.
+    # We add a tiny regularization factor to the diagonal to prevent the matrix from being 
+    # perfectly singular (since Neumann BCs mean pure diffusion has a null space).
+    # But since we no longer have Q on the diagonal, we must add a tiny sink to stabilize CG.
+    tiny_sink = 1e-12
+    data = np.array(data)
+    diag_mask = (np.array(rows) == np.array(cols))
+    data[diag_mask] += tiny_sink
     
     A = sp.coo_matrix((data, (rows, cols)), shape=(N, N)).tocsr()
-    logger.info(f"ADR Matrix constructed. Shape: {A.shape}, Non-zeros: {A.nnz}")
+    logger.info(f"Diffusion Matrix constructed. Shape: {A.shape}, Non-zeros: {A.nnz}")
     
-    return A, b_adv, diag_A
+    return A, q_total, s_incoming
 
 
-def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, b_adv: np.ndarray, perf_config) -> np.ndarray:
+def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarray, s_incoming: np.ndarray, perf_config) -> np.ndarray:
     """
     Step 5: Solve the Non-Linear Steady-State Perfusion system using Picard Iteration.
+    Solves for tissue PO2 (mmHg).
     """
     import scipy.sparse.linalg as splinalg
     
     N = grid.n_cells
-    C = np.zeros(N, dtype=np.float64) # Initial guess (0.0 mmol/L everywhere)
+    PO2 = np.zeros(N, dtype=np.float64) # Initial guess (0.0 mmHg everywhere)
     
     M_max = perf_config.M_max
     k_reduce = perf_config.k_reduce
     V_cell = grid.cell_volume
     
+    # We need a system-wide baseline hematocrit for the venous washout calculation
+    # For a perfect voxel-level solution, we'd store a weighted average H_D per voxel,
+    # but for stability we can assume the washout matches systemic 0.45, or we can approximate.
+    # We will use 0.45 as the baseline for the tissue equilibrium curve.
+    h_baseline = 0.45
+    
     max_iter = 50
     tolerance = 1e-5
     
     logger.info("Initializing ILU preconditioner for steady-state solver...")
-    # Because A is diagonally dominant, ILU works very well
+    # Add a tiny diagonal regularizer to A to ensure ILU succeeds if entirely disconnected
+    A_reg = A.copy()
+    A_reg.setdiag(A_reg.diagonal() + 1e-6)
+    
+    # NUMERICAL STABILIZATION:
+    # Because A is purely diffusion, its rows sum to 0. Solving A*x = b fails if sum(b) != 0.
+    # The non-linear advective washout acts as a sink on the RHS, which is highly unstable for CG.
+    # We apply a mathematical trick: Add a linear pseudo-washout to the LHS diagonal,
+    # and add the exact same term to the RHS. The true steady-state roots remain identical,
+    # but the LHS matrix becomes strictly diagonally dominant and highly invertible.
+    # Increasing gamma_relax dampens the Picard step size, preventing sigmoidal oscillations.
+    gamma_relax = 0.5 # Effective linearized slope
+    pseudo_washout_diag = q_total * gamma_relax
+    A_stable = A_reg.copy()
+    A_stable.setdiag(A_stable.diagonal() + pseudo_washout_diag)
+    
     try:
-        ilu = splinalg.spilu(A.tocsc(), drop_tol=1e-4, fill_factor=10)
-        M_pre = splinalg.LinearOperator(A.shape, ilu.solve)
+        ilu = splinalg.spilu(A_stable.tocsc(), drop_tol=1e-4, fill_factor=10)
+        M_pre = splinalg.LinearOperator(A_stable.shape, ilu.solve)
     except Exception as e:
         logger.warning(f"ILU preconditioning failed: {e}. Falling back to standard CG.")
         M_pre = None
 
-    logger.info("Starting Non-Linear Picard Iteration loop...")
+    logger.info("Starting Non-Linear Picard Iteration loop solving for PO2...")
     for iteration in range(max_iter):
-        # 1. Compute non-linear metabolic sink based on current concentration
-        # M(C) = M_max * (1 - exp(-k * C))
-        # Ensure C doesn't drop below 0 physically
-        C_clamped = np.maximum(C, 0.0)
-        M_reduced = M_max * (1.0 - np.exp(-k_reduce * C_clamped))
+        PO2_clamped = np.maximum(PO2, 0.0)
         
-        # 2. Construct the full RHS: b = Advection_Source - Metabolic_Sink
-        # Note: units of M_reduced * V_cell naturally balance with D and Q (as derived)
-        b = b_adv - (M_reduced * V_cell)
+        # 1. Compute non-linear metabolic sink based on current PO2
+        # M(PO2) = M_max * (1 - exp(-k * PO2))
+        M_reduced = M_max * (1.0 - np.exp(-k_reduce * PO2_clamped))
         
-        # 3. Solve the linear system A * C_new = b
-        C_new, info = splinalg.cg(A, b, M=M_pre, x0=C, rtol=1e-6, maxiter=1000)
+        # 2. Compute dynamic Advective Washout
+        # Voxel loses oxygen based on blood leaving at local tissue PO2
+        s_washout = np.zeros(N, dtype=np.float64)
+        for i in range(N):
+            if q_total[i] > 0:
+                c_venous = calculate_blood_oxygen_content(PO2_clamped[i], h_baseline)
+                s_washout[i] = q_total[i] * c_venous
+                
+        # 3. Construct the full RHS: b = Advection_In - Advection_Out - Metabolic_Sink + Pseudo_Washout
+        b = s_incoming - s_washout - (M_reduced * V_cell) + (pseudo_washout_diag * PO2_clamped)
+        
+        # 4. Solve the linear system A_stable * PO2_new = b
+        PO2_new, info = splinalg.cg(A_stable, b, M=M_pre, x0=PO2, rtol=1e-6, maxiter=1000)
         
         if info != 0:
             logger.warning(f"CG Solver did not converge perfectly at iteration {iteration} (info={info})")
             
-        # Prevent non-physical negative concentrations which cause Picard oscillation
-        C_new = np.maximum(C_new, 0.0)
+        # Prevent non-physical negative pressures which cause Picard oscillation
+        PO2_new = np.maximum(PO2_new, 0.0)
         
-        # 4. Check convergence
-        diff = np.linalg.norm(C_new - C) / (np.linalg.norm(C_new) + 1e-12)
+        # 5. Check convergence
+        diff = np.linalg.norm(PO2_new - PO2) / (np.linalg.norm(PO2_new) + 1e-12)
         logger.debug(f"  Iteration {iteration+1}: Relative change = {diff:.6e}")
         
-        C = C_new
+        PO2 = PO2_new
         
         if diff < tolerance:
             logger.info(f"Steady-state perfusion converged successfully after {iteration+1} iterations.")
@@ -269,4 +340,4 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, b_adv: np.ndarray,
     else:
         logger.warning(f"Picard iteration hit max_iter ({max_iter}) without reaching tolerance {tolerance}.")
         
-    return C
+    return PO2
