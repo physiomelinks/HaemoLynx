@@ -121,6 +121,11 @@ def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List
         flow = data.get("flow_abs", 0.0)
         edge_len = data.get("length", 0.0)
         
+        diameter = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
+        if diameter is None or diameter <= 0:
+            diameter = 5.0
+        radius = diameter / 2.0
+        
         if voxels is None or len(voxels) < 2:
             continue
             
@@ -146,6 +151,7 @@ def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List
                 for item in cell_to_vessels[idx]:
                     if item['edge'] == (u, v, key):
                         item['length'] += len_per_vox
+                        item['surface_area'] += 2.0 * np.pi * radius * len_per_vox
                         found = True
                         break
                 
@@ -154,7 +160,8 @@ def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List
                         'edge': (u, v, key),
                         'flow': flow,
                         'hematocrit': data.get("hematocrit", 0.45),
-                        'length': len_per_vox
+                        'length': len_per_vox,
+                        'surface_area': 2.0 * np.pi * radius * len_per_vox
                     })
                     
     logger.info(f"Vessel-to-Grid mapping complete. {len(cell_to_vessels)} tissue cells are perfused by vessels.")
@@ -341,3 +348,135 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
         logger.warning(f"Picard iteration hit max_iter ({max_iter}) without reaching tolerance {tolerance}.")
         
     return PO2
+
+
+def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting_nodes: list, cell_to_vessels: Dict, perf_config) -> np.ndarray:
+    """
+    Solve the Fully Coupled 1D-3D Steady-State Perfusion system using Picard Iteration.
+    Solves for tissue PO2 (mmHg) and Blood PO2 simultaneously using an endothelial barrier model.
+    """
+    import scipy.sparse as sp
+    import scipy.sparse.linalg as splinalg
+    from scipy.optimize import brentq
+    import networkx as nx
+    
+    N = grid.n_cells
+    nx_dim, ny_dim, nz_dim = grid.dims
+    res = grid.res
+    
+    sigma_diff_um2_s = perf_config.sigma_diff * 1e12
+    D_x = sigma_diff_um2_s * (res[1] * res[2]) / res[0]
+    D_y = sigma_diff_um2_s * (res[0] * res[2]) / res[1]
+    D_z = sigma_diff_um2_s * (res[0] * res[1]) / res[2]
+    
+    rows, cols, data = [], [], []
+    diag_A = np.zeros(N, dtype=np.float64)
+    
+    idx_x = np.arange(N).reshape((nz_dim, ny_dim, nx_dim))
+    left = idx_x[:, :, :-1].flatten(); right = idx_x[:, :, 1:].flatten()
+    rows.extend(left); cols.extend(right); data.extend([-D_x] * len(left))
+    rows.extend(right); cols.extend(left); data.extend([-D_x] * len(right))
+    np.add.at(diag_A, left, D_x); np.add.at(diag_A, right, D_x)
+    
+    bottom = idx_x[:, :-1, :].flatten(); top = idx_x[:, 1:, :].flatten()
+    rows.extend(bottom); cols.extend(top); data.extend([-D_y] * len(bottom))
+    rows.extend(top); cols.extend(bottom); data.extend([-D_y] * len(top))
+    np.add.at(diag_A, bottom, D_y); np.add.at(diag_A, top, D_y)
+    
+    back = idx_x[:-1, :, :].flatten(); front = idx_x[1:, :, :].flatten()
+    rows.extend(back); cols.extend(front); data.extend([-D_z] * len(back))
+    rows.extend(front); cols.extend(back); data.extend([-D_z] * len(front))
+    np.add.at(diag_A, back, D_z); np.add.at(diag_A, front, D_z)
+    
+    all_indices = np.arange(N)
+    rows.extend(all_indices); cols.extend(all_indices); data.extend(diag_A)
+    data = np.array(data)
+    diag_mask = (np.array(rows) == np.array(cols))
+    data[diag_mask] += 1e-12 
+    
+    A = sp.coo_matrix((data, (rows, cols)), shape=(N, N)).tocsr()
+    
+    PO2_tissue = np.zeros(N, dtype=np.float64)
+    M_max = perf_config.M_max
+    k_reduce = perf_config.k_reduce
+    V_cell = grid.cell_volume
+    P_perm = perf_config.permeability_o2_cm_s * 1e4 # um/s
+    po2_arterial = 100.0
+    
+    edge_to_cells = {}
+    q_total = np.zeros(N)
+    for cell_idx, vessels in cell_to_vessels.items():
+        q_total[cell_idx] = sum(v['flow'] for v in vessels)
+        for v in vessels:
+            edge = v['edge']
+            if edge not in edge_to_cells: edge_to_cells[edge] = []
+            edge_to_cells[edge].append({'cell_idx': cell_idx, 'surface_area': v.get('surface_area', 100.0), 'flow': v['flow']})
+            
+    DAG = nx.MultiDiGraph()
+    for u, v, key, e_data in G.edges(keys=True, data=True):
+        f = e_data.get("flow_signed", 0.0)
+        if f > 0: DAG.add_edge(u, v, key=key, **e_data)
+        elif f < 0: DAG.add_edge(v, u, key=key, **e_data)
+            
+    try:
+        topo_order = list(nx.topological_sort(DAG))
+    except nx.NetworkXUnfeasible:
+        topo_order = list(G.nodes())
+        
+    A_stable = A.copy()
+    gamma_relax = 0.5
+    pseudo_washout_diag = q_total * gamma_relax
+    A_stable.setdiag(A_stable.diagonal() + pseudo_washout_diag)
+    try:
+        ilu = splinalg.spilu(A_stable.tocsc(), drop_tol=1e-4, fill_factor=10)
+        M_pre = splinalg.LinearOperator(A_stable.shape, ilu.solve)
+    except Exception:
+        M_pre = None
+
+    logger.info("Starting Fully Coupled 1D-3D Picard Loop...")
+    for iteration in range(50):
+        PO2_clamped = np.maximum(PO2_tissue, 0.0)
+        M_red = M_max * (1.0 - np.exp(-k_reduce * PO2_clamped))
+        
+        node_o2_flux_in = {n: 0.0 for n in DAG.nodes()}
+        node_q_in = {n: 0.0 for n in DAG.nodes()}
+        for n in starting_nodes:
+            if n in DAG.nodes:
+                for succ in DAG.successors(n):
+                    for k, d in DAG[n][succ].items():
+                        h = d.get("hematocrit", 0.45)
+                        node_o2_flux_in[n] += calculate_blood_oxygen_content(po2_arterial, h) * d.get("flow_abs", 0.0)
+                        node_q_in[n] += d.get("flow_abs", 0.0)
+        
+        cell_transmural_flux = np.zeros(N, dtype=np.float64)
+        for node in topo_order:
+            c_mix = node_o2_flux_in[node] / node_q_in[node] if node_q_in[node] > 0 else calculate_blood_oxygen_content(po2_arterial, 0.45)
+            for _, v, k, e_data in DAG.out_edges(node, data=True, keys=True):
+                edge_key = (node, v, k)
+                if edge_key not in edge_to_cells: edge_key = (v, node, k)
+                q = e_data.get("flow_abs", 0.0)
+                h = e_data.get("hematocrit", 0.45)
+                try:
+                    po2_current = brentq(lambda p: calculate_blood_oxygen_content(p, h) - c_mix, 0.0, 150.0)
+                except ValueError: po2_current = po2_arterial if c_mix > 0 else 0.0
+                
+                c_current = c_mix
+                for cell in edge_to_cells.get(edge_key, []):
+                    flux = P_perm * cell['surface_area'] * max(0.0, po2_current - PO2_clamped[cell['cell_idx']])
+                    if q > 0:
+                        c_current = max(0.0, c_current - (flux / q))
+                        try:
+                            po2_current = brentq(lambda p: calculate_blood_oxygen_content(p, h) - c_current, 0.0, 150.0)
+                        except ValueError: po2_current = 0.0
+                    cell_transmural_flux[cell['cell_idx']] += flux
+                node_o2_flux_in[v] += c_current * q; node_q_in[v] += q
+                
+        b = cell_transmural_flux - (M_red * V_cell) + (pseudo_washout_diag * PO2_clamped)
+        PO2_new, info = splinalg.cg(A_stable, b, M=M_pre, x0=PO2_tissue, rtol=1e-6, maxiter=1000)
+        PO2_new = np.maximum(PO2_new, 0.0)
+        diff = np.linalg.norm(PO2_new - PO2_tissue) / (np.linalg.norm(PO2_new) + 1e-12)
+        PO2_tissue = PO2_new
+        if diff < 1e-4:
+            logger.info(f"Coupled solver converged after {iteration+1} iterations.")
+            break
+    return PO2_tissue

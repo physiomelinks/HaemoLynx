@@ -150,6 +150,10 @@ class PerfusionConfig:
     # -----------------------------------------------
     # sigma_diff: Diffusion coefficient of O2 in tissue (m^2/s)
     sigma_diff: float = 1.5e-9 
+    
+    # Endothelial Barrier Model
+    use_endothelial_barrier_model: bool = False
+    permeability_o2_cm_s: float = 1.0e-4 # Permeability coefficient for O2 (cm/s)
 
     # M_max: Maximum metabolic consumption rate (mmol / L / s)
     M_max: float = 0.05
