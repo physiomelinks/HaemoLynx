@@ -42,10 +42,6 @@ The pipeline constructs a global, sparse Laplacian conductance matrix ($A\mathbf
 *   **Boundary Conditions (Dirichlet):** Fixed physiological pressure constraints are applied at mathematically identified root nodes. Default configurations map Arterial Inlets to Mean Arterial Pressure (MAP $\approx 13.3$ kPa) and Venous Outlets to Central Venous Pressure (CVP $\approx 0.27$ kPa).
 *   **Outputs:** Nodal pressures ($P$), Volumetric flow rates ($Q$), Wall Shear Stress ($\tau$), Local Hematocrit ($H_D$), and Apparent Viscosity ($\mu_{app}$).
 
-**Associated Assumptions:**
-1.  **Laminar Flow:** Fluid mechanics are governed entirely by viscous forces (Reynolds number $\ll 1$); inertial forces and pulsatility are ignored (steady-state flow).
-2.  **Rigid Cylinders:** Vessel walls are assumed perfectly inelastic and perfectly circular.
-
 ### 1.2 3D Tissue Perfusion (Oxygen Transport)
 
 **The System of Governing Equations:**
@@ -68,8 +64,12 @@ Because Blood $PO_2$, Tissue $PO_2$, $PCO_2$, and pH are inextricably interactin
 *   **Boundary Conditions:** Neumann Zero-Flux boundary conditions ($\frac{\partial P}{\partial n} = 0$) are assumed at the external edges of the bounding box. 
 *   **Outputs:** Three complete 3D discrete grids of steady-state tissue Partial Pressures ($PO_2$ and $PCO_2$ in mmHg) and $pH$, exportable as a `.vti` heatmap.
 
-**Associated Assumptions:**
-1.  **Homogeneous Diffusion:** The tissue diffusion coefficient ($D$) is identical in all spatial directions and tissue types.
+### 1.3 Key Assumptions and Limitations
+While the pipeline utilizes state-of-the-art non-linear thermodynamics, empirical in-vivo rheology, and multi-species coupling, it remains a mathematical abstraction bound by several key assumptions:
+1.  **Laminar, Steady-State Flow:** Fluid mechanics are governed entirely by viscous forces (Reynolds number $\ll 1$). Inertial forces, pulsatility (heartbeats), and vasomotion over time are ignored. The system represents a "snapshot" of steady-state flow.
+2.  **Rigid Cylinders:** Vessel walls are assumed perfectly inelastic. While FWHM measurements capture true biological radii and pre-capillary sphincters are explicitly modeled, the vessels do not dynamically expand or contract in response to solved blood pressure (compliance is ignored).
+3.  **Homogeneous Diffusion:** The tissue diffusion coefficients ($D_{O2}$ and $D_{CO2}$) are assumed identical in all spatial directions (isotropic) and across all tissue types (homogeneous). The model does not differentiate between glomus cell clusters and interstitial stroma regarding diffusion speed.
+4.  **Endothelial Permeability Uniformity:** The endothelial barrier is modeled using constant permeability coefficients ($P_{perm\_O2}, P_{perm\_CO2}$). In reality, capillary fenestrations and continuous endothelium vary across the Carotid Body, which could lead to localized permeability differences not captured by a global constant.
 
 ---
 
