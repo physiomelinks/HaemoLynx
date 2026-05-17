@@ -49,22 +49,24 @@ The pipeline constructs a global, sparse Laplacian conductance matrix ($A\mathbf
 ### 1.2 3D Tissue Perfusion (Oxygen Transport)
 
 **The System of Governing Equations:**
-Oxygen delivery is mathematically mapped onto a 3D Cartesian grid. To accurately simulate physiological oxygen unloading, the pipeline explicitly resolves both the "Dissolved Oxygen Assumption" and the "Permeability Assumption" by decoupling Blood $PO_2$ from Tissue $PO_2$ and treating the vessel wall as a physical barrier.
-*   **The ADR Equation:** $D \nabla^2 PO_{2\_tissue}(\mathbf{x}) + S_{adv}(PO_{2\_tissue}(\mathbf{x})) - M(PO_{2\_tissue}(\mathbf{x})) = 0$
-*   **The Hill Equation (O2 Content):** $C_{blood}(PO_2) = (\alpha_{plasma} \cdot PO_2) + \left( H_D \cdot C_{Hb\_max} \cdot \frac{PO_2^n}{PO_2^n + P_{50}^n} \right)$
+Oxygen delivery is mathematically mapped onto a 3D Cartesian grid. To accurately simulate physiological oxygen unloading, the pipeline explicitly resolves both the "Dissolved Oxygen Assumption" and the "Permeability Assumption" by decoupling Blood $PO_2$ from Tissue $PO_2$ and treating the vessel wall as a physical barrier. Furthermore, the pipeline utilizes a **Multi-Species ($O_2, CO_2,$ pH) Coupled Model** to perfectly simulate the polymodal chemosensory environment of the Carotid Body.
+*   **The ADR Equations:** $D \nabla^2 PO_{2\_tissue}(\mathbf{x}) + S_{adv\_o2} - M_{O2} = 0$ and $D_{co2} \nabla^2 PCO_{2\_tissue}(\mathbf{x}) + S_{adv\_co2} + M_{CO2} = 0$. The solver builds two distinct 3D sparse matrices, explicitly reflecting that $CO_2$ diffuses roughly $20\times$ faster through tissue than $O_2$.
+*   **The Bohr Effect (O2 Content):** $C_{blood}(PO_2) = (\alpha_{plasma} \cdot PO_2) + \left( H_D \cdot C_{Hb\_max} \cdot \frac{PO_2^n}{PO_2^n + P_{50}^n} \right)$. The $P_{50}$ (hemoglobin affinity) dynamically shifts rightward based on local $PCO_2$ gradients and acidosis (pH) via the Kelman/Severinghaus equations, aggressively "dumping" oxygen in hypoxic/hypercapnic cores.
+*   **The Haldane Effect (CO2 Content):** $CO_2$ carrying capacity is explicitly coupled to local $PO_2$ via Spencer's empirical dissociation curve. As blood gives up oxygen to the tissue, its capacity to carry $CO_2$ mathematically increases.
+*   **Henderson-Hasselbalch Equilibration:** Tissue $pH$ is dynamically calculated per-voxel based on the local steady-state $PCO_2$ gradient and the standard tissue bicarbonate buffer ($[HCO_3^-]$).
 *   **Trans-Mural Oxygen Flux:** $Flux = P_{perm} \times Area \times \left(PO_{2\_blood} - PO_{2\_tissue}^{(n)}\right)$. Oxygen leakage is strictly regulated by the physical surface area ($2\pi r L$) of the vessel segment and its endothelial permeability coefficient ($P_{perm}$).
 *   **Dynamic Advective Source:** $S_{adv} = \frac{Flux}{V_{cell}}$. The total trans-mural flux deposited into the voxel becomes the dynamic right-hand-side source term for the 3D diffusion matrix.
-*   **Metabolic Sink:** $M(PO_2) = M_{max} \left( 1 - e^{-k_{reduce} \cdot PO_{2\_tissue}} \right)$ (Non-linear cellular consumption).
+*   **Coupled Metabolic Sinks:** $M_{O2} = M_{max} \left( 1 - e^{-k_{reduce} \cdot PO_{2\_tissue}} \right)$. $CO_2$ production is mathematically linked via the Respiratory Quotient: $M_{CO2} = M_{O2} \times RQ$.
 
 **Computational Solver:**
-Because Blood $PO_2$ and Tissue $PO_2$ are interacting state variables governed by the non-linear Hill Equation and Michaelis-Menten kinetics, the pipeline employs a **Fully Coupled 1D-3D Picard Iteration Solver**. 
-*   **1D Blood Traversal:** The algorithm traces blood down a Directed Acyclic Graph (DAG). At every voxel, it calculates the $Flux$ leaving the vessel and uses a high-precision numerical root-finder (`brentq`) to invert the Hill Equation, determining the new depleted downstream Blood $PO_2$.
-*   **3D Tissue Matrix:** The leaked $Flux$ is deposited into the 3D sparse diffusion matrix ($A \cdot PO_2 = b$), which is solved via Preconditioned Conjugate Gradient (`cg`). The 1D blood tracing and 3D tissue solving alternate iteratively until both domains reach steady-state convergence.
+Because Blood $PO_2$, Tissue $PO_2$, $PCO_2$, and pH are inextricably interacting state variables governed by non-linear sigmoidal curves, the pipeline employs a **Triple-Coupled 1D-3D Picard Iteration Solver**. 
+*   **1D Blood Traversal:** The algorithm traces blood down a Directed Acyclic Graph (DAG). At every voxel, it calculates the $Flux$ leaving the vessel and uses high-precision multi-variate numerical root-finders (`brentq`) to invert the coupled Bohr/Haldane equations, simultaneously determining the new depleted downstream Blood $PO_2$ and $PCO_2$.
+*   **3D Tissue Matrices:** The leaked $Fluxes$ are deposited into the two distinct 3D sparse diffusion matrices, which are solved side-by-side via Preconditioned Conjugate Gradient (`cg`). The 1D blood tracing and 3D tissue solving alternate iteratively until the entire multi-species environment reaches steady-state thermodynamic convergence.
 
 **Inputs, Outputs, and Boundary Conditions:**
-*   **Inputs:** Solved vessel flow rates ($Q$), local hematocrit ($H_D$), Arterial $PO_2$ baseline, Tissue diffusivity coefficient ($D$), Endothelial Permeability ($P_{perm}$), Maximum metabolic rate ($M_{max}$), and Hemoglobin binding constants ($P_{50}, n$).
-*   **Boundary Conditions:** Neumann Zero-Flux boundary conditions ($\frac{\partial PO_2}{\partial n} = 0$) are assumed at the external edges of the bounding box. 
-*   **Outputs:** A complete 3D discrete grid of steady-state tissue Partial Pressures ($PO_2$ in mmHg), exportable as a `.vti` heatmap.
+*   **Inputs:** Solved vessel flow rates ($Q$), local hematocrit ($H_D$), Arterial $PO_2$ & $PCO_2$ baselines, Tissue diffusivity coefficients ($D_{O2}, D_{CO2}$), Endothelial Permeabilities ($P_{perm\_O2}, P_{perm\_CO2}$), Maximum metabolic rate ($M_{max}$), Respiratory Quotient ($RQ$), and Tissue Bicarbonate.
+*   **Boundary Conditions:** Neumann Zero-Flux boundary conditions ($\frac{\partial P}{\partial n} = 0$) are assumed at the external edges of the bounding box. 
+*   **Outputs:** Three complete 3D discrete grids of steady-state tissue Partial Pressures ($PO_2$ and $PCO_2$ in mmHg) and $pH$, exportable as a `.vti` heatmap.
 
 **Associated Assumptions:**
 1.  **Homogeneous Diffusion:** The tissue diffusion coefficient ($D$) is identical in all spatial directions and tissue types.
@@ -112,12 +114,7 @@ To answer this hypothesis, static morphology is bypassed to utilize the pipeline
 
 To better address the presented hypotheses and elevate the model from a basic approximation to a highly rigorous, biologically representative simulation, the following areas of improvement should be targeted to address the baseline assumptions outlined in Section 1.
 
-### 3.1 Multi-Species Coupling ($CO_2$ and pH)
-*   **The Limitation:** The model currently only solves for Oxygen transport.
-*   **The Improvement:** Expand the ADR matrix builder to simultaneously solve for three coupled fields: $O_2$ (consumption), $CO_2$ (production), and $H^+$ ions.
-*   **Hypothesis Impact:** Glomus cells are stimulated by hypoxia, hypercapnia, and acidity. Because $CO_2$ diffuses roughly 20 times faster than $O_2$, the "Hypoxic Core" of a hyperplastic cluster may also act as a highly acidic "Hypercapnic Core". Modeling all three provides the complete chemosensory stimulus profile.
-
-### 3.2 Modeling Capillary Collapse (Structural vs. Functional Vasculature)
+### 3.1 Modeling Capillary Collapse (Structural vs. Functional Vasculature)
 *   **The Limitation:** CFM imaging only captures physically patent vessels. Hypertension and sympathetic tone cause micro-capillaries to collapse entirely, meaning anatomical capacity does not equal functional capacity.
 *   **The Improvement:** Add a "Virtual Pruning" step that systematically removes network edges from the control graph that fall below a specific diameter/pressure threshold.
 *   **Hypothesis Impact:** Simulates the functional morphology under high sympathetic tone, allowing a direct comparison between maximum anatomical capacity and restricted functional reality.
@@ -142,15 +139,17 @@ These tests compare the numerical sparse-matrix solvers against exact mathematic
 *   **Poiseuille Flow (Series & Parallel):** Creates test networks of differing radii and forces boundary pressures. Proves the numerical flow solver perfectly matches the analytical series ($R_{eq} = R_1 + R_2$) and parallel ($1/R_{eq} = 1/R_1 + 1/R_2$) conductance formulas.
 *   **Sphincter Resistance Calculus:** Defines a complex periodic constriction (ramp down, hold, ramp up) and integrates the non-linear continuous radius equation $\int (1/r(x)^4) dx$ analytically. Asserts that the mathematical solver's trapezoidal numerical integrator perfectly matches the exact calculus output (to within 0.1%), proving no precision is lost across steep pre-capillary sphincters.
 *   **Wall Shear Stress (WSS):** Extracts flow and non-Newtonian viscosity from a simulated network edge and asserts that the resulting WSS exactly matches the analytical mathematical formula ($\tau = 32\mu Q / \pi d^3$).
-*   **0D Fick Principle Mass Balance (The Bohr Effect):** Isolates a single zero-diffusion voxel with continuous blood flow and a metabolic sink. Uses a high-precision root-finder to mathematically invert the non-linear Hill Equation to find the exact theoretical $PO_2$ target. Proves the massive 3D Picard matrix solver perfectly navigates the sigmoidal oxygen unloading curves to converge to the exact analytical answer without numerical drift.
+*   **0D Fick Principle Mass Balance (Multi-Species):** Isolates a single zero-diffusion voxel with continuous blood flow and a metabolic sink linked by the Respiratory Quotient. Uses a high-precision multi-variate root-finder (`scipy.optimize.fsolve`) to mathematically invert the coupled Bohr/Haldane sigmoidal equations to find the exact theoretical $PO_2$ and $PCO_2$ targets. Proves the massive 3D Picard matrix solver perfectly navigates the interacting sigmoidal oxygen/carbon-dioxide unloading curves to converge to the exact analytical multivariate roots without numerical drift.
+*   **Henderson-Hasselbalch Equilibrium:** Mathematically verifies the conversion of $PCO_2$ arrays to 3D $pH$ heatmaps against precise physiological baselines ($pH = 7.4$ at $PCO_2 = 40$) and extreme acidic bounds.
 *   **1D Pure Diffusion:** Turns off metabolism and advection. Proves the 3D finite difference Laplacian matrix produces a flawless, straight-line linear concentration gradient along a single axis.
 *   **Parabolic Reaction-Diffusion:** Forces the non-linear metabolic sink into a constant zero-order rate. Proves the steady-state solver's spatial output perfectly traces the exact theoretical mathematical parabola.
 *   **Radial Point Source:** Places a single advective source in the center of the grid. Proves the spatial diffusion radiating outward strictly conforms to the expected inverse-radius curve ($C(r) \propto 1/r$).
 *   **Transmural Exponential Decay:** Isolates a single vessel passing through an infinite tissue vacuum ($PO_2 = 0$). Proves that the fully coupled 1D-3D Picard solver correctly depletes blood oxygen following an exact mathematical exponential decay curve ($PO_{out} = PO_{in} \cdot e^{-P_{perm} \cdot Area / \alpha Q}$) dictated by the endothelial permeability coefficient.
 *   **Krogh Cylinder Radial Diffusion:** Places a single capillary in a 3D grid with constant metabolism. Proves that the 3D diffusion solver perfectly traces the exact radial $PO_2$ gradients defined by August Krogh's Nobel-winning analytical cylinder equation.
 
-### 4.3 Non-Newtonian Rheology Validation
-These tests validate the Pries-Secomb empirical math and its integration into the iterative flow solver.
+### 4.3 Non-Newtonian Rheology & Multi-Species Validation
+These tests validate the empirical mathematical functions and their integration into the iterative flow solver.
+*   **Atomic Bohr/Haldane Curves:** Passes artificially high/low pH and $PCO_2$ values into the blood content functions to mathematically verify the Bohr shift (low pH definitively lowers $O_2$ affinity at $P_{50}$) and the Haldane shift (high $PO_2$ definitively lowers $CO_2$ carrying capacity), proving the atomic coupling equations are flawless prior to matrix assembly.
 *   **Fåhræus–Lindqvist Curve:** Empirically tests the viscosity equations across massive arteries ($100 \mu m$) down to extreme capillaries ($3 \mu m$), confirming that viscosity correctly drops as vessels shrink, and then correctly spikes at the $8 \mu m$ inversion point where RBCs must deform.
 *   **Plasma Skimming Mechanics & Mass Conservation:** Forces an asymmetric bifurcation (e.g., a $20 \mu m$ AVA vs a $5 \mu m$ capillary). Asserts that the AVA mathematically "steals" the RBCs, driving capillary hematocrit near zero, while strictly proving that total RBC flux is perfectly conserved across the node.
 *   **Coupled Solver Convergence & Safety:** Builds a mock Direct Acyclic Graph (DAG) and intentionally introduces an infinite fluid loop via impossible pressures. Asserts that the topological sorter safely catches the cycle and prevents a fatal crash.
