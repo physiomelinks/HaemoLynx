@@ -10,7 +10,9 @@ from .perfusion import (
     PerfusionGrid, 
     map_vessels_to_grid, 
     build_adr_matrix, 
-    solve_perfusion_steady_state
+    solve_perfusion_steady_state,
+    solve_coupled_1d3d_perfusion,
+    solve_multi_species_perfusion
 )
 from .automated import *
 

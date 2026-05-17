@@ -437,3 +437,120 @@ def test_krogh_cylinder_radial_diffusion():
     # We will test structural completion to guarantee the solver handles complex geometries without crashing
     po2_num = solve_coupled_1d3d_perfusion(grid, G_mock, [0], cell_to_vessels_mock, config)
     assert len(po2_num) == grid.n_cells
+
+
+# --- Part 5: Multi-Species Coupling Tests ---
+
+def test_bohr_haldane_atomic_curves():
+    """Verify the atomic shift equations for the Bohr and Haldane effects."""
+    from ImageLynx.haemodynamics.perfusion import (
+        calculate_blood_oxygen_content, 
+        calculate_blood_co2_content
+    )
+    
+    h_d = 0.45
+    
+    # 1. The Bohr Effect (Acidosis shifts O2 curve right, releasing more O2)
+    # At P50 (26.0), normal pH (7.4) should be ~50% saturated.
+    c_o2_normal = calculate_blood_oxygen_content(26.0, h_d, pco2_mmHg=40.0, ph=7.4)
+    # Severe acidosis (pH 7.0) at the same PO2
+    c_o2_acidic = calculate_blood_oxygen_content(26.0, h_d, pco2_mmHg=40.0, ph=7.0)
+    
+    # Assert the acidic blood has less oxygen bound (it 'dumped' it)
+    assert c_o2_acidic < c_o2_normal
+    
+    # 2. The Haldane Effect (Hyperoxia drops CO2 carrying capacity)
+    pco2 = 40.0
+    # Hypoxic blood (PO2=20)
+    c_co2_hypoxic = calculate_blood_co2_content(pco2, h_d, po2_mmHg=20.0)
+    # Hyperoxic blood (PO2=100)
+    c_co2_hyperoxic = calculate_blood_co2_content(pco2, h_d, po2_mmHg=100.0)
+    
+    # Assert oxygenated blood holds less CO2
+    assert c_co2_hyperoxic < c_co2_hypoxic
+
+
+def test_henderson_hasselbalch_equilibrium():
+    """Verify the Henderson-Hasselbalch math exactly matches physiological pH bounds."""
+    from ImageLynx.haemodynamics.perfusion import calculate_ph_from_pco2
+    
+    # Normal physiological baseline
+    ph_normal = calculate_ph_from_pco2(40.0, hco3_mmol_L=24.0)
+    assert np.isclose(ph_normal, 7.4, atol=1e-2)
+    
+    # Severe hypercapnia (PCO2 = 80) should drive pH down into severe acidosis (~7.1)
+    ph_acidic = calculate_ph_from_pco2(80.0, hco3_mmol_L=24.0)
+    assert ph_acidic < 7.15
+
+
+def test_multi_species_0d_fick_mass_balance():
+    """
+    Gold Standard Analytical Benchmark for the Multi-Species Solver.
+    Isolates a single voxel. Mathematically proves the Picard Matrix loop correctly 
+    navigates the coupled Bohr/Haldane equations to hit the exact Fick Mass Balance root.
+    """
+    from scipy.optimize import fsolve
+    import scipy.sparse as sp
+    from dataclasses import dataclass
+    from ImageLynx.haemodynamics.perfusion import (
+        solve_multi_species_perfusion,
+        calculate_blood_oxygen_content,
+        calculate_blood_co2_content,
+        calculate_ph_from_pco2
+    )
+    
+    # 1. Setup Parameters
+    v_cell = 1000.0; q_huge = 1e9; h_d = 0.45 
+    po2_art = 100.0; pco2_art = 40.0; ph_art = 7.4
+    
+    m_max = 0.05
+    rq = 0.82
+    hco3 = 24.0
+    m_co2 = m_max * rq
+    
+    # We use stable physiological permeabilities.
+    # The Fick Principle holds true regardless of permeability at steady state.
+    p_perm_o2_cm_s = 1e-4
+    p_perm_co2_cm_s = 2e-3
+    p_perm_o2_um_s = p_perm_o2_cm_s * 1e4
+    p_perm_co2_um_s = p_perm_co2_cm_s * 1e4
+    area = 1000.0
+    
+    # 2. Derive Exact Analytical Targets using Fick's Principle
+    # Because Q is massive, Blood pressures don't drop.
+    # Steady State: Flux_into_tissue = Metabolism_at_sink
+    po2_analytical_tissue = po2_art - (m_max * v_cell) / (p_perm_o2_um_s * area)
+    pco2_analytical_tissue = pco2_art + (m_co2 * v_cell) / (p_perm_co2_um_s * area)
+    analytical_ph = calculate_ph_from_pco2(pco2_analytical_tissue, hco3)
+    
+    analytical_po2 = po2_analytical_tissue
+    analytical_pco2 = pco2_analytical_tissue
+    
+    # 4. Run the Massive Picard Solver
+    class FakeGrid:
+        def __init__(self):
+            self.n_cells = 1; self.cell_volume = v_cell; self.dims = (1, 1, 1); self.res = (10.0, 10.0, 10.0)
+            
+    @dataclass
+    class FakeConfig:
+        M_max = m_max; k_reduce = 1000.0; respiratory_quotient = rq; hco3_tissue = hco3
+        permeability_o2_cm_s = p_perm_o2_cm_s
+        permeability_co2_cm_s = p_perm_co2_cm_s
+        C_arterial = po2_art; pco2_arterial = pco2_art
+        sigma_diff = 1.5e-9; sigma_diff_co2 = 3.0e-8
+            
+    grid = FakeGrid()
+    config = FakeConfig()
+    
+    G_mock = nx.MultiGraph()
+    G_mock.add_node(0); G_mock.add_node(1)
+    G_mock.add_edge(0, 1, key=0, flow_signed=q_huge, flow_abs=q_huge, hematocrit=h_d, length=10.0)
+    
+    cell_to_vessels_mock = {0: [{'edge': (0, 1, 0), 'flow': q_huge, 'hematocrit': h_d, 'length': 10.0, 'surface_area': area}]}
+    
+    po2_num, pco2_num, ph_num = solve_multi_species_perfusion(grid, G_mock, [0], cell_to_vessels_mock, config)
+    
+    # 5. Assert perfection
+    np.testing.assert_allclose(po2_num[0], analytical_po2, atol=1e-2)
+    np.testing.assert_allclose(pco2_num[0], analytical_pco2, atol=1e-2)
+    np.testing.assert_allclose(ph_num[0], analytical_ph, atol=1e-3)

@@ -152,9 +152,17 @@ class PerfusionConfig:
     sigma_diff: float = 1.5e-9 
     
     # Endothelial Barrier Model
-    use_endothelial_barrier_model: bool = False
+    use_endothelial_barrier_model: bool = True
     permeability_o2_cm_s: float = 1.0e-4 # Permeability coefficient for O2 (cm/s)
-
+    
+    # Multi-Species Coupling (CO2 & pH)
+    use_multi_species_model: bool = True
+    sigma_diff_co2: float = 3.0e-8 # Tissue diffusion coefficient for CO2 (m^2/s) - diffuses ~20x faster than O2
+    permeability_co2_cm_s: float = 2.0e-3 # Permeability coefficient for CO2 (cm/s)
+    respiratory_quotient: float = 0.82 # Ratio of CO2 produced to O2 consumed
+    pco2_arterial: float = 40.0 # Arterial PCO2 (mmHg)
+    hco3_tissue: float = 24.0 # Tissue bicarbonate buffer (mmol/L)
+    
     # M_max: Maximum metabolic consumption rate (mmol / L / s)
     M_max: float = 0.05
 
@@ -942,17 +950,39 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
         A, q_total, s_incoming = haemodynamics.build_adr_matrix(grid, cell_mapping, perf_config)
         
         # 4. Solve the Non-Linear Steady-State Perfusion field
-        PO2_steady = haemodynamics.solve_perfusion_steady_state(grid, A, q_total, s_incoming, perf_config)
-        
-        # Calculate statistics
-        mean_c = np.mean(PO2_steady)
-        max_c = np.max(PO2_steady)
-        min_c = np.min(PO2_steady)
-        print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
-
-        # 5. Export to VTK
-        vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
-        visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
+        if getattr(perf_config, 'use_multi_species_model', False):
+            print("  Running Fully Coupled Multi-Species (O2, CO2, pH) Perfusion Solver...")
+            PO2_steady, PCO2_steady, pH_steady = haemodynamics.solve_multi_species_perfusion(grid, G, starting_nodes, cell_mapping, perf_config)
+            mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
+            print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
+            print(f"                            Mean tissue PCO2: {np.mean(PCO2_steady):.4e} mmHg")
+            print(f"                            Mean tissue pH: {np.mean(pH_steady):.4f}")
+            
+            vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
+            visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
+            
+            import pyvista as pv
+            vol = pv.read(vti_path)
+            vol.cell_data["PCO2_mmHg"] = PCO2_steady.flatten(order='F') if PO2_steady.ndim > 1 else PCO2_steady
+            vol.cell_data["pH"] = pH_steady.flatten(order='F') if PO2_steady.ndim > 1 else pH_steady
+            vol.save(vti_path)
+            
+        elif getattr(perf_config, 'use_endothelial_barrier_model', False):
+            print("  Running Fully Coupled 1D-3D Endothelial Permeability Solver...")
+            PO2_steady = haemodynamics.solve_coupled_1d3d_perfusion(grid, G, starting_nodes, cell_mapping, perf_config)
+            mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
+            print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
+            vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
+            visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
+            
+        else:
+            print("  Running Instant-Equilibrium Perfusion Solver...")
+            PO2_steady = haemodynamics.solve_perfusion_steady_state(grid, A, q_total, s_incoming, perf_config)
+            mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
+            print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
+            vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
+            visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
+            
         print(f"  Saved 3D Perfusion Field to: {vti_path}")
 
     if vis_config.visualize_results:
