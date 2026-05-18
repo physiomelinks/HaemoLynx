@@ -311,7 +311,7 @@ def test_analytical_wall_shear_stress():
         G,
         starting_nodes=[0],
         output_nodes=[1],
-        input_p_bc=100.0,
+        input_p_bc=13.332e6,
         output_p_bc=0.0,
         systemic_hematocrit=0.45,
         max_iterations=1 # Only need 1 iteration to get the first WSS calculation
@@ -515,12 +515,15 @@ def test_multi_species_0d_fick_mass_balance():
     p_perm_o2_um_s = p_perm_o2_cm_s * 1e4
     p_perm_co2_um_s = p_perm_co2_cm_s * 1e4
     area = 1000.0
+    alpha_o2 = 1.34e-3
+    alpha_co2 = 0.03
     
     # 2. Derive Exact Analytical Targets using Fick's Principle
     # Because Q is massive, Blood pressures don't drop.
     # Steady State: Flux_into_tissue = Metabolism_at_sink
-    po2_analytical_tissue = po2_art - (m_max * v_cell) / (p_perm_o2_um_s * area)
-    pco2_analytical_tissue = pco2_art + (m_co2 * v_cell) / (p_perm_co2_um_s * area)
+    # P_perm * Area * alpha * (PO2_blood - PO2_tissue) = M_max * V_cell
+    po2_analytical_tissue = po2_art - (m_max * v_cell) / (p_perm_o2_um_s * area * alpha_o2)
+    pco2_analytical_tissue = pco2_art + (m_co2 * v_cell) / (p_perm_co2_um_s * area * alpha_co2)
     analytical_ph = calculate_ph_from_pco2(pco2_analytical_tissue, hco3)
     
     analytical_po2 = po2_analytical_tissue

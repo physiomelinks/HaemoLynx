@@ -83,7 +83,7 @@ class SkeletonConfig:
     use_padded_slicing: bool = True
     padded_slicing_padding: int = 3
     prune_mask_before: int = 1
-    sub_volume_percentage: float = 0.15
+    sub_volume_percentage: float = 0.25
     sub_volume_offset_z: float = 0.0
     sub_volume_offset_y: float = 0.0
     sub_volume_offset_x: float = 0.0
@@ -106,8 +106,10 @@ class GraphConfig:
 class HaemodynamicsConfig:
     """Configuration for fluid dynamics simulation, pressures, and vessel diameters."""
     constrict_at_pericytes: bool = True
-    input_p_bc: float = 13.332e3 ### Pa (MAP of 70 mmHg to 100 mmHg = MAP of 9.333 kPa to 13.332 kPa)
-    output_p_bc: float = 0.27e3 ### Pa (CVP of 2 mmHg to 8 mmHg = CVP of 0.267 kPa to 1.067 kPa)
+    # To match dimensions of viscosity (mPa*s) and lengths (um) yielding flow (Q) in um^3/s:
+    # Pressure must be provided in milliPascals (mPa).
+    input_p_bc: float = 13.332e6 ### mPa (MAP of 100 mmHg = 13.332 kPa = 13.332e6 mPa)
+    output_p_bc: float = 0.27e6 ### mPa (CVP of 2 mmHg = 0.267 kPa = 0.27e6 mPa)
     diameter_by_branch_order: dict = field(default_factory=dict)
     
     # --- Sphincter / Constriction Configuration ---
@@ -118,6 +120,16 @@ class HaemodynamicsConfig:
     intimal_cushion_constriction_ratio: float = 0.60
     pre_capillary_constriction_ratio: float = 0.50
     pre_capillary_topological_offset: int = 1
+    
+    # --- FWHM Ray-Casting Configuration ---
+    fwhm_sample_spacing_along_edge_um: float = 2.0
+    fwhm_transverse_profile_step_um: float = 0.5
+    fwhm_transverse_half_extent_um: float = 15.0
+    
+    # --- Rheology Solver Parameters ---
+    rheology_max_iterations: int = 15
+    rheology_tolerance: float = 1e-4
+    blood_plasma_viscosity_cP: float = 1.2
 
     def __post_init__(self):
         """Validates configuration bounds to prevent mathematical crashes in the physics engines."""
@@ -160,8 +172,16 @@ class PerfusionConfig:
     sigma_diff_co2: float = 3.0e-8 # Tissue diffusion coefficient for CO2 (m^2/s) - diffuses ~20x faster than O2
     permeability_co2_cm_s: float = 2.0e-3 # Permeability coefficient for CO2 (cm/s)
     respiratory_quotient: float = 0.82 # Ratio of CO2 produced to O2 consumed
+    
+    # Blood & Tissue Baselines
+    systemic_hematocrit: float = 0.45
+    po2_arterial_mmHg: float = 100.0
     pco2_arterial: float = 40.0 # Arterial PCO2 (mmHg)
     hco3_tissue: float = 24.0 # Tissue bicarbonate buffer (mmol/L)
+    
+    # Picard Solver Parameters
+    picard_max_iterations: int = 50
+    picard_tolerance: float = 1e-4
     
     # M_max: Maximum metabolic consumption rate (mmol / L / s)
     M_max: float = 0.05
@@ -779,9 +799,9 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             G,
             raw_tiff_path=image,  # We pass the numpy array directly (the backend has been patched to handle this)
             voxel_size_xyz=fwhm_spacing,
-            sample_spacing_along_edge_um=2.0,
-            transverse_profile_step_um=0.5,
-            transverse_half_extent_um=15.0,
+            sample_spacing_along_edge_um=hemo_config.fwhm_sample_spacing_along_edge_um,
+            transverse_profile_step_um=hemo_config.fwhm_transverse_profile_step_um,
+            transverse_half_extent_um=hemo_config.fwhm_transverse_half_extent_um,
         )
         print(f"FWHM measurement complete. Processed {len(stats_dict)} edges.")
 
@@ -881,8 +901,9 @@ def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resi
         output_nodes,
         hemo_config.input_p_bc,
         hemo_config.output_p_bc,
-        systemic_hematocrit=0.45,
-        max_iterations=15
+        systemic_hematocrit=perf_config.systemic_hematocrit,
+        max_iterations=hemo_config.rheology_max_iterations,
+        tolerance=hemo_config.rheology_tolerance
     )
     
     # We still need to export the final flow data to VTK

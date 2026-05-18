@@ -405,8 +405,11 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     V_cell = grid.cell_volume
     P_perm_o2 = getattr(perf_config, 'permeability_o2_cm_s', 1.0e-4) * 1e4 # um/s
     P_perm_co2 = getattr(perf_config, 'permeability_co2_cm_s', 2.0e-3) * 1e4 # um/s
-    po2_art = getattr(perf_config, 'C_arterial', 100.0) # Actually PO2_art, config naming is overloaded
+    po2_art = getattr(perf_config, 'po2_arterial_mmHg', 100.0)
     pco2_art = getattr(perf_config, 'pco2_arterial', 40.0)
+    systemic_h = getattr(perf_config, 'systemic_hematocrit', 0.45)
+    max_iter = getattr(perf_config, 'picard_max_iterations', 50)
+    tolerance = getattr(perf_config, 'picard_tolerance', 1e-4)
 
     logger.info("Initializing Multi-Species 1D-3D Picard Loop...")
 
@@ -430,11 +433,15 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     except nx.NetworkXUnfeasible:
         topo_order = list(G.nodes())
 
-    def build_diffusion_matrix(sigma_diff):
+    alpha_o2 = 1.34e-3 # mmol/L per mmHg
+    alpha_co2 = 0.03 # mmol/L per mmHg
+
+    def build_diffusion_matrix(sigma_diff, alpha):
         sigma_um2_s = sigma_diff * 1e12
-        D_x = sigma_um2_s * (res[1] * res[2]) / res[0]
-        D_y = sigma_um2_s * (res[0] * res[2]) / res[1]
-        D_z = sigma_um2_s * (res[0] * res[1]) / res[2]
+        # Scale D by alpha so the matrix solves for PO2 but outputs mmol/s
+        D_x = sigma_um2_s * alpha * (res[1] * res[2]) / res[0]
+        D_y = sigma_um2_s * alpha * (res[0] * res[2]) / res[1]
+        D_z = sigma_um2_s * alpha * (res[0] * res[1]) / res[2]
 
         rows, cols, data = [], [], []
         diag_A = np.zeros(N, dtype=np.float64)
@@ -464,8 +471,8 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         A = sp.coo_matrix((data_arr, (rows, cols)), shape=(N, N)).tocsr()
         return A
 
-    A_o2 = build_diffusion_matrix(perf_config.sigma_diff)
-    A_co2 = build_diffusion_matrix(getattr(perf_config, 'sigma_diff_co2', 3.0e-8))
+    A_o2 = build_diffusion_matrix(perf_config.sigma_diff, alpha_o2)
+    A_co2 = build_diffusion_matrix(getattr(perf_config, 'sigma_diff_co2', 3.0e-8), alpha_co2)
 
     area_total = np.zeros(N)
     for cell_idx, vessels in cell_to_vessels.items():
@@ -474,8 +481,8 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     gamma_relax_o2 = 1.0
     gamma_relax_co2 = 1.0 
 
-    pseudo_washout_o2 = P_perm_o2 * area_total * gamma_relax_o2
-    pseudo_washout_co2 = P_perm_co2 * area_total * gamma_relax_co2
+    pseudo_washout_o2 = P_perm_o2 * area_total * alpha_o2 * gamma_relax_o2
+    pseudo_washout_co2 = P_perm_co2 * area_total * alpha_co2 * gamma_relax_co2
 
     A_o2.setdiag(A_o2.diagonal() + pseudo_washout_o2)
     A_co2.setdiag(A_co2.diagonal() + pseudo_washout_co2)
@@ -487,7 +494,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         M_pre_o2 = None
         M_pre_co2 = None
 
-    for iteration in range(25):
+    for iteration in range(max_iter):
         PO2_clamped = np.maximum(PO2_tissue, 0.0)
         PCO2_clamped = np.maximum(PCO2_tissue, 0.0)
 
@@ -506,7 +513,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
             if n in DAG.nodes:
                 for succ in DAG.successors(n):
                     for k, d in DAG[n][succ].items():
-                        h = d.get("hematocrit", 0.45)
+                        h = d.get("hematocrit", systemic_h)
                         q = d.get("flow_abs", 0.0)
                         # Arterial blood assumed pH 7.4
                         node_o2_flux_in[n] += calculate_blood_oxygen_content(po2_art, h, pco2_art, 7.4) * q
@@ -521,14 +528,14 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                 c_o2_mix = node_o2_flux_in[node] / node_q_in[node]
                 c_co2_mix = node_co2_flux_in[node] / node_q_in[node]
             else:
-                c_o2_mix = calculate_blood_oxygen_content(po2_art, 0.45, pco2_art, 7.4)
-                c_co2_mix = calculate_blood_co2_content(pco2_art, 0.45, po2_art)
+                c_o2_mix = calculate_blood_oxygen_content(po2_art, systemic_h, pco2_art, 7.4)
+                c_co2_mix = calculate_blood_co2_content(pco2_art, systemic_h, po2_art)
 
             for _, v, k, e_data in DAG.out_edges(node, data=True, keys=True):
                 edge_key = (node, v, k)
                 if edge_key not in edge_to_cells: edge_key = (v, node, k)
                 q = e_data.get("flow_abs", 0.0)
-                h = e_data.get("hematocrit", 0.45)
+                h = e_data.get("hematocrit", systemic_h)
 
                 # Approximate incoming pressures based on mix
                 try:
@@ -546,8 +553,8 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                     area = cell['surface_area']
                     ph_local = pH_tissue[idx]
 
-                    flux_o2 = P_perm_o2 * area * (po2_curr - PO2_clamped[idx])
-                    flux_co2 = P_perm_co2 * area * (pco2_curr - PCO2_clamped[idx])
+                    flux_o2 = P_perm_o2 * area * alpha_o2 * (po2_curr - PO2_clamped[idx])
+                    flux_co2 = P_perm_co2 * area * alpha_co2 * (pco2_curr - PCO2_clamped[idx])
 
                     if q > 0:
                         c_o2_curr = max(0.0, c_o2_curr - (flux_o2 / q))
@@ -555,7 +562,6 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
 
                         try:
                             # Iteratively solve the coupled Bohr/Haldane equations
-                            # We assume PCO2 drives Haldane, PO2 drives Bohr
                             po2_curr = brentq(lambda p: calculate_blood_oxygen_content(p, h, pco2_curr, ph_local) - c_o2_curr, 0.0, 150.0)
                             pco2_curr = brentq(lambda p: calculate_blood_co2_content(p, h, po2_curr) - c_co2_curr, 0.0, 150.0)
                         except ValueError:
@@ -582,9 +588,11 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
 
         PO2_tissue, PCO2_tissue = PO2_new, PCO2_new
 
-        if diff_o2 < 1e-4 and diff_co2 < 1e-4:
+        if diff_o2 < tolerance and diff_co2 < tolerance:
             logger.info(f"Multi-Species solver converged after {iteration+1} iterations.")
             break
+    else:
+        logger.warning(f"Multi-Species Picard iteration hit max_iter ({max_iter}) without reaching tolerance {tolerance}.")
 
     pH_tissue = calculate_ph_from_pco2(np.maximum(PCO2_tissue, 0.0), hco3_tissue)
     return PO2_tissue, PCO2_tissue, pH_tissue
