@@ -147,6 +147,39 @@ These tests compare the numerical sparse-matrix solvers against exact mathematic
 *   **Transmural Exponential Decay:** Isolates a single vessel passing through an infinite tissue vacuum ($PO_2 = 0$). Proves that the fully coupled 1D-3D Picard solver correctly depletes blood oxygen following an exact mathematical exponential decay curve ($PO_{out} = PO_{in} \cdot e^{-P_{perm} \cdot Area / \alpha Q}$) dictated by the endothelial permeability coefficient.
 *   **Krogh Cylinder Radial Diffusion:** Places a single capillary in a 3D grid with constant metabolism. Proves that the 3D diffusion solver perfectly traces the exact radial $PO_2$ gradients defined by August Krogh's Nobel-winning analytical cylinder equation.
 
+---
+
+## 5. Appendix
+
+### 5.1 Dimensional Analysis
+To guarantee the mathematical validity of the coupled 1D-3D multiphysics engine, the pipeline maintains strict dimensional consistency across all interacting equations.
+
+#### 1D Fluid Dynamics (Poiseuille & WSS)
+*   **Viscosity ($\mu_{app}$):** Pries-Secomb equations output in centipoise ($cP$), which is physically identical to **milliPascal-seconds ($mPa \cdot s$)**.
+*   **Vessel Dimensions ($r, L$):** Measured natively in **micrometers ($\mu m$)**.
+*   **Resistance ($R$):** $R = \frac{128 \mu L}{\pi d^4} \rightarrow \frac{mPa \cdot s \cdot \mu m}{\mu m^4} = \mathbf{\frac{mPa \cdot s}{\mu m^3}}$.
+*   **Pressure ($\Delta P$):** Set via boundary conditions in **milliPascals ($mPa$)**.
+*   **Fluid Flow ($Q$):** $Q = \frac{\Delta P}{R} \rightarrow \frac{mPa}{\frac{mPa \cdot s}{\mu m^3}} = \mathbf{\frac{\mu m^3}{s}}$.
+*   **Wall Shear Stress ($\tau$):** $\tau = \frac{32 \mu Q}{\pi d^3} \rightarrow \frac{(mPa \cdot s) \cdot (\mu m^3 / s)}{\mu m^3} = \mathbf{mPa}$. *(The engine automatically divides by 1000 to export VTK arrays in standard Pascals).*
+
+#### Blood Gas Content & Non-Newtonian Rheology
+*   **Hematocrit ($H_D$):** A volumetric fraction. **Dimensionless.**
+*   **Plasma Skimming:** Operates on ratios of Flow ($Q_1 / Q_{in}$) and Diameters ($d_1 / d_2$). **Dimensionless.**
+*   **Gas Content ($C_{blood}$):** The Bohr/Haldane Hill equations scale the Partial Pressure ($PO_2$ in **mmHg**) by the solubility coefficient $\alpha$ (measured in $\mathbf{\frac{mmol/L}{mmHg}}$). Therefore, blood oxygen content is strictly measured in **mmol/L**.
+
+#### Fully Coupled 3D Tissue Perfusion
+To mathematically add diffusion, metabolic consumption, and trans-mural leakage together in the Picard sparse matrix ($A \cdot x = b$), they must all resolve to the exact same unit. In this pipeline, they all flawlessly resolve to **Mass Flux**: $\mathbf{\frac{\mu m^3}{s} \cdot \frac{mmol}{L}}$.
+
+*   **Metabolic Sink ($M$):** 
+    *   Maximum consumption ($M_{max}$) is set in $\frac{mmol}{L \cdot s}$. Voxel Volume ($V_{cell}$) is in $\mu m^3$. 
+    *   *Resolved Sink Unit:* $M_{max} \times V_{cell} \rightarrow \mathbf{\left(\frac{\mu m^3}{s}\right) \cdot \left(\frac{mmol}{L}\right)}$.
+*   **Trans-Mural Leakage ($Flux$):** 
+    *   Endothelial Permeability ($P_{perm}$) is converted from $cm/s$ to **$\mu m/s$**. Vessel Surface Area ($2\pi rL$) is in **$\mu m^2$**. Solubility ($\alpha$) is **$\frac{mmol/L}{mmHg}$**. Pressure gradient ($\Delta PO_2$) is **mmHg**.
+    *   *Resolved Leakage Unit:* $(\mu m/s) \cdot (\mu m^2) \cdot \left(\frac{mmol/L}{mmHg}\right) \cdot (mmHg) = \mathbf{\left(\frac{\mu m^3}{s}\right) \cdot \left(\frac{mmol}{L}\right)}$.
+*   **3D Tissue Diffusion ($A_{diff}$):**
+    *   Diffusivity ($D_{tissue}$) is converted from $m^2/s$ to **$\mu m^2/s$**. The 7-point stencil conductance ($D \cdot \frac{Area}{Length}$) resolves to **$\frac{\mu m^3}{s}$**. The engine explicitly scales the diffusion matrix by the solubility coefficient $\alpha$ ($\frac{mmol/L}{mmHg}$).
+    *   *Resolved Diffusion Unit:* $A_{diff} \cdot \Delta PO_2 \rightarrow \left(\frac{\mu m^3}{s} \cdot \frac{mmol/L}{mmHg}\right) \cdot (mmHg) = \mathbf{\left(\frac{\mu m^3}{s}\right) \cdot \left(\frac{mmol}{L}\right)}$.
+
 ### 4.3 Non-Newtonian Rheology & Multi-Species Validation
 These tests validate the empirical mathematical functions and their integration into the iterative flow solver.
 *   **Atomic Bohr/Haldane Curves:** Passes artificially high/low pH and $PCO_2$ values into the blood content functions to mathematically verify the Bohr shift (low pH definitively lowers $O_2$ affinity at $P_{50}$) and the Haldane shift (high $PO_2$ definitively lowers $CO_2$ carrying capacity), proving the atomic coupling equations are flawless prior to matrix assembly.
