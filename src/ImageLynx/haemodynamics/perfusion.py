@@ -577,6 +577,12 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         b_o2 = transmural_o2 - (M_o2_red * V_cell) + (pseudo_washout_o2 * PO2_clamped)
         b_co2 = transmural_co2 + (M_co2_prod * V_cell) + (pseudo_washout_co2 * PCO2_clamped)
 
+        if iteration == 0:
+            logger.info(f"DEBUG Iteration 0: max(transmural_o2) = {np.max(transmural_o2)}")
+            logger.info(f"DEBUG Iteration 0: max(M_o2_red * V_cell) = {np.max(M_o2_red * V_cell)}")
+            logger.info(f"DEBUG Iteration 0: max(b_o2) = {np.max(b_o2)}")
+            logger.info(f"DEBUG Iteration 0: max(node_o2_flux_in) = {max(node_o2_flux_in.values() if node_o2_flux_in else [0])}")
+
         PO2_new, _ = splinalg.cg(A_o2, b_o2, M=M_pre_o2, x0=PO2_tissue, rtol=1e-5, maxiter=500)
         PCO2_new, _ = splinalg.cg(A_co2, b_co2, M=M_pre_co2, x0=PCO2_tissue, rtol=1e-5, maxiter=500)
 

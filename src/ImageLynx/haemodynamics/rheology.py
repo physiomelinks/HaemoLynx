@@ -220,6 +220,7 @@ def solve_coupled_flow_and_hematocrit(
             
             current_flows[(u, v, key)] = flow_abs
             data["flow_abs"] = flow_abs
+            data["flow_signed"] = flow_signed
             
             # Direct the edge from high pressure to low pressure
             if flow_signed > 0:

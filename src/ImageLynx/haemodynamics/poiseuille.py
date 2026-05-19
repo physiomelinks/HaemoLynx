@@ -9,19 +9,15 @@ logger = logging.getLogger(__name__)
 class PoiseuilleModel:
     """Encapsulates Poiseuille computations and constriction settings."""
 
-    def __init__(self, constriction_length: float, constriction_spacing: float, mode: str = "periodic", constant_radius_um: float = 5.0) -> None:
+    def __init__(self, constriction_length: float, constriction_spacing: float, mode: str = "periodic") -> None:
         self.constriction_length = constriction_length
         self.constriction_spacing = constriction_spacing
         self.mode = mode
-        self.constant_radius_um = constant_radius_um
 
     def get_diameter_at_position(
         self, position: float, length: float, d1: float, d2: float
     ) -> float:
-        """Diameter at position along vessel. Supports periodic, sphincter, or constant_radius patterns."""
-        if self.mode == "constant_radius":
-            return self.constant_radius_um * 2.0
-            
+        """Diameter at position along vessel. Supports periodic or localized sphincter pattern."""
         if length <= 0:
             return d1
             
@@ -83,7 +79,8 @@ class PoiseuilleModel:
         G: nx.MultiGraph,
         diameter_by_branch_order: dict,
         *,
-        prefer_edge_fwhm_diameter: bool = False,
+        radius_assignment_mode: str = "fwhm_radius",
+        constant_radius_um: float = 5.0,
     ) -> tuple[nx.MultiGraph, dict]:
         """
         Set edge resistances using Poiseuille's law with calculated viscosity.
@@ -97,9 +94,10 @@ class PoiseuilleModel:
         diameter_by_branch_order : dict
             Dictionary mapping branch order strings to diameter values in micrometers (μm)
             e.g., {'BO1': 10.0, 'BO2': 8.0, 'BO3': 6.0}
-        prefer_edge_fwhm_diameter : bool
-            If True, use each edge's ``fwhm_diameter_um`` (when set and positive) instead
-            of the branch-order table.
+        radius_assignment_mode : str
+            "fwhm_radius" to use measurements, "constant_radius" to use the prescribed value.
+        constant_radius_um : float
+            The uniform radius to apply if in constant mode.
             
         Returns:
         --------
@@ -163,7 +161,9 @@ class PoiseuilleModel:
             
             # Get diameter for this branch order (or per-edge FWHM measurement)
             diameter = None
-            if prefer_edge_fwhm_diameter:
+            if radius_assignment_mode == "constant_radius":
+                diameter = constant_radius_um * 2.0
+            elif radius_assignment_mode == "fwhm_radius":
                 fwhm_d = data.get("fwhm_diameter_um")
                 if fwhm_d is not None and float(fwhm_d) > 0:
                     diameter = float(fwhm_d)
@@ -223,7 +223,8 @@ class PoiseuilleModel:
     def set_poiseuille_resistances_with_constrictions(
         self, G: nx.MultiGraph, diameter_by_branch_order: dict,
         *,
-        prefer_edge_fwhm_baseline: bool = False,
+        radius_assignment_mode: str = "fwhm_radius",
+        constant_radius_um: float = 5.0,
     ) -> dict:
         """Set edge resistances using integrated resistance with constrictions."""
         results = {
@@ -272,12 +273,14 @@ class PoiseuilleModel:
                     f"d1={d1_dict}, d2={d2_dict}."
                 )
                 
-            # If prefer_edge_fwhm_baseline is True, we grab d1 from the image measurement.
-            # We then scale d2 by the exact same ratio defined in the dictionary.
             d1 = d1_dict
             d2 = d2_dict
             
-            if prefer_edge_fwhm_baseline:
+            if radius_assignment_mode == "constant_radius":
+                d1 = constant_radius_um * 2.0
+                constriction_ratio = d2_dict / d1_dict
+                d2 = d1 * constriction_ratio
+            elif radius_assignment_mode == "fwhm_radius":
                 fwhm_d = data.get("fwhm_diameter_um")
                 if fwhm_d is not None and float(fwhm_d) > 0:
                     d1 = float(fwhm_d)
@@ -288,6 +291,8 @@ class PoiseuilleModel:
             try:
                 total_resistance = self.calculate_integrated_resistance(length, d1, d2)
                 G[u][v][key]["resistance"] = total_resistance
+                G[u][v][key]["assigned_diameter_um"] = d1
+                    
                 results["resistances_set"] += 1
             except Exception as e:
                 raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
