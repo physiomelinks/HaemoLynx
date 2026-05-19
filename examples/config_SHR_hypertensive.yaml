@@ -1,0 +1,23 @@
+# SHR (Hypertensive) Pipeline Configuration
+# This file overrides the default dataclass parameters in carotid_image_to_model.py
+
+HaemodynamicsConfig:
+  constriction_mode: "sphincter"
+  sphincter_length_um: 5.0
+  # Severe sympathetic tone simulating hypertension
+  intimal_cushion_constriction_ratio: 0.20 # 80% blockage at the inlet
+  pre_capillary_constriction_ratio: 0.20 # 80% blockage at the pre-capillaries
+  # Hypertensive blood pressure (e.g. 150 mmHg MAP)
+  input_p_bc: 19.998e6 # mPa
+
+PerfusionConfig:
+  # Multi-species parameters
+  systemic_hematocrit: 0.45
+  po2_arterial_mmHg: 100.0
+  pco2_arterial: 35.0 # Hyperventilating baseline
+  M_max: 0.05
+  use_multi_species_model: true
+
+SkeletonConfig:
+  # Analyze full volume
+  sub_volume_percentage: 1.0

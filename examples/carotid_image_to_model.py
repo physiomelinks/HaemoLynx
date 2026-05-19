@@ -1083,8 +1083,58 @@ def carotid_image_to_model(image_path: Path | str,
     starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format)
     _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config)
     
+def update_dataclass_from_dict(obj, config_dict):
+    """Updates a dataclass instance with values from a dictionary."""
+    if not config_dict:
+        return
+    for key, value in config_dict.items():
+        if hasattr(obj, key):
+            setattr(obj, key, value)
+        else:
+            logger.warning(f"Config key '{key}' ignored (not a valid parameter for {type(obj).__name__}).")
+
 if __name__ == "__main__":
-    # 1. Run Ilastik Segmentation (if enabled)
+    import argparse
+    import yaml
+    
+    parser = argparse.ArgumentParser(description="ImageLynx Carotid Pipeline")
+    parser.add_argument("--sub-volume", type=float, default=None, help="Override sub_volume_percentage (0.0 to 1.0)")
+    parser.add_argument("--config", type=str, default=None, help="Path to a YAML configuration file to override default parameters.")
+    args = parser.parse_args()
+
+    # 1. Initialize Default Configurations
+    pre_config = PreprocessingConfig()
+    skel_config = SkeletonConfig()
+    graph_config = GraphConfig()
+    hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER)
+    vis_config = VisualizationConfig(visualize_overlay_preview=False)
+    pipeline_config = PipelineConfig()
+    perf_config = PerfusionConfig()
+
+    # 2. Load YAML Overrides (if provided)
+    if args.config:
+        config_path = Path(args.config)
+        if config_path.exists():
+            print(f"Loading configuration overrides from: {config_path}")
+            with open(config_path, "r") as f:
+                yaml_data = yaml.safe_load(f)
+                
+            if yaml_data:
+                update_dataclass_from_dict(pre_config, yaml_data.get("PreprocessingConfig", {}))
+                update_dataclass_from_dict(skel_config, yaml_data.get("SkeletonConfig", {}))
+                update_dataclass_from_dict(graph_config, yaml_data.get("GraphConfig", {}))
+                update_dataclass_from_dict(hemo_config, yaml_data.get("HaemodynamicsConfig", {}))
+                update_dataclass_from_dict(perf_config, yaml_data.get("PerfusionConfig", {}))
+                update_dataclass_from_dict(vis_config, yaml_data.get("VisualizationConfig", {}))
+                update_dataclass_from_dict(pipeline_config, yaml_data.get("PipelineConfig", {}))
+        else:
+            print(f"Warning: Configuration file not found at {config_path}")
+
+    # 3. CLI Overrides
+    if args.sub_volume is not None:
+        skel_config.sub_volume_percentage = args.sub_volume
+
+    # 4. Run Ilastik Segmentation (if enabled)
     if RUN_ILASTIK:
         # Example using explicit kwargs for clarity
         target_input_mask_path = run_ilastik_segmentation(
@@ -1100,25 +1150,7 @@ if __name__ == "__main__":
         # Use the newly generated probabilities file
         target_input_mask_path = ILASTIK_OUTPUT_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_probs.tiff"
 
-    import argparse
-    parser = argparse.ArgumentParser(description="ImageLynx Carotid Pipeline")
-    parser.add_argument("--sub-volume", type=float, default=None, help="Override sub_volume_percentage (0.0 to 1.0)")
-    args = parser.parse_args()
-
-    # 2. Run the Network Pipeline
-    # Pipeline Configurations are now fully self-contained in their dataclasses at the top of the file.
-    pre_config = PreprocessingConfig()
-    skel_config = SkeletonConfig()
-    
-    if args.sub_volume is not None:
-        skel_config.sub_volume_percentage = args.sub_volume
-
-    graph_config = GraphConfig()
-    hemo_config = HaemodynamicsConfig(diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER, constrict_at_pericytes=True)
-    vis_config = VisualizationConfig(visualize_overlay_preview=False)
-    pipeline_config = PipelineConfig()
-    perf_config = PerfusionConfig()
-
+    # 5. Run the Network Pipeline
     carotid_image_to_model(
         image_path=target_input_mask_path,
         pre_config=pre_config,
