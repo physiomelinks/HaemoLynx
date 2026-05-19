@@ -10,7 +10,7 @@ HaemodynamicsConfig:
   # Blood Flow Physics & Boundary Conditions
   # ------------------------------------------------------------------
   # Hypertensive Mean Arterial Pressure (150 mmHg MAP)
-  input_p_bc: 19.998e6 # mPa
+  input_p_bc: 13.332e6 # 19.998e6 # mPa
   # Normal Central Venous Pressure (2 mmHg CVP)
   output_p_bc: 0.27e6 # mPa
   
@@ -18,11 +18,12 @@ HaemodynamicsConfig:
   # Pre-Capillary Sphincter Model (Sympathetic Tone)
   # ------------------------------------------------------------------
   constrict_at_pericytes: true
-  constriction_mode: "sphincter"
+  constriction_mode: "sphincter" # Options: "sphincter", "periodic", or "constant_radius"
   sphincter_length_um: 5.0
-  # Severe sympathetic tone: 80% blockage at inlets and capillary junctions
-  intimal_cushion_constriction_ratio: 0.20
-  pre_capillary_constriction_ratio: 0.20
+  constant_radius_um: 5.0 # Only used if constriction_mode is "constant_radius"
+  # Severe sympathetic tone: (1-x)% blockage at inlets and capillary junctions
+  intimal_cushion_constriction_ratio: 0.95
+  pre_capillary_constriction_ratio: 0.95
   pre_capillary_topological_offset: 1
   
   # ------------------------------------------------------------------

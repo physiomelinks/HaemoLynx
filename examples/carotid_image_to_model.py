@@ -83,7 +83,7 @@ class SkeletonConfig:
     use_padded_slicing: bool = True
     padded_slicing_padding: int = 3
     prune_mask_before: int = 1
-    sub_volume_percentage: float = 0.25
+    sub_volume_percentage: float = 0.15
     sub_volume_offset_z: float = 0.0
     sub_volume_offset_y: float = 0.0
     sub_volume_offset_x: float = 0.0
@@ -113,8 +113,9 @@ class HaemodynamicsConfig:
     diameter_by_branch_order: dict = field(default_factory=dict)
     
     # --- Sphincter / Constriction Configuration ---
-    constriction_mode: str = "sphincter"  # Options: "sphincter" or "periodic"
+    constriction_mode: str = "sphincter"  # Options: "sphincter", "periodic", or "constant_radius"
     sphincter_length_um: float = 5.0      # Physical length of the pinched region (um)
+    constant_radius_um: float = 5.0       # Used only if constriction_mode == "constant_radius"
     
     # Severity modifiers (1.0 = no constriction, 0.5 = 50% constriction)
     intimal_cushion_constriction_ratio: float = 0.60
@@ -136,8 +137,11 @@ class HaemodynamicsConfig:
         if self.input_p_bc <= self.output_p_bc:
             raise ValueError(f"Input pressure ({self.input_p_bc}) must be strictly greater than Output pressure ({self.output_p_bc}).")
 
-        if self.constriction_mode not in ("sphincter", "periodic"):
-            raise ValueError(f"constriction_mode must be 'sphincter' or 'periodic', got: {self.constriction_mode}")
+        if self.constriction_mode not in ("sphincter", "periodic", "constant_radius"):
+            raise ValueError(f"constriction_mode must be 'sphincter', 'periodic', or 'constant_radius', got: {self.constriction_mode}")
+            
+        if self.constant_radius_um <= 0.0:
+            raise ValueError("constant_radius_um must be strictly positive.")
 
         if self.sphincter_length_um < 0.0:
             raise ValueError("sphincter_length_um cannot be negative.")
@@ -809,7 +813,8 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=hemo_config.sphincter_length_um,
             constriction_spacing=100.0, # Not used in sphincter mode
-            mode=hemo_config.constriction_mode
+            mode=hemo_config.constriction_mode,
+            constant_radius_um=hemo_config.constant_radius_um
         )
         if hemo_config.constrict_at_pericytes:
             poiseuille_model.set_poiseuille_resistances_with_constrictions(

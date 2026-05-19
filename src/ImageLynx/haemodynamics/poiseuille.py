@@ -9,15 +9,19 @@ logger = logging.getLogger(__name__)
 class PoiseuilleModel:
     """Encapsulates Poiseuille computations and constriction settings."""
 
-    def __init__(self, constriction_length: float, constriction_spacing: float, mode: str = "periodic") -> None:
+    def __init__(self, constriction_length: float, constriction_spacing: float, mode: str = "periodic", constant_radius_um: float = 5.0) -> None:
         self.constriction_length = constriction_length
         self.constriction_spacing = constriction_spacing
         self.mode = mode
+        self.constant_radius_um = constant_radius_um
 
     def get_diameter_at_position(
         self, position: float, length: float, d1: float, d2: float
     ) -> float:
-        """Diameter at position along vessel. Supports periodic or localized sphincter pattern."""
+        """Diameter at position along vessel. Supports periodic, sphincter, or constant_radius patterns."""
+        if self.mode == "constant_radius":
+            return self.constant_radius_um * 2.0
+            
         if length <= 0:
             return d1
             

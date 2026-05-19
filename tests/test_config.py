@@ -41,7 +41,7 @@ def test_haemodynamics_config_bounds_safety():
         HaemodynamicsConfig(diameter_by_branch_order={}, input_p_bc=10.0, output_p_bc=100.0)
         
     # 2. Invalid mode should crash
-    with pytest.raises(ValueError, match="must be 'sphincter' or 'periodic'"):
+    with pytest.raises(ValueError, match="must be 'sphincter', 'periodic', or 'constant_radius'"):
         HaemodynamicsConfig(diameter_by_branch_order={}, constriction_mode="magic")
         
     # 3. Negative length should crash

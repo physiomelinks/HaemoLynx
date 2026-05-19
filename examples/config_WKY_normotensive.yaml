@@ -18,8 +18,9 @@ HaemodynamicsConfig:
   # Pre-Capillary Sphincter Model (Sympathetic Tone)
   # ------------------------------------------------------------------
   constrict_at_pericytes: true
-  constriction_mode: "sphincter"
+  constriction_mode: "sphincter" # Options: "sphincter", "periodic", or "constant_radius"
   sphincter_length_um: 5.0
+  constant_radius_um: 5.0 # Only used if constriction_mode is "constant_radius"
   # Healthy baseline: minimal sympathetic tone (vessels are 95% dilated)
   intimal_cushion_constriction_ratio: 0.95
   pre_capillary_constriction_ratio: 0.95
