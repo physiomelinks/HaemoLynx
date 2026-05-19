@@ -1,5 +1,5 @@
-# SHR (Hypertensive) Pipeline Configuration
-# Simulates a hypertensive Carotid Body with high blood pressure, extreme sympathetic tone, and hyperventilation.
+# WKY (Normotensive/Normoxic) Pipeline Configuration
+# Simulates a healthy Carotid Body with normal blood pressure, minimal sympathetic tone, and sustainable metabolism.
 
 SkeletonConfig:
   # Image analysis boundary
@@ -9,8 +9,8 @@ HaemodynamicsConfig:
   # ------------------------------------------------------------------
   # Blood Flow Physics & Boundary Conditions
   # ------------------------------------------------------------------
-  # Hypertensive Mean Arterial Pressure (150 mmHg MAP)
-  input_p_bc: 19.998e6 # mPa
+  # Normal Mean Arterial Pressure (100 mmHg MAP)
+  input_p_bc: 13.332e6 # mPa
   # Normal Central Venous Pressure (2 mmHg CVP)
   output_p_bc: 0.27e6 # mPa
   
@@ -20,9 +20,9 @@ HaemodynamicsConfig:
   constrict_at_pericytes: true
   constriction_mode: "sphincter"
   sphincter_length_um: 5.0
-  # Severe sympathetic tone: 80% blockage at inlets and capillary junctions
-  intimal_cushion_constriction_ratio: 0.20
-  pre_capillary_constriction_ratio: 0.20
+  # Healthy baseline: minimal sympathetic tone (vessels are 95% dilated)
+  intimal_cushion_constriction_ratio: 0.95
+  pre_capillary_constriction_ratio: 0.95
   pre_capillary_topological_offset: 1
   
   # ------------------------------------------------------------------
@@ -56,7 +56,7 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   systemic_hematocrit: 0.45
   po2_arterial_mmHg: 100.0
-  pco2_arterial: 35.0 # Hyperventilating baseline (hypocapnic arterial blood)
+  pco2_arterial: 40.0 # Normal physiological baseline
   hco3_tissue: 24.0 # Standard bicarbonate buffer (mmol/L)
   
   # ------------------------------------------------------------------
@@ -73,7 +73,8 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   # Tissue Metabolism (Michaelis-Menten Kinetics)
   # ------------------------------------------------------------------
-  M_max: 0.05 # Massive metabolic sink (simulates high glomus activity)
+  # Reduced metabolic sink to simulate a sustainable, normoxic tissue equilibrium
+  M_max: 0.005 # Maximum O2 consumption rate (mmol / L / s)
   k_reduce: 0.1 # Exponential decay constant under hypoxia
   respiratory_quotient: 0.82 # Ratio of CO2 produced to O2 consumed
   
