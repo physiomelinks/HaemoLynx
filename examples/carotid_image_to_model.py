@@ -1081,6 +1081,63 @@ def carotid_image_to_model(image_path: Path | str,
 
     if pipeline_config.do_skeletonize:
         image, binary = _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config)
+        
+        # --- Optuna Hyperparameter Optimization ---
+        if args.optimize_skeleton > 0:
+            import copy
+            import ImageLynx.statistics.benchmarking as benchmarking
+            import ImageLynx.statistics.auto_tuner as auto_tuner
+            
+            print(f"\n--- Launching Optuna Skeletonization Auto-Tuner ({args.optimize_skeleton} trials) ---")
+            
+            # Setup static dependencies
+            voxel_size_xyz = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+            
+            def pipeline_eval_callback(suggested_kwargs):
+                # Apply suggested parameters
+                test_skel_config = copy.deepcopy(skel_config)
+                for k, v in suggested_kwargs.items():
+                    setattr(test_skel_config, k, v)
+                    
+                # 1. Skeletonize
+                test_skeleton = _run_skeletonization_phase(binary, test_skel_config)
+                
+                # 2. Build Graph (Silently)
+                test_pipeline_config = copy.deepcopy(pipeline_config)
+                test_pipeline_config.verbose_logging = False # Reduce log spam
+                
+                # We do not want to save intermediate files during optimization
+                import tempfile
+                import os
+                
+                # Temporarily disable file I/O for the graph builder by passing dummy paths or patching
+                # Since _build_and_optimize_graph writes to disk, we run it normally but ignore output
+                # (The pipeline function does I/O, but we only care about the returned G)
+                test_G = _build_and_optimize_graph(
+                    test_skeleton, image, image_path, input_format, 
+                    test_skel_config, graph_config, test_pipeline_config
+                )
+                
+                if test_G.number_of_nodes() == 0 or test_G.number_of_edges() == 0:
+                    return None # Prune
+                    
+                # 3. Evaluate Benchmarks
+                bench_results = benchmarking.run_all_benchmarks(test_G, binary, voxel_size_xyz)
+                return bench_results
+
+            # Run Optuna
+            best_params = auto_tuner.run_optuna_skeleton_optimization(
+                pipeline_eval_fn=pipeline_eval_callback,
+                n_trials=args.optimize_skeleton,
+                output_dir=pipeline_config.vtk_output_prefix.parent
+            )
+            
+            # Apply Best Parameters permanently
+            print("\nApplying optimal parameters to pipeline...")
+            for k, v in best_params.items():
+                setattr(skel_config, k, v)
+        # ------------------------------------------
+
         skeleton = _run_skeletonization_phase(binary, skel_config)
         np.save(skeleton_path, skeleton)
         
@@ -1150,6 +1207,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ImageLynx Carotid Pipeline")
     parser.add_argument("--sub-volume", type=float, default=None, help="Override sub_volume_percentage (0.0 to 1.0)")
     parser.add_argument("--config", type=str, default=None, help="Path to a YAML configuration file to override default parameters.")
+    parser.add_argument("--optimize-skeleton", type=int, default=0, help="Run Bayesian optimization (Optuna) for N trials before continuing.")
     args = parser.parse_args()
 
     # 1. Initialize Default Configurations

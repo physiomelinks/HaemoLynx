@@ -16,3 +16,4 @@ dask[array]
 joblib
 python-igraph
 numba
+optuna
