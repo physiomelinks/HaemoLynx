@@ -15,15 +15,20 @@ HaemodynamicsConfig:
   output_p_bc: 0.27e6 # mPa
   
   # ------------------------------------------------------------------
+  # Baseline Radius Assignment
+  # ------------------------------------------------------------------
+  radius_assignment_mode: "constant_radius" # Options: "fwhm_radius" or "constant_radius"
+  constant_radius_um: 5.0 # Only used if radius_assignment_mode is "constant_radius"
+
+  # ------------------------------------------------------------------
   # Pre-Capillary Sphincter Model (Sympathetic Tone)
   # ------------------------------------------------------------------
   constrict_at_pericytes: true
-  constriction_mode: "sphincter" # Options: "sphincter", "periodic", or "constant_radius"
+  constriction_mode: "sphincter" # Options: "sphincter" or "periodic"
   sphincter_length_um: 5.0
-  constant_radius_um: 5.0 # Only used if constriction_mode is "constant_radius"
   # Healthy baseline: minimal sympathetic tone (vessels are 95% dilated)
-  intimal_cushion_constriction_ratio: 0.95
-  pre_capillary_constriction_ratio: 0.95
+  intimal_cushion_constriction_ratio: 1.0
+  pre_capillary_constriction_ratio: 1.0
   pre_capillary_topological_offset: 1
   
   # ------------------------------------------------------------------
@@ -48,6 +53,9 @@ PerfusionConfig:
   do_perfusion_modeling: true
   use_endothelial_barrier_model: true
   use_multi_species_model: true
+
+PipelineConfig:
+  run_benchmarking: true
   
   # 3D Tissue Grid Resolution (in micrometers)
   grid_resolution_xyz: [10.0, 10.0, 10.0] 

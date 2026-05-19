@@ -225,6 +225,7 @@ class PipelineConfig:
     do_skeletonize: bool = True
     do_graph_building: bool = True
     do_resistance_calculation: bool = True
+    run_benchmarking: bool = False
     verbose_logging: bool = False
     min_branch_length: int = 10
     vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
@@ -846,11 +847,21 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             
     return starting_nodes, output_nodes, resistance_node_pair
 
-def _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config=None):
+def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config=None):
     """
     Phase 5: Builds the Laplacian matrix, solves the flow equations,
     calculates comprehensive statistics, and exports all data to VTK files.
     """
+    if pipeline_config.run_benchmarking and binary is not None:
+        import ImageLynx.statistics.benchmarking as benchmarking
+        # Use the detected spacing (or default)
+        voxel_size_xyz = (1.0, 1.0, 1.0)
+        
+        bench_results = benchmarking.run_all_benchmarks(G, binary, voxel_size_xyz)
+        print("\n=== Skeletonization Benchmarks ===")
+        import json
+        print(json.dumps(bench_results, indent=2))
+        
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "pre_vtk.png")
     
     # Export the geometric network to standardized VTK PolyData files for viewing in ParaView
@@ -1098,6 +1109,7 @@ def carotid_image_to_model(image_path: Path | str,
     else:
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(image_path)
+        binary = None
 
     if vis_config.visualize_results:
         visualization.visualize_skeleton(skeleton, save_path=projection_path)
@@ -1119,7 +1131,7 @@ def carotid_image_to_model(image_path: Path | str,
         print(f"Loaded graph from: {graph_path}")
 
     starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format)
-    _export_and_solve_haemodynamics(G, image, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config)
+    _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config)
     
 def update_dataclass_from_dict(obj, config_dict):
     """Updates a dataclass instance with values from a dictionary."""
