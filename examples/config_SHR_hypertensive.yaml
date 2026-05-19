@@ -15,12 +15,17 @@ HaemodynamicsConfig:
   output_p_bc: 0.27e6 # mPa
   
   # ------------------------------------------------------------------
+  # Baseline Radius Assignment
+  # ------------------------------------------------------------------
+  radius_assignment_mode: "constant_radius" # Options: "fwhm_radius" or "constant_radius"
+  constant_radius_um: 5.0 # Only used if radius_assignment_mode is "constant_radius"
+
+  # ------------------------------------------------------------------
   # Pre-Capillary Sphincter Model (Sympathetic Tone)
   # ------------------------------------------------------------------
   constrict_at_pericytes: true
-  constriction_mode: "sphincter" # Options: "sphincter", "periodic", or "constant_radius"
+  constriction_mode: "sphincter" # Options: "sphincter" or "periodic"
   sphincter_length_um: 5.0
-  constant_radius_um: 5.0 # Only used if constriction_mode is "constant_radius"
   # Severe sympathetic tone: (1-x)% blockage at inlets and capillary junctions
   intimal_cushion_constriction_ratio: 0.95
   pre_capillary_constriction_ratio: 0.95
@@ -74,7 +79,7 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   # Tissue Metabolism (Michaelis-Menten Kinetics)
   # ------------------------------------------------------------------
-  M_max: 0.05 # Massive metabolic sink (simulates high glomus activity)
+  M_max: 0.005 # Massive metabolic sink (simulates high glomus activity)
   k_reduce: 0.1 # Exponential decay constant under hypoxia
   respiratory_quotient: 0.82 # Ratio of CO2 produced to O2 consumed
   
