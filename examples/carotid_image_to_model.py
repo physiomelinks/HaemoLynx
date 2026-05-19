@@ -184,7 +184,7 @@ class PerfusionConfig:
     picard_tolerance: float = 1e-4
     
     # M_max: Maximum metabolic consumption rate (mmol / L / s)
-    M_max: float = 0.05
+    M_max: float = 0.005
 
     # k_reduce: Metabolic reduction constant for hypoxic zones (per mmol)
     k_reduce: float = 0.1
