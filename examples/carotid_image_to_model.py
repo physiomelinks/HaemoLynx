@@ -1072,6 +1072,29 @@ def carotid_image_to_model(image_path: Path | str,
         image, binary = _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config)
         skeleton = _run_skeletonization_phase(binary, skel_config)
         np.save(skeleton_path, skeleton)
+        
+        # Export the post-processed binary volume to .vti for ParaView
+        import pyvista as pv
+        try:
+            print("Exporting post-processed binary volume to VTK...")
+            vtk_vol = pv.ImageData()
+            vtk_vol.dimensions = np.array(binary.shape)
+            
+            # Use detected spacing if available, otherwise default to 1x1x1
+            spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+            # Ensure spacing aligns with the Z, Y, X array shape
+            vtk_vol.spacing = (spacing[2], spacing[1], spacing[0]) # VTK uses X, Y, Z
+            
+            # PyVista expects flat Fortran-ordered arrays
+            vtk_vol.point_data["vessel_mask"] = binary.flatten(order="F").astype(np.uint8)
+            binary_vtk_path = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_vessel_mask.vti")
+            # Ensure the outputs folder exists
+            binary_vtk_path.parent.mkdir(parents=True, exist_ok=True)
+            vtk_vol.save(binary_vtk_path)
+            print(f"Saved binary vessel volume to: {binary_vtk_path}")
+        except Exception as e:
+            print(f"Warning: Failed to export binary volume to VTK: {e}")
+            
     else:
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(image_path)
