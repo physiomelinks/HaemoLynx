@@ -58,10 +58,38 @@ class SkeletonObjective:
         
         return loss
 
+class EarlyStoppingCallback:
+    """Optuna callback to stop optimization if the score hasn't improved after N trials."""
+    def __init__(self, patience: int = 15):
+        self.patience = patience
+        self.best_score = None
+        self.stagnant_trials = 0
+
+    def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+        current_score = study.best_value
+        if self.best_score is None:
+            self.best_score = current_score
+            return
+            
+        if current_score < self.best_score:
+            # We found a new minimum, reset the patience counter
+            self.best_score = current_score
+            self.stagnant_trials = 0
+        else:
+            # No improvement
+            self.stagnant_trials += 1
+            if self.stagnant_trials >= self.patience:
+                logger.warning(
+                    f"Early stopping triggered: The loss hasn't improved for {self.patience} consecutive trials. "
+                    "The optimizer has fully converged."
+                )
+                study.stop()
+
 def run_optuna_skeleton_optimization(
     pipeline_eval_fn: Callable,
     n_trials: int = 30,
-    output_dir: Path = Path("outputs")
+    output_dir: Path = Path("outputs"),
+    patience: int = 15
 ) -> Dict[str, Any]:
     """
     Executes the Bayesian optimization loop to find the best skeletonization parameters.
@@ -69,13 +97,14 @@ def run_optuna_skeleton_optimization(
     if optuna is None:
         raise ImportError("Optuna is not installed. Please run: pip install optuna")
         
-    logger.info(f"=== Starting Optuna Skeletonization Optimization ({n_trials} trials) ===")
+    logger.info(f"=== Starting Optuna Skeletonization Optimization (Max {n_trials} trials, Patience {patience}) ===")
     
     # Use Tree-structured Parzen Estimator (TPE)
     study = optuna.create_study(direction="minimize")
     objective = SkeletonObjective(pipeline_eval_fn)
+    early_stopper = EarlyStoppingCallback(patience=patience)
     
-    study.optimize(objective, n_trials=n_trials, n_jobs=1) # Sequential to avoid IO collisions
+    study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[early_stopper]) # Sequential to avoid IO collisions
     
     best_params = study.best_params
     logger.info(f"=== Optimization Complete ===")
