@@ -112,10 +112,13 @@ class HaemodynamicsConfig:
     output_p_bc: float = 0.27e6 ### mPa (CVP of 2 mmHg = 0.267 kPa = 0.27e6 mPa)
     diameter_by_branch_order: dict = field(default_factory=dict)
     
+    # --- Baseline Radius Assignment ---
+    radius_assignment_mode: str = "fwhm_radius" # Options: "fwhm_radius" or "constant_radius"
+    constant_radius_um: float = 5.0 # Used only if radius_assignment_mode == "constant_radius"
+    
     # --- Sphincter / Constriction Configuration ---
-    constriction_mode: str = "sphincter"  # Options: "sphincter", "periodic", or "constant_radius"
+    constriction_mode: str = "sphincter"  # Options: "sphincter" or "periodic"
     sphincter_length_um: float = 5.0      # Physical length of the pinched region (um)
-    constant_radius_um: float = 5.0       # Used only if constriction_mode == "constant_radius"
     
     # Severity modifiers (1.0 = no constriction, 0.5 = 50% constriction)
     intimal_cushion_constriction_ratio: float = 0.60
@@ -137,8 +140,11 @@ class HaemodynamicsConfig:
         if self.input_p_bc <= self.output_p_bc:
             raise ValueError(f"Input pressure ({self.input_p_bc}) must be strictly greater than Output pressure ({self.output_p_bc}).")
 
-        if self.constriction_mode not in ("sphincter", "periodic", "constant_radius"):
-            raise ValueError(f"constriction_mode must be 'sphincter', 'periodic', or 'constant_radius', got: {self.constriction_mode}")
+        if self.radius_assignment_mode not in ("fwhm_radius", "constant_radius"):
+            raise ValueError(f"radius_assignment_mode must be 'fwhm_radius' or 'constant_radius', got: {self.radius_assignment_mode}")
+
+        if self.constriction_mode not in ("sphincter", "periodic"):
+            raise ValueError(f"constriction_mode must be 'sphincter' or 'periodic', got: {self.constriction_mode}")
             
         if self.constant_radius_um <= 0.0:
             raise ValueError("constant_radius_um must be strictly positive.")
@@ -793,34 +799,37 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         hemo_config.diameter_by_branch_order = current_diam_dict
         
         # 5. Automatically measure exact physical vessel diameters from the raw image
-        print("Measuring exact physical vessel diameters using 3D FWHM ray-casting...")
-        
-        # Use the detected spacing (or default)
-        fwhm_spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
-        
-        # We pass the pre-loaded, pre-cropped 3D `image` array directly into the FWHM algorithm.
-        stats_dict = haemodynamics.measure_edge_diameters_fwhm_from_raw_tiff(
-            G,
-            raw_tiff_path=image,  # We pass the numpy array directly (the backend has been patched to handle this)
-            voxel_size_xyz=fwhm_spacing,
-            sample_spacing_along_edge_um=hemo_config.fwhm_sample_spacing_along_edge_um,
-            transverse_profile_step_um=hemo_config.fwhm_transverse_profile_step_um,
-            transverse_half_extent_um=hemo_config.fwhm_transverse_half_extent_um,
-        )
-        print(f"FWHM measurement complete. Processed {len(stats_dict)} edges.")
+        if hemo_config.radius_assignment_mode == "fwhm_radius":
+            print("Measuring exact physical vessel diameters using 3D FWHM ray-casting...")
+            
+            # Use the detected spacing (or default)
+            fwhm_spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+            
+            # We pass the pre-loaded, pre-cropped 3D `image` array directly into the FWHM algorithm.
+            stats_dict = haemodynamics.measure_edge_diameters_fwhm_from_raw_tiff(
+                G,
+                raw_tiff_path=image,  # We pass the numpy array directly (the backend has been patched to handle this)
+                voxel_size_xyz=fwhm_spacing,
+                sample_spacing_along_edge_um=hemo_config.fwhm_sample_spacing_along_edge_um,
+                transverse_profile_step_um=hemo_config.fwhm_transverse_profile_step_um,
+                transverse_half_extent_um=hemo_config.fwhm_transverse_half_extent_um,
+            )
+            print(f"FWHM measurement complete. Processed {len(stats_dict)} edges.")
+        else:
+            print(f"Bypassing FWHM ray-casting. Using '{hemo_config.radius_assignment_mode}' ({hemo_config.constant_radius_um} um)")
 
         # Initialize the haemodynamics solver to calculate physical flow resistance using Poiseuille's Law
         poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=hemo_config.sphincter_length_um,
             constriction_spacing=100.0, # Not used in sphincter mode
-            mode=hemo_config.constriction_mode,
-            constant_radius_um=hemo_config.constant_radius_um
+            mode=hemo_config.constriction_mode
         )
         if hemo_config.constrict_at_pericytes:
             poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
                 hemo_config.diameter_by_branch_order,
-                prefer_edge_fwhm_baseline=True,
+                radius_assignment_mode=hemo_config.radius_assignment_mode,
+                constant_radius_um=hemo_config.constant_radius_um
             )
         else:
             # For non-constricted mode, extract d1 from the config dicts
@@ -831,7 +840,8 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             poiseuille_model.set_poiseuille_resistances(
                 G,
                 simple_diameters,
-                prefer_edge_fwhm_diameter=True,
+                radius_assignment_mode=hemo_config.radius_assignment_mode,
+                constant_radius_um=hemo_config.constant_radius_um
             )
             
     return starting_nodes, output_nodes, resistance_node_pair
