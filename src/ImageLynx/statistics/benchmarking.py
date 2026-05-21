@@ -229,3 +229,70 @@ def run_all_benchmarks(G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_xyz
         
     logger.info("=== Benchmarking Suite Complete ===")
     return results
+
+# --- PREPROCESSING BENCHMARKS ---
+
+def evaluate_preprocessing_confidence(prob_map: np.ndarray, binary_mask: np.ndarray) -> Dict[str, float]:
+    """Calculates the mean probability of preserved voxels and the total probability yield."""
+    if not binary_mask.any():
+        return {"confidence": 0.0, "probability_yield": 0.0}
+    
+    mean_confidence = float(np.mean(prob_map[binary_mask]))
+    
+    total_mass = np.sum(prob_map)
+    yielded_mass = np.sum(prob_map[binary_mask])
+    prob_yield = float(yielded_mass / max(1e-9, total_mass))
+    
+    return {"confidence": mean_confidence, "probability_yield": prob_yield}
+
+def evaluate_preprocessing_crispness(prob_map: np.ndarray, binary_mask: np.ndarray) -> float:
+    """
+    Calculates the 3D gradient magnitude on the raw image to find sharp edges,
+    then measures how well the outer surface of the binary mask aligns with them.
+    """
+    if not binary_mask.any():
+        return 0.0
+        
+    # Isolate the surface (skin) of the binary mask
+    eroded = ndimage.binary_erosion(binary_mask)
+    surface_mask = binary_mask ^ eroded
+    
+    if not surface_mask.any():
+        return 0.0
+        
+    # Compute 3D gradient magnitude of the probability map
+    grad_z = ndimage.sobel(prob_map, axis=0)
+    grad_y = ndimage.sobel(prob_map, axis=1)
+    grad_x = ndimage.sobel(prob_map, axis=2)
+    gradient_magnitude = np.sqrt(grad_z**2 + grad_y**2 + grad_x**2)
+    
+    # Average gradient exactly at the boundary surface
+    crispness = np.mean(gradient_magnitude[surface_mask])
+    return float(crispness)
+
+def evaluate_preprocessing_fragmentation(binary_mask: np.ndarray) -> int:
+    """Counts the total number of floating 3D islands."""
+    _, num_components = ndimage.label(binary_mask)
+    return int(num_components)
+
+def run_all_preprocessing_benchmarks(prob_map: np.ndarray, binary_mask: np.ndarray) -> Dict[str, Any]:
+    """Executes the reference-free benchmarking suite for voxel preprocessing."""
+    results = {}
+    try:
+        conf_results = evaluate_preprocessing_confidence(prob_map, binary_mask)
+        results["confidence"] = conf_results["confidence"]
+        results["probability_yield"] = conf_results["probability_yield"]
+    except Exception as e:
+        logger.error(f"Failed Confidence Benchmark: {e}")
+        
+    try:
+        results["crispness"] = evaluate_preprocessing_crispness(prob_map, binary_mask)
+    except Exception as e:
+        logger.error(f"Failed Crispness Benchmark: {e}")
+        
+    try:
+        results["fragmentation"] = evaluate_preprocessing_fragmentation(binary_mask)
+    except Exception as e:
+        logger.error(f"Failed Fragmentation Benchmark: {e}")
+        
+    return results

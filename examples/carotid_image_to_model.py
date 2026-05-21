@@ -226,6 +226,7 @@ class PipelineConfig:
     do_graph_building: bool = True
     do_resistance_calculation: bool = True
     run_benchmarking: bool = False
+    optimize_preprocessing_trials: int = 0
     verbose_logging: bool = False
     min_branch_length: int = 10
     vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
@@ -405,6 +406,41 @@ def _visualize_final_results(G, image, starting_nodes, vis_config):
             group_above=8,
         )
 
+def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict):
+    """Applies preprocessing filters returning a materialized binary mask."""
+    image = raw_prob_map.copy()
+    
+    if entropy_map is not None and pre_config_dict.get("enable_shannon_entropy", True):
+        threshold = pre_config_dict.get("shannon_entropy_threshold", 0.95)
+        uncertain_mask = entropy_map > threshold
+        image[uncertain_mask] = 0.0
+        
+    median_size = pre_config_dict.get("median_filter_size", 0)
+    if median_size > 0:
+        image = preprocessing.median_filter_image(image, size=median_size)
+        
+    opening_radius = pre_config_dict.get("morphological_opening_radius", 0)
+    if opening_radius > 0:
+        image = preprocessing.morphological_opening(image, radius=opening_radius)
+        
+    if pre_config_dict.get("probability_smoothing_sigma", 0) > 0:
+        image = preprocessing.smooth_probability_map(image, sigma=pre_config_dict["probability_smoothing_sigma"])
+        
+    if pre_config_dict.get("enable_hysteresis_threshold", True):
+        binary = preprocessing.hysteresis_threshold(
+            image, 
+            low=pre_config_dict.get("hysteresis_threshold_low", 0.2), 
+            high=pre_config_dict.get("hysteresis_threshold_high", 0.4)
+        )
+    else:
+        from skimage.filters import threshold_otsu
+        binary = image > threshold_otsu(image)
+        
+    if pre_config_dict.get("enable_hole_filling", True):
+        binary = preprocessing.skeleton.fill_holes_3d(binary)
+        
+    return image, binary
+
 def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config):
     """
     Phase 1: Loads the image, handles 4D channels/entropy, crops the ROI,
@@ -466,66 +502,55 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
         print(f"Extracted vessel channel {pre_config.ilastik_vessel_channel}. New spatial shape: {image.shape}")
 
         if entropy_map is not None:
-            # Force the probability of uncertain voxels to 0.0 (background)
-            print(f"Applying Shannon Entropy Refinement (threshold={pre_config.shannon_entropy_threshold})...")
+            # We must compute entropy_map for the optimizer
             if is_lazy:
-                image = da.where(entropy_map > pre_config.shannon_entropy_threshold, 0.0, image)
-            else:
-                uncertain_mask = entropy_map > pre_config.shannon_entropy_threshold
-                print(f"  Rejecting {uncertain_mask.sum()} uncertain voxels.")
-                image[uncertain_mask] = 0.0
+                print("Computing entropy map for preprocessing...")
+                entropy_map = entropy_map.compute()
 
-    if not is_lazy:
-        print(f"Image probability range: min={image.min():.4f}, max={image.max():.4f}, mean={image.mean():.4f}")
+    # Materialize the raw probability map for the optimizer
+    if is_lazy:
+        print("Computing cropped raw probability map...")
+        raw_prob_map = image.compute()
+    else:
+        raw_prob_map = image.copy()
+        
+    print(f"Image probability range: min={raw_prob_map.min():.4f}, max={raw_prob_map.max():.4f}, mean={raw_prob_map.mean():.4f}")
 
     if vis_config.visualize_mask_only:
-        # We must compute for visualization
-        preview_img = image.compute() if is_lazy else image
-        _preview_raw_volume(preview_img, image_path, input_format, vis_config)
+        _preview_raw_volume(raw_prob_map, image_path, input_format, vis_config)
 
-    # Apply a 3D median filter to remove noise
-    if pre_config.median_filter_size > 0:
-        print(f"Applying median filter (size={pre_config.median_filter_size})...")
-        image = preprocessing.median_filter_image(image, size=pre_config.median_filter_size)
-
-    # Apply morphological opening to break thin webbing
-    if pre_config.morphological_opening_radius > 0:
-        print(f"Applying morphological opening (radius={pre_config.morphological_opening_radius})...")
-        image = preprocessing.morphological_opening(image, radius=pre_config.morphological_opening_radius)
-
-    # Apply Gaussian smoothing to soften edges
-    if pre_config.probability_smoothing_sigma > 0:
-        image = preprocessing.smooth_probability_map(image, sigma=pre_config.probability_smoothing_sigma)
-
-    # Convert the continuous 0.0-1.0 probability map into a binary mask
-    if pre_config.enable_hysteresis_threshold:
-        binary_raw = preprocessing.hysteresis_threshold(
-            image, low=pre_config.hysteresis_threshold_low, high=pre_config.hysteresis_threshold_high
-        )
-    else:
-        # Otsu thresholding requires the whole image in memory to calculate the histogram
-        if is_lazy:
-            print("Calculating global Otsu threshold (computing volume)...")
-            image = image.compute()
-            is_lazy = False
+    # --- Optuna Preprocessing Optimization ---
+    if pipeline_config.optimize_preprocessing_trials > 0:
+        import ImageLynx.statistics.benchmarking as benchmarking
+        import ImageLynx.statistics.auto_tuner as auto_tuner
+        import copy
+        
+        print(f"\n--- Launching Optuna Preprocessing Auto-Tuner ({pipeline_config.optimize_preprocessing_trials} trials) ---")
+        
+        def pre_eval_callback(suggested_kwargs):
+            # 1. Apply filters
+            test_config_dict = pre_config.__dict__.copy()
+            test_config_dict.update(suggested_kwargs)
             
-        from skimage.filters import threshold_otsu
-        threshold = threshold_otsu(image)
-        binary_raw = image > threshold
-    
-    # Final Materialization: Compute the Dask task graph into a real NumPy array
-    # before starting the topological operations (Skeletonization).
-    if is_lazy:
-        print("Computing final preprocessing task graph (Materializing volume)...")
-        from dask.diagnostics import ProgressBar
-        with ProgressBar():
-            binary = binary_raw.compute()
-    else:
-        binary = binary_raw.copy()
+            _, test_binary = _apply_preprocessing_filters(raw_prob_map, entropy_map, test_config_dict)
+            
+            # 2. Score the mask
+            bench_results = benchmarking.run_all_preprocessing_benchmarks(raw_prob_map, test_binary)
+            return bench_results
 
-    # Fill internal hollow cavities inside vessels
-    if pre_config.enable_hole_filling:
-        binary = preprocessing.skeleton.fill_holes_3d(binary)
+        best_pre_params = auto_tuner.run_optuna_preprocessing_optimization(
+            pipeline_eval_fn=pre_eval_callback,
+            n_trials=pipeline_config.optimize_preprocessing_trials,
+            output_dir=pipeline_config.vtk_output_prefix.parent
+        )
+        
+        print("\nApplying optimal preprocessing parameters to pipeline...")
+        for k, v in best_pre_params.items():
+            setattr(pre_config, k, v)
+    # ------------------------------------------
+
+    # Apply the (potentially optimized) filters
+    filtered_image, binary = _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config.__dict__)
 
     # Smooth the bumpy outer walls
     if skel_config.closing_radius > 0:
@@ -862,7 +887,8 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         import json
         print(json.dumps(bench_results, indent=2))
         
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "pre_vtk.png")
+    if pipeline_config.plot_dir is not None:
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "pre_vtk.png")
     
     # Export the geometric network to standardized VTK PolyData files for viewing in ParaView
     vtk_export = visualization.graph_to_vtk(G, pipeline_config.vtk_output_prefix)
@@ -1208,6 +1234,7 @@ if __name__ == "__main__":
     parser.add_argument("--sub-volume", type=float, default=None, help="Override sub_volume_percentage (0.0 to 1.0)")
     parser.add_argument("--config", type=str, default=None, help="Path to a YAML configuration file to override default parameters.")
     parser.add_argument("--optimize-skeleton", type=int, default=0, help="Run Bayesian optimization (Optuna) for N trials before continuing.")
+    parser.add_argument("--optimize-preprocessing", type=int, default=0, help="Run Bayesian optimization for preprocessing filters for N trials.")
     args = parser.parse_args()
 
     # 1. Initialize Default Configurations
@@ -1241,6 +1268,8 @@ if __name__ == "__main__":
     # 3. CLI Overrides
     if args.sub_volume is not None:
         skel_config.sub_volume_percentage = args.sub_volume
+        
+    pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
 
     # 4. Run Ilastik Segmentation (if enabled)
     if RUN_ILASTIK:

@@ -20,12 +20,12 @@ class SkeletonObjective:
     def __call__(self, trial):
         # 1. Define the Bayesian search space (TPE limits)
         skel_kwargs = {
-            "min_branch_length": trial.suggest_int("min_branch_length", 0, 50),
-            "max_bridge_distance": trial.suggest_int("max_bridge_distance", 0, 20),
-            "min_component_percent": trial.suggest_float("min_component_percent", 0.01, 5.0),
-            "bundle_scan_size": trial.suggest_int("bundle_scan_size", 3, 15),
-            "bundle_density_fraction": trial.suggest_float("bundle_density_fraction", 0.1, 0.9),
-            "bundle_max_connections": trial.suggest_int("bundle_max_connections", 2, 8)
+            "min_branch_length": trial.suggest_int("min_branch_length", 0, 15),
+            "max_bridge_distance": trial.suggest_int("max_bridge_distance", 0, 6),
+            "min_component_percent": trial.suggest_float("min_component_percent", 0.01, 2.0),
+            "bundle_scan_size": trial.suggest_int("bundle_scan_size", 3, 8),
+            "bundle_density_fraction": trial.suggest_float("bundle_density_fraction", 0.3, 0.7),
+            "bundle_max_connections": trial.suggest_int("bundle_max_connections", 2, 4)
         }
         
         # 2. Evaluate pipeline (builds graph and runs benchmarks)
@@ -130,5 +130,101 @@ def run_optuna_skeleton_optimization(
         logger.info(f"Saved interactive optimization plots to {output_dir}/")
     except Exception as e:
         logger.warning(f"Could not generate Optuna plots (is Plotly installed?): {e}")
+        
+    return best_params
+
+class PreprocessingObjective:
+    """Optuna objective function for tuning 3D Voxel Preprocessing parameters."""
+    
+    def __init__(self, pipeline_eval_fn: Callable):
+        self.pipeline_eval_fn = pipeline_eval_fn
+
+    def __call__(self, trial):
+        # 1. Define the Bayesian search space (TPE limits)
+        pre_kwargs = {
+            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.05, 0.50),
+            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.20, 0.90),
+            "median_filter_size": trial.suggest_categorical("median_filter_size", [0, 3, 5, 7]),
+            "morphological_opening_radius": trial.suggest_int("morphological_opening_radius", 0, 3),
+            "shannon_entropy_threshold": trial.suggest_float("shannon_entropy_threshold", 0.70, 0.99)
+        }
+        
+        # Enforce physical constraints: High threshold must be > Low threshold
+        if pre_kwargs["hysteresis_threshold_high"] <= pre_kwargs["hysteresis_threshold_low"]:
+            raise optuna.TrialPruned()
+        
+        # 2. Evaluate pipeline (applies filters and runs benchmarks)
+        try:
+            bench_results = self.pipeline_eval_fn(pre_kwargs)
+        except Exception as e:
+            logger.debug(f"Trial pruned due to preprocessing failure: {e}")
+            raise optuna.TrialPruned()
+            
+        if bench_results is None:
+            raise optuna.TrialPruned()
+            
+        # 3. Calculate Loss Function (Minimize towards 0.0)
+        confidence = bench_results.get("confidence", 0.0)
+        prob_yield = bench_results.get("probability_yield", 0.0)
+        crispness = bench_results.get("crispness", 0.0)
+        fragmentation = bench_results.get("fragmentation", 1000)
+        
+        # Base penalty: Missing confidence (DSC difference from 1.0, heavily weighted)
+        loss = (1.0 - confidence) * 100.0
+        
+        # Penalty: Yield. We want to preserve at least some baseline probability mass.
+        # If yield drops below 5% of the total probability mass, penalize it massively to stop 1-voxel cheats.
+        if prob_yield < 0.05:
+            loss += (0.05 - prob_yield) * 10000.0
+        
+        # Penalty: Crispness (Inverted and scaled, we want higher gradients at the boundaries)
+        # Usually gradient magnitude is < 1.0 depending on data scale. Let's subtract crispness.
+        loss += max(0.0, 1.0 - crispness) * 50.0
+        
+        # Penalty: Fragmentation / Dust Score
+        loss += (fragmentation - 1) * 5.0 
+        
+        return loss
+
+def run_optuna_preprocessing_optimization(
+    pipeline_eval_fn: Callable,
+    n_trials: int = 30,
+    output_dir: Path = Path("outputs"),
+    patience: int = 15
+) -> Dict[str, Any]:
+    """
+    Executes the Bayesian optimization loop to find the best preprocessing parameters.
+    """
+    if optuna is None:
+        raise ImportError("Optuna is not installed. Please run: pip install optuna")
+        
+    logger.info(f"=== Starting Optuna Preprocessing Optimization (Max {n_trials} trials, Patience {patience}) ===")
+    
+    study = optuna.create_study(direction="minimize")
+    objective = PreprocessingObjective(pipeline_eval_fn)
+    early_stopper = EarlyStoppingCallback(patience=patience)
+    
+    study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[early_stopper])
+    
+    best_params = study.best_params
+    logger.info(f"=== Preprocessing Optimization Complete ===")
+    logger.info(f"Best Loss: {study.best_value:.4f}")
+    logger.info(f"Best Parameters: {best_params}")
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    yaml_path = output_dir / "best_preprocessing_params.yaml"
+    with open(yaml_path, "w") as f:
+        yaml.dump({"PreprocessingConfig": best_params}, f)
+    logger.info(f"Saved optimal preprocessing parameters to: {yaml_path}")
+    
+    try:
+        import optuna.visualization as vis
+        fig_history = vis.plot_optimization_history(study)
+        fig_history.write_html(str(output_dir / "optuna_preprocessing_history.html"))
+        
+        fig_params = vis.plot_param_importances(study)
+        fig_params.write_html(str(output_dir / "optuna_preprocessing_param_importances.html"))
+    except Exception as e:
+        logger.warning(f"Could not generate Optuna plots: {e}")
         
     return best_params
