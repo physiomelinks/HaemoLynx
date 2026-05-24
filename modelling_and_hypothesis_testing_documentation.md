@@ -147,6 +147,23 @@ These tests compare the numerical sparse-matrix solvers against exact mathematic
 *   **Transmural Exponential Decay:** Isolates a single vessel passing through an infinite tissue vacuum ($PO_2 = 0$). Proves that the fully coupled 1D-3D Picard solver correctly depletes blood oxygen following an exact mathematical exponential decay curve ($PO_{out} = PO_{in} \cdot e^{-P_{perm} \cdot Area / \alpha Q}$) dictated by the endothelial permeability coefficient.
 *   **Krogh Cylinder Radial Diffusion:** Places a single capillary in a 3D grid with constant metabolism. Proves that the 3D diffusion solver perfectly traces the exact radial $PO_2$ gradients defined by August Krogh's Nobel-winning analytical cylinder equation.
 
+### 4.3 Non-Newtonian Rheology & Multi-Species Validation
+These tests validate the empirical mathematical functions and their integration into the iterative flow solver.
+*   **Atomic Bohr/Haldane Curves:** Passes artificially high/low pH and $PCO_2$ values into the blood content functions to mathematically verify the Bohr shift (low pH definitively lowers $O_2$ affinity at $P_{50}$) and the Haldane shift (high $PO_2$ definitively lowers $CO_2$ carrying capacity), proving the atomic coupling equations are flawless prior to matrix assembly.
+*   **Fåhræus–Lindqvist Curve:** Empirically tests the viscosity equations across massive arteries ($100 \mu m$) down to extreme capillaries ($3 \mu m$), confirming that viscosity correctly drops as vessels shrink, and then correctly spikes at the $8 \mu m$ inversion point where RBCs must deform.
+*   **Plasma Skimming Mechanics & Mass Conservation:** Forces an asymmetric bifurcation (e.g., a $20 \mu m$ AVA vs a $5 \mu m$ capillary). Asserts that the AVA mathematically "steals" the RBCs, driving capillary hematocrit near zero, while strictly proving that total RBC flux is perfectly conserved across the node.
+*   **Coupled Solver Convergence & Safety:** Builds a mock Direct Acyclic Graph (DAG) and intentionally introduces an infinite fluid loop via impossible pressures. Asserts that the topological sorter safely catches the cycle and prevents a fatal crash.
+*   **Hematocrit-Weighted Perfusion:** Creates two identical tissue cells with equal volumetric blood flow, assigning one to receive pure skimmed plasma ($H=0.0$). Asserts that the Advective Source mathematically starves the plasma-filled cell of oxygen, proving the downstream physiological impact of upstream plasma skimming.
+
+### 4.4 Hyperparameter Optimization (HPO) & Benchmarking Validation
+These tests ensure the automated Optuna Bayesian optimization algorithms are mathematically robust and incapable of being "gamed" by extreme edge cases.
+*   **Mock Pipeline Rigging:** Replaces the computationally heavy 3D morphological algorithms with lightning-fast, procedurally generated mathematical functions. This allows the Pytest suite to simulate thousands of Bayesian trials in under a second without requiring real biological data.
+*   **Volumetric & Centricity Baseline:** Generates perfect mathematical primitives (e.g., straight cylinders). Asserts the benchmarking suite perfectly evaluates these objects to exactly `DSC = 1.0` and exactly `0.0` Centricity Error.
+*   **Topological Cycle Extraction:** Procedurally generates a closed 3D mathematical Torus. Asserts the Betti number/Euler evaluator correctly flags exactly 1 fundamental graph loop, penalizing the AI for spiderwebs.
+*   **Anti-Cheating Mass Penalty:** Simulates a thresholding trial that generates a tiny 1-voxel mask to artificially achieve a 100% "Confidence" and "Dust" score. Asserts the `Probability Yield` metric safely catches the volume destruction, crushing the Loss score with a 10,000x penalty.
+*   **Optuna TPE Discovery Test:** Runs the full Optuna engine against a rigged mock pipeline where a specific parameter (e.g., `min_branch_length = 15`) is mathematically enforced as the global minimum. Asserts that the Bayesian Tree-structured Parzen Estimator (TPE) successfully navigates the multidimensional space to discover this hidden sweet spot without crashing.
+*   **Early Stopping Resilience:** Asserts that the custom `EarlyStoppingCallback` safely intercepts and terminates trials when the Loss function mathematically flatlines.
+
 ---
 
 ## 5. Appendix
@@ -179,11 +196,3 @@ To mathematically add diffusion, metabolic consumption, and trans-mural leakage 
 *   **3D Tissue Diffusion ($A_{diff}$):**
     *   Diffusivity ($D_{tissue}$) is converted from $m^2/s$ to **$\mu m^2/s$**. The 7-point stencil conductance ($D \cdot \frac{Area}{Length}$) resolves to **$\frac{\mu m^3}{s}$**. The engine explicitly scales the diffusion matrix by the solubility coefficient $\alpha$ ($\frac{mmol/L}{mmHg}$).
     *   *Resolved Diffusion Unit:* $A_{diff} \cdot \Delta PO_2 \rightarrow \left(\frac{\mu m^3}{s} \cdot \frac{mmol/L}{mmHg}\right) \cdot (mmHg) = \mathbf{\left(\frac{\mu m^3}{s}\right) \cdot \left(\frac{mmol}{L}\right)}$.
-
-### 4.3 Non-Newtonian Rheology & Multi-Species Validation
-These tests validate the empirical mathematical functions and their integration into the iterative flow solver.
-*   **Atomic Bohr/Haldane Curves:** Passes artificially high/low pH and $PCO_2$ values into the blood content functions to mathematically verify the Bohr shift (low pH definitively lowers $O_2$ affinity at $P_{50}$) and the Haldane shift (high $PO_2$ definitively lowers $CO_2$ carrying capacity), proving the atomic coupling equations are flawless prior to matrix assembly.
-*   **Fåhræus–Lindqvist Curve:** Empirically tests the viscosity equations across massive arteries ($100 \mu m$) down to extreme capillaries ($3 \mu m$), confirming that viscosity correctly drops as vessels shrink, and then correctly spikes at the $8 \mu m$ inversion point where RBCs must deform.
-*   **Plasma Skimming Mechanics & Mass Conservation:** Forces an asymmetric bifurcation (e.g., a $20 \mu m$ AVA vs a $5 \mu m$ capillary). Asserts that the AVA mathematically "steals" the RBCs, driving capillary hematocrit near zero, while strictly proving that total RBC flux is perfectly conserved across the node.
-*   **Coupled Solver Convergence & Safety:** Builds a mock Direct Acyclic Graph (DAG) and intentionally introduces an infinite fluid loop via impossible pressures. Asserts that the topological sorter safely catches the cycle and prevents a fatal crash.
-*   **Hematocrit-Weighted Perfusion:** Creates two identical tissue cells with equal volumetric blood flow, assigning one to receive pure skimmed plasma ($H=0.0$). Asserts that the Advective Source mathematically starves the plasma-filled cell of oxygen, proving the downstream physiological impact of upstream plasma skimming.
