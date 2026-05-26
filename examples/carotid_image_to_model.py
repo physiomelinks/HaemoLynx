@@ -62,6 +62,7 @@ class PreprocessingConfig:
     median_filter_size: int = 7
     probability_smoothing_sigma: float = 0.0
     morphological_opening_radius: int = 1
+    morphological_closing_radius: int = 0
     enable_hysteresis_threshold: bool = True
     hysteresis_threshold_low: float = 0.2
     hysteresis_threshold_high: float = 0.4
@@ -91,6 +92,8 @@ class SkeletonConfig:
     bundle_density_fraction: float = 0.025
     bundle_max_connections: int = 5
     bundle_hub_min_spacing: int = 0
+    smoothing_alpha: float = 0.75
+    prune_by_tortuosity: float = 5.0
 
 @dataclass
 class GraphConfig:
@@ -422,6 +425,10 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict):
     opening_radius = pre_config_dict.get("morphological_opening_radius", 0)
     if opening_radius > 0:
         image = preprocessing.morphological_opening(image, radius=opening_radius)
+        
+    closing_radius = pre_config_dict.get("morphological_closing_radius", 0)
+    if closing_radius > 0:
+        image = preprocessing.morphological_closing(image, radius=closing_radius)
         
     if pre_config_dict.get("probability_smoothing_sigma", 0) > 0:
         image = preprocessing.smooth_probability_map(image, sigma=pre_config_dict["probability_smoothing_sigma"])

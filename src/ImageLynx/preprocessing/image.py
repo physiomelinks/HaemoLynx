@@ -103,6 +103,40 @@ def morphological_opening(image: np.ndarray, radius: int = 1) -> np.ndarray:
     else:
         return opening(image, footprint=footprint)
 
+def morphological_closing(image: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Apply morphological closing to a 3D volume.
+
+    Parameters
+    ----------
+    image:
+        Input 3D array (z, y, x).
+    radius:
+        Radius of the ball-shaped structuring element.
+    """
+    if radius <= 0:
+        return image
+        
+    logger.info("Applying morphological closing with radius=%d", radius)
+    
+    if _is_dask_array(image):
+        import dask.array as da
+        depth = radius + 1
+        return image.map_overlap(
+            morphological_closing,
+            depth=depth,
+            boundary="reflect",
+            radius=radius,
+            dtype=image.dtype
+        )
+
+    footprint = ball(radius)
+    if image.dtype == bool:
+        from skimage.morphology import binary_closing
+        return binary_closing(image, footprint=footprint)
+    else:
+        from skimage.morphology import closing
+        return closing(image, footprint=footprint)
+
 def hysteresis_threshold(
     image: np.ndarray, low: float = 0.3, high: float = 0.7
 ) -> np.ndarray:
