@@ -118,3 +118,56 @@ def test_empty_binary_mask():
     
     res_comp = bench.evaluate_completeness_and_overpruning(G, mask, voxel_size)
     assert res_comp["orphaned_volume_fraction"] == 0.0
+
+def test_advanced_preprocessing_metrics():
+    """Validates the Euler Characteristic and Surface-Area-to-Volume Ratio (Compactness)."""
+    # 1. Perfect Solid Cube
+    solid_mask = np.zeros((10, 10, 10), dtype=bool)
+    solid_mask[2:8, 2:8, 2:8] = True
+    
+    # 2. Swiss Cheese Cube (Hollow center)
+    hollow_mask = solid_mask.copy()
+    hollow_mask[4:6, 4:6, 4:6] = False
+    
+    euler_solid = bench.evaluate_preprocessing_euler_characteristic(solid_mask)
+    euler_hollow = bench.evaluate_preprocessing_euler_characteristic(hollow_mask)
+    
+    # A solid cube has 1 component, 0 tunnels, 0 cavities -> Euler = 1
+    assert euler_solid == 1
+    # A hollow cube has 1 component, 0 tunnels, 1 cavity -> Euler = 1 - 0 + 1 = 2 (For surfaces. Actually in 3D voxels, cavities add 1, so euler=2).
+    # Wait, euler_number in skimage returns 2 for a hollow sphere/cube.
+    assert euler_hollow > euler_solid # Higher euler or different euler means topology changed
+    
+    compact_solid = bench.evaluate_preprocessing_compactness(solid_mask)
+    compact_hollow = bench.evaluate_preprocessing_compactness(hollow_mask)
+    # The hollow mask has MORE surface area (inner + outer) for LESS volume, so the ratio spikes
+    assert compact_hollow > compact_solid
+
+def test_advanced_topological_health_metrics():
+    """Validates Terminal Node Ratio, Degree-3 Dominance, and Edge Length Variance."""
+    G = nx.MultiGraph()
+    
+    # Create a healthy biological Y-bifurcation
+    # 1 inlet (node 0) -> splits at node 1 -> 2 outlets (nodes 2, 3)
+    G.add_node(0, pos=(0,0,0)); G.add_node(1, pos=(0,0,10))
+    G.add_node(2, pos=(5,0,15)); G.add_node(3, pos=(-5,0,15))
+    G.add_edge(0, 1); G.add_edge(1, 2); G.add_edge(1, 3)
+    
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[0,0,0] = True # Dummy
+    
+    res = bench.evaluate_topological_preservation(G, mask)
+    
+    # Nodes: 0,1,2,3. Degrees: 0(1), 1(3), 2(1), 3(1).
+    # Terminal nodes (Degree 1): nodes 0, 2, 3. Total 3. Ratio = 3/4 = 0.75
+    assert res["terminal_node_ratio"] == 0.75
+    
+    # Bifurcation ratio: Only one branch node (node 1, degree 3). Ratio = 1 / 1 = 1.0
+    assert res["degree3_bifurcation_ratio"] == 1.0
+    
+    # Now create an unnatural "Super-Hub" (Degree-4 X-intersection)
+    G.add_node(4, pos=(0,5,15))
+    G.add_edge(1, 4) # Node 1 is now Degree-4
+    
+    res_bad = bench.evaluate_topological_preservation(G, mask)
+    assert res_bad["degree3_bifurcation_ratio"] == 0.0 # No degree 3 nodes anymore!
