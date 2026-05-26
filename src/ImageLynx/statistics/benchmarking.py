@@ -137,24 +137,48 @@ def _calculate_euler_characteristic_3d(binary_mask: np.ndarray) -> int:
 def evaluate_topological_preservation(G: nx.MultiGraph, binary_mask: np.ndarray) -> Dict[str, float]:
     """
     Compares the cyclomatic complexity (fundamental loops) of the skeleton graph
-    against the number of isolated components in the binary mask.
+    against the number of isolated components in the binary mask. Also evaluates
+    advanced Graph Health metrics (Dead-end ratio, Bifurcation sanity, Edge Variance).
     """
     logger.info("Computing Topological Preservation...")
     
     _, num_components = ndimage.label(binary_mask)
     
     # Graph cyclomatic complexity: E - V + C
-    # Where E = edges, V = nodes, C = connected components
     num_nodes = G.number_of_nodes()
     num_edges = G.number_of_edges()
     graph_components = nx.number_connected_components(G) if not G.is_directed() else nx.number_weakly_connected_components(G)
     
     graph_loops = num_edges - num_nodes + graph_components
     
+    # Advanced Graph Health
+    terminal_nodes = sum(1 for n in G.nodes() if G.degree(n) == 1)
+    terminal_ratio = terminal_nodes / max(1, num_nodes)
+    
+    deg3 = sum(1 for n in G.nodes() if G.degree(n) == 3)
+    deg4_plus = sum(1 for n in G.nodes() if G.degree(n) > 3)
+    bifurcation_ratio = deg3 / max(1, deg3 + deg4_plus)
+    
+    # Edge Length Variance
+    import math
+    lengths = []
+    for u, v, data in G.edges(data=True):
+        if "length" in data:
+            lengths.append(data["length"])
+        elif "pos" in G.nodes[u] and "pos" in G.nodes[v]:
+            p1, p2 = G.nodes[u]["pos"], G.nodes[v]["pos"]
+            lengths.append(math.sqrt(sum((a - b)**2 for a, b in zip(p1, p2))))
+            
+    import numpy as np
+    edge_length_std = float(np.std(lengths)) if lengths else 0.0
+    
     return {
         "binary_mask_connected_components": int(num_components),
         "graph_connected_components": int(graph_components),
-        "graph_fundamental_loops": int(graph_loops)
+        "graph_fundamental_loops": int(graph_loops),
+        "terminal_node_ratio": float(terminal_ratio),
+        "degree3_bifurcation_ratio": float(bifurcation_ratio),
+        "edge_length_std": float(edge_length_std)
     }
 
 def evaluate_completeness_and_overpruning(G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_xyz: Tuple[float, float, float], max_capillary_radius_um: float = 20.0) -> Dict[str, float]:
@@ -275,6 +299,31 @@ def evaluate_preprocessing_fragmentation(binary_mask: np.ndarray) -> int:
     _, num_components = ndimage.label(binary_mask)
     return int(num_components)
 
+def evaluate_preprocessing_compactness(binary_mask: np.ndarray) -> float:
+    """
+    Calculates the Surface-Area-to-Volume Ratio.
+    High values indicate heavily jagged, non-cylindrical, or noisy boundaries.
+    """
+    if not binary_mask.any():
+        return 0.0
+    eroded = ndimage.binary_erosion(binary_mask)
+    surface_mask = binary_mask ^ eroded
+    return float(np.sum(surface_mask) / np.sum(binary_mask))
+
+def evaluate_preprocessing_euler_characteristic(binary_mask: np.ndarray) -> int:
+    """
+    Calculates the Euler Characteristic (Components - Tunnels + Cavities).
+    If a threshold creates "Swiss cheese" holes inside vessels, this drops sharply.
+    """
+    if not binary_mask.any():
+        return 0
+    from skimage.measure import euler_number
+    # 3D connectivity: 3 for faces+edges+corners (26-connected)
+    try:
+        return int(euler_number(binary_mask, connectivity=3))
+    except Exception:
+        return 0
+
 def run_all_preprocessing_benchmarks(prob_map: np.ndarray, binary_mask: np.ndarray) -> Dict[str, Any]:
     """Executes the reference-free benchmarking suite for voxel preprocessing."""
     results = {}
@@ -294,5 +343,15 @@ def run_all_preprocessing_benchmarks(prob_map: np.ndarray, binary_mask: np.ndarr
         results["fragmentation"] = evaluate_preprocessing_fragmentation(binary_mask)
     except Exception as e:
         logger.error(f"Failed Fragmentation Benchmark: {e}")
+        
+    try:
+        results["surface_area_ratio"] = evaluate_preprocessing_compactness(binary_mask)
+    except Exception as e:
+        logger.error(f"Failed Compactness Benchmark: {e}")
+        
+    try:
+        results["euler_characteristic"] = evaluate_preprocessing_euler_characteristic(binary_mask)
+    except Exception as e:
+        logger.error(f"Failed Euler Benchmark: {e}")
         
     return results

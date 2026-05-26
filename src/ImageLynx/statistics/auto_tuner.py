@@ -49,6 +49,9 @@ class SkeletonObjective:
         dsc = vol.get("dice_coefficient", 0.0)
         orphaned = comp.get("orphaned_volume_fraction", 1.0)
         loops = topo.get("graph_fundamental_loops", 100)
+        terminal_ratio = topo.get("terminal_node_ratio", 1.0)
+        deg3_ratio = topo.get("degree3_bifurcation_ratio", 0.0)
+        edge_variance = topo.get("edge_length_std", 100.0)
         
         # Base penalty: Missing volume (DSC difference from 1.0, heavily weighted)
         loss = (1.0 - dsc) * 100.0
@@ -58,6 +61,18 @@ class SkeletonObjective:
         
         # Penalty: Spiderwebs and messy topology (soft penalty per extra loop)
         loss += loops * 0.1 
+        
+        # Penalty: Dead-ends. If > 5% of network is dead-ends, heavily penalize fragmentation.
+        if terminal_ratio > 0.05:
+            loss += (terminal_ratio - 0.05) * 500.0
+            
+        # Penalty: Unnatural Super-Hubs. Enforce that Y-bifurcations (Deg-3) dominate X-bifurcations (Deg-4+).
+        # We want deg3_ratio to be as close to 1.0 as possible.
+        loss += (1.0 - deg3_ratio) * 20.0
+        
+        # Penalty: Edge Length Variance. We want smooth, cohesive lengths, not massive jumps.
+        # Downscale it so it doesn't overpower DSC, but provides a steady pull towards uniformity.
+        loss += edge_variance * 0.05
         
         return loss
 
@@ -173,22 +188,31 @@ class PreprocessingObjective:
         prob_yield = bench_results.get("probability_yield", 0.0)
         crispness = bench_results.get("crispness", 0.0)
         fragmentation = bench_results.get("fragmentation", 1000)
-        
-        # Base penalty: Missing confidence (DSC difference from 1.0, heavily weighted)
+        surface_ratio = bench_results.get("surface_area_ratio", 1.0)
+        euler_char = bench_results.get("euler_characteristic", 1)
+
+        # Base penalty: Missing Confidence
         loss = (1.0 - confidence) * 100.0
-        
+
         # Penalty: Yield. We want to preserve at least some baseline probability mass.
         # If yield drops below 5% of the total probability mass, penalize it massively to stop 1-voxel cheats.
         if prob_yield < 0.05:
             loss += (0.05 - prob_yield) * 10000.0
-        
+
         # Penalty: Crispness (Inverted and scaled, we want higher gradients at the boundaries)
         # Usually gradient magnitude is < 1.0 depending on data scale. Let's subtract crispness.
         loss += max(0.0, 1.0 - crispness) * 50.0
-        
+
         # Penalty: Fragmentation / Dust Score
         loss += (fragmentation - 1) * 5.0 
-        
+
+        # Penalty: Compactness (Jagged surfaces). Normal values ~0.2 to 0.4.
+        loss += surface_ratio * 10.0
+
+        # Penalty: Swiss Cheese (Negative Euler characteristic)
+        if euler_char < 1:
+            loss += abs(euler_char - 1) * 10.0
+
         return loss
 
 def run_optuna_preprocessing_optimization(
