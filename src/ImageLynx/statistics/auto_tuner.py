@@ -78,12 +78,18 @@ class SkeletonObjective:
 
 class EarlyStoppingCallback:
     """Optuna callback to stop optimization if the score hasn't improved after N trials."""
-    def __init__(self, patience: int = 15):
+    def __init__(self, patience: int = 100):
         self.patience = patience
         self.best_score = None
         self.stagnant_trials = 0
 
     def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+        # Check if any trial has actually completed to avoid ValueError in study.best_value
+        from optuna.trial import TrialState
+        completed_trials = study.get_trials(states=[TrialState.COMPLETE])
+        if not completed_trials:
+            return
+
         current_score = study.best_value
         if self.best_score is None:
             self.best_score = current_score
@@ -107,7 +113,7 @@ def run_optuna_skeleton_optimization(
     pipeline_eval_fn: Callable,
     n_trials: int = 30,
     output_dir: Path = Path("outputs"),
-    patience: int = 15
+    patience: int = 100
 ) -> Dict[str, Any]:
     """
     Executes the Bayesian optimization loop to find the best skeletonization parameters.
@@ -219,7 +225,7 @@ def run_optuna_preprocessing_optimization(
     pipeline_eval_fn: Callable,
     n_trials: int = 30,
     output_dir: Path = Path("outputs"),
-    patience: int = 15
+    patience: int = 100
 ) -> Dict[str, Any]:
     """
     Executes the Bayesian optimization loop to find the best preprocessing parameters.
