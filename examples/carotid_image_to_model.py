@@ -230,6 +230,7 @@ class PipelineConfig:
     do_resistance_calculation: bool = True
     run_benchmarking: bool = False
     optimize_preprocessing_trials: int = 0
+    optimize_patience: int = 15
     verbose_logging: bool = False
     min_branch_length: int = 10
     vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
@@ -418,6 +419,12 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict):
         uncertain_mask = entropy_map > threshold
         image[uncertain_mask] = 0.0
         
+    # --- Virtual Z-Padding (Boundary Caging Fix) ---
+    # To prevent morphological filters from smearing/caging open vessels at the cut plane,
+    # we duplicate the top/bottom slices outward to create "virtual tunnels".
+    z_pad = 10
+    image = np.pad(image, pad_width=((z_pad, z_pad), (0, 0), (0, 0)), mode='edge')
+    
     median_size = pre_config_dict.get("median_filter_size", 0)
     if median_size > 0:
         image = preprocessing.median_filter_image(image, size=median_size)
@@ -445,6 +452,11 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict):
         
     if pre_config_dict.get("enable_hole_filling", True):
         binary = preprocessing.skeleton.fill_holes_3d(binary)
+        
+    # --- Remove Virtual Z-Padding ---
+    # Slicing the padding off cleanly amputates the vessels, guaranteeing open Degree-1 dead ends.
+    image = image[z_pad:-z_pad, :, :]
+    binary = binary[z_pad:-z_pad, :, :]
         
     return image, binary
 
@@ -546,9 +558,10 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
             return bench_results
 
         best_pre_params = auto_tuner.run_optuna_preprocessing_optimization(
-            pipeline_eval_fn=pre_eval_callback,
+            pipeline_eval_callback,
             n_trials=pipeline_config.optimize_preprocessing_trials,
-            output_dir=pipeline_config.vtk_output_prefix.parent
+            output_dir=pipeline_config.vtk_output_prefix.parent,
+            patience=pipeline_config.optimize_patience
         )
         
         print("\nApplying optimal preprocessing parameters to pipeline...")
@@ -1160,9 +1173,10 @@ def carotid_image_to_model(image_path: Path | str,
 
             # Run Optuna
             best_params = auto_tuner.run_optuna_skeleton_optimization(
-                pipeline_eval_fn=pipeline_eval_callback,
+                pipeline_eval_callback,
                 n_trials=args.optimize_skeleton,
-                output_dir=pipeline_config.vtk_output_prefix.parent
+                output_dir=pipeline_config.vtk_output_prefix.parent,
+                patience=pipeline_config.optimize_patience
             )
             
             # Apply Best Parameters permanently
@@ -1242,6 +1256,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None, help="Path to a YAML configuration file to override default parameters.")
     parser.add_argument("--optimize-skeleton", type=int, default=0, help="Run Bayesian optimization (Optuna) for N trials before continuing.")
     parser.add_argument("--optimize-preprocessing", type=int, default=0, help="Run Bayesian optimization for preprocessing filters for N trials.")
+    parser.add_argument("--optimize-patience", type=int, default=None, help="Override the EarlyStoppingCallback patience limit.")
     args = parser.parse_args()
 
     # 1. Initialize Default Configurations
@@ -1277,6 +1292,9 @@ if __name__ == "__main__":
         skel_config.sub_volume_percentage = args.sub_volume
         
     pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
+    
+    if args.optimize_patience is not None:
+        pipeline_config.optimize_patience = args.optimize_patience
 
     # 4. Run Ilastik Segmentation (if enabled)
     if RUN_ILASTIK:
