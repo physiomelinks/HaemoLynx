@@ -222,6 +222,98 @@ def test_validate_voxel_path_continuity():
     assert np.isclose(validate_voxel_path_continuity(voxels_continuous), 1.0)
 
 
+def test_resolve_core_dead_ends_safe_zone_protection():
+    from ImageLynx.graph.prune import resolve_core_dead_ends
+    
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0, 50, 50)) # Boundary safe zone (Z=0)
+    G.add_node(1, pos=(50, 50, 50)) # Core (Z=50)
+    G.add_edge(0, 1) # Note: Node 0 is Degree 1 (Boundary). Node 1 is Degree 1 (Core).
+    
+    stats = resolve_core_dead_ends(G.copy(), (100, 100, 100), (1.0, 1.0, 1.0), "eradicate", 5.0)
+    assert stats["edges_removed"] == 1
+    
+    # What if a node is entirely in the safe zone?
+    G2 = nx.MultiGraph()
+    G2.add_node(0, pos=(0, 50, 50)) # Safe
+    G2.add_node(1, pos=(1, 50, 50)) # Safe
+    G2.add_edge(0, 1)
+    stats2 = resolve_core_dead_ends(G2.copy(), (100, 100, 100), (1.0, 1.0, 1.0), "eradicate", 5.0)
+    assert stats2.get("edges_removed", 0) == 0 # Neither node is core, so neither is queued.
+
+def test_resolve_core_dead_ends_eradicate_mode():
+    from ImageLynx.graph.prune import resolve_core_dead_ends
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(50, 50, 50)) # Core dead-end
+    G.add_node(1, pos=(51, 50, 50)) # Core
+    G.add_node(2, pos=(52, 50, 50)) # Core (will be bifurcation)
+    G.add_node(3, pos=(53, 50, 50)) # Core
+    G.add_node(4, pos=(54, 50, 50)) # Core
+    
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+    G.add_edge(2, 3)
+    G.add_edge(2, 4)
+    stats = resolve_core_dead_ends(G, (100, 100, 100), (1.0, 1.0, 1.0), "eradicate", 5.0)
+    assert stats["edges_removed"] == 4
+    assert stats["edges_removed_pct"] == 100.0
+
+def test_resolve_core_dead_ends_stitch_mode():
+    from ImageLynx.graph.prune import resolve_core_dead_ends
+    G = nx.MultiGraph()
+    # Dead end at Z=50
+    G.add_node(0, pos=(50, 50, 50)) # Core
+    G.add_node(1, pos=(0, 50, 50)) # Boundary safe
+    G.add_edge(0, 1) # 0 is deg 1 core.
+    
+    # Valid target at Z=55
+    G.add_node(2, pos=(55, 50, 50)) # Core
+    G.add_node(3, pos=(99, 50, 50)) # Boundary safe
+    G.add_edge(2, 3) # 2 is deg 1 core.
+    
+    stats = resolve_core_dead_ends(G, (100, 100, 100), (1.0, 1.0, 1.0), "stitch", 5.0, 10.0, 4)
+    assert stats["edges_added"] == 1
+    assert G.has_edge(0, 2) or G.has_edge(2, 0)
+    
+def test_resolve_core_dead_ends_stitch_degree_limit():
+    from ImageLynx.graph.prune import resolve_core_dead_ends
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(50, 50, 50)) # Core dead-end
+    G.add_node(1, pos=(0, 50, 50)) # Boundary safe
+    G.add_edge(0, 1)
+    
+    # Node 2 is close (dist 2) but has Degree=4
+    G.add_node(2, pos=(52, 50, 50))
+    for i in range(10, 14):
+        G.add_node(i, pos=(99, 50, i)) # safe
+        G.add_edge(2, i) # 2 is now Degree 4
+        
+    # Node 3 is further (dist 5) but has Degree=2
+    G.add_node(3, pos=(55, 50, 50))
+    G.add_node(15, pos=(99, 60, 50)) # safe
+    G.add_node(16, pos=(99, 65, 50)) # safe
+    G.add_edge(3, 15)
+    G.add_edge(3, 16) # 3 is now Degree 2
+    
+    stats = resolve_core_dead_ends(G, (100, 100, 100), (1.0, 1.0, 1.0), "stitch", 5.0, 10.0, 4)
+    assert G.has_edge(0, 3) or G.has_edge(3, 0)
+    assert not G.has_edge(0, 2)
+    assert stats["edges_added"] == 1
+
+def test_resolve_core_dead_ends_stitch_fallback():
+    from ImageLynx.graph.prune import resolve_core_dead_ends
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(50, 50, 50))
+    G.add_node(1, pos=(40, 50, 50))
+    G.add_edge(0, 1) # 0 is deg 1
+    
+    # No other nodes in the graph!
+    stats = resolve_core_dead_ends(G, (100, 100, 100), (1.0, 1.0, 1.0), "stitch", 5.0, 10.0, 4)
+    # Should fallback and eradicate
+    assert stats["fallback_eradicated"] == 1
+    assert stats["edges_removed"] == 1
+    assert len(G.edges()) == 0
+
 def test_chaikin_and_resample():
     from ImageLynx.graph._helpers import _chaikin_once, _resample_polyline
     points = np.array([[0.0, 0.0, 0.0], [5.0, 5.0, 0.0], [10.0, 0.0, 0.0]])

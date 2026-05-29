@@ -13,7 +13,7 @@ from .degree2 import (
     smart_multigraph_degree2_removal,
     merge_edges_with_topology_improvement,
 )
-from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
+from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes, resolve_core_dead_ends
 from .branch_order import assign_branch_orders, assign_hierarchical_branch_orders
 from .boundaries import select_boundary_terminal_nodes, select_boundary_nodes_by_method
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report

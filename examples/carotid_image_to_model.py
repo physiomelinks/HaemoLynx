@@ -94,6 +94,10 @@ class SkeletonConfig:
     bundle_hub_min_spacing: int = 0
     smoothing_alpha: float = 0.75
     prune_by_tortuosity: float = 5.0
+    core_dead_end_resolution_mode: str = "none"
+    core_safe_zone_percent: float = 5.0
+    core_stitch_max_distance_um: float = 15.0
+    core_stitch_max_degree: int = 4
 
 @dataclass
 class GraphConfig:
@@ -558,7 +562,7 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
             return bench_results
 
         best_pre_params = auto_tuner.run_optuna_preprocessing_optimization(
-            pipeline_eval_callback,
+            pre_eval_callback,
             n_trials=pipeline_config.optimize_preprocessing_trials,
             output_dir=pipeline_config.vtk_output_prefix.parent,
             patience=pipeline_config.optimize_patience
@@ -708,6 +712,28 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     # Delete impossible edges that start and end on the exact same node with no other connections
     G = graph.remove_edges_for_self_connected_nodes(G)
     visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "prune_vascular_stubs.png")
+    
+    # --- Plan A & B: Core Dead-End Resolution ---
+    if skel_config.core_dead_end_resolution_mode in ["eradicate", "stitch"]:
+        voxel_size_xyz = tuple(float(v) for v in current_spacing)
+        stats = graph.resolve_core_dead_ends(
+            G,
+            image_shape=image.shape,
+            voxel_size_xyz=voxel_size_xyz,
+            mode=skel_config.core_dead_end_resolution_mode,
+            safe_zone_percent=skel_config.core_safe_zone_percent,
+            max_stitch_distance_um=skel_config.core_stitch_max_distance_um,
+            max_degree=skel_config.core_stitch_max_degree
+        )
+        print(f"\n--- Core Dead-End Resolution [{skel_config.core_dead_end_resolution_mode.upper()} MODE] ---")
+        print(f"Initial edges: {stats.get('initial_edges', 0)}")
+        if stats.get('edges_added', 0) > 0:
+            print(f"Stitched edges added: {stats['edges_added']} ({stats['edges_added_pct']}%)")
+        if stats.get('edges_removed', 0) > 0:
+            print(f"Eradicated edges removed: {stats['edges_removed']} ({stats['edges_removed_pct']}%)")
+            if stats.get('fallback_eradicated', 0) > 0:
+                print(f" (Includes {stats['fallback_eradicated']} un-stitchable edges safely eradicated as fallback)")
+    # --------------------------------------------
     
     # Smooth the physical 3D paths (voxels) of all edges using B-Splines to ensure realistic biological curvature
     print("Smoothing all edge centerlines in parallel using Joblib and B-Splines...")
@@ -1257,6 +1283,7 @@ if __name__ == "__main__":
     parser.add_argument("--optimize-skeleton", type=int, default=0, help="Run Bayesian optimization (Optuna) for N trials before continuing.")
     parser.add_argument("--optimize-preprocessing", type=int, default=0, help="Run Bayesian optimization for preprocessing filters for N trials.")
     parser.add_argument("--optimize-patience", type=int, default=None, help="Override the EarlyStoppingCallback patience limit.")
+    parser.add_argument("--core-resolution", type=str, choices=["eradicate", "stitch", "none"], default=None, help="Mode for resolving internal core dead-ends.")
     args = parser.parse_args()
 
     # 1. Initialize Default Configurations
@@ -1290,6 +1317,9 @@ if __name__ == "__main__":
     # 3. CLI Overrides
     if args.sub_volume is not None:
         skel_config.sub_volume_percentage = args.sub_volume
+        
+    if args.core_resolution is not None:
+        skel_config.core_dead_end_resolution_mode = args.core_resolution
         
     pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
     
