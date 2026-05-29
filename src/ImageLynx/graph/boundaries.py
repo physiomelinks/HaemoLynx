@@ -14,8 +14,9 @@ def select_boundary_terminal_nodes(
     edge_percent: float,
     end_percent: float,
     axis: int = 1,
+    boundary_permeability_mode: str = "caged"
 ) -> tuple[list[Any], list[Any]]:
-    """Select degree-1 nodes in top and bottom image bands along one axis."""
+    """Select degree-1 nodes with support for Tri-Mode 3D permeability."""
     if not (0.0 <= edge_percent <= 100.0 and 0.0 <= end_percent <= 100.0):
         raise ValueError("edge_percent and end_percent must be in [0, 100].")
     if axis < 0 or axis >= len(image_shape):
@@ -35,7 +36,26 @@ def select_boundary_terminal_nodes(
 
     starting = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
     outputs = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
+    
     starting_set = set(starting)
+    outputs_set = set(outputs)
+    
+    # --- Tri-Mode Boundary Routing ---
+    if boundary_permeability_mode == "universal_sink":
+        # All remaining dead-ends (on X, Y, or inner Z) are routed directly to the Outlet (Venous Ground)
+        for node in terminal_nodes:
+            if node not in starting_set and node not in outputs_set:
+                outputs.append(node)
+                outputs_set.add(node)
+                
+    elif boundary_permeability_mode == "robin_resistance":
+        # Tag remaining dead-ends as Robin Boundaries for dynamic Matrix Ghost Node generation
+        for node in terminal_nodes:
+            if node not in starting_set and node not in outputs_set:
+                G.nodes[node]["is_robin_boundary"] = True
+                
+    # ---------------------------------
+
     outputs = [node for node in outputs if node not in starting_set]
 
     starting.sort(key=lambda n: (axis_coord(n), n))

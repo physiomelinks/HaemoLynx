@@ -8,15 +8,22 @@ import pyvista as pv
 
 
 def build_conductance_matrix_from_graph(
-    G: nx.Graph, weight_attr: str = "resistance"
+    G: nx.Graph, 
+    weight_attr: str = "resistance",
+    robin_multiplier: float = 10.0
 ) -> tuple[sp.csr_matrix, list]:
     """Build symmetric conductance matrix from graph edge resistances.
-
-    Returns:
-        A tuple of (conductance_matrix, node_list) where matrix indices map to
-        node IDs via node_list order.
+    
+    If nodes in the graph are tagged with `is_robin_boundary=True`, this mathematically
+    hallucinates a 'ROBIN_GHOST_NODE' into the matrix, coupling the dead-ends to a virtual
+    venous ground to simulate flow bleeding out of severed capillaries.
     """
     node_list = list(G.nodes())
+    has_robin = any(G.nodes[n].get("is_robin_boundary", False) for n in G.nodes())
+    
+    if has_robin:
+        node_list.append("ROBIN_GHOST_NODE")
+        
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
     n_nodes = len(node_list)
 
@@ -33,6 +40,21 @@ def build_conductance_matrix_from_graph(
         rows.extend([i, j])
         cols.extend([j, i])
         data_vals.extend([edge_conductance, edge_conductance])
+        
+    if has_robin:
+        ghost_idx = node_to_idx["ROBIN_GHOST_NODE"]
+        for n in G.nodes():
+            if G.nodes[n].get("is_robin_boundary", False):
+                # Calculate the average resistance of the vessels connected to this cut
+                edges_res = [d.get(weight_attr) for _, _, d in G.edges(n, data=True) if d.get(weight_attr) is not None]
+                if edges_res:
+                    r_avg = sum(edges_res) / len(edges_res)
+                    r_ghost = r_avg * robin_multiplier
+                    cond = 1.0 / r_ghost
+                    i = node_to_idx[n]
+                    rows.extend([i, ghost_idx])
+                    cols.extend([ghost_idx, i])
+                    data_vals.extend([cond, cond])
 
     conductance = sp.coo_matrix((data_vals, (rows, cols)), shape=(n_nodes, n_nodes)).tocsr()
     return conductance, node_list
@@ -127,6 +149,9 @@ def solve_flow_from_conductance_matrix(
         raise ValueError("starting_nodes cannot be empty")
     if not output_nodes:
         raise ValueError("output_nodes cannot be empty")
+        
+    if "ROBIN_GHOST_NODE" in node_list and "ROBIN_GHOST_NODE" not in output_nodes:
+        output_nodes.append("ROBIN_GHOST_NODE")
 
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
     missing_in = [n for n in starting_nodes if n not in node_to_idx]

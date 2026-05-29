@@ -106,6 +106,8 @@ class GraphConfig:
     edge_percent: float = 25.0
     end_percent: float = 25.0
     node_edge_axis: int = 0
+    boundary_permeability_mode: str = "caged" # Options: "caged", "universal_sink", "robin_resistance"
+    robin_distal_resistance_multiplier: float = 10.0
     starting_nodes: list = field(default_factory=list)
     output_nodes: list = field(default_factory=list)
 
@@ -414,7 +416,7 @@ def _visualize_final_results(G, image, starting_nodes, vis_config):
             group_above=8,
         )
 
-def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict):
+def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict, boundary_permeability_mode="caged"):
     """Applies preprocessing filters returning a materialized binary mask."""
     image = raw_prob_map.copy()
     
@@ -423,11 +425,15 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict):
         uncertain_mask = entropy_map > threshold
         image[uncertain_mask] = 0.0
         
-    # --- Virtual Z-Padding (Boundary Caging Fix) ---
-    # To prevent morphological filters from smearing/caging open vessels at the cut plane,
-    # we duplicate the top/bottom slices outward to create "virtual tunnels".
-    z_pad = 10
-    image = np.pad(image, pad_width=((z_pad, z_pad), (0, 0), (0, 0)), mode='edge')
+    # --- Virtual Padding (Boundary Caging Fix) ---
+    pad_z, pad_y, pad_x = 0, 0, 0
+    if boundary_permeability_mode == "caged":
+        pad_z = 10
+    elif boundary_permeability_mode in ["universal_sink", "robin_resistance"]:
+        pad_z, pad_y, pad_x = 10, 10, 10
+        
+    if pad_z > 0 or pad_y > 0 or pad_x > 0:
+        image = np.pad(image, pad_width=((pad_z, pad_z), (pad_y, pad_y), (pad_x, pad_x)), mode='edge')
     
     median_size = pre_config_dict.get("median_filter_size", 0)
     if median_size > 0:
@@ -457,14 +463,17 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict):
     if pre_config_dict.get("enable_hole_filling", True):
         binary = preprocessing.skeleton.fill_holes_3d(binary)
         
-    # --- Remove Virtual Z-Padding ---
-    # Slicing the padding off cleanly amputates the vessels, guaranteeing open Degree-1 dead ends.
-    image = image[z_pad:-z_pad, :, :]
-    binary = binary[z_pad:-z_pad, :, :]
+    # --- Remove Virtual Padding ---
+    if pad_z > 0 or pad_y > 0 or pad_x > 0:
+        z_slice = slice(pad_z, -pad_z) if pad_z > 0 else slice(None)
+        y_slice = slice(pad_y, -pad_y) if pad_y > 0 else slice(None)
+        x_slice = slice(pad_x, -pad_x) if pad_x > 0 else slice(None)
+        image = image[z_slice, y_slice, x_slice]
+        binary = binary[z_slice, y_slice, x_slice]
         
     return image, binary
 
-def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config):
+def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, graph_config, vis_config, pipeline_config):
     """
     Phase 1: Loads the image, handles 4D channels/entropy, crops the ROI,
     removes noise, and applies hysteresis thresholding to generate a binary mask.
@@ -555,7 +564,12 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
             test_config_dict = pre_config.__dict__.copy()
             test_config_dict.update(suggested_kwargs)
             
-            _, test_binary = _apply_preprocessing_filters(raw_prob_map, entropy_map, test_config_dict)
+            _, test_binary = _apply_preprocessing_filters(
+                raw_prob_map, 
+                entropy_map, 
+                test_config_dict, 
+                boundary_permeability_mode=graph_config.boundary_permeability_mode
+            )
             
             # 2. Score the mask
             bench_results = benchmarking.run_all_preprocessing_benchmarks(raw_prob_map, test_binary)
@@ -574,7 +588,12 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
     # ------------------------------------------
 
     # Apply the (potentially optimized) filters
-    filtered_image, binary = _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config.__dict__)
+    filtered_image, binary = _apply_preprocessing_filters(
+        raw_prob_map, 
+        entropy_map, 
+        pre_config.__dict__,
+        boundary_permeability_mode=graph_config.boundary_permeability_mode
+    )
 
     # Smooth the bumpy outer walls
     if skel_config.closing_radius > 0:
@@ -772,6 +791,7 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         edge_percent=graph_config.edge_percent,
         end_percent=graph_config.end_percent,
         axis=graph_config.node_edge_axis,
+        boundary_permeability_mode=graph_config.boundary_permeability_mode
     )
     starting_nodes.extend(start_nodes)
     output_nodes.extend(out_nodes)

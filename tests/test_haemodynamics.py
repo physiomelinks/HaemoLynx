@@ -149,3 +149,104 @@ def test_solve_system_smart_preconditioner_failure(monkeypatch):
     x = _solve_system_smart(A, b, iterative_threshold=1)
     assert np.allclose(x, [0.66666667, 0.33333333])
 
+def test_boundary_mode_universal_sink():
+    from ImageLynx.graph.boundaries import select_boundary_terminal_nodes
+    import networkx as nx
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0, 50, 50)) # Z-top
+    G.add_node(1, pos=(50, 50, 50)) # Center
+    G.add_node(2, pos=(100, 50, 50)) # Z-bottom
+    G.add_node(3, pos=(50, 0, 50)) # Y-edge
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+    G.add_edge(1, 3)
+    
+    # Universal sink should grab node 3 as an outlet
+    start, out = select_boundary_terminal_nodes(
+        G, (101, 101, 101), edge_percent=25.0, end_percent=25.0, axis=0, boundary_permeability_mode="universal_sink"
+    )
+    assert 0 in start
+    assert 2 in out
+    assert 3 in out # Swept up!
+
+def test_robin_matrix_ghost_node_generation():
+    from ImageLynx.haemodynamics.resistance import build_conductance_matrix_from_graph
+    import networkx as nx
+    G = nx.MultiGraph()
+    G.add_node(0)
+    G.add_node(1)
+    G.add_node(2, is_robin_boundary=True)
+    G.add_edge(0, 1, resistance=1.0)
+    G.add_edge(1, 2, resistance=2.0)
+    
+    # Matrix should be 4x4 (3 nodes + 1 ghost)
+    cond, nodes = build_conductance_matrix_from_graph(G, robin_multiplier=10.0)
+    assert cond.shape == (4, 4)
+    assert "ROBIN_GHOST_NODE" in nodes
+    
+    ghost_idx = nodes.index("ROBIN_GHOST_NODE")
+    node2_idx = nodes.index(2)
+    
+    # Check that Robin resistance was properly scaled: 
+    # Edge to node 2 has R=2.0. Multiplier is 10. Ghost R = 20.0. Conductance = 1/20 = 0.05
+    assert np.isclose(cond[ghost_idx, node2_idx], 0.05)
+
+def test_robin_vs_sink_flow_conservation(monkeypatch):
+    from ImageLynx.haemodynamics.resistance import build_conductance_matrix_from_graph, solve_flow_from_conductance_matrix
+    import networkx as nx
+    import pyvista as pv
+    
+    # Mock pv.read to return a dummy mesh
+    class DummyMesh:
+        def __init__(self):
+            self.cell_data = {
+                "edge_u": [0, 1, 1],
+                "edge_v": [1, 2, 3],
+                "resistance": [1.0, 1.0, 1.0]
+            }
+            self.n_cells = 3
+        def save(self, *args, **kwargs):
+            pass
+    monkeypatch.setattr(pv, "read", lambda x: DummyMesh())
+    
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0, 50, 50)) # Inlet
+    G.add_node(1, pos=(50, 50, 50)) # Hub
+    G.add_node(2, pos=(100, 50, 50)) # Outlet
+    G.add_node(3, pos=(50, 0, 50), is_robin_boundary=True) # X/Y dead-end
+    G.add_edge(0, 1, key=0, resistance=1.0)
+    G.add_edge(1, 2, key=0, resistance=1.0)
+    G.add_edge(1, 3, key=0, resistance=1.0)
+    
+    cond, nodes = build_conductance_matrix_from_graph(G, robin_multiplier=1.0)
+    # Output nodes must explicitly include the ghost node!
+    outputs = [2, "ROBIN_GHOST_NODE"] 
+    
+    vtk_export_in = {
+        "point_data": {}, 
+        "cell_data": {}, 
+        "vessels_path": "dummy.vtp",
+        "edges_u": [0, 1, 1],
+        "edges_v": [1, 2, 3],
+        "edges_k": [0, 0, 0]
+    }
+    
+    p_nodes, vtk_export = solve_flow_from_conductance_matrix(
+        cond, nodes, 100.0, 0.0, [0], outputs, vtk_export_in
+    )
+    
+    # Prove mass conservation using the output pressures directly
+    p_dict = dict(zip(p_nodes["node_list"], p_nodes["pressure"]))
+    
+    flow_0_1 = (p_dict[0] - p_dict[1]) / 1.0
+    flow_1_2 = (p_dict[1] - p_dict[2]) / 1.0
+    flow_1_3 = (p_dict[1] - p_dict[3]) / 1.0
+    
+    # In robin mode, the flow OUT of node 3 goes to the Ghost Node
+    flow_3_ghost = (p_dict[3] - p_dict["ROBIN_GHOST_NODE"]) / 1.0 # robin_multiplier=1.0 * resistance=1.0
+    
+    flow_in = flow_0_1
+    flow_out = flow_1_2 + flow_3_ghost
+                
+    assert np.isclose(flow_in, flow_out, atol=1e-8)
+

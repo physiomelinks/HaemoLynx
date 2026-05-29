@@ -129,7 +129,7 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     G2, res = model.set_poiseuille_resistances(
         G,
         {"B01": 99.0},
-        prefer_edge_fwhm_diameter=True,
+        radius_assignment_mode="fwhm_radius",
     )
     assert res["used_fwhm_edge_diameter"] == 1
     r = G2[0][1][0]["resistance"]
@@ -145,7 +145,7 @@ def test_set_poiseuille_resistances_prefers_fwhm_optional(multigraph_with_branch
     _, res = model.set_poiseuille_resistances(
         G,
         {"BO1": 20.0},
-        prefer_edge_fwhm_diameter=True,
+        radius_assignment_mode="fwhm_radius",
     )
     assert res["used_fwhm_edge_diameter"] == 1
     d_used = 2.0

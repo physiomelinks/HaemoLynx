@@ -11,8 +11,11 @@ def _get_dummy_fixed_trial():
         "max_bridge_distance": 5,
         "min_component_percent": 1.0,
         "bundle_scan_size": 5,
-        "bundle_density_fraction": 0.5,
-        "bundle_max_connections": 3
+        "bundle_density_fraction": 0.05,
+        "bundle_max_connections": 3,
+        "bundle_hub_min_spacing": 2,
+        "smoothing_alpha": 0.5,
+        "prune_by_tortuosity": 2.0
     })
 
 def test_objective_perfect_scores_yield_zero_loss():
@@ -21,7 +24,12 @@ def test_objective_perfect_scores_yield_zero_loss():
         return {
             "volumetric": {"dice_coefficient": 1.0},
             "completeness": {"orphaned_volume_fraction": 0.0},
-            "topology": {"graph_fundamental_loops": 0}
+            "topology": {
+                "graph_fundamental_loops": 0,
+                "terminal_node_ratio": 0.0,
+                "degree3_bifurcation_ratio": 1.0,
+                "edge_length_std": 0.0
+            }
         }
     
     objective = SkeletonObjective(perfect_pipeline)
@@ -35,14 +43,19 @@ def test_objective_penalizes_over_pruning_and_spiderwebs():
         return {
             "volumetric": {"dice_coefficient": 0.5},
             "completeness": {"orphaned_volume_fraction": 0.8},
-            "topology": {"graph_fundamental_loops": 50}
+            "topology": {
+                "graph_fundamental_loops": 50,
+                "terminal_node_ratio": 1.0, # 100% dead ends
+                "degree3_bifurcation_ratio": 0.0, # 0% Y-bifurcations
+                "edge_length_std": 100.0
+            }
         }
     
     objective = SkeletonObjective(terrible_pipeline)
     loss = objective(_get_dummy_fixed_trial())
     
-    # Expected Loss = (1 - 0.5)*100 + 0.8*100 + 50*0.1 = 50 + 80 + 5 = 135.0
-    assert loss == 135.0, f"Expected 135.0 loss, got {loss}"
+    # Expected Loss = 50 + 80 + 5 + 475 + 20 + 5 = 635.0
+    assert loss == 635.0, f"Expected 635.0 loss, got {loss}"
 
 def test_objective_prunes_on_pipeline_failure():
     """Phase 2: Ensures pipeline crashes are safely caught and signal a TrialPruned."""
@@ -79,7 +92,12 @@ def test_run_optuna_skeleton_optimization_finds_minimum(tmp_path: Path):
         return {
             "volumetric": {"dice_coefficient": dsc},
             "completeness": {"orphaned_volume_fraction": orphaned},
-            "topology": {"graph_fundamental_loops": loops}
+            "topology": {
+                "graph_fundamental_loops": loops,
+                "terminal_node_ratio": 0.0,
+                "degree3_bifurcation_ratio": 1.0,
+                "edge_length_std": 0.0
+            }
         }
         
     # Run the real optimizer for a few dozen iterations.
@@ -97,7 +115,12 @@ def test_optuna_generates_yaml_and_html_plots(tmp_path: Path):
         return {
             "volumetric": {"dice_coefficient": 0.9 - var},
             "completeness": {"orphaned_volume_fraction": 0.1 + var},
-            "topology": {"graph_fundamental_loops": 5}
+            "topology": {
+                "graph_fundamental_loops": 5,
+                "terminal_node_ratio": 0.0,
+                "degree3_bifurcation_ratio": 1.0,
+                "edge_length_std": 0.0
+            }
         }
         
     # Run a tiny 3-trial optimization to trigger the file exports
