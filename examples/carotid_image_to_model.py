@@ -227,6 +227,7 @@ class VisualizationConfig:
     visualize_mask_opacity: float = 1.0
     visualize_vtk: bool = False
     visualize_post_processed_mask: bool = False
+    generate_markdown_report: bool = True
 
 @dataclass
 class PipelineConfig:
@@ -1123,6 +1124,27 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
             
         print(f"  Saved 3D Perfusion Field to: {vti_path}")
+        
+    if vis_config.generate_markdown_report:
+        from ImageLynx.visualization.reporting import generate_model_results_dashboard
+        
+        # Build the perfusion field dict dynamically based on what was solved
+        perf_field_dict = {}
+        if perf_config and perf_config.do_perfusion_modeling:
+            if 'PO2_steady' in locals(): perf_field_dict["PO2_mmhg"] = PO2_steady
+            if 'PCO2_steady' in locals(): perf_field_dict["PCO2_mmhg"] = PCO2_steady
+            if 'pH_steady' in locals(): perf_field_dict["pH"] = pH_steady
+            
+        # Re-read vtk_export cell data directly from the generated file to ensure 100% accuracy
+        import pyvista as pv
+        final_vessels = pv.read(vtk_export['vessels_path'])
+        vtk_export["cell_data"] = {k: final_vessels.cell_data[k] for k in final_vessels.cell_data.keys()}
+            
+        generate_model_results_dashboard(
+            vtk_export, 
+            perf_field_dict, 
+            output_dir=pipeline_config.vtk_output_prefix.parent
+        )
 
     if vis_config.visualize_results:
         _visualize_final_results(G, image, starting_nodes, vis_config)
