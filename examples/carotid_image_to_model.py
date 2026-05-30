@@ -1172,7 +1172,7 @@ def carotid_image_to_model(image_path: Path | str,
         pipeline_config.plot_dir.mkdir(parents=True, exist_ok=True)
 
     if pipeline_config.do_skeletonize:
-        image, binary = _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, vis_config, pipeline_config)
+        image, binary = _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, graph_config, vis_config, pipeline_config)
         
         # --- Optuna Hyperparameter Optimization ---
         if args.optimize_skeleton > 0:
@@ -1304,6 +1304,7 @@ if __name__ == "__main__":
     parser.add_argument("--optimize-preprocessing", type=int, default=0, help="Run Bayesian optimization for preprocessing filters for N trials.")
     parser.add_argument("--optimize-patience", type=int, default=None, help="Override the EarlyStoppingCallback patience limit.")
     parser.add_argument("--core-resolution", type=str, choices=["eradicate", "stitch", "none"], default=None, help="Mode for resolving internal core dead-ends.")
+    parser.add_argument("--boundary-mode", type=str, choices=["caged", "universal_sink", "robin_resistance"], default=None, help="Mode for handling X/Y boundary permeability.")
     args = parser.parse_args()
 
     # 1. Initialize Default Configurations
@@ -1340,6 +1341,9 @@ if __name__ == "__main__":
         
     if args.core_resolution is not None:
         skel_config.core_dead_end_resolution_mode = args.core_resolution
+        
+    if args.boundary_mode is not None:
+        graph_config.boundary_permeability_mode = args.boundary_mode
         
     pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
     
