@@ -426,7 +426,7 @@ def _run_alice_pericyte_dilation_pressure_sweep(
         G_sweep, _ = poiseuille_model.set_poiseuille_resistances(
             G_sweep,
             scaled_diameter_by_branch_order,
-            prefer_edge_fwhm_diameter=True,
+            radius_assignment_mode="fwhm_radius",
         )
 
         if custom_edges:
@@ -1579,7 +1579,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G, results = poiseuille_model.set_poiseuille_resistances(
                 G,
                 diameter_by_branch_order,
-                prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
+                radius_assignment_mode="fwhm_radius" if use_fwhm_edge_diameters else "branch_order",
             )
             _diam_mode = (
                 "per-edge FWHM (Gaussian fit) with branch-order fallback"

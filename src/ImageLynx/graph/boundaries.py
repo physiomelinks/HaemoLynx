@@ -23,20 +23,34 @@ def select_boundary_terminal_nodes(
         raise ValueError(f"axis={axis} out of bounds for image shape {image_shape}.")
 
     node_pos = nx.get_node_attributes(G, "pos")
-    terminal_nodes = [node for node, degree in G.degree() if degree == 1 and node in node_pos]
-    if not terminal_nodes:
+    if not node_pos:
         return [], []
+
+    def axis_coord(node_id: Any) -> float:
+        return float(np.asarray(node_pos[node_id], dtype=float)[axis])
 
     axis_size = float(image_shape[axis] - 1)
     top_limit = axis_size * (edge_percent / 100.0)
     bottom_start = axis_size * (1.0 - (end_percent / 100.0))
 
-    def axis_coord(node_id: Any) -> float:
-        return float(np.asarray(node_pos[node_id], dtype=float)[axis])
-
+    # TIER 1: Standard Dead-Ends (Degree 1)
+    terminal_nodes = [node for node, degree in G.degree() if degree == 1 and node in node_pos]
+    
     starting = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
     outputs = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
-    
+
+    # TIER 2: Spatial Extremes Fallback
+    # If the network forms a closed loop cage (0 dead ends) or stitching removed them.
+    if not starting or not outputs:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Tier 1 Boundary Selection failed. Falling back to Spatial Extremes.")
+        
+        all_nodes_sorted = sorted(list(node_pos.keys()), key=lambda n: axis_coord(n))
+        n_select = max(1, len(all_nodes_sorted) // 10)
+        starting = all_nodes_sorted[:n_select]
+        outputs = all_nodes_sorted[-n_select:]
+
     starting_set = set(starting)
     outputs_set = set(outputs)
     

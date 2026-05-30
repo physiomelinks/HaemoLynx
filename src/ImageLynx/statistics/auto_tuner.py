@@ -21,12 +21,15 @@ class SkeletonObjective:
         # 1. Define the Bayesian search space (TPE limits)
         skel_kwargs = {
             "min_branch_length": trial.suggest_int("min_branch_length", 3, 12),
-            "max_bridge_distance": trial.suggest_int("max_bridge_distance", 0, 0),
-            "min_component_percent": trial.suggest_float("min_component_percent", 0.05, 1.5),
-            "bundle_scan_size": trial.suggest_int("bundle_scan_size", 3, 7),
-            "bundle_density_fraction": trial.suggest_float("bundle_density_fraction", 0.01, 0.1),
-            "bundle_max_connections": trial.suggest_int("bundle_max_connections", 2, 4),
-            "bundle_hub_min_spacing": trial.suggest_int("bundle_hub_min_spacing", 0, 10),
+            # "max_bridge_distance": trial.suggest_int("max_bridge_distance", 0, 0),
+            "max_bridge_distance": 0,
+            "min_component_percent": trial.suggest_float("min_component_percent", 4.0, 6.0),
+            "bundle_scan_size": trial.suggest_int("bundle_scan_size", 8, 10),
+            "bundle_density_fraction": trial.suggest_float("bundle_density_fraction", 0.01, 0.05),
+            # "bundle_max_connections": trial.suggest_int("bundle_max_connections", 2, 4),
+            "bundle_max_connections": 5,
+            # "bundle_hub_min_spacing": trial.suggest_int("bundle_hub_min_spacing", 0, 10),
+            "bundle_hub_min_spacing": 0,
             "smoothing_alpha": trial.suggest_float("smoothing_alpha", 0.1, 2.5),
             "prune_by_tortuosity": trial.suggest_float("prune_by_tortuosity", 1.2, 3.5)
         }
@@ -166,13 +169,17 @@ class PreprocessingObjective:
     def __call__(self, trial):
         # 1. Define the Bayesian search space (TPE limits)
         pre_kwargs = {
-            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.05, 0.50),
-            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.20, 0.90),
-            "median_filter_size": trial.suggest_categorical("median_filter_size", [0, 3, 5]),
-            "morphological_opening_radius": trial.suggest_int("morphological_opening_radius", 0, 1),
-            "morphological_closing_radius": trial.suggest_int("morphological_closing_radius", 0, 2),
+            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.0, 0.2),
+            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.2, 0.4),
+            # "median_filter_size": trial.suggest_categorical("median_filter_size", [0, 3, 5, 7, 9]),
+            "median_filter_size": 9,
+            # "morphological_opening_radius": trial.suggest_int("morphological_opening_radius", 0, 1),
+            # "morphological_closing_radius": trial.suggest_int("morphological_closing_radius", 0, 1),
+            "morphological_opening_radius": 4,
+            "morphological_closing_radius": 0,
             "probability_smoothing_sigma": trial.suggest_float("probability_smoothing_sigma", 0.0, 1.0),
-            "shannon_entropy_threshold": trial.suggest_float("shannon_entropy_threshold", 0.70, 0.99)
+            # "probability_smoothing_sigma": 0,
+            "shannon_entropy_threshold": trial.suggest_float("shannon_entropy_threshold", 0.95, 0.99)
         }
         
         # Enforce physical constraints: High threshold must be > Low threshold
