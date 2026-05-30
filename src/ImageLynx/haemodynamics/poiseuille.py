@@ -163,6 +163,11 @@ class PoiseuilleModel:
             diameter = None
             if radius_assignment_mode == "constant_radius":
                 diameter = constant_radius_um * 2.0
+            elif radius_assignment_mode == "edt_radius":
+                edt_d = data.get("edt_diameter_um")
+                if edt_d is not None and float(edt_d) > 0:
+                    diameter = float(edt_d)
+                    results['used_fwhm_edge_diameter'] += 1
             elif radius_assignment_mode == "fwhm_radius":
                 fwhm_d = data.get("fwhm_diameter_um")
                 if fwhm_d is not None and float(fwhm_d) > 0:
@@ -280,6 +285,13 @@ class PoiseuilleModel:
                 d1 = constant_radius_um * 2.0
                 constriction_ratio = d2_dict / d1_dict
                 d2 = d1 * constriction_ratio
+            elif radius_assignment_mode == "edt_radius":
+                edt_d = data.get("edt_diameter_um")
+                if edt_d is not None and float(edt_d) > 0:
+                    d1 = float(edt_d)
+                    constriction_ratio = d2_dict / d1_dict
+                    d2 = d1 * constriction_ratio
+                    results["used_fwhm_baseline"] += 1
             elif radius_assignment_mode == "fwhm_radius":
                 fwhm_d = data.get("fwhm_diameter_um")
                 if fwhm_d is not None and float(fwhm_d) > 0:

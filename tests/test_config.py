@@ -41,8 +41,8 @@ def test_haemodynamics_config_bounds_safety():
         HaemodynamicsConfig(diameter_by_branch_order={}, input_p_bc=10.0, output_p_bc=100.0)
         
     # 2. Invalid radius mode should crash
-    with pytest.raises(ValueError, match="radius_assignment_mode must be 'fwhm_radius' or 'constant_radius'"):
-        HaemodynamicsConfig(diameter_by_branch_order={}, radius_assignment_mode="magic")
+    with pytest.raises(ValueError, match="radius_assignment_mode must be 'fwhm_radius', 'edt_radius', or 'constant_radius'"):
+        HaemodynamicsConfig(diameter_by_branch_order={}, radius_assignment_mode="invalid_mode")
 
     # 3. Invalid constriction mode should crash
     with pytest.raises(ValueError, match="must be 'sphincter' or 'periodic'"):

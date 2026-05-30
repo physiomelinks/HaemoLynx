@@ -149,8 +149,8 @@ class HaemodynamicsConfig:
         if self.input_p_bc <= self.output_p_bc:
             raise ValueError(f"Input pressure ({self.input_p_bc}) must be strictly greater than Output pressure ({self.output_p_bc}).")
 
-        if self.radius_assignment_mode not in ("fwhm_radius", "constant_radius"):
-            raise ValueError(f"radius_assignment_mode must be 'fwhm_radius' or 'constant_radius', got: {self.radius_assignment_mode}")
+        if self.radius_assignment_mode not in ("fwhm_radius", "edt_radius", "constant_radius"):
+            raise ValueError(f"radius_assignment_mode must be 'fwhm_radius', 'edt_radius', or 'constant_radius', got: {self.radius_assignment_mode}")
 
         if self.constriction_mode not in ("sphincter", "periodic"):
             raise ValueError(f"constriction_mode must be 'sphincter' or 'periodic', got: {self.constriction_mode}")
@@ -1327,6 +1327,7 @@ if __name__ == "__main__":
     parser.add_argument("--optimize-patience", type=int, default=None, help="Override the EarlyStoppingCallback patience limit.")
     parser.add_argument("--core-resolution", type=str, choices=["eradicate", "stitch", "none"], default=None, help="Mode for resolving internal core dead-ends.")
     parser.add_argument("--boundary-mode", type=str, choices=["caged", "universal_sink", "robin_resistance"], default=None, help="Mode for handling X/Y boundary permeability.")
+    parser.add_argument("--radius-mode", type=str, choices=["fwhm_radius", "edt_radius", "constant_radius"], default=None, help="Radius assignment mode for physical flow.")
     args = parser.parse_args()
 
     # 1. Initialize Default Configurations
@@ -1367,6 +1368,9 @@ if __name__ == "__main__":
     if args.boundary_mode is not None:
         graph_config.boundary_permeability_mode = args.boundary_mode
         
+    if args.radius_mode is not None:
+        hemo_config.radius_assignment_mode = args.radius_mode
+        
     pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
     
     if args.optimize_patience is not None:
@@ -1399,4 +1403,3 @@ if __name__ == "__main__":
         vis_config=vis_config,
         pipeline_config=pipeline_config
     )
-

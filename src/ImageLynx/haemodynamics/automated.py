@@ -1197,3 +1197,65 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         })
 
     return summary
+
+def measure_edge_diameters_edt_from_binary_mask(
+    G: nx.MultiGraph,
+    binary_mask: np.ndarray,
+    voxel_size_xyz: tuple[float, float, float]
+) -> dict:
+    """Measure per-edge diameters (µm) using 3D Euclidean Distance Transform.
+    
+    This is robust for binary/thresholded masks where FWHM Gaussian fitting would fail 
+    or artificially inflate diameters due to flat intensity plateaus.
+    """
+    from scipy.ndimage import distance_transform_edt
+    import numpy as np
+
+    # Ensure binary mask is boolean to find distance from 1s to nearest 0s
+    mask_bool = binary_mask > 0
+
+    print("  Computing 3D Euclidean Distance Transform...")
+    # sampling parameter ensures the distance is calculated in physical units (µm)
+    edt_phys = distance_transform_edt(mask_bool, sampling=voxel_size_xyz)
+
+    summary = {"edges_measured": 0, "edges_skipped": 0, "per_edge": []}
+
+    for u, v, key, data in G.edges(keys=True, data=True):
+        voxels_phys = data.get("voxels")
+        if not voxels_phys:
+            summary["edges_skipped"] += 1
+            continue
+            
+        diameters = []
+        for pt_phys in voxels_phys:
+            # Convert physical coordinate to voxel index
+            z_idx = int(round(pt_phys[0] / voxel_size_xyz[0]))
+            y_idx = int(round(pt_phys[1] / voxel_size_xyz[1]))
+            x_idx = int(round(pt_phys[2] / voxel_size_xyz[2]))
+
+            # Bounds check
+            if (0 <= z_idx < edt_phys.shape[0] and
+                0 <= y_idx < edt_phys.shape[1] and
+                0 <= x_idx < edt_phys.shape[2]):
+                
+                radius_um = edt_phys[z_idx, y_idx, x_idx]
+                if radius_um > 0:
+                    # EDT returns radius, so multiply by 2 for diameter
+                    diameters.append(radius_um * 2.0)
+        
+        if diameters:
+            # Use median to be robust against localized bottlenecks or bulges
+            d_mean = float(np.median(diameters))
+            data["edt_diameter_um"] = d_mean
+            data["edt_diameter_samples_um"] = diameters
+            
+            summary["edges_measured"] += 1
+            summary["per_edge"].append({
+                "edge": (u, v, key),
+                "edt_diameter_um": d_mean,
+                "n_samples": len(diameters),
+            })
+        else:
+            summary["edges_skipped"] += 1
+            
+    return summary
