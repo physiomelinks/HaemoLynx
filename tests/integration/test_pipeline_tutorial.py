@@ -10,24 +10,16 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TUTORIAL_NOTEBOOK = REPO_ROOT / "tutorials" / "pipeline_tutorial.ipynb"
+TUTORIAL_DIR = REPO_ROOT / "tutorials"
+TUTORIAL_NOTEBOOK = TUTORIAL_DIR / "pipeline_tutorial.ipynb"
+GENERATED_SCRIPT = TUTORIAL_DIR / "pipeline_tutorial.py"
 INPUT_TIFF = REPO_ROOT / "tests" / "data" / "Nerve_capillaries_cropped.tif"
-
-
-def _nbconvert_notebook_to_python(notebook_path: Path, output_path: Path) -> None:
-    nbformat = pytest.importorskip("nbformat")
-    nbconvert = pytest.importorskip("nbconvert")
-
-    notebook = nbformat.read(notebook_path, as_version=nbformat.NO_CONVERT)
-    exporter = nbconvert.PythonExporter()
-    body, _resources = exporter.from_notebook_node(notebook)
-    output_path.write_text(body, encoding="utf-8")
 
 
 @pytest.mark.integration
 @pytest.mark.slow
 def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
-    """nbconvert pipeline_tutorial.ipynb to Python and run the full pipeline."""
+    """Export pipeline_tutorial.ipynb to pipeline_tutorial.py and run it."""
     pytest.importorskip("pyvista")
     pytest.importorskip("nbconvert")
     pytest.importorskip("nbformat")
@@ -37,19 +29,22 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
     if not INPUT_TIFF.exists():
         pytest.skip(f"Missing tutorial input TIFF: {INPUT_TIFF}")
 
+    if str(TUTORIAL_DIR) not in sys.path:
+        sys.path.insert(0, str(TUTORIAL_DIR))
+    from export_notebook import export_pipeline_tutorial_script
+
+    export_pipeline_tutorial_script(TUTORIAL_NOTEBOOK, GENERATED_SCRIPT)
+    assert GENERATED_SCRIPT.exists()
+    assert GENERATED_SCRIPT.stat().st_size > 0
+    assert "# AUTO-GENERATED" in GENERATED_SCRIPT.read_text(encoding="utf-8")
+
     output_dir = tmp_path / "outputs"
     plot_dir = tmp_path / "plots"
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    script_path = tmp_path / "pipeline_tutorial_from_nb.py"
-    _nbconvert_notebook_to_python(TUTORIAL_NOTEBOOK, script_path)
-    assert script_path.exists()
-    assert script_path.stat().st_size > 0
-
-    tutorial_dir = REPO_ROOT / "tutorials"
     existing_pythonpath = __import__("os").environ.get("PYTHONPATH", "")
-    extra_paths = str(tutorial_dir)
+    extra_paths = f"{TUTORIAL_DIR}:{REPO_ROOT / 'src'}:{REPO_ROOT / 'examples'}"
     if existing_pythonpath:
         extra_paths = f"{extra_paths}:{existing_pythonpath}"
     env = {
@@ -60,7 +55,7 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
         "PYTHONPATH": extra_paths,
     }
     result = subprocess.run(
-        [sys.executable, str(script_path)],
+        [sys.executable, str(GENERATED_SCRIPT)],
         cwd=str(REPO_ROOT),
         env=env,
         capture_output=True,

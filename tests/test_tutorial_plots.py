@@ -33,7 +33,12 @@ def test_graph_build_plotter_tracks_paths(tmp_path) -> None:
     G.add_node(1, pos=(1.0, 2.0, 5.0))
     G.add_edge(0, 1, voxels=[(1, 2, 3), (1, 2, 4), (1, 2, 5)])
 
-    plotter = GraphBuildPlotter(image, tmp_path, show_inline=False)
+    plotter = GraphBuildPlotter(
+        image,
+        tmp_path,
+        show_inline=False,
+        steps_to_display=frozenset({"test_step"}),
+    )
     plotter(G, "test_step")
     assert len(plotter.saved) == 1
     assert plotter.plot_paths()[0].is_file()
