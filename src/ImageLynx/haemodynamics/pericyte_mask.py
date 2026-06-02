@@ -31,9 +31,11 @@ def _load_binary_mask_and_voxel_size(
     path = resolve_image_path_with_optional_zip(Path(mask_path))
     suffix = path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
-        image, voxel_x, voxel_y, voxel_z = load_3d_tif_with_voxel_size(str(path))
+        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
+            str(path)
+        )
     elif suffix == ".h5":
-        image, voxel_x, voxel_y, voxel_z = load_3d_h5_with_voxel_size(
+        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
             str(path),
             dataset_name=h5_dataset_name,
         )

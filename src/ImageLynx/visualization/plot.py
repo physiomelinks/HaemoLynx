@@ -41,6 +41,43 @@ def _projection_extent(
     return (0.0, x_size * vx, y_size * vy, 0.0)
 
 
+def _overlay_z_projection(image: np.ndarray) -> np.ndarray:
+    """Return a Z-projection suitable for graph overlays.
+
+    For low-cardinality integer label maps (e.g., 0/1, 0/255, 1/2), use a
+    foreground occupancy projection instead of raw max-intensity projection.
+    This avoids flat backgrounds for 1/2 segmentations where max projection is
+    often constant (all 2s).
+    """
+    arr = np.asarray(image)
+    if arr.ndim < 3:
+        return np.asarray(arr)
+
+    if arr.dtype == bool:
+        return np.max(arr, axis=0).astype(float)
+
+    if np.issubdtype(arr.dtype, np.integer):
+        values, counts = np.unique(arr, return_counts=True)
+        if values.size == 1:
+            return np.max(arr, axis=0)
+        if values.size == 2:
+            if 0 in values:
+                fg_value = values[values != 0][0]
+            else:
+                fg_value = values[int(np.argmin(counts))]
+            return np.max(arr == fg_value, axis=0).astype(float)
+        if values.size <= 4:
+            nonzero_values = values[values != 0]
+            if nonzero_values.size > 0:
+                nonzero_counts = np.array(
+                    [counts[np.where(values == v)[0][0]] for v in nonzero_values]
+                )
+                fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
+                return np.max(arr == fg_value, axis=0).astype(float)
+
+    return np.max(arr, axis=0)
+
+
 def _show_matplotlib_non_blocking(pause_s: float = 0.001) -> None:
     """Show matplotlib figures without blocking script execution."""
     plt.show(block=False)
@@ -122,7 +159,7 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
 
     Set label_nodes=True to draw node IDs.
     """
-    projection = np.max(image, axis=0)
+    projection = _overlay_z_projection(image)
     pos = nx.get_node_attributes(G, "pos")
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
     extent = _projection_extent(projection.shape, resolved_voxel_size)
@@ -199,7 +236,7 @@ def visualize_geometry_with_branch_orders(
     block: bool = False,
 ):
     """Plot network colored by branch order."""
-    projection = np.max(image, axis=0)
+    projection = _overlay_z_projection(image)
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
     extent = _projection_extent(projection.shape, resolved_voxel_size)
     all_branch_orders = set()
@@ -309,7 +346,7 @@ def visualize_geometry_with_edge_weights(
     block: bool = False,
 ):
     """Plot network colored by edge weight."""
-    projection = np.max(image, axis=0)
+    projection = _overlay_z_projection(image)
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
     extent = _projection_extent(projection.shape, resolved_voxel_size)
     edge_weights = {}

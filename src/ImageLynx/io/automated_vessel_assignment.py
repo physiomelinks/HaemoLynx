@@ -16,10 +16,14 @@ def _load_mask_image(mask_path: Path) -> tuple[np.ndarray, tuple[float, float, f
     """Load a mask image and return (image, voxel_size_xyz)."""
     suffix = mask_path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
-        image, voxel_x, voxel_y, voxel_z = load_3d_tif_with_voxel_size(str(mask_path))
+        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
+            str(mask_path)
+        )
         return image, (float(voxel_x), float(voxel_y), float(voxel_z))
     if suffix == ".h5":
-        image, voxel_x, voxel_y, voxel_z = load_3d_h5_with_voxel_size(str(mask_path))
+        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
+            str(mask_path)
+        )
         return image, (float(voxel_x), float(voxel_y), float(voxel_z))
     raise ValueError(
         f"Unsupported mask format '{suffix}' for {mask_path}. "
