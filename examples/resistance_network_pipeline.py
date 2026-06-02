@@ -7,7 +7,6 @@ import ast
 import pickle
 import json
 from pathlib import Path
-from skan import csr
 import tifffile
 import numpy as np
 import networkx as nx
@@ -24,9 +23,7 @@ if str(examples_dir) not in sys.path:
 
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
-from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
-from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
-from ImageLynx.haemodynamics import probability as probability_haemodynamics
+from ImageLynx.haemodynamics.pipeline import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
 from preflight import run_preflight_checklist
 from resistance_pipeline_settings import *  # noqa: F403
@@ -328,471 +325,85 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
     print("Skeleton projection saved.")
 
-    if use_ilastik_large_vessel_segmentation and not use_large_vessel_masks:
-        raise ValueError(
-            "use_ilastik_large_vessel_segmentation=True requires "
-            "use_large_vessel_masks=True."
-        )
-
-    effective_large_arteriole_mask_path = large_arteriole_mask_path
-    effective_large_venule_mask_path = large_venule_mask_path
-    if not use_large_vessel_masks:
-        # Keep the loader contract strict: disabled mode must not receive mask paths.
-        effective_large_arteriole_mask_path = None
-        effective_large_venule_mask_path = None
-    if use_large_vessel_masks and use_ilastik_large_vessel_segmentation:
-        if ilastik_unsegmented_arteriole_image_path is None:
-            raise ValueError(
-                "ilastik_unsegmented_arteriole_image_path must be set when "
-                "use_ilastik_large_vessel_segmentation=True."
-            )
-        if ilastik_unsegmented_venule_image_path is None:
-            raise ValueError(
-                "ilastik_unsegmented_venule_image_path must be set when "
-                "use_ilastik_large_vessel_segmentation=True."
-            )
-        if ilastik_arteriole_classifier_path is None:
-            raise ValueError(
-                "ilastik_arteriole_classifier_path must be set when "
-                "use_ilastik_large_vessel_segmentation=True."
-            )
-        if ilastik_venule_classifier_path is None:
-            raise ValueError(
-                "ilastik_venule_classifier_path must be set when "
-                "use_ilastik_large_vessel_segmentation=True."
-            )
-
-        ilastik_output_dir = Path(ilastik_output_dir)
-        unsegmented_arteriole_image_path = io.resolve_image_path_with_optional_zip(
-            Path(ilastik_unsegmented_arteriole_image_path)
-        )
-        unsegmented_venule_image_path = io.resolve_image_path_with_optional_zip(
-            Path(ilastik_unsegmented_venule_image_path)
-        )
-        ilastik_segmented_arteriole_path = ilastik_output_dir / (
-            f"{unsegmented_arteriole_image_path.stem}_segmented{ilastik_output_suffix}"
-        )
-        ilastik_segmented_venule_path = ilastik_output_dir / (
-            f"{unsegmented_venule_image_path.stem}_segmented{ilastik_output_suffix}"
-        )
-
-        print(
-            "Running ilastik segmentation for large arteriole image: "
-            f"{unsegmented_arteriole_image_path}"
-        )
-        effective_large_arteriole_mask_path = io.run_ilastik_headless_segmentation(
-            input_image_path=unsegmented_arteriole_image_path,
-            classifier_path=Path(ilastik_arteriole_classifier_path),
-            output_path=ilastik_segmented_arteriole_path,
-            ilastik_executable=ilastik_executable,
-        )
-        print(
-            "Running ilastik segmentation for large venule image: "
-            f"{unsegmented_venule_image_path}"
-        )
-        effective_large_venule_mask_path = io.run_ilastik_headless_segmentation(
-            input_image_path=unsegmented_venule_image_path,
-            classifier_path=Path(ilastik_venule_classifier_path),
-            output_path=ilastik_segmented_venule_path,
-            ilastik_executable=ilastik_executable,
-        )
-        print(
-            "Using ilastik-segmented large-vessel masks: "
-            f"arteriole={effective_large_arteriole_mask_path}, "
-            f"venule={effective_large_venule_mask_path}"
-        )
-
+    main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
     (
         large_arteriole_mask,
         large_venule_mask,
         large_arteriole_mask_voxel_size,
         large_venule_mask_voxel_size,
-    ) = io.load_large_vessel_masks(
+    ) = io.load_and_validate_vessel_masks(
+        mask_role="large",
         enabled=use_large_vessel_masks,
-        large_arteriole_mask_path=effective_large_arteriole_mask_path,
-        large_venule_mask_path=effective_large_venule_mask_path,
+        use_ilastik=use_ilastik_large_vessel_segmentation,
+        arteriole_mask_path=large_arteriole_mask_path,
+        venule_mask_path=large_venule_mask_path,
+        image_shape=image.shape,
+        main_voxel_size_xyz=main_voxel_size_xyz,
+        ilastik_unsegmented_arteriole_path=ilastik_unsegmented_arteriole_image_path,
+        ilastik_unsegmented_venule_path=ilastik_unsegmented_venule_image_path,
+        ilastik_arteriole_classifier_path=ilastik_arteriole_classifier_path,
+        ilastik_venule_classifier_path=ilastik_venule_classifier_path,
+        ilastik_output_dir=ilastik_output_dir,
+        ilastik_output_suffix=ilastik_output_suffix,
+        ilastik_executable=ilastik_executable,
+        dilation_microns=large_vessel_mask_dilation_microns,
     )
-    if large_arteriole_mask is not None and large_venule_mask is not None:
-        if large_arteriole_mask.shape != image.shape:
-            raise ValueError(
-                "large_arteriole_mask shape does not match input image shape: "
-                f"{large_arteriole_mask.shape} != {image.shape}"
-            )
-        if large_venule_mask.shape != image.shape:
-            raise ValueError(
-                "large_venule_mask shape does not match input image shape: "
-                f"{large_venule_mask.shape} != {image.shape}"
-            )
-        print(
-            "Loaded large-vessel masks: "
-            f"arteriole={large_arteriole_mask.shape}, "
-            f"venule={large_venule_mask.shape}"
-        )
-        print(
-            "Large-vessel mask voxel sizes (x, y, z): "
-            f"arteriole={large_arteriole_mask_voxel_size}, "
-            f"venule={large_venule_mask_voxel_size}"
-        )
-        main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
-        arteriole_voxel_size_xyz = tuple(float(v) for v in large_arteriole_mask_voxel_size)
-        venule_voxel_size_xyz = tuple(float(v) for v in large_venule_mask_voxel_size)
-        voxel_match_main_vs_arteriole = np.allclose(
-            main_voxel_size_xyz,
-            arteriole_voxel_size_xyz,
-            rtol=0.0,
-            atol=0.0,
-        )
-        voxel_match_main_vs_venule = np.allclose(
-            main_voxel_size_xyz,
-            venule_voxel_size_xyz,
-            rtol=0.0,
-            atol=0.0,
-        )
-        voxel_match_arteriole_vs_venule = np.allclose(
-            arteriole_voxel_size_xyz,
-            venule_voxel_size_xyz,
-            rtol=0.0,
-            atol=0.0,
-        )
-        if not (
-            voxel_match_main_vs_arteriole
-            and voxel_match_main_vs_venule
-            and voxel_match_arteriole_vs_venule
-        ):
-            error_message = (
-                "Voxel-size mismatch detected across input image and large-vessel masks. "
-                f"main={main_voxel_size_xyz}, "
-                f"arteriole={arteriole_voxel_size_xyz}, "
-                f"venule={venule_voxel_size_xyz}. "
-                "All three must match exactly in x, y, and z."
-            )
-            print(error_message)
-            raise ValueError(error_message)
-        print(
-            "Voxel-size check passed. Arteriole and venule masks are aligned "
-            "to the same physical voxel units as the main image."
-        )
-        if large_vessel_mask_dilation_microns > 0:
-            large_arteriole_mask, large_venule_mask = (
-                graph.dilate_large_vessel_masks_by_microns(
-                    large_arteriole_mask=large_arteriole_mask,
-                    large_venule_mask=large_venule_mask,
-                    dilation_microns=large_vessel_mask_dilation_microns,
-                    voxel_size_xyz=main_voxel_size_xyz,
-                )
-            )
-            print(
-                "Dilated large-vessel masks by "
-                f"{float(large_vessel_mask_dilation_microns):.3f} microns."
-            )
-    else:
-        print("Large-vessel masks disabled; skipping arteriole/venule mask loading.")
-
-    if (
-        use_ilastik_small_vessel_segmentation
-        and not use_small_vessel_masks_for_boundary_assignment
-    ):
-        raise ValueError(
-            "use_ilastik_small_vessel_segmentation=True requires "
-            "use_small_vessel_masks_for_boundary_assignment=True."
-        )
-
-    effective_small_arteriole_mask_path = small_arteriole_mask_path
-    effective_small_venule_mask_path = small_venule_mask_path
-    if not use_small_vessel_masks_for_boundary_assignment:
-        # Keep the loader contract strict: disabled mode must not receive mask paths.
-        effective_small_arteriole_mask_path = None
-        effective_small_venule_mask_path = None
-    if (
-        use_small_vessel_masks_for_boundary_assignment
-        and use_ilastik_small_vessel_segmentation
-    ):
-        if ilastik_unsegmented_small_arteriole_image_path is None:
-            raise ValueError(
-                "ilastik_unsegmented_small_arteriole_image_path must be set when "
-                "use_ilastik_small_vessel_segmentation=True."
-            )
-        if ilastik_unsegmented_small_venule_image_path is None:
-            raise ValueError(
-                "ilastik_unsegmented_small_venule_image_path must be set when "
-                "use_ilastik_small_vessel_segmentation=True."
-            )
-        if ilastik_small_arteriole_classifier_path is None:
-            raise ValueError(
-                "ilastik_small_arteriole_classifier_path must be set when "
-                "use_ilastik_small_vessel_segmentation=True."
-            )
-        if ilastik_small_venule_classifier_path is None:
-            raise ValueError(
-                "ilastik_small_venule_classifier_path must be set when "
-                "use_ilastik_small_vessel_segmentation=True."
-            )
-
-        ilastik_output_dir = Path(ilastik_output_dir)
-        unsegmented_small_arteriole_image_path = io.resolve_image_path_with_optional_zip(
-            Path(ilastik_unsegmented_small_arteriole_image_path)
-        )
-        unsegmented_small_venule_image_path = io.resolve_image_path_with_optional_zip(
-            Path(ilastik_unsegmented_small_venule_image_path)
-        )
-        ilastik_segmented_small_arteriole_path = ilastik_output_dir / (
-            f"{unsegmented_small_arteriole_image_path.stem}_segmented{ilastik_output_suffix}"
-        )
-        ilastik_segmented_small_venule_path = ilastik_output_dir / (
-            f"{unsegmented_small_venule_image_path.stem}_segmented{ilastik_output_suffix}"
-        )
-
-        print(
-            "Running ilastik segmentation for small arteriole image: "
-            f"{unsegmented_small_arteriole_image_path}"
-        )
-        effective_small_arteriole_mask_path = io.run_ilastik_headless_segmentation(
-            input_image_path=unsegmented_small_arteriole_image_path,
-            classifier_path=Path(ilastik_small_arteriole_classifier_path),
-            output_path=ilastik_segmented_small_arteriole_path,
-            ilastik_executable=ilastik_executable,
-        )
-        print(
-            "Running ilastik segmentation for small venule image: "
-            f"{unsegmented_small_venule_image_path}"
-        )
-        effective_small_venule_mask_path = io.run_ilastik_headless_segmentation(
-            input_image_path=unsegmented_small_venule_image_path,
-            classifier_path=Path(ilastik_small_venule_classifier_path),
-            output_path=ilastik_segmented_small_venule_path,
-            ilastik_executable=ilastik_executable,
-        )
-        print(
-            "Using ilastik-segmented small-vessel masks: "
-            f"arteriole={effective_small_arteriole_mask_path}, "
-            f"venule={effective_small_venule_mask_path}"
-        )
-
     (
         small_arteriole_mask,
         small_venule_mask,
         small_arteriole_mask_voxel_size,
         small_venule_mask_voxel_size,
-    ) = io.load_large_vessel_masks(
+    ) = io.load_and_validate_vessel_masks(
+        mask_role="small",
         enabled=use_small_vessel_masks_for_boundary_assignment,
-        large_arteriole_mask_path=effective_small_arteriole_mask_path,
-        large_venule_mask_path=effective_small_venule_mask_path,
-    )
-    if small_arteriole_mask is not None and small_venule_mask is not None:
-        if small_arteriole_mask.shape != image.shape:
-            raise ValueError(
-                "small_arteriole_mask shape does not match input image shape: "
-                f"{small_arteriole_mask.shape} != {image.shape}"
-            )
-        if small_venule_mask.shape != image.shape:
-            raise ValueError(
-                "small_venule_mask shape does not match input image shape: "
-                f"{small_venule_mask.shape} != {image.shape}"
-            )
-        main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
-        small_arteriole_voxel_size_xyz = tuple(
-            float(v) for v in small_arteriole_mask_voxel_size
-        )
-        small_venule_voxel_size_xyz = tuple(float(v) for v in small_venule_mask_voxel_size)
-        if not (
-            np.allclose(main_voxel_size_xyz, small_arteriole_voxel_size_xyz, rtol=0.0, atol=0.0)
-            and np.allclose(main_voxel_size_xyz, small_venule_voxel_size_xyz, rtol=0.0, atol=0.0)
-            and np.allclose(
-                small_arteriole_voxel_size_xyz,
-                small_venule_voxel_size_xyz,
-                rtol=0.0,
-                atol=0.0,
-            )
-        ):
-            raise ValueError(
-                "Voxel-size mismatch detected across input image and small-vessel masks. "
-                f"main={main_voxel_size_xyz}, "
-                f"small_arteriole={small_arteriole_voxel_size_xyz}, "
-                f"small_venule={small_venule_voxel_size_xyz}. "
-                "All must match exactly in x, y, and z."
-            )
-        print(
-            "Loaded small-vessel masks for boundary assignment: "
-            f"arteriole={small_arteriole_mask.shape}, venule={small_venule_mask.shape}, "
+        use_ilastik=use_ilastik_small_vessel_segmentation,
+        arteriole_mask_path=small_arteriole_mask_path,
+        venule_mask_path=small_venule_mask_path,
+        image_shape=image.shape,
+        main_voxel_size_xyz=main_voxel_size_xyz,
+        ilastik_unsegmented_arteriole_path=ilastik_unsegmented_small_arteriole_image_path,
+        ilastik_unsegmented_venule_path=ilastik_unsegmented_small_venule_image_path,
+        ilastik_arteriole_classifier_path=ilastik_small_arteriole_classifier_path,
+        ilastik_venule_classifier_path=ilastik_small_venule_classifier_path,
+        ilastik_output_dir=ilastik_output_dir,
+        ilastik_output_suffix=ilastik_output_suffix,
+        ilastik_executable=ilastik_executable,
+        loaded_message_suffix=(
             f"min_overlap_fraction={float(small_vessel_mask_min_overlap_fraction):.3f}"
-        )
-    else:
-        print(
-            "Small-vessel-mask boundary assignment disabled; "
-            "manual arteriole/venule boundary-node selection remains available."
-        )
+        ),
+    )
 
     if do_graph_building:
         # 3) Convert skeleton to graph.
-        print("Building skan Skeleton object...")
-        sk = csr.Skeleton(skeleton)
-        print(f"skan Skeleton built: {sk.n_paths} paths")
+        def _graph_build_step_callback(graph_obj, label: str) -> None:
+            plot_png = label
+            if label == "smart_multigraph_degree2_removal_pass1":
+                plot_png = "smart_multigraph_degree2_removal"
+            visualization.save_graph_snapshot(
+                graph_obj,
+                image,
+                output_dir,
+                plot_dir,
+                image_path.stem,
+                label,
+            )
+            visualization.visualize_edges_and_nodes(
+                image,
+                graph_obj,
+                label_nodes=True,
+                save_path=plot_dir / f"{plot_png}.png",
+            )
 
-        print("Building graph (loop detection + segment extraction)...")
-        G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
-            sk,
+        G = graph.build_graph_from_skeleton(
             skeleton,
+            voxel_size=tuple(float(v) for v in voxel_size),
+            graph_reconnect_threshold=graph_reconnect_threshold,
+            final_orphan_reconnect_threshold=final_orphan_reconnect_threshold,
+            cluster_collapse_distance=cluster_collapse_distance,
+            min_stub_length=min_stub_length,
             debug=verbose_logging,
-            voxel_size=voxel_size,
-            reconnect_threshold=graph_reconnect_threshold,
+            step_callback=_graph_build_step_callback,
         )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "build_graph_segment_skan_stitched_loops",
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "build_graph_segment_skan_stitched_loops.png")
-        G = graph.reconnect_secondary_loop_edges(
-            G,
-            skeleton,
-            voxel_size=voxel_size,
-            debug=verbose_logging,
-        )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "reconnect_secondary_loop_edges",
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "reconnect_secondary_loop_edges.png")
-        
-        G, _ = graph.optimise_graph_topology_fixed(
-            G,
-            voxel_loops,
-            loop_edges,
-            skeleton_data=skeleton,
-            debug=verbose_logging,
-            reconnect_threshold=graph_reconnect_threshold,
-        )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "optimise_graph_topology_fixed",
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "optimise_graph_topology_fixed.png")
-        degree2_pass1_max_degree = 4
-        degree2_pass2_max_degree = 8
-        G = graph.smart_multigraph_degree2_removal(
-            G,
-            skeleton,
-            max_degree=degree2_pass1_max_degree,
-            debug=verbose_logging,
-        )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "smart_multigraph_degree2_removal_pass1",
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal.png")
-        degree2_diag = graph.diagnose_degree2_nodes(
-            G, max_degree=degree2_pass1_max_degree
-        )
-        print(graph.format_degree2_diagnostics_report(degree2_diag))
-
-        G = graph.collapse_node_clusters(
-            G,
-            distance_threshold=cluster_collapse_distance,
-            debug=verbose_logging,
-        )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "collapse_node_clusters",
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "collapse_node_clusters.png")
-
-        # Collapsing clusters can create new degree-2 pass-through nodes;
-        # run a second degree-2 cleanup pass with a higher threshold since
-        # remaining degree-2 nodes typically neighbour high-degree junctions.
-        G = graph.smart_multigraph_degree2_removal(
-            G,
-            skeleton,
-            max_degree=degree2_pass2_max_degree,
-            debug=verbose_logging,
-        )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "smart_multigraph_degree2_removal_post_collapse",
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "smart_multigraph_degree2_removal_post_collapse.png")
-
-        G = graph.prune_vascular_stubs(G, debug=verbose_logging, min_stub_length=min_stub_length)
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "prune_vascular_stubs",
-        )
-        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=plot_dir / "prune_vascular_stubs.png")
-        degree2_diag = graph.diagnose_degree2_nodes(
-            G, max_degree=degree2_pass2_max_degree
-        )
-        print(graph.format_degree2_diagnostics_report(degree2_diag))
-
-        G = graph.smart_multigraph_degree2_removal(
-            G,
-            skeleton,
-            max_degree=degree2_pass2_max_degree,
-            debug=verbose_logging,
-        )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "smart_multigraph_degree2_removal_post_prune",
-        )
-        visualization.visualize_edges_and_nodes(
-            image,
-            G,
-            label_nodes=True,
-            save_path=plot_dir / "smart_multigraph_degree2_removal_post_prune.png",
-        )
-        degree2_diag = graph.diagnose_degree2_nodes(
-            G, max_degree=degree2_pass2_max_degree
-        )
-        print(graph.format_degree2_diagnostics_report(degree2_diag))
-
-        # remove any nodes that are connected to themselves with no nodes in between
-        G = graph.remove_edges_for_self_connected_nodes(G)
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "remove_edges_for_self_connected_nodes",
-        )
-
-        # Final topology repair:
-        # 1) reconnect remaining orphan/dangling nodes only if a skeleton path
-        #    validates the link, then
-        # 2) remove any new degree-2 pass-through nodes that remain.
-        G = graph.reconnect_orphan_and_dangling_nodes(
-            G,
-            skeleton_data=skeleton,
-            reconnect_threshold=final_orphan_reconnect_threshold,
-            include_degree1=True,
-            max_new_edges_per_node=1,
-            validate_reconnections=True,
-            debug=verbose_logging,
-        )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "reconnect_orphan_and_dangling_nodes",
-        )
-        visualization.visualize_edges_and_nodes(
-            image,
-            G,
-            label_nodes=True,
-            save_path=plot_dir / "reconnect_orphan_and_dangling_nodes.png",
-        )
-
-        G = graph.smart_multigraph_degree2_removal(
-            G,
-            skeleton,
-            max_degree=4,
-            debug=verbose_logging,
-        )
-        visualization.save_graph_snapshot(
-            G, image, output_dir, plot_dir, image_path.stem,
-            "smart_multigraph_degree2_removal_post_orphan_reconnect",
-        )
-        visualization.visualize_edges_and_nodes(
-            image,
-            G,
-            label_nodes=True,
-            save_path=plot_dir / "smart_multigraph_degree2_removal_post_orphan_reconnect.png",
-        )
-        degree2_diag = graph.diagnose_degree2_nodes(
-            G, max_degree=degree2_pass2_max_degree
-        )
-        print(graph.format_degree2_diagnostics_report(degree2_diag))
 
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
@@ -1027,359 +638,136 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
 
     # 4) Add branch orders and hemodynamic edge weights.
-    #HD note - eventually pericyte localisation should be able to be either determined by this manual method, or via loading in a segmented image of pericytes?
-    #HD note - eventually add in probability of pericyte contraction?
     if starting_nodes:
-        use_hierarchical_assignment = bool(
-            arteriole_boundary_nodes and venule_boundary_nodes and output_nodes
-        )
-        expects_hierarchical_assignment = bool(
-            automated_vessel_assignment or use_small_vessel_masks_for_boundary_assignment
-        )
-        if (
-            strict_branch_order_assignment
-            and expects_hierarchical_assignment
-            and not use_hierarchical_assignment
-        ):
-            raise ValueError(
-                "Strict branch-order assignment is enabled, but hierarchical "
-                "assignment prerequisites are missing. "
-                f"Need non-empty output_nodes, arteriole_boundary_nodes, and "
-                f"venule_boundary_nodes. Got counts: "
-                f"output_nodes={len(output_nodes)}, "
-                f"arteriole_boundary_nodes={len(arteriole_boundary_nodes)}, "
-                f"venule_boundary_nodes={len(venule_boundary_nodes)}. "
-                "Fix mask inputs/thresholds or disable strict_branch_order_assignment."
+
+        def _vessel_types_after_branch_assign(graph_obj) -> None:
+            vessel_type_3d_path = plot_dir / "vessel_types_assigned_3d.html"
+            visualization.visualize_3d_plotly_vessel_types(
+                graph_obj,
+                title="Assigned Vessel Types (Interactive 3D)",
+                save_html_path=str(vessel_type_3d_path),
+                show=False,
             )
-        if use_hierarchical_assignment:
-            branch_assignment_results = graph.assign_hierarchical_branch_orders(
-                G,
-                starting_nodes=starting_nodes,
-                output_nodes=output_nodes,
-                arteriole_boundary_nodes=arteriole_boundary_nodes,
-                venule_boundary_nodes=venule_boundary_nodes,
+            print(
+                "Saved vessel-type 3D visualization after branch assignment to: "
+                f"{vessel_type_3d_path}"
             )
+
+        branch_summary = graph.assign_vessel_branch_orders(
+            G,
+            starting_nodes,
+            output_nodes=output_nodes,
+            arteriole_boundary_nodes=arteriole_boundary_nodes,
+            venule_boundary_nodes=venule_boundary_nodes,
+            strict_hierarchical=strict_branch_order_assignment,
+            expects_hierarchical=bool(
+                automated_vessel_assignment
+                or use_small_vessel_masks_for_boundary_assignment
+            ),
+            post_assign_callback=_vessel_types_after_branch_assign,
+        )
+        if branch_summary["mode"] == "hierarchical":
             print(
                 "Assigned hierarchical branch orders "
                 "(Art*/Ven* first, then capillary B* from arteriole boundary)."
             )
-            print(f"Branch assignment summary: {branch_assignment_results}")
-        else:
-            graph.assign_branch_orders(G, starting_nodes)
+            print(f"Branch assignment summary: {branch_summary}")
+        elif branch_summary["mode"] == "capillary":
             print(
                 "Assigned capillary branch orders from STARTING_NODES only "
                 "(no arteriole/venule boundary-node sets supplied)."
             )
 
-        vessel_type_3d_path = plot_dir / "vessel_types_assigned_3d.html"
-        visualization.visualize_3d_plotly_vessel_types(
-            G,
-            title="Assigned Vessel Types (Interactive 3D)",
-            save_html_path=str(vessel_type_3d_path),
-            show=False,
-        )
-        print(
-            "Saved vessel-type 3D visualization after branch assignment to: "
-            f"{vessel_type_3d_path}"
-        )
         if not run_haemodynamics:
             print(
                 "Haemodynamics disabled; skipping diameter fitting and "
                 "Poiseuille conductance assignment."
             )
-        if run_haemodynamics and use_fwhm_edge_diameters:
-            if fwhm_raw_tiff_path is None:
-                raise ValueError(
-                    "use_fwhm_edge_diameters=True requires fwhm_raw_tiff_path."
-                )
-            raw_p = io.resolve_image_path_with_optional_zip(Path(fwhm_raw_tiff_path))
-            voxel_sz = tuple(
-                float(v) for v in G.graph.get("image_voxel_size_xyz", voxel_size)
+        elif run_haemodynamics:
+            haemo_config = HaemodynamicsApplyConfig(
+                diameter_by_branch_order=diameter_by_branch_order,
+                constriction_by_branch_order=constriction_by_branch_order,
+                custom_edges=custom_edges,
+                do_pericyte_constriction=do_pericyte_constriction,
+                use_pericyte_mask_constriction=use_pericyte_mask_constriction,
+                pericyte_mask_path=pericyte_mask_path,
+                pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
+                pericyte_max_assignment_distance_um=pericyte_max_assignment_distance_um,
+                pericyte_min_diameter_um=pericyte_min_diameter_um,
+                pericyte_max_diameter_um=pericyte_max_diameter_um,
+                use_probabilistic_pericyte_constriction=use_probabilistic_pericyte_constriction,
+                pericyte_constriction_probability=pericyte_constriction_probability,
+                run_pericyte_resistance_comparison=run_pericyte_resistance_comparison,
+                pericyte_comparison_baseline_value=pericyte_comparison_baseline_value,
+                pericyte_comparison_constricted_value=pericyte_comparison_constricted_value,
+                reuse_comparison_pericyte_cohort_for_main_run=reuse_comparison_pericyte_cohort_for_main_run,
+                comparison_output_csv_path=(
+                    output_dir / f"{image_path.stem}_pericyte_resistance_comparison.csv"
+                    if run_pericyte_resistance_comparison
+                    else None
+                ),
+                resistance_node_pair=resistance_node_pair,
+                use_fwhm_edge_diameters=use_fwhm_edge_diameters,
+                fwhm_raw_tiff_path=fwhm_raw_tiff_path,
+                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                fwhm_sample_spacing_along_edge_um=fwhm_sample_spacing_along_edge_um,
+                fwhm_transverse_profile_step_um=fwhm_transverse_profile_step_um,
+                fwhm_transverse_half_extent_um=fwhm_transverse_half_extent_um,
+                fwhm_diameter_guess_um=fwhm_diameter_guess_um,
+                fwhm_min_total_extent_multiplier=fwhm_min_total_extent_multiplier,
+                fwhm_background_label=fwhm_background_label,
+                fwhm_junction_label=fwhm_junction_label,
+                fwhm_allow_junction_crossing=fwhm_allow_junction_crossing,
+                fwhm_profile_baseline_mode=fwhm_profile_baseline_mode,
+                fwhm_profile_baseline_wing_fraction=fwhm_profile_baseline_wing_fraction,
+                fwhm_constrain_fitted_baseline=fwhm_constrain_fitted_baseline,
+                fwhm_baseline_constraint_half_width_ptp=fwhm_baseline_constraint_half_width_ptp,
+                fwhm_clip_profile_to_single_vessel=fwhm_clip_profile_to_single_vessel,
+                fwhm_clip_min_drop_fraction_of_center=fwhm_clip_min_drop_fraction_of_center,
+                fwhm_clip_re_rise_fraction_of_center=fwhm_clip_re_rise_fraction_of_center,
+                fwhm_branch_endpoint_exclusion_um=fwhm_branch_endpoint_exclusion_um,
+                fwhm_junction_proximity_exclusion_um=fwhm_junction_proximity_exclusion_um,
+                fwhm_enforce_same_edge_locality=fwhm_enforce_same_edge_locality,
+                fwhm_same_edge_arc_window_um=fwhm_same_edge_arc_window_um,
+                fwhm_same_edge_arc_window_multiplier=fwhm_same_edge_arc_window_multiplier,
+                fwhm_same_edge_arc_window_min_um=fwhm_same_edge_arc_window_min_um,
+                fwhm_cap_half_extent_by_nonlocal_same_edge_distance=fwhm_cap_half_extent_by_nonlocal_same_edge_distance,
+                fwhm_nonlocal_same_edge_arc_separation_um=fwhm_nonlocal_same_edge_arc_separation_um,
+                fwhm_nonlocal_same_edge_half_extent_factor=fwhm_nonlocal_same_edge_half_extent_factor,
+                fwhm_reject_samples_with_center_offset=fwhm_reject_samples_with_center_offset,
+                fwhm_max_fit_center_offset_um=fwhm_max_fit_center_offset_um,
+                fwhm_reject_samples_with_low_fit_r2=fwhm_reject_samples_with_low_fit_r2,
+                fwhm_min_fit_r2=fwhm_min_fit_r2,
             )
-            fwhm_summary = haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff(
-                G,
-                raw_tiff_path=raw_p,
-                voxel_size_xyz=voxel_sz,
-                sample_spacing_along_edge_um=float(fwhm_sample_spacing_along_edge_um),
-                transverse_profile_step_um=float(fwhm_transverse_profile_step_um),
-                transverse_half_extent_um=float(fwhm_transverse_half_extent_um),
-                diameter_guess_um=(
-                    None
-                    if fwhm_diameter_guess_um is None
-                    else float(fwhm_diameter_guess_um)
-                ),
-                background_label=int(fwhm_background_label),
-                junction_label=int(fwhm_junction_label),
-                min_total_extent_multiplier=float(fwhm_min_total_extent_multiplier),
-                profile_baseline_mode=fwhm_profile_baseline_mode,
-                profile_baseline_wing_fraction=float(fwhm_profile_baseline_wing_fraction),
-                constrain_fitted_baseline=bool(fwhm_constrain_fitted_baseline),
-                allow_junction_crossing=bool(fwhm_allow_junction_crossing),
-                baseline_constraint_half_width_ptp=float(
-                    fwhm_baseline_constraint_half_width_ptp
-                ),
-                clip_profile_to_single_vessel=bool(fwhm_clip_profile_to_single_vessel),
-                clip_min_drop_fraction_of_center=float(
-                    fwhm_clip_min_drop_fraction_of_center
-                ),
-                clip_re_rise_fraction_of_center=float(
-                    fwhm_clip_re_rise_fraction_of_center
-                ),
-                branch_endpoint_exclusion_um=float(
-                    fwhm_branch_endpoint_exclusion_um
-                ),
-                junction_proximity_exclusion_um=float(
-                    fwhm_junction_proximity_exclusion_um
-                ),
-                enforce_same_edge_locality=bool(fwhm_enforce_same_edge_locality),
-                same_edge_arc_window_um=(
-                    None
-                    if fwhm_same_edge_arc_window_um is None
-                    else float(fwhm_same_edge_arc_window_um)
-                ),
-                same_edge_arc_window_multiplier=float(
-                    fwhm_same_edge_arc_window_multiplier
-                ),
-                same_edge_arc_window_min_um=float(
-                    fwhm_same_edge_arc_window_min_um
-                ),
-                cap_half_extent_by_nonlocal_same_edge_distance=bool(
-                    fwhm_cap_half_extent_by_nonlocal_same_edge_distance
-                ),
-                nonlocal_same_edge_arc_separation_um=float(
-                    fwhm_nonlocal_same_edge_arc_separation_um
-                ),
-                nonlocal_same_edge_half_extent_factor=float(
-                    fwhm_nonlocal_same_edge_half_extent_factor
-                ),
-                reject_samples_with_center_offset=bool(
-                    fwhm_reject_samples_with_center_offset
-                ),
-                max_fit_center_offset_um=float(
-                    fwhm_max_fit_center_offset_um
-                ),
-                reject_samples_with_low_fit_r2=bool(
-                    fwhm_reject_samples_with_low_fit_r2
-                ),
-                min_fit_r2=float(fwhm_min_fit_r2),
-            )
-            print(f"FWHM diameter measurement summary: {fwhm_summary}")
-            if do_pericyte_constriction:
-                print(
-                    "Pericyte mode: passive diameter d1 from per-edge FWHM where available, "
-                    "else DIAMETER_BY_BRANCH_ORDER; d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER."
-                )
-        elif run_haemodynamics and not use_fwhm_edge_diameters:
-            print(
-                "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
-                "set_poiseuille_weights without per-edge FWHM)."
-            )
-        comparison_active_pericyte_indices: list[int] | None = None
-        comparison_active_center_indices_by_edge: dict[str, list[int]] | None = None
-        if run_haemodynamics and run_pericyte_resistance_comparison:
-            comparison_csv_path = output_dir / f"{image_path.stem}_pericyte_resistance_comparison.csv"
-            comparison_results = (
-                pericyte_comparison_haemodynamics.compare_baseline_vs_pericyte_constriction(
-                    G,
-                    diameter_by_branch_order=diameter_by_branch_order,
-                    constriction_factor_by_branch_order=constriction_by_branch_order,
-                    resistance_node_pair=resistance_node_pair,
-                    output_csv_path=comparison_csv_path,
-                    baseline_factor_value=float(pericyte_comparison_baseline_value),
-                    constricted_factor_value=float(pericyte_comparison_constricted_value),
-                    use_pericyte_mask_constriction=bool(use_pericyte_mask_constriction),
-                    pericyte_mask_path=pericyte_mask_path,
-                    pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
-                    max_assignment_distance_um=(
-                        None
-                        if pericyte_max_assignment_distance_um is None
-                        else float(pericyte_max_assignment_distance_um)
-                    ),
-                    min_pericyte_diameter_um=(
-                        None
-                        if pericyte_min_diameter_um is None
-                        else float(pericyte_min_diameter_um)
-                    ),
-                    max_pericyte_diameter_um=(
-                        None
-                        if pericyte_max_diameter_um is None
-                        else float(pericyte_max_diameter_um)
-                    ),
-                    prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
-                    constriction_length=40.0,
-                    constriction_spacing=100.0,
-                    use_probabilistic_pericyte_constriction=bool(
-                        use_probabilistic_pericyte_constriction
-                    ),
-                    pericyte_constriction_probability=float(
-                        pericyte_constriction_probability
-                    ),
-                )
-            )
-            if (
-                reuse_comparison_pericyte_cohort_for_main_run
-                and use_probabilistic_pericyte_constriction
-            ):
-                if use_pericyte_mask_constriction:
-                    selected = comparison_results.get("active_pericyte_indices")
-                    comparison_active_pericyte_indices = (
-                        [int(idx) for idx in selected] if selected else []
-                    )
-                else:
-                    selected_map = comparison_results.get("active_center_indices_by_edge")
-                    if isinstance(selected_map, dict):
-                        comparison_active_center_indices_by_edge = {
-                            str(edge_id): [int(idx) for idx in idx_list]
-                            for edge_id, idx_list in selected_map.items()
-                        }
-            print(
-                "Pericyte resistance comparison complete: "
-                f"baseline={comparison_results['baseline_resistance']:.6f}, "
-                f"constricted={comparison_results['constricted_resistance']:.6f}, "
-                f"delta={comparison_results['delta']:.6f}, "
-                f"change={comparison_results['percent_change']:.3f}%."
-            )
-            print(
-                "Saved pericyte resistance comparison CSV to: "
-                f"{comparison_results['output_csv_path']}"
-            )
-        if run_haemodynamics:
-            poiseuille_model = haemodynamics.PoiseuilleModel(
-                constriction_length=40.0,
-                constriction_spacing=100.0,
-            )
-            if do_pericyte_constriction:
-                if use_pericyte_mask_constriction:
-                    if pericyte_mask_path is None:
-                        raise ValueError(
-                            "pericyte_mask_path must be set when "
-                            "use_pericyte_mask_constriction=True."
-                        )
-                    G, results = pericyte_mask_haemodynamics.set_poiseuille_weights_with_pericyte_mask(
-                        G,
-                        diameter_by_branch_order=diameter_by_branch_order,
-                        constriction_factor_by_branch_order=constriction_by_branch_order,
-                        pericyte_mask_path=pericyte_mask_path,
-                        pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
-                        max_assignment_distance_um=(
-                            None
-                            if pericyte_max_assignment_distance_um is None
-                            else float(pericyte_max_assignment_distance_um)
-                        ),
-                        min_pericyte_diameter_um=(
-                            None
-                            if pericyte_min_diameter_um is None
-                            else float(pericyte_min_diameter_um)
-                        ),
-                        max_pericyte_diameter_um=(
-                            None
-                            if pericyte_max_diameter_um is None
-                            else float(pericyte_max_diameter_um)
-                        ),
-                        prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
-                        constriction_length=40.0,
-                        use_probabilistic_constriction=bool(
-                            use_probabilistic_pericyte_constriction
-                        ),
-                        constriction_probability=float(pericyte_constriction_probability),
-                        active_pericyte_indices=(
-                            comparison_active_pericyte_indices
-                            if (
-                                reuse_comparison_pericyte_cohort_for_main_run
-                                and use_probabilistic_pericyte_constriction
-                            )
-                            else None
-                        ),
-                    )
+            G, haemo_results = apply_poiseuille_haemodynamics(G, config=haemo_config)
+            if "fwhm" in haemo_results:
+                print(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
+                if do_pericyte_constriction:
                     print(
-                        "Results from set_poiseuille_weights_with_pericyte_mask "
-                        f"(centroid-based d2 from mask): {results}"
+                        "Pericyte mode: passive diameter d1 from per-edge FWHM where available, "
+                        "else DIAMETER_BY_BRANCH_ORDER; d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER."
                     )
-                else:
-                    if use_probabilistic_pericyte_constriction:
-                        G, results = (
-                            probability_haemodynamics
-                            .set_poiseuille_weights_with_probabilistic_periodic_constrictions(
-                                G,
-                                diameter_by_branch_order=diameter_by_branch_order,
-                                constriction_factor_by_branch_order=constriction_by_branch_order,
-                                prefer_edge_fwhm_baseline=bool(use_fwhm_edge_diameters),
-                                constriction_length=40.0,
-                                constriction_spacing=100.0,
-                                constriction_probability=float(pericyte_constriction_probability),
-                                active_center_indices_by_edge=(
-                                    comparison_active_center_indices_by_edge
-                                    if (
-                                        reuse_comparison_pericyte_cohort_for_main_run
-                                        and use_probabilistic_pericyte_constriction
-                                    )
-                                    else None
-                                ),
-                            )
-                        )
-                        print(
-                            "Results from probabilistic periodic constrictions "
-                            f"(active sites={results.get('active_periodic_pericyte_sites')}, "
-                            f"total sites={results.get('total_periodic_pericyte_sites')}): "
-                            f"{results}"
-                        )
-                    else:
-                        if use_fwhm_edge_diameters:
-                            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
-                                G,
-                                diameter_by_branch_order,
-                                prefer_edge_fwhm_baseline=True,
-                                constriction_factor_by_branch_order=constriction_by_branch_order,
-                            )
-                            print(
-                                "Results from set_poiseuille_weights_with_constrictions "
-                                f"(FWHM baseline d1, constriction factors): {results}"
-                            )
-                        else:
-                            diameter_by_branch_order_enhanced = {}
-                            for branch_order, diameter in diameter_by_branch_order.items():
-                                diameter_by_branch_order_enhanced[branch_order] = {
-                                    "d1": diameter,
-                                    "d2": diameter * constriction_by_branch_order[branch_order],
-                                }
-
-                            G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
-                                G,
-                                diameter_by_branch_order_enhanced,
-                            )
-                            print(
-                                f"Results from set_poiseuille_weights_with_constrictions: {results}"
-                            )
-            else:
-                G, results = poiseuille_model.set_poiseuille_weights(
-                    G,
-                    diameter_by_branch_order,
-                    prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
+            elif use_fwhm_edge_diameters is False:
+                print(
+                    "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
+                    "set_poiseuille_weights without per-edge FWHM)."
                 )
-                _diam_mode = (
-                    "per-edge FWHM (Gaussian fit) with branch-order fallback"
-                    if use_fwhm_edge_diameters
-                    else "branch-order table only"
+            if "pericyte_comparison" in haemo_results:
+                comparison_results = haemo_results["pericyte_comparison"]
+                print(
+                    "Pericyte resistance comparison complete: "
+                    f"baseline={comparison_results['baseline_resistance']:.6f}, "
+                    f"constricted={comparison_results['constricted_resistance']:.6f}, "
+                    f"delta={comparison_results['delta']:.6f}, "
+                    f"change={comparison_results['percent_change']:.3f}%."
                 )
-                print(f"Results from set_poiseuille_weights ({_diam_mode}): {results}")
-
-            G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
-                G,
-                custom_edges,
-                edge_diameter=6.0,
-                use_resistance=False,
-            )
-
-            print(f"Results from set_poiseuille_edge_weights: {results_2}")
-            # create list of resistances of all edges
-            conductances = []
-            # TODO DEBUG
-            for u, v, key in G.edges(keys=True):
-                conductance = G[u][v][key]['weight']
-                # print(f"Conductance of edge ({u}, {v}, {key}): {conductance}")
-                conductances.append(conductance)
-
-            # print(f"Conductances of all edges: {conductances}")
+                print(
+                    "Saved pericyte resistance comparison CSV to: "
+                    f"{comparison_results['output_csv_path']}"
+                )
+            weight_results = haemo_results.get("weights", {})
+            for step_name, step_result in weight_results.items():
+                print(f"Haemodynamics weights [{step_name}]: {step_result}")
 
     # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
