@@ -13,7 +13,7 @@ dependencies = [
     "tifffile",
     "matplotlib",
     "networkx",
-    "scikit-image<0.25",
+    "scikit-image>=0.24",
     "scipy",
     "pandas",
     "plotly",
