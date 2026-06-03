@@ -13,17 +13,18 @@ dependencies = [
     "tifffile",
     "matplotlib",
     "networkx",
-    "scikit-image<0.25",
+    "scikit-image>=0.24",
     "scipy",
     "pandas",
     "plotly",
     "h5py",
     "skan",
     "pyvista",
+    "ipykernel"
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "nbconvert", "nbformat"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

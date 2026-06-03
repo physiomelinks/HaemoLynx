@@ -4,8 +4,8 @@ import numpy as np
 
 from ImageLynx.preprocessing import (
     bridge_gaps,
-    skeletonize_3d,
     preprocess_skeleton_for_graph,
+    skeletonize_volume,
 )
 
 
@@ -15,8 +15,8 @@ def test_bridge_gaps(small_binary_3d):
     assert np.any(result)
 
 
-def test_skeletonize_3d(small_binary_3d):
-    out = skeletonize_3d(small_binary_3d)
+def test_skeletonize_volume(small_binary_3d):
+    out = skeletonize_volume(small_binary_3d)
     assert out.shape == small_binary_3d.shape
     assert out.dtype == bool
 

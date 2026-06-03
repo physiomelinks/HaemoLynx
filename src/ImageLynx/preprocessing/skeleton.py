@@ -120,9 +120,14 @@ def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
     return binary_closing(binary.astype(bool), structure=struct, iterations=radius)
 
 
-def skeletonize_3d(img: np.ndarray) -> np.ndarray:
-    """Safe 3D skeletonization wrapper."""
+def skeletonize_volume(img: np.ndarray) -> np.ndarray:
+    """Skeletonize a 2D/3D binary volume (Lee method; replaces legacy skeletonize_3d)."""
     return skeletonize(img.astype(bool), method="lee")
+
+
+def skeletonize_3d(img: np.ndarray) -> np.ndarray:
+    """Deprecated alias for :func:`skeletonize_volume`."""
+    return skeletonize_volume(img)
 
 def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None:
     """Set voxels along the straight line from *start* to *end* to True."""
@@ -183,7 +188,7 @@ def skeletonize_voxel_bundles_into_paths(
     if hub_min_spacing is None:
         hub_min_spacing = max(1, int(min(scan) / 2))
 
-    base_skeleton = skeletonize_3d(mask)
+    base_skeleton = skeletonize_volume(mask)
     density = uniform_filter(mask.astype(np.float32), size=scan, mode="constant")
     dense_volume = density >= density_fraction
     if not dense_volume.any():
@@ -251,7 +256,7 @@ def skeletonize_voxel_bundles_into_paths(
         for _, endpoint in chosen:
             _draw_line_3d(result, center, endpoint)
 
-    return skeletonize_3d(result.astype(bool)).astype(bool)
+    return skeletonize_volume(result.astype(bool)).astype(bool)
 
 
 def connect_skeleton_components(
@@ -332,7 +337,7 @@ def connect_skeleton_components(
 
     if bridged:
         logger.debug("Bridged %d skeleton component pair(s).", bridged)
-        result = skeletonize_3d(result)
+        result = skeletonize_volume(result)
 
     return result.astype(bool)
 
@@ -355,7 +360,7 @@ def preprocess_skeleton_for_graph(
     Parameters
     ----------
     skeleton_image:
-        Raw boolean skeleton from :func:`skeletonize_3d`.
+        Raw boolean skeleton from :func:`skeletonize_volume` (or initial load).
     min_branch_length:
         Connected components with fewer than this many voxels are removed
         before re-skeletonizing (reduces degree-2 noise nodes).
@@ -412,7 +417,7 @@ def preprocess_skeleton_for_graph(
     if bridge_gap_size > 0:
         cleaned = bridge_gaps(cleaned.astype(bool), max_gap=bridge_gap_size)
 
-    cleaned = skeletonize_3d(cleaned.astype(bool))
+    cleaned = skeletonize_volume(cleaned.astype(bool))
 
     # Bridge remaining disconnected components BEFORE filtering by size so
     # that small fragments get a chance to merge rather than being discarded.

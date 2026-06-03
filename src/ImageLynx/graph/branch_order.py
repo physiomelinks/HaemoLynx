@@ -1,10 +1,16 @@
 """Assign branch orders to graph edges via BFS from boundary nodes."""
+from __future__ import annotations
+
 import logging
 from collections import defaultdict, deque
+from collections.abc import Callable
+from typing import Any
 
 import networkx as nx
 
 logger = logging.getLogger(__name__)
+
+PostAssignCallback = Callable[[nx.MultiGraph], None]
 
 
 def _edge_id(u: int, v: int, key: int) -> tuple[int, int, int]:
@@ -115,12 +121,7 @@ def assign_hierarchical_branch_orders(
     arteriole_boundary_nodes: list[int],
     venule_boundary_nodes: list[int],
 ) -> dict:
-    """
-    Assign branch orders in three stages:
-    1) Arteriole edges (Art1, Art2, ...) from starting nodes up to arteriole boundary.
-    2) Venule edges (Ven1, Ven2, ...) from output nodes up to venule boundary.
-    3) Capillary edges (B01, B02, ...) from arteriole boundary, excluding Art/Ven edges.
-    """
+    """Assign Art*/Ven*/B* branch orders using arteriole and venule boundaries."""
     arteriole_boundary_set = set(arteriole_boundary_nodes)
     venule_boundary_set = set(venule_boundary_nodes)
 
@@ -180,3 +181,82 @@ def assign_hierarchical_branch_orders(
         "venule_edge_count": len(venule_edges),
         "excluded_capillary_edge_count": len(capillary_excluded_edges),
     }
+
+
+def assign_vessel_branch_orders(
+    G: nx.MultiGraph,
+    starting_nodes: list[int],
+    *,
+    output_nodes: list[int] | None = None,
+    arteriole_boundary_nodes: list[int] | None = None,
+    venule_boundary_nodes: list[int] | None = None,
+    strict_hierarchical: bool = False,
+    expects_hierarchical: bool = False,
+    post_assign_callback: PostAssignCallback | None = None,
+) -> dict[str, Any]:
+    """
+    Assign branch orders on ``G`` using capillary-only or hierarchical rules.
+
+    When arteriole boundary nodes, venule boundary nodes, and output nodes are
+    all non-empty, uses :func:`assign_hierarchical_branch_orders`; otherwise
+    assigns capillary ``B*`` orders from ``starting_nodes`` only.
+
+    Parameters
+    ----------
+    G
+        Vascular graph (modified in place).
+    starting_nodes
+        Inlet / arteriole-side seed nodes for capillary or hierarchical assignment.
+    output_nodes, arteriole_boundary_nodes, venule_boundary_nodes
+        Optional node sets for hierarchical assignment.
+    strict_hierarchical
+        Raise if hierarchical assignment was expected but prerequisites are missing.
+    expects_hierarchical
+        Set when mask-based automation requires hierarchical assignment.
+    post_assign_callback
+        Optional ``callback(G)`` after orders are written (e.g. for plotting).
+
+    Returns
+    -------
+    dict
+        Summary with ``mode`` of ``"hierarchical"``, ``"capillary"``, or ``"skipped"``.
+    """
+    if not starting_nodes:
+        return {"mode": "skipped", "reason": "no_starting_nodes"}
+
+    output_nodes = list(output_nodes or [])
+    arteriole_boundary_nodes = list(arteriole_boundary_nodes or [])
+    venule_boundary_nodes = list(venule_boundary_nodes or [])
+
+    use_hierarchical = bool(
+        arteriole_boundary_nodes and venule_boundary_nodes and output_nodes
+    )
+    if strict_hierarchical and expects_hierarchical and not use_hierarchical:
+        raise ValueError(
+            "Strict branch-order assignment is enabled, but hierarchical "
+            "assignment prerequisites are missing. "
+            f"Need non-empty output_nodes, arteriole_boundary_nodes, and "
+            f"venule_boundary_nodes. Got counts: "
+            f"output_nodes={len(output_nodes)}, "
+            f"arteriole_boundary_nodes={len(arteriole_boundary_nodes)}, "
+            f"venule_boundary_nodes={len(venule_boundary_nodes)}. "
+            "Fix mask inputs/thresholds or disable strict_hierarchical."
+        )
+
+    if use_hierarchical:
+        branch_results = assign_hierarchical_branch_orders(
+            G,
+            starting_nodes=starting_nodes,
+            output_nodes=output_nodes,
+            arteriole_boundary_nodes=arteriole_boundary_nodes,
+            venule_boundary_nodes=venule_boundary_nodes,
+        )
+        summary: dict[str, Any] = {"mode": "hierarchical", **branch_results}
+    else:
+        capillary_results = assign_branch_orders(G, starting_nodes)
+        summary = {"mode": "capillary", "capillary": capillary_results}
+
+    if post_assign_callback is not None:
+        post_assign_callback(G)
+
+    return summary

@@ -6,6 +6,7 @@ from .skeleton import (
     preprocess_skeleton_for_graph,
     skeletonize_voxel_bundles_into_paths,
     print_skeleton_connectivity_stats,
+    skeletonize_volume,
     skeletonize_3d,
 )
 
@@ -16,5 +17,6 @@ __all__ = [
     "preprocess_skeleton_for_graph",
     "skeletonize_voxel_bundles_into_paths",
     "print_skeleton_connectivity_stats",
-    "skeletonize_3d",
+    "skeletonize_volume",
+    "skeletonize_3d",  # deprecated alias
 ]

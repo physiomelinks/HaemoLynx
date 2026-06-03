@@ -167,6 +167,8 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
     vtk_prefix = output_dir / "integration_probabilistic_reuse"
 
     pipeline = _load_pipeline_module()
+    from ImageLynx.haemodynamics import pipeline as haemo_pipeline
+    from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_mod
 
     # Force uniform 0.8 map for final run so comparison constrained value aligns.
     constriction_uniform_08 = {
@@ -174,36 +176,30 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
     }
     probabilistic_call_args: list[dict | None] = []
 
-    original_probabilistic_pipeline = (
-        pipeline.probability_haemodynamics
+    original_probabilistic_main = (
+        haemo_pipeline.probability_haemodynamics
         .set_poiseuille_weights_with_probabilistic_periodic_constrictions
     )
     original_probabilistic_compare = (
-        pipeline.pericyte_comparison_haemodynamics
-        .set_poiseuille_weights_with_probabilistic_periodic_constrictions
+        pericyte_comparison_mod.set_poiseuille_weights_with_probabilistic_periodic_constrictions
     )
 
-    def _recording_probabilistic_pipeline(*args, **kwargs):
-        kwargs = dict(kwargs)
-        kwargs["constriction_length"] = 8.0
-        kwargs["constriction_spacing"] = 10.0
-        active_map = kwargs.get("active_center_indices_by_edge")
-        probabilistic_call_args.append(deepcopy(active_map) if active_map is not None else None)
-        return original_probabilistic_pipeline(*args, **kwargs)
+    def _recording_probabilistic(original_fn, call_log: list[dict | None]):
+        def _wrapper(*args, **kwargs):
+            kwargs = dict(kwargs)
+            kwargs["constriction_length"] = 8.0
+            kwargs["constriction_spacing"] = 10.0
+            active_map = kwargs.get("active_center_indices_by_edge")
+            call_log.append(deepcopy(active_map) if active_map is not None else None)
+            return original_fn(*args, **kwargs)
 
-    def _recording_probabilistic_compare(*args, **kwargs):
-        kwargs = dict(kwargs)
-        kwargs["constriction_length"] = 8.0
-        kwargs["constriction_spacing"] = 10.0
-        active_map = kwargs.get("active_center_indices_by_edge")
-        probabilistic_call_args.append(deepcopy(active_map) if active_map is not None else None)
-        return original_probabilistic_compare(*args, **kwargs)
+        return _wrapper
 
-    pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
-        _recording_probabilistic_pipeline
+    haemo_pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        _recording_probabilistic(original_probabilistic_main, probabilistic_call_args)
     )
-    pipeline.pericyte_comparison_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
-        _recording_probabilistic_compare
+    pericyte_comparison_mod.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        _recording_probabilistic(original_probabilistic_compare, probabilistic_call_args)
     )
     try:
         pipeline.image_to_model_pipeline(
@@ -240,10 +236,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
             constriction_by_branch_order=constriction_uniform_08,
         )
     finally:
-        pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
-            original_probabilistic_pipeline
+        haemo_pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+            original_probabilistic_main
         )
-        pipeline.pericyte_comparison_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        pericyte_comparison_mod.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
             original_probabilistic_compare
         )
 
