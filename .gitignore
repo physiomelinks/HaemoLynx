@@ -1,4 +1,5 @@
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -6,5 +7,4 @@ __pycache__/
 build/
 dist/
 examples/images/nerve_capillaries.tif
-
-examples/outputs/Nerve_capillaries_skeleton.npy
+examples/images/images_archive.zip

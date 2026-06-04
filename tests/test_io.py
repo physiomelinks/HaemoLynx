@@ -7,6 +7,7 @@ from pathlib import Path
 from ImageLynx.io import (
     crop_tiff_volume_from_corners,
     load_and_skeletonize_3d_tif,
+    load_and_skeletonize_3d_tif_with_voxel_size,
     load_and_skeletonize_3d_h5,
     bridge_gaps,
     simplify_to_3d,
@@ -46,7 +47,7 @@ def test_load_and_skeletonize_3d_tif(tmp_path):
         voxel_size_y,
         voxel_size_z,
         voxel_meta_status,
-    ) = load_and_skeletonize_3d_tif(str(f))
+    ) = load_and_skeletonize_3d_tif_with_voxel_size(str(f))
     assert image.shape == (6, 6, 6)
     assert skeleton.shape == (6, 6, 6)
     assert skeleton.dtype == bool

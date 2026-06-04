@@ -6,7 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import networkx as nx
-from scipy.ndimage import generate_binary_structure
+from scipy.ndimage import (
+    generate_binary_structure,
+    label,
+    find_objects,
+)
 from scipy.spatial import cKDTree
 import heapq
 
@@ -21,6 +25,8 @@ def build_graph_segment_skan_stitched_loops(
     max_voxel_graph_size=100000,
     use_spatial_index=True,
     voxel_size=(1.0, 1.0, 1.0),
+    use_padded_slicing=True,
+    padding=3,
 ):
     """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection."""
     if sk is None or skeleton_image is None:
@@ -36,45 +42,89 @@ def build_graph_segment_skan_stitched_loops(
     foreground = np.argwhere(skel)
     voxel_loops = []
 
-    if len(foreground) <= max_voxel_graph_size:
-        offsets = np.argwhere(generate_binary_structure(ndim, 1)) - 1
-        voxel_graph = nx.Graph()
+    if len(foreground) > 0:
+        if use_padded_slicing:
+            # 1. Label segments (paths) in the skeleton
+            # We treat the entire skeleton as one "image" and find cycles within connected clusters
+            # For efficiency, we can label the whole skeleton and process each component
+            structure = generate_binary_structure(ndim, ndim)
+            labeled_skel, n_comp = label(skel, structure=structure)
+            slices = find_objects(labeled_skel)
 
-        def process_pt_batch(pts_batch):
-            edges = []
-            for pt in pts_batch:
-                for off in offsets:
-                    nb = pt + off
-                    if np.all(nb >= 0) and np.all(nb < skel.shape) and skel[tuple(nb)]:
-                        edges.append((tuple(pt), tuple(nb)))
-            return edges
+            offsets = np.argwhere(generate_binary_structure(ndim, 1)) - 1
 
-        batch_size = min(1000, len(foreground))
-        batches = [
-            foreground[i : i + batch_size]
-            for i in range(0, len(foreground), batch_size)
-        ]
-        max_workers = min(4, os.cpu_count() or 1)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for batch_edges in executor.map(process_pt_batch, batches):
-                voxel_graph.add_edges_from(batch_edges)
-        logger.info(
-            "Voxel graph built: %d nodes, %d edges. Running cycle_basis...",
-            voxel_graph.number_of_nodes(), voxel_graph.number_of_edges(),
-        )
-        try:
-            voxel_loops = nx.cycle_basis(voxel_graph)
-            logger.info("cycle_basis complete: found %d loops", len(voxel_loops))
-            if debug:
-                logger.debug("Found %d voxel loops", len(voxel_loops))
-        except Exception as e:
-            logger.warning("Loop detection failed: %s", e)
-            voxel_loops = []
-    else:
-        if debug:
-            logger.warning(
-                "Skeleton too large (%d voxels) for loop detection", len(foreground)
-            )
+            for comp_id, sl in enumerate(slices, 1):
+                if sl is None:
+                    continue
+                
+                # Expand slice with padding
+                sl_padded = tuple(
+                    slice(max(0, s.start - padding), min(dim, s.stop + padding))
+                    for s, dim in zip(sl, skel.shape)
+                )
+                
+                # Extract local crop
+                local_skel = skel[sl_padded]
+                local_foreground = np.argwhere(local_skel)
+                
+                # If local component is small enough, find cycles
+                if len(local_foreground) <= max_voxel_graph_size:
+                    local_graph = nx.Graph()
+                    for pt in local_foreground:
+                        for off in offsets:
+                            nb = pt + off
+                            if (
+                                np.all(nb >= 0)
+                                and np.all(nb < local_skel.shape)
+                                and local_skel[tuple(nb)]
+                            ):
+                                # Map local back to global
+                                global_pt = tuple(pt + np.array([s.start for s in sl_padded]))
+                                global_nb = tuple(nb + np.array([s.start for s in sl_padded]))
+                                local_graph.add_edge(global_pt, global_nb)
+                    
+                    try:
+                        comp_loops = nx.cycle_basis(local_graph)
+                        voxel_loops.extend(comp_loops)
+                    except Exception as e:
+                        logger.warning("Local loop detection failed for comp %d: %s", comp_id, e)
+        else:
+            # Legacy global approach
+            if len(foreground) <= max_voxel_graph_size:
+                offsets = np.argwhere(generate_binary_structure(ndim, 1)) - 1
+                voxel_graph = nx.Graph()
+
+                def process_pt_batch(pts_batch):
+                    edges = []
+                    for pt in pts_batch:
+                        for off in offsets:
+                            nb = pt + off
+                            if np.all(nb >= 0) and np.all(nb < skel.shape) and skel[tuple(nb)]:
+                                edges.append((tuple(pt), tuple(nb)))
+                    return edges
+
+                batch_size = min(1000, len(foreground))
+                batches = [
+                    foreground[i : i + batch_size]
+                    for i in range(0, len(foreground), batch_size)
+                ]
+                max_workers = min(4, os.cpu_count() or 1)
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    for batch_edges in executor.map(process_pt_batch, batches):
+                        voxel_graph.add_edges_from(batch_edges)
+                try:
+                    voxel_loops = nx.cycle_basis(voxel_graph)
+                except Exception as e:
+                    logger.warning("Loop detection failed: %s", e)
+                    voxel_loops = []
+            else:
+                if debug:
+                    logger.warning(
+                        "Skeleton too large (%d voxels) for loop detection", len(foreground)
+                    )
+
+    if debug:
+        logger.debug("Found %d voxel loops", len(voxel_loops))
 
     t0 = time.perf_counter()
     loop_vox = set()

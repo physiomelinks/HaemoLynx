@@ -281,7 +281,7 @@ print(f"USE_CUSTOM_SEGMENTED_IMAGE={USE_CUSTOM_SEGMENTED_IMAGE}")
     voxel_size_y,
     voxel_size_z,
     voxel_meta_status,
-) = io.load_and_skeletonize_3d_tif(INPUT_TIFF)
+) = io.load_and_skeletonize_3d_tif_with_voxel_size(INPUT_TIFF)
 metadata_voxel_size = (float(voxel_size_x), float(voxel_size_y), float(voxel_size_z))
 voxel_size, voxel_size_source = resolve_voxel_size_xyz(
     metadata_voxel_size_xyz=metadata_voxel_size,

@@ -8,6 +8,9 @@ import tifffile
 from skimage.util import img_as_bool
 from skimage.morphology import skeletonize
 from scipy.ndimage import binary_fill_holes
+
+from ..preprocessing.skeleton import bridge_gaps, close_binary_mask, rescale_and_skeletonize_3d
+
 try:
     import h5py
 except ImportError:
@@ -430,27 +433,142 @@ def load_3d_h5_with_voxel_size(
     return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
-def load_and_skeletonize_3d_tif(filepath: str):
-    print("Loading and skeletonizing TIFF...")
-    (
-        image,
-        voxel_size_x,
-        voxel_size_y,
-        voxel_size_z,
-        voxel_meta_status,
-    ) = load_3d_tif_with_voxel_size(filepath)
+def load_3d_tif(filepath: str | Path) -> np.ndarray:
+    """Load a 3D TIFF volume."""
+    return tifffile.imread(str(filepath))
 
-    print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
+
+def load_3d_h5(filepath: str | Path, dataset_name: str) -> np.ndarray:
+    """Load a 3D HDF5 volume."""
+    if h5py is None:
+        raise ImportError("h5py is required for HDF5 support. Install with: pip install h5py")
+    with h5py.File(str(filepath), "r") as f:
+        if dataset_name not in f:
+            available = list(f.keys())
+            raise ValueError(f"Dataset '{dataset_name}' not found. Available: {available}")
+        image = np.array(f[dataset_name][:])
+    return simplify_to_3d(image)
+
+
+def get_tif_spacing(filepath: str | Path) -> tuple[float, float, float]:
+    """Attempt to extract (z, y, x) spacing from TIFF metadata.
+    
+    Returns (1.0, 1.0, 1.0) if metadata is missing or invalid.
+    """
+    try:
+        with tifffile.TiffFile(str(filepath)) as tif:
+            # Default to isotropic
+            x = y = z = 1.0
+            
+            # X and Y Resolution
+            # resolution is usually stored as (numerator, denominator)
+            page = tif.pages[0]
+            if 'XResolution' in page.tags:
+                val = page.tags['XResolution'].value
+                x = val[1] / val[0] if isinstance(val, tuple) else 1.0 / val
+            if 'YResolution' in page.tags:
+                val = page.tags['YResolution'].value
+                y = val[1] / val[0] if isinstance(val, tuple) else 1.0 / val
+                
+            # Z Spacing (often in ImageJ metadata)
+            ij_meta = tif.imagej_metadata
+            if ij_meta and 'spacing' in ij_meta:
+                z = float(ij_meta['spacing'])
+            
+            return (z, y, x)
+    except Exception:
+        return (1.0, 1.0, 1.0)
+
+
+def load_and_skeletonize_3d_tif(
+    filepath: str,
+    closing_radius: int = 3,
+    bridge_gap_size: int = 4,
+    downsample_factor: float = 1.0,
+):
+    """Load a TIFF stack, binarize, optionally close/bridge gaps, and skeletonize.
+
+    Parameters
+    ----------
+    filepath:
+        Path to the TIFF file.
+    closing_radius:
+        Radius (in voxels) for the morphological closing step applied to the
+        binary mask before skeletonization.  Closing seals concavities and
+        bridges between nearby vessel blobs without permanently expanding
+        boundaries.  Set to 0 to skip.
+    bridge_gap_size:
+        Maximum gap (in voxels) filled by the distance-transform dilation step
+        after closing and hole-filling.
+    downsample_factor:
+        Factor to downsample by before skeletonization.
+    """
+    logger.debug("Loading and skeletonizing TIFF...")
+    image = tifffile.imread(filepath)
     binary = _to_binary_volume_for_skeletonization(image)
-    skeleton = skeletonize(binary.astype(bool), method="lee")
-    skeleton = binary_fill_holes(skeleton)
-    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+    if closing_radius > 0:
+        logger.debug("Applying morphological closing (radius=%d)…", closing_radius)
+        binary = close_binary_mask(binary, radius=closing_radius)
+    filled = binary_fill_holes(binary)
+    bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
 
+    if downsample_factor > 1.0:
+        skeleton = rescale_and_skeletonize_3d(bridged, downsample_factor=downsample_factor)
+    else:
+        skeleton = skeletonize(img_as_bool(bridged), method="lee")
+    skeleton = binary_fill_holes(skeleton)
+    return image, skeleton.astype(bool)
+
+
+def load_and_skeletonize_3d_tif_with_voxel_size(
+    filepath: str,
+    closing_radius: int = 3,
+    bridge_gap_size: int = 4,
+    downsample_factor: float = 1.0,
+):
+    """Load a TIFF stack, skeletonize, and return voxel sizes from TIFF metadata.
+
+    Calls :func:`load_and_skeletonize_3d_tif` for image processing and
+    :func:`load_3d_tif_with_voxel_size` to extract voxel-size metadata.
+
+    Returns
+    -------
+    image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+    """
+    image, skeleton = load_and_skeletonize_3d_tif(
+        filepath,
+        closing_radius=closing_radius,
+        bridge_gap_size=bridge_gap_size,
+        downsample_factor=downsample_factor,
+    )
+    _, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = load_3d_tif_with_voxel_size(
+        filepath
+    )
+    logger.debug(
+        "Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z
+    )
+    return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 def load_and_skeletonize_3d_h5(
     filepath: str,
     dataset_name: str | None = None,
+    closing_radius: int = 3,
+    bridge_gap_size: int = 4,
+    downsample_factor: float = 1.0,
 ):
+    """Load an HDF5 dataset, binarize, optionally close/bridge gaps, and skeletonize.
+
+    Parameters
+    ----------
+    dataset_name:
+        HDF5 dataset name.  When ``None``, the dataset is auto-detected.
+    closing_radius:
+        Radius for the morphological closing step.  Set to 0 to skip.
+    bridge_gap_size:
+        Maximum gap filled by the distance-transform dilation step.
+    downsample_factor:
+        Factor to downsample by before skeletonization.
+    """
     logger.debug("Loading and skeletonizing H5...")
     (
         image,
@@ -464,13 +582,21 @@ def load_and_skeletonize_3d_h5(
     )
 
     logger.debug("Original image shape: %s", image.shape)
-    logger.debug("Simplified image shape: %s", image.shape)
 
-    # Ensure image is (X, Y, Z)
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 
     binary = _to_binary_volume_for_skeletonization(image)
-    skeleton = skeletonize(binary.astype(bool), method="lee")
-    return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+    if closing_radius > 0:
+        logger.debug("Applying morphological closing (radius=%d)…", closing_radius)
+        binary = close_binary_mask(binary, radius=closing_radius)
+    filled = binary_fill_holes(binary)
+    bridged = bridge_gaps(filled, max_gap=bridge_gap_size)
+
+    if downsample_factor > 1.0:
+        skeleton = rescale_and_skeletonize_3d(bridged, downsample_factor=downsample_factor)
+    else:
+        skeleton = skeletonize(img_as_bool(bridged), method="lee")
+    skeleton = binary_fill_holes(skeleton)
+    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 

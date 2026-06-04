@@ -1,4 +1,4 @@
-"""Preprocessing: skeleton cleaning, bridging, skeletonization."""
+"""Preprocessing: skeleton cleaning, bridging, skeletonization, ROI cropping."""
 from .skeleton import (
     bridge_gaps,
     close_binary_mask,
@@ -8,7 +8,10 @@ from .skeleton import (
     print_skeleton_connectivity_stats,
     skeletonize_volume,
     skeletonize_3d,
+    rescale_and_skeletonize_3d,
+    keep_largest_mask_components,
 )
+from .image import crop_roi
 
 __all__ = [
     "bridge_gaps",
@@ -18,5 +21,7 @@ __all__ = [
     "skeletonize_voxel_bundles_into_paths",
     "print_skeleton_connectivity_stats",
     "skeletonize_volume",
-    "skeletonize_3d",  # deprecated alias
+    "rescale_and_skeletonize_3d",
+    "keep_largest_mask_components",
+    "crop_roi",
 ]

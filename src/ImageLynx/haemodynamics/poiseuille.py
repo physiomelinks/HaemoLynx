@@ -351,6 +351,7 @@ class PoiseuilleModel:
                     )
                 d1, d2 = diameters["d1"], diameters["d2"]
 
+
             if d1 <= 0 or d2 <= 0:
                 raise ValueError(
                     f"Invalid non-positive diameters for edge ({u}, {v}, {key}) "

@@ -217,7 +217,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 voxel_size_y,
                 voxel_size_z,
                 voxel_meta_status,
-            ) = io.load_and_skeletonize_3d_tif(
+            ) = io.load_and_skeletonize_3d_tif_with_voxel_size(
                 image_path,
             )
             metadata_voxel_size = (

@@ -9,6 +9,8 @@
 import logging
 import sys
 import pickle
+import os
+import subprocess
 from pathlib import Path
 from skan import csr
 import tifffile
@@ -25,6 +27,19 @@ from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visua
 # ---------------------------
 # Beginner-friendly settings
 # ---------------------------
+
+# Ilastik configuration settings
+RUN_ILASTIK = False
+ILASTIK_OUTPUT_PROBABILITIES = False # Set to True for Probabilities, False for Simple Segmentation
+ILASTIK_BINARY_PATH = "/home/dsas627/Desktop/ilastik-1.4.1rc2-gpu-Linux/run_ilastik.sh"
+ILASTIK_PROJECT_PATH = root_dir / "examples" / "images" / "cb_wky_2x2x2_A.ilp"
+RAW_IMAGE_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_input_images"
+ILASTIK_OUTPUT_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_output_images"
+
+# Paths for multi-input Ilastik features (e.g., Raw + Frangi)
+RAW_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vessels.tif"
+FRANGI_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map.tif"
+
 INPUT_PATH = None
 BASE_PLOT_DIR = root_dir / "examples" / "plots" 
 if not BASE_PLOT_DIR.exists():
@@ -33,9 +48,9 @@ H5_DATASET_NAME = None  # For h5 input, e.g. "data"
 # STARTING NODES and OUTPUT Nodes are now calculated automatically by looking for degree 1 nodes at start or
 # end of the image.
 EDGE_PERCENT = 10.0
-END_PERCENT = 10.0
+END_PERCENT = 25.0
 # For 3D skeletons this is usually the y-axis in (z, y, x).
-NODE_EDGE_AXIS = 1
+NODE_EDGE_AXIS = 0
 STARTING_NODES: list[int] = []
 OUTPUT_NODES: list[int] = []
 # TODO HD note - eventually add script to run resistance measurements between every BO1 (arteriole) and every (non-arteriole) capillary node, and between every node.
@@ -44,11 +59,27 @@ OUTPUT_NODES: list[int] = []
 INPUT_P_BC = 1000 # Pa 
 OUTPUT_P_BC = 500 # Pa
 VISUALIZE_RESULTS = True
+VISUALIZE_MASK_ONLY = False
+# ---------------------------
+# Vedo Visualization Style (image_to_model style)
+# ---------------------------
+VISUALIZE_VEDO = True
+# Mode: 'lego' (exact voxels) or 'iso' (smooth surface)
+VISUALIZE_VEDO_MODE = 'iso' 
+# Smoothing iterations (only for 'iso' mode)
+VISUALIZE_VEDO_SMOOTH_ITER = 15
+# Voxel spacing [z, y, x]
+VISUALIZE_VEDO_SPACING = (1.0, 1.0, 1.0)
+# If True, attempts to read spacing from TIF metadata automatically.
+VISUALIZE_VEDO_AUTO_SPACING = True
+
+VISUALIZE_VEDO_OPACITY = 0.5
+VISUALIZE_MASK_OPACITY = 1.0
 VISUALIZE_VTK = False
 VERBOSE_LOGGING = False
 DO_SKELETONIZE = True
 DO_GRAPH_BUILDING = True
-DO_RESISTANCE_CALCULATION = False
+DO_RESISTANCE_CALCULATION = True
 CONSTRICT_AT_PERICYTES = False
 MIN_BRANCH_LENGTH = 10
 VTK_OUTPUT_PREFIX = root_dir / "examples" / "outputs" / "resistance_network"
@@ -60,39 +91,47 @@ SKELETON_COMPONENT_CONNECTIVITY = 3
 # Keep only connected components at or above this percentage of total
 # skeleton voxels (e.g. 5.0 -> keep components >= 5% of total skeleton voxels).
 SKELETON_MIN_COMPONENT_PERCENT = 5.0
+
+# ---------------------------
+# Advanced Efficiency settings (Added 19/03/2026)
+# ---------------------------
+# Downsample factor for 3D skeletonization (e.g. 2.0 reduces each dimension by half).
+# Set to 1.0 to disable downsampling.
+SKELETON_DOWNSAMPLE_FACTOR = 1.0 
+
+# Enable local padded slicing for much faster loop detection on large skeletons.
+SKELETON_USE_PADDED_SLICING = True
+# Voxel padding for the local slicing crops.
+SKELETON_PADDED_SLICING_PADDING = 3
+
+# Prune the binary mask to keep only the largest N connected components BEFORE skeletonization.
+# This speeds up skeletonization by removing noise fragments. Set to 0 to disable.
+SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION = 1 
+
+# Sub-volume / ROI settings. 
+# SKELETON_SUB_VOLUME_PERCENTAGE: percentage of original volume to keep (0.0 to 1.0). Set to 1.0 for full volume.
+SKELETON_SUB_VOLUME_PERCENTAGE = 0.1
+# Center offsets for the ROI (as percentage of original dimensions, -0.5 to 0.5).
+SKELETON_SUB_VOLUME_CENTER_OFFSET_Z = 0.0
+SKELETON_SUB_VOLUME_CENTER_OFFSET_Y = 0.0
+SKELETON_SUB_VOLUME_CENTER_OFFSET_X = 0.0
 # TODO these diameters etc should be automated 
 #HD note - there should be a manual option, as per below, to add in in vivo diameters, and a option to read in diameters from the original image (via FWHM)
 #HD note - this no longer features the ability to manually define a limited number of user determined vessels (ie endoneurial vessels), which can't be done automatically. Not relevant for alice but relevant generally.
 """Configuration defaults for diameter maps."""
 
-# Diameter by branch order (simple scalar)
+# Diameter by branch order (dict with d1 and d2 for pericyte constriction simulation)
 DIAMETER_BY_BRANCH_ORDER = {
-    "BO1": 4.0,
-    "BO2": 4.0,
-    "BO3": 4.0,
-    "BO4": 4.0,
-    "BO5": 4.0,
-    "BO6": 4.0,
-    "BO7": 4.0,
-    "BO8": 4.0,
-    "BO9": 4.0,
-    "B10": 4.0,
-    "B11": 4.0,
-    "B12": 4.0,
-    "B13": 4.0,
-    "B14": 4.0,
-    "B15": 4.0,
-    "B16": 4.0,
-    "B17": 4.0,
-    "B18": 4.0,
-    "B19": 4.0,
-    "B20": 4.0,
-    "B21": 4.0,
-    "B22": 4.0,
-    "B23": 4.0,
-    "B24": 4.0,
-    "B25": 4.0,
-    "B26": 4.0,
+    "BO1": {"d1": 4.0, "d2": 4.0},
+    "BO2": {"d1": 4.0, "d2": 4.0},
+    "BO3": {"d1": 4.0, "d2": 4.0},
+    "BO4": {"d1": 4.0, "d2": 4.0},
+    "BO5": {"d1": 4.0, "d2": 4.0},
+    "BO6": {"d1": 4.0, "d2": 4.0},
+    "BO7": {"d1": 4.0, "d2": 4.0},
+    "BO8": {"d1": 4.0, "d2": 4.0},
+    "BO9": {"d1": 4.0, "d2": 4.0},
+    "DEFAULT": {"d1": 4.0, "d2": 4.0},
 }
 
 DIAMETER_BY_BRANCH_ORDER_ENHANCED = None
@@ -100,9 +139,123 @@ DIAMETER_BY_BRANCH_ORDER_ENHANCED = None
 # These are vesses that constrict differently (e.g. endoneurial vessels).
 custom_edges= []  
 
+class IlastikClassifier():
+    """Wrapper for the Ilastik headless engine to perform pixel classification."""
+    def __init__(self, ilastik_binary_path, project_file_path):
+        self.binary = ilastik_binary_path
+        self.project = project_file_path
+
+        if not os.path.exists(self.binary):
+            raise FileNotFoundError(f"Ilastik binary not found at: {self.binary}")
+        if not os.path.exists(self.project):
+            raise FileNotFoundError(f"Project file not found at: {self.project}")
+
+    def segment_images(self, image_paths, output_dir, export_source="Simple Segmentation"):
+        """Runs the segmentation on a volume composed of multiple input feature files."""
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Ensure all paths exist and are absolute strings
+        formatted_paths = []
+        for p in image_paths:
+            p = Path(p)
+            if not p.exists():
+                raise FileNotFoundError(f"Input image not found: {p}")
+            formatted_paths.append(str(p))
+
+        print(f"Starting Ilastik engine for {export_source} with {len(formatted_paths)} input features...")
+
+        # Determine suffix for naming (seg or probs)
+        suffix = "probs" if export_source == "Probabilities" else "seg"
+
+        # Base command - Use multipage tiff to support 3D volumes
+        cmd = [
+            str(self.binary),
+            "--headless",
+            f"--project={self.project}",
+            "--output_format=multipage tiff", 
+            f"--export_source={export_source}",
+            f"--output_filename_format={output_dir}/{{nickname}}_{suffix}.tif"
+        ]
+        
+        # Add each file as a separate raw_data entry to fill Ilastik input slots
+        for path_str in formatted_paths:
+            cmd.append(f"--raw_data={path_str}")
+
+        try:
+            process = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print("Ilastik Output Log (Success):\n", process.stdout)
+            print(f"Results saved in: {output_dir}")
+        except subprocess.CalledProcessError as e:
+            print("\n!!! Error occurred during Ilastik processing !!!")
+            print("--- ILASTIK ERROR OUTPUT ---\n", e.stderr)
+            raise e
+
+def run_ilastik_segmentation(ilastik_bin=ILASTIK_BINARY_PATH, 
+                             project_path=ILASTIK_PROJECT_PATH, 
+                             raw_image_path=RAW_IMAGE_PATH,
+                             frangi_image_path=FRANGI_IMAGE_PATH,
+                             output_dir=ILASTIK_OUTPUT_DIR, 
+                             output_probabilities=ILASTIK_OUTPUT_PROBABILITIES):
+    """
+    Stand-alone function to trigger the Ilastik headless segmentation.
+    
+    Args:
+        ilastik_bin (str): Path to the run_ilastik.sh executable.
+        project_path (str): Path to the .ilp project file.
+        raw_image_path (str): Path to the raw CB image.
+        frangi_image_path (str): Path to the frangi vesselness map.
+        output_dir (str): Directory where the result will be saved.
+        output_probabilities (bool): If True, exports "Probabilities". If False, "Simple Segmentation".
+        
+    Returns:
+        Path: The absolute path to the generated segmentation/probability TIFF file.
+    """
+    
+    # Bundle input features (Order matters! Matches Ilastik slots)
+    input_features = [raw_image_path, frangi_image_path]
+    
+    classifier = IlastikClassifier(ilastik_bin, project_path)
+    
+    # Set export source based on toggle
+    export_src = "Probabilities" if output_probabilities else "Simple Segmentation"
+    suffix = "probs" if output_probabilities else "seg"
+
+    # Trigger the segmentation
+    classifier.segment_images(
+        image_paths=input_features,
+        output_dir=output_dir,
+        export_source=export_src
+    )
+    
+    # Identify the resulting filename
+    # Ilastik headless can be unpredictable with nicknames and extensions (.tif vs .tiff)
+    possible_stems = [Path(p).stem for p in input_features]
+    exts = [".tif", ".tiff"]
+    
+    result_path = None
+    for stem in possible_stems:
+        for ext in exts:
+            test_path = Path(output_dir) / f"{stem}_{suffix}{ext}"
+            if test_path.exists():
+                result_path = test_path
+                break
+        if result_path: break
+
+    if not result_path:
+        # Final fallback: look for ANY file in the output dir modified in the last 60 seconds
+        print(f"Warning: Specific output not found. Searching {output_dir} for recent results...")
+        recent_files = sorted(Path(output_dir).glob(f"*_{suffix}.tif*"), key=os.path.getmtime, reverse=True)
+        if recent_files:
+            result_path = recent_files[0]
+            print(f"Detected output file: {result_path}")
+        else:
+            raise FileNotFoundError(f"Could not find Ilastik output in {output_dir}")
+        
+    return result_path
+
 def carotid_image_to_model(image_path=INPUT_PATH, 
                             diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
-                            plot_dir=PLOT_DIR,
+                            plot_dir=BASE_PLOT_DIR,
                             verbose_logging=VERBOSE_LOGGING, 
                             do_skeletonize=DO_SKELETONIZE, 
                             do_graph_building=DO_GRAPH_BUILDING, 
@@ -116,6 +269,14 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             skeleton_max_bridge_distance=SKELETON_MAX_BRIDGE_DISTANCE, 
                             skeleton_component_connectivity=SKELETON_COMPONENT_CONNECTIVITY, 
                             skeleton_min_component_percent=SKELETON_MIN_COMPONENT_PERCENT, 
+                            skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
+                            skeleton_use_padded_slicing=SKELETON_USE_PADDED_SLICING,
+                            skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING,
+                            skeleton_prune_mask_before=SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION,
+                            skeleton_sub_volume_percentage=SKELETON_SUB_VOLUME_PERCENTAGE,
+                            skeleton_sub_volume_offset_z=SKELETON_SUB_VOLUME_CENTER_OFFSET_Z,
+                            skeleton_sub_volume_offset_y=SKELETON_SUB_VOLUME_CENTER_OFFSET_Y,
+                            skeleton_sub_volume_offset_x=SKELETON_SUB_VOLUME_CENTER_OFFSET_X,
                             edge_percent=EDGE_PERCENT, 
                             end_percent=END_PERCENT, 
                             node_edge_axis=NODE_EDGE_AXIS, 
@@ -124,12 +285,24 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                             input_p_bc=INPUT_P_BC, 
                             output_p_bc=OUTPUT_P_BC, 
                             visualize_results=VISUALIZE_RESULTS, 
+                            visualize_mask_only=VISUALIZE_MASK_ONLY,
+                            visualize_vedo=VISUALIZE_VEDO,
+                            visualize_vedo_mode=VISUALIZE_VEDO_MODE,
+                            visualize_vedo_smooth_iter=VISUALIZE_VEDO_SMOOTH_ITER,
+                            visualize_vedo_spacing=VISUALIZE_VEDO_SPACING,
+                            visualize_vedo_auto_spacing=VISUALIZE_VEDO_AUTO_SPACING,
+                            visualize_vedo_opacity=VISUALIZE_VEDO_OPACITY,
+                            visualize_mask_opacity=VISUALIZE_MASK_OPACITY,
                             visualize_vtk=VISUALIZE_VTK) -> None:
                         
     # get image format from image_path
     input_format = image_path.suffix[1:].lower()
-    if input_format not in ["tif", "h5"]:
+    if input_format not in ["tif", "tiff", "h5"]:
         raise ValueError(f"Invalid image format: {input_format}")
+
+    # Canonicalize format for later checks
+    if input_format == "tiff":
+        input_format = "tif"
 
     image_path = Path(image_path)
     vtk_output_prefix = Path(vtk_output_prefix)
@@ -155,7 +328,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                 _voxel_size_y,
                 _voxel_size_z,
                 _voxel_meta_status,
-            ) = io.load_and_skeletonize_3d_tif(
+            ) = io.load_and_skeletonize_3d_tif_with_voxel_size(
                 image_path,
                 closing_radius=skeleton_closing_radius,
                 bridge_gap_size=skeleton_bridge_gap_size,
@@ -173,11 +346,71 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             ) = io.load_and_skeletonize_3d_h5(
                 image_path,
                 H5_DATASET_NAME,
-                closing_radius=skeleton_closing_radius,
-                bridge_gap_size=skeleton_bridge_gap_size,
             )
         else:
             raise ValueError("INPUT_FORMAT must be 'tif' or 'h5'.")
+
+        # 1.5) Sub-volume / ROI Cropping
+        if 0 < skeleton_sub_volume_percentage < 1.0 or skeleton_sub_volume_offset_z != 0 or \
+           skeleton_sub_volume_offset_y != 0 or skeleton_sub_volume_offset_x != 0:
+            
+            print(f"Applying ROI crop (sub-volume={skeleton_sub_volume_percentage})...")
+            image = preprocessing.crop_roi(
+                image,
+                sub_volume_percentage=skeleton_sub_volume_percentage,
+                offset_z=skeleton_sub_volume_offset_z,
+                offset_y=skeleton_sub_volume_offset_y,
+                offset_x=skeleton_sub_volume_offset_x
+            )
+            print(f"  ROI new shape: {image.shape}")
+
+        if visualize_mask_only:
+            print(f"Visualizing PRE-OTSU intensity volume (cropped, opacity={visualize_mask_opacity}). Close window to exit.")
+            visualization.visualize_volume(image, title="3D Pre-Otsu Intensity Image", opacity=visualize_mask_opacity)
+            print("Exiting pipeline as requested.")
+            return
+
+        if visualize_vedo:
+            print(f"Visualizing 3D volume with VEDO ({visualize_vedo_mode}, smooth={visualize_vedo_smooth_iter}).")
+            
+            # Use detected spacing if requested
+            current_spacing = visualize_vedo_spacing
+            if visualize_vedo_auto_spacing and input_format == "tif":
+                detected = io.get_tif_spacing(image_path)
+                print(f"  Auto-detected spacing (z,y,x): {detected}")
+                current_spacing = detected
+
+            visualization.visualize_volume_vedo(
+                image, 
+                title=f"Vedo 3D Image ({visualize_vedo_mode})", 
+                mode=visualize_vedo_mode,
+                spacing=current_spacing,
+                alpha=visualize_vedo_opacity,
+                smooth_iter=visualize_vedo_smooth_iter
+            )
+            print("Exiting pipeline as requested.")
+            return
+
+        from skimage.filters import threshold_otsu
+        threshold = threshold_otsu(image)
+        binary = image > threshold
+
+        if skeleton_prune_mask_before > 0:
+            print(f"Pruning binary mask to keep largest {skeleton_prune_mask_before} components...")
+            binary = preprocessing.skeleton.keep_largest_mask_components(
+                binary, n_components=skeleton_prune_mask_before, connectivity=skeleton_component_connectivity
+            )
+
+        if skeleton_closing_radius > 0:
+            binary = preprocessing.skeleton.close_binary_mask(binary, radius=skeleton_closing_radius)
+        if skeleton_bridge_gap_size > 0:
+            binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skeleton_bridge_gap_size)
+        
+        if skeleton_downsample_factor > 1.0:
+            print(f"Applying downsampled skeletonization (factor={skeleton_downsample_factor})...")
+            skeleton = preprocessing.skeleton.rescale_and_skeletonize_3d(binary, downsample_factor=skeleton_downsample_factor)
+        else:
+            skeleton = preprocessing.skeleton.skeletonize_3d(binary)
         
         preprocessing.print_skeleton_connectivity_stats(
             "raw",
@@ -217,6 +450,8 @@ def carotid_image_to_model(image_path=INPUT_PATH,
             sk,
             skeleton,
             debug=verbose_logging,
+            use_padded_slicing=skeleton_use_padded_slicing,
+            padding=skeleton_padded_slicing_padding,
         )
         # visualization.visualize_edges_and_nodes(image, G, label_nodes=True)
         G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=verbose_logging)
@@ -288,7 +523,7 @@ def carotid_image_to_model(image_path=INPUT_PATH,
 
     if starting_nodes and output_nodes:
         resistance_node_pair = (starting_nodes[0], output_nodes[0])
-        print(f"Auto-selected resistance node pair: {resistance_node_pair}")
+        print(f"Auto-selected resistance node_pair: {resistance_node_pair}")
     else:
         raise ValueError(f"No starting or output nodes found in input {edge_percent}% or output {end_percent}%")
 
@@ -400,13 +635,47 @@ def carotid_image_to_model(image_path=INPUT_PATH,
 
 
 if __name__ == "__main__":
-
-    input_path = root_dir / "examples" / "images" / "carotid.tif"
-    # TODO Dale 
-    # image to segmentation
-    
-    # create_mask_from_image()
-    
-    temp_input_mask_path = root_dir / "examples" / "images" / "carotid_mask.tif"
     plot_dir = BASE_PLOT_DIR / "carotid"
-    carotid_image_to_model(input_path=temp_input_mask_path, plot_dir=plot_dir)
+    
+    # 1. Run Ilastik Segmentation (if enabled)
+    if RUN_ILASTIK:
+        # Example using explicit kwargs for clarity
+        target_input_mask_path = run_ilastik_segmentation(
+            ilastik_bin=ILASTIK_BINARY_PATH,
+            project_path=ILASTIK_PROJECT_PATH,
+            raw_image_path=RAW_IMAGE_PATH,
+            frangi_image_path=FRANGI_IMAGE_PATH,
+            output_dir=ILASTIK_OUTPUT_DIR,
+            output_probabilities=ILASTIK_OUTPUT_PROBABILITIES
+        )
+    else:
+        # Fallback if we aren't running Ilastik (use pre-segmented mask)
+        target_input_mask_path = root_dir / "examples" / "images" / "ilastik_batch_processing_output_images" / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_seg.tiff"
+
+    # 2. Run the Network Pipeline
+    carotid_image_to_model(
+        image_path=target_input_mask_path, 
+        plot_dir=plot_dir,
+        skeleton_downsample_factor=SKELETON_DOWNSAMPLE_FACTOR,
+        skeleton_use_padded_slicing=SKELETON_USE_PADDED_SLICING,
+        skeleton_padded_slicing_padding=SKELETON_PADDED_SLICING_PADDING,
+        skeleton_prune_mask_before=SKELETON_PRUNE_MASK_BEFORE_SKELETONIZATION,
+        skeleton_sub_volume_percentage=SKELETON_SUB_VOLUME_PERCENTAGE,
+        skeleton_sub_volume_offset_z=SKELETON_SUB_VOLUME_CENTER_OFFSET_Z,
+        skeleton_sub_volume_offset_y=SKELETON_SUB_VOLUME_CENTER_OFFSET_Y,
+        skeleton_sub_volume_offset_x=SKELETON_SUB_VOLUME_CENTER_OFFSET_X,
+        visualize_results=VISUALIZE_RESULTS,
+        visualize_mask_only=VISUALIZE_MASK_ONLY,
+        visualize_vedo=VISUALIZE_VEDO,
+        visualize_vedo_mode=VISUALIZE_VEDO_MODE,
+        visualize_vedo_smooth_iter=VISUALIZE_VEDO_SMOOTH_ITER,
+        visualize_vedo_spacing=VISUALIZE_VEDO_SPACING,
+        visualize_vedo_auto_spacing=VISUALIZE_VEDO_AUTO_SPACING,
+        visualize_vedo_opacity=VISUALIZE_VEDO_OPACITY,
+        visualize_mask_opacity=VISUALIZE_MASK_OPACITY
+    )
+
+    ### // NOTES TO SELF FOR LATER // ###
+
+    ### Run through current image-to-model functionality with CB binary-mask and add fixes/
+    ### features on the fly

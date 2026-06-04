@@ -11,7 +11,91 @@ from scipy.ndimage import (
     uniform_filter,
 )
 from skimage.morphology import remove_small_objects, skeletonize
+from skimage.transform import resize
 logger = logging.getLogger(__name__)
+
+def rescale_and_skeletonize_3d(
+    binary_volume: np.ndarray, downsample_factor: float = 2.0
+) -> np.ndarray:
+    """Perform faster skeletonization by downsampling, skeletonizing, and upscaling.
+
+    Parameters
+    ----------
+    binary_volume:
+        Input boolean 3D array.
+    downsample_factor:
+        Factor to downsample by (e.g., 2.0 reduces each dimension by half).
+    """
+    if downsample_factor <= 1.0:
+        return skeletonize_3d(binary_volume)
+
+    # 1. Manual Max Pooling (most robust for binary downsampling)
+    f = int(np.round(downsample_factor))
+    
+    # Pad to multiple of f
+    pad_width = [ (0, (f - dim % f) % f) for dim in binary_volume.shape ]
+    padded = np.pad(binary_volume, pad_width, mode='constant', constant_values=False)
+    
+    new_shape = [ dim // f for dim in padded.shape ]
+    small_vol = padded.reshape(
+        new_shape[0], f, 
+        new_shape[1], f, 
+        new_shape[2], f
+    ).max(axis=(1, 3, 5))
+
+    # 2. Skeletonize the small volume
+    small_skel = skeletonize_3d(small_vol)
+
+    # 3. Upscale back to original size
+    thick_skel = resize(
+        small_skel.astype(float),
+        binary_volume.shape,
+        order=0,
+        preserve_range=True,
+        anti_aliasing=False,
+    ) > 0.5
+
+    # 3.5 Expansion pass to ensure robustness during final thinning
+    struct = generate_binary_structure(binary_volume.ndim, 1)
+    thick_skel = binary_dilation(thick_skel, structure=struct)
+    
+    # 4. Final thinning pass
+    return skeletonize_3d(thick_skel)
+
+
+def keep_largest_mask_components(
+    binary_mask: np.ndarray,
+    n_components: int = 1,
+    connectivity: int | None = None,
+) -> np.ndarray:
+    """Keep only the N largest connected components in a binary mask.
+
+    Parameters
+    ----------
+    binary_mask:
+        Input boolean mask.
+    n_components:
+        Number of largest components to keep.
+    connectivity:
+        Connectivity for labeling (e.g., 3 for 26-neighbor in 3D).
+    """
+    if not binary_mask.any():
+        return binary_mask
+
+    conn = _resolve_component_connectivity(binary_mask.ndim, connectivity)
+    struct = generate_binary_structure(binary_mask.ndim, conn)
+    labeled, n_found = label(binary_mask, structure=struct)
+
+    if n_found <= n_components:
+        return binary_mask
+
+    sizes = np.bincount(labeled.ravel())
+    # Sort labels by size descending, exclude background (index 0)
+    sorted_labels = np.argsort(sizes[1:])[::-1] + 1
+    keep_labels = sorted_labels[:n_components]
+
+    return np.isin(labeled, keep_labels)
+
 
 def _resolve_component_connectivity(ndim: int, connectivity: int | None) -> int:
     """Return valid component-connectivity in [1, ndim]."""

@@ -741,5 +741,113 @@ def visualize_skeleton(
             plotter.show(auto_close=False, interactive_update=True)
 
 
+def visualize_volume(
+    volume: np.ndarray,
+    title: str = "3D Volume Mask",
+    background_color: str = "black",
+    vessel_color: str = "salmon",
+    opacity: float = 1.0,
+    show: bool = True,
+) -> Any:
+    """Visualize a 3D binary volume as a smooth surface mesh using PyVista.
+
+    Parameters
+    ----------
+    volume:
+        3D boolean or integer array.
+    title:
+        Window title.
+    vessel_color:
+        Color of the rendered vessel surface.
+    """
+    try:
+        import pyvista as pv
+    except ImportError as exc:
+        raise ImportError(
+            "pyvista is required for 3D volume visualization. "
+            "Install with `pip install pyvista`."
+        ) from exc
+
+    if volume.ndim != 3:
+        raise ValueError(f"visualize_volume expects a 3D array, got {volume.ndim}D")
+
+    # Create a uniform grid from the voxel data
+    # Note: PyVista expects (X, Y, Z) ordering for dimensions
+    # Our data is (Z, Y, X), so we transpose to (X, Y, Z)
+    grid = pv.ImageData()
+    grid.dimensions = np.array(volume.transpose(2, 1, 0).shape) + 1
+    grid.cell_data["values"] = volume.transpose(2, 1, 0).flatten(order="F")
+
+    # Extract the surface where value >= 0.5 (the vessel boundary)
+    # Note: contour filter requires point data, so we convert cell data to point data (ctp)
+    surface = grid.ctp().contour([0.5], scalars="values")
+
+    plotter = pv.Plotter(title=title)
+    plotter.set_background(background_color)
+    plotter.add_mesh(
+        surface,
+        color=vessel_color,
+        opacity=opacity,
+        smooth_shading=True,
+        show_edges=False,
+    )
+    plotter.add_axes()
+    
+    if show:
+        plotter.show()
+    return plotter
+
+
+def visualize_volume_vedo(
+    volume: np.ndarray,
+    title: str = "Vedo 3D Volume",
+    mode: str = "iso",
+    spacing: tuple = (1.0, 1.0, 1.0),
+    vessel_color: str = "salmon",
+    background_color: str = "white",
+    alpha: float = 1.0,
+    smooth_iter: int = 0,
+):
+    """Visualize a 3D volume using Vedo (image_to_model style).
+
+    Parameters
+    ----------
+    mode:
+        'iso' for smooth surface mesh, 'lego' for raw voxel blocks.
+    spacing:
+        (z, y, x) voxel dimensions.
+    smooth_iter:
+        Iterations of Laplacian smoothing (only for 'iso' mode).
+    """
+    try:
+        import vedo
+    except ImportError as exc:
+        raise ImportError("vedo is required. Install with `pip install vedo`.")
+
+    # Vedo Volume expects (Z, Y, X) data but spacing usually maps to (X, Y, Z)
+    # in terms of how it stretches. To match ImageLynx/image_to_model convention:
+    # Transpose Z,Y,X -> X,Y,Z for internal consistency
+    vol_data = volume.transpose(2, 1, 0)
+    # Re-order spacing to match the transposed dims (x, y, z)
+    vedo_spacing = (spacing[2], spacing[1], spacing[0])
+    
+    # Auto-threshold for surface extraction
+    vmin = 0.5 if volume.dtype == bool else np.mean(volume)
+    
+    vol = vedo.Volume(vol_data, spacing=vedo_spacing)
+    
+    if mode.lower() == "lego":
+        actor = vol.legosurface(vmin=vmin).color(vessel_color).alpha(alpha)
+    else:
+        actor = vol.isosurface(vmin).color(vessel_color).alpha(alpha)
+        if smooth_iter > 0:
+            actor.smooth(niter=smooth_iter)
+    
+    plt_vedo = vedo.Plotter(title=title, bg=background_color)
+    plt_vedo.add(actor)
+    plt_vedo.show(interactive=True)
+    return plt_vedo
+
+
 # British-spelling alias used in the example script.
 visualise_skeleton = visualize_skeleton
