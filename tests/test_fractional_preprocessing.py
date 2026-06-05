@@ -32,7 +32,7 @@ def test_binary_stitching_continuity():
     
     # We will use map_reduce_pipeline directly
     # worker_fn just thresholds > 0.5 and strips margins
-    def mock_worker(chunk_prob, bbox):
+    def mock_worker(chunk_prob, bbox, chunk_idx, total_chunks):
         binary = (chunk_prob > 0.5).astype(np.uint8)
         
         pz1, pz2, py1, py2, px1, px2 = bbox['padded']

@@ -529,11 +529,14 @@ def _load_raw_probability_field(image_path, input_format, pre_config, skel_confi
         
     return raw_prob_map, entropy_map
 
-def _preprocess_local_mask(raw_prob_map, entropy_map, pre_config, skel_config, graph_config, pipeline_config, optimize_trials=0, optimize_patience=15):
+def _preprocess_local_mask(raw_prob_map, entropy_map, pre_config, skel_config, graph_config, pipeline_config, optimize_trials=0, optimize_patience=15, chunk_idx=1, total_chunks=1):
     if optimize_trials > 0:
         import ImageLynx.statistics.benchmarking as benchmarking
         import ImageLynx.statistics.auto_tuner as auto_tuner
         import copy
+        
+        print(f"\n--- [Chunk {chunk_idx}/{total_chunks}] Launching Optuna Preprocessing Auto-Tuner ({optimize_trials} trials) ---", flush=True)
+
         def pre_eval_callback(suggested_kwargs):
             test_config_dict = pre_config.__dict__.copy()
             test_config_dict.update(suggested_kwargs)
@@ -1194,7 +1197,7 @@ def carotid_image_to_model(image_path: Path | str,
             print(f"\n--- Launching Map-Reduce Preprocessing Architecture (fraction={pipeline_config.chunk_fraction}) ---")
             from ImageLynx.pipeline.map_reduce import map_reduce_pipeline
             
-            def preprocess_local_chunk(chunk_raw_prob, bbox):
+            def preprocess_local_chunk(chunk_raw_prob, bbox, chunk_idx, total_chunks):
                 import copy
                 local_pre_config = copy.deepcopy(pre_config)
                 
@@ -1203,7 +1206,8 @@ def carotid_image_to_model(image_path: Path | str,
                 
                 _, local_binary = _preprocess_local_mask(
                     chunk_raw_prob, local_entropy, local_pre_config, skel_config, graph_config, pipeline_config,
-                    optimize_trials=args.optimize_preprocessing, optimize_patience=pipeline_config.optimize_patience
+                    optimize_trials=args.optimize_preprocessing, optimize_patience=pipeline_config.optimize_patience,
+                    chunk_idx=chunk_idx, total_chunks=total_chunks
                 )
                 
                 # Strip overlap margin
@@ -1228,6 +1232,14 @@ def carotid_image_to_model(image_path: Path | str,
                 worker_fn=preprocess_local_chunk,
                 n_jobs=pipeline_config.n_jobs
             )
+            
+            if skel_config.prune_mask_before > 0:
+                print(f"Applying global pruning to stitched mask (keeping top {skel_config.prune_mask_before} components)...")
+                import ImageLynx.preprocessing as preprocessing
+                binary = preprocessing.skeleton.keep_largest_mask_components(
+                    binary, n_components=skel_config.prune_mask_before, connectivity=skel_config.component_connectivity
+                )
+                
             image = raw_prob_map # Monolithic image isn't strictly needed for graph, but we pass the raw map
             
         else:

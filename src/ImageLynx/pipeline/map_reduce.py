@@ -29,7 +29,8 @@ def map_reduce_pipeline(
     
     bboxes = list(generate_evenly_distributed_bounding_boxes((Z, Y, X), chunk_fraction, margin))
     
-    def process_chunk(bbox):
+    def process_chunk(item):
+        idx, bbox = item
         pz1, pz2, py1, py2, px1, px2 = bbox['padded']
         chunk = volume[pz1:pz2, py1:py2, px1:px2]
         
@@ -38,7 +39,7 @@ def map_reduce_pipeline(
             return None, bbox
             
         # Execute local pipeline (returns local_core_binary without margin)
-        local_core_binary = worker_fn(chunk, bbox)
+        local_core_binary = worker_fn(chunk, bbox, idx, len(bboxes))
         
         return local_core_binary, bbox
 
@@ -46,7 +47,7 @@ def map_reduce_pipeline(
     
     # Phase 2: Parallel Local Execution
     results = Parallel(n_jobs=n_jobs)(
-        delayed(process_chunk)(bbox) for bbox in bboxes
+        delayed(process_chunk)(item) for item in enumerate(bboxes, 1)
     )
     
     # Phase 3: Binary Stitching
