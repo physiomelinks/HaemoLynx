@@ -1164,18 +1164,27 @@ def carotid_image_to_model(image_path: Path | str,
                     if x1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x1] = 255
                     if x2 - 1 >= 0 and x2 - 1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x2-1] = 255
                 
-                vtk_vol = pv.ImageData()
-                vtk_vol.dimensions = np.array(raw_prob_map.shape)
-                vtk_vol.spacing = (spacing[2], spacing[1], spacing[0])
+                # Export Raw Probability Field
+                vtk_vol_prob = pv.ImageData()
+                vtk_vol_prob.dimensions = np.array(raw_prob_map.shape)
+                vtk_vol_prob.spacing = (spacing[2], spacing[1], spacing[0])
+                vtk_vol_prob.point_data["Probability"] = raw_prob_map.flatten(order="F").astype(np.float32)
                 
-                vtk_vol.point_data["Probability"] = raw_prob_map.flatten(order="F").astype(np.float32)
-                vtk_vol.point_data["ChunkGrid"] = grid_mask.flatten(order="F")
+                out_path_prob = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_raw_probability.vti")
+                out_path_prob.parent.mkdir(parents=True, exist_ok=True)
+                vtk_vol_prob.save(out_path_prob)
+
+                # Export Grid Wireframe
+                vtk_vol_grid = pv.ImageData()
+                vtk_vol_grid.dimensions = np.array(raw_prob_map.shape)
+                vtk_vol_grid.spacing = (spacing[2], spacing[1], spacing[0])
+                vtk_vol_grid.point_data["ChunkGrid"] = grid_mask.flatten(order="F")
                 
-                out_path = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_grid_preview.vti")
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                vtk_vol.save(out_path)
+                out_path_grid = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_grid_preview.vti")
+                vtk_vol_grid.save(out_path_grid)
                 
-                print(f"Exported Grid Preview to: {out_path}")
+                print(f"Exported Raw Probability to: {out_path_prob}")
+                print(f"Exported Grid Preview to: {out_path_grid}")
                 print("Exiting pipeline early as requested.")
                 sys.exit(0)
 
