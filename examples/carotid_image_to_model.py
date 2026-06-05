@@ -241,7 +241,9 @@ class PipelineConfig:
     verbose_logging: bool = False
     min_branch_length: int = 10
     vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
-    plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid" 
+    plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid"
+    chunk_fraction: float = 1.0
+    export_grid_preview: bool = False 
 
 class IlastikClassifier():
     """Wrapper for the Ilastik headless engine to perform pixel classification."""
@@ -1196,6 +1198,48 @@ def carotid_image_to_model(image_path: Path | str,
     if pipeline_config.do_skeletonize:
         image, binary = _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, graph_config, vis_config, pipeline_config)
         
+        if getattr(pipeline_config, 'chunk_fraction', None) is not None and pipeline_config.chunk_fraction < 1.0:
+            if getattr(pipeline_config, 'export_grid_preview', False):
+                import sys
+                import pyvista as pv
+                from ImageLynx.graph.tiling import generate_evenly_distributed_bounding_boxes
+                
+                print(f"\n--- Generating Map-Reduce Grid Preview (fraction={pipeline_config.chunk_fraction}) ---")
+                spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+                
+                grid_mask = np.zeros(binary.shape, dtype=np.uint8)
+                
+                for bbox in generate_evenly_distributed_bounding_boxes(binary.shape, pipeline_config.chunk_fraction, margin=pipeline_config.margin):
+                    z1, z2, y1, y2, x1, x2 = bbox['core']
+                    
+                    # Paint 2D planar faces of the core box
+                    # Top/Bottom (Z faces)
+                    if z1 < binary.shape[0]: grid_mask[z1, y1:y2, x1:x2] = 255
+                    if z2 - 1 >= 0 and z2 - 1 < binary.shape[0]: grid_mask[z2-1, y1:y2, x1:x2] = 255
+                    # Front/Back (Y faces)
+                    if y1 < binary.shape[1]: grid_mask[z1:z2, y1, x1:x2] = 255
+                    if y2 - 1 >= 0 and y2 - 1 < binary.shape[1]: grid_mask[z1:z2, y2-1, x1:x2] = 255
+                    # Left/Right (X faces)
+                    if x1 < binary.shape[2]: grid_mask[z1:z2, y1:y2, x1] = 255
+                    if x2 - 1 >= 0 and x2 - 1 < binary.shape[2]: grid_mask[z1:z2, y1:y2, x2-1] = 255
+                
+                # Multi-channel VTK Export
+                vtk_vol = pv.ImageData()
+                vtk_vol.dimensions = np.array(binary.shape)
+                vtk_vol.spacing = (spacing[2], spacing[1], spacing[0])
+                
+                # ParaView requires Fortran ordering (column-major) for multi-dimensional arrays
+                vtk_vol.point_data["Probability"] = binary.flatten(order="F").astype(np.uint8)
+                vtk_vol.point_data["ChunkGrid"] = grid_mask.flatten(order="F")
+                
+                out_path = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_grid_preview.vti")
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                vtk_vol.save(out_path)
+                
+                print(f"Exported Grid Preview to: {out_path}")
+                print("Exiting pipeline early as requested.")
+                sys.exit(0)
+
         # --- Optuna Hyperparameter Optimization ---
         if args.optimize_skeleton > 0:
             import copy
@@ -1328,6 +1372,8 @@ if __name__ == "__main__":
     parser.add_argument("--core-resolution", type=str, choices=["eradicate", "stitch", "none"], default=None, help="Mode for resolving internal core dead-ends.")
     parser.add_argument("--boundary-mode", type=str, choices=["caged", "universal_sink", "robin_resistance"], default=None, help="Mode for handling X/Y boundary permeability.")
     parser.add_argument("--radius-mode", type=str, choices=["fwhm_radius", "edt_radius", "constant_radius"], default=None, help="Radius assignment mode for physical flow.")
+    parser.add_argument("--chunk-fraction", type=float, default=None, help="Fraction of the volume for sub-volume chunking (e.g., 0.2)")
+    parser.add_argument("--export-grid-preview", action="store_true", help="Export the raw probability field with the calculated chunk grid superimposed and exit.")
     args = parser.parse_args()
 
     # 1. Initialize Default Configurations
@@ -1370,7 +1416,13 @@ if __name__ == "__main__":
         
     if args.radius_mode is not None:
         hemo_config.radius_assignment_mode = args.radius_mode
-        
+
+    if args.chunk_fraction is not None:
+        pipeline_config.chunk_fraction = args.chunk_fraction
+
+    if args.export_grid_preview:
+        pipeline_config.export_grid_preview = True
+
     pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
     
     if args.optimize_patience is not None:
