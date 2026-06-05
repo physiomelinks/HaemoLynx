@@ -80,5 +80,42 @@ To ensure the fractional math, uniform size distribution, and bounding box gener
 
 **ParaView Verification:** When opened in ParaView, the user can render the `Probability` field as a volume, and use a standard Threshold filter on the `ChunkGrid` channel to instantly overlay the glowing 3D wireframe boxes directly on top of the anatomy, guaranteeing that the calculated grid behaves exactly as requested.
 
+## Phase 2: Localized Preprocessing Optimization and Binary Stitching
+
+**Objective:** Push the preprocessing Bayesian optimization loop (Optuna) into the localized Map-Reduce workers. This allows each individual chunk to independently tune its median filters and hysteresis thresholds to fit its specific local anatomical noise profile.
+
+### 1. Encapsulating the Preprocessing Worker Function
+We will construct a self-contained worker function `preprocess_local_chunk(chunk_raw_prob, bbox)` that executes the initial filtering phases on a single padded sub-volume.
+*   **Input:** The `chunk_raw_prob` float array (extracted using the `padded_bbox` to include the safety margin) and the `bbox` metadata dictionary.
+*   **Preprocessing Optimization:** If `--optimize-preprocessing > 0` is set, a fresh, in-memory Optuna study is launched *exclusively for this chunk*. It tunes the hysteresis thresholds and median filters against this specific local noise profile.
+*   **Binary Mask Generation:** The (tuned) preprocessing filters are applied to the raw chunk to create the `local_binary` mask.
+*   **Output:** The worker isolates the `core_bbox` voxels of the finalized binary mask (stripping away the padded margin to prevent spatial overlaps) and returns the `local_core_binary` array.
+
+### 2. Map-Reduce Orchestrator (Image Stitching)
+The central orchestrator in `carotid_image_to_model.py` will manage the parallel execution and the final reduction.
+*   **Parallel Dispatch:** Using `joblib`, the orchestrator will pass the raw probability chunks into the worker function across all available CPU cores concurrently.
+*   **Binary Stitching (The Image Reduce):** A massive, empty global array (`stitched_binary_mask`) matching the original image dimensions is pre-allocated. As workers return their `local_core_binary` arrays, the orchestrator slots them into the global array at their exact `core_bbox` coordinates.
+
+### 3. Global Export and Optional Early Exit
+Once all chunks are processed and stitched back together:
+*   The pipeline will possess a perfectly continuous, locally-optimized global binary mask.
+*   This reconstructed mask will be exported via PyVista to a `.vti` file named `..._vessel_mask.vti`.
+*   **CLI Toggle:** A new command-line argument (e.g., `--exit-after-mask`) will be added to `argparse`. 
+    *   If this flag is provided, the pipeline will **immediately terminate/exit** (`sys.exit(0)`) after exporting the mask. This provides a hard stop for the user to visually verify the locally-optimized stitched binary mask in ParaView before proceeding.
+    *   If the flag is *not* provided, the pipeline will seamlessly continue into the downstream global skeletonization and haemodynamic modelling phases using this newly optimized global mask.
+
+### 4. Phase 2: Unit Testing Suite
+To guarantee the mathematical accuracy of the isolated image processing and the flawless realignment of the stitched chunks, we will implement the following tests in `tests/test_fractional_preprocessing.py`:
+
+*   **`test_local_worker_margin_stripping`:**
+    *   **Logic:** Pass a mocked $50 \times 50 \times 50$ padded probability chunk (where the core is $30 \times 30 \times 30$ and the margin is $10$) into the `preprocess_local_chunk` worker function.
+    *   **Assertion:** Verify that the returned `local_core_binary` mask has the exact shape of $(30, 30, 30)$. This proves the worker accurately strips the overlap margin to prevent spatial duplication during stitching.
+*   **`test_binary_stitching_continuity`:**
+    *   **Logic:** Create a synthetic global probability field containing a solid 3D cylinder that deliberately spans across the boundary of 4 adjacent chunks. Run the orchestrator with `chunk_fraction` enabled.
+    *   **Assertion:** Inspect the final `stitched_binary_mask`. Verify that the cylinder remains perfectly continuous and intact. If margin trimming or coordinate slotting failed, there would be a 0-value "gap" or a misaligned shift at the chunk seams.
+*   **`test_localized_optuna_invocation`:**
+    *   **Logic:** Use Python's `unittest.mock` to spy on the `run_optuna_preprocessing_optimization` function. Execute the Map-Reduce pipeline with `--optimize-preprocessing 5`.
+    *   **Assertion:** Verify that the Optuna auto-tuner was explicitly invoked exactly $N$ times (where $N$ is the number of generated chunks), proving that the Bayesian optimization is successfully localized and independently executed for every sub-volume.
+
 ---
-*Note: This plan will be expanded iteratively to include localized processing and global stitching features.*
+*Note: This plan will be expanded iteratively to include future phases.*
