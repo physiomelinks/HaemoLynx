@@ -244,6 +244,7 @@ class PipelineConfig:
     plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid"
     chunk_fraction: float = 1.0
     margin: int = 32
+    n_jobs: int = -1
     export_grid_preview: bool = False
     exit_after_mask: bool = False 
 
