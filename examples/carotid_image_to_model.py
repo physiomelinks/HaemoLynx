@@ -476,11 +476,7 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict, bou
         
     return image, binary
 
-def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config, graph_config, vis_config, pipeline_config):
-    """
-    Phase 1: Loads the image, handles 4D channels/entropy, crops the ROI,
-    removes noise, and applies hysteresis thresholding to generate a binary mask.
-    """
+def _load_raw_probability_field(image_path, input_format, pre_config, skel_config):
     # Load the 3D or 4D volume using lazy loading to save memory
     if input_format == "tif":
         image = io.load_3d_tif(image_path, lazy=True)
@@ -498,11 +494,8 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
 
     print(f"Loaded image shape: {image.shape}")
 
-    # Slice the array into a smaller sub-volume to speed up testing/debugging
-    # (Virtual operation if image is a Dask array)
     if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or \
        skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
-        
         print(f"Applying ROI crop (sub-volume={skel_config.sub_volume_percentage})...")
         image = preprocessing.crop_roi(
             image,
@@ -514,110 +507,60 @@ def _load_and_preprocess_image(image_path, input_format, pre_config, skel_config
         print(f"  ROI new shape: {image.shape}")
 
     entropy_map = None
-    # If the image is 4D (e.g., from Ilastik with multiple probability channels)
     if image.ndim == 4:
-        # Calculate entropy before extracting the vessel channel
         if pre_config.enable_shannon_entropy:
             entropy_map = preprocessing.calculate_entropy_map(image)
-
         dims = np.array(image.shape)
         c_axis = np.argmin(dims)
-        print(f"Detected 4D image. Assuming channel is at axis {c_axis} (size {dims[c_axis]}).")
-        
-        # Extract only the specific channel containing our target vessel probabilities
-        if c_axis == 0:
-            image = image[pre_config.ilastik_vessel_channel, :, :, :]
-        elif c_axis == 1:
-            image = image[:, pre_config.ilastik_vessel_channel, :, :]
-        elif c_axis == 2:
-            image = image[:, :, pre_config.ilastik_vessel_channel, :]
-        else:
-            image = image[:, :, :, pre_config.ilastik_vessel_channel]
-            
-        print(f"Extracted vessel channel {pre_config.ilastik_vessel_channel}. New spatial shape: {image.shape}")
+        if c_axis == 0: image = image[pre_config.ilastik_vessel_channel, :, :, :]
+        elif c_axis == 1: image = image[:, pre_config.ilastik_vessel_channel, :, :]
+        elif c_axis == 2: image = image[:, :, pre_config.ilastik_vessel_channel, :]
+        else: image = image[:, :, :, pre_config.ilastik_vessel_channel]
+        if entropy_map is not None and is_lazy:
+            entropy_map = entropy_map.compute()
 
-        if entropy_map is not None:
-            # We must compute entropy_map for the optimizer
-            if is_lazy:
-                print("Computing entropy map for preprocessing...")
-                entropy_map = entropy_map.compute()
-
-    # Materialize the raw probability map for the optimizer
     if is_lazy:
-        print("Computing cropped raw probability map...")
         raw_prob_map = image.compute()
     else:
         raw_prob_map = image.copy()
         
-    print(f"Image probability range: min={raw_prob_map.min():.4f}, max={raw_prob_map.max():.4f}, mean={raw_prob_map.mean():.4f}")
+    return raw_prob_map, entropy_map
 
-    if vis_config.visualize_mask_only:
-        _preview_raw_volume(raw_prob_map, image_path, input_format, vis_config)
-
-    # --- Optuna Preprocessing Optimization ---
-    if pipeline_config.optimize_preprocessing_trials > 0:
+def _preprocess_local_mask(raw_prob_map, entropy_map, pre_config, skel_config, graph_config, pipeline_config, optimize_trials=0, optimize_patience=15):
+    if optimize_trials > 0:
         import ImageLynx.statistics.benchmarking as benchmarking
         import ImageLynx.statistics.auto_tuner as auto_tuner
         import copy
-        
-        print(f"\n--- Launching Optuna Preprocessing Auto-Tuner ({pipeline_config.optimize_preprocessing_trials} trials) ---")
-        
         def pre_eval_callback(suggested_kwargs):
-            # 1. Apply filters
             test_config_dict = pre_config.__dict__.copy()
             test_config_dict.update(suggested_kwargs)
-            
             _, test_binary = _apply_preprocessing_filters(
-                raw_prob_map, 
-                entropy_map, 
-                test_config_dict, 
+                raw_prob_map, entropy_map, test_config_dict, 
                 boundary_permeability_mode=graph_config.boundary_permeability_mode
             )
-            
-            # 2. Score the mask
-            bench_results = benchmarking.run_all_preprocessing_benchmarks(raw_prob_map, test_binary)
-            return bench_results
-
+            return benchmarking.run_all_preprocessing_benchmarks(raw_prob_map, test_binary)
         best_pre_params = auto_tuner.run_optuna_preprocessing_optimization(
-            pre_eval_callback,
-            n_trials=pipeline_config.optimize_preprocessing_trials,
+            pre_eval_callback, n_trials=optimize_trials,
             output_dir=pipeline_config.vtk_output_prefix.parent,
-            patience=pipeline_config.optimize_patience
+            patience=optimize_patience
         )
-        
-        print("\nApplying optimal preprocessing parameters to pipeline...")
         for k, v in best_pre_params.items():
             setattr(pre_config, k, v)
-    # ------------------------------------------
 
-    # Apply the (potentially optimized) filters
     filtered_image, binary = _apply_preprocessing_filters(
-        raw_prob_map, 
-        entropy_map, 
-        pre_config.__dict__,
+        raw_prob_map, entropy_map, pre_config.__dict__,
         boundary_permeability_mode=graph_config.boundary_permeability_mode
     )
 
-    # Smooth the bumpy outer walls
     if skel_config.closing_radius > 0:
         binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.closing_radius)
-    
-    # Draw localized bridges across tiny gaps
     if skel_config.bridge_gap_size > 0:
         binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skel_config.bridge_gap_size)
-
-    # Delete all floating background noise blobs
     if skel_config.prune_mask_before > 0:
-        print(f"Pruning binary mask to keep largest {skel_config.prune_mask_before} components...")
         binary = preprocessing.skeleton.keep_largest_mask_components(
             binary, n_components=skel_config.prune_mask_before, connectivity=skel_config.component_connectivity
         )
-
-    if vis_config.visualize_post_processed_mask:
-        _preview_post_processed_mask(binary, image_path, input_format, vis_config, pipeline_config)
-    
-    # Return the materialized image and binary mask
-    return (image.compute() if preprocessing.image._is_dask_array(image) else image), binary
+    return raw_prob_map, binary
 
 def _run_skeletonization_phase(binary, skel_config):
     """

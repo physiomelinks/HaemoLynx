@@ -2,6 +2,15 @@
 
 This document outlines the iterative plan to divide the raw vessel probability field into localized sub-volume chunks based on a user-specified fractional resolution.
 
+## Phase 0: Decoupling Image Loading from Preprocessing
+
+**Objective:** Ensure that the fractional chunking algorithm and grid visualization operate strictly on the raw probability field *before* any noise removal, smoothing, or binarization occurs.
+
+1.  **Refactor Image Loader:** Split the existing monolithic `_load_and_preprocess_image` function in `carotid_image_to_model.py` into two distinct functions:
+    *   `_load_raw_probability_field`: Handles disk I/O (TIFF/H5), lazy loading with Dask, ROI cropping, and 4D channel/Shannon entropy extraction. Returns the raw, un-thresholded probability float array.
+    *   `_preprocess_local_mask`: Handles median filtering, morphological operations, hysteresis thresholding, and hole-filling.
+2.  **Execution Reordering:** The main script will call `_load_raw_probability_field` first. Immediately following this, the Phase 1 and 1.5 logic (fractional chunking and VTK export) will execute, allowing the script to prematurely exit before any preprocessing computation is wasted.
+
 ## Phase 1: Fractional Math and Grid Discretization
 
 **Objective:** Mathematically divide the global probability field into a 3D grid of chunks based on a fractional input (e.g., 0.2), ensuring support for non-cubic array dimensions and anisotropic voxel resolutions.
