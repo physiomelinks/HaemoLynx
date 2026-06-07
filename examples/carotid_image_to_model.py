@@ -1148,52 +1148,52 @@ def carotid_image_to_model(image_path: Path | str,
         raw_prob_map, entropy_map = _load_raw_probability_field(image_path, input_format, pre_config, skel_config)
         
         if getattr(pipeline_config, 'chunk_fraction', None) is not None and pipeline_config.chunk_fraction < 1.0:
+            import pyvista as pv
+            from ImageLynx.graph.tiling import generate_evenly_distributed_bounding_boxes
+            import ImageLynx.io as io
+            
+            print(f"\n--- Generating Map-Reduce Grid Preview (fraction={pipeline_config.chunk_fraction}) ---")
+            spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+            
+            grid_mask = np.zeros(raw_prob_map.shape, dtype=np.uint8)
+            
+            for bbox in generate_evenly_distributed_bounding_boxes(raw_prob_map.shape, pipeline_config.chunk_fraction, margin=pipeline_config.margin):
+                z1, z2, y1, y2, x1, x2 = bbox['core']
+                
+                if z1 < raw_prob_map.shape[0]: grid_mask[z1, y1:y2, x1:x2] = 255
+                if z2 - 1 >= 0 and z2 - 1 < raw_prob_map.shape[0]: grid_mask[z2-1, y1:y2, x1:x2] = 255
+                if y1 < raw_prob_map.shape[1]: grid_mask[z1:z2, y1, x1:x2] = 255
+                if y2 - 1 >= 0 and y2 - 1 < raw_prob_map.shape[1]: grid_mask[z1:z2, y2-1, x1:x2] = 255
+                if x1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x1] = 255
+                if x2 - 1 >= 0 and x2 - 1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x2-1] = 255
+            
+            # Export Raw Probability Field
+            vtk_vol_prob = pv.ImageData()
+            vtk_vol_prob.dimensions = np.array(raw_prob_map.shape)
+            vtk_vol_prob.spacing = (spacing[2], spacing[1], spacing[0])
+            vtk_vol_prob.point_data["Probability"] = raw_prob_map.flatten(order="F").astype(np.float32)
+            
+            out_path_prob = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_raw_probability.vti")
+            out_path_prob.parent.mkdir(parents=True, exist_ok=True)
+            vtk_vol_prob.save(out_path_prob)
+
+            # Export Grid Wireframe
+            vtk_vol_grid = pv.ImageData()
+            vtk_vol_grid.dimensions = np.array(raw_prob_map.shape)
+            vtk_vol_grid.spacing = (spacing[2], spacing[1], spacing[0])
+            vtk_vol_grid.point_data["ChunkGrid"] = grid_mask.flatten(order="F")
+            
+            out_path_grid = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_grid_preview.vti")
+            vtk_vol_grid.save(out_path_grid)
+            
+            print(f"Exported Raw Probability to: {out_path_prob}")
+            print(f"Exported Grid Preview to: {out_path_grid}")
+            
             if getattr(pipeline_config, 'export_grid_preview', False):
                 import sys
-                import pyvista as pv
-                from ImageLynx.graph.tiling import generate_evenly_distributed_bounding_boxes
-                
-                print(f"\n--- Generating Map-Reduce Grid Preview (fraction={pipeline_config.chunk_fraction}) ---")
-                import ImageLynx.io as io
-                spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
-                
-                grid_mask = np.zeros(raw_prob_map.shape, dtype=np.uint8)
-                
-                for bbox in generate_evenly_distributed_bounding_boxes(raw_prob_map.shape, pipeline_config.chunk_fraction, margin=pipeline_config.margin):
-                    z1, z2, y1, y2, x1, x2 = bbox['core']
-                    
-                    if z1 < raw_prob_map.shape[0]: grid_mask[z1, y1:y2, x1:x2] = 255
-                    if z2 - 1 >= 0 and z2 - 1 < raw_prob_map.shape[0]: grid_mask[z2-1, y1:y2, x1:x2] = 255
-                    if y1 < raw_prob_map.shape[1]: grid_mask[z1:z2, y1, x1:x2] = 255
-                    if y2 - 1 >= 0 and y2 - 1 < raw_prob_map.shape[1]: grid_mask[z1:z2, y2-1, x1:x2] = 255
-                    if x1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x1] = 255
-                    if x2 - 1 >= 0 and x2 - 1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x2-1] = 255
-                
-                # Export Raw Probability Field
-                vtk_vol_prob = pv.ImageData()
-                vtk_vol_prob.dimensions = np.array(raw_prob_map.shape)
-                vtk_vol_prob.spacing = (spacing[2], spacing[1], spacing[0])
-                vtk_vol_prob.point_data["Probability"] = raw_prob_map.flatten(order="F").astype(np.float32)
-                
-                out_path_prob = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_raw_probability.vti")
-                out_path_prob.parent.mkdir(parents=True, exist_ok=True)
-                vtk_vol_prob.save(out_path_prob)
-
-                # Export Grid Wireframe
-                vtk_vol_grid = pv.ImageData()
-                vtk_vol_grid.dimensions = np.array(raw_prob_map.shape)
-                vtk_vol_grid.spacing = (spacing[2], spacing[1], spacing[0])
-                vtk_vol_grid.point_data["ChunkGrid"] = grid_mask.flatten(order="F")
-                
-                out_path_grid = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_grid_preview.vti")
-                vtk_vol_grid.save(out_path_grid)
-                
-                print(f"Exported Raw Probability to: {out_path_prob}")
-                print(f"Exported Grid Preview to: {out_path_grid}")
-                print("Exiting pipeline early as requested.")
+                print("Exiting pipeline early as requested (--export-grid-preview).")
                 sys.exit(0)
 
-        if getattr(pipeline_config, 'chunk_fraction', None) is not None and pipeline_config.chunk_fraction < 1.0:
             print(f"\n--- Launching Map-Reduce Preprocessing Architecture (fraction={pipeline_config.chunk_fraction}) ---")
             from ImageLynx.pipeline.map_reduce import map_reduce_pipeline
             
