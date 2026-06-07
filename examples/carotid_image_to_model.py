@@ -1189,6 +1189,15 @@ def carotid_image_to_model(image_path: Path | str,
             print(f"Exported Raw Probability to: {out_path_prob}")
             print(f"Exported Grid Preview to: {out_path_grid}")
             
+            if entropy_map is not None:
+                vtk_vol_entropy = pv.ImageData()
+                vtk_vol_entropy.dimensions = np.array(entropy_map.shape)
+                vtk_vol_entropy.spacing = (spacing[2], spacing[1], spacing[0])
+                vtk_vol_entropy.point_data["ShannonEntropy"] = entropy_map.flatten(order="F").astype(np.float32)
+                out_path_entropy = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_shannon_entropy.vti")
+                vtk_vol_entropy.save(out_path_entropy)
+                print(f"Exported Shannon Entropy to: {out_path_entropy}")
+
             if getattr(pipeline_config, 'export_grid_preview', False):
                 import sys
                 print("Exiting pipeline early as requested (--export-grid-preview).")
