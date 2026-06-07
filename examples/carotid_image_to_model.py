@@ -1200,12 +1200,18 @@ def carotid_image_to_model(image_path: Path | str,
             def preprocess_local_chunk(chunk_raw_prob, bbox, chunk_idx, total_chunks):
                 import copy
                 local_pre_config = copy.deepcopy(pre_config)
+                local_skel_config = copy.deepcopy(skel_config)
+                
+                # CRITICAL FIX: Disable local pruning! 
+                # A chunk might contain multiple disconnected vessel branches that connect globally. 
+                # Pruning locally deletes valid anatomy, leaving cubic holes. Pruning is deferred to the global stitch.
+                local_skel_config.prune_mask_before = 0
                 
                 core_z1, core_z2, core_y1, core_y2, core_x1, core_x2 = bbox['padded']
                 local_entropy = entropy_map[core_z1:core_z2, core_y1:core_y2, core_x1:core_x2] if entropy_map is not None else None
                 
                 _, local_binary = _preprocess_local_mask(
-                    chunk_raw_prob, local_entropy, local_pre_config, skel_config, graph_config, pipeline_config,
+                    chunk_raw_prob, local_entropy, local_pre_config, local_skel_config, graph_config, pipeline_config,
                     optimize_trials=args.optimize_preprocessing, optimize_patience=pipeline_config.optimize_patience,
                     chunk_idx=chunk_idx, total_chunks=total_chunks
                 )
