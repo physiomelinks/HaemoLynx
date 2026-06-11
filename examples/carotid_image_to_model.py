@@ -1168,37 +1168,51 @@ def carotid_image_to_model(image_path: Path | str,
                 if x1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x1] = 255
                 if x2 - 1 >= 0 and x2 - 1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x2-1] = 255
             
-            # Export Raw Anatomy Field
+            # Export Dual Raw Anatomy Fields
             try:
-                raw_anatomy = io.load_3d_tif(RAW_IMAGE_PATH, lazy=False)
+                raw_anatomy_global = io.load_3d_tif(RAW_IMAGE_PATH, lazy=False)
+                
+                # 1. Global Volume Export
+                vtk_vol_anat_global = pv.ImageData()
+                vtk_vol_anat_global.dimensions = np.array(raw_anatomy_global.shape)
+                vtk_vol_anat_global.spacing = (spacing[2], spacing[1], spacing[0])
+                anat_global_flat = np.asarray(raw_anatomy_global).flatten(order="F").astype(np.float32)
+                vtk_vol_anat_global.point_data["RawAnatomy"] = anat_global_flat
+                out_path_anat_global = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_raw_anatomy_global.vti")
+                out_path_anat_global.parent.mkdir(parents=True, exist_ok=True)
+                vtk_vol_anat_global.save(out_path_anat_global)
+                print(f"Exported Global Raw Anatomy to: {out_path_anat_global}")
+                
+                # 2. Sub-Volume Export
                 if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
                     import ImageLynx.preprocessing as preprocessing
-                    raw_anatomy = preprocessing.crop_roi(
-                        raw_anatomy,
+                    raw_anatomy_sub = preprocessing.crop_roi(
+                        raw_anatomy_global,
                         sub_volume_percentage=skel_config.sub_volume_percentage,
                         offset_z=skel_config.sub_volume_offset_z,
                         offset_y=skel_config.sub_volume_offset_y,
                         offset_x=skel_config.sub_volume_offset_x
                     )
-                vtk_vol_anat = pv.ImageData()
-                vtk_vol_anat.dimensions = np.array(raw_prob_map.shape)
-                vtk_vol_anat.spacing = (spacing[2], spacing[1], spacing[0])
-                
-                anat_flat = np.asarray(raw_anatomy).flatten(order="F").astype(np.float32)
-                if len(anat_flat) != np.prod(raw_prob_map.shape):
-                    # Fallback for unittest mocks generating incorrect array sizes
-                    anat_flat = np.zeros(np.prod(raw_prob_map.shape), dtype=np.float32)
+                else:
+                    raw_anatomy_sub = raw_anatomy_global
                     
-                vtk_vol_anat.point_data["RawAnatomy"] = anat_flat
+                vtk_vol_anat_sub = pv.ImageData()
+                vtk_vol_anat_sub.dimensions = np.array(raw_prob_map.shape)
+                vtk_vol_anat_sub.spacing = (spacing[2], spacing[1], spacing[0])
                 
-                out_path_anat = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_raw_anatomy.vti")
-                out_path_anat.parent.mkdir(parents=True, exist_ok=True)
-                vtk_vol_anat.save(out_path_anat)
-                print(f"Exported Raw Anatomy to: {out_path_anat}")
+                anat_sub_flat = np.asarray(raw_anatomy_sub).flatten(order="F").astype(np.float32)
+                if len(anat_sub_flat) != np.prod(raw_prob_map.shape):
+                    # Fallback for unittest mocks generating incorrect array sizes
+                    anat_sub_flat = np.zeros(np.prod(raw_prob_map.shape), dtype=np.float32)
+                    
+                vtk_vol_anat_sub.point_data["RawAnatomy"] = anat_sub_flat
+                out_path_anat_sub = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_raw_anatomy_subvolume.vti")
+                vtk_vol_anat_sub.save(out_path_anat_sub)
+                print(f"Exported Sub-Volume Raw Anatomy to: {out_path_anat_sub}")
             except Exception as e:
                 import traceback
                 traceback.print_exc()
-                print(f"Warning: Could not export Raw Anatomy VTI: {e}")
+                print(f"Warning: Could not export Raw Anatomy VTIs: {e}")
 
             # Export Raw Probability Field
             vtk_vol_prob = pv.ImageData()

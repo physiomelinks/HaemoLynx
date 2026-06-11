@@ -59,28 +59,49 @@ To ensure the fractional math, uniform size distribution, and bounding box gener
     *   **Logic:** Generate padded bounding boxes with a `margin = 20` for a $(100, 100, 100)$ volume.
     *   **Assertion:** Inspect the `padded_bbox` of the very first chunk and very last chunk. Assert that negative indices are clamped to $0$, and indices exceeding $100$ are clamped to $100$, preventing downstream `IndexError` crashes.
 
-## Phase 1.5: Temporary Grid Visualization (VTK Export)
+## Phase 1.5: Permanent Grid and Probability Visualization (VTK Export)
 
-**Objective:** Provide a debugging mechanism to visually confirm the mathematical grid calculation by exporting the raw probability field and the calculated chunk grid to ParaView.
+**Objective:** Guarantee that users always have access to a visual representation of the grid layout overlaid on the raw probability field. These visualization artifacts are now a mandatory part of the chunking workflow.
 
-### 1. CLI Toggle and Execution Flow
-*   Add a new boolean argument to `argparse` (e.g., `--export-grid-preview`).
-*   If this flag is enabled, the pipeline will calculate the bounding boxes, generate the VTK export, and then **immediately terminate/exit** (`sys.exit(0)`), bypassing all downstream preprocessing, skeletonization, and physics modelling.
+### 1. Mandatory Export and CLI Early Exit
+*   **Always Export:** Whenever `chunk_fraction < 1.0` is specified, the pipeline will **always** calculate the bounding boxes and explicitly export the underlying visualization data to distinct `.vti` files.
+*   **CLI Toggle:** A boolean argument `--export-grid-preview` will be used exclusively to toggle early termination.
+    *   If enabled, the script will generate the `.vti` exports and then **immediately terminate/exit** (`sys.exit(0)`).
+    *   If disabled, the script generates the exact same `.vti` exports but continues seamlessly into Phase 2.
 
 ### 2. Generating the Grid Mask
 *   Allocate a 3D numpy array of `uint8` (`grid_mask`) perfectly matching the dimensions of the raw probability field, initialized to zeros.
 *   As the orchestrator loops through the generated `core_bbox` definitions, the script will "paint" the boundaries of each chunk.
 *   Specifically, the 2D planar faces of every $Z, Y, X$ bounding box will be set to `255`, effectively drawing a 3D wireframe cage that explicitly outlines where the array is being severed.
 
-### 3. Multi-Channel VTK Export
-*   Using `pyvista`, initialize a single `pv.ImageData()` object matching the spatial dimensions and physical voxel spacing of the dataset.
-*   Add the raw probability field array to the point data (e.g., `vtk_vol.point_data["Probability"]`).
-*   Add the newly generated `grid_mask` to the point data as a separate channel (e.g., `vtk_vol.point_data["ChunkGrid"]`).
-*   Export this as a `.vti` file. 
+### 3. Distinct VTK Exports
+Using `pyvista`, the script will initialize multiple separate `pv.ImageData()` objects:
+*   **Dual Raw Anatomy Exports:** The pipeline will load the original, unprocessed `.tif` image (from `RAW_IMAGE_PATH`). It will explicitly perform *two* separate exports of this biological ground truth regardless of whether `--export-grid-preview` is toggled on or off:
+    1.  **Global Volume Export:** The absolute, uncropped, original TIFF volume is exported as `..._raw_anatomy_global.vti`.
+    2.  **Sub-Volume Export:** If the user specified an ROI via `--sub-volume`, the pipeline will crop the raw anatomy to perfectly align with the processing region and export it as `..._raw_anatomy_subvolume.vti`. (If no crop is specified, this simply mirrors the global volume).
+*   **Raw Probability Export:** The next `.vti` file will contain only the raw float probability field from Ilastik (`..._raw_probability.vti`).
+*   **Grid Mask Export:** A `.vti` file will contain only the binary wireframe chunk boundaries (`..._grid_preview.vti`).
+*   **Shannon-Entropy Export:** If `enable_shannon_entropy` is active, a final `.vti` file will be generated containing the calculated Shannon-entropy float field (`..._shannon_entropy.vti`).
 
-**ParaView Verification:** When opened in ParaView, the user can render the `Probability` field as a volume, and use a standard Threshold filter on the `ChunkGrid` channel to instantly overlay the glowing 3D wireframe boxes directly on top of the anatomy, guaranteeing that the calculated grid behaves exactly as requested.
+**ParaView Verification:** When opened in ParaView, the user can load these independent files simultaneously. By superimposing the reconstructed `vessel_mask.vti` (from Phase 2) or the `raw_probability.vti` directly on top of the `raw_anatomy_subvolume.vti`, the user can slice through the Z-axis and quantitatively/qualitatively assess exactly how well the mathematical preprocessing lines up with the true biological boundaries of the raw TIFF image *within the exact processing bounds*. Furthermore, comparing this to the `raw_anatomy_global.vti` allows the user to see the exact macroscopic context of their selected ROI. Rendering the `Shannon-Entropy` volume alongside these further allows the user to visually inform exactly where they should be placing their hard Shannon-entropy rejection threshold.
 
-## Phase 2: Localized Preprocessing Optimization and Binary Stitching
+### 4. Phase 1.5: Unit Testing Suite
+To ensure the robustness of the visualization generation and the correct handling of file I/O, the following tests will be implemented in a dedicated test file (e.g., `tests/test_vtk_export.py` or within existing preview tests):
+
+*   **`test_mandatory_vtk_generation`:**
+    *   **Logic:** Mock a 3D probability array, a 3D entropy array, and a 3D raw anatomical array. Execute the Phase 1.5 export block with `chunk_fraction = 0.5`.
+    *   **Assertion:** Intercept the `pv.ImageData().save()` calls. Verify that exactly five distinct `.vti` files are saved: `_raw_anatomy_global.vti`, `_raw_anatomy_subvolume.vti`, `_raw_probability.vti`, `_grid_preview.vti`, and `_shannon_entropy.vti`.
+*   **`test_dual_anatomy_export_alignment`:**
+    *   **Logic:** Provide a mock global TIFF volume of $100 \times 100 \times 100$, and configure `--sub-volume 0.5` to target the central $50 \times 50 \times 50$ core.
+    *   **Assertion:** Assert that the generated `_raw_anatomy_global.vti` object retains the full $1000000$ points, while the `_raw_anatomy_subvolume.vti` object correctly scales down to exactly $125000$ points matching the sub-volume geometry.
+*   **`test_grid_wireframe_painting`:**
+    *   **Logic:** Pass a synthesized $100 \times 100 \times 100$ bounding box dictionary into the grid masking algorithm.
+    *   **Assertion:** Mathematically verify that the `grid_mask` array contains `255` ONLY on the explicit 2D planar boundaries (e.g., $Z=0, Z=99$, etc.) and that the interior volume remains strictly `0`. This guarantees the wireframe is hollow and accurately demarcates the chunk.
+*   **`test_early_termination_toggle`:**
+    *   **Logic:** Execute the orchestrator twice using `unittest.mock.patch` on `sys.exit`. First run with `--export-grid-preview` enabled, second run with it disabled.
+    *   **Assertion:** Verify that the exports strictly occur *in both runs*, but that `sys.exit(0)` is invoked perfectly after the VTK export ONLY in the first run, explicitly bypassing the exit in the second run to allow the pipeline to proceed to Phase 2.
+
+## Phase 2: Localized Map-Reduce Preprocessing & Dual-Parameter Hysteresis
 
 **Objective:** Push the preprocessing Bayesian optimization loop (Optuna) into the localized Map-Reduce workers. This allows each individual chunk to independently tune its median filters and hysteresis thresholds to fit its specific local anatomical noise profile.
 
