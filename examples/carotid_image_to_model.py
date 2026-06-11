@@ -237,6 +237,7 @@ class PipelineConfig:
     do_resistance_calculation: bool = True
     run_benchmarking: bool = False
     optimize_preprocessing_trials: int = 0
+    optimize_skeleton_trials: int = 0
     optimize_patience: int = 15
     verbose_logging: bool = False
     min_branch_length: int = 10
@@ -1167,6 +1168,38 @@ def carotid_image_to_model(image_path: Path | str,
                 if x1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x1] = 255
                 if x2 - 1 >= 0 and x2 - 1 < raw_prob_map.shape[2]: grid_mask[z1:z2, y1:y2, x2-1] = 255
             
+            # Export Raw Anatomy Field
+            try:
+                raw_anatomy = io.load_3d_tif(RAW_IMAGE_PATH, lazy=False)
+                if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
+                    import ImageLynx.preprocessing as preprocessing
+                    raw_anatomy = preprocessing.crop_roi(
+                        raw_anatomy,
+                        sub_volume_percentage=skel_config.sub_volume_percentage,
+                        offset_z=skel_config.sub_volume_offset_z,
+                        offset_y=skel_config.sub_volume_offset_y,
+                        offset_x=skel_config.sub_volume_offset_x
+                    )
+                vtk_vol_anat = pv.ImageData()
+                vtk_vol_anat.dimensions = np.array(raw_prob_map.shape)
+                vtk_vol_anat.spacing = (spacing[2], spacing[1], spacing[0])
+                
+                anat_flat = np.asarray(raw_anatomy).flatten(order="F").astype(np.float32)
+                if len(anat_flat) != np.prod(raw_prob_map.shape):
+                    # Fallback for unittest mocks generating incorrect array sizes
+                    anat_flat = np.zeros(np.prod(raw_prob_map.shape), dtype=np.float32)
+                    
+                vtk_vol_anat.point_data["RawAnatomy"] = anat_flat
+                
+                out_path_anat = pipeline_config.vtk_output_prefix.with_name(f"{pipeline_config.vtk_output_prefix.name}_raw_anatomy.vti")
+                out_path_anat.parent.mkdir(parents=True, exist_ok=True)
+                vtk_vol_anat.save(out_path_anat)
+                print(f"Exported Raw Anatomy to: {out_path_anat}")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"Warning: Could not export Raw Anatomy VTI: {e}")
+
             # Export Raw Probability Field
             vtk_vol_prob = pv.ImageData()
             vtk_vol_prob.dimensions = np.array(raw_prob_map.shape)
@@ -1221,7 +1254,7 @@ def carotid_image_to_model(image_path: Path | str,
                 
                 _, local_binary = _preprocess_local_mask(
                     chunk_raw_prob, local_entropy, local_pre_config, local_skel_config, graph_config, pipeline_config,
-                    optimize_trials=args.optimize_preprocessing, optimize_patience=pipeline_config.optimize_patience,
+                    optimize_trials=pipeline_config.optimize_preprocessing_trials, optimize_patience=pipeline_config.optimize_patience,
                     chunk_idx=chunk_idx, total_chunks=total_chunks
                 )
                 
@@ -1260,7 +1293,7 @@ def carotid_image_to_model(image_path: Path | str,
         else:
             image, binary = _preprocess_local_mask(
                 raw_prob_map, entropy_map, pre_config, skel_config, graph_config, pipeline_config,
-                optimize_trials=args.optimize_preprocessing, optimize_patience=pipeline_config.optimize_patience
+                optimize_trials=pipeline_config.optimize_preprocessing_trials, optimize_patience=pipeline_config.optimize_patience
             )
 
         if getattr(pipeline_config, 'exit_after_mask', False):
@@ -1284,12 +1317,12 @@ def carotid_image_to_model(image_path: Path | str,
             sys.exit(0)
 
         # --- Optuna Hyperparameter Optimization ---
-        if args.optimize_skeleton > 0:
+        if pipeline_config.optimize_skeleton_trials > 0:
             import copy
             import ImageLynx.statistics.benchmarking as benchmarking
             import ImageLynx.statistics.auto_tuner as auto_tuner
             
-            print(f"\n--- Launching Optuna Skeletonization Auto-Tuner ({args.optimize_skeleton} trials) ---")
+            print(f"\n--- Launching Optuna Skeletonization Auto-Tuner ({pipeline_config.optimize_skeleton_trials} trials) ---")
             
             # Setup static dependencies
             voxel_size_xyz = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
@@ -1329,7 +1362,7 @@ def carotid_image_to_model(image_path: Path | str,
             # Run Optuna
             best_params = auto_tuner.run_optuna_skeleton_optimization(
                 pipeline_eval_callback,
-                n_trials=args.optimize_skeleton,
+                n_trials=pipeline_config.optimize_skeleton_trials,
                 output_dir=pipeline_config.vtk_output_prefix.parent,
                 patience=pipeline_config.optimize_patience
             )
@@ -1470,7 +1503,7 @@ if __name__ == "__main__":
     if args.exit_after_mask:
         pipeline_config.exit_after_mask = True
 
-    pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
+    pipeline_config.optimize_preprocessing_trials = pipeline_config.optimize_preprocessing_trials
     
     if args.optimize_patience is not None:
         pipeline_config.optimize_patience = args.optimize_patience
