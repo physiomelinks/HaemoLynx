@@ -11,17 +11,28 @@ ImageLynx turns 3D microvascular microscopy into **NetworkX graphs** with haemod
 ```
 ImageLynx/
 ├── src/ImageLynx/          # Installable package (setuptools, pythonpath = src in pytest)
-│   ├── io/                 # Load TIFF/H5, skeletonize, ilastik, vessel-mask loading
-│   ├── preprocessing/      # Skeleton cleaning, bridging, bundle refinement
-│   ├── graph/              # Skeleton → graph, topology repair, branch orders, boundaries
-│   ├── haemodynamics/      # Poiseuille weights, resistance, flow solve, FWHM diameters, pericytes
-│   ├── statistics/         # Network metrics, 3D cell-to-vessel distances
-│   └── visualization/      # Matplotlib/plotly plots, VTK export
+│   ├── io/                 # load.py, ilastik.py, voxel_validation.py,
+│   │                       #   automated_vessel_assignment.py (mask loading/validation)
+│   ├── preprocessing/      # skeleton.py — skeletonize, bridge, clean, bundle refinement
+│   ├── graph/              # assemble.py (orchestrator) + build, reconnect, optimise, degree2,
+│   │                       #   prune, collapse, branch_order, boundaries, large_vessels,
+│   │                       #   diagnostics, validate, _helpers,
+│   │                       #   automated_vessel_assignment.py (terminal-node assignment)
+│   ├── haemodynamics/      # poiseuille, resistance, pipeline, automated.py (FWHM diameters),
+│   │                       #   probability, pericyte_mask, pericyte_comparison
+│   ├── statistics/         # stats.py, 3D_distances.py (cell-to-vessel; imported via importlib)
+│   └── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
-│   ├── resistance_network_pipeline.py   # Main end-to-end example / CLI
-│   ├── resistance_pipeline_settings.py  # Default parameters and presets
-│   ├── preflight.py, wizard.py, presets.py
-│   └── carotid_image_to_model.py
+│   ├── resistance_network_pipeline.py        # Main end-to-end example / CLI (~1,270 lines)
+│   ├── resistance_network_pipeline_for_Alice.py  # Alice paper variant (~85% dup — see Cleanup Plan)
+│   ├── resistance_pipeline_settings.py       # Default parameter constants
+│   ├── presets.py          # Preset definitions + CLI/YAML override engine
+│   ├── local_presets.py    # User-local preset overrides (stub)
+│   ├── preflight.py        # Pre-run validation checklist
+│   ├── wizard.py           # Interactive setup
+│   ├── carotid_image_to_model.py  # Orphaned single-dataset variant (to be replaced by Dale)
+│   └── OLD/                # Dead pre-refactor scripts (see Cleanup Plan — slated for removal)
+├── AlicePaper.py           # Plotting util for the Alice sweep (at repo ROOT — see Cleanup Plan)
 ├── tutorials/
 │   ├── pipeline_tutorial.ipynb   # **Source of truth** for the step-by-step tutorial
 │   ├── pipeline_tutorial.py       # Auto-generated from the notebook (do not edit by hand)
@@ -32,6 +43,8 @@ ImageLynx/
 │   └── integration/        # Full-pipeline and tutorial tests (@pytest.mark.integration)
 └── tests/data/             # Small TIFF/H5 fixtures for tests and tutorial input
 ```
+
+> **Note:** there is an active repo-cleanup effort — see **“Cleanup plan”** at the end of this file. Some filenames above are slated to change.
 
 ---
 
@@ -139,10 +152,13 @@ GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` 
 ## Key modules (quick reference)
 
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
-- **`io/automated_vessel_assignment.py`** — `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks).
+- **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.*
+- **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).*
 - **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step.
+- **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from raw TIFF (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`). *“automated” is a misnomer; this is diameter estimation.*
 - **`haemodynamics/pipeline.py`** — high-level Poiseuille application used by examples and tutorial.
-- **`examples/resistance_pipeline_settings.py`** — constants, ilastik toggles, and presets for the main pipeline script.
+- **`statistics/3D_distances.py`** — cell-to-vessel distances. Module name starts with a digit, so it can’t be imported normally — `statistics/__init__.py` pulls it in via `importlib.import_module`.
+- **`examples/resistance_pipeline_settings.py`** — default constants and ilastik toggles; the preset/override engine lives in `examples/presets.py`.
 
 ---
 
@@ -171,3 +187,103 @@ pytest tests/test_graph.py -s
 # Regenerate tutorial Python from notebook
 pytest tests/integration/test_pipeline_tutorial.py -s
 ```
+
+---
+
+# Cleanup plan (TEMPORARY — delete this whole section once implemented)
+
+> **Status:** approved, not yet implemented. This is a living checklist. Tick items as PRs land,
+> and **remove this entire section** when every phase is done. Until then, treat the descriptions
+> above as the *current* state and the items below as the *target* state.
+>
+> **Baseline at time of writing:** `pytest -m "not slow"` → **99 passed, 1 skipped, 8 deselected**.
+> Re-run this (and the full `pytest`, including `slow`/`integration`) after **every** phase; no phase
+> may reduce the green count. Every behaviour change needs a test (see Testing policy above).
+
+### Goals
+Remove duplication, kill dead code, give modules names that match what they do, and make the
+examples thin — without regressing the test suite. Work in small, reviewable phases on `devel`,
+running tests between each.
+
+### Findings driving this plan
+- **Two files named `automated_vessel_assignment.py`** (`io/` = mask loading, `graph/` = terminal-node
+  assignment). No shared code — just a confusing name collision.
+- **`haemodynamics/automated.py`** is FWHM diameter measurement, not “automation”.
+- **`statistics/3D_distances.py`** starts with a digit → can’t be imported normally; loaded via an
+  `importlib` hack in `statistics/__init__.py`.
+- **`resistance_network_pipeline_for_Alice.py` (~1,790 lines) duplicates ~85%** of
+  `resistance_network_pipeline.py`; `AlicePaper.py` (plotting) sits at the repo root; `test_alice.py`
+  dynamically imports the Alice script. The reusable bits (pressure/boundary-flow solve, pericyte
+  dilation sweep) are copy-pasted, not shared.
+- **`graph/__init__.py` bug:** imports `create_merged_edge_attributes` twice and lists
+  `create_merged_edge_attributes_simple` / `_full` in `__all__` — neither is imported, so
+  `from ImageLynx.graph import *` raises `AttributeError`. (Confirmed reproducible.)
+- **Dependency drift:** `requirements.txt` and `pyproject.toml` disagree (scikit-image pin, missing
+  `pandas`/`ipykernel`, `pytest` in the wrong place). Two sources of truth.
+- **Dead code:** `examples/OLD/` (two pre-refactor scripts, imported by nothing).
+- The settings/preset system (`resistance_pipeline_settings.py` + `presets.py` + `preflight.py` +
+  `wizard.py`) is **not** duplicated — it’s a clean layered design. Leave its logic alone; just document.
+- **`examples/carotid_image_to_model.py`** is orphaned and has a latent bug (`PLOT_DIR` undefined).
+  **Decision: leave as-is for now** — it will be replaced by Dale’s additions. Do not invest in it.
+
+### Phase 0 — Housekeeping & safety net (lowest risk)
+- [ ] Delete `examples/OLD/`.
+- [ ] Confirm `.gitignore` covers both `.venv/` **and** `venv/`, plus `__pycache__/`, `examples/outputs/`,
+      `examples/plots/`, `tutorials/outputs/`, `tutorials/plots/`, `tests/outputs/`, `tests/plots/`,
+      `examples/images/`. (None are tracked today — keep it that way.)
+- [ ] Make dependencies single-source: keep `pyproject.toml` authoritative; either delete
+      `requirements.txt` or regenerate it from `pyproject.toml`. Reconcile the scikit-image pin
+      (`>=0.24` vs `<0.25`) and move `pytest` to the `dev` extra only.
+- [ ] Run full `pytest`. Commit.
+
+### Phase 1 — Fix the `graph/__init__.py` star-import bug (small, high value)
+- [ ] Remove the duplicate `create_merged_edge_attributes` import; reconcile `__all__` with what is
+      actually imported (drop the phantom `_simple`/`_full` names, or import the real symbols if they
+      exist in `_helpers.py`).
+- [ ] Add a regression test (e.g. `tests/test_graph_public_api.py`) that does `from ImageLynx.graph import *`
+      and asserts every name in `__all__` is importable. Do the same guard for the other subpackages’
+      `__all__` while we’re here.
+- [ ] Run full `pytest`. Commit.
+
+### Phase 2 — Rename modules for clarity (mechanical, test-guarded)
+Rename + update all imports in `src/`, `examples/`, `tests/`, and the `__init__.py` re-exports.
+Keep the **public function names** the same so the API surface doesn’t move; only file/module names change.
+- [ ] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`.
+- [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`.
+- [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py` (update `haemodynamics/__init__.py`,
+      `haemodynamics/pipeline.py`, and `statistics/3D_distances.py` which calls `build_graph_branch_label_volume`).
+- [ ] `statistics/3D_distances.py` → `statistics/distances_3d.py` (or `cell_distances.py`); drop the
+      `importlib` hack in `statistics/__init__.py` for a normal `from .distances_3d import ...`.
+      Rename `tests/test_3d_distances.py` references as needed.
+- [ ] Use `git mv` so history is preserved. Run full `pytest` after each rename. Commit per rename.
+
+### Phase 3 — De-duplicate the Alice workflow (refactor to reuse)
+Target end state: the Alice script becomes a thin wrapper over the canonical pipeline.
+- [ ] Extract the shared, reusable logic out of `resistance_network_pipeline_for_Alice.py` into a
+      proper module — the pressure/boundary-flow solve (`_solve_pressure_and_boundary_flow`) and the
+      pericyte-dilation pressure sweep (`_run_alice_pericyte_dilation_pressure_sweep`). Prefer
+      `src/ImageLynx/haemodynamics/` if the logic is generally useful (with tests under `tests/`),
+      otherwise a single `examples/alice_sweep.py`.
+- [ ] Move `AlicePaper.py` off the repo root → alongside the sweep code (e.g. `examples/alice_curves.py`
+      or `src/ImageLynx/visualization/`); update its importer.
+- [ ] Rewrite `resistance_network_pipeline_for_Alice.py` as a thin script: call the canonical
+      `image_to_model_pipeline` (with the Alice constraints/validation) + the extracted sweep — no more
+      copy-pasted pipeline body.
+- [ ] Point `tests/test_alice.py` at the extracted sweep module directly (not the giant script).
+- [ ] Run full `pytest` incl. `test_alice.py`. Commit.
+
+### Phase 4 — Thin out the examples / consolidate config (larger, do last)
+- [ ] `examples/resistance_network_pipeline.py`’s `image_to_model_pipeline()` is a ~1,000-line monolith.
+      Consider lifting the stage orchestration into a reusable `src/ImageLynx/pipeline.py` (segmentation →
+      skeletonize → graph → boundary/branch-order → haemodynamics → export/stats), leaving the example as
+      thin CLI + settings glue per the “keep `examples/` thin” convention. **Scope/measure before doing —
+      this is the biggest change; only proceed if it clearly reduces duplication with the Alice/carotid
+      variants.** Add unit tests per extracted stage.
+- [ ] Add a short “preset system” note to the README (settings constants → preset dicts → CLI/YAML overrides),
+      since the layering isn’t obvious from filenames.
+- [ ] Populate `examples/local_presets.py` with one realistic example preset (it’s currently an empty stub).
+
+### When done
+- [ ] Full `pytest` (incl. `slow`/`integration`) green; tutorial notebook still exports & runs.
+- [ ] Update the **Repository layout** and **Key modules** sections above to the new names, drop the
+      “Note”/misnomer caveats, and **delete this entire Cleanup plan section.**

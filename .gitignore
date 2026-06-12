@@ -1,10 +1,29 @@
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
-.pytest_cache/
 build/
 dist/
-examples/images/nerve_capillaries.tif
 
-examples/outputs/Nerve_capillaries_skeleton.npy
+# Tooling / editors
+.pytest_cache/
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# Generated pipeline outputs, plots, and input images (not source)
+examples/images/
+examples/outputs/
+examples/plots/
+tutorials/outputs/
+tutorials/plots/
+tests/outputs/
+tests/plots/
+
+# Stray notebook in OLD/ (slated for removal)
+examples/OLD/Latest_ithink_network12082025.ipynb
