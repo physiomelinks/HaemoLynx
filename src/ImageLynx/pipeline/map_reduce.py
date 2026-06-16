@@ -46,7 +46,7 @@ def map_reduce_pipeline(
     print(f"Executing {len(bboxes)} chunks across {n_jobs if n_jobs > 0 else 'all'} workers...")
     
     # Phase 2: Parallel Local Execution
-    results = Parallel(n_jobs=n_jobs)(
+    results = Parallel(n_jobs=n_jobs, verbose=50)(
         delayed(process_chunk)(item) for item in enumerate(bboxes, 1)
     )
     

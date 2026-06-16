@@ -1335,7 +1335,8 @@ def carotid_image_to_model(image_path: Path | str,
             import copy
             import ImageLynx.statistics.benchmarking as benchmarking
             import ImageLynx.statistics.auto_tuner as auto_tuner
-            
+            import ImageLynx.io as io
+
             print(f"\n--- Launching Optuna Skeletonization Auto-Tuner ({pipeline_config.optimize_skeleton_trials} trials) ---")
             
             # Setup static dependencies
@@ -1517,8 +1518,9 @@ if __name__ == "__main__":
     if args.exit_after_mask:
         pipeline_config.exit_after_mask = True
 
-    pipeline_config.optimize_preprocessing_trials = pipeline_config.optimize_preprocessing_trials
-    
+    pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
+    pipeline_config.optimize_skeleton_trials = args.optimize_skeleton
+
     if args.optimize_patience is not None:
         pipeline_config.optimize_patience = args.optimize_patience
 
