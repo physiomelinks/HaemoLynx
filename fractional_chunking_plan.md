@@ -83,8 +83,6 @@ Using `pyvista`, the script will initialize multiple separate `pv.ImageData()` o
 *   **Grid Mask Export:** A `.vti` file will contain only the binary wireframe chunk boundaries (`..._grid_preview.vti`).
 *   **Shannon-Entropy Export:** If `enable_shannon_entropy` is active, a final `.vti` file will be generated containing the calculated Shannon-entropy float field (`..._shannon_entropy.vti`).
 
-**ParaView Verification:** When opened in ParaView, the user can load these independent files simultaneously. By superimposing the reconstructed `vessel_mask.vti` (from Phase 2) or the `raw_probability.vti` directly on top of the `raw_anatomy_subvolume.vti`, the user can slice through the Z-axis and quantitatively/qualitatively assess exactly how well the mathematical preprocessing lines up with the true biological boundaries of the raw TIFF image *within the exact processing bounds*. Furthermore, comparing this to the `raw_anatomy_global.vti` allows the user to see the exact macroscopic context of their selected ROI. Rendering the `Shannon-Entropy` volume alongside these further allows the user to visually inform exactly where they should be placing their hard Shannon-entropy rejection threshold.
-
 ### 4. Phase 1.5: Unit Testing Suite
 To ensure the robustness of the visualization generation and the correct handling of file I/O, the following tests will be implemented in a dedicated test file (e.g., `tests/test_vtk_export.py` or within existing preview tests):
 
@@ -138,5 +136,34 @@ To guarantee the mathematical accuracy of the isolated image processing and the 
     *   **Logic:** Use Python's `unittest.mock` to spy on the `run_optuna_preprocessing_optimization` function. Execute the Map-Reduce pipeline with `--optimize-preprocessing 5`.
     *   **Assertion:** Verify that the Optuna auto-tuner was explicitly invoked exactly $N$ times (where $N$ is the number of generated chunks), proving that the Bayesian optimization is successfully localized and independently executed for every sub-volume.
 
----
-*Note: This plan will be expanded iteratively to include future phases.*
+## Phase 3: Localized Map-Reduce Skeletonization & Topological Stitching
+
+**Objective:** Apply the exact same fractional chunking methodology used in Phase 2 to the skeletonization processing. This pushes the skeletonization Optuna loop into the localized workers, allowing each chunk to independently optimize its branching lengths and smoothing parameters.
+
+### 1. Encapsulating the Skeletonization Worker Function
+A new worker function `skeletonize_local_chunk(chunk_binary_mask, bbox)` will be constructed.
+*   **Input:** The `chunk_binary_mask` generated from the previously stitched post-optimized global vessel mask (extracted using `padded_bbox` to include the overlap safety margin).
+*   **Skeletonization Optimization:** If `--optimize-skeleton > 0` is set, a localized Optuna study is launched for this chunk to tune skeletonization parameters (e.g., `min_branch_length`, `bundle_scan_size`) specifically for the local vessel density and artifact topology.
+*   **Local Skeleton Generation:** The worker applies the optimal parameters to skeletonize the chunk, generating a 1D line boolean array (`local_skeleton`).
+*   **Output:** The worker strips the padded margin and returns the isolated `local_core_skeleton` boolean array.
+
+### 2. Map-Reduce Skeleton Stitching
+*   The same `joblib.Parallel` orchestrator from Phase 2 will execute the `skeletonize_local_chunk` workers across all CPU cores.
+*   The orchestrator will allocate an empty global boolean array (`stitched_skeleton_mask`).
+*   As chunks return their `local_core_skeleton` arrays, they are slotted directly into the `stitched_skeleton_mask` at their exact coordinates.
+
+### 3. Global Topological Reconnection
+Because skeletons are exactly 1-voxel wide, simple coordinate-based array stitching might result in 1-voxel micro-disconnections right at the boundaries of the chunks if the local algorithms morphed the vessels slightly differently.
+*   To resolve this, the globally stitched array will undergo a final, rapid topological reconnection pass (e.g., a localized morphological bridging or a KDTree edge reconnect algorithm specifically along the boundaries) to guarantee that the stitched 1D network remains globally continuous before it is converted into a `networkx` graph.
+
+### 4. Phase 3: Unit Testing Suite
+To ensure the robustness of the fractional skeletonization, the following tests will be added:
+*   **`test_localized_skeleton_optuna_invocation`:**
+    *   **Logic:** Execute the Phase 3 Map-Reduce orchestrator with a mock vessel mask and `--optimize-skeleton 5`.
+    *   **Assertion:** Spy on `run_optuna_skeleton_optimization` and mathematically verify it is explicitly called exactly $N$ times (once for each sub-volume chunk).
+*   **`test_skeleton_chunk_stitching_dimensions`:**
+    *   **Logic:** Pass a mocked global binary vessel mask into the Phase 3 orchestrator.
+    *   **Assertion:** Verify that the output `stitched_skeleton_mask` perfectly matches the original global dimensions with no out-of-bounds exceptions or off-by-one shifts.
+*   **`test_skeleton_boundary_continuity`:**
+    *   **Logic:** Synthesize a straight 1-voxel thick continuous line that intentionally crosses a chunk boundary.
+    *   **Assertion:** Following the Map-Reduce split, local skeletonization, stitching, and topological reconnection, assert that the resulting line remains 100% physically connected across the boundary in the final array.

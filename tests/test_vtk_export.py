@@ -186,5 +186,5 @@ def test_early_termination_toggle():
              pass # We only care that it proceeded past the sys.exit block
          
          assert mock_exit.call_count == 0
-         # Ensure it proceeded to Phase 2 (map_reduce_pipeline)
-         assert mock_mr.call_count == 1
+         # Ensure it proceeded to Phase 2 and Phase 3 (map_reduce_pipeline called twice)
+         assert mock_mr.call_count == 2

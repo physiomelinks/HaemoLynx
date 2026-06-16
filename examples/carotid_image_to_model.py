@@ -1330,65 +1330,141 @@ def carotid_image_to_model(image_path: Path | str,
             print("Exiting pipeline early as requested (--exit-after-mask).")
             sys.exit(0)
 
-        # --- Optuna Hyperparameter Optimization ---
-        if pipeline_config.optimize_skeleton_trials > 0:
-            import copy
-            import ImageLynx.statistics.benchmarking as benchmarking
-            import ImageLynx.statistics.auto_tuner as auto_tuner
+        # --- Phase 3: Localized Map-Reduce Skeletonization & Topological Stitching ---
+        if getattr(pipeline_config, 'chunk_fraction', None) is not None and pipeline_config.chunk_fraction < 1.0:
+            print(f"\n--- Launching Map-Reduce Skeletonization Architecture (fraction={pipeline_config.chunk_fraction}) ---")
+            from ImageLynx.pipeline.map_reduce import map_reduce_pipeline
             import ImageLynx.io as io
-
-            print(f"\n--- Launching Optuna Skeletonization Auto-Tuner ({pipeline_config.optimize_skeleton_trials} trials) ---")
             
-            # Setup static dependencies
-            voxel_size_xyz = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
-            
-            def pipeline_eval_callback(suggested_kwargs):
-                # Apply suggested parameters
-                test_skel_config = copy.deepcopy(skel_config)
-                for k, v in suggested_kwargs.items():
-                    setattr(test_skel_config, k, v)
+            def skeletonize_local_chunk(chunk_binary_mask, bbox, chunk_idx, total_chunks):
+                import copy
+                local_skel_config = copy.deepcopy(skel_config)
+                
+                # We need the raw probability chunk for FWHM evaluation during Optuna
+                pz1, pz2, py1, py2, px1, px2 = bbox['padded']
+                chunk_raw_prob = raw_prob_map[pz1:pz2, py1:py2, px1:px2]
+                
+                if pipeline_config.optimize_skeleton_trials > 0:
+                    import ImageLynx.statistics.benchmarking as benchmarking
+                    import ImageLynx.statistics.auto_tuner as auto_tuner
                     
-                # 1. Skeletonize
-                test_skeleton = _run_skeletonization_phase(binary, test_skel_config)
-                
-                # 2. Build Graph (Silently)
-                test_pipeline_config = copy.deepcopy(pipeline_config)
-                test_pipeline_config.verbose_logging = False # Reduce log spam
-                
-                # We do not want to save intermediate files during optimization
-                import tempfile
-                import os
-                
-                # Temporarily disable file I/O for the graph builder by passing dummy paths or patching
-                # Since _build_and_optimize_graph writes to disk, we run it normally but ignore output
-                # (The pipeline function does I/O, but we only care about the returned G)
-                test_G = _build_and_optimize_graph(
-                    test_skeleton, image, image_path, input_format, 
-                    test_skel_config, graph_config, test_pipeline_config
-                )
-                
-                if test_G.number_of_nodes() == 0 or test_G.number_of_edges() == 0:
-                    return None # Prune
+                    print(f"\n--- [Chunk {chunk_idx}/{total_chunks}] Launching Optuna Skeletonization Auto-Tuner ({pipeline_config.optimize_skeleton_trials} trials) ---", flush=True)
                     
-                # 3. Evaluate Benchmarks
-                bench_results = benchmarking.run_all_benchmarks(test_G, binary, voxel_size_xyz)
-                return bench_results
+                    voxel_size_xyz = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+                    
+                    def pipeline_eval_callback(suggested_kwargs):
+                        test_skel_config = copy.deepcopy(local_skel_config)
+                        for k, v in suggested_kwargs.items():
+                            setattr(test_skel_config, k, v)
+                            
+                        test_skeleton = _run_skeletonization_phase(chunk_binary_mask, test_skel_config)
+                        
+                        test_pipeline_config = copy.deepcopy(pipeline_config)
+                        test_pipeline_config.verbose_logging = False # Reduce log spam
+                        
+                        test_G = _build_and_optimize_graph(
+                            test_skeleton, chunk_raw_prob, image_path, input_format, 
+                            test_skel_config, graph_config, test_pipeline_config
+                        )
+                        
+                        if test_G.number_of_nodes() == 0 or test_G.number_of_edges() == 0:
+                            return None # Prune
+                            
+                        bench_results = benchmarking.run_all_benchmarks(test_G, chunk_binary_mask, voxel_size_xyz)
+                        return bench_results
 
-            # Run Optuna
-            best_params = auto_tuner.run_optuna_skeleton_optimization(
-                pipeline_eval_callback,
-                n_trials=pipeline_config.optimize_skeleton_trials,
-                output_dir=pipeline_config.vtk_output_prefix.parent,
-                patience=pipeline_config.optimize_patience
+                    best_params = auto_tuner.run_optuna_skeleton_optimization(
+                        pipeline_eval_callback,
+                        n_trials=pipeline_config.optimize_skeleton_trials,
+                        output_dir=pipeline_config.vtk_output_prefix.parent,
+                        patience=pipeline_config.optimize_patience
+                    )
+                    
+                    for k, v in best_params.items():
+                        setattr(local_skel_config, k, v)
+                        
+                local_skeleton = _run_skeletonization_phase(chunk_binary_mask, local_skel_config)
+                
+                cz1, cz2, cy1, cy2, cx1, cx2 = bbox['core']
+                rel_z1 = cz1 - pz1
+                rel_z2 = rel_z1 + (cz2 - cz1)
+                rel_y1 = cy1 - py1
+                rel_y2 = rel_y1 + (cy2 - cy1)
+                rel_x1 = cx1 - px1
+                rel_x2 = rel_x1 + (cx2 - cx1)
+                
+                local_core_skeleton = local_skeleton[rel_z1:rel_z2, rel_y1:rel_y2, rel_x1:rel_x2]
+                return local_core_skeleton
+                
+            skeleton = map_reduce_pipeline(
+                volume=binary,
+                chunk_fraction=pipeline_config.chunk_fraction,
+                margin=pipeline_config.margin,
+                worker_fn=skeletonize_local_chunk,
+                n_jobs=pipeline_config.n_jobs
             )
             
-            # Apply Best Parameters permanently
-            print("\nApplying optimal parameters to pipeline...")
-            for k, v in best_params.items():
-                setattr(skel_config, k, v)
-        # ------------------------------------------
+            print("Performing topological reconnection on stitched skeleton boundaries...")
+            import skimage.morphology as morph
+            from skimage.morphology import skeletonize as skimage_skeletonize
+            # Close 1-voxel gaps at chunk boundaries, then re-skeletonize to ensure 1D network
+            skeleton = morph.closing(skeleton, morph.cube(3))
+            skeleton = skimage_skeletonize(skeleton) > 0
 
-        skeleton = _run_skeletonization_phase(binary, skel_config)
+        else:
+            # --- Global Optuna Hyperparameter Optimization ---
+            if pipeline_config.optimize_skeleton_trials > 0:
+                import copy
+                import ImageLynx.statistics.benchmarking as benchmarking
+                import ImageLynx.statistics.auto_tuner as auto_tuner
+                import ImageLynx.io as io
+    
+                print(f"\n--- Launching Optuna Skeletonization Auto-Tuner ({pipeline_config.optimize_skeleton_trials} trials) ---")
+                
+                # Setup static dependencies
+                voxel_size_xyz = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+                
+                def pipeline_eval_callback(suggested_kwargs):
+                    # Apply suggested parameters
+                    test_skel_config = copy.deepcopy(skel_config)
+                    for k, v in suggested_kwargs.items():
+                        setattr(test_skel_config, k, v)
+                        
+                    # 1. Skeletonize
+                    test_skeleton = _run_skeletonization_phase(binary, test_skel_config)
+                    
+                    # 2. Build Graph (Silently)
+                    test_pipeline_config = copy.deepcopy(pipeline_config)
+                    test_pipeline_config.verbose_logging = False # Reduce log spam
+                    
+                    test_G = _build_and_optimize_graph(
+                        test_skeleton, image, image_path, input_format, 
+                        test_skel_config, graph_config, test_pipeline_config
+                    )
+                    
+                    if test_G.number_of_nodes() == 0 or test_G.number_of_edges() == 0:
+                        return None # Prune
+                        
+                    # 3. Evaluate Benchmarks
+                    bench_results = benchmarking.run_all_benchmarks(test_G, binary, voxel_size_xyz)
+                    return bench_results
+    
+                # Run Optuna
+                best_params = auto_tuner.run_optuna_skeleton_optimization(
+                    pipeline_eval_callback,
+                    n_trials=pipeline_config.optimize_skeleton_trials,
+                    output_dir=pipeline_config.vtk_output_prefix.parent,
+                    patience=pipeline_config.optimize_patience
+                )
+                
+                # Apply Best Parameters permanently
+                print("\nApplying optimal parameters to pipeline...")
+                for k, v in best_params.items():
+                    setattr(skel_config, k, v)
+            # ------------------------------------------
+    
+            skeleton = _run_skeletonization_phase(binary, skel_config)
+            
         np.save(skeleton_path, skeleton)
         
         # Export the post-processed binary volume to .vti for ParaView
