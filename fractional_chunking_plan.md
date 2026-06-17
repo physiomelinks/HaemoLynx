@@ -167,3 +167,36 @@ To ensure the robustness of the fractional skeletonization, the following tests 
 *   **`test_skeleton_boundary_continuity`:**
     *   **Logic:** Synthesize a straight 1-voxel thick continuous line that intentionally crosses a chunk boundary.
     *   **Assertion:** Following the Map-Reduce split, local skeletonization, stitching, and topological reconnection, assert that the resulting line remains 100% physically connected across the boundary in the final array.
+
+## Phase 4: Intermediate Caching & Pipeline Short-Circuiting
+
+**Objective:** Automatically bundle and save the heavily optimized binary mask, 1D skeleton array, and the finalized topological graph to a dedicated cache directory. Introduce a path-based command-line short-circuit that allows the pipeline to bypass the computationally expensive Map-Reduce/Optuna phases on subsequent runs by loading these exact artifacts.
+
+### 1. The "Holy Trinity" Artifact Cache
+During a standard run of the pipeline, immediately after they are finalized, three critical artifacts will be explicitly saved to disk:
+1.  `vessel_mask.npy` (The 3D global binary volume, saved natively for the first time).
+2.  `skeleton.npy` (The 1D mathematical centerlines).
+3.  `network_graph.pkl` (The finalized NetworkX topological graph containing physical FWHM radiuses).
+
+*   **Storage Location:** To prevent cross-contamination between different scans (e.g., WKY vs SHR), these files will be dynamically stored in a dedicated sub-folder within the `outputs/` directory (e.g., `outputs/<image_stem>_cache/`).
+*   **Workspace Cleanup:** The legacy code inside `carotid_image_to_model.py` that dumps `skeleton.npy` and `graph.pkl` directly into the raw source image directory (`examples/images/...`) will be completely stripped out to keep the input folders pristine.
+
+### 2. The Short-Circuit Execution Path
+*   **CLI Argument:** A new string argument, `--use-cache-dir <path/to/folder>`, will be added to `argparse`.
+*   **Bypass Logic:** When the user points this flag to a valid cache directory:
+    1.  The pipeline completely skips Ilastik inference, probability loading, Phase 2 Map-Reduce Preprocessing, Phase 3 Map-Reduce Skeletonization, and Graph Building.
+    2.  It aggressively loads all three files (`mask.npy`, `skeleton.npy`, `graph.pkl`) directly from the specified folder.
+    3.  The pipeline resumes normal operation immediately *after* graph building, dropping the user straight into boundary condition assignment and the hemodynamic fluid flow/pressure matrix solvers.
+*   **Failsafe:** If the flag is provided but the specified directory is missing any of the three required artifacts, the orchestrator will instantly raise a clear `FileNotFoundError` explaining that the cache is incomplete.
+
+### 3. Phase 4: Unit Testing Suite
+To guarantee the resilience of the short-circuiting logic, the following tests will be added:
+*   **`test_cache_saving_on_full_run`:**
+    *   **Logic:** Execute an abbreviated run of the pipeline with the short-circuit flag disabled.
+    *   **Assertion:** Verify that the dynamic `<image_stem>_cache` directory is successfully created in the outputs folder and that all three artifacts (`vessel_mask.npy`, `skeleton.npy`, `network_graph.pkl`) are explicitly written to disk.
+*   **`test_pipeline_short_circuit_loads_cache`:**
+    *   **Logic:** Pre-populate a dummy cache directory with mock `.npy` and `.pkl` files. Run the pipeline with `--use-cache-dir`. Spy on the `_preprocess_local_mask`, `_run_skeletonization_phase`, and `_build_and_optimize_graph` functions.
+    *   **Assertion:** Assert that the call counts for the preprocessing, skeletonization, and graph building engines are strictly `0`. Assert that the downstream boundary condition logic receives the exact mocked arrays loaded from disk, proving the bypass was flawlessly executed.
+*   **`test_missing_cache_raises_error`:**
+    *   **Logic:** Run the pipeline with the `--use-cache-dir` flag pointing to an empty or partially filled mock directory.
+    *   **Assertion:** Use `pytest.raises` to guarantee the pipeline safely aborts with a `FileNotFoundError` rather than crashing downstream with `NoneType` variables.

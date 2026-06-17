@@ -182,3 +182,82 @@ def test_skeleton_boundary_continuity():
     
     labels, num_features = label(stitched > 0, return_num=True)
     assert num_features == 1, "Line must be fully connected after topological stitch!"
+
+def test_cache_saving_on_full_run(tmp_path):
+    """Verify that the holy trinity cache is created on a standard run."""
+    from carotid_image_to_model import carotid_image_to_model, PipelineConfig
+    
+    # We will run the pipeline with dummy data and exit early after skeletonization
+    config = PipelineConfig()
+    config.vtk_output_prefix = tmp_path / "dummy_network"
+    config.do_graph_building = True # Needed to save the graph.pkl
+    
+    with patch('carotid_image_to_model._load_raw_probability_field') as mock_load, \
+         patch('ImageLynx.pipeline.map_reduce.map_reduce_pipeline') as mock_mr, \
+         patch('carotid_image_to_model._run_skeletonization_phase') as mock_skel, \
+         patch('carotid_image_to_model._build_and_optimize_graph') as mock_build, \
+         patch('carotid_image_to_model._setup_boundary_conditions_and_haemodynamics') as mock_bc, \
+         patch('carotid_image_to_model._export_and_solve_haemodynamics') as mock_hemo, \
+         patch('pyvista.ImageData.save'), \
+         patch('carotid_image_to_model.io.load_3d_tif'):
+         
+        mock_load.return_value = (np.zeros((10,10,10), dtype=np.float32), None)
+        mock_mr.return_value = np.zeros((10,10,10), dtype=np.uint8)
+        mock_skel.return_value = np.zeros((10,10,10), dtype=bool)
+        import networkx as nx
+        mock_build.return_value = nx.Graph()
+        mock_bc.return_value = ([], [], [])
+        
+        carotid_image_to_model("dummy.tif", pipeline_config=config)
+        
+        cache_dir = tmp_path / "dummy_network".replace("dummy_network", "dummy_cache")
+        # Wait, vtk_output_prefix is dummy_network. parent is tmp_path. stem is dummy. So it will be dummy_cache!
+        assert cache_dir.exists(), "Cache directory was not created!"
+        assert (cache_dir / "vessel_mask.npy").exists(), "vessel_mask.npy was not cached!"
+        assert (cache_dir / "skeleton.npy").exists(), "skeleton.npy was not cached!"
+        assert (cache_dir / "network_graph.pkl").exists(), "network_graph.pkl was not cached!"
+
+def test_pipeline_short_circuit_loads_cache(tmp_path):
+    """Verify that providing the cache dir flag bypasses all heavy processing."""
+    from carotid_image_to_model import carotid_image_to_model, PipelineConfig
+    
+    config = PipelineConfig()
+    config.vtk_output_prefix = tmp_path / "dummy_network"
+    config.pre_generated_mask_and_skeleton = True
+    config.do_graph_building = False
+    
+    # Create the mock cache
+    cache_dir = tmp_path / "dummy_cache"
+    cache_dir.mkdir(parents=True)
+    np.save(cache_dir / "vessel_mask.npy", np.zeros((10,10,10), dtype=np.uint8))
+    np.save(cache_dir / "skeleton.npy", np.zeros((10,10,10), dtype=bool))
+    import pickle
+    with open(cache_dir / "network_graph.pkl", "wb") as f:
+        import networkx as nx
+        pickle.dump(nx.Graph(), f)
+        
+    with patch('carotid_image_to_model._load_raw_probability_field') as mock_load, \
+         patch('ImageLynx.pipeline.map_reduce.map_reduce_pipeline') as mock_mr, \
+         patch('carotid_image_to_model._run_skeletonization_phase') as mock_skel, \
+         patch('carotid_image_to_model._setup_boundary_conditions_and_haemodynamics') as mock_bc, \
+         patch('carotid_image_to_model._export_and_solve_haemodynamics') as mock_hemo:
+         
+        mock_bc.return_value = ([], [], [])
+        carotid_image_to_model("dummy.tif", pipeline_config=config)
+        
+        # Assert none of the heavy lifters were called
+        assert mock_load.call_count == 0, "Ilastik load was not bypassed!"
+        assert mock_mr.call_count == 0, "Map-Reduce was not bypassed!"
+        assert mock_skel.call_count == 0, "Skeletonization was not bypassed!"
+
+def test_missing_cache_raises_error(tmp_path):
+    """Verify failsafe triggers if the cache is missing but flag is True."""
+    from carotid_image_to_model import carotid_image_to_model, PipelineConfig
+    
+    config = PipelineConfig()
+    config.vtk_output_prefix = tmp_path / "dummy_network"
+    config.pre_generated_mask_and_skeleton = True
+    
+    # No cache directory created
+    with pytest.raises(FileNotFoundError, match="Cache directory.*not found|is incomplete"):
+        carotid_image_to_model("dummy.tif", pipeline_config=config)

@@ -11,6 +11,7 @@ import tifffile
 import numpy as np
 import networkx as nx
 from dataclasses import dataclass, field
+import pickle
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -247,7 +248,8 @@ class PipelineConfig:
     margin: int = 32
     n_jobs: int = -1
     export_grid_preview: bool = False
-    exit_after_mask: bool = False 
+    exit_after_mask: bool = False
+    pre_generated_mask_and_skeleton: bool = False 
 
 class IlastikClassifier():
     """Wrapper for the Ilastik headless engine to perform pixel classification."""
@@ -1139,8 +1141,40 @@ def carotid_image_to_model(image_path: Path | str,
         format="[%(levelname)s] %(message)s",
     )
 
-    skeleton_path = image_path.with_name(f"{image_path.stem}_skeleton.npy")
-    graph_path = image_path.with_name(f"{image_path.stem}_graph.pkl")
+    # --- Phase 4: Intermediate Caching & Pipeline Short-Circuiting ---
+    cache_dir = pipeline_config.vtk_output_prefix.parent / f"{image_path.stem}_cache"
+    if getattr(pipeline_config, 'pre_generated_mask_and_skeleton', False):
+        if not cache_dir.exists():
+            raise FileNotFoundError(f"Cache directory {cache_dir} not found. A standard run must be completed first to populate the cache.")
+        
+        mask_path = cache_dir / "vessel_mask.npy"
+        skeleton_path = cache_dir / "skeleton.npy"
+        graph_path = cache_dir / "network_graph.pkl"
+        
+        if not (mask_path.exists() and skeleton_path.exists() and graph_path.exists()):
+            raise FileNotFoundError(f"Cache directory {cache_dir} is incomplete. Expected vessel_mask.npy, skeleton.npy, and network_graph.pkl.")
+            
+        print(f"\n--- [Phase 4] Short-Circuiting Pipeline. Loading artifacts from {cache_dir} ---")
+        binary = np.load(mask_path)
+        skeleton = np.load(skeleton_path)
+        
+        with graph_path.open("rb") as f:
+            G = pickle.load(f)
+            
+        import ImageLynx.io as io
+        image = io.load_3d_tif(RAW_IMAGE_PATH, lazy=False) if input_format == "tif" else np.zeros((1,1,1))
+        
+        # Bypass straight to downstream logic
+        pipeline_config.do_skeletonize = False
+        pipeline_config.do_graph_building = False
+        
+    else:
+        # We will write to the cache dir
+        mask_path = cache_dir / "vessel_mask.npy"
+        skeleton_path = cache_dir / "skeleton.npy"
+        graph_path = cache_dir / "network_graph.pkl"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
     projection_path = pipeline_config.plot_dir / "skeleton_projection.png"
     if not pipeline_config.plot_dir.exists():
         pipeline_config.plot_dir.mkdir(parents=True, exist_ok=True)
@@ -1466,6 +1500,9 @@ def carotid_image_to_model(image_path: Path | str,
             skeleton = _run_skeletonization_phase(binary, skel_config)
             
         np.save(skeleton_path, skeleton)
+        np.save(mask_path, binary)
+        print(f"Saved binary mask cache to: {mask_path}")
+        print(f"Saved skeleton cache to: {skeleton_path}")
         
         # Export the post-processed binary volume to .vti for ParaView
         import pyvista as pv
@@ -1489,7 +1526,7 @@ def carotid_image_to_model(image_path: Path | str,
         except Exception as e:
             print(f"Warning: Failed to export binary volume to VTK: {e}")
             
-    else:
+    elif not getattr(pipeline_config, 'pre_generated_mask_and_skeleton', False):
         skeleton = np.load(skeleton_path)
         image = tifffile.imread(image_path)
         binary = None
@@ -1542,6 +1579,7 @@ if __name__ == "__main__":
     parser.add_argument("--chunk-fraction", type=float, default=None, help="Fractional size for map-reduce chunking (e.g. 0.25)")
     parser.add_argument("--export-grid-preview", action="store_true", help="Export the raw probability field with the calculated chunk grid superimposed and exit.")
     parser.add_argument("--exit-after-mask", action="store_true", help="Export the locally-optimized stitched binary mask and exit.")
+    parser.add_argument("--use-cache-dir", action="store_true", help="Load artifacts from the dynamic image cache directory, bypassing preprocessing/skeletonization.")
     args = parser.parse_args()
 
     # 1. Initialize Default Configurations
@@ -1593,6 +1631,9 @@ if __name__ == "__main__":
 
     if args.exit_after_mask:
         pipeline_config.exit_after_mask = True
+        
+    if args.use_cache_dir:
+        pipeline_config.pre_generated_mask_and_skeleton = True
 
     pipeline_config.optimize_preprocessing_trials = args.optimize_preprocessing
     pipeline_config.optimize_skeleton_trials = args.optimize_skeleton
