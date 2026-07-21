@@ -208,6 +208,8 @@ class PreprocessingObjective:
         fragmentation = bench_results.get("fragmentation", 1000)
         surface_ratio = bench_results.get("surface_area_ratio", 1.0)
         euler_char = bench_results.get("euler_characteristic", 1)
+        mean_uncertainty = bench_results.get("mean_uncertainty", 0.0)
+        high_unc_frac = bench_results.get("high_uncertainty_fraction", 0.0)
 
         # Base penalty: Missing Confidence
         loss = (1.0 - confidence) * 100.0
@@ -230,6 +232,12 @@ class PreprocessingObjective:
         # Penalty: Swiss Cheese (Negative Euler characteristic)
         if euler_char < 1:
             loss += abs(euler_char - 1) * 10.0
+
+        # Penalty: Uncertainty
+        # Soft pressure to improve overall certainty
+        loss += mean_uncertainty * 20.0
+        # Severe penalty for retaining dangerous noise (entropy > 0.8)
+        loss += high_unc_frac * 1000.0
 
         return loss
 

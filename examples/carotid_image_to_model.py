@@ -555,7 +555,7 @@ def _preprocess_local_mask(raw_prob_map, entropy_map, pre_config, skel_config, g
                 raw_prob_map, entropy_map, test_config_dict, 
                 boundary_permeability_mode=graph_config.boundary_permeability_mode
             )
-            return benchmarking.run_all_preprocessing_benchmarks(raw_prob_map, test_binary)
+            return benchmarking.run_all_preprocessing_benchmarks(raw_prob_map, test_binary, entropy_map)
         best_pre_params = auto_tuner.run_optuna_preprocessing_optimization(
             pre_eval_callback, n_trials=optimize_trials,
             output_dir=pipeline_config.vtk_output_prefix.parent,

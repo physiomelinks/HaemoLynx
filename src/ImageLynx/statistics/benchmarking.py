@@ -269,6 +269,17 @@ def evaluate_preprocessing_confidence(prob_map: np.ndarray, binary_mask: np.ndar
     
     return {"confidence": mean_confidence, "probability_yield": prob_yield}
 
+def evaluate_preprocessing_uncertainty(entropy_map: np.ndarray, binary_mask: np.ndarray) -> Dict[str, float]:
+    """Calculates the mean uncertainty and the fraction of preserved voxels with dangerous uncertainty."""
+    if not binary_mask.any():
+        return {"mean_uncertainty": 0.0, "high_uncertainty_fraction": 0.0}
+    
+    preserved_entropy = entropy_map[binary_mask]
+    mean_unc = float(np.mean(preserved_entropy))
+    high_unc_frac = float(np.sum(preserved_entropy > 0.8) / preserved_entropy.size)
+    
+    return {"mean_uncertainty": mean_unc, "high_uncertainty_fraction": high_unc_frac}
+
 def evaluate_preprocessing_crispness(prob_map: np.ndarray, binary_mask: np.ndarray) -> float:
     """
     Calculates the 3D gradient magnitude on the raw image to find sharp edges,
@@ -324,7 +335,7 @@ def evaluate_preprocessing_euler_characteristic(binary_mask: np.ndarray) -> int:
     except Exception:
         return 0
 
-def run_all_preprocessing_benchmarks(prob_map: np.ndarray, binary_mask: np.ndarray) -> Dict[str, Any]:
+def run_all_preprocessing_benchmarks(prob_map: np.ndarray, binary_mask: np.ndarray, entropy_map: np.ndarray = None) -> Dict[str, Any]:
     """Executes the reference-free benchmarking suite for voxel preprocessing."""
     results = {}
     try:
@@ -333,6 +344,14 @@ def run_all_preprocessing_benchmarks(prob_map: np.ndarray, binary_mask: np.ndarr
         results["probability_yield"] = conf_results["probability_yield"]
     except Exception as e:
         logger.error(f"Failed Confidence Benchmark: {e}")
+        
+    if entropy_map is not None:
+        try:
+            unc_results = evaluate_preprocessing_uncertainty(entropy_map, binary_mask)
+            results["mean_uncertainty"] = unc_results["mean_uncertainty"]
+            results["high_uncertainty_fraction"] = unc_results["high_uncertainty_fraction"]
+        except Exception as e:
+            logger.error(f"Failed Uncertainty Benchmark: {e}")
         
     try:
         results["crispness"] = evaluate_preprocessing_crispness(prob_map, binary_mask)

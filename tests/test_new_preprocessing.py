@@ -155,3 +155,32 @@ def test_joint_hysteresis_validation():
         joint_hysteresis_threshold(prob, ent, low=0.8, high=0.4)
     with pytest.raises(ValueError):
         joint_hysteresis_threshold(prob, ent, shannon_core=0.9, shannon_max=0.5)
+
+def test_evaluate_preprocessing_uncertainty():
+    from ImageLynx.statistics.benchmarking import evaluate_preprocessing_uncertainty
+    
+    # 10x10x10 arrays
+    ent = np.zeros((10, 10, 10), dtype=np.float32)
+    binary = np.zeros((10, 10, 10), dtype=bool)
+    
+    # Empty mask should return 0
+    res = evaluate_preprocessing_uncertainty(ent, binary)
+    assert res["mean_uncertainty"] == 0.0
+    assert res["high_uncertainty_fraction"] == 0.0
+    
+    # 10 voxels kept
+    binary[0:10, 0, 0] = True
+    
+    # 5 voxels are highly uncertain (0.9), 5 are very certain (0.1)
+    ent[0:5, 0, 0] = 0.9
+    ent[5:10, 0, 0] = 0.1
+    
+    res2 = evaluate_preprocessing_uncertainty(ent, binary)
+    assert res2["mean_uncertainty"] == pytest.approx(0.5)
+    # 5 out of 10 voxels have entropy > 0.8
+    assert res2["high_uncertainty_fraction"] == pytest.approx(0.5)
+    
+    # Let's test the threshold exact boundary
+    ent[0:5, 0, 0] = 0.79  # Less than 0.8
+    res3 = evaluate_preprocessing_uncertainty(ent, binary)
+    assert res3["high_uncertainty_fraction"] == 0.0
