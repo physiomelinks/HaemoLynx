@@ -17,6 +17,7 @@ from .image import (
     median_filter_image,
     morphological_opening,
     hysteresis_threshold,
+    joint_hysteresis_threshold,
     calculate_entropy_map,
 )
 
@@ -36,5 +37,6 @@ __all__ = [
     "median_filter_image",
     "morphological_opening",
     "hysteresis_threshold",
+    "joint_hysteresis_threshold",
     "calculate_entropy_map",
 ]

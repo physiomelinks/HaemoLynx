@@ -174,6 +174,66 @@ def hysteresis_threshold(
 
     return apply_hysteresis_threshold(image, low, high)
 
+def joint_hysteresis_threshold(
+    probability_map: np.ndarray,
+    entropy_map: np.ndarray,
+    low: float = 0.2,
+    high: float = 0.4,
+    shannon_core: float = 0.6,
+    shannon_max: float = 0.95
+) -> np.ndarray:
+    """Apply dual-criteria morphological reconstruction based on probability and entropy.
+
+    Pixels above 'high' and below 'shannon_core' are seeds. 
+    Any pixel above 'low' and below 'shannon_max' that is connected to a seed is kept.
+
+    Parameters
+    ----------
+    probability_map:
+        Input 3D array (z, y, x) of probabilities.
+    entropy_map:
+        Input 3D array (z, y, x) of Shannon entropy.
+    low:
+        Lower threshold for connectivity.
+    high:
+        Upper threshold for seeds.
+    shannon_core:
+        Maximum entropy for a seed voxel.
+    shannon_max:
+        Maximum entropy for a candidate voxel.
+    """
+    if low > high:
+        raise ValueError(f"low ({low}) must be <= high ({high})")
+    if shannon_core > shannon_max:
+        raise ValueError(f"shannon_core ({shannon_core}) must be <= shannon_max ({shannon_max})")
+
+    logger.info("Applying joint hysteresis (low=%.2f, high=%.2f, core=%.2f, max=%.2f)", low, high, shannon_core, shannon_max)
+
+    if _is_dask_array(probability_map) or _is_dask_array(entropy_map):
+        logger.warning("Applying Joint Hysteresis to Dask array - results may differ slightly at chunk boundaries.")
+        import dask.array as da
+        
+        return da.map_overlap(
+            joint_hysteresis_threshold,
+            probability_map,
+            entropy_map,
+            depth=5,
+            boundary=0,
+            dtype=bool,
+            low=low,
+            high=high,
+            shannon_core=shannon_core,
+            shannon_max=shannon_max,
+        )
+
+    from skimage.morphology import reconstruction
+
+    seed_mask = (probability_map >= high) & (entropy_map <= shannon_core)
+    candidate_mask = (probability_map >= low) & (entropy_map <= shannon_max)
+    
+    # Reconstruct seeds into candidate mask
+    return reconstruction(seed=seed_mask, mask=candidate_mask, method='dilation').astype(bool)
+
 def calculate_entropy_map(probability_volume: np.ndarray) -> np.ndarray:
     """Calculate voxel-wise Shannon entropy from a multi-channel probability volume.
 

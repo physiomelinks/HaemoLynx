@@ -27,7 +27,7 @@ class SkeletonObjective:
             "bundle_scan_size": trial.suggest_int("bundle_scan_size", 8, 10),
             "bundle_density_fraction": trial.suggest_float("bundle_density_fraction", 0.01, 0.05),
             # "bundle_max_connections": trial.suggest_int("bundle_max_connections", 2, 4),
-            "bundle_max_connections": 5,
+            "bundle_max_connections": 3,
             # "bundle_hub_min_spacing": trial.suggest_int("bundle_hub_min_spacing", 0, 10),
             "bundle_hub_min_spacing": 0,
             "smoothing_alpha": trial.suggest_float("smoothing_alpha", 0.1, 2.5),
@@ -179,11 +179,16 @@ class PreprocessingObjective:
             "morphological_closing_radius": 0,
             "probability_smoothing_sigma": trial.suggest_float("probability_smoothing_sigma", 0.0, 1.0),
             # "probability_smoothing_sigma": 0,
-            "shannon_entropy_threshold": trial.suggest_float("shannon_entropy_threshold", 0.95, 0.99)
+            "shannon_entropy_threshold": trial.suggest_float("shannon_entropy_threshold", 0.85, 0.99),
+            "shannon_entropy_core": trial.suggest_float("shannon_entropy_core", 0.4, 0.8)
         }
         
         # Enforce physical constraints: High threshold must be > Low threshold
         if pre_kwargs["hysteresis_threshold_high"] <= pre_kwargs["hysteresis_threshold_low"]:
+            raise optuna.TrialPruned()
+            
+        # Core entropy must be less than max entropy
+        if pre_kwargs["shannon_entropy_core"] >= pre_kwargs["shannon_entropy_threshold"]:
             raise optuna.TrialPruned()
         
         # 2. Evaluate pipeline (applies filters and runs benchmarks)

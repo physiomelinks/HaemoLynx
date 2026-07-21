@@ -4,6 +4,7 @@ import numpy as np
 from ImageLynx.preprocessing.image import (
     smooth_probability_map, 
     hysteresis_threshold,
+    joint_hysteresis_threshold,
     median_filter_image,
     morphological_opening,
     calculate_entropy_map,
@@ -106,3 +107,51 @@ def test_crop_roi():
     cropped_4d = crop_roi(image_4d, sub_volume_percentage=0.5)
     assert cropped_4d.shape == (2, 5, 10, 10)
 
+
+def test_joint_hysteresis_logic():
+    # 10x10x10 arrays
+    prob = np.zeros((10, 10, 10), dtype=np.float32)
+    ent = np.ones((10, 10, 10), dtype=np.float32) * 0.99  # default high entropy
+    
+    # Core seed: High prob (0.8), Low entropy (0.5)
+    prob[5, 5, 5] = 0.8
+    ent[5, 5, 5] = 0.5
+    
+    # Attached uncertain vessel: High prob (0.8), High entropy (0.9)
+    prob[5, 5, 6] = 0.8
+    ent[5, 5, 6] = 0.9
+    
+    # Isolated uncertain vessel (noise): High prob (0.8), High entropy (0.9)
+    prob[2, 2, 2] = 0.8
+    ent[2, 2, 2] = 0.9
+    
+    # Connected certain background: Low prob (0.1), Low entropy (0.5)
+    prob[5, 5, 4] = 0.1
+    ent[5, 5, 4] = 0.5
+    
+    binary = joint_hysteresis_threshold(
+        prob, ent, 
+        low=0.2, high=0.4, 
+        shannon_core=0.6, shannon_max=0.95
+    )
+    
+    # Test Case 1: Spatial Connectivity Preservation
+    # The core seed and the attached uncertain vessel should both be True
+    assert binary[5, 5, 5] == True
+    assert binary[5, 5, 6] == True
+    
+    # Test Case 2: Isolated Noise Rejection
+    # The isolated uncertain vessel should be False (not connected to a seed)
+    assert binary[2, 2, 2] == False
+    
+    # Test Case 3: Certain Background Nullification
+    # Low probability region should be False even if connected to seed
+    assert binary[5, 5, 4] == False
+
+def test_joint_hysteresis_validation():
+    prob = np.zeros((2, 2, 2))
+    ent = np.zeros((2, 2, 2))
+    with pytest.raises(ValueError):
+        joint_hysteresis_threshold(prob, ent, low=0.8, high=0.4)
+    with pytest.raises(ValueError):
+        joint_hysteresis_threshold(prob, ent, shannon_core=0.9, shannon_max=0.5)

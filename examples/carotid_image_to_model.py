@@ -429,11 +429,7 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict, bou
     """Applies preprocessing filters returning a materialized binary mask."""
     image = raw_prob_map.copy()
     
-    if entropy_map is not None and pre_config_dict.get("enable_shannon_entropy", True):
-        threshold = pre_config_dict.get("shannon_entropy_threshold", 0.95)
-        uncertain_mask = entropy_map > threshold
-        image[uncertain_mask] = 0.0
-        
+
     # --- Virtual Padding (Boundary Caging Fix) ---
     pad_z, pad_y, pad_x = 0, 0, 0
     if boundary_permeability_mode == "caged":
@@ -443,6 +439,8 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict, bou
         
     if pad_z > 0 or pad_y > 0 or pad_x > 0:
         image = np.pad(image, pad_width=((pad_z, pad_z), (pad_y, pad_y), (pad_x, pad_x)), mode='edge')
+        if entropy_map is not None:
+            entropy_map = np.pad(entropy_map, pad_width=((pad_z, pad_z), (pad_y, pad_y), (pad_x, pad_x)), mode='edge')
     
     median_size = pre_config_dict.get("median_filter_size", 0)
     if median_size > 0:
@@ -460,11 +458,21 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict, bou
         image = preprocessing.smooth_probability_map(image, sigma=pre_config_dict["probability_smoothing_sigma"])
         
     if pre_config_dict.get("enable_hysteresis_threshold", True):
-        binary = preprocessing.hysteresis_threshold(
-            image, 
-            low=pre_config_dict.get("hysteresis_threshold_low", 0.2), 
-            high=pre_config_dict.get("hysteresis_threshold_high", 0.4)
-        )
+        if entropy_map is not None and pre_config_dict.get("enable_shannon_entropy", True):
+            binary = preprocessing.joint_hysteresis_threshold(
+                image, 
+                entropy_map,
+                low=pre_config_dict.get("hysteresis_threshold_low", 0.2), 
+                high=pre_config_dict.get("hysteresis_threshold_high", 0.4),
+                shannon_core=pre_config_dict.get("shannon_entropy_core", 0.6),
+                shannon_max=pre_config_dict.get("shannon_entropy_threshold", 0.95)
+            )
+        else:
+            binary = preprocessing.hysteresis_threshold(
+                image, 
+                low=pre_config_dict.get("hysteresis_threshold_low", 0.2), 
+                high=pre_config_dict.get("hysteresis_threshold_high", 0.4)
+            )
     else:
         from skimage.filters import threshold_otsu
         binary = image > threshold_otsu(image)
