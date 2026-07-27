@@ -217,7 +217,7 @@ def test_select_terminal_nodes_from_large_vessel_masks():
         G,
         large_arteriole_mask=arteriole_mask,
         large_venule_mask=venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
     )
     assert start_nodes == [0]
     assert out_nodes == [1]
@@ -241,7 +241,7 @@ def test_select_terminal_nodes_from_large_vessel_masks_excludes_overlap():
         G,
         large_arteriole_mask=arteriole_mask,
         large_venule_mask=venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         allow_overlap=False,
     )
     assert start_nodes == [0]

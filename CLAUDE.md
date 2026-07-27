@@ -11,7 +11,7 @@ ImageLynx turns 3D microvascular microscopy into **NetworkX graphs** with haemod
 ```
 ImageLynx/
 ├── src/ImageLynx/          # Installable package (setuptools, pythonpath = src in pytest)
-│   ├── io/                 # load.py, ilastik.py, voxel_validation.py,
+│   ├── io/                 # load.py, ilastik.py, voxel_validation.py, axis_order.py,
 │   │                       #   automated_vessel_assignment.py (mask loading/validation)
 │   ├── preprocessing/      # skeleton.py — skeletonize, bridge, clean, bundle refinement
 │   ├── graph/              # assemble.py (orchestrator) + build, reconnect, optimise, degree2,
@@ -142,8 +142,19 @@ GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` 
 - **Library code** lives under `src/ImageLynx/`. Keep `examples/` thin — orchestration, CLI, presets.
 - **Minimal diffs** — match existing naming, types, and import style in the touched module.
 - **Input contract** — pipeline expects **binary vessel masks** at skeletonization time. Masks may come from pre-existing files or from **ilastik inference** in this repo; classifier training is always manual. Document new ilastik-related paths/flags in `resistance_pipeline_settings.py` and `preflight.py`.
-- **Voxel sizes** — use `io.voxel_validation.resolve_voxel_size_xyz`; masks and main image must align in shape and physical voxel units.
-- **Graph** — `nx.MultiGraph` with `pos` on nodes and `voxels` on edges; haemodynamics uses `branch_order` on edges.
+- **Axis order** — arrays are canonical `(z, y, x)`: axis 0 is the stack axis that overlays and
+  projections look through. Loaders take `axis_order` (`"zyx"` default, any permutation of `xyz`)
+  and transpose the input to canonical order, so **that setting is how a user picks which axis is z**
+  (`IMAGE_AXIS_ORDER` in `examples/resistance_pipeline_settings.py`). See `io/axis_order.py`.
+- **Voxel sizes** — two orders, never mix them. Image metadata is physical **`(x, y, z)`**
+  (`voxel_size_xyz`, `io.voxel_validation.resolve_voxel_size_xyz`); anything that scales array
+  indices takes per-array-axis spacing in **`(z, y, x)`** (`voxel_size_zyx`). Convert once at the
+  loader boundary with `io.voxel_size_zyx_from_xyz`. Passing `xyz` where `zyx` is expected silently
+  swaps the z and x spacings — invisible for isotropic voxels, wrong for every real stack
+  (see `tests/test_anisotropic_voxel_size.py`). Masks and main image must align in shape and
+  physical voxel units.
+- **Graph** — `nx.MultiGraph` with `pos` on nodes and `voxels` on edges, both in physical
+  `(z, y, x)` microns; haemodynamics uses `branch_order` on edges.
 - **Edge attributes & units** — `length` (µm), `resistance` (Pa·s/m³), `conductance` (m³/(Pa·s)).
   `resistance` and `conductance` are always written together via
   `haemodynamics.poiseuille.set_edge_resistance`. **There is no `weight` attribute** — it used to
@@ -161,6 +172,8 @@ GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` 
 
 ## Key modules (quick reference)
 
+- **`io/axis_order.py`** — canonical `(z, y, x)` convention: `normalize_axis_order`, `apply_axis_order`
+  (transposes an input volume to canonical order), `voxel_size_zyx_from_xyz` / `voxel_size_xyz_from_zyx`.
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
 - **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.*
 - **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).*

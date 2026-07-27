@@ -8,6 +8,7 @@ from typing import Any
 
 import networkx as nx
 
+from ImageLynx.io.axis_order import CANONICAL_AXIS_ORDER
 from .pericyte_mask import set_poiseuille_resistances_with_pericyte_mask
 from .poiseuille import PoiseuilleModel
 from .probability import set_poiseuille_resistances_with_probabilistic_periodic_constrictions
@@ -47,6 +48,7 @@ def _set_resistances_for_factor(
     max_assignment_distance_um: float | None,
     min_pericyte_diameter_um: float | None,
     max_pericyte_diameter_um: float | None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Apply edge resistance/conductance for a comparison scenario."""
     branch_orders = [str(bo) for bo in diameter_by_branch_order.keys()]
@@ -73,6 +75,7 @@ def _set_resistances_for_factor(
             max_assignment_distance_um=max_assignment_distance_um,
             min_pericyte_diameter_um=min_pericyte_diameter_um,
             max_pericyte_diameter_um=max_pericyte_diameter_um,
+            axis_order=axis_order,
         )
 
     if use_probabilistic_pericyte_constriction:
@@ -148,6 +151,7 @@ def compare_baseline_vs_pericyte_constriction(
     max_assignment_distance_um: float | None = 3.0,
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> dict[str, Any]:
     """Compare effective resistance at baseline vs constricted settings.
 
@@ -189,6 +193,7 @@ def compare_baseline_vs_pericyte_constriction(
         max_assignment_distance_um=max_assignment_distance_um,
         min_pericyte_diameter_um=min_pericyte_diameter_um,
         max_pericyte_diameter_um=max_pericyte_diameter_um,
+        axis_order=axis_order,
     )
     if use_pericyte_mask_constriction and use_probabilistic_pericyte_constriction:
         selected = baseline_resistance_results.get("active_pericyte_indices")
@@ -224,6 +229,7 @@ def compare_baseline_vs_pericyte_constriction(
         max_assignment_distance_um=max_assignment_distance_um,
         min_pericyte_diameter_um=min_pericyte_diameter_um,
         max_pericyte_diameter_um=max_pericyte_diameter_um,
+        axis_order=axis_order,
     )
     constricted_resistance = _compute_two_point_resistance(
         graph_constricted,

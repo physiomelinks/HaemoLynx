@@ -9,6 +9,7 @@ from typing import Any
 import networkx as nx
 
 from ImageLynx import io
+from ImageLynx.io.axis_order import CANONICAL_AXIS_ORDER
 from ImageLynx.haemodynamics import automated
 from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
@@ -45,7 +46,9 @@ class HaemodynamicsApplyConfig:
     resistance_node_pair: tuple[int, int] | None = None
     use_fwhm_edge_diameters: bool = False
     fwhm_raw_tiff_path: Path | str | None = None
-    voxel_size_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    # Spacing per array axis in canonical (z, y, x) order, not image-metadata (x, y, z).
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    axis_order: str = CANONICAL_AXIS_ORDER
     fwhm_sample_spacing_along_edge_um: float = 5.0
     fwhm_transverse_profile_step_um: float = 0.5
     fwhm_transverse_half_extent_um: float = 10.0
@@ -81,12 +84,13 @@ def _measure_fwhm_diameters(G: nx.MultiGraph, config: HaemodynamicsApplyConfig) 
         raise ValueError("use_fwhm_edge_diameters=True requires fwhm_raw_tiff_path.")
     raw_p = io.resolve_image_path_with_optional_zip(Path(config.fwhm_raw_tiff_path))
     voxel_sz = tuple(
-        float(v) for v in G.graph.get("image_voxel_size_xyz", config.voxel_size_xyz)
+        float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
     )
     return automated.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_p,
-        voxel_size_xyz=voxel_sz,
+        voxel_size_zyx=voxel_sz,
+        axis_order=config.axis_order,
         sample_spacing_along_edge_um=float(config.fwhm_sample_spacing_along_edge_um),
         transverse_profile_step_um=float(config.fwhm_transverse_profile_step_um),
         transverse_half_extent_um=float(config.fwhm_transverse_half_extent_um),
@@ -156,6 +160,7 @@ def _run_pericyte_comparison(
         constriction_spacing=config.constriction_spacing,
         use_probabilistic_pericyte_constriction=bool(config.use_probabilistic_pericyte_constriction),
         pericyte_constriction_probability=float(config.pericyte_constriction_probability),
+        axis_order=config.axis_order,
     )
 
     active_pericyte_indices: list[int] | None = None
@@ -218,6 +223,7 @@ def _assign_poiseuille_resistances(
                         )
                         else None
                     ),
+                    axis_order=config.axis_order,
                 )
             )
         elif config.use_probabilistic_pericyte_constriction:

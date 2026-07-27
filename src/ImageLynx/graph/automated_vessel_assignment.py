@@ -28,19 +28,19 @@ def _terminal_nodes_with_positions(G: nx.Graph) -> list[tuple[Any, np.ndarray]]:
 
 
 def _position_to_mask_index(
-    position_xyz: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    position_zyx: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
     mask_shape: tuple[int, ...],
 ) -> tuple[int, int, int] | None:
-    voxel_size = np.asarray(voxel_size_xyz, dtype=float)
+    voxel_size = np.asarray(voxel_size_zyx, dtype=float)
     if voxel_size.shape != (3,) or np.any(voxel_size <= 0):
         raise ValueError(
-            f"voxel_size_xyz must be three positive values, got {voxel_size_xyz}."
+            f"voxel_size_zyx must be three positive values, got {voxel_size_zyx}."
         )
     if len(mask_shape) != 3:
         raise ValueError(f"Expected a 3D mask shape, got {mask_shape}.")
 
-    voxel_index = np.rint(position_xyz / voxel_size).astype(int)
+    voxel_index = np.rint(position_zyx / voxel_size).astype(int)
     if np.any(voxel_index < 0):
         return None
     if np.any(voxel_index >= np.asarray(mask_shape, dtype=int)):
@@ -91,12 +91,12 @@ def _terminal_edge_sample_points(
 
 def _mask_midpoint_physical(
     mask: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
 ) -> np.ndarray:
     points_zyx = np.argwhere(mask.astype(bool, copy=False))
     if points_zyx.size == 0:
         return np.asarray([np.inf, np.inf, np.inf], dtype=float)
-    voxel_size = np.asarray(voxel_size_xyz, dtype=float)
+    voxel_size = np.asarray(voxel_size_zyx, dtype=float)
     return np.mean(points_zyx.astype(float), axis=0) * voxel_size
 
 
@@ -110,14 +110,14 @@ def _mask_principal_axis(mask: np.ndarray) -> int:
 
 def _cross_section_midpoint_physical(
     mask: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     intersection_point: np.ndarray | None,
 ) -> np.ndarray:
     points_zyx = np.argwhere(mask.astype(bool, copy=False))
     if points_zyx.size == 0 or intersection_point is None:
         return np.asarray([np.inf, np.inf, np.inf], dtype=float)
     axis = _mask_principal_axis(mask)
-    voxel_size = np.asarray(voxel_size_xyz, dtype=float)
+    voxel_size = np.asarray(voxel_size_zyx, dtype=float)
     intersection_index = np.rint(intersection_point / voxel_size).astype(int)
     target_slice = int(intersection_index[axis])
     slice_coords = points_zyx[:, axis]
@@ -137,7 +137,7 @@ def _cross_section_midpoint_physical(
 def _overlap_fraction_and_intersection(
     sample_points: np.ndarray,
     mask: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     node_pos: np.ndarray,
 ) -> tuple[float, np.ndarray | None]:
     valid_points: list[np.ndarray] = []
@@ -145,7 +145,7 @@ def _overlap_fraction_and_intersection(
     for point in sample_points:
         mask_index = _position_to_mask_index(
             point,
-            voxel_size_xyz=voxel_size_xyz,
+            voxel_size_zyx=voxel_size_zyx,
             mask_shape=mask.shape,
         )
         if mask_index is None:
@@ -170,7 +170,7 @@ def resolve_overlapping_terminal_node_assignment(
     node_pos: np.ndarray,
     large_arteriole_mask: np.ndarray,
     large_venule_mask: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     max_sample_points: int = 25,
 ) -> str:
     """Resolve input/output assignment for a terminal node in both masks.
@@ -187,7 +187,7 @@ def resolve_overlapping_terminal_node_assignment(
         node_pos=node_pos,
         large_arteriole_mask=large_arteriole_mask,
         large_venule_mask=large_venule_mask,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         max_sample_points=max_sample_points,
     )
     arteriole_overlap = float(metrics["arteriole_overlap_fraction"])
@@ -221,7 +221,7 @@ def compute_overlapping_terminal_assignment_metrics(
     node_pos: np.ndarray,
     large_arteriole_mask: np.ndarray,
     large_venule_mask: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     max_sample_points: int = 25,
 ) -> dict[str, Any]:
     """Compute overlap and midpoint-distance metrics for overlap resolution."""
@@ -232,18 +232,18 @@ def compute_overlapping_terminal_assignment_metrics(
         max_sample_points=max_sample_points,
     )
     arteriole_overlap, arteriole_intersection = _overlap_fraction_and_intersection(
-        samples, large_arteriole_mask, voxel_size_xyz, node_pos
+        samples, large_arteriole_mask, voxel_size_zyx, node_pos
     )
     venule_overlap, venule_intersection = _overlap_fraction_and_intersection(
-        samples, large_venule_mask, voxel_size_xyz, node_pos
+        samples, large_venule_mask, voxel_size_zyx, node_pos
     )
-    arteriole_mid = _mask_midpoint_physical(large_arteriole_mask, voxel_size_xyz)
-    venule_mid = _mask_midpoint_physical(large_venule_mask, voxel_size_xyz)
+    arteriole_mid = _mask_midpoint_physical(large_arteriole_mask, voxel_size_zyx)
+    venule_mid = _mask_midpoint_physical(large_venule_mask, voxel_size_zyx)
     arteriole_cross_section_mid = _cross_section_midpoint_physical(
-        large_arteriole_mask, voxel_size_xyz, arteriole_intersection
+        large_arteriole_mask, voxel_size_zyx, arteriole_intersection
     )
     venule_cross_section_mid = _cross_section_midpoint_physical(
-        large_venule_mask, voxel_size_xyz, venule_intersection
+        large_venule_mask, voxel_size_zyx, venule_intersection
     )
     arteriole_dist = np.inf
     venule_dist = np.inf
@@ -282,7 +282,7 @@ def select_terminal_nodes_from_large_vessel_masks(
     large_arteriole_mask: np.ndarray,
     large_venule_mask: np.ndarray,
     *,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     allow_overlap: bool = False,
 ) -> tuple[list[Any], list[Any]]:
     """Assign degree-1 nodes to input/output groups by vessel-mask overlap."""
@@ -303,7 +303,7 @@ def select_terminal_nodes_from_large_vessel_masks(
     for node_id, node_pos in terminal_nodes:
         index_zyx = _position_to_mask_index(
             node_pos,
-            voxel_size_xyz=voxel_size_xyz,
+            voxel_size_zyx=voxel_size_zyx,
             mask_shape=arteriole_mask.shape,
         )
         if index_zyx is None:
@@ -317,7 +317,7 @@ def select_terminal_nodes_from_large_vessel_masks(
                 node_pos=node_pos,
                 large_arteriole_mask=arteriole_mask,
                 large_venule_mask=venule_mask,
-                voxel_size_xyz=voxel_size_xyz,
+                voxel_size_zyx=voxel_size_zyx,
             )
             if assignment == "input":
                 starting_nodes.add(node_id)
@@ -356,7 +356,7 @@ def _sample_overlap_fraction(
     sample_points: np.ndarray,
     mask: np.ndarray,
     *,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
 ) -> float:
     """Return fraction of valid edge sample points that fall inside a mask."""
     valid_count = 0
@@ -364,7 +364,7 @@ def _sample_overlap_fraction(
     for point in sample_points:
         idx = _position_to_mask_index(
             point,
-            voxel_size_xyz=voxel_size_xyz,
+            voxel_size_zyx=voxel_size_zyx,
             mask_shape=mask.shape,
         )
         if idx is None:
@@ -382,7 +382,7 @@ def infer_boundary_nodes_from_small_vessel_masks(
     small_arteriole_mask: np.ndarray,
     small_venule_mask: np.ndarray,
     *,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     minimum_overlap_fraction: float = 0.5,
     allow_overlap: bool = False,
 ) -> dict[str, Any]:
@@ -438,12 +438,12 @@ def infer_boundary_nodes_from_small_vessel_masks(
             arteriole_fraction = _sample_overlap_fraction(
                 samples,
                 arteriole_mask,
-                voxel_size_xyz=voxel_size_xyz,
+                voxel_size_zyx=voxel_size_zyx,
             )
             venule_fraction = _sample_overlap_fraction(
                 samples,
                 venule_mask,
-                voxel_size_xyz=voxel_size_xyz,
+                voxel_size_zyx=voxel_size_zyx,
             )
             in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
             in_venule = venule_fraction >= float(minimum_overlap_fraction)
@@ -478,12 +478,12 @@ def infer_boundary_nodes_from_small_vessel_masks(
             arteriole_fraction = _sample_overlap_fraction(
                 samples,
                 arteriole_mask,
-                voxel_size_xyz=voxel_size_xyz,
+                voxel_size_zyx=voxel_size_zyx,
             )
             venule_fraction = _sample_overlap_fraction(
                 samples,
                 venule_mask,
-                voxel_size_xyz=voxel_size_xyz,
+                voxel_size_zyx=voxel_size_zyx,
             )
             in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
             in_venule = venule_fraction >= float(minimum_overlap_fraction)
@@ -566,7 +566,7 @@ def write_automated_vessel_assignment_3d_html(
     large_venule_mask: np.ndarray,
     input_nodes: list[Any],
     output_nodes: list[Any],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     output_html_path: str | Path,
 ) -> bool:
     """Write interactive 3D HTML showing masks, graph, and selected nodes."""
@@ -621,7 +621,7 @@ def write_automated_vessel_assignment_3d_html(
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
         if not np.any(mask):
             return
-        z_scale, y_scale, x_scale = voxel_size_xyz
+        z_scale, y_scale, x_scale = voxel_size_zyx
         zz, yy, xx = np.indices(mask.shape, dtype=float)
         fig.add_trace(
             go.Volume(
@@ -720,7 +720,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
     small_venule_mask: np.ndarray,
     arteriole_boundary_nodes: list[Any],
     venule_boundary_nodes: list[Any],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     output_html_path: str | Path,
     title: str = "Small Vessel Mask Boundary Labelling (3D)",
 ) -> bool:
@@ -794,7 +794,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
         if not np.any(mask):
             return
-        z_scale, y_scale, x_scale = voxel_size_xyz
+        z_scale, y_scale, x_scale = voxel_size_zyx
         zz, yy, xx = np.indices(mask.shape, dtype=float)
         fig.add_trace(
             go.Volume(

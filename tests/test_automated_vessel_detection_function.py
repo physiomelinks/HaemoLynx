@@ -28,7 +28,7 @@ def _write_rotatable_assignment_graph(
     arteriole_mask: np.ndarray,
     venule_mask: np.ndarray,
     html_path: Path,
-    voxel_size_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     title: str = "Automated Vessel Detection (3D)",
     annotation_lines: list[str] | None = None,
 ) -> None:
@@ -80,7 +80,7 @@ def _write_rotatable_assignment_graph(
         # occupied voxels as a semi-transparent isovalue volume.
         if not np.any(mask):
             return
-        z_scale, y_scale, x_scale = voxel_size_xyz
+        z_scale, y_scale, x_scale = voxel_size_zyx
         zz, yy, xx = np.indices(mask.shape, dtype=float)
         fig.add_trace(
             go.Volume(
@@ -241,7 +241,7 @@ def test_automated_vessel_detection(tmp_path):
         G,
         large_arteriole_mask=arteriole_mask,
         large_venule_mask=venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         allow_overlap=False,
     )
     assert start_nodes == [0]
@@ -253,7 +253,7 @@ def test_automated_vessel_detection(tmp_path):
         arteriole_mask=arteriole_mask,
         venule_mask=venule_mask,
         html_path=tmp_path / "automated_vessel_detection_before_dilation_3d.html",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         title="Before Dilation",
     )
 
@@ -262,13 +262,13 @@ def test_automated_vessel_detection(tmp_path):
         large_arteriole_mask=arteriole_mask,
         large_venule_mask=venule_mask,
         dilation_microns=1.0,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
     )
     start_nodes_dilated, out_nodes_dilated = select_terminal_nodes_from_large_vessel_masks(
         G,
         large_arteriole_mask=dilated_arteriole_mask,
         large_venule_mask=dilated_venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         allow_overlap=False,
     )
     assert start_nodes_dilated == [0, 1]
@@ -281,7 +281,7 @@ def test_automated_vessel_detection(tmp_path):
         arteriole_mask=dilated_arteriole_mask,
         venule_mask=dilated_venule_mask,
         html_path=tmp_path / "automated_vessel_detection_after_dilation_3d.html",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         title="After Dilation",
     )
 
@@ -313,7 +313,7 @@ def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
         G,
         large_arteriole_mask=arteriole_mask,
         large_venule_mask=venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         allow_overlap=False,
     )
     assert start_nodes == [0]
@@ -324,7 +324,7 @@ def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
         node_pos=np.asarray(G.nodes[0]["pos"], dtype=float),
         large_arteriole_mask=arteriole_mask,
         large_venule_mask=venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
     )
     assert (
         metrics["arteriole_cross_section_midpoint_distance"]
@@ -338,7 +338,7 @@ def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
         arteriole_mask=arteriole_mask,
         venule_mask=venule_mask,
         html_path=tmp_path / "overlap_resolution_cross_section_priority_3d.html",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         title="Overlap Resolution: Cross-section Priority",
         annotation_lines=[
             f"Node 0 cross-section distance -> arteriole={metrics['arteriole_cross_section_midpoint_distance']:.3f}, "

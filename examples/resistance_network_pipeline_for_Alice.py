@@ -835,6 +835,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             f"venule={large_venule_mask_voxel_size}"
         )
         main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
+        voxel_size_zyx = io.voxel_size_zyx_from_xyz(main_voxel_size_xyz)
         arteriole_voxel_size_xyz = tuple(float(v) for v in large_arteriole_mask_voxel_size)
         venule_voxel_size_xyz = tuple(float(v) for v in large_venule_mask_voxel_size)
         voxel_match_main_vs_arteriole = np.allclose(
@@ -879,7 +880,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                     large_arteriole_mask=large_arteriole_mask,
                     large_venule_mask=large_venule_mask,
                     dilation_microns=large_vessel_mask_dilation_microns,
-                    voxel_size_xyz=main_voxel_size_xyz,
+                    voxel_size_zyx=voxel_size_zyx,
                 )
             )
             print(
@@ -991,6 +992,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 f"{small_venule_mask.shape} != {image.shape}"
             )
         main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
+        voxel_size_zyx = io.voxel_size_zyx_from_xyz(main_voxel_size_xyz)
         small_arteriole_voxel_size_xyz = tuple(
             float(v) for v in small_arteriole_mask_voxel_size
         )
@@ -1033,7 +1035,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             sk,
             skeleton,
             debug=verbose_logging,
-            voxel_size=voxel_size,
+            voxel_size=io.voxel_size_zyx_from_xyz(voxel_size),
             reconnect_threshold=graph_reconnect_threshold,
         )
         visualization.save_graph_snapshot(
@@ -1044,7 +1046,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         G = graph.reconnect_secondary_loop_edges(
             G,
             skeleton,
-            voxel_size=voxel_size,
+            voxel_size=io.voxel_size_zyx_from_xyz(voxel_size),
             debug=verbose_logging,
         )
         visualization.save_graph_snapshot(
@@ -1209,6 +1211,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
     # Store physical voxel-unit metadata used for skeleton/graph geometry and mask alignment.
     G.graph["image_voxel_size_xyz"] = tuple(float(v) for v in voxel_size)
+    G.graph["image_voxel_size_zyx"] = io.voxel_size_zyx_from_xyz(voxel_size)
     if large_arteriole_mask is not None and large_venule_mask is not None:
         G.graph["large_arteriole_mask_voxel_size_xyz"] = tuple(
             float(v) for v in large_arteriole_mask_voxel_size
@@ -1244,7 +1247,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         G,
         large_arteriole_mask=large_arteriole_mask,
         large_venule_mask=large_venule_mask,
-        voxel_size_xyz=tuple(float(v) for v in voxel_size),
+        voxel_size_zyx=io.voxel_size_zyx_from_xyz(voxel_size),
         allow_overlap=False,
     )
     if not auto_start_nodes:
@@ -1272,7 +1275,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         large_venule_mask=large_venule_mask,
         input_nodes=auto_start_nodes,
         output_nodes=auto_output_nodes,
-        voxel_size_xyz=tuple(float(v) for v in voxel_size),
+        voxel_size_zyx=io.voxel_size_zyx_from_xyz(voxel_size),
         output_html_path=automated_assignment_html_path,
     )
     if wrote_assignment_html:
@@ -1335,7 +1338,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G,
             small_arteriole_mask=small_arteriole_mask,
             small_venule_mask=small_venule_mask,
-            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            voxel_size_zyx=io.voxel_size_zyx_from_xyz(voxel_size),
             minimum_overlap_fraction=float(small_vessel_mask_min_overlap_fraction),
             allow_overlap=False,
         )
@@ -1364,7 +1367,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 small_venule_mask=small_venule_mask,
                 arteriole_boundary_nodes=arteriole_boundary_nodes,
                 venule_boundary_nodes=venule_boundary_nodes,
-                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                voxel_size_zyx=io.voxel_size_zyx_from_xyz(voxel_size),
                 output_html_path=boundary_html,
             )
             if ok:
@@ -1436,12 +1439,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 )
             raw_p = io.resolve_image_path_with_optional_zip(Path(fwhm_raw_tiff_path))
             voxel_sz = tuple(
-                float(v) for v in G.graph.get("image_voxel_size_xyz", voxel_size)
+                float(v)
+                for v in G.graph.get(
+                    "image_voxel_size_zyx", io.voxel_size_zyx_from_xyz(voxel_size)
+                )
             )
             fwhm_summary = haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff(
                 G,
                 raw_tiff_path=raw_p,
-                voxel_size_xyz=voxel_sz,
+                voxel_size_zyx=voxel_sz,
                 sample_spacing_along_edge_um=float(fwhm_sample_spacing_along_edge_um),
                 transverse_profile_step_um=float(fwhm_transverse_profile_step_um),
                 transverse_half_extent_um=float(fwhm_transverse_half_extent_um),

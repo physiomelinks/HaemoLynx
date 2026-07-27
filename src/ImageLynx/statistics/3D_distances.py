@@ -17,7 +17,12 @@ from scipy.ndimage import binary_erosion, generate_binary_structure, label
 from scipy.spatial import cKDTree
 import tifffile
 
-from ImageLynx.io import load_3d_h5_with_voxel_size, load_3d_tif_with_voxel_size
+from ImageLynx.io import (
+    CANONICAL_AXIS_ORDER,
+    load_3d_h5_with_voxel_size,
+    load_3d_tif_with_voxel_size,
+    voxel_size_zyx_from_xyz,
+)
 from ImageLynx.haemodynamics.automated import build_graph_branch_label_volume
 
 
@@ -49,15 +54,18 @@ def _load_binary_mask_and_voxel_size(
     mask_path: str | Path,
     *,
     h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """Load a binary mask from tif/tiff/h5 and return (mask_bool, voxel_size_xyz)."""
     path = Path(mask_path)
     suffix = path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
-        image, vx, vy, vz, _voxel_meta_status = load_3d_tif_with_voxel_size(str(path))
+        image, vx, vy, vz, _voxel_meta_status = load_3d_tif_with_voxel_size(
+            str(path), axis_order=axis_order
+        )
     elif suffix == ".h5":
         image, vx, vy, vz, _voxel_meta_status = load_3d_h5_with_voxel_size(
-            str(path), dataset_name=h5_dataset_name
+            str(path), dataset_name=h5_dataset_name, axis_order=axis_order
         )
     else:
         raise ValueError(
@@ -159,13 +167,13 @@ def _build_edge_voxel_lookup(
     G: nx.MultiGraph,
     *,
     volume_shape: tuple[int, int, int],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
 ) -> tuple[np.ndarray, dict[int, str | None]]:
     """Rasterize graph edges to a label volume and return branch-order lookup."""
     edge_label_volume, _ = build_graph_branch_label_volume(
         G,
         volume_shape=volume_shape,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         background_label=0,
         junction_label=-1,
     )
@@ -176,7 +184,7 @@ def compute_object_to_vessel_distances(
     *,
     object_mask: np.ndarray,
     vessel_mask: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     graph_edge_label_volume: np.ndarray | None = None,
     edge_label_to_branch_order: dict[int, str | None] | None = None,
     connectivity: int = 3,
@@ -193,10 +201,10 @@ def compute_object_to_vessel_distances(
             "object_mask and vessel_mask must share shape. "
             f"Got {object_mask.shape} and {vessel_mask.shape}."
         )
-    spacing = np.asarray(voxel_size_xyz, dtype=float)
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
     if spacing.shape != (3,) or np.any(spacing <= 0):
         raise ValueError(
-            f"voxel_size_xyz must be 3 positive values, got {voxel_size_xyz}."
+            f"voxel_size_zyx must be 3 positive values, got {voxel_size_zyx}."
         )
 
     labels, objects = label_connected_objects(
@@ -501,6 +509,7 @@ def run_3d_measurement_to_cell_mask(
     vessel_mask_h5_dataset_name: str | None = None,
     vessel_reference_h5_dataset_name: str | None = None,
     connectivity: int = 3,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> dict[str, Any]:
     """End-to-end 3D cell-mask distance analysis with CSV export.
 
@@ -508,38 +517,47 @@ def run_3d_measurement_to_cell_mask(
     edge voxels using the same rasterization logic as automated FWHM measurement.
     In that case, ``vessel_reference_image_path`` can be supplied to define the
     label volume shape; otherwise the cell-mask shape is used.
+
+    *voxel_size_xyz* is the physical ``(x, y, z)`` voxel size reported by image
+    metadata; it is compared against the mask metadata in the same order and
+    converted to canonical array order ``(z, y, x)`` before any index scaling.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cell_mask, cell_voxel_size = _load_binary_mask_and_voxel_size(
-        cell_mask_path, h5_dataset_name=cell_mask_h5_dataset_name
+        cell_mask_path,
+        h5_dataset_name=cell_mask_h5_dataset_name,
+        axis_order=axis_order,
     )
-    target_voxel_size = tuple(float(v) for v in voxel_size_xyz)
-    if not np.allclose(cell_voxel_size, target_voxel_size, rtol=0.0, atol=0.0):
+    target_voxel_size_xyz = tuple(float(v) for v in voxel_size_xyz)
+    target_voxel_size = voxel_size_zyx_from_xyz(target_voxel_size_xyz)
+    if not np.allclose(cell_voxel_size, target_voxel_size_xyz, rtol=0.0, atol=0.0):
         raise ValueError(
             "Cell-mask voxel size does not match pipeline voxel size. "
-            f"cell={cell_voxel_size}, pipeline={target_voxel_size}"
+            f"cell={cell_voxel_size}, pipeline={target_voxel_size_xyz}"
         )
 
     if vessel_mask_path is not None:
         vessel_mask, vessel_voxel_size = _load_binary_mask_and_voxel_size(
-            vessel_mask_path, h5_dataset_name=vessel_mask_h5_dataset_name
+            vessel_mask_path,
+            h5_dataset_name=vessel_mask_h5_dataset_name,
+            axis_order=axis_order,
         )
         if vessel_mask.shape != cell_mask.shape:
             raise ValueError(
                 "cell and vessel masks must share shape for distance analysis. "
                 f"Got cell={cell_mask.shape}, vessel={vessel_mask.shape}"
             )
-        if not np.allclose(vessel_voxel_size, target_voxel_size, rtol=0.0, atol=0.0):
+        if not np.allclose(vessel_voxel_size, target_voxel_size_xyz, rtol=0.0, atol=0.0):
             raise ValueError(
                 "Vessel-mask voxel size does not match pipeline voxel size. "
-                f"vessel={vessel_voxel_size}, pipeline={target_voxel_size}"
+                f"vessel={vessel_voxel_size}, pipeline={target_voxel_size_xyz}"
             )
         edge_label_volume, edge_to_bo = _build_edge_voxel_lookup(
             graph,
             volume_shape=vessel_mask.shape,
-            voxel_size_xyz=target_voxel_size,
+            voxel_size_zyx=target_voxel_size,
         )
     else:
         if vessel_reference_image_path is not None:
@@ -562,14 +580,14 @@ def run_3d_measurement_to_cell_mask(
         edge_label_volume, edge_to_bo = _build_edge_voxel_lookup(
             graph,
             volume_shape=volume_shape,
-            voxel_size_xyz=target_voxel_size,
+            voxel_size_zyx=target_voxel_size,
         )
         vessel_mask = edge_label_volume > 0
 
     records = compute_object_to_vessel_distances(
         object_mask=cell_mask,
         vessel_mask=vessel_mask,
-        voxel_size_xyz=target_voxel_size,
+        voxel_size_zyx=target_voxel_size,
         graph_edge_label_volume=edge_label_volume,
         edge_label_to_branch_order=edge_to_bo,
         connectivity=connectivity,

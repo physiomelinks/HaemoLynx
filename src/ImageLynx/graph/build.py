@@ -22,7 +22,13 @@ def build_graph_segment_skan_stitched_loops(
     use_spatial_index=True,
     voxel_size=(1.0, 1.0, 1.0),
 ):
-    """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection."""
+    """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection.
+
+    ``voxel_size`` is the spacing of each array axis in canonical ``(z, y, x)``
+    order, so node ``pos`` and edge ``voxels`` come out as physical ``(z, y, x)``
+    coordinates. Image metadata reports ``(x, y, z)``; convert with
+    ``ImageLynx.io.voxel_size_zyx_from_xyz`` first.
+    """
     if sk is None or skeleton_image is None:
         raise ValueError("sk and skeleton_image cannot be None")
 

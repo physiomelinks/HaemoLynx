@@ -108,11 +108,11 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
         voxels=voxels,
     )
 
-    voxel_size_xyz = (1.0, 1.0, 1.0)
+    voxel_size_zyx = (1.0, 1.0, 1.0)
     summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         sample_spacing_along_edge_um=5.0,
         transverse_profile_step_um=0.2,
         transverse_half_extent_um=8.0,
