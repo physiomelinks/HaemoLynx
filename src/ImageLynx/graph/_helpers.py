@@ -44,98 +44,25 @@ def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
     # Get original voxel paths
     voxels1 = edge1_data.get('voxels', [])
     voxels2 = edge2_data.get('voxels', [])
-    
-    # CRITICAL FIX: Properly orient and merge voxel paths
-    merged_voxels = []
-    
-    if voxels1 and voxels2 and node_pos is not None:
-        # Convert to numpy arrays for easier manipulation
-        voxels1_arr = [np.array(v) for v in voxels1]
-        voxels2_arr = [np.array(v) for v in voxels2]
-        node_pos_arr = np.array(node_pos)
-        
-        # Determine which end of each voxel path connects to the removed node
-        # Check distances to find the correct orientation
-        
-        # For voxels1: which end is closer to the removed node?
-        if len(voxels1_arr) > 0:
-            dist_to_start1 = np.linalg.norm(voxels1_arr[0] - node_pos_arr)
-            dist_to_end1 = np.linalg.norm(voxels1_arr[-1] - node_pos_arr)
-            
-            if dist_to_start1 < dist_to_end1:
-                # Node connects to start of voxels1, so reverse it
-                voxels1_oriented = voxels1[::-1]
-            else:
-                # Node connects to end of voxels1, keep original order
-                voxels1_oriented = voxels1
-        else:
-            voxels1_oriented = []
-        
-        # For voxels2: which end is closer to the removed node?
-        if len(voxels2_arr) > 0:
-            dist_to_start2 = np.linalg.norm(voxels2_arr[0] - node_pos_arr)
-            dist_to_end2 = np.linalg.norm(voxels2_arr[-1] - node_pos_arr)
-            
-            if dist_to_start2 < dist_to_end2:
-                # Node connects to start of voxels2, keep original order
-                voxels2_oriented = voxels2
-            else:
-                # Node connects to end of voxels2, so reverse it
-                voxels2_oriented = voxels2[::-1]
-        else:
-            voxels2_oriented = []
-        
-        # Build continuous path: voxels1_oriented + node_position + voxels2_oriented
-        merged_voxels = []
-        
-        # Add first path (leading TO the removed node)
-        if voxels1_oriented:
-            merged_voxels.extend(voxels1_oriented)
-        
-        # Add the removed node position (ensuring no duplicates)
-        node_voxel = tuple(int(round(x)) for x in node_pos)
-        if not merged_voxels or merged_voxels[-1] != node_voxel:
-            merged_voxels.append(node_voxel)
-        
-        # Add second path (leading FROM the removed node)
-        if voxels2_oriented:
-            # Skip first voxel of second path if it's the same as removed node
-            start_idx = 1 if (voxels2_oriented and 
-                            tuple(int(round(x)) for x in voxels2_oriented[0]) == node_voxel) else 0
-            merged_voxels.extend(voxels2_oriented[start_idx:])
-    
-    else:
-        # Fallback: simple concatenation if we can't do proper orientation
-        if voxels1:
-            merged_voxels.extend(voxels1)
-        
-        if node_pos is not None:
-            node_voxel = tuple(int(round(x)) for x in node_pos)
-            if node_voxel not in merged_voxels:
-                merged_voxels.append(node_voxel)
-        
-        if voxels2:
-            merged_voxels.extend(voxels2)
-    
+
+    merged_voxels = merge_voxel_paths_at_node(voxels1, voxels2, node_pos)
+
+
     # Validate the merged path for continuity
     if len(merged_voxels) > 1:
         max_gap = validate_voxel_path_continuity(merged_voxels)
         if max_gap > 5.0:  # Large gap indicates problematic merge
             print(f"WARNING: Large gap ({max_gap:.2f}) in merged voxel path - may be discontinuous")
-    
-    # Calculate proper length from the merged voxel path
-    length_from_voxels = calculate_voxel_path_length(merged_voxels) if merged_voxels else 0
+
+    # Length always comes from the merged path. The additive sum is kept only as a
+    # diagnostic: the two diverge legitimately when an upstream step re-routes a
+    # path through the skeleton, and the path is the truth in that case.
+    length_from_voxels = calculate_voxel_path_length(merged_voxels) if merged_voxels else 0.0
     length_additive = edge1_data.get('length', 0) + edge2_data.get('length', 0)
-    
-    # Use voxel path length if available and reasonable, otherwise use additive
-    if length_from_voxels > 0 and abs(length_from_voxels - length_additive) < length_additive * 0.5:
-        final_length = length_from_voxels
-    else:
-        final_length = length_additive
+    final_length = length_from_voxels
     
     # Create merged attributes
     merged_attrs = {
-        'weight': max(edge1_data.get('weight', 0) + edge2_data.get('weight', 0), 1e-6),
         'length': final_length,
         'voxels': merged_voxels,  # Properly oriented and continuous path
         'merged': True,
@@ -170,21 +97,65 @@ def validate_voxel_path_continuity(voxels):
     arr = np.array(voxels, dtype=float)
     return float(np.max(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
 
+#: Two path points closer than this (microns, per axis) are the same point.
+#: Edge paths meeting at a shared node terminate on the identical coordinate, so
+#: this only absorbs floating-point noise.
+JUNCTION_TOLERANCE_UM = 1e-6
+
+
+def _points_coincide(
+    point_a: Any, point_b: Any, tolerance: float = JUNCTION_TOLERANCE_UM
+) -> bool:
+    """Compare two physical points without quantising them to voxel indices."""
+    a = np.asarray(point_a, dtype=float)
+    b = np.asarray(point_b, dtype=float)
+    if a.shape != b.shape:
+        return False
+    return bool(np.all(np.abs(a - b) <= tolerance))
+
+
+def _as_point(point: Any) -> Tuple[float, ...]:
+    return tuple(float(c) for c in np.asarray(point, dtype=float).ravel())
+
+
+def merge_voxel_paths_at_node(
+    voxels1: List,
+    voxels2: List,
+    node_pos: Any,
+    *,
+    tolerance: float = JUNCTION_TOLERANCE_UM,
+) -> List[Tuple[float, ...]]:
+    """Join two edge voxel paths at their shared node, in physical microns.
+
+    Paths and ``node_pos`` are physical ``(z, y, x)`` coordinates, so the
+    junction is inserted at its exact position rather than being rounded to an
+    integer voxel index. Both incident edges already terminate on the shared
+    node, so the insertion is normally a no-op — it only fires when an upstream
+    step (e.g. skeleton re-routing) left a path short of the junction.
+
+    This is the single implementation behind :func:`merge_curved_edges`,
+    :func:`merge_edge_voxels_at_node` and :func:`create_merged_edge_attributes`,
+    which previously quantised the junction in three different ways.
+    """
+    if node_pos is None:
+        return [_as_point(p) for p in list(voxels1) + list(voxels2)]
+
+    node_point = _as_point(node_pos)
+    part1 = [_as_point(p) for p in orient_path_to_endpoint(voxels1, node_point)]
+    part2 = [_as_point(p) for p in orient_path_from_startpoint(voxels2, node_point)]
+
+    merged = list(part1)
+    if not merged or not _points_coincide(merged[-1], node_point, tolerance):
+        merged.append(node_point)
+
+    start_idx = 1 if (part2 and _points_coincide(part2[0], node_point, tolerance)) else 0
+    merged.extend(part2[start_idx:])
+    return merged
+
+
 def merge_edge_voxels_at_node(voxels1: List, voxels2: List, node_pos: Any) -> List:
     """Concatenate two edge voxel paths at the removed node with orientation."""
-    part1 = orient_voxel_path_to_node(voxels1, node_pos, node_should_be_start=False)
-    part2 = orient_voxel_path_to_node(voxels2, node_pos, node_should_be_start=True)
-    merged = list(part1)
-    if node_pos is not None:
-        node_voxel = tuple(np.array(node_pos).astype(int))
-        if not merged or _voxel_key(merged[-1]) != node_voxel:
-            merged.append(node_voxel)
-    if part2:
-        start_idx = 0
-        if node_pos is not None and _voxel_key(part2[0]) == tuple(np.array(node_pos).astype(int)):
-            start_idx = 1
-        merged.extend(part2[start_idx:])
-    return merged
+    return merge_voxel_paths_at_node(voxels1, voxels2, node_pos)
 
 def _voxel_key(point: Any) -> Tuple[int, ...]:
     arr = np.asarray(point, dtype=float)
@@ -281,34 +252,7 @@ def merge_curved_edges(voxels1, voxels2, connection_pos, debug=False):
     """
     Merge two edge paths at a connection point, preserving topology.
     """
-    
-    connection_pos = np.array(connection_pos)
-    
-    # Orient voxels1 to end at connection_pos
-    oriented_voxels1 = orient_path_to_endpoint(voxels1, connection_pos)
-    
-    # Orient voxels2 to start from connection_pos  
-    oriented_voxels2 = orient_path_from_startpoint(voxels2, connection_pos)
-    
-    # Merge the paths
-    merged = []
-    
-    # Add first path
-    if oriented_voxels1:
-        merged.extend(oriented_voxels1)
-    
-    # Add connection point if not already present
-    connection_voxel = tuple(connection_pos.astype(int))
-    if not merged or tuple(merged[-1]) != connection_voxel:
-        merged.append(connection_voxel)
-    
-    # Add second path (skip duplicate connection point)
-    if oriented_voxels2:
-        start_idx = 1 if (len(oriented_voxels2) > 0 and 
-                         tuple(oriented_voxels2[0]) == connection_voxel) else 0
-        merged.extend(oriented_voxels2[start_idx:])
-    
-    return merged
+    return merge_voxel_paths_at_node(voxels1, voxels2, connection_pos)
 
 def orient_path_to_endpoint(voxels, target_pos):
     """Orient path so it ends at target_pos."""
