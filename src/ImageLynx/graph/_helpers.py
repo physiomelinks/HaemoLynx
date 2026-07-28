@@ -4,6 +4,8 @@ from typing import List, Tuple, Dict, Any, Union
 import numpy as np
 import networkx as nx
 
+from .edge_attributes import FORBIDDEN_EDGE_ATTRIBUTES
+
 def add_edge_safe(G, u, v, **attr):
     return G.add_edge(u, v, **attr)
 
@@ -135,7 +137,6 @@ def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
     
     # Create merged attributes
     merged_attrs = {
-        'weight': max(edge1_data.get('weight', 0) + edge2_data.get('weight', 0), 1e-6),
         'length': final_length,
         'voxels': merged_voxels,  # Properly oriented and continuous path
         'merged': True,
@@ -145,9 +146,9 @@ def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
         'additive_length': length_additive
     }
     
-    # Preserve other attributes from first edge
+    # Preserve other attributes from first edge, minus any removed ones.
     for key, value in edge1_data.items():
-        if key not in merged_attrs:
+        if key not in merged_attrs and key not in FORBIDDEN_EDGE_ATTRIBUTES:
             merged_attrs[key] = value
     
     return merged_attrs

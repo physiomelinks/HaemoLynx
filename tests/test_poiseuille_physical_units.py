@@ -10,7 +10,7 @@ import math
 import networkx as nx
 import pytest
 
-from ImageLynx.graph.validate import assert_no_forbidden_edge_attributes
+from ImageLynx.graph.edge_attributes import assert_no_forbidden_edge_attributes
 from ImageLynx.haemodynamics.poiseuille import (
     MAX_VALID_DIAMETER_UM,
     PLASMA_VISCOSITY_PA_S,

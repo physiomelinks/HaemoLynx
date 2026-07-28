@@ -3,11 +3,11 @@ from .assemble import build_graph_from_skeleton
 from .build import build_graph_segment_skan_stitched_loops
 from .reconnect import reconnect_secondary_loop_edges
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
-from .validate import (
+from .edge_attributes import (
     EDGE_ATTRIBUTE_UNITS,
     assert_no_forbidden_edge_attributes,
-    validate_skeleton_connection,
 )
+from .validate import validate_skeleton_connection
 from .degree2 import (
     safer_simple_remove_all_degree2_nodes,
     trivial_remove_all_degree2_nodes,

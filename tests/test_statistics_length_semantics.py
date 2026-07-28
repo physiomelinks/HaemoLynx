@@ -90,3 +90,14 @@ def test_betweenness_resistance_model_uses_resistance_not_inverse_length():
     assert set(measurements) == {"edge_resistance", "edge_length"}
     for model in measurements.values():
         assert set(model) == {"Betweenness", "Communities"}
+
+
+def test_degree2_merge_helper_does_not_reintroduce_weight():
+    """`create_merged_edge_attributes` feeds the simple degree-2 removers."""
+    from ImageLynx.graph._helpers import create_merged_edge_attributes
+
+    e1 = {"voxels": [(0.0, 0.0, 0.0), (0.0, 0.0, 1.0)], "length": 1.0, "weight": 9.9}
+    e2 = {"voxels": [(0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], "length": 1.0, "weight": 9.9}
+    merged = create_merged_edge_attributes(e1, e2, (0.0, 0.0, 1.0))
+    assert "weight" not in merged, "removed attribute leaked through the merge helper"
+    assert merged["length"] == pytest.approx(2.0)

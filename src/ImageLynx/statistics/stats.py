@@ -11,7 +11,7 @@ import networkx as nx
 from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
 
-from ImageLynx.graph.validate import assert_no_forbidden_edge_attributes
+from ImageLynx.graph.edge_attributes import assert_no_forbidden_edge_attributes
 
 #Need to add in bifurcation ratios
 
