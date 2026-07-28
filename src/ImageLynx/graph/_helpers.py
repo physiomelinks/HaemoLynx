@@ -259,9 +259,6 @@ def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: T
         scaled_diff = diff * np.array(voxel_size)
         return np.linalg.norm(scaled_diff)
     
-    # If we have weight, use that
-    if 'weight' in edge_data:
-        return edge_data['weight']
     # Fallback
     return 1.0
     

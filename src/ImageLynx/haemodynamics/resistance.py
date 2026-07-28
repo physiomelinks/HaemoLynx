@@ -6,7 +6,7 @@ import pyvista as pv
 
 
 def build_conductance_matrix_from_graph(
-    G: nx.Graph, weight_attr: str = "weight"
+    G: nx.Graph, weight_attr: str = "conductance"
 ) -> tuple[np.ndarray, list]:
     """Build symmetric conductance matrix from graph edge weights.
 
@@ -158,14 +158,16 @@ def solve_flow_from_conductance_matrix(
     vessels = pv.read(str(vessels_path))
     edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
     edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
-    edge_weight = np.asarray(vessels.cell_data.get("weight", []), dtype=float)
+    edge_conductance = np.asarray(
+        vessels.cell_data.get("conductance", []), dtype=float
+    )
     if len(edge_u) != vessels.n_cells or len(edge_v) != vessels.n_cells:
         raise ValueError(
             "VTK vessels file is missing edge_u/edge_v cell arrays needed for flow export."
         )
-    if len(edge_weight) != vessels.n_cells:
+    if len(edge_conductance) != vessels.n_cells:
         raise ValueError(
-            "VTK vessels file is missing weight cell array needed for flow export."
+            "VTK vessels file is missing the conductance cell array needed for flow export."
         )
 
     edge_p_u = np.full(vessels.n_cells, np.nan, dtype=float)
@@ -180,7 +182,7 @@ def solve_flow_from_conductance_matrix(
         if v_idx is not None:
             edge_p_v[ii] = pressure[v_idx]
     pressure_drop = edge_p_u - edge_p_v
-    flow_signed = edge_weight * pressure_drop
+    flow_signed = edge_conductance * pressure_drop
     flow_abs = np.abs(flow_signed)
 
     vessels.cell_data["pressure_u"] = edge_p_u

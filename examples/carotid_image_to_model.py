@@ -306,7 +306,6 @@ def carotid_image_to_model(image_path=INPUT_PATH,
                 G,
                 custom_edges,
                 edge_diameter=6.0,
-                use_resistance=False,
             )
         else:
             poiseuille_model.set_poiseuille_weights_with_constrictions(

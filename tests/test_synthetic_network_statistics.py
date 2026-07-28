@@ -74,7 +74,7 @@ def _build_synthetic_network() -> tuple[nx.MultiGraph, dict[str, int]]:
         (5, 6, 11.0),  # Ven1
     ]
     for u, v, weight in weighted_edges:
-        G.add_edge(u, v, weight=float(weight))
+        G.add_edge(u, v, length=float(weight))
 
     node_roles = {
         "input_node": 0,
@@ -90,8 +90,7 @@ def _apply_pipeline_length_measurements(G: nx.MultiGraph) -> None:
     for u, v, key, data in G.edges(keys=True, data=True):
         length = float(calculate_edge_length(u, v, data))
         data["length"] = length
-        # Keep shortest-path weighting aligned to physical path length.
-        data["weight"] = length
+        # Statistics read `length` directly; nothing else to set.
 
 
 def _write_ground_truth_statistics_csv(
@@ -234,7 +233,7 @@ def _write_branch_labelled_3d_html(G: nx.MultiGraph, output_html_path: Path) -> 
     for u, v, key, data in G.edges(keys=True, data=True):
         pu = np.asarray(pos[u], dtype=float)
         pv = np.asarray(pos[v], dtype=float)
-        edge_length = float(data.get("length", data.get("weight", np.linalg.norm(pv - pu))))
+        edge_length = float(data.get("length", np.linalg.norm(pv - pu)))
         straight_distance = float(np.linalg.norm(pv - pu))
         bend_sign = -1.0 if ((u + v + key) % 2 == 0) else 1.0
         curve = _curved_edge_polyline(

@@ -408,7 +408,6 @@ def _run_alice_pericyte_dilation_pressure_sweep(
                 G_sweep,
                 custom_edges,
                 edge_diameter=6.0 * dilation_factor,
-                use_resistance=False,
             )
 
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G_sweep)
@@ -1565,7 +1564,6 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G,
             custom_edges,
             edge_diameter=6.0,
-            use_resistance=False,
         )
 
         print(f"Results from set_poiseuille_edge_weights: {results_2}")
