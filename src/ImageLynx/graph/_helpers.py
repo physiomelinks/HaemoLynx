@@ -57,7 +57,7 @@ def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
     # Length always comes from the merged path. The additive sum is kept only as a
     # diagnostic: the two diverge legitimately when an upstream step re-routes a
     # path through the skeleton, and the path is the truth in that case.
-    length_from_voxels = calculate_voxel_path_length(merged_voxels) if merged_voxels else 0.0
+    length_from_voxels = calculate_path_length(merged_voxels)
     length_additive = edge1_data.get('length', 0) + edge2_data.get('length', 0)
     final_length = length_from_voxels
     
@@ -78,15 +78,6 @@ def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
             merged_attrs[key] = value
     
     return merged_attrs
-
-def calculate_voxel_path_length(voxels):
-    """
-    Calculate the actual length along a voxel path.
-    """
-    if not voxels or len(voxels) < 2:
-        return 0.0
-    arr = np.array(voxels, dtype=float)
-    return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
 
 def validate_voxel_path_continuity(voxels):
     """
@@ -199,8 +190,8 @@ def get_line_points_3d(p1, p2):
 
 
 def calculate_path_length(voxels):
-    """Calculate length as sum of distances between consecutive voxels."""
-    if len(voxels) < 2:
+    """Length of a voxel path in microns: sum of consecutive point distances."""
+    if not voxels or len(voxels) < 2:
         return 0.0
     arr = np.array(voxels, dtype=float)
     return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
