@@ -270,7 +270,6 @@ def _assign_poiseuille_weights(
         G,
         config.custom_edges,
         edge_diameter=config.custom_edge_diameter,
-        use_resistance=False,
     )
     return results
 

@@ -11,6 +11,8 @@ import networkx as nx
 from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
 
+from ImageLynx.graph.validate import assert_no_forbidden_edge_attributes
+
 #Need to add in bifurcation ratios
 
 def compute_basic_statistics(
@@ -18,24 +20,24 @@ def compute_basic_statistics(
 ) -> Dict[str, Any]:
     """Compute basic graph statistics."""
     if is_multigraph:
-        edge_weights = [
-            d.get("weight", d.get("length"))
+        edge_lengths = [
+            d["length"]
             for _, _, _, d in G.edges(keys=True, data=True)
-            if d.get("weight") is not None or d.get("length") is not None
+            if d.get("length") is not None
         ]
     else:
-        edge_weights = [
-            d.get("weight", d.get("length"))
+        edge_lengths = [
+            d["length"]
             for _, _, d in G.edges(data=True)
-            if d.get("weight") is not None or d.get("length") is not None
+            if d.get("length") is not None
         ]
     node_degrees = [G.degree(n) for n in G.nodes()]
     return {
         "Total Nodes": G.number_of_nodes(),
         "Total Edges": G.number_of_edges(),
-        "Total Edge Length (microns)": sum(edge_weights) if edge_weights else 0,
+        "Total Edge Length (microns)": sum(edge_lengths) if edge_lengths else 0,
         "Average Edge Length (microns)": (
-            sum(edge_weights) / len(edge_weights) if edge_weights else 0
+            sum(edge_lengths) / len(edge_lengths) if edge_lengths else 0
         ),
         "Average Degree": sum(node_degrees) / len(node_degrees) if node_degrees else 0,
     }
@@ -62,7 +64,7 @@ def compute_tortuosity_measures(
             pos_u = np.array(node_positions[u])
             pos_v = np.array(node_positions[v])
             straight = euclidean(pos_u, pos_v)
-            path_length = edge_data.get("weight", edge_data.get("length", straight))
+            path_length = edge_data.get("length", straight)
             if straight > 0:
                 tortuosity_indices.append(path_length / straight)
                 if path_length > 0:
@@ -186,12 +188,12 @@ def compute_path_efficiency(
         G_s.add_nodes_from(G.nodes())
         ew = {}
         for u, v, k, d in G.edges(keys=True, data=True):
-            w = d.get("weight", d.get("length", 1))
+            w = d.get("length", 1)
             uv = (u, v)
             if uv not in ew or w < ew[uv]:
                 ew[uv] = w
         for (u, v), w in ew.items():
-            G_s.add_edge(u, v, weight=w)
+            G_s.add_edge(u, v, length=w)
     else:
         G_s = G
 
@@ -230,7 +232,7 @@ def compute_path_efficiency(
 
     for src, tgt in pairs:
         try:
-            pl = nx.shortest_path_length(G_s, src, tgt, weight="weight")
+            pl = nx.shortest_path_length(G_s, src, tgt, weight="length")
         except nx.NetworkXNoPath as exc:
             raise RuntimeError(
                 f"No path between connected-graph nodes {src} and {tgt}"
@@ -259,12 +261,12 @@ def compute_vessel_density(
     """Compute vessel density."""
     if is_multigraph:
         lengths = [
-            d.get("weight", d.get("length", 0))
+            d.get("length", 0)
             for _, _, _, d in G.edges(keys=True, data=True)
         ]
     else:
         lengths = [
-            d.get("weight", d.get("length", 0))
+            d.get("length", 0)
             for _, _, d in G.edges(data=True)
         ]
     total_length = sum(lengths)
@@ -496,12 +498,12 @@ def compute_betweenness_and_community_measurements(
     G: Union[nx.Graph, nx.MultiGraph],
 ) -> Dict[str, Dict[str, Any]]:
     """Compute weighted betweenness/community using two edge distance models."""
-    inverse_weight_results = {
+    resistance_results = {
         "Betweenness": compute_weighted_betweenness_summary(
-            G, source_attr="weight", inverse_source_attr=True
+            G, source_attr="resistance", inverse_source_attr=False
         ),
         "Communities": compute_weighted_communities_summary(
-            G, source_attr="weight", inverse_source_attr=True
+            G, source_attr="resistance", inverse_source_attr=False
         ),
     }
     edge_length_results = {
@@ -513,7 +515,7 @@ def compute_betweenness_and_community_measurements(
         ),
     }
     return {
-        "inverse_edge_weight": inverse_weight_results,
+        "edge_resistance": resistance_results,
         "edge_length": edge_length_results,
     }
 
@@ -525,7 +527,13 @@ def compute_comprehensive_vessel_statistics(
     image_dimensions=None,
     statistics_mode: str = "fast",
 ) -> Dict[str, Any]:
-    """Combine all vessel statistics."""
+    """Combine all vessel statistics.
+
+    Length-based metrics read the ``length`` edge attribute (microns). They never
+    read ``resistance``/``conductance``, so running haemodynamics first cannot
+    change a reported length.
+    """
+    assert_no_forbidden_edge_attributes(G, context="vessel statistics")
     valid_modes = {"fast", "full"}
     if statistics_mode not in valid_modes:
         raise ValueError(
@@ -756,7 +764,7 @@ def compute_branch_order_statistics(
         if not normalized_tag:
             continue
 
-        length = data.get("length", data.get("weight", 0.0))
+        length = data.get("length", 0.0)
         try:
             length_f = float(length)
         except (TypeError, ValueError):

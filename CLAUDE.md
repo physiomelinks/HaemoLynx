@@ -144,6 +144,16 @@ GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` 
 - **Input contract** — pipeline expects **binary vessel masks** at skeletonization time. Masks may come from pre-existing files or from **ilastik inference** in this repo; classifier training is always manual. Document new ilastik-related paths/flags in `resistance_pipeline_settings.py` and `preflight.py`.
 - **Voxel sizes** — use `io.voxel_validation.resolve_voxel_size_xyz`; masks and main image must align in shape and physical voxel units.
 - **Graph** — `nx.MultiGraph` with `pos` on nodes and `voxels` on edges; haemodynamics uses `branch_order` on edges.
+- **Edge attributes & units** — `length` (µm), `resistance` (Pa·s/m³), `conductance` (m³/(Pa·s)).
+  `resistance` and `conductance` are always written together via
+  `haemodynamics.poiseuille.set_edge_resistance`. **There is no `weight` attribute** — it used to
+  mean physical length at build time and conductance after haemodynamics ran, so statistics read
+  conductances back as microns. `graph.assert_no_forbidden_edge_attributes(G)` raises if it
+  reappears; NetworkX algorithms must be passed an explicit `weight="length"` / `weight="resistance"`
+  rather than relying on their `"weight"` default.
+- **Viscosity model** — capillary-only: `µ(d) = 3.0 mPa·s · (5 µm / d)^1.647`, valid to **7 µm**
+  (above ~8.7 µm it predicts blood thinner than plasma). Larger diameters hard-error; extending the
+  law and making it selectable is tracked in issue #85.
 - **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`.
 - **Comments** — only for non-obvious domain logic; prefer self-explanatory code.
 

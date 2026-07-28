@@ -856,7 +856,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
         else:
             weighted_measurements = {
-                "inverse_edge_weight": {
+                "edge_resistance": {
                     "Betweenness": {
                         "Betweenness Mean": "N/A (haemodynamics disabled)",
                         "Betweenness Max": "N/A (haemodynamics disabled)",
@@ -889,15 +889,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             for metric_name, metric_values in model_results.items():
                 print(f"    {metric_name}: {metric_values}")
 
-        inv_weight_path = output_dir / f"{image_path.stem}_betweenness_communities_inverse_weight.json"
-        inv_weight_path.write_text(
-            json.dumps(weighted_measurements["inverse_edge_weight"], indent=2)
+        resistance_path = output_dir / f"{image_path.stem}_betweenness_communities_resistance.json"
+        resistance_path.write_text(
+            json.dumps(weighted_measurements["edge_resistance"], indent=2)
         )
         length_path = output_dir / f"{image_path.stem}_betweenness_communities_edge_length.json"
         length_path.write_text(
             json.dumps(weighted_measurements["edge_length"], indent=2)
         )
-        print(f"Saved inverse-weight stats to: {inv_weight_path}")
+        print(f"Saved edge-resistance stats to: {resistance_path}")
         print(f"Saved edge-length stats to: {length_path}")
     else:
         print("Vessel statistics skipped.")

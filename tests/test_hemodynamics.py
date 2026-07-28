@@ -14,8 +14,9 @@ MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
 
 
 def test_calculate_viscosity():
-    assert MODEL.calculate_viscosity(1.0) == 1.0
-    assert MODEL.calculate_viscosity(2.0) < 1.0
+    # Physical Pa.s, pinned at 3.0 mPa.s for a 5 um capillary, rising as vessels narrow.
+    assert MODEL.calculate_viscosity(5.0) == pytest.approx(3.0e-3)
+    assert MODEL.calculate_viscosity(3.0) > MODEL.calculate_viscosity(6.0)
 
 
 def test_get_diameter_at_position():
@@ -48,40 +49,44 @@ def test_set_poiseuille_weights_with_constrictions_fwhm_baseline(multigraph_with
     G[0][1][0]["fwhm_diameter_um"] = 4.0
     out_graph, res = MODEL.set_poiseuille_weights_with_constrictions(
         G,
-        {"BO1": 10.0},
+        {"BO1": 6.0},
         prefer_edge_fwhm_baseline=True,
         constriction_factor_by_branch_order={"BO1": 0.8},
     )
     assert isinstance(out_graph, nx.MultiGraph)
     assert res["weights_set"] == 1
     assert res["used_fwhm_baseline"] == 1
-    assert out_graph[0][1][0]["weight"] > 0
+    assert out_graph[0][1][0]["resistance"] > 0
+    assert out_graph[0][1][0]["conductance"] == pytest.approx(
+        1.0 / out_graph[0][1][0]["resistance"]
+    )
 
 
 def test_set_poiseuille_weights_with_constrictions_fwhm_fallback(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     out_graph, res = MODEL.set_poiseuille_weights_with_constrictions(
         G,
-        {"BO1": 10.0},
+        {"BO1": 6.0},
         prefer_edge_fwhm_baseline=True,
         constriction_factor_by_branch_order={"BO1": 0.5},
     )
     assert res["used_fwhm_baseline"] == 0
     assert res["weights_set"] == 1
-    w_fallback = out_graph[0][1][0]["weight"]
+    r_fallback = out_graph[0][1][0]["resistance"]
 
     G2 = multigraph_with_branch_order.copy()
     G2, _ = MODEL.set_poiseuille_weights_with_constrictions(
         G2,
-        {"BO1": {"d1": 10.0, "d2": 5.0}},
+        # equivalent to the fallback above: d1=6.0 with constriction factor 0.5
+        {"BO1": {"d1": 6.0, "d2": 3.0}},
     )
-    assert np.isclose(w_fallback, G2[0][1][0]["weight"])
+    assert np.isclose(r_fallback, G2[0][1][0]["resistance"])
 
 
 def test_set_poiseuille_edge_weights(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     out_graph, res = MODEL.set_poiseuille_edge_weights(
-        G, [(0, 1)], 6.0, use_resistance=False
+        G, [(0, 1)], 6.0
     )
     assert isinstance(out_graph, nx.MultiGraph)
     assert "updated" in res
@@ -97,10 +102,10 @@ def test_calc_laplacian_from_conductance_matrix():
 def test_build_conductance_matrix_from_graph():
     G = nx.MultiGraph()
     G.add_nodes_from([0, 1, 2])
-    G.add_edge(0, 1, weight=1.5)
-    G.add_edge(0, 1, weight=2.5)  # Parallel edge should be summed.
-    G.add_edge(1, 2, weight=1.0)
-    G.add_edge(0, 2, weight=-3.0)  # Non-positive weights are ignored.
+    G.add_edge(0, 1, conductance=1.5)
+    G.add_edge(0, 1, conductance=2.5)  # Parallel edge should be summed.
+    G.add_edge(1, 2, conductance=1.0)
+    G.add_edge(0, 2, conductance=-3.0)  # Non-positive values are ignored.
 
     C, node_list = build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
@@ -119,8 +124,8 @@ def test_build_conductance_matrix_from_graph():
 def test_calc_two_point_from_laplacian_matrix_nodeID():
     G = nx.MultiGraph()
     G.add_nodes_from([0, 1, 2])
-    G.add_edge(0, 1, weight=1)
-    G.add_edge(1, 2, weight=1)
+    G.add_edge(0, 1, conductance=1)
+    G.add_edge(1, 2, conductance=1)
     C = np.zeros((3, 3))
     C[0, 1] = C[1, 0] = 1
     C[1, 2] = C[2, 1] = 1

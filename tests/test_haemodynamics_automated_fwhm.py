@@ -1,4 +1,5 @@
 """Tests for FWHM-based diameter estimation (haemodynamics.automated)."""
+import pytest
 from pathlib import Path
 
 import numpy as np
@@ -128,14 +129,14 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
     G2, res = model.set_poiseuille_weights(
         G,
-        {"B01": 99.0},
+        {"B01": 6.9},  # sentinel: must be ignored in favour of fwhm_diameter_um
         prefer_edge_fwhm_diameter=True,
     )
     assert res["used_fwhm_edge_diameter"] == 1
-    w = G2[0][1][0]["weight"]
-    visc = 1.0 / (d**1.647)
-    expect_w = (np.pi * d**4) / (128.0 * visc * 16.0)
-    assert abs(w - expect_w) < expect_w * 0.05
+    r = G2[0][1][0]["resistance"]
+    expect_r = model.resistance_of_uniform_segment(16.0, d)
+    assert abs(r - expect_r) < expect_r * 0.05
+    assert G2[0][1][0]["conductance"] == pytest.approx(1.0 / r)
 
 
 def test_set_poiseuille_weights_prefers_fwhm_optional(multigraph_with_branch_order):
@@ -144,11 +145,10 @@ def test_set_poiseuille_weights_prefers_fwhm_optional(multigraph_with_branch_ord
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
     _, res = model.set_poiseuille_weights(
         G,
-        {"BO1": 20.0},
+        {"BO1": 6.9},  # sentinel: must be ignored in favour of fwhm_diameter_um
         prefer_edge_fwhm_diameter=True,
     )
     assert res["used_fwhm_edge_diameter"] == 1
     d_used = 2.0
-    visc = 1.0 / (d_used**1.647)
-    expect = (np.pi * d_used**4) / (128.0 * visc * 5.0)
-    assert abs(G[0][1][0]["weight"] - expect) < 1e-6
+    expect = model.resistance_of_uniform_segment(5.0, d_used)
+    assert G[0][1][0]["resistance"] == pytest.approx(expect)

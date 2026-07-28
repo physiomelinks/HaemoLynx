@@ -236,7 +236,6 @@ def create_trivial_merged_edge(
     voxels2 = edge2_data.get("voxels", [])
     merged_voxels = merge_edge_voxels_at_node(voxels1, voxels2, removed_node_pos)
     merged_attributes = {
-        "weight": edge1_data.get("weight", 0) + edge2_data.get("weight", 0),
         "length": edge1_data.get("length", 0) + edge2_data.get("length", 0),
         "voxels": merged_voxels,
         "merged": True,
@@ -344,7 +343,6 @@ def smart_multigraph_degree2_removal(
                 voxel_size=vs,
             )
             merged_attrs = {
-                "weight": d1.get("weight", 0) + d2.get("weight", 0),
                 "length": calculate_path_length(merged_voxels),
                 "voxels": merged_voxels,
                 "merged": True,
