@@ -1,6 +1,7 @@
 """Haemodynamics: viscosity, Poiseuille resistance/conductance, network resistance."""
 from . import automated
 from .poiseuille import (
+    PlaceholderViscosityWarning,
     PoiseuilleModel,
     build_diameter_by_branch_order,
 )
@@ -14,6 +15,7 @@ from .pipeline import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
 
 __all__ = [
     "automated",
+    "PlaceholderViscosityWarning",
     "PoiseuilleModel",
     "build_diameter_by_branch_order",
     "build_conductance_matrix_from_graph",
