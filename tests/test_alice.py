@@ -1,7 +1,6 @@
 """Synthetic test for Alice pressure+dilation graphing workflow."""
 from __future__ import annotations
 
-import pytest
 import importlib.util
 import sys
 from pathlib import Path
@@ -172,17 +171,6 @@ def _assert_sweep_outputs_valid(
         assert flows[0] < flows[-1]
 
 
-@pytest.mark.xfail(
-    reason=(
-        "The Alice fixture models arterioles (Art1, 7.0 um) and venules (Ven1, 8.0 um), "
-        "and the pericyte dilation sweep pushes Art1 to 7.07-7.21 um. The capillary "
-        "viscosity law is only valid to 7 um — above ~8.7 um it predicts blood thinner "
-        "than plasma — so these diameters are now rejected instead of silently "
-        "extrapolated. Unblocked by the >7 um viscosity regime in issue #85."
-    ),
-    raises=ValueError,
-    strict=True,
-)
 def test_alice_graphing_on_synthetic_network(tmp_path: Path):
     """Run a reduced sweep and verify CSV + flow/resistance curve plots."""
     sweep = _run_synthetic_alice_graphing(

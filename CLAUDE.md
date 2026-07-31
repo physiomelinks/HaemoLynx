@@ -162,9 +162,11 @@ GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` 
   conductances back as microns. `graph.assert_no_forbidden_edge_attributes(G)` raises if it
   reappears; NetworkX algorithms must be passed an explicit `weight="length"` / `weight="resistance"`
   rather than relying on their `"weight"` default.
-- **Viscosity model** — capillary-only: `µ(d) = 3.0 mPa·s · (5 µm / d)^1.647`, valid to **7 µm**
-  (above ~8.7 µm it predicts blood thinner than plasma). Larger diameters hard-error; extending the
-  law and making it selectable is tracked in issue #85.
+- **Viscosity model** — piecewise: `µ(d) = 3.0 mPa·s · (5 µm / d)^1.647` up to **7 µm** (above
+  ~8.7 µm it would predict blood thinner than plasma), then a constant large-vessel
+  `µ = 3.5 mPa·s`. The constant branch is a placeholder — it steps up discontinuously at 7 µm, so
+  7–8.4 µm resistances are overestimated; modelling the real transition is issue #90, and making
+  the law selectable is issue #85.
 - **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`.
 - **Comments** — only for non-obvious domain logic; prefer self-explanatory code.
 

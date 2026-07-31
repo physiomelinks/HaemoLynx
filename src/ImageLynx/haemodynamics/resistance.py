@@ -53,9 +53,13 @@ def calc_two_point_from_laplacian_matrix_nodeID(
     except KeyError as e:
         raise ValueError(f"Node {e} not found in graph")
     eigvals, eigvecs = np.linalg.eigh(L)
+    # Null-space cut-off must scale with the matrix: conductances are ~1e-16
+    # m^3/(Pa.s) in SI units, so any fixed absolute threshold would discard
+    # every mode and silently return zero resistance.
+    tolerance = float(np.max(eigvals)) * len(eigvals) * np.finfo(float).eps
     R = 0.0
     for ii in range(1, len(eigvals)):
-        if eigvals[ii] > 1e-10:
+        if eigvals[ii] > tolerance:
             R += (1 / eigvals[ii]) * (
                 eigvecs[node_idx1, ii] - eigvecs[node_idx2, ii]
             ) ** 2

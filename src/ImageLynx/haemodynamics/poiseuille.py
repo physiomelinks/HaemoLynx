@@ -79,9 +79,21 @@ REFERENCE_DIAMETER_UM = 5.0
 VISCOSITY_DIAMETER_EXPONENT = 1.647
 
 # Plasma viscosity. The power law crosses this at ~8.7 um, above which it would
-# predict blood thinner than its own plasma, so the model is only valid below.
+# predict blood thinner than its own plasma, so the power law is only used below.
 PLASMA_VISCOSITY_PA_S = 1.2e-3
-MAX_VALID_DIAMETER_UM = 7.0
+CAPILLARY_REGIME_MAX_DIAMETER_UM = 7.0
+
+# Above the capillary regime, viscosity is held at the macroscale value: whole
+# blood at physiological haematocrit in vessels wide enough (d >~ 300 um) that
+# the Fahraeus-Lindqvist effect has died out.
+#
+# This is a deliberate placeholder, not a model of the 7 um-to-macroscale
+# transition, where apparent viscosity actually recovers gradually. It jumps
+# discontinuously at 7 um (1.72 -> 3.5 mPa.s), so between 7 and ~8.4 um a wider
+# vessel is predicted *more* resistive per unit length than a 7 um one. Vessels
+# well above that band are the ones this branch is meant to serve. Replacing it
+# with a continuous law (Pries et al. in-vivo) is tracked in issue #90.
+LARGE_VESSEL_VISCOSITY_PA_S = 3.5e-3
 
 UM_PER_M = 1.0e6
 
@@ -137,21 +149,16 @@ class PoiseuilleModel:
     def calculate_viscosity(diameter: float) -> float:
         """Apparent blood viscosity in Pa.s for a vessel of *diameter* um.
 
-        Valid only in the capillary regime (d <= ``MAX_VALID_DIAMETER_UM``).
+        Piecewise: the calibrated capillary power law up to
+        ``CAPILLARY_REGIME_MAX_DIAMETER_UM``, and a constant
+        ``LARGE_VESSEL_VISCOSITY_PA_S`` above it. The constant branch is a
+        placeholder for the real transition regime (issue #90) — resistances
+        for 7-30 um vessels should be read as order-of-magnitude only.
         """
         if diameter <= 0:
             raise ValueError(f"Diameter must be positive, got {diameter} um.")
-        if diameter > MAX_VALID_DIAMETER_UM:
-            raise ValueError(
-                f"Diameter {diameter} um exceeds the {MAX_VALID_DIAMETER_UM} um validity "
-                "limit of the capillary viscosity model "
-                f"mu(d) = {REFERENCE_VISCOSITY_PA_S * 1e3} mPa.s * "
-                f"({REFERENCE_DIAMETER_UM} um / d)^{VISCOSITY_DIAMETER_EXPONENT}. "
-                "Extrapolating upward drives apparent viscosity below plasma viscosity "
-                f"({PLASMA_VISCOSITY_PA_S * 1e3} mPa.s) at ~8.7 um, which is unphysical. "
-                "The above-7um viscosity regime still needs to be implemented — see "
-                "Fahraeus-Lindqvist / Pries et al. for the larger-vessel parameterisation."
-            )
+        if diameter > CAPILLARY_REGIME_MAX_DIAMETER_UM:
+            return LARGE_VESSEL_VISCOSITY_PA_S
         return REFERENCE_VISCOSITY_PA_S * (
             (REFERENCE_DIAMETER_UM / diameter) ** VISCOSITY_DIAMETER_EXPONENT
         )
@@ -237,7 +244,9 @@ class PoiseuilleModel:
         print(f"Formula: resistance = (128 * viscosity * length) / (π * diameter^4)")
         print(
             f"Viscosity: μ(d) = {REFERENCE_VISCOSITY_PA_S * 1e3} mPa.s * "
-            f"({REFERENCE_DIAMETER_UM} μm / d)^{VISCOSITY_DIAMETER_EXPONENT}"
+            f"({REFERENCE_DIAMETER_UM} μm / d)^{VISCOSITY_DIAMETER_EXPONENT} "
+            f"for d <= {CAPILLARY_REGIME_MAX_DIAMETER_UM} μm, "
+            f"else {LARGE_VESSEL_VISCOSITY_PA_S * 1e3} mPa.s (large-vessel constant)"
         )
         print(f"Units: diameter and length in μm; resistance in Pa.s/m^3")
         print()
