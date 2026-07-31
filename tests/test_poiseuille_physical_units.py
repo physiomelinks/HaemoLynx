@@ -12,7 +12,8 @@ import pytest
 
 from ImageLynx.graph.validate import assert_no_forbidden_edge_attributes
 from ImageLynx.haemodynamics.poiseuille import (
-    MAX_VALID_DIAMETER_UM,
+    CAPILLARY_REGIME_MAX_DIAMETER_UM,
+    LARGE_VESSEL_VISCOSITY_PA_S,
     PLASMA_VISCOSITY_PA_S,
     REFERENCE_DIAMETER_UM,
     REFERENCE_VISCOSITY_PA_S,
@@ -103,21 +104,61 @@ def test_viscosity_rises_as_vessels_narrow():
     assert viscosities == sorted(viscosities, reverse=True)
 
 
-# --- validity range --------------------------------------------------------
+# --- regime switch at the capillary limit ----------------------------------
 
 
-def test_diameter_above_seven_microns_is_rejected():
-    with pytest.raises(ValueError, match="above-7um viscosity regime"):
-        MODEL.calculate_viscosity(MAX_VALID_DIAMETER_UM + 0.001)
+def test_power_law_applies_up_to_and_including_the_capillary_limit():
+    at_limit = MODEL.calculate_viscosity(CAPILLARY_REGIME_MAX_DIAMETER_UM)
+    expected = REFERENCE_VISCOSITY_PA_S * (
+        (REFERENCE_DIAMETER_UM / CAPILLARY_REGIME_MAX_DIAMETER_UM)
+        ** VISCOSITY_DIAMETER_EXPONENT
+    )
+    assert at_limit == pytest.approx(expected, rel=1e-15)
 
 
-def test_diameter_at_the_limit_is_accepted():
-    assert MODEL.calculate_viscosity(MAX_VALID_DIAMETER_UM) > 0
+def test_capillary_limit_sits_inside_the_physically_meaningful_region():
+    """At the 7 um cutoff the power law must still predict blood thicker than plasma."""
+    assert (
+        MODEL.calculate_viscosity(CAPILLARY_REGIME_MAX_DIAMETER_UM)
+        > PLASMA_VISCOSITY_PA_S
+    )
 
 
-def test_validity_limit_sits_inside_the_physically_meaningful_region():
-    """At the 7 um cutoff the model must still predict blood thicker than plasma."""
-    assert MODEL.calculate_viscosity(MAX_VALID_DIAMETER_UM) > PLASMA_VISCOSITY_PA_S
+def test_above_the_capillary_limit_viscosity_is_the_large_vessel_constant():
+    """Arterioles, venules and anything larger get one fixed macroscale viscosity."""
+    for diameter in (7.001, 10.0, 25.0, 100.0, 1000.0):
+        assert MODEL.calculate_viscosity(diameter) == LARGE_VESSEL_VISCOSITY_PA_S
+
+
+def test_large_vessel_viscosity_is_thicker_than_plasma():
+    assert LARGE_VESSEL_VISCOSITY_PA_S > PLASMA_VISCOSITY_PA_S
+
+
+def test_above_the_capillary_limit_resistance_scales_as_diameter_to_the_minus_4():
+    """With viscosity constant, only Poiseuille's d^-4 remains."""
+    wide = MODEL.resistance_of_uniform_segment(CAPILLARY_LENGTH_UM, 40.0)
+    narrow = MODEL.resistance_of_uniform_segment(CAPILLARY_LENGTH_UM, 20.0)
+    assert narrow / wide == pytest.approx(2.0**4, rel=1e-12)
+
+
+def test_placeholder_transition_regime_is_discontinuous_at_the_limit():
+    """Pins the known artefact of the constant-viscosity placeholder (issue #90).
+
+    Viscosity steps up at 7 um instead of recovering smoothly, so vessels just
+    above the limit are over-resistive. Replacing the placeholder with a
+    continuous law should make this test fail — delete it then.
+    """
+    below = MODEL.calculate_viscosity(CAPILLARY_REGIME_MAX_DIAMETER_UM)
+    above = MODEL.calculate_viscosity(CAPILLARY_REGIME_MAX_DIAMETER_UM + 1e-9)
+    assert above / below == pytest.approx(2.03, rel=1e-2)
+
+    just_above = MODEL.resistance_of_uniform_segment(
+        CAPILLARY_LENGTH_UM, CAPILLARY_REGIME_MAX_DIAMETER_UM + 1e-9
+    )
+    at_limit = MODEL.resistance_of_uniform_segment(
+        CAPILLARY_LENGTH_UM, CAPILLARY_REGIME_MAX_DIAMETER_UM
+    )
+    assert just_above > at_limit
 
 
 def test_non_positive_diameter_is_rejected():
