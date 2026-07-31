@@ -178,10 +178,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
 
     original_probabilistic_main = (
         haemo_pipeline.probability_haemodynamics
-        .set_poiseuille_weights_with_probabilistic_periodic_constrictions
+        .set_poiseuille_resistances_with_probabilistic_periodic_constrictions
     )
     original_probabilistic_compare = (
-        pericyte_comparison_mod.set_poiseuille_weights_with_probabilistic_periodic_constrictions
+        pericyte_comparison_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions
     )
 
     def _recording_probabilistic(original_fn, call_log: list[dict | None]):
@@ -195,10 +195,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
 
         return _wrapper
 
-    haemo_pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+    haemo_pipeline.probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
         _recording_probabilistic(original_probabilistic_main, probabilistic_call_args)
     )
-    pericyte_comparison_mod.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+    pericyte_comparison_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
         _recording_probabilistic(original_probabilistic_compare, probabilistic_call_args)
     )
     try:
@@ -236,10 +236,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
             constriction_by_branch_order=constriction_uniform_08,
         )
     finally:
-        haemo_pipeline.probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        haemo_pipeline.probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
             original_probabilistic_main
         )
-        pericyte_comparison_mod.set_poiseuille_weights_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        pericyte_comparison_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
             original_probabilistic_compare
         )
 

@@ -5,7 +5,7 @@ from .plot import (
     visualize_3d_plotly_vessel_types,
     visualize_edges_and_nodes,
     visualize_geometry_with_branch_orders,
-    visualize_geometry_with_edge_weights,
+    visualize_geometry_with_edge_resistance,
     visualize_skeleton,
 )
 from .vtk_io import (
@@ -21,7 +21,7 @@ __all__ = [
     "visualize_3d_plotly_vessel_types",
     "visualize_edges_and_nodes",
     "visualize_geometry_with_branch_orders",
-    "visualize_geometry_with_edge_weights",
+    "visualize_geometry_with_edge_resistance",
     "visualize_skeleton",
     "derive_pericyte_points_from_graph",
     "graph_to_vtk",

@@ -141,9 +141,9 @@ def test_series_capillaries_add_resistance_and_preserve_length():
         )
     lengths_before = [d["length"] for _, _, d in G.edges(data=True)]
 
-    G, results = MODEL.set_poiseuille_weights(G, {"B01": CAPILLARY_DIAMETER_UM})
+    G, results = MODEL.set_poiseuille_resistances(G, {"B01": CAPILLARY_DIAMETER_UM})
 
-    assert results["weights_set"] == 2
+    assert results["edges_set"] == 2
     lengths_after = [d["length"] for _, _, d in G.edges(data=True)]
     assert lengths_after == lengths_before
 
@@ -155,7 +155,7 @@ def test_series_capillaries_add_resistance_and_preserve_length():
 def test_haemodynamics_does_not_write_the_removed_weight_attribute():
     G = nx.MultiGraph()
     G.add_edge(0, 1, length=CAPILLARY_LENGTH_UM, branch_order="B01")
-    G, _ = MODEL.set_poiseuille_weights(G, {"B01": CAPILLARY_DIAMETER_UM})
+    G, _ = MODEL.set_poiseuille_resistances(G, {"B01": CAPILLARY_DIAMETER_UM})
     assert_no_forbidden_edge_attributes(G, context="poiseuille output")
 
 

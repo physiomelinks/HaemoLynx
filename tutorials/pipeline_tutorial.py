@@ -103,7 +103,6 @@ from tutorial_plots import GraphBuildPlotter, in_jupyter, show_stage_plots
 print(f"Repository root: {REPO_ROOT}")
 print(f"Running in Jupyter: {in_jupyter()}")
 
-
 # ## Configuration (shared)
 # 
 # Output directories and skeleton/graph parameters used from Stage 1 onward. **Segmented input path is chosen in Stage 1** (tutorial default or your Stage 0 mask).
@@ -135,7 +134,6 @@ SHOW_STAGE_PLOTS = True
 print(f"Outputs: {OUTPUT_DIR}")
 print(f"Plots: {PLOT_DIR}")
 print(f"Inline stage plots enabled: {SHOW_STAGE_PLOTS and in_jupyter()}")
-
 
 # ## Stage 0: Segment **your** raw image with ilastik
 # 
@@ -229,7 +227,6 @@ else:
     print("Stage 0 skipped (RUN_STAGE_0_ILASTIK=False).")
     print("Stage 1 will use the tutorial default mask unless USE_CUSTOM_SEGMENTED_IMAGE=True.")
 
-
 # ## Stage 1: Load and skeletonize (pre-segmented mask)
 # 
 # Stages 1–6 operate on a **binary segmentation**, not raw fluorescence.
@@ -269,7 +266,6 @@ VTK_PREFIX = OUTPUT_DIR / f"{stem}_tutorial"
 
 print(f"Stage 1 input (segmented): {INPUT_TIFF}")
 print(f"USE_CUSTOM_SEGMENTED_IMAGE={USE_CUSTOM_SEGMENTED_IMAGE}")
-
 
 # In[ ]:
 
@@ -321,7 +317,6 @@ show_stage_plots(
     enabled=SHOW_STAGE_PLOTS,
 )
 
-
 # ## Stage 2: Build vascular graph
 # 
 # `build_graph_from_skeleton` runs the full topology pipeline (skan extraction, loop stitching, degree-2 cleanup, stub pruning, orphan reconnection). The optional callback prints node/edge counts after each step.
@@ -372,7 +367,6 @@ visualization.visualize_edges_and_nodes(
 )
 show_stage_plots("Stage 2: Final graph", [final_graph_path], enabled=SHOW_STAGE_PLOTS)
 
-
 # ## Stage 3: Boundary nodes and branch orders
 # 
 # Select inlet/outlet nodes inside the volume boxes, then call `graph.assign_vessel_branch_orders` (capillary `B*` orders, or hierarchical `Art*`/`Ven*`/`B*` when boundary sets are provided).
@@ -411,7 +405,6 @@ show_stage_plots(
     enabled=SHOW_STAGE_PLOTS,
 )
 
-
 # ## Stage 4: Haemodynamics (Poiseuille)
 # 
 # Call `haemodynamics.apply_poiseuille_haemodynamics` to assign conductances from branch-order diameters, then build the conductance matrix and compute two-point equivalent resistance.
@@ -432,7 +425,6 @@ r = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
     laplacian, G, resistance_node_pair[0], resistance_node_pair[1],
 )
 print(f"Two-point resistance: {r}")
-
 
 # ## Stage 5: VTK export and flow solve
 # 
@@ -479,7 +471,6 @@ statistics.export_statistics_to_csv(stats, stats_csv)
 for key, value in list(stats.items())[:8]:
     print(f"{key}: {value}")
 print(f"Saved: {stats_csv}")
-
 
 # ## Adapting for your own data
 # 

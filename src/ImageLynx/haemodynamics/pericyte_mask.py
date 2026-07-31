@@ -1,4 +1,4 @@
-"""Pericyte-mask driven constriction mapping for Poiseuille edge weights."""
+"""Pericyte-mask driven constriction mapping for Poiseuille edge resistance."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -337,7 +337,7 @@ def _resolve_d1_d2_for_edge(
     return d1, d2, used_fwhm_baseline
 
 
-def set_poiseuille_weights_with_pericyte_mask(
+def set_poiseuille_resistances_with_pericyte_mask(
     graph: nx.MultiGraph,
     *,
     diameter_by_branch_order: dict,
@@ -354,7 +354,7 @@ def set_poiseuille_weights_with_pericyte_mask(
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
-    """Set conductance weights using pericyte centroids from a mask volume.
+    """Set edge resistance/conductance using pericyte centroids from a mask volume.
 
     Each connected component in ``pericyte_mask_path`` is treated as one pericyte.
     The component centroid is projected to the nearest graph edge and used as a
@@ -442,7 +442,7 @@ def set_poiseuille_weights_with_pericyte_mask(
         assignment_distances.append(float(dist_um))
 
     results: dict[str, Any] = {
-        "weights_set": 0,
+        "edges_set": 0,
         "pericyte_count": total_pericytes,
         "eligible_pericyte_count": int(len(eligible_indices)),
         "max_assignment_distance_um": (
@@ -509,5 +509,5 @@ def set_poiseuille_weights_with_pericyte_mask(
         set_edge_resistance(graph[u][v][key], float(total_resistance))
         graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in centers]
-        results["weights_set"] += 1
+        results["edges_set"] += 1
     return graph, results

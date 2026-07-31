@@ -750,7 +750,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             elif use_fwhm_edge_diameters is False:
                 print(
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
-                    "set_poiseuille_weights without per-edge FWHM)."
+                    "set_poiseuille_resistances without per-edge FWHM)."
                 )
             if "pericyte_comparison" in haemo_results:
                 comparison_results = haemo_results["pericyte_comparison"]
