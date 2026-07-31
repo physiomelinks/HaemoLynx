@@ -165,8 +165,10 @@ GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` 
 - **Viscosity model** — piecewise: `µ(d) = 3.0 mPa·s · (5 µm / d)^1.647` up to **7 µm** (above
   ~8.7 µm it would predict blood thinner than plasma), then a constant large-vessel
   `µ = 3.5 mPa·s`. The constant branch is a placeholder — it steps up discontinuously at 7 µm, so
-  7–8.4 µm resistances are overestimated; modelling the real transition is issue #90, and making
-  the law selectable is issue #85.
+  7–8.4 µm resistances are overestimated. Diameters from 7 µm to 100 µm therefore raise
+  `haemodynamics.PlaceholderViscosityWarning`; above ~100 µm the constant is close to the true
+  macroscale value and no warning is raised. Modelling the real transition is issue #90, and
+  making the law selectable is issue #85.
 - **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`.
 - **Comments** — only for non-obvious domain logic; prefer self-explanatory code.
 

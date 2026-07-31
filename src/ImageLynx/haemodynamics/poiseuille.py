@@ -1,5 +1,6 @@
 """Poiseuille law: viscosity, resistance, conductance."""
 import logging
+import warnings
 
 import numpy as np
 import networkx as nx
@@ -95,7 +96,24 @@ CAPILLARY_REGIME_MAX_DIAMETER_UM = 7.0
 # with a continuous law (Pries et al. in-vivo) is tracked in issue #90.
 LARGE_VESSEL_VISCOSITY_PA_S = 3.5e-3
 
+# Upper end of the placeholder's error. By ~100 um the constant is close to the
+# true macroscale apparent viscosity, so vessels above this are served well by
+# it; between 7 and 100 um they are not, and every such vessel raises
+# PlaceholderViscosityWarning.
+PLACEHOLDER_REGIME_MAX_DIAMETER_UM = 100.0
+
 UM_PER_M = 1.0e6
+
+
+class PlaceholderViscosityWarning(UserWarning):
+    """A vessel fell in the 7-100 um regime where viscosity is a placeholder.
+
+    Raised so that a run using arteriole- and venule-scale vessels cannot
+    quietly report resistances that carry more precision than the model has.
+    Silence it deliberately, once you have accepted the approximation, with::
+
+        warnings.filterwarnings("ignore", category=PlaceholderViscosityWarning)
+    """
 
 
 def set_edge_resistance(edge_data: dict, resistance: float) -> None:
@@ -152,12 +170,31 @@ class PoiseuilleModel:
         Piecewise: the calibrated capillary power law up to
         ``CAPILLARY_REGIME_MAX_DIAMETER_UM``, and a constant
         ``LARGE_VESSEL_VISCOSITY_PA_S`` above it. The constant branch is a
-        placeholder for the real transition regime (issue #90) — resistances
-        for 7-30 um vessels should be read as order-of-magnitude only.
+        placeholder for the real transition regime (issue #90), so diameters
+        from 7 um to ``PLACEHOLDER_REGIME_MAX_DIAMETER_UM`` raise
+        :class:`PlaceholderViscosityWarning` and their resistances should be
+        read as order-of-magnitude only.
         """
         if diameter <= 0:
             raise ValueError(f"Diameter must be positive, got {diameter} um.")
         if diameter > CAPILLARY_REGIME_MAX_DIAMETER_UM:
+            if diameter <= PLACEHOLDER_REGIME_MAX_DIAMETER_UM:
+                # Deliberately free of the actual diameter so repeated calls
+                # collapse to one message under the default warning filter.
+                warnings.warn(
+                    "Vessel diameters between "
+                    f"{CAPILLARY_REGIME_MAX_DIAMETER_UM} and "
+                    f"{PLACEHOLDER_REGIME_MAX_DIAMETER_UM} um use a placeholder "
+                    "viscosity: it is held constant at "
+                    f"{LARGE_VESSEL_VISCOSITY_PA_S * 1e3} mPa.s instead of "
+                    "recovering gradually from the capillary law toward the "
+                    "macroscale value. The error is largest just above "
+                    f"{CAPILLARY_REGIME_MAX_DIAMETER_UM} um, where viscosity "
+                    "also steps up discontinuously. Treat resistances for these "
+                    "vessels as order-of-magnitude only — see issue #90.",
+                    PlaceholderViscosityWarning,
+                    stacklevel=2,
+                )
             return LARGE_VESSEL_VISCOSITY_PA_S
         return REFERENCE_VISCOSITY_PA_S * (
             (REFERENCE_DIAMETER_UM / diameter) ** VISCOSITY_DIAMETER_EXPONENT

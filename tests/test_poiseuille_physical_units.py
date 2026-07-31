@@ -6,6 +6,7 @@ scale against measured capillary physiology, and pin the scaling exponents so an
 algebra error cannot hide inside a plausible-looking absolute value.
 """
 import math
+import warnings
 
 import networkx as nx
 import pytest
@@ -13,6 +14,8 @@ import pytest
 from ImageLynx.graph.validate import assert_no_forbidden_edge_attributes
 from ImageLynx.haemodynamics.poiseuille import (
     CAPILLARY_REGIME_MAX_DIAMETER_UM,
+    PLACEHOLDER_REGIME_MAX_DIAMETER_UM,
+    PlaceholderViscosityWarning,
     LARGE_VESSEL_VISCOSITY_PA_S,
     PLASMA_VISCOSITY_PA_S,
     REFERENCE_DIAMETER_UM,
@@ -164,6 +167,92 @@ def test_placeholder_transition_regime_is_discontinuous_at_the_limit():
 def test_non_positive_diameter_is_rejected():
     with pytest.raises(ValueError, match="must be positive"):
         MODEL.calculate_viscosity(0.0)
+
+
+# --- warning on the placeholder regime -------------------------------------
+#
+# 7-100 um is where the constant is a placeholder rather than a model, so a run
+# that uses those vessels must say so rather than report resistances that look
+# as trustworthy as the capillary ones.
+
+
+@pytest.mark.parametrize("diameter", [7.001, 8.0, 10.0, 25.0, 50.0, 99.9, 100.0])
+def test_placeholder_regime_diameters_warn(diameter):
+    with pytest.warns(PlaceholderViscosityWarning, match="placeholder"):
+        MODEL.calculate_viscosity(diameter)
+
+
+@pytest.mark.parametrize("diameter", [0.5, 3.0, 5.0, 7.0])
+def test_capillary_diameters_do_not_warn(diameter):
+    """The power law below 7 um is calibrated, not a placeholder."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        MODEL.calculate_viscosity(diameter)
+
+
+@pytest.mark.parametrize("diameter", [100.001, 200.0, 1000.0])
+def test_macroscale_diameters_do_not_warn(diameter):
+    """Above ~100 um the constant is close to the true macroscale viscosity."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        MODEL.calculate_viscosity(diameter)
+
+
+def test_the_warning_does_not_change_the_value_returned():
+    with pytest.warns(PlaceholderViscosityWarning):
+        warned = MODEL.calculate_viscosity(20.0)
+    assert warned == LARGE_VESSEL_VISCOSITY_PA_S
+
+
+def test_warning_names_the_regime_and_the_tracking_issue():
+    """An operator reading the log must be able to act on it."""
+    with pytest.warns(PlaceholderViscosityWarning) as caught:
+        MODEL.calculate_viscosity(20.0)
+    message = str(caught[0].message)
+    assert f"{CAPILLARY_REGIME_MAX_DIAMETER_UM}" in message
+    assert f"{PLACEHOLDER_REGIME_MAX_DIAMETER_UM}" in message
+    assert "#90" in message
+    assert "order-of-magnitude" in message
+
+
+def test_the_warning_is_silenceable_by_category():
+    """Documented escape hatch for a run that has accepted the approximation."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        warnings.filterwarnings("ignore", category=PlaceholderViscosityWarning)
+        assert MODEL.calculate_viscosity(20.0) == LARGE_VESSEL_VISCOSITY_PA_S
+
+
+def test_running_a_model_on_arteriole_sized_vessels_warns():
+    """The end-to-end case: assigning resistances over a 20 um vessel warns."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=CAPILLARY_LENGTH_UM, branch_order="Art1")
+
+    with pytest.warns(PlaceholderViscosityWarning):
+        G, results = MODEL.set_poiseuille_resistances(G, {"Art1": 20.0})
+
+    # Warned, but still solved: the run is approximate, not blocked.
+    assert results["edges_set"] == 1
+    assert G[0][1][0]["resistance"] > 0
+
+
+def test_running_a_model_on_capillaries_only_stays_silent():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=CAPILLARY_LENGTH_UM, branch_order="B01")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", PlaceholderViscosityWarning)
+        G, results = MODEL.set_poiseuille_resistances(G, {"B01": CAPILLARY_DIAMETER_UM})
+
+    assert results["edges_set"] == 1
+
+
+def test_constricted_vessels_in_the_placeholder_regime_also_warn():
+    """The integrated-resistance path must not slip past the guard."""
+    with pytest.warns(PlaceholderViscosityWarning):
+        MODEL.calculate_integrated_resistance(
+            CAPILLARY_LENGTH_UM, 20.0, 16.0, num_points=8
+        )
 
 
 # --- regression: haemodynamics must not disturb geometry -------------------

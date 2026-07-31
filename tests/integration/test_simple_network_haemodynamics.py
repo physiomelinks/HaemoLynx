@@ -128,6 +128,14 @@ def test_boundary_selection_picks_the_terminal_nodes(example, run_result):
     assert not set(run_result["inlet_nodes"]) & set(run_result["outlet_nodes"])
 
 
+def test_running_the_example_warns_about_the_placeholder_viscosity(example, tmp_path):
+    """A run using 20 um and 30 um vessels must say its viscosity is a placeholder."""
+    from ImageLynx.haemodynamics.poiseuille import PlaceholderViscosityWarning
+
+    with pytest.warns(PlaceholderViscosityWarning, match="order-of-magnitude"):
+        example.main(tmp_path / "warns")
+
+
 def test_vtk_files_are_written_with_flow_fields(run_result):
     vtk_export = run_result["vtk_export"]
     flow_path = Path(vtk_export["vessels_flow_path"])
