@@ -14,13 +14,13 @@ def _build_synthetic_vascular_bed() -> np.ndarray:
     center = (10, 10, 10)
     skel[center] = True
 
-    # Axis-aligned branches.
-    for x in range(11, 14):
-        skel[x, 10, 10] = True
+    # Axis-aligned branches; array axes are canonical (z, y, x).
+    for z in range(11, 14):
+        skel[z, 10, 10] = True
     for y in range(9, 5, -1):
         skel[10, y, 10] = True
-    for z in range(11, 16):
-        skel[10, 10, z] = True
+    for x in range(11, 16):
+        skel[10, 10, x] = True
 
     # Diagonal branches in 3D.
     for step in range(1, 4):
@@ -43,16 +43,17 @@ def test_synthetic_3d_branch_lengths_are_measured_correctly():
         voxel_size=voxel_size,
     )
 
+    # voxel_size is spacing per array axis in canonical (z, y, x) order.
     expected_total_length = sum(
         [
-            3 * voxel_size[0],  # +x arm
+            3 * voxel_size[0],  # +z arm
             4 * voxel_size[1],  # -y arm
-            5 * voxel_size[2],  # +z arm
-            3 * math.hypot(voxel_size[0], voxel_size[1]),  # xy diagonal
+            5 * voxel_size[2],  # +x arm
+            3 * math.hypot(voxel_size[0], voxel_size[1]),  # zy diagonal
             2
             * math.sqrt(
                 voxel_size[0] ** 2 + voxel_size[1] ** 2 + voxel_size[2] ** 2
-            ),  # xyz diagonal
+            ),  # zyx diagonal
         ]
     )
 

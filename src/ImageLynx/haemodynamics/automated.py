@@ -25,18 +25,29 @@ import tifffile
 from scipy.ndimage import map_coordinates
 from scipy.optimize import curve_fit
 
+from ImageLynx.io.axis_order import CANONICAL_AXIS_ORDER, apply_axis_order
+
 # FWHM of a Gaussian with standard deviation sigma (not 2*sigma^2 in the exponent).
 _GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
 
 
-def load_single_channel_tiff_volume(path: str | Path) -> np.ndarray:
-    """Load a 3D TIFF as float32. Single channel / single signal expected."""
+def load_single_channel_tiff_volume(
+    path: str | Path,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+) -> np.ndarray:
+    """Load a 3D TIFF as float32 in canonical ``(z, y, x)`` order.
+
+    Single channel / single signal expected.
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"TIFF not found: {path}")
     vol = tifffile.imread(str(path))
     if vol.ndim == 2:
         vol = vol[np.newaxis, ...]
+    else:
+        vol = apply_axis_order(vol, axis_order)
     if vol.ndim != 3:
         raise ValueError(
             f"Expected 2D slice stack or 3D volume, got shape {vol.shape} for {path}"
@@ -44,28 +55,28 @@ def load_single_channel_tiff_volume(path: str | Path) -> np.ndarray:
     return np.asarray(vol, dtype=np.float32)
 
 
-def _spacing_vec(voxel_size_xyz: tuple[float, float, float]) -> np.ndarray:
-    s = np.asarray(voxel_size_xyz, dtype=float).ravel()
+def _spacing_vec(voxel_size_zyx: tuple[float, float, float]) -> np.ndarray:
+    s = np.asarray(voxel_size_zyx, dtype=float).ravel()
     if s.size != 3:
-        raise ValueError("voxel_size_xyz must have length 3")
+        raise ValueError("voxel_size_zyx must have length 3")
     return s
 
 
 def physical_points_to_continuous_indices(
     points_phys: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
 ) -> np.ndarray:
     """Convert physical (axis0, axis1, axis2) coordinates to continuous voxel indices.
 
     Uses the same element-wise scaling as graph construction:
-    ``phys[i] = index[i] * voxel_size_xyz[i]``.
+    ``phys[i] = index[i] * voxel_size_zyx[i]``.
     """
     pts = np.asarray(points_phys, dtype=float)
     if pts.ndim == 1:
         pts = pts.reshape(1, 3)
-    spacing = _spacing_vec(voxel_size_xyz)
+    spacing = _spacing_vec(voxel_size_zyx)
     if np.any(spacing <= 0):
-        raise ValueError("voxel_size_xyz components must be positive.")
+        raise ValueError("voxel_size_zyx components must be positive.")
     return pts / spacing
 
 
@@ -182,7 +193,7 @@ def _max_extent_along_ray(
     assigned_label: int,
     labels: np.ndarray,
     max_physical_extent: float,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     step_um: float,
     *,
     background_label: int,
@@ -202,7 +213,7 @@ def _max_extent_along_ray(
     neighbourhood around the current sample to avoid zig-zag self-intersections.
     Any other positive label is treated as a different graph edge and truncates the line.
     """
-    spacing = _spacing_vec(voxel_size_xyz)
+    spacing = _spacing_vec(voxel_size_zyx)
     if step_um <= 0:
         raise ValueError("step_um must be positive.")
     d = direction_unit / np.linalg.norm(direction_unit)
@@ -253,7 +264,7 @@ def _sample_transverse_profile(
     assigned_label: int,
     half_extent_um: float,
     transverse_step_um: float,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     *,
     background_label: int,
     junction_label: int | None,
@@ -269,7 +280,7 @@ def _sample_transverse_profile(
 
     Returns (positions_along_line_um, intensities).
     """
-    spacing = _spacing_vec(voxel_size_xyz)
+    spacing = _spacing_vec(voxel_size_zyx)
     n_hat = _transverse_unit_in_physical_yx_plane(tangent)
     center_idx = center_phys / spacing
 
@@ -279,7 +290,7 @@ def _sample_transverse_profile(
         assigned_label,
         labels,
         half_extent_um,
-        voxel_size_xyz,
+        voxel_size_zyx,
         transverse_step_um,
         background_label=background_label,
         junction_label=junction_label,
@@ -294,7 +305,7 @@ def _sample_transverse_profile(
         assigned_label,
         labels,
         half_extent_um,
-        voxel_size_xyz,
+        voxel_size_zyx,
         transverse_step_um,
         background_label=background_label,
         junction_label=junction_label,
@@ -648,7 +659,7 @@ def _clip_profile_to_central_lobe(
 def build_graph_branch_label_volume(
     G: nx.MultiGraph,
     volume_shape: tuple[int, int, int],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     *,
     background_label: int = 0,
     junction_label: int = -1,
@@ -690,7 +701,7 @@ def build_graph_branch_label_volume(
             continue
         idx_all = physical_points_to_continuous_indices(
             np.asarray(vox, dtype=float),
-            voxel_size_xyz,
+            voxel_size_zyx,
         )
         for row in idx_all:
             iz, iy, ix = _nearest_integer_index(row, shape)
@@ -711,7 +722,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     G: nx.MultiGraph,
     *,
     raw_tiff_path: str | Path,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     sample_spacing_along_edge_um: float,
     transverse_profile_step_um: float,
     transverse_half_extent_um: float,
@@ -741,6 +752,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     max_fit_center_offset_um: float = 1.5,
     reject_samples_with_low_fit_r2: bool = True,
     min_fit_r2: float = 0.85,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -757,7 +769,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         as the raw TIFF).
     raw_tiff_path :
         Single-channel 3D TIFF (intensity); shape defines the rasterized label grid.
-    voxel_size_xyz :
+    voxel_size_zyx :
         Spacing per image axis (same tuple passed to graph building).
     sample_spacing_along_edge_um :
         Distance along the edge centerline between FWHM samples.
@@ -834,11 +846,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             f"profile_baseline_mode must be 'wings' or 'percentile', got {profile_baseline_mode!r}."
         )
 
-    raw = load_single_channel_tiff_volume(raw_tiff_path)
+    raw = load_single_channel_tiff_volume(raw_tiff_path, axis_order=axis_order)
     labels, _ = build_graph_branch_label_volume(
         G,
         raw.shape,
-        voxel_size_xyz,
+        voxel_size_zyx,
         background_label=background_label,
         junction_label=junction_label,
     )
@@ -885,7 +897,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         # nearby arc-length region.
         junction_s: list[float] = []
         if junction_excl > 0.0 and jn != int(background_label):
-            idx_all = physical_points_to_continuous_indices(poly, voxel_size_xyz)
+            idx_all = physical_points_to_continuous_indices(poly, voxel_size_zyx)
             for i, row in enumerate(idx_all):
                 iz, iy, ix = _nearest_integer_index(row, labels.shape)
                 if int(labels[iz, iy, ix]) == jn:
@@ -897,7 +909,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             same_edge_s_lookup = {}
             # Dense arc-length lookup so curved/zig-zag edges are covered between sparse
             # control points; otherwise non-local same-edge re-entry can go undetected.
-            ds_lookup = max(0.1, 0.5 * float(np.min(np.asarray(voxel_size_xyz, dtype=float))))
+            ds_lookup = max(0.1, 0.5 * float(np.min(np.asarray(voxel_size_zyx, dtype=float))))
             dense_pts_list: list[np.ndarray] = []
             dense_s_list: list[float] = []
             for i in range(len(poly) - 1):
@@ -913,7 +925,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     s_here = (1.0 - t) * float(s[i]) + t * float(s[i + 1])
                     dense_pts_list.append(p)
                     dense_s_list.append(s_here)
-                    row = physical_points_to_continuous_indices(p, voxel_size_xyz)[0]
+                    row = physical_points_to_continuous_indices(p, voxel_size_zyx)[0]
                     key_idx = _nearest_integer_index(row, labels.shape)
                     prev = same_edge_s_lookup.get(key_idx)
                     # Keep arc-length closest to current segment midpoint mapping.
@@ -976,7 +988,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 int(assigned),
                 half_extent,
                 float(transverse_profile_step_um),
-                voxel_size_xyz,
+                voxel_size_zyx,
                 background_label=int(background_label),
                 junction_label=jn,
                 allow_junction_crossing=bool(allow_junction_crossing),
@@ -1028,7 +1040,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     int(assigned),
                     half_extent,
                     float(transverse_profile_step_um),
-                    voxel_size_xyz,
+                    voxel_size_zyx,
                     background_label=int(background_label),
                     junction_label=jn,
                     allow_junction_crossing=bool(allow_junction_crossing),
@@ -1077,7 +1089,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                             int(assigned),
                             half_extent,
                             float(transverse_profile_step_um),
-                            voxel_size_xyz,
+                            voxel_size_zyx,
                             background_label=int(background_label),
                             junction_label=jn,
                             allow_junction_crossing=bool(allow_junction_crossing),

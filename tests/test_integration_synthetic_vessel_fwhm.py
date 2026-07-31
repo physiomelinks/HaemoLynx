@@ -103,7 +103,7 @@ def _dist_point_to_segment_batch(
 
 
 def build_synthetic_vessel_volume_and_targets(
-    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+    voxel_size_zyx: tuple[float, float, float] = (0.25, 0.25, 0.25),
 ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]]]:
     """Float32 volume + list of (endpoint_a, endpoint_b, target_fwhm_um) in (z,y,x) µm.
 
@@ -115,7 +115,7 @@ def build_synthetic_vessel_volume_and_targets(
     background to the volume edge, producing strongly asymmetric profile lines (not a rendering
     bug). Vessels are therefore separated in *z* at a shared *y*.
     """
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
     y_center = 15.0
     z_centers = (6.0, 14.0, 22.0)
     x0, x1 = 8.0, 42.0
@@ -155,11 +155,11 @@ def build_synthetic_vessel_volume_and_targets(
 
 def build_matching_multigraph(
     targets: list[tuple[np.ndarray, np.ndarray, float]],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     step_um: float = 0.25,
 ) -> nx.MultiGraph:
     """Graph edges replicate centerlines; physical coords (z,y,x) match ``automated`` convention."""
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
     step = min(step_um, vz, vy, vx)
     G = nx.MultiGraph()
     branch_orders = ("B01", "B02", "B03")
@@ -189,7 +189,7 @@ def build_matching_multigraph(
 
 
 def build_synthetic_y_shaped_volume_and_targets(
-    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+    voxel_size_zyx: tuple[float, float, float] = (0.25, 0.25, 0.25),
 ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]]]:
     """Float32 Y-shaped vessel volume + segment targets as (a, b, fwhm_um) in (z,y,x) µm.
 
@@ -197,7 +197,7 @@ def build_synthetic_y_shaped_volume_and_targets(
     - one stem along +x
     - two daughter branches diverging in y at fixed z
     """
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
     z0 = 14.0
     y0 = 15.0
     x_stem0 = 8.0
@@ -244,11 +244,11 @@ def build_synthetic_y_shaped_volume_and_targets(
 
 def build_y_shaped_matching_multigraph(
     targets: list[tuple[np.ndarray, np.ndarray, float]],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     step_um: float = 0.25,
 ) -> nx.MultiGraph:
     """Graph for Y-shaped targets with a shared bifurcation node at the common point."""
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
     step = min(step_um, vz, vy, vx)
     G = nx.MultiGraph()
 
@@ -290,7 +290,7 @@ def build_y_shaped_matching_multigraph(
 
 def build_offcenter_matching_multigraph(
     targets: list[tuple[np.ndarray, np.ndarray, float]],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     step_um: float = 0.25,
     *,
     offcenter_fraction: float = 0.3,
@@ -312,7 +312,7 @@ def build_offcenter_matching_multigraph(
         a[2] += dx
         b[2] += dx
         shifted_targets.append((a, b, float(fwhm)))
-    return build_matching_multigraph(shifted_targets, voxel_size_xyz, step_um=step_um)
+    return build_matching_multigraph(shifted_targets, voxel_size_zyx, step_um=step_um)
 
 
 def add_background_noise_to_synthetic_volume(
@@ -332,13 +332,13 @@ def add_background_noise_to_synthetic_volume(
 
 
 def build_synthetic_x_junction_volume_and_targets(
-    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+    voxel_size_zyx: tuple[float, float, float] = (0.25, 0.25, 0.25),
 ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]]]:
     """Float32 X-junction vessel volume + segment targets in (z,y,x) µm.
 
     Four branches meet at one central node, forming an X in the y-x plane.
     """
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
     z0 = 14.0
     y0 = 15.0
     x0 = 24.0
@@ -382,13 +382,13 @@ def build_synthetic_x_junction_volume_and_targets(
 
 def build_x_junction_matching_multigraph(
     targets: list[tuple[np.ndarray, np.ndarray, float]],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     step_um: float = 0.25,
     *,
     offcenter_fraction: float = 0.0,
 ) -> nx.MultiGraph:
     """Graph for X-junction targets (shared center node + four arms), optional x/z off-center."""
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
     step = min(step_um, vz, vy, vx)
     if offcenter_fraction < 0:
         raise ValueError("offcenter_fraction must be non-negative.")
@@ -431,10 +431,10 @@ def build_x_junction_matching_multigraph(
 
 
 def build_synthetic_tight_zigzag_volume_and_target(
-    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+    voxel_size_zyx: tuple[float, float, float] = (0.25, 0.25, 0.25),
 ) -> tuple[np.ndarray, list[tuple[np.ndarray, np.ndarray, float]], np.ndarray]:
     """Float32 tight zig-zag vessel volume + single target + centerline polyline (z,y,x)."""
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
     # Tight alternating lateral oscillation while progressing in +x.
     points = np.array(
         [
@@ -479,15 +479,15 @@ def build_synthetic_tight_zigzag_volume_and_target(
 
 def build_tight_zigzag_matching_multigraph(
     centerline_points: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float] = (0.25, 0.25, 0.25),
+    voxel_size_zyx: tuple[float, float, float] = (0.25, 0.25, 0.25),
     step_um: float = 0.25,
 ) -> nx.MultiGraph:
     """Single-edge graph whose voxels densely follow the tight zig-zag polyline."""
     pts = np.asarray(centerline_points, dtype=float)
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
     step = min(float(step_um), float(vz), float(vy), float(vx))
     if step <= 0:
-        raise ValueError("step_um and voxel_size_xyz must be positive.")
+        raise ValueError("step_um and voxel_size_zyx must be positive.")
 
     dense_voxels: list[tuple[float, float, float]] = []
     for i in range(len(pts) - 1):
@@ -665,14 +665,14 @@ def build_synthetic_fwhm_integration_figure(
     G: nx.MultiGraph,
     raw: np.ndarray,
     labels: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     measure_kwargs: dict,
     *,
     title: str,
 ) -> go.Figure:
     """Plotly scene: raw intensity as a triangle mesh (marching cubes), centerlines, profile lines."""
     nz, ny, nx = raw.shape
-    vz, vy, vx = voxel_size_xyz
+    vz, vy, vx = voxel_size_zyx
 
     st = _volume_stride_for_display(nz, ny, nx)
     raw_iso = np.asarray(raw[::st, ::st, ::st], dtype=np.float64)
@@ -759,16 +759,16 @@ def build_synthetic_fwhm_integration_figure(
 @pytest.mark.plotting
 def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
     """Synthetic Gaussian tubes (3 / 5 / 8 µm FWHM) measured via ``measure_edge_diameters_fwhm_from_raw_tiff``."""
-    voxel_size_xyz = (0.25, 0.25, 0.25)
-    raw, targets = build_synthetic_vessel_volume_and_targets(voxel_size_xyz)
+    voxel_size_zyx = (0.25, 0.25, 0.25)
+    raw, targets = build_synthetic_vessel_volume_and_targets(voxel_size_zyx)
     raw_path = tmp_path / "synthetic_vessels.tif"
     tifffile.imwrite(str(raw_path), raw)
 
-    G = build_matching_multigraph(targets, voxel_size_xyz, step_um=0.25)
+    G = build_matching_multigraph(targets, voxel_size_zyx, step_um=0.25)
     summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         **_DEFAULT_FWHM_MEASURE_KWARGS,
     )
     assert summary["edges_measured"] == 3
@@ -786,7 +786,7 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
     labels, _ = automated.build_graph_branch_label_volume(
         G,
         raw.shape,
-        voxel_size_xyz,
+        voxel_size_zyx,
         background_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["background_label"]),
         junction_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["junction_label"]),
     )
@@ -801,7 +801,7 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
         G,
         raw,
         labels,
-        voxel_size_xyz,
+        voxel_size_zyx,
         _DEFAULT_FWHM_MEASURE_KWARGS,
         title=title,
     )
@@ -812,8 +812,8 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
 @pytest.mark.plotting
 def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> None:
     """Noisy X-junction raw volume with 30% off-center graph still yields sane diameters."""
-    voxel_size_xyz = (0.25, 0.25, 0.25)
-    raw_clean, targets = build_synthetic_x_junction_volume_and_targets(voxel_size_xyz)
+    voxel_size_zyx = (0.25, 0.25, 0.25)
+    raw_clean, targets = build_synthetic_x_junction_volume_and_targets(voxel_size_zyx)
     raw_noisy = add_background_noise_to_synthetic_volume(
         raw_clean, noise_sigma=6.0, background_offset=4.0, seed=321
     )
@@ -821,7 +821,7 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
     tifffile.imwrite(str(raw_path), raw_noisy)
 
     G = build_x_junction_matching_multigraph(
-        targets, voxel_size_xyz, step_um=0.25, offcenter_fraction=0.3
+        targets, voxel_size_zyx, step_um=0.25, offcenter_fraction=0.3
     )
     # Keep this scenario close to the original 3x-width behavior; tortuous-vessel
     # guards are useful for zig-zag, but too restrictive for this validation plot.
@@ -838,7 +838,7 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
     summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         **xj_measure_kwargs,
     )
     # Four arms should measure unless noise/truncation causes occasional fitting loss.
@@ -862,7 +862,7 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
     labels, _ = automated.build_graph_branch_label_volume(
         G,
         raw_noisy.shape,
-        voxel_size_xyz,
+        voxel_size_zyx,
         background_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["background_label"]),
         junction_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["junction_label"]),
     )
@@ -878,7 +878,7 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
         G,
         raw_noisy,
         labels,
-        voxel_size_xyz,
+        voxel_size_zyx,
         xj_measure_kwargs,
         title=title,
     )
@@ -892,8 +892,8 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
 @pytest.mark.plotting
 def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
     """Tightly zig-zagging single vessel, measured via real pipeline + HTML output."""
-    voxel_size_xyz = (0.25, 0.25, 0.25)
-    raw, targets, centerline = build_synthetic_tight_zigzag_volume_and_target(voxel_size_xyz)
+    voxel_size_zyx = (0.25, 0.25, 0.25)
+    raw, targets, centerline = build_synthetic_tight_zigzag_volume_and_target(voxel_size_zyx)
     raw_path = tmp_path / "synthetic_tight_zigzag.tif"
     tifffile.imwrite(str(raw_path), raw)
 
@@ -901,7 +901,7 @@ def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
     summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         **_DEFAULT_FWHM_MEASURE_KWARGS,
     )
     assert summary["edges_measured"] == 1
@@ -916,7 +916,7 @@ def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
     labels, _ = automated.build_graph_branch_label_volume(
         G,
         raw.shape,
-        voxel_size_xyz,
+        voxel_size_zyx,
         background_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["background_label"]),
         junction_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["junction_label"]),
     )
@@ -928,7 +928,7 @@ def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
         G,
         raw,
         labels,
-        voxel_size_xyz,
+        voxel_size_zyx,
         _DEFAULT_FWHM_MEASURE_KWARGS,
         title=title,
     )
@@ -942,7 +942,7 @@ def _write_single_demo_html(
     out_path: Path,
     raw: np.ndarray,
     G: nx.MultiGraph,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     title_prefix: str,
     targets: list[tuple[np.ndarray, np.ndarray, float]],
     measure_kwargs_overrides: dict | None = None,
@@ -956,7 +956,7 @@ def _write_single_demo_html(
         automated.measure_edge_diameters_fwhm_from_raw_tiff(
             G,
             raw_tiff_path=raw_path,
-            voxel_size_xyz=voxel_size_xyz,
+            voxel_size_zyx=voxel_size_zyx,
             **measure_kwargs,
         )
         pairs = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
@@ -968,7 +968,7 @@ def _write_single_demo_html(
         labels, _ = automated.build_graph_branch_label_volume(
             G,
             raw.shape,
-            voxel_size_xyz,
+            voxel_size_zyx,
             background_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["background_label"]),
             junction_label=int(_DEFAULT_FWHM_MEASURE_KWARGS["junction_label"]),
         )
@@ -976,7 +976,7 @@ def _write_single_demo_html(
             G,
             raw,
             labels,
-            voxel_size_xyz,
+            voxel_size_zyx,
             measure_kwargs,
             title=title,
         )
@@ -989,49 +989,49 @@ def _write_demo_html() -> list[Path]:
     repo_root = Path(__file__).resolve().parents[1]
     out_dir = repo_root / "examples" / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
-    voxel_size_xyz = (0.25, 0.25, 0.25)
+    voxel_size_zyx = (0.25, 0.25, 0.25)
 
     out_paths: list[Path] = []
 
     # 1) Baseline straight vessels.
-    raw0, targets0 = build_synthetic_vessel_volume_and_targets(voxel_size_xyz)
-    G0 = build_matching_multigraph(targets0, voxel_size_xyz, step_um=0.25)
+    raw0, targets0 = build_synthetic_vessel_volume_and_targets(voxel_size_zyx)
+    G0 = build_matching_multigraph(targets0, voxel_size_zyx, step_um=0.25)
     out0 = out_dir / "synthetic_vessel_fwhm_integration_3d.html"
     _write_single_demo_html(
         out0,
         raw0,
         G0,
-        voxel_size_xyz,
+        voxel_size_zyx,
         "Synthetic vessels: volume mesh + centerlines + transverse profile lines",
         targets0,
     )
     out_paths.append(out0)
 
     # 2) Y-shaped vessels.
-    raw_y, targets_y = build_synthetic_y_shaped_volume_and_targets(voxel_size_xyz)
-    Gy = build_y_shaped_matching_multigraph(targets_y, voxel_size_xyz, step_um=0.25)
+    raw_y, targets_y = build_synthetic_y_shaped_volume_and_targets(voxel_size_zyx)
+    Gy = build_y_shaped_matching_multigraph(targets_y, voxel_size_zyx, step_um=0.25)
     out_y = out_dir / "synthetic_vessel_y_shape_fwhm_integration_3d.html"
     _write_single_demo_html(
         out_y,
         raw_y,
         Gy,
-        voxel_size_xyz,
+        voxel_size_zyx,
         "Synthetic Y vessels: volume mesh + centerlines + transverse profile lines",
         targets_y,
     )
     out_paths.append(out_y)
 
     # 3) Straight vessels with graph centerlines off-center in x and z (30% of target diameter).
-    raw_off, targets_off = build_synthetic_vessel_volume_and_targets(voxel_size_xyz)
+    raw_off, targets_off = build_synthetic_vessel_volume_and_targets(voxel_size_zyx)
     Goff = build_offcenter_matching_multigraph(
-        targets_off, voxel_size_xyz, step_um=0.25, offcenter_fraction=0.3
+        targets_off, voxel_size_zyx, step_um=0.25, offcenter_fraction=0.3
     )
     out_off = out_dir / "synthetic_vessel_offcenter_graph_fwhm_integration_3d.html"
     _write_single_demo_html(
         out_off,
         raw_off,
         Goff,
-        voxel_size_xyz,
+        voxel_size_zyx,
         "Synthetic off-center graph: volume mesh + centerlines + transverse profile lines",
         targets_off,
     )
@@ -1049,26 +1049,26 @@ def _write_demo_html() -> list[Path]:
         out_off_noisy,
         raw_off_noisy,
         Goff,
-        voxel_size_xyz,
+        voxel_size_zyx,
         "Synthetic off-center graph (noisy raw): volume mesh + centerlines + transverse profile lines",
         targets_off,
     )
     out_paths.append(out_off_noisy)
 
     # 5) X-junction, noisy synthetic volume, and 30% off-center graph.
-    raw_x, targets_x = build_synthetic_x_junction_volume_and_targets(voxel_size_xyz)
+    raw_x, targets_x = build_synthetic_x_junction_volume_and_targets(voxel_size_zyx)
     raw_x_noisy = add_background_noise_to_synthetic_volume(
         raw_x, noise_sigma=6.0, background_offset=4.0, seed=321
     )
     Gx_off = build_x_junction_matching_multigraph(
-        targets_x, voxel_size_xyz, step_um=0.25, offcenter_fraction=0.3
+        targets_x, voxel_size_zyx, step_um=0.25, offcenter_fraction=0.3
     )
     out_x_noisy = out_dir / "synthetic_vessel_x_junction_offcenter_noisy_fwhm_integration_3d.html"
     _write_single_demo_html(
         out_x_noisy,
         raw_x_noisy,
         Gx_off,
-        voxel_size_xyz,
+        voxel_size_zyx,
         "Synthetic noisy X-junction + 30% off-center graph: volume mesh + centerlines + transverse profile lines",
         targets_x,
         measure_kwargs_overrides={
@@ -1084,7 +1084,7 @@ def _write_demo_html() -> list[Path]:
 
     # 6) Tight zig-zag vessel.
     raw_zig, targets_zig, centerline_zig = build_synthetic_tight_zigzag_volume_and_target(
-        voxel_size_xyz
+        voxel_size_zyx
     )
     Gzig = build_tight_zigzag_matching_multigraph(centerline_zig)
     out_zig = out_dir / "synthetic_vessel_tight_zigzag_fwhm_integration_3d.html"
@@ -1092,7 +1092,7 @@ def _write_demo_html() -> list[Path]:
         out_zig,
         raw_zig,
         Gzig,
-        voxel_size_xyz,
+        voxel_size_zyx,
         "Synthetic tight zig-zag vessel: volume mesh + centerline + transverse profile lines",
         targets_zig,
     )

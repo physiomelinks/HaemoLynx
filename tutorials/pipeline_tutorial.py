@@ -115,6 +115,9 @@ PLOT_DIR = Path(os.environ.get("IMAGELYNX_TUTORIAL_PLOT_DIR", str(TUTORIAL_DIR /
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Meaning of each input array axis. Volumes load as canonical (z, y, x), so this
+# selects which axis is z — the axis projections and overlays look through.
+IMAGE_AXIS_ORDER = "zyx"
 SKELETON_CLOSING_RADIUS = 1
 SKELETON_BRIDGE_GAP_SIZE = 1
 SKELETON_MIN_BRANCH_LENGTH = 3
@@ -277,7 +280,7 @@ print(f"USE_CUSTOM_SEGMENTED_IMAGE={USE_CUSTOM_SEGMENTED_IMAGE}")
     voxel_size_y,
     voxel_size_z,
     voxel_meta_status,
-) = io.load_and_skeletonize_3d_tif(INPUT_TIFF)
+) = io.load_and_skeletonize_3d_tif(INPUT_TIFF, axis_order=IMAGE_AXIS_ORDER)
 metadata_voxel_size = (float(voxel_size_x), float(voxel_size_y), float(voxel_size_z))
 voxel_size, voxel_size_source = resolve_voxel_size_xyz(
     metadata_voxel_size_xyz=metadata_voxel_size,
@@ -285,7 +288,10 @@ voxel_size, voxel_size_source = resolve_voxel_size_xyz(
     voxel_size_override_xyz=None,
     voxel_size_policy="auto",
 )
-print(f"Image shape: {image.shape[:3]}, voxel size: {voxel_size}")
+# Metadata reports voxel size as (x, y, z); array axes are canonical (z, y, x).
+voxel_size_zyx = io.voxel_size_zyx_from_xyz(voxel_size)
+print(f"Image shape: {image.shape[:3]}, voxel size (x, y, z): {voxel_size}")
+print(f"Array-axis spacing (z, y, x): {voxel_size_zyx}")
 
 preprocessing.print_skeleton_connectivity_stats("raw", skeleton, component_connectivity=SKELETON_COMPONENT_CONNECTIVITY)
 visualization.visualize_skeleton(skeleton, save_path=PLOT_DIR / "raw_skeleton.png")
@@ -342,7 +348,7 @@ def _print_step(graph_obj: nx.MultiGraph, label: str) -> None:
 
 G = graph.build_graph_from_skeleton(
     skeleton,
-    voxel_size=tuple(float(v) for v in voxel_size),
+    voxel_size=voxel_size_zyx,
     graph_reconnect_threshold=GRAPH_RECONNECT_THRESHOLD,
     final_orphan_reconnect_threshold=FINAL_ORPHAN_RECONNECT_THRESHOLD,
     cluster_collapse_distance=CLUSTER_COLLAPSE_DISTANCE,
@@ -350,6 +356,7 @@ G = graph.build_graph_from_skeleton(
     step_callback=_print_step,
 )
 G.graph["image_voxel_size_xyz"] = tuple(float(v) for v in voxel_size)
+G.graph["image_voxel_size_zyx"] = voxel_size_zyx
 with graph_path.open("wb") as fh:
     pickle.dump(G, fh)
 print(f"Final: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")

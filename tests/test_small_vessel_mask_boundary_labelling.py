@@ -96,7 +96,7 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
         G,
         small_arteriole_mask=art_mask,
         small_venule_mask=ven_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         minimum_overlap_fraction=0.5,
     )
 
@@ -114,7 +114,7 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
         small_venule_mask=ven_mask,
         arteriole_boundary_nodes=result["arteriole_boundary_nodes"],
         venule_boundary_nodes=result["venule_boundary_nodes"],
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         output_html_path=html_tmp,
         title="Synthetic small-vessel boundary model (3D)",
     )
@@ -129,7 +129,7 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
         small_venule_mask=ven_mask,
         arteriole_boundary_nodes=result["arteriole_boundary_nodes"],
         venule_boundary_nodes=result["venule_boundary_nodes"],
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         output_html_path=DEMO_HTML_PATH,
         title="Synthetic small-vessel boundary model (3D)",
     )

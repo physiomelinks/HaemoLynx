@@ -58,7 +58,9 @@ def build_graph_from_skeleton(
     skeleton
         Binary 3D skeleton array.
     voxel_size
-        Physical voxel size (x, y, z) in microns.
+        Spacing of each array axis in microns, in canonical ``(z, y, x)`` order —
+        *not* the ``(x, y, z)`` order reported by image metadata. Convert with
+        ``ImageLynx.io.voxel_size_zyx_from_xyz`` before calling.
     graph_reconnect_threshold
         Reconnection threshold for initial graph build and topology optimisation.
     final_orphan_reconnect_threshold

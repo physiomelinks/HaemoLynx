@@ -217,3 +217,30 @@ def test_resolve_preset_inheritance_detects_cycle():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([str(Path(__file__)), "-q"]))
+
+
+def test_preflight_validates_input_axis_order(tmp_path: Path):
+    image_path = tmp_path / "segmented_input.tif"
+    image_path.write_bytes(b"dummy")
+
+    base_kwargs = {
+        "image_path": image_path,
+        "use_ilastik_segmentation": False,
+        "final_render_mode": "3d",
+        "ide_plot_mode": "final_only",
+        "statistics_mode": "fast",
+        "run_haemodynamics": False,
+        "do_equiv_resistance_calculation": False,
+        "use_fwhm_edge_diameters": False,
+        "measurement_3d_to_cell_mask": False,
+    }
+
+    # Any permutation of xyz is accepted; the default is the canonical order.
+    for axis_order in ("zyx", "xyz", "YZX"):
+        report = preflight.run_preflight_checklist({**base_kwargs, "axis_order": axis_order})
+        assert report["ok"] is True, axis_order
+        assert report["errors"] == []
+
+    bad_report = preflight.run_preflight_checklist({**base_kwargs, "axis_order": "zzz"})
+    assert bad_report["ok"] is False
+    assert any("Input axis order" in err for err in bad_report["errors"])

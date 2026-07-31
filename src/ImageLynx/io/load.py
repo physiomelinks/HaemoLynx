@@ -13,6 +13,8 @@ try:
 except ImportError:
     h5py = None
 
+from .axis_order import CANONICAL_AXIS_ORDER, apply_axis_order
+
 logger = logging.getLogger(__name__)
 
 
@@ -306,10 +308,18 @@ def crop_tiff_volume_from_corners(
 
 def load_3d_tif_with_voxel_size(
     filepath: str,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
-    """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status."""
+    """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status.
+
+    *axis_order* names what the file's array axes mean (default ``"zyx"``); the
+    volume is transposed into the canonical ``(z, y, x)`` order on load. The
+    returned voxel size is always physical ``(x, y, z)`` — use
+    :func:`ImageLynx.io.voxel_size_zyx_from_xyz` before scaling array indices.
+    """
     with tifffile.TiffFile(filepath) as tif:
-        image = tif.asarray()
+        image = apply_axis_order(tif.asarray(), axis_order)
         meta = tif.imagej_metadata or {}
         tags = tif.pages[0].tags
 
@@ -381,8 +391,14 @@ def load_3d_tif_with_voxel_size(
 def load_3d_h5_with_voxel_size(
     filepath: str,
     dataset_name: str | None = None,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
-    """Load 3D H5 image and return image + voxel size (x, y, z) + metadata status."""
+    """Load 3D H5 image and return image + voxel size (x, y, z) + metadata status.
+
+    *axis_order* names what the dataset's array axes mean (default ``"zyx"``);
+    the volume is transposed into the canonical ``(z, y, x)`` order on load.
+    """
     if h5py is None:
         raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
     path = Path(filepath)
@@ -427,10 +443,13 @@ def load_3d_h5_with_voxel_size(
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 
+    image = apply_axis_order(image, axis_order)
+
     return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
-def load_and_skeletonize_3d_tif(filepath: str):
+def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AXIS_ORDER):
+    """Load a TIFF in canonical ``(z, y, x)`` order and skeletonize it."""
     print("Loading and skeletonizing TIFF...")
     (
         image,
@@ -438,7 +457,7 @@ def load_and_skeletonize_3d_tif(filepath: str):
         voxel_size_y,
         voxel_size_z,
         voxel_meta_status,
-    ) = load_3d_tif_with_voxel_size(filepath)
+    ) = load_3d_tif_with_voxel_size(filepath, axis_order=axis_order)
 
     print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
     binary = _to_binary_volume_for_skeletonization(image)
@@ -450,7 +469,10 @@ def load_and_skeletonize_3d_tif(filepath: str):
 def load_and_skeletonize_3d_h5(
     filepath: str,
     dataset_name: str | None = None,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ):
+    """Load an H5 volume in canonical ``(z, y, x)`` order and skeletonize it."""
     logger.debug("Loading and skeletonizing H5...")
     (
         image,
@@ -461,12 +483,12 @@ def load_and_skeletonize_3d_h5(
     ) = load_3d_h5_with_voxel_size(
         filepath,
         dataset_name=dataset_name,
+        axis_order=axis_order,
     )
 
     logger.debug("Original image shape: %s", image.shape)
     logger.debug("Simplified image shape: %s", image.shape)
 
-    # Ensure image is (X, Y, Z)
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 

@@ -6,6 +6,7 @@ from typing import Literal
 
 import numpy as np
 
+from .axis_order import CANONICAL_AXIS_ORDER, voxel_size_zyx_from_xyz
 from .ilastik import run_ilastik_headless_segmentation
 from .load import (
     load_3d_h5_with_voxel_size,
@@ -14,17 +15,21 @@ from .load import (
 )
 
 
-def _load_mask_image(mask_path: Path) -> tuple[np.ndarray, tuple[float, float, float]]:
-    """Load a mask image and return (image, voxel_size_xyz)."""
+def _load_mask_image(
+    mask_path: Path,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+) -> tuple[np.ndarray, tuple[float, float, float]]:
+    """Load a mask image and return (image in canonical (z, y, x) order, voxel_size_xyz)."""
     suffix = mask_path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
         image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
-            str(mask_path)
+            str(mask_path), axis_order=axis_order
         )
         return image, (float(voxel_x), float(voxel_y), float(voxel_z))
     if suffix == ".h5":
         image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
-            str(mask_path)
+            str(mask_path), axis_order=axis_order
         )
         return image, (float(voxel_x), float(voxel_y), float(voxel_z))
     raise ValueError(
@@ -37,6 +42,8 @@ def load_large_vessel_masks(
     enabled: bool,
     large_arteriole_mask_path: str | Path | None = None,
     large_venule_mask_path: str | Path | None = None,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -72,8 +79,12 @@ def load_large_vessel_masks(
 
     arteriole_path = resolve_image_path_with_optional_zip(Path(large_arteriole_mask_path))
     venule_path = resolve_image_path_with_optional_zip(Path(large_venule_mask_path))
-    large_arteriole_mask, large_arteriole_voxel_size = _load_mask_image(arteriole_path)
-    large_venule_mask, large_venule_voxel_size = _load_mask_image(venule_path)
+    large_arteriole_mask, large_arteriole_voxel_size = _load_mask_image(
+        arteriole_path, axis_order=axis_order
+    )
+    large_venule_mask, large_venule_voxel_size = _load_mask_image(
+        venule_path, axis_order=axis_order
+    )
     return (
         large_arteriole_mask,
         large_venule_mask,
@@ -169,6 +180,7 @@ def load_and_validate_vessel_masks(
     ilastik_executable: str | None = None,
     dilation_microns: float = 0.0,
     loaded_message_suffix: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -251,6 +263,7 @@ def load_and_validate_vessel_masks(
         enabled=enabled,
         large_arteriole_mask_path=effective_arteriole_mask_path,
         large_venule_mask_path=effective_venule_mask_path,
+        axis_order=axis_order,
     )
 
     if arteriole_mask is None or venule_mask is None:
@@ -294,7 +307,7 @@ def load_and_validate_vessel_masks(
             large_arteriole_mask=arteriole_mask,
             large_venule_mask=venule_mask,
             dilation_microns=dilation_microns,
-            voxel_size_xyz=main_voxel_size_xyz,
+            voxel_size_zyx=voxel_size_zyx_from_xyz(main_voxel_size_xyz),
         )
         print(
             f"Dilated {scale_label}-vessel masks by {float(dilation_microns):.3f} microns."
