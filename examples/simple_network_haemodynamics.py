@@ -12,12 +12,13 @@ The network spans both viscosity regimes: 5 um capillaries use the calibrated
 capillary power law, while the 20 um arteriole and 30 um venule sit above the
 7 um limit and take the constant large-vessel viscosity (see issue #90).
 
-Boundary nodes are chosen with ``graph.select_boundary_nodes_by_method``; step
-4 of ``main`` lists the other selection methods and the keyword each one reads.
+Every setting lives in ``simple_network_config.yaml``, described by
+``simple_network_schema.py``. Change a value there rather than editing this
+script; a ``--<setting-name>`` flag overrides one for a single run::
 
-Run::
-
-    python examples/simple_network_haemodynamics.py [--output-dir DIR]
+    python examples/simple_network_haemodynamics.py
+    python examples/simple_network_haemodynamics.py --config my_config.yaml
+    python examples/simple_network_haemodynamics.py --inlet-pressure-pa 8000
 """
 import argparse
 import sys
@@ -28,27 +29,20 @@ import numpy as np
 
 root_dir = Path(__file__).resolve().parents[1]
 src_dir = root_dir / "src"
-if str(src_dir) not in sys.path:
-    sys.path.insert(0, str(src_dir))
+examples_dir = root_dir / "examples"
+for _path in (src_dir, examples_dir):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from ImageLynx import graph as graph_tools
 from ImageLynx import haemodynamics, visualization
 from ImageLynx.haemodynamics.poiseuille import CAPILLARY_REGIME_MAX_DIAMETER_UM
+from ImageLynx.parsers import add_schema_arguments, cli_overrides, load_config
+from simple_network_schema import SCHEMA
 
+CONFIG_PATH = examples_dir / "simple_network_config.yaml"
 
-# Vessel diameters (um) per branch-order label. Art*/Ven* are above the 7 um
-# capillary limit and so use the constant large-vessel viscosity.
-DIAMETER_BY_BRANCH_ORDER = {"Art1": 20.0, "B01": 5.0, "Ven1": 30.0}
-
-# Where the boundaries are, in (z, y, x) um. The nearest terminal node to each
-# point is used, so these need only be approximate.
-INLET_COORDINATE_ZYX = (0.0, 0.0, 0.0)
-OUTLET_COORDINATE_ZYX = (0.0, 0.0, 600.0)
-
-# Dirichlet pressures imposed there (Pa). ~45 mmHg in, ~7.5 mmHg out.
-INLET_PRESSURE_PA = 6000.0
-OUTLET_PRESSURE_PA = 1000.0
-
+# Unit conversion, not a setting: nothing about a run should change it.
 M3_PER_S_TO_NL_PER_MIN = 6.0e13
 
 
@@ -102,8 +96,16 @@ def build_example_network() -> nx.MultiGraph:
     return G
 
 
-def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_network") -> dict:
-    output_dir = Path(output_dir)
+def main(settings: dict) -> dict:
+    """Run the pipeline for one settings dict, as loaded from the config file.
+
+    This example has 6 settings, so each stage below is given the individual
+    entries it needs rather than the whole dict -- the project convention is to
+    pass the dict only once a call would otherwise take more than
+    ``DICT_ARGUMENT_THRESHOLD`` (6) of them, as the imaging pipeline does. Doing
+    it this way keeps each call's real dependencies visible.
+    """
+    output_dir = Path(settings["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Graph.
@@ -114,7 +116,7 @@ def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_ne
     #    length and the diameter-dependent apparent viscosity.
     G, _ = haemodynamics.apply_poiseuille_haemodynamics(
         G,
-        diameter_by_branch_order=DIAMETER_BY_BRANCH_ORDER,
+        diameter_by_branch_order=settings["diameter_by_branch_order"],
     )
 
     # 3. VTK export. Written before the flow solve because the solver reads the
@@ -148,14 +150,14 @@ def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_ne
         image_shape,
         method="coordinates",
         node_role="input",
-        coordinates=[INLET_COORDINATE_ZYX],
+        coordinates=[settings["inlet_coordinate_zyx"]],
     )
     outlet_nodes = graph_tools.select_boundary_nodes_by_method(
         G,
         image_shape,
         method="coordinates",
         node_role="output",
-        coordinates=[OUTLET_COORDINATE_ZYX],
+        coordinates=[settings["outlet_coordinate_zyx"]],
         exclude_nodes=inlet_nodes,
     )
     print(f"Boundary nodes: inlets={inlet_nodes}, outlets={outlet_nodes}")
@@ -164,8 +166,8 @@ def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_ne
     flow_result, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
-        input_p_bc=INLET_PRESSURE_PA,
-        output_p_bc=OUTLET_PRESSURE_PA,
+        input_p_bc=settings["inlet_pressure_pa"],
+        output_p_bc=settings["outlet_pressure_pa"],
         starting_nodes=inlet_nodes,
         output_nodes=outlet_nodes,
         vtk_export=vtk_export,
@@ -182,16 +184,17 @@ def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_ne
     inlet_flow = float(np.sum(conductance[inlet_idx, :] * (pressure[inlet_idx] - pressure)))
 
     print(f"\nViscosity regime split at {CAPILLARY_REGIME_MAX_DIAMETER_UM} um:")
-    for branch_order, diameter in sorted(DIAMETER_BY_BRANCH_ORDER.items()):
+    for branch_order, diameter in sorted(settings["diameter_by_branch_order"].items()):
         viscosity = haemodynamics.PoiseuilleModel.calculate_viscosity(diameter)
         regime = "capillary law" if diameter <= CAPILLARY_REGIME_MAX_DIAMETER_UM else "large-vessel constant"
         print(f"  {branch_order:5s} d={diameter:5.1f} um  mu={viscosity * 1e3:.2f} mPa.s  ({regime})")
 
-    print(f"\nPressure drop:         {INLET_PRESSURE_PA - OUTLET_PRESSURE_PA:.0f} Pa")
+    pressure_drop = settings["inlet_pressure_pa"] - settings["outlet_pressure_pa"]
+    print(f"\nPressure drop:         {pressure_drop:.0f} Pa")
     print(f"Effective resistance:  {effective_resistance:.3e} Pa.s/m^3")
     print(f"Inlet flow:            {inlet_flow * M3_PER_S_TO_NL_PER_MIN:.3f} nL/min")
     print(f"  from dP/R_eff:       "
-          f"{(INLET_PRESSURE_PA - OUTLET_PRESSURE_PA) / effective_resistance * M3_PER_S_TO_NL_PER_MIN:.3f} nL/min")
+          f"{pressure_drop / effective_resistance * M3_PER_S_TO_NL_PER_MIN:.3f} nL/min")
     print(f"\nVTK with pressures and flows: {vtk_export['vessels_flow_path']}")
 
     return {
@@ -202,16 +205,20 @@ def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_ne
         "inlet_nodes": inlet_nodes,
         "outlet_nodes": outlet_nodes,
         "inlet_flow_m3_s": inlet_flow,
+        "settings": settings,
     }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--output-dir",
+        "--config",
         type=Path,
-        default=root_dir / "examples" / "outputs" / "simple_network",
-        help="Directory for the VTK output files.",
+        default=CONFIG_PATH,
+        help="YAML config to run from.",
     )
+    # One flag per setting, generated from the schema, for one-off overrides.
+    add_schema_arguments(parser, SCHEMA)
     args = parser.parse_args()
-    main(args.output_dir)
+
+    main(load_config(args.config, SCHEMA, overrides=cli_overrides(args)))

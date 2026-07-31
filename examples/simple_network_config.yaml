@@ -1,0 +1,33 @@
+# Minimal network haemodynamics
+# Settings for examples/simple_network_haemodynamics.py.
+# Edit values here; the script reads them and never hard-codes its own.
+
+# ------------------------------------------------------------------------
+# Output
+# ------------------------------------------------------------------------
+output:
+  # Directory for the exported VTK files
+  output_dir: examples/outputs/simple_network
+
+# ------------------------------------------------------------------------
+# Vessel geometry
+# ------------------------------------------------------------------------
+vessel_geometry:
+  # Vessel diameter for each branch-order label  [um]
+  diameter_by_branch_order:
+    Art1: 20.0
+    B01: 5.0
+    Ven1: 30.0
+
+# ------------------------------------------------------------------------
+# Boundary conditions
+# ------------------------------------------------------------------------
+boundary_conditions:
+  # Point whose nearest terminal node becomes the inlet  [um]
+  inlet_coordinate_zyx: [0.0, 0.0, 0.0]
+  # Point whose nearest terminal node becomes the outlet  [um]
+  outlet_coordinate_zyx: [0.0, 0.0, 600.0]
+  # Pressure imposed at the inlet node  [Pa; range 0.0..]
+  inlet_pressure_pa: 6000.0
+  # Pressure imposed at the outlet node  [Pa; range 0.0..]
+  outlet_pressure_pa: 1000.0
