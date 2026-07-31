@@ -63,8 +63,55 @@ def build_diameter_by_branch_order(
     return diameter_by_branch_order
 
 
+# --- Viscosity model -------------------------------------------------------
+#
+# Apparent blood viscosity rises as vessels narrow (the Fahraeus-Lindqvist
+# reversal below ~7 um). The empirical law used here is a power law in
+# diameter, pinned to a physical reference so that resistance comes out in SI
+# units rather than arbitrary model units:
+#
+#     mu(d) = REFERENCE_VISCOSITY_PA_S * (REFERENCE_DIAMETER_UM / d) ** EXPONENT
+#
+# Only the absolute scale depends on the reference point; every resistance
+# *ratio* is fixed by the exponent alone.
+REFERENCE_VISCOSITY_PA_S = 3.0e-3
+REFERENCE_DIAMETER_UM = 5.0
+VISCOSITY_DIAMETER_EXPONENT = 1.647
+
+# Plasma viscosity. The power law crosses this at ~8.7 um, above which it would
+# predict blood thinner than its own plasma, so the model is only valid below.
+PLASMA_VISCOSITY_PA_S = 1.2e-3
+MAX_VALID_DIAMETER_UM = 7.0
+
+UM_PER_M = 1.0e6
+
+
+def set_edge_resistance(edge_data: dict, resistance: float) -> None:
+    """Store both ``resistance`` and ``conductance`` on one edge's attribute dict.
+
+    The two are always written together so no call site has to derive one from
+    the other, and neither can go stale relative to the other.
+
+    ``resistance`` is in Pa.s/m^3; ``conductance`` is its reciprocal.
+    """
+    value = float(resistance)
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(
+            f"Edge resistance must be finite and positive, got {resistance}."
+        )
+    edge_data["resistance"] = value
+    edge_data["conductance"] = 1.0 / value
+
+
 class PoiseuilleModel:
-    """Encapsulates Poiseuille computations and constriction settings."""
+    """Encapsulates Poiseuille computations and constriction settings.
+
+    Units
+    -----
+    Diameters and lengths are in micrometres (um). Viscosity is in Pa.s.
+    Resistance is returned in Pa.s/m^3 and conductance in m^3/(Pa.s), so a
+    pressure drop in Pa divided by a resistance yields a flow in m^3/s.
+    """
 
     def __init__(self, constriction_length: float, constriction_spacing: float) -> None:
         self.constriction_length = constriction_length
@@ -88,28 +135,60 @@ class PoiseuilleModel:
 
     @staticmethod
     def calculate_viscosity(diameter: float) -> float:
-        """μ = 1 / diameter^1.647"""
-        return 1.0 / (diameter ** 1.647)
+        """Apparent blood viscosity in Pa.s for a vessel of *diameter* um.
+
+        Valid only in the capillary regime (d <= ``MAX_VALID_DIAMETER_UM``).
+        """
+        if diameter <= 0:
+            raise ValueError(f"Diameter must be positive, got {diameter} um.")
+        if diameter > MAX_VALID_DIAMETER_UM:
+            raise ValueError(
+                f"Diameter {diameter} um exceeds the {MAX_VALID_DIAMETER_UM} um validity "
+                "limit of the capillary viscosity model "
+                f"mu(d) = {REFERENCE_VISCOSITY_PA_S * 1e3} mPa.s * "
+                f"({REFERENCE_DIAMETER_UM} um / d)^{VISCOSITY_DIAMETER_EXPONENT}. "
+                "Extrapolating upward drives apparent viscosity below plasma viscosity "
+                f"({PLASMA_VISCOSITY_PA_S * 1e3} mPa.s) at ~8.7 um, which is unphysical. "
+                "The above-7um viscosity regime still needs to be implemented — see "
+                "Fahraeus-Lindqvist / Pries et al. for the larger-vessel parameterisation."
+            )
+        return REFERENCE_VISCOSITY_PA_S * (
+            (REFERENCE_DIAMETER_UM / diameter) ** VISCOSITY_DIAMETER_EXPONENT
+        )
+
+    @staticmethod
+    def resistance_of_uniform_segment(length: float, diameter: float) -> float:
+        """Poiseuille resistance (Pa.s/m^3) of a straight uniform segment.
+
+        ``length`` and ``diameter`` are in micrometres.
+        """
+        if length <= 0:
+            return float("inf")
+        viscosity = PoiseuilleModel.calculate_viscosity(diameter)
+        length_m = length / UM_PER_M
+        diameter_m = diameter / UM_PER_M
+        return (128.0 * viscosity * length_m) / (np.pi * diameter_m ** 4)
 
     def resistance_integrand(
         self, position: float, length: float, d1: float, d2: float
     ) -> float:
-        """Resistance per unit length = (128 * viscosity) / (π * diameter^4)."""
+        """Resistance per unit length (Pa.s/m^4) at *position* um along the vessel."""
         diameter = self.get_diameter_at_position(position, length, d1, d2)
         viscosity = self.calculate_viscosity(diameter)
-        return (128.0 * viscosity) / (np.pi * diameter ** 4)
+        diameter_m = diameter / UM_PER_M
+        return (128.0 * viscosity) / (np.pi * diameter_m ** 4)
 
     def calculate_integrated_resistance(
         self, length: float, d1: float, d2: float, num_points: int = 1000
     ) -> float:
-        """Total resistance by trapezoidal integration."""
+        """Total resistance (Pa.s/m^3) by trapezoidal integration along the vessel."""
         if length <= 0:
             return float("inf")
         positions = np.linspace(0, length, num_points)
         resistances = [
             self.resistance_integrand(pos, length, d1, d2) for pos in positions
         ]
-        dx = length / (num_points - 1) if num_points > 1 else length
+        dx = (length / (num_points - 1) if num_points > 1 else length) / UM_PER_M
         integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
         return float(integ(resistances, dx=dx))
 
@@ -154,10 +233,13 @@ class PoiseuilleModel:
             'used_fwhm_edge_diameter': 0,
         }
 
-        print(f"=== Poiseuille Weight Calculation (Branch Order Based) ===")
-        print(f"Formula: Weight = (π * diameter^4) / (128 * viscosity * length)")
-        print(f"Viscosity calculation: μ = 1 / diameter^1.647")
-        print(f"Units: diameter and length in micrometers (μm)")
+        print(f"=== Poiseuille Resistance Calculation (Branch Order Based) ===")
+        print(f"Formula: resistance = (128 * viscosity * length) / (π * diameter^4)")
+        print(
+            f"Viscosity: μ(d) = {REFERENCE_VISCOSITY_PA_S * 1e3} mPa.s * "
+            f"({REFERENCE_DIAMETER_UM} μm / d)^{VISCOSITY_DIAMETER_EXPONENT}"
+        )
+        print(f"Units: diameter and length in μm; resistance in Pa.s/m^3")
         print()
 
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
@@ -166,7 +248,7 @@ class PoiseuilleModel:
             if diameter <= 0:
                 print(f"Warning: Invalid diameter {diameter} for {branch_order}")
                 continue
-            viscosity = 1.0 / (diameter ** 1.647)
+            viscosity = self.calculate_viscosity(diameter)
             diameter_viscosity_map[diameter] = viscosity
             results['viscosity_calculations'][branch_order] = {
                 'diameter': diameter,
@@ -214,23 +296,17 @@ class PoiseuilleModel:
             viscosity = diameter_viscosity_map.get(diameter, None)
             if viscosity is None:
                 # Fallback calculation if not in map
-                viscosity = 1.0 / (diameter ** 1.647)
+                viscosity = self.calculate_viscosity(diameter)
 
-            # Calculate weight using inverse Poiseuille's law
-            # Weight = (π * diameter^4) / (128 * viscosity * length)
-            weight = (PI * diameter**4) / (128.0 * viscosity * length)
-
-            # Store old weight for comparison
-            old_weight = data.get('weight', None)
-
-            # Set new weight
-            G[u][v][key]['weight'] = weight
+            resistance = self.resistance_of_uniform_segment(length, diameter)
+            set_edge_resistance(G[u][v][key], resistance)
 
             results['weights_set'] += 1
 
             logger.debug(f"Edge ({u}, {v}, {key}): {branch_order}, "
                         f"diameter={diameter}μm, length={length:.3f}μm, "
-                        f"viscosity={viscosity:.6f}, weight={weight:.6f}")
+                        f"viscosity={viscosity:.3e} Pa.s, "
+                        f"resistance={resistance:.3e} Pa.s/m^3")
 
         # Print summary
         print(f"=== Summary ===")
@@ -358,8 +434,7 @@ class PoiseuilleModel:
                 )
             try:
                 total_resistance = self.calculate_integrated_resistance(length, d1, d2)
-                weight = 1.0 / total_resistance
-                G[u][v][key]["weight"] = weight
+                set_edge_resistance(G[u][v][key], total_resistance)
                 results["weights_set"] += 1
             except Exception as e:
                 raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
@@ -370,9 +445,12 @@ class PoiseuilleModel:
         G: nx.MultiGraph,
         custom_edges,
         edge_diameter: float,
-        use_resistance: bool = True,
     ) -> dict:
-        """Set weights for specified edges. use_resistance=True -> weight=resistance."""
+        """Override resistance/conductance on specific edges using a fixed diameter.
+
+        Both attributes are always written, so there is no longer a flag choosing
+        between storing resistance and storing its inverse (see issue #12).
+        """
         results = {
             "updated": [],
             "not_found": [],
@@ -382,7 +460,6 @@ class PoiseuilleModel:
         if edge_diameter <= 0:
             results["invalid_diameter"].append(edge_diameter)
             return G, results
-        viscosity = self.calculate_viscosity(edge_diameter)
         edge_pairs = custom_edges.keys() if isinstance(custom_edges, dict) else custom_edges
         for edge_pair in edge_pairs:
             u, v = edge_pair
@@ -404,20 +481,16 @@ class PoiseuilleModel:
                     continue
                 if vessel_length <= 0:
                     continue
-                if use_resistance:
-                    new_weight = (128.0 * viscosity * vessel_length) / (
-                        np.pi * edge_diameter ** 4
-                    )
-                else:
-                    new_weight = (np.pi * edge_diameter ** 4) / (
-                        128.0 * viscosity * vessel_length
-                    )
-                G[u_actual][v_actual][key]["weight"] = new_weight
+                new_resistance = self.resistance_of_uniform_segment(
+                    vessel_length, edge_diameter
+                )
+                set_edge_resistance(G[u_actual][v_actual][key], new_resistance)
                 results["updated"].append(
                     {
                         "edge": (u_actual, v_actual, key),
                         "vessel_length": vessel_length,
-                        "new_weight": new_weight,
+                        "resistance": new_resistance,
+                        "conductance": 1.0 / new_resistance,
                     }
                 )
         return G, results

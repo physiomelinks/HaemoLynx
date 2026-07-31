@@ -67,5 +67,8 @@ def test_visualize_geometry_with_edge_weights(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     for u, v, k, d in G.edges(keys=True, data=True):
         G[u][v][k]["voxels"] = [(0, 0, 0), (5, 0, 0)]
+        # The plot colours by haemodynamic resistance, so it must be present.
+        G[u][v][k]["resistance"] = 1.0e16
+        G[u][v][k]["conductance"] = 1.0e-16
     result = visualize_geometry_with_edge_weights(img, G)
     assert result[2] is not None

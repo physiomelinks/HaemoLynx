@@ -137,7 +137,6 @@ def build_graph_segment_skan_stitched_loops(
         G.add_edge(
             uid,
             vid,
-            weight=max(total_dist, 1e-6),
             length=total_dist,
             voxels=seg_array_phys.tolist(),
             segment_id=seg_idx,
@@ -194,7 +193,6 @@ def build_graph_segment_skan_stitched_loops(
                 G.add_edge(
                     src,
                     tgt,
-                    weight=max(dist, 1e-6),
                     length=dist,
                     voxels=[
                         src_pos.tolist(),

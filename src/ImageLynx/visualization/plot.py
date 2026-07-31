@@ -345,7 +345,11 @@ def visualize_geometry_with_edge_weights(
     show_after_save: bool = False,
     block: bool = False,
 ):
-    """Plot network colored by edge weight."""
+    """Plot network coloured by haemodynamic edge resistance.
+
+    Reads the ``resistance`` edge attribute (Pa.s/m^3). ``use_inverse=True``
+    colours by conductance instead.
+    """
     projection = _overlay_z_projection(image)
     resolved_voxel_size = _resolve_voxel_size(G, voxel_size)
     extent = _projection_extent(projection.shape, resolved_voxel_size)
@@ -353,7 +357,7 @@ def visualize_geometry_with_edge_weights(
     edge_paths = {}
     weights_list = []
     for u, v, key, data in G.edges(keys=True, data=True):
-        weight = data.get("weight")
+        weight = data.get("resistance")
         path = data.get("voxels", [])
         if weight is not None:
             proc = 1.0 / weight if use_inverse else weight

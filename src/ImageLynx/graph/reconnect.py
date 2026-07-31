@@ -321,7 +321,6 @@ def reconnect_secondary_loop_edges(
                         G.add_edge(
                             u,
                             v,
-                            weight=best["length"],
                             voxels=best["voxels"],
                             length=best["length"],
                             overlap=best["overlap"],

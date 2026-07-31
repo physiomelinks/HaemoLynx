@@ -15,6 +15,7 @@ from ImageLynx.io import (
     load_3d_tif_with_voxel_size,
     resolve_image_path_with_optional_zip,
 )
+from .poiseuille import set_edge_resistance
 from .probability import (
     is_capillary_branch_order,
     select_active_pericyte_indices,
@@ -505,7 +506,7 @@ def set_poiseuille_weights_with_pericyte_mask(
             constriction_length=float(constriction_length),
             num_points=int(num_integration_points),
         )
-        graph[u][v][key]["weight"] = 1.0 / float(total_resistance)
+        set_edge_resistance(graph[u][v][key], float(total_resistance))
         graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in centers]
         results["weights_set"] += 1

@@ -50,10 +50,11 @@ def test_validate_skeleton_connection(tiny_skeleton):
 
 
 def test_create_trivial_merged_edge():
-    e1 = {"voxels": [(0, 0, 0), (1, 0, 0)], "weight": 1, "length": 1}
-    e2 = {"voxels": [(1, 0, 0), (2, 0, 0)], "weight": 1, "length": 1}
+    e1 = {"voxels": [(0, 0, 0), (1, 0, 0)], "length": 1}
+    e2 = {"voxels": [(1, 0, 0), (2, 0, 0)], "length": 1}
     merged = create_trivial_merged_edge(e1, e2, np.array([1, 0, 0]))
-    assert merged["weight"] == 2
+    assert "weight" not in merged
+    assert merged["length"] == 2
     assert len(merged["voxels"]) >= 3
 
 

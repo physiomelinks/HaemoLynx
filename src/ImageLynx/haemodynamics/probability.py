@@ -5,6 +5,7 @@ from typing import Any, Iterable
 
 import networkx as nx
 import numpy as np
+from .poiseuille import set_edge_resistance
 
 
 def is_capillary_branch_order(branch_order: str | None) -> bool:
@@ -306,7 +307,7 @@ def set_poiseuille_weights_with_probabilistic_periodic_constrictions(
             constriction_length=float(constriction_length),
             num_points=int(num_integration_points),
         )
-        graph[u][v][key]["weight"] = 1.0 / float(total_resistance)
+        set_edge_resistance(graph[u][v][key], float(total_resistance))
         graph[u][v][key]["pericyte_count_assigned"] = int(len(active_centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in active_centers]
         results["weights_set"] += 1
