@@ -1,0 +1,133 @@
+"""End-to-end checks for the minimal graph -> BCs -> flow -> VTK example."""
+from __future__ import annotations
+
+import importlib.util
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+import pyvista as pv
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from ImageLynx.haemodynamics.poiseuille import (  # noqa: E402
+    CAPILLARY_REGIME_MAX_DIAMETER_UM,
+    LARGE_VESSEL_VISCOSITY_PA_S,
+    UM_PER_M,
+)
+
+pytestmark = pytest.mark.integration
+
+
+def _load_example_module():
+    module_path = REPO_ROOT / "examples" / "simple_network_haemodynamics.py"
+    spec = importlib.util.spec_from_file_location("simple_network_haemodynamics", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module spec from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def example():
+    return _load_example_module()
+
+
+@pytest.fixture(scope="module")
+def run_result(example, tmp_path_factory):
+    return example.main(tmp_path_factory.mktemp("simple_network"))
+
+
+def test_example_network_is_well_formed(example):
+    G = example.build_example_network()
+
+    import networkx as nx
+
+    assert nx.is_connected(G)
+    assert G.number_of_nodes() == 8
+    assert G.number_of_edges() == 9
+    for u, v, data in G.edges(data=True):
+        assert data["length"] > 0
+        assert data["branch_order"] in example.DIAMETER_BY_BRANCH_ORDER
+        assert len(data["voxels"]) == 2
+    # Length must be the physical node separation, in um.
+    assert G[0][1][0]["length"] == pytest.approx(100.0)
+
+
+def test_every_vessel_gets_resistance_and_matching_conductance(run_result):
+    G = run_result["graph"]
+    for u, v, data in G.edges(data=True):
+        assert data["resistance"] > 0
+        assert data["conductance"] == pytest.approx(1.0 / data["resistance"], rel=1e-12)
+
+
+def test_large_vessels_use_the_constant_large_vessel_viscosity(example, run_result):
+    """The 20 um arteriole is above the capillary limit, so mu is the constant."""
+    G = run_result["graph"]
+    diameter = example.DIAMETER_BY_BRANCH_ORDER["Art1"]
+    assert diameter > CAPILLARY_REGIME_MAX_DIAMETER_UM
+
+    length_m = G[0][1][0]["length"] / UM_PER_M
+    diameter_m = diameter / UM_PER_M
+    expected = (128.0 * LARGE_VESSEL_VISCOSITY_PA_S * length_m) / (math.pi * diameter_m**4)
+    assert G[0][1][0]["resistance"] == pytest.approx(expected, rel=1e-12)
+
+
+def test_pressures_stay_within_the_boundary_conditions(example, run_result):
+    pressure = run_result["flow_result"]["pressure"]
+    assert pressure.min() == pytest.approx(example.OUTLET_PRESSURE_PA)
+    assert pressure.max() == pytest.approx(example.INLET_PRESSURE_PA)
+
+
+def test_flow_is_conserved_at_every_internal_node(example, run_result):
+    """Kirchhoff's current law: only the two boundary nodes may source flow."""
+    from ImageLynx import haemodynamics
+
+    G = run_result["graph"]
+    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+    pressure = run_result["flow_result"]["pressure"]
+    inlet_flow = run_result["inlet_flow_m3_s"]
+
+    for idx, node_id in enumerate(node_list):
+        if node_id in (example.INLET_NODE, example.OUTLET_NODE):
+            continue
+        net_flow = float(np.sum(conductance[idx, :] * (pressure[idx] - pressure)))
+        assert abs(net_flow) < 1e-9 * abs(inlet_flow)
+
+
+def test_inlet_flow_matches_the_effective_resistance(example, run_result):
+    """Ohm's law across the whole network, computed two independent ways."""
+    pressure_drop = example.INLET_PRESSURE_PA - example.OUTLET_PRESSURE_PA
+    expected_flow = pressure_drop / run_result["effective_resistance"]
+    assert run_result["inlet_flow_m3_s"] == pytest.approx(expected_flow, rel=1e-9)
+    assert run_result["inlet_flow_m3_s"] > 0
+
+
+def test_flow_is_physiologically_plausible(run_result):
+    """A small capillary bed at ~37 mmHg drop should carry O(1-100) nL/min."""
+    flow_nl_min = run_result["inlet_flow_m3_s"] * 6.0e13
+    assert 1.0 <= flow_nl_min <= 100.0
+
+
+def test_vtk_files_are_written_with_flow_fields(run_result):
+    vtk_export = run_result["vtk_export"]
+    flow_path = Path(vtk_export["vessels_flow_path"])
+    assert flow_path.exists() and flow_path.stat().st_size > 0
+    assert Path(vtk_export["nodes_path"]).exists()
+
+    vessels = pv.read(str(flow_path))
+    assert vessels.n_cells == run_result["graph"].number_of_edges()
+    for field in ("resistance", "conductance", "pressure_drop", "flow_signed", "flow_abs"):
+        assert field in vessels.cell_data
+        assert np.all(np.isfinite(vessels.cell_data[field]))
+
+    # Signed flows are drawn from the same solve as the reported inlet flow.
+    assert np.max(vessels.cell_data["flow_abs"]) == pytest.approx(
+        run_result["inlet_flow_m3_s"], rel=1e-9
+    )
