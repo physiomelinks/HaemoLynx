@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from ImageLynx.parsers import ConfigError, Schema, Setting
+from ImageLynx.parsers import (
+    ConfigError,
+    IneffectiveSettingWarning,
+    Schema,
+    Setting,
+)
 
 
 def _schema() -> Schema:
@@ -90,10 +95,22 @@ def test_value_outside_choices_lists_the_allowed_values():
         _schema().validate({"mode": "medium"})
 
 
-def test_a_setting_whose_prerequisite_is_off_is_reported():
-    """The silent class of bug: a value that is set but can never be read."""
-    with pytest.raises(ConfigError, match="has no effect while 'use_masks' is false"):
-        _schema().validate({"mask_path": "art.tif"})
+def test_a_setting_whose_prerequisite_is_off_warns_but_still_loads():
+    """The silent class of bug: a value that is set but can never be read.
+
+    A warning rather than an error: leaving a path filled in while its feature
+    is off is ordinary practice, and such a config must still load.
+    """
+    with pytest.warns(IneffectiveSettingWarning, match="nothing will read it"):
+        resolved = _schema().validate({"mask_path": "art.tif"})
+    assert resolved["mask_path"] == Path("art.tif")
+
+
+def test_ineffective_settings_can_be_listed_without_running_validation():
+    values = _schema().validate({"use_masks": True, "mask_path": "art.tif"})
+    assert _schema().ineffective_settings(values) == []
+    values["use_masks"] = False
+    assert len(_schema().ineffective_settings(values)) == 1
 
 
 def test_a_setting_whose_prerequisite_is_on_is_accepted():
@@ -207,3 +224,43 @@ def test_subset_keeps_only_the_named_settings():
 def test_indexing_an_unknown_name_suggests_a_close_one():
     with pytest.raises(ConfigError, match="Did you mean: input_path"):
         _schema()["input_pth"]
+
+
+# --- regressions -----------------------------------------------------------
+
+
+def test_a_path_default_left_untouched_is_not_reported_as_ineffective():
+    """`requires` compares against the coerced default, not the raw literal.
+
+    A path setting declared with a string default coerces to Path, so comparing
+    against the literal would make every such setting look modified and report
+    itself as having no effect.
+    """
+    schema = Schema([
+        Setting("use_masks", "bool", False, "Gate", "S"),
+        Setting("mask_path", "path", "default.tif", "Mask", "S", requires=("use_masks",)),
+    ])
+    assert schema.validate({})["mask_path"] == Path("default.tif")
+
+
+def test_a_section_that_collides_with_a_setting_name_is_rejected():
+    """The section heading and the setting would be indistinguishable in YAML."""
+    with pytest.raises(ConfigError, match="also a setting name"):
+        Schema([
+            Setting("statistics", "bool", True, "Run statistics", "Statistics"),
+            Setting("mode", "str", "fast", "Detail", "Statistics"),
+        ])
+
+
+def test_container_defaults_are_not_shared_between_calls():
+    """One run mutating a default must not change the next run's."""
+    schema = Schema([
+        Setting("edges", "any", [[0, 1]], "Custom edges", "S"),
+        Setting("table", "mapping", {"B01": 5.0}, "Diameters", "S"),
+    ])
+    first = schema.defaults()
+    first["edges"].append([2, 3])
+    first["table"]["B01"] = 99.0
+    second = schema.defaults()
+    assert second["edges"] == [[0, 1]]
+    assert second["table"] == {"B01": 5.0}

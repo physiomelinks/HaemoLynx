@@ -15,6 +15,7 @@ loading numpy, ilastik, or any image data — a GUI can render the form from
 from __future__ import annotations
 
 import difflib
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -38,8 +39,23 @@ KINDS = (
 _LIST_KINDS = {"int_list": int, "float_list": float, "str_list": str}
 
 
+def section_key(section: str) -> str:
+    """YAML heading for a section name."""
+    return section.strip().lower().replace(" ", "_").replace("-", "_")
+
+
 class ConfigError(ValueError):
     """A config value is missing, unknown, or fails its declared constraints."""
+
+
+class IneffectiveSettingWarning(UserWarning):
+    """A setting carries a non-default value that nothing will read.
+
+    Not an error: leaving a path filled in while its feature is switched off is
+    ordinary practice, and a config file that documents every setting should
+    still load. It is worth saying out loud, though, because "I changed it and
+    nothing happened" is otherwise silent.
+    """
 
 
 @dataclass(frozen=True)
@@ -215,6 +231,15 @@ class Setting:
         }
 
 
+def _copy_container(value: Any) -> Any:
+    """Fresh list/dict so one run cannot mutate the next run's default."""
+    if isinstance(value, list):
+        return [_copy_container(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _copy_container(item) for key, item in value.items()}
+    return value
+
+
 def _jsonify(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -259,6 +284,14 @@ class Schema:
                         f"Setting '{setting.name}' requires '{prerequisite}', "
                         "which is not a bool."
                     )
+        for section in {setting.section for setting in settings}:
+            slug = section_key(section)
+            if slug in by_name:
+                raise ConfigError(
+                    f"Section '{section}' becomes YAML key '{slug}', which is also "
+                    f"a setting name. Rename one of them, or the section heading "
+                    "and the setting cannot be told apart when the file is read."
+                )
         object.__setattr__(self, "settings", settings)
         object.__setattr__(self, "title", title)
         object.__setattr__(self, "description", description)
@@ -298,7 +331,8 @@ class Schema:
         fresh containers rather than sharing one mutable default between runs.
         """
         return {
-            setting.name: setting.coerce(setting.default) for setting in self.settings
+            setting.name: _copy_container(setting.coerce(setting.default))
+            for setting in self.settings
         }
 
     def _unknown_key_message(self, name: object) -> str:
@@ -332,26 +366,8 @@ class Schema:
             except ConfigError as exc:
                 errors.append(str(exc))
 
-        for setting in self.settings:
-            if setting.name not in resolved:
-                continue
-            value = resolved[setting.name]
-            if not setting.requires:
-                continue
-            if value == setting.default or value is None:
-                continue
-            unmet = [
-                prerequisite
-                for prerequisite in setting.requires
-                if not resolved.get(prerequisite, False)
-            ]
-            if unmet:
-                errors.append(
-                    f"Setting '{setting.name}' is set to {value!r} but has no effect "
-                    f"while {' and '.join(repr(u) for u in unmet)} "
-                    f"{'is' if len(unmet) == 1 else 'are'} false. Enable "
-                    f"{' and '.join(unmet)}, or leave '{setting.name}' at its default."
-                )
+        for message in self._ineffective_messages(resolved):
+            warnings.warn(message, IneffectiveSettingWarning, stacklevel=3)
 
         if errors:
             raise ConfigError(
@@ -360,6 +376,35 @@ class Schema:
                 + "\n  - ".join(errors)
             )
         return resolved
+
+    def _ineffective_messages(self, resolved: Mapping[str, Any]) -> list[str]:
+        messages: list[str] = []
+        for setting in self.settings:
+            if setting.name not in resolved or not setting.requires:
+                continue
+            value = resolved[setting.name]
+            if value is None or value == setting.coerce(setting.default):
+                continue
+            unmet = [
+                prerequisite
+                for prerequisite in setting.requires
+                if not resolved.get(prerequisite, False)
+            ]
+            if unmet:
+                messages.append(
+                    f"Setting '{setting.name}' is set to {value!r} but nothing will "
+                    f"read it while {' and '.join(repr(u) for u in unmet)} "
+                    f"{'is' if len(unmet) == 1 else 'are'} false."
+                )
+        return messages
+
+    def ineffective_settings(self, values: Mapping[str, Any]) -> list[str]:
+        """Settings carrying a value that nothing will read, as messages.
+
+        A GUI greys these controls out instead; this is the text form for a
+        command-line run or a preflight report.
+        """
+        return self._ineffective_messages(values)
 
     def describe(self) -> dict[str, Any]:
         """Whole-schema JSON description: the contract a GUI renders from."""

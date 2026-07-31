@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .schema import ConfigError, Schema, Setting, _jsonify
+from .schema import ConfigError, Schema, Setting, _jsonify, section_key
 
 #: Threshold from the project convention: a call taking more than this many
 #: settings is passed the config dict instead of individual keyword arguments.
@@ -117,7 +117,7 @@ def dump_config(
         lines.append("# " + "-" * 72)
         lines.append(f"# {section}")
         lines.append("# " + "-" * 72)
-        lines.append(f"{_yaml_key(section)}:")
+        lines.append(f"{section_key(section)}:")
         for setting in settings:
             if include_help:
                 lines.extend(_comment_lines(setting))
@@ -175,10 +175,6 @@ def _scalar(value: Any) -> str:
     return yaml.safe_dump(
         _jsonify(value), default_flow_style=True, sort_keys=False
     ).strip().rstrip("...").strip()
-
-
-def _yaml_key(section: str) -> str:
-    return section.strip().lower().replace(" ", "_").replace("-", "_")
 
 
 def settings_for(values: Mapping[str, Any], names: Sequence[str]) -> dict[str, Any]:

@@ -22,10 +22,11 @@ from .config import (
     load_config,
     settings_for,
 )
-from .schema import ConfigError, Schema, Setting
+from .schema import ConfigError, IneffectiveSettingWarning, Schema, Setting
 
 __all__ = [
     "ConfigError",
+    "IneffectiveSettingWarning",
     "DICT_ARGUMENT_THRESHOLD",
     "Schema",
     "Setting",
