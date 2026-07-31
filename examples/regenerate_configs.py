@@ -25,6 +25,7 @@ from ImageLynx.parsers import Schema, dump_config, load_config  # noqa: E402
 #: config file (relative to the repo root) -> module holding its ``SCHEMA``.
 CONFIGS: dict[str, str] = {
     "examples/simple_network_config.yaml": "simple_network_schema",
+    "examples/resistance_pipeline_config.yaml": "resistance_pipeline_schema",
 }
 
 
