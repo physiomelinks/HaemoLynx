@@ -12,7 +12,6 @@ Run: ``python tests/test_synthetic_vessel_assignment_pipeline.py`` or ``pytest``
 from __future__ import annotations
 
 import sys
-import webbrowser
 from pathlib import Path
 
 import networkx as nx
@@ -29,6 +28,7 @@ from ImageLynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks,
     select_terminal_nodes_from_large_vessel_masks,
 )
+from browser_diagnostics import open_diagnostic_html
 
 DEMO_HTML_PATH = (
     REPO_ROOT / "examples" / "plots" / "synthetic_vessel_assignment_pipeline_3d.html"
@@ -496,10 +496,7 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         output_html_path=DEMO_HTML_PATH,
     )
 
-    try:
-        webbrowser.open_new_tab(html_tmp.resolve().as_uri())
-    except OSError:
-        pass
+    open_diagnostic_html(html_tmp)
 
 
 if __name__ == "__main__":

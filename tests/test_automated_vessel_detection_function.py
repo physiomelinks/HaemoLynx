@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import webbrowser
 from pathlib import Path
 
 import networkx as nx
@@ -19,6 +18,7 @@ from ImageLynx.graph import (
     dilate_large_vessel_masks_by_microns,
     select_terminal_nodes_from_large_vessel_masks,
 )
+from browser_diagnostics import open_diagnostic_html
 
 
 def _write_rotatable_assignment_graph(
@@ -174,12 +174,7 @@ def _write_rotatable_assignment_graph(
             font=dict(size=12),
         )
     fig.write_html(str(html_path), include_plotlyjs="cdn")
-    # Best-effort auto-open for local interactive debugging.
-    try:
-        webbrowser.open_new_tab(html_path.resolve().as_uri())
-    except Exception:
-        # Keep test robust in headless/CI environments.
-        pass
+    open_diagnostic_html(html_path)
 
 
 def _parallel_cylinder_mask_along_x(
