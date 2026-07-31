@@ -12,6 +12,9 @@ The network spans both viscosity regimes: 5 um capillaries use the calibrated
 capillary power law, while the 20 um arteriole and 30 um venule sit above the
 7 um limit and take the constant large-vessel viscosity (see issue #90).
 
+Boundary nodes are chosen with ``graph.select_boundary_nodes_by_method``; step
+4 of ``main`` lists the other selection methods and the keyword each one reads.
+
 Run::
 
     python examples/simple_network_haemodynamics.py [--output-dir DIR]
@@ -28,6 +31,7 @@ src_dir = root_dir / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
+from ImageLynx import graph as graph_tools
 from ImageLynx import haemodynamics, visualization
 from ImageLynx.haemodynamics.poiseuille import CAPILLARY_REGIME_MAX_DIAMETER_UM
 
@@ -36,9 +40,12 @@ from ImageLynx.haemodynamics.poiseuille import CAPILLARY_REGIME_MAX_DIAMETER_UM
 # capillary limit and so use the constant large-vessel viscosity.
 DIAMETER_BY_BRANCH_ORDER = {"Art1": 20.0, "B01": 5.0, "Ven1": 30.0}
 
-# Dirichlet pressure boundary conditions (Pa). ~45 mmHg in, ~7.5 mmHg out.
-INLET_NODE = 0
-OUTLET_NODE = 7
+# Where the boundaries are, in (z, y, x) um. The nearest terminal node to each
+# point is used, so these need only be approximate.
+INLET_COORDINATE_ZYX = (0.0, 0.0, 0.0)
+OUTLET_COORDINATE_ZYX = (0.0, 0.0, 600.0)
+
+# Dirichlet pressures imposed there (Pa). ~45 mmHg in, ~7.5 mmHg out.
 INLET_PRESSURE_PA = 6000.0
 OUTLET_PRESSURE_PA = 1000.0
 
@@ -114,16 +121,53 @@ def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_ne
     #    vessel file back to attach pressures and flows to it.
     vtk_export = visualization.graph_to_vtk(G, output_dir / "simple_network")
 
-    # 4. Conductance matrix, then nodal pressures and edge flows for the
-    #    inlet/outlet pressure boundary conditions.
+    # 4. Boundary nodes. Only degree-1 terminals are considered: pinning an
+    #    interior junction would make it inject or remove flow mid-network.
+    #    `method` selects how the terminals are picked, and each method reads a
+    #    different keyword:
+    #      "coordinates"           -> `coordinates`: each point snaps to the
+    #                                 nearest terminal, so it need not be exact
+    #      "volume"                -> `volume_boxes`: every terminal inside
+    #                                 ((z,y,x), (z,y,x)) corner pairs
+    #      "edge_percent"          -> `edge_percent`/`end_percent`/`axis`: the
+    #                                 first/last N% along one axis; the imaging
+    #                                 pipeline's default
+    #      "all_degree_1"          -> every terminal in the graph
+    #      "degree_1_from_starting"-> `starting_nodes_for_distance` +
+    #                                 `distance_from_starting_node`
+    #    With segmented masks, use graph.select_terminal_nodes_from_large_vessel_masks
+    #    instead, which assigns terminals from anatomy rather than geometry.
+    #    `image_shape` is only read by "edge_percent"; a real run passes the
+    #    loaded image's shape, so this hand-built network synthesises one.
+    #    `starting_nodes`/`output_nodes` are lists, so several inlets or outlets
+    #    are simply named together and share that list's pressure.
+    positions = np.asarray([G.nodes[n]["pos"] for n in G.nodes], dtype=float)
+    image_shape = tuple(int(np.ceil(hi)) + 1 for hi in positions.max(axis=0))
+    inlet_nodes = graph_tools.select_boundary_nodes_by_method(
+        G,
+        image_shape,
+        method="coordinates",
+        node_role="input",
+        coordinates=[INLET_COORDINATE_ZYX],
+    )
+    outlet_nodes = graph_tools.select_boundary_nodes_by_method(
+        G,
+        image_shape,
+        method="coordinates",
+        node_role="output",
+        coordinates=[OUTLET_COORDINATE_ZYX],
+        exclude_nodes=inlet_nodes,
+    )
+    print(f"Boundary nodes: inlets={inlet_nodes}, outlets={outlet_nodes}")
+
     conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
     flow_result, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
         input_p_bc=INLET_PRESSURE_PA,
         output_p_bc=OUTLET_PRESSURE_PA,
-        starting_nodes=[INLET_NODE],
-        output_nodes=[OUTLET_NODE],
+        starting_nodes=inlet_nodes,
+        output_nodes=outlet_nodes,
         vtk_export=vtk_export,
     )
 
@@ -131,10 +175,10 @@ def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_ne
     #    pressure drop divided by the inlet-to-outlet effective resistance.
     laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
     effective_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
-        laplacian, G, INLET_NODE, OUTLET_NODE
+        laplacian, G, inlet_nodes[0], outlet_nodes[0]
     )
     pressure = flow_result["pressure"]
-    inlet_idx = node_list.index(INLET_NODE)
+    inlet_idx = node_list.index(inlet_nodes[0])
     inlet_flow = float(np.sum(conductance[inlet_idx, :] * (pressure[inlet_idx] - pressure)))
 
     print(f"\nViscosity regime split at {CAPILLARY_REGIME_MAX_DIAMETER_UM} um:")
@@ -155,6 +199,8 @@ def main(output_dir: Path | str = root_dir / "examples" / "outputs" / "simple_ne
         "flow_result": flow_result,
         "vtk_export": vtk_export,
         "effective_resistance": effective_resistance,
+        "inlet_nodes": inlet_nodes,
+        "outlet_nodes": outlet_nodes,
         "inlet_flow_m3_s": inlet_flow,
     }
 

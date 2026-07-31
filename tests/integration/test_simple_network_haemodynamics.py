@@ -95,7 +95,7 @@ def test_flow_is_conserved_at_every_internal_node(example, run_result):
     inlet_flow = run_result["inlet_flow_m3_s"]
 
     for idx, node_id in enumerate(node_list):
-        if node_id in (example.INLET_NODE, example.OUTLET_NODE):
+        if node_id in (run_result["inlet_nodes"] + run_result["outlet_nodes"]):
             continue
         net_flow = float(np.sum(conductance[idx, :] * (pressure[idx] - pressure)))
         assert abs(net_flow) < 1e-9 * abs(inlet_flow)
@@ -113,6 +113,19 @@ def test_flow_is_physiologically_plausible(run_result):
     """A small capillary bed at ~37 mmHg drop should carry O(1-100) nL/min."""
     flow_nl_min = run_result["inlet_flow_m3_s"] * 6.0e13
     assert 1.0 <= flow_nl_min <= 100.0
+
+
+def test_boundary_selection_picks_the_terminal_nodes(example, run_result):
+    """The `select_boundary_nodes_by_method` call must resolve to the two ends."""
+    G = run_result["graph"]
+    terminals = {node for node, degree in G.degree() if degree == 1}
+
+    assert run_result["inlet_nodes"] == [0]
+    assert run_result["outlet_nodes"] == [7]
+    # Pinning an interior junction would make it inject or remove flow.
+    assert set(run_result["inlet_nodes"]) <= terminals
+    assert set(run_result["outlet_nodes"]) <= terminals
+    assert not set(run_result["inlet_nodes"]) & set(run_result["outlet_nodes"])
 
 
 def test_vtk_files_are_written_with_flow_fields(run_result):
