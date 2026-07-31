@@ -158,7 +158,7 @@ SKELETON_MIN_COMPONENT_PERCENT = 0.0
 # -----------------------------------------------------------------------------
 # Manual mode (default): USE_FWHM_EDGE_DIAMETERS=False. Diameters come from
 # DIAMETER_BY_BRANCH_ORDER (built from ALL_DIAMS_CONST, DEFAULT_DIAMETER, and
-# MANUAL_*_DIAMETER_BY_BRANCH_ORDER). Used by PoiseuilleModel.set_poiseuille_weights.
+# MANUAL_*_DIAMETER_BY_BRANCH_ORDER). Used by PoiseuilleModel.set_poiseuille_resistances.
 #
 # Automated mode: USE_FWHM_EDGE_DIAMETERS=True. Requires FWHM_RAW_TIFF_PATH to a
 # single-channel raw fluorescence TIFF aligned with the graph. Per-edge
@@ -397,14 +397,14 @@ def _run_alice_pericyte_dilation_pressure_sweep(
             for branch_order, diameter_um in diameter_by_branch_order.items()
         }
 
-        G_sweep, _ = poiseuille_model.set_poiseuille_weights(
+        G_sweep, _ = poiseuille_model.set_poiseuille_resistances(
             G_sweep,
             scaled_diameter_by_branch_order,
             prefer_edge_fwhm_diameter=True,
         )
 
         if custom_edges:
-            G_sweep, _ = poiseuille_model.set_poiseuille_edge_weights(
+            G_sweep, _ = poiseuille_model.set_poiseuille_edge_resistances(
                 G_sweep,
                 custom_edges,
                 edge_diameter=6.0 * dilation_factor,
@@ -1514,7 +1514,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         elif not use_fwhm_edge_diameters:
             print(
                 "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
-                "set_poiseuille_weights without per-edge FWHM)."
+                "set_poiseuille_resistances without per-edge FWHM)."
             )
         poiseuille_model = haemodynamics.PoiseuilleModel(
             constriction_length=40.0,
@@ -1522,14 +1522,14 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         )
         if do_pericyte_constriction:
             if use_fwhm_edge_diameters:
-                G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                G, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                     G,
                     diameter_by_branch_order,
                     prefer_edge_fwhm_baseline=True,
                     constriction_factor_by_branch_order=constriction_by_branch_order,
                 )
                 print(
-                    "Results from set_poiseuille_weights_with_constrictions "
+                    "Results from set_poiseuille_resistances_with_constrictions "
                     f"(FWHM baseline d1, constriction factors): {results}"
                 )
             else:
@@ -1540,15 +1540,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                         "d2": diameter * constriction_by_branch_order[branch_order],
                     }
 
-                G, results = poiseuille_model.set_poiseuille_weights_with_constrictions(
+                G, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                     G,
                     diameter_by_branch_order_enhanced,
                 )
                 print(
-                    f"Results from set_poiseuille_weights_with_constrictions: {results}"
+                    f"Results from set_poiseuille_resistances_with_constrictions: {results}"
                 )
         else:
-            G, results = poiseuille_model.set_poiseuille_weights(
+            G, results = poiseuille_model.set_poiseuille_resistances(
                 G,
                 diameter_by_branch_order,
                 prefer_edge_fwhm_diameter=bool(use_fwhm_edge_diameters),
@@ -1558,15 +1558,15 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 if use_fwhm_edge_diameters
                 else "branch-order table only"
             )
-            print(f"Results from set_poiseuille_weights ({_diam_mode}): {results}")
+            print(f"Results from set_poiseuille_resistances ({_diam_mode}): {results}")
 
-        G, results_2 = poiseuille_model.set_poiseuille_edge_weights(
+        G, results_2 = poiseuille_model.set_poiseuille_edge_resistances(
             G,
             custom_edges,
             edge_diameter=6.0,
         )
 
-        print(f"Results from set_poiseuille_edge_weights: {results_2}")
+        print(f"Results from set_poiseuille_edge_resistances: {results_2}")
         # create list of resistances of all edges
         conductances = []
         # TODO DEBUG

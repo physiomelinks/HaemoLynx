@@ -3,6 +3,7 @@ from typing import Optional, Tuple, Any
 import os
 
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
 from matplotlib.colors import Normalize
@@ -78,8 +79,37 @@ def _overlay_z_projection(image: np.ndarray) -> np.ndarray:
     return np.max(arr, axis=0)
 
 
+def backend_can_display() -> bool:
+    """True when the active matplotlib backend can actually open a window.
+
+    Under a non-interactive backend (``Agg`` in tests and CI, and whatever a GUI
+    host installs) ``plt.show`` cannot display anything and only emits
+    ``UserWarning: FigureCanvasAgg is non-interactive``. Callers use this to skip
+    display entirely rather than warn once per figure.
+    """
+    backend = matplotlib.get_backend().lower()
+    try:  # matplotlib >= 3.9
+        from matplotlib.backends import BackendFilter, backend_registry
+
+        interactive = backend_registry.list_builtin(BackendFilter.INTERACTIVE)
+    except ImportError:  # pragma: no cover - older matplotlib
+        interactive = matplotlib.rcsetup.interactive_bk
+    return backend in {name.lower() for name in interactive}
+
+
+def _show_matplotlib_blocking() -> None:
+    """Show figures and block, when the backend can display."""
+    if not backend_can_display():
+        plt.close("all")
+        return
+    plt.show()
+
+
 def _show_matplotlib_non_blocking(pause_s: float = 0.001) -> None:
     """Show matplotlib figures without blocking script execution."""
+    if not backend_can_display():
+        plt.close("all")
+        return
     plt.show(block=False)
     plt.pause(pause_s)
 
@@ -133,14 +163,14 @@ def plot_node_degree_distribution(
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
         if show and show_after_save:
             if block:
-                plt.show()
+                _show_matplotlib_blocking()
             else:
                 _show_matplotlib_non_blocking()
         else:
             plt.close()
     elif show:
         if block:
-            plt.show()
+            _show_matplotlib_blocking()
         else:
             _show_matplotlib_non_blocking()
     else:
@@ -201,14 +231,14 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         if show and show_after_save:
             if block:
-                plt.show()
+                _show_matplotlib_blocking()
             else:
                 _show_matplotlib_non_blocking()
         else:
             plt.close()
     elif show:
         if block:
-            plt.show()
+            _show_matplotlib_blocking()
         else:
             _show_matplotlib_non_blocking()
     else:
@@ -307,14 +337,14 @@ def visualize_geometry_with_branch_orders(
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
         if show and show_after_save:
             if block:
-                plt.show()
+                _show_matplotlib_blocking()
             else:
                 _show_matplotlib_non_blocking()
         else:
             plt.close(fig)
     elif show:
         if block:
-            plt.show()
+            _show_matplotlib_blocking()
         else:
             _show_matplotlib_non_blocking()
     else:
@@ -322,7 +352,7 @@ def visualize_geometry_with_branch_orders(
     return fig, ax, color_mapping
 
 
-def visualize_geometry_with_edge_weights(
+def visualize_geometry_with_edge_resistance(
     image: np.ndarray,
     G: nx.MultiGraph,
     figsize=(12, 10),
@@ -409,14 +439,14 @@ def visualize_geometry_with_edge_weights(
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
         if show and show_after_save:
             if block:
-                plt.show()
+                _show_matplotlib_blocking()
             else:
                 _show_matplotlib_non_blocking()
         else:
             plt.close(fig)
     elif show:
         if block:
-            plt.show()
+            _show_matplotlib_blocking()
         else:
             _show_matplotlib_non_blocking()
     else:
@@ -505,7 +535,8 @@ def visualize_3d_plotly(
     if save_html_path:
         fig.write_html(str(save_html_path), include_plotlyjs="cdn")
     if show and not _is_pytest_runtime():
-        fig.show()
+        if backend_can_display():
+            fig.show()
     return fig
 
 
@@ -639,7 +670,8 @@ def visualize_3d_plotly_vessel_types(
     if save_html_path:
         fig.write_html(str(save_html_path), include_plotlyjs="cdn")
     if show and not _is_pytest_runtime():
-        fig.show()
+        if backend_can_display():
+            fig.show()
     return fig
 
 
@@ -708,7 +740,7 @@ def visualize_skeleton(
             plt.close(fig)
         else:
             if block:
-                plt.show()
+                _show_matplotlib_blocking()
             else:
                 _show_matplotlib_non_blocking()
         return

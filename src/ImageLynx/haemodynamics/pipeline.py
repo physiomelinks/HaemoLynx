@@ -177,7 +177,7 @@ def _run_pericyte_comparison(
     return active_pericyte_indices, active_center_indices_by_edge, comparison_results
 
 
-def _assign_poiseuille_weights(
+def _assign_poiseuille_resistances(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
     *,
@@ -197,7 +197,7 @@ def _assign_poiseuille_weights(
                     "pericyte_mask_path must be set when use_pericyte_mask_constriction=True."
                 )
             G, results["pericyte_mask"] = (
-                pericyte_mask_haemodynamics.set_poiseuille_weights_with_pericyte_mask(
+                pericyte_mask_haemodynamics.set_poiseuille_resistances_with_pericyte_mask(
                     G,
                     diameter_by_branch_order=config.diameter_by_branch_order,
                     constriction_factor_by_branch_order=config.constriction_by_branch_order,
@@ -222,7 +222,7 @@ def _assign_poiseuille_weights(
             )
         elif config.use_probabilistic_pericyte_constriction:
             G, results["probabilistic"] = (
-                probability_haemodynamics.set_poiseuille_weights_with_probabilistic_periodic_constrictions(
+                probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
                     G,
                     diameter_by_branch_order=config.diameter_by_branch_order,
                     constriction_factor_by_branch_order=config.constriction_by_branch_order,
@@ -241,7 +241,7 @@ def _assign_poiseuille_weights(
                 )
             )
         elif config.use_fwhm_edge_diameters:
-            G, results["constrictions"] = poiseuille_model.set_poiseuille_weights_with_constrictions(
+            G, results["constrictions"] = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
                 config.diameter_by_branch_order,
                 prefer_edge_fwhm_baseline=True,
@@ -255,18 +255,18 @@ def _assign_poiseuille_weights(
                 }
                 for branch_order, diameter in config.diameter_by_branch_order.items()
             }
-            G, results["constrictions"] = poiseuille_model.set_poiseuille_weights_with_constrictions(
+            G, results["constrictions"] = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
                 diameter_enhanced,
             )
     else:
-        G, results["poiseuille"] = poiseuille_model.set_poiseuille_weights(
+        G, results["poiseuille"] = poiseuille_model.set_poiseuille_resistances(
             G,
             config.diameter_by_branch_order,
             prefer_edge_fwhm_diameter=bool(config.use_fwhm_edge_diameters),
         )
 
-    G, results["custom_edges"] = poiseuille_model.set_poiseuille_edge_weights(
+    G, results["custom_edges"] = poiseuille_model.set_poiseuille_edge_resistances(
         G,
         config.custom_edges,
         edge_diameter=config.custom_edge_diameter,
@@ -292,7 +292,7 @@ def apply_poiseuille_haemodynamics(
     Returns
     -------
     tuple
-        ``(G, results)`` where ``results`` summarizes FWHM, pericyte, and weight steps.
+        ``(G, results)`` where ``results`` summarizes FWHM, pericyte, and resistance steps.
     """
     if config is None:
         if diameter_by_branch_order is None:
@@ -315,7 +315,7 @@ def apply_poiseuille_haemodynamics(
     if comparison_results:
         summary["pericyte_comparison"] = comparison_results
 
-    summary["weights"] = _assign_poiseuille_weights(
+    summary["resistances"] = _assign_poiseuille_resistances(
         G,
         config,
         active_pericyte_indices=active_pericyte_indices,

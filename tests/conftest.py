@@ -1,10 +1,26 @@
 """Pytest fixtures and configuration."""
+import os
+from pathlib import Path
+
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend for tests
+# Keep PyVista from opening a render window locally; CI already sets this.
+os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 
 import pytest
 import numpy as np
 import networkx as nx
+
+#: Plots produced by tests are written here rather than displayed.
+#: Covered by the `tests/outputs/` .gitignore rule.
+PLOT_OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "plots"
+
+
+@pytest.fixture
+def plot_output_dir() -> Path:
+    """Directory for test-generated plot files."""
+    PLOT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    return PLOT_OUTPUT_DIR
 
 
 @pytest.fixture
