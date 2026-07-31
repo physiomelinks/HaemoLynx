@@ -39,6 +39,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                             ilastik_output_suffix=ILASTIK_OUTPUT_SUFFIX,
                             voxel_size_override_xyz=VOXEL_SIZE_OVERRIDE_XYZ,
                             voxel_size_policy=VOXEL_SIZE_POLICY,
+                            axis_order=IMAGE_AXIS_ORDER,
                             use_large_vessel_masks=USE_LARGE_VESSEL_MASKS,
                             use_ilastik_large_vessel_segmentation=USE_ILASTIK_LARGE_VESSEL_SEGMENTATION,
                             large_vessel_mask_dilation_microns=LARGE_VESSEL_MASK_DILATION_MICRONS,
@@ -184,6 +185,12 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     input_format = image_path.suffix[1:].lower()
     if input_format not in ["tif", "tiff", "h5"]:
         raise ValueError(f"Invalid image format: {input_format}")
+    axis_order = io.normalize_axis_order(axis_order, label="IMAGE_AXIS_ORDER")
+    if axis_order != io.CANONICAL_AXIS_ORDER:
+        print(
+            f"Input axis order '{axis_order}' will be transposed to the canonical "
+            f"'{io.CANONICAL_AXIS_ORDER}' layout on load."
+        )
     vtk_output_prefix = Path(vtk_output_prefix)
     output_dir = vtk_output_prefix.parent
     valid_final_render_modes = {"2d", "3d"}
@@ -219,6 +226,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 voxel_meta_status,
             ) = io.load_and_skeletonize_3d_tif(
                 image_path,
+                axis_order=axis_order,
             )
             metadata_voxel_size = (
                 float(voxel_size_x),
@@ -235,6 +243,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 voxel_meta_status,
             ) = io.load_and_skeletonize_3d_h5(
                 image_path,
+                axis_order=axis_order,
             )
             metadata_voxel_size = (
                 float(voxel_size_x),
@@ -296,7 +305,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     else:
         # load the skeleton
         skeleton = np.load(skeleton_path)
-        image = tifffile.imread(image_path)
+        image = io.apply_axis_order(tifffile.imread(image_path), axis_order)
         if voxel_meta_path.exists():
             cached_voxel_meta = json.loads(voxel_meta_path.read_text())
             metadata_voxel_size = tuple(cached_voxel_meta["voxel_size"])
@@ -326,6 +335,9 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
     print("Skeleton projection saved.")
 
     main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
+    # Image metadata reports (x, y, z); array axes are canonical (z, y, x). Everything
+    # downstream that scales array indices uses voxel_size_zyx.
+    voxel_size_zyx = io.voxel_size_zyx_from_xyz(main_voxel_size_xyz)
     (
         large_arteriole_mask,
         large_venule_mask,
@@ -347,6 +359,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         ilastik_output_suffix=ilastik_output_suffix,
         ilastik_executable=ilastik_executable,
         dilation_microns=large_vessel_mask_dilation_microns,
+        axis_order=axis_order,
     )
     (
         small_arteriole_mask,
@@ -368,6 +381,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         ilastik_output_dir=ilastik_output_dir,
         ilastik_output_suffix=ilastik_output_suffix,
         ilastik_executable=ilastik_executable,
+        axis_order=axis_order,
         loaded_message_suffix=(
             f"min_overlap_fraction={float(small_vessel_mask_min_overlap_fraction):.3f}"
         ),
@@ -396,7 +410,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
 
         G = graph.build_graph_from_skeleton(
             skeleton,
-            voxel_size=tuple(float(v) for v in voxel_size),
+            voxel_size=voxel_size_zyx,
             graph_reconnect_threshold=graph_reconnect_threshold,
             final_orphan_reconnect_threshold=final_orphan_reconnect_threshold,
             cluster_collapse_distance=cluster_collapse_distance,
@@ -419,7 +433,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         print(f"Loaded graph from: {graph_path}")
 
     # Store physical voxel-unit metadata used for skeleton/graph geometry and mask alignment.
-    G.graph["image_voxel_size_xyz"] = tuple(float(v) for v in voxel_size)
+    G.graph["image_voxel_size_xyz"] = main_voxel_size_xyz
+    G.graph["image_voxel_size_zyx"] = voxel_size_zyx
     if large_arteriole_mask is not None and large_venule_mask is not None:
         G.graph["large_arteriole_mask_voxel_size_xyz"] = tuple(
             float(v) for v in large_arteriole_mask_voxel_size
@@ -460,7 +475,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 G,
                 large_arteriole_mask=large_arteriole_mask,
                 large_venule_mask=large_venule_mask,
-                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                voxel_size_zyx=voxel_size_zyx,
                 allow_overlap=False,
             )
         )
@@ -489,7 +504,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             large_venule_mask=large_venule_mask,
             input_nodes=auto_start_nodes,
             output_nodes=auto_output_nodes,
-            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            voxel_size_zyx=voxel_size_zyx,
             output_html_path=automated_assignment_html_path,
         )
         if wrote_assignment_html:
@@ -571,7 +586,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             G,
             small_arteriole_mask=small_arteriole_mask,
             small_venule_mask=small_venule_mask,
-            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            voxel_size_zyx=voxel_size_zyx,
             minimum_overlap_fraction=float(small_vessel_mask_min_overlap_fraction),
             allow_overlap=False,
         )
@@ -600,7 +615,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 small_venule_mask=small_venule_mask,
                 arteriole_boundary_nodes=arteriole_boundary_nodes,
                 venule_boundary_nodes=venule_boundary_nodes,
-                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                voxel_size_zyx=voxel_size_zyx,
                 output_html_path=boundary_html,
             )
             if ok:
@@ -709,7 +724,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
                 resistance_node_pair=resistance_node_pair,
                 use_fwhm_edge_diameters=use_fwhm_edge_diameters,
                 fwhm_raw_tiff_path=fwhm_raw_tiff_path,
-                voxel_size_xyz=tuple(float(v) for v in voxel_size),
+                voxel_size_zyx=voxel_size_zyx,
+                axis_order=axis_order,
                 fwhm_sample_spacing_along_edge_um=fwhm_sample_spacing_along_edge_um,
                 fwhm_transverse_profile_step_um=fwhm_transverse_profile_step_um,
                 fwhm_transverse_half_extent_um=fwhm_transverse_half_extent_um,
@@ -750,7 +766,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             elif use_fwhm_edge_diameters is False:
                 print(
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
-                    "set_poiseuille_weights without per-edge FWHM)."
+                    "set_poiseuille_resistances without per-edge FWHM)."
                 )
             if "pericyte_comparison" in haemo_results:
                 comparison_results = haemo_results["pericyte_comparison"]
@@ -913,7 +929,8 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
             cell_mask_path=Path(cell_mask_path),
             output_dir=output_dir,
             image_stem=image_path.stem,
-            voxel_size_xyz=tuple(float(v) for v in voxel_size),
+            voxel_size_xyz=main_voxel_size_xyz,
+            axis_order=axis_order,
             vessel_mask_path=(
                 None
                 if measurement_3d_vessel_mask_path is None

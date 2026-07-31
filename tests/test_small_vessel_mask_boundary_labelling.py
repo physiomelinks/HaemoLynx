@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-import webbrowser
 from pathlib import Path
 
 import networkx as nx
@@ -19,6 +18,7 @@ from ImageLynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks,
     write_small_vessel_mask_boundary_labelling_3d_html,
 )
+from browser_diagnostics import open_diagnostic_html
 
 # Checked-in interactive demo (regenerated when this test runs).
 DEMO_HTML_PATH = REPO_ROOT / "examples" / "plots" / "small_vessel_mask_boundary_labelling_demo_3d.html"
@@ -96,7 +96,7 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
         G,
         small_arteriole_mask=art_mask,
         small_venule_mask=ven_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         minimum_overlap_fraction=0.5,
     )
 
@@ -114,7 +114,7 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
         small_venule_mask=ven_mask,
         arteriole_boundary_nodes=result["arteriole_boundary_nodes"],
         venule_boundary_nodes=result["venule_boundary_nodes"],
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         output_html_path=html_tmp,
         title="Synthetic small-vessel boundary model (3D)",
     )
@@ -129,17 +129,14 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
         small_venule_mask=ven_mask,
         arteriole_boundary_nodes=result["arteriole_boundary_nodes"],
         venule_boundary_nodes=result["venule_boundary_nodes"],
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         output_html_path=DEMO_HTML_PATH,
         title="Synthetic small-vessel boundary model (3D)",
     )
     assert ok_demo is True
     assert DEMO_HTML_PATH.is_file()
 
-    try:
-        webbrowser.open_new_tab(html_tmp.resolve().as_uri())
-    except OSError:
-        pass
+    open_diagnostic_html(html_tmp)
 
 
 if __name__ == "__main__":

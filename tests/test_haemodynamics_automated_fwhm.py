@@ -108,11 +108,11 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
         voxels=voxels,
     )
 
-    voxel_size_xyz = (1.0, 1.0, 1.0)
+    voxel_size_zyx = (1.0, 1.0, 1.0)
     summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
         raw_tiff_path=raw_path,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         sample_spacing_along_edge_um=5.0,
         transverse_profile_step_um=0.2,
         transverse_half_extent_um=8.0,
@@ -127,7 +127,7 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     assert abs(d - expected) < 0.35
 
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
-    G2, res = model.set_poiseuille_weights(
+    G2, res = model.set_poiseuille_resistances(
         G,
         {"B01": 6.9},  # sentinel: must be ignored in favour of fwhm_diameter_um
         prefer_edge_fwhm_diameter=True,
@@ -139,11 +139,11 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     assert G2[0][1][0]["conductance"] == pytest.approx(1.0 / r)
 
 
-def test_set_poiseuille_weights_prefers_fwhm_optional(multigraph_with_branch_order):
+def test_set_poiseuille_resistances_prefers_fwhm_optional(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     G[0][1][0]["fwhm_diameter_um"] = 2.0
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
-    _, res = model.set_poiseuille_weights(
+    _, res = model.set_poiseuille_resistances(
         G,
         {"BO1": 6.9},  # sentinel: must be ignored in favour of fwhm_diameter_um
         prefer_edge_fwhm_diameter=True,

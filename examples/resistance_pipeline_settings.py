@@ -41,6 +41,12 @@ ILASTIK_OUTPUT_SUFFIX = ".tif"
 VOXEL_SIZE_OVERRIDE_XYZ: tuple[float, float, float] | None = None
 # Policy for voxel-size resolution: "auto", "override", or "metadata_only".
 VOXEL_SIZE_POLICY = "auto"
+# Meaning of each array axis in the input files, e.g. "zyx" for a volume indexed
+# [z, y, x] (the usual TIFF stack layout) or "xyz" for one indexed [x, y, z].
+# Volumes are transposed to the canonical (z, y, x) order on load, so this
+# selects which axis is z — the axis that overlays and projections look through.
+# Masks, raw FWHM images and cell masks are loaded with the same order.
+IMAGE_AXIS_ORDER = "zyx"
 
 # ---------------------------
 # Vessel-mask settings

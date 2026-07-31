@@ -1,4 +1,4 @@
-"""Pericyte-mask driven constriction mapping for Poiseuille edge weights."""
+"""Pericyte-mask driven constriction mapping for Poiseuille edge resistance."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,9 +11,11 @@ from scipy.ndimage import center_of_mass, label
 from scipy.spatial import cKDTree
 
 from ImageLynx.io import (
+    CANONICAL_AXIS_ORDER,
     load_3d_h5_with_voxel_size,
     load_3d_tif_with_voxel_size,
     resolve_image_path_with_optional_zip,
+    voxel_size_zyx_from_xyz,
 )
 from .poiseuille import set_edge_resistance
 from .probability import (
@@ -27,18 +29,21 @@ def _load_binary_mask_and_voxel_size(
     mask_path: str | Path,
     *,
     h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """Load a binary 3D mask and return (mask_bool, voxel_size_xyz)."""
     path = resolve_image_path_with_optional_zip(Path(mask_path))
     suffix = path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
         image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
-            str(path)
+            str(path),
+            axis_order=axis_order,
         )
     elif suffix == ".h5":
         image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
             str(path),
             dataset_name=h5_dataset_name,
+            axis_order=axis_order,
         )
     else:
         raise ValueError(
@@ -58,7 +63,7 @@ def _load_binary_mask_and_voxel_size(
 
 def _extract_pericyte_centroids_physical(
     mask_bool: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
 ) -> np.ndarray:
     """Return connected-component centroids in physical coordinates."""
     labels, n_labels = label(mask_bool)
@@ -68,13 +73,13 @@ def _extract_pericyte_centroids_physical(
     centroids_idx = np.asarray(center_of_mass(mask_bool, labels, indices), dtype=float)
     if centroids_idx.ndim == 1:
         centroids_idx = centroids_idx.reshape(1, 3)
-    spacing = np.asarray(voxel_size_xyz, dtype=float).reshape(1, 3)
+    spacing = np.asarray(voxel_size_zyx, dtype=float).reshape(1, 3)
     return centroids_idx * spacing
 
 
 def _extract_pericyte_component_properties(
     mask_bool: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (centroids_phys, equivalent_diameters_um) per connected component."""
     labels, n_labels = label(mask_bool)
@@ -84,7 +89,7 @@ def _extract_pericyte_component_properties(
     centroids_idx = np.asarray(center_of_mass(mask_bool, labels, indices), dtype=float)
     if centroids_idx.ndim == 1:
         centroids_idx = centroids_idx.reshape(1, 3)
-    spacing = np.asarray(voxel_size_xyz, dtype=float)
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
     voxel_volume = float(np.prod(spacing))
     counts = np.asarray(
         [(labels == idx).sum() for idx in indices],
@@ -337,7 +342,7 @@ def _resolve_d1_d2_for_edge(
     return d1, d2, used_fwhm_baseline
 
 
-def set_poiseuille_weights_with_pericyte_mask(
+def set_poiseuille_resistances_with_pericyte_mask(
     graph: nx.MultiGraph,
     *,
     diameter_by_branch_order: dict,
@@ -353,8 +358,9 @@ def set_poiseuille_weights_with_pericyte_mask(
     max_assignment_distance_um: float | None = 3.0,
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
-    """Set conductance weights using pericyte centroids from a mask volume.
+    """Set edge resistance/conductance using pericyte centroids from a mask volume.
 
     Each connected component in ``pericyte_mask_path`` is treated as one pericyte.
     The component centroid is projected to the nearest graph edge and used as a
@@ -373,7 +379,9 @@ def set_poiseuille_weights_with_pericyte_mask(
     mask_bool, mask_voxel_size = _load_binary_mask_and_voxel_size(
         pericyte_mask_path,
         h5_dataset_name=pericyte_mask_h5_dataset_name,
+        axis_order=axis_order,
     )
+    mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
     if (
         min_pericyte_diameter_um is not None
         and max_pericyte_diameter_um is not None
@@ -385,7 +393,7 @@ def set_poiseuille_weights_with_pericyte_mask(
 
     all_centroids_phys, equivalent_diameters_um = _extract_pericyte_component_properties(
         mask_bool,
-        mask_voxel_size,
+        mask_voxel_size_zyx,
     )
     total_pericytes = int(all_centroids_phys.shape[0])
     edge_records = _build_edge_records(graph)
@@ -442,7 +450,7 @@ def set_poiseuille_weights_with_pericyte_mask(
         assignment_distances.append(float(dist_um))
 
     results: dict[str, Any] = {
-        "weights_set": 0,
+        "edges_set": 0,
         "pericyte_count": total_pericytes,
         "eligible_pericyte_count": int(len(eligible_indices)),
         "max_assignment_distance_um": (
@@ -509,5 +517,5 @@ def set_poiseuille_weights_with_pericyte_mask(
         set_edge_resistance(graph[u][v][key], float(total_resistance))
         graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in centers]
-        results["weights_set"] += 1
+        results["edges_set"] += 1
     return graph, results

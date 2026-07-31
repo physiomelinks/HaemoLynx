@@ -12,7 +12,6 @@ Run: ``python tests/test_synthetic_vessel_assignment_pipeline.py`` or ``pytest``
 from __future__ import annotations
 
 import sys
-import webbrowser
 from pathlib import Path
 
 import networkx as nx
@@ -29,6 +28,7 @@ from ImageLynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks,
     select_terminal_nodes_from_large_vessel_masks,
 )
+from browser_diagnostics import open_diagnostic_html
 
 DEMO_HTML_PATH = (
     REPO_ROOT / "examples" / "plots" / "synthetic_vessel_assignment_pipeline_3d.html"
@@ -174,7 +174,7 @@ def write_integrated_vessel_pipeline_3d_html(
     output_nodes: list[int],
     arteriole_boundary_nodes: list[int],
     venule_boundary_nodes: list[int],
-    voxel_size_xyz: tuple[float, float, float],
+    voxel_size_zyx: tuple[float, float, float],
     output_html_path: str | Path,
     title: str = "Synthetic pipeline: masks + hierarchical branch orders (3D)",
 ) -> bool:
@@ -198,7 +198,7 @@ def write_integrated_vessel_pipeline_3d_html(
     def add_volume(mask: np.ndarray, *, name: str, color: str, opacity: float) -> None:
         if not np.any(mask):
             return
-        zs, ys, xs = voxel_size_xyz
+        zs, ys, xs = voxel_size_zyx
         zz, yy, xx = np.indices(mask.shape, dtype=float)
         fig.add_trace(
             go.Volume(
@@ -406,7 +406,7 @@ def write_integrated_vessel_pipeline_3d_html(
 def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> None:
     pytest.importorskip("plotly.graph_objects")
 
-    voxel_size_xyz = (1.0, 1.0, 1.0)
+    voxel_size_zyx = (1.0, 1.0, 1.0)
     min_overlap = 0.5
 
     (
@@ -422,7 +422,7 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         G,
         large_arteriole_mask=large_art,
         large_venule_mask=large_ven,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         allow_overlap=False,
     )
     assert starting_nodes == expected["starting_nodes"]
@@ -432,7 +432,7 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         G,
         small_arteriole_mask=small_art,
         small_venule_mask=small_ven,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         minimum_overlap_fraction=min_overlap,
         allow_overlap=False,
     )
@@ -476,7 +476,7 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         output_nodes=output_nodes,
         arteriole_boundary_nodes=art_b,
         venule_boundary_nodes=ven_b,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         output_html_path=html_tmp,
     )
     assert html_tmp.is_file() and html_tmp.stat().st_size > 2000
@@ -492,14 +492,11 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         output_nodes=output_nodes,
         arteriole_boundary_nodes=art_b,
         venule_boundary_nodes=ven_b,
-        voxel_size_xyz=voxel_size_xyz,
+        voxel_size_zyx=voxel_size_zyx,
         output_html_path=DEMO_HTML_PATH,
     )
 
-    try:
-        webbrowser.open_new_tab(html_tmp.resolve().as_uri())
-    except OSError:
-        pass
+    open_diagnostic_html(html_tmp)
 
 
 if __name__ == "__main__":

@@ -6,9 +6,9 @@ import pyvista as pv
 
 
 def build_conductance_matrix_from_graph(
-    G: nx.Graph, weight_attr: str = "conductance"
+    G: nx.Graph, conductance_attr: str = "conductance"
 ) -> tuple[np.ndarray, list]:
-    """Build symmetric conductance matrix from graph edge weights.
+    """Build symmetric conductance matrix from graph edge conductances.
 
     Returns:
         A tuple of (conductance_matrix, node_list) where matrix indices map to
@@ -19,14 +19,14 @@ def build_conductance_matrix_from_graph(
     conductance = np.zeros((len(node_list), len(node_list)), dtype=float)
 
     for u, v, data in G.edges(data=True):
-        edge_weight = data.get(weight_attr)
-        if edge_weight is None or edge_weight <= 0:
+        edge_conductance = data.get(conductance_attr)
+        if edge_conductance is None or edge_conductance <= 0:
             continue
         i = node_to_idx[u]
         j = node_to_idx[v]
         # Sum conductance for parallel edges.
-        conductance[i, j] += edge_weight
-        conductance[j, i] += edge_weight
+        conductance[i, j] += edge_conductance
+        conductance[j, i] += edge_conductance
 
     return conductance, node_list
 

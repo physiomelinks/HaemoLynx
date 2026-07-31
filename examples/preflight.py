@@ -112,6 +112,24 @@ def run_preflight_checklist(pipeline_kwargs: dict[str, object]) -> dict[str, obj
                 "Set INPUT_PATH / --image-path to an existing segmented image.",
             )
 
+    # Input axis order must be a permutation of xyz; it decides which axis is z.
+    axis_order = pipeline_kwargs.get("axis_order", "zyx")
+    normalized_axis_order = str(axis_order).strip().lower()
+    if sorted(normalized_axis_order) == ["x", "y", "z"]:
+        if normalized_axis_order == "zyx":
+            ok("Input axis order", "zyx (canonical; no transpose)")
+        else:
+            ok(
+                "Input axis order",
+                f"{normalized_axis_order} (transposed to canonical zyx on load)",
+            )
+    else:
+        fail(
+            "Input axis order",
+            str(axis_order),
+            "Set IMAGE_AXIS_ORDER / --axis-order to a permutation of 'xyz', e.g. 'zyx'.",
+        )
+
     # ilastik executable check when any ilastik mode is enabled
     ilastik_required = bool(
         use_ilastik_segmentation

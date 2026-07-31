@@ -69,14 +69,31 @@ def test_merge_edges_with_topology_improvement():
     assert len(out) >= 2
 
 
+def _degree2_count(G):
+    return sum(1 for n in G.nodes() if G.degree[n] == 2)
+
+
+def _total_edge_length(G):
+    edges = G.edges(keys=True, data=True) if G.is_multigraph() else G.edges(data=True)
+    return sum(item[-1].get("length", 0.0) for item in edges)
+
+
 def test_safer_simple_remove_all_degree2_nodes(simple_graph):
+    before = simple_graph.copy()
     G = safer_simple_remove_all_degree2_nodes(simple_graph.copy(), max_degree=5)
-    assert G.number_of_nodes() <= 3
+    # The point of the pass: no removable degree-2 node may survive it.
+    assert _degree2_count(G) == 0
+    assert G.number_of_nodes() < before.number_of_nodes()
+    # A rejected merge must not silently drop vessel length.
+    assert _total_edge_length(G) == pytest.approx(_total_edge_length(before))
 
 
 def test_trivial_remove_all_degree2_nodes(simple_graph):
+    before = simple_graph.copy()
     G = trivial_remove_all_degree2_nodes(simple_graph.copy(), max_degree=5)
-    assert G.number_of_nodes() <= 3
+    assert _degree2_count(G) == 0
+    assert G.number_of_nodes() < before.number_of_nodes()
+    assert _total_edge_length(G) == pytest.approx(_total_edge_length(before))
 
 
 def test_prune_vascular_stubs(simple_graph):
@@ -117,8 +134,14 @@ def test_optimise_graph_topology_fixed(tiny_skeleton):
 
 def test_smart_multigraph_degree2_removal(simple_graph):
     G = nx.MultiGraph(simple_graph)
+    before_nodes = G.number_of_nodes()
+    before_length = _total_edge_length(G)
     G2 = smart_multigraph_degree2_removal(G, skeleton_data=None, debug=False)
     assert isinstance(G2, nx.MultiGraph)
+    # Previously asserted only the return type, so an empty body would have passed.
+    assert _degree2_count(G2) == 0
+    assert G2.number_of_nodes() < before_nodes
+    assert _total_edge_length(G2) == pytest.approx(before_length)
 
 
 def test_degree2_diagnostics(simple_graph):
@@ -217,7 +240,7 @@ def test_select_terminal_nodes_from_large_vessel_masks():
         G,
         large_arteriole_mask=arteriole_mask,
         large_venule_mask=venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
     )
     assert start_nodes == [0]
     assert out_nodes == [1]
@@ -241,7 +264,7 @@ def test_select_terminal_nodes_from_large_vessel_masks_excludes_overlap():
         G,
         large_arteriole_mask=arteriole_mask,
         large_venule_mask=venule_mask,
-        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
         allow_overlap=False,
     )
     assert start_nodes == [0]

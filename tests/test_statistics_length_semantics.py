@@ -45,7 +45,7 @@ def test_length_metrics_are_identical_before_and_after_haemodynamics():
     before = st.compute_comprehensive_vessel_statistics(
         G, node_positions=positions, statistics_mode="fast"
     )
-    G, _ = MODEL.set_poiseuille_weights(G, {"B01": DIAMETER_UM})
+    G, _ = MODEL.set_poiseuille_resistances(G, {"B01": DIAMETER_UM})
     after = st.compute_comprehensive_vessel_statistics(
         G, node_positions=positions, statistics_mode="fast"
     )
@@ -63,7 +63,7 @@ def test_length_metrics_are_identical_before_and_after_haemodynamics():
 
 def test_total_edge_length_is_the_true_geometric_length():
     G, positions = _two_segment_graph()
-    G, _ = MODEL.set_poiseuille_weights(G, {"B01": DIAMETER_UM})
+    G, _ = MODEL.set_poiseuille_resistances(G, {"B01": DIAMETER_UM})
     stats = st.compute_comprehensive_vessel_statistics(
         G, node_positions=positions, statistics_mode="fast"
     )
@@ -83,7 +83,7 @@ def test_statistics_reject_a_graph_carrying_the_removed_weight_attribute():
 def test_betweenness_resistance_model_uses_resistance_not_inverse_length():
     """The two distance models must be resistance and length, not 1/weight."""
     G, _ = _two_segment_graph()
-    G, _ = MODEL.set_poiseuille_weights(G, {"B01": DIAMETER_UM})
+    G, _ = MODEL.set_poiseuille_resistances(G, {"B01": DIAMETER_UM})
 
     measurements = st.compute_betweenness_and_community_measurements(G)
 

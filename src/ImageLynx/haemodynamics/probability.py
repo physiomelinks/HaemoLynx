@@ -199,7 +199,7 @@ def _resolve_d1_d2_for_edge(
     return d1, d1 * float(factor), used_fwhm_baseline
 
 
-def set_poiseuille_weights_with_probabilistic_periodic_constrictions(
+def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
     graph: nx.MultiGraph,
     *,
     diameter_by_branch_order: dict,
@@ -237,7 +237,7 @@ def set_poiseuille_weights_with_probabilistic_periodic_constrictions(
 
     generator = rng if rng is not None else np.random.default_rng()
     results: dict[str, Any] = {
-        "weights_set": 0,
+        "edges_set": 0,
         "used_fwhm_baseline": 0,
         "total_periodic_pericyte_sites": 0,
         "active_periodic_pericyte_sites": 0,
@@ -310,6 +310,6 @@ def set_poiseuille_weights_with_probabilistic_periodic_constrictions(
         set_edge_resistance(graph[u][v][key], float(total_resistance))
         graph[u][v][key]["pericyte_count_assigned"] = int(len(active_centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in active_centers]
-        results["weights_set"] += 1
+        results["edges_set"] += 1
 
     return graph, results

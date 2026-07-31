@@ -1,4 +1,4 @@
-"""Haemodynamics: viscosity, resistance, Poiseuille weights, network resistance."""
+"""Haemodynamics: viscosity, Poiseuille resistance/conductance, network resistance."""
 from . import automated
 from .poiseuille import (
     PoiseuilleModel,
