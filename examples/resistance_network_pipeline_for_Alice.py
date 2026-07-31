@@ -327,7 +327,9 @@ def _solve_pressure_and_boundary_flow(
         total_outlet_flow += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
 
     pressure_drop = float(input_p_bc - output_p_bc)
-    if np.isclose(total_inlet_flow, 0.0):
+    # Exact zero only: flows are in m^3/s and physiologically ~1e-14, so any
+    # absolute tolerance would swallow every real result.
+    if total_inlet_flow == 0.0:
         equivalent_resistance = np.inf
     else:
         equivalent_resistance = pressure_drop / total_inlet_flow

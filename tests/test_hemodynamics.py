@@ -176,3 +176,23 @@ def test_result_summaries_report_edges_set_not_weights_set(multigraph_with_branc
     _G, results = MODEL.set_poiseuille_resistances(G, {"BO1": 6.0})
     assert "edges_set" in results
     assert "weights_set" not in results
+
+
+@pytest.mark.parametrize("resistance_scale", [1.0, 1e16])
+def test_two_point_resistance_of_series_edges_is_scale_invariant(resistance_scale):
+    """Two edges in series must sum, at unit scale and at SI scale.
+
+    Physiological conductances are ~1e-16 m^3/(Pa.s); a fixed absolute
+    eigenvalue cut-off discards every mode at that scale and returns zero.
+    """
+    conductance_value = 1.0 / resistance_scale
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 1, 2])
+    G.add_edge(0, 1, conductance=conductance_value)
+    G.add_edge(1, 2, conductance=conductance_value)
+
+    C, node_list = build_conductance_matrix_from_graph(G)
+    L = calc_laplacian_from_conductance_matrix(C)
+    R = calc_two_point_from_laplacian_matrix_nodeID(L, G, 0, 2)
+
+    assert R == pytest.approx(2.0 * resistance_scale, rel=1e-9)
