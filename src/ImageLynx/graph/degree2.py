@@ -236,7 +236,9 @@ def create_trivial_merged_edge(
     voxels2 = edge2_data.get("voxels", [])
     merged_voxels = merge_edge_voxels_at_node(voxels1, voxels2, removed_node_pos)
     merged_attributes = {
-        "length": edge1_data.get("length", 0) + edge2_data.get("length", 0),
+        # Recomputed from the merged path, matching smart_multigraph_degree2_removal.
+        # The additive sum goes stale whenever a path is re-routed upstream.
+        "length": calculate_path_length(merged_voxels),
         "voxels": merged_voxels,
         "merged": True,
         "trivial_merge": True,
