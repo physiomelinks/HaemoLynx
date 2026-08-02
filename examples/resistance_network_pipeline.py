@@ -25,12 +25,14 @@ if str(examples_dir) not in sys.path:
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from ImageLynx.haemodynamics.pipeline import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
+from ImageLynx.parsers import add_schema_arguments, cli_overrides, dump_config, load_config
 from preflight import run_preflight_checklist
+from resistance_pipeline_schema import SCHEMA
 from resistance_pipeline_settings import *  # noqa: F403
 from wizard import run_interactive_setup_wizard
 
 
-def image_to_model_pipeline(image_path=INPUT_PATH,
+def run_pipeline_stages(image_path=INPUT_PATH,
                             use_ilastik_segmentation=USE_ILASTIK_SEGMENTATION,
                             ilastik_unsegmented_image_path=ILASTIK_UNSEGMENTED_IMAGE_PATH,
                             ilastik_classifier_path=ILASTIK_CLASSIFIER_PATH,
@@ -1031,6 +1033,163 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         print("Matplotlib visualizations skipped.")
 
 
+# ---------------------------------------------------------------------------
+# Settings -> pipeline arguments
+#
+# `resistance_pipeline_config.yaml` is the source of every setting, described by
+# `resistance_pipeline_schema.py`. This section is the only place that knows how
+# a setting name maps onto the pipeline stage arguments.
+# ---------------------------------------------------------------------------
+
+CONFIG_PATH = examples_dir / "resistance_pipeline_config.yaml"
+
+#: Arguments the stages take, captured once so the mapping does not depend on
+#: re-introspecting a function that may have been wrapped or patched.
+STAGE_PARAMETERS = frozenset(inspect.signature(run_pipeline_stages).parameters)
+
+#: Settings whose name differs from the stage argument they feed. Before the
+#: schema these were an ad-hoc alias table that `axis_order` was missing from,
+#: so `IMAGE_AXIS_ORDER` from a config file was silently ignored.
+SETTING_TO_ARGUMENT = {
+    "input_path": "image_path",
+    "image_axis_order": "axis_order",
+    "do_pericyte_construction": "do_pericyte_constriction",
+}
+
+#: Settings the stage body reads from module globals rather than its arguments.
+SETTING_TO_GLOBAL = {
+    "vtk_export": "VTK_export",
+    "statistics": "STATISTICS",
+    "custom_edges": "custom_edges",
+}
+
+#: Settings consumed here rather than passed on: they build the derived tables
+#: and the plot directory.
+_DERIVED_INPUTS = frozenset(
+    {
+        "all_diams_const",
+        "max_branch_order",
+        "default_diameter",
+        "manual_capillary_diameter_by_branch_order",
+        "manual_arteriole_diameter_by_branch_order",
+        "manual_venule_diameter_by_branch_order",
+        "base_plot_dir",
+        "use_volume_boxes",
+    }
+)
+
+
+def resolve_settings(
+    settings: dict | None = None,
+    *,
+    overrides: dict | None = None,
+    config_path: Path | str = CONFIG_PATH,
+) -> dict:
+    """Every setting for one run, validated against the schema.
+
+    With no arguments this is exactly what the config file says. Pass
+    ``settings`` to supply an already-loaded dict, and ``overrides`` to change
+    individual values on top of either.
+    """
+    if settings is None:
+        resolved = load_config(config_path, SCHEMA, overrides=overrides)
+    else:
+        merged = {**settings, **(overrides or {})}
+        resolved = SCHEMA.validate(merged)
+    _fill_derived_settings(resolved)
+    return resolved
+
+
+def _fill_derived_settings(settings: dict) -> None:
+    """Build the branch-order tables when the config leaves them unset.
+
+    They are functions of the manual diameter settings, so the config file
+    states those and leaves these null rather than duplicating a 150-entry
+    table that could then disagree with them.
+    """
+    if settings.get("diameter_by_branch_order") is None:
+        settings["diameter_by_branch_order"] = haemodynamics.build_diameter_by_branch_order(
+            all_diams_const=settings["all_diams_const"],
+            max_branch_order=settings["max_branch_order"],
+            default_diameter=settings["default_diameter"],
+            manual_capillary_diameter_by_branch_order=settings[
+                "manual_capillary_diameter_by_branch_order"
+            ],
+            manual_arteriole_diameter_by_branch_order=settings[
+                "manual_arteriole_diameter_by_branch_order"
+            ],
+            manual_venule_diameter_by_branch_order=settings[
+                "manual_venule_diameter_by_branch_order"
+            ],
+        )
+    if settings.get("constriction_by_branch_order") is None:
+        max_order = int(settings["max_branch_order"])
+        constriction = {"B01": 1.0, "Art1": 1.0, "Ven1": 1.0}
+        for order in range(2, max_order + 1):
+            constriction[f"B{order:02d}"] = 0.8
+            constriction[f"Art{order}"] = 0.8
+            constriction[f"Ven{order}"] = 0.8
+        settings["constriction_by_branch_order"] = constriction
+
+
+def stage_arguments(settings: dict) -> dict:
+    """Translate a settings dict into the arguments the stages take."""
+    arguments: dict[str, object] = {}
+    for name, value in settings.items():
+        if name in _DERIVED_INPUTS or name in SETTING_TO_GLOBAL:
+            continue
+        argument = SETTING_TO_ARGUMENT.get(name, name)
+        if argument in STAGE_PARAMETERS:
+            arguments[argument] = value
+    arguments["plot_dir"] = Path(settings["base_plot_dir"]) / "nerve"
+    return arguments
+
+
+#: Stage arguments that are not settings, so may be overridden but not configured.
+_STAGE_ONLY_ARGUMENTS = ("plot_dir",)
+
+#: Reverse of SETTING_TO_ARGUMENT, so a caller may use either spelling.
+ARGUMENT_TO_SETTING = {
+    argument: setting for setting, argument in SETTING_TO_ARGUMENT.items()
+}
+
+
+def _split_overrides(overrides: dict) -> tuple[dict, dict]:
+    """Separate setting overrides from stage-only ones, accepting either name."""
+    setting_overrides: dict[str, object] = {}
+    stage_overrides: dict[str, object] = {}
+    for key, value in overrides.items():
+        if key in _STAGE_ONLY_ARGUMENTS:
+            stage_overrides[key] = value
+        else:
+            setting_overrides[ARGUMENT_TO_SETTING.get(key, key)] = value
+    return setting_overrides, stage_overrides
+
+
+def image_to_model_pipeline(settings: dict | None = None, **overrides):
+    """Run the pipeline for one settings dict.
+
+    The pipeline reads far more than six settings, so the project convention is
+    to hand it the whole dict; ``overrides`` changes individual values for a
+    single call without editing the config file::
+
+        image_to_model_pipeline()                                # the config file
+        image_to_model_pipeline(settings)                        # a loaded dict
+        image_to_model_pipeline(image_path=..., do_skeletonize=False)   # one-offs
+    """
+    setting_overrides, stage_overrides = _split_overrides(overrides)
+    resolved = resolve_settings(settings, overrides=setting_overrides or None)
+
+    # Three settings are read from module globals inside the stages rather than
+    # passed as arguments, so a config change to them would otherwise be lost.
+    for setting_name, global_name in SETTING_TO_GLOBAL.items():
+        globals()[global_name] = resolved[setting_name]
+
+    arguments = stage_arguments(resolved)
+    arguments.update(stage_overrides)
+    return run_pipeline_stages(**arguments)
+
+
 def _build_pipeline_kwargs_from_active_settings(plot_dir: Path) -> dict:
     """Build full pipeline kwargs from current module-level settings."""
     alias_to_settings = {
@@ -1038,7 +1197,7 @@ def _build_pipeline_kwargs_from_active_settings(plot_dir: Path) -> dict:
         "do_pericyte_constriction": "DO_PERICYTE_CONSTRUCTION",
     }
     kwargs: dict = {}
-    for param_name in inspect.signature(image_to_model_pipeline).parameters:
+    for param_name in inspect.signature(run_pipeline_stages).parameters:
         if param_name == "plot_dir":
             kwargs[param_name] = plot_dir
             continue
@@ -1075,7 +1234,7 @@ def _coerce_pipeline_cli_value(param_name: str, value_text: str) -> object:
 
 def _extract_pipeline_cli_overrides(cli_namespace) -> dict[str, object]:
     overrides: dict[str, object] = {}
-    for param_name in inspect.signature(image_to_model_pipeline).parameters:
+    for param_name in inspect.signature(run_pipeline_stages).parameters:
         dest = f"pipeline_arg__{param_name}"
         if not hasattr(cli_namespace, dest):
             continue
@@ -1089,194 +1248,115 @@ def _extract_pipeline_cli_overrides(cli_namespace) -> dict[str, object]:
 if __name__ == "__main__":
     import argparse
 
-    pipeline_signature = inspect.signature(image_to_model_pipeline)
-    pipeline_param_names = set(pipeline_signature.parameters.keys())
-    parser = argparse.ArgumentParser(description="Resistance network pipeline example.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the resistance network pipeline. Settings come from "
+            "resistance_pipeline_config.yaml; every one of them can be overridden "
+            "with a flag of the same name for a single run."
+        )
+    )
     parser.add_argument(
-        "--list-presets",
-        action="store_true",
-        help="List available presets and exit.",
+        "--config",
+        type=Path,
+        default=CONFIG_PATH,
+        help="YAML config to run from (default: %(default)s).",
     )
     parser.add_argument(
         "--preset",
         type=str,
         default=None,
         choices=sorted(PRESET_DEFINITIONS.keys()),  # noqa: F405
-        help="Preset profile for grouped settings.",
+        help="Apply a named preset's overrides on top of the config file.",
     )
     parser.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help=(
-            "Path to YAML config file with preset/settings/pipeline overrides. "
-            "CLI overrides still take precedence."
-        ),
+        "--list-presets",
+        action="store_true",
+        help="List available presets and exit.",
+    )
+    parser.add_argument(
+        "--list-settings",
+        action="store_true",
+        help="List every setting with its value for this run, and exit.",
     )
     parser.add_argument(
         "--save-config",
         type=Path,
         default=None,
-        help="Write the effective resolved run configuration to a YAML file.",
-    )
-    parser.add_argument(
-        "--wizard",
-        action="store_true",
-        help=(
-            "Run interactive setup prompts for preset, image path, "
-            "mask usage, and key toggles."
-        ),
+        help="Write the settings this run would use to a YAML file, and exit.",
     )
     parser.add_argument(
         "--preflight-only",
         action="store_true",
-        help="Run preflight checklist and exit without executing the pipeline.",
+        help="Run the preflight checklist and exit without executing the pipeline.",
     )
     parser.add_argument(
-        "--set",
-        dest="manual_setting_overrides",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help=(
-            "Manual settings-file override (repeatable). "
-            "Example: --set VERBOSE_LOGGING=True --set FWHM_RAW_TIFF_PATH='C:/data/raw.tif'"
-        ),
-    )
-    parser.add_argument(
-        "--run-small-vessel-boundary-labelling-tests",
+        "--wizard",
         action="store_true",
-        help="Run pytest on tests/test_small_vessel_mask_boundary_labelling.py and exit.",
+        help="Answer setup prompts instead of editing the config file.",
     )
-    parser.add_argument(
-        "--use-fwhm-edge-diameters",
-        action="store_true",
-        help=(
-            "Override USE_FWHM_EDGE_DIAMETERS: measure diameters from raw TIFF "
-            "(Gaussian transverse fit). Requires --fwhm-raw-tiff unless "
-            "FWHM_RAW_TIFF_PATH is set in this file."
-        ),
-    )
-    parser.add_argument(
-        "--fwhm-raw-tiff",
-        type=Path,
-        default=None,
-        help="Path to raw single-channel TIFF for FWHM (overrides FWHM_RAW_TIFF_PATH).",
-    )
-
-    # Add dynamic CLI overrides for any image_to_model_pipeline(...) argument.
-    existing_option_strings = {
-        option
-        for action in parser._actions
-        for option in action.option_strings
-    }
-    for param_name in pipeline_signature.parameters:
-        option_name = f"--{param_name.replace('_', '-')}"
-        if option_name in existing_option_strings:
-            continue
-        parser.add_argument(
-            option_name,
-            dest=f"pipeline_arg__{param_name}",
-            default=None,
-            metavar="VALUE",
-            help=(
-                f"Override pipeline kwarg '{param_name}'. "
-                "Use Python literals for lists/dicts/tuples and True/False/None."
-            ),
-        )
-
+    # One flag per setting, generated from the schema.
+    add_schema_arguments(parser, SCHEMA)
     cli = parser.parse_args()
+
     if cli.list_presets:
         print("Available presets:")
         for preset_name, description in list_presets().items():  # noqa: F405
             print(f"  - {preset_name}: {description}")
         raise SystemExit(0)
-    if cli.run_small_vessel_boundary_labelling_tests:
-        import pytest
 
-        raise SystemExit(
-            pytest.main([str(root_dir / "tests" / "test_small_vessel_mask_boundary_labelling.py"), "-q"])
+    overrides: dict[str, object] = {}
+    if cli.preset:
+        # Preset overrides are still written in SCREAMING_SNAKE; the schema
+        # names are the lower-case form of the same settings.
+        preset_settings = build_settings_for_preset(preset_name=cli.preset)  # noqa: F405
+        overrides.update(
+            {
+                name.lower(): value
+                for name, value in preset_settings.items()
+                if name.lower() in SCHEMA
+            }
         )
-
-    config_preset_name: str | None = None
-    config_setting_overrides: dict[str, object] = {}
-    config_pipeline_overrides: dict[str, object] = {}
-    if cli.config is not None:
-        loaded_config = load_config_yaml(  # noqa: F405
-            config_path=cli.config,
-            pipeline_param_names=pipeline_param_names,
-        )
-        config_preset_name = loaded_config["preset_name"]
-        config_setting_overrides = dict(loaded_config["settings_overrides"])
-        config_pipeline_overrides = dict(loaded_config["pipeline_overrides"])
-        print(f"Loaded config from: {cli.config}")
-
-    preset_name = cli.preset or config_preset_name or "default"
-    manual_overrides: dict[str, object] = dict(config_setting_overrides)
-    for override_text in cli.manual_setting_overrides:
-        key, value = parse_cli_override(override_text)  # noqa: F405
-        manual_overrides[key] = value
-    if cli.use_fwhm_edge_diameters:
-        manual_overrides["USE_FWHM_EDGE_DIAMETERS"] = True
-    if cli.fwhm_raw_tiff is not None:
-        manual_overrides["FWHM_RAW_TIFF_PATH"] = cli.fwhm_raw_tiff
-
-    wizard_pipeline_overrides: dict[str, object] = {}
+        print(f"Applying preset '{cli.preset}'")
     if cli.wizard:
         wizard_results = run_interactive_setup_wizard(
-            default_preset=preset_name,
+            default_preset=cli.preset or "default",
             available_presets=sorted(PRESET_DEFINITIONS.keys()),  # noqa: F405
         )
-        preset_name = wizard_results["preset_name"]
-        manual_overrides.update(wizard_results["settings_overrides"])
-        wizard_pipeline_overrides = dict(wizard_results["pipeline_overrides"])
+        overrides.update(
+            {
+                name.lower(): value
+                for name, value in wizard_results["settings_overrides"].items()
+                if name.lower() in SCHEMA
+            }
+        )
+        for name, value in wizard_results["pipeline_overrides"].items():
+            setting_name = ARGUMENT_TO_SETTING.get(name, name)
+            if setting_name in SCHEMA:
+                overrides[setting_name] = value
+    overrides.update(cli_overrides(cli))
 
-    selected_settings = build_settings_for_preset(  # noqa: F405
-        preset_name=preset_name,
-        manual_overrides=manual_overrides,
-    )
-    apply_settings_to_namespace(selected_settings, globals())  # noqa: F405
-    if manual_overrides:
-        print(
-            f"Applying preset '{preset_name}' with manual overrides: "
-            f"{sorted(manual_overrides.keys())}"
-        )
-    else:
-        print(f"Applying preset '{preset_name}'")
+    settings = resolve_settings(config_path=cli.config, overrides=overrides or None)
+    print(f"Settings from: {cli.config}")
+    if overrides:
+        print(f"Overridden for this run: {sorted(overrides)}")
 
-    plot_dir = Path(BASE_PLOT_DIR) / "nerve"  # noqa: F405
-    pipeline_kwargs = _build_pipeline_kwargs_from_active_settings(plot_dir=plot_dir)
-    if config_pipeline_overrides:
-        pipeline_kwargs.update(config_pipeline_overrides)
-        print(
-            "Applying config pipeline overrides: "
-            f"{sorted(config_pipeline_overrides.keys())}"
-        )
-    if wizard_pipeline_overrides:
-        pipeline_kwargs.update(wizard_pipeline_overrides)
-        print(
-            "Applying wizard pipeline overrides: "
-            f"{sorted(wizard_pipeline_overrides.keys())}"
-        )
-    pipeline_cli_overrides = _extract_pipeline_cli_overrides(cli)
-    if pipeline_cli_overrides:
-        pipeline_kwargs.update(pipeline_cli_overrides)
-        print(
-            "Applying direct pipeline argument overrides: "
-            f"{sorted(pipeline_cli_overrides.keys())}"
-        )
+    if cli.list_settings:
+        for section, section_settings in SCHEMA.sections().items():
+            print(f"\n{section}")
+            for setting in section_settings:
+                print(f"  {setting.name:52s} {settings[setting.name]!r}")
+        raise SystemExit(0)
+
     if cli.save_config is not None:
-        saved_path = save_effective_config_yaml(  # noqa: F405
-            output_path=cli.save_config,
-            preset_name=preset_name,
-            settings=selected_settings,
-            pipeline_kwargs=pipeline_kwargs,
-        )
-        print(f"Saved effective run config to: {saved_path}")
-    preflight_report = run_preflight_checklist(pipeline_kwargs)
+        saved_path = dump_config(cli.save_config, SCHEMA, values=settings)
+        print(f"Saved the settings for this run to: {saved_path}")
+        raise SystemExit(0)
+
+    preflight_report = run_preflight_checklist(stage_arguments(settings))
     if not preflight_report["ok"]:
         raise SystemExit(2)
     if cli.preflight_only:
         print("Preflight-only mode: exiting before pipeline execution.")
         raise SystemExit(0)
-    image_to_model_pipeline(**pipeline_kwargs)
+
+    image_to_model_pipeline(settings)

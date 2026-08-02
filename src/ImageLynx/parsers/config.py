@@ -219,6 +219,7 @@ def add_schema_arguments(parser, schema: Schema, *, prefix: str = "") -> None:
             parser.add_argument(
                 flag,
                 dest=f"set__{setting.name}",
+                metavar=setting.kind.upper(),
                 default=None,
                 help=help_text,
             )
