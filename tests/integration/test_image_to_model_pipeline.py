@@ -171,8 +171,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
     from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_mod
 
     # Force uniform 0.8 map for final run so comparison constrained value aligns.
+    # The diameter table is derived from the config, not a module constant.
+    diameter_by_branch_order = pipeline.resolve_settings()["diameter_by_branch_order"]
     constriction_uniform_08 = {
-        str(branch_order): 0.8 for branch_order in pipeline.DIAMETER_BY_BRANCH_ORDER.keys()
+        str(branch_order): 0.8 for branch_order in diameter_by_branch_order
     }
     probabilistic_call_args: list[dict | None] = []
 

@@ -1,6 +1,6 @@
 """The config file reaching the resistance pipeline's stages.
 
-These exercise the mapping layer only — settings in, stage arguments out — so
+These exercise the settings layer only — config in, resolved settings out — so
 they stay fast and do not touch image data.
 """
 from __future__ import annotations
@@ -31,18 +31,24 @@ def pipeline():
     return module
 
 
+@pytest.fixture(scope="module")
+def source() -> str:
+    return (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
+
+
 # --- loading ---------------------------------------------------------------
 
 
 def test_settings_come_from_the_committed_config_file(pipeline):
     settings = pipeline.resolve_settings()
     assert settings["input_path"].name == "brain_microvessels.tiff"
-    assert set(settings) == set(pipeline.SCHEMA.names)
+    assert set(pipeline.SCHEMA.names) <= set(settings)
 
 
 def test_overrides_are_applied_and_validated(pipeline):
-    settings = pipeline.resolve_settings(overrides={"do_skeletonize": False})
-    assert settings["do_skeletonize"] is False
+    assert pipeline.resolve_settings(overrides={"do_skeletonize": False})[
+        "do_skeletonize"
+    ] is False
 
     with pytest.raises(ConfigError, match="Unknown setting 'do_skeletonise'"):
         pipeline.resolve_settings(overrides={"do_skeletonise": False})
@@ -50,7 +56,16 @@ def test_overrides_are_applied_and_validated(pipeline):
 
 def test_an_out_of_range_value_is_refused_before_any_image_is_read(pipeline):
     with pytest.raises(ConfigError, match="small_vessel_mask_min_overlap_fraction"):
-        pipeline.resolve_settings(overrides={"small_vessel_mask_min_overlap_fraction": 5.0})
+        pipeline.resolve_settings(
+            overrides={"small_vessel_mask_min_overlap_fraction": 5.0}
+        )
+
+
+def test_an_already_resolved_dict_can_be_passed_back_in(pipeline):
+    """Resolving twice must be a no-op, derived entries and all."""
+    once = pipeline.resolve_settings()
+    twice = pipeline.resolve_settings(once)
+    assert twice == once
 
 
 # --- derived settings ------------------------------------------------------
@@ -64,7 +79,6 @@ def test_the_branch_order_tables_are_derived_when_the_config_leaves_them_unset(p
     assert diameters["B01"] > 0
     assert constrictions["B01"] == 1.0
     assert constrictions["B02"] == 0.8
-    # Derived from max_branch_order, so the tables must cover it.
     assert f"B{settings['max_branch_order']:02d}" in diameters
 
 
@@ -75,47 +89,56 @@ def test_an_explicit_diameter_table_is_left_alone(pipeline):
     assert settings["diameter_by_branch_order"] == {"B01": 3.0}
 
 
-# --- settings to stage arguments -------------------------------------------
+def test_the_plot_directory_is_derived_from_the_base_plot_directory(pipeline):
+    settings = pipeline.resolve_settings(overrides={"base_plot_dir": "somewhere/plots"})
+    assert settings["plot_dir"] == Path("somewhere/plots/nerve")
 
 
-def test_every_stage_argument_is_supplied(pipeline):
-    arguments = pipeline.stage_arguments(pipeline.resolve_settings())
-    assert set(arguments) == set(pipeline.STAGE_PARAMETERS)
+def test_an_explicit_plot_directory_wins(pipeline):
+    settings = pipeline.resolve_settings(overrides={"plot_dir": "chosen/dir"})
+    assert settings["plot_dir"] == Path("chosen/dir")
+
+
+# --- how the stages read settings ------------------------------------------
+
+
+def test_the_stage_runner_takes_only_the_settings_dict(pipeline):
+    """The 127-parameter signature is gone; settings are read by name."""
+    assert list(inspect.signature(pipeline.run_pipeline_stages).parameters) == [
+        "settings"
+    ]
+
+
+def test_the_module_no_longer_star_imports_its_settings(source):
+    """Defaults come from the schema, so the constants are not in scope here."""
+    assert "from resistance_pipeline_settings import *" not in source
+
+
+def test_settings_once_read_from_module_globals_are_read_from_the_dict(source):
+    """`vtk_export`, `statistics` and `custom_edges` were module globals, so
+    configuring them did nothing at all."""
+    for setting in ("vtk_export", "statistics", "custom_edges"):
+        assert f'settings["{setting}"]' in source
+    assert "VTK_export" not in source
 
 
 @pytest.mark.parametrize(
-    "setting_name,argument_name",
+    "argument_name,setting_name,value",
     [
-        ("input_path", "image_path"),
-        ("image_axis_order", "axis_order"),
-        ("do_pericyte_construction", "do_pericyte_constriction"),
+        ("image_path", "input_path", Path("elsewhere/other.tif")),
+        ("axis_order", "image_axis_order", "xyz"),
+        ("do_pericyte_constriction", "do_pericyte_construction", True),
     ],
 )
-def test_settings_reach_the_argument_they_are_named_differently_from(
-    pipeline, setting_name, argument_name
+def test_overrides_may_name_the_old_argument_or_the_setting(
+    pipeline, argument_name, setting_name, value
 ):
-    """Regression: `axis_order` had no alias entry, so a configured
-    `IMAGE_AXIS_ORDER` was silently dropped and the import-time default won."""
-    schema_setting = pipeline.SCHEMA[setting_name]
-    value = (
-        "xyz"
-        if setting_name == "image_axis_order"
-        else (Path("elsewhere/other.tif") if schema_setting.kind == "path" else True)
-    )
-    settings = pipeline.resolve_settings(overrides={setting_name: value})
-    assert pipeline.stage_arguments(settings)[argument_name] == value
-
-
-def test_the_plot_directory_is_derived_from_the_base_plot_directory(pipeline):
-    settings = pipeline.resolve_settings(overrides={"base_plot_dir": "somewhere/plots"})
-    assert pipeline.stage_arguments(settings)["plot_dir"] == Path("somewhere/plots/nerve")
-
-
-def test_settings_consumed_by_the_mapping_are_not_passed_on(pipeline):
-    """The derived-table inputs configure this layer, not the stages."""
-    arguments = pipeline.stage_arguments(pipeline.resolve_settings())
-    for name in ("all_diams_const", "max_branch_order", "base_plot_dir"):
-        assert name not in arguments
+    """Regression: `axis_order` had no entry in the old kwargs bridge, so a
+    configured `IMAGE_AXIS_ORDER` was dropped and the import-time default won."""
+    by_argument = pipeline.resolve_settings(overrides={argument_name: value})
+    by_setting = pipeline.resolve_settings(overrides={setting_name: value})
+    assert by_argument[setting_name] == value
+    assert by_setting[setting_name] == value
 
 
 def test_node_lists_stay_mutable(pipeline):
@@ -126,46 +149,32 @@ def test_node_lists_stay_mutable(pipeline):
         assert settings[name] == [1, 2]
 
 
-# --- settings the stages read as module globals ----------------------------
-
-
-def test_settings_read_as_globals_are_applied(pipeline, monkeypatch):
-    """`vtk_export`, `statistics` and `custom_edges` are read from module
-    globals inside the stages, so the wiring has to set them or a config
-    change to any of the three would be silently lost."""
-    recorded = {}
-    monkeypatch.setattr(
-        pipeline, "run_pipeline_stages", lambda **kwargs: recorded.update(kwargs)
-    )
-    pipeline.image_to_model_pipeline(statistics=False, vtk_export=False)
-
-    assert pipeline.STATISTICS is False
-    assert pipeline.VTK_export is False
-    assert recorded, "the stages should still have been called"
-
-
 # --- the public entry point ------------------------------------------------
 
 
 def test_the_entry_point_takes_the_settings_dict(pipeline, monkeypatch):
-    recorded = {}
-    monkeypatch.setattr(
-        pipeline, "run_pipeline_stages", lambda **kwargs: recorded.update(kwargs)
+    recorded: dict = {}
+    monkeypatch.setattr(pipeline, "run_pipeline_stages", recorded.update)
+    pipeline.image_to_model_pipeline(
+        pipeline.resolve_settings(overrides={"do_skeletonize": False})
     )
-    settings = pipeline.resolve_settings(overrides={"do_skeletonize": False})
-    pipeline.image_to_model_pipeline(settings)
     assert recorded["do_skeletonize"] is False
 
 
-def test_the_entry_point_still_accepts_individual_stage_arguments(pipeline, monkeypatch):
-    """Callers that name arguments directly keep working, in either spelling."""
-    recorded = {}
-    monkeypatch.setattr(
-        pipeline, "run_pipeline_stages", lambda **kwargs: recorded.update(kwargs)
-    )
+def test_the_entry_point_runs_the_config_file_with_no_arguments(pipeline, monkeypatch):
+    recorded: dict = {}
+    monkeypatch.setattr(pipeline, "run_pipeline_stages", recorded.update)
+    pipeline.image_to_model_pipeline()
+    assert recorded["input_path"].name == "brain_microvessels.tiff"
+
+
+def test_the_entry_point_still_accepts_individual_overrides(pipeline, monkeypatch):
+    """Callers that name values directly keep working, in either spelling."""
+    recorded: dict = {}
+    monkeypatch.setattr(pipeline, "run_pipeline_stages", recorded.update)
     pipeline.image_to_model_pipeline(
         image_path=Path("a.tif"), plot_dir=Path("plots"), do_graph_building=False
     )
-    assert recorded["image_path"] == Path("a.tif")
+    assert recorded["input_path"] == Path("a.tif")
     assert recorded["plot_dir"] == Path("plots")
     assert recorded["do_graph_building"] is False
