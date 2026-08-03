@@ -34,7 +34,7 @@ def pipeline():
 @pytest.fixture(scope="module")
 def source() -> str:
     """The stage runner's source: it moved to the library so both examples share it."""
-    return (REPO_ROOT / "src" / "ImageLynx" / "pipeline.py").read_text()
+    return (REPO_ROOT / "src" / "ImageLynx" / "pipeline" / "stages.py").read_text()
 
 
 # --- loading ---------------------------------------------------------------
@@ -126,23 +126,22 @@ def test_settings_once_read_from_module_globals_are_read_from_the_dict(source, p
     assert "custom_edges" in pipeline.SCHEMA.section_names("Diameters and pericytes")
 
 
-@pytest.mark.parametrize(
-    "argument_name,setting_name,value",
-    [
-        ("image_path", "input_path", Path("elsewhere/other.tif")),
-        ("axis_order", "image_axis_order", "xyz"),
-        ("do_pericyte_constriction", "do_pericyte_construction", True),
-    ],
-)
-def test_overrides_may_name_the_old_argument_or_the_setting(
-    pipeline, argument_name, setting_name, value
-):
-    """Regression: `axis_order` had no entry in the old kwargs bridge, so a
-    configured `IMAGE_AXIS_ORDER` was dropped and the import-time default won."""
-    by_argument = pipeline.resolve_settings(overrides={argument_name: value})
-    by_setting = pipeline.resolve_settings(overrides={setting_name: value})
-    assert by_argument[setting_name] == value
-    assert by_setting[setting_name] == value
+def test_the_legacy_argument_names_are_gone(pipeline):
+    """`image_path` and friends were the old signature's names for settings that
+    are called something else. Accepting both kept a translation table alive --
+    the construct that let `axis_order` be silently dropped -- so they are gone
+    and the setting names are the only spelling."""
+    for retired in ("image_path", "axis_order", "do_pericyte_constriction"):
+        with pytest.raises(ConfigError, match="Unknown setting"):
+            pipeline.resolve_settings(overrides={retired: "x"})
+
+
+def test_settings_reach_the_run_under_their_own_names(pipeline):
+    settings = pipeline.resolve_settings(
+        overrides={"input_path": "elsewhere/other.tif", "image_axis_order": "xyz"}
+    )
+    assert settings["input_path"] == Path("elsewhere/other.tif")
+    assert settings["image_axis_order"] == "xyz"
 
 
 def test_node_lists_stay_mutable(pipeline):
@@ -177,13 +176,13 @@ def test_the_entry_point_runs_the_config_file_with_no_arguments(pipeline, monkey
 
 
 def test_the_entry_point_still_accepts_individual_overrides(pipeline, monkeypatch):
-    """Callers that name values directly keep working, in either spelling."""
+    """Callers that name individual settings directly keep working."""
     recorded: dict = {}
     monkeypatch.setattr(
         pipeline, "run_pipeline_stages", lambda settings, schema: recorded.update(settings)
     )
     pipeline.image_to_model_pipeline(
-        image_path=Path("a.tif"), plot_dir=Path("plots"), do_graph_building=False
+        input_path=Path("a.tif"), plot_dir=Path("plots"), do_graph_building=False
     )
     assert recorded["input_path"] == Path("a.tif")
     assert recorded["plot_dir"] == Path("plots")

@@ -11,7 +11,7 @@ from .resistance import (
     calc_two_point_from_laplacian_matrix_nodeID,
     solve_flow_from_conductance_matrix,
 )
-from .pipeline import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
+from .apply import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
 
 __all__ = [
     "automated",

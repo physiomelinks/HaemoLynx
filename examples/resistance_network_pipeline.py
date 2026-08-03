@@ -20,6 +20,7 @@ from ImageLynx.parsers import (
     dump_config,
     load_config,
 )
+from ImageLynx.pipeline import resolve_settings as _resolve_settings
 from ImageLynx.pipeline import run_pipeline_stages
 from preflight import run_preflight_checklist
 from resistance_pipeline_schema import SCHEMA
@@ -44,77 +45,24 @@ from wizard import run_interactive_setup_wizard
 CONFIG_PATH = examples_dir / "resistance_pipeline_config.yaml"
 
 
-#: Overrides may name a setting or the argument the old signature used.
-ARGUMENT_TO_SETTING = {
+#: preflight.py still reads the pipeline's old lowercase argument names; this
+#: maps them onto the settings that replaced them until it is schema-driven.
+PREFLIGHT_ARGUMENT_NAMES = {
     "image_path": "input_path",
     "axis_order": "image_axis_order",
     "do_pericyte_constriction": "do_pericyte_construction",
 }
 
 
-def resolve_settings(
-    settings: dict | None = None,
-    *,
-    overrides: dict | None = None,
-    config_path: Path | str = CONFIG_PATH,
-    schema=SCHEMA,
-) -> dict:
-    """Every setting for one run, validated against the schema.
-
-    With no arguments this is exactly what the config file says. Pass
-    ``settings`` to supply an already-loaded dict, and ``overrides`` to change
-    individual values on top of either.
-    """
-    overrides = {
-        ARGUMENT_TO_SETTING.get(name, name): value
-        for name, value in (overrides or {}).items()
-    }
-    plot_dir = overrides.pop("plot_dir", None)
-    if settings is None:
-        resolved = load_config(config_path, schema, overrides=overrides or None)
-    else:
-        # An already-resolved dict carries the derived entries too; they are not
-        # schema settings, so set them aside rather than failing validation.
-        merged = {**settings, **overrides}
-        plot_dir = plot_dir or merged.pop("plot_dir", None)
-        resolved = schema.validate({k: v for k, v in merged.items() if k in schema})
-    _fill_derived_settings(resolved)
-    if plot_dir is not None:
-        resolved["plot_dir"] = Path(plot_dir)
-    return resolved
+def resolve_settings(settings=None, *, overrides=None, config_path=CONFIG_PATH, schema=SCHEMA):
+    """This example's settings: the shared resolver, with its config and schema."""
+    return _resolve_settings(
+        settings, schema=schema, config_path=config_path, overrides=overrides
+    )
 
 
-def _fill_derived_settings(settings: dict) -> None:
-    """Add the settings computed from other settings.
 
-    The branch-order tables are functions of the manual diameter settings, so
-    the config file states those and leaves these null rather than duplicating
-    a 150-entry table that could then disagree with them.
-    """
-    settings.setdefault("plot_dir", Path(settings["base_plot_dir"]) / "nerve")
-    if settings.get("diameter_by_branch_order") is None:
-        settings["diameter_by_branch_order"] = haemodynamics.build_diameter_by_branch_order(
-            all_diams_const=settings["all_diams_const"],
-            max_branch_order=settings["max_branch_order"],
-            default_diameter=settings["default_diameter"],
-            manual_capillary_diameter_by_branch_order=settings[
-                "manual_capillary_diameter_by_branch_order"
-            ],
-            manual_arteriole_diameter_by_branch_order=settings[
-                "manual_arteriole_diameter_by_branch_order"
-            ],
-            manual_venule_diameter_by_branch_order=settings[
-                "manual_venule_diameter_by_branch_order"
-            ],
-        )
-    if settings.get("constriction_by_branch_order") is None:
-        max_order = int(settings["max_branch_order"])
-        constriction = {"B01": 1.0, "Art1": 1.0, "Ven1": 1.0}
-        for order in range(2, max_order + 1):
-            constriction[f"B{order:02d}"] = 0.8
-            constriction[f"Art{order}"] = 0.8
-            constriction[f"Ven{order}"] = 0.8
-        settings["constriction_by_branch_order"] = constriction
+
 
 
 def image_to_model_pipeline(settings: dict | None = None, **overrides):
@@ -242,7 +190,7 @@ if __name__ == "__main__":
         **settings,
         **{
             argument: settings[setting]
-            for argument, setting in ARGUMENT_TO_SETTING.items()
+            for argument, setting in PREFLIGHT_ARGUMENT_NAMES.items()
         },
     }
     preflight_report = run_preflight_checklist(preflight_arguments)

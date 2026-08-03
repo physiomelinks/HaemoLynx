@@ -25,10 +25,9 @@ for _path in (root_dir / "src", examples_dir):
 
 from ImageLynx.haemodynamics.pericyte_sweep import run_pericyte_dilation_pressure_sweep
 from ImageLynx.parsers import add_schema_arguments, cli_overrides
-from ImageLynx.pipeline import run_pipeline_stages
+from ImageLynx.pipeline import resolve_settings, run_pipeline_stages
 from ImageLynx.visualization.dilation_curves import plot_dilation_curves
 from brain_pipeline_schema import SCHEMA
-from resistance_network_pipeline import resolve_settings
 
 CONFIG_PATH = examples_dir / "brain_pipeline_config.yaml"
 
@@ -66,8 +65,6 @@ if __name__ == "__main__":
 
     main(
         resolve_settings(
-            overrides=cli_overrides(cli) or None,
-            config_path=cli.config,
-            schema=SCHEMA,
+            schema=SCHEMA, config_path=cli.config, overrides=cli_overrides(cli) or None
         )
     )

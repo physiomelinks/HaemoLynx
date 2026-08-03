@@ -21,7 +21,7 @@ import numpy as np
 import tifffile
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
-from ImageLynx.haemodynamics.pipeline import (
+from ImageLynx.haemodynamics.apply import (
     HaemodynamicsApplyConfig,
     apply_poiseuille_haemodynamics,
 )

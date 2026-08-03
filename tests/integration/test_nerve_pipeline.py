@@ -63,7 +63,7 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
     vtk_prefix = output_dir / "nerve_pipeline_test"
     pipeline = _load_pipeline_module()
     pipeline.image_to_model_pipeline(
-        image_path=cropped_tiff,
+        input_path=cropped_tiff,
         plot_dir=plot_dir,
         vtk_output_prefix=vtk_prefix,
         verbose_logging=False,
