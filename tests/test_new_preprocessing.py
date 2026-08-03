@@ -156,6 +156,101 @@ def test_joint_hysteresis_validation():
     with pytest.raises(ValueError):
         joint_hysteresis_threshold(prob, ent, shannon_core=0.9, shannon_max=0.5)
 
+def test_joint_hysteresis_rejects_two_class_entropy():
+    """A 2-class entropy map carries no evidence independent of p, so the joint criteria must
+    refuse it rather than silently producing a mask that is non-monotonic in p."""
+    prob = np.zeros((4, 4, 4), dtype=np.float32)
+    ent = np.zeros((4, 4, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="at least 3 classes"):
+        joint_hysteresis_threshold(prob, ent, n_classes=2)
+    with pytest.raises(ValueError, match="at least 3 classes"):
+        joint_hysteresis_threshold(prob, ent, n_classes=1)
+
+def test_joint_hysteresis_accepts_three_or_more_classes():
+    """The joint path stays fully available at >=3 classes, so it re-engages by itself once
+    the classifier is retrained with a TH/glomus class."""
+    prob = np.zeros((10, 10, 10), dtype=np.float32)
+    ent = np.ones((10, 10, 10), dtype=np.float32) * 0.99
+    prob[5, 5, 5], ent[5, 5, 5] = 0.8, 0.5   # core seed
+    prob[5, 5, 6], ent[5, 5, 6] = 0.8, 0.9   # attached uncertain vessel
+
+    unchecked = joint_hysteresis_threshold(prob, ent)
+    three_class = joint_hysteresis_threshold(prob, ent, n_classes=3)
+
+    assert np.array_equal(unchecked, three_class)
+    assert three_class[5, 5, 5] and three_class[5, 5, 6]
+
+def test_two_class_entropy_criterion_is_non_monotonic_in_probability():
+    """Characterisation test for the premise behind the class-count gate.
+
+    This one passes with or without the gate - it does not guard the gate, it guards the
+    mathematical fact the gate is justified by. If the entropy computation or its
+    normalisation ever changes such that H is no longer folded about p = 0.5, this fails and
+    the gate should be revisited.
+
+    Built from a genuine 2-class softmax volume and the real entropy map, the candidate
+    criterion of the joint threshold keeps a low-probability voxel while discarding one of
+    markedly *higher* vessel probability. A mask that is non-monotonic in its own evidence
+    cannot support morphometry, because every vessel becomes a high-confidence core plus a
+    detached shell with the wall voxels evacuated.
+    """
+    p_values = np.array([0.30, 0.50, 0.75, 0.95], dtype=np.float32)
+    volume = np.empty((2, 4, 4, 4), dtype=np.float32)   # (C, Z, Y, X), varying along X
+    volume[0] = p_values
+    volume[1] = 1.0 - p_values
+
+    entropy = calculate_entropy_map(volume)
+    assert entropy.shape == (4, 4, 4)
+    ent_line = entropy[0, 0, :]
+
+    # H is folded about p = 0.5, which is where it peaks.
+    assert ent_line[1] == pytest.approx(1.0, abs=1e-6)
+
+    candidate = (p_values >= 0.25) & (ent_line <= 0.95)
+    assert candidate[0], "p = 0.30 should be retained by the candidate criterion"
+    assert not candidate[1], "p = 0.50 should be discarded - this is the non-monotonicity"
+    assert candidate[2] and candidate[3], "high-confidence voxels should be retained"
+
+def test_entropy_map_not_computed_for_two_class_probability_field(tmp_path):
+    """The pipeline-level gate, which is what actually protects the run.
+
+    Leaving entropy_map as None routes _apply_preprocessing_filters down its existing plain
+    hysteresis branch. There is a single origin for the entropy map, so this covers the
+    monolithic and the map-reduce paths alike.
+    """
+    import sys
+    from pathlib import Path
+    import tifffile
+
+    examples_path = Path(__file__).parent.parent / "examples"
+    if str(examples_path) not in sys.path:
+        sys.path.insert(0, str(examples_path))
+    from carotid_image_to_model import (
+        _load_raw_probability_field, PreprocessingConfig, SkeletonConfig,
+    )
+
+    def write_probability_field(path, n_classes):
+        vol = np.zeros((6, n_classes, 8, 8), dtype=np.float32)   # ZCYX
+        vol[:, 0] = 0.7
+        vol[:, 1:] = 0.3 / (n_classes - 1)
+        tifffile.imwrite(str(path), vol)
+        return path
+
+    pre_config = PreprocessingConfig()
+    assert pre_config.enable_shannon_entropy, "fixture assumes entropy is requested"
+    skel_config = SkeletonConfig()
+    skel_config.sub_volume_percentage = 1.0
+
+    two_class = write_probability_field(tmp_path / "two_class.tif", 2)
+    _, entropy_two = _load_raw_probability_field(str(two_class), "tif", pre_config, skel_config)
+    assert entropy_two is None, "a 2-class field must not produce an entropy map"
+
+    three_class = write_probability_field(tmp_path / "three_class.tif", 3)
+    _, entropy_three = _load_raw_probability_field(str(three_class), "tif", pre_config, skel_config)
+    assert entropy_three is not None, "a 3-class field must still produce an entropy map"
+    assert entropy_three.shape == (6, 8, 8)
+
 def test_evaluate_preprocessing_uncertainty():
     from ImageLynx.statistics.benchmarking import evaluate_preprocessing_uncertainty
     

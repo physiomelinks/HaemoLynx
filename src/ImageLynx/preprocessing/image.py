@@ -1,5 +1,7 @@
 """Image-level operations: ROI cropping, smoothing, and pre-processing."""
 import logging
+from typing import Optional
+
 import numpy as np
 from scipy.ndimage import gaussian_filter, median_filter
 from skimage.filters import apply_hysteresis_threshold
@@ -180,12 +182,17 @@ def joint_hysteresis_threshold(
     low: float = 0.2,
     high: float = 0.4,
     shannon_core: float = 0.6,
-    shannon_max: float = 0.95
+    shannon_max: float = 0.95,
+    n_classes: Optional[int] = None
 ) -> np.ndarray:
     """Apply dual-criteria morphological reconstruction based on probability and entropy.
 
-    Pixels above 'high' and below 'shannon_core' are seeds. 
+    Pixels above 'high' and below 'shannon_core' are seeds.
     Any pixel above 'low' and below 'shannon_max' that is connected to a seed is kept.
+
+    Requires a classifier with at least three classes. For a 2-class softmax output the
+    entropy is a deterministic, folded function of the vessel probability and the dual
+    criteria degenerate into a non-monotonic band filter - see ``n_classes`` below.
 
     Parameters
     ----------
@@ -201,7 +208,23 @@ def joint_hysteresis_threshold(
         Maximum entropy for a seed voxel.
     shannon_max:
         Maximum entropy for a candidate voxel.
+    n_classes:
+        Number of classes in the classifier output the entropy map was derived from. When
+        given as 2 this raises, because H(p) = -p log2 p - (1-p) log2 (1-p) is then a
+        deterministic function of p and is symmetric about p = 0.5, so 'entropy <= t'
+        means 'p <= r OR p >= 1 - r' and excludes the middle of the probability range
+        while retaining voxels of lower probability. Left as None the check is skipped and
+        the caller is trusted.
     """
+    if n_classes is not None and n_classes < 3:
+        raise ValueError(
+            f"joint_hysteresis_threshold requires at least 3 classes, got n_classes={n_classes}. "
+            "For a 2-class output the Shannon entropy is a deterministic, folded function of "
+            "the vessel probability p, so it carries no evidence independent of p and "
+            "'entropy <= shannon_max' resolves to 'p <= r OR p >= 1 - r'. That carves a band "
+            "out of the middle of the probability range and leaves the mask non-monotonic in "
+            "p. Use hysteresis_threshold instead."
+        )
     if low > high:
         raise ValueError(f"low ({low}) must be <= high ({high})")
     if shannon_core > shannon_max:
@@ -224,6 +247,7 @@ def joint_hysteresis_threshold(
             high=high,
             shannon_core=shannon_core,
             shannon_max=shannon_max,
+            n_classes=n_classes,
         )
 
     from skimage.morphology import reconstruction

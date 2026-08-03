@@ -523,10 +523,29 @@ def _load_raw_probability_field(image_path, input_format, pre_config, skel_confi
 
     entropy_map = None
     if image.ndim == 4:
-        if pre_config.enable_shannon_entropy:
-            entropy_map = preprocessing.calculate_entropy_map(image)
         dims = np.array(image.shape)
         c_axis = np.argmin(dims)
+        n_classes = int(dims[c_axis])
+        if pre_config.enable_shannon_entropy:
+            # The Shannon entropy only carries evidence independent of the vessel probability
+            # when the classifier has three or more classes. For a 2-class softmax output
+            # H(p) is a deterministic function of p, folded about p = 0.5, so the joint
+            # hysteresis criterion 'entropy <= shannon_max' resolves to 'p <= r OR p >= 1 - r'
+            # and carves a band out of the middle of the probability range - retaining voxels
+            # of lower vessel probability while discarding higher ones, and leaving every
+            # vessel as a core plus a detached shell with the wall voxels evacuated.
+            # Leaving entropy_map as None routes _apply_preprocessing_filters to plain
+            # hysteresis. The joint path re-engages by itself once the classifier is
+            # retrained with a third class (e.g. TH/glomus).
+            if n_classes >= 3:
+                entropy_map = preprocessing.calculate_entropy_map(image)
+            else:
+                msg = (f"Shannon entropy is enabled but the probability field has only "
+                       f"{n_classes} classes; entropy is then a folded function of the vessel "
+                       f"probability and adds no independent evidence. Falling back to plain "
+                       f"hysteresis thresholding.")
+                logger.warning(msg)
+                print(f"  [WARNING] {msg}")
         if c_axis == 0: image = image[pre_config.ilastik_vessel_channel, :, :, :]
         elif c_axis == 1: image = image[:, pre_config.ilastik_vessel_channel, :, :]
         elif c_axis == 2: image = image[:, :, pre_config.ilastik_vessel_channel, :]
