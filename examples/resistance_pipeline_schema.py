@@ -1277,7 +1277,7 @@ SCHEMA = Schema(
             kind="any",
             default=[],
             help="Apply the custom edge-diameter assignment behaviour to these edge IDs",
-            section=_FWHM,
+            section=_DIAMETERS_AND_PERICYTES,
             advanced=True,
         ),
     ],

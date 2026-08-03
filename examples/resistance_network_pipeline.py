@@ -25,7 +25,14 @@ if str(examples_dir) not in sys.path:
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from ImageLynx.haemodynamics.pipeline import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
-from ImageLynx.parsers import add_schema_arguments, cli_overrides, dump_config, load_config
+from ImageLynx.parsers import (
+    add_schema_arguments,
+    cli_overrides,
+    dump_config,
+    load_config,
+    parameters_of,
+    prefixed_arguments,
+)
 from preflight import run_preflight_checklist
 from resistance_pipeline_schema import SCHEMA
 from resistance_pipeline_settings import (
@@ -160,14 +167,16 @@ def run_pipeline_stages(settings: dict) -> None:
         )
         visualization.visualize_skeleton(skeleton, save_path=settings["plot_dir"] / "raw_skeleton.png")
 
+        # The `skeleton_*` settings are this function's parameters with a
+        # prefix, so they go in as a group; the percentage is the one exception.
         skeleton = preprocessing.preprocess_skeleton_for_graph(
             skeleton,
-            min_branch_length=settings["skeleton_min_branch_length"],
-            max_bridge_distance=settings["skeleton_max_bridge_distance"],
-            component_connectivity=settings["skeleton_component_connectivity"],
+            **prefixed_arguments(
+                settings,
+                "skeleton_",
+                parameters_of(preprocessing.preprocess_skeleton_for_graph),
+            ),
             min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
-            closing_radius=settings["skeleton_closing_radius"],
-            bridge_gap_size=settings["skeleton_bridge_gap_size"],
         )
         preprocessing.print_skeleton_connectivity_stats(
             "cleaned",
@@ -225,28 +234,21 @@ def run_pipeline_stages(settings: dict) -> None:
     # Image metadata reports (x, y, z); array axes are canonical (z, y, x). Everything
     # downstream that scales array indices uses voxel_size_zyx.
     voxel_size_zyx = io.voxel_size_zyx_from_xyz(main_voxel_size_xyz)
+    # The vessel-mask and segmentation settings go in as a group; each role
+    # picks the ones it uses. `io.VESSEL_MASK_SETTINGS` lists which those are.
+    mask_settings = {
+        **SCHEMA.section_values(settings, "Vessel masks"),
+        **SCHEMA.section_values(settings, "Input and segmentation"),
+    }
     (
         large_arteriole_mask,
         large_venule_mask,
         large_arteriole_mask_voxel_size,
         large_venule_mask_voxel_size,
     ) = io.load_and_validate_vessel_masks(
-        mask_role="large",
-        enabled=settings["use_large_vessel_masks"],
-        use_ilastik=settings["use_ilastik_large_vessel_segmentation"],
-        arteriole_mask_path=settings["large_arteriole_mask_path"],
-        venule_mask_path=settings["large_venule_mask_path"],
+        **io.vessel_mask_arguments(mask_settings, "large"),
         image_shape=image.shape,
         main_voxel_size_xyz=main_voxel_size_xyz,
-        ilastik_unsegmented_arteriole_path=settings["ilastik_unsegmented_arteriole_image_path"],
-        ilastik_unsegmented_venule_path=settings["ilastik_unsegmented_venule_image_path"],
-        ilastik_arteriole_classifier_path=settings["ilastik_arteriole_classifier_path"],
-        ilastik_venule_classifier_path=settings["ilastik_venule_classifier_path"],
-        ilastik_output_dir=settings["ilastik_output_dir"],
-        ilastik_output_suffix=settings["ilastik_output_suffix"],
-        ilastik_executable=settings["ilastik_executable"],
-        dilation_microns=settings["large_vessel_mask_dilation_microns"],
-        axis_order=settings["image_axis_order"],
     )
     (
         small_arteriole_mask,
@@ -254,21 +256,9 @@ def run_pipeline_stages(settings: dict) -> None:
         small_arteriole_mask_voxel_size,
         small_venule_mask_voxel_size,
     ) = io.load_and_validate_vessel_masks(
-        mask_role="small",
-        enabled=settings["use_small_vessel_masks_for_boundary_assignment"],
-        use_ilastik=settings["use_ilastik_small_vessel_segmentation"],
-        arteriole_mask_path=settings["small_arteriole_mask_path"],
-        venule_mask_path=settings["small_venule_mask_path"],
+        **io.vessel_mask_arguments(mask_settings, "small"),
         image_shape=image.shape,
         main_voxel_size_xyz=main_voxel_size_xyz,
-        ilastik_unsegmented_arteriole_path=settings["ilastik_unsegmented_small_arteriole_image_path"],
-        ilastik_unsegmented_venule_path=settings["ilastik_unsegmented_small_venule_image_path"],
-        ilastik_arteriole_classifier_path=settings["ilastik_small_arteriole_classifier_path"],
-        ilastik_venule_classifier_path=settings["ilastik_small_venule_classifier_path"],
-        ilastik_output_dir=settings["ilastik_output_dir"],
-        ilastik_output_suffix=settings["ilastik_output_suffix"],
-        ilastik_executable=settings["ilastik_executable"],
-        axis_order=settings["image_axis_order"],
         loaded_message_suffix=(
             f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
         ),
@@ -419,48 +409,26 @@ def run_pipeline_stages(settings: dict) -> None:
         start_nodes = auto_start_nodes
         out_nodes = [node_id for node_id in auto_output_nodes if node_id not in set(start_nodes)]
     else:
-        start_nodes = graph.select_boundary_nodes_by_method(
-            G,
-            image.shape,
-            method=settings["starting_node_selection_method"],
-            node_role="input",
-            coordinates=settings["starting_node_coordinates"],
-            volume_boxes=settings["starting_node_volumes"],
+        # Each role reads its own three settings; naming the role is enough.
+        start_nodes = graph.select_boundary_nodes_for_role(
+            G, image.shape, settings, "starting"
         )
-        out_nodes = graph.select_boundary_nodes_by_method(
-            G,
-            image.shape,
-            method=settings["output_node_selection_method"],
-            node_role="output",
-            coordinates=settings["output_node_coordinates"],
-            volume_boxes=settings["output_node_volumes"],
-            exclude_nodes=start_nodes,
+        out_nodes = graph.select_boundary_nodes_for_role(
+            G, image.shape, settings, "output", exclude_nodes=start_nodes
         )
     settings["starting_nodes"].extend(start_nodes)
     settings["output_nodes"].extend(out_nodes)
     used_nodes = set(settings["starting_nodes"]) | set(settings["output_nodes"])
     if settings["arteriole_boundary_node_coordinates"] or settings["arteriole_boundary_node_volumes"]:
-        art_boundary = graph.select_boundary_nodes_by_method(
-            G,
-            image.shape,
-            method=settings["arteriole_boundary_selection_method"],
-            node_role="input",
-            coordinates=settings["arteriole_boundary_node_coordinates"],
-            volume_boxes=settings["arteriole_boundary_node_volumes"],
-            exclude_nodes=list(used_nodes),
+        art_boundary = graph.select_boundary_nodes_for_role(
+            G, image.shape, settings, "arteriole_boundary", exclude_nodes=list(used_nodes)
         )
         settings["arteriole_boundary_nodes"].extend(art_boundary)
         used_nodes.update(settings["arteriole_boundary_nodes"])
 
     if settings["venule_boundary_node_coordinates"] or settings["venule_boundary_node_volumes"]:
-        ven_boundary = graph.select_boundary_nodes_by_method(
-            G,
-            image.shape,
-            method=settings["venule_boundary_selection_method"],
-            node_role="output",
-            coordinates=settings["venule_boundary_node_coordinates"],
-            volume_boxes=settings["venule_boundary_node_volumes"],
-            exclude_nodes=list(used_nodes),
+        ven_boundary = graph.select_boundary_nodes_for_role(
+            G, image.shape, settings, "venule_boundary", exclude_nodes=list(used_nodes)
         )
         settings["venule_boundary_nodes"].extend(ven_boundary)
     if settings["use_small_vessel_masks_for_boundary_assignment"]:
@@ -586,61 +554,19 @@ def run_pipeline_stages(settings: dict) -> None:
                 "Poiseuille conductance assignment."
             )
         elif settings["run_haemodynamics"]:
+            # Two config sections go in whole rather than as forty-odd
+            # keyword arguments; everything else here is computed by this run.
             haemo_config = HaemodynamicsApplyConfig(
-                diameter_by_branch_order=settings["diameter_by_branch_order"],
-                constriction_by_branch_order=settings["constriction_by_branch_order"],
-                custom_edges=settings["custom_edges"],
-                do_pericyte_constriction=settings["do_pericyte_construction"],
-                use_pericyte_mask_constriction=settings["use_pericyte_mask_constriction"],
-                pericyte_mask_path=settings["pericyte_mask_path"],
-                pericyte_mask_h5_dataset_name=settings["pericyte_mask_h5_dataset_name"],
-                pericyte_max_assignment_distance_um=settings["pericyte_max_assignment_distance_um"],
-                pericyte_min_diameter_um=settings["pericyte_min_diameter_um"],
-                pericyte_max_diameter_um=settings["pericyte_max_diameter_um"],
-                use_probabilistic_pericyte_constriction=settings["use_probabilistic_pericyte_constriction"],
-                pericyte_constriction_probability=settings["pericyte_constriction_probability"],
-                run_pericyte_resistance_comparison=settings["run_pericyte_resistance_comparison"],
-                pericyte_comparison_baseline_value=settings["pericyte_comparison_baseline_value"],
-                pericyte_comparison_constricted_value=settings["pericyte_comparison_constricted_value"],
-                reuse_comparison_pericyte_cohort_for_main_run=settings["reuse_comparison_pericyte_cohort_for_main_run"],
+                diameters=SCHEMA.section_values(settings, "Diameters and pericytes"),
+                fwhm=SCHEMA.section_values(settings, "FWHM diameter measurement"),
+                resistance_node_pair=resistance_node_pair,
+                voxel_size_zyx=voxel_size_zyx,
+                axis_order=settings["image_axis_order"],
                 comparison_output_csv_path=(
                     output_dir / f"{settings['input_path'].stem}_pericyte_resistance_comparison.csv"
                     if settings["run_pericyte_resistance_comparison"]
                     else None
                 ),
-                resistance_node_pair=resistance_node_pair,
-                use_fwhm_edge_diameters=settings["use_fwhm_edge_diameters"],
-                fwhm_raw_tiff_path=settings["fwhm_raw_tiff_path"],
-                voxel_size_zyx=voxel_size_zyx,
-                axis_order=settings["image_axis_order"],
-                fwhm_sample_spacing_along_edge_um=settings["fwhm_sample_spacing_along_edge_um"],
-                fwhm_transverse_profile_step_um=settings["fwhm_transverse_profile_step_um"],
-                fwhm_transverse_half_extent_um=settings["fwhm_transverse_half_extent_um"],
-                fwhm_diameter_guess_um=settings["fwhm_diameter_guess_um"],
-                fwhm_min_total_extent_multiplier=settings["fwhm_min_total_extent_multiplier"],
-                fwhm_background_label=settings["fwhm_background_label"],
-                fwhm_junction_label=settings["fwhm_junction_label"],
-                fwhm_allow_junction_crossing=settings["fwhm_allow_junction_crossing"],
-                fwhm_profile_baseline_mode=settings["fwhm_profile_baseline_mode"],
-                fwhm_profile_baseline_wing_fraction=settings["fwhm_profile_baseline_wing_fraction"],
-                fwhm_constrain_fitted_baseline=settings["fwhm_constrain_fitted_baseline"],
-                fwhm_baseline_constraint_half_width_ptp=settings["fwhm_baseline_constraint_half_width_ptp"],
-                fwhm_clip_profile_to_single_vessel=settings["fwhm_clip_profile_to_single_vessel"],
-                fwhm_clip_min_drop_fraction_of_center=settings["fwhm_clip_min_drop_fraction_of_center"],
-                fwhm_clip_re_rise_fraction_of_center=settings["fwhm_clip_re_rise_fraction_of_center"],
-                fwhm_branch_endpoint_exclusion_um=settings["fwhm_branch_endpoint_exclusion_um"],
-                fwhm_junction_proximity_exclusion_um=settings["fwhm_junction_proximity_exclusion_um"],
-                fwhm_enforce_same_edge_locality=settings["fwhm_enforce_same_edge_locality"],
-                fwhm_same_edge_arc_window_um=settings["fwhm_same_edge_arc_window_um"],
-                fwhm_same_edge_arc_window_multiplier=settings["fwhm_same_edge_arc_window_multiplier"],
-                fwhm_same_edge_arc_window_min_um=settings["fwhm_same_edge_arc_window_min_um"],
-                fwhm_cap_half_extent_by_nonlocal_same_edge_distance=settings["fwhm_cap_half_extent_by_nonlocal_same_edge_distance"],
-                fwhm_nonlocal_same_edge_arc_separation_um=settings["fwhm_nonlocal_same_edge_arc_separation_um"],
-                fwhm_nonlocal_same_edge_half_extent_factor=settings["fwhm_nonlocal_same_edge_half_extent_factor"],
-                fwhm_reject_samples_with_center_offset=settings["fwhm_reject_samples_with_center_offset"],
-                fwhm_max_fit_center_offset_um=settings["fwhm_max_fit_center_offset_um"],
-                fwhm_reject_samples_with_low_fit_r2=settings["fwhm_reject_samples_with_low_fit_r2"],
-                fwhm_min_fit_r2=settings["fwhm_min_fit_r2"],
             )
             G, haemo_results = apply_poiseuille_haemodynamics(G, config=haemo_config)
             if "fwhm" in haemo_results:

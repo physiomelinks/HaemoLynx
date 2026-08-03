@@ -20,6 +20,8 @@ from .config import (
     cli_overrides,
     dump_config,
     load_config,
+    parameters_of,
+    prefixed_arguments,
     settings_for,
 )
 from .schema import ConfigError, IneffectiveSettingWarning, Schema, Setting
@@ -34,5 +36,7 @@ __all__ = [
     "cli_overrides",
     "dump_config",
     "load_config",
+    "parameters_of",
+    "prefixed_arguments",
     "settings_for",
 ]

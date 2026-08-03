@@ -114,12 +114,14 @@ def test_the_module_no_longer_star_imports_its_settings(source):
     assert "from resistance_pipeline_settings import *" not in source
 
 
-def test_settings_once_read_from_module_globals_are_read_from_the_dict(source):
+def test_settings_once_read_from_module_globals_are_read_from_the_dict(source, pipeline):
     """`vtk_export`, `statistics` and `custom_edges` were module globals, so
     configuring them did nothing at all."""
-    for setting in ("vtk_export", "statistics", "custom_edges"):
+    for setting in ("vtk_export", "statistics"):
         assert f'settings["{setting}"]' in source
     assert "VTK_export" not in source
+    # custom_edges reaches haemodynamics inside the diameters section.
+    assert "custom_edges" in pipeline.SCHEMA.section_names("Diameters and pericytes")
 
 
 @pytest.mark.parametrize(

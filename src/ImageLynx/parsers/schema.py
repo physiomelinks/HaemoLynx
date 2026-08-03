@@ -323,6 +323,28 @@ class Schema:
             grouped.setdefault(setting.section, []).append(setting)
         return {name: tuple(items) for name, items in grouped.items()}
 
+    def section_names(self, section: str) -> tuple[str, ...]:
+        """Names of the settings in *section*, by title or by its YAML key."""
+        wanted = section_key(section)
+        for name, settings in self.sections().items():
+            if name == section or section_key(name) == wanted:
+                return tuple(setting.name for setting in settings)
+        known = ", ".join(sorted(self.sections()))
+        raise ConfigError(f"Unknown section '{section}'. Sections are: {known}.")
+
+    def section_values(self, values: Mapping[str, Any], section: str) -> dict[str, Any]:
+        """The part of *values* belonging to *section*.
+
+        Lets a caller hand one group of settings to the stage that consumes it,
+        instead of naming each one, and keeps the grouping identical to the one
+        the config file and the GUI show.
+        """
+        return {
+            name: values[name]
+            for name in self.section_names(section)
+            if name in values
+        }
+
     def defaults(self) -> dict[str, Any]:
         """Defaults, coerced exactly like user-supplied values.
 

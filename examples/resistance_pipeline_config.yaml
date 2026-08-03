@@ -269,6 +269,8 @@ diameters_and_pericytes:
   diameter_by_branch_order: null
   # Supply the full branch-order constriction-factor lookup; leave unset to derive it from the manual diameter settings
   constriction_by_branch_order: null
+  # Apply the custom edge-diameter assignment behaviour to these edge IDs
+  custom_edges: []
 
 # ------------------------------------------------------------------------
 # FWHM diameter measurement
@@ -334,5 +336,3 @@ fwhm_diameter_measurement:
   fwhm_reject_samples_with_low_fit_r2: true
   # Keep a sample only when its transverse Gaussian fit reaches this R-squared  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_low_fit_r2]
   fwhm_min_fit_r2: 0.85
-  # Apply the custom edge-diameter assignment behaviour to these edge IDs
-  custom_edges: []

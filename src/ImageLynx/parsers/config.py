@@ -10,8 +10,9 @@ overrides (``--set name=value``).
 """
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .schema import ConfigError, Schema, Setting, _jsonify, section_key
 
@@ -187,6 +188,33 @@ def settings_for(values: Mapping[str, Any], names: Sequence[str]) -> dict[str, A
     if missing:
         raise ConfigError(f"Settings not present: {', '.join(missing)}.")
     return {name: values[name] for name in names}
+
+
+def prefixed_arguments(
+    settings: Mapping[str, Any], prefix: str, valid_parameters: Iterable[str]
+) -> dict[str, Any]:
+    """Settings named ``<prefix><parameter>`` as keyword arguments.
+
+    A group of settings that share a prefix and otherwise match a function's
+    parameters can be handed over in one go. Only names the function actually
+    accepts are passed, so a setting that stops being read shows up as a
+    mismatch here rather than as a value that silently does nothing::
+
+        preprocess_skeleton_for_graph(
+            skeleton, **prefixed_arguments(settings, "skeleton_", parameters)
+        )
+    """
+    valid = set(valid_parameters)
+    return {
+        name[len(prefix):]: value
+        for name, value in settings.items()
+        if name.startswith(prefix) and name[len(prefix):] in valid
+    }
+
+
+def parameters_of(function) -> tuple[str, ...]:
+    """Parameter names of *function*, for pairing with :func:`prefixed_arguments`."""
+    return tuple(inspect.signature(function).parameters)
 
 
 def add_schema_arguments(parser, schema: Schema, *, prefix: str = "") -> None:

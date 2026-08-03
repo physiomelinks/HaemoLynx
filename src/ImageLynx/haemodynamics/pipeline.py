@@ -1,15 +1,17 @@
 """High-level haemodynamics steps for vascular graphs."""
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import networkx as nx
 
 from ImageLynx import io
 from ImageLynx.io.axis_order import CANONICAL_AXIS_ORDER
+from ImageLynx.parsers import prefixed_arguments
 from ImageLynx.haemodynamics import automated
 from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
@@ -19,114 +21,105 @@ from ImageLynx.haemodynamics import probability as probability_haemodynamics
 logger = logging.getLogger(__name__)
 
 
+#: FWHM settings are named `fwhm_<parameter>` in the config, matching the
+#: measurement function's parameters one for one.
+FWHM_SETTING_PREFIX = "fwhm_"
+
+#: Values the constriction model needs that are not config settings today. They
+#: were defaults on this dataclass before the settings arrived as a group, and
+#: are kept here so behaviour is unchanged and the numbers stay findable.
+DIAMETER_DEFAULTS: dict[str, Any] = {
+    "custom_edge_diameter": 6.0,
+    "constriction_length": 40.0,
+    "constriction_spacing": 100.0,
+    "constriction_by_branch_order": {},
+    "custom_edges": [],
+}
+
+
 @dataclass
 class HaemodynamicsApplyConfig:
-    """Settings for Poiseuille conductance assignment on a vascular graph."""
+    """Settings for Poiseuille conductance assignment on a vascular graph.
 
-    diameter_by_branch_order: dict[str, float]
-    constriction_by_branch_order: dict[str, float] = field(default_factory=dict)
-    custom_edges: list | dict = field(default_factory=list)
-    custom_edge_diameter: float = 6.0
-    constriction_length: float = 40.0
-    constriction_spacing: float = 100.0
-    do_pericyte_constriction: bool = False
-    use_pericyte_mask_constriction: bool = False
-    pericyte_mask_path: Path | str | None = None
-    pericyte_mask_h5_dataset_name: str | None = None
-    pericyte_max_assignment_distance_um: float | None = None
-    pericyte_min_diameter_um: float | None = None
-    pericyte_max_diameter_um: float | None = None
-    use_probabilistic_pericyte_constriction: bool = False
-    pericyte_constriction_probability: float = 0.5
-    run_pericyte_resistance_comparison: bool = False
-    pericyte_comparison_baseline_value: float = 1.0
-    pericyte_comparison_constricted_value: float = 0.8
-    reuse_comparison_pericyte_cohort_for_main_run: bool = False
+    The two large groups arrive as dicts rather than as forty-odd separate
+    fields, keyed exactly as they are in the config file so a value can be
+    traced from YAML to here by name:
+
+    ``diameters``
+        The ``diameters_and_pericytes`` section — branch-order diameters, the
+        constriction factors, custom edges, and every pericyte setting.
+    ``fwhm``
+        The ``fwhm_diameter_measurement`` section — whether to measure diameters
+        from the raw image, and the fitting parameters if so.
+
+    Anything a run computes rather than configures stays an ordinary field.
+    """
+
+    diameters: dict[str, Any] = field(default_factory=dict)
+    fwhm: dict[str, Any] = field(default_factory=dict)
+
+    # Computed per run, not configured.
     comparison_output_csv_path: Path | None = None
     resistance_node_pair: tuple[int, int] | None = None
-    use_fwhm_edge_diameters: bool = False
-    fwhm_raw_tiff_path: Path | str | None = None
-    # Spacing per array axis in canonical (z, y, x) order, not image-metadata (x, y, z).
+    #: Spacing per array axis in canonical (z, y, x) order, not image-metadata (x, y, z).
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
     axis_order: str = CANONICAL_AXIS_ORDER
-    fwhm_sample_spacing_along_edge_um: float = 5.0
-    fwhm_transverse_profile_step_um: float = 0.5
-    fwhm_transverse_half_extent_um: float = 10.0
-    fwhm_diameter_guess_um: float | None = None
-    fwhm_min_total_extent_multiplier: float = 1.5
-    fwhm_background_label: int = 0
-    fwhm_junction_label: int = 2
-    fwhm_allow_junction_crossing: bool = False
-    fwhm_profile_baseline_mode: str = "wings"
-    fwhm_profile_baseline_wing_fraction: float = 0.2
-    fwhm_constrain_fitted_baseline: bool = True
-    fwhm_baseline_constraint_half_width_ptp: float = 0.15
-    fwhm_clip_profile_to_single_vessel: bool = True
-    fwhm_clip_min_drop_fraction_of_center: float = 0.35
-    fwhm_clip_re_rise_fraction_of_center: float = 0.2
-    fwhm_branch_endpoint_exclusion_um: float = 2.0
-    fwhm_junction_proximity_exclusion_um: float = 3.0
-    fwhm_enforce_same_edge_locality: bool = True
-    fwhm_same_edge_arc_window_um: float | None = None
-    fwhm_same_edge_arc_window_multiplier: float = 2.0
-    fwhm_same_edge_arc_window_min_um: float = 5.0
-    fwhm_cap_half_extent_by_nonlocal_same_edge_distance: bool = True
-    fwhm_nonlocal_same_edge_arc_separation_um: float = 15.0
-    fwhm_nonlocal_same_edge_half_extent_factor: float = 0.5
-    fwhm_reject_samples_with_center_offset: bool = True
-    fwhm_max_fit_center_offset_um: float = 1.5
-    fwhm_reject_samples_with_low_fit_r2: bool = True
-    fwhm_min_fit_r2: float = 0.85
+
+    def __post_init__(self) -> None:
+        if not self.diameters.get("diameter_by_branch_order"):
+            raise ValueError(
+                "HaemodynamicsApplyConfig needs 'diameter_by_branch_order' in its "
+                "diameters settings; pass the diameters_and_pericytes section of "
+                "the config."
+            )
+
+    def diameter(self, name: str, default: Any = None) -> Any:
+        """One value from the diameters/pericytes group.
+
+        Falls back to :data:`DIAMETER_DEFAULTS` for the few values the config
+        does not carry, then to *default*.
+        """
+        if name in self.diameters and self.diameters[name] is not None:
+            return self.diameters[name]
+        if default is not None:
+            return default
+        return DIAMETER_DEFAULTS.get(name)
+
+    def fwhm_setting(self, name: str, default: Any = None) -> Any:
+        """One value from the FWHM group, named as it is in the config."""
+        return self.fwhm.get(name, default)
+
+    @property
+    def use_fwhm_edge_diameters(self) -> bool:
+        return bool(self.fwhm.get("use_fwhm_edge_diameters", False))
+
+    @property
+    def do_pericyte_constriction(self) -> bool:
+        return bool(self.diameters.get("do_pericyte_construction", False))
+
+    def fwhm_measurement_arguments(self, valid_parameters: Iterable[str]) -> dict[str, Any]:
+        """FWHM settings as measurement-function arguments."""
+        return prefixed_arguments(self.fwhm, FWHM_SETTING_PREFIX, valid_parameters)
 
 
 def _measure_fwhm_diameters(G: nx.MultiGraph, config: HaemodynamicsApplyConfig) -> dict[str, Any]:
-    if config.fwhm_raw_tiff_path is None:
+    raw_tiff_path = config.fwhm_setting("fwhm_raw_tiff_path")
+    if raw_tiff_path is None:
         raise ValueError("use_fwhm_edge_diameters=True requires fwhm_raw_tiff_path.")
-    raw_p = io.resolve_image_path_with_optional_zip(Path(config.fwhm_raw_tiff_path))
     voxel_sz = tuple(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
     )
+    measurement_parameters = inspect.signature(
+        automated.measure_edge_diameters_fwhm_from_raw_tiff
+    ).parameters
     return automated.measure_edge_diameters_fwhm_from_raw_tiff(
         G,
-        raw_tiff_path=raw_p,
         voxel_size_zyx=voxel_sz,
         axis_order=config.axis_order,
-        sample_spacing_along_edge_um=float(config.fwhm_sample_spacing_along_edge_um),
-        transverse_profile_step_um=float(config.fwhm_transverse_profile_step_um),
-        transverse_half_extent_um=float(config.fwhm_transverse_half_extent_um),
-        diameter_guess_um=(
-            None if config.fwhm_diameter_guess_um is None else float(config.fwhm_diameter_guess_um)
-        ),
-        background_label=int(config.fwhm_background_label),
-        junction_label=int(config.fwhm_junction_label),
-        min_total_extent_multiplier=float(config.fwhm_min_total_extent_multiplier),
-        profile_baseline_mode=config.fwhm_profile_baseline_mode,
-        profile_baseline_wing_fraction=float(config.fwhm_profile_baseline_wing_fraction),
-        constrain_fitted_baseline=bool(config.fwhm_constrain_fitted_baseline),
-        allow_junction_crossing=bool(config.fwhm_allow_junction_crossing),
-        baseline_constraint_half_width_ptp=float(config.fwhm_baseline_constraint_half_width_ptp),
-        clip_profile_to_single_vessel=bool(config.fwhm_clip_profile_to_single_vessel),
-        clip_min_drop_fraction_of_center=float(config.fwhm_clip_min_drop_fraction_of_center),
-        clip_re_rise_fraction_of_center=float(config.fwhm_clip_re_rise_fraction_of_center),
-        branch_endpoint_exclusion_um=float(config.fwhm_branch_endpoint_exclusion_um),
-        junction_proximity_exclusion_um=float(config.fwhm_junction_proximity_exclusion_um),
-        enforce_same_edge_locality=bool(config.fwhm_enforce_same_edge_locality),
-        same_edge_arc_window_um=(
-            None
-            if config.fwhm_same_edge_arc_window_um is None
-            else float(config.fwhm_same_edge_arc_window_um)
-        ),
-        same_edge_arc_window_multiplier=float(config.fwhm_same_edge_arc_window_multiplier),
-        same_edge_arc_window_min_um=float(config.fwhm_same_edge_arc_window_min_um),
-        cap_half_extent_by_nonlocal_same_edge_distance=bool(
-            config.fwhm_cap_half_extent_by_nonlocal_same_edge_distance
-        ),
-        nonlocal_same_edge_arc_separation_um=float(config.fwhm_nonlocal_same_edge_arc_separation_um),
-        nonlocal_same_edge_half_extent_factor=float(config.fwhm_nonlocal_same_edge_half_extent_factor),
-        reject_samples_with_center_offset=bool(config.fwhm_reject_samples_with_center_offset),
-        max_fit_center_offset_um=float(config.fwhm_max_fit_center_offset_um),
-        reject_samples_with_low_fit_r2=bool(config.fwhm_reject_samples_with_low_fit_r2),
-        min_fit_r2=float(config.fwhm_min_fit_r2),
+        **{
+            **config.fwhm_measurement_arguments(measurement_parameters),
+            "raw_tiff_path": io.resolve_image_path_with_optional_zip(Path(raw_tiff_path)),
+        },
     )
 
 
@@ -134,7 +127,7 @@ def _run_pericyte_comparison(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
 ) -> tuple[list[int] | None, dict[str, list[int]] | None, dict[str, Any]]:
-    if not config.run_pericyte_resistance_comparison:
+    if not config.diameter("run_pericyte_resistance_comparison"):
         return None, None, {}
     if config.comparison_output_csv_path is None:
         raise ValueError("comparison_output_csv_path required for pericyte comparison.")
@@ -143,33 +136,33 @@ def _run_pericyte_comparison(
 
     comparison_results = pericyte_comparison_haemodynamics.compare_baseline_vs_pericyte_constriction(
         G,
-        diameter_by_branch_order=config.diameter_by_branch_order,
-        constriction_factor_by_branch_order=config.constriction_by_branch_order,
+        diameter_by_branch_order=config.diameter("diameter_by_branch_order"),
+        constriction_factor_by_branch_order=config.diameter("constriction_by_branch_order"),
         resistance_node_pair=config.resistance_node_pair,
         output_csv_path=config.comparison_output_csv_path,
-        baseline_factor_value=float(config.pericyte_comparison_baseline_value),
-        constricted_factor_value=float(config.pericyte_comparison_constricted_value),
-        use_pericyte_mask_constriction=bool(config.use_pericyte_mask_constriction),
-        pericyte_mask_path=config.pericyte_mask_path,
-        pericyte_mask_h5_dataset_name=config.pericyte_mask_h5_dataset_name,
-        max_assignment_distance_um=config.pericyte_max_assignment_distance_um,
-        min_pericyte_diameter_um=config.pericyte_min_diameter_um,
-        max_pericyte_diameter_um=config.pericyte_max_diameter_um,
+        baseline_factor_value=float(config.diameter("pericyte_comparison_baseline_value")),
+        constricted_factor_value=float(config.diameter("pericyte_comparison_constricted_value")),
+        use_pericyte_mask_constriction=bool(config.diameter("use_pericyte_mask_constriction")),
+        pericyte_mask_path=config.diameter("pericyte_mask_path"),
+        pericyte_mask_h5_dataset_name=config.diameter("pericyte_mask_h5_dataset_name"),
+        max_assignment_distance_um=config.diameter("pericyte_max_assignment_distance_um"),
+        min_pericyte_diameter_um=config.diameter("pericyte_min_diameter_um"),
+        max_pericyte_diameter_um=config.diameter("pericyte_max_diameter_um"),
         prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
-        constriction_length=config.constriction_length,
-        constriction_spacing=config.constriction_spacing,
-        use_probabilistic_pericyte_constriction=bool(config.use_probabilistic_pericyte_constriction),
-        pericyte_constriction_probability=float(config.pericyte_constriction_probability),
+        constriction_length=config.diameter("constriction_length"),
+        constriction_spacing=config.diameter("constriction_spacing"),
+        use_probabilistic_pericyte_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
+        pericyte_constriction_probability=float(config.diameter("pericyte_constriction_probability")),
         axis_order=config.axis_order,
     )
 
     active_pericyte_indices: list[int] | None = None
     active_center_indices_by_edge: dict[str, list[int]] | None = None
     if (
-        config.reuse_comparison_pericyte_cohort_for_main_run
-        and config.use_probabilistic_pericyte_constriction
+        config.diameter("reuse_comparison_pericyte_cohort_for_main_run")
+        and config.diameter("use_probabilistic_pericyte_constriction")
     ):
-        if config.use_pericyte_mask_constriction:
+        if config.diameter("use_pericyte_mask_constriction"):
             selected = comparison_results.get("active_pericyte_indices")
             active_pericyte_indices = [int(idx) for idx in selected] if selected else []
         else:
@@ -190,57 +183,57 @@ def _assign_poiseuille_resistances(
     active_center_indices_by_edge: dict[str, list[int]] | None,
 ) -> dict[str, Any]:
     poiseuille_model = PoiseuilleModel(
-        constriction_length=config.constriction_length,
-        constriction_spacing=config.constriction_spacing,
+        constriction_length=config.diameter("constriction_length"),
+        constriction_spacing=config.diameter("constriction_spacing"),
     )
     results: dict[str, Any] = {}
 
     if config.do_pericyte_constriction:
-        if config.use_pericyte_mask_constriction:
-            if config.pericyte_mask_path is None:
+        if config.diameter("use_pericyte_mask_constriction"):
+            if config.diameter("pericyte_mask_path") is None:
                 raise ValueError(
                     "pericyte_mask_path must be set when use_pericyte_mask_constriction=True."
                 )
             G, results["pericyte_mask"] = (
                 pericyte_mask_haemodynamics.set_poiseuille_resistances_with_pericyte_mask(
                     G,
-                    diameter_by_branch_order=config.diameter_by_branch_order,
-                    constriction_factor_by_branch_order=config.constriction_by_branch_order,
-                    pericyte_mask_path=config.pericyte_mask_path,
-                    pericyte_mask_h5_dataset_name=config.pericyte_mask_h5_dataset_name,
-                    max_assignment_distance_um=config.pericyte_max_assignment_distance_um,
-                    min_pericyte_diameter_um=config.pericyte_min_diameter_um,
-                    max_pericyte_diameter_um=config.pericyte_max_diameter_um,
+                    diameter_by_branch_order=config.diameter("diameter_by_branch_order"),
+                    constriction_factor_by_branch_order=config.diameter("constriction_by_branch_order"),
+                    pericyte_mask_path=config.diameter("pericyte_mask_path"),
+                    pericyte_mask_h5_dataset_name=config.diameter("pericyte_mask_h5_dataset_name"),
+                    max_assignment_distance_um=config.diameter("pericyte_max_assignment_distance_um"),
+                    min_pericyte_diameter_um=config.diameter("pericyte_min_diameter_um"),
+                    max_pericyte_diameter_um=config.diameter("pericyte_max_diameter_um"),
                     prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
-                    constriction_length=config.constriction_length,
-                    use_probabilistic_constriction=bool(config.use_probabilistic_pericyte_constriction),
-                    constriction_probability=float(config.pericyte_constriction_probability),
+                    constriction_length=config.diameter("constriction_length"),
+                    use_probabilistic_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
+                    constriction_probability=float(config.diameter("pericyte_constriction_probability")),
                     active_pericyte_indices=(
                         active_pericyte_indices
                         if (
-                            config.reuse_comparison_pericyte_cohort_for_main_run
-                            and config.use_probabilistic_pericyte_constriction
+                            config.diameter("reuse_comparison_pericyte_cohort_for_main_run")
+                            and config.diameter("use_probabilistic_pericyte_constriction")
                         )
                         else None
                     ),
                     axis_order=config.axis_order,
                 )
             )
-        elif config.use_probabilistic_pericyte_constriction:
+        elif config.diameter("use_probabilistic_pericyte_constriction"):
             G, results["probabilistic"] = (
                 probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
                     G,
-                    diameter_by_branch_order=config.diameter_by_branch_order,
-                    constriction_factor_by_branch_order=config.constriction_by_branch_order,
+                    diameter_by_branch_order=config.diameter("diameter_by_branch_order"),
+                    constriction_factor_by_branch_order=config.diameter("constriction_by_branch_order"),
                     prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
-                    constriction_length=config.constriction_length,
-                    constriction_spacing=config.constriction_spacing,
-                    constriction_probability=float(config.pericyte_constriction_probability),
+                    constriction_length=config.diameter("constriction_length"),
+                    constriction_spacing=config.diameter("constriction_spacing"),
+                    constriction_probability=float(config.diameter("pericyte_constriction_probability")),
                     active_center_indices_by_edge=(
                         active_center_indices_by_edge
                         if (
-                            config.reuse_comparison_pericyte_cohort_for_main_run
-                            and config.use_probabilistic_pericyte_constriction
+                            config.diameter("reuse_comparison_pericyte_cohort_for_main_run")
+                            and config.diameter("use_probabilistic_pericyte_constriction")
                         )
                         else None
                     ),
@@ -249,17 +242,17 @@ def _assign_poiseuille_resistances(
         elif config.use_fwhm_edge_diameters:
             G, results["constrictions"] = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
-                config.diameter_by_branch_order,
+                config.diameter("diameter_by_branch_order"),
                 prefer_edge_fwhm_baseline=True,
-                constriction_factor_by_branch_order=config.constriction_by_branch_order,
+                constriction_factor_by_branch_order=config.diameter("constriction_by_branch_order"),
             )
         else:
             diameter_enhanced = {
                 branch_order: {
                     "d1": diameter,
-                    "d2": diameter * config.constriction_by_branch_order.get(branch_order, 1.0),
+                    "d2": diameter * config.diameter("constriction_by_branch_order").get(branch_order, 1.0),
                 }
-                for branch_order, diameter in config.diameter_by_branch_order.items()
+                for branch_order, diameter in config.diameter("diameter_by_branch_order").items()
             }
             G, results["constrictions"] = poiseuille_model.set_poiseuille_resistances_with_constrictions(
                 G,
@@ -268,14 +261,14 @@ def _assign_poiseuille_resistances(
     else:
         G, results["poiseuille"] = poiseuille_model.set_poiseuille_resistances(
             G,
-            config.diameter_by_branch_order,
+            config.diameter("diameter_by_branch_order"),
             prefer_edge_fwhm_diameter=bool(config.use_fwhm_edge_diameters),
         )
 
     G, results["custom_edges"] = poiseuille_model.set_poiseuille_edge_resistances(
         G,
-        config.custom_edges,
-        edge_diameter=config.custom_edge_diameter,
+        config.diameter("custom_edges"),
+        edge_diameter=config.diameter("custom_edge_diameter"),
     )
     return results
 
@@ -306,9 +299,11 @@ def apply_poiseuille_haemodynamics(
                 "diameter_by_branch_order is required when config is not provided."
             )
         config = HaemodynamicsApplyConfig(
-            diameter_by_branch_order=diameter_by_branch_order,
-            constriction_by_branch_order=constriction_by_branch_order or {},
-            custom_edges=custom_edges or [],
+            diameters={
+                "diameter_by_branch_order": diameter_by_branch_order,
+                "constriction_by_branch_order": constriction_by_branch_order or {},
+                "custom_edges": custom_edges or [],
+            }
         )
     summary: dict[str, Any] = {}
 
