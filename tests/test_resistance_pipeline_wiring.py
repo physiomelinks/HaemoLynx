@@ -133,9 +133,10 @@ def test_the_example_calls_the_stages_in_order():
     assert "export_results(" in example
 
 
-def test_the_module_no_longer_star_imports_its_settings():
-    example = (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
-    assert "from resistance_pipeline_settings import *" not in example
+def test_the_constants_module_is_gone():
+    """Defaults live in the schema; a second copy could only drift from it."""
+    assert not (REPO_ROOT / "examples" / "resistance_pipeline_settings.py").exists()
+    assert not (REPO_ROOT / "examples" / "presets.py").exists()
 
 
 def test_settings_once_read_from_module_globals_are_read_from_the_dict(source, pipeline):

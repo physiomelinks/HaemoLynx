@@ -91,10 +91,17 @@ for p in (SRC_DIR, EXAMPLES_DIR):
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
-from resistance_pipeline_settings import (
-    DIAMETER_BY_BRANCH_ORDER,
-    custom_edges,
+from ImageLynx.pipeline import resolve_settings
+from resistance_pipeline_schema import SCHEMA
+
+# Settings come from the pipeline's config file, so the tutorial and the
+# example agree by construction rather than by being kept in step by hand.
+# resolve_settings also fills in the tables derived from other settings.
+PIPELINE_SETTINGS = resolve_settings(
+    schema=SCHEMA, config_path=EXAMPLES_DIR / "resistance_pipeline_config.yaml"
 )
+DIAMETER_BY_BRANCH_ORDER = PIPELINE_SETTINGS["diameter_by_branch_order"]
+custom_edges = PIPELINE_SETTINGS["custom_edges"]
 
 if str(TUTORIAL_DIR) not in sys.path:
     sys.path.insert(0, str(TUTORIAL_DIR))
@@ -487,7 +494,7 @@ print(f"Saved: {stats_csv}")
 # 1. **Edit this notebook** (`pipeline_tutorial.ipynb`) — not the generated `.py`.
 # 2. **Stage 0:** set `RAW_IMAGE_PATH`, train ilastik, save `.ilp`, run with `RUN_STAGE_0_ILASTIK = True`.
 # 3. **Stage 1:** set `USE_CUSTOM_SEGMENTED_IMAGE = True` to use your segmented mask.
-# 4. Adjust inlet/outlet volume boxes or use coordinate/mask-based boundary selection (`examples/resistance_pipeline_settings.py`).
+# 4. Adjust inlet/outlet volume boxes or use coordinate/mask-based boundary selection (`examples/resistance_pipeline_config.yaml`).
 # 5. Tune skeleton and `build_graph_from_skeleton` parameters for your resolution.
 # 6. For FWHM diameters, pericytes, or automated ilastik in one script: `examples/resistance_network_pipeline.py`.
 # 7. Regenerate `pipeline_tutorial.py`: `pytest tests/integration/test_pipeline_tutorial.py`.

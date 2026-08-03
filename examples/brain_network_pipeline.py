@@ -13,7 +13,6 @@ sweep's. Change a value there rather than editing this script::
     python examples/brain_network_pipeline.py --config other_config.yaml
     python examples/brain_network_pipeline.py --pericyte-dilation-max-percent 10
 """
-import argparse
 import sys
 from pathlib import Path
 
@@ -24,7 +23,7 @@ for _path in (root_dir / "src", examples_dir):
         sys.path.insert(0, str(_path))
 
 from ImageLynx.haemodynamics.pericyte_sweep import run_pericyte_dilation_pressure_sweep
-from ImageLynx.parsers import add_schema_arguments, cli_overrides
+from ImageLynx.parsers import settings_from_command_line
 from ImageLynx.pipeline import (
     assign_boundaries,
     assign_diameters,
@@ -38,6 +37,8 @@ from ImageLynx.pipeline import (
 )
 from ImageLynx.visualization.dilation_curves import plot_dilation_curves
 from brain_pipeline_schema import SCHEMA
+from pipeline_presets import PRESETS
+from resistance_network_pipeline import run_preflight
 
 CONFIG_PATH = examples_dir / "brain_pipeline_config.yaml"
 
@@ -69,15 +70,13 @@ def main(settings: dict) -> dict:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--config", type=Path, default=CONFIG_PATH, help="YAML config to run from."
-    )
-    add_schema_arguments(parser, SCHEMA)
-    cli = parser.parse_args()
-
     main(
-        resolve_settings(
-            schema=SCHEMA, config_path=cli.config, overrides=cli_overrides(cli) or None
+        settings_from_command_line(
+            SCHEMA,
+            CONFIG_PATH,
+            description=__doc__,
+            presets=PRESETS,
+            resolver=resolve_settings,
+            check=run_preflight,
         )
     )

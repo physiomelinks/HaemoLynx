@@ -24,6 +24,7 @@ from .config import (
     prefixed_arguments,
     settings_for,
 )
+from .cli import build_parser, print_settings, settings_from_command_line
 from .schema import ConfigError, IneffectiveSettingWarning, Schema, Setting
 
 __all__ = [
@@ -33,10 +34,13 @@ __all__ = [
     "Schema",
     "Setting",
     "add_schema_arguments",
+    "build_parser",
     "cli_overrides",
     "dump_config",
     "load_config",
     "parameters_of",
     "prefixed_arguments",
+    "print_settings",
     "settings_for",
+    "settings_from_command_line",
 ]

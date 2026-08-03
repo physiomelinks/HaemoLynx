@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Declarative schema for the resistance-network pipeline settings.
 
-Every module constant in ``examples/resistance_pipeline_settings.py`` is
+Every setting the pipeline reads is
 declared here once, as a :class:`~ImageLynx.parsers.Setting`. That single
 declaration is what the YAML config writer, the command line, and a GUI form
 all read from, so none of them has to repeat the list of settings.
