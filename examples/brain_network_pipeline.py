@@ -25,7 +25,17 @@ for _path in (root_dir / "src", examples_dir):
 
 from ImageLynx.haemodynamics.pericyte_sweep import run_pericyte_dilation_pressure_sweep
 from ImageLynx.parsers import add_schema_arguments, cli_overrides
-from ImageLynx.pipeline import resolve_settings, run_pipeline_stages
+from ImageLynx.pipeline import (
+    assign_boundaries,
+    assign_diameters,
+    build_haemodynamic_model,
+    build_network,
+    export_results,
+    resolve_settings,
+    segment,
+    skeletonise,
+    solve,
+)
 from ImageLynx.visualization.dilation_curves import plot_dilation_curves
 from brain_pipeline_schema import SCHEMA
 
@@ -34,21 +44,24 @@ CONFIG_PATH = examples_dir / "brain_pipeline_config.yaml"
 
 def main(settings: dict) -> dict:
     """Run the pipeline, then the dilation sweep over the network it built."""
-    G = run_pipeline_stages(settings, SCHEMA)
-    if G is None:
-        raise RuntimeError(
-            "The pipeline produced no graph; enable do_graph_building or point "
-            "graph_pickle_path at a saved run."
-        )
+    inputs = segment(settings)
+    volume = skeletonise(settings, inputs)
+    network = build_network(settings, volume, SCHEMA)
+    boundaries = assign_boundaries(settings, network)
+    diameters = assign_diameters(settings, network, boundaries, SCHEMA)
+    model = build_haemodynamic_model(settings, diameters)
+    solution = solve(settings, model, boundaries)
+    export_results(settings, network, model, solution)
 
+    G = model.graph
     if not settings["run_pericyte_dilation_sweep"]:
         return {"graph": G, "sweep": None, "curves": None}
 
     sweep = run_pericyte_dilation_pressure_sweep(
         G,
         settings,
-        starting_nodes=settings["starting_nodes"],
-        output_nodes=settings["output_nodes"],
+        starting_nodes=boundaries.starting_nodes,
+        output_nodes=boundaries.output_nodes,
         output_dir=settings["sweep_output_dir"],
     )
     curves = plot_dilation_curves(sweep["results"], settings["sweep_output_dir"])

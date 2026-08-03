@@ -21,7 +21,16 @@ from ImageLynx.parsers import (
     load_config,
 )
 from ImageLynx.pipeline import resolve_settings as _resolve_settings
-from ImageLynx.pipeline import run_pipeline_stages
+from ImageLynx.pipeline import (
+    assign_boundaries,
+    assign_diameters,
+    build_haemodynamic_model,
+    build_network,
+    export_results,
+    segment,
+    skeletonise,
+    solve,
+)
 from preflight import run_preflight_checklist
 from resistance_pipeline_schema import SCHEMA
 from resistance_pipeline_settings import (
@@ -76,7 +85,18 @@ def image_to_model_pipeline(settings: dict | None = None, **overrides):
         image_to_model_pipeline(settings)
         image_to_model_pipeline(image_path="other.tif", do_skeletonize=False)
     """
-    return run_pipeline_stages(resolve_settings(settings, overrides=overrides or None), SCHEMA)
+    settings = resolve_settings(settings, overrides=overrides or None)
+
+    inputs = segment(settings)
+    volume = skeletonise(settings, inputs)
+    network = build_network(settings, volume, SCHEMA)
+    boundaries = assign_boundaries(settings, network)
+    diameters = assign_diameters(settings, network, boundaries, SCHEMA)
+    model = build_haemodynamic_model(settings, diameters)
+    solution = solve(settings, model, boundaries)
+    export_results(settings, network, model, solution)
+
+    return model.graph
 
 
 if __name__ == "__main__":

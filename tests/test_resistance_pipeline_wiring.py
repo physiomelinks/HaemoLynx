@@ -103,12 +103,34 @@ def test_an_explicit_plot_directory_wins(pipeline):
 # --- how the stages read settings ------------------------------------------
 
 
-def test_the_stage_runner_takes_the_settings_dict_and_a_schema(pipeline):
-    """The 127-parameter signature is gone; settings are read by name."""
-    assert list(inspect.signature(pipeline.run_pipeline_stages).parameters) == [
-        "settings",
-        "schema",
-    ]
+#: The stages a run is made of, in order, and what each returns.
+STAGES = [
+    ("segment", "SegmentedInputs"),
+    ("skeletonise", "SkeletonisedVolume"),
+    ("build_network", "VesselNetwork"),
+    ("assign_boundaries", "BoundaryNodes"),
+    ("assign_diameters", "HaemodynamicModel"),
+    ("build_haemodynamic_model", "HaemodynamicModel"),
+    ("solve", "Solution"),
+    ("export_results", "Solution"),
+]
+
+
+@pytest.mark.parametrize("stage_name,_returns", STAGES)
+def test_every_stage_takes_the_settings_dict_first(stage_name, _returns):
+    """The 127-parameter signature is gone; each stage reads settings by name."""
+    from ImageLynx import pipeline as pipeline_package
+
+    stage = getattr(pipeline_package, stage_name)
+    assert list(inspect.signature(stage).parameters)[0] == "settings"
+
+
+def test_the_example_calls_the_stages_in_order():
+    """The example is the eight stages, so a reader sees the shape of a run."""
+    example = (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
+    positions = [example.index(f"= {name}(") for name, _ in STAGES[:-1]]
+    assert positions == sorted(positions), "stages are called out of order"
+    assert "export_results(" in example
 
 
 def test_the_module_no_longer_star_imports_its_settings():
@@ -155,35 +177,49 @@ def test_node_lists_stay_mutable(pipeline):
 # --- the public entry point ------------------------------------------------
 
 
-def test_the_entry_point_takes_the_settings_dict(pipeline, monkeypatch):
+class _StopAfterFirstStage(Exception):
+    """Raised by the stubbed first stage; the rest of the run is not the point."""
+
+
+@pytest.fixture
+def settings_reaching_the_first_stage(pipeline, monkeypatch):
+    """Capture what the entry point hands to `segment`, then stop the run."""
     recorded: dict = {}
-    monkeypatch.setattr(
-        pipeline, "run_pipeline_stages", lambda settings, schema: recorded.update(settings)
-    )
-    pipeline.image_to_model_pipeline(
-        pipeline.resolve_settings(overrides={"do_skeletonize": False})
-    )
-    assert recorded["do_skeletonize"] is False
+
+    def _capture(settings):
+        recorded.update(settings)
+        raise _StopAfterFirstStage
+
+    monkeypatch.setattr(pipeline, "segment", _capture)
+    return recorded
 
 
-def test_the_entry_point_runs_the_config_file_with_no_arguments(pipeline, monkeypatch):
-    recorded: dict = {}
-    monkeypatch.setattr(
-        pipeline, "run_pipeline_stages", lambda settings, schema: recorded.update(settings)
-    )
-    pipeline.image_to_model_pipeline()
-    assert recorded["input_path"].name == "brain_microvessels.tiff"
+def test_the_entry_point_takes_the_settings_dict(
+    pipeline, settings_reaching_the_first_stage
+):
+    with pytest.raises(_StopAfterFirstStage):
+        pipeline.image_to_model_pipeline(
+            pipeline.resolve_settings(overrides={"do_skeletonize": False})
+        )
+    assert settings_reaching_the_first_stage["do_skeletonize"] is False
 
 
-def test_the_entry_point_still_accepts_individual_overrides(pipeline, monkeypatch):
+def test_the_entry_point_runs_the_config_file_with_no_arguments(
+    pipeline, settings_reaching_the_first_stage
+):
+    with pytest.raises(_StopAfterFirstStage):
+        pipeline.image_to_model_pipeline()
+    assert settings_reaching_the_first_stage["input_path"].name == "brain_microvessels.tiff"
+
+
+def test_the_entry_point_still_accepts_individual_overrides(
+    pipeline, settings_reaching_the_first_stage
+):
     """Callers that name individual settings directly keep working."""
-    recorded: dict = {}
-    monkeypatch.setattr(
-        pipeline, "run_pipeline_stages", lambda settings, schema: recorded.update(settings)
-    )
-    pipeline.image_to_model_pipeline(
-        input_path=Path("a.tif"), plot_dir=Path("plots"), do_graph_building=False
-    )
-    assert recorded["input_path"] == Path("a.tif")
-    assert recorded["plot_dir"] == Path("plots")
-    assert recorded["do_graph_building"] is False
+    with pytest.raises(_StopAfterFirstStage):
+        pipeline.image_to_model_pipeline(
+            input_path=Path("a.tif"), plot_dir=Path("plots"), do_graph_building=False
+        )
+    assert settings_reaching_the_first_stage["input_path"] == Path("a.tif")
+    assert settings_reaching_the_first_stage["plot_dir"] == Path("plots")
+    assert settings_reaching_the_first_stage["do_graph_building"] is False

@@ -1,11 +1,18 @@
-"""The image-to-model pipeline, stage by stage.
+"""The image-to-model pipeline, one function per stage.
 
-Segmentation, skeletonisation, graph building, boundary and branch-order
-assignment, haemodynamics, export and statistics — driven by one settings dict
-as loaded from a config file.
+Each stage takes the settings dict and whatever the earlier stages produced,
+and returns a small dataclass holding what the later ones need. Running them in
+order is what :func:`run_pipeline_stages` does; calling them individually is how
+you intervene in the middle of a run.
 
-Lives here rather than in an example so that more than one example can run it:
-the whole-brain script adds a pericyte dilation sweep on top of exactly this.
+    segment              raw image -> segmented mask (ilastik, or pass through)
+    skeletonise          mask -> skeleton, with the voxel size resolved
+    build_network        skeleton + vessel masks -> graph
+    assign_boundaries    graph -> inlet, outlet and vessel-boundary nodes
+    assign_diameters     graph -> branch orders and a diameter per edge
+    build_haemodynamic_model  diameters -> resistance and conductance per edge
+    solve                conductance -> pressures, flows, equivalent resistance
+    export_results       VTK, statistics, distances and plots
 """
 from __future__ import annotations
 
@@ -13,7 +20,9 @@ import inspect
 import json
 import logging
 import pickle
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -31,17 +40,70 @@ from ImageLynx.parsers import Schema, parameters_of, prefixed_arguments
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
-    """Run every pipeline stage for one resolved settings dict.
+@dataclass
+class SegmentedInputs:
+    """What segmentation settled: which image to analyse, and where output goes."""
 
-    Returns the graph the run produced, so a caller can do more with it — the
-    whole-brain script sweeps pericyte dilation over exactly this graph.
+    image_path: Path
+    output_dir: Path
+    #: "tif"/"tiff"/"h5" — which loader skeletonise should use.
+    input_format: str = "tif"
 
-    Reads settings by name rather than taking them as arguments: there are 137
-    of them, far past the point where a signature documents anything. See
-    ``resistance_pipeline_schema.py`` for what each one means and
-    ``resistance_pipeline_config.yaml`` for the values.
-    """
+
+@dataclass
+class SkeletonisedVolume:
+    """The loaded volume, its skeleton, and the voxel size they are measured in."""
+
+    image: np.ndarray
+    skeleton: np.ndarray
+    voxel_size_xyz: tuple[float, float, float]
+    voxel_size_zyx: tuple[float, float, float]
+    output_dir: Path
+
+
+@dataclass
+class VesselNetwork:
+    """The graph, the volume it came from, and the vessel masks alongside it."""
+
+    graph: nx.MultiGraph
+    volume: SkeletonisedVolume
+    large_arteriole_mask: np.ndarray | None = None
+    large_venule_mask: np.ndarray | None = None
+    small_arteriole_mask: np.ndarray | None = None
+    small_venule_mask: np.ndarray | None = None
+
+
+@dataclass
+class BoundaryNodes:
+    """Where flow enters and leaves, and where vessel types change."""
+
+    starting_nodes: list[int] = field(default_factory=list)
+    output_nodes: list[int] = field(default_factory=list)
+    arteriole_boundary_nodes: list[int] = field(default_factory=list)
+    venule_boundary_nodes: list[int] = field(default_factory=list)
+    resistance_node_pair: tuple[int, int] | None = None
+
+
+@dataclass
+class HaemodynamicModel:
+    """A graph carrying branch orders, diameters, resistances and conductances."""
+
+    graph: nx.MultiGraph
+    results: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Solution:
+    """What the solve produced: pressures, flows, equivalent resistance."""
+
+    pressure: np.ndarray | None = None
+    node_list: list[int] = field(default_factory=list)
+    equivalent_resistance: float | None = None
+    statistics: dict[str, Any] = field(default_factory=dict)
+
+
+def segment(settings: dict):
+    """Produce the segmented mask to analyse, running ilastik when asked to."""
     settings["input_path"] = Path(settings["input_path"])
     if settings["use_ilastik_segmentation"]:
         unsegmented_image_path = Path(settings["ilastik_unsegmented_image_path"])
@@ -90,6 +152,17 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
         format="[%(levelname)s] %(message)s",
     )
 
+    return SegmentedInputs(
+        image_path=settings["input_path"],
+        output_dir=output_dir,
+        input_format=input_format,
+    )
+
+
+def skeletonise(settings: dict, inputs: SegmentedInputs):
+    """Load the mask, resolve its voxel size, and skeletonise it."""
+    output_dir = inputs.output_dir
+    input_format = inputs.input_format
     # 1) Load image and skeletonize.
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -222,9 +295,25 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
     print("Skeleton projection saved.")
 
     main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
-    # Image metadata reports (x, y, z); array axes are canonical (z, y, x). Everything
-    # downstream that scales array indices uses voxel_size_zyx.
-    voxel_size_zyx = io.voxel_size_zyx_from_xyz(main_voxel_size_xyz)
+    # Image metadata reports (x, y, z); array axes are canonical (z, y, x).
+    # Everything downstream that scales array indices uses voxel_size_zyx.
+    return SkeletonisedVolume(
+        image=image,
+        skeleton=skeleton,
+        voxel_size_xyz=main_voxel_size_xyz,
+        voxel_size_zyx=io.voxel_size_zyx_from_xyz(main_voxel_size_xyz),
+        output_dir=output_dir,
+    )
+
+
+def build_network(settings: dict, volume: SkeletonisedVolume, schema: Schema):
+    """Load the vessel masks and turn the skeleton into a graph."""
+    image, skeleton = volume.image, volume.skeleton
+    output_dir = volume.output_dir
+    main_voxel_size_xyz = volume.voxel_size_xyz
+    voxel_size_zyx = volume.voxel_size_zyx
+    graph_path = output_dir / f"{settings['input_path'].stem}_graph.pkl"
+
     # The vessel-mask and segmentation settings go in as a group; each role
     # picks the ones it uses. `io.VESSEL_MASK_SETTINGS` lists which those are.
     mask_settings = {
@@ -330,6 +419,26 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
             show_coordinates_degree_1=True,
         )
 
+
+    return VesselNetwork(
+        graph=G,
+        volume=volume,
+        large_arteriole_mask=large_arteriole_mask,
+        large_venule_mask=large_venule_mask,
+        small_arteriole_mask=small_arteriole_mask,
+        small_venule_mask=small_venule_mask,
+    )
+
+
+def assign_boundaries(settings: dict, network: VesselNetwork):
+    """Choose the inlet, outlet and vessel-boundary nodes for this network."""
+    G = network.graph
+    image = network.volume.image
+    voxel_size_zyx = network.volume.voxel_size_zyx
+    large_arteriole_mask = network.large_arteriole_mask
+    large_venule_mask = network.large_venule_mask
+    small_arteriole_mask = network.small_arteriole_mask
+    small_venule_mask = network.small_venule_mask
     auto_start_nodes: list[int] = []
     auto_output_nodes: list[int] = []
     if settings["automated_vessel_assignment"]:
@@ -498,6 +607,23 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
             "No starting or output nodes found from manual input coordinates."
         )
 
+
+    return BoundaryNodes(
+        starting_nodes=settings["starting_nodes"],
+        output_nodes=settings["output_nodes"],
+        arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
+        venule_boundary_nodes=settings["venule_boundary_nodes"],
+        resistance_node_pair=resistance_node_pair,
+    )
+
+
+def assign_diameters(settings: dict, network: VesselNetwork, boundaries: BoundaryNodes, schema: Schema):
+    """Assign branch orders, then the diameter each edge is modelled with.\n\n    Branch orders come first because they are the key into the diameter\n    table; per-edge FWHM measurements override that table when enabled."""
+    G = network.graph
+    image = network.volume.image
+    output_dir = network.volume.output_dir
+    voxel_size_zyx = network.volume.voxel_size_zyx
+    resistance_node_pair = boundaries.resistance_node_pair
     # 4) Add branch orders and hemodynamic edge weights.
     if settings["starting_nodes"]:
 
@@ -589,6 +715,28 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
             for step_name, step_result in weight_results.items():
                 print(f"Haemodynamics weights [{step_name}]: {step_result}")
 
+
+    return HaemodynamicModel(graph=G, results=locals().get("haemo_results", {}) or {})
+
+
+def build_haemodynamic_model(settings: dict, model: HaemodynamicModel):
+    """Return the model ready to solve.\n\n    `assign_diameters` already applied Poiseuille's law to every edge, so\n    this reports what it produced rather than recomputing it."""
+    if settings["run_haemodynamics"]:
+        edges_with_resistance = sum(
+            1 for _, _, data in model.graph.edges(data=True) if "resistance" in data
+        )
+        print(
+            f"Haemodynamic model: {edges_with_resistance} of "
+            f"{model.graph.number_of_edges()} edges carry a resistance"
+        )
+    return model
+
+
+def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
+    """Solve the network: equivalent resistance, then pressures and edge flows."""
+    G = model.graph
+    resistance_node_pair = boundaries.resistance_node_pair
+    solution = Solution()
     # 6) Compute effective resistance between two selected nodes.
     if settings["run_haemodynamics"]:
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
@@ -598,7 +746,7 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
             laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-            two_point_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+            solution.equivalent_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
                 laplacian,
                 G,
                 source_node,
@@ -606,7 +754,7 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
             )
             print(
                 f"\nEffective resistance between nodes {source_node} and "
-                f"{target_node}: {two_point_resistance}"
+                f"{target_node}: {solution.equivalent_resistance}"
             )
         else:
             print(
@@ -614,6 +762,37 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
                 "are not both present in the graph."
             )
 
+    # 9) Also solve for flow throughout the network using the conductance matrix 
+    # and the input and output pressures.
+    if settings["run_haemodynamics"]:
+        print("\nSolving flow through the network...")
+        flow = haemodynamics.solve_flow_from_conductance_matrix(
+            conductance,
+            node_list,
+            input_p_bc=settings["input_p_bc"],
+            output_p_bc=settings["output_p_bc"],
+            starting_nodes=settings["starting_nodes"],
+            output_nodes=settings["output_nodes"],
+        )
+        haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
+        print("Flow through the network solved")
+    else:
+        print("Haemodynamics solve skipped (run_haemodynamics=False).")
+
+
+    if settings["run_haemodynamics"]:
+        solution.pressure = flow["pressure"]
+        solution.node_list = list(node_list)
+    return solution
+
+
+def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicModel, solution: Solution):
+    """Write VTK, statistics and distance measurements, and draw the plots."""
+    G = model.graph
+    image = network.volume.image
+    output_dir = network.volume.output_dir
+    voxel_size_zyx = network.volume.voxel_size_zyx
+    main_voxel_size_xyz = network.volume.voxel_size_xyz
     # 7) Compute and print vessel statistics.
     print("\nComputing vessel statistics...")
     if settings["statistics"]:
@@ -734,23 +913,6 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
     else:
         print("3D cell-mask vessel-distance measurement skipped.")
 
-    # 9) Also solve for flow throughout the network using the conductance matrix 
-    # and the input and output pressures.
-    if settings["run_haemodynamics"]:
-        print("\nSolving flow through the network...")
-        flow = haemodynamics.solve_flow_from_conductance_matrix(
-            conductance,
-            node_list,
-            input_p_bc=settings["input_p_bc"],
-            output_p_bc=settings["output_p_bc"],
-            starting_nodes=settings["starting_nodes"],
-            output_nodes=settings["output_nodes"],
-        )
-        haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
-        print("Flow through the network solved")
-    else:
-        print("Haemodynamics solve skipped (run_haemodynamics=False).")
-
     # 10) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
@@ -836,4 +998,22 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
     else:
         print("Matplotlib visualizations skipped.")
 
-    return G
+
+    return solution
+
+
+def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
+    """Run every stage in order, for one resolved settings dict.
+
+    Returns the graph the run produced, so a caller can do more with it -- the
+    whole-brain script sweeps pericyte dilation over exactly this graph.
+    """
+    inputs = segment(settings)
+    volume = skeletonise(settings, inputs)
+    network = build_network(settings, volume, schema)
+    boundaries = assign_boundaries(settings, network)
+    diameters = assign_diameters(settings, network, boundaries, schema)
+    model = build_haemodynamic_model(settings, diameters)
+    solution = solve(settings, model, boundaries)
+    export_results(settings, network, model, solution)
+    return model.graph
