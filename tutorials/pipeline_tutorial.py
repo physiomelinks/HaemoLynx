@@ -433,18 +433,21 @@ r = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
 )
 print(f"Two-point resistance: {r}")
 
-# ## Stage 5: VTK export and flow solve
+# ## Stage 5: Flow solve and VTK export
 # 
-# Export vessels, pericytes, and nodes to VTK (`.vtp`), then solve pressure-driven flow with inlet/outlet boundary conditions.
+# Solve pressure-driven flow with inlet/outlet boundary conditions, put the resulting flows on the graph, then export vessels, pericytes, and nodes to VTK (`.vtp`) in one pass.
 
 # In[ ]:
 
 
-vtk_export = visualization.graph_to_vtk(G, VTK_PREFIX)
-flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
-    conductance, node_list, INPUT_P_BC, OUTPUT_P_BC,
-    starting_nodes, output_nodes, vtk_export,
+flow = haemodynamics.solve_flow_from_conductance_matrix(
+    conductance, node_list,
+    input_p_bc=INPUT_P_BC, output_p_bc=OUTPUT_P_BC,
+    starting_nodes=starting_nodes, output_nodes=output_nodes,
 )
+# Flows go onto the graph, so one export writes vessels and flow together.
+haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
+vtk_export = visualization.graph_to_vtk(G, VTK_PREFIX)
 print(f"VTK with flow: {vtk_export['vessels_path']}")
 print(
     "Open the .vtp files in ParaView (or similar) to visualise vessels, nodes, and flow."

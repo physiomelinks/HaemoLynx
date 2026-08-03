@@ -119,10 +119,6 @@ def main(settings: dict) -> dict:
         diameter_by_branch_order=settings["diameter_by_branch_order"],
     )
 
-    # 3. VTK export. Written before the flow solve because the solver reads the
-    #    vessel file back to attach pressures and flows to it.
-    vtk_export = visualization.graph_to_vtk(G, output_dir / "simple_network")
-
     # 4. Boundary nodes. Only degree-1 terminals are considered: pinning an
     #    interior junction would make it inject or remove flow mid-network.
     #    `method` selects how the terminals are picked, and each method reads a
@@ -163,15 +159,17 @@ def main(settings: dict) -> dict:
     print(f"Boundary nodes: inlets={inlet_nodes}, outlets={outlet_nodes}")
 
     conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
-    flow_result, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
+    flow_result = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
         input_p_bc=settings["inlet_pressure_pa"],
         output_p_bc=settings["outlet_pressure_pa"],
         starting_nodes=inlet_nodes,
         output_nodes=outlet_nodes,
-        vtk_export=vtk_export,
     )
+    # Flows live on the graph, so the export below writes them like any other
+    # edge attribute.
+    haemodynamics.set_edge_flows(G, node_list, flow_result["pressure"])
 
     # 5. Network-level check: the flow driven through the inlet must match the
     #    pressure drop divided by the inlet-to-outlet effective resistance.
@@ -195,7 +193,9 @@ def main(settings: dict) -> dict:
     print(f"Inlet flow:            {inlet_flow * M3_PER_S_TO_NL_PER_MIN:.3f} nL/min")
     print(f"  from dP/R_eff:       "
           f"{pressure_drop / effective_resistance * M3_PER_S_TO_NL_PER_MIN:.3f} nL/min")
-    print(f"\nVTK with pressures and flows: {vtk_export['vessels_flow_path']}")
+    # 6. Export, once, after everything that writes to the graph.
+    vtk_export = visualization.graph_to_vtk(G, output_dir / "simple_network")
+    print(f"\nVTK with pressures and flows: {vtk_export['vessels_path']}")
 
     return {
         "graph": G,

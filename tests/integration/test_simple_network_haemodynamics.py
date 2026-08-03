@@ -152,7 +152,8 @@ def test_running_the_example_warns_about_the_placeholder_viscosity(
 
 def test_vtk_files_are_written_with_flow_fields(run_result):
     vtk_export = run_result["vtk_export"]
-    flow_path = Path(vtk_export["vessels_flow_path"])
+    # One export, after the solve: the flows ride along as edge attributes.
+    flow_path = Path(vtk_export["vessels_path"])
     assert flow_path.exists() and flow_path.stat().st_size > 0
     assert Path(vtk_export["nodes_path"]).exists()
 

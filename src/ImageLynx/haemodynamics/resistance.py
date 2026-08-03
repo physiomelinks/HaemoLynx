@@ -69,17 +69,17 @@ def calc_two_point_from_laplacian_matrix_nodeID(
 def solve_flow_from_conductance_matrix(
     conductance: np.ndarray,
     node_list: list,
+    *,
     input_p_bc: float,
     output_p_bc: float,
     starting_nodes: list,
     output_nodes: list,
-    vtk_export: dict,
-) -> tuple[dict, dict]:
-    """Solve nodal pressures/edge flows from conductance with Dirichlet BCs.
+) -> dict:
+    """Solve nodal pressures from a conductance matrix with Dirichlet BCs.
 
-    Boundary conditions are applied by node IDs (matching node_list values).
-    The returned vtk_export is updated with flow arrays on vessel cell_data and
-    a new `_flow.vtp` output path.
+    Boundary conditions are applied by node ID. Returns the node order and the
+    pressure at each node; use :func:`set_edge_flows` to turn those into
+    per-edge flows on the graph.
     """
     if conductance.ndim != 2 or conductance.shape[0] != conductance.shape[1]:
         raise ValueError("conductance must be a square matrix")
@@ -153,63 +153,32 @@ def solve_flow_from_conductance_matrix(
             p_u = np.linalg.lstsq(l_uu, rhs, rcond=None)[0]
         pressure[unknown_idx] = p_u
 
-    flow_result = {
-        "node_list": node_list,
-        "pressure": pressure,
-    }
+    return {"node_list": node_list, "pressure": pressure}
 
-    vessels_path = Path(vtk_export["vessels_path"])
-    vessels = pv.read(str(vessels_path))
-    edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
-    edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
-    edge_conductance = np.asarray(
-        vessels.cell_data.get("conductance", []), dtype=float
-    )
-    if len(edge_u) != vessels.n_cells or len(edge_v) != vessels.n_cells:
-        raise ValueError(
-            "VTK vessels file is missing edge_u/edge_v cell arrays needed for flow export."
-        )
-    if len(edge_conductance) != vessels.n_cells:
-        raise ValueError(
-            "VTK vessels file is missing the conductance cell array needed for flow export."
-        )
 
-    edge_p_u = np.full(vessels.n_cells, np.nan, dtype=float)
-    edge_p_v = np.full(vessels.n_cells, np.nan, dtype=float)
-    for ii in range(vessels.n_cells):
-        u = int(edge_u[ii])
-        v = int(edge_v[ii])
+def set_edge_flows(G: nx.Graph, node_list: list, pressure: np.ndarray) -> dict:
+    """Write the flow implied by *pressure* onto every edge of *G*.
+
+    Adds ``pressure_drop`` (Pa), ``flow_signed`` and ``flow_abs`` (m^3/s), so
+    the flows travel with the graph and any export writes them out like any
+    other edge attribute.
+    """
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    edges_set = 0
+    total_abs_flow = 0.0
+    for u, v, data in G.edges(data=True):
+        conductance = data.get("conductance")
         u_idx = node_to_idx.get(u)
         v_idx = node_to_idx.get(v)
-        if u_idx is not None:
-            edge_p_u[ii] = pressure[u_idx]
-        if v_idx is not None:
-            edge_p_v[ii] = pressure[v_idx]
-    pressure_drop = edge_p_u - edge_p_v
-    flow_signed = edge_conductance * pressure_drop
-    flow_abs = np.abs(flow_signed)
-
-    vessels.cell_data["pressure_u"] = edge_p_u
-    vessels.cell_data["pressure_v"] = edge_p_v
-    vessels.cell_data["pressure_drop"] = pressure_drop
-    vessels.cell_data["flow_signed"] = flow_signed
-    vessels.cell_data["flow_abs"] = flow_abs
-
-    flow_path = vessels_path.with_name(f"{vessels_path.stem}_flow.vtp")
-    vessels.save(flow_path)
-
-    vtk_export = dict(vtk_export)
-    vtk_export["vessels_path"] = str(flow_path)
-    vtk_export["vessels_flow_path"] = str(flow_path)
-    vtk_export["flow_field_names"] = [
-        "pressure_u",
-        "pressure_v",
-        "pressure_drop",
-        "flow_signed",
-        "flow_abs",
-    ]
-    vtk_export["flow_cell_count"] = int(vessels.n_cells)
-
-    flow_result["flow_signed"] = flow_signed
-    flow_result["flow_abs"] = flow_abs
-    return flow_result, vtk_export
+        if conductance is None or u_idx is None or v_idx is None:
+            continue
+        drop = float(pressure[u_idx] - pressure[v_idx])
+        signed = float(conductance) * drop
+        data["pressure_u"] = float(pressure[u_idx])
+        data["pressure_v"] = float(pressure[v_idx])
+        data["pressure_drop"] = drop
+        data["flow_signed"] = signed
+        data["flow_abs"] = abs(signed)
+        edges_set += 1
+        total_abs_flow += abs(signed)
+    return {"edges_set": edges_set, "total_abs_flow": total_abs_flow}

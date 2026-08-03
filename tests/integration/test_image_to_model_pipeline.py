@@ -75,14 +75,12 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
     skeleton_path = output_dir / f"{input_tiff.stem}_skeleton.npy"
     graph_path = output_dir / f"{input_tiff.stem}_graph.pkl"
     vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
     pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
     nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
 
     assert skeleton_path.exists()
     assert graph_path.exists()
     assert vessels_path.exists()
-    assert vessels_flow_path.exists()
     assert pericytes_path.exists()
     assert nodes_path.exists()
 
@@ -330,14 +328,12 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     skeleton_path = output_dir / f"{input_h5.stem}_skeleton.npy"
     graph_path = output_dir / f"{input_h5.stem}_graph.pkl"
     vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
     pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
     nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
 
     assert skeleton_path.exists()
     assert graph_path.exists()
     assert vessels_path.exists()
-    assert vessels_flow_path.exists()
     assert pericytes_path.exists()
     assert nodes_path.exists()
 

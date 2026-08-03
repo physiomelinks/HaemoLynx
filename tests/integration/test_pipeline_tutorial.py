@@ -73,10 +73,8 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
     stem = INPUT_TIFF.stem
     graph_path = output_dir / f"{stem}_graph.pkl"
     vtk_prefix = output_dir / f"{stem}_tutorial"
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
 
     assert graph_path.exists(), f"Missing graph pickle: {graph_path}"
-    assert vessels_flow_path.exists(), f"Missing VTK flow file: {vessels_flow_path}"
 
     with graph_path.open("rb") as fh:
         graph = pickle.load(fh)

@@ -90,9 +90,7 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
     )
 
     graph_path = output_dir / f"{cropped_tiff.stem}_graph.pkl"
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
     assert graph_path.exists()
-    assert vessels_flow_path.exists()
 
     with graph_path.open("rb") as fh:
         graph = pickle.load(fh)

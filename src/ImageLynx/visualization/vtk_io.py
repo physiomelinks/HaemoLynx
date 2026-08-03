@@ -191,6 +191,11 @@ def graph_to_vtk(
     branch_order: List[str] = []
     resistances: List[float] = []
     conductances: List[float] = []
+    #: Written by haemodynamics.set_edge_flows; absent until a run has solved.
+    flow_fields: Dict[str, List[float]] = {
+        name: [] for name in ("pressure_u", "pressure_v", "pressure_drop",
+                              "flow_signed", "flow_abs")
+    }
 
     is_multigraph = isinstance(graph, nx.MultiGraph)
     edge_iter: Iterable[Any]
@@ -231,6 +236,9 @@ def graph_to_vtk(
         c = data.get("conductance")
         resistances.append(float(r) if r is not None else np.nan)
         conductances.append(float(c) if c is not None else np.nan)
+        for name, values in flow_fields.items():
+            value = data.get(name)
+            values.append(float(value) if value is not None else np.nan)
 
     vessel_mesh = pv.PolyData()
     vessel_mesh.points = np.asarray(all_points, dtype=float) if all_points else np.empty((0, 3), dtype=float)
@@ -242,6 +250,10 @@ def graph_to_vtk(
         vessel_mesh.cell_data["branch_order"] = np.asarray(branch_order)
         vessel_mesh.cell_data["resistance"] = np.asarray(resistances, dtype=float)
         vessel_mesh.cell_data["conductance"] = np.asarray(conductances, dtype=float)
+        for name, values in flow_fields.items():
+            array = np.asarray(values, dtype=float)
+            if np.any(np.isfinite(array)):
+                vessel_mesh.cell_data[name] = array
     vessel_mesh.save(vessel_path)
 
     pericyte = derive_pericyte_points_from_graph(

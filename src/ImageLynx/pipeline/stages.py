@@ -589,31 +589,6 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
             for step_name, step_result in weight_results.items():
                 print(f"Haemodynamics weights [{step_name}]: {step_result}")
 
-    # 5) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
-    # FA I have no idea if pericyte location is correct. AI did that part.
-    # FA I don't fully understand how pericyte location is currently determined?
-    if settings["run_haemodynamics"] and settings["vtk_export"]:
-        vtk_export = visualization.graph_to_vtk(G, settings["vtk_output_prefix"])
-        print("\n=== VTK Export ===")
-        print(f"  Vessels:   {vtk_export['vessels_path']}")
-        print(f"  Pericytes: {vtk_export['pericytes_path']}")
-        print(f"  Nodes:     {vtk_export['nodes_path']}")
-        print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
-          f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
-    if settings["run_haemodynamics"] and settings["visualize_vtk"] and settings["vtk_export"]:
-        visualization.visualize_vtk_network(
-            vtk_export["vessels_path"],
-            vtk_export["pericytes_path"],
-            vtk_export["nodes_path"],
-            show_nodes=False,
-        )
-    if settings["run_haemodynamics"] and settings["visualize_vtk"] and not settings["vtk_export"]:
-        print(
-            "VTK visualization requested but VTK export is disabled. "
-            "Set vtk_export: true in the config to enable."
-        )
-    if settings["run_haemodynamics"] and not settings["visualize_vtk"]:
-        print("VTK visualization skipped.") 
     # 6) Compute effective resistance between two selected nodes.
     if settings["run_haemodynamics"]:
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
@@ -763,21 +738,45 @@ def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
     # and the input and output pressures.
     if settings["run_haemodynamics"]:
         print("\nSolving flow through the network...")
-        flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
+        flow = haemodynamics.solve_flow_from_conductance_matrix(
             conductance,
             node_list,
-            settings["input_p_bc"],
-            settings["output_p_bc"],
-            settings["starting_nodes"],
-            settings["output_nodes"],
-            vtk_export,
+            input_p_bc=settings["input_p_bc"],
+            output_p_bc=settings["output_p_bc"],
+            starting_nodes=settings["starting_nodes"],
+            output_nodes=settings["output_nodes"],
         )
+        haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
         print("Flow through the network solved")
-        print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
     else:
         print("Haemodynamics solve skipped (run_haemodynamics=False).")
 
-    # 10) Optional matplotlib visualization.
+    # 10) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
+    # FA I have no idea if pericyte location is correct. AI did that part.
+    # FA I don't fully understand how pericyte location is currently determined?
+    if settings["run_haemodynamics"] and settings["vtk_export"]:
+        vtk_export = visualization.graph_to_vtk(G, settings["vtk_output_prefix"])
+        print("\n=== VTK Export ===")
+        print(f"  Vessels:   {vtk_export['vessels_path']}")
+        print(f"  Pericytes: {vtk_export['pericytes_path']}")
+        print(f"  Nodes:     {vtk_export['nodes_path']}")
+        print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
+          f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
+    if settings["run_haemodynamics"] and settings["visualize_vtk"] and settings["vtk_export"]:
+        visualization.visualize_vtk_network(
+            vtk_export["vessels_path"],
+            vtk_export["pericytes_path"],
+            vtk_export["nodes_path"],
+            show_nodes=False,
+        )
+    if settings["run_haemodynamics"] and settings["visualize_vtk"] and not settings["vtk_export"]:
+        print(
+            "VTK visualization requested but VTK export is disabled. "
+            "Set vtk_export: true in the config to enable."
+        )
+    if settings["run_haemodynamics"] and not settings["visualize_vtk"]:
+        print("VTK visualization skipped.") 
+    # 11) Optional matplotlib visualization.
     if settings["visualize_results"]:
         print("\nGenerating visualizations...")
         valid_plot_modes = {"all", "final_only", "none"}
