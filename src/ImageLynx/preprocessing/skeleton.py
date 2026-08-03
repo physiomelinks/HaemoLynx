@@ -177,6 +177,19 @@ def bridge_gaps(binary_skeleton: np.ndarray, max_gap: int = 4) -> np.ndarray:
     Every background voxel within *max_gap* voxels of any foreground voxel is
     set to foreground.  Equivalent to morphological dilation with radius
     *max_gap*.
+
+    .. warning::
+       This is a plain dilation and **not** a closing: it never erodes back, so every
+       structure gains *max_gap* voxels of radius unconditionally and anything within
+       ``2 * max_gap`` fuses. On a segmentation mask the bias is not size-neutral - because
+       cross-sectional area goes as the square of the radius, +1 voxel on a 2-voxel radius is
+       +125% area but only +36% on a 6-voxel radius, so narrow vessels are inflated hardest.
+       It also thickens the vessel wall that EDT-based radius estimation measures against.
+
+       For masks, prefer :func:`close_binary_mask`, which bridges gaps without permanently
+       expanding boundaries. This dilation is retained because a closing cannot reconnect a
+       gap in a 1-voxel-thick skeleton - the erosion step removes the bridge again - so the
+       two are not interchangeable for skeleton input.
     """
     dist = distance_transform_edt(~binary_skeleton)
     fill_mask = (dist <= max_gap) & (~binary_skeleton)

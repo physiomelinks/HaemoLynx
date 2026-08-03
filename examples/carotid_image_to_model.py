@@ -625,7 +625,12 @@ def _preprocess_local_mask(raw_prob_map, entropy_map, pre_config, skel_config, g
     if skel_config.closing_radius > 0:
         binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.closing_radius)
     if skel_config.bridge_gap_size > 0:
-        binary = preprocessing.skeleton.bridge_gaps(binary, max_gap=skel_config.bridge_gap_size)
+        # Was bridge_gaps(), which is a plain dilation: it never erodes back, so every vessel
+        # gained bridge_gap_size voxels of radius unconditionally and anything within twice
+        # that fused. On a thick mask a closing bridges the same gaps without expanding
+        # boundaries. (It is not a substitute on a 1-voxel skeleton, where the erosion step
+        # would remove the bridge again - see bridge_gaps' docstring.)
+        binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.bridge_gap_size)
     if skel_config.prune_mask_before > 0:
         binary = preprocessing.skeleton.keep_largest_mask_components(
             binary, n_components=skel_config.prune_mask_before, connectivity=skel_config.component_connectivity
