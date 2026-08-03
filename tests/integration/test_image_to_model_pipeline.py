@@ -146,7 +146,12 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
 
     assert n_nodes > 0
     assert n_edges > 0
-    assert vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp").exists()
+    # One export, after the solve: vessels and flow in a single file.
+    vessels = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
+    assert vessels.exists()
+    import pyvista as pv
+
+    assert "flow_abs" in pv.read(str(vessels)).cell_data
 
 
 @pytest.mark.integration
