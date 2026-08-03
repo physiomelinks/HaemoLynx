@@ -68,3 +68,68 @@ def test_poiseuille_edt_mode():
     
     assert stats_constrict["resistances_set"] == 1
     assert G_constrict[0][1][0]["assigned_diameter_um"] == 12.0
+
+
+def test_edt_radius_raises_when_nothing_was_measured():
+    """edt_radius used to pass validation and then silently fabricate every diameter.
+
+    Nothing populated edt_diameter_um anywhere in the codebase, so selecting the mode
+    produced the synthetic branch-order law with no error and no warning. Half a calibre
+    distribution being fabricated is not something that should happen quietly.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, branch_order="B01", length=100.0)  # no edt_diameter_um
+    diameter_by_branch_order = {"B01": {"d1": 4.0, "d2": 4.0}}
+    model = PoiseuilleModel(constriction_length=5.0, constriction_spacing=100.0)
+
+    with pytest.raises(ValueError, match="edt_diameter_um"):
+        model.set_poiseuille_resistances(
+            G, diameter_by_branch_order, radius_assignment_mode="edt_radius"
+        )
+
+    with pytest.raises(ValueError, match="edt_diameter_um"):
+        model.set_poiseuille_resistances_with_constrictions(
+            G, diameter_by_branch_order, radius_assignment_mode="edt_radius"
+        )
+
+
+def test_fwhm_radius_does_not_raise_when_nothing_was_measured():
+    """fwhm_radius deliberately does not raise, unlike edt_radius.
+
+    FWHM legitimately fails on individual edges - roughly half of them on the Ilastik
+    probability field, whose flat in-vessel plateau is the documented failure case for
+    Gaussian fitting - so an empty measurement is a real outcome rather than proof that the
+    measurement step never ran. The fabricated fraction is surfaced through the provenance
+    counts instead of being turned into an error.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, branch_order="B01", length=100.0)
+    model = PoiseuilleModel(constriction_length=5.0, constriction_spacing=100.0)
+
+    _, stats = model.set_poiseuille_resistances(
+        G, {"B01": {"d1": 4.0, "d2": 4.0}}, radius_assignment_mode="fwhm_radius"
+    )
+    assert stats["diameter_provenance_counts"] == {"synthetic_branch_order": 1}
+
+
+def test_diameter_provenance_distinguishes_measured_from_synthetic():
+    """assigned_diameter_um recorded measured and fabricated diameters identically.
+
+    Section 1.2 is a distributional claim, so a mixed distribution has to be separable.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, branch_order="B01", length=100.0, edt_diameter_um=12.0)  # measured
+    G.add_edge(1, 2, branch_order="B01", length=100.0)                        # falls back
+    model = PoiseuilleModel(constriction_length=5.0, constriction_spacing=100.0)
+
+    _, stats = model.set_poiseuille_resistances(
+        G, {"B01": {"d1": 4.0, "d2": 4.0}}, radius_assignment_mode="edt_radius"
+    )
+
+    assert stats["diameter_provenance_counts"] == {
+        "measured_edt": 1, "synthetic_branch_order": 1,
+    }
+    assert G[0][1][0]["diameter_provenance"] == "measured_edt"
+    assert G[1][2][0]["diameter_provenance"] == "synthetic_branch_order"
+    assert G[0][1][0]["assigned_diameter_um"] == 12.0
+    assert G[1][2][0]["assigned_diameter_um"] == 4.0

@@ -807,7 +807,7 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
             
     return G
 
-def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format):
+def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format, binary=None):
     """
     Phase 4: Selects inlet/outlet nodes, calculates branch hierarchies,
     and assigns physical resistances based on Poiseuille's law.
@@ -941,8 +941,27 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
                 transverse_half_extent_um=hemo_config.fwhm_transverse_half_extent_um,
             )
             print(f"FWHM measurement complete. Processed {len(stats_dict)} edges.")
+        elif hemo_config.radius_assignment_mode == "edt_radius":
+            # measure_edge_diameters_edt_from_binary_mask was implemented, correct, and never
+            # called from anywhere; edt_radius passed validation and then silently produced
+            # synthetic branch-order diameters. It is the estimator H1 section 1.2 specifies:
+            # a 3D EDT in physical units, sampled at every centreline voxel, per-edge median.
+            if binary is None:
+                raise ValueError(
+                    "radius_assignment_mode='edt_radius' requires the binary mask, but none "
+                    "was supplied. It is unavailable on graph-only paths; use 'fwhm_radius' "
+                    "or re-run with segmentation enabled."
+                )
+            print("Measuring exact physical vessel diameters using the 3D Euclidean distance transform...")
+            edt_summary = haemodynamics.measure_edge_diameters_edt_from_binary_mask(
+                G,
+                binary_mask=binary,
+                voxel_size_xyz=_resolve_voxel_size(image_path, input_format),
+            )
+            print(f"EDT measurement complete. Measured {edt_summary['edges_measured']} edges, "
+                  f"skipped {edt_summary['edges_skipped']}.")
         else:
-            print(f"Bypassing FWHM ray-casting. Using '{hemo_config.radius_assignment_mode}' ({hemo_config.constant_radius_um} um)")
+            print(f"Bypassing diameter measurement. Using '{hemo_config.radius_assignment_mode}' ({hemo_config.constant_radius_um} um)")
 
         # Initialize the haemodynamics solver to calculate physical flow resistance using Poiseuille's Law
         poiseuille_model = haemodynamics.PoiseuilleModel(
@@ -1632,7 +1651,7 @@ def carotid_image_to_model(image_path: Path | str,
             G = pickle.load(f)
         print(f"Loaded graph from: {graph_path}")
 
-    starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format)
+    starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format, binary=binary)
     _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config)
     
 def update_dataclass_from_dict(obj, config_dict):

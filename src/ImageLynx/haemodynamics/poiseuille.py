@@ -6,6 +6,29 @@ import networkx as nx
 
 logger = logging.getLogger(__name__)
 
+def _raise_if_measurement_mode_measured_nothing(radius_assignment_mode, edges_processed, edges_measured):
+    """Refuse to return a diameter distribution that is entirely fabricated.
+
+    Only ``edt_radius`` raises. Nothing in the codebase populated ``edt_diameter_um``, so
+    selecting that mode silently produced the synthetic branch-order law for every edge - no
+    error, no warning - and zero measured edges is proof the measurement step never ran.
+
+    ``fwhm_radius`` deliberately does not raise: FWHM legitimately fails on individual edges
+    (roughly half, on the Ilastik probability field, whose flat in-vessel plateau is the case
+    Gaussian fitting is documented to fail on), so a partial or empty measurement is a real
+    outcome rather than a misconfiguration. The fabricated fraction is instead made explicit
+    and countable through ``diameter_provenance``.
+    """
+    if radius_assignment_mode != "edt_radius" or edges_processed == 0 or edges_measured > 0:
+        return
+    raise ValueError(
+        "radius_assignment_mode='edt_radius' was selected but no edge carries "
+        "'edt_diameter_um', so every diameter would silently fall back to the synthetic "
+        "branch-order law. Run measure_edge_diameters_edt_from_binary_mask on the graph "
+        "before assigning resistances."
+    )
+
+
 class PoiseuilleModel:
     """Encapsulates Poiseuille computations and constriction settings."""
 
@@ -161,18 +184,29 @@ class PoiseuilleModel:
             
             # Get diameter for this branch order (or per-edge FWHM measurement)
             diameter = None
+            provenance = "synthetic_branch_order"
             if radius_assignment_mode == "constant_radius":
                 diameter = constant_radius_um * 2.0
+                provenance = "constant"
             elif radius_assignment_mode == "edt_radius":
                 edt_d = data.get("edt_diameter_um")
                 if edt_d is not None and float(edt_d) > 0:
                     diameter = float(edt_d)
                     results['used_fwhm_edge_diameter'] += 1
+                    provenance = "measured_edt"
             elif radius_assignment_mode == "fwhm_radius":
                 fwhm_d = data.get("fwhm_diameter_um")
                 if fwhm_d is not None and float(fwhm_d) > 0:
                     diameter = float(fwhm_d)
                     results['used_fwhm_edge_diameter'] += 1
+                    provenance = "measured_fwhm"
+
+            results.setdefault("diameter_provenance_counts", {})
+            results["diameter_provenance_counts"][provenance] = (
+                results["diameter_provenance_counts"].get(provenance, 0) + 1
+            )
+            data["diameter_provenance"] = provenance
+
             if diameter is None:
                 val = diameter_by_branch_order.get(branch_order)
                 if val is None:
@@ -209,6 +243,10 @@ class PoiseuilleModel:
                         f"diameter={diameter}μm, length={length:.3f}μm, "
                         f"viscosity={viscosity:.6f}, resistance={resistance:.6f}")
         
+        _raise_if_measurement_mode_measured_nothing(
+            radius_assignment_mode, results['resistances_set'], results['used_fwhm_edge_diameter']
+        )
+
         # Print summary
         print(f"=== Summary ===")
         print(f"Resistances successfully set: {results['resistances_set']}")
@@ -240,6 +278,7 @@ class PoiseuilleModel:
             "invalid_length": [],
             "invalid_diameter": [],
             "used_fwhm_baseline": 0,
+            "diameter_provenance_counts": {},
         }
         for u, v, key, data in G.edges(keys=True, data=True):
             branch_order = data.get("branch_order")
@@ -281,10 +320,16 @@ class PoiseuilleModel:
             d1 = d1_dict
             d2 = d2_dict
             
+            # Default provenance: the branch-order law, i.e. a synthetic diameter. Overwritten
+            # below only when a real measurement is present. Without this tag, measured and
+            # fabricated diameters are indistinguishable in assigned_diameter_um.
+            provenance = "synthetic_branch_order"
+
             if radius_assignment_mode == "constant_radius":
                 d1 = constant_radius_um * 2.0
                 constriction_ratio = d2_dict / d1_dict
                 d2 = d1 * constriction_ratio
+                provenance = "constant"
             elif radius_assignment_mode == "edt_radius":
                 edt_d = data.get("edt_diameter_um")
                 if edt_d is not None and float(edt_d) > 0:
@@ -292,6 +337,7 @@ class PoiseuilleModel:
                     constriction_ratio = d2_dict / d1_dict
                     d2 = d1 * constriction_ratio
                     results["used_fwhm_baseline"] += 1
+                    provenance = "measured_edt"
             elif radius_assignment_mode == "fwhm_radius":
                 fwhm_d = data.get("fwhm_diameter_um")
                 if fwhm_d is not None and float(fwhm_d) > 0:
@@ -299,6 +345,12 @@ class PoiseuilleModel:
                     constriction_ratio = d2_dict / d1_dict
                     d2 = d1 * constriction_ratio
                     results["used_fwhm_baseline"] += 1
+                    provenance = "measured_fwhm"
+
+            results["diameter_provenance_counts"][provenance] = (
+                results["diameter_provenance_counts"].get(provenance, 0) + 1
+            )
+            data["diameter_provenance"] = provenance
             
             try:
                 total_resistance = self.calculate_integrated_resistance(length, d1, d2)
@@ -308,6 +360,14 @@ class PoiseuilleModel:
                 results["resistances_set"] += 1
             except Exception as e:
                 raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
+
+        # Fail loudly on a measurement mode that measured nothing. edt_radius in particular
+        # used to pass validation, be offered by --radius-mode, and then silently yield the
+        # synthetic branch-order diameter for every edge because nothing ever populated
+        # edt_diameter_um - no error, no warning, and a fabricated calibre distribution.
+        _raise_if_measurement_mode_measured_nothing(
+            radius_assignment_mode, results["resistances_set"], results["used_fwhm_baseline"]
+        )
         return G, results
 
     def set_poiseuille_edge_resistances(
