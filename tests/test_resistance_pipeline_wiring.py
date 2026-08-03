@@ -33,7 +33,8 @@ def pipeline():
 
 @pytest.fixture(scope="module")
 def source() -> str:
-    return (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
+    """The stage runner's source: it moved to the library so both examples share it."""
+    return (REPO_ROOT / "src" / "ImageLynx" / "pipeline.py").read_text()
 
 
 # --- loading ---------------------------------------------------------------
@@ -102,16 +103,17 @@ def test_an_explicit_plot_directory_wins(pipeline):
 # --- how the stages read settings ------------------------------------------
 
 
-def test_the_stage_runner_takes_only_the_settings_dict(pipeline):
+def test_the_stage_runner_takes_the_settings_dict_and_a_schema(pipeline):
     """The 127-parameter signature is gone; settings are read by name."""
     assert list(inspect.signature(pipeline.run_pipeline_stages).parameters) == [
-        "settings"
+        "settings",
+        "schema",
     ]
 
 
-def test_the_module_no_longer_star_imports_its_settings(source):
-    """Defaults come from the schema, so the constants are not in scope here."""
-    assert "from resistance_pipeline_settings import *" not in source
+def test_the_module_no_longer_star_imports_its_settings():
+    example = (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
+    assert "from resistance_pipeline_settings import *" not in example
 
 
 def test_settings_once_read_from_module_globals_are_read_from_the_dict(source, pipeline):
@@ -156,7 +158,9 @@ def test_node_lists_stay_mutable(pipeline):
 
 def test_the_entry_point_takes_the_settings_dict(pipeline, monkeypatch):
     recorded: dict = {}
-    monkeypatch.setattr(pipeline, "run_pipeline_stages", recorded.update)
+    monkeypatch.setattr(
+        pipeline, "run_pipeline_stages", lambda settings, schema: recorded.update(settings)
+    )
     pipeline.image_to_model_pipeline(
         pipeline.resolve_settings(overrides={"do_skeletonize": False})
     )
@@ -165,7 +169,9 @@ def test_the_entry_point_takes_the_settings_dict(pipeline, monkeypatch):
 
 def test_the_entry_point_runs_the_config_file_with_no_arguments(pipeline, monkeypatch):
     recorded: dict = {}
-    monkeypatch.setattr(pipeline, "run_pipeline_stages", recorded.update)
+    monkeypatch.setattr(
+        pipeline, "run_pipeline_stages", lambda settings, schema: recorded.update(settings)
+    )
     pipeline.image_to_model_pipeline()
     assert recorded["input_path"].name == "brain_microvessels.tiff"
 
@@ -173,7 +179,9 @@ def test_the_entry_point_runs_the_config_file_with_no_arguments(pipeline, monkey
 def test_the_entry_point_still_accepts_individual_overrides(pipeline, monkeypatch):
     """Callers that name values directly keep working, in either spelling."""
     recorded: dict = {}
-    monkeypatch.setattr(pipeline, "run_pipeline_stages", recorded.update)
+    monkeypatch.setattr(
+        pipeline, "run_pipeline_stages", lambda settings, schema: recorded.update(settings)
+    )
     pipeline.image_to_model_pipeline(
         image_path=Path("a.tif"), plot_dir=Path("plots"), do_graph_building=False
     )

@@ -27,3 +27,6 @@ tests/plots/
 
 # Stray notebook in OLD/ (slated for removal)
 examples/OLD/Latest_ithink_network12082025.ipynb
+
+# Local agent worktrees and scratch state
+.claude/

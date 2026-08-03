@@ -1,7 +1,6 @@
-"""Synthetic test for Alice pressure+dilation graphing workflow."""
+"""Pericyte dilation and inlet-pressure sweep, on a synthetic network."""
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -15,17 +14,13 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 
-def _load_alice_pipeline_module():
-    module_path = REPO_ROOT / "examples" / "resistance_network_pipeline_for_Alice.py"
-    spec = importlib.util.spec_from_file_location("alice_pipeline_module", module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load module spec from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from ImageLynx.haemodynamics.pericyte_sweep import (  # noqa: E402
+    run_pericyte_dilation_pressure_sweep,
+)
+from ImageLynx.visualization.dilation_curves import plot_dilation_curves  # noqa: E402
 
 
-def _build_synthetic_alice_graph() -> tuple[
+def _build_synthetic_network() -> tuple[
     nx.MultiGraph,
     list[int],
     list[int],
@@ -103,14 +98,13 @@ def _build_synthetic_alice_graph() -> tuple[
     )
 
 
-def _run_synthetic_alice_graphing(
+def _run_synthetic_sweep(
     output_dir: Path,
     *,
     min_dilation_percent: int,
     max_dilation_percent: int,
 ) -> dict:
-    """Run reduced Alice sweep and return output paths/results."""
-    alice_pipeline = _load_alice_pipeline_module()
+    """Run a reduced sweep and return its results and output paths."""
     (
         G,
         starting_nodes,
@@ -118,29 +112,33 @@ def _run_synthetic_alice_graphing(
         arteriole_boundary_nodes,
         venule_boundary_nodes,
         diameter_by_branch_order,
-    ) = _build_synthetic_alice_graph()
+    ) = _build_synthetic_network()
 
     # Assigned transition-node sets are part of the synthetic model specification.
     assert arteriole_boundary_nodes == [1]
     assert venule_boundary_nodes == [3]
 
-    # Match original pipeline pericyte spacing settings.
-    return alice_pipeline._run_alice_pericyte_dilation_pressure_sweep(
+    settings = {
+        "diameter_by_branch_order": diameter_by_branch_order,
+        "output_p_bc": 1000.0,
+        "constriction_length_um": 40.0,
+        "constriction_spacing_um": 100.0,
+        "pericyte_dilation_min_percent": min_dilation_percent,
+        "pericyte_dilation_max_percent": max_dilation_percent,
+        "pericyte_dilation_step_percent": 1,
+        "inlet_pressure_min_pa": 4500,
+        "inlet_pressure_max_pa": 6000,
+        "inlet_pressure_step_pa": 500,
+    }
+    sweep = run_pericyte_dilation_pressure_sweep(
         G,
-        diameter_by_branch_order=diameter_by_branch_order,
+        settings,
         starting_nodes=starting_nodes,
         output_nodes=output_nodes,
-        output_p_bc=1000.0,
         output_dir=output_dir,
-        constriction_length_um=40.0,
-        constriction_spacing_um=100.0,
-        min_dilation_percent=min_dilation_percent,
-        max_dilation_percent=max_dilation_percent,
-        dilation_step_percent=1,
-        min_inlet_pressure_pa=4500,
-        max_inlet_pressure_pa=6000,
-        inlet_pressure_step_pa=500,
     )
+    sweep["plot_outputs"] = plot_dilation_curves(sweep["results"], output_dir)
+    return sweep
 
 
 def _assert_sweep_outputs_valid(
@@ -153,8 +151,8 @@ def _assert_sweep_outputs_valid(
     rows = sweep["results"]
     assert len(rows) == expected_dilation_points * expected_pressure_points
     csv_path = Path(sweep["csv_path"])
-    resistance_plot = Path(sweep["plot_outputs"]["resistance_plot_path"])
-    flow_plot = Path(sweep["plot_outputs"]["flow_plot_path"])
+    resistance_plot = Path(sweep["plot_outputs"]["equivalent_resistance_plot_path"])
+    flow_plot = Path(sweep["plot_outputs"]["total_inlet_flow_plot_path"])
 
     assert csv_path.exists() and csv_path.stat().st_size > 0
     assert resistance_plot.exists() and resistance_plot.stat().st_size > 0
@@ -171,9 +169,9 @@ def _assert_sweep_outputs_valid(
         assert flows[0] < flows[-1]
 
 
-def test_alice_graphing_on_synthetic_network(tmp_path: Path):
-    """Run a reduced sweep and verify CSV + flow/resistance curve plots."""
-    sweep = _run_synthetic_alice_graphing(
+def test_dilation_sweep_on_synthetic_network(tmp_path: Path):
+    """Run a reduced sweep and verify the CSV and the two curve plots."""
+    sweep = _run_synthetic_sweep(
         tmp_path,
         min_dilation_percent=1,
         max_dilation_percent=3,
@@ -185,9 +183,9 @@ def test_alice_graphing_on_synthetic_network(tmp_path: Path):
 
 
 if __name__ == "__main__":
-    demo_output_dir = REPO_ROOT / "examples" / "outputs" / "synthetic_alice_test"
+    demo_output_dir = REPO_ROOT / "examples" / "outputs" / "synthetic_dilation_sweep"
     demo_output_dir.mkdir(parents=True, exist_ok=True)
-    sweep = _run_synthetic_alice_graphing(
+    sweep = _run_synthetic_sweep(
         demo_output_dir,
         min_dilation_percent=1,
         max_dilation_percent=30,
@@ -196,7 +194,7 @@ if __name__ == "__main__":
         sweep,
         expected_dilation_points=30,
     )
-    print("Synthetic Alice graphing run completed.")
+    print("Synthetic dilation sweep completed.")
     print(f"CSV: {sweep['csv_path']}")
-    print(f"Resistance plot: {sweep['plot_outputs']['resistance_plot_path']}")
-    print(f"Flow plot: {sweep['plot_outputs']['flow_plot_path']}")
+    print(f"Resistance plot: {sweep['plot_outputs']['equivalent_resistance_plot_path']}")
+    print(f"Flow plot: {sweep['plot_outputs']['total_inlet_flow_plot_path']}")

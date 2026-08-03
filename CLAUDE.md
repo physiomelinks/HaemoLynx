@@ -23,16 +23,16 @@ ImageLynx/
 │   ├── statistics/         # stats.py, 3D_distances.py (cell-to-vessel; imported via importlib)
 │   └── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
-│   ├── resistance_network_pipeline.py        # Main end-to-end example / CLI (~1,270 lines)
-│   ├── resistance_network_pipeline_for_Alice.py  # Alice paper variant (~85% dup — see Cleanup Plan)
-│   ├── resistance_pipeline_settings.py       # Default parameter constants
+│   ├── resistance_network_pipeline.py        # Main example: config + CLI over ImageLynx.pipeline
+│   ├── brain_network_pipeline.py             # Whole-brain run: pipeline + pericyte dilation sweep
+│   ├── *_schema.py / *_config.yaml           # Settings: declared once, generated config files
+│   ├── resistance_pipeline_settings.py       # Legacy constants (presets/wizard still read these)
 │   ├── presets.py          # Preset definitions + CLI/YAML override engine
 │   ├── local_presets.py    # User-local preset overrides (stub)
 │   ├── preflight.py        # Pre-run validation checklist
 │   ├── wizard.py           # Interactive setup
 │   ├── carotid_image_to_model.py  # Orphaned single-dataset variant (to be replaced by Dale)
 │   └── OLD/                # Dead pre-refactor scripts (see Cleanup Plan — slated for removal)
-├── AlicePaper.py           # Plotting util for the Alice sweep (at repo ROOT — see Cleanup Plan)
 ├── tutorials/
 │   ├── pipeline_tutorial.ipynb   # **Source of truth** for the step-by-step tutorial
 │   ├── pipeline_tutorial.py       # Auto-generated from the notebook (do not edit by hand)
@@ -238,10 +238,6 @@ running tests between each.
 - **`haemodynamics/automated.py`** is FWHM diameter measurement, not “automation”.
 - **`statistics/3D_distances.py`** starts with a digit → can’t be imported normally; loaded via an
   `importlib` hack in `statistics/__init__.py`.
-- **`resistance_network_pipeline_for_Alice.py` (~1,790 lines) duplicates ~85%** of
-  `resistance_network_pipeline.py`; `AlicePaper.py` (plotting) sits at the repo root; `test_alice.py`
-  dynamically imports the Alice script. The reusable bits (pressure/boundary-flow solve, pericyte
-  dilation sweep) are copy-pasted, not shared.
 - **`graph/__init__.py` bug:** imports `create_merged_edge_attributes` twice and lists
   `create_merged_edge_attributes_simple` / `_full` in `__all__` — neither is imported, so
   `from ImageLynx.graph import *` raises `AttributeError`. (Confirmed reproducible.)
@@ -284,28 +280,22 @@ Keep the **public function names** the same so the API surface doesn’t move; o
       Rename `tests/test_3d_distances.py` references as needed.
 - [ ] Use `git mv` so history is preserved. Run full `pytest` after each rename. Commit per rename.
 
-### Phase 3 — De-duplicate the Alice workflow (refactor to reuse)
-Target end state: the Alice script becomes a thin wrapper over the canonical pipeline.
-- [ ] Extract the shared, reusable logic out of `resistance_network_pipeline_for_Alice.py` into a
-      proper module — the pressure/boundary-flow solve (`_solve_pressure_and_boundary_flow`) and the
-      pericyte-dilation pressure sweep (`_run_alice_pericyte_dilation_pressure_sweep`). Prefer
-      `src/ImageLynx/haemodynamics/` if the logic is generally useful (with tests under `tests/`),
-      otherwise a single `examples/alice_sweep.py`.
-- [ ] Move `AlicePaper.py` off the repo root → alongside the sweep code (e.g. `examples/alice_curves.py`
-      or `src/ImageLynx/visualization/`); update its importer.
-- [ ] Rewrite `resistance_network_pipeline_for_Alice.py` as a thin script: call the canonical
-      `image_to_model_pipeline` (with the Alice constraints/validation) + the extracted sweep — no more
-      copy-pasted pipeline body.
-- [ ] Point `tests/test_alice.py` at the extracted sweep module directly (not the giant script).
-- [ ] Run full `pytest` incl. `test_alice.py`. Commit.
+### Phase 3 — De-duplicate the whole-brain workflow — **DONE**
+- [x] The stage runner moved to `src/ImageLynx/pipeline.py`, so examples share it instead of forking it.
+- [x] The pressure/boundary-flow solve and the pericyte dilation sweep moved to
+      `src/ImageLynx/haemodynamics/pericyte_sweep.py`; the curve plots to
+      `src/ImageLynx/visualization/dilation_curves.py`.
+- [x] `resistance_network_pipeline_for_Alice.py` (1,795 lines) and root-level `AlicePaper.py` are
+      replaced by `examples/brain_network_pipeline.py` (73 lines) plus `brain_pipeline_config.yaml`.
+      "Alice" is gone from the names; the sweep is described by what it does.
+- [x] `tests/test_alice.py` → `tests/test_pericyte_sweep.py`, driving the extracted module.
 
 ### Phase 4 — Thin out the examples / consolidate config (larger, do last)
-- [ ] `examples/resistance_network_pipeline.py`’s `image_to_model_pipeline()` is a ~1,000-line monolith.
-      Consider lifting the stage orchestration into a reusable `src/ImageLynx/pipeline.py` (segmentation →
-      skeletonize → graph → boundary/branch-order → haemodynamics → export/stats), leaving the example as
-      thin CLI + settings glue per the “keep `examples/` thin” convention. **Scope/measure before doing —
-      this is the biggest change; only proceed if it clearly reduces duplication with the Alice/carotid
-      variants.** Add unit tests per extracted stage.
+- [x] Stage orchestration lifted into `src/ImageLynx/pipeline.py`; the example is now config + CLI
+      glue (1,282 → ~250 lines) and `brain_network_pipeline.py` runs the same stages.
+- [ ] Split `ImageLynx.pipeline.run_pipeline_stages` further into one function per stage
+      (segmentation → skeletonize → graph → boundary/branch-order → haemodynamics → export/stats)
+      with unit tests per stage. It is one ~800-line function today.
 - [ ] Add a short “preset system” note to the README (settings constants → preset dicts → CLI/YAML overrides),
       since the layering isn’t obvious from filenames.
 - [ ] Populate `examples/local_presets.py` with one realistic example preset (it’s currently an empty stub).
