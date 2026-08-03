@@ -45,6 +45,10 @@ class SkeletonObjective:
             raise optuna.TrialPruned()
             
         # 3. Calculate Loss Function (Minimize towards 0.0)
+        return self._calculate_loss(bench_results)
+
+    def _calculate_loss(self, bench_results) -> float:
+        """Loss from a benchmark result dict. Separated so it is testable without Optuna."""
         vol = bench_results.get("volumetric", {})
         comp = bench_results.get("completeness", {})
         topo = bench_results.get("topology", {})
@@ -62,9 +66,20 @@ class SkeletonObjective:
         # Penalty: Over-pruning (orphaned tissue fraction, heavily weighted to preserve capillary beds)
         loss += orphaned * 100.0
         
-        # Penalty: Spiderwebs and messy topology (soft penalty per extra loop)
-        loss += loops * 0.1 
-        
+        # NO loop penalty. This used to be `loss += loops * 0.1`, where `loops` is
+        # graph_fundamental_loops = E - V + C, i.e. the first Betti number. That is precisely
+        # the quantity H1 section 1.1 reads out as vascular loop topology, so the tuner's
+        # dominant objective was to minimise the hypothesis' own signal. Measured, it was
+        # 70-86% of total loss and single-handedly overturned better Dice, better
+        # completeness and a better terminal ratio. It is also group-dependent: a denser
+        # network incurs a proportionally larger penalty and gets pruned harder, suppressing
+        # the SHR/WKY difference in the false-negative direction.
+        #
+        # It is removed rather than downweighted because any term keyed on beta-1 can be
+        # minimised by deleting real anastomoses. The artefact it was nominally aimed at -
+        # spurious 1-voxel skeleton loops - is already handled upstream by the voxel-loop
+        # detection and stitching in build_graph_segment_skan_stitched_loops.
+
         # Penalty: Dead-ends. If > 5% of network is dead-ends, heavily penalize fragmentation.
         if terminal_ratio > 0.05:
             loss += (terminal_ratio - 0.05) * 500.0
@@ -202,6 +217,10 @@ class PreprocessingObjective:
             raise optuna.TrialPruned()
             
         # 3. Calculate Loss Function (Minimize towards 0.0)
+        return self._calculate_loss(bench_results)
+
+    def _calculate_loss(self, bench_results) -> float:
+        """Loss from a benchmark result dict. Separated so it is testable without Optuna."""
         confidence = bench_results.get("confidence", 0.0)
         prob_yield = bench_results.get("probability_yield", 0.0)
         crispness = bench_results.get("crispness", 0.0)
@@ -229,9 +248,16 @@ class PreprocessingObjective:
         # Penalty: Compactness (Jagged surfaces). Normal values ~0.2 to 0.4.
         loss += surface_ratio * 10.0
 
-        # Penalty: Swiss Cheese (Negative Euler characteristic)
-        if euler_char < 1:
-            loss += abs(euler_char - 1) * 10.0
+        # NO Euler penalty. This used to be `if euler_char < 1: loss += abs(euler_char-1)*10`,
+        # measured at 83% of total loss. The intent was to punish "swiss cheese" cavities, but
+        # chi = beta0 - beta1 + beta2 and a capillary bed legitimately has large beta1 and so
+        # a strongly negative chi. Penalising chi < 1 therefore drives vascular loop topology
+        # toward zero - the same H1 section 1.1 readout the skeleton objective was attacking -
+        # and does so proportionally harder on denser networks.
+        #
+        # Cavities are the beta2 term and are already handled directly by fill_holes_3d in the
+        # preprocessing chain, so nothing is lost by dropping this. A cavity-specific penalty
+        # would have to measure beta2 on its own rather than inferring it from chi.
 
         # Penalty: Uncertainty
         # Soft pressure to improve overall certainty
