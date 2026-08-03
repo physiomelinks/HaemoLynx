@@ -241,6 +241,7 @@ class PipelineConfig:
     optimize_skeleton_trials: int = 0
     optimize_patience: int = 15
     verbose_logging: bool = False
+    enable_diagnostic_plots: bool = True
     min_branch_length: int = 10
     vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
     plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid"
@@ -663,7 +664,8 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     )
     # Ensure any branches that touched the stitched loop are properly reconnected to the new central hub node
     G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=pipeline_config.verbose_logging)
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "reconnect_secondary_loop_edges.png")
+    if pipeline_config.enable_diagnostic_plots:
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "reconnect_secondary_loop_edges.png")
     
     # Merge nodes that are physically right next to each other, and resolve "triangle" intersections into clean "Y" bifurcations
     G, _ = graph.optimise_graph_topology_fixed(
@@ -673,7 +675,8 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
         skeleton_data=skeleton,
         debug=pipeline_config.verbose_logging,
     )
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "optimise_graph_topology_fixed.png")
+    if pipeline_config.enable_diagnostic_plots:
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "optimise_graph_topology_fixed.png")
     
     # Delete redundant middle nodes sitting on straight lines, merging their edges, without destroying the physical curvature of the vessel
     G = graph.smart_multigraph_degree2_removal(
@@ -681,7 +684,8 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
         skeleton,
         debug=pipeline_config.verbose_logging,
     )
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "smart_multigraph_degree2_removal.png")
+    if pipeline_config.enable_diagnostic_plots:
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "smart_multigraph_degree2_removal.png")
 
     # Automatically detect the physical image resolution to accurately calculate vessel lengths in microns
     current_spacing = (1.0, 1.0, 1.0)
@@ -693,7 +697,8 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     G = graph.prune_vascular_stubs(G, debug=pipeline_config.verbose_logging, voxel_size=current_spacing)
     # Delete impossible edges that start and end on the exact same node with no other connections
     G = graph.remove_edges_for_self_connected_nodes(G)
-    visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "prune_vascular_stubs.png")
+    if pipeline_config.enable_diagnostic_plots:
+        visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "prune_vascular_stubs.png")
     
     # --- Plan A & B: Core Dead-End Resolution ---
     if skel_config.core_dead_end_resolution_mode in ["eradicate", "stitch"]:
@@ -1403,6 +1408,7 @@ def carotid_image_to_model(image_path: Path | str,
                         
                         test_pipeline_config = copy.deepcopy(pipeline_config)
                         test_pipeline_config.verbose_logging = False # Reduce log spam
+                        test_pipeline_config.enable_diagnostic_plots = False # Renders dominate trial cost and only the last trial's files survive
                         
                         test_G = _build_and_optimize_graph(
                             test_skeleton, chunk_raw_prob, image_path, input_format, 
@@ -1478,6 +1484,7 @@ def carotid_image_to_model(image_path: Path | str,
                     # 2. Build Graph (Silently)
                     test_pipeline_config = copy.deepcopy(pipeline_config)
                     test_pipeline_config.verbose_logging = False # Reduce log spam
+                    test_pipeline_config.enable_diagnostic_plots = False # Renders dominate trial cost and only the last trial's files survive
                     
                     test_G = _build_and_optimize_graph(
                         test_skeleton, image, image_path, input_format, 

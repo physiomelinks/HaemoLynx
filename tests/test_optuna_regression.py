@@ -94,3 +94,44 @@ def test_optuna_triggered_during_map_reduce():
          
          # Verify Optuna was mathematically called exactly once for this chunk
          assert mock_optuna.call_count == 1, "The Optuna auto-tuner was bypassed despite optimize_trials > 0!"
+
+def test_diagnostic_plots_suppressed_during_optuna_trials():
+    """Graph-build diagnostic renders must be gated, not unconditional.
+
+    _build_and_optimize_graph writes four dpi=300 figures to fixed paths. During an Optuna
+    study they are re-rendered and overwritten on every trial, so only the final trial's
+    files ever survive - measured at 62% of graph-build time. The gate must suppress them
+    for trials while leaving them intact for a real run.
+    """
+    import carotid_image_to_model as C
+    from carotid_image_to_model import (
+        _build_and_optimize_graph, SkeletonConfig, GraphConfig, PipelineConfig,
+    )
+
+    # Y-shaped skeleton: a 30-voxel trunk with a 15-voxel branch, both comfortably longer
+    # than prune_vascular_stubs' 10.0 threshold so the topology survives to the final render.
+    skeleton = np.zeros((40, 40, 40), dtype=np.uint8)
+    skeleton[5:35, 20, 20] = 1
+    skeleton[20, 20:35, 20] = 1
+
+    skel_config = SkeletonConfig()
+    graph_config = GraphConfig()
+    graph_config.keep_largest_component_only = False
+
+    def count_renders(enable_diagnostic_plots):
+        pipeline_config = PipelineConfig()
+        pipeline_config.enable_diagnostic_plots = enable_diagnostic_plots
+        with patch.object(C.visualization, "visualize_edges_and_nodes") as mock_plot:
+            # input_format != "tif" keeps get_tif_spacing away from the filesystem.
+            _build_and_optimize_graph(
+                skeleton, skeleton, None, "npy",
+                skel_config, graph_config, pipeline_config,
+            )
+            return mock_plot.call_count
+
+    assert count_renders(False) == 0, \
+        "Diagnostic renders still fire inside Optuna trials; the per-trial cost is unchanged!"
+    # Asserted in both directions on purpose: a gate that is always off is indistinguishable
+    # from deleting the plotting outright, and would silently pass a one-sided test.
+    assert count_renders(True) == 4, \
+        "A normal run must still produce all four diagnostic renders."
