@@ -121,8 +121,11 @@ def resolve_core_dead_ends(
     import numpy as np
     from scipy.spatial import cKDTree
     
-    # Calculate physical boundaries (in voxel coordinates)
-    z_max, y_max, x_max = [float(s - 1) for s in image_shape]
+    # Node 'pos' is in physical units but image_shape is in voxels, so the extent has to be
+    # scaled by the spacing before the two are compared.
+    z_max, y_max, x_max = [
+        float(s - 1) * float(v) for s, v in zip(image_shape, voxel_size_xyz)
+    ]
     z_marg = z_max * (safe_zone_percent / 100.0)
     y_marg = y_max * (safe_zone_percent / 100.0)
     x_marg = x_max * (safe_zone_percent / 100.0)

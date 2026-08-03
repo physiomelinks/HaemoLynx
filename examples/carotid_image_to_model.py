@@ -242,6 +242,10 @@ class PipelineConfig:
     optimize_patience: int = 15
     verbose_logging: bool = False
     enable_diagnostic_plots: bool = True
+    # (z, y, x) acquisition voxel size in microns. Explicit and recorded, because the Ilastik
+    # probability TIFFs carry no resolution tag and get_tif_spacing then silently returns
+    # (1, 1, 1), which makes every reported "micron" a voxel count. None = detect from file.
+    voxel_size_um: tuple = None
     min_branch_length: int = 10
     vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
     plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid"
@@ -413,6 +417,35 @@ def _preview_post_processed_mask(binary, image_path, input_format, vis_config, p
     print("Exiting pipeline as requested after post-processed mask visualization.")
     import sys
     sys.exit(0)
+
+# Run-wide (z, y, x) voxel size in microns, populated from PipelineConfig.voxel_size_um in
+# main(). None means "fall back to file metadata", which is warned about in _resolve_voxel_size.
+VOXEL_SIZE_UM = None
+_VOXEL_SIZE_WARNED = False
+
+def _resolve_voxel_size(image_path, input_format):
+    """Return the (z, y, x) voxel size in microns for this run.
+
+    An explicit configured value always wins. Falling back to file metadata is a last
+    resort and is warned about once, because the Ilastik probability TIFFs declare no
+    resolution and get_tif_spacing then returns (1, 1, 1) - under which every downstream
+    "micron" is really a voxel count and physical and voxel coordinates are numerically
+    indistinguishable.
+    """
+    global _VOXEL_SIZE_WARNED
+
+    if VOXEL_SIZE_UM is not None:
+        return tuple(float(v) for v in VOXEL_SIZE_UM)
+
+    detected = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+    if tuple(float(v) for v in detected) == (1.0, 1.0, 1.0) and not _VOXEL_SIZE_WARNED:
+        _VOXEL_SIZE_WARNED = True
+        msg = ("Voxel size resolved to (1.0, 1.0, 1.0) - no explicit voxel_size_um was "
+               "configured and the file declares no usable resolution. All lengths, areas "
+               "and volumes below are in VOXELS, not microns.")
+        logger.warning(msg)
+        print(f"  [WARNING] {msg}")
+    return tuple(float(v) for v in detected)
 
 def _visualize_final_results(G, image, starting_nodes, vis_config):
     """Helper function to generate final 2D summary plots (node degree, branch orders)."""
@@ -673,6 +706,13 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     # Trace the voxel centerline to identify mathematical Nodes (intersections) and Edges (vessel paths)
     sk = csr.Skeleton(skeleton)
 
+    # Resolve the voxel size BEFORE the graph is built. build_graph_segment_skan_stitched_loops
+    # writes node 'pos' and edge 'voxels' in physical units, so this value defines the
+    # coordinate system every downstream consumer has to divide by to get back to indices.
+    # It was previously detected only after the build, leaving the graph in voxel units.
+    current_spacing = _resolve_voxel_size(image_path, input_format)
+    print(f"  Using voxel size (z,y,x): {current_spacing}")
+
     # Build the networkx MultiGraph. Crucially, detect and stitch tiny 1-voxel circular artifacts (voxel loops) so the graph doesn't shatter.
     G, voxel_loops, loop_edges = graph.build_graph_segment_skan_stitched_loops(
         sk,
@@ -680,6 +720,7 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
         debug=pipeline_config.verbose_logging,
         use_padded_slicing=skel_config.use_padded_slicing,
         padding=skel_config.padded_slicing_padding,
+        voxel_size=current_spacing,
     )
     # Ensure any branches that touched the stitched loop are properly reconnected to the new central hub node
     G = graph.reconnect_secondary_loop_edges(G, skeleton, debug=pipeline_config.verbose_logging)
@@ -706,11 +747,8 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     if pipeline_config.enable_diagnostic_plots:
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "smart_multigraph_degree2_removal.png")
 
-    # Automatically detect the physical image resolution to accurately calculate vessel lengths in microns
-    current_spacing = (1.0, 1.0, 1.0)
-    if input_format == "tif":
-        current_spacing = io.get_tif_spacing(image_path)
-        print(f"  Using detected spacing for pruning (z,y,x): {current_spacing}")
+    # current_spacing was resolved above, before the graph was built, so pruning thresholds
+    # and node positions are now expressed in the same units.
 
     # Delete dead-end branches (stubs) that are physically shorter than the minimum branch length threshold
     G = graph.prune_vascular_stubs(G, debug=pipeline_config.verbose_logging, voxel_size=current_spacing)
@@ -775,6 +813,10 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
     start_nodes, out_nodes = graph.select_boundary_terminal_nodes(
         G,
         image.shape,
+        # image.shape is in voxels while node 'pos' is physical, so the spacing is needed to
+        # compare them; without it the apparent volume shrinks and interior dead-ends drift
+        # into the outlet band.
+        voxel_size=_resolve_voxel_size(image_path, input_format),
         edge_percent=graph_config.edge_percent,
         end_percent=graph_config.end_percent,
         axis=graph_config.node_edge_axis,
@@ -882,7 +924,7 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             print("Measuring exact physical vessel diameters using 3D FWHM ray-casting...")
             
             # Use the detected spacing (or default)
-            fwhm_spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+            fwhm_spacing = _resolve_voxel_size(image_path, input_format)
             
             # We pass the pre-loaded, pre-cropped 3D `image` array directly into the FWHM algorithm.
             stats_dict = haemodynamics.measure_edge_diameters_fwhm_from_raw_tiff(
@@ -932,9 +974,10 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     """
     if pipeline_config.run_benchmarking and binary is not None:
         import ImageLynx.statistics.benchmarking as benchmarking
-        # Use the detected spacing (or default)
-        voxel_size_xyz = (1.0, 1.0, 1.0)
-        
+        # Was hardcoded to (1, 1, 1), so the benchmark suite ran in voxel units even when the
+        # graph it was measuring had been built in physical ones.
+        voxel_size_xyz = pipeline_config.voxel_size_um or (1.0, 1.0, 1.0)
+
         bench_results = benchmarking.run_all_benchmarks(G, binary, voxel_size_xyz)
         print("\n=== Skeletonization Benchmarks ===")
         import json
@@ -1220,7 +1263,7 @@ def carotid_image_to_model(image_path: Path | str,
             import ImageLynx.io as io
             
             print(f"\n--- Generating Map-Reduce Grid Preview (fraction={pipeline_config.chunk_fraction}) ---")
-            spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+            spacing = _resolve_voxel_size(image_path, input_format)
             
             grid_mask = np.zeros(raw_prob_map.shape, dtype=np.uint8)
             
@@ -1381,7 +1424,7 @@ def carotid_image_to_model(image_path: Path | str,
             import pyvista as pv
             import ImageLynx.io as io
             print(f"\n--- Exporting Globally Stitched Vessel Mask ---")
-            spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+            spacing = _resolve_voxel_size(image_path, input_format)
             
             vtk_vol = pv.ImageData()
             vtk_vol.dimensions = np.array(binary.shape)
@@ -1416,7 +1459,7 @@ def carotid_image_to_model(image_path: Path | str,
                     
                     print(f"\n--- [Chunk {chunk_idx}/{total_chunks}] Launching Optuna Skeletonization Auto-Tuner ({pipeline_config.optimize_skeleton_trials} trials) ---", flush=True)
                     
-                    voxel_size_xyz = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+                    voxel_size_xyz = _resolve_voxel_size(image_path, input_format)
                     
                     def pipeline_eval_callback(suggested_kwargs):
                         test_skel_config = copy.deepcopy(local_skel_config)
@@ -1489,7 +1532,7 @@ def carotid_image_to_model(image_path: Path | str,
                 print(f"\n--- Launching Optuna Skeletonization Auto-Tuner ({pipeline_config.optimize_skeleton_trials} trials) ---")
                 
                 # Setup static dependencies
-                voxel_size_xyz = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+                voxel_size_xyz = _resolve_voxel_size(image_path, input_format)
                 
                 def pipeline_eval_callback(suggested_kwargs):
                     # Apply suggested parameters
@@ -1546,7 +1589,7 @@ def carotid_image_to_model(image_path: Path | str,
             vtk_vol.dimensions = np.array(binary.shape)
             
             # Use detected spacing if available, otherwise default to 1x1x1
-            spacing = io.get_tif_spacing(image_path) if input_format == "tif" else (1.0, 1.0, 1.0)
+            spacing = _resolve_voxel_size(image_path, input_format)
             # Ensure spacing aligns with the Z, Y, X array shape
             vtk_vol.spacing = (spacing[2], spacing[1], spacing[0]) # VTK uses X, Y, Z
             
@@ -1610,6 +1653,9 @@ if __name__ == "__main__":
     parser.add_argument("--core-resolution", type=str, choices=["eradicate", "stitch", "none"], default=None, help="Mode for resolving internal core dead-ends.")
     parser.add_argument("--boundary-mode", type=str, choices=["caged", "universal_sink", "robin_resistance"], default=None, help="Mode for handling X/Y boundary permeability.")
     parser.add_argument("--radius-mode", type=str, choices=["fwhm_radius", "edt_radius", "constant_radius"], default=None, help="Radius assignment mode for physical flow.")
+    parser.add_argument("--voxel-size-um", type=float, nargs=3, metavar=("Z", "Y", "X"), default=None,
+                        help="Acquisition voxel size in microns as z y x. Overrides file metadata, "
+                             "which the Ilastik probability TIFFs do not carry.")
     parser.add_argument("--chunk-fraction", type=float, default=None, help="Fractional size for map-reduce chunking (e.g. 0.25)")
     parser.add_argument("--export-grid-preview", action="store_true", help="Export the raw probability field with the calculated chunk grid superimposed and exit.")
     parser.add_argument("--exit-after-mask", action="store_true", help="Export the locally-optimized stitched binary mask and exit.")
@@ -1674,6 +1720,15 @@ if __name__ == "__main__":
 
     if args.optimize_patience is not None:
         pipeline_config.optimize_patience = args.optimize_patience
+
+    if args.voxel_size_um is not None:
+        pipeline_config.voxel_size_um = tuple(args.voxel_size_um)
+
+    # Publish the configured voxel size run-wide. Everything that converts between physical
+    # coordinates and array indices reads it through _resolve_voxel_size.
+    VOXEL_SIZE_UM = pipeline_config.voxel_size_um
+    if VOXEL_SIZE_UM is not None:
+        print(f"Voxel size (z,y,x) set from configuration: {tuple(VOXEL_SIZE_UM)} um")
 
     # 4. Run Ilastik Segmentation (if enabled)
     if RUN_ILASTIK:

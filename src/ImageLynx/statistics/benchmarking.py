@@ -36,8 +36,10 @@ def redilate_skeleton_to_volume(G: nx.MultiGraph, shape: Tuple[int, int, int], v
         max_rad = math.ceil(max(radius_vox_x, radius_vox_y, radius_vox_z))
         
         for pt in pts:
-            z, y, x = int(pt[0]), int(pt[1]), int(pt[2])
-            
+            # 'voxels'/'pts' are stored in PHYSICAL units by build_graph_segment_skan_stitched_loops,
+            # so they must be divided by the spacing before being used as array subscripts.
+            z, y, x = (int(round(pt[0] / vz)), int(round(pt[1] / vy)), int(round(pt[2] / vx)))
+
             # Simple bounding box voxelization
             z_min, z_max = max(0, z - max_rad), min(shape[0], z + max_rad + 1)
             y_min, y_max = max(0, y - max_rad), min(shape[1], y + max_rad + 1)
@@ -189,13 +191,15 @@ def evaluate_completeness_and_overpruning(G: nx.MultiGraph, binary_mask: np.ndar
     
     # Create a blank volume and draw ONLY the skeleton centerline points (1 voxel thick)
     skeleton_volume = np.zeros_like(binary_mask)
+    vz, vy, vx = voxel_size_xyz
     for u, v, key, data in G.edges(keys=True, data=True):
         pts = data.get("pts")
         if pts is None or len(pts) == 0:
             pts = data.get("voxels", [])
-            
+
         for pt in pts:
-            z, y, x = int(pt[0]), int(pt[1]), int(pt[2])
+            # Physical -> voxel index; see redilate_skeleton_to_volume for the same conversion.
+            z, y, x = (int(round(pt[0] / vz)), int(round(pt[1] / vy)), int(round(pt[2] / vx)))
             if 0 <= z < skeleton_volume.shape[0] and 0 <= y < skeleton_volume.shape[1] and 0 <= x < skeleton_volume.shape[2]:
                 skeleton_volume[z, y, x] = True
                 

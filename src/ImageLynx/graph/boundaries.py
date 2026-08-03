@@ -14,9 +14,16 @@ def select_boundary_terminal_nodes(
     edge_percent: float,
     end_percent: float,
     axis: int = 1,
-    boundary_permeability_mode: str = "caged"
+    boundary_permeability_mode: str = "caged",
+    voxel_size: tuple[float, ...] = None
 ) -> tuple[list[Any], list[Any]]:
-    """Select degree-1 nodes with support for Tri-Mode 3D permeability."""
+    """Select degree-1 nodes with support for Tri-Mode 3D permeability.
+
+    ``voxel_size`` is the (z, y, x) spacing in physical units. Node ``pos`` attributes are
+    stored in physical units while ``image_shape`` is in voxels, so the axis extent must be
+    scaled before the two are compared. Defaults to unit spacing, under which the comparison
+    is unchanged.
+    """
     if not (0.0 <= edge_percent <= 100.0 and 0.0 <= end_percent <= 100.0):
         raise ValueError("edge_percent and end_percent must be in [0, 100].")
     if axis < 0 or axis >= len(image_shape):
@@ -29,7 +36,8 @@ def select_boundary_terminal_nodes(
     def axis_coord(node_id: Any) -> float:
         return float(np.asarray(node_pos[node_id], dtype=float)[axis])
 
-    axis_size = float(image_shape[axis] - 1)
+    axis_spacing = 1.0 if voxel_size is None else float(voxel_size[axis])
+    axis_size = float(image_shape[axis] - 1) * axis_spacing
     top_limit = axis_size * (edge_percent / 100.0)
     bottom_start = axis_size * (1.0 - (end_percent / 100.0))
 
