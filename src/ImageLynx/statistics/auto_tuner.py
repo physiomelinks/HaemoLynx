@@ -169,8 +169,8 @@ class PreprocessingObjective:
     def __call__(self, trial):
         # 1. Define the Bayesian search space (TPE limits)
         pre_kwargs = {
-            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.0, 0.2),
-            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.2, 0.4),
+            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.25, 0.5),
+            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.5, 0.75),
             # "median_filter_size": trial.suggest_categorical("median_filter_size", [0, 3, 5, 7, 9]),
             "median_filter_size": 9,
             # "morphological_opening_radius": trial.suggest_int("morphological_opening_radius", 0, 1),
