@@ -146,7 +146,15 @@ def _comment_lines(setting: Setting) -> list[str]:
         high = "" if setting.maximum is None else str(setting.maximum)
         notes.append(f"range {low}..{high}")
     if setting.requires:
-        notes.append("needs " + " and ".join(setting.requires))
+        notes.append(
+            "needs "
+            + " and ".join(
+                f"{name[1:]} off" if name.startswith("!") else name
+                for name in setting.requires
+            )
+        )
+    if setting.must_exist:
+        notes.append("must exist")
     suffix = f"  [{'; '.join(notes)}]" if notes else ""
     return [f"  # {setting.help}{suffix}"]
 

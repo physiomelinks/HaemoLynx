@@ -224,3 +224,62 @@ def test_the_entry_point_still_accepts_individual_overrides(
     assert settings_reaching_the_first_stage["input_path"] == Path("a.tif")
     assert settings_reaching_the_first_stage["plot_dir"] == Path("plots")
     assert settings_reaching_the_first_stage["do_graph_building"] is False
+
+
+# --- pre-run checks ---------------------------------------------------------
+
+
+def test_preflight_is_derived_from_the_schema_not_a_hand_written_list():
+    """The example's preflight.py is gone; the checks read the schema."""
+    from ImageLynx.pipeline import preflight
+
+    assert not (REPO_ROOT / "examples" / "preflight.py").exists()
+    assert callable(preflight)
+
+
+def test_preflight_accepts_a_runnable_configuration(pipeline, tmp_path):
+    from ImageLynx.pipeline import preflight
+
+    image = tmp_path / "mask.tif"
+    image.write_bytes(b"x")
+    settings = pipeline.resolve_settings(overrides={"input_path": image})
+    assert preflight(settings, pipeline.SCHEMA).ok
+
+
+def test_preflight_rejects_a_missing_input_image(pipeline, tmp_path):
+    from ImageLynx.pipeline import preflight
+
+    settings = pipeline.resolve_settings(overrides={"input_path": tmp_path / "absent.tif"})
+    report = preflight(settings, pipeline.SCHEMA)
+    assert not report.ok
+    assert any("input_path" in message for message in report.errors)
+
+
+def test_preflight_demands_the_masks_a_toggle_turns_on(pipeline, tmp_path):
+    """Turning on large-vessel masks makes their paths required."""
+    from ImageLynx.pipeline import preflight
+
+    image = tmp_path / "mask.tif"
+    image.write_bytes(b"x")
+    settings = pipeline.resolve_settings(
+        overrides={"input_path": image, "use_large_vessel_masks": True}
+    )
+    report = preflight(settings, pipeline.SCHEMA)
+    assert not report.ok
+    assert any("large_arteriole_mask_path" in message for message in report.errors)
+
+
+def test_preflight_requires_a_cached_graph_when_graph_building_is_off(pipeline, tmp_path):
+    from ImageLynx.pipeline import preflight
+
+    image = tmp_path / "mask.tif"
+    image.write_bytes(b"x")
+    settings = pipeline.resolve_settings(
+        overrides={
+            "input_path": image,
+            "do_graph_building": False,
+            "vtk_output_prefix": tmp_path / "outputs" / "network",
+        }
+    )
+    report = preflight(settings, pipeline.SCHEMA)
+    assert any("do_graph_building" in message for message in report.errors)

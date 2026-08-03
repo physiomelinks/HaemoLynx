@@ -39,6 +39,23 @@ KINDS = (
 _LIST_KINDS = {"int_list": int, "float_list": float, "str_list": str}
 
 
+def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
+    """True when *prerequisite* holds in *values*.
+
+    A leading ``!`` negates it, which is how a setting says it applies only
+    while some feature is *off* — an input path that a run would otherwise
+    generate for itself, for instance.
+    """
+    if prerequisite.startswith("!"):
+        return not bool(values.get(prerequisite[1:], False))
+    return bool(values.get(prerequisite, False))
+
+
+def is_active(setting: "Setting", values: Mapping[str, Any]) -> bool:
+    """True when every one of *setting*'s prerequisites is met."""
+    return all(is_prerequisite_met(p, values) for p in setting.requires)
+
+
 def section_key(section: str) -> str:
     """YAML heading for a section name."""
     return section.strip().lower().replace(" ", "_").replace("-", "_")
@@ -83,10 +100,16 @@ class Setting:
     unit:
         Physical unit shown next to the widget, e.g. ``"um"``.
     requires:
-        Names of boolean settings that must all be true for this one to apply.
-        A GUI greys the control out when they are not; validation rejects a
-        non-default value whose prerequisites are off, which is how the silent
-        "setting had no effect" class of bug is caught.
+        Names of boolean settings that must all be true for this one to apply,
+        each optionally negated with a leading ``!``. A GUI greys the control
+        out when they are not met; a non-default value whose prerequisites are
+        unmet warns, which is how the silent "setting had no effect" class of
+        bug is caught.
+    must_exist:
+        For a path: the file or directory it names must be there before a run
+        starts, whenever this setting is active. Checked by
+        :func:`ImageLynx.parsers.check_settings`, not at load, so a GUI can
+        show the problem rather than refuse to open the file.
     advanced:
         Hide behind an "advanced" disclosure by default.
     """
@@ -101,6 +124,7 @@ class Setting:
     maximum: float | None = None
     unit: str | None = None
     requires: tuple[str, ...] = ()
+    must_exist: bool = False
     advanced: bool = False
 
     def __post_init__(self) -> None:
@@ -131,6 +155,11 @@ class Setting:
             raise ConfigError(
                 f"Setting '{self.name}' has minimum {self.minimum} above maximum "
                 f"{self.maximum}."
+            )
+        if self.must_exist and self.kind != "path":
+            raise ConfigError(
+                f"Setting '{self.name}' declares must_exist but is kind "
+                f"'{self.kind}'; only a path can be checked for existence."
             )
         if self.default is not None:
             # A default that its own rules reject is a schema bug, not a user
@@ -227,6 +256,7 @@ class Setting:
             "maximum": self.maximum,
             "unit": self.unit,
             "requires": list(self.requires),
+            "must_exist": self.must_exist,
             "advanced": self.advanced,
         }
 
@@ -274,6 +304,7 @@ class Schema:
             by_name[setting.name] = setting
         for setting in settings:
             for prerequisite in setting.requires:
+                prerequisite = prerequisite.lstrip("!")
                 if prerequisite not in by_name:
                     raise ConfigError(
                         f"Setting '{setting.name}' requires '{prerequisite}', "
@@ -410,7 +441,7 @@ class Schema:
             unmet = [
                 prerequisite
                 for prerequisite in setting.requires
-                if not resolved.get(prerequisite, False)
+                if not is_prerequisite_met(prerequisite, resolved)
             ]
             if unmet:
                 messages.append(

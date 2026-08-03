@@ -24,11 +24,14 @@ from .config import (
     prefixed_arguments,
     settings_for,
 )
+from .checks import CheckReport, check_settings
 from .cli import build_parser, print_settings, settings_from_command_line
 from .schema import ConfigError, IneffectiveSettingWarning, Schema, Setting
 
 __all__ = [
+    "CheckReport",
     "ConfigError",
+    "check_settings",
     "IneffectiveSettingWarning",
     "DICT_ARGUMENT_THRESHOLD",
     "Schema",

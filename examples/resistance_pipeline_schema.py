@@ -64,6 +64,8 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/brain_microvessels.tiff",
             help="Read this already-segmented image as the pipeline input",
             section=_INPUT_AND_SEGMENTATION,
+            must_exist=True,
+            requires=("!use_ilastik_segmentation",)
         ),
         Setting(
             name="use_ilastik_segmentation",
@@ -79,6 +81,7 @@ SCHEMA = Schema(
             help="Read this raw image as the ilastik input for main-image segmentation",
             section=_INPUT_AND_SEGMENTATION,
             requires=("use_ilastik_segmentation",),
+            must_exist=True,
         ),
         Setting(
             name="ilastik_classifier_path",
@@ -87,6 +90,7 @@ SCHEMA = Schema(
             help="Use this trained ilastik project to segment the main image",
             section=_INPUT_AND_SEGMENTATION,
             requires=("use_ilastik_segmentation",),
+            must_exist=True,
         ),
         Setting(
             name="ilastik_executable",
@@ -168,6 +172,7 @@ SCHEMA = Schema(
             help="Read this pre-segmented large arteriole mask",
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks",),
+            must_exist=True,
         ),
         Setting(
             name="large_venule_mask_path",
@@ -176,6 +181,7 @@ SCHEMA = Schema(
             help="Read this pre-segmented large venule mask",
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks",),
+            must_exist=True,
         ),
         Setting(
             name="ilastik_unsegmented_arteriole_image_path",
@@ -200,6 +206,7 @@ SCHEMA = Schema(
             help="Use this trained ilastik project to segment arterioles",
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            must_exist=True,
         ),
         Setting(
             name="ilastik_venule_classifier_path",
@@ -208,6 +215,7 @@ SCHEMA = Schema(
             help="Use this trained ilastik project to segment venules",
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            must_exist=True,
         ),
         Setting(
             name="use_small_vessel_masks_for_boundary_assignment",
@@ -249,6 +257,7 @@ SCHEMA = Schema(
             help="Read this pre-segmented small arteriole mask",
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment",),
+            must_exist=True,
         ),
         Setting(
             name="small_venule_mask_path",
@@ -257,6 +266,7 @@ SCHEMA = Schema(
             help="Read this pre-segmented small venule mask",
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment",),
+            must_exist=True,
         ),
         Setting(
             name="ilastik_unsegmented_small_arteriole_image_path",
@@ -290,6 +300,7 @@ SCHEMA = Schema(
                 "use_small_vessel_masks_for_boundary_assignment",
                 "use_ilastik_small_vessel_segmentation",
             ),
+            must_exist=True,
         ),
         Setting(
             name="ilastik_small_venule_classifier_path",
@@ -301,6 +312,7 @@ SCHEMA = Schema(
                 "use_small_vessel_masks_for_boundary_assignment",
                 "use_ilastik_small_vessel_segmentation",
             ),
+            must_exist=True,
         ),
         # ------------------------------------------------------------------
         # Boundary assignment
@@ -724,6 +736,7 @@ SCHEMA = Schema(
             help="Read this cell mask for the 3D distance measurement",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            must_exist=True,
         ),
         Setting(
             name="cell_mask_h5_dataset_name",
@@ -740,6 +753,7 @@ SCHEMA = Schema(
             help="Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            must_exist=True,
         ),
         Setting(
             name="measurement_3d_vessel_mask_h5_dataset_name",
@@ -756,6 +770,7 @@ SCHEMA = Schema(
             help="Take the vessel-volume raster shape from this reference image",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            must_exist=True,
         ),
         Setting(
             name="measurement_3d_reference_h5_dataset_name",
@@ -807,6 +822,7 @@ SCHEMA = Schema(
             help="Read pericyte locations from this mask",
             section=_DIAMETERS_AND_PERICYTES,
             requires=("use_pericyte_mask_constriction",),
+            must_exist=True,
         ),
         Setting(
             name="pericyte_mask_h5_dataset_name",
@@ -977,6 +993,7 @@ SCHEMA = Schema(
             help="Measure FWHM diameters from this raw single-channel image",
             section=_FWHM,
             requires=("use_fwhm_edge_diameters",),
+            must_exist=True,
         ),
         Setting(
             name="fwhm_sample_spacing_along_edge_um",

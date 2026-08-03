@@ -38,7 +38,7 @@ from ImageLynx.pipeline import (
 from ImageLynx.visualization.dilation_curves import plot_dilation_curves
 from brain_pipeline_schema import SCHEMA
 from pipeline_presets import PRESETS
-from resistance_network_pipeline import run_preflight
+from resistance_network_pipeline import _preflight_or_exit
 
 CONFIG_PATH = examples_dir / "brain_pipeline_config.yaml"
 
@@ -77,6 +77,6 @@ if __name__ == "__main__":
             description=__doc__,
             presets=PRESETS,
             resolver=resolve_settings,
-            check=run_preflight,
+            check=_preflight_or_exit,
         )
     )

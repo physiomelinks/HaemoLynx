@@ -13,6 +13,7 @@ a run is visible and can be intervened in::
     network  = build_network(settings, volume, SCHEMA)
     ...
 """
+from .checks import preflight
 from .settings import fill_derived_settings, resolve_settings
 from .stages import (
     BoundaryNodes,
@@ -44,6 +45,7 @@ __all__ = [
     "build_haemodynamic_model",
     "build_network",
     "export_results",
+    "preflight",
     "fill_derived_settings",
     "resolve_settings",
     "run_pipeline_stages",

@@ -17,6 +17,7 @@ from ImageLynx import haemodynamics
 from ImageLynx.parsers import settings_from_command_line
 from ImageLynx.pipeline import resolve_settings as _resolve_settings
 from ImageLynx.pipeline import (
+    preflight,
     assign_boundaries,
     assign_diameters,
     build_haemodynamic_model,
@@ -26,7 +27,6 @@ from ImageLynx.pipeline import (
     skeletonise,
     solve,
 )
-from preflight import run_preflight_checklist
 from resistance_pipeline_schema import SCHEMA
 from pipeline_presets import PRESETS
 
@@ -44,27 +44,9 @@ from pipeline_presets import PRESETS
 CONFIG_PATH = examples_dir / "resistance_pipeline_config.yaml"
 
 
-#: preflight.py still reads the pipeline's old lowercase argument names; this
-#: maps them onto the settings that replaced them until it is schema-driven.
-PREFLIGHT_ARGUMENT_NAMES = {
-    "image_path": "input_path",
-    "axis_order": "image_axis_order",
-    "do_pericyte_constriction": "do_pericyte_construction",
-}
-
-
-def run_preflight(settings: dict) -> None:
-    """Check the settings make a runnable configuration, or exit."""
-    report = run_preflight_checklist(
-        {
-            **settings,
-            **{
-                argument: settings[setting]
-                for argument, setting in PREFLIGHT_ARGUMENT_NAMES.items()
-            },
-        }
-    )
-    if not report["ok"]:
+def _preflight_or_exit(settings: dict) -> None:
+    """Run the pre-run checks; stop before doing any work if any failed."""
+    if not preflight(settings, SCHEMA).ok:
         raise SystemExit(2)
 
 
@@ -112,6 +94,6 @@ if __name__ == "__main__":
             description=__doc__,
             presets=PRESETS,
             resolver=resolve_settings,
-            check=run_preflight,
+            check=lambda settings: _preflight_or_exit(settings),
         )
     )

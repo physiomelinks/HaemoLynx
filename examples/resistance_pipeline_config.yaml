@@ -5,13 +5,13 @@
 # Input and segmentation
 # ------------------------------------------------------------------------
 input_and_segmentation:
-  # Read this already-segmented image as the pipeline input
+  # Read this already-segmented image as the pipeline input  [needs use_ilastik_segmentation off; must exist]
   input_path: examples/images/brain_microvessels.tiff
   # Segment the main input image with ilastik instead of reading a segmented file
   use_ilastik_segmentation: false
-  # Read this raw image as the ilastik input for main-image segmentation  [needs use_ilastik_segmentation]
+  # Read this raw image as the ilastik input for main-image segmentation  [needs use_ilastik_segmentation; must exist]
   ilastik_unsegmented_image_path: examples/images/Nerve_capillaries.tif
-  # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation]
+  # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation; must exist]
   ilastik_classifier_path: examples/classifiers/nerve_classifier.ilp
   # Run this ilastik executable name or path in headless mode
   ilastik_executable: ilastik.exe
@@ -36,17 +36,17 @@ vessel_masks:
   use_ilastik_large_vessel_segmentation: false
   # Dilate the large-vessel masks by this distance before selecting terminal nodes  [um; range 0.0..; needs use_large_vessel_masks]
   large_vessel_mask_dilation_microns: 0.0
-  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks]
+  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks; must exist]
   large_arteriole_mask_path: examples/images/large_arteriole_mask.tif
-  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks]
+  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks; must exist]
   large_venule_mask_path: examples/images/large_venule_mask.tif
   # Read this raw image as the ilastik input for the large arteriole mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
   ilastik_unsegmented_arteriole_image_path: examples/images/large_arteriole_mask.tif
   # Read this raw image as the ilastik input for the large venule mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
   ilastik_unsegmented_venule_image_path: examples/images/large_venule_mask.tif
-  # Use this trained ilastik project to segment arterioles  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
+  # Use this trained ilastik project to segment arterioles  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation; must exist]
   ilastik_arteriole_classifier_path: examples/classifiers/arteriole_classifier.ilp
-  # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
+  # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation; must exist]
   ilastik_venule_classifier_path: examples/classifiers/venule_classifier.ilp
   # Assign arteriole and venule boundary nodes from small-vessel masks
   use_small_vessel_masks_for_boundary_assignment: false
@@ -56,17 +56,17 @@ vessel_masks:
   small_vessel_mask_min_overlap_fraction: 0.5
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
-  # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]
   small_arteriole_mask_path: examples/images/small_arteriole_mask.tif
-  # Read this pre-segmented small venule mask  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Read this pre-segmented small venule mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]
   small_venule_mask_path: examples/images/small_venule_mask.tif
   # Read this raw image as the ilastik input for the small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
   ilastik_unsegmented_small_arteriole_image_path: examples/images/small_arteriole_mask.tif
   # Read this raw image as the ilastik input for the small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
   ilastik_unsegmented_small_venule_image_path: examples/images/small_venule_mask.tif
-  # Use this trained ilastik project to segment small arterioles  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
+  # Use this trained ilastik project to segment small arterioles  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation; must exist]
   ilastik_small_arteriole_classifier_path: examples/classifiers/arteriole_classifier.ilp
-  # Use this trained ilastik project to segment small venules  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
+  # Use this trained ilastik project to segment small venules  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation; must exist]
   ilastik_small_venule_classifier_path: examples/classifiers/venule_classifier.ilp
 
 # ------------------------------------------------------------------------
@@ -204,15 +204,15 @@ statistics_and_measurements:
   statistics: false
   # Measure 3D distances from the vessel network to a cell mask
   measurement_3d_to_cell_mask: false
-  # Read this cell mask for the 3D distance measurement  [needs measurement_3d_to_cell_mask]
+  # Read this cell mask for the 3D distance measurement  [needs measurement_3d_to_cell_mask; must exist]
   cell_mask_path: null
   # Read this dataset from the cell mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
   cell_mask_h5_dataset_name: null
-  # Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input  [needs measurement_3d_to_cell_mask]
+  # Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input  [needs measurement_3d_to_cell_mask; must exist]
   measurement_3d_vessel_mask_path: null
   # Read this dataset from the 3D-distance vessel mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
   measurement_3d_vessel_mask_h5_dataset_name: null
-  # Take the vessel-volume raster shape from this reference image  [needs measurement_3d_to_cell_mask]
+  # Take the vessel-volume raster shape from this reference image  [needs measurement_3d_to_cell_mask; must exist]
   measurement_3d_reference_image_path: null
   # Read this dataset from the 3D-distance reference image when it is an H5 file  [needs measurement_3d_to_cell_mask]
   measurement_3d_reference_h5_dataset_name: null
@@ -229,7 +229,7 @@ diameters_and_pericytes:
   do_pericyte_construction: false
   # Place constrictions at pericyte centroids taken from a mask rather than at regular spacing  [needs run_haemodynamics]
   use_pericyte_mask_constriction: false
-  # Read pericyte locations from this mask  [needs use_pericyte_mask_constriction]
+  # Read pericyte locations from this mask  [needs use_pericyte_mask_constriction; must exist]
   pericyte_mask_path: null
   # Read this dataset from the pericyte mask when it is an H5 file  [needs use_pericyte_mask_constriction]
   pericyte_mask_h5_dataset_name: null
@@ -278,7 +278,7 @@ diameters_and_pericytes:
 fwhm_diameter_measurement:
   # Measure per-edge diameters from the raw image by full-width-half-maximum fitting  [needs run_haemodynamics]
   use_fwhm_edge_diameters: false
-  # Measure FWHM diameters from this raw single-channel image  [needs use_fwhm_edge_diameters]
+  # Measure FWHM diameters from this raw single-channel image  [needs use_fwhm_edge_diameters; must exist]
   fwhm_raw_tiff_path: null
   # Sample a transverse profile every this far along the centerline  [um; range 0.0..; needs use_fwhm_edge_diameters]
   fwhm_sample_spacing_along_edge_um: 2.0
