@@ -14,13 +14,14 @@ capillary power law, while the 20 um arteriole and 30 um venule sit above the
 
 Every setting lives in ``simple_network_config.yaml``, described by
 ``simple_network_schema.py``. Change a value there rather than editing this
-script; a ``--<setting-name>`` flag overrides one for a single run::
+script. The command line is generated from the schema, so every setting has a
+flag of its own, and ``--list-settings`` and ``--save-config`` come for free::
 
     python examples/simple_network_haemodynamics.py
     python examples/simple_network_haemodynamics.py --config my_config.yaml
     python examples/simple_network_haemodynamics.py --inlet-pressure-pa 8000
+    python examples/simple_network_haemodynamics.py --list-settings
 """
-import argparse
 import sys
 from pathlib import Path
 
@@ -37,7 +38,7 @@ for _path in (src_dir, examples_dir):
 from ImageLynx import graph as graph_tools
 from ImageLynx import haemodynamics, visualization
 from ImageLynx.haemodynamics.poiseuille import CAPILLARY_REGIME_MAX_DIAMETER_UM
-from ImageLynx.parsers import add_schema_arguments, cli_overrides, load_config
+from ImageLynx.parsers import settings_from_command_line
 from simple_network_schema import SCHEMA
 
 CONFIG_PATH = examples_dir / "simple_network_config.yaml"
@@ -210,15 +211,4 @@ def main(settings: dict) -> dict:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=CONFIG_PATH,
-        help="YAML config to run from.",
-    )
-    # One flag per setting, generated from the schema, for one-off overrides.
-    add_schema_arguments(parser, SCHEMA)
-    args = parser.parse_args()
-
-    main(load_config(args.config, SCHEMA, overrides=cli_overrides(args)))
+    main(settings_from_command_line(SCHEMA, CONFIG_PATH, description=__doc__))
