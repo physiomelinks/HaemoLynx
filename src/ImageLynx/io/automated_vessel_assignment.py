@@ -1,6 +1,7 @@
 """Helpers for optional automated large-vessel mask loading."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Literal, Mapping
 
@@ -12,6 +13,8 @@ from .load import (
     load_volume_and_voxel_size,
     resolve_image_path_with_optional_zip,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _load_mask_image(
@@ -129,7 +132,7 @@ def _assert_voxel_sizes_match_main_image(
         )
     ):
         if mask_role == "large":
-            print(
+            logger.info(
                 "Voxel-size check passed. Arteriole and venule masks are aligned "
                 "to the same physical voxel units as the main image."
             )
@@ -143,7 +146,7 @@ def _assert_voxel_sizes_match_main_image(
         "All must match exactly in x, y, and z."
     )
     if mask_role == "large":
-        print(error_message)
+        logger.error(error_message)
     raise ValueError(error_message)
 
 
@@ -273,7 +276,7 @@ def load_and_validate_vessel_masks(
             f"{unsegmented_venule_image_path.stem}_segmented{ilastik_output_suffix}"
         )
 
-        print(
+        logger.info(
             f"Running ilastik segmentation for {scale_label} arteriole image: "
             f"{unsegmented_arteriole_image_path}"
         )
@@ -283,7 +286,7 @@ def load_and_validate_vessel_masks(
             output_path=segmented_arteriole_path,
             ilastik_executable=ilastik_executable,
         )
-        print(
+        logger.info(
             f"Running ilastik segmentation for {scale_label} venule image: "
             f"{unsegmented_venule_image_path}"
         )
@@ -293,7 +296,7 @@ def load_and_validate_vessel_masks(
             output_path=segmented_venule_path,
             ilastik_executable=ilastik_executable,
         )
-        print(
+        logger.info(
             f"Using ilastik-segmented {scale_label}-vessel masks: "
             f"arteriole={effective_arteriole_mask_path}, "
             f"venule={effective_venule_mask_path}"
@@ -313,7 +316,7 @@ def load_and_validate_vessel_masks(
 
     if arteriole_mask is None or venule_mask is None:
         disabled_message = config["boundary_disabled_message"] or config["disabled_message"]
-        print(disabled_message)
+        logger.info(disabled_message)
         return None, None, None, None
 
     if arteriole_mask.shape != image_shape:
@@ -330,11 +333,11 @@ def load_and_validate_vessel_masks(
     arteriole_voxel_size_xyz = tuple(float(v) for v in arteriole_mask_voxel_size)
     venule_voxel_size_xyz = tuple(float(v) for v in venule_mask_voxel_size)
     if mask_role == "large":
-        print(
+        logger.info(
             f"Loaded {scale_label}-vessel masks: "
             f"arteriole={arteriole_mask.shape}, venule={venule_mask.shape}"
         )
-        print(
+        logger.info(
             "Large-vessel mask voxel sizes (x, y, z): "
             f"arteriole={arteriole_mask_voxel_size}, venule={venule_mask_voxel_size}"
         )
@@ -354,7 +357,7 @@ def load_and_validate_vessel_masks(
             dilation_microns=dilation_microns,
             voxel_size_zyx=voxel_size_zyx_from_xyz(main_voxel_size_xyz),
         )
-        print(
+        logger.info(
             f"Dilated {scale_label}-vessel masks by {float(dilation_microns):.3f} microns."
         )
 
@@ -362,7 +365,7 @@ def load_and_validate_vessel_masks(
         overlap_info = (
             f", {loaded_message_suffix}" if loaded_message_suffix else ""
         )
-        print(
+        logger.info(
             "Loaded small-vessel masks for boundary assignment: "
             f"arteriole={arteriole_mask.shape}, venule={venule_mask.shape}"
             f"{overlap_info}"
