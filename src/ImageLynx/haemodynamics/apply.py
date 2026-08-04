@@ -15,8 +15,9 @@ from ImageLynx.parsers import prefixed_arguments
 from ImageLynx.haemodynamics import automated
 from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
-from ImageLynx.haemodynamics import pericyte_mask as pericyte_mask_haemodynamics
-from ImageLynx.haemodynamics import probability as probability_haemodynamics
+from ImageLynx.haemodynamics.constriction_strategy import (
+    set_resistances_for_constriction_strategy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -189,75 +190,37 @@ def _assign_poiseuille_resistances(
     results: dict[str, Any] = {}
 
     if config.do_pericyte_constriction:
-        if config.diameter("use_pericyte_mask_constriction"):
-            if config.diameter("pericyte_mask_path") is None:
-                raise ValueError(
-                    "pericyte_mask_path must be set when use_pericyte_mask_constriction=True."
-                )
-            G, results["pericyte_mask"] = (
-                pericyte_mask_haemodynamics.set_poiseuille_resistances_with_pericyte_mask(
-                    G,
-                    diameter_by_branch_order=config.diameter("diameter_by_branch_order"),
-                    constriction_factor_by_branch_order=config.diameter("constriction_by_branch_order"),
-                    pericyte_mask_path=config.diameter("pericyte_mask_path"),
-                    pericyte_mask_h5_dataset_name=config.diameter("pericyte_mask_h5_dataset_name"),
-                    max_assignment_distance_um=config.diameter("pericyte_max_assignment_distance_um"),
-                    min_pericyte_diameter_um=config.diameter("pericyte_min_diameter_um"),
-                    max_pericyte_diameter_um=config.diameter("pericyte_max_diameter_um"),
-                    prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
-                    constriction_length=config.diameter("constriction_length"),
-                    use_probabilistic_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
-                    constriction_probability=float(config.diameter("pericyte_constriction_probability")),
-                    active_pericyte_indices=(
-                        active_pericyte_indices
-                        if (
-                            config.diameter("reuse_comparison_pericyte_cohort_for_main_run")
-                            and config.diameter("use_probabilistic_pericyte_constriction")
-                        )
-                        else None
-                    ),
-                    axis_order=config.axis_order,
-                )
-            )
-        elif config.diameter("use_probabilistic_pericyte_constriction"):
-            G, results["probabilistic"] = (
-                probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
-                    G,
-                    diameter_by_branch_order=config.diameter("diameter_by_branch_order"),
-                    constriction_factor_by_branch_order=config.diameter("constriction_by_branch_order"),
-                    prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
-                    constriction_length=config.diameter("constriction_length"),
-                    constriction_spacing=config.diameter("constriction_spacing"),
-                    constriction_probability=float(config.diameter("pericyte_constriction_probability")),
-                    active_center_indices_by_edge=(
-                        active_center_indices_by_edge
-                        if (
-                            config.diameter("reuse_comparison_pericyte_cohort_for_main_run")
-                            and config.diameter("use_probabilistic_pericyte_constriction")
-                        )
-                        else None
-                    ),
-                )
-            )
-        elif config.use_fwhm_edge_diameters:
-            G, results["constrictions"] = poiseuille_model.set_poiseuille_resistances_with_constrictions(
-                G,
-                config.diameter("diameter_by_branch_order"),
-                prefer_edge_fwhm_baseline=True,
-                constriction_factor_by_branch_order=config.diameter("constriction_by_branch_order"),
-            )
-        else:
-            diameter_enhanced = {
-                branch_order: {
-                    "d1": diameter,
-                    "d2": diameter * config.diameter("constriction_by_branch_order").get(branch_order, 1.0),
-                }
-                for branch_order, diameter in config.diameter("diameter_by_branch_order").items()
-            }
-            G, results["constrictions"] = poiseuille_model.set_poiseuille_resistances_with_constrictions(
-                G,
-                diameter_enhanced,
-            )
+        reuse_comparison_cohort = bool(
+            config.diameter("reuse_comparison_pericyte_cohort_for_main_run")
+            and config.diameter("use_probabilistic_pericyte_constriction")
+        )
+        # Only the probabilistic strategies read this, and a run that uses
+        # neither need not configure it.
+        configured_probability = config.diameter("pericyte_constriction_probability")
+        G, strategy, strategy_results = set_resistances_for_constriction_strategy(
+            G,
+            diameter_by_branch_order=config.diameter("diameter_by_branch_order"),
+            constriction_factor_by_branch_order=config.diameter("constriction_by_branch_order"),
+            use_pericyte_mask_constriction=bool(config.diameter("use_pericyte_mask_constriction")),
+            use_probabilistic_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
+            prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
+            constriction_length=config.diameter("constriction_length"),
+            constriction_spacing=config.diameter("constriction_spacing"),
+            constriction_probability=(
+                1.0 if configured_probability is None else float(configured_probability)
+            ),
+            pericyte_mask_path=config.diameter("pericyte_mask_path"),
+            pericyte_mask_h5_dataset_name=config.diameter("pericyte_mask_h5_dataset_name"),
+            active_pericyte_indices=active_pericyte_indices if reuse_comparison_cohort else None,
+            active_center_indices_by_edge=(
+                active_center_indices_by_edge if reuse_comparison_cohort else None
+            ),
+            max_assignment_distance_um=config.diameter("pericyte_max_assignment_distance_um"),
+            min_pericyte_diameter_um=config.diameter("pericyte_min_diameter_um"),
+            max_pericyte_diameter_um=config.diameter("pericyte_max_diameter_um"),
+            axis_order=config.axis_order,
+        )
+        results[strategy] = strategy_results
     else:
         G, results["poiseuille"] = poiseuille_model.set_poiseuille_resistances(
             G,

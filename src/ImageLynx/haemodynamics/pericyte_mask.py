@@ -1,4 +1,10 @@
-"""Pericyte-mask driven constriction mapping for Poiseuille edge resistance."""
+"""Constriction sites taken from a segmented pericyte mask.
+
+Each connected component of the mask is one pericyte; its centroid is projected
+onto the nearest capillary and becomes a constriction site there. The narrowing
+itself, and how it becomes an edge resistance, is
+:mod:`ImageLynx.haemodynamics.constriction`.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,9 +22,11 @@ from ImageLynx.io import (
     load_binary_mask_and_voxel_size,
     voxel_size_zyx_from_xyz,
 )
-from .poiseuille import set_edge_resistance
-from .probability import (
+from .constriction import (
+    apply_constriction_sites,
     is_capillary_branch_order,
+    require_enough_integration_points,
+    require_positive_constriction_length,
     select_active_pericyte_indices,
     validate_active_pericyte_indices,
 )
@@ -187,127 +195,36 @@ def _assign_centroids_to_edges(
     return projections
 
 
-def _diameter_at_position_from_pericytes(
-    position: float,
-    d1: float,
-    d2: float,
-    constriction_centers: list[float],
-    constriction_length: float,
-) -> float:
-    """Piecewise linear constriction around each centroid (d1->d2->d1)."""
-    if not constriction_centers or constriction_length <= 0:
-        return d1
+class MaskConstrictionSites:
+    """Sites already fixed to edges by projecting mask centroids onto them.
 
-    half_window = float(constriction_length) / 2.0
-    ramp_width = float(constriction_length) / 4.0
-    plateau_half = float(constriction_length) / 4.0
+    The mask decides everything before the run reaches an edge, so this simply
+    hands back what was assigned to ``(u, v, key)`` and reports how the
+    assignment went.
+    """
 
-    diameter = float(d1)
-    for center in constriction_centers:
-        distance_from_center = abs(float(position) - float(center))
-        if distance_from_center >= half_window:
-            continue
-        if distance_from_center <= plateau_half:
-            local_diameter = float(d2)
-        else:
-            if ramp_width <= 0:
-                local_diameter = float(d1)
-            else:
-                alpha = (distance_from_center - plateau_half) / ramp_width
-                local_diameter = float(d2 + (d1 - d2) * alpha)
-        diameter = min(diameter, local_diameter)
-    return diameter
+    def __init__(
+        self,
+        *,
+        assigned_centers_by_edge: dict[tuple[Any, Any, Any], list[float]],
+        summary_fields: dict[str, Any],
+    ) -> None:
+        self._assigned_centers_by_edge = assigned_centers_by_edge
+        self._summary_fields = summary_fields
 
+    def centers_for_edge(
+        self,
+        u: Any,
+        v: Any,
+        key: Any,
+        edge_data: dict[str, Any],
+        *,
+        length: float,
+    ) -> list[float]:
+        return self._assigned_centers_by_edge.get((u, v, key), [])
 
-def _integrated_resistance_from_centroid_constrictions(
-    *,
-    length: float,
-    d1: float,
-    d2: float,
-    constriction_centers: list[float],
-    constriction_length: float,
-    num_points: int,
-) -> float:
-    if length <= 0:
-        return float("inf")
-    positions = np.linspace(0.0, float(length), int(num_points))
-    diameters = np.asarray(
-        [
-            _diameter_at_position_from_pericytes(
-                position=pos,
-                d1=d1,
-                d2=d2,
-                constriction_centers=constriction_centers,
-                constriction_length=constriction_length,
-            )
-            for pos in positions
-        ],
-        dtype=float,
-    )
-    diameters = np.clip(diameters, a_min=1e-9, a_max=None)
-    viscosity = 1.0 / (diameters ** 1.647)
-    resistance_per_length = (128.0 * viscosity) / (np.pi * (diameters ** 4))
-    integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
-    return float(integ(resistance_per_length, x=positions))
-
-
-def _resolve_d1_d2_for_edge(
-    *,
-    edge_data: dict[str, Any],
-    branch_order: str,
-    diameter_by_branch_order: dict,
-    constriction_factor_by_branch_order: dict[str, float] | None,
-    prefer_edge_fwhm_baseline: bool,
-) -> tuple[float, float, bool]:
-    used_fwhm_baseline = False
-    if prefer_edge_fwhm_baseline:
-        spec = diameter_by_branch_order.get(branch_order)
-        if spec is None:
-            raise ValueError(
-                f"No fallback baseline diameter for branch_order '{branch_order}'."
-            )
-        if isinstance(spec, dict):
-            raise ValueError(
-                "With prefer_edge_fwhm_baseline=True, diameter_by_branch_order must "
-                f"map '{branch_order}' to a numeric fallback baseline diameter."
-            )
-        fallback_d1 = float(spec)
-        fwhm_d = edge_data.get("fwhm_diameter_um")
-        if fwhm_d is not None and float(fwhm_d) > 0:
-            d1 = float(fwhm_d)
-            used_fwhm_baseline = True
-        else:
-            d1 = fallback_d1
-        factor = None
-        if constriction_factor_by_branch_order is not None:
-            factor = constriction_factor_by_branch_order.get(branch_order)
-        if factor is None:
-            raise ValueError(
-                f"No constriction factor for branch_order '{branch_order}'."
-            )
-        d2 = d1 * float(factor)
-        return d1, d2, used_fwhm_baseline
-
-    spec = diameter_by_branch_order.get(branch_order)
-    if spec is None:
-        raise ValueError(f"No diameter mapping for branch_order '{branch_order}'.")
-    if isinstance(spec, dict):
-        if "d1" not in spec or "d2" not in spec:
-            raise ValueError(
-                f"Invalid diameter dict for '{branch_order}'. Expected keys d1 and d2."
-            )
-        return float(spec["d1"]), float(spec["d2"]), used_fwhm_baseline
-
-    d1 = float(spec)
-    factor = None
-    if constriction_factor_by_branch_order is not None:
-        factor = constriction_factor_by_branch_order.get(branch_order)
-    if factor is None:
-        raise ValueError(
-            f"No constriction factor for branch_order '{branch_order}' in scalar mode."
-        )
-    d2 = d1 * float(factor)
-    return d1, d2, used_fwhm_baseline
+    def summary(self) -> dict[str, Any]:
+        return dict(self._summary_fields)
 
 
 def set_poiseuille_resistances_with_pericyte_mask(
@@ -335,14 +252,8 @@ def set_poiseuille_resistances_with_pericyte_mask(
     constriction center. Diameter is ``d2`` in the local core around that center
     and linearly ramps to ``d1`` towards the edge of the constriction window.
     """
-    if constriction_length <= 0:
-        raise ValueError(
-            f"constriction_length must be > 0, got {constriction_length}."
-        )
-    if num_integration_points < 3:
-        raise ValueError(
-            f"num_integration_points must be >= 3, got {num_integration_points}."
-        )
+    require_positive_constriction_length(constriction_length)
+    require_enough_integration_points(num_integration_points)
 
     mask_bool, mask_voxel_size = load_binary_mask_and_voxel_size(
         pericyte_mask_path,
@@ -418,8 +329,7 @@ def set_poiseuille_resistances_with_pericyte_mask(
         assigned_centers_by_edge.setdefault(edge_key, []).append(float(s_um))
         assignment_distances.append(float(dist_um))
 
-    results: dict[str, Any] = {
-        "edges_set": 0,
+    assignment_summary: dict[str, Any] = {
         "pericyte_count": total_pericytes,
         "eligible_pericyte_count": int(len(eligible_indices)),
         "max_assignment_distance_um": (
@@ -439,7 +349,6 @@ def set_poiseuille_resistances_with_pericyte_mask(
         "probabilistic_constriction_enabled": probabilistic_mode,
         "constriction_probability": float(constriction_probability),
         "edges_with_pericytes": int(len(assigned_centers_by_edge)),
-        "used_fwhm_baseline": 0,
         "mask_voxel_size_xyz": tuple(float(v) for v in mask_voxel_size),
         "assignment_distance_um_mean": (
             float(np.mean(assignment_distances)) if assignment_distances else 0.0
@@ -449,42 +358,16 @@ def set_poiseuille_resistances_with_pericyte_mask(
         ),
     }
 
-    for u, v, key, edge_data in graph.edges(keys=True, data=True):
-        branch_order = edge_data.get("branch_order")
-        if branch_order is None:
-            raise ValueError(
-                f"Edge ({u}, {v}, {key}) missing required 'branch_order' attribute."
-            )
-        length = edge_data.get("length")
-        if length is None or float(length) <= 0:
-            raise ValueError(
-                f"Edge ({u}, {v}, {key}) has invalid length: {length}."
-            )
-        d1, d2, used_fwhm = _resolve_d1_d2_for_edge(
-            edge_data=edge_data,
-            branch_order=str(branch_order),
-            diameter_by_branch_order=diameter_by_branch_order,
-            constriction_factor_by_branch_order=constriction_factor_by_branch_order,
-            prefer_edge_fwhm_baseline=bool(prefer_edge_fwhm_baseline),
-        )
-        if used_fwhm:
-            results["used_fwhm_baseline"] += 1
-        if d1 <= 0 or d2 <= 0:
-            raise ValueError(
-                f"Edge ({u}, {v}, {key}) has non-positive diameters d1={d1}, d2={d2}."
-            )
-
-        centers = assigned_centers_by_edge.get((u, v, key), [])
-        total_resistance = _integrated_resistance_from_centroid_constrictions(
-            length=float(length),
-            d1=float(d1),
-            d2=float(d2),
-            constriction_centers=centers,
-            constriction_length=float(constriction_length),
-            num_points=int(num_integration_points),
-        )
-        set_edge_resistance(graph[u][v][key], float(total_resistance))
-        graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))
-        graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in centers]
-        results["edges_set"] += 1
-    return graph, results
+    sites = MaskConstrictionSites(
+        assigned_centers_by_edge=assigned_centers_by_edge,
+        summary_fields=assignment_summary,
+    )
+    return apply_constriction_sites(
+        graph,
+        sites,
+        diameter_by_branch_order=diameter_by_branch_order,
+        constriction_factor_by_branch_order=constriction_factor_by_branch_order,
+        prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
+        constriction_length=constriction_length,
+        num_integration_points=num_integration_points,
+    )
