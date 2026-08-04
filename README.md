@@ -4,6 +4,8 @@ Converts raw microscopy images of the microvasculature into computational haemod
 
 ## Install
 
+Python 3.10 or newer.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate

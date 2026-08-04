@@ -90,7 +90,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-- **Python:** ≥ 3.9 (CI uses 3.10)
+- **Python:** ≥ 3.10 (CI matrix: 3.10, 3.11, 3.12)
 - **Run package tests:** from repo root: `pytest -s` or `pytest`
 - **Skip slow tests:** `pytest -m "not slow"`
 - **Integration only:** `pytest -m integration`
@@ -133,7 +133,9 @@ pip install -e ".[dev]"
 
 ### CI
 
-GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` and `pytest` on pull requests.
+GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` and `pytest` on pull
+requests, across a Python 3.10 / 3.11 / 3.12 matrix (`fail-fast: false`, so one version failing still
+reports the others).
 
 ---
 
