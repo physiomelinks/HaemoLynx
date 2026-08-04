@@ -20,7 +20,8 @@ dependencies = [
     "h5py",
     "skan",
     "pyvista",
-    "ipykernel"
+    "ipykernel",
+    "pyyaml"
 ]
 
 [project.optional-dependencies]

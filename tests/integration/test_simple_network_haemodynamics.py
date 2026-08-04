@@ -40,11 +40,23 @@ def example():
 
 
 @pytest.fixture(scope="module")
-def run_result(example, tmp_path_factory):
-    return example.main(tmp_path_factory.mktemp("simple_network"))
+def settings(example, tmp_path_factory):
+    """Settings exactly as a real run gets them: the config file on disk."""
+    from ImageLynx.parsers import load_config
+
+    return load_config(
+        example.CONFIG_PATH,
+        example.SCHEMA,
+        overrides={"output_dir": tmp_path_factory.mktemp("simple_network")},
+    )
 
 
-def test_example_network_is_well_formed(example):
+@pytest.fixture(scope="module")
+def run_result(example, settings):
+    return example.main(settings)
+
+
+def test_example_network_is_well_formed(example, settings):
     G = example.build_example_network()
 
     import networkx as nx
@@ -54,7 +66,7 @@ def test_example_network_is_well_formed(example):
     assert G.number_of_edges() == 9
     for u, v, data in G.edges(data=True):
         assert data["length"] > 0
-        assert data["branch_order"] in example.DIAMETER_BY_BRANCH_ORDER
+        assert data["branch_order"] in settings["diameter_by_branch_order"]
         assert len(data["voxels"]) == 2
     # Length must be the physical node separation, in um.
     assert G[0][1][0]["length"] == pytest.approx(100.0)
@@ -67,10 +79,10 @@ def test_every_vessel_gets_resistance_and_matching_conductance(run_result):
         assert data["conductance"] == pytest.approx(1.0 / data["resistance"], rel=1e-12)
 
 
-def test_large_vessels_use_the_constant_large_vessel_viscosity(example, run_result):
+def test_large_vessels_use_the_constant_large_vessel_viscosity(settings, run_result):
     """The 20 um arteriole is above the capillary limit, so mu is the constant."""
     G = run_result["graph"]
-    diameter = example.DIAMETER_BY_BRANCH_ORDER["Art1"]
+    diameter = settings["diameter_by_branch_order"]["Art1"]
     assert diameter > CAPILLARY_REGIME_MAX_DIAMETER_UM
 
     length_m = G[0][1][0]["length"] / UM_PER_M
@@ -79,10 +91,10 @@ def test_large_vessels_use_the_constant_large_vessel_viscosity(example, run_resu
     assert G[0][1][0]["resistance"] == pytest.approx(expected, rel=1e-12)
 
 
-def test_pressures_stay_within_the_boundary_conditions(example, run_result):
+def test_pressures_stay_within_the_boundary_conditions(settings, run_result):
     pressure = run_result["flow_result"]["pressure"]
-    assert pressure.min() == pytest.approx(example.OUTLET_PRESSURE_PA)
-    assert pressure.max() == pytest.approx(example.INLET_PRESSURE_PA)
+    assert pressure.min() == pytest.approx(settings["outlet_pressure_pa"])
+    assert pressure.max() == pytest.approx(settings["inlet_pressure_pa"])
 
 
 def test_flow_is_conserved_at_every_internal_node(example, run_result):
@@ -101,9 +113,9 @@ def test_flow_is_conserved_at_every_internal_node(example, run_result):
         assert abs(net_flow) < 1e-9 * abs(inlet_flow)
 
 
-def test_inlet_flow_matches_the_effective_resistance(example, run_result):
+def test_inlet_flow_matches_the_effective_resistance(settings, run_result):
     """Ohm's law across the whole network, computed two independent ways."""
-    pressure_drop = example.INLET_PRESSURE_PA - example.OUTLET_PRESSURE_PA
+    pressure_drop = settings["inlet_pressure_pa"] - settings["outlet_pressure_pa"]
     expected_flow = pressure_drop / run_result["effective_resistance"]
     assert run_result["inlet_flow_m3_s"] == pytest.approx(expected_flow, rel=1e-9)
     assert run_result["inlet_flow_m3_s"] > 0
@@ -115,7 +127,7 @@ def test_flow_is_physiologically_plausible(run_result):
     assert 1.0 <= flow_nl_min <= 100.0
 
 
-def test_boundary_selection_picks_the_terminal_nodes(example, run_result):
+def test_boundary_selection_picks_the_terminal_nodes(run_result):
     """The `select_boundary_nodes_by_method` call must resolve to the two ends."""
     G = run_result["graph"]
     terminals = {node for node, degree in G.degree() if degree == 1}
@@ -128,17 +140,20 @@ def test_boundary_selection_picks_the_terminal_nodes(example, run_result):
     assert not set(run_result["inlet_nodes"]) & set(run_result["outlet_nodes"])
 
 
-def test_running_the_example_warns_about_the_placeholder_viscosity(example, tmp_path):
+def test_running_the_example_warns_about_the_placeholder_viscosity(
+    example, settings, tmp_path
+):
     """A run using 20 um and 30 um vessels must say its viscosity is a placeholder."""
     from ImageLynx.haemodynamics.poiseuille import PlaceholderViscosityWarning
 
     with pytest.warns(PlaceholderViscosityWarning, match="order-of-magnitude"):
-        example.main(tmp_path / "warns")
+        example.main({**settings, "output_dir": tmp_path / "warns"})
 
 
 def test_vtk_files_are_written_with_flow_fields(run_result):
     vtk_export = run_result["vtk_export"]
-    flow_path = Path(vtk_export["vessels_flow_path"])
+    # One export, after the solve: the flows ride along as edge attributes.
+    flow_path = Path(vtk_export["vessels_path"])
     assert flow_path.exists() and flow_path.stat().st_size > 0
     assert Path(vtk_export["nodes_path"]).exists()
 

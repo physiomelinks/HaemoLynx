@@ -91,10 +91,17 @@ for p in (SRC_DIR, EXAMPLES_DIR):
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
-from resistance_pipeline_settings import (
-    DIAMETER_BY_BRANCH_ORDER,
-    custom_edges,
+from ImageLynx.pipeline import resolve_settings
+from resistance_pipeline_schema import SCHEMA
+
+# Settings come from the pipeline's config file, so the tutorial and the
+# example agree by construction rather than by being kept in step by hand.
+# resolve_settings also fills in the tables derived from other settings.
+PIPELINE_SETTINGS = resolve_settings(
+    schema=SCHEMA, config_path=EXAMPLES_DIR / "resistance_pipeline_config.yaml"
 )
+DIAMETER_BY_BRANCH_ORDER = PIPELINE_SETTINGS["diameter_by_branch_order"]
+custom_edges = PIPELINE_SETTINGS["custom_edges"]
 
 if str(TUTORIAL_DIR) not in sys.path:
     sys.path.insert(0, str(TUTORIAL_DIR))
@@ -433,18 +440,21 @@ r = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
 )
 print(f"Two-point resistance: {r}")
 
-# ## Stage 5: VTK export and flow solve
+# ## Stage 5: Flow solve and VTK export
 # 
-# Export vessels, pericytes, and nodes to VTK (`.vtp`), then solve pressure-driven flow with inlet/outlet boundary conditions.
+# Solve pressure-driven flow with inlet/outlet boundary conditions, put the resulting flows on the graph, then export vessels, pericytes, and nodes to VTK (`.vtp`) in one pass.
 
 # In[ ]:
 
 
-vtk_export = visualization.graph_to_vtk(G, VTK_PREFIX)
-flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
-    conductance, node_list, INPUT_P_BC, OUTPUT_P_BC,
-    starting_nodes, output_nodes, vtk_export,
+flow = haemodynamics.solve_flow_from_conductance_matrix(
+    conductance, node_list,
+    input_p_bc=INPUT_P_BC, output_p_bc=OUTPUT_P_BC,
+    starting_nodes=starting_nodes, output_nodes=output_nodes,
 )
+# Flows go onto the graph, so one export writes vessels and flow together.
+haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
+vtk_export = visualization.graph_to_vtk(G, VTK_PREFIX)
 print(f"VTK with flow: {vtk_export['vessels_path']}")
 print(
     "Open the .vtp files in ParaView (or similar) to visualise vessels, nodes, and flow."
@@ -456,7 +466,7 @@ print(
 # After the cell above finishes, open the exported `.vtp` files in [ParaView](https://www.paraview.org/) or similar VTK software (e.g. napari with a VTK plugin, [3D Slicer](https://www.slicer.org/)):
 # 
 # - ``stem`_tutorial_vessels.vtp` — vessel centreline geometry and attributes
-# - ``stem`_tutorial_vessels_flow.vtp` — same geometry with **flow** scalars (recommended)
+# - the vessels file also carries **flow** scalars once the solve has run
 # - ``stem`_tutorial_nodes.vtp` — graph nodes
 # - ``stem`_tutorial_pericytes.vtp` — pericyte points (if present)
 # 
@@ -484,7 +494,7 @@ print(f"Saved: {stats_csv}")
 # 1. **Edit this notebook** (`pipeline_tutorial.ipynb`) — not the generated `.py`.
 # 2. **Stage 0:** set `RAW_IMAGE_PATH`, train ilastik, save `.ilp`, run with `RUN_STAGE_0_ILASTIK = True`.
 # 3. **Stage 1:** set `USE_CUSTOM_SEGMENTED_IMAGE = True` to use your segmented mask.
-# 4. Adjust inlet/outlet volume boxes or use coordinate/mask-based boundary selection (`examples/resistance_pipeline_settings.py`).
+# 4. Adjust inlet/outlet volume boxes or use coordinate/mask-based boundary selection (`examples/resistance_pipeline_config.yaml`).
 # 5. Tune skeleton and `build_graph_from_skeleton` parameters for your resolution.
 # 6. For FWHM diameters, pericytes, or automated ilastik in one script: `examples/resistance_network_pipeline.py`.
 # 7. Regenerate `pipeline_tutorial.py`: `pytest tests/integration/test_pipeline_tutorial.py`.

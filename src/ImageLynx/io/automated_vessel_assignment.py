@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
 import numpy as np
 
@@ -160,6 +160,66 @@ def _assert_voxel_sizes_match_main_image(
     if mask_role == "large":
         print(error_message)
     raise ValueError(error_message)
+
+
+#: Config setting names per mask role, so a caller with the vessel-mask section
+#: of the config can pass it whole instead of naming eleven settings. The small
+#: role does not simply prefix the large one, which is why this is written out.
+VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
+    "large": {
+        "enabled": "use_large_vessel_masks",
+        "use_ilastik": "use_ilastik_large_vessel_segmentation",
+        "arteriole_mask_path": "large_arteriole_mask_path",
+        "venule_mask_path": "large_venule_mask_path",
+        "ilastik_unsegmented_arteriole_path": "ilastik_unsegmented_arteriole_image_path",
+        "ilastik_unsegmented_venule_path": "ilastik_unsegmented_venule_image_path",
+        "ilastik_arteriole_classifier_path": "ilastik_arteriole_classifier_path",
+        "ilastik_venule_classifier_path": "ilastik_venule_classifier_path",
+        "dilation_microns": "large_vessel_mask_dilation_microns",
+    },
+    "small": {
+        "enabled": "use_small_vessel_masks_for_boundary_assignment",
+        "use_ilastik": "use_ilastik_small_vessel_segmentation",
+        "arteriole_mask_path": "small_arteriole_mask_path",
+        "venule_mask_path": "small_venule_mask_path",
+        "ilastik_unsegmented_arteriole_path": "ilastik_unsegmented_small_arteriole_image_path",
+        "ilastik_unsegmented_venule_path": "ilastik_unsegmented_small_venule_image_path",
+        "ilastik_arteriole_classifier_path": "ilastik_small_arteriole_classifier_path",
+        "ilastik_venule_classifier_path": "ilastik_small_venule_classifier_path",
+    },
+}
+
+#: Settings both roles share, named identically in the config.
+_SHARED_VESSEL_MASK_SETTINGS = (
+    "ilastik_output_dir",
+    "ilastik_output_suffix",
+    "ilastik_executable",
+)
+
+
+def vessel_mask_arguments(
+    settings: Mapping[str, object], mask_role: Literal["large", "small"]
+) -> dict[str, object]:
+    """Arguments for :func:`load_and_validate_vessel_masks` for one mask role.
+
+    Takes the vessel-mask and segmentation settings as loaded from the config
+    and picks out the ones that role uses, so the caller states the role once
+    rather than eleven setting names twice.
+    """
+    if mask_role not in VESSEL_MASK_SETTINGS:
+        raise ValueError(
+            f"mask_role must be 'large' or 'small', got {mask_role!r}."
+        )
+    arguments: dict[str, object] = {"mask_role": mask_role}
+    for parameter, setting_name in VESSEL_MASK_SETTINGS[mask_role].items():
+        if setting_name in settings:
+            arguments[parameter] = settings[setting_name]
+    for setting_name in _SHARED_VESSEL_MASK_SETTINGS:
+        if setting_name in settings:
+            arguments[setting_name] = settings[setting_name]
+    if "image_axis_order" in settings:
+        arguments["axis_order"] = settings["image_axis_order"]
+    return arguments
 
 
 def load_and_validate_vessel_masks(

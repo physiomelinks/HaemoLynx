@@ -46,7 +46,7 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
 
     pipeline = _load_pipeline_module()
     pipeline.image_to_model_pipeline(
-        image_path=input_tiff,
+        input_path=input_tiff,
         plot_dir=plot_dir,
         vtk_output_prefix=vtk_prefix,
         verbose_logging=False,
@@ -75,14 +75,12 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
     skeleton_path = output_dir / f"{input_tiff.stem}_skeleton.npy"
     graph_path = output_dir / f"{input_tiff.stem}_graph.pkl"
     vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
     pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
     nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
 
     assert skeleton_path.exists()
     assert graph_path.exists()
     assert vessels_path.exists()
-    assert vessels_flow_path.exists()
     assert pericytes_path.exists()
     assert nodes_path.exists()
 
@@ -113,7 +111,7 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
 
     pipeline = _load_pipeline_module()
     pipeline.image_to_model_pipeline(
-        image_path=input_tiff,
+        input_path=input_tiff,
         plot_dir=plot_dir,
         vtk_output_prefix=vtk_prefix,
         verbose_logging=False,
@@ -148,7 +146,12 @@ def test_image_to_model_pipeline_coordinate_input_volume_output(tmp_path):
 
     assert n_nodes > 0
     assert n_edges > 0
-    assert vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp").exists()
+    # One export, after the solve: vessels and flow in a single file.
+    vessels = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
+    assert vessels.exists()
+    import pyvista as pv
+
+    assert "flow_abs" in pv.read(str(vessels)).cell_data
 
 
 @pytest.mark.integration
@@ -167,12 +170,14 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
     vtk_prefix = output_dir / "integration_probabilistic_reuse"
 
     pipeline = _load_pipeline_module()
-    from ImageLynx.haemodynamics import pipeline as haemo_pipeline
+    from ImageLynx.haemodynamics import apply as haemo_pipeline
     from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_mod
 
     # Force uniform 0.8 map for final run so comparison constrained value aligns.
+    # The diameter table is derived from the config, not a module constant.
+    diameter_by_branch_order = pipeline.resolve_settings()["diameter_by_branch_order"]
     constriction_uniform_08 = {
-        str(branch_order): 0.8 for branch_order in pipeline.DIAMETER_BY_BRANCH_ORDER.keys()
+        str(branch_order): 0.8 for branch_order in diameter_by_branch_order
     }
     probabilistic_call_args: list[dict | None] = []
 
@@ -203,7 +208,7 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
     )
     try:
         pipeline.image_to_model_pipeline(
-            image_path=input_tiff,
+            input_path=input_tiff,
             plot_dir=plot_dir,
             vtk_output_prefix=vtk_prefix,
             verbose_logging=False,
@@ -225,7 +230,7 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
             min_stub_length=3.0,
             visualize_results=False,
             visualize_vtk=False,
-            do_pericyte_constriction=True,
+            do_pericyte_construction=True,
             use_pericyte_mask_constriction=False,
             use_probabilistic_pericyte_constriction=True,
             pericyte_constriction_probability=0.8,
@@ -287,7 +292,7 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     output_x_lo = max(0, int(round(0.8 * x_max)))
     try:
         pipeline.image_to_model_pipeline(
-            image_path=input_h5,
+            input_path=input_h5,
             plot_dir=plot_dir,
             vtk_output_prefix=vtk_prefix,
             verbose_logging=False,
@@ -328,14 +333,12 @@ def test_image_to_model_pipeline_end_to_end_on_h5_bundle_fixture():
     skeleton_path = output_dir / f"{input_h5.stem}_skeleton.npy"
     graph_path = output_dir / f"{input_h5.stem}_graph.pkl"
     vessels_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels.vtp")
-    vessels_flow_path = vtk_prefix.with_name(vtk_prefix.name + "_vessels_flow.vtp")
     pericytes_path = vtk_prefix.with_name(vtk_prefix.name + "_pericytes.vtp")
     nodes_path = vtk_prefix.with_name(vtk_prefix.name + "_nodes.vtp")
 
     assert skeleton_path.exists()
     assert graph_path.exists()
     assert vessels_path.exists()
-    assert vessels_flow_path.exists()
     assert pericytes_path.exists()
     assert nodes_path.exists()
 

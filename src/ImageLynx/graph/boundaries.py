@@ -1,7 +1,7 @@
 """Boundary-based node selection helpers."""
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 import networkx as nx
@@ -160,3 +160,63 @@ def select_boundary_nodes_by_method(
 
     return [node for node in _sort_nodes(selected) if node not in excluded]
 
+
+
+#: Config settings naming each boundary role's selection method, coordinates and
+#: volume boxes, plus the ``node_role`` the selector expects.
+BOUNDARY_ROLE_SETTINGS: dict[str, dict[str, str]] = {
+    "starting": {
+        "method": "starting_node_selection_method",
+        "coordinates": "starting_node_coordinates",
+        "volume_boxes": "starting_node_volumes",
+        "node_role": "input",
+    },
+    "output": {
+        "method": "output_node_selection_method",
+        "coordinates": "output_node_coordinates",
+        "volume_boxes": "output_node_volumes",
+        "node_role": "output",
+    },
+    "arteriole_boundary": {
+        "method": "arteriole_boundary_selection_method",
+        "coordinates": "arteriole_boundary_node_coordinates",
+        "volume_boxes": "arteriole_boundary_node_volumes",
+        "node_role": "input",
+    },
+    "venule_boundary": {
+        "method": "venule_boundary_selection_method",
+        "coordinates": "venule_boundary_node_coordinates",
+        "volume_boxes": "venule_boundary_node_volumes",
+        "node_role": "output",
+    },
+}
+
+
+def select_boundary_nodes_for_role(
+    G: nx.Graph,
+    image_shape: tuple[int, ...],
+    settings: Mapping[str, Any],
+    role: str,
+    *,
+    exclude_nodes: Iterable[Any] | None = None,
+) -> list[Any]:
+    """Select one role's boundary nodes from the boundary-assignment settings.
+
+    The four roles differ only in which three settings they read, so naming the
+    role is enough; :data:`BOUNDARY_ROLE_SETTINGS` records which those are.
+    """
+    try:
+        names = BOUNDARY_ROLE_SETTINGS[role]
+    except KeyError:
+        known = ", ".join(sorted(BOUNDARY_ROLE_SETTINGS))
+        raise ValueError(f"Unknown boundary role {role!r}. Roles are: {known}.") from None
+
+    return select_boundary_nodes_by_method(
+        G,
+        image_shape,
+        method=settings[names["method"]],
+        node_role=names["node_role"],
+        coordinates=settings.get(names["coordinates"]),
+        volume_boxes=settings.get(names["volume_boxes"]),
+        exclude_nodes=exclude_nodes,
+    )

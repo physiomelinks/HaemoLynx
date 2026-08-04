@@ -1,0 +1,360 @@
+# Whole-brain network pipeline
+# The standard image-to-model pipeline plus a pericyte dilation and
+# inlet-pressure sweep over the resulting network.
+
+# ------------------------------------------------------------------------
+# Input and segmentation
+# ------------------------------------------------------------------------
+input_and_segmentation:
+  # Read this already-segmented image as the pipeline input  [needs use_ilastik_segmentation off; must exist]
+  input_path: examples/images/brain_microvessels.tiff
+  # Segment the main input image with ilastik instead of reading a segmented file
+  use_ilastik_segmentation: false
+  # Read this raw image as the ilastik input for main-image segmentation  [needs use_ilastik_segmentation; must exist]
+  ilastik_unsegmented_image_path: examples/images/Nerve_capillaries.tif
+  # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation; must exist]
+  ilastik_classifier_path: examples/classifiers/nerve_classifier.ilp
+  # Run this ilastik executable name or path in headless mode
+  ilastik_executable: ilastik.exe
+  # Write ilastik-generated segmentations into this directory
+  ilastik_output_dir: examples/outputs/segmentations
+  # Give ilastik segmentation outputs this file suffix
+  ilastik_output_suffix: .tif
+  # Override the voxel size with these (x, y, z) values instead of reading image metadata  [um]
+  voxel_size_override_xyz: null
+  # Choose how the voxel size is resolved from metadata and the manual override  [one of: auto, override, metadata_only]
+  voxel_size_policy: auto
+  # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
+  image_axis_order: zyx
+
+# ------------------------------------------------------------------------
+# Vessel masks
+# ------------------------------------------------------------------------
+vessel_masks:
+  # Load large arteriole and venule masks for automated start/output node assignment
+  use_large_vessel_masks: false
+  # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks]
+  use_ilastik_large_vessel_segmentation: false
+  # Dilate the large-vessel masks by this distance before selecting terminal nodes  [um; range 0.0..; needs use_large_vessel_masks]
+  large_vessel_mask_dilation_microns: 0.0
+  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks; must exist]
+  large_arteriole_mask_path: examples/images/large_arteriole_mask.tif
+  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks; must exist]
+  large_venule_mask_path: examples/images/large_venule_mask.tif
+  # Read this raw image as the ilastik input for the large arteriole mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
+  ilastik_unsegmented_arteriole_image_path: examples/images/large_arteriole_mask.tif
+  # Read this raw image as the ilastik input for the large venule mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
+  ilastik_unsegmented_venule_image_path: examples/images/large_venule_mask.tif
+  # Use this trained ilastik project to segment arterioles  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation; must exist]
+  ilastik_arteriole_classifier_path: examples/classifiers/arteriole_classifier.ilp
+  # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation; must exist]
+  ilastik_venule_classifier_path: examples/classifiers/venule_classifier.ilp
+  # Assign arteriole and venule boundary nodes from small-vessel masks
+  use_small_vessel_masks_for_boundary_assignment: false
+  # Produce the small-vessel masks with ilastik instead of reading pre-segmented files  [needs use_small_vessel_masks_for_boundary_assignment]
+  use_ilastik_small_vessel_segmentation: false
+  # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_mask_min_overlap_fraction: 0.5
+  # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]
+  write_small_vessel_boundary_labelling_3d_html: true
+  # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]
+  small_arteriole_mask_path: examples/images/small_arteriole_mask.tif
+  # Read this pre-segmented small venule mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]
+  small_venule_mask_path: examples/images/small_venule_mask.tif
+  # Read this raw image as the ilastik input for the small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
+  ilastik_unsegmented_small_arteriole_image_path: examples/images/small_arteriole_mask.tif
+  # Read this raw image as the ilastik input for the small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
+  ilastik_unsegmented_small_venule_image_path: examples/images/small_venule_mask.tif
+  # Use this trained ilastik project to segment small arterioles  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation; must exist]
+  ilastik_small_arteriole_classifier_path: examples/classifiers/arteriole_classifier.ilp
+  # Use this trained ilastik project to segment small venules  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation; must exist]
+  ilastik_small_venule_classifier_path: examples/classifiers/venule_classifier.ilp
+
+# ------------------------------------------------------------------------
+# Boundary assignment
+# ------------------------------------------------------------------------
+boundary_assignment:
+  # Write plot artifacts under this base directory
+  base_plot_dir: examples/plots
+  # Select start and output nodes automatically from the large-vessel masks instead of manually  [needs use_large_vessel_masks]
+  automated_vessel_assignment: false
+  # Choose how manual starting nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
+  starting_node_selection_method: coordinates
+  # Choose how manual output nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
+  output_node_selection_method: coordinates
+  # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
+  arteriole_boundary_selection_method: coordinates
+  # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
+  venule_boundary_selection_method: coordinates
+  # Pick starting nodes nearest to these coordinates when the coordinates method is used
+  starting_node_coordinates:
+  - - 152.0
+    - 340.0
+    - 527.0
+  - - 160.0
+    - 350.0
+    - 545.0
+  - - 202.0
+    - 1303.0
+    - 132.0
+  - - 104.0
+    - 1321.0
+    - 133.0
+  - - 361.0
+    - 332.0
+    - 120.0
+  - - 321.0
+    - 334.0
+    - 163.0
+  # Pick output nodes nearest to these coordinates when the coordinates method is used
+  output_node_coordinates: []
+  # Pick arteriole boundary nodes nearest to these coordinates when the coordinates method is used
+  arteriole_boundary_node_coordinates: []
+  # Pick venule boundary nodes nearest to these coordinates when the coordinates method is used
+  venule_boundary_node_coordinates: []
+  # Select boundary nodes from volume boxes rather than from single coordinates
+  use_volume_boxes: false
+  # Select starting nodes falling inside these (min corner, max corner) boxes  [needs use_volume_boxes]
+  starting_node_volumes: []
+  # Select output nodes falling inside these (min corner, max corner) boxes  [needs use_volume_boxes]
+  output_node_volumes: []
+  # Select arteriole boundary nodes falling inside these (min corner, max corner) boxes  [needs use_volume_boxes]
+  arteriole_boundary_node_volumes: []
+  # Select venule boundary nodes falling inside these (min corner, max corner) boxes  [needs use_volume_boxes]
+  venule_boundary_node_volumes: []
+  # Hold the starting node IDs chosen during the run; leave empty to let the pipeline fill it
+  starting_nodes: []
+  # Hold the output node IDs chosen during the run; leave empty to let the pipeline fill it
+  output_nodes: []
+  # Hold the arteriole boundary node IDs chosen during the run; leave empty to let the pipeline fill it
+  arteriole_boundary_nodes: []
+  # Hold the venule boundary node IDs chosen during the run; leave empty to let the pipeline fill it
+  venule_boundary_nodes: []
+  # Fail rather than fall back when the hierarchical branch-order prerequisites are not met
+  strict_branch_order_assignment: false
+
+# ------------------------------------------------------------------------
+# Solver and output
+# ------------------------------------------------------------------------
+solver_and_output:
+  # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
+  input_p_bc: 4500.0
+  # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
+  output_p_bc: 1000.0
+  # Generate the matplotlib visualizations at the end of the run
+  visualize_results: true
+  # Show plots interactively instead of saving them to the plot directory  [needs visualize_results]
+  interactive_plots: false
+  # Open saved plots in IDE windows while the run proceeds  [needs visualize_results]
+  show_plots_in_ide: true
+  # Choose which plots are shown in IDE windows  [one of: all, final_only, none; needs visualize_results and show_plots_in_ide]
+  ide_plot_mode: final_only
+  # Block at the end of the script so the IDE plot windows stay open  [needs visualize_results and show_plots_in_ide]
+  hold_ide_plots_open: true
+  # Render the final graph views as a 2D overlay or an interactive 3D plot  [one of: 2d, 3d; needs visualize_results]
+  final_render_mode: 3d
+  # Export vessels, pericytes and nodes as VTK files  [needs run_haemodynamics]
+  vtk_export: true
+  # Open the exported VTK network in the interactive viewer  [needs run_haemodynamics and vtk_export]
+  visualize_vtk: false
+  # Print verbose per-stage logging while the pipeline runs
+  verbose_logging: false
+
+# ------------------------------------------------------------------------
+# Pipeline stages
+# ------------------------------------------------------------------------
+pipeline_stages:
+  # Run the skeletonization stage instead of reusing the cached skeleton
+  do_skeletonize: true
+  # Run the graph-building stage instead of reusing the cached graph
+  do_graph_building: true
+  # Run the haemodynamics stage after the graph is built
+  run_haemodynamics: true
+  # Compute the two-point equivalent resistance between the chosen node pair  [needs run_haemodynamics]
+  do_equiv_resistance_calculation: true
+  # Set the minimum branch length threshold used by graph operations  [range 0..]
+  min_branch_length: 10
+  # Prefix every VTK artifact and cached stage file with this output path
+  vtk_output_prefix: examples/outputs/resistance_network
+  # Close gaps in the mask with a structuring element of this radius before skeletonizing  [range 0..; needs do_skeletonize]
+  skeleton_closing_radius: 2
+  # Bridge skeleton gaps no larger than this many voxels  [range 0..; needs do_skeletonize]
+  skeleton_bridge_gap_size: 3
+  # Drop skeleton branches shorter than this during cleaning  [range 0..; needs do_skeletonize]
+  skeleton_min_branch_length: 3
+  # Reconnect skeleton fragments no further apart than this distance  [range 0..; needs do_skeletonize]
+  skeleton_max_bridge_distance: 4
+  # Use this voxel connectivity when analysing skeleton components  [range 1..3; needs do_skeletonize]
+  skeleton_component_connectivity: 3
+  # Reconnect graph fragments whose endpoints lie within this distance  [range 0.0..; needs do_graph_building]
+  graph_reconnect_threshold: 10.0
+  # Reconnect leftover orphan and dangling nodes within this distance in the final pass  [range 0.0..; needs do_graph_building]
+  final_orphan_reconnect_threshold: 3.0
+  # Prune terminal stubs shorter than this length  [range 0.0..; needs do_graph_building]
+  min_stub_length: 10.0
+  # Collapse clusters of nodes lying within this distance of each other  [range 0.0..; needs do_graph_building]
+  cluster_collapse_distance: 5.0
+  # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
+  skeleton_min_component_percent: 0.0
+
+# ------------------------------------------------------------------------
+# Statistics and measurements
+# ------------------------------------------------------------------------
+statistics_and_measurements:
+  # Compute and export the global vessel statistics
+  statistics: false
+  # Measure 3D distances from the vessel network to a cell mask
+  measurement_3d_to_cell_mask: false
+  # Read this cell mask for the 3D distance measurement  [needs measurement_3d_to_cell_mask; must exist]
+  cell_mask_path: null
+  # Read this dataset from the cell mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
+  cell_mask_h5_dataset_name: null
+  # Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input  [needs measurement_3d_to_cell_mask; must exist]
+  measurement_3d_vessel_mask_path: null
+  # Read this dataset from the 3D-distance vessel mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
+  measurement_3d_vessel_mask_h5_dataset_name: null
+  # Take the vessel-volume raster shape from this reference image  [needs measurement_3d_to_cell_mask; must exist]
+  measurement_3d_reference_image_path: null
+  # Read this dataset from the 3D-distance reference image when it is an H5 file  [needs measurement_3d_to_cell_mask]
+  measurement_3d_reference_h5_dataset_name: null
+  # Compute either the fast subset of vessel statistics or the full set  [one of: fast, full; needs statistics]
+  statistics_mode: fast
+
+# ------------------------------------------------------------------------
+# Diameters and pericytes
+# ------------------------------------------------------------------------
+diameters_and_pericytes:
+  # Give every branch order the same vessel diameter instead of a per-order table
+  all_diams_const: true
+  # Model pericyte constrictions when assigning Poiseuille resistances  [needs run_haemodynamics]
+  do_pericyte_construction: false
+  # Place constrictions at pericyte centroids taken from a mask rather than at regular spacing  [needs run_haemodynamics]
+  use_pericyte_mask_constriction: false
+  # Read pericyte locations from this mask  [needs use_pericyte_mask_constriction; must exist]
+  pericyte_mask_path: null
+  # Read this dataset from the pericyte mask when it is an H5 file  [needs use_pericyte_mask_constriction]
+  pericyte_mask_h5_dataset_name: null
+  # Assign a pericyte centroid to a vessel edge only within this distance  [um; range 0.0..; needs use_pericyte_mask_constriction]
+  pericyte_max_assignment_distance_um: 3.0
+  # Treat mask components below this diameter as too small to be a pericyte  [um; range 0.0..; needs use_pericyte_mask_constriction]
+  pericyte_min_diameter_um: 5.0
+  # Treat mask components above this diameter as too large to be a pericyte  [um; range 0.0..; needs use_pericyte_mask_constriction]
+  pericyte_max_diameter_um: 12.0
+  # Activate each candidate pericyte constriction at random rather than activating all of them  [needs run_haemodynamics]
+  use_probabilistic_pericyte_constriction: false
+  # Activate each candidate pericyte constriction with this probability  [range 0.0..1.0; needs use_probabilistic_pericyte_constriction]
+  pericyte_constriction_probability: 0.8
+  # Run the baseline-versus-constricted pericyte resistance comparison and write its CSV  [needs run_haemodynamics]
+  run_pericyte_resistance_comparison: false
+  # Use this constriction factor as the baseline arm of the pericyte comparison  [range 0.0..; needs run_pericyte_resistance_comparison]
+  pericyte_comparison_baseline_value: 1.0
+  # Use this constriction factor as the constricted arm of the pericyte comparison  [range 0.0..; needs run_pericyte_resistance_comparison]
+  pericyte_comparison_constricted_value: 0.8
+  # Reuse the randomly selected pericyte cohort from the comparison in the main run  [needs run_pericyte_resistance_comparison and use_probabilistic_pericyte_constriction]
+  reuse_comparison_pericyte_cohort_for_main_run: false
+  # Build the diameter and constriction tables up to this branch-order index  [range 1..]
+  max_branch_order: 51
+  # Use this vessel diameter where no branch-order override applies  [um; range 0.0..]
+  default_diameter: 4.0
+  # Override capillary diameters per branch-order label, e.g. B01  [um]
+  manual_capillary_diameter_by_branch_order:
+    B01: 6.2
+    B02: 4.0
+    B03: 5.0
+    B04: 5.0
+  # Override arteriole diameters per branch-order label, e.g. Art1  [um]
+  manual_arteriole_diameter_by_branch_order: {}
+  # Override venule diameters per branch-order label, e.g. Ven1  [um]
+  manual_venule_diameter_by_branch_order: {}
+  # Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings  [um]
+  diameter_by_branch_order: null
+  # Supply the full branch-order constriction-factor lookup; leave unset to derive it from the manual diameter settings
+  constriction_by_branch_order: null
+  # Apply the custom edge-diameter assignment behaviour to these edge IDs
+  custom_edges: []
+
+# ------------------------------------------------------------------------
+# FWHM diameter measurement
+# ------------------------------------------------------------------------
+fwhm_diameter_measurement:
+  # Measure per-edge diameters from the raw image by full-width-half-maximum fitting  [needs run_haemodynamics]
+  use_fwhm_edge_diameters: false
+  # Measure FWHM diameters from this raw single-channel image  [needs use_fwhm_edge_diameters; must exist]
+  fwhm_raw_tiff_path: null
+  # Sample a transverse profile every this far along the centerline  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_sample_spacing_along_edge_um: 2.0
+  # Step this far between points when sampling each transverse profile  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_transverse_profile_step_um: 0.25
+  # Sample this far either side of the centerline before any adaptive adjustment  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_transverse_half_extent_um: 6.0
+  # Start the Gaussian fit from this diameter guess instead of an automatic one  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_diameter_guess_um: null
+  # Require the sampled profile to span at least this multiple of the fitted width  [range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_min_total_extent_multiplier: 3.0
+  # Mark background voxels with this label in the rasterized branch label volume  [needs use_fwhm_edge_diameters]
+  fwhm_background_label: 0
+  # Mark junction voxels with this label in the rasterized branch label volume  [needs use_fwhm_edge_diameters]
+  fwhm_junction_label: -1
+  # Let a transverse profile pass through junction voxels while sampling  [needs use_fwhm_edge_diameters]
+  fwhm_allow_junction_crossing: false
+  # Estimate the profile baseline from the profile wings or from a percentile  [one of: wings, percentile; needs use_fwhm_edge_diameters]
+  fwhm_profile_baseline_mode: wings
+  # Take this fraction of each profile end as the wing used for baseline estimation  [range 0.0..1.0; needs use_fwhm_edge_diameters]
+  fwhm_profile_baseline_wing_fraction: 0.2
+  # Hold the fitted baseline near the anchor estimate rather than letting it float  [needs use_fwhm_edge_diameters]
+  fwhm_constrain_fitted_baseline: false
+  # Allow the fitted baseline to move this fraction of the profile peak-to-peak range either way  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_constrain_fitted_baseline]
+  fwhm_baseline_constraint_half_width_ptp: 0.35
+  # Clip each profile to the central lobe so neighbouring branches do not bias the fit  [needs use_fwhm_edge_diameters]
+  fwhm_clip_profile_to_single_vessel: true
+  # Require the profile to fall by this fraction of the centre value before clipping starts  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_clip_profile_to_single_vessel]
+  fwhm_clip_min_drop_fraction_of_center: 0.35
+  # End the clipped lobe once the profile rises again by this fraction of the centre value  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_clip_profile_to_single_vessel]
+  fwhm_clip_re_rise_fraction_of_center: 0.08
+  # Skip sample positions within this distance of a branch endpoint  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_branch_endpoint_exclusion_um: 10.0
+  # Skip sample positions within this distance of a detected junction voxel  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_junction_proximity_exclusion_um: 10.0
+  # Require profile samples to stay within a local arc window of the same edge  [needs use_fwhm_edge_diameters]
+  fwhm_enforce_same_edge_locality: true
+  # Use this absolute arc window when checking same-edge locality  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_enforce_same_edge_locality]
+  fwhm_same_edge_arc_window_um: 3.0
+  # Scale the same-edge arc window by this factor  [range 0.0..; needs use_fwhm_edge_diameters and fwhm_enforce_same_edge_locality]
+  fwhm_same_edge_arc_window_multiplier: 1.0
+  # Never shrink the same-edge arc window below this size  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_enforce_same_edge_locality]
+  fwhm_same_edge_arc_window_min_um: 1.0
+  # Shorten the profile half-extent when a distant part of the same edge comes close  [needs use_fwhm_edge_diameters]
+  fwhm_cap_half_extent_by_nonlocal_same_edge_distance: true
+  # Treat same-edge points separated by more than this arc length as nonlocal  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
+  fwhm_nonlocal_same_edge_arc_separation_um: 6.0
+  # Cap the profile half-extent at this fraction of the nearest nonlocal same-edge distance  [range 0.0..; needs use_fwhm_edge_diameters and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
+  fwhm_nonlocal_same_edge_half_extent_factor: 0.45
+  # Discard samples whose fitted centre drifts too far from the centerline position  [needs use_fwhm_edge_diameters]
+  fwhm_reject_samples_with_center_offset: true
+  # Discard a sample once its fitted centre is further than this from the expected centre  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_center_offset]
+  fwhm_max_fit_center_offset_um: 1.5
+  # Discard samples whose transverse Gaussian fit quality is too low  [needs use_fwhm_edge_diameters]
+  fwhm_reject_samples_with_low_fit_r2: true
+  # Keep a sample only when its transverse Gaussian fit reaches this R-squared  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_low_fit_r2]
+  fwhm_min_fit_r2: 0.85
+
+# ------------------------------------------------------------------------
+# Pericyte dilation sweep
+# ------------------------------------------------------------------------
+pericyte_dilation_sweep:
+  # Sweep pericyte dilation against inlet pressure after the pipeline run
+  run_pericyte_dilation_sweep: true
+  # Start the dilation sweep at this percentage  [percent; range 0..100; needs run_pericyte_dilation_sweep]
+  pericyte_dilation_min_percent: 1
+  # End the dilation sweep at this percentage  [percent; range 0..100; needs run_pericyte_dilation_sweep]
+  pericyte_dilation_max_percent: 30
+  # Step the dilation sweep by this percentage  [percent; range 1..100; needs run_pericyte_dilation_sweep]
+  pericyte_dilation_step_percent: 1
+  # Start the inlet-pressure sweep at this pressure  [Pa; range 0..; needs run_pericyte_dilation_sweep]
+  inlet_pressure_min_pa: 4500
+  # End the inlet-pressure sweep at this pressure  [Pa; range 0..; needs run_pericyte_dilation_sweep]
+  inlet_pressure_max_pa: 6000
+  # Step the inlet-pressure sweep by this much  [Pa; range 1..; needs run_pericyte_dilation_sweep]
+  inlet_pressure_step_pa: 500
+  # Write the sweep CSV and its curves here  [needs run_pericyte_dilation_sweep]
+  sweep_output_dir: examples/outputs/brain_dilation_sweep

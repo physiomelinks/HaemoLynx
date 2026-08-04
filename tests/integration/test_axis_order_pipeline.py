@@ -31,15 +31,15 @@ def _load_pipeline_module():
     return module
 
 
-def _run_pipeline(pipeline, *, image_path, plot_dir, output_dir, axis_order):
+def _run_pipeline(pipeline, *, input_path, plot_dir, output_dir, image_axis_order):
     plot_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     vtk_prefix = output_dir / "axis_order_network"
     pipeline.image_to_model_pipeline(
-        image_path=image_path,
+        input_path=input_path,
         plot_dir=plot_dir,
         vtk_output_prefix=vtk_prefix,
-        axis_order=axis_order,
+        image_axis_order=image_axis_order,
         verbose_logging=False,
         do_skeletonize=True,
         do_graph_building=True,
@@ -65,7 +65,7 @@ def _run_pipeline(pipeline, *, image_path, plot_dir, output_dir, axis_order):
         visualize_results=False,
         visualize_vtk=False,
     )
-    with (output_dir / f"{image_path.stem}_graph.pkl").open("rb") as fh:
+    with (output_dir / f"{input_path.stem}_graph.pkl").open("rb") as fh:
         return pickle.load(fh)
 
 
@@ -93,10 +93,10 @@ def test_pipeline_uses_array_axis_spacing_for_anisotropic_voxels(tmp_path):
     output_dir = TESTS_DIR / "outputs" / "axis_order_anisotropic"
     graph = _run_pipeline(
         pipeline,
-        image_path=input_tiff,
+        input_path=input_tiff,
         plot_dir=TESTS_DIR / "plots" / "plots_axis_order_anisotropic",
         output_dir=output_dir,
-        axis_order="zyx",
+        image_axis_order="zyx",
     )
 
     # Metadata is recorded in (x, y, z) as reported by the file.
@@ -128,17 +128,17 @@ def test_pipeline_axis_order_transposed_input_matches_canonical_run(tmp_path):
     pipeline = _load_pipeline_module()
     canonical_graph = _run_pipeline(
         pipeline,
-        image_path=canonical_tiff,
+        input_path=canonical_tiff,
         plot_dir=TESTS_DIR / "plots" / "plots_axis_order_canonical",
         output_dir=TESTS_DIR / "outputs" / "axis_order_canonical",
-        axis_order="zyx",
+        image_axis_order="zyx",
     )
     transposed_graph = _run_pipeline(
         pipeline,
-        image_path=transposed_tiff,
+        input_path=transposed_tiff,
         plot_dir=TESTS_DIR / "plots" / "plots_axis_order_transposed",
         output_dir=TESTS_DIR / "outputs" / "axis_order_transposed",
-        axis_order="xyz",
+        image_axis_order="xyz",
     )
 
     assert transposed_graph.number_of_nodes() == canonical_graph.number_of_nodes()
