@@ -1,10 +1,13 @@
 """Curves from a pericyte dilation and inlet-pressure sweep."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Iterable, Mapping
 
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger(__name__)
 
 #: What is plotted against dilation: result column -> (file stem, axis label, title).
 CURVES = {
@@ -61,5 +64,5 @@ def plot_dilation_curves(
         plt.close(figure)
         written[f"{column}_plot_path"] = str(path)
 
-    print(f"Dilation curves saved to: {', '.join(sorted(written.values()))}")
+    logger.info(f"Dilation curves saved to: {', '.join(sorted(written.values()))}")
     return written
