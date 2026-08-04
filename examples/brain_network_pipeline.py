@@ -23,7 +23,7 @@ for _path in (root_dir / "src", examples_dir):
         sys.path.insert(0, str(_path))
 
 from ImageLynx.haemodynamics.pericyte_sweep import run_pericyte_dilation_pressure_sweep
-from ImageLynx.parsers import settings_from_command_line
+from ImageLynx.parsers import configure_console_logging, settings_from_command_line
 from ImageLynx.pipeline import (
     assign_boundaries,
     assign_diameters,
@@ -70,13 +70,15 @@ def main(settings: dict) -> dict:
 
 
 if __name__ == "__main__":
-    main(
-        settings_from_command_line(
-            SCHEMA,
-            CONFIG_PATH,
-            description=__doc__,
-            presets=PRESETS,
-            resolver=resolve_settings,
-            check=_preflight_or_exit,
-        )
+    settings = settings_from_command_line(
+        SCHEMA,
+        CONFIG_PATH,
+        description=__doc__,
+        presets=PRESETS,
+        resolver=resolve_settings,
+        check=_preflight_or_exit,
     )
+    # The pipeline and the sweep report progress through `logging`; sending it
+    # to the console is this script's decision to make, not the library's.
+    configure_console_logging(verbose=settings["verbose_logging"])
+    main(settings)
