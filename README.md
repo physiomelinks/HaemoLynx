@@ -12,6 +12,10 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+`pyproject.toml` is the single source of truth for dependencies. Add the
+`notebook` extra (`pip install -e ".[dev,notebook]"`) to get the Jupyter kernel
+needed to run `tutorials/pipeline_tutorial.ipynb` interactively.
+
 ## Running the examples
 
 Every example is driven by a YAML config file. Run one with no arguments and it

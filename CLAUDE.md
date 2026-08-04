@@ -91,6 +91,8 @@ pip install -e ".[dev]"
 ```
 
 - **Python:** ≥ 3.10 (CI matrix: 3.10, 3.11, 3.12)
+- **Dependencies:** `pyproject.toml` only — there is no `requirements.txt`. Extras: `dev`
+  (pytest, nbconvert, nbformat), `notebook` (ipykernel, for running the tutorial interactively).
 - **Run package tests:** from repo root: `pytest -s` or `pytest`
 - **Skip slow tests:** `pytest -m "not slow"`
 - **Integration only:** `pytest -m integration`
@@ -243,8 +245,8 @@ running tests between each.
 - **`graph/__init__.py` bug:** imports `create_merged_edge_attributes` twice and lists
   `create_merged_edge_attributes_simple` / `_full` in `__all__` — neither is imported, so
   `from ImageLynx.graph import *` raises `AttributeError`. (Confirmed reproducible.)
-- **Dependency drift:** `requirements.txt` and `pyproject.toml` disagree (scikit-image pin, missing
-  `pandas`/`ipykernel`, `pytest` in the wrong place). Two sources of truth.
+- ~~**Dependency drift:** `requirements.txt` and `pyproject.toml` disagree.~~ **DONE** —
+  `requirements.txt` is deleted; `pyproject.toml` is the only source.
 - **Dead code:** `examples/OLD/` (two pre-refactor scripts, imported by nothing).
 - The settings/preset system (`resistance_pipeline_settings.py` + `presets.py` + `preflight.py` +
   `wizard.py`) is **not** duplicated — it’s a clean layered design. Leave its logic alone; just document.
@@ -256,9 +258,8 @@ running tests between each.
 - [ ] Confirm `.gitignore` covers both `.venv/` **and** `venv/`, plus `__pycache__/`, `examples/outputs/`,
       `examples/plots/`, `tutorials/outputs/`, `tutorials/plots/`, `tests/outputs/`, `tests/plots/`,
       `examples/images/`. (None are tracked today — keep it that way.)
-- [ ] Make dependencies single-source: keep `pyproject.toml` authoritative; either delete
-      `requirements.txt` or regenerate it from `pyproject.toml`. Reconcile the scikit-image pin
-      (`>=0.24` vs `<0.25`) and move `pytest` to the `dev` extra only.
+- [x] Make dependencies single-source: `requirements.txt` deleted, `pyproject.toml` authoritative.
+      `pytest` lives in the `dev` extra only and `ipykernel` moved to a new `notebook` extra.
 - [ ] Run full `pytest`. Commit.
 
 ### Phase 1 — Fix the `graph/__init__.py` star-import bug (small, high value)
