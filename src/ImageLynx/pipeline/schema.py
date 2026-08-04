@@ -1,25 +1,30 @@
-#!/usr/bin/env python3
-"""Declarative schema for the resistance-network pipeline settings.
+"""Declarative schema for the image-to-model pipeline settings.
 
-Every setting the pipeline reads is
-declared here once, as a :class:`~ImageLynx.parsers.Setting`. That single
-declaration is what the YAML config writer, the command line, and a GUI form
-all read from, so none of them has to repeat the list of settings.
+Every setting :func:`ImageLynx.pipeline.run_pipeline_stages` reads is declared
+here once, as a :class:`~ImageLynx.parsers.Setting`. That single declaration is
+what the YAML config writer, the command line, and a GUI form all read from, so
+none of them has to repeat the list of settings.
 
-This module imports nothing from the pipeline (no numpy, no ilastik, no image
-data), so it can be introspected on a bare Python install.
+It lives in the package rather than beside an example because it is the only
+way to configure a run: without it there is nothing to hand
+:func:`ImageLynx.pipeline.resolve_settings`, so an installed copy of ImageLynx
+could not be run at all::
+
+    from ImageLynx.pipeline import default_schema, write_default_config
+
+    write_default_config("my_config.yaml")       # commented, every setting
+    settings = resolve_settings(schema=default_schema(), config_path="my_config.yaml")
+
+It declares no dependency on the stage code, on ilastik, or on any image: the
+settings are plain data, so a GUI can render its whole form from
+``default_schema().describe()`` alone.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
+from typing import Any, Mapping
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_SRC = _REPO_ROOT / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from ImageLynx.parsers import Schema, Setting  # noqa: E402
+from ..parsers import Schema, Setting, dump_config
 
 # Path defaults are written relative to the repository root, so the generated
 # config file is portable between machines. Resolve them against the root when
@@ -1303,3 +1308,39 @@ SCHEMA = Schema(
         "assignment, haemodynamics, and export."
     ),
 )
+
+
+def default_schema() -> Schema:
+    """The pipeline's settings, as a :class:`~ImageLynx.parsers.Schema`.
+
+    Every front-end starts here: :func:`resolve_settings` validates a config
+    against it, the command line generates a flag per setting from it, and a
+    GUI renders ``default_schema().describe()``. Extend it by building a new
+    schema from its settings plus your own, which is what the whole-brain
+    example does for its sweep::
+
+        Schema(list(default_schema()) + MY_SETTINGS, title="...")
+    """
+    return SCHEMA
+
+
+def write_default_config(
+    config_path: Path | str,
+    *,
+    schema: Schema | None = None,
+    values: Mapping[str, Any] | None = None,
+) -> Path:
+    """Write a commented YAML config for *schema* to *config_path*.
+
+    The file is generated from the schema, so every setting arrives with its
+    help text, unit, allowed values and prerequisites as comments -- it is the
+    documented starting point for a run, and the answer to "what can I
+    configure?" on an installed copy with no repository to read::
+
+        write_default_config("my_config.yaml")
+
+    *values* seeds the file with settings already chosen (an existing config,
+    say), which is how regenerating picks up new settings without discarding
+    what a user has set.
+    """
+    return dump_config(config_path, schema or default_schema(), values=values)

@@ -20,29 +20,33 @@ for _path in (ROOT / "src", ROOT / "examples"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from ImageLynx.parsers import Schema, dump_config, load_config  # noqa: E402
+from importlib import import_module  # noqa: E402
+
+from ImageLynx.parsers import Schema, load_config  # noqa: E402
+from ImageLynx.pipeline import write_default_config  # noqa: E402
 
 #: config file (relative to the repo root) -> module holding its ``SCHEMA``.
+#: The pipeline's own schema ships with the package, so an installed copy can
+#: write itself a config; only the examples' extensions live beside them here.
 CONFIGS: dict[str, str] = {
     "examples/simple_network_config.yaml": "simple_network_schema",
-    "examples/resistance_pipeline_config.yaml": "resistance_pipeline_schema",
+    "examples/resistance_pipeline_config.yaml": "ImageLynx.pipeline.schema",
     "examples/brain_pipeline_config.yaml": "brain_pipeline_schema",
     "examples/carotid_config.yaml": "carotid_schema",
 }
 
 
-def _schema_for(module_name: str) -> Schema:
-    module = __import__(module_name)
-    return module.SCHEMA
+def schema_for(module_name: str) -> Schema:
+    return import_module(module_name).SCHEMA
 
 
 def regenerate(root: Path = ROOT) -> list[Path]:
     written: list[Path] = []
     for relative_path, module_name in CONFIGS.items():
-        schema = _schema_for(module_name)
+        schema = schema_for(module_name)
         path = root / relative_path
         existing = load_config(path, schema) if path.is_file() else {}
-        written.append(dump_config(path, schema, values=existing))
+        written.append(write_default_config(path, schema=schema, values=existing))
     return written
 
 

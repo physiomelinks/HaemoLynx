@@ -23,11 +23,15 @@ ImageLynx/
 │   │                       #   strategies: probability, pericyte_mask; constriction_strategy
 │   │                       #   (which strategy a run uses), pericyte_comparison, pericyte_sweep
 │   ├── statistics/         # stats.py, 3D_distances.py (cell-to-vessel; imported via importlib)
-│   └── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
+│   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
+│   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
+│   └── pipeline/           # schema.py (the pipeline's 137 settings), settings.py, checks.py,
+│                           #   stages.py; public: default_schema, write_default_config
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over ImageLynx.pipeline
 │   ├── brain_network_pipeline.py             # Whole-brain run: pipeline + pericyte dilation sweep
-│   ├── *_schema.py / *_config.yaml           # Settings: declared once, generated config files
+│   ├── *_schema.py / *_config.yaml           # Settings an example adds on top of
+│   │                                         #   ImageLynx.pipeline.schema; configs are generated
 │   ├── resistance_pipeline_settings.py       # Legacy constants (presets/wizard still read these)
 │   ├── presets.py          # Preset definitions + CLI/YAML override engine
 │   ├── local_presets.py    # User-local preset overrides (stub)

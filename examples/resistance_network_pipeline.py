@@ -24,13 +24,15 @@ from ImageLynx.pipeline import (
     assign_diameters,
     build_haemodynamic_model,
     build_network,
+    default_schema,
     export_results,
     segment,
     skeletonise,
     solve,
 )
-from resistance_pipeline_schema import SCHEMA
 from pipeline_presets import PRESETS
+
+SCHEMA = default_schema()
 
 
 
@@ -39,7 +41,7 @@ from pipeline_presets import PRESETS
 # Settings -> pipeline arguments
 #
 # `resistance_pipeline_config.yaml` is the source of every setting, described by
-# `resistance_pipeline_schema.py`. This section is the only place that knows how
+# `ImageLynx.pipeline.schema`. This section is the only place that knows how
 # a setting name maps onto the pipeline stage arguments.
 # ---------------------------------------------------------------------------
 

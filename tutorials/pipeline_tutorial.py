@@ -91,8 +91,9 @@ for p in (SRC_DIR, EXAMPLES_DIR):
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
-from ImageLynx.pipeline import resolve_settings
-from resistance_pipeline_schema import SCHEMA
+from ImageLynx.pipeline import default_schema, resolve_settings
+
+SCHEMA = default_schema()
 
 # Settings come from the pipeline's config file, so the tutorial and the
 # example agree by construction rather than by being kept in step by hand.
