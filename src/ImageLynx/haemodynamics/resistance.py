@@ -1,8 +1,11 @@
 """Network resistance from Laplacian."""
+import logging
 from pathlib import Path
 import numpy as np
 import networkx as nx
 import pyvista as pv
+
+logger = logging.getLogger(__name__)
 
 
 def build_conductance_matrix_from_graph(
@@ -135,7 +138,7 @@ def solve_flow_from_conductance_matrix(
     n_free = int(len(unknown_idx))
     alpha = 2.5e-9
     t_est = alpha * (max(n_free, 1) ** 3)
-    print(
+    logger.info(
         "[flow-solve] Runtime estimate (heuristic): "
         f"t_est = alpha * n_free^3 = {alpha:.2e} * {n_free}^3 = {t_est:.3f} s "
         f"(n={n_nodes}, n_free={n_free})"

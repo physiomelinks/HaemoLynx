@@ -279,22 +279,21 @@ class PoiseuilleModel:
             'used_fwhm_edge_diameter': 0,
         }
 
-        print(f"=== Poiseuille Resistance Calculation (Branch Order Based) ===")
-        print(f"Formula: resistance = (128 * viscosity * length) / (π * diameter^4)")
-        print(
+        logger.info("=== Poiseuille Resistance Calculation (Branch Order Based) ===")
+        logger.info("Formula: resistance = (128 * viscosity * length) / (π * diameter^4)")
+        logger.info(
             f"Viscosity: μ(d) = {REFERENCE_VISCOSITY_PA_S * 1e3} mPa.s * "
             f"({REFERENCE_DIAMETER_UM} μm / d)^{VISCOSITY_DIAMETER_EXPONENT} "
             f"for d <= {CAPILLARY_REGIME_MAX_DIAMETER_UM} μm, "
             f"else {LARGE_VESSEL_VISCOSITY_PA_S * 1e3} mPa.s (large-vessel constant)"
         )
-        print(f"Units: diameter and length in μm; resistance in Pa.s/m^3")
-        print()
+        logger.info("Units: diameter and length in μm; resistance in Pa.s/m^3")
 
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
         diameter_viscosity_map = {}
         for branch_order, diameter in diameter_by_branch_order.items():
             if diameter <= 0:
-                print(f"Warning: Invalid diameter {diameter} for {branch_order}")
+                logger.warning(f"Invalid diameter {diameter} for {branch_order}")
                 continue
             viscosity = self.calculate_viscosity(diameter)
             diameter_viscosity_map[diameter] = viscosity
@@ -302,9 +301,9 @@ class PoiseuilleModel:
                 'diameter': diameter,
                 'viscosity': viscosity
             }
-            print(f"{branch_order}: diameter={diameter}μm, calculated viscosity={viscosity:.6f}")
-
-        print()
+            logger.info(
+                f"{branch_order}: diameter={diameter}μm, calculated viscosity={viscosity:.6f}"
+            )
 
         for u, v, key, data in G.edges(keys=True, data=True):
             # Check for branch order
@@ -356,24 +355,32 @@ class PoiseuilleModel:
                         f"viscosity={viscosity:.3e} Pa.s, "
                         f"resistance={resistance:.3e} Pa.s/m^3")
 
-        # Print summary
-        print(f"=== Summary ===")
-        print(f"Edges assigned resistance: {results['edges_set']}")
+        # Log summary
+        logger.info("=== Summary ===")
+        logger.info(f"Edges assigned resistance: {results['edges_set']}")
         if prefer_edge_fwhm_diameter:
-            print(
+            logger.info(
                 f"Edges using per-edge fwhm_diameter_um: "
                 f"{results.get('used_fwhm_edge_diameter', 0)}"
             )
+        # Every count below is an edge that was skipped, so it left the graph
+        # without a resistance: a problem the run recovered from, not progress.
         if results['missing_branch_order']:
-            print(f"Edges missing branch_order: {len(results['missing_branch_order'])}")
+            logger.warning(
+                f"Edges missing branch_order: {len(results['missing_branch_order'])}"
+            )
         if results['missing_length']:
-            print(f"Edges missing length: {len(results['missing_length'])}")
+            logger.warning(f"Edges missing length: {len(results['missing_length'])}")
         if results['unknown_branch_order']:
-            print(f"Edges with unknown branch_order: {len(results['unknown_branch_order'])}")
+            logger.warning(
+                f"Edges with unknown branch_order: {len(results['unknown_branch_order'])}"
+            )
         if results['invalid_length']:
-            print(f"Edges with invalid length: {len(results['invalid_length'])}")
+            logger.warning(f"Edges with invalid length: {len(results['invalid_length'])}")
         if results['invalid_diameter']:
-            print(f"Edges with invalid diameter: {len(results['invalid_diameter'])}")
+            logger.warning(
+                f"Edges with invalid diameter: {len(results['invalid_diameter'])}"
+            )
 
         return G, results
 
