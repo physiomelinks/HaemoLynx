@@ -112,15 +112,13 @@ boundary_assignment:
   arteriole_boundary_node_coordinates: []
   # Pick venule boundary nodes nearest to these coordinates when the coordinates method is used
   venule_boundary_node_coordinates: []
-  # Select boundary nodes from volume boxes rather than from single coordinates
-  use_volume_boxes: false
-  # Select starting nodes falling inside these (min corner, max corner) boxes  [needs use_volume_boxes]
+  # Select starting nodes falling inside these (min corner, max corner) boxes
   starting_node_volumes: []
-  # Select output nodes falling inside these (min corner, max corner) boxes  [needs use_volume_boxes]
+  # Select output nodes falling inside these (min corner, max corner) boxes
   output_node_volumes: []
-  # Select arteriole boundary nodes falling inside these (min corner, max corner) boxes  [needs use_volume_boxes]
+  # Select arteriole boundary nodes falling inside these (min corner, max corner) boxes
   arteriole_boundary_node_volumes: []
-  # Select venule boundary nodes falling inside these (min corner, max corner) boxes  [needs use_volume_boxes]
+  # Select venule boundary nodes falling inside these (min corner, max corner) boxes
   venule_boundary_node_volumes: []
   # Hold the starting node IDs chosen during the run; leave empty to let the pipeline fill it
   starting_nodes: []
@@ -172,8 +170,6 @@ pipeline_stages:
   run_haemodynamics: true
   # Compute the two-point equivalent resistance between the chosen node pair  [needs run_haemodynamics]
   do_equiv_resistance_calculation: true
-  # Set the minimum branch length threshold used by graph operations  [range 0..]
-  min_branch_length: 10
   # Prefix every VTK artifact and cached stage file with this output path
   vtk_output_prefix: examples/outputs/resistance_network
   # Close gaps in the mask with a structuring element of this radius before skeletonizing  [range 0..; needs do_skeletonize]
