@@ -1,9 +1,12 @@
 """Prune short terminal stubs from vascular graph."""
+import logging
 from typing import Tuple, Union
 
 import networkx as nx
 
 from ._helpers import calculate_edge_length
+
+logger = logging.getLogger(__name__)
 
 def prune_vascular_stubs(
     G: Union[nx.Graph, nx.MultiGraph],
@@ -61,13 +64,13 @@ def prune_vascular_stubs(
                 if edge_length < min_stub_length:
                     nodes_to_remove.append(node)
                     if debug:
-                        print(
+                        logger.debug(
                             f"  Iteration {iteration}: Marking node {node} "
                             f"(stub length: {edge_length:.2f})"
                         )
             except Exception as e:
                 if debug:
-                    print(f"  Warning: Could not calculate edge length: {e}")
+                    logger.debug(f"  Warning: Could not calculate edge length: {e}")
                 nodes_to_remove.append(node)
 
         G_pruned.remove_nodes_from(nodes_to_remove)
@@ -76,17 +79,17 @@ def prune_vascular_stubs(
         total_removed += removed_this_iteration
 
         if debug:
-            print(
+            logger.debug(
                 f"  Iteration {iteration}: Removed {removed_this_iteration} "
                 f"({nodes_after} remaining)"
             )
         if removed_this_iteration == 0:
             if debug:
-                print(f"Convergence reached after {iteration} iterations")
+                logger.debug(f"Convergence reached after {iteration} iterations")
             break
 
     if debug:
-        print(f"\nPruning complete: Total nodes removed: {total_removed}")
+        logger.debug(f"Pruning complete: Total nodes removed: {total_removed}")
     return G_pruned
 
 def remove_edges_for_self_connected_nodes(G: Union[nx.Graph, nx.MultiGraph]) -> Union[nx.Graph, nx.MultiGraph]:
