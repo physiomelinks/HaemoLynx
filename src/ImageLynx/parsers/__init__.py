@@ -25,7 +25,12 @@ from .config import (
     settings_for,
 )
 from .checks import CheckReport, check_settings
-from .cli import build_parser, print_settings, settings_from_command_line
+from .cli import (
+    build_parser,
+    configure_console_logging,
+    print_settings,
+    settings_from_command_line,
+)
 from .schema import ConfigError, IneffectiveSettingWarning, Schema, Setting
 
 __all__ = [
@@ -39,6 +44,7 @@ __all__ = [
     "add_schema_arguments",
     "build_parser",
     "cli_overrides",
+    "configure_console_logging",
     "dump_config",
     "load_config",
     "parameters_of",
