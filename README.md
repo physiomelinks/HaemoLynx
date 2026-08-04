@@ -164,6 +164,10 @@ graph = run_pipeline_stages(settings, default_schema())
 `default_schema().describe()` is plain JSON — the same declaration a GUI can
 render a settings form from.
 
+Path defaults in the generated config are relative, so they resolve against the
+directory you run in (`images/`, `outputs/`, `plots/`). The examples in this
+repository pin their own paths under `examples/` in their config files.
+
 ## Tutorial
 
 `tutorials/pipeline_tutorial.ipynb` walks through the same pipeline stage by

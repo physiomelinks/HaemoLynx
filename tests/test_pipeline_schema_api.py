@@ -53,6 +53,21 @@ def test_the_schema_module_is_importable_without_the_examples_directory():
     assert module.SCHEMA is default_schema()
 
 
+def test_no_path_default_points_inside_the_examples_directory():
+    """Library defaults describe the user's working directory, not this repo."""
+    inside_repo = [
+        setting.name
+        for setting in default_schema()
+        if setting.kind == "path"
+        and setting.default is not None
+        and str(setting.default).startswith("examples/")
+    ]
+    assert not inside_repo, (
+        "path defaults still point at this repository's examples/ tree: "
+        f"{inside_repo}"
+    )
+
+
 # --- the generated config file ---------------------------------------------
 
 

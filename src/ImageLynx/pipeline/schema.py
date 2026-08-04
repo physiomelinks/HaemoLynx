@@ -26,13 +26,14 @@ from typing import Any, Mapping
 
 from ..parsers import Schema, Setting, dump_config
 
-# Path defaults are written relative to the repository root, so the generated
-# config file is portable between machines. Resolve them against the root when
-# a run needs an absolute path.
-_IMAGES = "examples/images"
-_CLASSIFIERS = "examples/classifiers"
-_OUTPUTS = "examples/outputs"
-_PLOTS = "examples/plots"
+# Path defaults are relative, and so are resolved against the directory a run
+# starts in. They name a plain working-directory layout rather than anything
+# inside this repository, so a generated config is a starting point on any
+# machine; the examples pin their own paths in their config files.
+_IMAGES = "images"
+_CLASSIFIERS = "classifiers"
+_OUTPUTS = "outputs"
+_PLOTS = "plots"
 
 #: Axis orders accepted by the loader: any permutation of x, y and z.
 AXIS_ORDERS = ("zyx", "zxy", "yzx", "yxz", "xzy", "xyz")
