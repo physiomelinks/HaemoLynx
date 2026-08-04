@@ -166,3 +166,49 @@ From the repository root:
 pytest -s               # everything
 pytest -m "not slow"    # skip the slow integration tests
 ```
+
+### Does this branch change the numbers?
+
+`scripts/compare_branches.py` runs the resistance network pipeline twice on the
+same dataset with the same settings — once on your checkout, once on a
+reference ref in a temporary `git worktree` — and reports every way the two
+runs differ:
+
+```bash
+python scripts/compare_branches.py                       # against main
+python scripts/compare_branches.py --ref devel           # against another ref
+python scripts/compare_branches.py --image /data/x.tif   # another dataset
+python scripts/compare_branches.py --setting min_stub_length=5.0
+```
+
+It writes `COMPARISON.md` and an `index.html` — every plot from both runs, side
+by side — into `comparison_outputs/` (gitignored). The report covers graph
+metrics, **the first graph-building stage whose output diverges** (which is
+what localises a regression), edge attributes, the statistics CSVs, the VTK
+exports, and runtime.
+
+This is **not** part of the test suite and never runs in CI: it takes roughly
+15 minutes per side and defaults to `examples/images/Nerve_capillaries.tif`, a
+328 MB image that is not in the repository. To check the tool itself works —
+about a minute, on the committed test fixture:
+
+```bash
+python scripts/compare_branches.py --self-check --smoke
+```
+
+That compares `HEAD` against `HEAD` and exits non-zero if anything differs.
+The reporting logic has fast unit tests of its own in
+`tests/test_branch_comparison.py`, which do run in CI.
+
+A few things to know before trusting a report:
+
+* If either side fails, the tool says which one and why, and prints no tables —
+  a partial comparison is never presented as a complete one.
+* Branches take their settings differently (older entry points have a hundred
+  or so keyword arguments and read some settings from module constants). Each
+  side is inspected and adapted; a setting that defines the comparison and
+  cannot be applied stops that side rather than silently running a different
+  configuration, and a setting a branch simply does not have is listed in the
+  report as a caveat.
+* The boundary boxes are in physical (z, y, x) **micrometres**, not voxel
+  indices.

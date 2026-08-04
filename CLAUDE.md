@@ -37,6 +37,10 @@ ImageLynx/
 │   ├── pipeline_tutorial.py       # Auto-generated from the notebook (do not edit by hand)
 │   ├── tutorial_plots.py          # Inline plot helpers for the notebook
 │   └── export_notebook.py         # nbconvert export used by integration tests
+├── scripts/                # Developer tools, not part of the package
+│   ├── compare_branches.py # Run the pipeline on this branch and on a reference
+│   │                       #   ref, and diff the numbers (never runs in CI)
+│   └── branch_comparison/  # metrics/report (pure, unit-tested) + runner
 ├── tests/                  # Unit + integration tests (see Testing below)
 │   ├── conftest.py         # Shared fixtures; matplotlib Agg backend
 │   └── integration/        # Full-pipeline and tutorial tests (@pytest.mark.integration)
