@@ -28,5 +28,8 @@ tests/plots/
 # Stray notebook in OLD/ (slated for removal)
 examples/OLD/Latest_ithink_network12082025.ipynb
 
+# Branch comparison reports (scripts/compare_branches.py)
+comparison_outputs/
+
 # Local agent worktrees and scratch state
 .claude/

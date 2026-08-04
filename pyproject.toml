@@ -29,7 +29,7 @@ notebook = ["ipykernel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "scripts"]
 markers = [
     "slow: marks tests as slow",
     "plotting: marks tests that create figures",
