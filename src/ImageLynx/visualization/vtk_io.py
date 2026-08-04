@@ -7,6 +7,8 @@ from typing import Any, Dict, Iterable, List
 import numpy as np
 import networkx as nx
 
+from ImageLynx.geometry import cumulative_lengths
+
 
 def _as_points(path_like: Any) -> np.ndarray:
     arr = np.asarray(path_like, dtype=float)
@@ -21,9 +23,15 @@ def _as_points(path_like: Any) -> np.ndarray:
     return arr
 
 
-def _edge_points(
+def _edge_points_padded_to_3d(
     u: Any, v: Any, edge_data: Dict[str, Any], graph: nx.Graph
 ) -> np.ndarray:
+    """Edge polyline coerced to exactly three float columns for VTK.
+
+    Unlike the haemodynamics centerline accessor of the same former name, a 2D
+    or over-wide polyline is padded or truncated here rather than rejected:
+    VTK needs a point array of fixed width, and a flat graph is still exportable.
+    """
     voxels = edge_data.get("voxels")
     if voxels is not None and len(voxels) >= 2:
         return _as_points(voxels)
@@ -85,12 +93,6 @@ def _compress_consecutive_duplicate_ids(ids: List[int]) -> List[int]:
     return out
 
 
-def _cumulative_lengths(points: np.ndarray) -> np.ndarray:
-    diffs = np.diff(points, axis=0)
-    seg_lengths = np.linalg.norm(diffs, axis=1)
-    return np.concatenate(([0.0], np.cumsum(seg_lengths)))
-
-
 def _interpolate_at_length(points: np.ndarray, cumlen: np.ndarray, s: float) -> np.ndarray:
     if s <= 0:
         return points[0]
@@ -134,10 +136,10 @@ def derive_pericyte_points_from_graph(
     first_center = constriction_length / 2.0
     for u, v, k, data in edge_iter:
         try:
-            line_pts = _edge_points(u, v, data, graph)
+            line_pts = _edge_points_padded_to_3d(u, v, data, graph)
         except ValueError:
             continue
-        cumlen = _cumulative_lengths(line_pts)
+        cumlen = cumulative_lengths(line_pts)
         length = float(cumlen[-1])
         if length <= 0:
             continue
@@ -206,7 +208,7 @@ def graph_to_vtk(
 
     for u, v, k, data in edge_iter:
         try:
-            pts = _edge_points(u, v, data, graph)
+            pts = _edge_points_padded_to_3d(u, v, data, graph)
         except ValueError:
             continue
         pts = _orient_edge_points_to_nodes(pts, u, v, graph)

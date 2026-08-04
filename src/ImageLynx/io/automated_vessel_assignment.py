@@ -9,8 +9,7 @@ import numpy as np
 from .axis_order import CANONICAL_AXIS_ORDER, voxel_size_zyx_from_xyz
 from .ilastik import run_ilastik_headless_segmentation
 from .load import (
-    load_3d_h5_with_voxel_size,
-    load_3d_tif_with_voxel_size,
+    load_volume_and_voxel_size,
     resolve_image_path_with_optional_zip,
 )
 
@@ -21,21 +20,7 @@ def _load_mask_image(
     axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """Load a mask image and return (image in canonical (z, y, x) order, voxel_size_xyz)."""
-    suffix = mask_path.suffix.lower()
-    if suffix in {".tif", ".tiff"}:
-        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
-            str(mask_path), axis_order=axis_order
-        )
-        return image, (float(voxel_x), float(voxel_y), float(voxel_z))
-    if suffix == ".h5":
-        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
-            str(mask_path), axis_order=axis_order
-        )
-        return image, (float(voxel_x), float(voxel_y), float(voxel_z))
-    raise ValueError(
-        f"Unsupported mask format '{suffix}' for {mask_path}. "
-        "Supported formats: .tif, .tiff, .h5"
-    )
+    return load_volume_and_voxel_size(mask_path, axis_order=axis_order)
 
 
 def load_large_vessel_masks(

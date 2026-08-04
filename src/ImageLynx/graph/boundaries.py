@@ -6,6 +6,8 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 import networkx as nx
 
+from ._helpers import sort_nodes
+
 
 def select_boundary_terminal_nodes(
     G: nx.Graph,
@@ -43,7 +45,7 @@ def select_boundary_terminal_nodes(
     return starting, outputs
 
 
-def _terminal_nodes_with_positions(G: nx.Graph) -> tuple[list[Any], dict[Any, np.ndarray]]:
+def _terminal_nodes_and_position_map(G: nx.Graph) -> tuple[list[Any], dict[Any, np.ndarray]]:
     node_pos = nx.get_node_attributes(G, "pos")
     terminals = [node for node, degree in G.degree() if degree == 1 and node in node_pos]
     pos = {node: np.asarray(node_pos[node], dtype=float) for node in terminals}
@@ -55,10 +57,6 @@ def _normalize_point(point: Iterable[float], *, name: str) -> np.ndarray:
     if arr.shape != (3,):
         raise ValueError(f"{name} must be a 3D coordinate, got shape {arr.shape}.")
     return arr
-
-
-def _sort_nodes(nodes: Iterable[Any]) -> list[Any]:
-    return sorted(set(nodes), key=lambda n: (str(type(n)), str(n)))
 
 
 def select_boundary_nodes_by_method(
@@ -80,7 +78,7 @@ def select_boundary_nodes_by_method(
     if node_role not in {"input", "output"}:
         raise ValueError("node_role must be 'input' or 'output'.")
 
-    terminals, pos = _terminal_nodes_with_positions(G)
+    terminals, pos = _terminal_nodes_and_position_map(G)
     if not terminals:
         return []
 
@@ -158,7 +156,7 @@ def select_boundary_nodes_by_method(
             "'degree_1_from_starting'."
         )
 
-    return [node for node in _sort_nodes(selected) if node not in excluded]
+    return [node for node in sort_nodes(selected) if node not in excluded]
 
 
 

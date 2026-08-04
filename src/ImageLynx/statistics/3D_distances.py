@@ -20,7 +20,7 @@ import tifffile
 from ImageLynx.io import (
     CANONICAL_AXIS_ORDER,
     load_3d_h5_with_voxel_size,
-    load_3d_tif_with_voxel_size,
+    load_binary_mask_and_voxel_size,
     voxel_size_zyx_from_xyz,
 )
 from ImageLynx.haemodynamics.automated import build_graph_branch_label_volume
@@ -48,32 +48,6 @@ class ObjectDistanceRecord:
     centroid_to_vessel_nearest_x: float
     centroid_to_vessel_nearest_graph_edge_label_id: int | None
     centroid_to_vessel_nearest_branch_order: str | None
-
-
-def _load_binary_mask_and_voxel_size(
-    mask_path: str | Path,
-    *,
-    h5_dataset_name: str | None = None,
-    axis_order: str = CANONICAL_AXIS_ORDER,
-) -> tuple[np.ndarray, tuple[float, float, float]]:
-    """Load a binary mask from tif/tiff/h5 and return (mask_bool, voxel_size_xyz)."""
-    path = Path(mask_path)
-    suffix = path.suffix.lower()
-    if suffix in {".tif", ".tiff"}:
-        image, vx, vy, vz, _voxel_meta_status = load_3d_tif_with_voxel_size(
-            str(path), axis_order=axis_order
-        )
-    elif suffix == ".h5":
-        image, vx, vy, vz, _voxel_meta_status = load_3d_h5_with_voxel_size(
-            str(path), dataset_name=h5_dataset_name, axis_order=axis_order
-        )
-    else:
-        raise ValueError(
-            f"Unsupported mask format '{path.suffix}'. Expected .tif, .tiff, or .h5."
-        )
-    if image.ndim != 3:
-        raise ValueError(f"Expected a 3D mask, got shape {image.shape}.")
-    return image.astype(bool), (float(vx), float(vy), float(vz))
 
 
 def _load_volume_shape_only(
@@ -525,7 +499,7 @@ def run_3d_measurement_to_cell_mask(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cell_mask, cell_voxel_size = _load_binary_mask_and_voxel_size(
+    cell_mask, cell_voxel_size = load_binary_mask_and_voxel_size(
         cell_mask_path,
         h5_dataset_name=cell_mask_h5_dataset_name,
         axis_order=axis_order,
@@ -539,7 +513,7 @@ def run_3d_measurement_to_cell_mask(
         )
 
     if vessel_mask_path is not None:
-        vessel_mask, vessel_voxel_size = _load_binary_mask_and_voxel_size(
+        vessel_mask, vessel_voxel_size = load_binary_mask_and_voxel_size(
             vessel_mask_path,
             h5_dataset_name=vessel_mask_h5_dataset_name,
             axis_order=axis_order,

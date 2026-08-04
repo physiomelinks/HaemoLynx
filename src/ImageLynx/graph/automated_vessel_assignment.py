@@ -7,17 +7,11 @@ from typing import Any
 import networkx as nx
 import numpy as np
 
-
-def _sort_nodes(nodes: set[Any]) -> list[Any]:
-    return sorted(nodes, key=lambda n: (str(type(n)), str(n)))
-
-
-def _edge_id(u: Any, v: Any, key: int) -> tuple[Any, Any, int]:
-    """Orientation-independent edge id for MultiGraph edges."""
-    return (u, v, key) if u <= v else (v, u, key)
+# Aliased because this module also uses ``edge_id`` as a local variable name.
+from ._helpers import edge_id as _edge_id, sort_nodes as _sort_nodes
 
 
-def _terminal_nodes_with_positions(G: nx.Graph) -> list[tuple[Any, np.ndarray]]:
+def _terminal_nodes_with_position_pairs(G: nx.Graph) -> list[tuple[Any, np.ndarray]]:
     node_pos = nx.get_node_attributes(G, "pos")
     terminals: list[tuple[Any, np.ndarray]] = []
     for node_id, degree in G.degree():
@@ -294,7 +288,7 @@ def select_terminal_nodes_from_large_vessel_masks(
 
     arteriole_mask = large_arteriole_mask.astype(bool, copy=False)
     venule_mask = large_venule_mask.astype(bool, copy=False)
-    terminal_nodes = _terminal_nodes_with_positions(G)
+    terminal_nodes = _terminal_nodes_with_position_pairs(G)
     if not terminal_nodes:
         return [], []
 

@@ -10,11 +10,10 @@ import numpy as np
 from scipy.ndimage import center_of_mass, label
 from scipy.spatial import cKDTree
 
+from ImageLynx.geometry import cumulative_lengths
 from ImageLynx.io import (
     CANONICAL_AXIS_ORDER,
-    load_3d_h5_with_voxel_size,
-    load_3d_tif_with_voxel_size,
-    resolve_image_path_with_optional_zip,
+    load_binary_mask_and_voxel_size,
     voxel_size_zyx_from_xyz,
 )
 from .poiseuille import set_edge_resistance
@@ -24,41 +23,9 @@ from .probability import (
     validate_active_pericyte_indices,
 )
 
-
-def _load_binary_mask_and_voxel_size(
-    mask_path: str | Path,
-    *,
-    h5_dataset_name: str | None = None,
-    axis_order: str = CANONICAL_AXIS_ORDER,
-) -> tuple[np.ndarray, tuple[float, float, float]]:
-    """Load a binary 3D mask and return (mask_bool, voxel_size_xyz)."""
-    path = resolve_image_path_with_optional_zip(Path(mask_path))
-    suffix = path.suffix.lower()
-    if suffix in {".tif", ".tiff"}:
-        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
-            str(path),
-            axis_order=axis_order,
-        )
-    elif suffix == ".h5":
-        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
-            str(path),
-            dataset_name=h5_dataset_name,
-            axis_order=axis_order,
-        )
-    else:
-        raise ValueError(
-            f"Unsupported pericyte mask format '{suffix}'. "
-            "Expected .tif, .tiff, or .h5."
-        )
-    if image.ndim != 3:
-        raise ValueError(
-            f"Pericyte mask must be 3D, got shape={tuple(image.shape)}."
-        )
-    mask = np.asarray(image) > 0
-    return (
-        mask,
-        (float(voxel_x), float(voxel_y), float(voxel_z)),
-    )
+#: Names the pericyte mask in loader errors, so a bad path or format says which
+#: of the pipeline's several masks was at fault.
+PERICYTE_MASK_DESCRIPTION = "pericyte mask"
 
 
 def _extract_pericyte_centroids_physical(
@@ -101,12 +68,19 @@ def _extract_pericyte_component_properties(
     return centroids_idx * spacing.reshape(1, 3), equivalent_diameters_um
 
 
-def _edge_points(
+def _edge_centerline_points(
     graph: nx.Graph,
     u: Any,
     v: Any,
     edge_data: dict[str, Any],
 ) -> np.ndarray:
+    """Centerline of one edge as strict ``(n, 3)`` physical points.
+
+    Anything that is not already an ``(n>=2, 3)`` array of voxel coordinates —
+    including a 2D or padded polyline — is discarded in favour of the straight
+    node-to-node segment, because pericyte centroids are projected onto this in
+    3D and a reshaped polyline would move the projection.
+    """
     voxels = edge_data.get("voxels")
     if voxels is not None:
         pts = np.asarray(voxels, dtype=float)
@@ -115,12 +89,6 @@ def _edge_points(
     p0 = np.asarray(graph.nodes[u]["pos"], dtype=float)
     p1 = np.asarray(graph.nodes[v]["pos"], dtype=float)
     return np.vstack([p0, p1])
-
-
-def _cumulative_lengths(points: np.ndarray) -> np.ndarray:
-    diffs = np.diff(points, axis=0)
-    seg_lengths = np.linalg.norm(diffs, axis=1)
-    return np.concatenate(([0.0], np.cumsum(seg_lengths)))
 
 
 def _project_point_to_polyline(
@@ -171,11 +139,11 @@ def _build_edge_records(graph: nx.Graph) -> list[_EdgeRecord]:
         if not is_capillary_branch_order(edge_data.get("branch_order")):
             # Rule: only capillary branches can receive pericyte assignments.
             continue
-        points = _edge_points(graph, u, v, edge_data)
+        points = _edge_centerline_points(graph, u, v, edge_data)
         if points.shape[0] < 2:
             continue
-        cumulative_lengths = _cumulative_lengths(points)
-        length = float(cumulative_lengths[-1])
+        arc_lengths = cumulative_lengths(points)
+        length = float(arc_lengths[-1])
         if length <= 0:
             continue
         records.append(
@@ -184,7 +152,7 @@ def _build_edge_records(graph: nx.Graph) -> list[_EdgeRecord]:
                 v=v,
                 key=key,
                 points=points,
-                cumulative_lengths=cumulative_lengths,
+                cumulative_lengths=arc_lengths,
                 length=length,
             )
         )
@@ -376,10 +344,11 @@ def set_poiseuille_resistances_with_pericyte_mask(
             f"num_integration_points must be >= 3, got {num_integration_points}."
         )
 
-    mask_bool, mask_voxel_size = _load_binary_mask_and_voxel_size(
+    mask_bool, mask_voxel_size = load_binary_mask_and_voxel_size(
         pericyte_mask_path,
         h5_dataset_name=pericyte_mask_h5_dataset_name,
         axis_order=axis_order,
+        description=PERICYTE_MASK_DESCRIPTION,
     )
     mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
     if (

@@ -450,6 +450,65 @@ def load_3d_h5_with_voxel_size(
     return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
+def load_volume_and_voxel_size(
+    volume_path: str | Path,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    description: str = "mask",
+) -> tuple[np.ndarray, tuple[float, float, float]]:
+    """Load a TIFF/H5 volume in canonical ``(z, y, x)`` order with its voxel size.
+
+    The returned voxel size is image-metadata order ``(x, y, z)``; convert with
+    :func:`voxel_size_zyx_from_xyz` before scaling array indices. ``description``
+    names the volume in the unsupported-format error, so callers can say what the
+    user actually passed ("pericyte mask", "cell mask", ...).
+    """
+    path = Path(volume_path)
+    suffix = path.suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
+            str(path),
+            axis_order=axis_order,
+        )
+    elif suffix == ".h5":
+        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
+            str(path),
+            dataset_name=h5_dataset_name,
+            axis_order=axis_order,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported {description} format '{suffix}'. "
+            "Expected .tif, .tiff, or .h5."
+        )
+    return image, (float(voxel_x), float(voxel_y), float(voxel_z))
+
+
+def load_binary_mask_and_voxel_size(
+    mask_path: str | Path,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    description: str = "mask",
+) -> tuple[np.ndarray, tuple[float, float, float]]:
+    """Load a 3D binary mask and return ``(mask_bool, voxel_size_xyz)``.
+
+    Any strictly positive voxel is foreground. The path may point at a file
+    inside a sibling zip archive; see :func:`resolve_image_path_with_optional_zip`.
+    """
+    path = resolve_image_path_with_optional_zip(Path(mask_path))
+    image, voxel_size_xyz = load_volume_and_voxel_size(
+        path,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=axis_order,
+        description=description,
+    )
+    if image.ndim != 3:
+        raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
+    return np.asarray(image) > 0, voxel_size_xyz
+
+
 def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AXIS_ORDER):
     """Load a TIFF in canonical ``(z, y, x)`` order and skeletonize it."""
     print("Loading and skeletonizing TIFF...")
