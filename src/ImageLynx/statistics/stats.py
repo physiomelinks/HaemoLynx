@@ -1,4 +1,6 @@
 """Vessel network statistics."""
+from __future__ import annotations
+
 from typing import Dict, Any, Optional, Union, Callable
 from pathlib import Path
 from datetime import datetime, timezone
