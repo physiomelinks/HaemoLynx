@@ -116,16 +116,16 @@ def segment(settings: dict):
         ilastik_segmented_path = settings["ilastik_output_dir"] / (
             f"{unsegmented_image_path.stem}_segmented{settings['ilastik_output_suffix']}"
         )
-        print(f"Running ilastik segmentation for unsegmented image: {unsegmented_image_path}")
+        logger.info(f"Running ilastik segmentation for unsegmented image: {unsegmented_image_path}")
         settings["input_path"] = io.run_ilastik_headless_segmentation(
             input_image_path=unsegmented_image_path,
             classifier_path=Path(settings["ilastik_classifier_path"]),
             output_path=ilastik_segmented_path,
             ilastik_executable=settings["ilastik_executable"],
         )
-        print(f"Using ilastik-segmented image: {settings['input_path']}")
+        logger.info(f"Using ilastik-segmented image: {settings['input_path']}")
     else:
-        print(f"Using segmented input image: {settings['input_path']}")
+        logger.info(f"Using segmented input image: {settings['input_path']}")
 
     settings["input_path"] = io.resolve_image_path_with_optional_zip(settings["input_path"])
     # get image format from image_path
@@ -134,7 +134,7 @@ def segment(settings: dict):
         raise ValueError(f"Invalid image format: {input_format}")
     settings["image_axis_order"] = io.normalize_axis_order(settings["image_axis_order"], label="IMAGE_AXIS_ORDER")
     if settings["image_axis_order"] != io.CANONICAL_AXIS_ORDER:
-        print(
+        logger.info(
             f"Input axis order '{settings['image_axis_order']}' will be transposed to the canonical "
             f"'{io.CANONICAL_AXIS_ORDER}' layout on load."
         )
@@ -146,11 +146,6 @@ def segment(settings: dict):
             f"Invalid final_render_mode='{settings['final_render_mode']}'. "
             f"Choose one of {sorted(valid_final_render_modes)}."
         )
-
-    logging.basicConfig(
-        level=logging.DEBUG if settings["verbose_logging"] else logging.INFO,
-        format="[%(levelname)s] %(message)s",
-    )
 
     return SegmentedInputs(
         image_path=settings["input_path"],
@@ -216,7 +211,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             voxel_size_override_xyz=settings["voxel_size_override_xyz"],
             voxel_size_policy=settings["voxel_size_policy"],
         )
-        print(
+        logger.info(
             "Voxel-size resolution: "
             f"source={voxel_size_source}, "
             f"metadata_status={voxel_meta_status.get('status')}, "
@@ -224,7 +219,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             f"final={voxel_size}"
         )
         
-        preprocessing.print_skeleton_connectivity_stats(
+        preprocessing.log_skeleton_connectivity_stats(
             "raw",
             skeleton,
             component_connectivity=settings["skeleton_component_connectivity"],
@@ -242,7 +237,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             ),
             min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
         )
-        preprocessing.print_skeleton_connectivity_stats(
+        preprocessing.log_skeleton_connectivity_stats(
             "cleaned",
             skeleton,
             component_connectivity=settings["skeleton_component_connectivity"],
@@ -261,7 +256,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 }
             )
         )
-        print(f"Saved skeleton to: {skeleton_path}")
+        logger.info(f"Saved skeleton to: {skeleton_path}")
     else:
         # load the skeleton
         skeleton = np.load(skeleton_path)
@@ -282,17 +277,17 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             voxel_size_override_xyz=settings["voxel_size_override_xyz"],
             voxel_size_policy=settings["voxel_size_policy"],
         )
-        print(f"Loaded skeleton from: {skeleton_path}")
-        print(
+        logger.info(f"Loaded skeleton from: {skeleton_path}")
+        logger.info(
             "Voxel-size resolution (from cache/default): "
             f"source={voxel_size_source}, "
             f"metadata_status={voxel_meta_status.get('status')}, "
             f"final={voxel_size}"
         )
 
-    print("Visualizing skeleton projection...")
+    logger.info("Visualizing skeleton projection...")
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
-    print("Skeleton projection saved.")
+    logger.info("Skeleton projection saved.")
 
     main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
     # Image metadata reports (x, y, z); array axes are canonical (z, y, x).
@@ -378,7 +373,7 @@ def build_network(settings: dict, volume: SkeletonisedVolume, schema: Schema):
 
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
-        print(f"Saved graph to: {graph_path}")
+        logger.info(f"Saved graph to: {graph_path}")
     else:
         if not graph_path.exists():
             raise FileNotFoundError(
@@ -387,7 +382,7 @@ def build_network(settings: dict, volume: SkeletonisedVolume, schema: Schema):
             )
         with graph_path.open("rb") as f:
             G = pickle.load(f)
-        print(f"Loaded graph from: {graph_path}")
+        logger.info(f"Loaded graph from: {graph_path}")
 
     # Store physical voxel-unit metadata used for skeleton/graph geometry and mask alignment.
     G.graph["image_voxel_size_xyz"] = main_voxel_size_xyz
@@ -409,7 +404,7 @@ def build_network(settings: dict, volume: SkeletonisedVolume, schema: Schema):
             save_html_path=str(final_graph_3d_path),
             show=settings["show_plots_in_ide"] or settings["interactive_plots"],
         )
-        print(f"Saved interactive 3D final graph to: {final_graph_3d_path}")
+        logger.info(f"Saved interactive 3D final graph to: {final_graph_3d_path}")
     else:
         visualization.visualize_edges_and_nodes(
             image,
@@ -485,16 +480,16 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             output_html_path=automated_assignment_html_path,
         )
         if wrote_assignment_html:
-            print(
+            logger.info(
                 "Saved automated vessel-assignment 3D visualization to: "
                 f"{automated_assignment_html_path}"
             )
         else:
-            print(
+            logger.warning(
                 "Skipped automated vessel-assignment 3D visualization "
                 "(plotly is not installed)."
             )
-        print(
+        logger.info(
             "Automated vessel assignment selected "
             f"{len(settings['starting_node_coordinates'])} input coordinates from arteriole-mask overlap "
             f"and {len(settings['output_node_coordinates'])} output coordinates from venule-mask overlap."
@@ -549,13 +544,13 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             inferred_boundary_results["arteriole_boundary_nodes"]
         )
         settings["venule_boundary_nodes"][:] = list(inferred_boundary_results["venule_boundary_nodes"])
-        print(
+        logger.info(
             "Small-vessel mask boundary assignment selected "
             f"{len(settings['arteriole_boundary_nodes'])} arteriole boundary nodes and "
             f"{len(settings['venule_boundary_nodes'])} venule boundary nodes "
             f"(min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f})."
         )
-        print(
+        logger.info(
             "Small-vessel mask edge labels: "
             f"arteriole_edges={inferred_boundary_results['arteriole_edge_count']}, "
             f"venule_edges={inferred_boundary_results['venule_edge_count']}, "
@@ -574,29 +569,29 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 output_html_path=boundary_html,
             )
             if ok:
-                print(f"Saved interactive 3D small-vessel boundary view: {boundary_html}")
+                logger.info(f"Saved interactive 3D small-vessel boundary view: {boundary_html}")
             else:
-                print(
+                logger.warning(
                     "Small-vessel boundary 3D HTML not written (install plotly to enable)."
                 )
     if settings["automated_vessel_assignment"]:
-        print(
+        logger.info(
             f"Selected {len(settings['starting_nodes'])} STARTING_NODES and {len(settings['output_nodes'])} "
             "OUTPUT_NODES directly from terminal-node overlap with vessel masks."
         )
     else:
-        print(
+        logger.info(
             f"Selected {len(settings['starting_nodes'])} STARTING_NODES and {len(settings['output_nodes'])} "
             "OUTPUT_NODES from manual coordinates."
         )
-    print(f"Starting nodes are: {settings['starting_nodes']}")
-    print(f"Output nodes are: {settings['output_nodes']}")
-    print(f"Arteriole boundary nodes are: {settings['arteriole_boundary_nodes']}")
-    print(f"Venule boundary nodes are: {settings['venule_boundary_nodes']}")
+    logger.info(f"Starting nodes are: {settings['starting_nodes']}")
+    logger.info(f"Output nodes are: {settings['output_nodes']}")
+    logger.info(f"Arteriole boundary nodes are: {settings['arteriole_boundary_nodes']}")
+    logger.info(f"Venule boundary nodes are: {settings['venule_boundary_nodes']}")
 
     if settings["starting_nodes"] and settings["output_nodes"]:
         resistance_node_pair = (settings["starting_nodes"][0], settings["output_nodes"][0])
-        print(f"Auto-selected resistance node pair: {resistance_node_pair}")
+        logger.info(f"Auto-selected resistance node pair: {resistance_node_pair}")
     else:
         if settings["automated_vessel_assignment"]:
             raise ValueError(
@@ -635,7 +630,7 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 save_html_path=str(vessel_type_3d_path),
                 show=False,
             )
-            print(
+            logger.info(
                 "Saved vessel-type 3D visualization after branch assignment to: "
                 f"{vessel_type_3d_path}"
             )
@@ -654,19 +649,19 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             post_assign_callback=_vessel_types_after_branch_assign,
         )
         if branch_summary["mode"] == "hierarchical":
-            print(
+            logger.info(
                 "Assigned hierarchical branch orders "
                 "(Art*/Ven* first, then capillary B* from arteriole boundary)."
             )
-            print(f"Branch assignment summary: {branch_summary}")
+            logger.info(f"Branch assignment summary: {branch_summary}")
         elif branch_summary["mode"] == "capillary":
-            print(
+            logger.info(
                 "Assigned capillary branch orders from STARTING_NODES only "
                 "(no arteriole/venule boundary-node sets supplied)."
             )
 
         if not settings["run_haemodynamics"]:
-            print(
+            logger.info(
                 "Haemodynamics disabled; skipping diameter fitting and "
                 "Poiseuille conductance assignment."
             )
@@ -687,33 +682,33 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             )
             G, haemo_results = apply_poiseuille_haemodynamics(G, config=haemo_config)
             if "fwhm" in haemo_results:
-                print(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
+                logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
                 if settings["do_pericyte_construction"]:
-                    print(
+                    logger.info(
                         "Pericyte mode: passive diameter d1 from per-edge FWHM where available, "
                         "else DIAMETER_BY_BRANCH_ORDER; d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER."
                     )
             elif settings["use_fwhm_edge_diameters"] is False:
-                print(
+                logger.info(
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                     "set_poiseuille_resistances without per-edge FWHM)."
                 )
             if "pericyte_comparison" in haemo_results:
                 comparison_results = haemo_results["pericyte_comparison"]
-                print(
+                logger.info(
                     "Pericyte resistance comparison complete: "
                     f"baseline={comparison_results['baseline_resistance']:.6f}, "
                     f"constricted={comparison_results['constricted_resistance']:.6f}, "
                     f"delta={comparison_results['delta']:.6f}, "
                     f"change={comparison_results['percent_change']:.3f}%."
                 )
-                print(
+                logger.info(
                     "Saved pericyte resistance comparison CSV to: "
                     f"{comparison_results['output_csv_path']}"
                 )
             weight_results = haemo_results.get("weights", {})
             for step_name, step_result in weight_results.items():
-                print(f"Haemodynamics weights [{step_name}]: {step_result}")
+                logger.info(f"Haemodynamics weights [{step_name}]: {step_result}")
 
 
     return HaemodynamicModel(graph=G, results=locals().get("haemo_results", {}) or {})
@@ -725,7 +720,7 @@ def build_haemodynamic_model(settings: dict, model: HaemodynamicModel):
         edges_with_resistance = sum(
             1 for _, _, data in model.graph.edges(data=True) if "resistance" in data
         )
-        print(
+        logger.info(
             f"Haemodynamic model: {edges_with_resistance} of "
             f"{model.graph.number_of_edges()} edges carry a resistance"
         )
@@ -741,7 +736,7 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
     if settings["run_haemodynamics"]:
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
         node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-        print(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
+        logger.info(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
     if settings["run_haemodynamics"] and settings["do_equiv_resistance_calculation"]:
         source_node, target_node = resistance_node_pair
         if source_node in node_to_idx and target_node in node_to_idx:
@@ -752,20 +747,20 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
                 source_node,
                 target_node,
             )
-            print(
-                f"\nEffective resistance between nodes {source_node} and "
+            logger.info(
+                f"Effective resistance between nodes {source_node} and "
                 f"{target_node}: {solution.equivalent_resistance}"
             )
         else:
-            print(
-                f"\nSkipped two-point resistance: nodes {resistance_node_pair} "
+            logger.warning(
+                f"Skipped two-point resistance: nodes {resistance_node_pair} "
                 "are not both present in the graph."
             )
 
     # 9) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.
     if settings["run_haemodynamics"]:
-        print("\nSolving flow through the network...")
+        logger.info("Solving flow through the network...")
         flow = haemodynamics.solve_flow_from_conductance_matrix(
             conductance,
             node_list,
@@ -775,9 +770,9 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
             output_nodes=settings["output_nodes"],
         )
         haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
-        print("Flow through the network solved")
+        logger.info("Flow through the network solved")
     else:
-        print("Haemodynamics solve skipped (run_haemodynamics=False).")
+        logger.info("Haemodynamics solve skipped (run_haemodynamics=False).")
 
 
     if settings["run_haemodynamics"]:
@@ -794,7 +789,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     voxel_size_zyx = network.volume.voxel_size_zyx
     main_voxel_size_xyz = network.volume.voxel_size_xyz
     # 7) Compute and print vessel statistics.
-    print("\nComputing vessel statistics...")
+    logger.info("Computing vessel statistics...")
     if settings["statistics"]:
         valid_statistics_modes = {"fast", "full"}
         if settings["statistics_mode"] not in valid_statistics_modes:
@@ -810,13 +805,13 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             statistics_mode=settings["statistics_mode"],
         )
 
-        print("\n=== Statistics ===")
+        logger.info("=== Statistics ===")
         for key, value in stats.items():
-            print(f"  {key}: {value}")
+            logger.info(f"  {key}: {value}")
 
         stats_csv_path = output_dir / f"{settings['input_path'].stem}_statistics.csv"
         statistics.export_statistics_to_csv(stats, stats_csv_path)
-        print(f"Saved statistics CSV to: {stats_csv_path}")
+        logger.info(f"Saved statistics CSV to: {stats_csv_path}")
 
         branch_stats = statistics.compute_branch_order_statistics(
             G,
@@ -827,7 +822,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             branch_stats,
             branch_stats_csv_path,
         )
-        print(f"Saved branch-order statistics CSV to: {branch_stats_csv_path}")
+        logger.info(f"Saved branch-order statistics CSV to: {branch_stats_csv_path}")
 
         if settings["run_haemodynamics"]:
             weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
@@ -860,11 +855,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                     ),
                 },
             }
-        print("\n=== Weighted Betweenness and Communities ===")
+        logger.info("=== Weighted Betweenness and Communities ===")
         for model_name, model_results in weighted_measurements.items():
-            print(f"  [{model_name}]")
+            logger.info(f"  [{model_name}]")
             for metric_name, metric_values in model_results.items():
-                print(f"    {metric_name}: {metric_values}")
+                logger.info(f"    {metric_name}: {metric_values}")
 
         resistance_path = output_dir / f"{settings['input_path'].stem}_betweenness_communities_resistance.json"
         resistance_path.write_text(
@@ -874,10 +869,10 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         length_path.write_text(
             json.dumps(weighted_measurements["edge_length"], indent=2)
         )
-        print(f"Saved edge-resistance stats to: {resistance_path}")
-        print(f"Saved edge-length stats to: {length_path}")
+        logger.info(f"Saved edge-resistance stats to: {resistance_path}")
+        logger.info(f"Saved edge-length stats to: {length_path}")
     else:
-        print("Vessel statistics skipped.")
+        logger.info("Vessel statistics skipped.")
 
     # 8) Optional: nearest 3D distance from objects in a cell mask to vessel edge.
     if settings["measurement_3d_to_cell_mask"]:
@@ -906,23 +901,23 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             vessel_mask_h5_dataset_name=settings["measurement_3d_vessel_mask_h5_dataset_name"],
             vessel_reference_h5_dataset_name=settings["measurement_3d_reference_h5_dataset_name"],
         )
-        print(
+        logger.info(
             "3D cell-mask vessel-distance summary: "
             f"{distance_summary}"
         )
     else:
-        print("3D cell-mask vessel-distance measurement skipped.")
+        logger.info("3D cell-mask vessel-distance measurement skipped.")
 
     # 10) Export vessels/pericytes/nodes to VTK and optionally visualize in PyVista.
     # FA I have no idea if pericyte location is correct. AI did that part.
     # FA I don't fully understand how pericyte location is currently determined?
     if settings["run_haemodynamics"] and settings["vtk_export"]:
         vtk_export = visualization.graph_to_vtk(G, settings["vtk_output_prefix"])
-        print("\n=== VTK Export ===")
-        print(f"  Vessels:   {vtk_export['vessels_path']}")
-        print(f"  Pericytes: {vtk_export['pericytes_path']}")
-        print(f"  Nodes:     {vtk_export['nodes_path']}")
-        print(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
+        logger.info("=== VTK Export ===")
+        logger.info(f"  Vessels:   {vtk_export['vessels_path']}")
+        logger.info(f"  Pericytes: {vtk_export['pericytes_path']}")
+        logger.info(f"  Nodes:     {vtk_export['nodes_path']}")
+        logger.info(f"  Counts: vessels={vtk_export['vessel_line_count']}, "
           f"pericytes={vtk_export['pericyte_count']}, nodes={vtk_export['node_count']}")
     if settings["run_haemodynamics"] and settings["visualize_vtk"] and settings["vtk_export"]:
         visualization.visualize_vtk_network(
@@ -932,15 +927,15 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             show_nodes=False,
         )
     if settings["run_haemodynamics"] and settings["visualize_vtk"] and not settings["vtk_export"]:
-        print(
+        logger.warning(
             "VTK visualization requested but VTK export is disabled. "
             "Set vtk_export: true in the config to enable."
         )
     if settings["run_haemodynamics"] and not settings["visualize_vtk"]:
-        print("VTK visualization skipped.") 
+        logger.info("VTK visualization skipped.") 
     # 11) Optional matplotlib visualization.
     if settings["visualize_results"]:
-        print("\nGenerating visualizations...")
+        logger.info("Generating visualizations...")
         valid_plot_modes = {"all", "final_only", "none"}
         if settings["ide_plot_mode"] not in valid_plot_modes:
             raise ValueError(
@@ -967,7 +962,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 show=settings["interactive_plots"] or show_3d_plot,
             )
             if overlay_3d_path is not None:
-                print(f"Saved interactive 3D overlay to: {overlay_3d_path}")
+                logger.info(f"Saved interactive 3D overlay to: {overlay_3d_path}")
         else:
             visualization.visualize_edges_and_nodes(
                 image,
@@ -993,10 +988,10 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             and not settings["interactive_plots"]
             and plt.get_fignums()
         ):
-            print("Holding plot windows open. Close them to finish the script.")
+            logger.info("Holding plot windows open. Close them to finish the script.")
             plt.show(block=True)
     else:
-        print("Matplotlib visualizations skipped.")
+        logger.info("Matplotlib visualizations skipped.")
 
 
     return solution

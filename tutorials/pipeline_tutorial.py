@@ -300,7 +300,7 @@ voxel_size_zyx = io.voxel_size_zyx_from_xyz(voxel_size)
 print(f"Image shape: {image.shape[:3]}, voxel size (x, y, z): {voxel_size}")
 print(f"Array-axis spacing (z, y, x): {voxel_size_zyx}")
 
-preprocessing.print_skeleton_connectivity_stats("raw", skeleton, component_connectivity=SKELETON_COMPONENT_CONNECTIVITY)
+preprocessing.log_skeleton_connectivity_stats("raw", skeleton, component_connectivity=SKELETON_COMPONENT_CONNECTIVITY)
 visualization.visualize_skeleton(skeleton, save_path=PLOT_DIR / "raw_skeleton.png")
 
 skeleton = preprocessing.preprocess_skeleton_for_graph(
@@ -312,7 +312,7 @@ skeleton = preprocessing.preprocess_skeleton_for_graph(
     closing_radius=SKELETON_CLOSING_RADIUS,
     bridge_gap_size=SKELETON_BRIDGE_GAP_SIZE,
 )
-preprocessing.print_skeleton_connectivity_stats("cleaned", skeleton, component_connectivity=SKELETON_COMPONENT_CONNECTIVITY)
+preprocessing.log_skeleton_connectivity_stats("cleaned", skeleton, component_connectivity=SKELETON_COMPONENT_CONNECTIVITY)
 np.save(skeleton_path, skeleton)
 voxel_meta_path.write_text(json.dumps({"voxel_size": voxel_size, "voxel_size_source": voxel_size_source}))
 visualization.visualize_skeleton(skeleton, save_path=PLOT_DIR / "skeleton_projection.png")
