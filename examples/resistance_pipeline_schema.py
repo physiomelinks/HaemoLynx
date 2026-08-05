@@ -399,20 +399,14 @@ SCHEMA = Schema(
             help="Pick venule boundary nodes nearest to these coordinates when the coordinates method is used",
             section=_BOUNDARY_ASSIGNMENT,
         ),
-        Setting(
-            name="use_volume_boxes",
-            kind="bool",
-            default=False,
-            help="Select boundary nodes from volume boxes rather than from single coordinates",
-            section=_BOUNDARY_ASSIGNMENT,
-        ),
+        # The volume boxes below apply whenever a role's selection method is
+        # "volume"; that choice is the switch, so there is no separate flag.
         Setting(
             name="starting_node_volumes",
             kind="any",
             default=[],
             help="Select starting nodes falling inside these (min corner, max corner) boxes",
             section=_BOUNDARY_ASSIGNMENT,
-            requires=("use_volume_boxes",),
         ),
         Setting(
             name="output_node_volumes",
@@ -420,7 +414,6 @@ SCHEMA = Schema(
             default=[],
             help="Select output nodes falling inside these (min corner, max corner) boxes",
             section=_BOUNDARY_ASSIGNMENT,
-            requires=("use_volume_boxes",),
         ),
         Setting(
             name="arteriole_boundary_node_volumes",
@@ -428,7 +421,6 @@ SCHEMA = Schema(
             default=[],
             help="Select arteriole boundary nodes falling inside these (min corner, max corner) boxes",
             section=_BOUNDARY_ASSIGNMENT,
-            requires=("use_volume_boxes",),
         ),
         Setting(
             name="venule_boundary_node_volumes",
@@ -436,7 +428,6 @@ SCHEMA = Schema(
             default=[],
             help="Select venule boundary nodes falling inside these (min corner, max corner) boxes",
             section=_BOUNDARY_ASSIGNMENT,
-            requires=("use_volume_boxes",),
         ),
         Setting(
             # The pipeline fills these in place (`starting_nodes[:] = []`), so
@@ -603,14 +594,6 @@ SCHEMA = Schema(
             help="Compute the two-point equivalent resistance between the chosen node pair",
             section=_PIPELINE_STAGES,
             requires=("run_haemodynamics",),
-        ),
-        Setting(
-            name="min_branch_length",
-            kind="int",
-            default=10,
-            help="Set the minimum branch length threshold used by graph operations",
-            section=_PIPELINE_STAGES,
-            minimum=0,
         ),
         Setting(
             name="vtk_output_prefix",

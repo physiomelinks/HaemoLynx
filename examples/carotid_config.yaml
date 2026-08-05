@@ -1,18 +1,19 @@
-# Resistance network pipeline
-# Settings for the end-to-end microvascular pipeline: optional ilastik segmentation, skeletonization, graph building, boundary and branch-order assignment, haemodynamics, and export.
+# Carotid network pipeline
+# The standard image-to-model pipeline over a single carotid dataset.
+# Same settings as resistance_pipeline_config.yaml, different values.
 
 # ------------------------------------------------------------------------
 # Input and segmentation
 # ------------------------------------------------------------------------
 input_and_segmentation:
   # Read this already-segmented image as the pipeline input  [needs use_ilastik_segmentation off; must exist]
-  input_path: examples/images/brain_microvessels.tiff
+  input_path: examples/images/carotid_mask.tif
   # Segment the main input image with ilastik instead of reading a segmented file
   use_ilastik_segmentation: false
   # Read this raw image as the ilastik input for main-image segmentation  [needs use_ilastik_segmentation; must exist]
-  ilastik_unsegmented_image_path: examples/images/Nerve_capillaries.tif
+  ilastik_unsegmented_image_path: examples/images/carotid.tif
   # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation; must exist]
-  ilastik_classifier_path: examples/classifiers/nerve_classifier.ilp
+  ilastik_classifier_path: examples/classifiers/carotid_classifier.ilp
   # Run this ilastik executable name or path in headless mode
   ilastik_executable: ilastik.exe
   # Write ilastik-generated segmentations into this directory
@@ -78,33 +79,15 @@ boundary_assignment:
   # Select start and output nodes automatically from the large-vessel masks instead of manually  [needs use_large_vessel_masks]
   automated_vessel_assignment: false
   # Choose how manual starting nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
-  starting_node_selection_method: coordinates
+  starting_node_selection_method: edge_percent
   # Choose how manual output nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
-  output_node_selection_method: coordinates
+  output_node_selection_method: edge_percent
   # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
   arteriole_boundary_selection_method: coordinates
   # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
   venule_boundary_selection_method: coordinates
   # Pick starting nodes nearest to these coordinates when the coordinates method is used
-  starting_node_coordinates:
-  - - 152.0
-    - 340.0
-    - 527.0
-  - - 160.0
-    - 350.0
-    - 545.0
-  - - 202.0
-    - 1303.0
-    - 132.0
-  - - 104.0
-    - 1321.0
-    - 133.0
-  - - 361.0
-    - 332.0
-    - 120.0
-  - - 321.0
-    - 334.0
-    - 163.0
+  starting_node_coordinates: []
   # Pick output nodes nearest to these coordinates when the coordinates method is used
   output_node_coordinates: []
   # Pick arteriole boundary nodes nearest to these coordinates when the coordinates method is used
@@ -135,9 +118,9 @@ boundary_assignment:
 # ------------------------------------------------------------------------
 solver_and_output:
   # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
-  input_p_bc: 4500.0
+  input_p_bc: 1000.0
   # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
-  output_p_bc: 1000.0
+  output_p_bc: 500.0
   # Generate the matplotlib visualizations at the end of the run
   visualize_results: true
   # Show plots interactively instead of saving them to the plot directory  [needs visualize_results]
@@ -170,7 +153,7 @@ pipeline_stages:
   # Compute the two-point equivalent resistance between the chosen node pair  [needs run_haemodynamics]
   do_equiv_resistance_calculation: true
   # Prefix every VTK artifact and cached stage file with this output path
-  vtk_output_prefix: examples/outputs/resistance_network
+  vtk_output_prefix: examples/outputs/carotid/carotid_network
   # Close gaps in the mask with a structuring element of this radius before skeletonizing  [range 0..; needs do_skeletonize]
   skeleton_closing_radius: 2
   # Bridge skeleton gaps no larger than this many voxels  [range 0..; needs do_skeletonize]
@@ -178,7 +161,7 @@ pipeline_stages:
   # Drop skeleton branches shorter than this during cleaning  [range 0..; needs do_skeletonize]
   skeleton_min_branch_length: 3
   # Reconnect skeleton fragments no further apart than this distance  [range 0..; needs do_skeletonize]
-  skeleton_max_bridge_distance: 4
+  skeleton_max_bridge_distance: 0
   # Use this voxel connectivity when analysing skeleton components  [range 1..3; needs do_skeletonize]
   skeleton_component_connectivity: 3
   # Reconnect graph fragments whose endpoints lie within this distance  [range 0.0..; needs do_graph_building]
@@ -190,7 +173,7 @@ pipeline_stages:
   # Collapse clusters of nodes lying within this distance of each other  [range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
-  skeleton_min_component_percent: 0.0
+  skeleton_min_component_percent: 5.0
 
 # ------------------------------------------------------------------------
 # Statistics and measurements

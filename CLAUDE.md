@@ -31,8 +31,7 @@ ImageLynx/
 │   ├── local_presets.py    # User-local preset overrides (stub)
 │   ├── preflight.py        # Pre-run validation checklist
 │   ├── wizard.py           # Interactive setup
-│   ├── carotid_image_to_model.py  # Orphaned single-dataset variant (to be replaced by Dale)
-│   └── OLD/                # Dead pre-refactor scripts (see Cleanup Plan — slated for removal)
+│   └── carotid_image_to_model.py  # Carotid dataset: the same pipeline, its own config
 ├── tutorials/
 │   ├── pipeline_tutorial.ipynb   # **Source of truth** for the step-by-step tutorial
 │   ├── pipeline_tutorial.py       # Auto-generated from the notebook (do not edit by hand)
@@ -247,14 +246,16 @@ running tests between each.
   `from ImageLynx.graph import *` raises `AttributeError`. (Confirmed reproducible.)
 - ~~**Dependency drift:** `requirements.txt` and `pyproject.toml` disagree.~~ **DONE** —
   `requirements.txt` is deleted; `pyproject.toml` is the only source.
-- **Dead code:** `examples/OLD/` (two pre-refactor scripts, imported by nothing).
+- ~~**Dead code:** `examples/OLD/` (two pre-refactor scripts, imported by nothing).~~ **DONE** — deleted.
 - The settings/preset system (`resistance_pipeline_settings.py` + `presets.py` + `preflight.py` +
   `wizard.py`) is **not** duplicated — it’s a clean layered design. Leave its logic alone; just document.
-- **`examples/carotid_image_to_model.py`** is orphaned and has a latent bug (`PLOT_DIR` undefined).
-  **Decision: leave as-is for now** — it will be replaced by Dale’s additions. Do not invest in it.
+- **`examples/carotid_image_to_model.py`** was orphaned and could not even be imported
+  (`PLOT_DIR` undefined; `__main__` passed an argument the entry point did not take) — **fixed**:
+  it is now `carotid_schema.py` + `carotid_config.yaml` over `ImageLynx.pipeline`, like the other
+  examples. Dale’s segmentation work slots into its `use_ilastik_segmentation` path.
 
 ### Phase 0 — Housekeeping & safety net (lowest risk)
-- [ ] Delete `examples/OLD/`.
+- [x] Delete `examples/OLD/`.
 - [ ] Confirm `.gitignore` covers both `.venv/` **and** `venv/`, plus `__pycache__/`, `examples/outputs/`,
       `examples/plots/`, `tutorials/outputs/`, `tutorials/plots/`, `tests/outputs/`, `tests/plots/`,
       `examples/images/`. (None are tracked today — keep it that way.)
