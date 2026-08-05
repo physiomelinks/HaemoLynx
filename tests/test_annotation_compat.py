@@ -3,8 +3,8 @@
 PEP 604 unions (``X | Y``) only became valid at runtime in Python 3.10.  A
 module that writes them in an annotation position without
 ``from __future__ import annotations`` evaluates them at ``def`` time and
-therefore fails to import on 3.9.  ``requires-python`` is ``>=3.10``, but the
-future import keeps the sources importable on 3.9 and costs nothing, so this
+therefore fails to import on 3.9.  ``requires-python`` is ``>=3.9`` and CI runs
+3.9, so this is a supported version rather than a courtesy; this
 test keeps them that way.
 """
 from __future__ import annotations

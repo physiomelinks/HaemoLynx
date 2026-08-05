@@ -90,7 +90,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-- **Python:** ≥ 3.10 (CI matrix: 3.10, 3.11, 3.12)
+- **Python:** ≥ 3.9 (CI matrix: 3.9, 3.10, 3.11, 3.12)
 - **Dependencies:** `pyproject.toml` only — there is no `requirements.txt`. Extras: `dev`
   (pytest, nbconvert, nbformat), `notebook` (ipykernel, for running the tutorial interactively).
 - **Run package tests:** from repo root: `pytest -s` or `pytest`
@@ -136,7 +136,7 @@ pip install -e ".[dev]"
 ### CI
 
 GitHub Actions (`.github/workflows/pytest-pr.yml`) runs `pip install -e .[dev]` and `pytest` on pull
-requests, across a Python 3.10 / 3.11 / 3.12 matrix (`fail-fast: false`, so one version failing still
+requests, across a Python 3.9 / 3.10 / 3.11 / 3.12 matrix (`fail-fast: false`, so one version failing still
 reports the others).
 
 ---
