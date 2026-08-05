@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """ImageLynx main pipeline package."""
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

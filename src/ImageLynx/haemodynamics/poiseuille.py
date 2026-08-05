@@ -1,4 +1,6 @@
 """Poiseuille law: viscosity, resistance, conductance."""
+from __future__ import annotations
+
 import logging
 import warnings
 

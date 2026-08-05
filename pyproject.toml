@@ -20,12 +20,12 @@ dependencies = [
     "h5py",
     "skan",
     "pyvista",
-    "ipykernel",
     "pyyaml"
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "nbconvert", "nbformat"]
+notebook = ["ipykernel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -4,11 +4,17 @@ Converts raw microscopy images of the microvasculature into computational haemod
 
 ## Install
 
+Python 3.9 or newer.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
+
+`pyproject.toml` is the single source of truth for dependencies. Add the
+`notebook` extra (`pip install -e ".[dev,notebook]"`) to get the Jupyter kernel
+needed to run `tutorials/pipeline_tutorial.ipynb` interactively.
 
 ## Running the examples
 

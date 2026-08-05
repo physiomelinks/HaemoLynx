@@ -1,4 +1,6 @@
 """Load 3D images from TIFF or HDF5 and produce skeleton."""
+from __future__ import annotations
+
 import logging
 import zipfile
 from pathlib import Path

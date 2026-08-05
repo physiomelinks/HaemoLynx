@@ -1,4 +1,6 @@
 """Plotting functions for vascular networks."""
+from __future__ import annotations
+
 from typing import Optional, Tuple, Any
 import os
 
