@@ -27,6 +27,8 @@ Change values in the config file rather than editing this script::
     python examples/carotid_image_to_model.py --input-path my_mask.tif
     python examples/carotid_image_to_model.py --list-settings
 """
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
