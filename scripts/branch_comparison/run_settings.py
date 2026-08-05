@@ -62,7 +62,9 @@ SMOKE_BOUNDARY_SETTINGS: dict[str, Any] = {
 #: does not: either they keep the run non-interactive, or they switch off an
 #: optional stage that only newer branches know about.
 BEST_EFFORT_SETTINGS: dict[str, Any] = {
-    "use_volume_boxes": True,
+    # `use_volume_boxes` used to live here. It was deleted as a dead setting:
+    # what actually selects volume-box boundaries is a role's selection method
+    # being "volume". Branches old enough to still have it do not need it set.
     "interactive_plots": False,
     "hold_ide_plots_open": False,
     "ide_plot_mode": "none",
