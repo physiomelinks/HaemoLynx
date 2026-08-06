@@ -130,6 +130,11 @@ def test_carotid_pipeline_end_to_end_sphincter_and_skimming():
         constriction_mode="sphincter",
         sphincter_length_um=5.0,
         intimal_cushion_constriction_ratio=0.5,
+        # Stated explicitly rather than inherited: the default moved to "edt_radius" (#98
+        # Phase 3), and this is a graph-only smoke test with a mock image and no binary mask,
+        # so EDT correctly refuses to run. What is being exercised here is the haemodynamics
+        # wiring, not diameter estimation.
+        radius_assignment_mode="fwhm_radius",
     )
     
     # Create a mock 3D numpy array representing the image (to pass the FWHM step)

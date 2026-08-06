@@ -133,3 +133,39 @@ def test_diameter_provenance_distinguishes_measured_from_synthetic():
     assert G[1][2][0]["diameter_provenance"] == "synthetic_branch_order"
     assert G[0][1][0]["assigned_diameter_um"] == 12.0
     assert G[1][2][0]["assigned_diameter_um"] == 4.0
+
+
+# --- The default radius estimator (#98 Phase 3) -------------------------------------------
+#
+# Re-measured on the repaired pipeline over the same 1330 edges: EDT covered 100.0% with a
+# median diameter of 6.37 um, FWHM covered 76.5% with a median of 8.20 um and a maximum of
+# 39.16 um. Pearson r = +0.245, Spearman rho = +0.284, median FWHM/EDT ratio 1.359. The
+# assessment's r = 0.079 / rho = 0.141 was measured on a bridge_gaps-inflated mask and is
+# superseded; repairing it roughly tripled the correlation, but the two still disagree.
+
+def test_default_radius_assignment_mode_is_edt():
+    """H1 section 1.2 specifies EDT, and the default used to contradict that."""
+    C = pytest.importorskip("carotid_image_to_model")
+    assert C.HaemodynamicsConfig().radius_assignment_mode == "edt_radius"
+
+
+def test_default_radius_mode_yields_measured_not_synthetic_provenance():
+    """The failure 79baf86 closed: a mode that validates and then fabricates diameters.
+
+    With the default mode, an edge carrying an EDT measurement must be recorded as measured,
+    never as synthetic_branch_order.
+    """
+    C = pytest.importorskip("carotid_image_to_model")
+
+    G = nx.MultiGraph()
+    # The measured median on the repaired pipeline, so the fixture is a real capillary.
+    G.add_edge(0, 1, branch_order="B01", length=100.0, edt_diameter_um=6.37)
+    model = PoiseuilleModel(constriction_length=5.0, constriction_spacing=100.0)
+
+    _, stats = model.set_poiseuille_resistances(
+        G, {"B01": {"d1": 4.0, "d2": 4.0}},
+        radius_assignment_mode=C.HaemodynamicsConfig().radius_assignment_mode,
+    )
+
+    assert stats["diameter_provenance_counts"] == {"measured_edt": 1}
+    assert all(d["diameter_provenance"] == "measured_edt" for _, _, d in G.edges(data=True))

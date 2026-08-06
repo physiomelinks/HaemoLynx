@@ -217,7 +217,30 @@ class HaemodynamicsConfig:
     diameter_by_branch_order: dict = field(default_factory=dict)
     
     # --- Baseline Radius Assignment ---
-    radius_assignment_mode: str = "fwhm_radius" # Options: "fwhm_radius" or "constant_radius"
+    # Options: "edt_radius", "fwhm_radius" or "constant_radius". EDT is the estimator H1
+    # section 1.2 specifies, and the default now matches that rather than contradicting it.
+    #
+    # Re-measured on the repaired pipeline, both estimators run over the same 1330 edges:
+    #
+    #                  coverage      median     p95      max
+    #     EDT      1330  (100.0%)   6.37 um   11.34    20.09
+    #     FWHM     1017  ( 76.5%)   8.20 um   16.78    39.16
+    #
+    # They still disagree: Pearson r = +0.245, Spearman rho = +0.284, median FWHM/EDT ratio
+    # 1.359. The assessment's r = 0.079 / rho = 0.141 is superseded - that was measured on an
+    # uncalibrated graph whose mask had been inflated by the bridge_gaps dilation, which adds a
+    # uniform foreground shell, precisely the wall EDT measures the distance to. Repairing the
+    # mask roughly tripled the correlation, which confirms the old figure was contaminated, but
+    # r = 0.245 is still weak: the two estimators genuinely do not agree.
+    #
+    # EDT is preferred on the evidence, not by assumption. FWHM reads 36% larger at the median
+    # and its tail is not physical - p95 of 16.78 um and a maximum of 39.16 um for a capillary
+    # bed whose measured inscribed radius is p99 5.60 um. Two mechanisms account for it: the
+    # pipeline hands FWHM the probability field, which saturates at 1.0 inside a vessel, so the
+    # Gaussian is fitted to a plateau; and fwhm_transverse_half_extent_um = 15.0 is about 8
+    # voxels, roughly 4.7 vessel radii, so in a bed this dense the transverse profile runs into
+    # neighbouring vessels. EDT is bounded by the mask and cannot do either.
+    radius_assignment_mode: str = "edt_radius"
     constant_radius_um: float = 5.0 # Used only if radius_assignment_mode == "constant_radius"
     
     # --- Sphincter / Constriction Configuration ---
