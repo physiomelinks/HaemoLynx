@@ -864,6 +864,21 @@ SCHEMA = Schema(
             requires=("use_probabilistic_pericyte_constriction",),
         ),
         Setting(
+            name="pericyte_constriction_seed",
+            kind="int",
+            # Kept equal to ImageLynx.haemodynamics.apply's
+            # DEFAULT_PERICYTE_CONSTRICTION_SEED (this module stays importable
+            # without numpy, so the value is repeated rather than imported).
+            default=20240917,
+            help=(
+                "Draw the random pericyte cohort from this seed, so a run repeats; "
+                "another seed constricts a different set of pericytes, and null "
+                "draws a fresh cohort every run"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("use_probabilistic_pericyte_constriction",),
+        ),
+        Setting(
             name="run_pericyte_resistance_comparison",
             kind="bool",
             default=False,
