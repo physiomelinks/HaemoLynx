@@ -245,7 +245,12 @@ class PipelineConfig:
     # (z, y, x) acquisition voxel size in microns. Explicit and recorded, because the Ilastik
     # probability TIFFs carry no resolution tag and get_tif_spacing then silently returns
     # (1, 1, 1), which makes every reported "micron" a voxel count. None = detect from file.
-    voxel_size_um: tuple = None
+    #
+    # Taken from the raw acquisition TIFF's own ImageJ metadata, not typed in by hand:
+    # spacing=1.8638551724137933 is the z slice step, and XResolution=YResolution=535905/1000000
+    # gives 1/0.535905 = 1.8660023698230097 um in y and x. The anisotropy is therefore on z.
+    # test_physical_units.py re-derives this from the file so the constant cannot drift from it.
+    voxel_size_um: tuple = (1.8638551724137933, 1.8660023698230097, 1.8660023698230097)
     min_branch_length: int = 10
     vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
     plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid"

@@ -18,7 +18,10 @@ from ImageLynx.statistics.benchmarking import (
 )
 
 # The measured acquisition voxel size for the WKY carotid body volume, (z, y, x) in microns.
-SPACING = (1.8660, 1.8660, 1.8639)
+# The anisotropy is on z, not x: the raw TIFF's ImageJ metadata gives a slice spacing of
+# 1.86386 um and an in-plane pixel size of 1.86600 um in both y and x. This was previously
+# written (1.8660, 1.8660, 1.8639), which put the odd axis on x under a (z, y, x) reading.
+SPACING = (1.8639, 1.8660, 1.8660)
 SHAPE = (20, 20, 20)
 
 # A straight centreline along z at voxel (y, x) = (10, 10), spanning voxels z = 5..15.
@@ -151,3 +154,60 @@ def test_unit_spacing_is_unchanged():
     reconstructed = redilate_skeleton_to_volume(G, SHAPE, unit)
     assert reconstructed[10, 10, 10]
     assert not reconstructed[10, 18, 18]
+
+
+# --- The configured acquisition voxel size ------------------------------------------------
+#
+# 2705b38 added the mechanism for an explicit voxel size, but PipelineConfig.voxel_size_um was
+# left at None and neither group YAML set it. The pipeline consumes the Ilastik probability
+# TIFF, which carries no resolution tag, so _resolve_voxel_size fell back to (1, 1, 1) and
+# every "micron" in the output was really a voxel count - the exact failure 2705b38 was meant
+# to close. These tests pin the configured value to the acquisition file it came from.
+
+def _pipeline_module():
+    return pytest.importorskip("carotid_image_to_model")
+
+
+def test_configured_voxel_size_is_calibrated_not_unit():
+    mod = _pipeline_module()
+    configured = mod.PipelineConfig().voxel_size_um
+
+    assert configured is not None, "voxel_size_um is unset; the pipeline will fall back to voxels"
+    assert tuple(configured) != (1.0, 1.0, 1.0)
+    # The anisotropy belongs on z. y and x are the in-plane pixel size and must agree.
+    z, y, x = configured
+    assert y == x, "y and x are the same in-plane pixel size and must be equal"
+    assert z != y, "the slice spacing differs from the in-plane pixel size"
+
+
+def test_configured_voxel_size_matches_the_raw_acquisition_metadata():
+    """The constant must be derived from the file, not typed in beside it."""
+    mod = _pipeline_module()
+    if not mod.RAW_IMAGE_PATH.exists():
+        pytest.skip(f"raw acquisition volume not present at {mod.RAW_IMAGE_PATH}")
+
+    from ImageLynx.io import get_tif_spacing
+
+    detected = get_tif_spacing(mod.RAW_IMAGE_PATH)
+    configured = tuple(mod.PipelineConfig().voxel_size_um)
+
+    assert configured == pytest.approx(detected), (
+        f"configured voxel_size_um {configured} has drifted from the acquisition "
+        f"metadata {detected}"
+    )
+
+
+def test_resolve_voxel_size_uses_the_configuration_for_the_untagged_probability_tiff():
+    """The probability TIFF declares no resolution; the configured value must win anyway."""
+    mod = _pipeline_module()
+    configured = tuple(mod.PipelineConfig().voxel_size_um)
+
+    saved = mod.VOXEL_SIZE_UM
+    try:
+        mod.VOXEL_SIZE_UM = configured
+        resolved = mod._resolve_voxel_size(mod.RAW_IMAGE_PATH, "tiff")
+    finally:
+        mod.VOXEL_SIZE_UM = saved
+
+    assert resolved == pytest.approx(configured)
+    assert resolved != (1.0, 1.0, 1.0)
