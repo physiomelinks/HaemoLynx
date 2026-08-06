@@ -651,3 +651,75 @@ def test_pipeline_configures_the_stub_threshold_explicitly():
     source = inspect.getsource(C._build_and_optimize_graph)
     assert "min_stub_length=graph_config.min_stub_length_um" in source, \
         "the configured threshold is not reaching prune_vascular_stubs"
+
+
+# --- Centreline smoothing provenance (#98 Tier 1 item 7) ----------------------------------
+#
+# `length` is only rewritten for edges that smooth successfully, so the section 1.4 tortuosity
+# numerator mixes two operators: a B-spline arc length for some edges and a raw 26-connected
+# staircase for the rest. Measured on the reference subvolume, 967 edges smoothed, 4 relaxed,
+# 214 fell back and 149 were too short - 27.2% keeping the staircase - and the staircase runs
+# about 8% longer (smoothed/raw ratio: p50 0.9336, mean 0.9263).
+
+def _smoothing_graph():
+    """One long wobbly edge that can be splined, and one 2-point reconnection edge."""
+    G = nx.MultiGraph()
+    wobble = [[0.0, float(i), 2.0 * ((i % 2) - 0.5)] for i in range(20)]
+    G.add_node("a", pos=np.array(wobble[0]))
+    G.add_node("b", pos=np.array(wobble[-1]))
+    G.add_edge("a", "b", voxels=wobble, length=100.0)
+
+    G.add_node("c", pos=np.array([0.0, 40.0, 0.0]))
+    G.add_edge("b", "c", voxels=[wobble[-1], [0.0, 40.0, 0.0]], length=20.0)
+
+    skeleton = np.zeros((3, 45, 9), dtype=bool)
+    for pt in wobble:
+        skeleton[int(round(pt[0])), int(round(pt[1])), int(round(pt[2])) + 4] = True
+    return G, skeleton
+
+
+def test_every_edge_is_tagged_with_its_smoothing_provenance():
+    """An untagged graph silently mixes two operators in the tortuosity numerator."""
+    from ImageLynx.graph._helpers import smooth_graph_edge_centerlines_continuous
+
+    G, skeleton = _smoothing_graph()
+    stats = smooth_graph_edge_centerlines_continuous(G, skeleton, voxel_size=(1.0, 1.0, 1.0))
+
+    tags = [d.get("centreline_smoothing") for _, _, d in G.edges(data=True)]
+    assert all(t is not None for t in tags), "some edges carry no smoothing provenance"
+    assert set(tags) <= {"bspline", "chaikin", "bspline_relaxed", "raw_fallback", "raw_too_short"}
+    assert sum(stats["centreline_smoothing_counts"].values()) == G.number_of_edges()
+
+
+def test_two_point_edges_are_tagged_as_structurally_unsplinable():
+    """These are terminal reconnections. Their tortuosity is 1.0 by construction, not anatomy.
+
+    They must be distinguishable from edges where smoothing was tried and rejected, because the
+    two need different treatment in a section 1.4 distribution.
+    """
+    from ImageLynx.graph._helpers import smooth_graph_edge_centerlines_continuous
+
+    G, skeleton = _smoothing_graph()
+    smooth_graph_edge_centerlines_continuous(G, skeleton, voxel_size=(1.0, 1.0, 1.0))
+
+    two_point = [d for u, v, d in G.edges(data=True) if len(d["voxels"]) == 2]
+    assert two_point, "fixture no longer contains a 2-point edge"
+    assert all(d["centreline_smoothing"] == "raw_too_short" for d in two_point)
+
+
+def test_unsmoothed_edges_keep_the_longer_staircase_numerator():
+    """The bias being made visible: a raw voxel path is longer than its spline.
+
+    Tortuosity is length over Euclidean distance and the denominator is unaffected, so an
+    unsmoothed edge reports a proportionally higher tortuosity for purely instrumental reasons.
+    """
+    from ImageLynx.graph._helpers import bspline_smooth_polyline, calculate_path_length
+
+    wobble = [[0.0, float(i), 2.0 * ((i % 2) - 0.5)] for i in range(20)]
+    raw_length = calculate_path_length(wobble)
+    smoothed = np.asarray(bspline_smooth_polyline(np.asarray(wobble, dtype=float), smoothness=0.75))
+    smoothed_length = calculate_path_length(smoothed.tolist())
+
+    assert smoothed_length < raw_length, (
+        "the staircase bias has vanished; the provenance tag is no longer motivated"
+    )

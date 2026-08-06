@@ -814,7 +814,10 @@ def _smooth_single_edge_centerline(
     """Inner logic for smoothing a single graph edge centerline."""
     voxels = data.get("voxels")
     if not voxels or len(voxels) < 3:
-        return id_tuple, {"status": "skipped"}
+        # Structurally unsplinable, not a smoothing failure. These are overwhelmingly the
+        # 2-point edges that terminal reconnection inserts, whose polyline is already a
+        # straight line - so their tortuosity is exactly 1.0 by construction, not by anatomy.
+        return id_tuple, {"status": "skipped", "provenance": "raw_too_short"}
         
     original = np.asarray(voxels, dtype=float)
     accepted = None
@@ -852,10 +855,11 @@ def _smooth_single_edge_centerline(
             "status": "smoothed",
             "voxels": accepted.tolist(),
             "length": new_len,
-            "was_relaxed": was_relaxed
+            "was_relaxed": was_relaxed,
+            "provenance": "bspline_relaxed" if was_relaxed else method,
         }
     else:
-        return id_tuple, {"status": "fallback"}
+        return id_tuple, {"status": "fallback", "provenance": "raw_fallback"}
 
 
 def smooth_graph_edge_centerlines_continuous(
@@ -941,20 +945,31 @@ def smooth_graph_edge_centerlines_continuous(
 
     for id_tuple, res in results:
         status = res["status"]
+        u, v, key = id_tuple
+        data = G[u][v][key] if is_multi else G[u][v]
+
+        # Every edge is tagged, including the untouched ones. `length` is only rewritten for
+        # edges that smooth, so an untagged graph silently mixes two different operators in the
+        # section 1.4 tortuosity numerator: a B-spline arc length for some edges and a raw
+        # 26-connected staircase for the rest. Measured, the staircase runs about 8% longer, so
+        # unsmoothed edges carry a proportionally inflated tortuosity. That bias also tracks
+        # tortuosity itself - twisty edges are the ones whose spline leaves the corridor and
+        # falls back - so unlike most defects in this pipeline it can manufacture a between-group
+        # difference rather than suppress one. Consumers must be able to stratify or exclude.
+        data["centreline_smoothing"] = res.get("provenance", "raw_fallback")
+
         if status == "skipped":
             skipped_edges += 1
             continue
         if status == "fallback":
             fallback_edges += 1
             continue
-        
+
         # Apply the smoothed data to the graph
-        u, v, key = id_tuple
-        data = G[u][v][key] if is_multi else G[u][v]
         data["voxels"] = res["voxels"]
         data["length"] = res["length"]
         data["weight"] = max(res["length"], 1e-6)
-        
+
         smoothed_edges += 1
         if res.get("was_relaxed"):
             relaxed_edges += 1
@@ -966,12 +981,19 @@ def smooth_graph_edge_centerlines_continuous(
             f"{smoothed_edges}, relaxed={relaxed_edges}, "
             f"fallback={fallback_edges}, skipped={skipped_edges}"
         )
+    provenance_counts: Dict[str, int] = {}
+    for edge in (G.edges(keys=True, data=True) if is_multi else G.edges(data=True)):
+        tag = edge[-1].get("centreline_smoothing")
+        if tag is not None:
+            provenance_counts[tag] = provenance_counts.get(tag, 0) + 1
+
     return {
         "method": method,
         "smoothed_edges": smoothed_edges,
         "relaxed_edges": relaxed_edges,
         "fallback_edges": fallback_edges,
         "skipped_edges": skipped_edges,
+        "centreline_smoothing_counts": provenance_counts,
     }
 
 
