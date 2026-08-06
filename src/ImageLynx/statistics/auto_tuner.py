@@ -36,8 +36,16 @@ class SkeletonObjective:
             "bundle_max_connections": 3,
             # "bundle_hub_min_spacing": trial.suggest_int("bundle_hub_min_spacing", 0, 10),
             "bundle_hub_min_spacing": 0,
-            "smoothing_alpha": trial.suggest_float("smoothing_alpha", 0.1, 2.5),
-            "prune_by_tortuosity": trial.suggest_float("prune_by_tortuosity", 1.2, 3.5)
+            # NO smoothing_alpha dimension. It is now wired to bspline_smoothness rather than
+            # being ignored, but it must not be tuned: centreline smoothness is what H1 section
+            # 1.4 reads tortuosity off, and this objective is only Dice plus orphaned volume,
+            # neither of which can see it. Searching it would set a hypothesis readout by noise.
+            # It is a frozen, recorded constant and belongs in the item 25 sensitivity scope.
+            #
+            # NO prune_by_tortuosity dimension. It was suggested every trial, written into
+            # best_skeleton_params.yaml and read by nothing at all - no implementation exists.
+            # A dead dimension is not free: TPE spends trials modelling it and the reported
+            # parameter importances divide attention across it.
         }
         
         # 2. Evaluate pipeline (builds graph and runs benchmarks)

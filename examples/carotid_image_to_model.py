@@ -93,8 +93,9 @@ class SkeletonConfig:
     bundle_density_fraction: float = 0.025
     bundle_max_connections: int = 5
     bundle_hub_min_spacing: int = 0
+    # B-spline smoothing factor for edge centrelines. Frozen, not tuned: it determines the
+    # curvature H1 section 1.4 reads tortuosity off, and no Optuna objective can see tortuosity.
     smoothing_alpha: float = 0.75
-    prune_by_tortuosity: float = 5.0
     core_dead_end_resolution_mode: str = "none"
     core_safe_zone_percent: float = 5.0
     core_stitch_max_distance_um: float = 15.0
@@ -795,7 +796,10 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
         G,
         skeleton,
         smoothing_method="bspline",
-        bspline_smoothness=0.75,
+        # Was hardcoded 0.75 while SkeletonConfig.smoothing_alpha, also 0.75, was read by
+        # nothing. Behaviour-neutral at the defaults, but the value now comes from the config
+        # that records it instead of being buried at this call site.
+        bspline_smoothness=skel_config.smoothing_alpha,
         debug=pipeline_config.verbose_logging,
         voxel_size=current_spacing
     )

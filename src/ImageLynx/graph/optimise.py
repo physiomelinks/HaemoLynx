@@ -52,7 +52,11 @@ def optimise_graph_topology_fixed(
     reconnect_threshold=3.0,
     use_spatial_index=True,
     remove_degree2_nodes=True,
-    consolidation_threshold=2.0,
+    # consolidation_threshold=2.0 removed: declared here and consumed nowhere, in this
+    # implementation or the legacy one it was ported from. It was not a miscalibrated
+    # threshold that 2705b38 re-denominated from voxels to microns, as first assumed - it
+    # never had an effect in either unit, which is also why Stage 11 step 3 measured as an
+    # exact no-op.
     improve_junctions=True,
     preserve_multigraph=True,
     validate_reconnections=True,

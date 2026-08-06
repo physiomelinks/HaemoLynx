@@ -12,17 +12,21 @@ from ImageLynx.statistics.auto_tuner import (
 )
 
 def _get_dummy_fixed_trial():
-    """Helper to generate a consistent FixedTrial for objective logic testing."""
+    """Helper to generate a consistent FixedTrial for objective logic testing.
+
+    Values must lie inside the declared distributions. min_component_percent was 1.0 against
+    a range of [4.0, 6.0] and bundle_scan_size was 5 against [8, 10], which made Optuna emit
+    a UserWarning on every run of three tests. smoothing_alpha and prune_by_tortuosity are
+    gone with the search dimensions themselves (#98 item 17).
+    """
     return FixedTrial({
         "min_branch_length": 10,
         "max_bridge_distance": 5,
-        "min_component_percent": 1.0,
-        "bundle_scan_size": 5,
+        "min_component_percent": 5.0,
+        "bundle_scan_size": 9,
         "bundle_density_fraction": 0.05,
         "bundle_max_connections": 3,
         "bundle_hub_min_spacing": 2,
-        "smoothing_alpha": 0.5,
-        "prune_by_tortuosity": 2.0
     })
 
 def test_objective_perfect_scores_yield_zero_loss():
@@ -463,3 +467,76 @@ def test_skeleton_objective_cannot_be_improved_by_pruning_real_branches():
                                   loops=5, deg3=1.00, edge_std=1.0)
 
     assert objective._calculate_loss(faithful) < objective._calculate_loss(over_pruned)
+
+
+# --- Dead search dimensions removed (item 17) ---------------------------------------------
+
+def _suggested_dimensions(objective):
+    """Names the objective actually asks the sampler for, recorded from a real trial."""
+    seen = []
+
+    class _Recorder:
+        def suggest_int(self, name, *a, **k):
+            seen.append(name)
+            return a[0]
+
+        def suggest_float(self, name, *a, **k):
+            seen.append(name)
+            return a[0]
+
+        def suggest_categorical(self, name, choices):
+            seen.append(name)
+            return choices[0]
+
+    try:
+        objective(_Recorder())
+    except optuna.TrialPruned:
+        pass
+    return seen
+
+
+@pytest.mark.parametrize("dimension", ["smoothing_alpha", "prune_by_tortuosity"])
+def test_dead_skeleton_search_dimensions_are_no_longer_suggested(dimension):
+    """Both were suggested every trial, saved to the YAML, and read by nothing.
+
+    prune_by_tortuosity has no implementation at all. smoothing_alpha is now wired to
+    bspline_smoothness but must stay frozen: it sets the curvature H1 section 1.4 measures
+    tortuosity from, and this objective is Dice plus orphaned volume, neither of which can
+    see it.
+    """
+    assert dimension not in _suggested_dimensions(SkeletonObjective(lambda kwargs: None))
+
+
+def test_skeleton_search_dimensions_are_exactly_the_live_ones():
+    live = _suggested_dimensions(SkeletonObjective(lambda kwargs: None))
+    assert live == [
+        "min_branch_length",
+        "min_component_percent",
+        "bundle_scan_size",
+        "bundle_density_fraction",
+    ]
+
+
+def test_smoothing_alpha_reaches_the_centreline_smoother():
+    """It was a dead config field beside a hardcoded 0.75 at the call site."""
+    C = pytest.importorskip("carotid_image_to_model")
+    import inspect
+
+    source = inspect.getsource(C._build_and_optimize_graph)
+    assert "bspline_smoothness=skel_config.smoothing_alpha" in source
+    # Behaviour-neutral at the defaults: the field carries the value that was hardcoded.
+    assert C.SkeletonConfig().smoothing_alpha == 0.75
+
+
+def test_prune_by_tortuosity_is_gone_from_the_config():
+    """No implementation existed, so a YAML setting it should warn rather than look accepted."""
+    C = pytest.importorskip("carotid_image_to_model")
+    assert not hasattr(C.SkeletonConfig(), "prune_by_tortuosity")
+
+
+def test_consolidation_threshold_is_gone_from_the_topology_optimiser():
+    """Declared in the signature and consumed nowhere, in this or the legacy implementation."""
+    import inspect
+    from ImageLynx.graph.optimise import optimise_graph_topology_fixed
+
+    assert "consolidation_threshold" not in inspect.signature(optimise_graph_topology_fixed).parameters

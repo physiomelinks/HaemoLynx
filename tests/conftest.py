@@ -2,9 +2,20 @@
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend for tests
 
+import sys
+from pathlib import Path
+
 import pytest
 import numpy as np
 import networkx as nx
+
+# The pipeline script lives in examples/, which pyproject's pythonpath does not cover. Several
+# test modules import it, and until now each did its own sys.path surgery inside whichever test
+# happened to need it first - so tests placed before that one silently skipped instead of
+# running. Done once here, so importorskip means "genuinely unavailable".
+_EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
+if str(_EXAMPLES) not in sys.path:
+    sys.path.insert(0, str(_EXAMPLES))
 
 
 @pytest.fixture
