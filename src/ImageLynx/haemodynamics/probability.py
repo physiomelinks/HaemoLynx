@@ -17,12 +17,14 @@ from .constriction import (
     is_capillary_branch_order,
     require_enough_integration_points,
     require_positive_constriction_length,
+    resolve_generator,
     select_active_pericyte_indices,
     validate_active_pericyte_indices,
 )
 
 __all__ = [
     "is_capillary_branch_order",
+    "resolve_generator",
     "select_active_pericyte_indices",
     "validate_active_pericyte_indices",
     "set_poiseuille_resistances_with_probabilistic_periodic_constrictions",
@@ -61,12 +63,13 @@ class PeriodicConstrictionSites:
         constriction_probability: float,
         active_center_indices_by_edge: dict[str, list[int]] | None = None,
         rng: np.random.Generator | None = None,
+        seed: int | None = None,
     ) -> None:
         self.constriction_length = float(constriction_length)
         self.constriction_spacing = float(constriction_spacing)
         self.constriction_probability = float(constriction_probability)
         self.active_center_indices_by_edge = active_center_indices_by_edge
-        self._rng = rng if rng is not None else np.random.default_rng()
+        self._rng = resolve_generator(rng, seed)
         self._total_sites = 0
         self._active_sites = 0
         self._active_indices_by_edge: dict[str, list[int]] = {}
@@ -129,6 +132,7 @@ def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
     active_center_indices_by_edge: dict[str, list[int]] | None = None,
     num_integration_points: int = 1000,
     rng: np.random.Generator | None = None,
+    seed: int | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Apply periodic constrictions with random per-center activation.
 
@@ -153,6 +157,7 @@ def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
         constriction_probability=constriction_probability,
         active_center_indices_by_edge=active_center_indices_by_edge,
         rng=rng,
+        seed=seed,
     )
     return apply_constriction_sites(
         graph,

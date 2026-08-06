@@ -222,6 +222,8 @@ diameters_and_pericytes:
   use_probabilistic_pericyte_constriction: false
   # Activate each candidate pericyte constriction with this probability  [range 0.0..1.0; needs use_probabilistic_pericyte_constriction]
   pericyte_constriction_probability: 0.8
+  # Draw the random pericyte cohort from this seed, so a run repeats; another seed constricts a different set of pericytes, and null draws a fresh cohort every run  [needs use_probabilistic_pericyte_constriction]
+  pericyte_constriction_seed: 20240917
   # Run the baseline-versus-constricted pericyte resistance comparison and write its CSV  [needs run_haemodynamics]
   run_pericyte_resistance_comparison: false
   # Use this constriction factor as the baseline arm of the pericyte comparison  [range 0.0..; needs run_pericyte_resistance_comparison]

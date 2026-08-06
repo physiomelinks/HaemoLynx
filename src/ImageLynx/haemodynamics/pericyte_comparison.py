@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Any
 
 import networkx as nx
+import numpy as np
 
 from ImageLynx.io.axis_order import CANONICAL_AXIS_ORDER
+from .constriction import resolve_generator
 from .constriction_strategy import (
     set_resistances_for_constriction_strategy,
     uniform_constriction_factors,
@@ -65,6 +67,8 @@ def compare_baseline_vs_pericyte_constriction(
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    rng: np.random.Generator | None = None,
+    seed: int | None = None,
 ) -> dict[str, Any]:
     """Compare effective resistance at baseline vs constricted settings.
 
@@ -85,6 +89,10 @@ def compare_baseline_vs_pericyte_constriction(
         )
     if not diameter_by_branch_order:
         raise ValueError("diameter_by_branch_order cannot be empty.")
+
+    # One generator for both scenarios: the constricted arm reuses the cohort the
+    # baseline arm drew, so what varies between them is the factor, not the draw.
+    generator = resolve_generator(rng, seed)
 
     graph_baseline = deepcopy(graph)
     graph_constricted = deepcopy(graph)
@@ -108,6 +116,7 @@ def compare_baseline_vs_pericyte_constriction(
         "min_pericyte_diameter_um": min_pericyte_diameter_um,
         "max_pericyte_diameter_um": max_pericyte_diameter_um,
         "axis_order": axis_order,
+        "rng": generator,
     }
 
     graph_baseline, _strategy, baseline_resistance_results = (

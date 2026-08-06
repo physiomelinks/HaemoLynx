@@ -49,11 +49,27 @@ def is_capillary_branch_order(branch_order: str | None) -> bool:
     return label.startswith("B")
 
 
+def resolve_generator(
+    rng: np.random.Generator | None,
+    seed: int | None,
+) -> np.random.Generator:
+    """Return the generator the pericyte cohort is drawn from.
+
+    An explicit generator always wins, so a caller driving several draws from
+    one stream keeps that stream. Otherwise it is built from *seed*;
+    ``seed=None`` means fresh entropy, i.e. a different cohort every run.
+    """
+    if rng is not None:
+        return rng
+    return np.random.default_rng(seed)
+
+
 def select_active_pericyte_indices(
     total_pericytes: int,
     constriction_probability: float,
     *,
     rng: np.random.Generator | None = None,
+    seed: int | None = None,
 ) -> list[int]:
     """Randomly select pericyte indices that are active for constriction.
 
@@ -64,8 +80,11 @@ def select_active_pericyte_indices(
     constriction_probability:
         Activation probability in [0, 1]. Example: 0.8 means 80% expected active.
     rng:
-        Optional random generator. If omitted, uses a fresh default RNG so each
-        pipeline run naturally produces a different cohort.
+        Optional random generator, used as-is when given. Takes precedence over
+        *seed*.
+    seed:
+        Seed for the generator built when *rng* is omitted. ``None`` draws from
+        fresh entropy, so the cohort differs on every call.
     """
     if total_pericytes < 0:
         raise ValueError(f"total_pericytes must be >= 0, got {total_pericytes}.")
@@ -76,7 +95,7 @@ def select_active_pericyte_indices(
         )
     if total_pericytes == 0:
         return []
-    generator = rng if rng is not None else np.random.default_rng()
+    generator = resolve_generator(rng, seed)
     active_mask = generator.random(total_pericytes) < float(constriction_probability)
     return np.flatnonzero(active_mask).astype(int).tolist()
 
