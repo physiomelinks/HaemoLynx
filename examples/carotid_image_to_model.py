@@ -77,8 +77,36 @@ class PreprocessingConfig:
     morphological_opening_radius: int = 0
     morphological_closing_radius: int = 0
     enable_hysteresis_threshold: bool = True
-    hysteresis_threshold_low: float = 0.2
-    hysteresis_threshold_high: float = 0.4
+    # PROVISIONAL, and not chosen by the tuner - it cannot choose them. The preprocessing
+    # objective is (1 - mean probability inside the mask), which rises monotonically with the
+    # threshold across the entire plausible band, and the yield cliff that is supposed to stop
+    # it never engages: probability yield is still 0.071 at low = 0.85, far above the 0.05
+    # trigger. So the objective's argmin is simply the top of whatever search range it is given,
+    # and a tuned value would report the range bound rather than a property of the data.
+    #
+    # Set instead from the two criteria that are independent of the classifier's calibration.
+    # Measured on the reference subvolume at the default filter chain:
+    #
+    #     low   fg     r_p90    r_p99   components
+    #     0.20  0.847  31.55    44.51            1   floods - one blob
+    #     0.60  0.154   4.57     8.55           61
+    #     0.65  0.118   4.17     6.73          116   <- here
+    #     0.70  0.090   3.73     5.60           84
+    #     0.80  0.045   3.23     4.57          367   network breaking into fragments
+    #     0.85  0.031   2.64     4.17          414
+    #
+    # Calibre: r_p90 of 4.17 um is the right scale for a capillary (~3 um inscribed radius).
+    # Connectivity: component count stays in the 60-120 range from 0.60 to 0.73 and then
+    # explodes above 0.80, which is continuous vessels breaking into disconnected beads. Both
+    # criteria agree on roughly 0.60-0.75, and 0.65 sits inside it and interior to the search
+    # range rather than against an edge.
+    #
+    # Item 21's pooled tuning run was meant to set these. It cannot, for the reason above; that
+    # needs resolving before the frozen parameter set is fixed. Both values are in item 25's
+    # sensitivity scope, and given they were chosen rather than derived, that analysis is doing
+    # real work here rather than confirming robustness.
+    hysteresis_threshold_low: float = 0.65
+    hysteresis_threshold_high: float = 0.75
     enable_hole_filling: bool = True
     ilastik_vessel_channel: int = 0
     enable_shannon_entropy: bool = True

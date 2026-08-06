@@ -413,3 +413,62 @@ def test_greyscale_opening_has_no_capillary_preserving_radius():
     _, tube = _capillary_probability_volume()
     assert ndimage.binary_opening(tube, structure=ball(1)).sum() < 0.7 * tube.sum()
     assert ndimage.binary_opening(tube, structure=ball(2)).sum() == 0
+
+
+# --- The default thresholds must not flood (Phase 1.5) ------------------------------------
+
+def test_default_hysteresis_thresholds_do_not_flood_a_soft_probability_field():
+    """The failure mode the old 0.2 / 0.4 defaults had on the real data.
+
+    Hysteresis grows from seeds above `high` into any connected region above `low`. When the
+    background probability sits above `low` - which it does here, and does on the real field,
+    whose median is 0.42 - the whole volume is one connected superlevel set containing seeds,
+    so the mask floods regardless of `high`. Measured on real data, the old defaults gave 84.7%
+    foreground as a single component with a median inscribed radius of 11.8 um.
+    """
+    C = pytest.importorskip("carotid_image_to_model")
+
+    shape = (24, 41, 41)
+    _, yy, xx = np.indices(shape)
+    prob = np.full(shape, 0.35, dtype=np.float32)          # soft background, above the old low
+    prob[((yy - 20) ** 2 + (xx - 20) ** 2) <= 1.6 ** 2] = 0.95   # a capillary
+
+    _, mask = C._apply_preprocessing_filters(
+        prob, None, C.PreprocessingConfig().__dict__, boundary_permeability_mode="caged")
+
+    assert mask.mean() < 0.25, (
+        f"the default thresholds flooded: {mask.mean():.1%} foreground on a volume whose "
+        "vessel occupies about 1%"
+    )
+
+
+def test_default_hysteresis_thresholds_lie_inside_the_tuner_search_range():
+    """A default outside the searched range cannot be reproduced or refined by tuning."""
+    C = pytest.importorskip("carotid_image_to_model")
+    from ImageLynx.statistics.auto_tuner import PreprocessingObjective
+
+    ranges = {}
+
+    class _Recorder:
+        def suggest_float(self, name, low, high, **k):
+            ranges[name] = (low, high)
+            return (low + high) / 2.0
+
+        def suggest_int(self, name, low, high, **k):
+            ranges[name] = (low, high)
+            return low
+
+        def suggest_categorical(self, name, choices):
+            return choices[0]
+
+    try:
+        PreprocessingObjective(lambda kwargs: None)(_Recorder())
+    except Exception:
+        pass
+
+    cfg = C.PreprocessingConfig()
+    lo_lo, lo_hi = ranges["hysteresis_threshold_low"]
+    hi_lo, hi_hi = ranges["hysteresis_threshold_high"]
+    assert lo_lo <= cfg.hysteresis_threshold_low <= lo_hi
+    assert hi_lo <= cfg.hysteresis_threshold_high <= hi_hi
+    assert cfg.hysteresis_threshold_high > cfg.hysteresis_threshold_low
