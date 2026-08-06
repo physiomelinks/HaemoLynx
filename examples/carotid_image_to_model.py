@@ -179,6 +179,29 @@ class GraphConfig:
     end_percent: float = 25.0
     node_edge_axis: int = 0
     boundary_permeability_mode: str = "caged" # Options: "caged", "universal_sink", "robin_resistance"
+    # Terminal branches shorter than this are deleted, in MICRONS. Previously not passed at all,
+    # so the pipeline silently took prune_vascular_stubs' library default of 10.0 - which at the
+    # old (1, 1, 1) spacing behaved as 10 voxels = 18.7 um and, after 2705b38, as 10 um. Neither
+    # value was ever chosen; the effective threshold changed without the literal changing.
+    #
+    # Justified by what a stub physically is. A skeletonisation spur at a branch point cannot be
+    # longer than the local vessel radius, and the measured inscribed radius of the mask is
+    # p90 3.73 um and p99 5.60 um, so 5.6 um is the length beyond which a terminal branch is
+    # more likely a real vessel tip than a thinning artefact. Measured terminal-stub lengths on
+    # the reference subvolume run from 3.47 um to 129.83 um with p25 = 10.94 um, so the old
+    # 10 um cut just below the lower quartile of genuine terminal branches.
+    #
+    # This CANNOT affect beta-1: pruning removes only degree-1 nodes, which by construction lie
+    # on no cycle. Verified - beta-1 was 307 at every threshold from 0 to 30 um. It does move
+    # the section 1.2 and 1.4 per-edge distributions, by removing the shortest terminal
+    # segments, so it is in item 25's sensitivity scope.
+    #
+    #     min_stub_length_um     V      E   beta1   nodes removed
+    #                    0.0  1041   1347     307         0  (0.0%)
+    #                    5.6  1024   1330     307        17  (1.6%)   <- here
+    #                   10.0   991   1297     307        50  (4.8%)   old effective value
+    #                   18.7   932   1238     307       109 (10.5%)   pre-calibration meaning
+    min_stub_length_um: float = 5.6
     robin_distal_resistance_multiplier: float = 10.0
     starting_nodes: list = field(default_factory=list)
     output_nodes: list = field(default_factory=list)
@@ -838,7 +861,19 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     # and node positions are now expressed in the same units.
 
     # Delete dead-end branches (stubs) that are physically shorter than the minimum branch length threshold
-    G = graph.prune_vascular_stubs(G, debug=pipeline_config.verbose_logging, voxel_size=current_spacing)
+    _v_before, _e_before = G.number_of_nodes(), G.number_of_edges()
+    G = graph.prune_vascular_stubs(
+        G, debug=pipeline_config.verbose_logging, voxel_size=current_spacing,
+        min_stub_length=graph_config.min_stub_length_um,
+    )
+    # Reported unconditionally, not behind verbose_logging: #98 Tier 1 item 6 asks for node
+    # counts with and without stub pruning, because how much of the graph this deletes is a
+    # methods-section number, not a debugging detail.
+    print(f"  Stub pruning at {graph_config.min_stub_length_um} um: "
+          f"V {_v_before} -> {G.number_of_nodes()} "
+          f"({_v_before - G.number_of_nodes()} removed, "
+          f"{100.0 * (_v_before - G.number_of_nodes()) / max(1, _v_before):.1f}%), "
+          f"E {_e_before} -> {G.number_of_edges()}")
     # Delete impossible edges that start and end on the exact same node with no other connections
     G = graph.remove_edges_for_self_connected_nodes(G)
     if pipeline_config.enable_diagnostic_plots:

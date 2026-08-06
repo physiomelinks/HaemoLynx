@@ -12,7 +12,18 @@ def prune_vascular_stubs(
     debug: bool = False,
     voxel_size: Tuple[float, float, float] = (1, 1, 1),
 ) -> Union[nx.Graph, nx.MultiGraph]:
-    """Iteratively remove short terminal stubs until convergence."""
+    """Iteratively remove short terminal stubs until convergence.
+
+    ``min_stub_length`` is in the units ``voxel_size`` puts edge lengths in - MICRONS whenever a
+    real voxel size is passed, voxels only at (1, 1, 1). The default of 10.0 is a bare number
+    inherited from when everything ran at unit spacing, where it happened to mean 10 voxels;
+    callers should pass an explicit, physically justified value rather than rely on it.
+
+    This cannot change beta-1. Only degree-1 nodes are removed, and a degree-1 node lies on no
+    cycle, so vascular loop topology - the H1 section 1.1 readout - is untouched at any
+    threshold. It does change the per-edge length and tortuosity distributions, since it removes
+    the shortest terminal segments first.
+    """
     if min_stub_length < 0:
         raise ValueError("min_stub_length must be non-negative")
     if max_iterations <= 0:

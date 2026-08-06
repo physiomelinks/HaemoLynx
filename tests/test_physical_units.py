@@ -577,3 +577,77 @@ def test_default_skeleton_config_preserves_a_loop_through_the_full_cleanup():
     )
 
     assert _beta1(cleaned) == 1, "the shipped skeleton cleanup altered a vascular loop"
+
+
+# --- Stub pruning is micron-denominated and cannot touch beta-1 (#98 Tier 1 item 6) -------
+
+def _stub_graph(stub_lengths_um):
+    """A square loop plus one terminal stub of each requested physical length."""
+    G = nx.MultiGraph()
+    ring = [(0.0, 0.0, 0.0), (0.0, 40.0, 0.0), (0.0, 40.0, 40.0), (0.0, 0.0, 40.0)]
+    for i, pos in enumerate(ring):
+        G.add_node(i, pos=np.array(pos))
+    for i in range(4):
+        j = (i + 1) % 4
+        G.add_edge(i, j, voxels=[list(ring[i]), list(ring[j])])
+
+    for k, length in enumerate(stub_lengths_um):
+        tip = f"tip{k}"
+        anchor = ring[0]
+        end = (anchor[0], anchor[1] - length, anchor[2])
+        G.add_node(tip, pos=np.array(end))
+        G.add_edge(0, tip, voxels=[list(anchor), list(end)])
+    return G
+
+
+def _graph_beta1(G):
+    return G.number_of_edges() - G.number_of_nodes() + nx.number_connected_components(G)
+
+
+def test_stub_pruning_cannot_change_beta1():
+    """Structural guarantee: only degree-1 nodes are removed, and those lie on no cycle.
+
+    Confirmed on real data too - beta-1 was 307 at every threshold from 0 to 30 um. This is
+    what distinguishes stub pruning from bundle collapse, which destroyed 68% of it.
+    """
+    from ImageLynx.graph.prune import prune_vascular_stubs
+
+    G = _stub_graph([2.0, 4.0, 8.0, 20.0])
+    assert _graph_beta1(G) == 1
+
+    for threshold in [0.0, 3.0, 5.6, 10.0, 30.0, 1000.0]:
+        pruned = prune_vascular_stubs(
+            G.copy(), min_stub_length=threshold, voxel_size=(1.0, 1.0, 1.0))
+        assert _graph_beta1(pruned) == 1, f"beta-1 changed at min_stub_length={threshold}"
+
+
+def test_stub_pruning_threshold_is_in_microns():
+    """A 4 um stub must survive a 3 um threshold and be cut by a 5.6 um one."""
+    from ImageLynx.graph.prune import prune_vascular_stubs
+
+    G = _stub_graph([4.0])
+    kept = prune_vascular_stubs(G.copy(), min_stub_length=3.0, voxel_size=(1.0, 1.0, 1.0))
+    cut = prune_vascular_stubs(G.copy(), min_stub_length=5.6, voxel_size=(1.0, 1.0, 1.0))
+
+    assert "tip0" in kept
+    assert "tip0" not in cut
+
+
+def test_pipeline_configures_the_stub_threshold_explicitly():
+    """It was never passed, so the pipeline silently took the library default of 10.0.
+
+    That default behaved as 10 voxels = 18.7 um before 2705b38 and as 10 um after, without the
+    literal ever changing.
+    """
+    C = pytest.importorskip("carotid_image_to_model")
+    import inspect
+
+    cfg = C.GraphConfig()
+    assert hasattr(cfg, "min_stub_length_um")
+    # Bounded by the measured p99 inscribed radius of the mask, 5.60 um: a skeletonisation spur
+    # cannot be longer than the local vessel radius.
+    assert 0.0 < cfg.min_stub_length_um <= 6.0
+
+    source = inspect.getsource(C._build_and_optimize_graph)
+    assert "min_stub_length=graph_config.min_stub_length_um" in source, \
+        "the configured threshold is not reaching prune_vascular_stubs"
