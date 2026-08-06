@@ -52,6 +52,14 @@ def test_objective_penalizes_over_pruning():
     removed - it is the first Betti number, i.e. the readout H1 section 1.1 depends on - so
     the expected total is now 630.0 and the loop count no longer contributes at all. The test
     was renamed accordingly: "spiderwebs" is no longer a thing this objective penalises.
+
+    Second contract change (#98, Tier 2 item 15): 630.0 became 130.0. The 500.0 dead-end
+    cliff, the 20.0 degree-3 term and the 0.05 edge-length-variance term are all gone, which
+    removes exactly 475.0 + 20.0 + 5.0 from this fixture. The residual 130.0 is the two
+    surviving fidelity terms and nothing else. This is a deliberate contract removal, not a
+    regression: the expectations this test encoded - that a 100% dead-end network and a 0%
+    Y-bifurcation network are penalised - are precisely the expectations that were biasing
+    the tuner toward deleting real capillaries.
     """
     def terrible_pipeline(kwargs):
         return {
@@ -68,8 +76,9 @@ def test_objective_penalizes_over_pruning():
     objective = SkeletonObjective(terrible_pipeline)
     loss = objective(_get_dummy_fixed_trial())
     
-    # Expected Loss = 50 (dice) + 80 (orphaned) + 475 (terminal) + 20 (deg3) + 5 (edge_var)
-    assert loss == 630.0, f"Expected 630.0 loss, got {loss}"
+    # Expected Loss = 50 (dice) + 80 (orphaned). The terminal, deg3 and edge_var terms that
+    # used to add 475 + 20 + 5 have been removed.
+    assert loss == 130.0, f"Expected 130.0 loss, got {loss}"
 
 def test_objective_prunes_on_pipeline_failure():
     """Phase 2: Ensures pipeline crashes are safely caught and signal a TrialPruned."""
@@ -385,3 +394,72 @@ def test_preprocessing_objective_cannot_be_improved_by_merging_vessels():
     resolved = _preproc_bench(fragmentation=40, euler_characteristic=-900, surface_area_ratio=0.8)
     merged_blob = _preproc_bench(fragmentation=1, euler_characteristic=1, surface_area_ratio=0.05)
     assert objective._calculate_loss(resolved) == objective._calculate_loss(merged_blob)
+
+
+# --- Skeleton objective reduced to its fidelity terms (item 15) ----------------------------
+#
+# Measured over 12 seeded TPE trials on the WKY subvolume z 60:110, y 120:280, x 120:280 at
+# the calibrated voxel size: dice 42.2% of loss, terminal cliff 37.8%, orphaned 19.3%,
+# edge_length_std 0.6%, degree3 0.2%.
+
+def test_skeleton_objective_loss_ignores_dead_end_ratio():
+    """The dead-end cliff's only mechanism of improvement was deleting terminal branches.
+
+    Measured at 37.8% of loss and active on every trial. It outweighed the orphaned term - the
+    one term guarding against over-pruning - by 5 to 1, so the net pressure was to delete
+    capillaries. In this data most terminals are real: capillaries end, and a subvolume cuts
+    vessels at its faces.
+    """
+    objective = SkeletonObjective(lambda kwargs: None)
+    few_dead_ends = _skeleton_bench(0.6, 0.01, terminal_ratio=0.02, loops=100)
+    many_dead_ends = _skeleton_bench(0.6, 0.01, terminal_ratio=0.90, loops=100)
+
+    assert objective._calculate_loss(few_dead_ends) == objective._calculate_loss(many_dead_ends)
+
+
+def test_skeleton_objective_loss_ignores_bifurcation_degree_mix():
+    """deg3_ratio measured 0.960-1.000: saturated, nothing to trade against.
+
+    It also pays for simplifying real topology, since an anastomosing capillary bed has
+    genuine degree-4 crossings.
+    """
+    objective = SkeletonObjective(lambda kwargs: None)
+    all_y = _skeleton_bench(0.6, 0.01, 0.03, loops=100, deg3=1.0)
+    all_x = _skeleton_bench(0.6, 0.01, 0.03, loops=100, deg3=0.0)
+
+    assert objective._calculate_loss(all_y) == objective._calculate_loss(all_x)
+
+
+def test_skeleton_objective_loss_ignores_edge_length_variance():
+    """A real vascular tree has a wide natural spread of segment lengths.
+
+    The weight was also silently re-denominated from voxels to microns by 2705b38.
+    """
+    objective = SkeletonObjective(lambda kwargs: None)
+    uniform = _skeleton_bench(0.6, 0.01, 0.03, loops=100, edge_std=0.0)
+    varied = _skeleton_bench(0.6, 0.01, 0.03, loops=100, edge_std=500.0)
+
+    assert objective._calculate_loss(uniform) == objective._calculate_loss(varied)
+
+
+def test_skeleton_objective_is_exactly_the_two_fidelity_terms():
+    objective = SkeletonObjective(lambda kwargs: None)
+    bench = _skeleton_bench(dice=0.75, orphaned=0.10, terminal_ratio=0.40,
+                            loops=900, deg3=0.2, edge_std=42.0)
+    assert objective._calculate_loss(bench) == pytest.approx(25.0 + 10.0)
+
+
+def test_skeleton_objective_cannot_be_improved_by_pruning_real_branches():
+    """Regression for the whole a079048/item-15 family, on the skeleton side.
+
+    An aggressively pruned graph scores better on dead-end ratio, loop count, bifurcation mix
+    and edge-length uniformity all at once, while losing coverage. Only the coverage may now
+    move the loss, so the pruned graph must score strictly worse.
+    """
+    objective = SkeletonObjective(lambda kwargs: None)
+    faithful = _skeleton_bench(dice=0.60, orphaned=0.02, terminal_ratio=0.35,
+                               loops=1200, deg3=0.90, edge_std=30.0)
+    over_pruned = _skeleton_bench(dice=0.40, orphaned=0.30, terminal_ratio=0.02,
+                                  loops=5, deg3=1.00, edge_std=1.0)
+
+    assert objective._calculate_loss(faithful) < objective._calculate_loss(over_pruned)

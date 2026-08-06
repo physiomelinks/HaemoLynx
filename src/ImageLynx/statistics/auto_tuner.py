@@ -54,24 +54,40 @@ class SkeletonObjective:
         return self._calculate_loss(bench_results)
 
     def _calculate_loss(self, bench_results) -> float:
-        """Loss from a benchmark result dict. Separated so it is testable without Optuna."""
+        """Loss from a benchmark result dict. Separated so it is testable without Optuna.
+
+        Reduced to the two fidelity terms. Decomposition over 12 seeded TPE trials on the WKY
+        subvolume z 60:110, y 120:280, x 120:280, at the calibrated voxel size, post-a079048:
+
+            dice             42.2% of total loss   (raw 0.007 - 0.036)
+            terminal cliff   37.8%                 (raw ratio 0.188 - 0.370)
+            orphaned         19.3%                 (raw 0.371 - 0.821)
+            edge_length_std   0.6%                 (raw 21.9 - 35.5 um)
+            degree3           0.2%                 (raw 0.960 - 1.000)
+
+        Every surviving weight enters the item 25 sensitivity scope. Neither surviving weight
+        was changed; both were already 100.
+
+        CAVEAT on the two survivors: both are currently dominated by the mask rather than by
+        the skeleton. The binary is 87% foreground at the default thresholds, so the redilated
+        centreline covers 1.5% of a volume that is 87% "vessel" and Dice is pinned near zero
+        whatever the skeleton parameters do, while most mask voxels are necessarily further
+        than 20 um from any centreline and count as orphaned. These are the right two terms
+        and they are the wrong two numbers until the hysteresis thresholds are fixed. No H1
+        figure should be read off this objective before then.
+        """
         vol = bench_results.get("volumetric", {})
         comp = bench_results.get("completeness", {})
-        topo = bench_results.get("topology", {})
-        
+
         dsc = vol.get("dice_coefficient", 0.0)
         orphaned = comp.get("orphaned_volume_fraction", 1.0)
-        loops = topo.get("graph_fundamental_loops", 100)
-        terminal_ratio = topo.get("terminal_node_ratio", 1.0)
-        deg3_ratio = topo.get("degree3_bifurcation_ratio", 0.0)
-        edge_variance = topo.get("edge_length_std", 100.0)
-        
+
         # Base penalty: Missing volume (DSC difference from 1.0, heavily weighted)
         loss = (1.0 - dsc) * 100.0
-        
+
         # Penalty: Over-pruning (orphaned tissue fraction, heavily weighted to preserve capillary beds)
         loss += orphaned * 100.0
-        
+
         # NO loop penalty. This used to be `loss += loops * 0.1`, where `loops` is
         # graph_fundamental_loops = E - V + C, i.e. the first Betti number. That is precisely
         # the quantity H1 section 1.1 reads out as vascular loop topology, so the tuner's
@@ -86,18 +102,31 @@ class SkeletonObjective:
         # spurious 1-voxel skeleton loops - is already handled upstream by the voxel-loop
         # detection and stitching in build_graph_segment_skan_stitched_loops.
 
-        # Penalty: Dead-ends. If > 5% of network is dead-ends, heavily penalize fragmentation.
-        if terminal_ratio > 0.05:
-            loss += (terminal_ratio - 0.05) * 500.0
-            
-        # Penalty: Unnatural Super-Hubs. Enforce that Y-bifurcations (Deg-3) dominate X-bifurcations (Deg-4+).
-        # We want deg3_ratio to be as close to 1.0 as possible.
-        loss += (1.0 - deg3_ratio) * 20.0
-        
-        # Penalty: Edge Length Variance. We want smooth, cohesive lengths, not massive jumps.
-        # Downscale it so it doesn't overpower DSC, but provides a steady pull towards uniformity.
-        loss += edge_variance * 0.05
-        
+        # NO dead-end penalty. This was `if terminal_ratio > 0.05: (terminal_ratio - 0.05) * 500`,
+        # measured at 37.8% of total loss and active on every single trial, since the ratio
+        # never fell below 0.188. Its only mechanism of improvement is deleting terminal
+        # branches, and in this data most terminals are real: capillaries genuinely end, and a
+        # subvolume genuinely cuts vessels at its faces. It therefore fought the orphaned term
+        # - the one term that exists to stop over-pruning - and outweighed it 5 to 1, giving a
+        # net bias toward deleting capillaries. That is a false-negative bias on H1's own
+        # signal, the same direction as the beta-1 penalty removed in a079048.
+        #
+        # What it was nominally guarding, a graph shattered into disconnected pieces, is
+        # already handled: GraphConfig.keep_largest_component_only forces a single connected
+        # component, measured at 1 on every trial.
+
+        # NO degree-3 penalty. This was `(1 - deg3_ratio) * 20`, measured at 0.2% of loss with
+        # deg3_ratio sitting between 0.960 and 1.000 - saturated, so there was nothing for the
+        # tuner to trade against. Directionally it is also wrong: it asks that Y-bifurcations
+        # dominate X-bifurcations, but an anastomosing capillary bed has genuine degree-4
+        # crossings, so the term pays for simplifying real topology.
+
+        # NO edge-length-variance penalty. This was `edge_length_std * 0.05`, measured at 0.6%
+        # of loss. A real vascular tree has a wide natural spread of segment lengths, from
+        # short capillary segments to long arterioles, so a pull toward uniform edge length is
+        # a pull toward a homogenised network. The 0.05 weight is also now um-denominated
+        # rather than voxel-denominated after 2705b38 and was never recalibrated.
+
         return loss
 
 class EarlyStoppingCallback:
