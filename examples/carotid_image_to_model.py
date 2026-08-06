@@ -40,7 +40,7 @@ for _path in (root_dir / "src", examples_dir):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from ImageLynx.parsers import settings_from_command_line
+from ImageLynx.parsers import configure_console_logging, settings_from_command_line
 from ImageLynx.pipeline import preflight, run_pipeline_stages
 from ImageLynx.pipeline import resolve_settings as _resolve_settings
 from carotid_schema import SCHEMA
@@ -78,12 +78,14 @@ def main(settings: dict | None = None, **overrides) -> nx.MultiGraph | None:
 
 
 if __name__ == "__main__":
-    main(
-        settings_from_command_line(
-            SCHEMA,
-            CONFIG_PATH,
-            description=__doc__,
-            resolver=resolve_settings,
-            check=_preflight_or_exit,
-        )
+    settings = settings_from_command_line(
+        SCHEMA,
+        CONFIG_PATH,
+        description=__doc__,
+        resolver=resolve_settings,
+        check=_preflight_or_exit,
     )
+    # The pipeline reports its progress through `logging`; sending this run's
+    # progress to the console is the script's call, not the library's.
+    configure_console_logging(verbose=settings["verbose_logging"])
+    main(settings)
