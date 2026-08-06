@@ -472,3 +472,108 @@ def test_default_hysteresis_thresholds_lie_inside_the_tuner_search_range():
     assert lo_lo <= cfg.hysteresis_threshold_low <= lo_hi
     assert hi_lo <= cfg.hysteresis_threshold_high <= hi_hi
     assert cfg.hysteresis_threshold_high > cfg.hysteresis_threshold_low
+
+
+# --- The bundle-collapse operator must not eat vascular loops (#98 Tier 1 item 5) ---------
+#
+# skeletonize_voxel_bundles_into_paths deletes dense skeleton regions and replaces each with one
+# hub node, merging everything passing through the window. Density is measured on the SKELETON,
+# so one centreline crossing a 9^3 window is 9/729 = 0.0123 and two are 0.0247 - the old default
+# of 0.025 meant "collapse anywhere two capillaries pass within 16.8 um", which in a capillary
+# bed is the normal condition. Measured on the reference subvolume it took beta-1 from 307 to
+# 99 and deleted 29% of the skeleton.
+
+def _loop_skeleton():
+    """Two centrelines 4 voxels apart, joined at both ends: one unambiguous vascular loop."""
+    vol = np.zeros((11, 20, 31), dtype=bool)
+    vol[5, 6, 5:26] = True       # first centreline
+    vol[5, 10, 5:26] = True      # second, well inside a 9-voxel window
+    vol[5, 6:11, 5] = True       # joined at the left
+    vol[5, 6:11, 25] = True      # and at the right
+    return vol
+
+
+def _beta1(skeleton):
+    """beta-1 via the Euler characteristic: chi = b0 - b1 + b2, and b2 = 0 for a curve.
+
+    Not computed from voxel adjacency directly. Face connectivity reports a thinned skeleton as
+    broken wherever it steps diagonally, and 26-connectivity closes a spurious triangle at every
+    right-angle corner - the same fixture reads as 0 or as 5 depending which you pick. The Euler
+    number is the quantity the pipeline's own graph_fundamental_loops is built on.
+    """
+    if not skeleton.any():
+        return 0
+    from scipy import ndimage
+    from skimage.measure import euler_number
+
+    _, b0 = ndimage.label(skeleton, structure=np.ones((3, 3, 3)))
+    return b0 - int(euler_number(skeleton, connectivity=3))
+
+
+def test_bundle_collapse_is_disabled_by_default():
+    C = pytest.importorskip("carotid_image_to_model")
+    assert C.SkeletonConfig().bundle_density_fraction >= 1.0, (
+        "the bundle-collapse operator is enabled; it took beta-1 from 307 to 99 when measured"
+    )
+
+
+def test_bundle_collapse_short_circuits_when_disabled():
+    """A window cannot exceed 100% foreground, so >= 1.0 is the documented off switch.
+
+    The contract is that it does nothing beyond the baseline skeletonisation the function always
+    performs, so the output must equal that baseline exactly.
+    """
+    from ImageLynx.preprocessing.skeleton import (
+        skeletonize_3d,
+        skeletonize_voxel_bundles_into_paths,
+    )
+
+    skeleton = _loop_skeleton()
+    out = skeletonize_voxel_bundles_into_paths(skeleton, scan_size=9, density_fraction=1.0)
+    assert np.array_equal(out, skeletonize_3d(skeleton).astype(bool))
+    assert _beta1(out) == 1
+
+
+def test_bundle_collapse_at_the_old_default_corrupts_loop_topology():
+    """The behaviour being disabled, pinned so the reason cannot quietly be lost.
+
+    On this fixture the operator does not delete the loop but replaces it with three, because
+    collapsing the crossing to a hub and re-linking the boundary invents connections. Either
+    direction is disqualifying for a hypothesis whose readout IS beta-1: on real data the error
+    ran the other way, 307 loops down to 99.
+    """
+    from ImageLynx.preprocessing.skeleton import (
+        skeletonize_3d,
+        skeletonize_voxel_bundles_into_paths,
+    )
+
+    skeleton = skeletonize_3d(_loop_skeleton()).astype(bool)
+    assert _beta1(skeleton) == 1, "fixture does not contain exactly one loop"
+
+    collapsed = skeletonize_voxel_bundles_into_paths(
+        skeleton, scan_size=9, density_fraction=0.025)
+    assert _beta1(collapsed) != 1, (
+        "the old default no longer alters this loop; the fixture has drifted and this test is "
+        "no longer pinning the behaviour it documents"
+    )
+
+
+def test_default_skeleton_config_preserves_a_loop_through_the_full_cleanup():
+    """End to end through preprocess_skeleton_for_graph at the shipped configuration."""
+    C = pytest.importorskip("carotid_image_to_model")
+    from ImageLynx.preprocessing import preprocess_skeleton_for_graph
+
+    s = C.SkeletonConfig()
+    cleaned = preprocess_skeleton_for_graph(
+        _loop_skeleton(),
+        min_branch_length=s.min_branch_length,
+        max_bridge_distance=s.max_bridge_distance,
+        component_connectivity=s.component_connectivity,
+        min_component_fraction=0.0,
+        bundle_scan_size=s.bundle_scan_size,
+        bundle_density_fraction=s.bundle_density_fraction,
+        bundle_max_connections_per_hub=s.bundle_max_connections,
+        bundle_hub_min_spacing=s.bundle_hub_min_spacing,
+    )
+
+    assert _beta1(cleaned) == 1, "the shipped skeleton cleanup altered a vascular loop"

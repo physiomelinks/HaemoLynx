@@ -130,7 +130,37 @@ class SkeletonConfig:
     sub_volume_offset_y: float = 0.0
     sub_volume_offset_x: float = 0.0
     bundle_scan_size: int = 9
-    bundle_density_fraction: float = 0.025
+    # DISABLED. 1.0 requires a window to be 100% skeleton, which is unreachable; the operator
+    # short-circuits on it. This was 0.025, and it was the single most destructive setting in
+    # the pipeline.
+    #
+    # skeletonize_voxel_bundles_into_paths deletes dense skeleton regions and replaces each with
+    # one hub node. Density is a uniform_filter over the SKELETON, so a single centreline
+    # crossing the 9^3 window contributes 9/729 = 0.0123 and two contribute 0.0247 - the default
+    # of 0.025 was therefore "collapse anywhere two capillaries pass within 16.8 um", which in a
+    # capillary bed is the normal condition, not a defect.
+    #
+    # Measured on the reference subvolume. Local density at skeleton voxels: p50 0.0206,
+    # p75 0.0261, p90 0.0316, p99 0.0425, max 0.0604 - so 0.025 sits at roughly the 72nd
+    # percentile of ordinary skeleton density and marked 28.1% of all skeleton voxels as "dense",
+    # firing 214 hubs. Effect on the graph:
+    #
+    #     density_fraction   skeleton voxels     V      E    beta1
+    #     0.0250 (old)                  4788   398    496       99
+    #     0.0500                        6805  1007   1318      312
+    #     disabled                      6789   991   1297      307
+    #
+    # It was destroying 208 of 307 fundamental loops - 68% of beta-1, which IS the H1 section 1.1
+    # readout - and 29% of the skeleton along with them. Worse, it is group-dependent in the
+    # false-negative direction: a denser network exceeds the threshold in more places, fires more
+    # hubs, and loses proportionally more loops, so it actively suppresses the SHR/WKY difference.
+    #
+    # There is no validated operating point rather than a better one. The density distribution
+    # has no gap - it runs smoothly from 0.02 to 0.06 - so no threshold separates "pathological
+    # bundle" from "capillary bed". Anything >= 0.05 is already inert here, and the function's
+    # own docstring default of 0.35 is six times the densest point in the entire volume, i.e. a
+    # no-op. Re-enabling it needs the hand-counted validation Tier 1 item 5 asked for.
+    bundle_density_fraction: float = 1.0
     bundle_max_connections: int = 5
     bundle_hub_min_spacing: int = 0
     # B-spline smoothing factor for edge centrelines. Frozen, not tuned: it determines the

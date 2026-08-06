@@ -30,8 +30,16 @@ class SkeletonObjective:
             # "max_bridge_distance": trial.suggest_int("max_bridge_distance", 0, 0),
             "max_bridge_distance": 0,
             "min_component_percent": trial.suggest_float("min_component_percent", 4.0, 6.0),
-            "bundle_scan_size": trial.suggest_int("bundle_scan_size", 8, 10),
-            "bundle_density_fraction": trial.suggest_float("bundle_density_fraction", 0.01, 0.05),
+            # NO bundle_scan_size or bundle_density_fraction dimensions. The bundle-collapse
+            # operator is disabled (SkeletonConfig.bundle_density_fraction = 1.0) because it
+            # destroyed 68% of beta-1 on the reference subvolume, so both are inert.
+            #
+            # They must not come back even if it is re-enabled. The searched range for
+            # bundle_density_fraction was [0.01, 0.05], which is precisely the destructive band -
+            # 0.0123 is one centreline through the window and 0.0247 is two - and this objective
+            # is Dice plus orphaned volume, neither of which can see loop topology. a079048
+            # removed beta-1 from the loss because no weight on it is safe; searching a dimension
+            # that deletes beta-1 while being blind to it is the same failure by another route.
             # "bundle_max_connections": trial.suggest_int("bundle_max_connections", 2, 4),
             "bundle_max_connections": 3,
             # "bundle_hub_min_spacing": trial.suggest_int("bundle_hub_min_spacing", 0, 10),

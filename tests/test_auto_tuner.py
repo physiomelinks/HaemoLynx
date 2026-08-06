@@ -228,7 +228,7 @@ def test_preprocessing_objective_loss_ignores_euler_characteristic():
 def _recording_skeleton_eval(seen):
     """Deterministic mock eval that records the parameter vector proposed on each trial."""
     def _eval(kwargs):
-        seen.append((kwargs["min_branch_length"], kwargs["bundle_density_fraction"]))
+        seen.append((kwargs["min_branch_length"], kwargs["min_component_percent"]))
         return _skeleton_bench(
             dice=0.9, orphaned=0.05, terminal_ratio=0.02, loops=5,
             edge_std=float(kwargs["min_branch_length"]),
@@ -512,12 +512,9 @@ def test_dead_skeleton_search_dimensions_are_no_longer_suggested(dimension):
 
 def test_skeleton_search_dimensions_are_exactly_the_live_ones():
     live = _suggested_dimensions(SkeletonObjective(lambda kwargs: None))
-    assert live == [
-        "min_branch_length",
-        "min_component_percent",
-        "bundle_scan_size",
-        "bundle_density_fraction",
-    ]
+    # bundle_scan_size and bundle_density_fraction left with the bundle-collapse operator,
+    # which is disabled for destroying 68% of beta-1 (#98 Tier 1 item 5).
+    assert live == ["min_branch_length", "min_component_percent"]
 
 
 def test_smoothing_alpha_reaches_the_centreline_smoother():

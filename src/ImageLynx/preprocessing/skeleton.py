@@ -276,10 +276,31 @@ def skeletonize_voxel_bundles_into_paths(
     hub_min_spacing:
         Minimum Euclidean spacing between selected hub centers. Defaults to
         about half the smallest scan window dimension.
+
+    Notes
+    -----
+    ``density_fraction`` is measured against the SKELETON, not a solid mask, and the two live on
+    very different scales. A single 1-voxel-wide centreline crossing a 9x9x9 window contributes
+    9/729 = 0.0123, so achievable densities run from about 0.02 to 0.06 - measured on a real
+    capillary bed, p50 0.0206 and max 0.0604. The default of 0.35 above is therefore roughly six
+    times the densest point such data can produce, i.e. this function is a no-op at its own
+    documented default. Values in the 0.01-0.05 band are the ones that do anything, and they
+    collapse ordinary capillary crossings: at 0.025 - "anywhere two centrelines pass within the
+    window" - it destroyed 68% of beta-1 on the reference subvolume.
+
+    Because each hub merges everything passing through its window into one node, this operator
+    removes vascular loops, which is exactly what H1 section 1.1 measures. It is disabled by
+    default in the pipeline (``density_fraction >= 1.0``) and should not be re-enabled without
+    the hand-counted validation that #98 Tier 1 item 5 asks for.
     """
     mask = binary_mask.astype(bool)
     if not mask.any():
         return mask
+
+    # A window can never be more than 100% foreground, so >= 1.0 is the documented "off" switch
+    # rather than an accident of clipping.
+    if float(density_fraction) >= 1.0:
+        return skeletonize_3d(mask).astype(bool)
 
     if isinstance(scan_size, int):
         scan = (max(3, int(scan_size)),) * mask.ndim
