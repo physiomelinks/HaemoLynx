@@ -57,7 +57,9 @@ def test_the_config_and_the_schema_describe_the_same_settings(carotid):
 
 def test_the_schema_is_the_pipeline_schema_with_this_dataset_s_values(carotid):
     """A carotid-only setting would be a setting the main pipeline cannot read."""
-    from resistance_pipeline_schema import SCHEMA as PIPELINE_SCHEMA
+    from ImageLynx.pipeline.schema import default_schema
+
+    PIPELINE_SCHEMA = default_schema()
 
     assert set(carotid.SCHEMA.names) == set(PIPELINE_SCHEMA.names)
     assert carotid.SCHEMA["input_p_bc"].default != PIPELINE_SCHEMA["input_p_bc"].default
