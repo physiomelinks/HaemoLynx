@@ -252,8 +252,24 @@ class PreprocessingObjective:
     def __call__(self, trial):
         # 1. Define the Bayesian search space (TPE limits)
         pre_kwargs = {
-            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.25, 0.5),
-            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.5, 0.75),
+            # Ranges raised so the search can reach the region the objective itself prefers.
+            # Hysteresis grows from seeds above `high` into any connected region above `low`, so
+            # `low` is the binding threshold, and on this probability field 83.4% of voxels
+            # exceed 0.2 and 53.8% exceed 0.4. The superlevel set at the old range is a single
+            # blob spanning most of the volume containing plenty of seeds, so the mask flooded
+            # for every point in [0.25, 0.5] regardless of `high` - measured foreground 0.233 to
+            # 0.836 across 25 trials, and identical results for high = 0.5, 0.7 and 0.9 at
+            # low = 0.2. 8424ea0 raised the `high` range; `low` is what actually binds.
+            #
+            # Swept on the reference subvolume, the objective's own optimum is at low = 0.65,
+            # foreground 0.049, sitting on the yield cliff - outside the old range entirely. The
+            # search could not reach its own answer. Independently corroborated by mask calibre:
+            # the median EDT radius falls from 20.1 um at low = 0.2 (a solid blob) to 2.6 um from
+            # low = 0.6 onward, which is the discretisation floor at a 1.866 um voxel and the
+            # correct scale for a capillary. Bounds are set wide enough that the plausible band
+            # of roughly 0.60-0.80 is interior rather than pressed against an edge.
+            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.45, 0.85),
+            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.55, 0.95),
             # "median_filter_size": trial.suggest_categorical("median_filter_size", [0, 3, 5, 7, 9]),
             "median_filter_size": 9,
             # "morphological_opening_radius": trial.suggest_int("morphological_opening_radius", 0, 1),

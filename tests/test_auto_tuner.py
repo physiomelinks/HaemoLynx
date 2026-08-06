@@ -282,7 +282,10 @@ def test_preprocessing_sampler_repeats_the_same_trial_sequence_for_one_seed(tmp_
     run_optuna_preprocessing_optimization(
         _recording_preprocessing_eval(second), n_trials=12, output_dir=tmp_path / "b", seed=7)
 
-    assert len(first) == 12
+    # Not all 12 trials reach the eval: the objective prunes any pair with high <= low before
+    # calling it, and the widened ranges overlap, so a minority are discarded. Which ones is
+    # itself determined by the seed, so the recorded sequences must still match exactly.
+    assert len(first) >= 6, f"too few trials survived pruning to be meaningful: {len(first)}"
     assert first == second, "Same seed produced a different trial sequence."
 
 
@@ -540,3 +543,57 @@ def test_consolidation_threshold_is_gone_from_the_topology_optimiser():
     from ImageLynx.graph.optimise import optimise_graph_topology_fixed
 
     assert "consolidation_threshold" not in inspect.signature(optimise_graph_topology_fixed).parameters
+
+
+# --- Hysteresis search ranges reach the plausible region (Phase 1.5) ----------------------
+#
+# Swept on the reference subvolume: at the old low range of [0.25, 0.5] the mask floods,
+# because 83.4% of voxels exceed p = 0.2 and 53.8% exceed 0.4, so the superlevel set is one
+# blob spanning most of the volume. The objective's own optimum is at low = 0.65 - outside the
+# range it was allowed to search. Corroborated independently by mask calibre: median EDT radius
+# 20.1 um at low = 0.2 versus 2.6 um from low = 0.6 on, the latter being the correct scale for
+# a capillary at a 1.866 um voxel.
+
+def _suggested_ranges(objective):
+    """Records (low, high) bounds for every float dimension the objective asks for."""
+    ranges = {}
+
+    class _Recorder:
+        def suggest_int(self, name, low, high, **k):
+            ranges[name] = (low, high)
+            return low
+
+        def suggest_float(self, name, low, high, **k):
+            ranges[name] = (low, high)
+            return low
+
+        def suggest_categorical(self, name, choices):
+            ranges[name] = choices
+            return choices[0]
+
+    try:
+        objective(_Recorder())
+    except optuna.TrialPruned:
+        pass
+    return ranges
+
+
+def test_hysteresis_low_range_reaches_the_physically_plausible_band():
+    ranges = _suggested_ranges(PreprocessingObjective(lambda kwargs: None))
+    low_bound, high_bound = ranges["hysteresis_threshold_low"]
+
+    # The band corroborated by mask calibre, with margin so the optimum is interior.
+    assert low_bound < 0.60, "the plausible band's lower edge is not reachable"
+    assert high_bound > 0.80, "the plausible band's upper edge is not reachable"
+    # The old ceiling of 0.5 floods for every point in the range; it must not come back.
+    assert high_bound > 0.5
+
+
+def test_hysteresis_high_range_stays_above_the_low_range():
+    """`high` seeds and `low` grows, so a `high` below the reachable `low` prunes every trial."""
+    ranges = _suggested_ranges(PreprocessingObjective(lambda kwargs: None))
+    low_lo, low_hi = ranges["hysteresis_threshold_low"]
+    high_lo, high_hi = ranges["hysteresis_threshold_high"]
+
+    assert high_hi > low_hi, "no valid (low, high) pair exists at the top of the low range"
+    assert high_lo >= low_lo, "the high range starts below the low range"
