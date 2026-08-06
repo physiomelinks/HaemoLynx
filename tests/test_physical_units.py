@@ -292,3 +292,82 @@ def test_reconnection_threshold_is_compared_against_physical_positions():
         "a 2 um gap was not bridged by a 2.8 um cap; the threshold is not in microns"
     assert not out.has_edge(far_a, far_b), \
         "a 4 um gap was bridged by a 2.8 um cap"
+
+
+# --- Mask calibre: the one classifier-independent diagnostic (Phase 1.5) -------------------
+#
+# Every other preprocessing benchmark scores the mask against the probability field, so all of
+# them inherit the classifier's miscalibration. This one measures how thick the segmented
+# structures physically are. With hand annotation infeasible (#98 item 23) it is the only
+# evidence about the segmentation that does not come from the classifier being assessed.
+
+def _tube(shape, radius_voxels, spacing):
+    """A solid cylinder along z, centred, of the given radius in voxels."""
+    zz, yy, xx = np.indices(shape)
+    cy, cx = shape[1] // 2, shape[2] // 2
+    return ((yy - cy) ** 2 + (xx - cx) ** 2) <= radius_voxels ** 2
+
+
+def test_mask_calibre_reports_microns_not_voxels():
+    """The whole point is comparing against a capillary calibre, which is a physical quantity."""
+    from ImageLynx.statistics.benchmarking import evaluate_mask_calibre
+
+    shape = (12, 41, 41)
+    mask = _tube(shape, radius_voxels=6, spacing=SPACING)
+
+    voxels = evaluate_mask_calibre(mask, (1.0, 1.0, 1.0))
+    microns = evaluate_mask_calibre(mask, SPACING)
+
+    # Same mask, spacing 1.866x larger, so every radius must scale by 1.866.
+    assert microns["max_radius_um"] == pytest.approx(voxels["max_radius_um"] * SPACING[1], rel=0.02)
+    assert microns["max_radius_um"] > voxels["max_radius_um"]
+
+
+def test_mask_calibre_separates_a_capillary_from_a_flooded_blob():
+    """The discrimination the diagnostic exists for, at the real voxel size.
+
+    A 2-voxel-radius tube is a capillary at 1.866 um voxels; a mask covering most of the volume
+    is a block of tissue. Measured on real data the same contrast appears as a median radius of
+    2.64 um against 20.09 um.
+    """
+    from ImageLynx.statistics.benchmarking import evaluate_mask_calibre
+
+    shape = (12, 61, 61)
+    capillary = evaluate_mask_calibre(_tube(shape, 2, SPACING), SPACING)
+    flooded = evaluate_mask_calibre(np.ones(shape, dtype=bool), SPACING)
+
+    assert capillary["max_radius_um"] < 5.0, "a 2-voxel tube should read as a few microns"
+    assert flooded["max_radius_um"] > 20.0, "a filled volume should read as tens of microns"
+    assert flooded["median_radius_um"] > 5 * capillary["median_radius_um"]
+    assert capillary["foreground_fraction"] < flooded["foreground_fraction"] == 1.0
+
+
+def test_mask_calibre_handles_an_empty_mask():
+    from ImageLynx.statistics.benchmarking import evaluate_mask_calibre
+
+    result = evaluate_mask_calibre(np.zeros((5, 5, 5), dtype=bool), SPACING)
+    assert result["foreground_fraction"] == 0.0
+    assert result["max_radius_um"] == 0.0
+
+
+def test_mask_calibre_is_reported_but_never_optimised_against():
+    """It must not become a loss term: that would assert the capillary radius it exists to test."""
+    from ImageLynx.statistics.auto_tuner import PreprocessingObjective
+    from ImageLynx.statistics.benchmarking import run_all_preprocessing_benchmarks
+
+    prob = np.zeros((10, 21, 21), dtype=np.float32)
+    prob[:, 8:13, 8:13] = 0.9
+    mask = prob > 0.5
+
+    reported = run_all_preprocessing_benchmarks(prob, mask, None, voxel_size_xyz=SPACING)
+    calibre_keys = {"foreground_fraction", "median_radius_um", "p90_radius_um",
+                    "p99_radius_um", "max_radius_um"}
+    assert calibre_keys <= set(reported), "the diagnostic is not being reported"
+
+    objective = PreprocessingObjective(lambda kwargs: None)
+    baseline = objective._calculate_loss(reported)
+    for key in calibre_keys:
+        perturbed = dict(reported)
+        perturbed[key] = reported[key] * 1000.0 + 7.0
+        assert objective._calculate_loss(perturbed) == baseline, \
+            f"{key} moved the loss; the diagnostic has leaked into the objective"

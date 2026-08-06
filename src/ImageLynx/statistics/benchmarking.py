@@ -339,7 +339,63 @@ def evaluate_preprocessing_euler_characteristic(binary_mask: np.ndarray) -> int:
     except Exception:
         return 0
 
-def run_all_preprocessing_benchmarks(prob_map: np.ndarray, binary_mask: np.ndarray, entropy_map: np.ndarray = None) -> Dict[str, Any]:
+def evaluate_mask_calibre(
+    binary_mask: np.ndarray,
+    voxel_size_xyz: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> Dict[str, float]:
+    """Distribution of the mask's inscribed radius, in microns. A DIAGNOSTIC, not a loss term.
+
+    Every other preprocessing benchmark scores the mask against the probability field, so all
+    of them inherit whatever miscalibration the classifier has. This one does not look at the
+    probability field at all: it asks how thick the segmented structures physically are, and
+    compares that against what a capillary is. Flooding gives absurd radii and over-tightening
+    gives sub-voxel ones, so it brackets the answer from both sides using biology rather than
+    the classifier.
+
+    That independence is why it is worth having. With hand annotation infeasible (#98 item 23)
+    this is the only evidence about the segmentation that does not come from the classifier
+    being assessed, and it belongs in item 25's sensitivity scope.
+
+    Measured on the reference subvolume, median radius falls from 20.09 um at a low threshold
+    of 0.2 - a solid block of tissue, not a vessel - to 2.64 um from 0.6 onward, which is the
+    discretisation floor at a 1.866 um voxel and the right scale for a 5-8 um capillary.
+
+    Deliberately NOT used by any objective. Turning it into a loss term would require asserting
+    an expected capillary radius, which is the assumption it exists to test independently.
+
+    Caveat: percentiles are taken over all mask voxels, not the medial axis, so they
+    systematically under-report true vessel radius - most mask voxels sit near a surface. It is
+    monotone in vessel calibre, which is what a diagnostic needs, but the absolute values are
+    not vessel radii.
+    """
+    if not binary_mask.any():
+        return {
+            "foreground_fraction": 0.0,
+            "median_radius_um": 0.0,
+            "p90_radius_um": 0.0,
+            "p99_radius_um": 0.0,
+            "max_radius_um": 0.0,
+        }
+
+    edt = ndimage.distance_transform_edt(binary_mask, sampling=voxel_size_xyz)
+    radii = edt[binary_mask]
+    median, p90, p99 = np.percentile(radii, [50, 90, 99])
+
+    return {
+        "foreground_fraction": float(binary_mask.mean()),
+        "median_radius_um": float(median),
+        "p90_radius_um": float(p90),
+        "p99_radius_um": float(p99),
+        "max_radius_um": float(radii.max()),
+    }
+
+
+def run_all_preprocessing_benchmarks(
+    prob_map: np.ndarray,
+    binary_mask: np.ndarray,
+    entropy_map: np.ndarray = None,
+    voxel_size_xyz: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> Dict[str, Any]:
     """Executes the reference-free benchmarking suite for voxel preprocessing."""
     results = {}
     try:
@@ -376,5 +432,11 @@ def run_all_preprocessing_benchmarks(prob_map: np.ndarray, binary_mask: np.ndarr
         results["euler_characteristic"] = evaluate_preprocessing_euler_characteristic(binary_mask)
     except Exception as e:
         logger.error(f"Failed Euler Benchmark: {e}")
-        
+
+    # Reported, never optimised against - see evaluate_mask_calibre's docstring.
+    try:
+        results.update(evaluate_mask_calibre(binary_mask, voxel_size_xyz))
+    except Exception as e:
+        logger.error(f"Failed Mask Calibre Benchmark: {e}")
+
     return results
