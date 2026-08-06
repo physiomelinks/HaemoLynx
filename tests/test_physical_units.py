@@ -371,3 +371,45 @@ def test_mask_calibre_is_reported_but_never_optimised_against():
         perturbed[key] = reported[key] * 1000.0 + 7.0
         assert objective._calculate_loss(perturbed) == baseline, \
             f"{key} moved the loss; the diagnostic has leaked into the objective"
+
+
+# --- The default filter chain must survive a capillary (Phase 1.5) ------------------------
+
+def _capillary_probability_volume(radius_voxels=1.6, p_vessel=0.95, p_background=0.05):
+    """A capillary-scale tube in a probability map: the thing the chain must not erase."""
+    shape = (24, 41, 41)
+    _, yy, xx = np.indices(shape)
+    tube = ((yy - 20) ** 2 + (xx - 20) ** 2) <= radius_voxels ** 2
+    prob = np.full(shape, p_background, dtype=np.float32)
+    prob[tube] = p_vessel
+    return prob, tube
+
+
+def test_default_preprocessing_chain_preserves_a_capillary():
+    """A 6 um capillary is 3.2 voxels across; median 7 and opening 1 filter it away.
+
+    Both are applied to the float probability map before thresholding, so this is signal
+    destruction rather than mask cleanup. Measured on real data, the old chain left 71
+    connected structures where an unfiltered one left 199.
+    """
+    C = pytest.importorskip("carotid_image_to_model")
+    prob, tube = _capillary_probability_volume()
+
+    _, mask = C._apply_preprocessing_filters(
+        prob, None, C.PreprocessingConfig().__dict__, boundary_permeability_mode="caged")
+    assert mask.shape == prob.shape
+
+    recovered = float((mask & tube).sum()) / float(tube.sum())
+    assert recovered > 0.5, (
+        f"the default filter chain destroyed the capillary: only {recovered:.0%} recovered"
+    )
+
+
+def test_greyscale_opening_has_no_capillary_preserving_radius():
+    """The reason morphological_opening_radius is 0 rather than merely reduced."""
+    from scipy import ndimage
+    from skimage.morphology import ball
+
+    _, tube = _capillary_probability_volume()
+    assert ndimage.binary_opening(tube, structure=ball(1)).sum() < 0.7 * tube.sum()
+    assert ndimage.binary_opening(tube, structure=ball(2)).sum() == 0

@@ -60,9 +60,21 @@ custom_edges= []
 @dataclass
 class PreprocessingConfig:
     """Configuration for probability map noise removal, smoothing, and binary thresholding."""
-    median_filter_size: int = 7
+    # Applied to the FLOAT probability map BEFORE thresholding, so both can erase capillary
+    # signal outright rather than merely cleaning it up. A 6 um capillary is 3.2 voxels across
+    # at a 1.866 um voxel. Measured at a fixed threshold on the reference subvolume, varying
+    # only this chain: (0, 0) -> 199 connected structures, median radius 1.87 um; (7, 1) -> 71
+    # structures, 2.64 um; (9, 4) -> 3 structures, 5.27 um. Thin structures are being deleted
+    # while fat ones survive.
+    #
+    # median 3 is the smallest window that suppresses isolated speckle, and it leaves the
+    # calibre distribution capillary-scale (r_p90 4.17 um against 3.73 um unfiltered).
+    # opening 0 because a greyscale opening has no useful radius here: at radius 1 it retains
+    # 51% of a 1.6-voxel-radius tube and at radius 2 it removes the tube entirely, so its only
+    # effect at capillary scale is to delete the anatomy.
+    median_filter_size: int = 3
     probability_smoothing_sigma: float = 0.0
-    morphological_opening_radius: int = 1
+    morphological_opening_radius: int = 0
     morphological_closing_radius: int = 0
     enable_hysteresis_threshold: bool = True
     hysteresis_threshold_low: float = 0.2
