@@ -251,17 +251,37 @@ class PreprocessingObjective:
         return self._calculate_loss(bench_results)
 
     def _calculate_loss(self, bench_results) -> float:
-        """Loss from a benchmark result dict. Separated so it is testable without Optuna."""
+        """Loss from a benchmark result dict. Separated so it is testable without Optuna.
+
+        Reduced to the two terms that were measured to do anything. Decomposition over 25
+        seeded TPE trials on the WKY subvolume z 60:110, y 120:280, x 120:280, post-a079048:
+
+            confidence          89.5% of total loss (up to 98.2%)
+            fragmentation        7.4%               (up to 27.9%)
+            surface_area_ratio   3.1%               (up to  5.1%)
+            crispness            0.0% on every trial
+            yield cliff          0.0% on every trial
+            mean_uncertainty     0.0% on every trial
+            high_uncertainty     0.0% on every trial
+
+        Each removal is justified at its site below. Every surviving weight enters the item
+        25 sensitivity scope.
+
+        KNOWN DEGENERACY, left visible rather than papered over: confidence is the mean
+        probability inside the mask, so it decreases monotonically as the mask shrinks onto
+        the highest-probability voxels, and the only thing opposing it is a cliff that does
+        not engage until the mask has discarded 95% of the probability mass. Between yield
+        1.00 and 0.05 this objective has no restoring force at all - its argmin is "the
+        smallest mask still holding 5% of the mass". That defect was previously hidden behind
+        four terms that contributed exactly zero. No weight was changed here, because
+        changing one would mean inventing a constant; the fix is a single bounded
+        precision/recall term (e.g. soft Dice between mask and probability field), which
+        replaces the objective rather than re-weighting it.
+        """
         confidence = bench_results.get("confidence", 0.0)
         prob_yield = bench_results.get("probability_yield", 0.0)
-        crispness = bench_results.get("crispness", 0.0)
-        fragmentation = bench_results.get("fragmentation", 1000)
-        surface_ratio = bench_results.get("surface_area_ratio", 1.0)
-        euler_char = bench_results.get("euler_characteristic", 1)
-        mean_uncertainty = bench_results.get("mean_uncertainty", 0.0)
-        high_unc_frac = bench_results.get("high_uncertainty_fraction", 0.0)
 
-        # Base penalty: Missing Confidence
+        # Base penalty: Missing Confidence. The dominant term, and the only real gradient.
         loss = (1.0 - confidence) * 100.0
 
         # Penalty: Yield. We want to preserve at least some baseline probability mass.
@@ -269,15 +289,25 @@ class PreprocessingObjective:
         if prob_yield < 0.05:
             loss += (0.05 - prob_yield) * 10000.0
 
-        # Penalty: Crispness (Inverted and scaled, we want higher gradients at the boundaries)
-        # Usually gradient magnitude is < 1.0 depending on data scale. Let's subtract crispness.
-        loss += max(0.0, 1.0 - crispness) * 50.0
+        # NO crispness penalty. This was `max(0, 1 - crispness) * 50`, which assumes crispness
+        # is bounded by 1. It is a mean Sobel gradient magnitude on the probability field and
+        # is not bounded that way: measured 2.84 to 3.23 across the search space, so the term
+        # clamped to zero on every trial. It was not doing a small amount of work; it was
+        # doing none, and on differently scaled data it would switch on at a weight nobody chose.
 
-        # Penalty: Fragmentation / Dust Score
-        loss += (fragmentation - 1) * 5.0 
+        # NO fragmentation penalty. This was `(fragmentation - 1) * 5`, uncapped. Measured
+        # component counts were 1 to 4, so it never approached the magnitude the cap was meant
+        # to contain - but it is redundant rather than harmless: SkeletonConfig.prune_mask_before
+        # already keeps only the single largest component downstream, so the mask's component
+        # count is forced to 1 whatever the tuner picks. What the term does add is pressure to
+        # merge genuinely separate vessels, which is the same "improve the score by degrading
+        # the biology" failure as the beta-1 and chi terms removed in a079048.
 
-        # Penalty: Compactness (Jagged surfaces). Normal values ~0.2 to 0.4.
-        loss += surface_ratio * 10.0
+        # NO compactness penalty. This was `surface_area_ratio * 10`, where the ratio is
+        # surface voxels over volume voxels, i.e. roughly 2/r for a tube of radius r. A
+        # correctly resolved capillary bed of thin vessels has a HIGH ratio and a fat merged
+        # blob has a LOW one, so the term rewarded exactly the degradation the segmentation
+        # has to avoid, and would penalise the pipeline harder the better it got.
 
         # NO Euler penalty. This used to be `if euler_char < 1: loss += abs(euler_char-1)*10`,
         # measured at 83% of total loss. The intent was to punish "swiss cheese" cavities, but
@@ -290,11 +320,13 @@ class PreprocessingObjective:
         # preprocessing chain, so nothing is lost by dropping this. A cavity-specific penalty
         # would have to measure beta2 on its own rather than inferring it from chi.
 
-        # Penalty: Uncertainty
-        # Soft pressure to improve overall certainty
-        loss += mean_uncertainty * 20.0
-        # Severe penalty for retaining dangerous noise (entropy > 0.8)
-        loss += high_unc_frac * 1000.0
+        # NO uncertainty penalties. These were `mean_uncertainty * 20` and
+        # `high_uncertainty_fraction * 1000`. run_all_preprocessing_benchmarks only computes
+        # either when entropy_map is not None, and the b89104c gate leaves it None for a
+        # 2-class classifier, so both read their 0.0 defaults on every trial. Keeping them was
+        # a trap rather than a no-op: retraining with a third class would switch a weight of
+        # 1000 back on silently, and it would immediately dominate. If the TH channel arrives,
+        # they have to be re-derived and re-weighted deliberately.
 
         return loss
 

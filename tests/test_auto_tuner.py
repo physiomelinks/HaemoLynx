@@ -317,3 +317,71 @@ def test_tuning_provenance_records_the_seed_beside_the_parameters(tmp_path, runn
     assert provenance["sampler"] == "TPESampler"
     assert provenance["n_trials_requested"] == 4
     assert provenance["n_trials_run"] == 4
+
+
+# --- Preprocessing objective reduced to its measurable terms (item 15) ---------------------
+#
+# Measured over 25 seeded TPE trials on the WKY subvolume z 60:110, y 120:280, x 120:280:
+# confidence 89.5% of loss, fragmentation 7.4%, surface_area_ratio 3.1%, and crispness, the
+# yield cliff and both uncertainty terms exactly 0.0% on every single trial.
+
+def _preproc_bench(**overrides):
+    base = {
+        "confidence": 0.8, "probability_yield": 0.3, "crispness": 0.5,
+        "fragmentation": 10, "surface_area_ratio": 0.3, "euler_characteristic": 1,
+        "mean_uncertainty": 0.1, "high_uncertainty_fraction": 0.01,
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.parametrize("key,low,high", [
+    # Never computed post-b89104c: the 2-class gate leaves entropy_map None, so
+    # run_all_preprocessing_benchmarks emits neither. A weight of 1000 that switches itself
+    # back on when the classifier gains a third class is a trap, not a dormant feature.
+    ("mean_uncertainty", 0.0, 1.0),
+    ("high_uncertainty_fraction", 0.0, 1.0),
+    # Mis-scaled: the term assumed crispness <= 1, but it is a mean Sobel gradient magnitude
+    # and measured 2.84-3.23, so it clamped to zero on every trial.
+    ("crispness", 0.1, 5.0),
+    # Redundant with prune_mask_before, which keeps only the largest component anyway, and
+    # otherwise pressure to merge genuinely separate vessels.
+    ("fragmentation", 1, 5000),
+    # surface/volume is ~2/r: thin resolved capillaries score HIGH and a fat merged blob
+    # scores LOW, so the term rewarded exactly the degradation to be avoided.
+    ("surface_area_ratio", 0.05, 2.0),
+])
+def test_preprocessing_objective_loss_ignores_removed_term(key, low, high):
+    objective = PreprocessingObjective(lambda kwargs: None)
+    assert objective._calculate_loss(_preproc_bench(**{key: low})) == \
+           objective._calculate_loss(_preproc_bench(**{key: high}))
+
+
+def test_preprocessing_objective_is_exactly_confidence_above_the_yield_cliff():
+    """The two surviving terms, and nothing else. Contract change from #98 item 15."""
+    objective = PreprocessingObjective(lambda kwargs: None)
+    # yield 0.3 is far above the 0.05 cliff, so the cliff contributes nothing.
+    assert objective._calculate_loss(_preproc_bench(confidence=0.8)) == pytest.approx(20.0)
+    assert objective._calculate_loss(_preproc_bench(confidence=0.25)) == pytest.approx(75.0)
+
+
+def test_preprocessing_objective_yield_cliff_still_fires():
+    """The only thing opposing confidence's shrink-the-mask gradient must survive."""
+    objective = PreprocessingObjective(lambda kwargs: None)
+    above = objective._calculate_loss(_preproc_bench(confidence=0.9, probability_yield=0.06))
+    below = objective._calculate_loss(_preproc_bench(confidence=0.9, probability_yield=0.04))
+    assert below > above
+    assert below - above == pytest.approx(0.01 * 10000.0)
+
+
+def test_preprocessing_objective_cannot_be_improved_by_merging_vessels():
+    """Regression for the whole a079048/item-15 family.
+
+    A mask whose vessels have been fattened and merged scores better on component count,
+    Euler characteristic and surface-to-volume ratio all at once. None of those may now move
+    the loss, so degrading the biology can no longer buy a better score.
+    """
+    objective = PreprocessingObjective(lambda kwargs: None)
+    resolved = _preproc_bench(fragmentation=40, euler_characteristic=-900, surface_area_ratio=0.8)
+    merged_blob = _preproc_bench(fragmentation=1, euler_characteristic=1, surface_area_ratio=0.05)
+    assert objective._calculate_loss(resolved) == objective._calculate_loss(merged_blob)
