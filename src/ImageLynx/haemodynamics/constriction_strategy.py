@@ -19,9 +19,11 @@ from pathlib import Path
 from typing import Any
 
 import networkx as nx
+import numpy as np
 
 from ImageLynx.io.axis_order import CANONICAL_AXIS_ORDER
 
+from .constriction import resolve_generator
 from . import pericyte_mask as pericyte_mask_strategy
 from . import probability as probability_strategy
 from .poiseuille import PoiseuilleModel
@@ -67,11 +69,16 @@ def set_resistances_for_constriction_strategy(
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    rng: np.random.Generator | None = None,
+    seed: int | None = None,
 ) -> tuple[nx.MultiGraph, str, dict[str, Any]]:
     """Apply one constriction strategy to ``graph``.
 
     Returns ``(graph, strategy, results)``, where *strategy* names the model that
     ran so a caller can file the summary under it.
+
+    Both randomised strategies draw their cohort from ``rng`` when given, else
+    from a generator built on ``seed``, so a run repeats for a given seed.
     """
     if use_pericyte_mask_constriction:
         if pericyte_mask_path is None:
@@ -93,6 +100,8 @@ def set_resistances_for_constriction_strategy(
             min_pericyte_diameter_um=min_pericyte_diameter_um,
             max_pericyte_diameter_um=max_pericyte_diameter_um,
             axis_order=axis_order,
+            rng=rng,
+            seed=seed,
         )
         return graph, PERICYTE_MASK_STRATEGY, results
 
@@ -108,6 +117,8 @@ def set_resistances_for_constriction_strategy(
                 constriction_spacing=float(constriction_spacing),
                 constriction_probability=float(constriction_probability),
                 active_center_indices_by_edge=active_center_indices_by_edge,
+                rng=rng,
+                seed=seed,
             )
         )
         return graph, PROBABILISTIC_STRATEGY, results

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import networkx as nx
+import numpy as np
 
 from ImageLynx import io
 from ImageLynx.io.axis_order import CANONICAL_AXIS_ORDER
@@ -15,6 +16,7 @@ from ImageLynx.parsers import prefixed_arguments
 from ImageLynx.haemodynamics import automated
 from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
 from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
+from ImageLynx.haemodynamics.constriction import resolve_generator
 from ImageLynx.haemodynamics.constriction_strategy import (
     set_resistances_for_constriction_strategy,
 )
@@ -25,6 +27,12 @@ logger = logging.getLogger(__name__)
 #: FWHM settings are named `fwhm_<parameter>` in the config, matching the
 #: measurement function's parameters one for one.
 FWHM_SETTING_PREFIX = "fwhm_"
+
+#: Seed used for the probabilistic pericyte cohort when the settings do not
+#: name one, so a run made through the library API repeats by default. The
+#: config file's ``pericyte_constriction_seed`` overrides it, and setting that
+#: to null asks for a fresh cohort each run.
+DEFAULT_PERICYTE_CONSTRICTION_SEED = 20240917
 
 #: Values the constriction model needs that are not config settings today. They
 #: were defaults on this dataclass before the settings arrived as a group, and
@@ -62,6 +70,9 @@ class HaemodynamicsApplyConfig:
     # Computed per run, not configured.
     comparison_output_csv_path: Path | None = None
     resistance_node_pair: tuple[int, int] | None = None
+    #: Generator for the probabilistic pericyte cohort. Wins over the seed in
+    #: ``diameters``, for a caller driving several runs off one stream.
+    rng: np.random.Generator | None = None
     #: Spacing per array axis in canonical (z, y, x) order, not image-metadata (x, y, z).
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
     axis_order: str = CANONICAL_AXIS_ORDER
@@ -85,6 +96,23 @@ class HaemodynamicsApplyConfig:
         if default is not None:
             return default
         return DIAMETER_DEFAULTS.get(name)
+
+    @property
+    def pericyte_constriction_seed(self) -> int | None:
+        """Seed for the probabilistic pericyte cohort; ``None`` means unseeded.
+
+        A settings group that says nothing about the seed gets
+        :data:`DEFAULT_PERICYTE_CONSTRICTION_SEED`, because a run that cannot be
+        repeated is the worse default. An explicit null asks for a fresh cohort.
+        """
+        if "pericyte_constriction_seed" not in self.diameters:
+            return DEFAULT_PERICYTE_CONSTRICTION_SEED
+        seed = self.diameters["pericyte_constriction_seed"]
+        return None if seed is None else int(seed)
+
+    def pericyte_rng(self) -> np.random.Generator:
+        """The generator every pericyte draw in this run comes from."""
+        return resolve_generator(self.rng, self.pericyte_constriction_seed)
 
     def fwhm_setting(self, name: str, default: Any = None) -> Any:
         """One value from the FWHM group, named as it is in the config."""
@@ -127,6 +155,8 @@ def _measure_fwhm_diameters(G: nx.MultiGraph, config: HaemodynamicsApplyConfig) 
 def _run_pericyte_comparison(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
+    *,
+    rng: np.random.Generator | None = None,
 ) -> tuple[list[int] | None, dict[str, list[int]] | None, dict[str, Any]]:
     if not config.diameter("run_pericyte_resistance_comparison"):
         return None, None, {}
@@ -155,6 +185,7 @@ def _run_pericyte_comparison(
         use_probabilistic_pericyte_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
         pericyte_constriction_probability=float(config.diameter("pericyte_constriction_probability")),
         axis_order=config.axis_order,
+        rng=rng,
     )
 
     active_pericyte_indices: list[int] | None = None
@@ -182,6 +213,7 @@ def _assign_poiseuille_resistances(
     *,
     active_pericyte_indices: list[int] | None,
     active_center_indices_by_edge: dict[str, list[int]] | None,
+    rng: np.random.Generator | None = None,
 ) -> dict[str, Any]:
     poiseuille_model = PoiseuilleModel(
         constriction_length=config.diameter("constriction_length"),
@@ -219,6 +251,7 @@ def _assign_poiseuille_resistances(
             min_pericyte_diameter_um=config.diameter("pericyte_min_diameter_um"),
             max_pericyte_diameter_um=config.diameter("pericyte_max_diameter_um"),
             axis_order=config.axis_order,
+            rng=rng,
         )
         results[strategy] = strategy_results
     else:
@@ -273,8 +306,9 @@ def apply_poiseuille_haemodynamics(
     if config.use_fwhm_edge_diameters:
         summary["fwhm"] = _measure_fwhm_diameters(G, config)
 
+    pericyte_rng = config.pericyte_rng()
     active_pericyte_indices, active_center_indices_by_edge, comparison_results = (
-        _run_pericyte_comparison(G, config)
+        _run_pericyte_comparison(G, config, rng=pericyte_rng)
     )
     if comparison_results:
         summary["pericyte_comparison"] = comparison_results
@@ -284,6 +318,7 @@ def apply_poiseuille_haemodynamics(
         config,
         active_pericyte_indices=active_pericyte_indices,
         active_center_indices_by_edge=active_center_indices_by_edge,
+        rng=pericyte_rng,
     )
 
     return G, summary

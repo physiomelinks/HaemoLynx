@@ -244,6 +244,8 @@ def set_poiseuille_resistances_with_pericyte_mask(
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    rng: np.random.Generator | None = None,
+    seed: int | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Set edge resistance/conductance using pericyte centroids from a mask volume.
 
@@ -251,6 +253,10 @@ def set_poiseuille_resistances_with_pericyte_mask(
     The component centroid is projected to the nearest graph edge and used as a
     constriction center. Diameter is ``d2`` in the local core around that center
     and linearly ramps to ``d1`` towards the edge of the constriction window.
+
+    With ``use_probabilistic_constriction=True`` the active cohort is drawn from
+    ``rng`` if given, else from a generator built on ``seed``; ``seed=None``
+    means a different cohort on every call.
     """
     require_positive_constriction_length(constriction_length)
     require_enough_integration_points(num_integration_points)
@@ -312,6 +318,8 @@ def set_poiseuille_resistances_with_pericyte_mask(
         selected_from_eligible = select_active_pericyte_indices(
             total_pericytes=len(eligible_indices),
             constriction_probability=float(constriction_probability),
+            rng=rng,
+            seed=seed,
         )
         selected_indices = [eligible_indices[idx] for idx in selected_from_eligible]
         probabilistic_mode = True
