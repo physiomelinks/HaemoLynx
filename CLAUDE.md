@@ -18,8 +18,10 @@ ImageLynx/
 │   │                       #   prune, collapse, branch_order, boundaries, large_vessels,
 │   │                       #   diagnostics, validate, _helpers,
 │   │                       #   automated_vessel_assignment.py (terminal-node assignment)
-│   ├── haemodynamics/      # poiseuille, resistance, pipeline, automated.py (FWHM diameters),
-│   │                       #   probability, pericyte_mask, pericyte_comparison
+│   ├── haemodynamics/      # poiseuille, resistance, apply, automated.py (FWHM diameters),
+│   │                       #   constriction (the one constriction model) + its site-choosing
+│   │                       #   strategies: probability, pericyte_mask; constriction_strategy
+│   │                       #   (which strategy a run uses), pericyte_comparison, pericyte_sweep
 │   ├── statistics/         # stats.py, 3D_distances.py (cell-to-vessel; imported via importlib)
 │   └── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
@@ -190,7 +192,15 @@ reports the others).
 - **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).*
 - **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step.
 - **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from raw TIFF (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`). *“automated” is a misnomer; this is diameter estimation.*
-- **`haemodynamics/pipeline.py`** — high-level Poiseuille application used by examples and tutorial.
+- **`haemodynamics/constriction.py`** — the constriction model: diameter profile around a site,
+  the resistance integral, and `apply_constriction_sites`, the only place a constricted edge's
+  resistance is computed. A strategy supplies *where* the sites are (`ConstrictionSites`);
+  `pericyte_mask.py` takes them from a segmented mask, `probability.py` places them periodically
+  and activates each with a probability. Note its viscosity is the uncalibrated `1/d^1.647`,
+  not the SI-pinned law in `poiseuille.py` — see the module docstring.
+- **`haemodynamics/constriction_strategy.py`** — `set_resistances_for_constriction_strategy`, the
+  single place the settings pick a strategy, used by both `apply.py` and `pericyte_comparison.py`.
+- **`haemodynamics/apply.py`** — high-level Poiseuille application used by examples and tutorial.
 - **`statistics/3D_distances.py`** — cell-to-vessel distances. Module name starts with a digit, so it can’t be imported normally — `statistics/__init__.py` pulls it in via `importlib.import_module`.
 - **`examples/resistance_pipeline_settings.py`** — default constants and ilastik toggles; the preset/override engine lives in `examples/presets.py`.
 

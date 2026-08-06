@@ -8,14 +8,11 @@ from typing import Any
 
 import networkx as nx
 
+from ._helpers import edge_id
+
 logger = logging.getLogger(__name__)
 
 PostAssignCallback = Callable[[nx.MultiGraph], None]
-
-
-def _edge_id(u: int, v: int, key: int) -> tuple[int, int, int]:
-    """Return an orientation-independent edge id for MultiGraph edges."""
-    return (u, v, key) if u <= v else (v, u, key)
 
 
 def _compute_node_distances(
@@ -82,7 +79,7 @@ def assign_branch_orders(
     }
 
     for u, v, key, data in G.edges(keys=True, data=True):
-        edge_identifier = _edge_id(u, v, key)
+        edge_identifier = edge_id(u, v, key)
         if included_edges and edge_identifier not in included_edges:
             results["edges_skipped"] += 1
             continue
@@ -132,7 +129,7 @@ def assign_hierarchical_branch_orders(
     )
     arteriole_nodes = set(arteriole_node_distances.keys())
     arteriole_edges = {
-        _edge_id(u, v, key)
+        edge_id(u, v, key)
         for u, v, key in G.edges(keys=True)
         if u in arteriole_nodes and v in arteriole_nodes
     }
@@ -151,7 +148,7 @@ def assign_hierarchical_branch_orders(
     )
     venule_nodes = set(venule_node_distances.keys())
     venule_edges = {
-        _edge_id(u, v, key)
+        edge_id(u, v, key)
         for u, v, key in G.edges(keys=True)
         if u in venule_nodes and v in venule_nodes
     }

@@ -170,8 +170,7 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
     vtk_prefix = output_dir / "integration_probabilistic_reuse"
 
     pipeline = _load_pipeline_module()
-    from ImageLynx.haemodynamics import apply as haemo_pipeline
-    from ImageLynx.haemodynamics import pericyte_comparison as pericyte_comparison_mod
+    from ImageLynx.haemodynamics import probability as probability_mod
 
     # Force uniform 0.8 map for final run so comparison constrained value aligns.
     # The diameter table is derived from the config, not a module constant.
@@ -181,12 +180,10 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
     }
     probabilistic_call_args: list[dict | None] = []
 
-    original_probabilistic_main = (
-        haemo_pipeline.probability_haemodynamics
-        .set_poiseuille_resistances_with_probabilistic_periodic_constrictions
-    )
-    original_probabilistic_compare = (
-        pericyte_comparison_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions
+    # The comparison scenarios and the final run all reach the periodic model
+    # through this one module attribute, so a single patch records all three.
+    original_probabilistic = (
+        probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions
     )
 
     def _recording_probabilistic(original_fn, call_log: list[dict | None]):
@@ -200,11 +197,8 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
 
         return _wrapper
 
-    haemo_pipeline.probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
-        _recording_probabilistic(original_probabilistic_main, probabilistic_call_args)
-    )
-    pericyte_comparison_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
-        _recording_probabilistic(original_probabilistic_compare, probabilistic_call_args)
+    probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+        _recording_probabilistic(original_probabilistic, probabilistic_call_args)
     )
     try:
         pipeline.image_to_model_pipeline(
@@ -241,11 +235,8 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
             constriction_by_branch_order=constriction_uniform_08,
         )
     finally:
-        haemo_pipeline.probability_haemodynamics.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
-            original_probabilistic_main
-        )
-        pericyte_comparison_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
-            original_probabilistic_compare
+        probability_mod.set_poiseuille_resistances_with_probabilistic_periodic_constrictions = (  # type: ignore[attr-defined]
+            original_probabilistic
         )
 
     # Expect 3 calls:

@@ -1,4 +1,11 @@
-"""Utilities to compare baseline vs constricted pericyte haemodynamics."""
+"""Compare baseline vs constricted pericyte haemodynamics.
+
+Runs one constriction strategy twice over copies of the same graph — once at a
+baseline constriction factor, once at a constricted one — and reports what that
+did to the effective resistance between two nodes. Which strategy runs, and
+with what settings, is :mod:`ImageLynx.haemodynamics.constriction_strategy`;
+this module only sets up the two scenarios and reports the difference.
+"""
 from __future__ import annotations
 
 import csv
@@ -9,109 +16,15 @@ from typing import Any
 import networkx as nx
 
 from ImageLynx.io.axis_order import CANONICAL_AXIS_ORDER
-from .pericyte_mask import set_poiseuille_resistances_with_pericyte_mask
-from .poiseuille import PoiseuilleModel
-from .probability import set_poiseuille_resistances_with_probabilistic_periodic_constrictions
+from .constriction_strategy import (
+    set_resistances_for_constriction_strategy,
+    uniform_constriction_factors,
+)
 from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
     calc_two_point_from_laplacian_matrix_nodeID,
 )
-
-
-def _absolute_factor_map(
-    branch_orders: list[str],
-    factor_value: float,
-) -> dict[str, float]:
-    return {
-        str(branch_order): float(factor_value)
-        for branch_order in branch_orders
-    }
-
-
-def _set_resistances_for_factor(
-    graph: nx.MultiGraph,
-    *,
-    diameter_by_branch_order: dict,
-    constriction_factor_by_branch_order: dict[str, float],
-    factor_value: float,
-    use_pericyte_mask_constriction: bool,
-    pericyte_mask_path: str | Path | None,
-    pericyte_mask_h5_dataset_name: str | None,
-    prefer_edge_fwhm_baseline: bool,
-    constriction_length: float,
-    constriction_spacing: float,
-    use_probabilistic_pericyte_constriction: bool,
-    pericyte_constriction_probability: float,
-    active_pericyte_indices: list[int] | None,
-    active_center_indices_by_edge: dict[str, list[int]] | None,
-    max_assignment_distance_um: float | None,
-    min_pericyte_diameter_um: float | None,
-    max_pericyte_diameter_um: float | None,
-    axis_order: str = CANONICAL_AXIS_ORDER,
-) -> tuple[nx.MultiGraph, dict[str, Any]]:
-    """Apply edge resistance/conductance for a comparison scenario."""
-    branch_orders = [str(bo) for bo in diameter_by_branch_order.keys()]
-    factor_map = _absolute_factor_map(
-        branch_orders=branch_orders,
-        factor_value=factor_value,
-    )
-    if use_pericyte_mask_constriction:
-        if pericyte_mask_path is None:
-            raise ValueError(
-                "pericyte_mask_path is required when use_pericyte_mask_constriction=True."
-            )
-        return set_poiseuille_resistances_with_pericyte_mask(
-            graph,
-            diameter_by_branch_order=diameter_by_branch_order,
-            constriction_factor_by_branch_order=factor_map,
-            pericyte_mask_path=pericyte_mask_path,
-            pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
-            prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
-            constriction_length=constriction_length,
-            use_probabilistic_constriction=bool(use_probabilistic_pericyte_constriction),
-            constriction_probability=float(pericyte_constriction_probability),
-            active_pericyte_indices=active_pericyte_indices,
-            max_assignment_distance_um=max_assignment_distance_um,
-            min_pericyte_diameter_um=min_pericyte_diameter_um,
-            max_pericyte_diameter_um=max_pericyte_diameter_um,
-            axis_order=axis_order,
-        )
-
-    if use_probabilistic_pericyte_constriction:
-        return set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
-            graph,
-            diameter_by_branch_order=diameter_by_branch_order,
-            constriction_factor_by_branch_order=factor_map,
-            prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
-            constriction_length=float(constriction_length),
-            constriction_spacing=float(constriction_spacing),
-            constriction_probability=float(pericyte_constriction_probability),
-            active_center_indices_by_edge=active_center_indices_by_edge,
-        )
-
-    poiseuille_model = PoiseuilleModel(
-        constriction_length=float(constriction_length),
-        constriction_spacing=float(constriction_spacing),
-    )
-    if prefer_edge_fwhm_baseline:
-        return poiseuille_model.set_poiseuille_resistances_with_constrictions(
-            graph,
-            diameter_by_branch_order,
-            prefer_edge_fwhm_baseline=True,
-            constriction_factor_by_branch_order=factor_map,
-        )
-
-    enhanced_diameters: dict[str, dict[str, float]] = {}
-    for branch_order, diameter in diameter_by_branch_order.items():
-        enhanced_diameters[str(branch_order)] = {
-            "d1": float(diameter),
-            "d2": float(diameter) * float(factor_map[str(branch_order)]),
-        }
-    return poiseuille_model.set_poiseuille_resistances_with_constrictions(
-        graph,
-        enhanced_diameters,
-    )
 
 
 def _compute_two_point_resistance(
@@ -157,7 +70,10 @@ def compare_baseline_vs_pericyte_constriction(
 
     Comparison factors are treated as absolute values (not scales). This means
     ``baseline_factor_value`` and ``constricted_factor_value`` override the
-    non-comparison constriction magnitudes while comparison is running.
+    non-comparison constriction magnitudes while comparison is running —
+    including every entry of ``constriction_factor_by_branch_order``, which is
+    accepted so a caller can pass its run settings through unchanged, and then
+    superseded for the duration of the comparison.
 
     Returns a summary dict and writes a human-readable CSV with one row per
     scenario plus a final delta row.
@@ -175,25 +91,36 @@ def compare_baseline_vs_pericyte_constriction(
     fixed_active_pericyte_indices: list[int] | None = None
     fixed_active_center_indices_by_edge: dict[str, list[int]] | None = None
 
-    graph_baseline, baseline_resistance_results = _set_resistances_for_factor(
-        graph_baseline,
-        diameter_by_branch_order=diameter_by_branch_order,
-        constriction_factor_by_branch_order=constriction_factor_by_branch_order,
-        factor_value=float(baseline_factor_value),
-        use_pericyte_mask_constriction=bool(use_pericyte_mask_constriction),
-        pericyte_mask_path=pericyte_mask_path,
-        pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
-        prefer_edge_fwhm_baseline=bool(prefer_edge_fwhm_baseline),
-        constriction_length=float(constriction_length),
-        constriction_spacing=float(constriction_spacing),
-        use_probabilistic_pericyte_constriction=bool(use_probabilistic_pericyte_constriction),
-        pericyte_constriction_probability=float(pericyte_constriction_probability),
-        active_pericyte_indices=None,
-        active_center_indices_by_edge=None,
-        max_assignment_distance_um=max_assignment_distance_um,
-        min_pericyte_diameter_um=min_pericyte_diameter_um,
-        max_pericyte_diameter_um=max_pericyte_diameter_um,
-        axis_order=axis_order,
+    # Everything the two scenarios share. They differ only in their constriction
+    # factor and, for a probabilistic model, in the second one reusing the
+    # pericyte cohort the first one drew.
+    scenario_settings: dict[str, Any] = {
+        "diameter_by_branch_order": diameter_by_branch_order,
+        "use_pericyte_mask_constriction": bool(use_pericyte_mask_constriction),
+        "use_probabilistic_constriction": bool(use_probabilistic_pericyte_constriction),
+        "prefer_edge_fwhm_baseline": bool(prefer_edge_fwhm_baseline),
+        "constriction_length": float(constriction_length),
+        "constriction_spacing": float(constriction_spacing),
+        "constriction_probability": float(pericyte_constriction_probability),
+        "pericyte_mask_path": pericyte_mask_path,
+        "pericyte_mask_h5_dataset_name": pericyte_mask_h5_dataset_name,
+        "max_assignment_distance_um": max_assignment_distance_um,
+        "min_pericyte_diameter_um": min_pericyte_diameter_um,
+        "max_pericyte_diameter_um": max_pericyte_diameter_um,
+        "axis_order": axis_order,
+    }
+
+    graph_baseline, _strategy, baseline_resistance_results = (
+        set_resistances_for_constriction_strategy(
+            graph_baseline,
+            constriction_factor_by_branch_order=uniform_constriction_factors(
+                diameter_by_branch_order,
+                float(baseline_factor_value),
+            ),
+            active_pericyte_indices=None,
+            active_center_indices_by_edge=None,
+            **scenario_settings,
+        )
     )
     if use_pericyte_mask_constriction and use_probabilistic_pericyte_constriction:
         selected = baseline_resistance_results.get("active_pericyte_indices")
@@ -211,25 +138,17 @@ def compare_baseline_vs_pericyte_constriction(
         target_node=target_node,
     )
 
-    graph_constricted, constricted_resistance_results = _set_resistances_for_factor(
-        graph_constricted,
-        diameter_by_branch_order=diameter_by_branch_order,
-        constriction_factor_by_branch_order=constriction_factor_by_branch_order,
-        factor_value=float(constricted_factor_value),
-        use_pericyte_mask_constriction=bool(use_pericyte_mask_constriction),
-        pericyte_mask_path=pericyte_mask_path,
-        pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
-        prefer_edge_fwhm_baseline=bool(prefer_edge_fwhm_baseline),
-        constriction_length=float(constriction_length),
-        constriction_spacing=float(constriction_spacing),
-        use_probabilistic_pericyte_constriction=bool(use_probabilistic_pericyte_constriction),
-        pericyte_constriction_probability=float(pericyte_constriction_probability),
-        active_pericyte_indices=fixed_active_pericyte_indices,
-        active_center_indices_by_edge=fixed_active_center_indices_by_edge,
-        max_assignment_distance_um=max_assignment_distance_um,
-        min_pericyte_diameter_um=min_pericyte_diameter_um,
-        max_pericyte_diameter_um=max_pericyte_diameter_um,
-        axis_order=axis_order,
+    graph_constricted, _strategy, constricted_resistance_results = (
+        set_resistances_for_constriction_strategy(
+            graph_constricted,
+            constriction_factor_by_branch_order=uniform_constriction_factors(
+                diameter_by_branch_order,
+                float(constricted_factor_value),
+            ),
+            active_pericyte_indices=fixed_active_pericyte_indices,
+            active_center_indices_by_edge=fixed_active_center_indices_by_edge,
+            **scenario_settings,
+        )
     )
     constricted_resistance = _compute_two_point_resistance(
         graph_constricted,

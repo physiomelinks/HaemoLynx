@@ -4,6 +4,24 @@ from typing import List, Tuple, Dict, Any, Union
 import numpy as np
 import networkx as nx
 
+def edge_id(u: Any, v: Any, key: Any) -> Tuple[Any, Any, Any]:
+    """Orientation-independent id for a MultiGraph edge.
+
+    ``(u, v, key)`` and ``(v, u, key)`` name the same edge, so callers that key
+    dicts or sets by edge must normalise first or they will count it twice.
+    """
+    return (u, v, key) if u <= v else (v, u, key)
+
+
+def sort_nodes(nodes) -> List[Any]:
+    """Deterministic node order for reproducible output.
+
+    Node ids can be a mix of types, which is unorderable in Python 3, so they
+    are ordered by type name then string form. Duplicates are dropped.
+    """
+    return sorted(set(nodes), key=lambda n: (str(type(n)), str(n)))
+
+
 def add_edge_safe(G, u, v, **attr):
     return G.add_edge(u, v, **attr)
 
