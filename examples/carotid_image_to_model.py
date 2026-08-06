@@ -22,7 +22,7 @@ root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization 
+from ImageLynx import graph, haemodynamics, io, preprocessing, specimens, statistics, visualization
 
 # ---------------------------
 # Beginner-friendly settings
@@ -32,7 +32,11 @@ from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visua
 RUN_ILASTIK = False
 ILASTIK_OUTPUT_PROBABILITIES = True # Set to True for Probabilities, False for Simple Segmentation
 ILASTIK_BINARY_PATH = "/home/dsas627/Desktop/ilastik-1.4.1rc2-gpu-Linux/run_ilastik.sh"
-ILASTIK_PROJECT_PATH = root_dir / "examples" / "images" / "cb_wky_2x2x2_A.ilp"
+# The pooled pixel-classification project, trained on labels from BOTH groups. Segmenting each
+# specimen with its own project - or all six with the WKY-only cb_wky_2x2x2_A.ilp - would
+# confound classifier identity with group, and nothing downstream could separate a classifier
+# difference from a tissue one. See ImageLynx.specimens.
+ILASTIK_PROJECT_PATH = specimens.POOLED_CLASSIFIER
 RAW_IMAGE_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_input_images"
 ILASTIK_OUTPUT_DIR = root_dir / "examples" / "images" / "ilastik_batch_processing_output_images"
 
@@ -1842,7 +1846,22 @@ if __name__ == "__main__":
     parser.add_argument("--export-grid-preview", action="store_true", help="Export the raw probability field with the calculated chunk grid superimposed and exit.")
     parser.add_argument("--exit-after-mask", action="store_true", help="Export the locally-optimized stitched binary mask and exit.")
     parser.add_argument("--use-cache-dir", action="store_true", help="Load artifacts from the dynamic image cache directory, bypassing preprocessing/skeletonization.")
+    parser.add_argument("--specimen", type=str, default="WKY-A",
+                        help="Which specimen to run: WKY-A/B/C or SHR-A/B/C. Selects the "
+                             "probability volume and that specimen's measured voxel size.")
+    parser.add_argument("--list-specimens", action="store_true",
+                        help="Print each specimen's segmentation status and exit.")
     args = parser.parse_args()
+
+    if args.list_specimens:
+        print(f"{'specimen':<10}{'group':<7}{'segmented':<11}missing inputs")
+        print("-" * 78)
+        for _sid, _row in specimens.segmentation_status().items():
+            _missing = ", ".join(_row["missing_inputs"]) or "-"
+            print(f"{_sid:<10}{_row['group']:<7}{str(_row['segmented']):<11}{_missing}")
+        print(f"\nPooled classifier: {specimens.POOLED_CLASSIFIER}")
+        print(f"  present: {specimens.POOLED_CLASSIFIER.exists()}")
+        raise SystemExit(0)
 
     # 1. Initialize Default Configurations
     pre_config = PreprocessingConfig()
@@ -1903,6 +1922,16 @@ if __name__ == "__main__":
     if args.optimize_patience is not None:
         pipeline_config.optimize_patience = args.optimize_patience
 
+    # Resolve the specimen first: it supplies both the probability volume and that specimen's
+    # own measured voxel size. The z step differs between groups (WKY 1.86386 um, SHR
+    # 1.86412 um), so taking it from the registry rather than a single constant keeps each run
+    # matched to its own acquisition. An explicit --voxel-size-um still wins over both.
+    active_specimen = specimens.get_specimen(args.specimen)
+    specimens.assert_single_classifier()
+    pipeline_config.voxel_size_um = active_specimen.voxel_size_um
+    print(f"Specimen {active_specimen.specimen_id} ({active_specimen.group}), "
+          f"classifier {active_specimen.classifier.name}")
+
     if args.voxel_size_um is not None:
         pipeline_config.voxel_size_um = tuple(args.voxel_size_um)
 
@@ -1925,8 +1954,16 @@ if __name__ == "__main__":
         )
         print(f"Acquired Ilastik output: {target_input_mask_path}")
     else:
-        # Use the newly generated probabilities file
-        target_input_mask_path = ILASTIK_OUTPUT_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map_probs.tiff"
+        # The already-generated probabilities file for the selected specimen. Was hardcoded to
+        # WKY-A, which is why the pipeline could only ever run one of the six.
+        target_input_mask_path = active_specimen.probabilities_path
+        if not target_input_mask_path.exists():
+            raise FileNotFoundError(
+                f"{active_specimen.specimen_id} has no probability volume at "
+                f"{target_input_mask_path}. Missing Ilastik inputs: "
+                f"{[p.name for p in active_specimen.missing_inputs()] or 'none'}. "
+                "Run --list-specimens to see what is outstanding."
+            )
 
     # 5. Run the Network Pipeline
     carotid_image_to_model(
