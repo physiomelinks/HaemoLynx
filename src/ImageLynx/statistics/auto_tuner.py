@@ -2,7 +2,7 @@ import logging
 import yaml
 import copy
 from pathlib import Path
-from typing import Callable, Dict, Any
+from typing import Callable, Dict, Any, Optional
 
 try:
     import optuna
@@ -10,6 +10,12 @@ except ImportError:
     optuna = None
 
 logger = logging.getLogger(__name__)
+
+# Default random state for both TPE samplers. Fixed rather than left at Optuna's default of
+# None so that a tuning run is reproducible, and so that two runs which differ only in the
+# objective's weights are comparable trial-for-trial rather than confounded with sampler
+# noise. Pass seed=None to draw an independent search trajectory.
+DEFAULT_SAMPLER_SEED = 42
 
 class SkeletonObjective:
     """Optuna objective function for tuning skeletonization parameters."""
@@ -127,22 +133,44 @@ class EarlyStoppingCallback:
                 )
                 study.stop()
 
+def _tuning_provenance(study, seed: Optional[int], n_trials: int) -> Dict[str, Any]:
+    """Describes how a tuned parameter set was produced, to be saved alongside it.
+
+    Written as a sibling of the config block rather than inside it, because the pipeline's
+    YAML loader feeds its named block straight into a dataclass and would reject these keys.
+    A frozen parameter set is only defensible if the run that produced it can be repeated,
+    and that requires the seed to survive in the artefact rather than only in a log line.
+    """
+    return {
+        "sampler": "TPESampler",
+        "seed": seed,
+        "n_trials_requested": int(n_trials),
+        "n_trials_run": len(study.trials),
+        "best_loss": float(study.best_value),
+    }
+
 def run_optuna_skeleton_optimization(
     pipeline_eval_fn: Callable,
     n_trials: int = 30,
     output_dir: Path = Path("outputs"),
-    patience: int = 100
+    patience: int = 100,
+    seed: Optional[int] = DEFAULT_SAMPLER_SEED
 ) -> Dict[str, Any]:
     """
     Executes the Bayesian optimization loop to find the best skeletonization parameters.
+
+    seed fixes the TPE sampler's random state, so the trial sequence is reproducible across
+    runs. Note that this makes the *search* deterministic, not the whole tuning run: if
+    pipeline_eval_fn is itself stochastic the losses will still vary. Pass seed=None for an
+    independent replicate.
     """
     if optuna is None:
         raise ImportError("Optuna is not installed. Please run: pip install optuna")
-        
-    logger.info(f"=== Starting Optuna Skeletonization Optimization (Max {n_trials} trials, Patience {patience}) ===")
-    
-    # Use Tree-structured Parzen Estimator (TPE)
-    study = optuna.create_study(direction="minimize")
+
+    logger.info(f"=== Starting Optuna Skeletonization Optimization (Max {n_trials} trials, Patience {patience}, Seed {seed}) ===")
+
+    # Use Tree-structured Parzen Estimator (TPE), seeded for a reproducible trial sequence.
+    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))
     objective = SkeletonObjective(pipeline_eval_fn)
     early_stopper = EarlyStoppingCallback(patience=patience)
     
@@ -157,7 +185,10 @@ def run_optuna_skeleton_optimization(
     output_dir.mkdir(parents=True, exist_ok=True)
     yaml_path = output_dir / "best_skeleton_params.yaml"
     with open(yaml_path, "w") as f:
-        yaml.dump({"SkeletonConfig": best_params}, f)
+        yaml.dump({
+            "SkeletonConfig": best_params,
+            "TuningProvenance": _tuning_provenance(study, seed, n_trials),
+        }, f)
     logger.info(f"Saved optimal parameters to: {yaml_path}")
     
     # Generate Visualizations
@@ -271,17 +302,23 @@ def run_optuna_preprocessing_optimization(
     pipeline_eval_fn: Callable,
     n_trials: int = 30,
     output_dir: Path = Path("outputs"),
-    patience: int = 100
+    patience: int = 100,
+    seed: Optional[int] = DEFAULT_SAMPLER_SEED
 ) -> Dict[str, Any]:
     """
     Executes the Bayesian optimization loop to find the best preprocessing parameters.
+
+    seed fixes the TPE sampler's random state, so the trial sequence is reproducible across
+    runs. Note that this makes the *search* deterministic, not the whole tuning run: if
+    pipeline_eval_fn is itself stochastic the losses will still vary. Pass seed=None for an
+    independent replicate.
     """
     if optuna is None:
         raise ImportError("Optuna is not installed. Please run: pip install optuna")
-        
-    logger.info(f"=== Starting Optuna Preprocessing Optimization (Max {n_trials} trials, Patience {patience}) ===")
-    
-    study = optuna.create_study(direction="minimize")
+
+    logger.info(f"=== Starting Optuna Preprocessing Optimization (Max {n_trials} trials, Patience {patience}, Seed {seed}) ===")
+
+    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))
     objective = PreprocessingObjective(pipeline_eval_fn)
     early_stopper = EarlyStoppingCallback(patience=patience)
     
@@ -295,7 +332,10 @@ def run_optuna_preprocessing_optimization(
     output_dir.mkdir(parents=True, exist_ok=True)
     yaml_path = output_dir / "best_preprocessing_params.yaml"
     with open(yaml_path, "w") as f:
-        yaml.dump({"PreprocessingConfig": best_params}, f)
+        yaml.dump({
+            "PreprocessingConfig": best_params,
+            "TuningProvenance": _tuning_provenance(study, seed, n_trials),
+        }, f)
     logger.info(f"Saved optimal preprocessing parameters to: {yaml_path}")
     
     try:

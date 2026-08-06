@@ -1,8 +1,15 @@
 import pytest
+import yaml
 from pathlib import Path
 import optuna
 from optuna.trial import FixedTrial
-from ImageLynx.statistics.auto_tuner import SkeletonObjective, PreprocessingObjective, run_optuna_skeleton_optimization
+from ImageLynx.statistics.auto_tuner import (
+    DEFAULT_SAMPLER_SEED,
+    PreprocessingObjective,
+    SkeletonObjective,
+    run_optuna_preprocessing_optimization,
+    run_optuna_skeleton_optimization,
+)
 
 def _get_dummy_fixed_trial():
     """Helper to generate a consistent FixedTrial for objective logic testing."""
@@ -196,3 +203,117 @@ def test_preprocessing_objective_loss_ignores_euler_characteristic():
     very_negative_euler = dict(base, euler_characteristic=-18870)
 
     assert objective._calculate_loss(positive_euler) == objective._calculate_loss(very_negative_euler)
+
+
+# --- Sampler seeding (item 18) -------------------------------------------------------------
+#
+# Both studies previously ran on Optuna's default unseeded TPESampler, so two runs explored
+# different trial sequences. That makes any change to the objective's weights inseparable
+# from sampler noise: a different best_params could be the re-weighting or could be the draw.
+# These tests pin the trial sequence to the seed so weight changes are attributable.
+
+def _recording_skeleton_eval(seen):
+    """Deterministic mock eval that records the parameter vector proposed on each trial."""
+    def _eval(kwargs):
+        seen.append((kwargs["min_branch_length"], kwargs["bundle_density_fraction"]))
+        return _skeleton_bench(
+            dice=0.9, orphaned=0.05, terminal_ratio=0.02, loops=5,
+            edge_std=float(kwargs["min_branch_length"]),
+        )
+    return _eval
+
+
+def _recording_preprocessing_eval(seen):
+    """Deterministic mock eval for the preprocessing study, recording each proposal."""
+    def _eval(kwargs):
+        seen.append((kwargs["hysteresis_threshold_low"], kwargs["shannon_entropy_threshold"]))
+        return {
+            "confidence": 0.8,
+            "probability_yield": 0.3,
+            "crispness": 0.5,
+            "fragmentation": 10,
+            "surface_area_ratio": kwargs["hysteresis_threshold_low"],
+            "euler_characteristic": 1,
+            "mean_uncertainty": 0.1,
+            "high_uncertainty_fraction": 0.01,
+        }
+    return _eval
+
+
+def test_skeleton_sampler_repeats_the_same_trial_sequence_for_one_seed(tmp_path: Path):
+    first, second = [], []
+    run_optuna_skeleton_optimization(
+        _recording_skeleton_eval(first), n_trials=12, output_dir=tmp_path / "a", seed=7)
+    run_optuna_skeleton_optimization(
+        _recording_skeleton_eval(second), n_trials=12, output_dir=tmp_path / "b", seed=7)
+
+    assert len(first) == 12
+    assert first == second, "Same seed produced a different trial sequence."
+
+
+def test_skeleton_sampler_explores_differently_for_a_different_seed(tmp_path: Path):
+    """Guards against the seed being accepted but ignored, which would pass the test above."""
+    first, second = [], []
+    run_optuna_skeleton_optimization(
+        _recording_skeleton_eval(first), n_trials=12, output_dir=tmp_path / "a", seed=7)
+    run_optuna_skeleton_optimization(
+        _recording_skeleton_eval(second), n_trials=12, output_dir=tmp_path / "b", seed=8)
+
+    assert first != second, "Two different seeds produced an identical trial sequence."
+
+
+def test_preprocessing_sampler_repeats_the_same_trial_sequence_for_one_seed(tmp_path: Path):
+    first, second = [], []
+    run_optuna_preprocessing_optimization(
+        _recording_preprocessing_eval(first), n_trials=12, output_dir=tmp_path / "a", seed=7)
+    run_optuna_preprocessing_optimization(
+        _recording_preprocessing_eval(second), n_trials=12, output_dir=tmp_path / "b", seed=7)
+
+    assert len(first) == 12
+    assert first == second, "Same seed produced a different trial sequence."
+
+
+def test_preprocessing_sampler_explores_differently_for_a_different_seed(tmp_path: Path):
+    first, second = [], []
+    run_optuna_preprocessing_optimization(
+        _recording_preprocessing_eval(first), n_trials=12, output_dir=tmp_path / "a", seed=7)
+    run_optuna_preprocessing_optimization(
+        _recording_preprocessing_eval(second), n_trials=12, output_dir=tmp_path / "b", seed=8)
+
+    assert first != second, "Two different seeds produced an identical trial sequence."
+
+
+def test_sampler_is_seeded_by_default(tmp_path: Path):
+    """The default must be reproducible, not Optuna's unseeded default."""
+    assert DEFAULT_SAMPLER_SEED is not None
+
+    first, second = [], []
+    run_optuna_skeleton_optimization(
+        _recording_skeleton_eval(first), n_trials=12, output_dir=tmp_path / "a")
+    run_optuna_skeleton_optimization(
+        _recording_skeleton_eval(second), n_trials=12, output_dir=tmp_path / "b")
+
+    assert first == second, "Default run was not reproducible; the sampler is unseeded."
+
+
+@pytest.mark.parametrize("runner,block", [
+    (run_optuna_skeleton_optimization, "SkeletonConfig"),
+    (run_optuna_preprocessing_optimization, "PreprocessingConfig"),
+])
+def test_tuning_provenance_records_the_seed_beside_the_parameters(tmp_path, runner, block):
+    """A frozen parameter set is only defensible if the run that produced it can be repeated."""
+    evals = {"SkeletonConfig": _recording_skeleton_eval, "PreprocessingConfig": _recording_preprocessing_eval}
+    runner(evals[block]([]), n_trials=4, output_dir=tmp_path, seed=7)
+
+    written = list(tmp_path.glob("best_*_params.yaml"))
+    assert len(written) == 1
+    saved = yaml.safe_load(written[0].read_text())
+
+    # The config block the pipeline loader reads must be unchanged in shape.
+    assert block in saved and isinstance(saved[block], dict)
+
+    provenance = saved["TuningProvenance"]
+    assert provenance["seed"] == 7
+    assert provenance["sampler"] == "TPESampler"
+    assert provenance["n_trials_requested"] == 4
+    assert provenance["n_trials_run"] == 4
