@@ -1207,6 +1207,21 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
+    # Per-edge morphometry (#98 Tier 1 item 13). Sections 1.2 and 1.4 are distributional
+    # claims, and the summary above reduces each to a single mean. With n = 3 specimens per
+    # group the per-edge table is the only place with enough data to describe a distribution
+    # at all, and every provenance tag has to travel with its measurement - the diameter,
+    # smoothing and reconnection columns are each inhomogeneous in ways that matter.
+    per_edge = statistics.export_per_edge_morphometry(G, node_positions=node_positions)
+    per_edge_path = statistics.write_per_edge_morphometry_csv(
+        per_edge, pipeline_config.vtk_output_prefix.parent / "per_edge_morphometry.csv")
+    print(f"  Per-edge morphometry: {len(per_edge)} edges -> {per_edge_path}")
+    for column in ("diameter_provenance", "centreline_smoothing"):
+        counts = {}
+        for row in per_edge:
+            counts[row[column]] = counts.get(row[column], 0) + 1
+        print(f"    {column}: {counts}")
+
     # Inject boundary pressures and solve the system of linear equations to find pressure at every node and flow in every edge
     print("Running Iterative Flow-Hematocrit solver (Phase Separation and Fåhræus–Lindqvist effect)...")
     import ImageLynx.haemodynamics.rheology as rheo

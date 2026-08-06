@@ -41,32 +41,122 @@ def compute_basic_statistics(
     }
 
 #Update with newer tortuosity values HD gave to Anna
+#: Column order for the per-edge morphometry table. Stable, because a written CSV is an
+#: analysis input rather than a debug dump.
+PER_EDGE_MORPHOMETRY_COLUMNS = (
+    "u", "v", "key",
+    "length_um", "euclidean_um", "tortuosity", "curvature",
+    "assigned_diameter_um", "diameter_provenance",
+    "edt_diameter_um", "fwhm_diameter_um",
+    "centreline_smoothing", "n_centreline_points",
+    "branch_order", "reconnected",
+)
+
+
+def export_per_edge_morphometry(
+    G: Union[nx.Graph, nx.MultiGraph],
+    node_positions: Optional[dict] = None,
+    is_multigraph: Optional[bool] = None,
+) -> list:
+    """One row per edge, carrying every quantity H1 sections 1.2 and 1.4 are claims about.
+
+    Both sections are distributional - a difference in the spread or shape of vessel diameters
+    and tortuosities between groups - and this pipeline previously reduced each to a single
+    mean before anything could look at it. A mean cannot support a distributional claim, and
+    with n = 3 specimens per group the per-edge distribution is the only place there is enough
+    data to describe anything at all.
+
+    Every provenance tag travels with its measurement, because none of these columns is
+    homogeneous:
+
+    - ``diameter_provenance``   measured_edt / measured_fwhm / constant / synthetic_branch_order.
+      A distribution mixing measured and fabricated diameters is not a measurement (79baf86).
+    - ``centreline_smoothing``  bspline / bspline_relaxed / raw_fallback / raw_too_short.
+      ``length`` is only rewritten for edges that smooth, so the tortuosity numerator mixes a
+      B-spline arc length with a raw 26-connected staircase that runs about 8% longer, and
+      ``raw_too_short`` edges are 2-point reconnections whose tortuosity is 1.0 by construction
+      rather than by anatomy (610da99).
+    - ``reconnected``           whether terminal reconnection invented this edge.
+
+    Both raw estimators are emitted alongside the assigned diameter so the FWHM/EDT comparison
+    is reproducible from the artefact instead of from a one-off script.
+    """
+    if is_multigraph is None:
+        is_multigraph = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    if node_positions is None:
+        node_positions = {n: d["pos"] for n, d in G.nodes(data=True) if "pos" in d}
+
+    rows = []
+    it = G.edges(keys=True, data=True) if is_multigraph else G.edges(data=True)
+    for item in it:
+        u, v = item[0], item[1]
+        key = item[2] if is_multigraph else None
+        data = item[-1]
+
+        straight = None
+        if u in node_positions and v in node_positions:
+            straight = float(euclidean(np.array(node_positions[u]), np.array(node_positions[v])))
+
+        path_length = data.get("weight", data.get("length", straight))
+        tortuosity = curvature = None
+        if straight is not None and straight > 0 and path_length is not None:
+            tortuosity = float(path_length) / straight
+            if path_length > 0:
+                curvature = (float(path_length) - straight) / float(path_length)
+
+        voxels = data.get("voxels") or []
+        rows.append({
+            "u": u,
+            "v": v,
+            "key": key,
+            "length_um": None if path_length is None else float(path_length),
+            "euclidean_um": straight,
+            "tortuosity": tortuosity,
+            "curvature": curvature,
+            "assigned_diameter_um": data.get("assigned_diameter_um"),
+            "diameter_provenance": data.get("diameter_provenance"),
+            "edt_diameter_um": data.get("edt_diameter_um"),
+            "fwhm_diameter_um": data.get("fwhm_diameter_um"),
+            "centreline_smoothing": data.get("centreline_smoothing"),
+            "n_centreline_points": len(voxels),
+            "branch_order": data.get("branch_order"),
+            "reconnected": bool(data.get("reconnected", False)),
+        })
+    return rows
+
+
+def write_per_edge_morphometry_csv(rows: list, path: Union[str, Path]) -> Path:
+    """Write the per-edge table to CSV with a stable column order."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(PER_EDGE_MORPHOMETRY_COLUMNS))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({col: row.get(col) for col in PER_EDGE_MORPHOMETRY_COLUMNS})
+    return path
+
+
 def compute_tortuosity_measures(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict],
     is_multigraph: bool,
 ) -> Dict[str, Any]:
-    """Compute tortuosity index and curvature."""
+    """Compute tortuosity index and curvature.
+
+    Derived from export_per_edge_morphometry rather than recomputed, so the summary and the
+    per-edge table cannot disagree about what an edge's tortuosity is.
+    """
     if node_positions is None:
         return {
             "Average Tortuosity Index": "N/A (no position data)",
             "Average Curvature": "N/A (no position data)",
         }
-    tortuosity_indices = []
-    curvatures = []
-    it = G.edges(keys=True, data=True) if is_multigraph else G.edges(data=True)
-    for item in it:
-        u, v = item[0], item[1]
-        edge_data = item[-1]
-        if u in node_positions and v in node_positions:
-            pos_u = np.array(node_positions[u])
-            pos_v = np.array(node_positions[v])
-            straight = euclidean(pos_u, pos_v)
-            path_length = edge_data.get("weight", edge_data.get("length", straight))
-            if straight > 0:
-                tortuosity_indices.append(path_length / straight)
-                if path_length > 0:
-                    curvatures.append((path_length - straight) / path_length)
+
+    rows = export_per_edge_morphometry(G, node_positions, is_multigraph)
+    tortuosity_indices = [r["tortuosity"] for r in rows if r["tortuosity"] is not None]
+    curvatures = [r["curvature"] for r in rows if r["curvature"] is not None]
+
     return {
         "Average Tortuosity Index": (
             np.mean(tortuosity_indices) if tortuosity_indices else 0
