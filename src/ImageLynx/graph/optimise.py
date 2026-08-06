@@ -6,7 +6,12 @@ import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
 
-from ._helpers import add_edge_safe, calculate_path_length
+from ._helpers import (
+    CONSERVATIVE_RECONNECT_CAP_UM,
+    RECONNECT_THRESHOLD_UM,
+    add_edge_safe,
+    calculate_path_length,
+)
 from .validate import validate_skeleton_connection
 
 logger = logging.getLogger(__name__)
@@ -49,7 +54,7 @@ def optimise_graph_topology_fixed(
     loop_edges,
     skeleton_data=None,
     debug=False,
-    reconnect_threshold=3.0,
+    reconnect_threshold=RECONNECT_THRESHOLD_UM,
     use_spatial_index=True,
     remove_degree2_nodes=True,
     # consolidation_threshold=2.0 removed: declared here and consumed nowhere, in this
@@ -62,7 +67,11 @@ def optimise_graph_topology_fixed(
     validate_reconnections=True,
     aggressive_degree2_cleanup_level=1,
 ):
-    """Reconnect nearby terminals with optional skeleton validation."""
+    """Reconnect nearby terminals with optional skeleton validation.
+
+    reconnect_threshold is in MICRONS, not voxels: it is compared against node "pos",
+    which is stored in physical units. See RECONNECT_THRESHOLD_UM in _helpers.
+    """
     vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
 
     if reconnect_threshold and reconnect_threshold > 0:
@@ -152,7 +161,7 @@ def optimise_graph_topology_fixed(
                         validated=True,
                     )
                 else:
-                    conservative_threshold = min(reconnect_threshold * 0.5, 1.5)
+                    conservative_threshold = min(reconnect_threshold * 0.5, CONSERVATIVE_RECONNECT_CAP_UM)
                     if dist > conservative_threshold:
                         if debug:
                             logger.debug(

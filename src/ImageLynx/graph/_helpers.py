@@ -7,6 +7,27 @@ from scipy.interpolate import splprep, splev
 from scipy.spatial import cKDTree
 from numba import jit
 
+# Terminal-reconnection distances, in MICRONS.
+#
+# These are compared against node "pos", which build_graph_segment_skan_stitched_loops stores
+# in physical units. Before 2705b38 the pipeline ran at a voxel size of (1, 1, 1), so a
+# threshold of 3.0 was simultaneously 3 voxels and 3 "microns" and nobody had to choose. Fixing
+# the voxel size did not change these literals but did change what they mean: 3.0 silently
+# became 3.0 um where it had behaved as 3 voxels = 5.6 um, and the cap of 1.5 became 1.5 um
+# where it had behaved as 1.5 voxels = 2.8 um. Both are restored to the distance they used to
+# have. This is the converse of the usual calibration bug - the number did not move, its
+# meaning did - so nothing in the diff of 2705b38 pointed at it.
+#
+# 5.6 um is also defensible on its own terms: it is about one capillary diameter, so the gap
+# being bridged is comparable to the vessel being reconnected rather than an arbitrary jump.
+#
+# The parameters that carry these are named reconnect_threshold, not reconnect_threshold_um.
+# Renaming them would break the callers in examples/resistance_network_pipeline*.py, which pass
+# the value positionally by keyword; the units are pinned here and in the docstrings instead.
+RECONNECT_THRESHOLD_UM = 5.6
+CONSERVATIVE_RECONNECT_CAP_UM = 2.8
+
+
 def add_edge_safe(G, u, v, **attr):
     return G.add_edge(u, v, **attr)
 

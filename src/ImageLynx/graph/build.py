@@ -14,6 +14,8 @@ from scipy.ndimage import (
 from scipy.spatial import cKDTree
 import heapq
 
+from ._helpers import RECONNECT_THRESHOLD_UM
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,14 +23,18 @@ def build_graph_segment_skan_stitched_loops(
     sk,
     skeleton_image,
     debug=False,
-    reconnect_threshold=3.0,
+    reconnect_threshold=RECONNECT_THRESHOLD_UM,
     max_voxel_graph_size=1000000, # Increased limit because it's now instant
     use_spatial_index=True,
     use_padded_slicing=True, # Ignored, kept for API compatibility
     padding=3, # Ignored, kept for API compatibility
     voxel_size=(1.0, 1.0, 1.0),
 ):
-    """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection."""
+    """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection.
+
+    reconnect_threshold is in MICRONS, not voxels: terminals are matched on node "pos",
+    which this function stores in physical units. See RECONNECT_THRESHOLD_UM in _helpers.
+    """
     if sk is None or skeleton_image is None:
         raise ValueError("sk and skeleton_image cannot be None")
 

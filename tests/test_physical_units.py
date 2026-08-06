@@ -211,3 +211,84 @@ def test_resolve_voxel_size_uses_the_configuration_for_the_untagged_probability_
 
     assert resolved == pytest.approx(configured)
     assert resolved != (1.0, 1.0, 1.0)
+
+
+# --- Terminal-reconnection thresholds are microns, not voxels (item 17/(e)) ----------------
+#
+# The converse of the usual calibration bug: 2705b38 did not change these literals, it changed
+# what they mean. At the old (1, 1, 1) spacing a threshold of 3.0 was both 3 voxels and 3
+# "microns"; once the voxel size was fixed it silently became 3 um where it had behaved as
+# 3 * 1.866 = 5.6 um, and the conservative cap of 1.5 became 1.5 um where it had behaved as
+# 2.8 um. Nothing in the diff of 2705b38 pointed at either.
+
+def test_reconnect_thresholds_are_declared_in_microns():
+    from ImageLynx.graph._helpers import (
+        CONSERVATIVE_RECONNECT_CAP_UM,
+        RECONNECT_THRESHOLD_UM,
+    )
+
+    # 3 voxels and 1.5 voxels at the measured 1.866 um in-plane pixel size.
+    assert RECONNECT_THRESHOLD_UM == pytest.approx(3 * 1.866, abs=0.05)
+    assert CONSERVATIVE_RECONNECT_CAP_UM == pytest.approx(1.5 * 1.866, abs=0.05)
+
+
+def test_both_reconnection_entry_points_default_to_the_same_physical_distance():
+    """They reconnect the same terminals; a divergence here is silent and asymmetric."""
+    import inspect
+
+    from ImageLynx.graph._helpers import RECONNECT_THRESHOLD_UM
+    from ImageLynx.graph.build import build_graph_segment_skan_stitched_loops
+    from ImageLynx.graph.optimise import optimise_graph_topology_fixed
+
+    build_default = inspect.signature(
+        build_graph_segment_skan_stitched_loops).parameters["reconnect_threshold"].default
+    optimise_default = inspect.signature(
+        optimise_graph_topology_fixed).parameters["reconnect_threshold"].default
+
+    assert build_default == optimise_default == RECONNECT_THRESHOLD_UM
+
+
+def test_reconnection_threshold_is_compared_against_physical_positions():
+    """A 2 um gap must be bridged and a 4 um gap must not, at anisotropic spacing.
+
+    Without skeleton_data the reconnection takes the conservative branch, capped at
+    min(reconnect_threshold * 0.5, CONSERVATIVE_RECONNECT_CAP_UM) = 2.8 um, so these are the
+    distances that actually decide anything here.
+
+    Under the old voxel reading the cap was 1.5 and neither gap would be bridged. That is the
+    only way to tell the two readings apart: a pure rescaling is invisible unless the test
+    fixes an absolute physical distance, which is exactly why this class of bug survived.
+    """
+    from ImageLynx.graph._helpers import RECONNECT_THRESHOLD_UM
+    from ImageLynx.graph.optimise import optimise_graph_topology_fixed
+
+    G = nx.MultiGraph()
+    G.graph["voxel_size"] = SPACING
+
+    def _pair(prefix, z_start, gap_um, y):
+        """Two degree-1 terminals separated along z by exactly gap_um."""
+        a, b = f"{prefix}_a", f"{prefix}_b"
+        anchor_a, anchor_b = f"{prefix}_anchor_a", f"{prefix}_anchor_b"
+        z0 = z_start * SPACING[0]
+        G.add_node(a, pos=np.array([z0, y * SPACING[1], 10 * SPACING[2]]))
+        G.add_node(b, pos=np.array([z0 + gap_um, y * SPACING[1], 10 * SPACING[2]]))
+        # Anchors keep a and b at degree 1 without being reconnection candidates themselves.
+        G.add_node(anchor_a, pos=np.array([z0 - 40.0, y * SPACING[1], 10 * SPACING[2]]))
+        G.add_node(anchor_b, pos=np.array([z0 + gap_um + 40.0, y * SPACING[1], 10 * SPACING[2]]))
+        G.add_edge(a, anchor_a)
+        G.add_edge(b, anchor_b)
+        return a, b
+
+    near_a, near_b = _pair("near", 5, gap_um=2.0, y=4)
+    far_a, far_b = _pair("far", 5, gap_um=4.0, y=14)
+
+    out, _ = optimise_graph_topology_fixed(
+        G, voxel_loops=set(), loop_edges=set(), skeleton_data=None, debug=False,
+        reconnect_threshold=RECONNECT_THRESHOLD_UM, use_spatial_index=False,
+        remove_degree2_nodes=False, improve_junctions=False,
+    )
+
+    assert out.has_edge(near_a, near_b), \
+        "a 2 um gap was not bridged by a 2.8 um cap; the threshold is not in microns"
+    assert not out.has_edge(far_a, far_b), \
+        "a 4 um gap was bridged by a 2.8 um cap"
