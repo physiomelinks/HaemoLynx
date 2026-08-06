@@ -597,3 +597,59 @@ def test_hysteresis_high_range_stays_above_the_low_range():
 
     assert high_hi > low_hi, "no valid (low, high) pair exists at the top of the low range"
     assert high_lo >= low_lo, "the high range starts below the low range"
+
+
+# --- The objective must not override the configured filter chain (Phase 1.5) --------------
+
+def _kwargs_passed_to_eval(objective_cls):
+    """The dict the objective hands to the pipeline, which is merged over the config."""
+    captured = {}
+
+    class _Recorder:
+        def suggest_int(self, name, low, high, **k):
+            return low
+
+        def suggest_float(self, name, low, high, **k):
+            # Return the midpoint so the low/high ordering constraint is not tripped.
+            return (low + high) / 2.0
+
+        def suggest_categorical(self, name, choices):
+            return choices[0]
+
+    def _eval(kwargs):
+        captured.update(kwargs)
+        return None
+
+    try:
+        objective_cls(_eval)(_Recorder())
+    except optuna.TrialPruned:
+        pass
+    return captured
+
+
+@pytest.mark.parametrize("filter_key", [
+    "median_filter_size",
+    "morphological_opening_radius",
+    "morphological_closing_radius",
+])
+def test_preprocessing_objective_does_not_override_the_configured_filter_chain(filter_key):
+    """These were pinned at 9, 4 and 0, silently beating PreprocessingConfig's 7, 1 and 0.
+
+    The eval callback merges the suggested kwargs over the config dict, so anything named here
+    wins. The tuner was therefore tuning a far more heavily filtered pipeline than the one that
+    actually runs, and returning thresholds calibrated for it. All three are applied to the
+    float probability map before thresholding, so they erase capillary signal outright: at a
+    fixed threshold, (9, 4) leaves 3 connected structures where (0, 0) leaves 199.
+    """
+    assert filter_key not in _kwargs_passed_to_eval(PreprocessingObjective)
+
+
+def test_filter_chain_is_not_a_search_dimension():
+    """It must not be tuned either: this objective would select the chain that erases anatomy.
+
+    A higher mean probability inside the mask is exactly what destroying capillaries produces,
+    since only the most confident voxels survive.
+    """
+    suggested = _suggested_ranges(PreprocessingObjective(lambda kwargs: None))
+    assert "median_filter_size" not in suggested
+    assert "morphological_opening_radius" not in suggested

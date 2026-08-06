@@ -270,14 +270,38 @@ class PreprocessingObjective:
             # of roughly 0.60-0.80 is interior rather than pressed against an edge.
             "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.45, 0.85),
             "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.55, 0.95),
-            # "median_filter_size": trial.suggest_categorical("median_filter_size", [0, 3, 5, 7, 9]),
-            "median_filter_size": 9,
-            # "morphological_opening_radius": trial.suggest_int("morphological_opening_radius", 0, 1),
-            # "morphological_closing_radius": trial.suggest_int("morphological_closing_radius", 0, 1),
-            "morphological_opening_radius": 4,
-            "morphological_closing_radius": 0,
+            # median_filter_size, morphological_opening_radius and morphological_closing_radius
+            # are NOT set here. They used to be pinned at 9, 4 and 0, which silently overrode
+            # PreprocessingConfig's own 7, 1 and 0 - the eval callback does
+            # `config.__dict__ | suggested_kwargs`, so whatever appears here wins. The tuner was
+            # therefore not tuning the pipeline; it was tuning a different, much more heavily
+            # filtered one, and returning thresholds calibrated for that one.
+            #
+            # It matters because all three are applied to the FLOAT probability map BEFORE
+            # thresholding, so they can erase capillary signal before any threshold sees it.
+            # Measured at a fixed threshold on the reference subvolume, varying only the chain:
+            #
+            #     median  opening    fg   r_med  r_p90  r_p99   components
+            #          0        0  0.137   1.87   3.73   5.60          199
+            #          3        0  0.118   1.87   4.17   6.73          116
+            #          7        1  0.046   2.64   5.90  11.95           71   <- config default
+            #          9        4  0.010   5.27  10.88  15.82            3   <- this objective
+            #
+            # 199 distinct structures down to 3, with the survivors twice as thick: that is the
+            # signature of thin structures being erased while fat ones remain. A 6 um capillary
+            # is 3.2 voxels across at a 1.866 um voxel, and a greyscale opening of radius 4
+            # flattens it into its background.
+            #
+            # They must not become search dimensions either. This objective rewards a high mean
+            # probability inside the mask, and destroying capillaries raises it - only the most
+            # confident voxels survive - so it would actively select the chain that erases the
+            # anatomy. Mask calibre is the criterion that can settle them, and it is a reported
+            # diagnostic rather than a loss term precisely so it cannot be gamed.
+            #
+            # Smoothing sigma is a different case and stays searched: measured over its whole
+            # range it moves foreground 0.114-0.121 and leaves the median radius unchanged, and
+            # confidence falls slightly as it rises, so the objective is not driven toward it.
             "probability_smoothing_sigma": trial.suggest_float("probability_smoothing_sigma", 0.0, 1.0),
-            # "probability_smoothing_sigma": 0,
             "shannon_entropy_threshold": trial.suggest_float("shannon_entropy_threshold", 0.85, 0.99),
             "shannon_entropy_core": trial.suggest_float("shannon_entropy_core", 0.4, 0.8)
         }
