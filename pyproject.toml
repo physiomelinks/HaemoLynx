@@ -8,20 +8,55 @@ version = "0.1.0"
 description = "Vascular network analysis from 3D microscopy"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = [
-    "numpy",
-    "tifffile",
-    "matplotlib",
-    "networkx",
-    "scikit-image>=0.24",
-    "scipy",
-    "pandas",
-    "plotly",
-    "h5py",
-    "skan",
-    "pyvista",
-    "pyyaml"
+authors = [
+    { name = "Finbar Argus", email = "finbar.argus@auckland.ac.nz" },
+    { name = "Harvey Davis" },
 ]
+keywords = [
+    "vascular",
+    "microvasculature",
+    "haemodynamics",
+    "microscopy",
+    "skeletonization",
+    "graph",
+    "network-analysis",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+# Lower bounds are the oldest release the test suite passes on, not the oldest
+# that imports. See tests/test_dependency_floors.py, which reads them back.
+dependencies = [
+    "numpy>=1.23",
+    "tifffile>=2022.8.12",
+    "matplotlib>=3.6",
+    "networkx>=2.8",
+    "scikit-image>=0.24",
+    "scipy>=1.9",
+    "pandas>=2.0.2",
+    "plotly>=5.10",
+    "h5py>=3.7",
+    "skan>=0.11.1",
+    "pyvista>=0.45",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+# The repository is private today, so these 404 for anyone else. An issue
+# tracks revisiting them when it is made public (issue #109).
+Homepage = "https://github.com/FinbarArgus/ImageLynx"
+Repository = "https://github.com/FinbarArgus/ImageLynx"
+Issues = "https://github.com/FinbarArgus/ImageLynx/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "nbconvert", "nbformat"]
@@ -38,3 +73,7 @@ markers = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["ImageLynx*"]
+
+[tool.setuptools.package-data]
+ImageLynx = ["py.typed"]
