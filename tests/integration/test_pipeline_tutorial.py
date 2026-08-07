@@ -85,3 +85,69 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
     assert n_edges > 50, f"Expected at least 50 edges, got {n_edges}"
     assert n_nodes < 1000, f"Expected less than 1000 nodes, got {n_nodes}"
     assert n_edges < 1000, f"Expected less than 1000 edges, got {n_edges}"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_the_tutorial_runs_without_the_repository(tmp_path):
+    """The notebook promises `pip install ImageLynx` is enough. Check that.
+
+    The exported script is copied out of the repository and run from a
+    directory that contains nothing else, so the checkout is not discoverable:
+    no `tests/data` mask, no `examples/` config, no `tutorial_plots`. It has to
+    fall back to the schema's default settings and the synthetic vessel volume
+    it builds itself, which is what a pip-installed user gets.
+    """
+    import os
+    import shutil
+
+    pytest.importorskip("pyvista")
+    pytest.importorskip("nbconvert")
+
+    if not GENERATED_SCRIPT.exists():
+        pytest.skip("run test_pipeline_tutorial_notebook_converts_and_runs first")
+
+    sandbox = tmp_path / "elsewhere"
+    sandbox.mkdir()
+    script = sandbox / GENERATED_SCRIPT.name
+    shutil.copy(GENERATED_SCRIPT, script)
+
+    env = {
+        **os.environ,
+        "IMAGELYNX_TUTORIAL_OUTPUT_DIR": str(tmp_path / "outputs"),
+        "IMAGELYNX_TUTORIAL_PLOT_DIR": str(tmp_path / "plots"),
+        # Only the library, exactly as an install provides it.
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+        "MPLBACKEND": "Agg",
+        "PYVISTA_OFF_SCREEN": "true",
+    }
+    env.pop("IMAGELYNX_REPO_ROOT", None)
+    env.pop("IMAGELYNX_TUTORIAL_INPUT_TIFF", None)
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=str(sandbox), env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, (
+        f"the tutorial needs the repository after all:\n{result.stdout}\n{result.stderr}"
+    )
+    assert "synthetic volume" in result.stdout, (
+        "expected the fallback volume to be used when there is no mask to hand"
+    )
+
+    graph_path = tmp_path / "outputs" / "synthetic_vessels_graph.pkl"
+    assert graph_path.exists(), f"missing graph from the synthetic run: {graph_path}"
+    with graph_path.open("rb") as fh:
+        graph = pickle.load(fh)
+    # The phantom is a trunk splitting twice: 7 vessels, 8 nodes.
+    assert graph.number_of_edges() == 7
+    assert graph.number_of_nodes() == 8
+    # The graph is pickled at Stage 2, before haemodynamics; the later stages
+    # are evidenced by what they write.
+    assert (tmp_path / "outputs" / "synthetic_vessels_tutorial_vessels.vtp").exists(), (
+        "the VTK export did not run on the synthetic network"
+    )
+    assert (tmp_path / "outputs" / "synthetic_vessels_statistics.csv").exists(), (
+        "the statistics export did not run on the synthetic network"
+    )
+    assert "Two-point resistance:" in result.stdout

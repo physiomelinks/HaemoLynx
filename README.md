@@ -7,14 +7,44 @@ Converts raw microscopy images of the microvasculature into computational haemod
 Python 3.9 or newer.
 
 ```bash
+pip install ImageLynx
+```
+
+> Not on PyPI yet — until the first release, install from a checkout as below.
+> Everything else on this page already works that way.
+
+To work on ImageLynx itself, install the checkout instead:
+
+```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
 `pyproject.toml` is the single source of truth for dependencies. Add the
-`notebook` extra (`pip install -e ".[dev,notebook]"`) to get the Jupyter kernel
-needed to run `tutorials/pipeline_tutorial.ipynb` interactively.
+`notebook` extra (`pip install "ImageLynx[notebook]"`, or
+`pip install -e ".[dev,notebook]"` from a checkout) to get the Jupyter kernel
+for the tutorial notebook.
+
+## Start here: the tutorial notebook
+
+**[tutorials/pipeline_tutorial.ipynb](tutorials/pipeline_tutorial.ipynb)** runs
+every stage of the pipeline one cell at a time, with a plot after each, and
+explains what each stage is for. It is the fastest way to see what ImageLynx
+does.
+
+Open it and run all cells — that is the whole setup:
+
+```bash
+pip install "ImageLynx[notebook]"
+jupyter notebook tutorials/pipeline_tutorial.ipynb
+```
+
+The first cell installs ImageLynx if the kernel does not already have it, and
+the notebook builds its own small vessel volume when no segmented image is to
+hand, so it needs no data download and no clone. From a checkout it picks up
+the cropped nerve mask in `tests/data/` and the pipeline's own
+`examples/resistance_pipeline_config.yaml` instead.
 
 ## Running the examples
 
@@ -170,9 +200,10 @@ repository pin their own paths under `examples/` in their config files.
 
 ## Tutorial
 
-`tutorials/pipeline_tutorial.ipynb` walks through the same pipeline stage by
-stage with plots at each step. Edit the notebook, not the generated
-`pipeline_tutorial.py`; regenerate that with:
+[The tutorial notebook](tutorials/pipeline_tutorial.ipynb) walks through the
+same pipeline stage by stage with plots at each step (see
+[Start here](#start-here-the-tutorial-notebook) for how to open it). Edit the
+notebook, not the generated `pipeline_tutorial.py`; regenerate that with:
 
 ```bash
 pytest tests/integration/test_pipeline_tutorial.py

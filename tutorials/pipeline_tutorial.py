@@ -31,23 +31,51 @@
 # ## Prerequisites
 # 
 # ```bash
-# pip install -e ".[dev]"
+# pip install ImageLynx
 # ```
 # 
-# - **ImageLynx** (above) for Stages 1–6.
-# - **[ilastik](https://www.ilastik.org/download/)** (separate install) for Stage 0 — only if you segment your own raw image.
+# That is everything Stages 1–6 need: the next cell installs it for you if it is
+# missing, and the tutorial runs on a synthetic vessel volume it builds itself,
+# so no data download and no repository checkout are required.
 # 
-# Run from the repository root or from `tutorials/`.
+# Two optional extras:
+# 
+# - **Working from a clone?** `pip install -e ".[dev]"` from the repository root
+#   instead. The tutorial then picks up the real cropped nerve mask in
+#   `tests/data/` and the pipeline's own `examples/resistance_pipeline_config.yaml`
+#   rather than the defaults, and you get the per-step graph plots from
+#   `tutorials/tutorial_plots.py`.
+# - **[ilastik](https://www.ilastik.org/download/)** (a separate program) for
+#   Stage 0, only if you want to segment your own raw image.
 
 # In[ ]:
 
 
+# `from __future__` has to be the first statement in the exported .py, so
+# it leads the first code cell rather than the setup cell below.
 from __future__ import annotations
+
+# Install ImageLynx if this kernel does not already have it. Nothing happens
+# when it is present, so a clone or an editable install is left alone.
+import importlib.util
+import subprocess
+import sys
+
+if importlib.util.find_spec("ImageLynx") is None:
+    subprocess.run([sys.executable, "-m", "pip", "install", "ImageLynx"], check=True)
+
+import ImageLynx
+
+print(f"ImageLynx {ImageLynx.__version__} from {ImageLynx.__file__}")
+
+# In[ ]:
+
 
 import json
 import os
 import pickle
 import sys
+import tempfile
 from pathlib import Path
 
 import networkx as nx
@@ -72,44 +100,90 @@ def _resolve_tutorial_dir() -> Path:
 TUTORIAL_DIR = _resolve_tutorial_dir()
 
 
-def _resolve_repo_root(tutorial_dir: Path) -> Path:
+def _resolve_repo_root(tutorial_dir: Path) -> Path | None:
+    """The checkout this notebook sits in, or None when pip-installed."""
     env_root = os.environ.get("IMAGELYNX_REPO_ROOT")
     if env_root:
         return Path(env_root)
-    for start in [tutorial_dir, tutorial_dir.parent, Path.cwd().resolve(), *Path.cwd().resolve().parents]:
-        if (start / "src" / "ImageLynx").is_dir() and (start / "examples" / "resistance_network_pipeline.py").is_file():
+    candidates = [tutorial_dir, tutorial_dir.parent, Path.cwd().resolve(), *Path.cwd().resolve().parents]
+    for start in candidates:
+        if (start / "src" / "ImageLynx").is_dir() and (start / "examples").is_dir():
             return start
-    return tutorial_dir.parent
+    return None
 
 
 REPO_ROOT = _resolve_repo_root(TUTORIAL_DIR)
-SRC_DIR = REPO_ROOT / "src"
-EXAMPLES_DIR = REPO_ROOT / "examples"
-for p in (SRC_DIR, EXAMPLES_DIR):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+if REPO_ROOT is not None:
+    # In a checkout, prefer the working tree over anything already installed.
+    for p in (REPO_ROOT / "src", REPO_ROOT / "examples"):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from ImageLynx.io.voxel_validation import resolve_voxel_size_xyz
-from ImageLynx.pipeline import default_schema, resolve_settings
+from ImageLynx.pipeline import default_schema, resolve_settings, write_default_config
 
 SCHEMA = default_schema()
 
-# Settings come from the pipeline's config file, so the tutorial and the
-# example agree by construction rather than by being kept in step by hand.
+# Settings come from a config file rather than from constants typed here, so
+# the tutorial and the pipeline agree by construction. In a checkout that is
+# the example's own config; otherwise the schema writes a default one, which is
+# exactly what `write_default_config` gives any installed user.
+CONFIG_PATH = REPO_ROOT / "examples" / "resistance_pipeline_config.yaml" if REPO_ROOT else None
+if CONFIG_PATH is None or not CONFIG_PATH.exists():
+    CONFIG_PATH = write_default_config(Path(tempfile.mkdtemp()) / "tutorial_config.yaml")
+
 # resolve_settings also fills in the tables derived from other settings.
-PIPELINE_SETTINGS = resolve_settings(
-    schema=SCHEMA, config_path=EXAMPLES_DIR / "resistance_pipeline_config.yaml"
-)
+PIPELINE_SETTINGS = resolve_settings(schema=SCHEMA, config_path=CONFIG_PATH)
 DIAMETER_BY_BRANCH_ORDER = PIPELINE_SETTINGS["diameter_by_branch_order"]
 custom_edges = PIPELINE_SETTINGS["custom_edges"]
 
+# The plot helpers live beside the notebook in the repository. Without them the
+# pipeline still runs; only the inline figures are skipped.
 if str(TUTORIAL_DIR) not in sys.path:
     sys.path.insert(0, str(TUTORIAL_DIR))
-from tutorial_plots import GraphBuildPlotter, in_jupyter, show_stage_plots
+try:
+    from tutorial_plots import GraphBuildPlotter, in_jupyter, show_stage_plots
+except ModuleNotFoundError:
+    # Same behaviour, minus the inline display: every figure is still written
+    # to PLOT_DIR, which is all the pipeline itself needs.
+    print("tutorial_plots.py not found (installed, no checkout): figures are saved to disk, not shown inline.")
 
-print(f"Repository root: {REPO_ROOT}")
-print(f"Running in Jupyter: {in_jupyter()}")
+    def in_jupyter() -> bool:
+        return False
+
+    def show_stage_plots(stage_title, paths, *, enabled=True, **kwargs) -> None:
+        if enabled:
+            print(f"{stage_title}: {', '.join(str(p) for p in paths)}")
+
+    class GraphBuildPlotter:
+        """Save a graph overlay after each topology step."""
+
+        def __init__(self, image, plot_dir, *, subdir="graph_steps", label_nodes=False, **kwargs):
+            self.image = image
+            self.plot_dir = Path(plot_dir) / subdir
+            self.plot_dir.mkdir(parents=True, exist_ok=True)
+            self.label_nodes = label_nodes
+            self.saved = []
+
+        def __call__(self, graph_obj, label):
+            plot_path = self.plot_dir / f"{label}.png"
+            visualization.visualize_edges_and_nodes(
+                self.image, graph_obj, label_nodes=self.label_nodes,
+                save_path=plot_path, show=False,
+            )
+            self.saved.append((label, plot_path))
+
+        def display_all(self, stage_title, *, enabled=True, **kwargs) -> None:
+            if enabled and self.saved:
+                print(f"{stage_title}: {len(self.saved)} step plots in {self.plot_dir}")
+
+        def plot_paths(self):
+            return [path for _label, path in self.saved]
+
+print(f"Repository root: {REPO_ROOT if REPO_ROOT else 'none - running from an installed ImageLynx'}")
+print(f"Settings from: {CONFIG_PATH}")
+
 
 # ## Configuration (shared)
 # 
@@ -251,17 +325,63 @@ else:
 
 
 # --- Stage 1 input selection ---
-DEFAULT_SEGMENTED_TIFF = REPO_ROOT / "tests" / "data" / "Nerve_capillaries_cropped.tif"
+# In a checkout, the small cropped nerve mask committed for the tests. Without
+# one, a synthetic volume built here -- so this notebook runs on a bare
+# `pip install ImageLynx`, with no data to download.
+DEFAULT_SEGMENTED_TIFF = REPO_ROOT / "tests" / "data" / "Nerve_capillaries_cropped.tif" if REPO_ROOT else None
+
+
+def build_synthetic_vessel_volume(path: Path) -> Path:
+    """A branching phantom: one trunk, two branches, two sub-branches.
+
+    Vessels are drawn as thick lines through a 64 x 64 x 64 volume, which is
+    enough for every stage below to do something real -- skeletonise, build a
+    graph with junctions and free ends, order the branches, and solve a flow.
+    """
+    import tifffile
+
+    volume = np.zeros((64, 64, 64), dtype=np.uint8)
+
+    def draw(start, end, radius=2):
+        start, end = np.asarray(start, dtype=float), np.asarray(end, dtype=float)
+        steps = int(np.linalg.norm(end - start)) * 4 + 1
+        for t in np.linspace(0.0, 1.0, steps):
+            z, y, x = np.round(start + t * (end - start)).astype(int)
+            z0, z1 = max(0, z - radius), min(volume.shape[0], z + radius + 1)
+            y0, y1 = max(0, y - radius), min(volume.shape[1], y + radius + 1)
+            x0, x1 = max(0, x - radius), min(volume.shape[2], x + radius + 1)
+            volume[z0:z1, y0:y1, x0:x1] = 255
+
+    # Points are (z, y, x). The tree runs along y because Stage 3 picks the
+    # inlet from the first 20% of y and the outlet from the last 20%: the trunk
+    # starts inside the inlet band and every free end lands in the outlet band.
+    draw((32, 5, 32), (32, 30, 32))          # trunk
+    draw((32, 30, 32), (32, 50, 14))         # two branches...
+    draw((32, 30, 32), (32, 50, 50))
+    draw((32, 50, 14), (18, 60, 8))          # ...each splitting once more
+    draw((32, 50, 14), (46, 60, 8))
+    draw((32, 50, 50), (18, 60, 56))
+    draw((32, 50, 50), (46, 60, 56))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(path, volume)
+    return path
+
 
 # True: use your Stage 0 mask (or any other segmented TIFF you specify).
 USE_CUSTOM_SEGMENTED_IMAGE = False
 CUSTOM_SEGMENTED_TIFF = SEGMENTED_OUTPUT_PATH  # from Stage 0; only used when USE_CUSTOM_SEGMENTED_IMAGE=True
 
+env_input = os.environ.get("IMAGELYNX_TUTORIAL_INPUT_TIFF")
 if USE_CUSTOM_SEGMENTED_IMAGE:
     INPUT_TIFF = Path(CUSTOM_SEGMENTED_TIFF).expanduser().resolve()
+elif env_input:
+    INPUT_TIFF = Path(env_input).expanduser().resolve()
+elif DEFAULT_SEGMENTED_TIFF is not None and DEFAULT_SEGMENTED_TIFF.exists():
+    INPUT_TIFF = DEFAULT_SEGMENTED_TIFF.resolve()
 else:
-    env_input = os.environ.get("IMAGELYNX_TUTORIAL_INPUT_TIFF")
-    INPUT_TIFF = Path(env_input).expanduser().resolve() if env_input else DEFAULT_SEGMENTED_TIFF.resolve()
+    INPUT_TIFF = build_synthetic_vessel_volume(OUTPUT_DIR / "synthetic_vessels.tif")
+    print("No segmented image to hand, so this run uses the synthetic volume above.")
 
 if not INPUT_TIFF.exists():
     raise FileNotFoundError(
@@ -276,7 +396,7 @@ graph_path = OUTPUT_DIR / f"{stem}_graph.pkl"
 VTK_PREFIX = OUTPUT_DIR / f"{stem}_tutorial"
 
 print(f"Stage 1 input (segmented): {INPUT_TIFF}")
-print(f"USE_CUSTOM_SEGMENTED_IMAGE={USE_CUSTOM_SEGMENTED_IMAGE}")
+
 
 # In[ ]:
 
