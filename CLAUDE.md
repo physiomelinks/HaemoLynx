@@ -22,7 +22,7 @@ ImageLynx/
 │   │                       #   constriction (the one constriction model) + its site-choosing
 │   │                       #   strategies: probability, pericyte_mask; constriction_strategy
 │   │                       #   (which strategy a run uses), pericyte_comparison, pericyte_sweep
-│   ├── statistics/         # stats.py, 3D_distances.py (cell-to-vessel; imported via importlib)
+│   ├── statistics/         # stats.py, three_dim_distances.py (cell-to-vessel distances)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
 │   └── pipeline/           # schema.py (the pipeline's 137 settings), settings.py, checks.py,
@@ -130,7 +130,7 @@ pip install -e ".[dev]"
 | `src/ImageLynx/preprocessing/` | `tests/test_preprocessing.py` |
 | `src/ImageLynx/graph/` | `tests/test_graph.py`, `tests/test_branch_order_hierarchy.py`, boundary/assignment tests |
 | `src/ImageLynx/haemodynamics/` | `tests/test_hemodynamics.py`, FWHM/pericyte integration tests |
-| `src/ImageLynx/statistics/` | `tests/test_statistics.py`, `tests/test_3d_distances.py` |
+| `src/ImageLynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py` |
 | `src/ImageLynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py` |
 | Full pipeline / examples | `tests/integration/test_image_to_model_pipeline.py`, `test_nerve_pipeline.py` |
 | Tutorial notebook | `tests/integration/test_pipeline_tutorial.py` (exports notebook → `.py`, then runs) |
@@ -205,7 +205,7 @@ reports the others).
 - **`haemodynamics/constriction_strategy.py`** — `set_resistances_for_constriction_strategy`, the
   single place the settings pick a strategy, used by both `apply.py` and `pericyte_comparison.py`.
 - **`haemodynamics/apply.py`** — high-level Poiseuille application used by examples and tutorial.
-- **`statistics/3D_distances.py`** — cell-to-vessel distances. Module name starts with a digit, so it can’t be imported normally — `statistics/__init__.py` pulls it in via `importlib.import_module`.
+- **`statistics/three_dim_distances.py`** — cell-to-vessel distances.
 - **`examples/resistance_pipeline_settings.py`** — default constants and ilastik toggles; the preset/override engine lives in `examples/presets.py`.
 
 ---
@@ -257,8 +257,6 @@ running tests between each.
 - **Two files named `automated_vessel_assignment.py`** (`io/` = mask loading, `graph/` = terminal-node
   assignment). No shared code — just a confusing name collision.
 - **`haemodynamics/automated.py`** is FWHM diameter measurement, not “automation”.
-- **`statistics/3D_distances.py`** starts with a digit → can’t be imported normally; loaded via an
-  `importlib` hack in `statistics/__init__.py`.
 - **`graph/__init__.py` bug:** imports `create_merged_edge_attributes` twice and lists
   `create_merged_edge_attributes_simple` / `_full` in `__all__` — neither is imported, so
   `from ImageLynx.graph import *` raises `AttributeError`. (Confirmed reproducible.)
@@ -296,10 +294,11 @@ Keep the **public function names** the same so the API surface doesn’t move; o
 - [ ] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`.
 - [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`.
 - [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py` (update `haemodynamics/__init__.py`,
-      `haemodynamics/pipeline.py`, and `statistics/3D_distances.py` which calls `build_graph_branch_label_volume`).
-- [ ] `statistics/3D_distances.py` → `statistics/distances_3d.py` (or `cell_distances.py`); drop the
-      `importlib` hack in `statistics/__init__.py` for a normal `from .distances_3d import ...`.
-      Rename `tests/test_3d_distances.py` references as needed.
+      `haemodynamics/pipeline.py`, and `statistics/three_dim_distances.py` which calls `build_graph_branch_label_volume`).
+- [x] `statistics/3D_distances.py` → `statistics/three_dim_distances.py`; the `importlib` hack in
+      `statistics/__init__.py` is gone, replaced by a normal
+      `from .three_dim_distances import ...`. `tests/test_3d_distances.py` →
+      `tests/test_three_dim_distances.py`.
 - [ ] Use `git mv` so history is preserved. Run full `pytest` after each rename. Commit per rename.
 
 ### Phase 3 — De-duplicate the whole-brain workflow — **DONE**
