@@ -333,21 +333,21 @@ def load_3d_tif_with_voxel_size(
         if x_res_tag:
             x_res = x_res_tag.value[0] / x_res_tag.value[1]
         else:
-            print("No x resolution tag found; defaulting to 1.0")
+            logger.warning("No x resolution tag found; defaulting to 1.0")
             x_res = 1.0
             missing_axes.append("x")
 
         if y_res_tag:
             y_res = y_res_tag.value[0] / y_res_tag.value[1]
         else:
-            print("No y resolution tag found; defaulting to 1.0")
+            logger.warning("No y resolution tag found; defaulting to 1.0")
             y_res = 1.0
             missing_axes.append("y")
 
         if "spacing" in meta:
             z_res = float(meta.get("spacing"))
         else:
-            print("No z resolution (spacing) found; defaulting to 1.0")
+            logger.warning("No z resolution (spacing) found; defaulting to 1.0")
             z_res = 1.0
             missing_axes.append("z")
 
@@ -511,7 +511,7 @@ def load_binary_mask_and_voxel_size(
 
 def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AXIS_ORDER):
     """Load a TIFF in canonical ``(z, y, x)`` order and skeletonize it."""
-    print("Loading and skeletonizing TIFF...")
+    logger.info("Loading and skeletonizing TIFF...")
     (
         image,
         voxel_size_x,
@@ -520,7 +520,7 @@ def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AX
         voxel_meta_status,
     ) = load_3d_tif_with_voxel_size(filepath, axis_order=axis_order)
 
-    print("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
+    logger.info("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
     binary = _to_binary_volume_for_skeletonization(image)
     skeleton = skeletonize(binary.astype(bool), method="lee")
     skeleton = binary_fill_holes(skeleton)

@@ -33,7 +33,7 @@ def _log_degree2_diagnostics(G: nx.MultiGraph, max_degree: int, debug: bool) -> 
     if not debug:
         return
     degree2_diag = diagnose_degree2_nodes(G, max_degree=max_degree)
-    print(format_degree2_diagnostics_report(degree2_diag))
+    logger.debug(format_degree2_diagnostics_report(degree2_diag))
 
 
 def build_graph_from_skeleton(
@@ -83,11 +83,10 @@ def build_graph_from_skeleton(
     degree2_pass2_max_degree = 8
 
     logger.info("Building skan Skeleton object...")
-    print("Building skan Skeleton object...")
     sk = csr.Skeleton(skeleton)
-    print(f"skan Skeleton built: {sk.n_paths} paths")
+    logger.info(f"skan Skeleton built: {sk.n_paths} paths")
 
-    print("Building graph (loop detection + segment extraction)...")
+    logger.info("Building graph (loop detection + segment extraction)...")
     G, voxel_loops, loop_edges = build_graph_segment_skan_stitched_loops(
         sk,
         skeleton,

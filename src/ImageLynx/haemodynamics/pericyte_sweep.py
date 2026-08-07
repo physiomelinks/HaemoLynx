@@ -11,6 +11,7 @@ somewhere it can be tested.
 from __future__ import annotations
 
 import csv
+import logging
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -22,6 +23,8 @@ from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Columns of the sweep CSV, in order.
 SWEEP_COLUMNS = (
@@ -220,7 +223,7 @@ def run_pericyte_dilation_pressure_sweep(
             )
 
     csv_path = write_sweep_csv(results, output_dir / "pericyte_dilation_pressure_sweep.csv")
-    print(
+    logger.info(
         f"Pericyte dilation sweep: {len(results)} points "
         f"({len(list(dilation_values))} dilations x {len(list(inlet_pressures))} pressures) "
         f"-> {csv_path}"

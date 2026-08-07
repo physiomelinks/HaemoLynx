@@ -1,8 +1,12 @@
 """Internal helpers for graph operations."""
+import logging
 from typing import List, Tuple, Dict, Any, Union
 
 import numpy as np
 import networkx as nx
+
+logger = logging.getLogger(__name__)
+
 
 def edge_id(u: Any, v: Any, key: Any) -> Tuple[Any, Any, Any]:
     """Orientation-independent id for a MultiGraph edge.
@@ -70,7 +74,7 @@ def create_merged_edge_attributes(edge1_data, edge2_data, node_pos):
     if len(merged_voxels) > 1:
         max_gap = validate_voxel_path_continuity(merged_voxels)
         if max_gap > 5.0:  # Large gap indicates problematic merge
-            print(f"WARNING: Large gap ({max_gap:.2f}) in merged voxel path - may be discontinuous")
+            logger.warning(f"Large gap ({max_gap:.2f}) in merged voxel path - may be discontinuous")
 
     # Length always comes from the merged path. The additive sum is kept only as a
     # diagnostic: the two diverge legitimately when an upstream step re-routes a
@@ -321,12 +325,12 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
     end_vox = np.round(np.asarray(end_pos, dtype=float) / vs).astype(int)
     
     if debug:
-        print(f"       Tracing skeleton from {start_pos} (vox {start_vox}) to {end_pos} (vox {end_vox})")
+        logger.debug(f"       Tracing skeleton from {start_pos} (vox {start_vox}) to {end_pos} (vox {end_vox})")
     
     skeleton_array = parse_skeleton_data(skeleton_data)
     if skeleton_array is None:
         if debug:
-            print(f"       Could not parse skeleton data")
+            logger.debug(f"       Could not parse skeleton data")
         return None
     
     start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_vox)
@@ -334,25 +338,25 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
     
     if start_skeleton is None or end_skeleton is None:
         if debug:
-            print(f"       Could not find skeleton voxels near start/end positions")
+            logger.debug(f"       Could not find skeleton voxels near start/end positions")
         return None
     
     if debug:
         start_dist = np.linalg.norm(np.array(start_pos) - np.array(start_skeleton))
         end_dist = np.linalg.norm(np.array(end_pos) - np.array(end_skeleton))
-        print(f"       Start skeleton voxel: {start_skeleton} (dist: {start_dist:.1f})")
-        print(f"       End skeleton voxel: {end_skeleton} (dist: {end_dist:.1f})")
+        logger.debug(f"       Start skeleton voxel: {start_skeleton} (dist: {start_dist:.1f})")
+        logger.debug(f"       End skeleton voxel: {end_skeleton} (dist: {end_dist:.1f})")
     
     path = astar_skeleton_path(skeleton_array, start_skeleton, end_skeleton, debug)
     
     if path:
         if debug:
-            print(f"       Found skeleton path with {len(path)} voxels")
+            logger.debug(f"       Found skeleton path with {len(path)} voxels")
         phys_path = [(np.array(p, dtype=float) * vs).tolist() for p in path]
         return phys_path
     else:
         if debug:
-            print(f"       No skeleton path found")
+            logger.debug(f"       No skeleton path found")
         return None
 
 def parse_skeleton_data(skeleton_data):
@@ -545,21 +549,21 @@ def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
             # Prefer curved over straight
             if new_is_curved and not existing_is_curved:
                 if debug:
-                    print(f"     Replacing straight with curved path")
+                    logger.debug(f"     Replacing straight with curved path")
                 return True, edge_key
             elif not new_is_curved and existing_is_curved:
                 if debug:
-                    print(f"     Keeping existing curved over new straight")
+                    logger.debug(f"     Keeping existing curved over new straight")
                 return False, None
             else:
                 # Same type - prefer shorter
                 if new_length < existing_length * 0.95:
                     if debug:
-                        print(f"     Replacing with shorter path ({new_length:.1f} vs {existing_length:.1f})")
+                        logger.debug(f"     Replacing with shorter path ({new_length:.1f} vs {existing_length:.1f})")
                     return True, edge_key
                 else:
                     if debug:
-                        print(f"     Keeping existing shorter path ({existing_length:.1f} vs {new_length:.1f})")
+                        logger.debug(f"     Keeping existing shorter path ({existing_length:.1f} vs {new_length:.1f})")
                     return False, None
     
     return True, None

@@ -56,19 +56,19 @@ def _filter_components_by_total_fraction(
     return np.isin(labeled, keep_labels)
 
 
-def print_skeleton_connectivity_stats(
+def log_skeleton_connectivity_stats(
     name: str,
     skeleton: np.ndarray,
     component_connectivity: int | None = None,
 ) -> None:
-    """Print concise connectivity diagnostics for a 2D/3D skeleton."""
+    """Log concise connectivity diagnostics for a 2D/3D skeleton."""
     skeleton_bool = skeleton.astype(bool)
     voxel_count = int(skeleton_bool.sum())
     conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
     structure = generate_binary_structure(skeleton_bool.ndim, conn)
     labeled, n_components = label(skeleton_bool, structure=structure)
     if n_components == 0:
-        print(f"[skeleton:{name}] empty skeleton (0 foreground voxels).")
+        logger.warning(f"[skeleton:{name}] empty skeleton (0 foreground voxels).")
         return
 
     component_sizes = np.bincount(labeled.ravel())
@@ -78,12 +78,12 @@ def print_skeleton_connectivity_stats(
     largest_fraction = (largest / voxel_count) if voxel_count else 0.0
     top_sizes = sorted_sizes[:10].tolist()
 
-    print(
+    logger.info(
         f"[skeleton:{name}] shape={skeleton.shape}, dtype={skeleton.dtype}, "
         f"voxels={voxel_count}, components={int(n_components)}, "
         f"largest={largest} ({largest_fraction:.2%} of voxels)"
     )
-    print(f"[skeleton:{name}] top component sizes (up to 10): {top_sizes}")
+    logger.info(f"[skeleton:{name}] top component sizes (up to 10): {top_sizes}")
 
 def bridge_gaps(binary_skeleton: np.ndarray, max_gap: int = 4) -> np.ndarray:
     """Fill small gaps in a binary mask using a distance-transform dilation.

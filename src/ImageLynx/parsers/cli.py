@@ -9,15 +9,46 @@ no argument parsing of its own::
 which gives it ``--config``, a ``--<setting-name>`` flag for every setting,
 ``--preset``, ``--list-settings`` and ``--save-config``, all generated from the
 schema so they cannot drift from it.
+
+The direct ``print`` calls below are deliberate. This module is the command
+line itself: everything it writes is the answer to a flag the user typed
+(``--list-settings``, ``--list-presets``, ``--save-config``), not a library
+reporting on work it is doing in the background. Those belong on stdout
+unconditionally, and must not disappear because the caller has not configured
+logging. Library modules log instead; :func:`configure_console_logging` is how
+a script turns that logging into console output.
 """
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .config import add_schema_arguments, cli_overrides, dump_config, load_config
 from .schema import ConfigError, Schema
+
+#: Every log record carries its level, so a warning is visible as one.
+CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
+
+
+def configure_console_logging(*, verbose: bool = False) -> None:
+    """Send ImageLynx's log records to the console.
+
+    Call this from a script's entry point, never from library code: choosing
+    where log records go is the application's decision, and a library that
+    calls :func:`logging.basicConfig` makes it for every caller that imports
+    it — including test runners and notebooks.
+
+    Records go to stdout so that they interleave in order with anything the
+    script prints itself.
+    """
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format=CONSOLE_LOG_FORMAT,
+        stream=sys.stdout,
+    )
 
 
 def build_parser(
@@ -151,4 +182,10 @@ def print_settings(schema: Schema, settings: Mapping[str, Any]) -> None:
                 print(f"  {setting.name:52s} {settings[setting.name]!r}")
 
 
-__all__ = ["build_parser", "print_settings", "settings_from_command_line", "ConfigError"]
+__all__ = [
+    "build_parser",
+    "configure_console_logging",
+    "print_settings",
+    "settings_from_command_line",
+    "ConfigError",
+]

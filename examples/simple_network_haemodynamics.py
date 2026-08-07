@@ -38,7 +38,7 @@ for _path in (src_dir, examples_dir):
 from ImageLynx import graph as graph_tools
 from ImageLynx import haemodynamics, visualization
 from ImageLynx.haemodynamics.poiseuille import CAPILLARY_REGIME_MAX_DIAMETER_UM
-from ImageLynx.parsers import settings_from_command_line
+from ImageLynx.parsers import configure_console_logging, settings_from_command_line
 from simple_network_schema import SCHEMA
 
 CONFIG_PATH = examples_dir / "simple_network_config.yaml"
@@ -211,4 +211,7 @@ def main(settings: dict) -> dict:
 
 
 if __name__ == "__main__":
+    # `haemodynamics` logs what it works out about each vessel; this script's
+    # own results below are printed. Both go to stdout, in order.
+    configure_console_logging()
     main(settings_from_command_line(SCHEMA, CONFIG_PATH, description=__doc__))

@@ -16,7 +16,7 @@ if str(examples_dir) not in sys.path:
 
 
 from ImageLynx import haemodynamics
-from ImageLynx.parsers import settings_from_command_line
+from ImageLynx.parsers import configure_console_logging, settings_from_command_line
 from ImageLynx.pipeline import resolve_settings as _resolve_settings
 from ImageLynx.pipeline import (
     preflight,
@@ -89,13 +89,17 @@ def image_to_model_pipeline(settings: dict | None = None, **overrides):
 
 
 if __name__ == "__main__":
-    image_to_model_pipeline(
-        settings_from_command_line(
-            SCHEMA,
-            CONFIG_PATH,
-            description=__doc__,
-            presets=PRESETS,
-            resolver=resolve_settings,
-            check=lambda settings: _preflight_or_exit(settings),
-        )
+    settings = settings_from_command_line(
+        SCHEMA,
+        CONFIG_PATH,
+        description=__doc__,
+        presets=PRESETS,
+        resolver=resolve_settings,
+        check=lambda settings: _preflight_or_exit(settings),
     )
+    # The pipeline reports its progress through `logging`. Deciding that this
+    # run's progress goes to the console is the script's call, not the
+    # library's, so it is made here — `verbose_logging` turns on the
+    # per-node/per-edge detail the graph steps log at DEBUG.
+    configure_console_logging(verbose=settings["verbose_logging"])
+    image_to_model_pipeline(settings)

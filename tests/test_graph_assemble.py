@@ -8,6 +8,8 @@ no longer matches what the pipeline keys its per-step artifacts on.
 """
 from __future__ import annotations
 
+import logging
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -204,13 +206,15 @@ def test_building_without_a_callback_is_supported():
 # --- debug output -----------------------------------------------------------
 
 
-def test_degree2_diagnostics_are_printed_only_in_debug_mode(capsys):
+def test_degree2_diagnostics_are_logged_only_in_debug_mode(caplog):
     """The report is the tool for chasing un-merged degree-2 nodes; it must be gated."""
-    _build(_t_skeleton(), debug=False)
-    quiet = capsys.readouterr().out
+    with caplog.at_level(logging.DEBUG, logger="ImageLynx.graph"):
+        _build(_t_skeleton(), debug=False)
+        quiet = caplog.text
+        caplog.clear()
 
-    _build(_t_skeleton(), debug=True)
-    verbose = capsys.readouterr().out
+        _build(_t_skeleton(), debug=True)
+        verbose = caplog.text
 
     assert "DEGREE-2" in verbose.upper()
     assert "DEGREE-2" not in quiet.upper()
