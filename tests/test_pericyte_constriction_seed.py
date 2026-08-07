@@ -28,6 +28,7 @@ from ImageLynx.haemodynamics.apply import (  # noqa: E402
 from ImageLynx.haemodynamics.pericyte_comparison import (  # noqa: E402
     compare_baseline_vs_pericyte_constriction,
 )
+from ImageLynx.pipeline import default_schema  # noqa: E402
 from ImageLynx.haemodynamics.probability import (  # noqa: E402
     resolve_generator,
     select_active_pericyte_indices,
@@ -234,7 +235,7 @@ def test_apply_poiseuille_haemodynamics_unseeded_still_varies():
 
 
 def test_schema_declares_the_seed_beside_the_other_pericyte_settings():
-    schema = __import__("resistance_pipeline_schema").SCHEMA
+    schema = default_schema()
     setting = schema["pericyte_constriction_seed"]
 
     assert setting.kind == "int"
@@ -247,7 +248,7 @@ def test_seed_survives_the_config_round_trip_and_reaches_the_run(tmp_path):
     yaml_module = pytest.importorskip("yaml")
     from ImageLynx.parsers import dump_config, load_config
 
-    schema = __import__("resistance_pipeline_schema").SCHEMA
+    schema = default_schema()
     config_path = tmp_path / "config.yaml"
 
     dump_config(
@@ -277,7 +278,7 @@ def test_seed_survives_the_config_round_trip_and_reaches_the_run(tmp_path):
 def test_null_seed_survives_the_config_round_trip(tmp_path):
     from ImageLynx.parsers import dump_config, load_config
 
-    schema = __import__("resistance_pipeline_schema").SCHEMA
+    schema = default_schema()
     config_path = tmp_path / "config.yaml"
 
     dump_config(
