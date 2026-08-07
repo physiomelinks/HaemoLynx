@@ -132,10 +132,11 @@ out-of-range number fails immediately rather than halfway through a long run:
 
 ### Adding a setting
 
-Settings are declared once, in the schema beside each example
-(`examples/*_schema.py`), and that declaration generates the config file, the
-command-line flags and the validation. After editing a schema, regenerate the
-config files:
+Settings are declared once, as a schema, and that declaration generates the
+config file, the command-line flags and the validation. The pipeline's own
+settings live in the package, in `ImageLynx.pipeline.schema`; an example that
+adds settings of its own declares those beside it (`examples/*_schema.py`) on
+top of the pipeline's. After editing a schema, regenerate the config files:
 
 ```bash
 python examples/regenerate_configs.py
@@ -143,6 +144,29 @@ python examples/regenerate_configs.py
 
 This keeps the values already in your config files and adds any new settings
 with their documentation.
+
+## Without a repository checkout
+
+The pipeline is configured entirely from its schema, and the schema ships with
+the package — so `pip install imagelynx` is enough to write yourself a config
+file and run from it, with no copy of this repository involved:
+
+```python
+from ImageLynx.pipeline import default_schema, resolve_settings, run_pipeline_stages
+from ImageLynx.pipeline import write_default_config
+
+write_default_config("my_config.yaml")   # every setting, commented, at its default
+# edit my_config.yaml, then:
+settings = resolve_settings(schema=default_schema(), config_path="my_config.yaml")
+graph = run_pipeline_stages(settings, default_schema())
+```
+
+`default_schema().describe()` is plain JSON — the same declaration a GUI can
+render a settings form from.
+
+Path defaults in the generated config are relative, so they resolve against the
+directory you run in (`images/`, `outputs/`, `plots/`). The examples in this
+repository pin their own paths under `examples/` in their config files.
 
 ## Tutorial
 

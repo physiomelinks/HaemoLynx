@@ -2,7 +2,7 @@
 
 A preset is just a partial config: the settings it names replace what the
 config file says, and everything else is untouched. Every name is validated
-against ``resistance_pipeline_schema.SCHEMA`` when this module is imported, so
+against the pipeline's schema when this module is imported, so
 a preset cannot quietly set something that no longer exists.
 """
 from __future__ import annotations
@@ -15,7 +15,9 @@ for _path in (_ROOT / "src", _ROOT / "examples"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from resistance_pipeline_schema import SCHEMA  # noqa: E402
+from ImageLynx.pipeline.schema import default_schema  # noqa: E402
+
+SCHEMA = default_schema()
 
 PRESETS: dict[str, dict] = {
     "all_automated": {

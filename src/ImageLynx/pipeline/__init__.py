@@ -1,9 +1,12 @@
-"""The image-to-model pipeline: settings resolution and the run stages.
+"""The image-to-model pipeline: its settings, and the stages of a run.
 
-Run the whole thing::
+Every setting is declared once, in :mod:`ImageLynx.pipeline.schema`. Start from
+that declaration to write yourself a config file, then run the whole thing::
 
-    settings = resolve_settings(schema=SCHEMA, config_path="my_config.yaml")
-    graph = run_pipeline_stages(settings, SCHEMA)
+    write_default_config("my_config.yaml")      # commented, every setting
+    schema = default_schema()
+    settings = resolve_settings(schema=schema, config_path="my_config.yaml")
+    graph = run_pipeline_stages(settings, schema)
 
 or call the stages yourself, which is what the examples do so that each step of
 a run is visible and can be intervened in::
@@ -14,6 +17,7 @@ a run is visible and can be intervened in::
     ...
 """
 from .checks import preflight
+from .schema import SCHEMA, default_schema, write_default_config
 from .settings import fill_derived_settings, resolve_settings
 from .stages import (
     BoundaryNodes,
@@ -34,6 +38,7 @@ from .stages import (
 )
 
 __all__ = [
+    "SCHEMA",
     "BoundaryNodes",
     "HaemodynamicModel",
     "SegmentedInputs",
@@ -44,6 +49,7 @@ __all__ = [
     "assign_diameters",
     "build_haemodynamic_model",
     "build_network",
+    "default_schema",
     "export_results",
     "preflight",
     "fill_derived_settings",
@@ -52,4 +58,5 @@ __all__ = [
     "segment",
     "skeletonise",
     "solve",
+    "write_default_config",
 ]

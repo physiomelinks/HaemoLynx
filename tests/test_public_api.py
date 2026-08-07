@@ -14,6 +14,8 @@ SUBPACKAGES = [
     "ImageLynx.graph",
     "ImageLynx.io",
     "ImageLynx.haemodynamics",
+    "ImageLynx.parsers",
+    "ImageLynx.pipeline",
     "ImageLynx.preprocessing",
     "ImageLynx.statistics",
     "ImageLynx.visualization",

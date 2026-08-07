@@ -16,7 +16,7 @@ for _path in (_ROOT / "src", _ROOT / "examples"):
         sys.path.insert(0, str(_path))
 
 from ImageLynx.parsers import Schema, Setting  # noqa: E402
-from resistance_pipeline_schema import SCHEMA as PIPELINE_SCHEMA  # noqa: E402
+from ImageLynx.pipeline.schema import default_schema  # noqa: E402
 
 _SWEEP = "Pericyte dilation sweep"
 
@@ -103,7 +103,7 @@ SWEEP_SETTINGS = [
 ]
 
 SCHEMA = Schema(
-    list(PIPELINE_SCHEMA) + SWEEP_SETTINGS,
+    list(default_schema()) + SWEEP_SETTINGS,
     title="Whole-brain network pipeline",
     description=(
         "The standard image-to-model pipeline plus a pericyte dilation and\n"
