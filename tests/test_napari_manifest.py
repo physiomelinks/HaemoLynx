@@ -21,6 +21,20 @@ MANIFEST = REPO_ROOT / "src" / "haemolynx" / "gui" / "napari.yaml"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 
+def _probe_env() -> dict:
+    """Environment for a subprocess probe, pointed at THIS tree.
+
+    Without it the probe imports whatever the editable install resolves to --
+    the checkout pip was run in, which is not this one when the tests run from
+    a git worktree. The probe would then quietly answer for the wrong source.
+    """
+    import os
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    return env
+
+
 @pytest.fixture(scope="module")
 def manifest() -> dict:
     return yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
@@ -117,7 +131,8 @@ def test_importing_the_widget_module_does_not_need_a_gui():
         "print(','.join(loaded))"
     )
     result = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+        [sys.executable, "-c", probe],
+        capture_output=True, text=True, check=False, env=_probe_env(),
     )
     assert result.returncode == 0, (
         f"importing the widget module failed:\n{result.stdout}\n{result.stderr}"
@@ -135,7 +150,8 @@ def test_importing_the_library_does_not_need_a_gui():
         "print('napari' in sys.modules or 'qtpy' in sys.modules)"
     )
     result = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+        [sys.executable, "-c", probe],
+        capture_output=True, text=True, check=False, env=_probe_env(),
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "False"
