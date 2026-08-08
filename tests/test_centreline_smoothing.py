@@ -414,3 +414,158 @@ def test_smoothing_never_makes_a_centreline_longer():
     )
 
     assert graph.edges[0, 1, 0]["length"] <= original_length + 1e-9
+
+
+# --- something to look at ----------------------------------------------------
+
+DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "centreline_smoothing"
+
+
+def _write_smoothing_scene_html(curves, raw_graph, smoothed_graph, output_html_path):
+    """Draw the truth, the staircase and the smoothed centreline together.
+
+    The numbers say the raw path is 7% long and the smoothed one is not. This
+    is the same claim as a picture: the true curve, the zigzag the skeleton
+    returned, and what smoothing made of it, in one rotatable scene.
+    """
+    try:
+        import plotly.graph_objects as go
+    except ModuleNotFoundError:
+        return False
+
+    figure = go.Figure()
+
+    def add_paths(graph, name, colour, width):
+        xs, ys, zs = [], [], []
+        for *_ids, data in graph.edges(keys=True, data=True):
+            path = np.asarray(data["voxels"], dtype=float)
+            xs.extend(path[:, 2].tolist() + [None])
+            ys.extend(path[:, 1].tolist() + [None])
+            zs.extend(path[:, 0].tolist() + [None])
+        figure.add_trace(
+            go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", name=name,
+                         line=dict(color=colour, width=width))
+        )
+
+    truth_x, truth_y, truth_z = [], [], []
+    for curve in curves:
+        points = curve(np.linspace(0.0, 1.0, 400))
+        truth_x.extend(points[:, 2].tolist() + [None])
+        truth_y.extend(points[:, 1].tolist() + [None])
+        truth_z.extend(points[:, 0].tolist() + [None])
+    figure.add_trace(
+        go.Scatter3d(x=truth_x, y=truth_y, z=truth_z, mode="lines",
+                     name="true curve (known length)",
+                     line=dict(color="#111111", width=8))
+    )
+    add_paths(raw_graph, "raw skeleton path (+7%)", "#d62728", 4)
+    add_paths(smoothed_graph, "smoothed (+0.7%)", "#1f77b4", 4)
+
+    nodes = np.array(
+        [smoothed_graph.nodes[n]["pos"] for n in smoothed_graph.nodes
+         if "pos" in smoothed_graph.nodes[n]]
+    )
+    if len(nodes):
+        figure.add_trace(
+            go.Scatter3d(x=nodes[:, 2], y=nodes[:, 1], z=nodes[:, 0], mode="markers",
+                         name="graph nodes", marker=dict(size=3, color="#2ca02c"))
+        )
+
+    figure.update_layout(
+        title="Centreline smoothing against curves of known length",
+        scene=dict(xaxis_title="x", yaxis_title="y", zaxis_title="z", aspectmode="data"),
+        showlegend=True,
+    )
+    output_html_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.write_html(str(output_html_path), include_plotlyjs="cdn")
+    return True
+
+
+@pytest.mark.slow
+@pytest.mark.plotting
+def test_writes_a_scene_showing_the_truth_the_staircase_and_the_smoothing(known_vessels):
+    """Writes the diagnostic; opens it only when asked.
+
+        HAEMOLYNX_OPEN_TEST_HTML=1 pytest tests/test_centreline_smoothing.py -k scene
+    """
+    from tests.browser_diagnostics import open_diagnostic_html
+
+    curves, skeleton, graph = known_vessels
+    smoothed = graph.copy()
+    smooth_graph_centrelines(smoothed, skeleton, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    output = DEMO_OUTPUT_DIR / "centreline_smoothing_3d.html"
+    if not _write_smoothing_scene_html(curves, graph, smoothed, output):
+        pytest.skip("plotly is not installed")
+
+    assert output.exists() and output.stat().st_size > 0
+    open_diagnostic_html(output)
+
+
+def _write_smoothing_closeup_png(curves, raw_graph, smoothed_graph, output_png_path):
+    """A still of one vessel, whole and close up.
+
+    At whole-vessel scale the three curves are indistinguishable, which is why
+    the staircase went unnoticed in the pipeline's own overlays for so long --
+    they draw a 1,500 um field into about a pixel per micron. Zoomed to a couple
+    of dozen points it is obvious.
+    """
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    matplotlib.use("Agg", force=False)
+
+    raw = [np.asarray(d["voxels"], float) for *_i, d in raw_graph.edges(keys=True, data=True)]
+    smoothed = [
+        np.asarray(d["voxels"], float)
+        for *_i, d in smoothed_graph.edges(keys=True, data=True)
+    ]
+    if not raw:
+        return False
+    longest = int(np.argmax([len(path) for path in raw]))
+    middle = raw[longest][len(raw[longest]) // 2]
+    nearest = min(
+        range(len(curves)),
+        key=lambda i: np.linalg.norm(
+            curves[i](np.linspace(0, 1, 2000)) - middle, axis=1
+        ).min(),
+    )
+    truth = curves[nearest](np.linspace(0.0, 1.0, 2000))
+
+    figure, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+    for axis, upto, title in (
+        (axes[0], len(raw[longest]), "whole vessel"),
+        (axes[1], 22, "zoomed on the first 22 points"),
+    ):
+        axis.plot(truth[:, 1], truth[:, 0], color="black", lw=3, alpha=0.5,
+                  label="true curve", zorder=1)
+        axis.plot(raw[longest][:upto, 1], raw[longest][:upto, 0], "-o", color="#d62728",
+                  ms=3.2, lw=1.2, label="raw skeleton path", zorder=2)
+        axis.plot(smoothed[longest][:upto, 1], smoothed[longest][:upto, 0], "-o",
+                  color="#1f77b4", ms=3.2, lw=1.4, label="smoothed", zorder=3)
+        axis.set_title(title)
+        axis.set_xlabel("y")
+        axis.set_ylabel("z")
+        axis.set_aspect("equal")
+        axis.legend(fontsize=8)
+        if upto == 22:
+            axis.set_xlim(raw[longest][:22, 1].min() - 1.5, raw[longest][:22, 1].max() + 1.5)
+            axis.set_ylim(raw[longest][:22, 0].min() - 1.5, raw[longest][:22, 0].max() + 1.5)
+
+    figure.tight_layout()
+    output_png_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_png_path, dpi=130)
+    plt.close(figure)
+    return True
+
+
+@pytest.mark.slow
+@pytest.mark.plotting
+def test_writes_a_closeup_of_one_vessel(known_vessels):
+    curves, skeleton, graph = known_vessels
+    smoothed = graph.copy()
+    smooth_graph_centrelines(smoothed, skeleton, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    output = DEMO_OUTPUT_DIR / "centreline_smoothing_closeup.png"
+    assert _write_smoothing_closeup_png(curves, graph, smoothed, output)
+    assert output.stat().st_size > 0
