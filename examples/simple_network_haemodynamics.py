@@ -129,15 +129,17 @@ def main(settings: dict) -> dict:
     #      "volume"                -> `volume_boxes`: every terminal inside
     #                                 ((z,y,x), (z,y,x)) corner pairs
     #      "edge_percent"          -> `edge_percent`/`end_percent`/`axis`: the
-    #                                 first/last N% along one axis; the imaging
-    #                                 pipeline's default
+    #                                 first/last N% of the network along one
+    #                                 axis; the imaging pipeline's default,
+    #                                 since it needs nothing from the dataset
     #      "all_degree_1"          -> every terminal in the graph
     #      "degree_1_from_starting"-> `starting_nodes_for_distance` +
     #                                 `distance_from_starting_node`
     #    With segmented masks, use graph.select_terminal_nodes_from_large_vessel_masks
     #    instead, which assigns terminals from anatomy rather than geometry.
-    #    `image_shape` is only read by "edge_percent"; a real run passes the
-    #    loaded image's shape, so this hand-built network synthesises one.
+    #    `image_shape` is what "edge_percent" checks its `axis` against; the
+    #    bands themselves span the network, so a real run passes the loaded
+    #    image's shape and this hand-built network synthesises one.
     #    `starting_nodes`/`output_nodes` are lists, so several inlets or outlets
     #    are simply named together and share that list's pressure.
     positions = np.asarray([G.nodes[n]["pos"] for n in G.nodes], dtype=float)

@@ -13,6 +13,10 @@ you intervene in the middle of a run.
     build_haemodynamic_model  diameters -> resistance and conductance per edge
     solve                conductance -> pressures, flows, equivalent resistance
     export_results       VTK, statistics, distances and plots
+
+A run says where it has got to through :mod:`haemolynx.pipeline.progress`: pass
+``progress=`` a callback and it is handed one event per stage boundary, and one
+per topology step inside graph building.
 """
 from __future__ import annotations
 
@@ -36,6 +40,7 @@ from haemolynx.haemodynamics.apply import (
 )
 from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
+from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 
 logger = logging.getLogger(__name__)
 
@@ -301,8 +306,18 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     )
 
 
-def build_network(settings: dict, volume: SkeletonisedVolume, schema: Schema):
-    """Load the vessel masks and turn the skeleton into a graph."""
+def build_network(
+    settings: dict,
+    volume: SkeletonisedVolume,
+    schema: Schema,
+    progress: StageProgress | None = None,
+):
+    """Load the vessel masks and turn the skeleton into a graph.
+
+    This is the long stage, so it reports the eleven topology steps of
+    :func:`graph.build_graph_from_skeleton` to *progress* as they land -- a
+    run's only finer-grained progress than "graph building is happening".
+    """
     image, skeleton = volume.image, volume.skeleton
     output_dir = volume.output_dir
     main_voxel_size_xyz = volume.voxel_size_xyz
@@ -342,6 +357,10 @@ def build_network(settings: dict, volume: SkeletonisedVolume, schema: Schema):
     if settings["do_graph_building"]:
         # 3) Convert skeleton to graph.
         def _graph_build_step_callback(graph_obj, label: str) -> None:
+            # Report before drawing: the snapshots below are the slow part of
+            # this step, so a watcher should see it tick over on arrival.
+            if progress is not None:
+                progress.step(label, total=len(graph.STEP_LABELS))
             plot_png = label
             if label == "smart_multigraph_degree2_removal_pass1":
                 plot_png = "smart_multigraph_degree2_removal"
@@ -581,8 +600,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         )
     else:
         logger.info(
-            f"Selected {len(settings['starting_nodes'])} STARTING_NODES and {len(settings['output_nodes'])} "
-            "OUTPUT_NODES from manual coordinates."
+            f"Selected {len(settings['starting_nodes'])} STARTING_NODES "
+            f"({settings['starting_node_selection_method']}) and "
+            f"{len(settings['output_nodes'])} OUTPUT_NODES "
+            f"({settings['output_node_selection_method']})."
         )
     logger.info(f"Starting nodes are: {settings['starting_nodes']}")
     logger.info(f"Output nodes are: {settings['output_nodes']}")
@@ -598,8 +619,21 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "No starting or output nodes found from terminal-node overlap with "
                 "arteriole/venule masks."
             )
+        # Name the settings and what each of them found: the graph, not the
+        # config, is the usual culprit by the time the run gets here, and the
+        # counts are what say which of the two to look at.
+        terminal_count = sum(1 for _, degree in G.degree() if degree == 1)
         raise ValueError(
-            "No starting or output nodes found from manual input coordinates."
+            "No starting or output nodes found: "
+            f"starting_node_selection_method="
+            f"{settings['starting_node_selection_method']!r} selected "
+            f"{len(settings['starting_nodes'])} inlet(s) and "
+            f"output_node_selection_method="
+            f"{settings['output_node_selection_method']!r} selected "
+            f"{len(settings['output_nodes'])} outlet(s), from the "
+            f"{terminal_count} terminal node(s) in the graph. Fix: change those "
+            "two settings or the values they read, or check that the graph has "
+            "terminals at both ends of boundary_axis."
         )
 
 
@@ -997,18 +1031,37 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     return solution
 
 
-def run_pipeline_stages(settings: dict, schema: Schema) -> nx.MultiGraph | None:
+def run_pipeline_stages(
+    settings: dict,
+    schema: Schema,
+    progress: ProgressCallback | None = None,
+) -> nx.MultiGraph | None:
     """Run every stage in order, for one resolved settings dict.
 
     Returns the graph the run produced, so a caller can do more with it -- the
     whole-brain script sweeps pericyte dilation over exactly this graph.
+
+    *progress*, if given, is called with a
+    :class:`~haemolynx.pipeline.progress.ProgressEvent` as each stage starts,
+    finishes or fails, and once per topology step inside graph building. It
+    runs on whatever thread the run is on, and must not raise: a run is not
+    stopped, or changed in any way, by whoever is watching it.
     """
-    inputs = segment(settings)
-    volume = skeletonise(settings, inputs)
-    network = build_network(settings, volume, schema)
-    boundaries = assign_boundaries(settings, network)
-    diameters = assign_diameters(settings, network, boundaries, schema)
-    model = build_haemodynamic_model(settings, diameters)
-    solution = solve(settings, model, boundaries)
-    export_results(settings, network, model, solution)
+    run = RunProgress(progress)
+    with run.stage("segment"):
+        inputs = segment(settings)
+    with run.stage("skeletonise"):
+        volume = skeletonise(settings, inputs)
+    with run.stage("build_network") as building:
+        network = build_network(settings, volume, schema, progress=building)
+    with run.stage("assign_boundaries"):
+        boundaries = assign_boundaries(settings, network)
+    with run.stage("assign_diameters"):
+        diameters = assign_diameters(settings, network, boundaries, schema)
+    with run.stage("build_haemodynamic_model"):
+        model = build_haemodynamic_model(settings, diameters)
+    with run.stage("solve"):
+        solution = solve(settings, model, boundaries)
+    with run.stage("export_results"):
+        export_results(settings, network, model, solution)
     return model.graph

@@ -85,6 +85,14 @@ boundary_assignment:
   arteriole_boundary_selection_method: coordinates
   # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
   venule_boundary_selection_method: coordinates
+  # Split inlets from outlets along this array axis when the edge_percent method is used (0=z, 1=y, 2=x)  [range 0..2]
+  boundary_axis: 1
+  # Take inlets from the terminals in this much of the network, measured from its start along the boundary axis  [percent; range 0.0..100.0]
+  boundary_first_percent: 10.0
+  # Take outlets from the terminals in this much of the network, measured back from its end along the boundary axis  [percent; range 0.0..100.0]
+  boundary_last_percent: 10.0
+  # Keep only the terminals further than this from a starting node when the degree_1_from_starting method is used  [um; range 0.0..]
+  boundary_distance_from_starting_node: 0.0
   # Pick starting nodes nearest to these coordinates when the coordinates method is used
   starting_node_coordinates:
   - - 152.0

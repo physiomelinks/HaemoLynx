@@ -19,6 +19,25 @@ logger = logging.getLogger(__name__)
 
 StepCallback = Callable[[nx.MultiGraph, str], None]
 
+#: Every step `build_graph_from_skeleton` reports, in the order it runs them.
+#: A progress bar has to know how many there will be before the first one
+#: fires, and a snapshot writer has to know the labels are unique, so the list
+#: is declared here rather than left implicit in the call order below.
+#: `tests/test_graph_assemble.py` fails if a build stops matching it.
+STEP_LABELS: tuple[str, ...] = (
+    "build_graph_segment_skan_stitched_loops",
+    "reconnect_secondary_loop_edges",
+    "optimise_graph_topology_fixed",
+    "smart_multigraph_degree2_removal_pass1",
+    "collapse_node_clusters",
+    "smart_multigraph_degree2_removal_post_collapse",
+    "prune_vascular_stubs",
+    "smart_multigraph_degree2_removal_post_prune",
+    "remove_edges_for_self_connected_nodes",
+    "reconnect_orphan_and_dangling_nodes",
+    "smart_multigraph_degree2_removal_post_orphan_reconnect",
+)
+
 
 def _notify_step(
     G: nx.MultiGraph,

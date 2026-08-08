@@ -17,7 +17,23 @@ def select_boundary_terminal_nodes(
     end_percent: float,
     axis: int = 1,
 ) -> tuple[list[Any], list[Any]]:
-    """Select degree-1 nodes in top and bottom image bands along one axis."""
+    """Select the degree-1 nodes in the first and last bands along one axis.
+
+    The bands are measured across the span the terminal nodes themselves cover
+    along ``axis``, not across the image. Two reasons, both of which made the
+    image-relative version select nothing at all:
+
+    * node ``pos`` is in microns while ``image_shape`` counts voxels, so the
+      two were only ever the same numbers at 1 micron voxels;
+    * a network rarely reaches the edge of its image -- closing, pruning and
+      stub removal all pull terminals inward -- so the first and last few
+      percent of the *image* routinely hold no terminal node.
+
+    Measured across the terminals, both lists are non-empty whenever two
+    terminals differ along ``axis`` and neither percentage is 100: the lowest
+    terminal always falls in the first band and the highest in the last.
+    ``image_shape`` is what ``axis`` is checked against.
+    """
     if not (0.0 <= edge_percent <= 100.0 and 0.0 <= end_percent <= 100.0):
         raise ValueError("edge_percent and end_percent must be in [0, 100].")
     if axis < 0 or axis >= len(image_shape):
@@ -28,12 +44,14 @@ def select_boundary_terminal_nodes(
     if not terminal_nodes:
         return [], []
 
-    axis_size = float(image_shape[axis] - 1)
-    top_limit = axis_size * (edge_percent / 100.0)
-    bottom_start = axis_size * (1.0 - (end_percent / 100.0))
-
     def axis_coord(node_id: Any) -> float:
         return float(np.asarray(node_pos[node_id], dtype=float)[axis])
+
+    axis_coords = [axis_coord(node) for node in terminal_nodes]
+    lowest, highest = min(axis_coords), max(axis_coords)
+    span = highest - lowest
+    top_limit = lowest + span * (edge_percent / 100.0)
+    bottom_start = highest - span * (end_percent / 100.0)
 
     starting = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
     outputs = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
@@ -190,6 +208,18 @@ BOUNDARY_ROLE_SETTINGS: dict[str, dict[str, str]] = {
 }
 
 
+#: Settings every role shares, mapped to the keyword each one fills in
+#: :func:`select_boundary_nodes_by_method`. One axis and one pair of bands
+#: describe the whole network, so these are not per-role the way the
+#: coordinates and volume boxes are.
+BOUNDARY_BAND_SETTINGS: dict[str, str] = {
+    "boundary_axis": "axis",
+    "boundary_first_percent": "edge_percent",
+    "boundary_last_percent": "end_percent",
+    "boundary_distance_from_starting_node": "distance_from_starting_node",
+}
+
+
 def select_boundary_nodes_for_role(
     G: nx.Graph,
     image_shape: tuple[int, ...],
@@ -200,8 +230,13 @@ def select_boundary_nodes_for_role(
 ) -> list[Any]:
     """Select one role's boundary nodes from the boundary-assignment settings.
 
-    The four roles differ only in which three settings they read, so naming the
-    role is enough; :data:`BOUNDARY_ROLE_SETTINGS` records which those are.
+    The four roles differ only in which settings they read, so naming the role
+    is enough; :data:`BOUNDARY_ROLE_SETTINGS` records which those are.
+
+    A method whose settings hold nothing for it to work with raises here,
+    naming the setting to change: it would otherwise return an empty list and
+    surface much later as "no boundary nodes found", with nothing to say which
+    of the settings was the empty one.
     """
     try:
         names = BOUNDARY_ROLE_SETTINGS[role]
@@ -209,12 +244,51 @@ def select_boundary_nodes_for_role(
         known = ", ".join(sorted(BOUNDARY_ROLE_SETTINGS))
         raise ValueError(f"Unknown boundary role {role!r}. Roles are: {known}.") from None
 
+    method = str(settings[names["method"]]).strip().lower()
+    coordinates = list(settings.get(names["coordinates"]) or [])
+    volume_boxes = list(settings.get(names["volume_boxes"]) or [])
+    starting_nodes = list(settings.get("starting_nodes") or [])
+
+    if method == "coordinates" and not coordinates:
+        raise ValueError(
+            f"{names['method']}='coordinates' takes the terminals nearest to the "
+            f"points in {names['coordinates']}, but that setting is empty. Fix: "
+            f"list the coordinates in {names['coordinates']}, or set "
+            f"{names['method']} to 'edge_percent', which needs no coordinates "
+            "from this dataset."
+        )
+    if method == "volume" and not volume_boxes:
+        raise ValueError(
+            f"{names['method']}='volume' takes the terminals inside the boxes in "
+            f"{names['volume_boxes']}, but that setting is empty. Fix: list the "
+            f"(min corner, max corner) boxes in {names['volume_boxes']}, or set "
+            f"{names['method']} to 'edge_percent', which needs no boxes from "
+            "this dataset."
+        )
+    if method == "degree_1_from_starting" and not starting_nodes:
+        raise ValueError(
+            f"{names['method']}='degree_1_from_starting' measures each terminal's "
+            "distance from the starting nodes, and none have been chosen. Fix: "
+            f"set {names['method']} to another method, or pick the starting "
+            "nodes first by giving starting_node_selection_method one of the "
+            "other methods."
+        )
+
+    # Settings the config does not carry fall through to the selector's own
+    # defaults rather than being repeated here.
+    band = {
+        keyword: settings[name]
+        for name, keyword in BOUNDARY_BAND_SETTINGS.items()
+        if settings.get(name) is not None
+    }
     return select_boundary_nodes_by_method(
         G,
         image_shape,
-        method=settings[names["method"]],
+        method=method,
         node_role=names["node_role"],
-        coordinates=settings.get(names["coordinates"]),
-        volume_boxes=settings.get(names["volume_boxes"]),
+        coordinates=coordinates,
+        volume_boxes=volume_boxes,
         exclude_nodes=exclude_nodes,
+        starting_nodes_for_distance=starting_nodes,
+        **band,
     )

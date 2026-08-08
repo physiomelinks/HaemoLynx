@@ -1,5 +1,5 @@
 """Graph building and topology optimization for vascular networks."""
-from .assemble import build_graph_from_skeleton
+from .assemble import STEP_LABELS, build_graph_from_skeleton
 from .build import build_graph_segment_skan_stitched_loops
 from .reconnect import reconnect_secondary_loop_edges
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
@@ -67,6 +67,7 @@ from ._helpers import (
 )
 
 __all__ = [
+    "STEP_LABELS",
     "build_graph_from_skeleton",
     "build_graph_segment_skan_stitched_loops",
     "reconnect_secondary_loop_edges",

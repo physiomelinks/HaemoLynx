@@ -184,7 +184,7 @@ print(f"Running in Jupyter: {in_jupyter()}")
 # YAML) — you never edit a call.
 # 
 # Run `python examples/resistance_network_pipeline.py --list-settings` to see all
-# 137 of them, or `write_default_config("my_config.yaml")` to get a documented
+# 140 of them, or `write_default_config("my_config.yaml")` to get a documented
 # file to edit.
 
 # In[ ]:
@@ -472,9 +472,14 @@ show_stage_plots("Stage 2: Graph topology steps", step_plots, enabled=SHOW_STAGE
 # |---|---|
 # | `"volume"` | `starting_node_volumes` — corner pairs in (z, y, x) microns |
 # | `"coordinates"` | `starting_node_coordinates` — each point snaps to the nearest terminal |
-# | `"edge_percent"` | the first/last N% along one axis |
+# | `"edge_percent"` | `boundary_first_percent` / `boundary_last_percent` / `boundary_axis` — the first and last bands of the network along one axis |
 # | `"all_degree_1"` | every terminal in the graph |
-# | `"degree_1_from_starting"` | terminals within a distance of named nodes |
+# | `"degree_1_from_starting"` | `boundary_distance_from_starting_node` — every terminal further than that from a starting node |
+# 
+# `"edge_percent"` is the default, and the only one that asks nothing of the
+# dataset: it needs no coordinate, box or mask, so it has something to say about
+# an image nobody has looked at yet. This notebook overrides it with `"volume"`
+# because it knows where its own vessels are.
 # 
 # With segmented arteriole/venule masks, set `automated_vessel_assignment` instead
 # and the terminals come from anatomy rather than geometry.
@@ -618,6 +623,6 @@ show_stage_plots(
 #    reads (see the table in Stage 3), or set `automated_vessel_assignment` to take
 #    them from arteriole/venule masks.
 # 5. **Tuning:** every skeleton and graph threshold is a key in `TUTORIAL_OVERRIDES`.
-#    `write_default_config("my_config.yaml")` writes all 137 settings with their
+#    `write_default_config("my_config.yaml")` writes all 140 settings with their
 #    documentation, ranges and defaults; edit that and pass it as `CONFIG_PATH`.
 # 6. **Regenerate** `pipeline_tutorial.py`: `pytest tests/integration/test_pipeline_tutorial.py`.
