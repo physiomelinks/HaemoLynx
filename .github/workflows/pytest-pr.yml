@@ -77,3 +77,31 @@ jobs:
         run: |
           pip install -e .[dev]
           pytest tests/test_installed_package.py -v
+
+  # The floors in pyproject.toml are a promise about the oldest releases this
+  # works with. Running the suite against exactly those versions is the only
+  # thing that keeps the promise true; without it a floor is a guess.
+  dependency-floors:
+    runs-on: ubuntu-latest
+    env:
+      MPLBACKEND: Agg
+      PYVISTA_OFF_SCREEN: "true"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install the oldest supported dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -c constraints-floor.txt -e ".[dev]"
+          pip list
+
+      - name: Run pytest
+        run: pytest

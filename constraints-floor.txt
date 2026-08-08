@@ -1,0 +1,22 @@
+# The oldest release of each dependency the test suite passes on, pinned
+# exactly. `pip install -c constraints-floor.txt -e ".[dev]"` reproduces that
+# environment; CI runs the suite against it so a floor in pyproject.toml
+# cannot quietly become a lie.
+#
+# Raising a floor is a real change: say in the commit what broke below it.
+# pyvista is at 0.45 because PolyData().points = array raised
+# "SetPoints argument 1: method requires a VTK object" on 0.42-0.44, which
+# failed every VTK export test.
+# pandas is at 2.0.2 and skan at 0.11.1 because skan requires that pandas.
+numpy==1.23.0
+scipy==1.9.0
+scikit-image==0.24.0
+networkx==2.8
+pandas==2.0.2
+matplotlib==3.6.0
+tifffile==2022.8.12
+h5py==3.7.0
+plotly==5.10.0
+pyvista==0.45.0
+skan==0.11.1
+pyyaml==6.0

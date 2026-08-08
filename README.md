@@ -236,3 +236,8 @@ A few things to know before trusting a report:
   report as a caveat.
 * The boundary boxes are in physical (z, y, x) **micrometres**, not voxel
   indices.
+
+## Licence
+
+ImageLynx is released under the [Apache License 2.0](LICENSE).
+Copyright 2026 Finbar Argus and Harvey Davis.
