@@ -338,10 +338,16 @@ SCHEMA = Schema(
             section=_BOUNDARY_ASSIGNMENT,
             requires=("use_large_vessel_masks",),
         ),
+        # "edge_percent" is the default for the two that every run needs
+        # because it is the only method that asks nothing of the dataset: it
+        # takes the terminals in the first and last band of the network along
+        # one axis, so an image nobody has looked at yet still gets inlets and
+        # outlets. "coordinates" and "volume" describe one dataset and no
+        # other, which is why they are chosen rather than defaulted to.
         Setting(
             name="starting_node_selection_method",
             kind="choice",
-            default="coordinates",
+            default="edge_percent",
             help="Choose how manual starting nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
@@ -349,7 +355,7 @@ SCHEMA = Schema(
         Setting(
             name="output_node_selection_method",
             kind="choice",
-            default="coordinates",
+            default="edge_percent",
             help="Choose how manual output nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
@@ -370,17 +376,55 @@ SCHEMA = Schema(
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
         ),
+        # What the "edge_percent" method reads. Shared by every role: one axis
+        # and one pair of bands describe the whole network.
+        Setting(
+            name="boundary_axis",
+            kind="int",
+            default=1,
+            help="Split inlets from outlets along this array axis when the edge_percent method is used (0=z, 1=y, 2=x)",
+            section=_BOUNDARY_ASSIGNMENT,
+            minimum=0,
+            maximum=2,
+        ),
+        Setting(
+            name="boundary_first_percent",
+            kind="float",
+            default=10.0,
+            help="Take inlets from the terminals in this much of the network, measured from its start along the boundary axis",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="percent",
+            minimum=0.0,
+            maximum=100.0,
+        ),
+        Setting(
+            name="boundary_last_percent",
+            kind="float",
+            default=10.0,
+            help="Take outlets from the terminals in this much of the network, measured back from its end along the boundary axis",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="percent",
+            minimum=0.0,
+            maximum=100.0,
+        ),
+        Setting(
+            name="boundary_distance_from_starting_node",
+            kind="float",
+            default=0.0,
+            help="Keep only the terminals further than this from a starting node when the degree_1_from_starting method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+            minimum=0.0,
+        ),
+        # The coordinates below apply whenever a role's selection method is
+        # "coordinates". They are empty by default because a coordinate is a
+        # statement about one dataset: the previous default named six points in
+        # one brain stack, which selected six arbitrary terminals in anything
+        # else and left the outlets, whose list was empty, unfindable.
         Setting(
             name="starting_node_coordinates",
             kind="any",
-            default=[
-                [152.0, 340.0, 527.0],
-                [160.0, 350.0, 545.0],
-                [202.0, 1303.0, 132.0],
-                [104.0, 1321.0, 133.0],
-                [361.0, 332.0, 120.0],
-                [321.0, 334.0, 163.0],
-            ],
+            default=[],
             help="Pick starting nodes nearest to these coordinates when the coordinates method is used",
             section=_BOUNDARY_ASSIGNMENT,
         ),
