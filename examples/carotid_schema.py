@@ -21,8 +21,8 @@ for _path in (_ROOT / "src", _ROOT / "examples"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from ImageLynx.parsers import Schema  # noqa: E402
-from ImageLynx.pipeline.schema import default_schema  # noqa: E402
+from haemolynx.parsers import Schema  # noqa: E402
+from haemolynx.pipeline.schema import default_schema  # noqa: E402
 
 #: Where this dataset's inlets and outlets are: the carotid stack runs along
 #: the y axis, so the terminal nodes in the first and last 10% of that axis are

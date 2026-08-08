@@ -14,7 +14,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from ImageLynx.visualization import save_graph_snapshot
+from haemolynx.visualization import save_graph_snapshot
 
 
 @pytest.fixture

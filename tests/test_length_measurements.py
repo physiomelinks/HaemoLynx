@@ -4,8 +4,8 @@ import math
 import numpy as np
 import pytest
 
-from ImageLynx.graph import build_graph_segment_skan_stitched_loops
-from ImageLynx.graph._helpers import calculate_path_length
+from haemolynx.graph import build_graph_segment_skan_stitched_loops
+from haemolynx.graph._helpers import calculate_path_length
 
 
 def _build_synthetic_vascular_bed() -> np.ndarray:

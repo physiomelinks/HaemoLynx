@@ -34,7 +34,7 @@ jobs:
 
   # The suite above runs against `src/` with the repository as the working
   # directory. This job answers a different question: does `pip install
-  # ImageLynx` give someone a package that works? It builds the wheel,
+  # HaemoLynx` give someone a package that works? It builds the wheel,
   # installs it into an empty environment with its declared dependencies
   # resolved from scratch, and runs it from a directory that is not the
   # repository -- so an import that only resolved because `src` was on the

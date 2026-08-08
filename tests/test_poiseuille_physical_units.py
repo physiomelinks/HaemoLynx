@@ -11,8 +11,8 @@ import warnings
 import networkx as nx
 import pytest
 
-from ImageLynx.graph.validate import assert_no_forbidden_edge_attributes
-from ImageLynx.haemodynamics.poiseuille import (
+from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
+from haemolynx.haemodynamics.poiseuille import (
     CAPILLARY_REGIME_MAX_DIAMETER_UM,
     PLACEHOLDER_REGIME_MAX_DIAMETER_UM,
     PlaceholderViscosityWarning,

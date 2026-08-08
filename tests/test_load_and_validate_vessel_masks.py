@@ -23,7 +23,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ImageLynx.io import (
+from haemolynx.io import (
     load_and_validate_vessel_masks,
     load_large_vessel_masks,
     vessel_mask_arguments,

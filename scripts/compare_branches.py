@@ -39,7 +39,9 @@ Notes
 * The reference ref is checked out into a temporary ``git worktree`` and run in
   a subprocess whose ``PYTHONPATH`` points at it, so the editable install does
   not silently make both sides run the same library. Each side verifies this
-  and refuses to run if ``ImageLynx`` resolved outside its own checkout.
+  and refuses to run if the library resolved outside its own checkout.
+* A reference ref from before the ImageLynx -> HaemoLynx rename is handled:
+  each side imports whichever package name its own checkout has.
 * Branches differ in how the entry point takes settings -- older ones have a
   hundred-odd keyword arguments and read some settings from module constants,
   newer ones take a settings dict validated against a schema. Each side is

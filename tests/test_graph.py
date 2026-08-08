@@ -3,7 +3,7 @@ import pytest
 import numpy as np
 import networkx as nx
 
-from ImageLynx.graph import (
+from haemolynx.graph import (
     build_graph_segment_skan_stitched_loops,
     reconnect_secondary_loop_edges,
     optimise_graph_topology_fixed,
@@ -20,7 +20,7 @@ from ImageLynx.graph import (
     diagnose_degree2_nodes,
     format_degree2_diagnostics_report,
 )
-from ImageLynx.graph._helpers import (
+from haemolynx.graph._helpers import (
     get_line_points_3d,
     calculate_path_length,
     calculate_edge_length,

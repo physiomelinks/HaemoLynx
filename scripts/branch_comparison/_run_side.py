@@ -71,21 +71,42 @@ def _load_entry_point(checkout: Path):
     return module
 
 
+
+#: The import package was renamed ImageLynx -> haemolynx. This module runs
+#: inside the reference checkout, which may predate that, so both are tried.
+PACKAGE_NAMES = ("haemolynx", "ImageLynx")
+
+
+def _import_library(submodule: str | None = None):
+    """The library of the checkout being run, under whichever name it has."""
+    import importlib
+
+    errors = []
+    for name in PACKAGE_NAMES:
+        target = f"{name}.{submodule}" if submodule else name
+        try:
+            return importlib.import_module(target)
+        except ImportError as error:  # noqa: PERF203 - two candidates, at most
+            errors.append(f"{target}: {error}")
+    raise ImportError("; ".join(errors))
+
+
 def _assert_checkout_is_in_use(checkout: Path) -> None:
-    """Fail loudly if ``ImageLynx`` resolved somewhere other than this checkout.
+    """Fail loudly if the library resolved somewhere other than this checkout.
 
     The development install points at one working tree, so without this the
     reference run would silently exercise the current branch's library and the
     comparison would report "no differences" for every change.
     """
-    import ImageLynx
+    library = _import_library()
 
-    resolved = Path(ImageLynx.__file__).resolve()
+    resolved = Path(library.__file__).resolve()
     expected = (checkout / "src").resolve()
     if expected not in resolved.parents:
         raise RuntimeError(
-            f"ImageLynx was imported from {resolved}, which is not inside "
-            f"{expected}. The comparison would not be measuring this checkout."
+            f"{library.__name__} was imported from {resolved}, which is not "
+            f"inside {expected}. The comparison would not be measuring this "
+            "checkout."
         )
 
 
@@ -195,7 +216,7 @@ def _install_graph_capture(destination: Path) -> dict:
     """
     state = {"captured": False}
     try:
-        from ImageLynx import visualization
+        visualization = _import_library("visualization")
     except Exception:  # noqa: BLE001 - a broken import is reported by the run itself
         return state
 

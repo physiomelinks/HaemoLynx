@@ -6,7 +6,7 @@ from pathlib import Path
 import networkx as nx
 import numpy as np
 
-from ImageLynx import visualization
+from haemolynx import visualization
 
 # Milestone topology steps shown in the tutorial (full pipeline still runs all 11).
 TUTORIAL_GRAPH_STEPS_TO_DISPLAY: frozenset[str] = frozenset(

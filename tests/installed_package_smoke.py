@@ -1,4 +1,4 @@
-"""A run through ImageLynx's public API, for checking an installed package.
+"""A run through HaemoLynx's public API, for checking an installed package.
 
 Run directly (``python installed_package_smoke.py``) from any directory that is
 not the repository: everything it needs must come from the installed package.
@@ -12,11 +12,11 @@ from pathlib import Path
 import networkx as nx
 import numpy as np
 
-import ImageLynx
+import haemolynx
 # Every subpackage, imported for its own sake: one missing from the wheel
 # fails here rather than in whichever call happens to reach it first.
-from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
-from ImageLynx.pipeline import default_schema, write_default_config
+from haemolynx import graph, haemodynamics, io, preprocessing, statistics, visualization
+from haemolynx.pipeline import default_schema, write_default_config
 
 assert graph and io and preprocessing  # imported above for the check, used below via haemodynamics
 
@@ -58,8 +58,8 @@ written = visualization.graph_to_vtk(G, str(here / "out"))
 stats = statistics.compute_comprehensive_vessel_statistics(G)
 
 result = {
-    "version": ImageLynx.__version__,
-    "package_dir": str(Path(ImageLynx.__file__).parent),
+    "version": haemolynx.__version__,
+    "package_dir": str(Path(haemolynx.__file__).parent),
     "edges": G.number_of_edges(),
     "resistances": [float(d["resistance"]) for _u, _v, d in G.edges(data=True)],
     "vtk_files": sorted(

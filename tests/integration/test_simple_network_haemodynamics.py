@@ -15,7 +15,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ImageLynx.haemodynamics.poiseuille import (  # noqa: E402
+from haemolynx.haemodynamics.poiseuille import (  # noqa: E402
     CAPILLARY_REGIME_MAX_DIAMETER_UM,
     LARGE_VESSEL_VISCOSITY_PA_S,
     UM_PER_M,
@@ -42,7 +42,7 @@ def example():
 @pytest.fixture(scope="module")
 def settings(example, tmp_path_factory):
     """Settings exactly as a real run gets them: the config file on disk."""
-    from ImageLynx.parsers import load_config
+    from haemolynx.parsers import load_config
 
     return load_config(
         example.CONFIG_PATH,
@@ -99,7 +99,7 @@ def test_pressures_stay_within_the_boundary_conditions(settings, run_result):
 
 def test_flow_is_conserved_at_every_internal_node(example, run_result):
     """Kirchhoff's current law: only the two boundary nodes may source flow."""
-    from ImageLynx import haemodynamics
+    from haemolynx import haemodynamics
 
     G = run_result["graph"]
     conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
@@ -144,7 +144,7 @@ def test_running_the_example_warns_about_the_placeholder_viscosity(
     example, settings, tmp_path
 ):
     """A run using 20 um and 30 um vessels must say its viscosity is a placeholder."""
-    from ImageLynx.haemodynamics.poiseuille import PlaceholderViscosityWarning
+    from haemolynx.haemodynamics.poiseuille import PlaceholderViscosityWarning
 
     with pytest.warns(PlaceholderViscosityWarning, match="order-of-magnitude"):
         example.main({**settings, "output_dir": tmp_path / "warns"})

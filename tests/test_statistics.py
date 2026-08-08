@@ -3,7 +3,7 @@ import pytest
 import numpy as np
 import networkx as nx
 
-from ImageLynx.statistics import (
+from haemolynx.statistics import (
     compute_basic_statistics,
     compute_tortuosity_measures,
     compute_branching_statistics,

@@ -13,7 +13,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ImageLynx.graph import (
+from haemolynx.graph import (
     compute_overlapping_terminal_assignment_metrics,
     dilate_large_vessel_masks_by_microns,
     select_terminal_nodes_from_large_vessel_masks,

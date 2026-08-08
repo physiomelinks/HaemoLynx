@@ -90,8 +90,8 @@ def test_each_pin_is_exactly_the_declared_floor(name):
 def test_the_type_marker_is_declared_as_package_data():
     """`py.typed` is only honoured if it is installed alongside the modules."""
     text = PYPROJECT.read_text(encoding="utf-8")
-    assert (REPO_ROOT / "src" / "ImageLynx" / "py.typed").exists()
-    assert 'ImageLynx = ["py.typed"]' in text, (
+    assert (REPO_ROOT / "src" / "haemolynx" / "py.typed").exists()
+    assert 'haemolynx = ["py.typed"]' in text, (
         "py.typed exists but is not listed in [tool.setuptools.package-data]; "
         "it would not be installed."
     )

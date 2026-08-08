@@ -31,7 +31,7 @@ import tifffile
 from skimage.measure import label as sk_label_cc
 from skimage.measure import marching_cubes
 
-from ImageLynx.haemodynamics import automated
+from haemolynx.haemodynamics import automated
 
 _GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
 _I0 = 100.0

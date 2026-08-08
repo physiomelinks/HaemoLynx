@@ -4,7 +4,7 @@ import numpy as np
 import tempfile
 from pathlib import Path
 
-from ImageLynx.io import (
+from haemolynx.io import (
     crop_tiff_volume_from_corners,
     load_and_skeletonize_3d_tif,
     load_and_skeletonize_3d_h5,

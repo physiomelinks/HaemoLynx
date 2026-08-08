@@ -9,8 +9,8 @@ was actually a conductance -- `Total Edge Length (microns)` fell from 120.0 to
 import networkx as nx
 import pytest
 
-from ImageLynx import statistics as st
-from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel, set_edge_resistance
+from haemolynx import statistics as st
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel, set_edge_resistance
 
 MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
 

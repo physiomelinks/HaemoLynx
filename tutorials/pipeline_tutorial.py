@@ -4,7 +4,7 @@
 
 # coding: utf-8
 
-# # ImageLynx pipeline tutorial
+# # HaemoLynx pipeline tutorial
 # 
 # This notebook runs the image-to-model pipeline **one stage at a time**, calling
 # the same functions `examples/resistance_network_pipeline.py` calls, in the same
@@ -40,7 +40,7 @@
 # ## Prerequisites
 # 
 # ```bash
-# pip install ImageLynx
+# pip install HaemoLynx
 # ```
 # 
 # That is everything Stages 1–6 need: the next cell installs it for you if it is
@@ -64,18 +64,18 @@
 # it leads the first code cell rather than the setup cell below.
 from __future__ import annotations
 
-# Install ImageLynx if this kernel does not already have it. Nothing happens
+# Install HaemoLynx if this kernel does not already have it. Nothing happens
 # when it is present, so a clone or an editable install is left alone.
 import importlib.util
 import subprocess
 import sys
 
-if importlib.util.find_spec("ImageLynx") is None:
-    subprocess.run([sys.executable, "-m", "pip", "install", "ImageLynx"], check=True)
+if importlib.util.find_spec("haemolynx") is None:
+    subprocess.run([sys.executable, "-m", "pip", "install", "HaemoLynx"], check=True)
 
-import ImageLynx
+import haemolynx
 
-print(f"ImageLynx {ImageLynx.__version__} from {ImageLynx.__file__}")
+print(f"HaemoLynx {haemolynx.__version__} from {haemolynx.__file__}")
 
 # In[ ]:
 
@@ -111,12 +111,12 @@ TUTORIAL_DIR = _resolve_tutorial_dir()
 
 def _resolve_repo_root(tutorial_dir: Path) -> Path | None:
     """The checkout this notebook sits in, or None when pip-installed."""
-    env_root = os.environ.get("IMAGELYNX_REPO_ROOT")
+    env_root = os.environ.get("HAEMOLYNX_REPO_ROOT")
     if env_root:
         return Path(env_root)
     candidates = [tutorial_dir, tutorial_dir.parent, Path.cwd().resolve(), *Path.cwd().resolve().parents]
     for start in candidates:
-        if (start / "src" / "ImageLynx").is_dir() and (start / "examples").is_dir():
+        if (start / "src" / "haemolynx").is_dir() and (start / "examples").is_dir():
             return start
     return None
 
@@ -128,11 +128,11 @@ if REPO_ROOT is not None:
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
 
-from ImageLynx import graph, haemodynamics, io, preprocessing, statistics, visualization
-from ImageLynx.parsers import configure_console_logging
+from haemolynx import graph, haemodynamics, io, preprocessing, statistics, visualization
+from haemolynx.parsers import configure_console_logging
 
 # The eight stages the example runs, in the order it runs them.
-from ImageLynx.pipeline import (
+from haemolynx.pipeline import (
     assign_boundaries,
     assign_diameters,
     build_haemodynamic_model,
@@ -169,7 +169,7 @@ except ModuleNotFoundError:
             existing = [str(p) for p in paths if Path(p).exists()]
             print(f"{stage_title}: {', '.join(existing) if existing else 'no figures'}")
 
-print(f"Repository root: {REPO_ROOT if REPO_ROOT else 'none - running from an installed ImageLynx'}")
+print(f"Repository root: {REPO_ROOT if REPO_ROOT else 'none - running from an installed HaemoLynx'}")
 print(f"Running in Jupyter: {in_jupyter()}")
 
 # ## Configuration: one settings dict
@@ -190,8 +190,8 @@ print(f"Running in Jupyter: {in_jupyter()}")
 # In[ ]:
 
 
-OUTPUT_DIR = Path(os.environ.get("IMAGELYNX_TUTORIAL_OUTPUT_DIR", str(TUTORIAL_DIR / "outputs"))).resolve()
-PLOT_DIR = Path(os.environ.get("IMAGELYNX_TUTORIAL_PLOT_DIR", str(TUTORIAL_DIR / "plots"))).resolve()
+OUTPUT_DIR = Path(os.environ.get("HAEMOLYNX_TUTORIAL_OUTPUT_DIR", str(TUTORIAL_DIR / "outputs"))).resolve()
+PLOT_DIR = Path(os.environ.get("HAEMOLYNX_TUTORIAL_PLOT_DIR", str(TUTORIAL_DIR / "plots"))).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -248,7 +248,7 @@ print(f"Inline stage plots enabled: {SHOW_STAGE_PLOTS and in_jupyter()}")
 
 # ## Stage 0: Segment **your** raw image with ilastik
 # 
-# ImageLynx Stages 1–6 need a **binary vessel mask** (foreground = vessel). This stage turns **your unsegmented** 3D TIFF into that mask using [ilastik](https://www.ilastik.org/) Pixel Classification.
+# HaemoLynx Stages 1–6 need a **binary vessel mask** (foreground = vessel). This stage turns **your unsegmented** 3D TIFF into that mask using [ilastik](https://www.ilastik.org/) Pixel Classification.
 # 
 # > **Training happens in the ilastik GUI** (interactive). **Inference** runs headlessly inside `segment()` once you have a saved `.ilp` project — set `use_ilastik_segmentation` and the three paths below, and the stage does the rest.
 # 
@@ -273,7 +273,7 @@ print(f"Inline stage plots enabled: {SHOW_STAGE_PLOTS and in_jupyter()}")
 # 
 # ### Step 0.3 — Check export settings (important)
 # 
-# In the **Prediction** / export section of the Pixel Classification workflow, ensure **Simple Segmentation** is available as an export source (this is what ImageLynx requests headlessly). The saved `.ilp` embeds these settings.
+# In the **Prediction** / export section of the Pixel Classification workflow, ensure **Simple Segmentation** is available as an export source (this is what HaemoLynx requests headlessly). The saved `.ilp` embeds these settings.
 # 
 # ### Step 0.4 — Run headless segmentation (code cell below)
 # 
@@ -320,7 +320,7 @@ else:
 # skeleton, returning a `SkeletonisedVolume`.
 # 
 # Stages 1–6 operate on a **binary segmentation**, not raw fluorescence. The mask
-# should be foreground voxels (e.g. 255) on background (0); ImageLynx binarises
+# should be foreground voxels (e.g. 255) on background (0); HaemoLynx binarises
 # it on load.
 # 
 # - **In a checkout:** `tests/data/Nerve_capillaries_cropped.tif`, a small cropped mask.
@@ -333,7 +333,7 @@ else:
 # --- Which mask to analyse -------------------------------------------------
 # In a checkout, the small cropped nerve mask committed for the tests. Without
 # one, a synthetic volume built here -- so this notebook runs on a bare
-# `pip install ImageLynx`, with no data to download.
+# `pip install HaemoLynx`, with no data to download.
 DEFAULT_SEGMENTED_TIFF = REPO_ROOT / "tests" / "data" / "Nerve_capillaries_cropped.tif" if REPO_ROOT else None
 
 
@@ -375,7 +375,7 @@ def build_synthetic_vessel_volume(path: Path) -> Path:
     return path
 
 
-env_input = os.environ.get("IMAGELYNX_TUTORIAL_INPUT_TIFF")
+env_input = os.environ.get("HAEMOLYNX_TUTORIAL_INPUT_TIFF")
 if RUN_STAGE_0_ILASTIK:
     INPUT_TIFF = None  # segment() fills input_path in from the ilastik run
 elif env_input:
@@ -604,7 +604,7 @@ show_stage_plots(
 # export_results(settings, network, model, solution)
 # ```
 # 
-# `ImageLynx.pipeline.run_pipeline_stages(settings, SCHEMA)` runs that sequence
+# `haemolynx.pipeline.run_pipeline_stages(settings, SCHEMA)` runs that sequence
 # for you, and `python examples/resistance_network_pipeline.py` runs it from the
 # command line against `examples/resistance_pipeline_config.yaml`.
 # 

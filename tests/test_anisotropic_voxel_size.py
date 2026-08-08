@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 import tifffile
 
-from ImageLynx.graph import build_graph_from_skeleton
-from ImageLynx.graph.large_vessels import dilate_binary_mask_by_microns
-from ImageLynx.haemodynamics.automated import physical_points_to_continuous_indices
-from ImageLynx.io import load_3d_tif_with_voxel_size, voxel_size_zyx_from_xyz
+from haemolynx.graph import build_graph_from_skeleton
+from haemolynx.graph.large_vessels import dilate_binary_mask_by_microns
+from haemolynx.haemodynamics.automated import physical_points_to_continuous_indices
+from haemolynx.io import load_3d_tif_with_voxel_size, voxel_size_zyx_from_xyz
 
 # Deliberately anisotropic: coarse z, fine x — the usual confocal/2-photon case.
 VOXEL_SIZE_XYZ = (0.4, 0.5, 2.0)
@@ -121,7 +121,7 @@ def test_terminal_node_mask_lookup_uses_array_axis_spacing():
     pytest.importorskip("skan")
     import networkx as nx
 
-    from ImageLynx.graph import select_terminal_nodes_from_large_vessel_masks
+    from haemolynx.graph import select_terminal_nodes_from_large_vessel_masks
 
     arteriole = np.zeros((8, 8, 8), dtype=bool)
     venule = np.zeros((8, 8, 8), dtype=bool)

@@ -19,7 +19,7 @@ for _path in (REPO_ROOT / "src", REPO_ROOT / "examples"):
 
 pytest.importorskip("yaml")
 
-from ImageLynx.parsers import ConfigError  # noqa: E402
+from haemolynx.parsers import ConfigError  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -34,7 +34,7 @@ def pipeline():
 @pytest.fixture(scope="module")
 def source() -> str:
     """The stage runner's source: it moved to the library so both examples share it."""
-    return (REPO_ROOT / "src" / "ImageLynx" / "pipeline" / "stages.py").read_text()
+    return (REPO_ROOT / "src" / "haemolynx" / "pipeline" / "stages.py").read_text()
 
 
 # --- loading ---------------------------------------------------------------
@@ -119,7 +119,7 @@ STAGES = [
 @pytest.mark.parametrize("stage_name,_returns", STAGES)
 def test_every_stage_takes_the_settings_dict_first(stage_name, _returns):
     """The 127-parameter signature is gone; each stage reads settings by name."""
-    from ImageLynx import pipeline as pipeline_package
+    from haemolynx import pipeline as pipeline_package
 
     stage = getattr(pipeline_package, stage_name)
     assert list(inspect.signature(stage).parameters)[0] == "settings"
@@ -231,14 +231,14 @@ def test_the_entry_point_still_accepts_individual_overrides(
 
 def test_preflight_is_derived_from_the_schema_not_a_hand_written_list():
     """The example's preflight.py is gone; the checks read the schema."""
-    from ImageLynx.pipeline import preflight
+    from haemolynx.pipeline import preflight
 
     assert not (REPO_ROOT / "examples" / "preflight.py").exists()
     assert callable(preflight)
 
 
 def test_preflight_accepts_a_runnable_configuration(pipeline, tmp_path):
-    from ImageLynx.pipeline import preflight
+    from haemolynx.pipeline import preflight
 
     image = tmp_path / "mask.tif"
     image.write_bytes(b"x")
@@ -247,7 +247,7 @@ def test_preflight_accepts_a_runnable_configuration(pipeline, tmp_path):
 
 
 def test_preflight_rejects_a_missing_input_image(pipeline, tmp_path):
-    from ImageLynx.pipeline import preflight
+    from haemolynx.pipeline import preflight
 
     settings = pipeline.resolve_settings(overrides={"input_path": tmp_path / "absent.tif"})
     report = preflight(settings, pipeline.SCHEMA)
@@ -257,7 +257,7 @@ def test_preflight_rejects_a_missing_input_image(pipeline, tmp_path):
 
 def test_preflight_demands_the_masks_a_toggle_turns_on(pipeline, tmp_path):
     """Turning on large-vessel masks makes their paths required."""
-    from ImageLynx.pipeline import preflight
+    from haemolynx.pipeline import preflight
 
     image = tmp_path / "mask.tif"
     image.write_bytes(b"x")
@@ -270,7 +270,7 @@ def test_preflight_demands_the_masks_a_toggle_turns_on(pipeline, tmp_path):
 
 
 def test_preflight_requires_a_cached_graph_when_graph_building_is_off(pipeline, tmp_path):
-    from ImageLynx.pipeline import preflight
+    from haemolynx.pipeline import preflight
 
     image = tmp_path / "mask.tif"
     image.write_bytes(b"x")

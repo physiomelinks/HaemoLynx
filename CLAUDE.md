@@ -1,16 +1,16 @@
-# ImageLynx — repository guide for AI assistants
+# HaemoLynx — repository guide for AI assistants
 
-ImageLynx turns 3D microvascular microscopy into **NetworkX graphs** with haemodynamic edge weights, VTK exports, and network statistics. The pipeline accepts **already-segmented** binary masks (TIFF/H5) or can **run segmentation in-repo via ilastik** (headless) when configured.
+HaemoLynx turns 3D microvascular microscopy into **NetworkX graphs** with haemodynamic edge weights, VTK exports, and network statistics. The pipeline accepts **already-segmented** binary masks (TIFF/H5) or can **run segmentation in-repo via ilastik** (headless) when configured.
 
-**Segmentation is in scope.** ImageLynx integrates ilastik for pixel classification inference on the main vessel volume and on optional large/small arteriole–venule channels. What stays **outside** this repo is **training** ilastik projects (`.ilp` classifiers): users train those manually in the [ilastik](https://www.ilastik.org/) GUI, then point the pipeline at the exported project and raw/unsegmented images.
+**Segmentation is in scope.** HaemoLynx integrates ilastik for pixel classification inference on the main vessel volume and on optional large/small arteriole–venule channels. What stays **outside** this repo is **training** ilastik projects (`.ilp` classifiers): users train those manually in the [ilastik](https://www.ilastik.org/) GUI, then point the pipeline at the exported project and raw/unsegmented images.
 
 ---
 
 ## Repository layout
 
 ```
-ImageLynx/
-├── src/ImageLynx/          # Installable package (setuptools, pythonpath = src in pytest)
+haemolynx/
+├── src/haemolynx/          # Installable package (setuptools, pythonpath = src in pytest)
 │   ├── io/                 # load.py, ilastik.py, voxel_validation.py, axis_order.py,
 │   │                       #   automated_vessel_assignment.py (mask loading/validation)
 │   ├── preprocessing/      # skeleton.py — skeletonize, bridge, clean, bundle refinement
@@ -28,10 +28,10 @@ ImageLynx/
 │   └── pipeline/           # schema.py (the pipeline's 137 settings), settings.py, checks.py,
 │                           #   stages.py; public: default_schema, write_default_config
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
-│   ├── resistance_network_pipeline.py        # Main example: config + CLI over ImageLynx.pipeline
+│   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
 │   ├── brain_network_pipeline.py             # Whole-brain run: pipeline + pericyte dilation sweep
 │   ├── *_schema.py / *_config.yaml           # Settings an example adds on top of
-│   │                                         #   ImageLynx.pipeline.schema; configs are generated
+│   │                                         #   haemolynx.pipeline.schema; configs are generated
 │   ├── resistance_pipeline_settings.py       # Legacy constants (presets/wizard still read these)
 │   ├── presets.py          # Preset definitions + CLI/YAML override engine
 │   ├── local_presets.py    # User-local preset overrides (stub)
@@ -126,12 +126,12 @@ pip install -e ".[dev]"
 
 | Change area | Typical test location |
 |-------------|----------------------|
-| `src/ImageLynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py` |
-| `src/ImageLynx/preprocessing/` | `tests/test_preprocessing.py` |
-| `src/ImageLynx/graph/` | `tests/test_graph.py`, `tests/test_branch_order_hierarchy.py`, boundary/assignment tests |
-| `src/ImageLynx/haemodynamics/` | `tests/test_hemodynamics.py`, FWHM/pericyte integration tests |
-| `src/ImageLynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py` |
-| `src/ImageLynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py` |
+| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py` |
+| `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py` |
+| `src/haemolynx/graph/` | `tests/test_graph.py`, `tests/test_branch_order_hierarchy.py`, boundary/assignment tests |
+| `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, FWHM/pericyte integration tests |
+| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py` |
+| `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py` |
 | Full pipeline / examples | `tests/integration/test_image_to_model_pipeline.py`, `test_nerve_pipeline.py` |
 | Tutorial notebook | `tests/integration/test_pipeline_tutorial.py` (exports notebook → `.py`, then runs) |
 
@@ -152,7 +152,7 @@ reports the others).
 
 ## Coding conventions
 
-- **Library code** lives under `src/ImageLynx/`. Keep `examples/` thin — orchestration, CLI, presets.
+- **Library code** lives under `src/haemolynx/`. Keep `examples/` thin — orchestration, CLI, presets.
 - **Minimal diffs** — match existing naming, types, and import style in the touched module.
 - **Input contract** — pipeline expects **binary vessel masks** at skeletonization time. Masks may come from pre-existing files or from **ilastik inference** in this repo; classifier training is always manual. Document new ilastik-related paths/flags in `resistance_pipeline_settings.py` and `preflight.py`.
 - **Axis order** — arrays are canonical `(z, y, x)`: axis 0 is the stack axis that overlays and
@@ -259,7 +259,7 @@ running tests between each.
 - **`haemodynamics/automated.py`** is FWHM diameter measurement, not “automation”.
 - **`graph/__init__.py` bug:** imports `create_merged_edge_attributes` twice and lists
   `create_merged_edge_attributes_simple` / `_full` in `__all__` — neither is imported, so
-  `from ImageLynx.graph import *` raises `AttributeError`. (Confirmed reproducible.)
+  `from haemolynx.graph import *` raises `AttributeError`. (Confirmed reproducible.)
 - ~~**Dependency drift:** `requirements.txt` and `pyproject.toml` disagree.~~ **DONE** —
   `requirements.txt` is deleted; `pyproject.toml` is the only source.
 - ~~**Dead code:** `examples/OLD/` (two pre-refactor scripts, imported by nothing).~~ **DONE** — deleted.
@@ -267,7 +267,7 @@ running tests between each.
   `wizard.py`) is **not** duplicated — it’s a clean layered design. Leave its logic alone; just document.
 - **`examples/carotid_image_to_model.py`** was orphaned and could not even be imported
   (`PLOT_DIR` undefined; `__main__` passed an argument the entry point did not take) — **fixed**:
-  it is now `carotid_schema.py` + `carotid_config.yaml` over `ImageLynx.pipeline`, like the other
+  it is now `carotid_schema.py` + `carotid_config.yaml` over `haemolynx.pipeline`, like the other
   examples. Dale’s segmentation work slots into its `use_ilastik_segmentation` path.
 
 ### Phase 0 — Housekeeping & safety net (lowest risk)
@@ -283,7 +283,7 @@ running tests between each.
 - [ ] Remove the duplicate `create_merged_edge_attributes` import; reconcile `__all__` with what is
       actually imported (drop the phantom `_simple`/`_full` names, or import the real symbols if they
       exist in `_helpers.py`).
-- [ ] Add a regression test (e.g. `tests/test_graph_public_api.py`) that does `from ImageLynx.graph import *`
+- [ ] Add a regression test (e.g. `tests/test_graph_public_api.py`) that does `from haemolynx.graph import *`
       and asserts every name in `__all__` is importable. Do the same guard for the other subpackages’
       `__all__` while we’re here.
 - [ ] Run full `pytest`. Commit.
@@ -302,19 +302,19 @@ Keep the **public function names** the same so the API surface doesn’t move; o
 - [ ] Use `git mv` so history is preserved. Run full `pytest` after each rename. Commit per rename.
 
 ### Phase 3 — De-duplicate the whole-brain workflow — **DONE**
-- [x] The stage runner moved to `src/ImageLynx/pipeline.py`, so examples share it instead of forking it.
+- [x] The stage runner moved to `src/haemolynx/pipeline.py`, so examples share it instead of forking it.
 - [x] The pressure/boundary-flow solve and the pericyte dilation sweep moved to
-      `src/ImageLynx/haemodynamics/pericyte_sweep.py`; the curve plots to
-      `src/ImageLynx/visualization/dilation_curves.py`.
+      `src/haemolynx/haemodynamics/pericyte_sweep.py`; the curve plots to
+      `src/haemolynx/visualization/dilation_curves.py`.
 - [x] `resistance_network_pipeline_for_Alice.py` (1,795 lines) and root-level `AlicePaper.py` are
       replaced by `examples/brain_network_pipeline.py` (73 lines) plus `brain_pipeline_config.yaml`.
       "Alice" is gone from the names; the sweep is described by what it does.
 - [x] `tests/test_alice.py` → `tests/test_pericyte_sweep.py`, driving the extracted module.
 
 ### Phase 4 — Thin out the examples / consolidate config (larger, do last)
-- [x] Stage orchestration lifted into `src/ImageLynx/pipeline.py`; the example is now config + CLI
+- [x] Stage orchestration lifted into `src/haemolynx/pipeline.py`; the example is now config + CLI
       glue (1,282 → ~250 lines) and `brain_network_pipeline.py` runs the same stages.
-- [ ] Split `ImageLynx.pipeline.run_pipeline_stages` further into one function per stage
+- [ ] Split `haemolynx.pipeline.run_pipeline_stages` further into one function per stage
       (segmentation → skeletonize → graph → boundary/branch-order → haemodynamics → export/stats)
       with unit tests per stage. It is one ~800-line function today.
 - [ ] Add a short “preset system” note to the README (settings constants → preset dicts → CLI/YAML overrides),

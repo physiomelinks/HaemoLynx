@@ -13,19 +13,19 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from ImageLynx.haemodynamics import constriction
-from ImageLynx.haemodynamics.constriction import (
+from haemolynx.haemodynamics import constriction
+from haemolynx.haemodynamics.constriction import (
     apply_constriction_sites,
     diameter_at_position,
     integrated_resistance,
     resolve_edge_diameters,
 )
-from ImageLynx.haemodynamics.constriction_strategy import (
+from haemolynx.haemodynamics.constriction_strategy import (
     set_resistances_for_constriction_strategy,
     uniform_constriction_factors,
 )
-from ImageLynx.haemodynamics.pericyte_mask import MaskConstrictionSites
-from ImageLynx.haemodynamics.probability import (
+from haemolynx.haemodynamics.pericyte_mask import MaskConstrictionSites
+from haemolynx.haemodynamics.probability import (
     set_poiseuille_resistances_with_probabilistic_periodic_constrictions,
 )
 
@@ -340,7 +340,7 @@ def test_mask_and_periodic_strategies_give_the_same_resistance_for_the_same_site
 
 
 def test_both_strategy_modules_use_the_one_shared_application():
-    from ImageLynx.haemodynamics import pericyte_mask, probability
+    from haemolynx.haemodynamics import pericyte_mask, probability
 
     assert pericyte_mask.apply_constriction_sites is apply_constriction_sites
     assert probability.apply_constriction_sites is apply_constriction_sites

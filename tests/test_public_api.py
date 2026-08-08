@@ -1,8 +1,8 @@
 """Guards on the advertised public API of every subpackage.
 
-`ImageLynx.graph.__all__` listed two names that never existed
+`haemolynx.graph.__all__` listed two names that never existed
 (`create_merged_edge_attributes_simple` / `_full`, leftovers from a reverted
-split), so `from ImageLynx.graph import *` raised AttributeError. Nothing
+split), so `from haemolynx.graph import *` raised AttributeError. Nothing
 caught it because no test performed a star-import or checked `__all__`.
 """
 import importlib
@@ -10,15 +10,15 @@ import importlib
 import pytest
 
 SUBPACKAGES = [
-    "ImageLynx",
-    "ImageLynx.graph",
-    "ImageLynx.io",
-    "ImageLynx.haemodynamics",
-    "ImageLynx.parsers",
-    "ImageLynx.pipeline",
-    "ImageLynx.preprocessing",
-    "ImageLynx.statistics",
-    "ImageLynx.visualization",
+    "haemolynx",
+    "haemolynx.graph",
+    "haemolynx.io",
+    "haemolynx.haemodynamics",
+    "haemolynx.parsers",
+    "haemolynx.pipeline",
+    "haemolynx.preprocessing",
+    "haemolynx.statistics",
+    "haemolynx.visualization",
 ]
 
 
@@ -50,7 +50,7 @@ def test_all_has_no_duplicates(module_name):
 
 def test_path_length_has_exactly_one_public_name():
     """`calculate_voxel_path_length` was a second public name for the same behaviour."""
-    import ImageLynx.graph as graph
+    import haemolynx.graph as graph
 
     assert hasattr(graph, "calculate_path_length")
     assert not hasattr(graph, "calculate_voxel_path_length")
@@ -58,7 +58,7 @@ def test_path_length_has_exactly_one_public_name():
 
 def test_calculate_path_length_tolerates_empty_and_none():
     """The removed twin's only real difference was its falsy-input guard."""
-    from ImageLynx.graph import calculate_path_length
+    from haemolynx.graph import calculate_path_length
 
     assert calculate_path_length([]) == 0.0
     assert calculate_path_length(None) == 0.0
@@ -71,16 +71,16 @@ def test_every_module_can_be_imported_by_normal_syntax():
 
     `statistics/3D_distances.py` started with a digit, so the package had to
     reach it through `importlib.import_module` and no user could write
-    `from ImageLynx.statistics import 3D_distances` at all. It is now
+    `from haemolynx.statistics import 3D_distances` at all. It is now
     `three_dim_distances`; this catches the next one.
     """
     import pkgutil
 
-    import ImageLynx
+    import haemolynx
 
     offenders = [
         info.name
-        for info in pkgutil.walk_packages(ImageLynx.__path__, prefix="ImageLynx.")
+        for info in pkgutil.walk_packages(haemolynx.__path__, prefix="haemolynx.")
         if not info.name.rpartition(".")[2].isidentifier()
     ]
     assert offenders == [], (
@@ -90,6 +90,6 @@ def test_every_module_can_be_imported_by_normal_syntax():
 
 
 def test_the_cell_distance_module_is_a_normal_import():
-    from ImageLynx.statistics import three_dim_distances
+    from haemolynx.statistics import three_dim_distances
 
     assert callable(three_dim_distances.run_3d_measurement_to_cell_mask)

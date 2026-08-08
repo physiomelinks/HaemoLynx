@@ -2,7 +2,7 @@
 
 The reference branch is checked out into a throwaway ``git worktree`` and run
 by a subprocess whose ``PYTHONPATH`` points at that checkout, because the
-editable development install otherwise resolves ``ImageLynx`` to whichever
+editable development install otherwise resolves ``haemolynx`` to whichever
 working tree it was installed from -- which would make every comparison report
 "no differences".
 """

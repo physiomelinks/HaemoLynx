@@ -15,7 +15,7 @@ for _path in (_ROOT / "src", _ROOT / "examples"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from ImageLynx.pipeline.schema import default_schema  # noqa: E402
+from haemolynx.pipeline.schema import default_schema  # noqa: E402
 
 SCHEMA = default_schema()
 
@@ -26,7 +26,7 @@ PRESETS: dict[str, dict] = {
             'automated_vessel_assignment': True,
             'do_pericyte_construction': True,
             'final_render_mode': '3d',
-            'fwhm_raw_tiff_path': '/home/farg967/Documents/git_projects/ImageLynx/examples/images/Nerve_capillaries.tif',
+            'fwhm_raw_tiff_path': '/home/farg967/Documents/git_projects/haemolynx/examples/images/Nerve_capillaries.tif',
             'hold_ide_plots_open': False,
             'interactive_plots': False,
             'pericyte_mask_path': None,
@@ -141,7 +141,7 @@ PRESETS: dict[str, dict] = {
     "full_fwhm": {
         "description": 'Enable full FWHM diameter workflow with detailed outputs for raw-image-aligned analysis.',
         "overrides": {
-            'fwhm_raw_tiff_path': '/home/farg967/Documents/git_projects/ImageLynx/examples/images/Nerve_capillaries.tif',
+            'fwhm_raw_tiff_path': '/home/farg967/Documents/git_projects/haemolynx/examples/images/Nerve_capillaries.tif',
             'hold_ide_plots_open': False,
             'interactive_plots': False,
             'show_plots_in_ide': False,

@@ -2,7 +2,7 @@
 import pytest
 import numpy as np
 
-from ImageLynx.preprocessing import (
+from haemolynx.preprocessing import (
     bridge_gaps,
     preprocess_skeleton_for_graph,
     skeletonize_volume,

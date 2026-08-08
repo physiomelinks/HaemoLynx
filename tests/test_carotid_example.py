@@ -21,7 +21,7 @@ for _path in (REPO_ROOT / "src", REPO_ROOT / "examples"):
 
 pytest.importorskip("yaml")
 
-from ImageLynx.parsers import ConfigError  # noqa: E402
+from haemolynx.parsers import ConfigError  # noqa: E402
 
 EXAMPLE_PATH = REPO_ROOT / "examples" / "carotid_image_to_model.py"
 
@@ -49,7 +49,7 @@ def test_settings_come_from_the_committed_config_file(carotid):
 
 
 def test_the_config_and_the_schema_describe_the_same_settings(carotid):
-    from ImageLynx.parsers import load_config
+    from haemolynx.parsers import load_config
 
     settings = load_config(carotid.CONFIG_PATH, carotid.SCHEMA)
     assert set(settings) == set(carotid.SCHEMA.names)
@@ -57,7 +57,7 @@ def test_the_config_and_the_schema_describe_the_same_settings(carotid):
 
 def test_the_schema_is_the_pipeline_schema_with_this_dataset_s_values(carotid):
     """A carotid-only setting would be a setting the main pipeline cannot read."""
-    from ImageLynx.pipeline.schema import default_schema
+    from haemolynx.pipeline.schema import default_schema
 
     PIPELINE_SCHEMA = default_schema()
 
@@ -108,7 +108,7 @@ def test_the_entry_point_runs_the_shared_stages_not_a_fork(carotid, source):
         "load_and_skeletonize_3d_tif",
         "graph_to_vtk",
     ):
-        assert forked_call not in source, f"{forked_call} belongs to ImageLynx.pipeline"
+        assert forked_call not in source, f"{forked_call} belongs to haemolynx.pipeline"
 
 
 def test_the_command_line_is_generated_from_the_schema(source):

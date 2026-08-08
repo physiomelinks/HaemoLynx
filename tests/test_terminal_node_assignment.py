@@ -12,11 +12,11 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from ImageLynx.graph import (
+from haemolynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks,
     select_terminal_nodes_from_large_vessel_masks,
 )
-from ImageLynx.graph.automated_vessel_assignment import (
+from haemolynx.graph.automated_vessel_assignment import (
     compute_overlapping_terminal_assignment_metrics,
     resolve_overlapping_terminal_node_assignment,
 )

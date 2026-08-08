@@ -15,7 +15,7 @@ import pytest
 
 pv = pytest.importorskip("pyvista")
 
-from ImageLynx.visualization import (
+from haemolynx.visualization import (
     derive_pericyte_points_from_graph,
     graph_to_vtk,
     visualize_vtk_network,
@@ -173,7 +173,7 @@ def test_anisotropic_stack_exports_with_its_true_physical_extent(tmp_path):
     three spacings differ, so no swap can produce the expected numbers.
     """
     pytest.importorskip("skan")
-    from ImageLynx.graph import build_graph_from_skeleton
+    from haemolynx.graph import build_graph_from_skeleton
 
     voxel_size_zyx = (2.0, 0.5, 0.4)
     skeleton = np.zeros((12, 7, 7), dtype=bool)

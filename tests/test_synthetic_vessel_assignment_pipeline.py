@@ -1,6 +1,6 @@
 """End-to-end synthetic test: large-mask terminals, small-mask boundaries, hierarchical orders.
 
-ImageLynx roles (this test matches the main resistance pipeline):
+HaemoLynx roles (this test matches the main resistance pipeline):
 - **Large** arteriole/venule masks -> `select_terminal_nodes_from_large_vessel_masks`
   (degree-1 **input / output** terminals).
 - **Small** arteriole/venule masks -> `infer_boundary_nodes_from_small_vessel_masks`
@@ -23,7 +23,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ImageLynx.graph import (
+from haemolynx.graph import (
     assign_hierarchical_branch_orders,
     infer_boundary_nodes_from_small_vessel_masks,
     select_terminal_nodes_from_large_vessel_masks,

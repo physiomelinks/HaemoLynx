@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ImageLynx main pipeline package."""
+"""HaemoLynx main pipeline package."""
 from __future__ import annotations
 
 import sys
@@ -15,10 +15,10 @@ if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
 
-from ImageLynx import haemodynamics
-from ImageLynx.parsers import configure_console_logging, settings_from_command_line
-from ImageLynx.pipeline import resolve_settings as _resolve_settings
-from ImageLynx.pipeline import (
+from haemolynx import haemodynamics
+from haemolynx.parsers import configure_console_logging, settings_from_command_line
+from haemolynx.pipeline import resolve_settings as _resolve_settings
+from haemolynx.pipeline import (
     preflight,
     assign_boundaries,
     assign_diameters,
@@ -41,7 +41,7 @@ SCHEMA = default_schema()
 # Settings -> pipeline arguments
 #
 # `resistance_pipeline_config.yaml` is the source of every setting, described by
-# `ImageLynx.pipeline.schema`. This section is the only place that knows how
+# `haemolynx.pipeline.schema`. This section is the only place that knows how
 # a setting name maps onto the pipeline stage arguments.
 # ---------------------------------------------------------------------------
 

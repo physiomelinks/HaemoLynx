@@ -1,7 +1,7 @@
 """The pipeline's schema is part of the installed package, not example code.
 
 `resolve_settings` cannot be called without a schema, so while the schema lived
-in `examples/resistance_pipeline_schema.py` a pip-installed copy of ImageLynx
+in `examples/resistance_pipeline_schema.py` a pip-installed copy of HaemoLynx
 had no way to configure a run at all. These tests pin the public route in --
 `default_schema()` and `write_default_config()` -- and, in a subprocess with
 only the package importable, prove it does not reach back into the repository.
@@ -17,8 +17,8 @@ import pytest
 
 yaml = pytest.importorskip("yaml")
 
-from ImageLynx.parsers import ConfigError, Schema, load_config  # noqa: E402
-from ImageLynx.pipeline import default_schema, write_default_config  # noqa: E402
+from haemolynx.parsers import ConfigError, Schema, load_config  # noqa: E402
+from haemolynx.pipeline import default_schema, write_default_config  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
@@ -46,8 +46,8 @@ def test_default_schema_is_stable_between_calls():
 
 
 def test_the_schema_module_is_importable_without_the_examples_directory():
-    """`import ImageLynx.pipeline.schema` must not need a repository checkout."""
-    import ImageLynx.pipeline.schema as module
+    """`import haemolynx.pipeline.schema` must not need a repository checkout."""
+    import haemolynx.pipeline.schema as module
 
     assert Path(module.__file__).is_relative_to(SRC)
     assert module.SCHEMA is default_schema()
@@ -104,7 +104,7 @@ def test_write_default_config_refuses_a_value_the_schema_rejects(tmp_path):
 
 def test_write_default_config_accepts_an_extended_schema(tmp_path):
     """Extending the pipeline schema is how the whole-brain example works."""
-    from ImageLynx.parsers import Setting
+    from haemolynx.parsers import Setting
 
     extended = Schema(
         list(default_schema())
@@ -125,8 +125,8 @@ def test_a_bare_package_import_can_configure_a_run(tmp_path):
     """
     script = textwrap.dedent(
         """
-        from ImageLynx.parsers import load_config
-        from ImageLynx.pipeline import default_schema, write_default_config
+        from haemolynx.parsers import load_config
+        from haemolynx.pipeline import default_schema, write_default_config
 
         write_default_config("cfg.yaml")
         settings = load_config("cfg.yaml", default_schema())

@@ -49,9 +49,9 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
         extra_paths = f"{extra_paths}:{existing_pythonpath}"
     env = {
         **dict(__import__("os").environ),
-        "IMAGELYNX_REPO_ROOT": str(REPO_ROOT),
-        "IMAGELYNX_TUTORIAL_OUTPUT_DIR": str(output_dir),
-        "IMAGELYNX_TUTORIAL_PLOT_DIR": str(plot_dir),
+        "HAEMOLYNX_REPO_ROOT": str(REPO_ROOT),
+        "HAEMOLYNX_TUTORIAL_OUTPUT_DIR": str(output_dir),
+        "HAEMOLYNX_TUTORIAL_PLOT_DIR": str(plot_dir),
         "PYTHONPATH": extra_paths,
     }
     result = subprocess.run(
@@ -90,7 +90,7 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
 @pytest.mark.integration
 @pytest.mark.slow
 def test_the_tutorial_runs_without_the_repository(tmp_path):
-    """The notebook promises `pip install ImageLynx` is enough. Check that.
+    """The notebook promises `pip install HaemoLynx` is enough. Check that.
 
     The exported script is copied out of the repository and run from a
     directory that contains nothing else, so the checkout is not discoverable:
@@ -114,15 +114,15 @@ def test_the_tutorial_runs_without_the_repository(tmp_path):
 
     env = {
         **os.environ,
-        "IMAGELYNX_TUTORIAL_OUTPUT_DIR": str(tmp_path / "outputs"),
-        "IMAGELYNX_TUTORIAL_PLOT_DIR": str(tmp_path / "plots"),
+        "HAEMOLYNX_TUTORIAL_OUTPUT_DIR": str(tmp_path / "outputs"),
+        "HAEMOLYNX_TUTORIAL_PLOT_DIR": str(tmp_path / "plots"),
         # Only the library, exactly as an install provides it.
         "PYTHONPATH": str(REPO_ROOT / "src"),
         "MPLBACKEND": "Agg",
         "PYVISTA_OFF_SCREEN": "true",
     }
-    env.pop("IMAGELYNX_REPO_ROOT", None)
-    env.pop("IMAGELYNX_TUTORIAL_INPUT_TIFF", None)
+    env.pop("HAEMOLYNX_REPO_ROOT", None)
+    env.pop("HAEMOLYNX_TUTORIAL_INPUT_TIFF", None)
 
     result = subprocess.run(
         [sys.executable, str(script)],

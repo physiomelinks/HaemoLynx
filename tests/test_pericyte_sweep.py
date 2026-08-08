@@ -14,10 +14,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 
-from ImageLynx.haemodynamics.pericyte_sweep import (  # noqa: E402
+from haemolynx.haemodynamics.pericyte_sweep import (  # noqa: E402
     run_pericyte_dilation_pressure_sweep,
 )
-from ImageLynx.visualization.dilation_curves import plot_dilation_curves  # noqa: E402
+from haemolynx.visualization.dilation_curves import plot_dilation_curves  # noqa: E402
 
 
 def _build_synthetic_network() -> tuple[

@@ -15,11 +15,11 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
-from ImageLynx.parsers import Schema, Setting, configure_console_logging, print_settings
-from ImageLynx.parsers.cli import CONSOLE_LOG_FORMAT
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+from haemolynx.parsers import Schema, Setting, configure_console_logging, print_settings
+from haemolynx.parsers.cli import CONSOLE_LOG_FORMAT
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "ImageLynx"
+PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "haemolynx"
 
 #: The command line is allowed to print: everything these two modules write is
 #: the answer to a flag the user typed (`--list-settings`, `--list-presets`,
@@ -104,7 +104,7 @@ def _network_with_one_capillary() -> nx.MultiGraph:
 
 def test_resistance_assignment_reports_progress_at_info(caplog) -> None:
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
-    with caplog.at_level(logging.INFO, logger="ImageLynx.haemodynamics.poiseuille"):
+    with caplog.at_level(logging.INFO, logger="haemolynx.haemodynamics.poiseuille"):
         _, results = model.set_poiseuille_resistances(
             _network_with_one_capillary(), {"B01": 5.0}
         )
@@ -121,7 +121,7 @@ def test_an_edge_left_without_a_resistance_is_a_warning(caplog) -> None:
     G.add_edge(0, 1, length=100.0)  # no branch_order, so no diameter to use
 
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
-    with caplog.at_level(logging.INFO, logger="ImageLynx.haemodynamics.poiseuille"):
+    with caplog.at_level(logging.INFO, logger="haemolynx.haemodynamics.poiseuille"):
         _, results = model.set_poiseuille_resistances(G, {"B01": 5.0})
 
     assert len(results["missing_branch_order"]) == 1
@@ -135,7 +135,7 @@ def test_an_edge_left_without_a_resistance_is_a_warning(caplog) -> None:
 
 def test_nothing_is_emitted_when_the_caller_has_not_configured_logging(capsys) -> None:
     """A library import must not turn a caller's stdout into a progress log."""
-    logging.getLogger("ImageLynx").handlers.clear()
+    logging.getLogger("haemolynx").handlers.clear()
     model = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
     model.set_poiseuille_resistances(_network_with_one_capillary(), {"B01": 5.0})
     assert capsys.readouterr().out == ""
