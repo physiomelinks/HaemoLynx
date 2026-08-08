@@ -1,0 +1,662 @@
+"""What a finished stage should put in the viewer, worked out without napari.
+
+:mod:`haemolynx.gui.layers` is the input direction -- what a layer already open
+means for a run. This is the output direction: what a stage's own return value
+means for the viewer. Nothing here imports napari; a spec is data, and the
+widget's only job is to hand it to ``viewer.add_*``.
+
+Two things decide the shape of this module.
+
+**Conversion is eager, on purpose.** Every stage after ``build_network`` writes
+attributes onto the same graph object. A spec built later -- on the GUI thread,
+after the run has moved on -- would show a later stage's numbers under an
+earlier stage's name: wrong, and silently so. So each stage's spec is built the
+moment that stage hands its output over, on whatever thread the run is on.
+
+**Geometry is built once.** Nothing after ``build_network`` adds or removes a
+node or an edge; the later stages only write attributes. So the vessels and
+nodes layers are created once and later stages replace their ``features``
+table, which is also what makes "colour by flow" a column switch rather than a
+rebuild of 33,000 points.
+
+Coordinates: node ``pos`` and edge ``voxels`` are physical microns already --
+voxel indices multiplied by ``voxel_size_zyx`` when the graph was built -- while
+``image``, ``skeleton`` and the masks are voxel-indexed arrays. So graph layers
+take ``scale=(1, 1, 1)`` and array layers take ``scale=voxel_size_zyx``. Getting
+that backwards is invisible on isotropic data and wrong on every real stack.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping, Sequence
+
+import numpy as np
+
+from haemolynx.visualization._helpers import (
+    create_color_mapping,
+    sort_branch_orders_numerically,
+)
+from haemolynx.visualization.geometry import edge_polyline
+
+#: Prefix on every layer this module names, so a re-run can tell its own layers
+#: from the user's and never overwrite theirs.
+PREFIX = "HaemoLynx "
+
+VESSELS = f"{PREFIX}vessels"
+VESSEL_LABELS = f"{PREFIX}vessel labels"
+NODES = f"{PREFIX}nodes"
+BOUNDARY_NODES = f"{PREFIX}boundary nodes"
+PERICYTES = f"{PREFIX}pericytes"
+IMAGE = f"{PREFIX}image"
+SKELETON = f"{PREFIX}skeleton"
+
+#: Mask field on VesselNetwork -> the layer it becomes.
+MASK_LAYERS = {
+    "large_arteriole_mask": f"{PREFIX}large arteriole mask",
+    "large_venule_mask": f"{PREFIX}large venule mask",
+    "small_arteriole_mask": f"{PREFIX}small arteriole mask",
+    "small_venule_mask": f"{PREFIX}small venule mask",
+}
+
+#: Every name this module can emit, so "clear ours" knows the set.
+LAYER_NAMES = frozenset(
+    {VESSELS, VESSEL_LABELS, NODES, BOUNDARY_NODES, PERICYTES, IMAGE, SKELETON}
+    | set(MASK_LAYERS.values())
+)
+
+#: Per-edge columns, and the stage that first writes each. A column is offered
+#: for colouring only once the stage that fills it has run, so the dropdown
+#: never lists a quantity that would come back all-NaN.
+EDGE_COLUMNS: dict[str, str] = {
+    "length": "build_network",
+    "segment_id": "build_network",
+    "mask_vessel_type": "assign_boundaries",
+    "branch_order": "assign_diameters",
+    "resistance": "assign_diameters",
+    "conductance": "assign_diameters",
+    "fwhm_diameter_um": "assign_diameters",
+    "pericyte_count_assigned": "assign_diameters",
+    "pressure_u": "solve",
+    "pressure_v": "solve",
+    "pressure_drop": "solve",
+    "flow_signed": "solve",
+    "flow_abs": "solve",
+}
+
+#: Columns holding text rather than numbers; a missing one is "" not NaN.
+TEXT_COLUMNS = frozenset({"branch_order", "mask_vessel_type"})
+
+#: What each stage colours the vessels by once it has run, unless the user has
+#: chosen otherwise. `flow_abs`, not `flow_signed`: the sign follows the order
+#: the MultiGraph happens to store an edge in, so a signed colouring shows an
+#: arbitrary pattern that reads as a physics bug.
+DEFAULT_VESSEL_COLOUR = {
+    "build_network": "segment_id",
+    "assign_diameters": "branch_order",
+    "build_haemodynamic_model": "resistance",
+    "solve": "flow_abs",
+}
+
+
+@dataclass(frozen=True)
+class LayerSpec:
+    """One layer to add or update, described without napari."""
+
+    kind: str  # image | labels | points | vectors | shapes
+    name: str
+    data: Any
+    scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    features: Mapping[str, np.ndarray] = field(default_factory=dict)
+    colour_by: str | None = None
+    #: "continuous" drives a colormap, "categorical" a colour cycle.
+    colour_kind: str = "none"
+    colour_cycle: tuple[tuple[str, tuple[float, float, float, float]], ...] = ()
+    contrast_limits: tuple[float, float] | None = None
+    visible: bool = True
+    options: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StageLayers:
+    """What one finished stage means for the viewer."""
+
+    stage: str
+    title: str
+    layers: tuple[LayerSpec, ...] = ()
+    #: Layers already there that only change how they are coloured.
+    recolour: tuple[tuple[str, str], ...] = ()
+    #: One line for the report box.
+    note: str = ""
+    #: 3 when the first geometry arrives, so a paths layer is not hidden by the
+    #: 2D slice; None leaves the viewer's own setting alone.
+    ndisplay: int | None = None
+
+
+# --- reading a graph ---------------------------------------------------------
+
+
+def edge_polylines(graph: Any) -> tuple[list[np.ndarray], dict[str, np.ndarray]]:
+    """Every edge's polyline, plus the columns that identify it.
+
+    Edges the geometry cannot place -- no voxels and no node positions -- are
+    dropped rather than raising: one unplaceable vessel should not cost the
+    other thousand their layer.
+    """
+    paths: list[np.ndarray] = []
+    edge_index: list[int] = []
+    us: list[Any] = []
+    vs: list[Any] = []
+    keys: list[int] = []
+
+    for index, (u, v, key, data) in enumerate(_iter_edges(graph)):
+        try:
+            paths.append(edge_polyline(graph, u, v, data))
+        except ValueError:
+            continue
+        edge_index.append(index)
+        us.append(u)
+        vs.append(v)
+        keys.append(key)
+
+    identity = {
+        "edge_index": np.asarray(edge_index, dtype=int),
+        "u": np.asarray(us),
+        "v": np.asarray(vs),
+        "key": np.asarray(keys, dtype=int),
+    }
+    return paths, identity
+
+
+def _iter_edges(graph: Any) -> Iterable[tuple[Any, Any, int, Mapping[str, Any]]]:
+    """(u, v, key, data) whether or not this is a MultiGraph."""
+    if getattr(graph, "is_multigraph", lambda: False)():
+        return graph.edges(keys=True, data=True)
+    return ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+
+
+def polylines_to_vectors(
+    paths: Sequence[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Polylines as (M, 2, 3) origin+direction segments, and which path each came from.
+
+    A Vectors layer draws every segment separately, so a per-edge value has to
+    be repeated across that edge's segments -- the second array is the index to
+    repeat by.
+    """
+    origins: list[np.ndarray] = []
+    directions: list[np.ndarray] = []
+    owner: list[int] = []
+    for index, path in enumerate(paths):
+        points = np.asarray(path, dtype=float)
+        if len(points) < 2:
+            continue
+        starts = points[:-1]
+        origins.append(starts)
+        directions.append(points[1:] - starts)
+        owner.extend([index] * len(starts))
+
+    if not origins:
+        return np.empty((0, 2, 3), dtype=float), np.empty(0, dtype=int)
+
+    vectors = np.stack(
+        [np.concatenate(origins, axis=0), np.concatenate(directions, axis=0)], axis=1
+    )
+    return vectors, np.asarray(owner, dtype=int)
+
+
+def edge_features(graph: Any, names: Iterable[str]) -> dict[str, np.ndarray]:
+    """One column per name, in edge order, for the edges that can be drawn.
+
+    A value a stage has not written yet comes back NaN, or "" for text. The
+    flow columns are sparse even after a solve -- `set_edge_flows` skips an edge
+    with no conductance -- so a consumer must use nan-aware limits.
+    """
+    wanted = list(names)
+    columns: dict[str, list[Any]] = {name: [] for name in wanted}
+
+    for u, v, _key, data in _iter_edges(graph):
+        try:
+            edge_polyline(graph, u, v, data)
+        except ValueError:
+            continue
+        for name in wanted:
+            value = data.get(name)
+            if name in TEXT_COLUMNS:
+                columns[name].append("" if value is None else str(value))
+            else:
+                columns[name].append(np.nan if value is None else float(value))
+
+    return {
+        name: np.asarray(values, dtype=object if name in TEXT_COLUMNS else float)
+        for name, values in columns.items()
+    }
+
+
+def available_edge_columns(graph: Any) -> list[str]:
+    """The columns this graph actually carries a value for, in declared order."""
+    present: list[str] = []
+    for name in EDGE_COLUMNS:
+        for _u, _v, _key, data in _iter_edges(graph):
+            if data.get(name) is not None:
+                present.append(name)
+                break
+    return present
+
+
+def node_points(
+    graph: Any, node_ids: Sequence[Any] | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Positions and ids for the nodes that have a position."""
+    ids = list(graph.nodes) if node_ids is None else list(node_ids)
+    points: list[np.ndarray] = []
+    kept: list[Any] = []
+    for node_id in ids:
+        pos = graph.nodes[node_id].get("pos") if node_id in graph.nodes else None
+        if pos is None:
+            continue
+        points.append(np.asarray(pos, dtype=float)[:3])
+        kept.append(node_id)
+    if not points:
+        return np.empty((0, 3), dtype=float), np.empty(0, dtype=object)
+    return np.stack(points), np.asarray(kept, dtype=object)
+
+
+def colour_cycle_for(
+    values: Iterable[Any],
+) -> tuple[tuple[str, tuple[float, float, float, float]], ...]:
+    """Colours for a text column, matching the plots the same run writes."""
+    labels = sorted({str(value) for value in values if str(value)})
+    if not labels:
+        return ()
+    ordered = sort_branch_orders_numerically(labels)
+    mapping = create_color_mapping(ordered)
+    return tuple((label, tuple(float(c) for c in mapping[label])) for label in ordered)
+
+
+def pericyte_points(graph: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Where the constrictions actually are, from each edge's own centres.
+
+    `constriction.py` records `pericyte_centers_um` per edge -- arclengths along
+    that edge, in microns -- so the points are read back by interpolating along
+    the polyline. `visualization.derive_pericyte_points_from_graph` does not use
+    them: it re-derives positions periodically from the spacing settings, which
+    is right for the periodic strategy and wrong for the mask one, where the
+    sites came from a segmented image. Here we want where they are.
+    """
+    from haemolynx.geometry import cumulative_lengths
+    from haemolynx.visualization.vtk_io import _interpolate_at_length
+
+    points: list[np.ndarray] = []
+    edge_index: list[int] = []
+    branch_order: list[str] = []
+    arclength: list[float] = []
+
+    for index, (u, v, _key, data) in enumerate(_iter_edges(graph)):
+        centres = data.get("pericyte_centers_um")
+        if not centres:
+            continue
+        try:
+            path = edge_polyline(graph, u, v, data)
+        except ValueError:
+            continue
+        cumlen = cumulative_lengths(path)
+        for centre in centres:
+            points.append(_interpolate_at_length(path, cumlen, float(centre)))
+            edge_index.append(index)
+            branch_order.append(str(data.get("branch_order", "")))
+            arclength.append(float(centre))
+
+    if not points:
+        return np.empty((0, 3), dtype=float), {}
+    return np.stack(points), {
+        "edge_index": np.asarray(edge_index, dtype=int),
+        "branch_order": np.asarray(branch_order, dtype=object),
+        "arc_length_um": np.asarray(arclength, dtype=float),
+    }
+
+
+def midpoints_of(paths: Sequence[np.ndarray]) -> np.ndarray:
+    """The middle of each polyline, for the hover-identity layer."""
+    if not paths:
+        return np.empty((0, 3), dtype=float)
+    return np.stack([np.asarray(path, dtype=float).mean(axis=0) for path in paths])
+
+
+def _limits(values: np.ndarray) -> tuple[float, float] | None:
+    """nan-aware colour limits, or None when there is nothing finite to scale."""
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return None
+    low, high = float(finite.min()), float(finite.max())
+    return (low, high) if high > low else (low, low + 1.0)
+
+
+# --- one stage at a time -----------------------------------------------------
+
+
+class ResultLayers:
+    """Turns each finished stage's output into the layers it should show.
+
+    Stateful, because a stage's output does not always carry what a layer
+    needs: `BoundaryNodes` is four lists of node ids and `Solution.pressure` is
+    ordered by `node_list`, while the positions for both live on the graph an
+    earlier stage produced. So the graph is remembered as it goes past.
+    """
+
+    def __init__(self, *, prefix: str = PREFIX) -> None:
+        self.prefix = prefix
+        self._graph: Any | None = None
+        self._voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        self._geometry_shown = False
+        self._emitted: list[str] = []
+
+    @property
+    def emitted(self) -> tuple[str, ...]:
+        """Every layer name produced so far, in order."""
+        return tuple(self._emitted)
+
+    def stage_finished(self, stage: str, output: Any) -> StageLayers:
+        """The layers for *stage*, built now, from *output* as it is now."""
+        builder = _BUILDERS.get(stage)
+        title = _title_for(stage)
+        if builder is None:
+            return StageLayers(stage=stage, title=title, note="")
+        group = builder(self, output)
+        for spec in group.layers:
+            if spec.name not in self._emitted:
+                self._emitted.append(spec.name)
+        return group
+
+    # -- the columns a graph can offer right now, for the colour-by control --
+
+    def colour_options(self) -> list[str]:
+        """Edge columns the remembered graph actually carries a value for."""
+        if self._graph is None:
+            return []
+        return available_edge_columns(self._graph)
+
+    # -- builders ---------------------------------------------------------
+
+    def _vessel_layers(self, stage: str) -> tuple[LayerSpec, ...]:
+        """The vessels and their hover-identity twin, from the graph we hold."""
+        graph = self._graph
+        assert graph is not None
+        paths, identity = edge_polylines(graph)
+        if not paths:
+            return ()
+
+        columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
+        columns.update(edge_features(graph, available_edge_columns(graph)))
+
+        vectors, owner = polylines_to_vectors(paths)
+        per_segment = {name: np.asarray(values)[owner] for name, values in columns.items()}
+
+        colour_by = DEFAULT_VESSEL_COLOUR.get(stage)
+        if colour_by is not None and colour_by not in columns:
+            colour_by = None
+
+        return (
+            LayerSpec(
+                kind="vectors",
+                name=VESSELS,
+                data=vectors,
+                features=per_segment,
+                colour_by=colour_by,
+                **_colouring(per_segment, colour_by),
+                options={"vector_style": "line", "edge_width": 0.6,
+                         "out_of_slice_display": True},
+            ),
+            # A Vectors layer answers no hover query -- `_get_value` returns
+            # None -- so the same table rides on a hidden Points layer at the
+            # middle of each vessel, which does.
+            LayerSpec(
+                kind="points",
+                name=VESSEL_LABELS,
+                data=midpoints_of(paths),
+                features=columns,
+                visible=False,
+                options={"size": 2.0, "out_of_slice_display": True},
+            ),
+        )
+
+    def _from_segment(self, output: Any) -> StageLayers:
+        """Nothing to draw: the stage settles which file to read, not its content."""
+        path = getattr(output, "image_path", None)
+        return StageLayers(
+            stage="segment",
+            title=_title_for("segment"),
+            note=f"Reading {path}. Its content arrives with the next stage."
+            if path
+            else "",
+        )
+
+    def _from_skeletonise(self, output: Any) -> StageLayers:
+        scale = tuple(float(v) for v in getattr(output, "voxel_size_zyx", (1.0, 1.0, 1.0)))
+        self._voxel_size_zyx = scale  # type: ignore[assignment]
+        image = getattr(output, "image", None)
+        skeleton = getattr(output, "skeleton", None)
+        layers: list[LayerSpec] = []
+        if image is not None:
+            layers.append(
+                LayerSpec(kind="image", name=IMAGE, data=image, scale=scale,
+                          options={"blending": "additive", "colormap": "gray"})
+            )
+        if skeleton is not None:
+            layers.append(
+                LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=scale)
+            )
+        return StageLayers(
+            stage="skeletonise",
+            title=_title_for("skeletonise"),
+            layers=tuple(layers),
+            note=f"Voxel size (z, y, x): {scale}",
+        )
+
+    def _from_build_network(self, output: Any) -> StageLayers:
+        graph = getattr(output, "graph", None)
+        self._graph = graph
+        layers: list[LayerSpec] = []
+
+        if graph is not None:
+            layers.extend(self._vessel_layers("build_network"))
+            points, ids = node_points(graph)
+            degrees = np.asarray([graph.degree(node_id) for node_id in ids], dtype=float)
+            layers.append(
+                LayerSpec(
+                    kind="points", name=NODES, data=points,
+                    features={"node_id": ids, "degree": degrees},
+                    colour_by="degree", colour_kind="continuous",
+                    contrast_limits=_limits(degrees),
+                    options={"size": 3.0, "out_of_slice_display": True},
+                )
+            )
+
+        for attribute, name in MASK_LAYERS.items():
+            mask = getattr(output, attribute, None)
+            if mask is not None:
+                layers.append(
+                    LayerSpec(kind="labels", name=name, data=mask,
+                              scale=self._voxel_size_zyx, visible=False)
+                )
+
+        edges = graph.number_of_edges() if graph is not None else 0
+        nodes = graph.number_of_nodes() if graph is not None else 0
+        first_geometry = not self._geometry_shown and bool(layers)
+        self._geometry_shown = self._geometry_shown or first_geometry
+        return StageLayers(
+            stage="build_network",
+            title=_title_for("build_network"),
+            layers=tuple(layers),
+            note=f"{nodes} nodes, {edges} vessels.",
+            # A network drawn in a 2D slice is a handful of dots; show it whole.
+            ndisplay=3 if first_geometry else None,
+        )
+
+    def _from_assign_boundaries(self, output: Any) -> StageLayers:
+        roles = {
+            "starting": getattr(output, "starting_nodes", ()) or (),
+            "output": getattr(output, "output_nodes", ()) or (),
+            "arteriole_boundary": getattr(output, "arteriole_boundary_nodes", ()) or (),
+            "venule_boundary": getattr(output, "venule_boundary_nodes", ()) or (),
+        }
+        layers: list[LayerSpec] = []
+        if self._graph is not None:
+            positions: list[np.ndarray] = []
+            labels: list[str] = []
+            ids: list[Any] = []
+            for role, node_ids in roles.items():
+                points, kept = node_points(self._graph, list(node_ids))
+                if len(points):
+                    positions.append(points)
+                    labels.extend([role] * len(kept))
+                    ids.extend(kept.tolist())
+            if positions:
+                role_column = np.asarray(labels, dtype=object)
+                layers.append(
+                    LayerSpec(
+                        kind="points", name=BOUNDARY_NODES,
+                        data=np.concatenate(positions, axis=0),
+                        features={"role": role_column,
+                                  "node_id": np.asarray(ids, dtype=object)},
+                        colour_by="role", colour_kind="categorical",
+                        colour_cycle=_role_colours(),
+                        options={"size": 6.0, "out_of_slice_display": True},
+                    )
+                )
+            layers.extend(self._vessel_layers("assign_boundaries"))
+
+        counts = ", ".join(f"{len(ids)} {role}" for role, ids in roles.items() if ids)
+        return StageLayers(
+            stage="assign_boundaries",
+            title=_title_for("assign_boundaries"),
+            layers=tuple(layers),
+            note=counts or "No boundary nodes found.",
+        )
+
+    def _from_assign_diameters(self, output: Any) -> StageLayers:
+        self._graph = getattr(output, "graph", self._graph)
+        layers = list(self._vessel_layers("assign_diameters"))
+        points, features = pericyte_points(self._graph) if self._graph is not None else (
+            np.empty((0, 3)), {}
+        )
+        if len(points):
+            layers.append(
+                LayerSpec(
+                    kind="points", name=PERICYTES, data=points, features=features,
+                    colour_by="branch_order", colour_kind="categorical",
+                    colour_cycle=colour_cycle_for(features.get("branch_order", ())),
+                    options={"size": 4.0, "out_of_slice_display": True},
+                )
+            )
+        orders = sorted(
+            {str(o) for o in edge_features(self._graph, ["branch_order"])["branch_order"] if o}
+        ) if self._graph is not None else []
+        return StageLayers(
+            stage="assign_diameters",
+            title=_title_for("assign_diameters"),
+            layers=tuple(layers),
+            note=f"{len(orders)} branch orders"
+            + (f", {len(points)} pericytes" if len(points) else ""),
+        )
+
+    def _from_build_haemodynamic_model(self, output: Any) -> StageLayers:
+        """No new layer: this stage returns the object it was given.
+
+        What it does establish is that every edge now carries a resistance, so
+        the honest thing to show is the network repainted by it -- the one stage
+        whose visible effect is a change of view rather than new data.
+        """
+        graph = getattr(output, "graph", self._graph)
+        self._graph = graph
+        with_resistance = 0
+        total = 0
+        if graph is not None:
+            for _u, _v, _key, data in _iter_edges(graph):
+                total += 1
+                if data.get("resistance") is not None:
+                    with_resistance += 1
+        return StageLayers(
+            stage="build_haemodynamic_model",
+            title=_title_for("build_haemodynamic_model"),
+            recolour=((VESSELS, "resistance"),),
+            note=f"Resistance on {with_resistance} of {total} vessels.",
+        )
+
+    def _from_solve(self, output: Any) -> StageLayers:
+        layers = list(self._vessel_layers("solve"))
+        pressure = getattr(output, "pressure", None)
+        node_list = list(getattr(output, "node_list", ()) or ())
+        if self._graph is not None and pressure is not None and node_list:
+            # `pressure` is ordered by `node_list`, not by node id: pair them
+            # before dropping any node that has no position.
+            by_node = {node_id: float(p) for node_id, p in zip(node_list, pressure)}
+            points, ids = node_points(self._graph, node_list)
+            values = np.asarray([by_node[node_id] for node_id in ids], dtype=float)
+            if len(points):
+                layers.append(
+                    LayerSpec(
+                        kind="points", name=NODES, data=points,
+                        features={"node_id": ids, "pressure": values,
+                                  "degree": np.asarray(
+                                      [self._graph.degree(n) for n in ids], dtype=float)},
+                        colour_by="pressure", colour_kind="continuous",
+                        contrast_limits=_limits(values),
+                        options={"size": 3.0, "out_of_slice_display": True},
+                    )
+                )
+        equivalent = getattr(output, "equivalent_resistance", None)
+        note = "Solved."
+        if equivalent is not None:
+            note = f"Equivalent resistance {float(equivalent):.4e} Pa.s/m^3."
+        return StageLayers(
+            stage="solve", title=_title_for("solve"), layers=tuple(layers), note=note
+        )
+
+    def _from_export_results(self, _output: Any) -> StageLayers:
+        return StageLayers(
+            stage="export_results",
+            title=_title_for("export_results"),
+            note="Wrote the VTK, statistics and plots.",
+        )
+
+
+def _colouring(columns: Mapping[str, np.ndarray], colour_by: str | None) -> dict[str, Any]:
+    """How to colour by *colour_by*: a cycle for text, limits for numbers."""
+    if colour_by is None or colour_by not in columns:
+        return {"colour_kind": "none"}
+    values = columns[colour_by]
+    if colour_by in TEXT_COLUMNS:
+        return {"colour_kind": "categorical", "colour_cycle": colour_cycle_for(values)}
+    return {"colour_kind": "continuous", "contrast_limits": _limits(values)}
+
+
+def _role_colours() -> tuple[tuple[str, tuple[float, float, float, float]], ...]:
+    """Inlets, outlets and vessel-type boundaries, told apart at a glance."""
+    return (
+        ("starting", (0.13, 0.47, 0.71, 1.0)),
+        ("output", (0.84, 0.15, 0.16, 1.0)),
+        ("arteriole_boundary", (1.0, 0.5, 0.05, 1.0)),
+        ("venule_boundary", (0.17, 0.63, 0.17, 1.0)),
+    )
+
+
+def _title_for(stage: str) -> str:
+    from haemolynx.pipeline.progress import STAGES
+
+    for entry in STAGES:
+        if entry.call == stage:
+            return entry.title
+    return stage
+
+
+_BUILDERS = {
+    "segment": ResultLayers._from_segment,
+    "skeletonise": ResultLayers._from_skeletonise,
+    "build_network": ResultLayers._from_build_network,
+    "assign_boundaries": ResultLayers._from_assign_boundaries,
+    "assign_diameters": ResultLayers._from_assign_diameters,
+    "build_haemodynamic_model": ResultLayers._from_build_haemodynamic_model,
+    "solve": ResultLayers._from_solve,
+    "export_results": ResultLayers._from_export_results,
+}
