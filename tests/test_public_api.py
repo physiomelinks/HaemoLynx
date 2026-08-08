@@ -64,3 +64,32 @@ def test_calculate_path_length_tolerates_empty_and_none():
     assert calculate_path_length(None) == 0.0
     assert calculate_path_length([(0.0, 0.0, 0.0)]) == 0.0
     assert calculate_path_length([(0.0, 0.0, 0.0), (0.0, 0.0, 2.5)]) == pytest.approx(2.5)
+
+
+def test_every_module_can_be_imported_by_normal_syntax():
+    """A module whose name is not an identifier is unreachable by `import`.
+
+    `statistics/3D_distances.py` started with a digit, so the package had to
+    reach it through `importlib.import_module` and no user could write
+    `from ImageLynx.statistics import 3D_distances` at all. It is now
+    `three_dim_distances`; this catches the next one.
+    """
+    import pkgutil
+
+    import ImageLynx
+
+    offenders = [
+        info.name
+        for info in pkgutil.walk_packages(ImageLynx.__path__, prefix="ImageLynx.")
+        if not info.name.rpartition(".")[2].isidentifier()
+    ]
+    assert offenders == [], (
+        f"module names that cannot be imported normally: {offenders}. Rename them; "
+        "a digit or a dash makes the module reachable only through importlib."
+    )
+
+
+def test_the_cell_distance_module_is_a_normal_import():
+    from ImageLynx.statistics import three_dim_distances
+
+    assert callable(three_dim_distances.run_3d_measurement_to_cell_mask)

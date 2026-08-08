@@ -111,12 +111,9 @@ def test_load_binary_mask_rejects_non_3d_volume(tmp_path):
 
 
 def test_load_binary_mask_is_the_one_used_by_both_consumers():
-    import importlib
-
     from ImageLynx import io
     from ImageLynx.haemodynamics import pericyte_mask
-
-    distances = importlib.import_module("ImageLynx.statistics.3D_distances")
+    from ImageLynx.statistics import three_dim_distances as distances
 
     assert pericyte_mask.load_binary_mask_and_voxel_size is io.load_binary_mask_and_voxel_size
     assert distances.load_binary_mask_and_voxel_size is io.load_binary_mask_and_voxel_size

@@ -1,7 +1,6 @@
 """Tests for 3D object-to-vessel distance measurement."""
 from __future__ import annotations
 
-import importlib
 import csv
 import sys
 from pathlib import Path
@@ -17,7 +16,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-dist3d = importlib.import_module("ImageLynx.statistics.3D_distances")
+from ImageLynx.statistics import three_dim_distances as dist3d  # noqa: E402
 DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "synthetic_3d_distances"
 
 

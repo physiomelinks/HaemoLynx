@@ -1,6 +1,4 @@
 """Vessel network statistics."""
-import importlib
-
 from .stats import (
     compute_comprehensive_vessel_statistics,
     compute_basic_statistics,
@@ -16,8 +14,7 @@ from .stats import (
     export_branch_order_statistics_to_csv,
 )
 
-_dist3d = importlib.import_module(".3D_distances", __name__)
-run_3d_measurement_to_cell_mask = _dist3d.run_3d_measurement_to_cell_mask
+from .three_dim_distances import run_3d_measurement_to_cell_mask
 
 __all__ = [
     "compute_comprehensive_vessel_statistics",
