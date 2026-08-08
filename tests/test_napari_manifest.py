@@ -8,6 +8,7 @@ and npe2, which needs no Qt, validates the manifest itself.
 from __future__ import annotations
 
 import importlib
+import subprocess
 import sys
 from pathlib import Path
 
@@ -101,13 +102,42 @@ def test_every_command_points_at_something_importable(manifest):
 
 
 def test_importing_the_widget_module_does_not_need_a_gui():
-    """The package must import on a machine with no napari and no Qt."""
-    assert "napari" not in sys.modules, "something imported napari at collection time"
-    importlib.import_module("haemolynx.gui._widget")
-    assert "napari" not in sys.modules, (
-        "importing the widget module pulled in napari; keep those imports inside "
-        "the functions so the library works without a GUI"
+    """The library must import on a machine with no napari and no Qt.
+
+    Checked in a fresh interpreter rather than in this one: napari ships a
+    pytest plugin, so `import napari` has already happened in any test session
+    where napari is installed -- which is exactly the environment the GUI runs
+    in. Asserting on this process's sys.modules would test the test runner.
+    """
+    probe = (
+        "import sys; import haemolynx.gui._widget; "
+        "loaded = sorted(m for m in sys.modules if m.split('.')[0] in "
+        "{'napari', 'magicgui', 'qtpy', 'PyQt6', 'PyQt5', 'PySide6'}); "
+        "print(','.join(loaded))"
     )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, (
+        f"importing the widget module failed:\n{result.stdout}\n{result.stderr}"
+    )
+    assert result.stdout.strip() == "", (
+        f"importing haemolynx.gui._widget pulled in {result.stdout.strip()}. Keep "
+        "those imports inside the functions, so the library works without a GUI."
+    )
+
+
+def test_importing_the_library_does_not_need_a_gui():
+    """The same, for the package as a whole: `import haemolynx` must stay cheap."""
+    probe = (
+        "import sys; import haemolynx; "
+        "print('napari' in sys.modules or 'qtpy' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False"
 
 
 # --- how it is declared and shipped -----------------------------------------
