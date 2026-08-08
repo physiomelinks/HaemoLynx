@@ -35,6 +35,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Processing",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
     "Topic :: Scientific/Engineering :: Visualization",
+    "Framework :: napari",
 ]
 # Lower bounds are the oldest release the test suite passes on, not the oldest
 # that imports. See tests/test_packaging_metadata.py, which reads them back.
@@ -61,8 +62,25 @@ Repository = "https://github.com/FinbarArgus/HaemoLynx"
 Issues = "https://github.com/FinbarArgus/HaemoLynx/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "nbconvert", "nbformat"]
+# pytest-qt is deliberately NOT here: it is a pytest plugin that aborts the
+# whole run with "pytest-qt requires either PySide6, PyQt5 or PyQt6 installed"
+# when there is no Qt binding, rather than skipping. The napari-gui CI job
+# installs it alongside the napari extra, which brings a binding with it.
+dev = ["pytest", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'"]
 notebook = ["ipykernel"]
+# The napari panel. napari 0.8 requires Python 3.11, above this library's 3.9,
+# so this extra is installable only there -- deliberately, rather than
+# resolving to an old napari that has not been tested against.
+#
+# It includes a Qt binding, because `pip install "HaemoLynx[napari]"` should
+# give a panel that opens: napari itself declares none, and without one it
+# exits with "No Qt bindings found". Use the `napari-plugin` extra instead to
+# take the binding from an existing napari installation.
+napari = ["napari[pyqt6]>=0.8", "magicgui>=0.7", "npe2>=0.8"]
+napari-plugin = ["napari>=0.8", "magicgui>=0.7", "npe2>=0.8"]
+
+[project.entry-points."napari.manifest"]
+haemolynx = "haemolynx.gui:napari.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -71,6 +89,7 @@ markers = [
     "slow: marks tests as slow",
     "plotting: marks tests that create figures",
     "integration: marks integration tests",
+    "gui: marks tests that build real Qt widgets (need napari and a display)",
 ]
 
 [tool.setuptools.packages.find]
@@ -79,3 +98,4 @@ include = ["haemolynx*"]
 
 [tool.setuptools.package-data]
 haemolynx = ["py.typed"]
+"haemolynx.gui" = ["napari.yaml"]

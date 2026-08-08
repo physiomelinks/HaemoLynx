@@ -209,6 +209,63 @@ notebook, not the generated `pipeline_tutorial.py`; regenerate that with:
 pytest tests/integration/test_pipeline_tutorial.py
 ```
 
+## napari plugin (experimental)
+
+A napari panel that builds a settings form from the schema, runs the pre-run
+checks, and runs the pipeline in a background thread:
+
+```bash
+pip install "HaemoLynx[napari]"    # needs Python 3.11+ (napari's floor, not ours)
+napari                             # Plugins -> HaemoLynx -> Pipeline settings
+```
+
+That extra brings a Qt binding (PyQt6) with it, so the panel opens on a fresh
+environment. If you already run napari with a binding of your own, install
+`HaemoLynx[napari-plugin]` instead and keep it.
+
+The panel has **one tab per pipeline stage**, in the order the example runs
+them -- Input, Skeletonise, Graph, Boundaries, Diameters, Resistances, Solve,
+Export -- so a run is configured the way it executes rather than the way the
+config file is laid out.
+
+Every row comes from `haemolynx.pipeline.default_schema()`, so a setting
+declared there appears in the panel with its help text, range and choices, and
+greys out with a reason when the setting it depends on is off. There is no
+second list of settings to keep in step; a test fails if a setting reaches no
+tab or more than one.
+
+### Running on the image already open in napari
+
+Open an image in napari, then open the panel: the selected layer is picked up
+automatically, and the row at the top lets you choose a different one.
+
+- A layer **read from a TIFF or HDF5** points the run at that file, so the same
+  bytes and the same metadata are used -- no copy is made.
+- A layer **built in the viewer** (a threshold, a crop) has no file behind it,
+  so its array is written next to the run's outputs and read back. The panel
+  says which of the two happened.
+- If the layer has a **scale**, it becomes the voxel size. napari scales per
+  array axis `(z, y, x)` and the setting is image metadata order `(x, y, z)`,
+  so the two are reversed on the way in.
+
+The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
+without opening the form.
+
+Running the panel does not open plots outside napari: the settings that make
+plotly open a web browser mid-run start switched off, and are ordinary rows you
+can tick back on.
+
+The panel's own tests build real Qt widgets, so they need napari and a display.
+They are marked `gui`, skipped without one, and CI runs them on 3.11 under
+xvfb:
+
+```bash
+pytest -m gui           # with "HaemoLynx[napari]" installed
+```
+
+The library itself never imports napari; the extra is optional, and the panel
+is only loaded when you open it.
+
 ## Allowable input mask formats
 
 `tif`, `h5`

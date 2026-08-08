@@ -1,0 +1,18 @@
+name: HaemoLynx
+display_name: HaemoLynx
+contributions:
+  commands:
+    - id: HaemoLynx.settings_widget
+      title: Configure and run a pipeline
+      python_name: haemolynx.gui._widget:settings_widget
+    - id: HaemoLynx.run_config_widget
+      title: Run a saved config file
+      python_name: haemolynx.gui._widget:run_config_widget
+  widgets:
+    # Two widgets, so napari groups them under a submenu titled with the plugin
+    # display name. With one, it renders "<widget> (HaemoLynx)" and there is no
+    # way to suppress the suffix -- see napari's menu_item_template.
+    - command: HaemoLynx.settings_widget
+      display_name: Pipeline settings
+    - command: HaemoLynx.run_config_widget
+      display_name: Run a saved config
