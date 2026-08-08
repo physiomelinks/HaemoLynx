@@ -101,16 +101,30 @@ def label_for(name: str) -> str:
     return name.replace("_", " ").capitalize()
 
 
-def _options_for(setting: Setting) -> dict[str, Any]:
-    """The magicgui keyword options this setting's widget needs."""
+#: Which options each widget accepts. magicgui raises on anything else, so a
+#: setting's options follow the widget it actually gets -- not its kind. A
+#: float with no default is edited in a LineEdit, which has no min or max.
+OPTIONS_BY_WIDGET = {
+    "ComboBox": {"choices"},
+    "SpinBox": {"min", "max"},
+    "FloatSpinBox": {"min", "max", "step"},
+    "FileEdit": {"mode", "filter"},
+    "CheckBox": set(),
+    "LineEdit": set(),
+    "LiteralEvalLineEdit": set(),
+}
+
+
+def _options_for(setting: Setting, widget_type: str) -> dict[str, Any]:
+    """The magicgui keyword options the widget this setting gets will accept."""
     options: dict[str, Any] = {}
     if setting.kind == "choice":
         options["choices"] = list(setting.choices or ())
-    elif setting.kind == "int":
+    elif setting.kind == "int" and widget_type == "SpinBox":
         low, high = DEFAULT_INT_RANGE
         options["min"] = int(setting.minimum) if setting.minimum is not None else low
         options["max"] = int(setting.maximum) if setting.maximum is not None else high
-    elif setting.kind == "float":
+    elif setting.kind == "float" and widget_type == "FloatSpinBox":
         low, high = DEFAULT_FLOAT_RANGE
         options["min"] = float(setting.minimum) if setting.minimum is not None else low
         options["max"] = float(setting.maximum) if setting.maximum is not None else high
@@ -156,12 +170,13 @@ def _display_value(setting: Setting, value: Any) -> Any:
 
 def field_for(setting: Setting, value: Any = None) -> Field:
     """The form row for one setting, showing *value* or the schema default."""
+    widget_type = widget_type_for(setting)
     return Field(
         name=setting.name,
         label=label_for(setting.name),
-        widget_type=widget_type_for(setting),
+        widget_type=widget_type,
         value=_display_value(setting, setting.default if value is None else value),
-        options=_options_for(setting),
+        options=_options_for(setting, widget_type),
         help=setting.help + (f" ({setting.unit})" if setting.unit else ""),
         section=setting.section,
         advanced=setting.advanced,

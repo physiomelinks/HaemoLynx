@@ -15,6 +15,7 @@ from pathlib import Path
 from haemolynx.gui.form import (
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
+    OPTIONS_BY_WIDGET,
     WIDGET_TYPES,
     Field,
     field_for,
@@ -280,3 +281,52 @@ def test_the_untouched_panel_produces_the_schema_defaults():
     read_back = SCHEMA.validate(values_from(fields_for(SCHEMA)))
     defaults = SCHEMA.validate({s.name: s.default for s in SCHEMA})
     assert read_back == defaults
+
+
+# --- options must suit the widget, not the kind ------------------------------
+
+
+def test_no_row_passes_an_option_its_widget_would_reject():
+    """magicgui raises on an unknown keyword, and the panel fails to open.
+
+    The options used to be chosen from the setting's kind. When a float with no
+    default started using a LineEdit so it could be empty, it kept the spin
+    box's options and magicgui refused it:
+
+        LineEdit got an unexpected keyword argument: min, max, step
+
+    Options now follow the widget the setting actually gets. This checks every
+    row, so the next widget swap cannot repeat it.
+    """
+    offenders = {}
+    for field in fields_for(SCHEMA):
+        allowed = OPTIONS_BY_WIDGET[field.widget_type]
+        extra = sorted(set(field.options) - allowed)
+        if extra:
+            offenders[field.name] = (field.widget_type, extra)
+    assert offenders == {}, (
+        f"rows whose options their widget would reject: {offenders}"
+    )
+
+
+def test_every_widget_in_use_declares_which_options_it_takes():
+    used = {field.widget_type for field in fields_for(SCHEMA)}
+    assert used <= set(OPTIONS_BY_WIDGET), (
+        f"widgets with no declared options: {sorted(used - set(OPTIONS_BY_WIDGET))}"
+    )
+
+
+def test_a_numeric_setting_with_no_default_gets_no_range_options():
+    from haemolynx.parsers import Setting
+
+    field = field_for(Setting("guess", "float", None, "A guess", "S", minimum=0.0))
+    assert field.widget_type == "LineEdit"
+    assert field.options == {}
+
+
+def test_a_numeric_setting_with_a_default_keeps_its_range():
+    from haemolynx.parsers import Setting
+
+    field = field_for(Setting("guess", "float", 1.0, "A guess", "S", minimum=0.0))
+    assert field.widget_type == "FloatSpinBox"
+    assert field.options["min"] == 0.0
