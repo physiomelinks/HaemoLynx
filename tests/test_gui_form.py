@@ -330,3 +330,43 @@ def test_a_numeric_setting_with_a_default_keeps_its_range():
     field = field_for(Setting("guess", "float", 1.0, "A guess", "S", minimum=0.0))
     assert field.widget_type == "FloatSpinBox"
     assert field.options["min"] == 0.0
+
+
+def test_every_row_starts_with_a_value_its_widget_can_read_back():
+    """A LiteralEvalLineEdit parses its text; "" is not a literal.
+
+    Blanking an unset value made three rows -- voxel_size_override_xyz and the
+    two diameter tables -- start empty, and magicgui raised
+    `SyntaxError: invalid syntax (<unknown>, line 0)` from `ast.literal_eval`
+    as soon as the panel read them, which is at construction. None renders as
+    "None" and parses straight back, so that is what they get.
+    """
+    import ast
+
+    for field in fields_for(SCHEMA):
+        if field.widget_type != "LiteralEvalLineEdit":
+            continue
+        try:
+            ast.literal_eval(str(field.value))
+        except (ValueError, SyntaxError) as error:  # pragma: no cover - the failure
+            raise AssertionError(
+                f"{field.name} starts as {field.value!r}, which its "
+                f"LiteralEvalLineEdit cannot parse: {error}"
+            ) from error
+
+
+def test_an_unset_literal_row_is_none_rather_than_empty():
+    from haemolynx.parsers import Setting
+
+    field = field_for(Setting("table", "mapping", None, "A table", "S"))
+    assert field.widget_type == "LiteralEvalLineEdit"
+    assert field.value is None
+    assert field.to_setting_value(None) is None
+
+
+def test_an_unset_path_or_number_is_still_blank():
+    """The empty string is right for those two; only literals need None."""
+    from haemolynx.parsers import Setting
+
+    assert field_for(Setting("where", "path", None, "A path", "S")).value == ""
+    assert field_for(Setting("guess", "float", None, "A guess", "S")).value == ""

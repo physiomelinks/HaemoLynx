@@ -156,15 +156,23 @@ def widget_type_for(setting: Setting) -> str:
     return widget
 
 
-def _display_value(setting: Setting, value: Any) -> Any:
+#: Widgets whose empty state is an empty string. `LiteralEvalLineEdit` is not
+#: one of them: it parses its text with `ast.literal_eval`, and "" is not a
+#: literal, so an empty one raises `SyntaxError: invalid syntax`. It takes None
+#: instead, which it renders as "None" and parses straight back.
+BLANK_WHEN_UNSET = {"FileEdit", "LineEdit"}
+
+
+def _display_value(setting: Setting, value: Any, widget_type: str) -> Any:
     """What the widget starts with.
 
     An unset value shows as an empty box rather than magicgui's fallback --
     the working directory for a path, zero for a number -- which would look
-    like a choice somebody made.
+    like a choice somebody made. Whether "empty" is an empty string depends on
+    the widget: see :data:`BLANK_WHEN_UNSET`.
     """
-    if value is None:
-        return "" if setting.default is None or setting.kind == "path" else value
+    if value is None and widget_type in BLANK_WHEN_UNSET:
+        return ""
     return value
 
 
@@ -175,7 +183,9 @@ def field_for(setting: Setting, value: Any = None) -> Field:
         name=setting.name,
         label=label_for(setting.name),
         widget_type=widget_type,
-        value=_display_value(setting, setting.default if value is None else value),
+        value=_display_value(
+            setting, setting.default if value is None else value, widget_type
+        ),
         options=_options_for(setting, widget_type),
         help=setting.help + (f" ({setting.unit})" if setting.unit else ""),
         section=setting.section,
