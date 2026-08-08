@@ -36,6 +36,7 @@ from haemolynx.visualization._helpers import (
     create_color_mapping,
     sort_branch_orders_numerically,
 )
+from haemolynx.pipeline.stages import TOPOLOGY_STEP
 from haemolynx.visualization.geometry import edge_polyline
 
 #: Prefix on every layer this module names, so a re-run can tell its own layers
@@ -344,8 +345,12 @@ class ResultLayers:
     earlier stage produced. So the graph is remembered as it goes past.
     """
 
-    def __init__(self, *, prefix: str = PREFIX) -> None:
+    def __init__(self, *, prefix: str = PREFIX, show_steps: bool = False) -> None:
         self.prefix = prefix
+        #: Redraw the vessels after each of graph building's eleven topology
+        #: steps. Off by default: it is eleven extra rebuilds of the geometry
+        #: in the middle of the slowest stage.
+        self.show_steps = show_steps
         self._graph: Any | None = None
         self._voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
         self._geometry_shown = False
@@ -358,6 +363,8 @@ class ResultLayers:
 
     def stage_finished(self, stage: str, output: Any) -> StageLayers:
         """The layers for *stage*, built now, from *output* as it is now."""
+        if stage.startswith(TOPOLOGY_STEP):
+            return self._from_topology_step(stage[len(TOPOLOGY_STEP):], output)
         builder = _BUILDERS.get(stage)
         title = _title_for(stage)
         if builder is None:
@@ -418,6 +425,29 @@ class ResultLayers:
                 visible=False,
                 options={"size": 2.0, "out_of_slice_display": True},
             ),
+        )
+
+    def _from_topology_step(self, label: str, graph: Any) -> StageLayers:
+        """The graph part-way through its repair, when asked for.
+
+        The output here is the graph itself, mid-repair -- `build_network` has
+        not returned, so there is no VesselNetwork yet -- and it will change
+        again on the next step. Nothing is remembered from it.
+        """
+        if not self.show_steps or graph is None:
+            return StageLayers(stage=f"{TOPOLOGY_STEP}{label}", title=label)
+        held = self._graph
+        self._graph = graph
+        try:
+            layers = self._vessel_layers("build_network")
+        finally:
+            self._graph = held
+        return StageLayers(
+            stage=f"{TOPOLOGY_STEP}{label}",
+            title=label,
+            layers=layers,
+            note=f"{label}: {graph.number_of_nodes()} nodes, "
+            f"{graph.number_of_edges()} vessels.",
         )
 
     def _from_segment(self, output: Any) -> StageLayers:

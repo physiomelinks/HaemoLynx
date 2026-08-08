@@ -248,6 +248,27 @@ automatically, and the row at the top lets you choose a different one.
   array axis `(z, y, x)` and the setting is image metadata order `(x, y, z)`,
   so the two are reversed on the way in.
 
+### Watching a run
+
+Each stage puts its work in the viewer as it finishes — the volume and skeleton,
+then the vessel network, the boundary nodes, the pericytes — so a run is
+something to watch rather than a wait for files. **Colour vessels by** and
+**Colour nodes by** pick what the colour means: flow, pressure, branch order,
+resistance, or nothing. Switching is instant; the geometry is built once and
+only the colouring changes.
+
+Vessels are drawn as a Vectors layer, which is roughly ten times faster to draw
+than paths at the size of a real run; the per-vessel numbers ride on a hidden
+Points layer at each vessel's midpoint, so hovering still identifies one.
+
+**Show each topology step** additionally redraws the network after each of graph
+building's eleven repair steps, which is worth switching on when skeletonisation
+is behaving oddly and not otherwise.
+
+A second run updates its own layers in place, so anything you hid stays hidden,
+and a layer of your own that happens to share a name is never touched.
+**Clear layers** removes everything the plugin added and nothing else.
+
 The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
 without opening the form.
 

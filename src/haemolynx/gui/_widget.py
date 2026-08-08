@@ -14,11 +14,20 @@ GUI installed.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from haemolynx.gui.form import Field
 from haemolynx.gui.layers import input_for_layer
+from haemolynx.gui.results import (
+    NODES,
+    TEXT_COLUMNS,
+    VESSELS,
+    ResultLayers,
+    colour_cycle_for,
+)
 from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.tabs import tabs_for
 from haemolynx.parsers import dump_config, load_config
@@ -125,6 +134,116 @@ class ProgressBars:
             bar.setVisible(state.visible)
 
 
+#: Marks a layer as one of ours, so a re-run updates its own work and never a
+#: layer the user made that happens to share a name.
+OURS = "haemolynx"
+
+
+def _is_ours(layer) -> bool:
+    return bool(getattr(layer, "metadata", {}).get(OURS))
+
+
+def _apply_layers(viewer, group, report=None) -> None:
+    """Put one stage's layers in the viewer. Runs on the GUI thread."""
+    for spec in group.layers:
+        try:
+            _add_or_update(viewer, spec)
+        except Exception:  # noqa: BLE001 - one bad layer must not stop the rest
+            logger.exception("could not show layer %s", spec.name)
+    for name, column in group.recolour:
+        layer = viewer.layers[name] if name in viewer.layers else None
+        if layer is not None and _is_ours(layer):
+            _colour_layer(layer, column)
+    if group.ndisplay is not None:
+        viewer.dims.ndisplay = group.ndisplay
+    if report is not None and group.note:
+        report.value = f"{group.title}: {group.note}"
+
+
+def _colour_layer(layer, column: str | None, kind: str = "continuous",
+                  cycle=(), limits=None) -> None:
+    """Colour a layer by one of its feature columns."""
+    if column is None or column not in getattr(layer, "features", {}):
+        return
+    attribute = "edge_color" if layer.__class__.__name__ == "Vectors" else "face_color"
+    if kind == "categorical" and cycle:
+        setattr(layer, f"{attribute}_cycle", [colour for _label, colour in cycle])
+        setattr(layer, attribute, column)
+    else:
+        setattr(layer, f"{attribute}_colormap", "viridis")
+        setattr(layer, attribute, column)
+        if limits is not None:
+            try:
+                setattr(layer, f"{attribute}_contrast_limits", limits)
+            except (AttributeError, ValueError):  # not every layer takes them
+                pass
+
+
+def _add_or_update(viewer, spec) -> None:
+    """Add *spec*, or update the layer of ours already carrying its name."""
+    import pandas as pd  # noqa: F401  (napari builds features through pandas)
+
+    existing = viewer.layers[spec.name] if spec.name in viewer.layers else None
+    if existing is not None and not _is_ours(existing):
+        # Someone else's layer happens to share the name. Never overwrite it.
+        spec = replace(spec, name=f"{spec.name} (HaemoLynx)")
+        existing = viewer.layers[spec.name] if spec.name in viewer.layers else None
+
+    if existing is not None and existing.__class__.__name__.lower() == _CLASS_FOR[spec.kind]:
+        existing.data = spec.data
+        if spec.features:
+            existing.features = dict(spec.features)
+        _colour_layer(existing, spec.colour_by, spec.colour_kind,
+                      spec.colour_cycle, spec.contrast_limits)
+        return
+
+    if existing is not None:
+        viewer.layers.remove(existing)
+
+    adder = getattr(viewer, f"add_{spec.kind}")
+    options = dict(spec.options)
+    if spec.features:
+        options["features"] = dict(spec.features)
+    layer = adder(spec.data, name=spec.name, scale=spec.scale,
+                  visible=spec.visible, metadata={OURS: {"kind": spec.kind}}, **options)
+    _colour_layer(layer, spec.colour_by, spec.colour_kind,
+                  spec.colour_cycle, spec.contrast_limits)
+
+
+#: Spec kind -> the napari class name it becomes, for "is this the same sort of
+#: layer I already have?".
+_CLASS_FOR = {
+    "image": "image", "labels": "labels", "points": "points",
+    "vectors": "vectors", "shapes": "shapes",
+}
+
+
+def _colour_choices(viewer, layer_name: str) -> list[str]:
+    """Columns that layer can be coloured by, or just "none" before a run.
+
+    Read off the layer itself rather than guessed, so a quantity only appears
+    once the stage that produces it has run.
+    """
+    choices = ["none"]
+    if viewer is None or layer_name not in getattr(viewer, "layers", {}):
+        return choices
+    layer = viewer.layers[layer_name]
+    if not _is_ours(layer):
+        return choices
+    for column in getattr(layer, "features", {}):
+        if column not in {"u", "v", "key", "edge_index", "node_id"}:
+            choices.append(column)
+    return choices
+
+
+def _clear_our_layers(viewer) -> int:
+    """Remove every layer this plugin added. Leaves the user's alone."""
+    ours = [layer for layer in list(viewer.layers) if _is_ours(layer)]
+    for layer in ours:
+        viewer.layers.remove(layer)
+    return len(ours)
+
+
 #: Built on first use: defining a QObject subclass registers a Qt meta-object,
 #: and one per run would be one per press of the button.
 _PROGRESS_BRIDGE_CLASS = None
@@ -147,16 +266,27 @@ def _progress_bridge():
 
         class ProgressBridge(QObject):
             event = Signal(object)
+            #: A StageLayers, already built on the run's thread. Converting
+            #: here rather than in the slot is what stops an earlier stage
+            #: being drawn with a later stage's numbers.
+            layers = Signal(object)
 
         _PROGRESS_BRIDGE_CLASS = ProgressBridge
     return _PROGRESS_BRIDGE_CLASS()
 
 
-def _run_in_background(settings, schema, report, button, bars=None):
-    """Run the pipeline off the GUI thread, reporting back as it goes."""
+def _run_in_background(
+    settings, schema, report, button, bars=None, viewer=None, results=None
+):
+    """Run the pipeline off the GUI thread, reporting back as it goes.
+
+    With *viewer* and *results*, each stage's output is turned into layers as it
+    finishes and shown in the viewer the run was launched from.
+    """
     from napari.qt.threading import thread_worker
 
     bridge = _progress_bridge()
+    show_layers = viewer is not None and results is not None
 
     def progressed(event: ProgressEvent) -> None:
         if bars is not None:
@@ -165,12 +295,34 @@ def _run_in_background(settings, schema, report, button, bars=None):
             report.value = f"Running {event.title} ({event.index + 1}/{event.total})..."
 
     bridge.event.connect(progressed)
+    if show_layers:
+        bridge.layers.connect(lambda group: _apply_layers(viewer, group, report))
+
+    def produced(stage: str, output) -> None:
+        """Build this stage's layers here, on the run's thread.
+
+        Eagerly, because every stage after `build_network` writes onto the same
+        graph: convert later and the viewer shows a later stage's numbers under
+        this stage's name. And guarded, because a fault in drawing a run must
+        never end it -- an eight-hour whole-brain run least of all.
+        """
+        try:
+            group = results.stage_finished(stage, output)
+        except Exception:  # noqa: BLE001 - reported, never raised at the run
+            logger.exception("could not build layers for stage %s", stage)
+            return
+        bridge.layers.emit(group)
 
     @thread_worker
     def run():
         # `bridge` is captured here, which is also what keeps it alive for as
         # long as the run that emits through it.
-        return run_pipeline_stages(settings, schema, progress=bridge.event.emit)
+        return run_pipeline_stages(
+            settings,
+            schema,
+            progress=bridge.event.emit,
+            on_stage_output=produced if show_layers else None,
+        )
 
     def finished(graph) -> None:
         button.enabled = True
@@ -268,7 +420,7 @@ def settings_widget(napari_viewer=None):
     script would.
     """
     import napari
-    from magicgui.widgets import Container, Label, PushButton, TextEdit
+    from magicgui.widgets import CheckBox, ComboBox, Container, Label, PushButton, TextEdit
     from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
     viewer = napari_viewer if napari_viewer is not None else napari.current_viewer()
@@ -424,6 +576,20 @@ def settings_widget(napari_viewer=None):
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
     run_button = PushButton(text="Run pipeline")
+    clear_button = PushButton(text="Clear layers")
+
+    # What a run puts in the viewer, and how it is coloured. These are panel
+    # controls rather than settings: a config file is read by CLI runs too,
+    # where "show it in napari" means nothing.
+    show_results = CheckBox(value=True, text="Show each stage in the viewer")
+    show_steps = CheckBox(value=False, text="Show each topology step")
+    colour_vessels = ComboBox(
+        label="Colour vessels by", choices=_colour_choices(viewer, VESSELS)
+    )
+    colour_nodes = ComboBox(
+        label="Colour nodes by", choices=_colour_choices(viewer, NODES)
+    )
+    view = SimpleNamespace(results=None)
 
     def _settings() -> dict[str, Any]:
         return resolve_settings(current_values(), schema=schema, config_path=None)
@@ -464,17 +630,58 @@ def settings_widget(napari_viewer=None):
         if not preflight(settings, schema).ok:
             report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
             return
-        _run_in_background(settings, schema, report, run_button, bars)
+        results = None
+        if show_results.value and viewer is not None:
+            results = ResultLayers(show_steps=bool(show_steps.value))
+            view.results = results
+        _run_in_background(
+            settings, schema, report, run_button, bars,
+            viewer=viewer if show_results.value else None,
+            results=results,
+        )
+
+    def on_clear() -> None:
+        if viewer is None:
+            return
+        removed = _clear_our_layers(viewer)
+        view.results = None
+        report.value = f"Removed {removed} HaemoLynx layer(s)."
+
+    def on_colour_changed(*_args) -> None:
+        """Recolour what is already there; no geometry is rebuilt."""
+        if viewer is None:
+            return
+        for name, chooser in ((VESSELS, colour_vessels), (NODES, colour_nodes)):
+            if name not in viewer.layers:
+                continue
+            layer = viewer.layers[name]
+            if not _is_ours(layer):
+                continue
+            column = chooser.value
+            if column in {None, "", "none"}:
+                continue
+            kind = "categorical" if column in TEXT_COLUMNS else "continuous"
+            cycle = ()
+            if kind == "categorical":
+                cycle = colour_cycle_for(layer.features[column])
+            _colour_layer(layer, column, kind, cycle)
 
     load_button.changed.connect(on_load)
     save_button.changed.connect(on_save)
     check_button.changed.connect(on_check)
     run_button.changed.connect(on_run)
+    clear_button.changed.connect(on_clear)
+    colour_vessels.changed.connect(on_colour_changed)
+    colour_nodes.changed.connect(on_colour_changed)
 
     buttons = Container(
-        widgets=[load_button, save_button, check_button, run_button],
+        widgets=[load_button, save_button, check_button, run_button, clear_button],
         layout="horizontal",
         labels=False,
+    )
+    view_controls = Container(
+        widgets=[show_results, show_steps, colour_vessels, colour_nodes],
+        labels=True,
     )
 
     panel = QWidget()
@@ -482,10 +689,14 @@ def settings_widget(napari_viewer=None):
     # for a test that cannot press buttons and wait.
     panel._haemolynx_values = current_values
     panel._haemolynx_progress = bars
+    panel._haemolynx_view = view
+    panel._haemolynx_colour = {"vessels": colour_vessels, "nodes": colour_nodes}
+    panel._haemolynx_show_results = show_results
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
     layout.addWidget(tab_widget)
+    layout.addWidget(view_controls.native)
     layout.addWidget(buttons.native)
     layout.addWidget(bars.native)
     layout.addWidget(report.native)
