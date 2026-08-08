@@ -137,7 +137,9 @@ jobs:
       - name: Install HaemoLynx with the napari extra
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,napari]"
+          # pytest-qt only here: it aborts a run that has no Qt binding, so it
+          # must not reach the other jobs. The napari extra brings PyQt6.
+          pip install -e ".[dev,napari]" pytest-qt
 
       - name: The plugin is discoverable
         run: python -m npe2 validate HaemoLynx

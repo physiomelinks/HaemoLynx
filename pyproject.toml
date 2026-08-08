@@ -62,14 +62,11 @@ Repository = "https://github.com/FinbarArgus/HaemoLynx"
 Issues = "https://github.com/FinbarArgus/HaemoLynx/issues"
 
 [project.optional-dependencies]
-dev = [
-    "pytest",
-    "nbconvert",
-    "nbformat",
-    "npe2>=0.8; python_version >= '3.10'",
-    # Only used by the `gui` tests, which skip without napari and a display.
-    "pytest-qt",
-]
+# pytest-qt is deliberately NOT here: it is a pytest plugin that aborts the
+# whole run with "pytest-qt requires either PySide6, PyQt5 or PyQt6 installed"
+# when there is no Qt binding, rather than skipping. The napari-gui CI job
+# installs it alongside the napari extra, which brings a binding with it.
+dev = ["pytest", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'"]
 notebook = ["ipykernel"]
 # The napari panel. napari 0.8 requires Python 3.11, above this library's 3.9,
 # so this extra is installable only there -- deliberately, rather than
