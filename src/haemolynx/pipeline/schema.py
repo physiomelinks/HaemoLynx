@@ -749,6 +749,52 @@ SCHEMA = Schema(
             unit="percent",
             requires=("do_skeletonize",),
         ),
+        Setting(
+            name="smooth_centrelines",
+            kind="bool",
+            default=True,
+            help=(
+                "Take the voxel staircase out of each vessel's centreline after "
+                "the graph is built, and re-measure its length from the result"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building",),
+        ),
+        Setting(
+            name="centreline_smoothing_method",
+            kind="choice",
+            default="taubin",
+            help="How to smooth a centreline: taubin recovers true length, chaikin changes it least",
+            section=_PIPELINE_STAGES,
+            choices=("taubin", "chaikin"),
+            requires=("smooth_centrelines",),
+        ),
+        Setting(
+            name="centreline_smoothing_iterations",
+            kind="int",
+            default=10,
+            help=(
+                "How many smoothing passes; accuracy plateaus around 15, and past "
+                "that the filter slowly starts inflating a centreline instead"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0,
+            maximum=50,
+            requires=("smooth_centrelines",),
+        ),
+        Setting(
+            name="centreline_max_deviation",
+            kind="float",
+            default=1.0,
+            help=(
+                "How far a smoothed centreline may sit from the skeleton before it "
+                "is blended back towards the original"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            unit="microns",
+            requires=("smooth_centrelines",),
+        ),
         # ------------------------------------------------------------------
         # Statistics
         # ------------------------------------------------------------------

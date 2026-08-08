@@ -406,6 +406,20 @@ def build_network(
             step_callback=_graph_build_step_callback,
         )
 
+        # Last thing before the graph is saved: take the voxel staircase out of
+        # each centreline. A skeleton path steps voxel to voxel, so a vessel at
+        # an angle comes back 7% longer than it is, and resistance follows
+        # length -- so this is a measurement fix, not a cosmetic one.
+        if settings["smooth_centrelines"]:
+            graph.smooth_graph_centrelines(
+                G,
+                skeleton,
+                voxel_size_zyx=voxel_size_zyx,
+                method=settings["centreline_smoothing_method"],
+                iterations=settings["centreline_smoothing_iterations"],
+                max_deviation=settings["centreline_max_deviation"],
+            )
+
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
         logger.info(f"Saved graph to: {graph_path}")
