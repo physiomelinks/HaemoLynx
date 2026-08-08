@@ -27,6 +27,12 @@ from haemolynx.gui._widget import (  # noqa: E402
 )
 from haemolynx.gui.tabs import STAGES  # noqa: E402
 from haemolynx.pipeline import default_schema  # noqa: E402
+from haemolynx.pipeline.progress import (  # noqa: E402
+    STAGE_FINISHED,
+    STAGE_STARTED,
+    STEP,
+    ProgressEvent,
+)
 
 pytestmark = pytest.mark.gui
 
@@ -205,6 +211,130 @@ def test_a_layer_with_a_scale_sets_the_voxel_size(panel):
     values = rebuilt._haemolynx_values()
     assert values["voxel_size_override_xyz"] == [0.4, 0.5, 2.0]
     assert values["voxel_size_policy"] == "override"
+
+
+# --- the progress bars -------------------------------------------------------
+#
+# What the bars should read is decided by `haemolynx.gui.progress`, which
+# `test_gui_progress.py` covers without a display. What is left for here is the
+# wiring: that the panel has bars at all, and that an event moves them.
+
+
+def test_the_panel_has_a_bar_for_the_stages_and_one_for_the_steps(panel):
+    from qtpy.QtWidgets import QProgressBar
+
+    widget, _viewer = panel
+    assert len(widget.findChildren(QProgressBar)) == 2
+
+
+def test_the_bars_are_hidden_until_a_run_starts(panel):
+    widget, _viewer = panel
+    bars = widget._haemolynx_progress
+    assert bars.stage_bar.isHidden()
+    assert bars.step_bar.isHidden()
+
+
+def test_starting_a_run_shows_an_empty_stage_bar(panel):
+    widget, _viewer = panel
+    bars = widget._haemolynx_progress
+
+    bars.start()
+
+    assert not bars.stage_bar.isHidden()
+    assert bars.stage_bar.value() == 0
+    assert bars.stage_bar.maximum() == len(STAGES)
+
+
+def test_a_finished_stage_moves_the_stage_bar(panel):
+    widget, _viewer = panel
+    bars = widget._haemolynx_progress
+    bars.start()
+
+    bars.show_event(
+        ProgressEvent(
+            kind=STAGE_FINISHED,
+            stage="build_network",
+            title="3. Graph",
+            index=2,
+            total=len(STAGES),
+        )
+    )
+
+    assert bars.stage_bar.value() == 3
+    assert bars.stage_bar.maximum() == len(STAGES)
+
+
+def test_a_graph_build_step_moves_the_second_bar(panel):
+    widget, _viewer = panel
+    bars = widget._haemolynx_progress
+    bars.start()
+    assert bars.step_bar.isHidden()
+
+    bars.show_event(
+        ProgressEvent(
+            kind=STEP,
+            stage="build_network",
+            title="3. Graph",
+            index=2,
+            total=len(STAGES),
+            step="collapse_node_clusters",
+            step_index=4,
+            step_total=11,
+        )
+    )
+
+    assert not bars.step_bar.isHidden()
+    assert bars.step_bar.value() == 5
+    assert bars.step_bar.maximum() == 11
+
+
+def test_a_finished_run_fills_the_stage_bar_and_drops_the_step_bar(panel):
+    widget, _viewer = panel
+    bars = widget._haemolynx_progress
+    bars.start()
+    bars.show_event(
+        ProgressEvent(
+            kind=STAGE_STARTED,
+            stage="build_network",
+            title="3. Graph",
+            index=2,
+            total=len(STAGES),
+        )
+    )
+
+    bars.finish()
+
+    assert bars.stage_bar.value() == bars.stage_bar.maximum() == len(STAGES)
+    assert bars.step_bar.isHidden()
+
+
+def test_a_failed_run_leaves_the_bar_where_it_stopped(panel):
+    """A full bar would say the run finished; it did not."""
+    widget, _viewer = panel
+    bars = widget._haemolynx_progress
+    bars.start()
+    bars.show_event(
+        ProgressEvent(
+            kind=STAGE_FINISHED,
+            stage="skeletonise",
+            title="2. Skeletonise",
+            index=1,
+            total=len(STAGES),
+        )
+    )
+
+    bars.fail("Failed: ValueError")
+
+    assert bars.stage_bar.value() == 2
+    assert bars.stage_bar.format() == "Failed: ValueError"
+
+
+def test_the_run_a_config_panel_has_progress_bars_too():
+    panel = run_config_widget()
+
+    panel._haemolynx_progress.start()
+
+    assert panel._haemolynx_progress.stage_bar.maximum() == len(STAGES)
 
 
 # --- a run, end to end -------------------------------------------------------

@@ -15,8 +15,26 @@ a run is visible and can be intervened in::
     volume   = skeletonise(settings, inputs)
     network  = build_network(settings, volume, SCHEMA)
     ...
+
+Either way a run says where it has got to, if anything is listening::
+
+    run_pipeline_stages(settings, schema, progress=log_progress)
 """
 from .checks import preflight
+from .progress import (
+    KINDS,
+    STAGE_FAILED,
+    STAGE_FINISHED,
+    STAGE_STARTED,
+    STAGES,
+    STEP,
+    ProgressCallback,
+    ProgressEvent,
+    RunProgress,
+    Stage,
+    StageProgress,
+    log_progress,
+)
 from .schema import SCHEMA, default_schema, write_default_config
 from .settings import fill_derived_settings, resolve_settings
 from .stages import (
@@ -38,12 +56,23 @@ from .stages import (
 )
 
 __all__ = [
+    "KINDS",
     "SCHEMA",
+    "STAGES",
+    "STAGE_FAILED",
+    "STAGE_FINISHED",
+    "STAGE_STARTED",
+    "STEP",
     "BoundaryNodes",
     "HaemodynamicModel",
+    "ProgressCallback",
+    "ProgressEvent",
+    "RunProgress",
     "SegmentedInputs",
     "SkeletonisedVolume",
     "Solution",
+    "Stage",
+    "StageProgress",
     "VesselNetwork",
     "assign_boundaries",
     "assign_diameters",
@@ -51,6 +80,7 @@ __all__ = [
     "build_network",
     "default_schema",
     "export_results",
+    "log_progress",
     "preflight",
     "fill_derived_settings",
     "resolve_settings",
