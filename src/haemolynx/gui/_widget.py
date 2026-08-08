@@ -22,6 +22,18 @@ from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_
 
 logger = logging.getLogger(__name__)
 
+#: Settings the panel starts with switched off, because they put a run's
+#: results somewhere other than napari: `show_plots_in_ide` makes the 3D graph
+#: open in a web browser (plotly's `fig.show()`), and the other two block on
+#: windows of their own. They are ordinary rows, so anyone who wants a browser
+#: tab can tick them back on -- they are just the wrong default for a panel
+#: whose whole point is that the viewer is already open.
+DISPLAY_SETTINGS_OFF_IN_NAPARI = {
+    "show_plots_in_ide": False,
+    "interactive_plots": False,
+    "hold_ide_plots_open": False,
+}
+
 
 def _create_widget(**kwargs):
     """magicgui's `create_widget`, imported only when a panel is built."""
@@ -208,6 +220,10 @@ def settings_widget(napari_viewer=None):
             widget.enabled = enabled
             widget.tooltip = field.help if enabled else field.why_disabled(values)
 
+    for name, value in DISPLAY_SETTINGS_OFF_IN_NAPARI.items():
+        if name in rows:
+            rows[name].value = value
+
     for widget in rows.values():
         widget.changed.connect(apply_prerequisites)
     apply_prerequisites()
@@ -317,6 +333,8 @@ def settings_widget(napari_viewer=None):
     )
 
     panel = QWidget()
+    # What the panel would send to a run, for a test that cannot press buttons.
+    panel._haemolynx_values = current_values
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)

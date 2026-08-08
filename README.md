@@ -251,6 +251,18 @@ automatically, and the row at the top lets you choose a different one.
 The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
 without opening the form.
 
+Running the panel does not open plots outside napari: the settings that make
+plotly open a web browser mid-run start switched off, and are ordinary rows you
+can tick back on.
+
+The panel's own tests build real Qt widgets, so they need napari and a display.
+They are marked `gui`, skipped without one, and CI runs them on 3.11 under
+xvfb:
+
+```bash
+pytest -m gui           # with "HaemoLynx[napari]" installed
+```
+
 The library itself never imports napari; the extra is optional, and the panel
 is only loaded when you open it.
 

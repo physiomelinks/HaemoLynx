@@ -62,7 +62,14 @@ Repository = "https://github.com/FinbarArgus/HaemoLynx"
 Issues = "https://github.com/FinbarArgus/HaemoLynx/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'"]
+dev = [
+    "pytest",
+    "nbconvert",
+    "nbformat",
+    "npe2>=0.8; python_version >= '3.10'",
+    # Only used by the `gui` tests, which skip without napari and a display.
+    "pytest-qt",
+]
 notebook = ["ipykernel"]
 # The napari panel. napari 0.8 requires Python 3.11, above this library's 3.9,
 # so this extra is installable only there -- deliberately, rather than
@@ -85,6 +92,7 @@ markers = [
     "slow: marks tests as slow",
     "plotting: marks tests that create figures",
     "integration: marks integration tests",
+    "gui: marks tests that build real Qt widgets (need napari and a display)",
 ]
 
 [tool.setuptools.packages.find]
