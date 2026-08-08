@@ -36,8 +36,8 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "synthetic_network_statistics"
 
-from ImageLynx.graph import assign_hierarchical_branch_orders, calculate_edge_length
-from ImageLynx.statistics import (
+from haemolynx.graph import assign_hierarchical_branch_orders, calculate_edge_length
+from haemolynx.statistics import (
     compute_branch_order_statistics,
     compute_comprehensive_vessel_statistics,
     export_branch_order_statistics_to_csv,
@@ -49,7 +49,7 @@ def _build_synthetic_network() -> tuple[nx.MultiGraph, dict[str, int]]:
     """Create a small branched network with explicit transition nodes."""
     G = nx.MultiGraph()
 
-    # Coordinates are (z, y, x) to match ImageLynx conventions.
+    # Coordinates are (z, y, x) to match HaemoLynx conventions.
     positions = {
         0: (0.0, 0.0, 0.0),    # input terminal
         1: (0.0, 0.0, 10.0),
@@ -86,7 +86,7 @@ def _build_synthetic_network() -> tuple[nx.MultiGraph, dict[str, int]]:
 
 
 def _apply_pipeline_length_measurements(G: nx.MultiGraph) -> None:
-    """Populate edge length using ImageLynx pipeline helper."""
+    """Populate edge length using the HaemoLynx pipeline helper."""
     for u, v, key, data in G.edges(keys=True, data=True):
         length = float(calculate_edge_length(u, v, data))
         data["length"] = length

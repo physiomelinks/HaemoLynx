@@ -20,7 +20,7 @@ for _path in (REPO_ROOT / "src", REPO_ROOT / "examples"):
 
 yaml = pytest.importorskip("yaml")
 
-from ImageLynx.parsers import dump_config, load_config  # noqa: E402
+from haemolynx.parsers import dump_config, load_config  # noqa: E402
 from regenerate_configs import CONFIGS, regenerate, schema_for as _schema  # noqa: E402
 
 CASES = sorted(CONFIGS.items())

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from ImageLynx import graph, io, preprocessing
+from haemolynx import graph, io, preprocessing
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "tests" / "data"

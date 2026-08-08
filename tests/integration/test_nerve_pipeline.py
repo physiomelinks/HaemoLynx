@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ImageLynx.io import crop_tiff_volume_from_corners
+from haemolynx.io import crop_tiff_volume_from_corners
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

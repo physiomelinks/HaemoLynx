@@ -35,10 +35,10 @@ for _path in (src_dir, examples_dir):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from ImageLynx import graph as graph_tools
-from ImageLynx import haemodynamics, visualization
-from ImageLynx.haemodynamics.poiseuille import CAPILLARY_REGIME_MAX_DIAMETER_UM
-from ImageLynx.parsers import configure_console_logging, settings_from_command_line
+from haemolynx import graph as graph_tools
+from haemolynx import haemodynamics, visualization
+from haemolynx.haemodynamics.poiseuille import CAPILLARY_REGIME_MAX_DIAMETER_UM
+from haemolynx.parsers import configure_console_logging, settings_from_command_line
 from simple_network_schema import SCHEMA
 
 CONFIG_PATH = examples_dir / "simple_network_config.yaml"

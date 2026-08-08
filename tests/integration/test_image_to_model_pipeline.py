@@ -170,7 +170,7 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
     vtk_prefix = output_dir / "integration_probabilistic_reuse"
 
     pipeline = _load_pipeline_module()
-    from ImageLynx.haemodynamics import probability as probability_mod
+    from haemolynx.haemodynamics import probability as probability_mod
 
     # Force uniform 0.8 map for final run so comparison constrained value aligns.
     # The diameter table is derived from the config, not a module constant.

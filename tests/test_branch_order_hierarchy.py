@@ -12,7 +12,7 @@ src_dir = repo_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from ImageLynx.graph import assign_hierarchical_branch_orders
+from haemolynx.graph import assign_hierarchical_branch_orders
 
 
 def _edge_id(u: int, v: int, key: int) -> tuple[int, int, int]:

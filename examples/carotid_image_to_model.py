@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Carotid vascular network: the standard pipeline over one carotid dataset.
 
-Runs ``ImageLynx.pipeline`` exactly as ``resistance_network_pipeline.py`` does
+Runs ``haemolynx.pipeline`` exactly as ``resistance_network_pipeline.py`` does
 -- segmentation, skeletonisation, graph building, boundary and branch-order
 assignment, haemodynamics, export -- with the settings this dataset needs. The
 run itself holds nothing carotid-specific, so there is no forked copy of the
@@ -40,9 +40,9 @@ for _path in (root_dir / "src", examples_dir):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from ImageLynx.parsers import configure_console_logging, settings_from_command_line
-from ImageLynx.pipeline import preflight, run_pipeline_stages
-from ImageLynx.pipeline import resolve_settings as _resolve_settings
+from haemolynx.parsers import configure_console_logging, settings_from_command_line
+from haemolynx.pipeline import preflight, run_pipeline_stages
+from haemolynx.pipeline import resolve_settings as _resolve_settings
 from carotid_schema import SCHEMA
 
 CONFIG_PATH = examples_dir / "carotid_config.yaml"

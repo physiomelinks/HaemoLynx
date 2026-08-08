@@ -8,7 +8,7 @@ tests only display when the matplotlib backend can (``plot.backend_can_display``
 
 Set the environment variable to look at them::
 
-    IMAGELYNX_OPEN_TEST_HTML=1 pytest tests/test_synthetic_vessel_assignment_pipeline.py
+    HAEMOLYNX_OPEN_TEST_HTML=1 pytest tests/test_synthetic_vessel_assignment_pipeline.py
 
 The HTML is written either way, so the files are there to open by hand.
 """
@@ -18,7 +18,7 @@ import os
 import webbrowser
 from pathlib import Path
 
-OPEN_TEST_HTML_ENV_VAR = "IMAGELYNX_OPEN_TEST_HTML"
+OPEN_TEST_HTML_ENV_VAR = "HAEMOLYNX_OPEN_TEST_HTML"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 

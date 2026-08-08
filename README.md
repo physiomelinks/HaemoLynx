@@ -1,4 +1,4 @@
-# ImageLynx
+# HaemoLynx
 
 Converts raw microscopy images of the microvasculature into computational haemodynamics models for hypothesis testing, experimental design, and more.
 
@@ -7,13 +7,13 @@ Converts raw microscopy images of the microvasculature into computational haemod
 Python 3.9 or newer.
 
 ```bash
-pip install ImageLynx
+pip install HaemoLynx
 ```
 
 > Not on PyPI yet — until the first release, install from a checkout as below.
 > Everything else on this page already works that way.
 
-To work on ImageLynx itself, install the checkout instead:
+To work on HaemoLynx itself, install the checkout instead:
 
 ```bash
 python -m venv .venv
@@ -22,7 +22,7 @@ pip install -e ".[dev]"
 ```
 
 `pyproject.toml` is the single source of truth for dependencies. Add the
-`notebook` extra (`pip install "ImageLynx[notebook]"`, or
+`notebook` extra (`pip install "HaemoLynx[notebook]"`, or
 `pip install -e ".[dev,notebook]"` from a checkout) to get the Jupyter kernel
 for the tutorial notebook.
 
@@ -30,17 +30,17 @@ for the tutorial notebook.
 
 **[tutorials/pipeline_tutorial.ipynb](tutorials/pipeline_tutorial.ipynb)** runs
 every stage of the pipeline one cell at a time, with a plot after each, and
-explains what each stage is for. It is the fastest way to see what ImageLynx
+explains what each stage is for. It is the fastest way to see what HaemoLynx
 does.
 
 Open it and run all cells — that is the whole setup:
 
 ```bash
-pip install "ImageLynx[notebook]"
+pip install "HaemoLynx[notebook]"
 jupyter notebook tutorials/pipeline_tutorial.ipynb
 ```
 
-The first cell installs ImageLynx if the kernel does not already have it, and
+The first cell installs HaemoLynx if the kernel does not already have it, and
 the notebook builds its own small vessel volume when no segmented image is to
 hand, so it needs no data download and no clone. From a checkout it picks up
 the cropped nerve mask in `tests/data/` and the pipeline's own
@@ -66,7 +66,7 @@ python examples/brain_network_pipeline.py           # the pipeline, then a peric
 ### The pipeline, one stage at a time
 
 `resistance_network_pipeline.py` is deliberately short: the stages live in
-`ImageLynx.pipeline` and the example just calls them in order, so you can read a
+`haemolynx.pipeline` and the example just calls them in order, so you can read a
 run's shape without opening the library.
 
 ```python
@@ -164,7 +164,7 @@ out-of-range number fails immediately rather than halfway through a long run:
 
 Settings are declared once, as a schema, and that declaration generates the
 config file, the command-line flags and the validation. The pipeline's own
-settings live in the package, in `ImageLynx.pipeline.schema`; an example that
+settings live in the package, in `haemolynx.pipeline.schema`; an example that
 adds settings of its own declares those beside it (`examples/*_schema.py`) on
 top of the pipeline's. After editing a schema, regenerate the config files:
 
@@ -182,8 +182,8 @@ the package — so `pip install imagelynx` is enough to write yourself a config
 file and run from it, with no copy of this repository involved:
 
 ```python
-from ImageLynx.pipeline import default_schema, resolve_settings, run_pipeline_stages
-from ImageLynx.pipeline import write_default_config
+from haemolynx.pipeline import default_schema, resolve_settings, run_pipeline_stages
+from haemolynx.pipeline import write_default_config
 
 write_default_config("my_config.yaml")   # every setting, commented, at its default
 # edit my_config.yaml, then:
@@ -270,5 +270,5 @@ A few things to know before trusting a report:
 
 ## Licence
 
-ImageLynx is released under the [Apache License 2.0](LICENSE).
+HaemoLynx is released under the [Apache License 2.0](LICENSE).
 Copyright 2026 Finbar Argus and Harvey Davis.

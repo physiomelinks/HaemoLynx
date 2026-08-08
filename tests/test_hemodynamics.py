@@ -3,7 +3,7 @@ import pytest
 import numpy as np
 import networkx as nx
 
-from ImageLynx.haemodynamics import (
+from haemolynx.haemodynamics import (
     PoiseuilleModel,
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
@@ -140,8 +140,8 @@ def test_poiseuille_setters_are_named_for_what_they_set():
     Guards against the old names creeping back via copy-paste from the OLD/
     scripts or from a stale branch.
     """
-    import ImageLynx.haemodynamics.pericyte_mask as pericyte_mask
-    import ImageLynx.haemodynamics.probability as probability
+    import haemolynx.haemodynamics.pericyte_mask as pericyte_mask
+    import haemolynx.haemodynamics.probability as probability
 
     for module, new_name, old_name in (
         (PoiseuilleModel, "set_poiseuille_resistances", "set_poiseuille_weights"),

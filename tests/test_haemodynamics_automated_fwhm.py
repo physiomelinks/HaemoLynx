@@ -6,8 +6,8 @@ import numpy as np
 import networkx as nx
 import tifffile
 
-from ImageLynx.haemodynamics import automated
-from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
+from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 
 
 def _cylinder_gaussian_volume(nz: int, ny: int, nx: int, sigma: float) -> np.ndarray:

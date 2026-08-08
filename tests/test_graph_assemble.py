@@ -16,13 +16,13 @@ import pytest
 
 pytest.importorskip("skan")
 
-from ImageLynx.graph import build_graph_from_skeleton
-from ImageLynx.graph.validate import assert_no_forbidden_edge_attributes
+from haemolynx.graph import build_graph_from_skeleton
+from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 
 # Coarse z, fine x, all three distinct so a (z, y, x) / (x, y, z) swap shows up.
 VOXEL_SIZE_ZYX = (2.0, 0.5, 0.4)
 
-#: Emitted in this order after each topology step. `ImageLynx.pipeline.stages`
+#: Emitted in this order after each topology step. `haemolynx.pipeline.stages`
 #: special-cases "..._pass1" by name when it writes per-step plots, so these are
 #: a contract, not an implementation detail.
 EXPECTED_STEP_LABELS = [
@@ -208,7 +208,7 @@ def test_building_without_a_callback_is_supported():
 
 def test_degree2_diagnostics_are_logged_only_in_debug_mode(caplog):
     """The report is the tool for chasing un-merged degree-2 nodes; it must be gated."""
-    with caplog.at_level(logging.DEBUG, logger="ImageLynx.graph"):
+    with caplog.at_level(logging.DEBUG, logger="haemolynx.graph"):
         _build(_t_skeleton(), debug=False)
         quiet = caplog.text
         caplog.clear()

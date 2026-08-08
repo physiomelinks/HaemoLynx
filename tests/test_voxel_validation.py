@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from ImageLynx.io import resolve_voxel_size_xyz, validate_voxel_size_xyz
+from haemolynx.io import resolve_voxel_size_xyz, validate_voxel_size_xyz
 
 # Coarse z, fine x — the usual confocal case, and all three differ.
 METADATA_XYZ = (0.4, 0.5, 2.0)

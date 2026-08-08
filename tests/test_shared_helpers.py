@@ -15,9 +15,9 @@ import networkx as nx
 import pytest
 import tifffile
 
-from ImageLynx.geometry import cumulative_lengths
-from ImageLynx.graph._helpers import edge_id, sort_nodes
-from ImageLynx.io import load_binary_mask_and_voxel_size
+from haemolynx.geometry import cumulative_lengths
+from haemolynx.graph._helpers import edge_id, sort_nodes
+from haemolynx.io import load_binary_mask_and_voxel_size
 
 
 # --- cumulative_lengths ----------------------------------------------------
@@ -32,8 +32,8 @@ def test_cumulative_lengths_starts_at_zero_and_ends_at_total_length():
 
 
 def test_cumulative_lengths_has_one_definition_shared_by_both_consumers():
-    from ImageLynx import geometry
-    from ImageLynx.visualization import vtk_io
+    from haemolynx import geometry
+    from haemolynx.visualization import vtk_io
 
     assert vtk_io.cumulative_lengths is geometry.cumulative_lengths
 
@@ -50,7 +50,7 @@ def test_edge_id_keeps_parallel_edges_distinct():
 
 
 def test_edge_id_has_one_definition_shared_by_both_consumers():
-    from ImageLynx.graph import automated_vessel_assignment, branch_order
+    from haemolynx.graph import automated_vessel_assignment, branch_order
 
     assert branch_order.edge_id is edge_id
     assert automated_vessel_assignment._edge_id is edge_id
@@ -73,7 +73,7 @@ def test_sort_nodes_deduplicates():
 
 
 def test_sort_nodes_has_one_definition_shared_by_both_consumers():
-    from ImageLynx.graph import automated_vessel_assignment, boundaries
+    from haemolynx.graph import automated_vessel_assignment, boundaries
 
     assert boundaries.sort_nodes is sort_nodes
     assert automated_vessel_assignment._sort_nodes is sort_nodes
@@ -111,9 +111,9 @@ def test_load_binary_mask_rejects_non_3d_volume(tmp_path):
 
 
 def test_load_binary_mask_is_the_one_used_by_both_consumers():
-    from ImageLynx import io
-    from ImageLynx.haemodynamics import pericyte_mask
-    from ImageLynx.statistics import three_dim_distances as distances
+    from haemolynx import io
+    from haemolynx.haemodynamics import pericyte_mask
+    from haemolynx.statistics import three_dim_distances as distances
 
     assert pericyte_mask.load_binary_mask_and_voxel_size is io.load_binary_mask_and_voxel_size
     assert distances.load_binary_mask_and_voxel_size is io.load_binary_mask_and_voxel_size
@@ -137,8 +137,8 @@ def test_edge_point_accessors_differ_on_a_two_dimensional_polyline():
     centerline accessor rejects it and falls back to the node-to-node segment,
     because a padded polyline would move a projected pericyte.
     """
-    from ImageLynx.haemodynamics.pericyte_mask import _edge_centerline_points
-    from ImageLynx.visualization.vtk_io import _edge_points_padded_to_3d
+    from haemolynx.haemodynamics.pericyte_mask import _edge_centerline_points
+    from haemolynx.visualization.vtk_io import _edge_points_padded_to_3d
 
     flat = [[0.0, 0.0], [0.0, 6.0], [0.0, 10.0]]
     graph = _two_node_graph(flat)
@@ -153,10 +153,10 @@ def test_edge_point_accessors_differ_on_a_two_dimensional_polyline():
 
 def test_terminal_node_accessors_return_different_shapes():
     """Why ``_terminal_nodes_with_positions`` could not become one function."""
-    from ImageLynx.graph.automated_vessel_assignment import (
+    from haemolynx.graph.automated_vessel_assignment import (
         _terminal_nodes_with_position_pairs,
     )
-    from ImageLynx.graph.boundaries import _terminal_nodes_and_position_map
+    from haemolynx.graph.boundaries import _terminal_nodes_and_position_map
 
     graph = _two_node_graph([[0.0, 0.0, 0.0], [0.0, 0.0, 10.0]])
 

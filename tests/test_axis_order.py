@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from ImageLynx.io import (
+from haemolynx.io import (
     CANONICAL_AXIS_ORDER,
     VALID_AXIS_ORDERS,
     apply_axis_order,

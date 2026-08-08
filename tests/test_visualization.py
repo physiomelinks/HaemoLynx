@@ -6,13 +6,13 @@ import pytest
 import numpy as np
 import networkx as nx
 
-from ImageLynx.visualization import (
+from haemolynx.visualization import (
     plot_node_degree_distribution,
     visualize_edges_and_nodes,
     visualize_geometry_with_branch_orders,
     visualize_geometry_with_edge_resistance,
 )
-from ImageLynx.visualization._helpers import (
+from haemolynx.visualization._helpers import (
     sort_branch_orders_numerically,
     create_color_mapping,
     group_branch_orders_for_legend,
@@ -89,7 +89,7 @@ def test_no_display_is_attempted_under_a_non_interactive_backend():
     """Guards the UserWarning storm: Agg cannot show, so nothing must try."""
     import warnings
 
-    from ImageLynx.visualization.plot import (
+    from haemolynx.visualization.plot import (
         _show_matplotlib_blocking,
         _show_matplotlib_non_blocking,
         backend_can_display,

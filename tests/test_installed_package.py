@@ -1,4 +1,4 @@
-"""What `pip install ImageLynx` actually gives someone.
+"""What `pip install HaemoLynx` actually gives someone.
 
 Every other test runs against the source tree, with `src` on the path. That
 cannot see the ways a distribution differs from a checkout: a module missing
@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = REPO_ROOT / "src" / "ImageLynx"
+PACKAGE_ROOT = REPO_ROOT / "src" / "haemolynx"
 
 #: A run through the public API, executed in a directory that is not the
 #: repository. It lives in its own file so the CI job can run it directly
@@ -69,10 +69,13 @@ def test_the_wheel_ships_every_module_in_the_package(wheel):
 def test_the_wheel_ships_nothing_but_the_package(wheel):
     """Tests, examples and tutorials are not part of what a user installs."""
     contents = zipfile.ZipFile(wheel).namelist()
+    # The metadata directory is named for the distribution and version, so it
+    # is taken from the wheel rather than spelled out and left to rot.
+    dist_info = f"{wheel.name.split('-')[0]}-{wheel.name.split('-')[1]}.dist-info/"
     strays = [
         name
         for name in contents
-        if not name.startswith(("ImageLynx/", "imagelynx-"))
+        if not name.startswith((f"{PACKAGE_ROOT.name}/", dist_info))
     ]
     assert strays == [], f"unexpected files in the wheel: {strays}"
 
@@ -86,7 +89,7 @@ def test_the_installed_package_works_from_outside_the_repository(wheel, tmp_path
     """Unpack the wheel on its own and drive the public API from elsewhere.
 
     The wheel is installed into a directory of its own and put on the path
-    alone, so every ImageLynx import must be satisfied by what the wheel
+    alone, so every haemolynx import must be satisfied by what the wheel
     contains. The third-party dependencies come from the running interpreter --
     they are not what is under test here; the CI job installs them from scratch.
     """
@@ -122,7 +125,7 @@ def test_the_installed_package_works_from_outside_the_repository(wheel, tmp_path
     result = json.loads(payload[-1][len("RESULT "):])
 
     # It ran from the unpacked wheel, not from a stray copy of the source tree.
-    assert result["package_dir"] == str(site_dir / "ImageLynx")
+    assert result["package_dir"] == str(site_dir / "haemolynx")
     assert str(REPO_ROOT / "src") not in result["package_dir"]
 
     assert result["edges"] == 2
@@ -137,8 +140,8 @@ def test_the_installed_package_works_from_outside_the_repository(wheel, tmp_path
 @pytest.mark.slow
 def test_the_config_a_fresh_install_writes_is_complete(wheel, tmp_path):
     """`write_default_config` is how an installed user gets a runnable config."""
-    from ImageLynx.parsers import load_config
-    from ImageLynx.pipeline import default_schema, write_default_config
+    from haemolynx.parsers import load_config
+    from haemolynx.pipeline import default_schema, write_default_config
 
     schema = default_schema()
     written = write_default_config(tmp_path / "config.yaml")
@@ -148,21 +151,21 @@ def test_the_config_a_fresh_install_writes_is_complete(wheel, tmp_path):
 
 
 def test_the_distribution_name_matches_what_users_pip_install():
-    """`pip install ImageLynx` must resolve to this package, not a near-miss."""
+    """`pip install HaemoLynx` must resolve to this package, not a near-miss."""
     from importlib import metadata
 
-    distribution = metadata.distribution("ImageLynx")
-    assert distribution.metadata["Name"] == "ImageLynx"
-    assert metadata.distribution("ImageLynx").locate_file("ImageLynx").name == "ImageLynx"
+    distribution = metadata.distribution("HaemoLynx")
+    assert distribution.metadata["Name"] == "HaemoLynx"
+    assert metadata.distribution("HaemoLynx").locate_file("haemolynx").name == "haemolynx"
 
 
 def test_the_version_is_single_sourced():
     """A version in two places drifts; the metadata must agree with the module."""
     from importlib import metadata
 
-    import ImageLynx
+    import haemolynx
 
-    assert metadata.version("ImageLynx") == ImageLynx.__version__
+    assert metadata.version("HaemoLynx") == haemolynx.__version__
 
 
 def test_no_module_imports_the_repository_layout():
@@ -192,7 +195,7 @@ def test_declared_console_scripts_exist_after_installation():
     """
     from importlib import metadata
 
-    scripts = metadata.distribution("ImageLynx").entry_points.select(group="console_scripts")
+    scripts = metadata.distribution("HaemoLynx").entry_points.select(group="console_scripts")
     for script in scripts:
         assert shutil.which(script.name), (
             f"{script.name} is declared in [project.scripts] but is not on PATH "

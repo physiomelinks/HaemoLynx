@@ -20,16 +20,16 @@ for _path in (REPO_ROOT / "src", REPO_ROOT / "examples"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from ImageLynx.haemodynamics.apply import (  # noqa: E402
+from haemolynx.haemodynamics.apply import (  # noqa: E402
     DEFAULT_PERICYTE_CONSTRICTION_SEED,
     HaemodynamicsApplyConfig,
     apply_poiseuille_haemodynamics,
 )
-from ImageLynx.haemodynamics.pericyte_comparison import (  # noqa: E402
+from haemolynx.haemodynamics.pericyte_comparison import (  # noqa: E402
     compare_baseline_vs_pericyte_constriction,
 )
-from ImageLynx.pipeline import default_schema  # noqa: E402
-from ImageLynx.haemodynamics.probability import (  # noqa: E402
+from haemolynx.pipeline import default_schema  # noqa: E402
+from haemolynx.haemodynamics.probability import (  # noqa: E402
     resolve_generator,
     select_active_pericyte_indices,
     set_poiseuille_resistances_with_probabilistic_periodic_constrictions,
@@ -246,7 +246,7 @@ def test_schema_declares_the_seed_beside_the_other_pericyte_settings():
 
 def test_seed_survives_the_config_round_trip_and_reaches_the_run(tmp_path):
     yaml_module = pytest.importorskip("yaml")
-    from ImageLynx.parsers import dump_config, load_config
+    from haemolynx.parsers import dump_config, load_config
 
     schema = default_schema()
     config_path = tmp_path / "config.yaml"
@@ -276,7 +276,7 @@ def test_seed_survives_the_config_round_trip_and_reaches_the_run(tmp_path):
 
 
 def test_null_seed_survives_the_config_round_trip(tmp_path):
-    from ImageLynx.parsers import dump_config, load_config
+    from haemolynx.parsers import dump_config, load_config
 
     schema = default_schema()
     config_path = tmp_path / "config.yaml"

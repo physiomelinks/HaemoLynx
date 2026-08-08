@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Whole-brain vascular network: the standard pipeline, then a dilation sweep.
 
-Runs ``ImageLynx.pipeline`` exactly as ``resistance_network_pipeline.py`` does,
+Runs ``haemolynx.pipeline`` exactly as ``resistance_network_pipeline.py`` does,
 then sweeps pericyte dilation against inlet pressure over the resulting network
 and plots the flow and resistance curves.
 
@@ -22,9 +22,9 @@ for _path in (root_dir / "src", examples_dir):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from ImageLynx.haemodynamics.pericyte_sweep import run_pericyte_dilation_pressure_sweep
-from ImageLynx.parsers import configure_console_logging, settings_from_command_line
-from ImageLynx.pipeline import (
+from haemolynx.haemodynamics.pericyte_sweep import run_pericyte_dilation_pressure_sweep
+from haemolynx.parsers import configure_console_logging, settings_from_command_line
+from haemolynx.pipeline import (
     assign_boundaries,
     assign_diameters,
     build_haemodynamic_model,
@@ -35,7 +35,7 @@ from ImageLynx.pipeline import (
     skeletonise,
     solve,
 )
-from ImageLynx.visualization.dilation_curves import plot_dilation_curves
+from haemolynx.visualization.dilation_curves import plot_dilation_curves
 from brain_pipeline_schema import SCHEMA
 from pipeline_presets import PRESETS
 from resistance_network_pipeline import _preflight_or_exit

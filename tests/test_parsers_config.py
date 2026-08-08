@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ImageLynx.parsers import (
+from haemolynx.parsers import (
     ConfigError,
     Schema,
     Setting,

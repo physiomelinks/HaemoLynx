@@ -22,15 +22,15 @@ for _path in (ROOT / "src", ROOT / "examples"):
 
 from importlib import import_module  # noqa: E402
 
-from ImageLynx.parsers import Schema, load_config  # noqa: E402
-from ImageLynx.pipeline import write_default_config  # noqa: E402
+from haemolynx.parsers import Schema, load_config  # noqa: E402
+from haemolynx.pipeline import write_default_config  # noqa: E402
 
 #: config file (relative to the repo root) -> module holding its ``SCHEMA``.
 #: The pipeline's own schema ships with the package, so an installed copy can
 #: write itself a config; only the examples' extensions live beside them here.
 CONFIGS: dict[str, str] = {
     "examples/simple_network_config.yaml": "simple_network_schema",
-    "examples/resistance_pipeline_config.yaml": "ImageLynx.pipeline.schema",
+    "examples/resistance_pipeline_config.yaml": "haemolynx.pipeline.schema",
     "examples/brain_pipeline_config.yaml": "brain_pipeline_schema",
     "examples/carotid_config.yaml": "carotid_schema",
 }

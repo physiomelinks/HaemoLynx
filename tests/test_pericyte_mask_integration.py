@@ -9,18 +9,18 @@ import networkx as nx
 import numpy as np
 import pytest
 
-# Ensure ImageLynx package is importable for direct script execution.
+# Ensure the haemolynx package is importable for direct script execution.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ImageLynx.haemodynamics import (
+from haemolynx.haemodynamics import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
     calc_two_point_from_laplacian_matrix_nodeID,
 )
-from ImageLynx.haemodynamics.pericyte_mask import (
+from haemolynx.haemodynamics.pericyte_mask import (
     set_poiseuille_resistances_with_pericyte_mask,
 )
 

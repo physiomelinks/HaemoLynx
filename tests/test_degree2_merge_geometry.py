@@ -12,7 +12,7 @@ the suite never caught it: almost every fixture uses ``voxel_size = 1.0``.
 import numpy as np
 import pytest
 
-from ImageLynx.graph._helpers import (
+from haemolynx.graph._helpers import (
     JUNCTION_TOLERANCE_UM,
     calculate_path_length,
     create_merged_edge_attributes,
@@ -20,7 +20,7 @@ from ImageLynx.graph._helpers import (
     merge_edge_voxels_at_node,
     merge_voxel_paths_at_node,
 )
-from ImageLynx.graph.degree2 import create_trivial_merged_edge
+from haemolynx.graph.degree2 import create_trivial_merged_edge
 
 TRUE_LENGTH_UM = 3.0
 
