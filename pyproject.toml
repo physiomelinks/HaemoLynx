@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Vascular network analysis from 3D microscopy"
 readme = "README.md"
 requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "Finbar Argus", email = "finbar.argus@auckland.ac.nz" },
     { name = "Harvey Davis" },
@@ -35,7 +37,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 # Lower bounds are the oldest release the test suite passes on, not the oldest
-# that imports. See tests/test_dependency_floors.py, which reads them back.
+# that imports. See tests/test_packaging_metadata.py, which reads them back.
 dependencies = [
     "numpy>=1.23",
     "tifffile>=2022.8.12",

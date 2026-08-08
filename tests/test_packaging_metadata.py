@@ -1,10 +1,9 @@
-"""The declared dependency floors must be the ones that were actually tested.
+"""What `pyproject.toml` declares must match what the repository actually has.
 
-`pyproject.toml` promises a lower bound for each dependency, and
-`constraints-floor.txt` pins exactly those versions so CI can run the suite
-against them. The promise is only worth something if the two agree, so that is
-what these tests check. A floor raised in one file and not the other is the
-failure this prevents.
+Packaging metadata is only checked when someone builds and uploads, which is
+too late to find out that a floor was never tested, that `py.typed` is not
+installed, or that the licence the project claims is not the one in the file.
+Each of those is a statement about the repository, so each is checked here.
 """
 from __future__ import annotations
 
@@ -96,3 +95,46 @@ def test_the_type_marker_is_declared_as_package_data():
         "py.typed exists but is not listed in [tool.setuptools.package-data]; "
         "it would not be installed."
     )
+
+
+# --- licence ----------------------------------------------------------------
+
+LICENSE_FILE = REPO_ROOT / "LICENSE"
+COPYRIGHT_HOLDERS = ("Finbar Argus", "Harvey Davis")
+
+
+def test_the_licence_file_exists_and_is_apache_2():
+    """Without a licence, the default is all-rights-reserved: nobody may use it."""
+    text = LICENSE_FILE.read_text(encoding="utf-8")
+    assert "Apache License" in text
+    assert "Version 2.0, January 2004" in text
+    assert "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION" in text
+
+
+def test_the_licence_names_the_copyright_holders():
+    """Apache 2.0's appendix is boilerplate until the holders are filled in."""
+    text = LICENSE_FILE.read_text(encoding="utf-8")
+    for holder in COPYRIGHT_HOLDERS:
+        assert holder in text, f"{holder} is not named in LICENSE"
+    assert "[name of copyright owner]" not in text, (
+        "the Apache appendix still has its placeholder; fill in the year and holders"
+    )
+
+
+def test_pyproject_declares_the_same_licence_as_the_file():
+    """A metadata licence that disagrees with LICENSE misleads every consumer."""
+    text = PYPROJECT.read_text(encoding="utf-8")
+    assert 'license = "Apache-2.0"' in text, (
+        "declare the SPDX expression, so the wheel carries License-Expression"
+    )
+    assert 'license-files = ["LICENSE"]' in text, (
+        "LICENSE must be listed, or it is not shipped in the distribution"
+    )
+
+
+def test_every_author_is_a_copyright_holder():
+    """The people named in the metadata and in the licence must be the same."""
+    text = PYPROJECT.read_text(encoding="utf-8")
+    block = text.split("authors = [", 1)[1].split("]", 1)[0]
+    for holder in COPYRIGHT_HOLDERS:
+        assert holder in block, f"{holder} holds copyright but is not an author"
