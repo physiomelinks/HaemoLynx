@@ -25,7 +25,9 @@ haemolynx/
 │   ├── statistics/         # stats.py, three_dim_distances.py (cell-to-vessel distances)
 │   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
 │   │                       #   tabs.py (one tab per stage), progress.py (what the
-│   │                       #   progress bars read, pure), _widget.py (the panel),
+│   │                       #   progress bars read, pure), results.py (what each
+│   │                       #   stage puts in the viewer, pure), layers.py (an open
+│   │                       #   layer -> run settings, pure), _widget.py (the panel),
 │   │                       #   napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
@@ -171,7 +173,10 @@ reports the others).
   loader boundary with `io.voxel_size_zyx_from_xyz`. Passing `xyz` where `zyx` is expected silently
   swaps the z and x spacings — invisible for isotropic voxels, wrong for every real stack
   (see `tests/test_anisotropic_voxel_size.py`). Masks and main image must align in shape and
-  physical voxel units.
+  physical voxel units. **Drawing a run has the same split the other way round:** node `pos` and
+  edge `voxels` are physical microns already, so a layer built from the graph takes `scale=(1,1,1)`,
+  while `image`, `skeleton` and the masks are voxel-indexed and take `scale=voxel_size_zyx`
+  (see `gui/results.py` and its registration test).
 - **Graph** — `nx.MultiGraph` with `pos` on nodes and `voxels` on edges, both in physical
   `(z, y, x)` microns; haemodynamics uses `branch_order` on edges.
 - **Edge attributes & units** — `length` (µm), `resistance` (Pa·s/m³), `conductance` (m³/(Pa·s)).

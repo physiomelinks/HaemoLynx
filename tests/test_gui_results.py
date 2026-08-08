@@ -422,3 +422,39 @@ def test_no_napari_import_appears_in_the_source():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
     assert not imported & {"napari", "magicgui", "qtpy"}
+
+
+# --- the topology steps, when asked for --------------------------------------
+
+
+def test_topology_steps_are_not_drawn_unless_asked_for():
+    """Eleven extra rebuilds in the middle of the slowest stage, so: opt in."""
+    results = built()
+    group = results.stage_finished("topology_step:prune_vascular_stubs", a_graph())
+    assert group.layers == ()
+
+
+def test_a_topology_step_redraws_the_vessels_when_switched_on():
+    results = ResultLayers(show_steps=True)
+    results.stage_finished("build_network", network(a_graph()))
+
+    group = results.stage_finished("topology_step:prune_vascular_stubs", a_graph())
+
+    assert [spec.name for spec in group.layers] == [VESSELS, VESSEL_LABELS]
+    assert "prune_vascular_stubs" in group.title
+    assert "3 vessels" in group.note
+
+
+def test_a_step_does_not_replace_the_graph_the_stage_produced():
+    """The step's graph is mid-repair and will change again; do not keep it."""
+    results = ResultLayers(show_steps=True)
+    finished_graph = a_graph()
+    results.stage_finished("build_network", network(finished_graph))
+
+    half_built = nx.MultiGraph()
+    half_built.add_node(0, pos=np.zeros(3))
+    results.stage_finished("topology_step:collapse_node_clusters", half_built)
+
+    later = results.stage_finished("solve", SimpleNamespace(
+        pressure=np.zeros(4), node_list=[0, 1, 2, 3], equivalent_resistance=1.0))
+    assert len(spec_named(later, NODES).data) == 4

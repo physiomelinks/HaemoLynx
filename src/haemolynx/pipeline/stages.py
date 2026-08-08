@@ -48,6 +48,10 @@ from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProg
 #: layers; a script could pickle them, or count them, or ignore them.
 StageOutputCallback = Callable[[str, Any], None]
 
+#: Prefix on the name given to a graph-building step, so a consumer can tell
+#: one from a stage: `topology_step:prune_vascular_stubs`.
+TOPOLOGY_STEP = "topology_step:"
+
 logger = logging.getLogger(__name__)
 
 
@@ -317,6 +321,7 @@ def build_network(
     volume: SkeletonisedVolume,
     schema: Schema,
     progress: StageProgress | None = None,
+    on_step_graph: Callable[[str, Any], None] | None = None,
 ):
     """Load the vessel masks and turn the skeleton into a graph.
 
@@ -367,6 +372,11 @@ def build_network(
             # this step, so a watcher should see it tick over on arrival.
             if progress is not None:
                 progress.step(label, total=len(graph.STEP_LABELS))
+            # The graph as it stands, for anyone drawing the repair as it
+            # happens. It is mid-repair and will change again, which is why it
+            # goes out here rather than being kept.
+            if on_step_graph is not None:
+                on_step_graph(label, graph_obj)
             plot_png = label
             if label == "smart_multigraph_degree2_removal_pass1":
                 plot_png = "smart_multigraph_degree2_removal"
@@ -1085,7 +1095,19 @@ def run_pipeline_stages(
         volume = skeletonise(settings, inputs)
     _produced(on_stage_output, "skeletonise", volume)
     with run.stage("build_network") as building:
-        network = build_network(settings, volume, schema, progress=building)
+        network = build_network(
+            settings,
+            volume,
+            schema,
+            progress=building,
+            on_step_graph=(
+                (lambda label, graph_obj: _produced(
+                    on_stage_output, f"{TOPOLOGY_STEP}{label}", graph_obj
+                ))
+                if on_stage_output is not None
+                else None
+            ),
+        )
     _produced(on_stage_output, "build_network", network)
     with run.stage("assign_boundaries"):
         boundaries = assign_boundaries(settings, network)
