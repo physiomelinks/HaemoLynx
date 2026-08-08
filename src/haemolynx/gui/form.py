@@ -58,6 +58,28 @@ class Field:
     #: they hold, rather than hiding it, so a user can see why it is off.
     enabled_by: tuple[str, ...]
 
+    #: The kind this row came from, needed to read its value back.
+    kind: str = "any"
+    #: True when the setting has no default, so an empty box means None.
+    nullable: bool = False
+
+    def to_setting_value(self, raw: Any) -> Any:
+        """A widget's value as the setting's own value.
+
+        The inverse of what the widget did to it: an empty picker or an empty
+        box is *unset*, not the working directory and not zero.
+        """
+        if isinstance(raw, str) and not raw.strip():
+            return None if self.nullable or self.kind == "path" else raw
+        if self.kind == "path":
+            text = str(raw)
+            if text in {"", "."} and self.nullable:
+                return None
+            return raw
+        if self.nullable and self.kind in {"int", "float"} and isinstance(raw, str):
+            return int(raw) if self.kind == "int" else float(raw)
+        return raw
+
     def is_enabled(self, values: Mapping[str, Any]) -> bool:
         """Whether this setting can take effect, given the other values."""
         return all(is_prerequisite_met(rule, values) for rule in self.enabled_by)
@@ -105,18 +127,47 @@ def _options_for(setting: Setting) -> dict[str, Any]:
     return options
 
 
+#: Widgets that cannot hold "unset". A setting with no default needs one that
+#: can, or the panel reports a value nobody chose -- a FloatSpinBox says 0.0
+#: and a FileEdit says the working directory, and the schema then warns that a
+#: setting is set while the feature reading it is off.
+NUMERIC_WIDGETS = {"SpinBox", "FloatSpinBox"}
+
+
+def widget_type_for(setting: Setting) -> str:
+    """The widget that can express this setting, including its unset state."""
+    widget = WIDGET_TYPES[setting.kind]
+    if setting.default is None and widget in NUMERIC_WIDGETS:
+        return "LineEdit"
+    return widget
+
+
+def _display_value(setting: Setting, value: Any) -> Any:
+    """What the widget starts with.
+
+    An unset value shows as an empty box rather than magicgui's fallback --
+    the working directory for a path, zero for a number -- which would look
+    like a choice somebody made.
+    """
+    if value is None:
+        return "" if setting.default is None or setting.kind == "path" else value
+    return value
+
+
 def field_for(setting: Setting, value: Any = None) -> Field:
     """The form row for one setting, showing *value* or the schema default."""
     return Field(
         name=setting.name,
         label=label_for(setting.name),
-        widget_type=WIDGET_TYPES[setting.kind],
-        value=setting.default if value is None else value,
+        widget_type=widget_type_for(setting),
+        value=_display_value(setting, setting.default if value is None else value),
         options=_options_for(setting),
         help=setting.help + (f" ({setting.unit})" if setting.unit else ""),
         section=setting.section,
         advanced=setting.advanced,
         enabled_by=tuple(setting.requires or ()),
+        kind=setting.kind,
+        nullable=setting.default is None,
     )
 
 
@@ -138,4 +189,4 @@ def sections_for(
 
 def values_from(fields: Sequence[Field]) -> dict[str, Any]:
     """The settings dict these rows describe, ready for `schema.validate`."""
-    return {field.name: field.value for field in fields}
+    return {field.name: field.to_setting_value(field.value) for field in fields}

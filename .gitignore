@@ -20,6 +20,10 @@ dist/
 examples/images/
 examples/outputs/
 examples/plots/
+# The generated config's paths are relative, so a run started from the
+# repository root -- the napari panel, or `python -c` -- writes here.
+/outputs/
+/plots/
 tutorials/outputs/
 tutorials/plots/
 tests/outputs/

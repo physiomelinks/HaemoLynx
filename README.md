@@ -234,6 +234,20 @@ greys out with a reason when the setting it depends on is off. There is no
 second list of settings to keep in step; a test fails if a setting reaches no
 tab or more than one.
 
+### Running on the image already open in napari
+
+Open an image in napari, then open the panel: the selected layer is picked up
+automatically, and the row at the top lets you choose a different one.
+
+- A layer **read from a TIFF or HDF5** points the run at that file, so the same
+  bytes and the same metadata are used -- no copy is made.
+- A layer **built in the viewer** (a threshold, a crop) has no file behind it,
+  so its array is written next to the run's outputs and read back. The panel
+  says which of the two happened.
+- If the layer has a **scale**, it becomes the voxel size. napari scales per
+  array axis `(z, y, x)` and the setting is image metadata order `(x, y, z)`,
+  so the two are reversed on the way in.
+
 The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
 without opening the form.
 

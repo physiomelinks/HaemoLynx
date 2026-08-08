@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from haemolynx.gui.form import Field
+from haemolynx.gui.layers import input_for_layer
 from haemolynx.gui.tabs import tabs_for
 from haemolynx.parsers import dump_config, load_config
 from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
@@ -22,11 +23,22 @@ from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_
 logger = logging.getLogger(__name__)
 
 
-def _build_row(field: Field):
-    """One magicgui widget for one form row."""
+def _create_widget(**kwargs):
+    """magicgui's `create_widget`, imported only when a panel is built."""
     from magicgui.widgets import create_widget
 
-    widget = create_widget(
+    return create_widget(**kwargs)
+
+
+def _export_dir(values: dict[str, Any]) -> Path:
+    """Where a layer with no file behind it gets written: beside the outputs."""
+    prefix = values.get("vtk_output_prefix")
+    return Path(prefix).parent if prefix else Path.cwd()
+
+
+def _build_row(field: Field):
+    """One magicgui widget for one form row."""
+    widget = _create_widget(
         value=field.value,
         name=field.name,
         label=field.label,
@@ -110,10 +122,22 @@ def run_config_widget():
     )
 
 
-def settings_widget():
-    """The HaemoLynx panel: the pipeline's stages, in the order it runs them."""
+def settings_widget(napari_viewer=None):
+    """The HaemoLynx panel: the pipeline's stages, in the order it runs them.
+
+    The panel can run on a layer that is already open, which needs the viewer.
+    napari injects that only into a class -- `_get_widget_viewer_param` returns
+    nothing for a plain function -- and defining a QWidget subclass would mean
+    importing Qt when this module is imported, which the library must not do.
+    So the viewer is asked for instead: `napari.current_viewer()` is the one
+    building this panel. Pass *napari_viewer* to override that, as a test or a
+    script would.
+    """
+    import napari
     from magicgui.widgets import Container, Label, PushButton, TextEdit
     from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
+
+    viewer = napari_viewer if napari_viewer is not None else napari.current_viewer()
 
     schema = default_schema()
     tabs = tabs_for(schema)
@@ -145,7 +169,35 @@ def settings_widget():
             tab_widget.setTabToolTip(index, f"{tab.stage.call}(settings, ...)")
 
     def current_values() -> dict[str, Any]:
-        return {name: widget.value for name, widget in rows.items()}
+        """What the panel says, in the settings' own terms.
+
+        Read back through the field rather than straight off the widget: an
+        empty picker is *unset*, not the working directory, and an empty box is
+        unset rather than zero.
+        """
+        return {
+            name: fields[name].to_setting_value(widget.value)
+            for name, widget in rows.items()
+        }
+
+    def use_layer(layer) -> None:
+        """Point the run at *layer*: its own file, or its array written out."""
+        try:
+            chosen = input_for_layer(layer, _export_dir(current_values()))
+        except ValueError as error:
+            report.value = str(error)
+            return
+        if chosen.needs_export:
+            import tifffile
+
+            target = Path(chosen.settings["input_path"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tifffile.imwrite(target, layer.data)
+        for name, value in chosen.settings.items():
+            if name in rows:
+                rows[name].value = value
+        apply_prerequisites()
+        report.value = chosen.note
 
     def apply_prerequisites(*_args) -> None:
         """Grey out settings whose prerequisite is unmet, and say why."""
@@ -162,6 +214,50 @@ def settings_widget():
 
     report = TextEdit(value="Ready.")
     report.read_only = True
+
+    layer_row: Any = None
+    if viewer is not None:
+        layer_picker = _create_widget(
+            annotation=napari.layers.Image, label="Use open layer"
+        )
+        use_button = PushButton(text="Use this layer as the input")
+        layer_row = Container(
+            widgets=[layer_picker, use_button], layout="horizontal", labels=True
+        )
+
+        applying = False
+
+        def adopt(layer) -> None:
+            """Point the run at *layer*, without re-entering through `changed`."""
+            nonlocal applying
+            if applying or not isinstance(layer, napari.layers.Image):
+                return
+            applying = True
+            try:
+                if layer_picker.value is not layer:
+                    layer_picker.value = layer
+                use_layer(layer)
+            finally:
+                applying = False
+
+        def on_layer_added(event) -> None:
+            """A dropped image becomes the input, panel already open or not."""
+            adopt(getattr(event, "value", None))
+
+        # Both orders have to work: open the panel with an image already there,
+        # or drop one in while it is open.
+        layer_picker.changed.connect(lambda *_: adopt(layer_picker.value))
+        use_button.changed.connect(lambda *_: use_layer(layer_picker.value))
+        viewer.layers.events.inserted.connect(on_layer_added)
+
+        images = [
+            layer for layer in viewer.layers if isinstance(layer, napari.layers.Image)
+        ]
+        active = viewer.layers.selection.active
+        if isinstance(active, napari.layers.Image):
+            adopt(active)
+        elif images:
+            adopt(images[-1])
 
     load_button = PushButton(text="Load config...")
     save_button = PushButton(text="Save config...")
@@ -222,6 +318,8 @@ def settings_widget():
 
     panel = QWidget()
     layout = QVBoxLayout(panel)
+    if layer_row is not None:
+        layout.addWidget(layer_row.native)
     layout.addWidget(tab_widget)
     layout.addWidget(buttons.native)
     layout.addWidget(report.native)

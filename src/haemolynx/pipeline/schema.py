@@ -66,8 +66,12 @@ SCHEMA = Schema(
         # ------------------------------------------------------------------
         Setting(
             name="input_path",
+            # No default: there is no image every run should read, and a
+            # plausible-looking path that is not there costs more to diagnose
+            # than an empty one. The pre-run checks say it is unset; the napari
+            # panel fills it in from the layer you have open.
             kind="path",
-            default=f"{_IMAGES}/brain_microvessels.tiff",
+            default=None,
             help="Read this already-segmented image as the pipeline input",
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,

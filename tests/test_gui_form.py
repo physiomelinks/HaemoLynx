@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from pathlib import Path
+
 from haemolynx.gui.form import (
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
@@ -181,3 +183,100 @@ def test_fields_are_immutable():
     with pytest.raises(Exception):
         field.value = "changed"  # type: ignore[misc]
     assert isinstance(field, Field)
+
+
+# --- an unset path shows as empty -------------------------------------------
+
+
+def test_an_unset_path_starts_empty_rather_than_at_the_working_directory():
+    """`input_path` has no default: the picker must not invent one.
+
+    magicgui's FileEdit falls back to the current directory for a null value,
+    which reads as a choice somebody made. An empty box says "not set", which
+    is what the pre-run checks will also say.
+    """
+    by_name = {field.name: field for field in fields_for(SCHEMA)}
+    assert SCHEMA["input_path"].default is None
+    assert by_name["input_path"].value == ""
+
+
+def test_a_path_that_has_a_default_still_shows_it():
+    by_name = {field.name: field for field in fields_for(SCHEMA)}
+    assert by_name["ilastik_output_dir"].value == SCHEMA["ilastik_output_dir"].default
+
+
+def test_a_row_is_blank_only_when_the_setting_is_unset():
+    """An empty box means "not set" -- so it must not appear for a set value."""
+    for field in fields_for(SCHEMA):
+        if field.value != "":
+            continue
+        default = SCHEMA[field.name].default
+        assert default is None or default == "", (
+            f"{field.name} shows as empty but its default is {default!r}"
+        )
+
+
+# --- unset must survive the round trip through a widget ----------------------
+
+
+def test_a_setting_with_no_default_gets_a_widget_that_can_be_empty():
+    """A FloatSpinBox cannot hold "unset"; it reports 0.0, which is a value.
+
+    `fwhm_diameter_guess_um` is a float with no default. Shown in a spin box,
+    the panel reads back 0.0, the schema sees a setting that is neither None
+    nor its default, and warns that it is set while the feature that reads it
+    is off -- for a panel nobody has touched.
+    """
+    by_name = {field.name: field for field in fields_for(SCHEMA)}
+    assert SCHEMA["fwhm_diameter_guess_um"].default is None
+    assert by_name["fwhm_diameter_guess_um"].widget_type == "LineEdit"
+    assert by_name["fwhm_diameter_guess_um"].value == ""
+
+
+def test_a_numeric_setting_that_has_a_default_keeps_its_spin_box():
+    by_name = {field.name: field for field in fields_for(SCHEMA)}
+    assert by_name["min_stub_length"].widget_type == "FloatSpinBox"
+
+
+@pytest.mark.parametrize(
+    "kind,default,raw,expected",
+    [
+        ("path", None, Path("."), None),        # FileEdit's empty value
+        ("path", None, "", None),
+        ("path", None, Path("/data/x.tif"), Path("/data/x.tif")),
+        ("path", "out", Path("out"), Path("out")),
+        ("float", None, "", None),              # LineEdit left empty
+        ("float", None, "4.5", 4.5),
+        ("int", None, "7", 7),
+        ("float", 1.0, 2.5, 2.5),               # ordinary spin box
+        ("str", None, "", None),
+        ("str", "auto", "", ""),                # a real empty string, not unset
+    ],
+)
+def test_a_widget_value_reads_back_as_the_setting_value(kind, default, raw, expected):
+    from haemolynx.parsers import Setting
+
+    field = field_for(Setting("thing", kind, default, "A thing", "S"))
+    assert field.to_setting_value(raw) == expected
+
+
+def test_the_untouched_panel_warns_about_nothing():
+    """Opening the panel and reading it back must equal the schema defaults.
+
+    This is the whole bug: a widget that invents a value for a setting with no
+    default makes the schema report "set but nothing will read it" on a panel
+    the user has not touched.
+    """
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        SCHEMA.validate(values_from(fields_for(SCHEMA)))
+
+    assert [str(warning.message) for warning in caught] == []
+
+
+def test_the_untouched_panel_produces_the_schema_defaults():
+    read_back = SCHEMA.validate(values_from(fields_for(SCHEMA)))
+    defaults = SCHEMA.validate({s.name: s.default for s in SCHEMA})
+    assert read_back == defaults
