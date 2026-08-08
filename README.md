@@ -219,6 +219,10 @@ pip install "HaemoLynx[napari]"    # needs Python 3.11+ (napari's floor, not our
 napari                             # Plugins -> HaemoLynx -> Pipeline settings
 ```
 
+That extra brings a Qt binding (PyQt6) with it, so the panel opens on a fresh
+environment. If you already run napari with a binding of your own, install
+`HaemoLynx[napari-plugin]` instead and keep it.
+
 Every row in the form comes from `haemolynx.pipeline.default_schema()`, so a
 setting declared there appears in the panel with its help text, range, choices
 and section, and greys out when the setting it depends on is off. There is no

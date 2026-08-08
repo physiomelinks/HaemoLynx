@@ -67,7 +67,13 @@ notebook = ["ipykernel"]
 # The napari panel. napari 0.8 requires Python 3.11, above this library's 3.9,
 # so this extra is installable only there -- deliberately, rather than
 # resolving to an old napari that has not been tested against.
-napari = ["napari>=0.8", "magicgui>=0.7", "npe2>=0.8"]
+#
+# It includes a Qt binding, because `pip install "HaemoLynx[napari]"` should
+# give a panel that opens: napari itself declares none, and without one it
+# exits with "No Qt bindings found". Use the `napari-plugin` extra instead to
+# take the binding from an existing napari installation.
+napari = ["napari[pyqt6]>=0.8", "magicgui>=0.7", "npe2>=0.8"]
+napari-plugin = ["napari>=0.8", "magicgui>=0.7", "npe2>=0.8"]
 
 [project.entry-points."napari.manifest"]
 haemolynx = "haemolynx.gui:napari.yaml"

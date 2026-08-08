@@ -131,7 +131,22 @@ def test_napari_is_an_extra_not_a_dependency():
     runtime = text.split("dependencies = [", 1)[1].split("]", 1)[0]
     assert "napari" not in runtime, "napari must not be a runtime dependency"
     extras = text.split("[project.optional-dependencies]", 1)[1].split("[project", 1)[0]
-    assert "napari>=0.8" in extras
+    assert "napari[pyqt6]>=0.8" in extras
+
+
+def test_the_napari_extra_brings_a_qt_binding():
+    """napari declares no Qt binding, and exits with "No Qt bindings found".
+
+    `pip install "HaemoLynx[napari]"` has to give a panel that opens, so the
+    extra names one. `napari-plugin` is the same thing without it, for someone
+    who already runs napari and has chosen their own.
+    """
+    text = PYPROJECT.read_text(encoding="utf-8")
+    extras = text.split("[project.optional-dependencies]", 1)[1].split("[project", 1)[0]
+    napari_extra = extras.split("napari = ", 1)[1].split("\n", 1)[0]
+    assert "pyqt" in napari_extra.lower() or "pyside" in napari_extra.lower()
+    plugin_extra = extras.split("napari-plugin = ", 1)[1].split("\n", 1)[0]
+    assert "pyqt" not in plugin_extra.lower()
 
 
 def test_the_napari_framework_classifier_is_declared():
