@@ -54,11 +54,11 @@ dependencies = [
 ]
 
 [project.urls]
-# The repository is private today, so these 404 for anyone else. An issue
-# tracks revisiting them when it is made public (issue #109).
-Homepage = "https://github.com/physiomelinks/HaemoLynx"
-Repository = "https://github.com/physiomelinks/HaemoLynx"
-Issues = "https://github.com/physiomelinks/HaemoLynx/issues"
+# The repository is private today, so these 404 for anyone else, and it has not
+# moved to the physiomelinks organisation yet. Issue #109 tracks both.
+Homepage = "https://github.com/FinbarArgus/HaemoLynx"
+Repository = "https://github.com/FinbarArgus/HaemoLynx"
+Issues = "https://github.com/FinbarArgus/HaemoLynx/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "nbconvert", "nbformat"]
