@@ -31,8 +31,20 @@ from haemolynx.pipeline import default_schema  # noqa: E402
 pytestmark = pytest.mark.gui
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-#: Small enough to skeletonise, build and solve in seconds.
+#: Small enough to skeletonise, build and solve in seconds. It is a grayscale
+#: volume of 74 levels, which the loader thresholds at half the dtype range --
+#: so it needs no preparation here. (Binarising it by hand with `> 0` would
+#: give a solid block, since 95% of its voxels are nonzero.)
 FIXTURE = REPO_ROOT / "tests" / "data" / "seven_vessel_noisy_3d.tif"
+
+
+#: Boxes in physical (z, y, x) microns that split this fixture's terminals into
+#: two non-empty, disjoint sets. Its vessels span y = 5..42 of a 0..47 volume,
+#: so they never reach the image border and any band measured against the
+#: image extent -- edge_percent's default 10% is y < 4.7 and y > 42.3 -- finds
+#: nothing at all.
+INLET_BOX = ((0.0, 0.0, 0.0), (47.0, 15.0, 47.0))
+OUTLET_BOX = ((0.0, 35.0, 0.0), (47.0, 47.0, 47.0))
 
 
 @pytest.fixture
@@ -214,8 +226,10 @@ def test_the_panel_runs_the_pipeline_on_the_open_layer(make_napari_viewer, tmp_p
     # Inlets from one end of the volume and outlets from the other. Both set to
     # "all_degree_1" would leave outlets empty, because the outlet call excludes
     # the inlets it was already given.
-    values["starting_node_selection_method"] = "edge_percent"
-    values["output_node_selection_method"] = "edge_percent"
+    values["starting_node_selection_method"] = "volume"
+    values["output_node_selection_method"] = "volume"
+    values["starting_node_volumes"] = [INLET_BOX]
+    values["output_node_volumes"] = [OUTLET_BOX]
     schema = default_schema()
     settings = resolve_settings(values, schema=schema, config_path=None)
 
@@ -245,8 +259,10 @@ def test_a_run_from_the_panel_opens_no_browser(make_napari_viewer, tmp_path, mon
     values["vtk_output_prefix"] = tmp_path / "run"
     values["plot_dir"] = tmp_path / "plots"
     values["statistics"] = False
-    values["starting_node_selection_method"] = "edge_percent"
-    values["output_node_selection_method"] = "edge_percent"
+    values["starting_node_selection_method"] = "volume"
+    values["output_node_selection_method"] = "volume"
+    values["starting_node_volumes"] = [INLET_BOX]
+    values["output_node_volumes"] = [OUTLET_BOX]
     schema = default_schema()
 
     run_pipeline_stages(resolve_settings(values, schema=schema, config_path=None), schema)
