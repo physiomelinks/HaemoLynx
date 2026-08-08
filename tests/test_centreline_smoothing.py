@@ -21,6 +21,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
+from browser_diagnostics import open_diagnostic_html
 from haemolynx import graph as graph_tools
 from haemolynx import preprocessing
 from haemolynx.graph.smoothing import smooth_graph_centrelines
@@ -418,7 +419,6 @@ def test_smoothing_never_makes_a_centreline_longer():
 
 # --- something to look at ----------------------------------------------------
 
-DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "centreline_smoothing"
 
 
 def _write_smoothing_scene_html(curves, raw_graph, smoothed_graph, output_html_path):
@@ -483,18 +483,18 @@ def _write_smoothing_scene_html(curves, raw_graph, smoothed_graph, output_html_p
 
 @pytest.mark.slow
 @pytest.mark.plotting
-def test_writes_a_scene_showing_the_truth_the_staircase_and_the_smoothing(known_vessels):
+def test_writes_a_scene_showing_the_truth_the_staircase_and_the_smoothing(
+    known_vessels, plot_subdir
+):
     """Writes the diagnostic; opens it only when asked.
 
         HAEMOLYNX_OPEN_TEST_HTML=1 pytest tests/test_centreline_smoothing.py -k scene
     """
-    from tests.browser_diagnostics import open_diagnostic_html
-
     curves, skeleton, graph = known_vessels
     smoothed = graph.copy()
     smooth_graph_centrelines(smoothed, skeleton, voxel_size_zyx=(1.0, 1.0, 1.0))
 
-    output = DEMO_OUTPUT_DIR / "centreline_smoothing_3d.html"
+    output = plot_subdir / "centreline_smoothing_3d.html"
     if not _write_smoothing_scene_html(curves, graph, smoothed, output):
         pytest.skip("plotly is not installed")
 
@@ -561,11 +561,89 @@ def _write_smoothing_closeup_png(curves, raw_graph, smoothed_graph, output_png_p
 
 @pytest.mark.slow
 @pytest.mark.plotting
-def test_writes_a_closeup_of_one_vessel(known_vessels):
+def test_writes_a_closeup_of_one_vessel(known_vessels, plot_subdir):
     curves, skeleton, graph = known_vessels
     smoothed = graph.copy()
     smooth_graph_centrelines(smoothed, skeleton, voxel_size_zyx=(1.0, 1.0, 1.0))
 
-    output = DEMO_OUTPUT_DIR / "centreline_smoothing_closeup.png"
+    output = plot_subdir / "centreline_smoothing_closeup.png"
     assert _write_smoothing_closeup_png(curves, graph, smoothed, output)
     assert output.stat().st_size > 0
+
+
+def _write_length_error_png(curves, raw_graph, smoothed_graph, output_png_path):
+    """The claim the ground-truth tests make, drawn.
+
+    Every vessel here has a length we know rather than one we measured, so the
+    error is a real error and not a disagreement between two estimates. Left:
+    each vessel's measured length against its true length, where perfect is the
+    diagonal. Right: the same as a percentage, vessel by vessel, with the totals
+    the tests bound marked.
+    """
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    matplotlib.use("Agg", force=False)
+
+    raw = _errors_against_truth(curves, raw_graph)
+    smoothed = _errors_against_truth(curves, smoothed_graph)
+    truth = np.array([t for _m, t in raw])
+    raw_measured = np.array([m for m, _t in raw])
+    smoothed_measured = np.array([m for m, _t in smoothed])
+
+    def total_error(measured):
+        return 100.0 * (measured.sum() / truth.sum() - 1.0)
+
+    figure, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+
+    limits = (0.0, float(max(truth.max(), raw_measured.max())) * 1.05)
+    axes[0].plot(limits, limits, color="black", lw=1.5, ls="--", label="exact")
+    axes[0].scatter(truth, raw_measured, s=34, color="#d62728",
+                    label=f"raw skeleton path ({total_error(raw_measured):+.2f}% total)")
+    axes[0].scatter(truth, smoothed_measured, s=34, color="#1f77b4",
+                    label=f"smoothed ({total_error(smoothed_measured):+.2f}% total)")
+    axes[0].set_xlim(*limits)
+    axes[0].set_ylim(*limits)
+    axes[0].set_aspect("equal")
+    axes[0].set_xlabel("true arc length (um)")
+    axes[0].set_ylabel("length the graph reports (um)")
+    axes[0].set_title(f"{len(truth)} helices of known length")
+    axes[0].legend(fontsize=8, loc="upper left")
+
+    order = np.argsort(truth)
+    index = np.arange(len(truth))
+    axes[1].axhline(0.0, color="black", lw=1.2, ls="--")
+    axes[1].bar(index - 0.2, 100 * (raw_measured / truth - 1)[order], width=0.4,
+                color="#d62728", label="raw skeleton path")
+    axes[1].bar(index + 0.2, 100 * (smoothed_measured / truth - 1)[order], width=0.4,
+                color="#1f77b4", label="smoothed")
+    axes[1].axhline(total_error(raw_measured), color="#d62728", lw=1.0, alpha=0.6)
+    axes[1].axhline(total_error(smoothed_measured), color="#1f77b4", lw=1.0, alpha=0.6)
+    axes[1].set_xlabel("vessel, shortest to longest")
+    axes[1].set_ylabel("error against the true length (%)")
+    axes[1].set_title("per vessel; the flat lines are the totals")
+    axes[1].legend(fontsize=8)
+
+    figure.tight_layout()
+    output_png_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_png_path, dpi=130)
+    plt.close(figure)
+    return total_error(raw_measured), total_error(smoothed_measured)
+
+
+@pytest.mark.slow
+@pytest.mark.plotting
+def test_writes_the_length_error_against_known_truth(known_vessels, plot_subdir, capsys):
+    curves, skeleton, graph = known_vessels
+    smoothed = graph.copy()
+    smooth_graph_centrelines(smoothed, skeleton, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    output = plot_subdir / "centreline_length_error.png"
+    raw_error, smoothed_error = _write_length_error_png(curves, graph, smoothed, output)
+
+    with capsys.disabled():
+        print(f"\n{output}\n  raw {raw_error:+.2f}%, smoothed {smoothed_error:+.2f}%")
+
+    assert output.stat().st_size > 0
+    # The figure has to show what the tests above assert, or it is decoration.
+    assert raw_error > 4.0 and abs(smoothed_error) < 2.0
