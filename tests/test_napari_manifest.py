@@ -58,7 +58,8 @@ def test_npe2_discovers_the_plugin_from_the_installed_entry_point():
 
     found = manager.get_manifest(declared)
     assert [widget.display_name for widget in found.contributions.widgets] == [
-        "Pipeline settings"
+        "Pipeline settings",
+        "Run a saved config",
     ]
 
 
@@ -183,3 +184,22 @@ def test_the_napari_framework_classifier_is_declared():
     """It is what makes the package findable as a plugin once published."""
     text = PYPROJECT.read_text(encoding="utf-8")
     assert '"Framework :: napari"' in text
+
+
+def test_more_than_one_widget_is_contributed(manifest):
+    """This is what makes the menu read "HaemoLynx" rather than "x (HaemoLynx)".
+
+    napari renders a lone widget as `menu_item_template = "{1} ({0})"`, and
+    `needs_full_title` is True whenever a plugin provides only one, so the
+    suffix cannot be turned off. With two or more it builds a submenu titled
+    with the plugin's display name and lists the bare widget names inside.
+    """
+    assert len(manifest["contributions"]["widgets"]) >= 2, (
+        "napari only groups a plugin's widgets under its own name when there "
+        "is more than one; with a single widget the menu shows "
+        "'<widget> (HaemoLynx)'."
+    )
+
+
+def test_the_display_name_is_what_should_appear_in_the_menu(manifest):
+    assert manifest["display_name"] == "HaemoLynx"

@@ -223,10 +223,19 @@ That extra brings a Qt binding (PyQt6) with it, so the panel opens on a fresh
 environment. If you already run napari with a binding of your own, install
 `HaemoLynx[napari-plugin]` instead and keep it.
 
-Every row in the form comes from `haemolynx.pipeline.default_schema()`, so a
-setting declared there appears in the panel with its help text, range, choices
-and section, and greys out when the setting it depends on is off. There is no
-second list of settings to keep in step.
+The panel has **one tab per pipeline stage**, in the order the example runs
+them -- Input, Skeletonise, Graph, Boundaries, Diameters, Resistances, Solve,
+Export -- so a run is configured the way it executes rather than the way the
+config file is laid out.
+
+Every row comes from `haemolynx.pipeline.default_schema()`, so a setting
+declared there appears in the panel with its help text, range and choices, and
+greys out with a reason when the setting it depends on is off. There is no
+second list of settings to keep in step; a test fails if a setting reaches no
+tab or more than one.
+
+The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
+without opening the form.
 
 The library itself never imports napari; the extra is optional, and the panel
 is only loaded when you open it.
