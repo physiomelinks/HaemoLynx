@@ -72,21 +72,37 @@ def test_there_is_one_tab_per_stage(panel):
     ]
 
 
-def test_a_long_tab_does_not_force_the_panel_wide_or_tall(panel):
-    """The Diameters tab has 39 rows; it must scroll, not stretch the window."""
+def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
+    """The Diameters tab has 39 rows; it must scroll, not stretch the window.
+
+    What matters is not that every tab asks for the same height -- a scroll
+    area's hint does vary a little -- but that a tab asks for much less than
+    the rows inside it would need, so napari sizes the dock to the panel rather
+    than to 39 spin boxes.
+    """
     from qtpy.QtWidgets import QScrollArea, QTabWidget
 
     widget, _viewer = panel
     tab_widget = widget.findChild(QTabWidget)
-    heights = []
+    tallest_content = 0
     for index in range(tab_widget.count()):
         page = tab_widget.widget(index)
         assert isinstance(page, QScrollArea), "each tab must be scrollable"
-        heights.append(page.sizeHint().height())
-    # A scroll area's hint does not grow with its contents, so the tab with 39
-    # rows must not ask for more room than the one with three.
-    assert max(heights) - min(heights) < 200, (
-        f"tab size hints vary with content: {heights}"
+        content_height = page.widget().sizeHint().height()
+        tallest_content = max(tallest_content, content_height)
+        assert page.sizeHint().height() <= content_height + 40, (
+            f"tab {tab_widget.tabText(index)} asks for "
+            f"{page.sizeHint().height()}px for {content_height}px of content"
+        )
+
+    # The longest tab's contents are far taller than any tab asks for.
+    asked = max(
+        tab_widget.widget(index).sizeHint().height()
+        for index in range(tab_widget.count())
+    )
+    assert tallest_content > 800, "the fixture no longer has a long tab to test"
+    assert asked < tallest_content / 2, (
+        f"the tallest tab asks for {asked}px against {tallest_content}px of content"
     )
 
 
@@ -113,6 +129,22 @@ def test_an_untouched_panel_reads_back_the_schema_defaults(panel):
         }
     )
     assert resolved == expected
+
+
+def test_the_panel_does_not_set_a_setting_nothing_will_read(panel):
+    """Switching a display setting off must not earn an ineffective warning.
+
+    `hold_ide_plots_open` only does anything while `show_plots_in_ide` is on,
+    so turning it off as well made the schema warn on an untouched panel.
+    """
+    widget, _viewer = panel
+    schema = default_schema()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        schema.validate(widget._haemolynx_values())
+
+    assert [str(warning.message) for warning in caught] == []
 
 
 def test_the_settings_that_open_a_browser_start_off(panel):
@@ -179,8 +211,11 @@ def test_the_panel_runs_the_pipeline_on_the_open_layer(make_napari_viewer, tmp_p
     values["vtk_output_prefix"] = tmp_path / "run"
     values["plot_dir"] = tmp_path / "plots"
     values["statistics"] = False
-    values["starting_node_selection_method"] = "all_degree_1"
-    values["output_node_selection_method"] = "all_degree_1"
+    # Inlets from one end of the volume and outlets from the other. Both set to
+    # "all_degree_1" would leave outlets empty, because the outlet call excludes
+    # the inlets it was already given.
+    values["starting_node_selection_method"] = "edge_percent"
+    values["output_node_selection_method"] = "edge_percent"
     schema = default_schema()
     settings = resolve_settings(values, schema=schema, config_path=None)
 
@@ -210,8 +245,8 @@ def test_a_run_from_the_panel_opens_no_browser(make_napari_viewer, tmp_path, mon
     values["vtk_output_prefix"] = tmp_path / "run"
     values["plot_dir"] = tmp_path / "plots"
     values["statistics"] = False
-    values["starting_node_selection_method"] = "all_degree_1"
-    values["output_node_selection_method"] = "all_degree_1"
+    values["starting_node_selection_method"] = "edge_percent"
+    values["output_node_selection_method"] = "edge_percent"
     schema = default_schema()
 
     run_pipeline_stages(resolve_settings(values, schema=schema, config_path=None), schema)

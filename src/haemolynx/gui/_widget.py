@@ -24,14 +24,17 @@ logger = logging.getLogger(__name__)
 
 #: Settings the panel starts with switched off, because they put a run's
 #: results somewhere other than napari: `show_plots_in_ide` makes the 3D graph
-#: open in a web browser (plotly's `fig.show()`), and the other two block on
-#: windows of their own. They are ordinary rows, so anyone who wants a browser
-#: tab can tick them back on -- they are just the wrong default for a panel
-#: whose whole point is that the viewer is already open.
+#: open in a web browser (plotly's `fig.show()`), and `interactive_plots`
+#: blocks on windows of its own. They are ordinary rows, so anyone who wants a
+#: browser tab can tick them back on -- they are just the wrong default for a
+#: panel whose whole point is that the viewer is already open.
+#:
+#: `hold_ide_plots_open` is deliberately NOT here: it only does anything while
+#: `show_plots_in_ide` is on, so setting it as well earns an
+#: IneffectiveSettingWarning on a panel nobody has touched.
 DISPLAY_SETTINGS_OFF_IN_NAPARI = {
     "show_plots_in_ide": False,
     "interactive_plots": False,
-    "hold_ide_plots_open": False,
 }
 
 
@@ -233,8 +236,24 @@ def settings_widget(napari_viewer=None):
 
     layer_row: Any = None
     if viewer is not None:
-        layer_picker = _create_widget(
-            annotation=napari.layers.Image, label="Use open layer"
+        def image_layers(_widget=None):
+            """The viewer's image layers, as (label, layer) choices.
+
+            Explicitly, rather than through magicgui's napari type
+            registration: that finds its own viewer, which in a test -- and in
+            any second viewer -- is not this one, and the combo comes up empty
+            with "is not a valid choice. must be in ()".
+            """
+            return [
+                (layer.name, layer)
+                for layer in viewer.layers
+                if isinstance(layer, napari.layers.Image)
+            ]
+
+        from magicgui.widgets import ComboBox
+
+        layer_picker = ComboBox(
+            choices=image_layers, label="Use open layer", nullable=True
         )
         use_button = PushButton(text="Use this layer as the input")
         layer_row = Container(
@@ -250,6 +269,7 @@ def settings_widget(napari_viewer=None):
                 return
             applying = True
             try:
+                layer_picker.reset_choices()
                 if layer_picker.value is not layer:
                     layer_picker.value = layer
                 use_layer(layer)
@@ -258,13 +278,18 @@ def settings_widget(napari_viewer=None):
 
         def on_layer_added(event) -> None:
             """A dropped image becomes the input, panel already open or not."""
+            layer_picker.reset_choices()
             adopt(getattr(event, "value", None))
+
+        def on_layer_removed(_event) -> None:
+            layer_picker.reset_choices()
 
         # Both orders have to work: open the panel with an image already there,
         # or drop one in while it is open.
         layer_picker.changed.connect(lambda *_: adopt(layer_picker.value))
         use_button.changed.connect(lambda *_: use_layer(layer_picker.value))
         viewer.layers.events.inserted.connect(on_layer_added)
+        viewer.layers.events.removed.connect(on_layer_removed)
 
         images = [
             layer for layer in viewer.layers if isinstance(layer, napari.layers.Image)
