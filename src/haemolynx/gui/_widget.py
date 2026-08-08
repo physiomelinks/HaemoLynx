@@ -113,7 +113,7 @@ def run_config_widget():
 def settings_widget():
     """The HaemoLynx panel: the pipeline's stages, in the order it runs them."""
     from magicgui.widgets import Container, Label, PushButton, TextEdit
-    from qtpy.QtWidgets import QTabWidget, QVBoxLayout, QWidget
+    from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
     schema = default_schema()
     tabs = tabs_for(schema)
@@ -129,9 +129,17 @@ def settings_widget():
         page = Container(
             widgets=[summary, *(rows[field.name] for field in tab.fields)],
             labels=True,
-            scrollable=True,
         )
-        tab_widget.addTab(page.native, tab.stage.title)
+        # A plain QScrollArea rather than `Container(scrollable=True)`: the
+        # magicgui one reports the full height of its contents, so a tab with
+        # 39 rows stretches the whole napari window instead of scrolling.
+        # QScrollArea's own size hint ignores the widget inside it, which is
+        # exactly what keeps the panel a sensible size. Its scrollbars default
+        # to appearing only when needed, vertically and horizontally.
+        scroller = QScrollArea()
+        scroller.setWidgetResizable(True)
+        scroller.setWidget(page.native)
+        tab_widget.addTab(scroller, tab.stage.title)
         if tab.stage.call:
             index = tab_widget.count() - 1
             tab_widget.setTabToolTip(index, f"{tab.stage.call}(settings, ...)")
