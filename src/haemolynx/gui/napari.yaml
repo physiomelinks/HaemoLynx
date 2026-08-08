@@ -1,0 +1,10 @@
+name: HaemoLynx
+display_name: HaemoLynx
+contributions:
+  commands:
+    - id: HaemoLynx.settings_widget
+      title: Configure and run a HaemoLynx pipeline
+      python_name: haemolynx.gui._widget:settings_widget
+  widgets:
+    - command: HaemoLynx.settings_widget
+      display_name: Pipeline settings

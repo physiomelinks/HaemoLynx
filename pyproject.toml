@@ -35,6 +35,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Processing",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
     "Topic :: Scientific/Engineering :: Visualization",
+    "Framework :: napari",
 ]
 # Lower bounds are the oldest release the test suite passes on, not the oldest
 # that imports. See tests/test_packaging_metadata.py, which reads them back.
@@ -61,8 +62,15 @@ Repository = "https://github.com/FinbarArgus/HaemoLynx"
 Issues = "https://github.com/FinbarArgus/HaemoLynx/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "nbconvert", "nbformat"]
+dev = ["pytest", "nbconvert", "nbformat", "npe2>=0.8; python_version >= '3.10'"]
 notebook = ["ipykernel"]
+# The napari panel. napari 0.8 requires Python 3.11, above this library's 3.9,
+# so this extra is installable only there -- deliberately, rather than
+# resolving to an old napari that has not been tested against.
+napari = ["napari>=0.8", "magicgui>=0.7", "npe2>=0.8"]
+
+[project.entry-points."napari.manifest"]
+haemolynx = "haemolynx.gui:napari.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -79,3 +87,4 @@ include = ["haemolynx*"]
 
 [tool.setuptools.package-data]
 haemolynx = ["py.typed"]
+"haemolynx.gui" = ["napari.yaml"]

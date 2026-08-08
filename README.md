@@ -209,6 +209,24 @@ notebook, not the generated `pipeline_tutorial.py`; regenerate that with:
 pytest tests/integration/test_pipeline_tutorial.py
 ```
 
+## napari plugin (experimental)
+
+A napari panel that builds a settings form from the schema, runs the pre-run
+checks, and runs the pipeline in a background thread:
+
+```bash
+pip install "HaemoLynx[napari]"    # needs Python 3.11+ (napari's floor, not ours)
+napari                             # Plugins -> HaemoLynx -> Pipeline settings
+```
+
+Every row in the form comes from `haemolynx.pipeline.default_schema()`, so a
+setting declared there appears in the panel with its help text, range, choices
+and section, and greys out when the setting it depends on is off. There is no
+second list of settings to keep in step.
+
+The library itself never imports napari; the extra is optional, and the panel
+is only loaded when you open it.
+
 ## Allowable input mask formats
 
 `tif`, `h5`

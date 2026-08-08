@@ -1,0 +1,183 @@
+"""The schema-to-form mapping, checked without a GUI.
+
+`Schema.describe()` was built so a form could be generated rather than
+hand-written; this is the first thing to use it. The mapping is pure, so the
+part most likely to be wrong -- a setting with no widget, a range that silently
+clamps a legal value, a prerequisite that greys out the wrong row -- is
+testable with no napari, no Qt and no display.
+"""
+from __future__ import annotations
+
+import pytest
+
+from haemolynx.gui.form import (
+    DEFAULT_FLOAT_RANGE,
+    DEFAULT_INT_RANGE,
+    WIDGET_TYPES,
+    Field,
+    field_for,
+    fields_for,
+    label_for,
+    sections_for,
+    values_from,
+)
+from haemolynx.parsers import Schema, Setting
+from haemolynx.pipeline import default_schema
+
+SCHEMA = default_schema()
+
+
+# --- every setting reaches the form -----------------------------------------
+
+
+def test_every_setting_becomes_a_row():
+    """A setting with no row is a setting a GUI user cannot reach."""
+    names = {field.name for field in fields_for(SCHEMA)}
+    assert names == set(SCHEMA.names)
+
+
+def test_every_schema_kind_has_a_widget():
+    """A new kind must be given a widget, not silently dropped."""
+    kinds = {setting.kind for setting in SCHEMA}
+    missing = kinds - set(WIDGET_TYPES)
+    assert not missing, f"schema kinds with no widget: {sorted(missing)}"
+
+
+def test_rows_are_grouped_into_the_schema_sections():
+    grouped = sections_for(SCHEMA)
+    assert list(grouped) == list(dict.fromkeys(s.section for s in SCHEMA))
+    assert sum(len(rows) for rows in grouped.values()) == len(SCHEMA.names)
+
+
+def test_the_defaults_the_form_starts_with_are_valid_settings():
+    """Opening the panel and pressing run must not fail validation."""
+    values = values_from(fields_for(SCHEMA))
+    validated = SCHEMA.validate(values)
+    assert set(validated) == set(SCHEMA.names)
+
+
+def test_supplied_values_win_over_the_defaults():
+    fields = fields_for(SCHEMA, {"min_stub_length": 42.0})
+    by_name = {field.name: field for field in fields}
+    assert by_name["min_stub_length"].value == 42.0
+    assert by_name["cluster_collapse_distance"].value == SCHEMA["cluster_collapse_distance"].default
+
+
+# --- what each widget is told ------------------------------------------------
+
+
+def test_a_choice_setting_offers_exactly_its_choices():
+    setting = next(s for s in SCHEMA if s.kind == "choice")
+    field = field_for(setting)
+    assert field.widget_type == "ComboBox"
+    assert field.options["choices"] == list(setting.choices)
+
+
+def test_a_declared_range_reaches_the_spin_box():
+    field = field_for(
+        Setting("count", "int", 3, "How many", "S", minimum=1, maximum=9)
+    )
+    assert (field.options["min"], field.options["max"]) == (1, 9)
+
+
+def test_an_undeclared_range_is_wide_rather_than_absent():
+    """magicgui's own default is 0-1000, which would clamp legal values."""
+    field = field_for(Setting("count", "int", 3, "How many", "S"))
+    assert (field.options["min"], field.options["max"]) == DEFAULT_INT_RANGE
+
+    field = field_for(Setting("size", "float", 3.0, "How big", "S"))
+    assert (field.options["min"], field.options["max"]) == DEFAULT_FLOAT_RANGE
+
+
+def test_no_spin_box_can_clamp_a_value_the_schema_allows():
+    """Every numeric default must sit inside the bounds the form gives it."""
+    for field in fields_for(SCHEMA):
+        if field.widget_type not in {"SpinBox", "FloatSpinBox"}:
+            continue
+        if field.value is None:
+            continue
+        assert field.options["min"] <= field.value <= field.options["max"], (
+            f"{field.name}: default {field.value} is outside the widget range "
+            f"{field.options['min']}..{field.options['max']}"
+        )
+
+
+@pytest.mark.parametrize(
+    "name,must_exist,expected_mode",
+    [
+        ("output_dir", False, "d"),   # a directory, whether or not it exists
+        ("plot_dir", True, "d"),
+        ("input_path", True, "r"),    # must already be there: open it
+        ("report_path", False, "w"),  # the run writes it: save dialogue
+    ],
+)
+def test_a_path_opens_the_right_kind_of_dialogue(name, must_exist, expected_mode):
+    field = field_for(Setting(name, "path", None, "A path", "S", must_exist=must_exist))
+    assert field.widget_type == "FileEdit"
+    assert field.options["mode"] == expected_mode
+
+
+def test_the_unit_is_shown_with_the_help_text():
+    field = field_for(Setting("length", "float", 1.0, "How long", "S", unit="um"))
+    assert field.help == "How long (um)"
+
+
+def test_labels_read_as_words():
+    assert label_for("skeleton_closing_radius") == "Skeleton closing radius"
+
+
+# --- prerequisites gate the row ---------------------------------------------
+
+
+def _gated_schema() -> Schema:
+    return Schema(
+        [
+            Setting("use_ilastik", "bool", False, "Segment with ilastik", "S"),
+            Setting("classifier", "path", None, "The trained classifier", "S",
+                    requires=("use_ilastik",)),
+            Setting("mask", "path", None, "An existing mask", "S",
+                    requires=("!use_ilastik",)),
+        ]
+    )
+
+
+def test_a_row_is_enabled_only_when_its_prerequisite_holds():
+    fields = {field.name: field for field in fields_for(_gated_schema())}
+
+    off = {"use_ilastik": False}
+    assert not fields["classifier"].is_enabled(off)
+    assert fields["mask"].is_enabled(off)
+
+    on = {"use_ilastik": True}
+    assert fields["classifier"].is_enabled(on)
+    assert not fields["mask"].is_enabled(on)
+
+
+def test_a_disabled_row_says_which_setting_disabled_it():
+    fields = {field.name: field for field in fields_for(_gated_schema())}
+
+    assert fields["classifier"].why_disabled({"use_ilastik": False}) == (
+        "Not used while 'use_ilastik' is off."
+    )
+    assert fields["mask"].why_disabled({"use_ilastik": True}) == (
+        "Not used while 'use_ilastik' is on."
+    )
+
+
+def test_an_enabled_row_gives_no_reason():
+    fields = {field.name: field for field in fields_for(_gated_schema())}
+    assert fields["classifier"].why_disabled({"use_ilastik": True}) == ""
+
+
+def test_a_row_with_no_prerequisite_is_always_enabled():
+    field = field_for(Setting("always", "bool", True, "On", "S"))
+    assert field.enabled_by == ()
+    assert field.is_enabled({})
+
+
+def test_fields_are_immutable():
+    """The form reads the schema; it must not be able to edit it by accident."""
+    field = fields_for(SCHEMA)[0]
+    with pytest.raises(Exception):
+        field.value = "changed"  # type: ignore[misc]
+    assert isinstance(field, Field)

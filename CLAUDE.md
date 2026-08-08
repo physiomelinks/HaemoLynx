@@ -23,6 +23,8 @@ haemolynx/
 │   │                       #   strategies: probability, pericyte_mask; constriction_strategy
 │   │                       #   (which strategy a run uses), pericyte_comparison, pericyte_sweep
 │   ├── statistics/         # stats.py, three_dim_distances.py (cell-to-vessel distances)
+│   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
+│   │                       #   _widget.py (the panel), napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
 │   └── pipeline/           # schema.py (the pipeline's 137 settings), settings.py, checks.py,
