@@ -34,7 +34,7 @@ from haemolynx.gui.results import (  # noqa: E402
     ResultLayers,
     StageLayers,
 )
-from tests.test_gui_results import a_graph, network  # noqa: E402
+from test_gui_results import a_graph, network  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
