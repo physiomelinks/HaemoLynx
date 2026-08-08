@@ -25,11 +25,13 @@ from haemolynx.parsers import Schema  # noqa: E402
 from haemolynx.pipeline.schema import default_schema  # noqa: E402
 
 #: Where this dataset's inlets and outlets are: the carotid stack runs along
-#: the y axis, so the terminal nodes in the first and last 10% of that axis are
-#: the ones flow enters and leaves through, rather than hand-picked
-#: coordinates. `edge_percent`/`end_percent`/`axis` keep their defaults of
-#: 10%, 10% and axis 1, which is what this dataset needs.
-_BOUNDARIES_FROM_IMAGE_ENDS = {
+#: the y axis, so the terminal nodes in the first and last 10% of the network
+#: along that axis are the ones flow enters and leaves through, rather than
+#: hand-picked coordinates. `boundary_axis`, `boundary_first_percent` and
+#: `boundary_last_percent` keep their defaults of axis 1, 10% and 10%, which is
+#: what this dataset needs. This is also the pipeline default now, so it is
+#: named here only to say that it was chosen rather than inherited.
+_BOUNDARIES_FROM_NETWORK_ENDS = {
     "starting_node_selection_method": "edge_percent",
     "output_node_selection_method": "edge_percent",
     "starting_node_coordinates": [],
@@ -42,7 +44,7 @@ CAROTID_DEFAULTS: dict[str, Any] = {
     "input_path": "examples/images/carotid_mask.tif",
     "ilastik_unsegmented_image_path": "examples/images/carotid.tif",
     "ilastik_classifier_path": "examples/classifiers/carotid_classifier.ilp",
-    **_BOUNDARIES_FROM_IMAGE_ENDS,
+    **_BOUNDARIES_FROM_NETWORK_ENDS,
     # Perfusion pressures measured for this preparation.
     "input_p_bc": 1000.0,
     "output_p_bc": 500.0,

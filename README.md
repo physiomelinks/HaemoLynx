@@ -95,7 +95,7 @@ prerequisite as a comment.
 # ------------------------------------------------------------------------
 boundary_assignment:
   # Choose the method for selecting input boundary nodes  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
-  starting_node_selection_method: coordinates
+  starting_node_selection_method: edge_percent
 
 # ------------------------------------------------------------------------
 # Solver and output

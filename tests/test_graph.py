@@ -16,6 +16,7 @@ from haemolynx.graph import (
     prune_vascular_stubs,
     assign_branch_orders,
     select_boundary_nodes_by_method,
+    select_boundary_terminal_nodes,
     select_terminal_nodes_from_large_vessel_masks,
     diagnose_degree2_nodes,
     format_degree2_diagnostics_report,
@@ -162,6 +163,73 @@ def test_build_graph_requires_skan(tiny_skeleton):
     assert isinstance(G, nx.Graph)
     assert isinstance(loops, list)
     assert isinstance(loop_edges, set)
+
+
+def _network_short_of_the_image_border(scale: float = 1.0) -> nx.MultiGraph:
+    """A Y-shaped network whose terminals stop well inside a 48-voxel image.
+
+    ``scale`` is the voxel size in microns, which is what node ``pos`` is
+    measured in; the graph is the same either way.
+    """
+    positions = {
+        0: (24.0, 8.0, 24.0),   # the one terminal at the low-y end
+        1: (24.0, 20.0, 24.0),
+        2: (24.0, 32.0, 12.0),
+        3: (24.0, 32.0, 36.0),
+        4: (24.0, 41.0, 8.0),   # the two terminals at the high-y end
+        5: (24.0, 41.0, 40.0),
+    }
+    G = nx.MultiGraph()
+    for node_id, position in positions.items():
+        G.add_node(node_id, pos=np.asarray(position, dtype=float) * scale)
+    for u, v in ((0, 1), (1, 2), (1, 3), (2, 4), (3, 5)):
+        G.add_edge(u, v, length=1.0)
+    return G
+
+
+def test_edge_percent_bands_span_the_network_not_the_image():
+    """Terminals inside the image, not on its border, are still selected.
+
+    The bands used to be measured across the image, so a network that stops
+    short of the border -- which pruning and stub removal make the normal case
+    -- fell outside both of them and no boundary node was found at all.
+    """
+    G = _network_short_of_the_image_border()
+
+    starting, outputs = select_boundary_terminal_nodes(
+        G, (48, 48, 48), edge_percent=10.0, end_percent=10.0, axis=1
+    )
+
+    assert starting == [0]
+    assert sorted(outputs) == [4, 5]
+
+
+def test_edge_percent_bands_do_not_depend_on_the_voxel_size():
+    """`pos` is in microns and `image_shape` counts voxels.
+
+    Comparing the two only agreed at 1 micron voxels: at 0.25 micron the whole
+    network sat below the old outlet band and no outlet existed.
+    """
+    G = _network_short_of_the_image_border(scale=0.25)
+
+    starting, outputs = select_boundary_terminal_nodes(
+        G, (48, 48, 48), edge_percent=10.0, end_percent=10.0, axis=1
+    )
+
+    assert starting == [0]
+    assert sorted(outputs) == [4, 5]
+
+
+def test_edge_percent_bands_are_disjoint_even_when_they_overlap():
+    """Wide bands still name each terminal once, as an inlet or an outlet."""
+    G = _network_short_of_the_image_border()
+
+    starting, outputs = select_boundary_terminal_nodes(
+        G, (48, 48, 48), edge_percent=90.0, end_percent=90.0, axis=1
+    )
+
+    assert set(starting).isdisjoint(outputs)
+    assert starting and outputs
 
 
 def test_select_boundary_nodes_by_method_coordinates():

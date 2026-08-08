@@ -581,8 +581,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         )
     else:
         logger.info(
-            f"Selected {len(settings['starting_nodes'])} STARTING_NODES and {len(settings['output_nodes'])} "
-            "OUTPUT_NODES from manual coordinates."
+            f"Selected {len(settings['starting_nodes'])} STARTING_NODES "
+            f"({settings['starting_node_selection_method']}) and "
+            f"{len(settings['output_nodes'])} OUTPUT_NODES "
+            f"({settings['output_node_selection_method']})."
         )
     logger.info(f"Starting nodes are: {settings['starting_nodes']}")
     logger.info(f"Output nodes are: {settings['output_nodes']}")
@@ -598,8 +600,21 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "No starting or output nodes found from terminal-node overlap with "
                 "arteriole/venule masks."
             )
+        # Name the settings and what each of them found: the graph, not the
+        # config, is the usual culprit by the time the run gets here, and the
+        # counts are what say which of the two to look at.
+        terminal_count = sum(1 for _, degree in G.degree() if degree == 1)
         raise ValueError(
-            "No starting or output nodes found from manual input coordinates."
+            "No starting or output nodes found: "
+            f"starting_node_selection_method="
+            f"{settings['starting_node_selection_method']!r} selected "
+            f"{len(settings['starting_nodes'])} inlet(s) and "
+            f"output_node_selection_method="
+            f"{settings['output_node_selection_method']!r} selected "
+            f"{len(settings['output_nodes'])} outlet(s), from the "
+            f"{terminal_count} terminal node(s) in the graph. Fix: change those "
+            "two settings or the values they read, or check that the graph has "
+            "terminals at both ends of boundary_axis."
         )
 
 

@@ -25,7 +25,7 @@ haemolynx/
 │   ├── statistics/         # stats.py, three_dim_distances.py (cell-to-vessel distances)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # schema.py (the pipeline's 137 settings), settings.py, checks.py,
+│   └── pipeline/           # schema.py (the pipeline's 140 settings), settings.py, checks.py,
 │                           #   stages.py; public: default_schema, write_default_config
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
