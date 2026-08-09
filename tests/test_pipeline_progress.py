@@ -404,3 +404,100 @@ def test_reporting_progress_needs_no_gui():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "[]"
+
+
+# --- what each stage produced ------------------------------------------------
+
+
+def test_every_stage_hands_over_what_it_returned(stubbed):
+    """`on_stage_output` is how the panel sees a run's work as it happens."""
+    _called, model = stubbed()
+    produced: list[tuple[str, object]] = []
+
+    _run(on_stage_output=lambda name, output: produced.append((name, output)))
+
+    assert [name for name, _output in produced] == STAGE_NAMES
+    by_name = dict(produced)
+    assert by_name["skeletonise"] == "skeletonise-result"
+    # The stage's own object, not a copy: the panel builds layers from it.
+    assert by_name["build_haemodynamic_model"] is model
+
+
+def test_a_stage_that_raised_hands_over_nothing(stubbed):
+    """There is no output to show for a stage that did not finish."""
+    stubbed(fail_at="assign_boundaries")
+    produced: list[str] = []
+
+    with pytest.raises(RuntimeError, match="assign_boundaries broke"):
+        _run(on_stage_output=lambda name, _output: produced.append(name))
+
+    assert produced == ["segment", "skeletonise", "build_network"]
+
+
+def test_an_output_lands_before_the_next_stage_starts(stubbed):
+    """This is what lets a consumer snapshot a stage before it is overwritten.
+
+    Every stage after `build_network` writes attributes onto the same graph, so
+    an output handed over late would describe a later stage's work under an
+    earlier stage's name. Pinning the interleaving is what makes "convert it
+    now" a rule rather than a hope.
+    """
+    stubbed()
+    timeline: list[tuple[str, str]] = []
+
+    _run(
+        recorder=lambda event: timeline.append((event.kind, event.stage)),
+        on_stage_output=lambda name, _output: timeline.append(("output", name)),
+    )
+
+    for index, stage in enumerate(STAGE_NAMES):
+        finished = timeline.index((STAGE_FINISHED, stage))
+        output = timeline.index(("output", stage))
+        assert output > finished, f"{stage} handed over its output before finishing"
+        if index + 1 < len(STAGE_NAMES):
+            next_started = timeline.index((STAGE_STARTED, STAGE_NAMES[index + 1]))
+            assert output < next_started, (
+                f"{stage}'s output arrived after {STAGE_NAMES[index + 1]} had started"
+            )
+
+
+def test_a_consumer_that_raises_stops_the_run_at_the_right_place(stubbed):
+    """It must not be reported as the *stage* failing.
+
+    Calling the callback inside the stage's `with` block would have
+    `RunProgress.stage()` catch this, emit STAGE_FAILED and re-raise -- so a
+    fault in whoever is watching would blame the pipeline.
+    """
+    stubbed()
+    events: list[ProgressEvent] = []
+
+    def explode(name, _output):
+        if name == "skeletonise":
+            raise RuntimeError("the watcher broke")
+
+    with pytest.raises(RuntimeError, match="the watcher broke"):
+        _run(recorder=events.append, on_stage_output=explode)
+
+    assert [event.kind for event in events if event.kind == STAGE_FAILED] == []
+    assert (STAGE_FINISHED, "skeletonise") in [(e.kind, e.stage) for e in events]
+
+
+def test_watching_the_outputs_does_not_change_the_progress_events(stubbed):
+    """Adding a second watcher must not disturb the first."""
+    stubbed()
+    without: list[tuple[str, str, int]] = []
+    _run(recorder=lambda e: without.append((e.kind, e.stage, e.index)))
+
+    stubbed()
+    with_outputs: list[tuple[str, str, int]] = []
+    _run(
+        recorder=lambda e: with_outputs.append((e.kind, e.stage, e.index)),
+        on_stage_output=lambda _name, _output: None,
+    )
+
+    assert with_outputs == without
+
+
+def test_a_run_nobody_is_watching_still_returns_its_graph(stubbed):
+    _called, model = stubbed()
+    assert _run() is model.graph

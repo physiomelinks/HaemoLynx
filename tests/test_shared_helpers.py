@@ -131,20 +131,21 @@ def _two_node_graph(voxels) -> nx.MultiGraph:
 
 
 def test_edge_point_accessors_differ_on_a_two_dimensional_polyline():
-    """Why ``_edge_points`` could not become one function.
+    """Why drawing an edge and measuring along one could not become one function.
 
-    The VTK exporter pads a 2D polyline out to three columns; the haemodynamics
-    centerline accessor rejects it and falls back to the node-to-node segment,
-    because a padded polyline would move a projected pericyte.
+    Anything that draws a vessel pads a 2D polyline out to three columns, since
+    a flat graph is still worth showing; the haemodynamics centerline accessor
+    rejects it and falls back to the node-to-node segment, because a padded
+    polyline would move a projected pericyte.
     """
     from haemolynx.haemodynamics.pericyte_mask import _edge_centerline_points
-    from haemolynx.visualization.vtk_io import _edge_points_padded_to_3d
+    from haemolynx.visualization.geometry import edge_polyline
 
     flat = [[0.0, 0.0], [0.0, 6.0], [0.0, 10.0]]
     graph = _two_node_graph(flat)
     data = graph[0][1][0]
 
-    padded = _edge_points_padded_to_3d(0, 1, data, graph)
+    padded = edge_polyline(graph, 0, 1, data, orient=False, snap=False)
     centerline = _edge_centerline_points(graph, 0, 1, data)
 
     assert padded.shape == (3, 3)

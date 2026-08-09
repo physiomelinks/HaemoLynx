@@ -26,7 +26,7 @@ import logging
 import pickle
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -41,6 +41,16 @@ from haemolynx.haemodynamics.apply import (
 from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
+
+#: Called with each stage's name and the object that stage returned, so
+#: something watching a run can look at its work as it happens rather than
+#: waiting for the files at the end. The napari panel turns each one into
+#: layers; a script could pickle them, or count them, or ignore them.
+StageOutputCallback = Callable[[str, Any], None]
+
+#: Prefix on the name given to a graph-building step, so a consumer can tell
+#: one from a stage: `topology_step:prune_vascular_stubs`.
+TOPOLOGY_STEP = "topology_step:"
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +321,7 @@ def build_network(
     volume: SkeletonisedVolume,
     schema: Schema,
     progress: StageProgress | None = None,
+    on_step_graph: Callable[[str, Any], None] | None = None,
 ):
     """Load the vessel masks and turn the skeleton into a graph.
 
@@ -361,6 +372,11 @@ def build_network(
             # this step, so a watcher should see it tick over on arrival.
             if progress is not None:
                 progress.step(label, total=len(graph.STEP_LABELS))
+            # The graph as it stands, for anyone drawing the repair as it
+            # happens. It is mid-repair and will change again, which is why it
+            # goes out here rather than being kept.
+            if on_step_graph is not None:
+                on_step_graph(label, graph_obj)
             plot_png = label
             if label == "smart_multigraph_degree2_removal_pass1":
                 plot_png = "smart_multigraph_degree2_removal"
@@ -1031,10 +1047,25 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     return solution
 
 
+def _produced(
+    callback: StageOutputCallback | None, stage: str, output: Any
+) -> None:
+    """Hand one finished stage's output to *callback*, if anyone is watching.
+
+    Called after the stage's ``with`` block rather than inside it. Inside, an
+    exception from the callback would be caught by ``RunProgress.stage()``,
+    reported as that stage failing, and re-raised -- so a fault in whoever is
+    watching would both kill the run and lie about where it died.
+    """
+    if callback is not None:
+        callback(stage, output)
+
+
 def run_pipeline_stages(
     settings: dict,
     schema: Schema,
     progress: ProgressCallback | None = None,
+    on_stage_output: StageOutputCallback | None = None,
 ) -> nx.MultiGraph | None:
     """Run every stage in order, for one resolved settings dict.
 
@@ -1043,25 +1074,54 @@ def run_pipeline_stages(
 
     *progress*, if given, is called with a
     :class:`~haemolynx.pipeline.progress.ProgressEvent` as each stage starts,
-    finishes or fails, and once per topology step inside graph building. It
-    runs on whatever thread the run is on, and must not raise: a run is not
-    stopped, or changed in any way, by whoever is watching it.
+    finishes or fails, and once per topology step inside graph building.
+
+    *on_stage_output*, if given, is called with each stage's name and the object
+    that stage returned, once that stage is done. It is how the napari panel
+    shows a run's work as it happens; a script could pickle each output, or
+    count it, or ignore it.
+
+    Both run on whatever thread the run is on, and must not raise: a run is not
+    stopped, or changed in any way, by whoever is watching it. Note the outputs
+    are the live objects, not copies -- every stage after ``build_network``
+    writes attributes onto the same graph -- so a consumer that wants a
+    snapshot must take one there and then.
     """
     run = RunProgress(progress)
     with run.stage("segment"):
         inputs = segment(settings)
+    _produced(on_stage_output, "segment", inputs)
     with run.stage("skeletonise"):
         volume = skeletonise(settings, inputs)
+    _produced(on_stage_output, "skeletonise", volume)
     with run.stage("build_network") as building:
-        network = build_network(settings, volume, schema, progress=building)
+        network = build_network(
+            settings,
+            volume,
+            schema,
+            progress=building,
+            on_step_graph=(
+                (lambda label, graph_obj: _produced(
+                    on_stage_output, f"{TOPOLOGY_STEP}{label}", graph_obj
+                ))
+                if on_stage_output is not None
+                else None
+            ),
+        )
+    _produced(on_stage_output, "build_network", network)
     with run.stage("assign_boundaries"):
         boundaries = assign_boundaries(settings, network)
+    _produced(on_stage_output, "assign_boundaries", boundaries)
     with run.stage("assign_diameters"):
         diameters = assign_diameters(settings, network, boundaries, schema)
+    _produced(on_stage_output, "assign_diameters", diameters)
     with run.stage("build_haemodynamic_model"):
         model = build_haemodynamic_model(settings, diameters)
+    _produced(on_stage_output, "build_haemodynamic_model", model)
     with run.stage("solve"):
         solution = solve(settings, model, boundaries)
+    _produced(on_stage_output, "solve", solution)
     with run.stage("export_results"):
         export_results(settings, network, model, solution)
+    _produced(on_stage_output, "export_results", solution)
     return model.graph

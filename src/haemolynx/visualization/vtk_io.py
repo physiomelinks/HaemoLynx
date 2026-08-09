@@ -8,74 +8,7 @@ import numpy as np
 import networkx as nx
 
 from haemolynx.geometry import cumulative_lengths
-
-
-def _as_points(path_like: Any) -> np.ndarray:
-    arr = np.asarray(path_like, dtype=float)
-    if arr.ndim == 1:
-        arr = np.expand_dims(arr, axis=0)
-    if arr.shape[0] < 2:
-        raise ValueError("Polyline needs at least two points")
-    if arr.shape[1] > 3:
-        arr = arr[:, :3]
-    if arr.shape[1] < 3:
-        arr = np.pad(arr, ((0, 0), (0, 3 - arr.shape[1])), mode="constant")
-    return arr
-
-
-def _edge_points_padded_to_3d(
-    u: Any, v: Any, edge_data: Dict[str, Any], graph: nx.Graph
-) -> np.ndarray:
-    """Edge polyline coerced to exactly three float columns for VTK.
-
-    Unlike the haemodynamics centerline accessor of the same former name, a 2D
-    or over-wide polyline is padded or truncated here rather than rejected:
-    VTK needs a point array of fixed width, and a flat graph is still exportable.
-    """
-    voxels = edge_data.get("voxels")
-    if voxels is not None and len(voxels) >= 2:
-        return _as_points(voxels)
-
-    u_pos = graph.nodes[u].get("pos")
-    v_pos = graph.nodes[v].get("pos")
-    if u_pos is None or v_pos is None:
-        raise ValueError(f"Edge ({u}, {v}) is missing both voxels and node positions")
-    return _as_points([u_pos, v_pos])
-
-
-def _snap_edge_endpoints_to_nodes(
-    points: np.ndarray, u: Any, v: Any, graph: nx.Graph
-) -> np.ndarray:
-    """Force edge endpoints to match node positions when available."""
-    out = points.copy()
-    u_pos = graph.nodes[u].get("pos")
-    v_pos = graph.nodes[v].get("pos")
-    if u_pos is not None:
-        out[0] = np.asarray(u_pos, dtype=float)[:3]
-    if v_pos is not None:
-        out[-1] = np.asarray(v_pos, dtype=float)[:3]
-    return out
-
-
-def _orient_edge_points_to_nodes(
-    points: np.ndarray, u: Any, v: Any, graph: nx.Graph
-) -> np.ndarray:
-    """Orient polyline so first point maps best to u and last to v."""
-    u_pos = graph.nodes[u].get("pos")
-    v_pos = graph.nodes[v].get("pos")
-    if u_pos is None or v_pos is None or len(points) < 2:
-        return points
-
-    u_arr = np.asarray(u_pos, dtype=float)[:3]
-    v_arr = np.asarray(v_pos, dtype=float)[:3]
-    start = np.asarray(points[0], dtype=float)
-    end = np.asarray(points[-1], dtype=float)
-
-    direct_cost = float(np.linalg.norm(start - u_arr) + np.linalg.norm(end - v_arr))
-    flipped_cost = float(np.linalg.norm(start - v_arr) + np.linalg.norm(end - u_arr))
-    if flipped_cost < direct_cost:
-        return points[::-1].copy()
-    return points
+from haemolynx.visualization.geometry import edge_polyline
 
 
 def _point_key(point: np.ndarray, decimals: int) -> tuple[float, float, float]:
@@ -136,7 +69,7 @@ def derive_pericyte_points_from_graph(
     first_center = constriction_length / 2.0
     for u, v, k, data in edge_iter:
         try:
-            line_pts = _edge_points_padded_to_3d(u, v, data, graph)
+            line_pts = edge_polyline(graph, u, v, data, orient=False, snap=False)
         except ValueError:
             continue
         cumlen = cumulative_lengths(line_pts)
@@ -208,11 +141,9 @@ def graph_to_vtk(
 
     for u, v, k, data in edge_iter:
         try:
-            pts = _edge_points_padded_to_3d(u, v, data, graph)
+            pts = edge_polyline(graph, u, v, data)
         except ValueError:
             continue
-        pts = _orient_edge_points_to_nodes(pts, u, v, graph)
-        pts = _snap_edge_endpoints_to_nodes(pts, u, v, graph)
 
         edge_ids: List[int] = []
         for p in pts:
