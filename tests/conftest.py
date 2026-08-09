@@ -12,8 +12,8 @@ import numpy as np
 import networkx as nx
 
 #: Plots produced by tests are written here rather than displayed.
-#: Covered by the `tests/outputs/` .gitignore rule.
-PLOT_OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "plots"
+#: Covered by the `tests/plots/` .gitignore rule.
+PLOT_OUTPUT_DIR = Path(__file__).resolve().parent / "plots"
 
 
 @pytest.fixture
@@ -21,6 +21,14 @@ def plot_output_dir() -> Path:
     """Directory for test-generated plot files."""
     PLOT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     return PLOT_OUTPUT_DIR
+
+
+@pytest.fixture
+def plot_subdir(plot_output_dir, request) -> Path:
+    """A per-module folder under `tests/plots/`, so figures do not collide."""
+    directory = plot_output_dir / request.module.__name__.removeprefix("test_")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 @pytest.fixture
