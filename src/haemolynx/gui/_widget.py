@@ -782,6 +782,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_progress = bars
     panel._haemolynx_view = view
     panel._haemolynx_colour = {"vessels": colour_vessels, "nodes": colour_nodes}
+    panel._haemolynx_refresh_colours = refresh_colours
     panel._haemolynx_show_results = show_results
     layout = QVBoxLayout(panel)
     if layer_row is not None:

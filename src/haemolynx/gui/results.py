@@ -394,7 +394,15 @@ class ResultLayers:
             return ()
 
         columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
-        columns.update(edge_features(graph, available_edge_columns(graph)))
+        # Every column every time, including the ones no stage has filled yet:
+        # those come back NaN. napari's own "edge feature:" dropdown reads
+        # `features.columns` once, when the layer controls are built, and never
+        # listens for a features change (`qt_edge_color.py` calls `addItems` in
+        # `__init__` and connects only to the edge_color events). So a column
+        # that appears later is invisible there forever -- which is exactly what
+        # happened to flow and pressure, written by the last stage, long after
+        # the vessels layer was made.
+        columns.update(edge_features(graph, EDGE_COLUMNS))
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {name: np.asarray(values)[owner] for name, values in columns.items()}
@@ -495,7 +503,12 @@ class ResultLayers:
             layers.append(
                 LayerSpec(
                     kind="points", name=NODES, data=points,
-                    features={"node_id": ids, "degree": degrees},
+                    # `pressure` is declared empty here for the same reason the
+                    # vessel columns are: napari's layer controls read the
+                    # column list once, so a column the solve adds later would
+                    # never reach the dropdown on the left.
+                    features={"node_id": ids, "degree": degrees,
+                              "pressure": np.full(len(ids), np.nan)},
                     colour_by="degree", colour_kind="continuous",
                     contrast_limits=_limits(degrees),
                     options={"size": 3.0, "out_of_slice_display": True},

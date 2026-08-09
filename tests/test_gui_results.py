@@ -30,6 +30,7 @@ from haemolynx.gui.results import (
     VESSEL_LABELS,
     VESSELS,
     ResultLayers,
+    available_edge_columns,
     edge_features,
     edge_polylines,
     midpoints_of,
@@ -214,15 +215,40 @@ def test_the_vessels_layer_carries_the_identity_of_each_edge():
         assert len(vessels.features[column]) == len(vessels.data)
 
 
-def test_columns_appear_only_once_their_stage_has_run():
+def test_a_column_is_empty_until_its_stage_runs_but_never_absent():
+    """Declared from the first layer, filled when its stage gets to it.
+
+    This used to assert the opposite -- that a column appeared only once its
+    stage had run -- which read as the tidier contract right up until it met
+    napari: the layer controls list the columns once, at construction, so a
+    column added later never shows up in the "edge feature:" dropdown. Present
+    and empty is what a user can actually find.
+    """
     graph = a_graph()
-    before = built(graph).stage_finished("build_network", network(graph))
-    assert "flow_abs" not in spec_named(before, VESSELS).features
+    before = spec_named(built(graph).stage_finished(
+        "build_network", network(graph)), VESSELS)
+    assert "flow_abs" in before.features
+    assert np.isnan(np.asarray(before.features["flow_abs"], dtype=float)).all()
 
     for _u, _v, _key, data in graph.edges(keys=True, data=True):
         data["flow_abs"] = 2.0
-    after = built(graph).stage_finished("build_network", network(graph))
-    assert "flow_abs" in spec_named(after, VESSELS).features
+    after = spec_named(built(graph).stage_finished(
+        "build_network", network(graph)), VESSELS)
+    assert np.allclose(np.asarray(after.features["flow_abs"], dtype=float), 2.0)
+
+
+def test_the_panel_still_only_offers_columns_that_hold_a_value():
+    """`available_edge_columns` keeps its meaning: filled, not merely declared.
+
+    The layer carries every column so napari can see them; this is the separate
+    question of which ones are worth colouring by, and it must not drift into
+    "all of them" now that the layer holds all of them.
+    """
+    graph = a_graph()
+    assert "flow_abs" not in available_edge_columns(graph)
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 2.0
+    assert "flow_abs" in available_edge_columns(graph)
 
 
 # --- nodes and boundaries ----------------------------------------------------
@@ -458,3 +484,73 @@ def test_a_step_does_not_replace_the_graph_the_stage_produced():
     later = results.stage_finished("solve", SimpleNamespace(
         pressure=np.zeros(4), node_list=[0, 1, 2, 3], equivalent_resistance=1.0))
     assert len(spec_named(later, NODES).data) == 4
+
+
+# --- napari's own layer controls read the column list exactly once ------------
+
+
+def test_every_column_is_declared_before_its_stage_fills_it():
+    """The vessels layer carries the full column set from the first stage.
+
+    napari builds the "edge feature:" dropdown in the layer controls from
+    `features.columns` in its constructor and never listens for a features
+    change, so a column that only appears at the solve is invisible there for
+    the rest of the session. Declaring them all up front -- NaN until filled --
+    is what puts flow and pressure in that list.
+    """
+    from haemolynx.gui.results import EDGE_COLUMNS
+
+    layers = built(a_graph()).stage_finished(
+        "build_network", network(a_graph())
+    ).layers
+    vessels = next(spec for spec in layers if spec.name == VESSELS)
+
+    assert set(EDGE_COLUMNS) <= set(vessels.features), (
+        set(EDGE_COLUMNS) - set(vessels.features)
+    )
+    # And unfilled means empty, not absent or zero: zero is a flow.
+    assert np.isnan(np.asarray(vessels.features["flow_abs"], dtype=float)).all()
+
+    nodes = next(spec for spec in layers if spec.name == NODES)
+    assert "pressure" in nodes.features
+    assert np.isnan(np.asarray(nodes.features["pressure"], dtype=float)).all()
+
+
+def test_the_column_set_does_not_change_between_stages():
+    """Same columns at build_network and at solve, so nothing appears late."""
+    graph = a_graph(conductance=1e-18, resistance=1e18)
+    results = built(graph)
+    early = results.stage_finished("build_network", network(graph))
+
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+        data["flow_signed"] = -5e-16
+        data["pressure_drop"] = 500.0
+    late = results.stage_finished(
+        "solve",
+        SimpleNamespace(node_list=list(graph.nodes),
+                        pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+    )
+
+    def columns(group, name):
+        return set(next(s for s in group.layers if s.name == name).features)
+
+    assert columns(early, VESSELS) == columns(late, VESSELS)
+    assert columns(early, NODES) == columns(late, NODES)
+
+
+def test_a_declared_column_still_carries_the_value_once_it_is_filled():
+    """Declaring early must not mean the real value is lost later."""
+    graph = a_graph(conductance=1e-18)
+    results = built(graph)
+    results.stage_finished("build_network", network(graph))
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 7e-16
+
+    group = results.stage_finished(
+        "solve",
+        SimpleNamespace(node_list=list(graph.nodes),
+                        pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+    )
+    vessels = next(s for s in group.layers if s.name == VESSELS)
+    assert np.allclose(np.asarray(vessels.features["flow_abs"], dtype=float), 7e-16)

@@ -396,3 +396,46 @@ def test_deliberately_choosing_none_is_not_overruled(make_napari_viewer):
     _refresh_colour_choices(viewer, choosers)
 
     assert vessels.value == "none"
+
+
+def test_a_real_run_through_the_panel_offers_flow_and_pressure(
+    make_napari_viewer, qtbot, monkeypatch
+):
+    """End to end, through the panel's own button, not by calling the helpers.
+
+    The earlier tests apply layers and refresh the boxes by hand, which proves
+    the refresh works but not that the panel is wired to it. This drives the
+    real `on_run`, so a future change that drops `after_layers` fails here.
+    """
+    from haemolynx.gui import _widget
+
+    viewer = make_napari_viewer()
+    panel = _widget.settings_widget(napari_viewer=viewer)
+    vessels = panel._haemolynx_colour["vessels"]
+    nodes = panel._haemolynx_colour["nodes"]
+    assert list(vessels.choices) == ["none"]
+
+    groups = _solved_run()  # already-built StageLayers, replayed by the fake run
+
+    def fake_run(settings, schema, progress=None, on_stage_output=None):
+        for group in groups:
+            if on_stage_output is not None:
+                on_stage_output(group.stage, None)
+        return None
+
+    def fake_stage_finished(stage, _output, _groups={g.stage: g for g in groups}):
+        return _groups[stage]
+
+    monkeypatch.setattr(_widget, "run_pipeline_stages", fake_run)
+    monkeypatch.setattr(_widget.ResultLayers, "stage_finished",
+                        lambda self, stage, output: fake_stage_finished(stage, output))
+
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+    refresh = panel._haemolynx_refresh_colours
+    _widget._run_in_background({}, None, report, button, None,
+                               viewer=viewer, results=ResultLayers(),
+                               after_layers=refresh)
+
+    qtbot.waitUntil(lambda: "flow_abs" in list(vessels.choices), timeout=5000)
+    assert "pressure" in list(nodes.choices), list(nodes.choices)
