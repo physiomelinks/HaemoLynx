@@ -36,6 +36,9 @@ from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent
 
 logger = logging.getLogger(__name__)
 
+#: What a layer looks like when the user asks for no colouring at all.
+UNCOLOURED = "#cccccc"
+
 #: Settings the panel starts with switched off, because they put a run's
 #: results somewhere other than napari: `show_plots_in_ide` makes the 3D graph
 #: open in a web browser (plotly's `fig.show()`), and `interactive_plots`
@@ -163,9 +166,15 @@ def _apply_layers(viewer, group, report=None) -> None:
 def _colour_layer(layer, column: str | None, kind: str = "continuous",
                   cycle=(), limits=None) -> None:
     """Colour a layer by one of its feature columns."""
-    if column is None or column not in getattr(layer, "features", {}):
-        return
     attribute = "edge_color" if layer.__class__.__name__ == "Vectors" else "face_color"
+    if column in {None, "", "none"}:
+        # An explicit "no colouring", which has to be a real branch: leaving the
+        # layer as it was would make picking "none" a control that does nothing.
+        setattr(layer, attribute, UNCOLOURED)
+        _record_colour(layer, None)
+        return
+    if column not in getattr(layer, "features", {}):
+        return
     if kind == "categorical" and cycle:
         setattr(layer, f"{attribute}_cycle", [colour for _label, colour in cycle])
         setattr(layer, attribute, column)
@@ -177,6 +186,64 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
                 setattr(layer, f"{attribute}_contrast_limits", limits)
             except (AttributeError, ValueError):  # not every layer takes them
                 pass
+    _record_colour(layer, column)
+
+
+def _record_colour(layer, column: str | None) -> None:
+    """Remember what a layer is coloured by, on the layer itself.
+
+    napari keeps the chosen column somewhere different for each layer type and
+    each napari version, so asking the layer is fragile. We set the colouring,
+    so we can just write down what we set -- and the panel needs it to show the
+    user what they are already looking at.
+    """
+    tag = getattr(layer, "metadata", {}).get(OURS)
+    if isinstance(tag, dict):
+        tag["colour_by"] = column
+
+
+def _current_colour(viewer, layer_name: str) -> str:
+    """What that layer is coloured by now, as a combo-box value."""
+    layers = getattr(viewer, "layers", {})
+    if layer_name not in layers:
+        return "none"
+    tag = getattr(layers[layer_name], "metadata", {}).get(OURS)
+    column = tag.get("colour_by") if isinstance(tag, dict) else None
+    return column or "none"
+
+
+def _refresh_colour_choices(viewer, choosers) -> None:
+    """Re-offer what the layers can now be coloured by.
+
+    The combo boxes are built before a run, when the only honest answer is
+    "none" -- a column cannot be offered until the stage that fills it has run.
+    Nothing rebuilt them as stages landed, so `flow_abs` and node `pressure`,
+    which arrive at the very last stage, could never be selected: the features
+    were on the layers and the dropdown did not know.
+
+    A choice the user has made is kept whenever the column still exists; when
+    they have not chosen, the box follows the stage's own default colouring, so
+    it always names what is actually on screen.
+
+    "Has the user chosen?" is a flag rather than "is the value still 'none'":
+    "none" is itself a choice one can make, and inferring it from the value
+    would quietly overrule anyone who picked it at the next stage.
+    """
+    for layer_name, chooser in choosers:
+        if chooser is None or viewer is None:
+            continue
+        choices = _colour_choices(viewer, layer_name)
+        chosen = getattr(chooser, "_haemolynx_chosen", False)
+        keep = chooser.value if chosen and chooser.value in choices else None
+        if keep is None:
+            keep = _current_colour(viewer, layer_name)
+        if keep not in choices:
+            keep = "none"
+        if list(chooser.choices) == choices and chooser.value == keep:
+            continue
+        with chooser.changed.blocked():
+            chooser.choices = choices
+            chooser.value = keep
 
 
 def _add_or_update(viewer, spec) -> None:
@@ -276,12 +343,15 @@ def _progress_bridge():
 
 
 def _run_in_background(
-    settings, schema, report, button, bars=None, viewer=None, results=None
+    settings, schema, report, button, bars=None, viewer=None, results=None,
+    after_layers=None,
 ):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
-    finishes and shown in the viewer the run was launched from.
+    finishes and shown in the viewer the run was launched from. *after_layers*
+    is called on the GUI thread once each stage's layers are in place, so the
+    panel can offer whatever that stage just made available.
     """
     from napari.qt.threading import thread_worker
 
@@ -296,7 +366,14 @@ def _run_in_background(
 
     bridge.event.connect(progressed)
     if show_layers:
-        bridge.layers.connect(lambda group: _apply_layers(viewer, group, report))
+        def apply(group) -> None:
+            _apply_layers(viewer, group, report)
+            # Right here, and not at the end of the run: a quantity becomes
+            # selectable the moment the stage that fills it lands.
+            if after_layers is not None:
+                after_layers()
+
+        bridge.layers.connect(apply)
 
     def produced(stage: str, output) -> None:
         """Build this stage's layers here, on the run's thread.
@@ -638,6 +715,7 @@ def settings_widget(napari_viewer=None):
             settings, schema, report, run_button, bars,
             viewer=viewer if show_results.value else None,
             results=results,
+            after_layers=refresh_colours,
         )
 
     def on_clear() -> None:
@@ -645,7 +723,14 @@ def settings_widget(napari_viewer=None):
             return
         removed = _clear_our_layers(viewer)
         view.results = None
+        refresh_colours()  # the columns went with the layers
         report.value = f"Removed {removed} HaemoLynx layer(s)."
+
+    def refresh_colours() -> None:
+        """Offer whatever the layers now carry, as soon as they carry it."""
+        _refresh_colour_choices(
+            viewer, ((VESSELS, colour_vessels), (NODES, colour_nodes))
+        )
 
     def on_colour_changed(*_args) -> None:
         """Recolour what is already there; no geometry is rebuilt."""
@@ -658,11 +743,9 @@ def settings_widget(napari_viewer=None):
             if not _is_ours(layer):
                 continue
             column = chooser.value
-            if column in {None, "", "none"}:
-                continue
             kind = "categorical" if column in TEXT_COLUMNS else "continuous"
             cycle = ()
-            if kind == "categorical":
+            if kind == "categorical" and column in getattr(layer, "features", {}):
                 cycle = colour_cycle_for(layer.features[column])
             _colour_layer(layer, column, kind, cycle)
 
@@ -671,8 +754,16 @@ def settings_widget(napari_viewer=None):
     check_button.changed.connect(on_check)
     run_button.changed.connect(on_run)
     clear_button.changed.connect(on_clear)
-    colour_vessels.changed.connect(on_colour_changed)
-    colour_nodes.changed.connect(on_colour_changed)
+    def chosen_by_hand(chooser):
+        """Note that this box now holds a choice, not just a default."""
+        def handler(*_args) -> None:
+            chooser._haemolynx_chosen = True
+            on_colour_changed()
+
+        return handler
+
+    colour_vessels.changed.connect(chosen_by_hand(colour_vessels))
+    colour_nodes.changed.connect(chosen_by_hand(colour_nodes))
 
     buttons = Container(
         widgets=[load_button, save_button, check_button, run_button, clear_button],

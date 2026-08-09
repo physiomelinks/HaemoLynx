@@ -253,3 +253,146 @@ def test_the_panel_offers_the_view_controls(make_napari_viewer):
     assert panel._haemolynx_show_results.value is True
     assert set(panel._haemolynx_colour) == {"vessels", "nodes"}
     assert panel._haemolynx_colour["vessels"].value == "none"
+
+
+# --- the colour-by dropdowns learn what a stage made available ---------------
+
+
+def _solved_run() -> list[StageLayers]:
+    """A run through to `solve`, which is where flow and pressure appear."""
+    results = ResultLayers()
+    graph = a_graph(conductance=1e-18, resistance=1e18)
+    groups = [results.stage_finished("build_network", network(graph))]
+    for index, (u, v, key, data) in enumerate(graph.edges(keys=True, data=True)):
+        data["pressure_u"] = 1000.0
+        data["pressure_v"] = 500.0
+        data["pressure_drop"] = 500.0
+        data["flow_signed"] = 5e-16 * (1 if index % 2 else -1)
+        data["flow_abs"] = 5e-16
+    groups.append(
+        results.stage_finished(
+            "solve",
+            SimpleNamespace(
+                node_list=list(graph.nodes),
+                pressure=np.array([1000.0, 900.0, 700.0, 500.0]),
+                equivalent_resistance=1e18,
+            ),
+        )
+    )
+    return groups
+
+
+def test_flow_and_pressure_can_be_chosen_once_the_solve_has_run(make_napari_viewer):
+    """The bug: the features were on the layers and the dropdown never knew.
+
+    Both boxes are built before a run, when "none" is the only honest answer,
+    and nothing rebuilt them as stages landed. Flow and pressure arrive at the
+    very last stage, so they were the two quantities you could never pick.
+    """
+    from haemolynx.gui._widget import _refresh_colour_choices, settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    vessels = panel._haemolynx_colour["vessels"]
+    nodes = panel._haemolynx_colour["nodes"]
+
+    assert list(vessels.choices) == ["none"]
+
+    for group in _solved_run():
+        _apply_layers(viewer, group)
+    _refresh_colour_choices(viewer, ((VESSELS, vessels), (NODES, nodes)))
+
+    assert "flow_abs" in vessels.choices, list(vessels.choices)
+    assert "pressure_drop" in vessels.choices
+    assert "pressure" in nodes.choices, list(nodes.choices)
+    # The endpoint identifiers are not quantities; colouring by them is noise.
+    assert not {"u", "v", "key", "edge_index", "node_id"} & set(vessels.choices)
+    assert not {"node_id"} & set(nodes.choices)
+
+
+def test_the_boxes_name_what_is_actually_on_screen(make_napari_viewer):
+    """Unchosen, each box follows the stage's own default colouring."""
+    from haemolynx.gui._widget import _refresh_colour_choices, settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    choosers = (
+        (VESSELS, panel._haemolynx_colour["vessels"]),
+        (NODES, panel._haemolynx_colour["nodes"]),
+    )
+
+    for group in _solved_run():
+        _apply_layers(viewer, group)
+    _refresh_colour_choices(viewer, choosers)
+
+    assert panel._haemolynx_colour["vessels"].value == "flow_abs"
+    assert panel._haemolynx_colour["nodes"].value == "pressure"
+
+
+def test_a_choice_survives_the_next_stage(make_napari_viewer):
+    """Re-offering the columns must not overwrite what the user picked."""
+    from haemolynx.gui._widget import _refresh_colour_choices, settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    vessels = panel._haemolynx_colour["vessels"]
+    choosers = ((VESSELS, vessels), (NODES, panel._haemolynx_colour["nodes"]))
+
+    groups = _solved_run()
+    _apply_layers(viewer, groups[0])
+    _refresh_colour_choices(viewer, choosers)
+    vessels.value = "length"
+
+    _apply_layers(viewer, groups[1])
+    _refresh_colour_choices(viewer, choosers)
+
+    assert vessels.value == "length"
+    assert "flow_abs" in vessels.choices
+
+
+def test_choosing_none_actually_uncolours_the_layer(make_napari_viewer):
+    """"none" is offered, so it has to do something."""
+    import numpy.testing as npt
+
+    from haemolynx.gui._widget import UNCOLOURED, _colour_layer
+
+    viewer = make_napari_viewer()
+    for group in _solved_run():
+        _apply_layers(viewer, group)
+    layer = viewer.layers[VESSELS]
+
+    _colour_layer(layer, "flow_abs")
+    coloured = np.array(layer.edge_color, copy=True)
+
+    _colour_layer(layer, "none")
+    flat = np.asarray(layer.edge_color)
+
+    assert len(np.unique(flat, axis=0)) == 1, "every vessel should look the same"
+    assert not np.allclose(flat, coloured) or len(np.unique(coloured, axis=0)) == 1
+    assert UNCOLOURED == "#cccccc"
+    npt.assert_allclose(flat[0][:3], 0.8, atol=0.02)
+
+
+def test_deliberately_choosing_none_is_not_overruled(make_napari_viewer):
+    """"Not chosen" cannot be inferred from the value, because none is a choice.
+
+    Reading "still on none" as "has not chosen" would work until someone picked
+    none on purpose, and then the next stage would silently recolour their
+    layer behind them.
+    """
+    from haemolynx.gui._widget import _refresh_colour_choices, settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    vessels = panel._haemolynx_colour["vessels"]
+    choosers = ((VESSELS, vessels), (NODES, panel._haemolynx_colour["nodes"]))
+
+    groups = _solved_run()
+    _apply_layers(viewer, groups[0])
+    _refresh_colour_choices(viewer, choosers)
+    vessels.value = "none"          # deliberate, through the signal
+
+    _apply_layers(viewer, groups[1])
+    _refresh_colour_choices(viewer, choosers)
+
+    assert vessels.value == "none"
