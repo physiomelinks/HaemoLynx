@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("skan")
 
-from haemolynx.graph import build_graph_from_skeleton
+from haemolynx.graph import STEP_LABELS, build_graph_from_skeleton
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 
 # Coarse z, fine x, all three distinct so a (z, y, x) / (x, y, z) swap shows up.
@@ -173,6 +173,19 @@ def test_the_step_callback_fires_once_per_step_in_a_fixed_order():
 
     assert seen == EXPECTED_STEP_LABELS
     assert G.number_of_nodes() == 4
+
+
+def test_the_published_step_labels_are_the_steps_a_build_actually_fires():
+    """A progress bar sizes itself from `STEP_LABELS` before the first fires.
+
+    Declaring the list separately from the calls that emit it is only safe if
+    the two cannot drift, which is what this pins.
+    """
+    seen: list[str] = []
+
+    _build(_t_skeleton(), step_callback=lambda graph, label: seen.append(label))
+
+    assert list(STEP_LABELS) == seen == EXPECTED_STEP_LABELS
 
 
 def test_step_labels_are_unique_so_snapshots_do_not_overwrite_each_other():

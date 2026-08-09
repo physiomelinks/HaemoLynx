@@ -24,11 +24,15 @@ haemolynx/
 │   │                       #   (which strategy a run uses), pericyte_comparison, pericyte_sweep
 │   ├── statistics/         # stats.py, three_dim_distances.py (cell-to-vessel distances)
 │   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
-│   │                       #   _widget.py (the panel), napari.yaml (npe2 manifest)
+│   │                       #   tabs.py (one tab per stage), progress.py (what the
+│   │                       #   progress bars read, pure), _widget.py (the panel),
+│   │                       #   napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
 │   └── pipeline/           # schema.py (the pipeline's 140 settings), settings.py, checks.py,
-│                           #   stages.py; public: default_schema, write_default_config
+│                           #   stages.py, progress.py (the ordered STAGES + the
+│                           #   progress callback); public: default_schema,
+│                           #   write_default_config
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
 │   ├── brain_network_pipeline.py             # Whole-brain run: pipeline + pericyte dilation sweep
@@ -196,7 +200,13 @@ reports the others).
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
 - **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.*
 - **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).*
-- **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step.
+- **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step, one per label in `STEP_LABELS`.
+- **`pipeline/progress.py`** — `STAGES`, the run's eight stages in order (the panel draws one tab
+  per entry and a progress bar counts them — one list, not two), plus what a run reports through:
+  `run_pipeline_stages(settings, schema, progress=callback)` hands the callback a `ProgressEvent`
+  as each stage starts, finishes or fails, and one per topology step inside graph building.
+  `log_progress` is the ready-made console consumer; the napari panel's bars are the other one.
+  Nothing here imports a GUI or a progress-bar library — the callback is the whole mechanism.
 - **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from raw TIFF (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`). *“automated” is a misnomer; this is diameter estimation.*
 - **`haemodynamics/constriction.py`** — the constriction model: diameter profile around a site,
   the resistance integral, and `apply_constriction_sites`, the only place a constricted edge's

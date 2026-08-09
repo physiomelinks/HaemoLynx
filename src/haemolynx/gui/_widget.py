@@ -1,12 +1,15 @@
 """The napari panel: one tab per pipeline stage, then the run buttons.
 
-What each tab contains lives in :mod:`haemolynx.gui.tabs`, and what each row
-looks like in :mod:`haemolynx.gui.form`; neither needs a GUI, which is where
+What each tab contains lives in :mod:`haemolynx.gui.tabs`, what each row looks
+like in :mod:`haemolynx.gui.form`, and what the progress bars read in
+:mod:`haemolynx.gui.progress`; none of the three needs a GUI, which is where
 the testable logic is. This module is the Qt layer: it turns those rows into
-magicgui widgets, stacks them into tabs, and wires the buttons.
+magicgui widgets, stacks them into tabs, wires the buttons, and moves the bars
+as the run reports back.
 
-napari, magicgui and Qt are imported inside the functions, so importing this
-module -- and therefore the package -- costs nothing without a GUI installed.
+napari, magicgui and Qt are imported inside the functions and methods here, so
+importing this module -- and therefore the package -- costs nothing without a
+GUI installed.
 """
 from __future__ import annotations
 
@@ -16,9 +19,11 @@ from typing import Any
 
 from haemolynx.gui.form import Field
 from haemolynx.gui.layers import input_for_layer
+from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.tabs import tabs_for
 from haemolynx.parsers import dump_config, load_config
 from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
+from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent
 
 logger = logging.getLogger(__name__)
 
@@ -64,19 +69,118 @@ def _build_row(field: Field):
     return widget
 
 
-def _run_in_background(settings, schema, report, button):
-    """Run the pipeline off the GUI thread, reporting back when it lands."""
+class ProgressBars:
+    """The panel's two progress bars: one across the stages, one within one.
+
+    What they should read is :class:`haemolynx.gui.progress.ProgressDisplay`,
+    which needs no GUI and is tested without one; this only copies that onto
+    the widgets. Every method here touches Qt, so all of them must be called on
+    the GUI thread -- `_run_in_background` is what gets a run's events there.
+    """
+
+    def __init__(self) -> None:
+        # Plain QProgressBars rather than magicgui's: these are read, never
+        # edited, and a bar needs `setFormat` to name the stage it is on.
+        from qtpy.QtWidgets import QProgressBar, QVBoxLayout, QWidget
+
+        self.display = ProgressDisplay()
+        self.stage_bar = QProgressBar()
+        self.step_bar = QProgressBar()
+        self.native = QWidget()
+        layout = QVBoxLayout(self.native)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.stage_bar)
+        layout.addWidget(self.step_bar)
+        self._refresh()
+
+    def start(self) -> None:
+        """A run has begun: show an empty bar rather than nothing at all."""
+        self.display.start()
+        self._refresh()
+
+    def show_event(self, event: ProgressEvent) -> None:
+        """One event from the run, already marshalled onto the GUI thread."""
+        self.display.update(event)
+        self._refresh()
+
+    def finish(self, message: str = "Finished") -> None:
+        self.display.finish(message)
+        self._refresh()
+
+    def fail(self, message: str = "Failed") -> None:
+        self.display.fail(message)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        for bar, state in (
+            (self.stage_bar, self.display.stages),
+            (self.step_bar, self.display.steps),
+        ):
+            # Range 0..0 is Qt's own "no end in sight": the bar animates rather
+            # than filling, which is the honest reading for an unknown total.
+            bar.setRange(0, state.total)
+            bar.setValue(min(state.value, state.total) if state.total else 0)
+            bar.setTextVisible(bool(state.text))
+            bar.setFormat(state.text or "%p%")
+            bar.setVisible(state.visible)
+
+
+#: Built on first use: defining a QObject subclass registers a Qt meta-object,
+#: and one per run would be one per press of the button.
+_PROGRESS_BRIDGE_CLASS = None
+
+
+def _progress_bridge():
+    """A QObject whose signal carries progress from the run's thread to the GUI.
+
+    The pipeline reports through a callback that fires deep inside a stage, so
+    there is nothing the thread worker could `yield` at the moment a step lands
+    -- the events have to cross threads by themselves. A Qt signal is how that
+    is done safely: emitting from the worker thread posts to the receiving
+    object's event loop, and this object is made on the GUI thread, so every
+    slot connected to it runs there. Touching a widget from the worker thread
+    instead is what crashes or freezes a Qt application.
+    """
+    global _PROGRESS_BRIDGE_CLASS
+    if _PROGRESS_BRIDGE_CLASS is None:
+        from qtpy.QtCore import QObject, Signal
+
+        class ProgressBridge(QObject):
+            event = Signal(object)
+
+        _PROGRESS_BRIDGE_CLASS = ProgressBridge
+    return _PROGRESS_BRIDGE_CLASS()
+
+
+def _run_in_background(settings, schema, report, button, bars=None):
+    """Run the pipeline off the GUI thread, reporting back as it goes."""
     from napari.qt.threading import thread_worker
+
+    bridge = _progress_bridge()
+
+    def progressed(event: ProgressEvent) -> None:
+        if bars is not None:
+            bars.show_event(event)
+        if event.kind == STAGE_STARTED:
+            report.value = f"Running {event.title} ({event.index + 1}/{event.total})..."
+
+    bridge.event.connect(progressed)
 
     @thread_worker
     def run():
-        return run_pipeline_stages(settings, schema)
+        # `bridge` is captured here, which is also what keeps it alive for as
+        # long as the run that emits through it.
+        return run_pipeline_stages(settings, schema, progress=bridge.event.emit)
 
     def finished(graph) -> None:
         button.enabled = True
         if graph is None:
+            if bars is not None:
+                bars.finish("Finished, no graph")
             report.value = "Finished, but the run produced no graph."
             return
+        if bars is not None:
+            bars.finish()
         report.value = (
             f"Finished: {graph.number_of_nodes()} nodes, "
             f"{graph.number_of_edges()} vessels."
@@ -84,6 +188,8 @@ def _run_in_background(settings, schema, report, button):
 
     def failed(error: Exception) -> None:
         button.enabled = True
+        if bars is not None:
+            bars.fail(f"Failed: {type(error).__name__}")
         report.value = f"{type(error).__name__}: {error}"
         logger.exception("pipeline run failed", exc_info=error)
 
@@ -91,6 +197,8 @@ def _run_in_background(settings, schema, report, button):
     worker.returned.connect(finished)
     worker.errored.connect(failed)
     button.enabled = False
+    if bars is not None:
+        bars.start()
     report.value = "Running..."
     worker.start()
 
@@ -102,12 +210,14 @@ def run_config_widget():
     my.yaml` does, for a config that is already how you want it.
     """
     from magicgui.widgets import Container, FileEdit, Label, PushButton, TextEdit
+    from qtpy.QtWidgets import QVBoxLayout, QWidget
 
     schema = default_schema()
     chooser = FileEdit(mode="r", filter="*.yaml *.yml", label="Config file")
     report = TextEdit(value="Choose a config file, then press Run.")
     report.read_only = True
     run_button = PushButton(text="Run")
+    bars = ProgressBars()
 
     def on_run() -> None:
         path = Path(str(chooser.value))
@@ -123,18 +233,27 @@ def run_config_widget():
         if not result.ok:
             report.value = "\n".join(f"FAILED: {message}" for message in result.errors)
             return
-        _run_in_background(settings, schema, report, run_button)
+        _run_in_background(settings, schema, report, run_button, bars)
 
     run_button.changed.connect(on_run)
-    return Container(
+    form = Container(
         widgets=[
             Label(value="Run a config file exactly as it stands."),
             chooser,
             run_button,
-            report,
         ],
         labels=True,
     )
+    # A QWidget rather than one more Container: the progress bars are plain
+    # QProgressBars, which a magicgui Container will not hold.
+    panel = QWidget()
+    # What a test would otherwise have to press a button and wait for a run to see.
+    panel._haemolynx_progress = bars
+    layout = QVBoxLayout(panel)
+    layout.addWidget(form.native)
+    layout.addWidget(bars.native)
+    layout.addWidget(report.native)
+    return panel
 
 
 def settings_widget(napari_viewer=None):
@@ -233,6 +352,7 @@ def settings_widget(napari_viewer=None):
 
     report = TextEdit(value="Ready.")
     report.read_only = True
+    bars = ProgressBars()
 
     layer_row: Any = None
     if viewer is not None:
@@ -344,7 +464,7 @@ def settings_widget(napari_viewer=None):
         if not preflight(settings, schema).ok:
             report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
             return
-        _run_in_background(settings, schema, report, run_button)
+        _run_in_background(settings, schema, report, run_button, bars)
 
     load_button.changed.connect(on_load)
     save_button.changed.connect(on_save)
@@ -358,12 +478,15 @@ def settings_widget(napari_viewer=None):
     )
 
     panel = QWidget()
-    # What the panel would send to a run, for a test that cannot press buttons.
+    # What the panel would send to a run, and what a run would report back,
+    # for a test that cannot press buttons and wait.
     panel._haemolynx_values = current_values
+    panel._haemolynx_progress = bars
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
     layout.addWidget(tab_widget)
     layout.addWidget(buttons.native)
+    layout.addWidget(bars.native)
     layout.addWidget(report.native)
     return panel
