@@ -1,5 +1,12 @@
 """Graph building and topology optimization for vascular networks."""
 from .assemble import STEP_LABELS, build_graph_from_skeleton
+from .smoothing import (
+    SMOOTHING_METHODS,
+    chaikin_smooth_polyline,
+    smooth_graph_centrelines,
+    smooth_polyline,
+    taubin_smooth_polyline,
+)
 from .build import build_graph_segment_skan_stitched_loops
 from .reconnect import reconnect_secondary_loop_edges
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
@@ -69,6 +76,11 @@ from ._helpers import (
 __all__ = [
     "STEP_LABELS",
     "build_graph_from_skeleton",
+    "SMOOTHING_METHODS",
+    "smooth_graph_centrelines",
+    "smooth_polyline",
+    "taubin_smooth_polyline",
+    "chaikin_smooth_polyline",
     "build_graph_segment_skan_stitched_loops",
     "reconnect_secondary_loop_edges",
     "optimise_graph_topology_fixed",

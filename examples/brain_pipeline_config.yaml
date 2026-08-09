@@ -200,6 +200,14 @@ pipeline_stages:
   cluster_collapse_distance: 5.0
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
   skeleton_min_component_percent: 0.0
+  # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
+  smooth_centrelines: true
+  # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]
+  centreline_smoothing_method: taubin
+  # How many smoothing passes; accuracy plateaus around 15, and past that the filter slowly starts inflating a centreline instead  [range 0..50; needs smooth_centrelines]
+  centreline_smoothing_iterations: 10
+  # How far a smoothed centreline may sit from the skeleton before it is blended back towards the original  [microns; range 0.0..; needs smooth_centrelines]
+  centreline_max_deviation: 1.0
 
 # ------------------------------------------------------------------------
 # Statistics and measurements
