@@ -439,3 +439,83 @@ def test_a_real_run_through_the_panel_offers_flow_and_pressure(
 
     qtbot.waitUntil(lambda: "flow_abs" in list(vessels.choices), timeout=5000)
     assert "pressure" in list(nodes.choices), list(nodes.choices)
+
+
+def test_branch_order_then_flow_does_not_raise_keyerror_nan(make_napari_viewer):
+    """The real sequence of a run, which used to end in `KeyError: nan`.
+
+    The diameters stage colours by `branch_order`, which is text, so the layer
+    is left in cycle mode. The solve then colours by `flow_abs`, which is full
+    of NaN because `set_edge_flows` skips any edge with no conductance. napari's
+    `CategoricalColormap.map` tests membership with `np.isin`, and NaN is never
+    equal to itself, so the value is filed under a key that can never be looked
+    up again and the very next lookup raises. No user interaction needed -- the
+    two default colourings are enough.
+    """
+    from haemolynx.gui._widget import _colour_layer
+
+    viewer = make_napari_viewer()
+    graph = a_graph(conductance=1e-18, branch_order="BO1")
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(graph)))
+    layer = viewer.layers[VESSELS]
+
+    _colour_layer(layer, "branch_order", "categorical",
+                  (("BO1", (1.0, 0.0, 0.0, 1.0)),))
+    assert layer.edge_color_mode == "cycle"
+
+    # Only some edges get a flow, which is the case that bites.
+    partial = np.array([1e-16, np.nan, 5e-17])
+    features = dict(layer.features)
+    features["flow_abs"] = np.repeat(partial, len(layer.data) // 3)[: len(layer.data)]
+    layer.features = features
+
+    _colour_layer(layer, "flow_abs", "continuous")
+
+    assert layer.edge_color_mode == "colormap"
+    assert len(layer.edge_color) == len(layer.data)
+
+
+def test_flow_then_branch_order_does_not_raise_either(make_napari_viewer):
+    """The mirror image: colormap mode meeting a text column."""
+    from haemolynx.gui._widget import _colour_layer
+
+    viewer = make_napari_viewer()
+    graph = a_graph(conductance=1e-18, branch_order="BO1")
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "build_network", network(graph)))
+    layer = viewer.layers[VESSELS]
+
+    _colour_layer(layer, "length", "continuous")
+    assert layer.edge_color_mode == "colormap"
+
+    _colour_layer(layer, "branch_order", "categorical",
+                  (("BO1", (1.0, 0.0, 0.0, 1.0)),))
+    assert layer.edge_color_mode == "cycle"
+    assert len(layer.edge_color) == len(layer.data)
+
+
+def test_a_stage_with_no_opinion_leaves_the_colouring_alone(make_napari_viewer):
+    """`None` means "say nothing", `"none"` means "clear it". Not the same.
+
+    Most stages after build_network name no colouring. Treating that as a
+    request to blank the layer threw away the previous stage's colouring at
+    every one of them -- the vessels went flat grey at assign_boundaries and
+    stayed that way until a stage that did have an opinion.
+    """
+    from haemolynx.gui._widget import UNCOLOURED, _colour_layer
+
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "build_network", network(a_graph())))
+    layer = viewer.layers[VESSELS]
+
+    _colour_layer(layer, "length", "continuous")
+    coloured = np.array(layer.edge_color, copy=True)
+
+    _colour_layer(layer, None)                       # a stage with nothing to say
+    assert np.allclose(np.asarray(layer.edge_color), coloured)
+
+    _colour_layer(layer, "none")                     # the user, deliberately
+    assert len(np.unique(np.asarray(layer.edge_color), axis=0)) == 1
+    assert UNCOLOURED == "#cccccc"

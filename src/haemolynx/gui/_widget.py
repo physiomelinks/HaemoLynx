@@ -167,7 +167,13 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
                   cycle=(), limits=None) -> None:
     """Colour a layer by one of its feature columns."""
     attribute = "edge_color" if layer.__class__.__name__ == "Vectors" else "face_color"
-    if column in {None, "", "none"}:
+    if column is None:
+        # No opinion: a stage that does not name a colouring means "leave what
+        # is there", not "blank it". Most stages after build_network have
+        # nothing to say about colour, and clearing on each would throw away
+        # the previous stage's colouring every time.
+        return
+    if column in {"", "none"}:
         # An explicit "no colouring", which has to be a real branch: leaving the
         # layer as it was would make picking "none" a control that does nothing.
         setattr(layer, attribute, UNCOLOURED)
@@ -175,6 +181,25 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         return
     if column not in getattr(layer, "features", {}):
         return
+    # Drop to a flat colour before naming the new column. A layer keeps
+    # whichever colour mode the last colouring left it in, and neither mode
+    # survives meeting the other kind of column:
+    #
+    #   cycle mode + a column holding NaN  -> `KeyError: nan`, from
+    #     `CategoricalColormap.map`, which decides membership with `np.isin`.
+    #     NaN is never equal to itself, so the value is filed under a key that
+    #     can never be found again and the next lookup raises.
+    #   colormap mode + a text column      -> `TypeError: cannot cast O to
+    #     float64`, from trying to interpolate the strings.
+    #
+    # A run walks straight into the first: the diameters stage colours by
+    # `branch_order`, which is text and leaves the layer cycling, and the solve
+    # then colours by `flow_abs`, which is full of NaN because `set_edge_flows`
+    # skips every edge with no conductance. No user interaction required.
+    #
+    # Setting the mode instead of the colour does not work -- changing mode
+    # re-maps the column that is still active, which is the same crash.
+    setattr(layer, attribute, UNCOLOURED)
     if kind == "categorical" and cycle:
         setattr(layer, f"{attribute}_cycle", [colour for _label, colour in cycle])
         setattr(layer, attribute, column)
