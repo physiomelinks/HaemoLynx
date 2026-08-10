@@ -180,6 +180,8 @@ pipeline_stages:
   min_stub_length: 10.0
   # Collapse clusters of nodes lying within this distance of each other  [range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0
+  # Write a graph pickle and an overlay PNG after each graph-building step. Turn on to debug a bad topology; it dominates the runtime of a large run, so it is off by default  [needs do_graph_building]
+  save_step_artifacts: false
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
   skeleton_min_component_percent: 5.0
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]

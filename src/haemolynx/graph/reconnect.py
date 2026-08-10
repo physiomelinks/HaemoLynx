@@ -11,6 +11,33 @@ from skimage.graph import route_through_array
 
 logger = logging.getLogger(__name__)
 
+#: Voxels of context included around a routing window when its cost field is
+#: built. Distances up to this are exact; beyond it the field only has to stay
+#: large, which it does.
+COST_WINDOW_PAD = 32
+
+#: A single padded window this much of the volume or more is not worth doing as
+#: a window: at that size it costs about what the whole volume costs, and a
+#: second such window costs it again.
+GLOBAL_FIELD_WINDOW_FRACTION = 0.25
+
+#: Total padded window volume, as a multiple of the volume, past which the
+#: whole-volume field is built instead.
+#:
+#: Deliberately not 1, even though transforming a volume's worth of windows
+#: sounds like the break-even point. It is not, because the windows are
+#: transformed on the worker threads below and the transform releases the GIL,
+#: so they run several at a time, while one whole-volume transform runs alone.
+#: On the nerve stack the windows come to 1.29x the volume and take about 13 s
+#: of wall clock against 35 s for the whole-volume field -- so counting raw
+#: voxels against the volume declares the windows too expensive at the point
+#: where they are still nearly three times cheaper. Setting this to 1.0 did
+#: exactly that and made the step three times slower.
+#:
+#: At 4 the worst case is roughly one whole-volume field's worth of windowing
+#: before the fallback and one after, and the observed 1.29x has room to grow.
+GLOBAL_FIELD_BUDGET_MULTIPLE = 4.0
+
 
 def _path_length_3d(points) -> float:
     """Compute 3D polyline length from physical coordinates."""
@@ -54,11 +81,66 @@ def reconnect_secondary_loop_edges(
 
     deg = dict(G.degree())
     skeleton_copy = skeleton.astype(bool)
-    try:
-        base_cost = 1 + distance_transform_edt(~skeleton_copy) ** 2
-    except Exception as e:
-        logger.error("Failed to compute distance transform: %s", e)
-        return G
+
+    # Windowing is only a saving while the windows stay small: one whole-volume
+    # transform costs a fixed amount, and enough window area eventually exceeds
+    # it. Two ways that happens -- one window nearly as big as the volume, or a
+    # great many smaller ones -- and either switches to the whole-volume field,
+    # which is then built once and sliced.
+    cost_budget = {"transformed_voxels": 0, "global_field": None}
+    cost_lock = threading.Lock()
+    volume_voxels = int(skeleton_copy.size)
+    window_budget = GLOBAL_FIELD_BUDGET_MULTIPLE * volume_voxels
+    single_window_limit = GLOBAL_FIELD_WINDOW_FRACTION * volume_voxels
+
+    def window_cost(minc, maxc):
+        """Routing cost `1 + d^2` over one sub-volume, d = distance to skeleton.
+
+        The transform runs on the window padded by :data:`COST_WINDOW_PAD`
+        rather than on the whole stack, because that is the only part the
+        router ever reads. Distances are exact wherever the nearest skeleton
+        voxel lies inside the padded window; past the pad they come out larger
+        than the true distance, which only pushes the router further away from
+        voxels it already avoids -- an accepted path has to lie on the skeleton
+        for `min_overlap` of its length.
+        """
+        plo = np.maximum(minc - COST_WINDOW_PAD, 0)
+        phi = np.minimum(maxc + COST_WINDOW_PAD, skeleton_copy.shape)
+        padded_voxels = int(np.prod(np.maximum(phi - plo, 0)))
+
+        with cost_lock:
+            if cost_budget["global_field"] is None:
+                spent = cost_budget["transformed_voxels"] + padded_voxels
+                too_big = padded_voxels >= single_window_limit
+                too_many = spent > window_budget
+                if too_big or too_many:
+                    logger.info(
+                        "[reconnect] %s; transforming the whole volume once instead",
+                        "this routing window covers a quarter of the volume"
+                        if too_big
+                        else "routing windows have covered "
+                        f"{spent / max(volume_voxels, 1):.1f}x the volume",
+                    )
+                    cost_budget["global_field"] = (
+                        1 + distance_transform_edt(~skeleton_copy) ** 2
+                    )
+            global_field = cost_budget["global_field"]
+            if global_field is None:
+                cost_budget["transformed_voxels"] += padded_voxels
+
+        if global_field is not None:
+            return global_field[
+                minc[0]:maxc[0], minc[1]:maxc[1], minc[2]:maxc[2]
+            ].copy()
+
+        dist = distance_transform_edt(
+            ~skeleton_copy[plo[0]:phi[0], plo[1]:phi[1], plo[2]:phi[2]]
+        )
+        inner = tuple(
+            slice(int(minc[d] - plo[d]), int(minc[d] - plo[d] + maxc[d] - minc[d]))
+            for d in range(3)
+        )
+        return 1 + dist[inner] ** 2
 
     cache_lock = threading.Lock()
     sub_cache = {}
@@ -178,11 +260,7 @@ def reconnect_secondary_loop_edges(
                 cached_result = manage_cache(cache_key)
                 if cached_result is None:
                     try:
-                        sub_cost = base_cost[
-                            minc[0] : maxc[0],
-                            minc[1] : maxc[1],
-                            minc[2] : maxc[2],
-                        ].copy()
+                        sub_cost = window_cost(minc, maxc)
                         if sub_cost.size == 0:
                             continue
                         orig_rel = [vox - minc for vox in orig_voxels]
