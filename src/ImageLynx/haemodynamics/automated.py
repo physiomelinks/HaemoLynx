@@ -1253,11 +1253,17 @@ def measure_edge_diameters_edt_from_binary_mask(
 
     ``junction_proximity_exclusion_um`` discards centreline samples within that arc distance
     of a junction end. Inside roughly one radius of a bifurcation the EDT returns the
-    junction's inscribed sphere rather than the vessel's, so those samples are biased upward.
-    The bias is length-dependent - a few contaminated samples cannot move the median of a
-    long edge, but they are most of a short inter-junction segment - so it cannot be removed
-    by a global correction factor, and it falls hardest on exactly the capillary population
-    section 1.2 is a claim about. Resistance carries it as r^-4.
+    junction's inscribed sphere rather than the vessel's, so those samples are biased upward,
+    and resistance carries the error as r^-4.
+
+    How much it matters depends on how the exclusion compares with the segment lengths. On
+    an isolated edge against a large junction the effect is severe (the fixture in
+    tests/test_edt_diameter.py reads two identical tubes 34% apart, 3.2x on resistance). On
+    the real carotid body network at a 1.866 um voxel the median segment is 3.9 voxels long,
+    so the exclusion is a large fraction of most edges: 61% of them cannot be trimmed at all
+    at two voxels, and the population effect is about 8% on resistance. It is not correctable
+    by a global factor either way, since which edges are affected depends on their length and
+    on the calibre of the vessel each junction belongs to.
 
     Defaults to 0.0, i.e. off: every figure in the #98 sweep was measured without it, and a
     silent default would make those numbers irreproducible from the code that produced them.

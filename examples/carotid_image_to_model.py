@@ -264,13 +264,33 @@ class HaemodynamicsConfig:
     # sphere rather than the vessel's, so the radius there is biased upward. Two voxels is
     # the exclusion the segmentation handover specifies; at 1.866 um that is 3.73 um.
     #
-    # The bias is length-dependent, so it cannot be absorbed into a global calibration
-    # factor: contaminated samples cannot move the median of a long edge but are most of a
-    # short one. On the synthetic fixture in tests/test_edt_diameter.py two identical
-    # radius-2 tubes read 6.0 um and 4.47 um apart for no reason other than segment length,
-    # which Poiseuille turns into 3.2x on resistance. Short inter-junction segments are the
-    # capillary population section 1.2 is a claim about, so this falls hardest where it
-    # matters most.
+    # Measured over 3882 edges on the WKY-A reference subvolume. The exclusion is swept in
+    # half-voxel steps; "too short" is the fraction of segments that cannot survive it at
+    # all and therefore keep their inflated radius, tagged untrimmed_too_short:
+    #
+    #     excl um  voxels  trimmed  too short   moved   mean um  mean shift   r^-4
+    #        0.93     0.5    77.6%      22.3%   29.8%     5.516      -0.060  1.044
+    #        1.87     1.0    74.9%      25.0%   28.9%     5.509      -0.067  1.049
+    #        2.80     1.5    50.0%      49.9%   25.9%     5.470      -0.106  1.080
+    #        3.73     2.0    38.5%      61.4%   19.7%     5.473      -0.102  1.077
+    #        5.60     3.0    20.0%      79.9%   12.1%     5.516      -0.060  1.044
+    #
+    # The delivered correction peaks near 1.5 voxels and falls away on both sides: too small
+    # and it removes nothing, too large and most segments become untrimmable and keep the
+    # full bias. 3.73 um is kept anyway because it is specified externally and corresponds to
+    # about one capillary inscribed radius, whereas 2.80 um would be a value tuned to this
+    # subvolume - and the difference between them is 0.3% on resistance. The exclusion joins
+    # item 25's sensitivity scope.
+    #
+    # Two things this measurement corrects. First, the effect at the population level is
+    # ~8% on resistance, not the 3.2x the synthetic fixture in tests/test_edt_diameter.py
+    # shows; that fixture isolates one edge against a deliberately large junction sphere.
+    # Second, the bias here is NOT concentrated on short segments. Median segment length is
+    # 7.2 um - 3.9 voxels - so every segment in this network is short relative to the
+    # exclusion, and the shift is if anything larger on the longer ones (-0.181 um in the
+    # shortest quartile rising to -0.298 um in the longest) because the junction's inscribed
+    # sphere scales with the vessel it belongs to. 176 of 765 moved edges got wider, not
+    # narrower, where the junction sat on the narrow side of a calibre step.
     edt_junction_proximity_exclusion_um: float = 3.73
 
     # --- Sphincter / Constriction Configuration ---

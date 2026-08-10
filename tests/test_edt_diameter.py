@@ -174,11 +174,15 @@ def test_default_radius_mode_yields_measured_not_synthetic_provenance():
 # --- Junction-proximity exclusion (#98 Phase A) -------------------------------------------
 #
 # Within roughly one radius of a bifurcation the EDT reports the junction's inscribed sphere
-# rather than the vessel's, so every radius sampled there is biased upward. The bias is
-# length-dependent: on a long edge a handful of contaminated samples cannot move the median,
-# but on a short inter-junction capillary segment they are most of the samples. Those short
-# segments are the population H1 section 1.2 is a claim about, and resistance carries the
-# error as r^-4.
+# rather than the vessel's, so every radius sampled there is biased upward, and resistance
+# carries the error as r^-4.
+#
+# The fixture below isolates the mechanism: one short edge against a deliberately large
+# junction sphere, where it is worth 34% on diameter and 3.2x on resistance. On the real
+# WKY-A network the effect is about 8% on resistance, because the median segment is only 3.9
+# voxels long and 61% of edges are too short to trim at all. The length-dependence these
+# tests demonstrate is real but does not dominate there - every segment in that network is
+# short relative to the exclusion. See HaemodynamicsConfig for the measured sweep.
 
 def _junction_fixture():
     """A z-tube with a spherical swelling at a degree-3 node, plus a transverse branch.
