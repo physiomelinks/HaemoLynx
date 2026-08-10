@@ -285,6 +285,42 @@ GROUPS: Tuple[str, str] = ("WKY", "SHR")
 #: that was made in advance rather than a discovery made afterwards.
 WEAKEST_SPECIMEN_ID = "WKY-C"
 
+#: The classifier the labelling imbalance was accepted for - and the measurement that argues
+#: the acceptance should be revisited.
+#:
+#: 2026-08-10: prediction was run against a project that verifies but is lopsided - SHR 79388
+#: labelled voxels against WKY 20142, a factor of 3.9, and WKY-C thinnest of all at 4488 with
+#: vessel:background 2.32 where the SHR volumes sit near 0.9. A forest weights by labelled
+#: voxel count, so this classifier is better calibrated on SHR. The decision was to proceed
+#: and top up WKY later, on the reasoning that downstream pipeline work does not depend on
+#: which way the bias points.
+#:
+#: Three volumes were then predicted, and that reasoning does not survive them:
+#:
+#:     specimen  group  mean p  p<0.05  p>0.95  uncertain  fg@0.5  r_med@0.5 um
+#:     WKY-A     WKY    0.2358   0.589   0.106      0.305   0.224          5.60
+#:     WKY-C     WKY    0.3949   0.341   0.184      0.475   0.380          5.60
+#:     SHR-C     SHR    0.1948   0.659   0.082      0.259   0.185          5.27
+#:
+#: SHR is the more confidently predicted cohort, exactly as the label counts predict, and the
+#: foreground fraction at a fixed threshold is higher for WKY than for SHR. Foreground
+#: fraction at a fixed threshold is not a neutral quantity here - it is close to what H1
+#: measures. So the imbalance is not a background risk to be carried into the limitations
+#: section; it is a measurable, group-correlated shift sitting on the group contrast.
+#:
+#: Separately, the whole probability scale is shifted towards vessel: at p > 0.5 the median
+#: inscribed radius is 5.3-5.6 um against a capillary radius of roughly 2-3 um, and the
+#: handover's hysteresis low of 0.30 would take 45% of WKY-C as foreground. No threshold
+#: gives capillary calibre and connectivity at once. That points at background being
+#: under-labelled everywhere rather than at either cohort specifically.
+#:
+#: The hash makes this record self-invalidating. Once the project is relabelled the hash
+#: moves, and an acceptance recorded against the old one no longer describes what is being
+#: run - which is the whole reason it is a hash rather than a date.
+ACCEPTED_LABEL_IMBALANCE_SHA256 = (
+    "79a5f6ac5a5e3d6f5c56d0656deb7f78ec95c5f06be6013e4f0143331136c17a"
+)
+
 
 def get_specimen(specimen_id: str) -> Specimen:
     """Look up one specimen, case-insensitively."""
