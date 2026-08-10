@@ -380,7 +380,9 @@ def build_network(
     if settings["do_graph_building"]:
         # 3) Convert skeleton to graph.
         # Every snapshot draws the same volume, and projecting it reads the whole
-        # stack, so it is projected once here rather than once per step.
+        # stack, so it is projected once here rather than once per step. Graph
+        # building reads `image` and never writes to it, which is what makes one
+        # projection good for all eleven steps.
         step_projection = (
             visualization.overlay_z_projection(image)
             if settings["save_step_artifacts"]

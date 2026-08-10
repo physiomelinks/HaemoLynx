@@ -9,7 +9,7 @@ import numpy as np
 import tifffile
 from skimage.util import img_as_bool
 from skimage.morphology import skeletonize
-from scipy.ndimage import binary_fill_holes
+from ..preprocessing.skeleton import fill_binary_holes
 try:
     import h5py
 except ImportError:
@@ -523,7 +523,7 @@ def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AX
     logger.info("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
     binary = _to_binary_volume_for_skeletonization(image)
     skeleton = skeletonize(binary.astype(bool), method="lee")
-    skeleton = binary_fill_holes(skeleton)
+    skeleton = fill_binary_holes(skeleton)
     return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
