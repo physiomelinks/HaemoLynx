@@ -9,9 +9,18 @@ the schema, checks the settings before anything runs, and runs the pipeline in a
 background thread while each stage's results appear in the viewer.
 
 ```bash
-pip install "HaemoLynx[napari]"    # needs Python 3.11+ (napari's floor, not ours)
+pip install "napari[all]" --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple HaemoLynx==0.1.0
 napari                             # Plugins -> HaemoLynx -> Pipeline settings
 ```
+
+Once we have a pypi project and its not a test then do this
+
+```bash
+pip install "HaemoLynx[napari]"    # needs Python 3.11+ (napari's floor, not ours)
+napari                             # Plugins -> HaemoLynx -> Pipeline settings
+
+```
+
 
 That extra brings a Qt binding (PyQt6) with it, so the panel opens on a fresh
 environment. If you already run napari with a binding of your own, install
@@ -109,16 +118,9 @@ pytest -m gui           # with "HaemoLynx[napari]" installed
 The library itself never imports napari; the extra is optional, and the panel is
 only loaded when you open it.
 
-## Install
+## Develop Mode Install
 
 Python 3.9 or newer.
-
-```bash
-pip install HaemoLynx
-```
-
-> Not on PyPI yet — until the first release, install from a checkout as below.
-> Everything else on this page already works that way.
 
 ```bash
 git clone https://github.com/physiomelinks/HaemoLynx.git
@@ -139,7 +141,7 @@ pip install -e ".[dev]"
 `pip install -e ".[dev,notebook]"` from a checkout) to get the Jupyter kernel
 for the tutorial notebook.
 
-## Start here: the tutorial notebook
+## tutorial if you want to work in a jupyter notebook (unadvised)
 
 **[tutorials/pipeline_tutorial.ipynb](tutorials/pipeline_tutorial.ipynb)** runs
 every stage of the pipeline one cell at a time, with a plot after each, and
