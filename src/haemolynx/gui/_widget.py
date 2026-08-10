@@ -207,11 +207,38 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         setattr(layer, f"{attribute}_colormap", "viridis")
         setattr(layer, attribute, column)
         if limits is not None:
-            try:
-                setattr(layer, f"{attribute}_contrast_limits", limits)
-            except (AttributeError, ValueError):  # not every layer takes them
-                pass
+            _set_contrast_limits(layer, attribute, limits)
     _record_colour(layer, column)
+
+
+def _set_contrast_limits(layer, attribute: str, limits) -> None:
+    """Give the colormap the range of the column it is showing.
+
+    The attribute is not the obvious one. Colours live on `edge_color` and
+    `face_color`, but their range lives on `edge_contrast_limits` and
+    `face_contrast_limits` -- no `_color`. That matters more than it looks,
+    because a napari layer accepts `setattr` of a name it does not have: the
+    value lands on a stray attribute, nothing raises, and the real limits keep
+    whatever the previous colouring left them at. Colouring by `segment_id`
+    (0..9) and then by `flow_abs` (0..1.5e-13) therefore mapped every vessel to
+    the bottom of the colormap, and the network came out a single flat colour
+    while looking, from the outside, exactly as though it had worked.
+
+    So the name is checked rather than tried: a wrong one is a bug to hear
+    about, not a condition to pass over.
+    """
+    name = f"{attribute.replace('_color', '')}_contrast_limits"
+    if not hasattr(layer, name):
+        logger.warning(
+            "%s has no %s: colouring will use whatever range was set before.",
+            type(layer).__name__, name,
+        )
+        return
+    try:
+        setattr(layer, name, tuple(float(v) for v in limits))
+    except (ValueError, TypeError):
+        # A degenerate range (every value identical) is not worth a failure.
+        logger.debug("could not set %s to %r", name, limits)
 
 
 def _record_colour(layer, column: str | None) -> None:

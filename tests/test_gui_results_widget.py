@@ -519,3 +519,47 @@ def test_a_stage_with_no_opinion_leaves_the_colouring_alone(make_napari_viewer):
     _colour_layer(layer, "none")                     # the user, deliberately
     assert len(np.unique(np.asarray(layer.edge_color), axis=0)) == 1
     assert UNCOLOURED == "#cccccc"
+
+
+def test_the_contrast_limits_attribute_is_one_napari_actually_has(make_napari_viewer):
+    """A napari layer accepts setattr of a name it does not have.
+
+    `layer.edge_color_contrast_limits = ...` raises nothing and does nothing:
+    the value lands on a stray attribute while the real limits keep their old
+    value. We set that name for a while, so colouring by `segment_id` (0..9)
+    and then by `flow_abs` (0..1.5e-13) left the flow mapped against 0..9 --
+    every vessel at the bottom of the colormap, one flat colour, no error.
+
+    So assert the names exist rather than trusting a try/except to catch a typo.
+    """
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "build_network", network(a_graph())))
+
+    assert hasattr(viewer.layers[VESSELS], "edge_contrast_limits")
+    assert hasattr(viewer.layers[NODES], "face_contrast_limits")
+    assert not hasattr(type(viewer.layers[VESSELS]), "edge_color_contrast_limits")
+
+
+def test_colouring_by_a_small_column_after_a_large_one_still_spreads(make_napari_viewer):
+    """The symptom the wrong attribute produced, stated as a test."""
+    from haemolynx.gui._widget import _colour_layer
+
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "build_network", network(a_graph())))
+    layer = viewer.layers[VESSELS]
+
+    big = np.linspace(0.0, 9.0, len(layer.data))
+    tiny = np.linspace(0.0, 1.5e-13, len(layer.data))
+    features = dict(layer.features)
+    features["big"], features["tiny"] = big, tiny
+    layer.features = features
+
+    _colour_layer(layer, "big", "continuous", limits=(0.0, 9.0))
+    _colour_layer(layer, "tiny", "continuous", limits=(0.0, 1.5e-13))
+
+    assert layer.edge_contrast_limits == (0.0, 1.5e-13)
+    assert len(np.unique(np.asarray(layer.edge_color), axis=0)) > 1, (
+        "the tiny column is mapped against the big column's range"
+    )
