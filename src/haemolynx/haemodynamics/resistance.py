@@ -69,6 +69,44 @@ def calc_two_point_from_laplacian_matrix_nodeID(
     return R
 
 
+def _reachable_through_conductances(
+    adjacency: np.ndarray, seed_idx: np.ndarray
+) -> np.ndarray:
+    """Boolean mask of nodes connected to any seed through conductive edges."""
+    reached = np.zeros(adjacency.shape[0], dtype=bool)
+    reached[seed_idx] = True
+    frontier = np.asarray(seed_idx, dtype=int)
+    while len(frontier):
+        neighbours = np.any(adjacency[frontier], axis=0) & ~reached
+        frontier = np.nonzero(neighbours)[0]
+        reached[frontier] = True
+    return reached
+
+
+def _warn_components_pinned_to_one_pressure(
+    adjacency: np.ndarray, bc_idx_to_p: dict
+) -> None:
+    """Warn for each conductive component whose boundary nodes all impose the
+    same pressure — nothing drives it, so its every flow solves to zero."""
+    visited = np.zeros(adjacency.shape[0], dtype=bool)
+    for start in sorted(bc_idx_to_p):
+        if visited[start] or not adjacency[start].any():
+            continue
+        component = _reachable_through_conductances(adjacency, np.array([start]))
+        visited |= component
+        pressures = {
+            bc_idx_to_p[idx] for idx in np.nonzero(component)[0] if idx in bc_idx_to_p
+        }
+        if len(pressures) == 1:
+            logger.warning(
+                f"A conductive component of {int(component.sum())} node(s) only "
+                f"reaches boundary nodes at {pressures.pop()} Pa; with no "
+                "pressure difference across it, its every flow solves to zero. "
+                "Check that the inlet and outlet boundary nodes land on the "
+                "same connected, conductance-carrying part of the network."
+            )
+
+
 def solve_flow_from_conductance_matrix(
     conductance: np.ndarray,
     node_list: list,
@@ -130,9 +168,28 @@ def solve_flow_from_conductance_matrix(
     known_idx = np.array(sorted(bc_idx_to_p.keys()), dtype=int)
     for idx in known_idx:
         pressure[idx] = bc_idx_to_p[idx]
-    unknown_idx = np.array(
-        sorted(set(range(n_nodes)).difference(set(known_idx))), dtype=int
-    )
+
+    # A node with no conductive path to any boundary node gives the reduced
+    # Laplacian a zero row; np.linalg.solve then raises and the lstsq
+    # fallback degrades the pressure of *every* node, not just the
+    # disconnected ones. Solve only what the boundary conditions can reach:
+    # the rest has no driving pressure, so it keeps pressure 0 and its
+    # edges carry zero flow.
+    adjacency = conductance > 0
+    reached = _reachable_through_conductances(adjacency, known_idx)
+    unknown_mask = np.ones(n_nodes, dtype=bool)
+    unknown_mask[known_idx] = False
+    unknown_idx = np.nonzero(unknown_mask & reached)[0]
+
+    stranded_conductive = int(np.sum(unknown_mask & ~reached & adjacency.any(axis=1)))
+    if stranded_conductive:
+        logger.warning(
+            f"{stranded_conductive} node(s) carry conductances but have no "
+            "conductive path to any boundary node; their pressure stays 0 "
+            "and their edges carry zero flow."
+        )
+    if float(input_p_bc) != float(output_p_bc):
+        _warn_components_pinned_to_one_pressure(adjacency, bc_idx_to_p)
 
     # Heuristic dense-solve estimate using cubic complexity.
     n_free = int(len(unknown_idx))
@@ -164,9 +221,13 @@ def set_edge_flows(G: nx.Graph, node_list: list, pressure: np.ndarray) -> dict:
 
     Adds ``pressure_drop`` (Pa), ``flow_signed`` and ``flow_abs`` (m^3/s), so
     the flows travel with the graph and any export writes them out like any
-    other edge attribute.
+    other edge attribute. Also writes ``pressure`` (Pa) onto every node, so
+    :func:`flow_conservation_residuals` can audit the solution later.
     """
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    for node_id, idx in node_to_idx.items():
+        if node_id in G:
+            G.nodes[node_id]["pressure"] = float(pressure[idx])
     edges_set = 0
     total_abs_flow = 0.0
     for u, v, data in G.edges(data=True):
@@ -185,3 +246,34 @@ def set_edge_flows(G: nx.Graph, node_list: list, pressure: np.ndarray) -> dict:
         edges_set += 1
         total_abs_flow += abs(signed)
     return {"edges_set": edges_set, "total_abs_flow": total_abs_flow}
+
+
+def flow_conservation_residuals(G: nx.Graph, *, boundary_nodes=()) -> dict:
+    """Net signed outflow (m^3/s) at each node without an imposed pressure.
+
+    Kirchhoff's current law: after :func:`set_edge_flows`, the conductive
+    flows into any node that is not a boundary node must sum to zero.
+    Returns ``{node: residual}`` for every non-boundary node that has a
+    ``pressure`` and at least one conductive incident edge; a residual far
+    from zero (relative to the largest flow in the network) means the
+    solved pressures do not satisfy the conductances stored on the graph.
+    """
+    boundary = set(boundary_nodes)
+    residuals = {}
+    for node, node_data in G.nodes(data=True):
+        if node in boundary or "pressure" not in node_data:
+            continue
+        net_outflow = 0.0
+        conductive_edges = 0
+        for _, other, edge_data in G.edges(node, data=True):
+            edge_conductance = edge_data.get("conductance")
+            other_pressure = G.nodes[other].get("pressure")
+            if not edge_conductance or other_pressure is None:
+                continue
+            net_outflow += float(edge_conductance) * (
+                node_data["pressure"] - other_pressure
+            )
+            conductive_edges += 1
+        if conductive_edges:
+            residuals[node] = net_outflow
+    return residuals
