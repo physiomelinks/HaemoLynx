@@ -417,7 +417,12 @@ class PipelineConfig:
     # spacing=1.8638551724137933 is the z slice step, and XResolution=YResolution=535905/1000000
     # gives 1/0.535905 = 1.8660023698230097 um in y and x. The anisotropy is therefore on z.
     # test_physical_units.py re-derives this from the file so the constant cannot drift from it.
-    voxel_size_um: tuple = (1.8638551724137933, 1.8660023698230097, 1.8660023698230097)
+    # One value for all six specimens. The acquisitions do differ in z - 1.86386 um for WKY
+    # against 1.86412 for SHR - but preprocess_cb.py annotated all six with the WKY value and
+    # the supplied distance transform is calibrated in it, so using each specimen's own
+    # measurement would put radii and lengths on different scales for a 0.014% gain. The
+    # acquisition truth is kept as Specimen.measured_voxel_um for the methods section.
+    voxel_size_um: tuple = specimens.PROCESSING_VOXEL_UM
     min_branch_length: int = 10
     vtk_output_prefix: Path = Path(__file__).resolve().parents[1] / "examples" / "outputs" / "resistance_network"
     plot_dir: Path = Path(__file__).resolve().parents[1] / "examples" / "plots" / "carotid"
@@ -1904,13 +1909,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.list_specimens:
-        print(f"{'specimen':<10}{'group':<7}{'segmented':<11}missing inputs")
-        print("-" * 78)
+        _stages = ("acquired", "preprocessed", "predicted", "masked")
+        print(f"{'specimen':<10}{'group':<7}" + "".join(f"{s:<14}" for s in _stages) + "ready")
+        print("-" * 84)
         for _sid, _row in specimens.segmentation_status().items():
-            _missing = ", ".join(_row["missing_inputs"]) or "-"
-            print(f"{_sid:<10}{_row['group']:<7}{str(_row['segmented']):<11}{_missing}")
+            _cells = "".join(f"{('yes' if _row['stages'][s] else '-'):<14}" for s in _stages)
+            print(f"{_sid:<10}{_row['group']:<7}{_cells}{'yes' if _row['ready'] else '-'}")
         print(f"\nPooled classifier: {specimens.POOLED_CLASSIFIER}")
         print(f"  present: {specimens.POOLED_CLASSIFIER.exists()}")
+        print(f"Vessel class index: {specimens.VESSEL_CLASS_INDEX} "
+              f"({'RECORD IT BEFORE PREDICTING' if specimens.VESSEL_CLASS_INDEX is None else 'ok'})")
+        print("\nStages: acquired -> preprocessed (preprocess_cb.py) -> predicted (ilastik "
+              "headless)\n        -> masked (prob_to_mask.py). This pipeline consumes the last.")
         raise SystemExit(0)
 
     # 1. Initialize Default Configurations
@@ -1972,15 +1982,14 @@ if __name__ == "__main__":
     if args.optimize_patience is not None:
         pipeline_config.optimize_patience = args.optimize_patience
 
-    # Resolve the specimen first: it supplies both the probability volume and that specimen's
-    # own measured voxel size. The z step differs between groups (WKY 1.86386 um, SHR
-    # 1.86412 um), so taking it from the registry rather than a single constant keeps each run
-    # matched to its own acquisition. An explicit --voxel-size-um still wins over both.
+    # Resolve the specimen first: it supplies the probability volume and the artefact paths.
+    # The voxel size is deliberately NOT per-specimen - see PipelineConfig.voxel_size_um. An
+    # explicit --voxel-size-um still wins.
     active_specimen = specimens.get_specimen(args.specimen)
     specimens.assert_single_classifier()
-    pipeline_config.voxel_size_um = active_specimen.voxel_size_um
     print(f"Specimen {active_specimen.specimen_id} ({active_specimen.group}), "
           f"classifier {active_specimen.classifier.name}")
+    print(f"  stages: {active_specimen.stage_status()}")
 
     if args.voxel_size_um is not None:
         pipeline_config.voxel_size_um = tuple(args.voxel_size_um)

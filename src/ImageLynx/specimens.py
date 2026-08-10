@@ -3,7 +3,7 @@
 Six carotid bodies: three normotensive (WKY) and three spontaneously hypertensive (SHR),
 n = 3 per group, with the specimen as the unit of analysis.
 
-Two things this exists to make structurally impossible.
+Three things this exists to make structurally impossible.
 
 **Per-specimen classifiers.** There is one ``POOLED_CLASSIFIER`` and every specimen references
 it. Segmenting each specimen with its own Ilastik project would confound specimen identity with
@@ -11,33 +11,86 @@ classifier identity perfectly and unfixably - a between-group difference in vess
 then be a difference in the classifier rather than in the tissue, with no way to tell after the
 fact. ``assert_single_classifier`` refuses a run whose specimens do not share one project.
 
-**Silently mismatched acquisition geometry.** The z step differs between the two groups -
-1.86386 um for WKY against 1.86412 um for SHR - so a single hardcoded voxel size is wrong for
-one group. The difference is 0.014% and changes no result, but it is a group-correlated
-acquisition difference and belongs in the methods section rather than in nobody's notes. Each
-specimen therefore carries its own measured value, and a test re-derives it from the
-acquisition file whenever that file is present, so these constants cannot drift from the data.
+**Paths guessed from a naming rule.** The artefacts are not consistently named, and the
+inconsistency is group-correlated, which is the worst possible kind here: WKY carries a ``C1-``
+prefix and a ``_vessels`` infix that SHR does not, and the WKY acquisitions sit one directory
+deeper than the SHR ones. No f-string produces both. Each specimen therefore records its stems
+and subdirectory explicitly rather than deriving them, so a rename shows up as a missing file
+instead of as a silently wrong volume.
+
+**Two voxel sizes in one calculation.** The acquisitions genuinely differ - 1.86386 um in z for
+WKY against 1.86412 for SHR - but the upstream preprocessing annotated all six with the WKY
+value, and the supplied distance transform is calibrated in those units. Radii would then be in
+one scale and skeleton lengths in another. ``PROCESSING_VOXEL_UM`` is the single value every
+computation uses; ``Specimen.measured_voxel_um`` keeps the acquisition truth for the methods
+section, where a group-correlated acquisition difference belongs. The gap is 0.014% and changes
+no result, which is the reason to record it once rather than discover it twice.
 """
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 
 _ROOT = Path(__file__).resolve().parents[2]
-ILASTIK_INPUT_DIR = _ROOT / "examples" / "images" / "ilastik_batch_processing_input_images"
-ILASTIK_OUTPUT_DIR = _ROOT / "examples" / "images" / "ilastik_batch_processing_output_images"
 
-#: Raw acquisitions live outside the repository; they are ~300 MB each and gitignored.
+#: Raw acquisitions and every intermediate live outside the repository; they run to hundreds
+#: of megabytes each.
 ACQUISITION_ROOT = Path.home() / "Desktop" / "LCFM Images"
+
+#: preprocess_cb.py output: the 3-channel volumes Ilastik is trained and predicted on, plus
+#: the per-volume _qc.json record of how each was produced.
+ILASTIK_INPUT_DIR = ACQUISITION_ROOT / "ilastik_inputs"
+
+#: Headless prediction output, one *_Probabilities.h5 per volume.
+PROBABILITIES_DIR = ACQUISITION_ROOT / "ilastik_probabilities"
+
+#: prob_to_mask.py output: the binary mask and the calibrated distance transform this
+#: pipeline consumes.
+MASK_DIR = ACQUISITION_ROOT / "masks"
 
 #: The single pixel-classification project every specimen must be segmented with. Training it
 #: is interactive work in the Ilastik GUI and cannot be automated; what is enforced here is
 #: that one project is used for all six, with labels drawn from both groups.
-POOLED_CLASSIFIER = _ROOT / "examples" / "images" / "cb_pooled_2x2x2.ilp"
+#:
+#: The project currently in ILASTIK_INPUT_DIR is still called MyProject.ilp. It has to be
+#: renamed and checksummed before any headless run, or which classifier produced a given
+#: probability map becomes unanswerable - the same provenance question this module exists to
+#: settle for everything else.
+POOLED_CLASSIFIER = ILASTIK_INPUT_DIR / "cb_vessels.ilp"
 
-#: The project WKY-A was originally segmented with. Trained on normotensive tissue only, so it
-#: is not valid for the study - retained to identify probability maps that predate the pooled
-#: classifier rather than to be used.
+#: The project WKY-A was originally segmented with, back when the pipeline consumed a
+#: 2-channel vesselness TIFF. Trained on normotensive tissue only, so it is not valid for the
+#: study - retained to identify probability maps that predate the pooled classifier rather
+#: than to be used.
 LEGACY_WKY_A_CLASSIFIER = _ROOT / "examples" / "images" / "cb_wky_2x2x2_A.ilp"
+
+# --- The HDF5 contract preprocess_cb.py and Ilastik agree on -------------------------------
+#
+# The classifier was trained on features computed from these three channels in this order.
+# Feeding it anything else produces confident nonsense rather than an error, so the contract
+# is worth naming in code rather than leaving in a handover document.
+
+ILASTIK_INPUT_DATASET = "data"
+ILASTIK_INPUT_AXISTAGS = "zyxc"
+ILASTIK_INPUT_CHANNELS: Tuple[str, str, str] = (
+    "grayscale",          # rolling-ball background-subtracted, normalised lectin intensity
+    "vesselness_fine",    # multiscale Sato, sigma 1.0/1.4/2.0 px, per-scale normalised
+    "vesselness_coarse",  # multiscale Sato, sigma 4.0/8.0 px, at half resolution
+)
+
+#: Ilastik's headless export dataset name.
+PROBABILITIES_DATASET = "exported_data"
+
+#: Which class channel of the probability export is vessel. Ilastik exports one channel per
+#: class in label order, so the wrong index yields the inverse segmentation silently - a mean
+#: probability near 1 - expected rather than an error. Left None deliberately: the pooled
+#: classifier is not trained yet, and guessing is worse than refusing. Readers must raise
+#: while this is None rather than default to 0.
+VESSEL_CLASS_INDEX: Optional[int] = None
+
+#: The voxel size every computation uses. All six volumes were preprocessed with this value
+#: and the supplied distance transform is calibrated in it, so radii and lengths stay on one
+#: scale. See the module docstring for why it is not each specimen's measured value.
+PROCESSING_VOXEL_UM: Tuple[float, float, float] = (1.8639, 1.866, 1.866)
 
 
 @dataclass(frozen=True)
@@ -47,33 +100,48 @@ class Specimen:
     specimen_id: str
     group: str                      # "WKY" (normotensive) or "SHR" (hypertensive)
     stem: str                       # acquisition stem, e.g. "CB3-WKY-CB-A-2x2x2"
-    voxel_size_um: Tuple[float, float, float]   # (z, y, x), measured from the acquisition file
-    shape_zyx: Tuple[int, int, int]             # after channel separation
+    preproc_stem: str               # what preprocess_cb.py named its outputs after
+    acquisition_subdir: str         # the acquisitions are not all at the same depth
+    measured_voxel_um: Tuple[float, float, float]   # (z, y, x), read from the acquisition
+    shape_zyx: Tuple[int, int, int]                 # after channel separation
     classifier: Path = POOLED_CLASSIFIER
 
+    # --- Stage 0: acquisition ---
     @property
     def acquisition_path(self) -> Path:
-        """The raw multi-channel ZCYX acquisition. Channel 0 is vessels, channel 1 glomus."""
-        return ACQUISITION_ROOT / f"CB3-{self.group}" / f"{self.stem}.tif"
+        """The raw multi-channel ZCYX acquisition. Channel 0 is lectin/vessels, 1 is TH."""
+        return ACQUISITION_ROOT / self.acquisition_subdir / f"{self.stem}.tif"
+
+    # --- Stage 1: preprocess_cb.py ---
+    @property
+    def ilastik_input_path(self) -> Path:
+        """3-channel float32 HDF5 at /data, axistags zyxc, each channel in [0, 1]."""
+        return ILASTIK_INPUT_DIR / f"{self.preproc_stem}_ilastik.h5"
 
     @property
-    def vessels_path(self) -> Path:
-        """Channel 1 split out in Fiji: the vessel fluorescence Ilastik is trained on."""
-        return ILASTIK_INPUT_DIR / f"C1-{self.stem}_vessels.tif"
+    def qc_path(self) -> Path:
+        """The machine-readable record of how this volume was preprocessed."""
+        return ILASTIK_INPUT_DIR / f"{self.preproc_stem}_qc.json"
 
-    @property
-    def vesselness_path(self) -> Path:
-        """Frangi vesselness computed on the vessel channel: Ilastik's second feature."""
-        return ILASTIK_INPUT_DIR / f"C1-{self.stem}_vesselness_map.tif"
-
+    # --- Stage 2: headless Ilastik prediction ---
     @property
     def probabilities_path(self) -> Path:
-        """What the pipeline actually consumes. Ilastik names it after the vesselness stem."""
-        return ILASTIK_OUTPUT_DIR / f"C1-{self.stem}_vesselness_map_probs.tiff"
+        """Ilastik names the export after the input's nickname, i.e. its HDF5 stem."""
+        return PROBABILITIES_DIR / f"{self.preproc_stem}_ilastik_Probabilities.h5"
+
+    # --- Stage 3: prob_to_mask.py ---
+    @property
+    def mask_path(self) -> Path:
+        return MASK_DIR / f"{self.specimen_id}_mask.npy"
+
+    @property
+    def edt_path(self) -> Path:
+        """Distance to background, already in micrometres - do not rescale it."""
+        return MASK_DIR / f"{self.specimen_id}_edt_um.npy"
 
     @property
     def voxel_volume_um3(self) -> float:
-        z, y, x = self.voxel_size_um
+        z, y, x = PROCESSING_VOXEL_UM
         return float(z * y * x)
 
     @property
@@ -87,30 +155,57 @@ class Specimen:
         nz, ny, nx = self.shape_zyx
         return float(nz * ny * nx) * self.voxel_volume_um3
 
-    def missing_inputs(self) -> list:
-        """Which files still have to be produced before this specimen can be segmented."""
-        return [p for p in (self.vessels_path, self.vesselness_path) if not p.exists()]
+    def stage_status(self) -> Dict[str, bool]:
+        """Which pipeline stages have produced their artefact for this specimen."""
+        return {
+            "acquired": self.acquisition_path.exists(),
+            "preprocessed": self.ilastik_input_path.exists(),
+            "predicted": self.probabilities_path.exists(),
+            "masked": self.mask_path.exists() and self.edt_path.exists(),
+        }
 
-    def is_segmented(self) -> bool:
-        return self.probabilities_path.exists()
+    def missing_inputs(self) -> list:
+        """Which files still have to be produced before this specimen can be modelled."""
+        wanted = (self.ilastik_input_path, self.probabilities_path,
+                  self.mask_path, self.edt_path)
+        return [p for p in wanted if not p.exists()]
+
+    def is_ready(self) -> bool:
+        """Whether the mask and distance transform this pipeline consumes both exist."""
+        return self.stage_status()["masked"]
 
 
 #: Voxel sizes and shapes read from each acquisition's own ImageJ metadata, not typed in:
 #: `spacing` gives the z step and XResolution = 535905/1000000 gives 1.8660023698230097 um in
 #: y and x for all six. test_specimens.py re-derives them whenever the files are reachable.
+#: These are provenance only - PROCESSING_VOXEL_UM is what any calculation uses.
 _WKY_VOXEL = (1.8638551724137933, 1.8660023698230097, 1.8660023698230097)
 _SHR_VOXEL = (1.8641151515151515, 1.8660023698230097, 1.8660023698230097)
 
+# The preprocessing stems are group-correlated: the WKY volumes were split to a C1-*_vessels
+# TIFF in Fiji before preprocessing and carry that name, the SHR volumes were preprocessed
+# from the acquisition directly. Recorded rather than derived - see the module docstring.
 SPECIMENS: Tuple[Specimen, ...] = (
-    Specimen("WKY-A", "WKY", "CB3-WKY-CB-A-2x2x2", _WKY_VOXEL, (435, 456, 507)),
-    Specimen("WKY-B", "WKY", "CB3-WKY-CB-B-2x2x2", _WKY_VOXEL, (435, 357, 351)),
-    Specimen("WKY-C", "WKY", "CB3-WKY-CB-C-2x2x2", _WKY_VOXEL, (435, 315, 255)),
-    Specimen("SHR-A", "SHR", "CB3-SHR-CB-A-2x2x2", _SHR_VOXEL, (495, 459, 345)),
-    Specimen("SHR-B", "SHR", "CB3-SHR-CB-B-2x2x2", _SHR_VOXEL, (495, 483, 399)),
-    Specimen("SHR-C", "SHR", "CB3-SHR-CB-C-2x2x2", _SHR_VOXEL, (495, 495, 381)),
+    Specimen("WKY-A", "WKY", "CB3-WKY-CB-A-2x2x2", "C1-CB3-WKY-CB-A-2x2x2_vessels",
+             "CB3-WKY/raw_cb_images", _WKY_VOXEL, (435, 456, 507)),
+    Specimen("WKY-B", "WKY", "CB3-WKY-CB-B-2x2x2", "C1-CB3-WKY-CB-B-2x2x2_vessels",
+             "CB3-WKY/raw_cb_images", _WKY_VOXEL, (435, 357, 351)),
+    Specimen("WKY-C", "WKY", "CB3-WKY-CB-C-2x2x2", "C1-CB3-WKY-CB-C-2x2x2_vessels",
+             "CB3-WKY/raw_cb_images", _WKY_VOXEL, (435, 315, 255)),
+    Specimen("SHR-A", "SHR", "CB3-SHR-CB-A-2x2x2", "CB3-SHR-CB-A-2x2x2",
+             "CB3-SHR", _SHR_VOXEL, (495, 459, 345)),
+    Specimen("SHR-B", "SHR", "CB3-SHR-CB-B-2x2x2", "CB3-SHR-CB-B-2x2x2",
+             "CB3-SHR", _SHR_VOXEL, (495, 483, 399)),
+    Specimen("SHR-C", "SHR", "CB3-SHR-CB-C-2x2x2", "CB3-SHR-CB-C-2x2x2",
+             "CB3-SHR", _SHR_VOXEL, (495, 495, 381)),
 )
 
 GROUPS: Tuple[str, str] = ("WKY", "SHR")
+
+#: The volume the handover flags as the weakest of the six: background 955 against 337-466 for
+#: the other WKY volumes, SNR 7.8. Named here so a segmentation failure there is a prediction
+#: that was made in advance rather than a discovery made afterwards.
+WEAKEST_SPECIMEN_ID = "WKY-C"
 
 
 def get_specimen(specimen_id: str) -> Specimen:
@@ -149,13 +244,35 @@ def assert_single_classifier(specimens: Optional[Sequence[Specimen]] = None) -> 
     return classifiers.pop()
 
 
+def resolve_vessel_class_index(override: Optional[int] = None) -> int:
+    """The probability channel that is vessel, or a refusal to guess.
+
+    Ilastik exports one channel per class in label order. Picking the wrong one does not
+    fail: it returns the background probability, whose mean is 1 - expected, and every
+    downstream number is computed from the inverse segmentation. There is no safe default,
+    so this raises until the trained classifier's label order is recorded.
+    """
+    index = VESSEL_CLASS_INDEX if override is None else override
+    if index is None:
+        raise ValueError(
+            "The vessel class index is not recorded. Ilastik exports one probability "
+            "channel per class in label order, and the wrong index silently yields the "
+            "inverse segmentation rather than an error. Set specimens.VESSEL_CLASS_INDEX "
+            "from the trained project's label order before predicting."
+        )
+    if index < 0:
+        raise ValueError(f"VESSEL_CLASS_INDEX must be non-negative, got {index}.")
+    return int(index)
+
+
 def segmentation_status() -> Dict[str, Dict[str, object]]:
     """What still has to be produced, per specimen, before the study can run."""
     return {
         s.specimen_id: {
             "group": s.group,
+            "stages": s.stage_status(),
             "missing_inputs": [p.name for p in s.missing_inputs()],
-            "segmented": s.is_segmented(),
+            "ready": s.is_ready(),
         }
         for s in SPECIMENS
     }
