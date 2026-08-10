@@ -1,0 +1,67 @@
+{
+  "input": "CB3-SHR-CB-A-2x2x2.tif",
+  "parameters": {
+    "input": [
+      "CB3-SHR-CB-A-2x2x2.tif",
+      "CB3-SHR-CB-B-2x2x2.tif",
+      "CB3-SHR-CB-C-2x2x2.tif"
+    ],
+    "output_dir": "../ilastik_inputs",
+    "channel": 0,
+    "extra_channel": null,
+    "rolling_ball": 30.0,
+    "remove_outliers": 0,
+    "saturated": 0.02,
+    "sigmas_fine": [
+      1.0,
+      1.4,
+      2.0
+    ],
+    "sigmas_coarse": [
+      4.0,
+      8.0
+    ],
+    "single_vesselness": false,
+    "fast_coarse": true,
+    "workers": 8,
+    "chunk_z": 32,
+    "max_memory_gb": 12.0,
+    "voxel": [
+      1.8639,
+      1.866,
+      1.866
+    ],
+    "diagnose": false,
+    "save_tif": true
+  },
+  "shape_zyx": [
+    495,
+    459,
+    345
+  ],
+  "n_channels_in_file": 2,
+  "z_profile": {
+    "peak_slice": 157,
+    "peak_position_fraction": 0.318,
+    "p99_first_quarter_mean": 3504.9,
+    "p99_last_quarter_mean": 201.0,
+    "background_p50_range": [
+      23.0,
+      371.0
+    ],
+    "verdict": "hump / tissue-extent dominated",
+    "advice": "Do NOT apply bleach correction. This shape is the tissue block, not photobleaching. Label at several depths in ilastik instead."
+  },
+  "normalisation_anchors": [
+    0.0,
+    6673.79736328125
+  ],
+  "workers_used": 8,
+  "output_h5": "../ilastik_inputs/CB3-SHR-CB-A-2x2x2_ilastik.h5",
+  "channel_names": [
+    "grayscale",
+    "vesselness_fine",
+    "vesselness_coarse"
+  ],
+  "elapsed_seconds": 182.9
+}

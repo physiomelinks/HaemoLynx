@@ -1915,10 +1915,28 @@ if __name__ == "__main__":
         for _sid, _row in specimens.segmentation_status().items():
             _cells = "".join(f"{('yes' if _row['stages'][s] else '-'):<14}" for s in _stages)
             print(f"{_sid:<10}{_row['group']:<7}{_cells}{'yes' if _row['ready'] else '-'}")
+        _prov = specimens.data_root_provenance()
+        print(f"\nAcquisition root: {_prov['acquisition_root']}"
+              f"{' (from env)' if _prov['acquisition_root_from_env'] else ''}"
+              f"{'' if _prov['acquisition_root_exists'] else '  [MISSING]'}")
+        print(f"Data root:        {_prov['data_root']}"
+              f"{' (from env)' if _prov['data_root_from_env'] else ''}"
+              f"{'' if _prov['data_root_exists'] else '  [MISSING]'}")
+        print(f"  override with {' or '.join(_prov['env_vars'])}")
+
         print(f"\nPooled classifier: {specimens.POOLED_CLASSIFIER}")
-        print(f"  present: {specimens.POOLED_CLASSIFIER.exists()}")
-        print(f"Vessel class index: {specimens.VESSEL_CLASS_INDEX} "
-              f"({'RECORD IT BEFORE PREDICTING' if specimens.VESSEL_CLASS_INDEX is None else 'ok'})")
+        if specimens.POOLED_CLASSIFIER.exists():
+            print(f"  sha256: {specimens.classifier_sha256()}")
+            try:
+                _report = specimens.verify_classifier()
+                print(f"  verified: {_report['total_labelled_voxels']} labelled voxels "
+                      f"across {len(_report['lanes'])} lanes, "
+                      f"{_report['selected_features']} feature selections")
+            except ValueError as _problem:
+                print(f"  NOT READY -- {_problem}")
+        else:
+            print("  present: False")
+        print(f"Vessel class index: {specimens.VESSEL_CLASS_INDEX}")
         print("\nStages: acquired -> preprocessed (preprocess_cb.py) -> predicted (ilastik "
               "headless)\n        -> masked (prob_to_mask.py). This pipeline consumes the last.")
         raise SystemExit(0)

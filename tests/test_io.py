@@ -123,13 +123,28 @@ def test_reads_the_named_vessel_class_channel(probability_h5):
     assert got == pytest.approx(vessel)
 
 
-def test_refuses_to_guess_the_vessel_class(probability_h5):
-    """There is no safe default while the trained project's label order is unrecorded."""
+def test_refuses_to_guess_the_vessel_class(probability_h5, monkeypatch):
+    """There is no safe default when the trained project's label order is unrecorded.
+
+    It is recorded now - LabelNames are ['vessel', 'background'], so vessel is channel 0 -
+    but the refusal is what protects the next classifier, whose label order is whatever it
+    was clicked in.
+    """
+    import ImageLynx.specimens as specimens
     from ImageLynx.io import read_ilastik_probabilities
 
+    monkeypatch.setattr(specimens, "VESSEL_CLASS_INDEX", None)
     path, _ = probability_h5
     with pytest.raises(ValueError, match="vessel class index is not recorded"):
         read_ilastik_probabilities(path)
+
+
+def test_uses_the_recorded_vessel_class_by_default(probability_h5):
+    """With the index recorded, reading needs no argument - and gets channel 0."""
+    from ImageLynx.io import read_ilastik_probabilities
+
+    path, vessel = probability_h5
+    assert read_ilastik_probabilities(path) == pytest.approx(vessel)
 
 
 def test_rejects_the_inverse_segmentation(probability_h5):

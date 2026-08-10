@@ -7,6 +7,7 @@ voxel size would put radii and lengths on different scales, because the supplied
 transform is calibrated in one value for all six.
 """
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from ImageLynx.specimens import (
     GROUPS,
     ILASTIK_INPUT_CHANNELS,
     ILASTIK_INPUT_DATASET,
+    ILASTIK_INPUT_DIR,
     LEGACY_WKY_A_CLASSIFIER,
     POOLED_CLASSIFIER,
     PROBABILITIES_DATASET,
@@ -197,14 +199,17 @@ def test_shr_specimens_are_larger_so_raw_counts_are_not_comparable():
 
 # --- The Ilastik contract ------------------------------------------------------------------
 
-def test_the_vessel_class_index_refuses_to_be_guessed():
+def test_the_vessel_class_index_refuses_to_be_guessed(monkeypatch):
     """The wrong class index yields the inverse segmentation and no error.
 
     Ilastik exports one probability channel per class in label order. Reading the background
     channel gives a mean of 1 - expected and a full set of downstream numbers computed from
-    the complement of the vessels. There is no safe default, so the absence of a recorded
-    value has to be an error rather than a zero.
+    the complement of the vessels. There is no safe default, so an unrecorded value has to be
+    an error rather than a zero - which stays true now that the value happens to be known.
     """
+    import ImageLynx.specimens as module
+
+    monkeypatch.setattr(module, "VESSEL_CLASS_INDEX", None)
     with pytest.raises(ValueError, match="vessel class index is not recorded"):
         resolve_vessel_class_index()
 
@@ -305,3 +310,194 @@ def test_pipeline_input_path_is_no_longer_hardcoded_to_one_specimen():
 def test_pipeline_voxel_size_is_the_shared_processing_value():
     """Running one group at the other's z step would silently mis-scale it."""
     assert _pipeline().PipelineConfig().voxel_size_um == PROCESSING_VOXEL_UM
+
+
+# --- Locating the data ---------------------------------------------------------------------
+
+def test_data_root_search_prefers_the_location_that_actually_holds_the_data(tmp_path):
+    """The artefacts have moved twice in two days; a hardcoded path needs a commit each time."""
+    from ImageLynx.specimens import _resolve_root
+
+    stale, current = tmp_path / "stale", tmp_path / "current"
+    (current / "ilastik_inputs").mkdir(parents=True)
+    stale.mkdir()
+
+    assert _resolve_root("_UNSET_ENV_", (stale, current), "ilastik_inputs") == current
+    # With nothing found, the first candidate is returned so the error names a real intent.
+    assert _resolve_root("_UNSET_ENV_", (stale, current), "nowhere") == stale
+
+
+def test_an_environment_override_wins_outright(tmp_path, monkeypatch):
+    from ImageLynx.specimens import _resolve_root
+
+    monkeypatch.setenv("IMAGELYNX_TEST_ROOT", str(tmp_path))
+    resolved = _resolve_root("IMAGELYNX_TEST_ROOT", (Path("/nonexistent"),), "ilastik_inputs")
+    assert resolved == tmp_path.resolve()
+
+
+def test_data_root_provenance_reports_where_it_looked():
+    """A silently stale copy is the failure mode a search introduces; this makes it visible."""
+    from ImageLynx.specimens import data_root_provenance
+
+    provenance = data_root_provenance()
+    assert set(provenance) >= {"acquisition_root", "data_root", "data_root_exists",
+                               "data_root_from_env", "env_vars"}
+
+
+def test_the_classifier_sits_with_the_volumes_it_registers():
+    """The project references its datasets by relative path, so separating them breaks it."""
+    assert POOLED_CLASSIFIER.parent == ILASTIK_INPUT_DIR
+    assert POOLED_CLASSIFIER.name == "vessel_segmentation.ilp"
+
+
+def test_the_vessel_class_index_is_recorded():
+    """LabelNames on the trained project are ['vessel', 'background'], so vessel is channel 0."""
+    from ImageLynx.specimens import VESSEL_CLASS_INDEX
+
+    assert VESSEL_CLASS_INDEX == 0
+    assert resolve_vessel_class_index() == 0
+
+
+# --- Verifying the trained project ---------------------------------------------------------
+
+def _write_project(path, lanes, label_names=("vessel", "background"), compute_in_2d=False):
+    """Build a minimal .ilp with the structure verify_classifier reads.
+
+    ``lanes`` is a sequence of (preproc_stem, [z_start, ...]); an empty depth list means the
+    lane is registered but never labelled, which is the real failure this guards against.
+    """
+    import h5py
+    import numpy as np
+
+    with h5py.File(path, "w") as project:
+        project["PixelClassification/LabelNames"] = np.array(
+            [n.encode() for n in label_names], dtype="S32")
+
+        for position, (stem, depths) in enumerate(lanes):
+            lane = f"lane{position:04d}"
+            project[f"Input Data/infos/{lane}/Raw Data/filePath"] = \
+                f"{stem}_ilastik.h5/data".encode()
+
+            group = project.create_group(f"PixelClassification/LabelSets/labels{position:03d}")
+            for block_index, z in enumerate(depths):
+                block = group.create_dataset(
+                    f"block{block_index:04d}", data=np.ones((1, 4, 4, 1), dtype=np.uint8))
+                block.attrs["blockSlice"] = f"[{z}:{z + 1},0:4,0:4,0:1]".encode()
+
+        project["FeatureSelections/ComputeIn2d"] = np.array([compute_in_2d] * 7)
+        project["FeatureSelections/SelectionMatrix"] = np.zeros((6, 7), dtype=bool)
+
+
+def _all_lanes(depths):
+    return [(s.preproc_stem, list(depths)) for s in SPECIMENS]
+
+
+def test_a_properly_pooled_project_verifies(tmp_path):
+    from ImageLynx.specimens import verify_classifier
+
+    path = tmp_path / "good.ilp"
+    _write_project(path, _all_lanes([50, 150, 250]))
+
+    report = verify_classifier(path)
+    assert report["label_names"] == ["vessel", "background"]
+    assert report["total_labelled_voxels"] == 6 * 3 * 16
+
+
+def test_labels_on_one_cohort_only_are_refused(tmp_path):
+    """One .ilp trained on one cohort satisfies the letter of the rule and defeats its point.
+
+    This is the state the first trained project was actually in: all 454 labels on WKY-A,
+    the other five lanes registered and empty. The decision boundary is then learned from
+    normotensive tissue and applied to hypertensive tissue, which is the confound the whole
+    registry exists to remove, reintroduced one level down where nothing else can see it.
+    """
+    from ImageLynx.specimens import verify_classifier
+
+    lanes = [(s.preproc_stem, [214] if s.specimen_id == "WKY-A" else []) for s in SPECIMENS]
+    path = tmp_path / "one_cohort.ilp"
+    _write_project(path, lanes)
+
+    with pytest.raises(ValueError) as excinfo:
+        verify_classifier(path)
+
+    message = str(excinfo.value)
+    assert "no labels at all" in message
+    for unlabelled in ("WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C"):
+        assert unlabelled in message
+    assert "WKY-A" not in message.split("no labels at all")[1].split("\n")[0]
+
+
+def test_labelling_at_a_single_depth_is_refused(tmp_path):
+    """Each volume's tissue peaks at a different slice, and the sparse ends are the hard case."""
+    from ImageLynx.specimens import verify_classifier
+
+    path = tmp_path / "one_depth.ilp"
+    _write_project(path, _all_lanes([214]))
+
+    with pytest.raises(ValueError, match="fewer than 2 depths"):
+        verify_classifier(path)
+
+    # Still inspectable without raising, and the depth rule can be relaxed deliberately.
+    assert verify_classifier(path, require_pooled_labels=False)["total_labelled_voxels"] > 0
+
+
+def test_a_label_order_contradicting_the_recorded_index_is_refused(tmp_path):
+    """Reading the background channel yields a full set of results from the inverse mask."""
+    from ImageLynx.specimens import verify_classifier
+
+    path = tmp_path / "swapped.ilp"
+    _write_project(path, _all_lanes([50, 150]), label_names=("background", "vessel"))
+
+    with pytest.raises(ValueError, match="label order"):
+        verify_classifier(path)
+
+
+def test_two_dimensional_features_are_refused(tmp_path):
+    """Per-slice features give z-anisotropic predictions and staircase skeleton artefacts."""
+    from ImageLynx.specimens import verify_classifier
+
+    path = tmp_path / "flat_features.ilp"
+    _write_project(path, _all_lanes([50, 150]), compute_in_2d=True)
+
+    with pytest.raises(ValueError, match="2D"):
+        verify_classifier(path)
+
+
+def test_a_specimen_missing_from_the_project_is_refused(tmp_path):
+    """A volume the classifier was never shown cannot be part of a pooled training set."""
+    from ImageLynx.specimens import verify_classifier
+
+    path = tmp_path / "five_lanes.ilp"
+    _write_project(path, _all_lanes([50, 150])[:-1])
+
+    with pytest.raises(ValueError, match="not registered as lanes|not registered"):
+        verify_classifier(path)
+
+
+def test_classifier_hash_is_content_addressed(tmp_path):
+    """A run has to be able to name the classifier that produced it, not just a filename."""
+    from ImageLynx.specimens import classifier_sha256
+
+    a, b = tmp_path / "a.ilp", tmp_path / "b.ilp"
+    a.write_bytes(b"same"), b.write_bytes(b"same")
+    assert classifier_sha256(a) == classifier_sha256(b)
+
+    b.write_bytes(b"retrained")
+    assert classifier_sha256(a) != classifier_sha256(b)
+
+
+def test_the_real_trained_classifier_is_ready_to_segment_the_study():
+    """Status check on the actual project, which is data rather than code.
+
+    Skips - loudly - while the project is not ready, so the suite stays green on a code
+    change while the reason stays visible in `pytest -rs`. It turns into a real pass on its
+    own once the labelling covers all six volumes at more than one depth.
+    """
+    from ImageLynx.specimens import verify_classifier
+
+    if not POOLED_CLASSIFIER.exists():
+        pytest.skip(f"no trained classifier at {POOLED_CLASSIFIER}")
+    try:
+        verify_classifier()
+    except ValueError as problem:
+        pytest.skip(f"classifier not ready: {problem}")

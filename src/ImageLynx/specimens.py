@@ -26,36 +26,83 @@ computation uses; ``Specimen.measured_voxel_um`` keeps the acquisition truth for
 section, where a group-correlated acquisition difference belongs. The gap is 0.014% and changes
 no result, which is the reason to record it once rather than discover it twice.
 """
+import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 _ROOT = Path(__file__).resolve().parents[2]
 
-#: Raw acquisitions and every intermediate live outside the repository; they run to hundreds
-#: of megabytes each.
-ACQUISITION_ROOT = Path.home() / "Desktop" / "LCFM Images"
+_ACQUISITION_ENV = "IMAGELYNX_CB_ACQUISITION_ROOT"
+_DATA_ENV = "IMAGELYNX_CB_DATA_ROOT"
+
+#: Where the raw acquisitions live. Hundreds of megabytes each, so outside the repository.
+_ACQUISITION_CANDIDATES = (
+    Path.home() / "Desktop" / "LCFM Images",
+)
+
+#: Where the derived artefacts live - the directory *containing* ilastik_inputs. These have
+#: already moved twice: preprocess_cb.py wrote them beside the acquisitions, and they were
+#: then relocated into the repository. Searching known locations rather than hardcoding one
+#: means a move is a printed line rather than a commit, and ``data_root_provenance`` reports
+#: which candidate won so the search is visible instead of magic. IMAGELYNX_CB_DATA_ROOT
+#: overrides it outright.
+_DATA_CANDIDATES = (
+    _ROOT,
+    Path.home() / "Desktop" / "LCFM Images",
+)
+
+
+def _resolve_root(env_var: str, candidates: Sequence[Path], marker: str) -> Path:
+    """First the environment, then the first candidate that actually holds ``marker``."""
+    override = os.environ.get(env_var)
+    if override:
+        return Path(override).expanduser().resolve()
+    for candidate in candidates:
+        if (candidate / marker).is_dir():
+            return candidate
+    return candidates[0]
+
+
+ACQUISITION_ROOT = _resolve_root(_ACQUISITION_ENV, _ACQUISITION_CANDIDATES, "CB3-WKY")
+CB_DATA_ROOT = _resolve_root(_DATA_ENV, _DATA_CANDIDATES, "ilastik_inputs")
+
+
+def data_root_provenance() -> Dict[str, object]:
+    """Which roots were chosen and why, so a silently stale copy is visible."""
+    return {
+        "acquisition_root": str(ACQUISITION_ROOT),
+        "acquisition_root_from_env": bool(os.environ.get(_ACQUISITION_ENV)),
+        "acquisition_root_exists": ACQUISITION_ROOT.is_dir(),
+        "data_root": str(CB_DATA_ROOT),
+        "data_root_from_env": bool(os.environ.get(_DATA_ENV)),
+        "data_root_exists": CB_DATA_ROOT.is_dir(),
+        "env_vars": (_ACQUISITION_ENV, _DATA_ENV),
+    }
+
 
 #: preprocess_cb.py output: the 3-channel volumes Ilastik is trained and predicted on, plus
-#: the per-volume _qc.json record of how each was produced.
-ILASTIK_INPUT_DIR = ACQUISITION_ROOT / "ilastik_inputs"
+#: the per-volume _qc.json record of how each was produced. The trained project has to sit in
+#: this directory too - it registers its datasets by relative path, so separating them breaks
+#: it.
+ILASTIK_INPUT_DIR = CB_DATA_ROOT / "ilastik_inputs"
 
 #: Headless prediction output, one *_Probabilities.h5 per volume.
-PROBABILITIES_DIR = ACQUISITION_ROOT / "ilastik_probabilities"
+PROBABILITIES_DIR = CB_DATA_ROOT / "ilastik_probabilities"
 
 #: prob_to_mask.py output: the binary mask and the calibrated distance transform this
 #: pipeline consumes.
-MASK_DIR = ACQUISITION_ROOT / "masks"
+MASK_DIR = CB_DATA_ROOT / "masks"
 
 #: The single pixel-classification project every specimen must be segmented with. Training it
 #: is interactive work in the Ilastik GUI and cannot be automated; what is enforced here is
 #: that one project is used for all six, with labels drawn from both groups.
 #:
-#: The project currently in ILASTIK_INPUT_DIR is still called MyProject.ilp. It has to be
-#: renamed and checksummed before any headless run, or which classifier produced a given
-#: probability map becomes unanswerable - the same provenance question this module exists to
-#: settle for everything else.
-POOLED_CLASSIFIER = ILASTIK_INPUT_DIR / "cb_vessels.ilp"
+#: It must live in ILASTIK_INPUT_DIR: the project registers its six datasets by relative path
+#: (``C1-CB3-WKY-CB-A-2x2x2_vessels_ilastik.h5/data``), so moving it away from them breaks it,
+#: while moving the whole directory together does not.
+POOLED_CLASSIFIER = ILASTIK_INPUT_DIR / "vessel_segmentation.ilp"
 
 #: The project WKY-A was originally segmented with, back when the pipeline consumed a
 #: 2-channel vesselness TIFF. Trained on normotensive tissue only, so it is not valid for the
@@ -82,10 +129,16 @@ PROBABILITIES_DATASET = "exported_data"
 
 #: Which class channel of the probability export is vessel. Ilastik exports one channel per
 #: class in label order, so the wrong index yields the inverse segmentation silently - a mean
-#: probability near 1 - expected rather than an error. Left None deliberately: the pooled
-#: classifier is not trained yet, and guessing is worse than refusing. Readers must raise
-#: while this is None rather than default to 0.
-VESSEL_CLASS_INDEX: Optional[int] = None
+#: probability near 1 - expected rather than an error.
+#:
+#: Read from the trained project, whose LabelNames are ['vessel', 'background']. Kept as a
+#: constant rather than a lookup because resolving it would mean opening a 288 KB HDF5 on
+#: every import; verify_classifier checks it against the project's real label order, which is
+#: the only thing that can contradict it.
+VESSEL_CLASS_INDEX: Optional[int] = 0
+
+#: The label name that identifies the vessel class, used to verify VESSEL_CLASS_INDEX.
+VESSEL_LABEL_NAME = "vessel"
 
 #: The voxel size every computation uses. All six volumes were preprocessed with this value
 #: and the supplied distance transform is calibrated in it, so radii and lengths stay on one
@@ -276,3 +329,172 @@ def segmentation_status() -> Dict[str, Dict[str, object]]:
         }
         for s in SPECIMENS
     }
+
+
+# --- Reading and verifying the trained project ---------------------------------------------
+
+def classifier_sha256(path: Optional[Path] = None) -> str:
+    """Content hash of the .ilp, so a run can record which classifier produced it.
+
+    Not pinned to an expected value anywhere: retraining is supposed to change it. What
+    matters is that the hash travels with the output, so a probability map can be traced to
+    the project that made it rather than to a filename that may have been reused.
+    """
+    path = POOLED_CLASSIFIER if path is None else Path(path)
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_classifier_metadata(path: Optional[Path] = None) -> Dict[str, object]:
+    """What the trained Ilastik project actually contains.
+
+    Reads the label names, the registered dataset lanes, how many voxels were labelled on
+    each and at which z, and whether the features are 3D. Everything ``verify_classifier``
+    decides on, separated out so it can be inspected without raising.
+    """
+    import h5py
+    import numpy as np
+
+    path = POOLED_CLASSIFIER if path is None else Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"No trained classifier at {path}")
+
+    def _text(value):
+        return value.decode() if isinstance(value, bytes) else str(value)
+
+    with h5py.File(path, "r") as project:
+        label_names = [_text(n) for n in project["PixelClassification/LabelNames"][()]]
+
+        lanes: List[Dict[str, object]] = []
+        infos = project["Input Data/infos"]
+        for lane_key in sorted(infos.keys()):
+            file_path = None
+            for role in infos[lane_key].keys():
+                role_group = infos[lane_key][role]
+                if "filePath" in role_group:
+                    file_path = _text(role_group["filePath"][()])
+                    break
+            lanes.append({"lane": lane_key, "file_path": file_path or ""})
+
+        label_sets = project["PixelClassification/LabelSets"]
+        for position, lane_key in enumerate(sorted(label_sets.keys())):
+            counts: Dict[int, int] = {}
+            z_slices = set()
+
+            def _visit(_name, obj):
+                if not isinstance(obj, h5py.Dataset) or obj.size == 0:
+                    return
+                block = obj[()]
+                for value in np.unique(block):
+                    if value:
+                        counts[int(value)] = counts.get(int(value), 0) + int((block == value).sum())
+                extent = obj.attrs.get("blockSlice")
+                if extent is not None:
+                    z_slices.add(_text(extent).strip("[]").split(",")[0].strip())
+
+            label_sets[lane_key].visititems(_visit)
+            if position < len(lanes):
+                lanes[position]["labelled_voxels"] = sum(counts.values())
+                lanes[position]["labels_by_value"] = counts
+                lanes[position]["z_extents"] = sorted(z_slices)
+
+        features = project["FeatureSelections"]
+        compute_in_2d = [bool(v) for v in features["ComputeIn2d"][()]]
+        selection = np.asarray(features["SelectionMatrix"][()])
+
+    return {
+        "path": str(path),
+        "label_names": label_names,
+        "lanes": lanes,
+        "compute_in_2d": compute_in_2d,
+        "selected_features": int(selection.sum()),
+        "total_labelled_voxels": sum(int(l.get("labelled_voxels", 0)) for l in lanes),
+    }
+
+
+def verify_classifier(
+    path: Optional[Path] = None,
+    require_pooled_labels: bool = True,
+    min_depths_per_lane: int = 2,
+) -> Dict[str, object]:
+    """Refuse a classifier that cannot support a between-group comparison.
+
+    One ``.ilp`` used for all six volumes satisfies the letter of the single-classifier rule
+    while still being trained on one cohort, if only that cohort's lanes carry labels. The
+    decision boundary is then learned from normotensive tissue and applied to hypertensive
+    tissue, which is the confound the whole registry exists to remove - reintroduced one
+    level down, where nothing else in this codebase can see it.
+
+    That is not hypothetical: the first trained project had all 454 of its labels on WKY-A,
+    on a single z slice, with the other five lanes registered and empty.
+
+    Labelling at one depth is a milder version of the same problem. Each volume's tissue
+    peaks at a different slice, and the sparse end slices are where background noise comes
+    closest to vessel intensity, so a classifier trained only near the peak has never seen
+    the case it most needs to get right.
+
+    Returns the metadata report on success. Raises ValueError listing every problem at once,
+    since relabelling is one trip back to the GUI either way.
+    """
+    report = read_classifier_metadata(path)
+    problems: List[str] = []
+
+    names = report["label_names"]
+    index = VESSEL_CLASS_INDEX
+    if index is None or index >= len(names) or names[index] != VESSEL_LABEL_NAME:
+        problems.append(
+            f"VESSEL_CLASS_INDEX is {index} but the project's label order is {names}; "
+            f"reading the wrong channel yields the inverse segmentation without an error."
+        )
+
+    if any(report["compute_in_2d"]):
+        problems.append(
+            "Some features are computed in 2D. Per-slice features give z-anisotropic "
+            "predictions and staircase artefacts in the skeleton."
+        )
+
+    lanes = report["lanes"]
+    registered = {
+        s.specimen_id: any(s.preproc_stem in str(l["file_path"]) for l in lanes)
+        for s in SPECIMENS
+    }
+    unregistered = sorted(sid for sid, present in registered.items() if not present)
+    if unregistered:
+        problems.append(
+            f"Specimens not registered as lanes in the project: {', '.join(unregistered)}. "
+            f"A volume the classifier was never shown cannot be part of a pooled training set."
+        )
+
+    if require_pooled_labels:
+        empty, shallow = [], []
+        for lane in lanes:
+            who = next((s.specimen_id for s in SPECIMENS
+                        if s.preproc_stem in str(lane["file_path"])), lane["lane"])
+            labelled = int(lane.get("labelled_voxels", 0))
+            if labelled == 0:
+                empty.append(who)
+            elif len(lane.get("z_extents", [])) < min_depths_per_lane:
+                shallow.append(f"{who} (1 depth, {labelled} voxels)")
+
+        if empty:
+            problems.append(
+                f"Lanes with no labels at all: {', '.join(empty)}. The classifier is trained "
+                f"on the remainder, so its decision boundary comes from one cohort and the "
+                f"between-group difference it measures is partly its own."
+            )
+        if shallow:
+            problems.append(
+                f"Lanes labelled at fewer than {min_depths_per_lane} depths: "
+                f"{', '.join(shallow)}. Each volume's tissue peaks at a different slice and "
+                f"the sparse ends are where background most resembles vessel."
+            )
+
+    if problems:
+        raise ValueError(
+            f"{Path(report['path']).name} is not ready to segment this study:\n  - "
+            + "\n  - ".join(problems)
+        )
+    return report
