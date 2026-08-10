@@ -1198,64 +1198,162 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
 
     return summary
 
+#: Discard centreline samples within this many voxels of a junction node. The segmentation
+#: handover specifies two voxels; at this study's 1.866 µm voxel that is 3.73 µm, which is
+#: also roughly one inscribed radius for a capillary and so matches the physical argument
+#: (the contaminated neighbourhood scales with the junction's inscribed sphere).
+JUNCTION_PROXIMITY_EXCLUSION_VOXELS = 2.0
+
+
+def _polyline_end_junction_flags(
+    G: nx.MultiGraph, u, v, poly: np.ndarray
+) -> tuple[bool, bool]:
+    """Which ends of ``poly`` terminate on a junction node, as ``(start, end)``.
+
+    A junction is a node of degree > 2; degree-1 tips and degree-2 pass-throughs carry no
+    inscribed sphere of their own. Edge voxel lists conventionally run from ``u`` to ``v``,
+    but nothing enforces it, so when the two nodes disagree about junction status the ends
+    are matched geometrically against the node positions. Getting this backwards would trim
+    the free end and keep the junction - inflating the radius rather than correcting it, and
+    silently.
+    """
+    u_is_junction = G.degree(u) > 2
+    v_is_junction = G.degree(v) > 2
+    if u_is_junction == v_is_junction:
+        return u_is_junction, v_is_junction
+
+    pos_u = G.nodes[u].get("pos")
+    pos_v = G.nodes[v].get("pos")
+    if pos_u is None or pos_v is None:
+        return u_is_junction, v_is_junction
+
+    start = np.asarray(poly[0], dtype=float)
+    to_u = float(np.linalg.norm(start - np.asarray(pos_u, dtype=float)))
+    to_v = float(np.linalg.norm(start - np.asarray(pos_v, dtype=float)))
+    if to_v < to_u:
+        return v_is_junction, u_is_junction
+    return u_is_junction, v_is_junction
+
+
 def measure_edge_diameters_edt_from_binary_mask(
     G: nx.MultiGraph,
     binary_mask: np.ndarray,
-    voxel_size_xyz: tuple[float, float, float]
+    voxel_size_zyx: tuple[float, float, float],
+    junction_proximity_exclusion_um: float = 0.0,
 ) -> dict:
     """Measure per-edge diameters (µm) using 3D Euclidean Distance Transform.
-    
-    This is robust for binary/thresholded masks where FWHM Gaussian fitting would fail 
+
+    This is robust for binary/thresholded masks where FWHM Gaussian fitting would fail
     or artificially inflate diameters due to flat intensity plateaus.
+
+    ``voxel_size_zyx`` is in (z, y, x) order, matching the mask's axes. It was named
+    ``voxel_size_xyz`` while being indexed as (z, y, x) throughout, which is invisible on
+    this study's near-isotropic voxel (axial:lateral = 1.0011) and wrong the moment anyone
+    runs anisotropic data through it.
+
+    ``junction_proximity_exclusion_um`` discards centreline samples within that arc distance
+    of a junction end. Inside roughly one radius of a bifurcation the EDT returns the
+    junction's inscribed sphere rather than the vessel's, so those samples are biased upward.
+    The bias is length-dependent - a few contaminated samples cannot move the median of a
+    long edge, but they are most of a short inter-junction segment - so it cannot be removed
+    by a global correction factor, and it falls hardest on exactly the capillary population
+    section 1.2 is a claim about. Resistance carries it as r^-4.
+
+    Defaults to 0.0, i.e. off: every figure in the #98 sweep was measured without it, and a
+    silent default would make those numbers irreproducible from the code that produced them.
+    Each edge is tagged with ``edt_junction_trim`` so trimmed, untrimmable and untrimmed
+    measurements stay separable downstream.
     """
     from scipy.ndimage import distance_transform_edt
     import numpy as np
 
     # Ensure binary mask is boolean to find distance from 1s to nearest 0s
     mask_bool = binary_mask > 0
+    spacing = tuple(float(s) for s in voxel_size_zyx)
 
     print("  Computing 3D Euclidean Distance Transform...")
     # sampling parameter ensures the distance is calculated in physical units (µm)
-    edt_phys = distance_transform_edt(mask_bool, sampling=voxel_size_xyz)
+    edt_phys = distance_transform_edt(mask_bool, sampling=spacing)
 
-    summary = {"edges_measured": 0, "edges_skipped": 0, "per_edge": []}
+    exclusion = max(0.0, float(junction_proximity_exclusion_um))
+    summary = {
+        "edges_measured": 0,
+        "edges_skipped": 0,
+        "junction_proximity_exclusion_um": exclusion,
+        "junction_trim_counts": {},
+        "per_edge": [],
+    }
 
     for u, v, key, data in G.edges(keys=True, data=True):
         voxels_phys = data.get("voxels")
         if not voxels_phys:
             summary["edges_skipped"] += 1
             continue
-            
-        diameters = []
-        for pt_phys in voxels_phys:
+
+        poly = np.asarray(voxels_phys, dtype=float)
+        arc, total_length = _arc_length_parameterize(poly)
+
+        # (arc position, radius) so the junction trim can be applied after sampling; samples
+        # falling outside the mask or on background are dropped here as they always were.
+        samples = []
+        for i, pt_phys in enumerate(poly):
             # Convert physical coordinate to voxel index
-            z_idx = int(round(pt_phys[0] / voxel_size_xyz[0]))
-            y_idx = int(round(pt_phys[1] / voxel_size_xyz[1]))
-            x_idx = int(round(pt_phys[2] / voxel_size_xyz[2]))
+            z_idx = int(round(pt_phys[0] / spacing[0]))
+            y_idx = int(round(pt_phys[1] / spacing[1]))
+            x_idx = int(round(pt_phys[2] / spacing[2]))
 
             # Bounds check
             if (0 <= z_idx < edt_phys.shape[0] and
                 0 <= y_idx < edt_phys.shape[1] and
                 0 <= x_idx < edt_phys.shape[2]):
-                
-                radius_um = edt_phys[z_idx, y_idx, x_idx]
+
+                radius_um = float(edt_phys[z_idx, y_idx, x_idx])
                 if radius_um > 0:
-                    # EDT returns radius, so multiply by 2 for diameter
-                    diameters.append(radius_um * 2.0)
-        
-        if diameters:
+                    samples.append((float(arc[i]), radius_um))
+
+        trim = "not_applied"
+        kept = samples
+        if exclusion > 0.0 and samples:
+            start_is_junction, end_is_junction = _polyline_end_junction_flags(G, u, v, poly)
+            if not (start_is_junction or end_is_junction):
+                trim = "no_junction"
+            else:
+                surviving = [
+                    (s, r) for s, r in samples
+                    if not (start_is_junction and s < exclusion)
+                    and not (end_is_junction and (total_length - s) < exclusion)
+                ]
+                if surviving:
+                    kept, trim = surviving, "trimmed"
+                else:
+                    # Nothing survives on a segment shorter than the excluded neighbourhood.
+                    # Discarding it would delete short inter-junction capillaries from the
+                    # distribution and bias it towards long vessels, which is a worse error
+                    # than the inflation; the untrimmed median is kept and tagged so the
+                    # affected fraction stays countable.
+                    trim = "untrimmed_too_short"
+
+        if kept:
+            # EDT returns radius, so multiply by 2 for diameter
+            diameters = [2.0 * r for _, r in kept]
             # Use median to be robust against localized bottlenecks or bulges
-            d_mean = float(np.median(diameters))
-            data["edt_diameter_um"] = d_mean
+            d_median = float(np.median(diameters))
+            data["edt_diameter_um"] = d_median
             data["edt_diameter_samples_um"] = diameters
-            
+            data["edt_junction_trim"] = trim
+
             summary["edges_measured"] += 1
+            summary["junction_trim_counts"][trim] = (
+                summary["junction_trim_counts"].get(trim, 0) + 1
+            )
             summary["per_edge"].append({
                 "edge": (u, v, key),
-                "edt_diameter_um": d_mean,
+                "edt_diameter_um": d_median,
                 "n_samples": len(diameters),
+                "n_samples_before_trim": len(samples),
+                "junction_trim": trim,
             })
         else:
             summary["edges_skipped"] += 1
-            
+
     return summary

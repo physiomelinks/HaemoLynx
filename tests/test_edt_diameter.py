@@ -169,3 +169,181 @@ def test_default_radius_mode_yields_measured_not_synthetic_provenance():
 
     assert stats["diameter_provenance_counts"] == {"measured_edt": 1}
     assert all(d["diameter_provenance"] == "measured_edt" for _, _, d in G.edges(data=True))
+
+
+# --- Junction-proximity exclusion (#98 Phase A) -------------------------------------------
+#
+# Within roughly one radius of a bifurcation the EDT reports the junction's inscribed sphere
+# rather than the vessel's, so every radius sampled there is biased upward. The bias is
+# length-dependent: on a long edge a handful of contaminated samples cannot move the median,
+# but on a short inter-junction capillary segment they are most of the samples. Those short
+# segments are the population H1 section 1.2 is a claim about, and resistance carries the
+# error as r^-4.
+
+def _junction_fixture():
+    """A z-tube with a spherical swelling at a degree-3 node, plus a transverse branch.
+
+    Voxel size is 1 um so index and physical coordinates coincide and the arithmetic in the
+    assertions stays readable.
+
+        A = (20, 16, 16)  junction, degree 3, sitting at the centre of a radius-5 sphere
+        B = (26, 16, 16)  free end,  6 um from A - short enough for the junction to dominate
+        C = ( 0, 16, 16)  free end, 20 um from A - long enough for it not to
+        D = (20, 31, 16)  free end on the transverse branch
+    """
+    mask = np.zeros((48, 32, 32), dtype=bool)
+    zz, yy, xx = np.ogrid[:48, :32, :32]
+
+    mask |= ((yy - 16) ** 2 + (xx - 16) ** 2) <= 2 ** 2                    # z-tube, radius 2
+    mask |= (((zz - 20) ** 2 + (xx - 16) ** 2) <= 2 ** 2) & (yy >= 16)     # y-branch, radius 2
+    mask |= ((zz - 20) ** 2 + (yy - 16) ** 2 + (xx - 16) ** 2) <= 5 ** 2   # junction swelling
+
+    G = nx.MultiGraph()
+    for name, pos in (("A", (20, 16, 16)), ("B", (26, 16, 16)),
+                      ("C", (0, 16, 16)), ("D", (20, 31, 16))):
+        G.add_node(name, pos=tuple(float(c) for c in pos))
+
+    G.add_edge("A", "B", voxels=[(float(z), 16.0, 16.0) for z in range(20, 27)])
+    G.add_edge("A", "C", voxels=[(float(z), 16.0, 16.0) for z in range(20, -1, -1)])
+    G.add_edge("A", "D", voxels=[(20.0, float(y), 16.0) for y in range(16, 32)])
+    return mask, G
+
+
+def test_junction_proximity_exclusion_lowers_the_radius_of_a_short_junction_edge():
+    """The bias the exclusion exists to remove, on the segment length where it bites."""
+    mask, G = _junction_fixture()
+    voxel = (1.0, 1.0, 1.0)
+
+    measure_edge_diameters_edt_from_binary_mask(G, mask, voxel)
+    untrimmed = G["A"]["B"][0]["edt_diameter_um"]
+    # A-C runs down the same radius-2 tube but is long enough that the junction samples
+    # cannot move its median, so it reports the calibre A-B should have reported.
+    honest = G["A"]["C"][0]["edt_diameter_um"]
+
+    measure_edge_diameters_edt_from_binary_mask(
+        G, mask, voxel, junction_proximity_exclusion_um=5.0
+    )
+    trimmed = G["A"]["B"][0]["edt_diameter_um"]
+
+    # Two identical tubes, read 34% apart purely because one segment is short. Poiseuille
+    # takes that to (6.0 / 4.47)^4 = 3.2x on the segment's resistance.
+    assert untrimmed == pytest.approx(6.0)
+    assert honest == pytest.approx(np.sqrt(5.0) * 2.0)
+    assert trimmed == pytest.approx(honest), "trimming should recover the tube's own calibre"
+    assert G["A"]["B"][0]["edt_junction_trim"] == "trimmed"
+
+
+def test_junction_proximity_exclusion_is_off_by_default():
+    """The default has to reproduce the previous behaviour exactly.
+
+    Every measured number in the #98 sweep was taken without it, so a silent default would
+    make those figures irreproducible from the code that claims to have produced them.
+    """
+    mask, G = _junction_fixture()
+    measure_edge_diameters_edt_from_binary_mask(G, mask, (1.0, 1.0, 1.0))
+
+    assert G["A"]["B"][0]["edt_junction_trim"] == "not_applied"
+
+
+def test_a_reversed_voxel_list_still_trims_the_junction_end():
+    """Edge voxel lists are conventionally u -> v, and nothing enforces it.
+
+    If the ends are assumed rather than matched, a reversed list trims the free end and
+    keeps the junction, which inflates the radius instead of correcting it - the opposite of
+    the intended effect, and silent.
+    """
+    mask, G = _junction_fixture()
+    forward = G["A"]["B"][0]["voxels"]
+
+    reversed_G = nx.MultiGraph()
+    reversed_G.add_nodes_from(G.nodes(data=True))
+    for u, v, data in G.edges(data=True):
+        payload = dict(data)
+        if {u, v} == {"A", "B"}:
+            payload["voxels"] = list(reversed(forward))
+        reversed_G.add_edge(u, v, **payload)
+
+    kwargs = dict(junction_proximity_exclusion_um=5.0)
+    measure_edge_diameters_edt_from_binary_mask(G, mask, (1.0, 1.0, 1.0), **kwargs)
+    measure_edge_diameters_edt_from_binary_mask(reversed_G, mask, (1.0, 1.0, 1.0), **kwargs)
+
+    assert reversed_G["A"]["B"][0]["edt_diameter_um"] == pytest.approx(
+        G["A"]["B"][0]["edt_diameter_um"]
+    )
+
+
+def test_a_long_edge_is_barely_moved_by_the_same_exclusion():
+    """The bias is length-dependent, which is why it cannot be corrected by a global factor."""
+    mask, G = _junction_fixture()
+
+    measure_edge_diameters_edt_from_binary_mask(G, mask, (1.0, 1.0, 1.0))
+    long_before, short_before = G["A"]["C"][0]["edt_diameter_um"], G["A"]["B"][0]["edt_diameter_um"]
+
+    measure_edge_diameters_edt_from_binary_mask(
+        G, mask, (1.0, 1.0, 1.0), junction_proximity_exclusion_um=5.0
+    )
+    long_after, short_after = G["A"]["C"][0]["edt_diameter_um"], G["A"]["B"][0]["edt_diameter_um"]
+
+    assert abs(long_before - long_after) < abs(short_before - short_after)
+
+
+def test_free_ends_are_not_trimmed():
+    """Only degree > 2 nodes carry the junction inscribed sphere; tips are ordinary vessel."""
+    mask = np.zeros((21, 21, 21), dtype=bool)
+    zz, yy, xx = np.ogrid[:21, :21, :21]
+    mask |= ((yy - 10) ** 2 + (xx - 10) ** 2) <= 3 ** 2
+
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(2.0, 10.0, 10.0))
+    G.add_node(1, pos=(18.0, 10.0, 10.0))
+    G.add_edge(0, 1, voxels=[(float(z), 10.0, 10.0) for z in range(2, 19)])
+
+    measure_edge_diameters_edt_from_binary_mask(G, mask, (1.0, 1.0, 1.0))
+    untrimmed = G[0][1][0]["edt_diameter_um"]
+    measure_edge_diameters_edt_from_binary_mask(
+        G, mask, (1.0, 1.0, 1.0), junction_proximity_exclusion_um=5.0
+    )
+
+    assert G[0][1][0]["edt_diameter_um"] == pytest.approx(untrimmed)
+    assert G[0][1][0]["edt_junction_trim"] == "no_junction"
+
+
+def test_an_edge_shorter_than_the_exclusion_is_tagged_rather_than_discarded():
+    """Discarding them would delete the capillary population section 1.2 is about.
+
+    A segment running between two bifurcations can be shorter than twice the exclusion, in
+    which case no sample survives. Dropping the edge would bias the reported distribution
+    towards long vessels; the untrimmed median is kept and tagged so the inflated fraction
+    stays countable instead of disappearing into the measured population.
+    """
+    mask = np.ones((12, 12, 12), dtype=bool)
+    mask[0, :, :] = mask[-1, :, :] = False
+
+    G = nx.MultiGraph()
+    for name, pos in (("J1", (4.0, 6.0, 6.0)), ("J2", (7.0, 6.0, 6.0))):
+        G.add_node(name, pos=pos)
+    for spur in ("s1", "s2", "s3", "s4"):
+        G.add_node(spur, pos=(6.0, 6.0, 6.0))
+    G.add_edge("J1", "J2", voxels=[(float(z), 6.0, 6.0) for z in range(4, 8)])
+    G.add_edge("J1", "s1", voxels=[(4.0, 6.0, 6.0), (4.0, 5.0, 6.0)])
+    G.add_edge("J1", "s2", voxels=[(4.0, 6.0, 6.0), (4.0, 7.0, 6.0)])
+    G.add_edge("J2", "s3", voxels=[(7.0, 6.0, 6.0), (7.0, 5.0, 6.0)])
+    G.add_edge("J2", "s4", voxels=[(7.0, 6.0, 6.0), (7.0, 7.0, 6.0)])
+
+    summary = measure_edge_diameters_edt_from_binary_mask(
+        G, mask, (1.0, 1.0, 1.0), junction_proximity_exclusion_um=20.0
+    )
+
+    assert G["J1"]["J2"][0]["edt_junction_trim"] == "untrimmed_too_short"
+    assert G["J1"]["J2"][0]["edt_diameter_um"] is not None
+    assert summary["junction_trim_counts"]["untrimmed_too_short"] >= 1
+
+
+def test_summary_records_the_exclusion_that_was_actually_applied():
+    """A frozen parameter set is only frozen if the artefact says what it was."""
+    mask, G = _junction_fixture()
+    summary = measure_edge_diameters_edt_from_binary_mask(
+        G, mask, (1.0, 1.0, 1.0), junction_proximity_exclusion_um=3.5
+    )
+    assert summary["junction_proximity_exclusion_um"] == 3.5
+    assert sum(summary["junction_trim_counts"].values()) == summary["edges_measured"]

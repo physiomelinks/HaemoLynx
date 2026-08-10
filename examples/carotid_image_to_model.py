@@ -246,7 +246,20 @@ class HaemodynamicsConfig:
     # neighbouring vessels. EDT is bounded by the mask and cannot do either.
     radius_assignment_mode: str = "edt_radius"
     constant_radius_um: float = 5.0 # Used only if radius_assignment_mode == "constant_radius"
-    
+
+    # Within roughly one radius of a bifurcation the EDT returns the junction's inscribed
+    # sphere rather than the vessel's, so the radius there is biased upward. Two voxels is
+    # the exclusion the segmentation handover specifies; at 1.866 um that is 3.73 um.
+    #
+    # The bias is length-dependent, so it cannot be absorbed into a global calibration
+    # factor: contaminated samples cannot move the median of a long edge but are most of a
+    # short one. On the synthetic fixture in tests/test_edt_diameter.py two identical
+    # radius-2 tubes read 6.0 um and 4.47 um apart for no reason other than segment length,
+    # which Poiseuille turns into 3.2x on resistance. Short inter-junction segments are the
+    # capillary population section 1.2 is a claim about, so this falls hardest where it
+    # matters most.
+    edt_junction_proximity_exclusion_um: float = 3.73
+
     # --- Sphincter / Constriction Configuration ---
     constriction_mode: str = "sphincter"  # Options: "sphincter" or "periodic"
     sphincter_length_um: float = 5.0      # Physical length of the pinched region (um)
@@ -1103,10 +1116,14 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             edt_summary = haemodynamics.measure_edge_diameters_edt_from_binary_mask(
                 G,
                 binary_mask=binary,
-                voxel_size_xyz=_resolve_voxel_size(image_path, input_format),
+                voxel_size_zyx=_resolve_voxel_size(image_path, input_format),
+                junction_proximity_exclusion_um=hemo_config.edt_junction_proximity_exclusion_um,
             )
             print(f"EDT measurement complete. Measured {edt_summary['edges_measured']} edges, "
                   f"skipped {edt_summary['edges_skipped']}.")
+            print(f"  Junction-proximity exclusion: "
+                  f"{edt_summary['junction_proximity_exclusion_um']:.2f} um -> "
+                  f"{edt_summary['junction_trim_counts']}")
         else:
             print(f"Bypassing diameter measurement. Using '{hemo_config.radius_assignment_mode}' ({hemo_config.constant_radius_um} um)")
 

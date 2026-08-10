@@ -47,7 +47,7 @@ PER_EDGE_MORPHOMETRY_COLUMNS = (
     "u", "v", "key",
     "length_um", "euclidean_um", "tortuosity", "curvature",
     "assigned_diameter_um", "diameter_provenance",
-    "edt_diameter_um", "fwhm_diameter_um",
+    "edt_diameter_um", "fwhm_diameter_um", "edt_junction_trim",
     "centreline_smoothing", "n_centreline_points",
     "branch_order", "reconnected",
 )
@@ -76,6 +76,12 @@ def export_per_edge_morphometry(
       B-spline arc length with a raw 26-connected staircase that runs about 8% longer, and
       ``raw_too_short`` edges are 2-point reconnections whose tortuosity is 1.0 by construction
       rather than by anatomy (610da99).
+    - ``edt_junction_trim``     trimmed / untrimmed_too_short / no_junction / not_applied.
+      Within about one radius of a bifurcation the EDT returns the junction's inscribed
+      sphere, so segments too short to survive the exclusion keep a radius known to be
+      inflated. They are retained rather than discarded - dropping them would delete the
+      short inter-junction capillaries section 1.2 is about and bias the distribution
+      towards long vessels - which only works if the affected rows stay identifiable.
     - ``reconnected``           whether terminal reconnection invented this edge.
 
     Both raw estimators are emitted alongside the assigned diameter so the FWHM/EDT comparison
@@ -117,6 +123,7 @@ def export_per_edge_morphometry(
             "diameter_provenance": data.get("diameter_provenance"),
             "edt_diameter_um": data.get("edt_diameter_um"),
             "fwhm_diameter_um": data.get("fwhm_diameter_um"),
+            "edt_junction_trim": data.get("edt_junction_trim"),
             "centreline_smoothing": data.get("centreline_smoothing"),
             "n_centreline_points": len(voxels),
             "branch_order": data.get("branch_order"),

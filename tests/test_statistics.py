@@ -89,12 +89,13 @@ def _morphometry_graph():
                voxels=[[0, 0, 0], [0, 3, 5], [0, 0, 10]],
                assigned_diameter_um=6.37, diameter_provenance="measured_edt",
                edt_diameter_um=6.37, fwhm_diameter_um=8.20,
-               centreline_smoothing="bspline")
+               centreline_smoothing="bspline", edt_junction_trim="trimmed")
     # A fabricated diameter on an unsmoothed edge.
     G.add_edge(1, 2, length=10.0, weight=10.0, branch_order="B02",
                voxels=[[0, 0, 10], [0, 5, 10], [0, 10, 10]],
                assigned_diameter_um=4.0, diameter_provenance="synthetic_branch_order",
-               centreline_smoothing="raw_fallback")
+               centreline_smoothing="raw_fallback",
+               edt_junction_trim="untrimmed_too_short")
     # A 2-point reconnection: tortuosity 1.0 by construction, not anatomy.
     G.add_edge(2, 3, length=10.0, weight=10.0, branch_order="B02",
                voxels=[[0, 10, 10], [0, 20, 10]],
@@ -175,3 +176,22 @@ def test_tortuosity_summary_still_handles_missing_positions():
         "Average Tortuosity Index": "N/A (no position data)",
         "Average Curvature": "N/A (no position data)",
     }
+
+
+def test_per_edge_export_carries_the_junction_trim_provenance():
+    """An untrimmable edge's radius is inflated by its junction, and has to stay identifiable.
+
+    Segments shorter than twice the exclusion keep their untrimmed median rather than being
+    discarded, because dropping them would delete the short inter-junction capillaries that
+    section 1.2 is a claim about. That trade only holds if the affected rows can be told
+    apart in the exported distribution - otherwise a known-biased radius is pooled with
+    corrected ones and nothing downstream can see it.
+    """
+    rows = export_per_edge_morphometry(_morphometry_graph())
+    by_trim = {r["edt_junction_trim"]: r for r in rows}
+
+    assert "edt_junction_trim" in PER_EDGE_MORPHOMETRY_COLUMNS
+    assert by_trim["trimmed"]["edt_diameter_um"] == pytest.approx(6.37)
+    assert "untrimmed_too_short" in by_trim
+    # Edges never measured by EDT carry no trim tag at all, rather than a misleading one.
+    assert None in by_trim
