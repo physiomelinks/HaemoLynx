@@ -398,3 +398,24 @@ def test_a_run_from_the_panel_opens_no_browser(make_napari_viewer, tmp_path, mon
     run_pipeline_stages(resolve_settings(values, schema=schema, config_path=None), schema)
 
     assert shown == [], "the run called fig.show(), which opens a browser tab"
+
+
+def test_the_haemodynamics_tab_is_named_for_what_it_does(panel):
+    """#125: the tab was called "Resistances".
+
+    Named literally rather than derived from `STAGES`, unlike the test above:
+    comparing the tabs against the same list they are built from cannot catch a
+    title that is wrong in both places, which is exactly what a rename is.
+
+    The stage computes Poiseuille resistances *and* applies pericyte
+    constriction, and it is where `run_haemodynamics` lives -- "Resistances"
+    named one output of it.
+    """
+    from qtpy.QtWidgets import QTabWidget
+
+    widget, _viewer = panel
+    tabs = widget.findChild(QTabWidget)
+    titles = [tabs.tabText(i) for i in range(tabs.count())]
+
+    assert "6. Haemodynamics" in titles, titles
+    assert not any("Resistances" in title for title in titles), titles
