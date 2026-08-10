@@ -119,7 +119,13 @@ class Solution:
 
 def segment(settings: dict):
     """Produce the segmented mask to analyse, running ilastik when asked to."""
-    settings["input_path"] = Path(settings["input_path"])
+    # Not yet a path when ilastik is doing the segmenting: `input_path` is what
+    # this stage *produces* in that case, and the documented way to ask for it
+    # is to leave the setting empty. Converting first turned that into
+    # `Path(None)` -- a TypeError before ilastik was even reached, on the one
+    # configuration the setting exists to support (#127).
+    if settings["input_path"] is not None:
+        settings["input_path"] = Path(settings["input_path"])
     if settings["use_ilastik_segmentation"]:
         unsegmented_image_path = Path(settings["ilastik_unsegmented_image_path"])
         unsegmented_image_path = io.resolve_image_path_with_optional_zip(unsegmented_image_path)
@@ -140,6 +146,12 @@ def segment(settings: dict):
         )
         logger.info(f"Using ilastik-segmented image: {settings['input_path']}")
     else:
+        if settings["input_path"] is None:
+            raise ValueError(
+                "input_path must name a segmented image, or "
+                "use_ilastik_segmentation must be on so that one is produced. "
+                "Neither is set, so there is nothing to analyse."
+            )
         logger.info(f"Using segmented input image: {settings['input_path']}")
 
     settings["input_path"] = io.resolve_image_path_with_optional_zip(settings["input_path"])
