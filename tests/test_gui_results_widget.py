@@ -682,3 +682,106 @@ def test_the_checkbox_reports_the_overlay_it_did_not_set(make_napari_viewer):
     scale.follow_the_layer()
 
     assert scale.in_viewer.isChecked() is True
+
+
+# --- the range is worked out, not left over ---------------------------------
+
+
+def test_a_colouring_is_scaled_to_its_own_column(make_napari_viewer):
+    """Selected and shown are not the same thing.
+
+    The range used to be applied after the column had already been mapped, and
+    by a route that re-mapped nothing, so the colours stayed scaled to whatever
+    the previous stage had used. `flow_abs` was the chosen colouring at the
+    solve and the network was a single flat colour, because flows of 1e-13 were
+    being mapped against segment ids of 0..9.
+    """
+    from haemolynx.gui._widget import _colour_layer
+
+    _viewer, layer, _scale = a_drawn_run(make_napari_viewer)
+    features = dict(layer.features)
+    features["flow_abs"] = np.linspace(0.0, 1.5e-13, len(layer.data))
+    layer.features = features
+
+    _colour_layer(layer, "segment_id", "continuous", limits=(0.0, 9.0))
+    _colour_layer(layer, "flow_abs", "continuous")      # no limits given
+
+    assert layer.edge_contrast_limits == pytest.approx((0.0, 1.5e-13))
+    assert len(np.unique(np.asarray(layer.edge_color), axis=0)) > 1
+
+
+def test_choosing_a_feature_on_the_left_rescales_it(make_napari_viewer):
+    """napari applies a new column with the old range; nothing else would fit it."""
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+    features = dict(layer.features)
+    features["flow_abs"] = np.linspace(0.0, 1.5e-13, len(layer.data))
+    layer.features = features
+
+    layer.edge_color = "segment_id"
+    scale.follow_the_layer()
+    layer.edge_color = "flow_abs"          # as napari's own dropdown does it
+    scale.follow_the_layer()
+
+    assert layer.edge_contrast_limits == pytest.approx((0.0, 1.5e-13))
+    assert float(scale.high.text()) == pytest.approx(1.5e-13)
+
+
+def test_a_range_you_set_yourself_is_not_refitted(make_napari_viewer):
+    """Autofitting on every event would undo the range you just typed."""
+    from haemolynx.gui._widget import _colour_layer
+
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+    _colour_layer(layer, "length", "continuous")
+    scale.follow_the_layer()
+
+    scale.low.setText("2")
+    scale.high.setText("8")
+    scale.low.editingFinished.emit()
+    scale.follow_the_layer()               # same column, so leave it be
+
+    assert layer.edge_contrast_limits == (2.0, 8.0)
+
+
+# --- the node feature dropdown napari does not provide ----------------------
+
+
+def test_the_nodes_get_a_feature_dropdown(make_napari_viewer):
+    """QtPointsControls has a colour swatch and no way to colour by a column."""
+    from haemolynx.gui._widget import _active_column, _layer_controls
+
+    viewer, _vessels, _scale = a_drawn_run(make_napari_viewer)
+    nodes = viewer.layers[NODES]
+    chooser = _layer_controls(viewer, nodes)._haemolynx_feature
+
+    offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
+    assert "degree" in offered and "pressure" in offered
+    # Identifiers are not quantities; colouring by one shows nothing.
+    assert "node_id" not in offered
+
+    chooser.native.setCurrentText("pressure")
+    assert _active_column(nodes) == "pressure"
+
+
+def test_the_node_dropdown_gains_columns_as_stages_land(make_napari_viewer):
+    """Rebuilt from the layer, unlike napari's own, which is filled once."""
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, _vessels, _scale = a_drawn_run(make_napari_viewer)
+    nodes = viewer.layers[NODES]
+    chooser = _layer_controls(viewer, nodes)._haemolynx_feature
+
+    features = dict(nodes.features)
+    features["something_new"] = np.zeros(len(nodes.data))
+    nodes.features = features
+    chooser.refresh()
+
+    offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
+    assert "something_new" in offered
+
+
+def test_the_vessels_keep_napari_s_own_dropdown(make_napari_viewer):
+    """Vectors already has "edge feature:"; do not add a second one."""
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
+    assert getattr(_layer_controls(viewer, vessels), "_haemolynx_feature", None) is None

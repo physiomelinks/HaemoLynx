@@ -160,6 +160,7 @@ def _apply_layers(viewer, group, report=None) -> None:
         if spec.name in viewer.layers:
             try:
                 _attach_colour_scale(viewer, viewer.layers[spec.name])
+                _refresh_layer_controls(viewer, viewer.layers[spec.name])
             except Exception:  # noqa: BLE001 - a missing colour bar is survivable
                 logger.debug("could not attach a colour bar to %s",
                              spec.name, exc_info=True)
@@ -221,39 +222,16 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
     else:
         setattr(layer, f"{attribute}_colormap", "viridis")
         setattr(layer, attribute, column)
+        # After the column, and through the same path the Fit buttons use: the
+        # range has to be applied *and* the colours re-mapped against it. Set
+        # before, and the assignment above maps with the old range; set with a
+        # plain setattr, and nothing re-maps at all -- which is how `flow_abs`
+        # came to be the selected colouring and not the one on screen.
+        if limits is None:
+            limits = _data_range(layer, column)
         if limits is not None:
-            _set_contrast_limits(layer, attribute, limits)
+            _apply_contrast_limits(layer, *limits)
     _record_colour(layer, column)
-
-
-def _set_contrast_limits(layer, attribute: str, limits) -> None:
-    """Give the colormap the range of the column it is showing.
-
-    The attribute is not the obvious one. Colours live on `edge_color` and
-    `face_color`, but their range lives on `edge_contrast_limits` and
-    `face_contrast_limits` -- no `_color`. That matters more than it looks,
-    because a napari layer accepts `setattr` of a name it does not have: the
-    value lands on a stray attribute, nothing raises, and the real limits keep
-    whatever the previous colouring left them at. Colouring by `segment_id`
-    (0..9) and then by `flow_abs` (0..1.5e-13) therefore mapped every vessel to
-    the bottom of the colormap, and the network came out a single flat colour
-    while looking, from the outside, exactly as though it had worked.
-
-    So the name is checked rather than tried: a wrong one is a bug to hear
-    about, not a condition to pass over.
-    """
-    name = f"{attribute.replace('_color', '')}_contrast_limits"
-    if not hasattr(layer, name):
-        logger.warning(
-            "%s has no %s: colouring will use whatever range was set before.",
-            type(layer).__name__, name,
-        )
-        return
-    try:
-        setattr(layer, name, tuple(float(v) for v in limits))
-    except (ValueError, TypeError):
-        # A degenerate range (every value identical) is not worth a failure.
-        logger.debug("could not set %s to %r", name, limits)
 
 
 def _record_colour(layer, column: str | None) -> None:
@@ -326,6 +304,9 @@ _CLASS_FOR = {
     "vectors": "vectors", "shapes": "shapes",
 }
 
+
+#: Identifiers rather than quantities: colouring by one shows nothing.
+NOT_WORTH_COLOURING_BY = frozenset({"u", "v", "key", "edge_index", "node_id"})
 
 #: How wide and tall the colour bar is drawn, in pixels.
 COLORBAR_SIZE = (150, 12)
@@ -558,7 +539,15 @@ class _ColourScale:
             if signal is not None:
                 signal.connect(lambda *_a: self.follow_the_layer())
             self._connected = layer
-        self.refresh(_active_column(layer) if layer is not None else None)
+        column = _active_column(layer) if layer is not None else None
+        changed = column != self._column
+        self.refresh(column)
+        if changed and self.shown:
+            # A colouring chosen in napari's own dropdown is applied with
+            # whatever range the last one used, so a column of flows lands on
+            # a scale of branch orders and every vessel comes out one colour.
+            # Fit it, exactly as the button does.
+            self.autoscale(0.0, 100.0)
 
     def refresh(self, column: str | None) -> None:
         """Show the range of *column*, or hide if there is nothing to show."""
@@ -631,6 +620,65 @@ class _ColourScale:
             self.refresh(self._column)
 
 
+class _FeatureChooser:
+    """The dropdown napari gives Vectors and does not give Points.
+
+    `QtVectorsControls` has an "edge feature:" box; `QtPointsControls` has a
+    colour swatch and no way to colour by a column at all, so the node layer
+    arrives with `pressure`, `degree` and `node_id` on it and nothing to pick
+    between them.
+
+    Rebuilt from the layer whenever it is refreshed rather than filled once,
+    because napari's own box is filled in its constructor and never updated --
+    the bug that kept flow out of the vessels list -- and there is no reason to
+    repeat it here.
+    """
+
+    def __init__(self, viewer, layer_name: str) -> None:
+        from qtpy.QtWidgets import QComboBox
+
+        self._viewer = viewer
+        self._layer_name = layer_name
+        self.native = QComboBox()
+        self.native.currentTextChanged.connect(self._chosen)
+
+    def _layer(self):
+        layers = getattr(self._viewer, "layers", {}) if self._viewer else {}
+        layer = layers[self._layer_name] if self._layer_name in layers else None
+        return layer if layer is not None and _is_ours(layer) else None
+
+    def refresh(self) -> None:
+        """Offer the columns the layer holds now, keeping the current one."""
+        layer = self._layer()
+        if layer is None:
+            return
+        columns = [
+            name for name in getattr(layer, "features", {})
+            if name not in NOT_WORTH_COLOURING_BY
+        ]
+        active = _active_column(layer)
+        if list(self._items()) == columns and self.native.currentText() == (active or ""):
+            return
+        with _blocked(self.native):
+            self.native.clear()
+            self.native.addItems(columns)
+            if active in columns:
+                self.native.setCurrentIndex(columns.index(active))
+
+    def _items(self):
+        return (self.native.itemText(i) for i in range(self.native.count()))
+
+    def _chosen(self, column: str) -> None:
+        layer = self._layer()
+        if layer is None or not column:
+            return
+        kind = "categorical" if column in TEXT_COLUMNS else "continuous"
+        cycle = ()
+        if kind == "categorical" and column in getattr(layer, "features", {}):
+            cycle = colour_cycle_for(layer.features[column])
+        _colour_layer(layer, column, kind, cycle)
+
+
 def _layer_controls(viewer, layer):
     """The controls napari shows on the left for *layer*, if they can be found.
 
@@ -674,11 +722,30 @@ def _attach_colour_scale(viewer, layer) -> bool:
     layout = controls.layout()
     if not hasattr(layout, "addRow"):
         return False
+    if _colour_attribute(layer) == "face_color":
+        # Vectors already has "edge feature:"; Points has nothing.
+        chooser = _FeatureChooser(viewer, layer.name)
+        layout.addRow(QLabel("node feature:"), chooser.native)
+        controls._haemolynx_feature = chooser
+        chooser.refresh()
     scale = _ColourScale(viewer, layer.name)
     layout.addRow(QLabel("colour range:"), scale.native)
     controls._haemolynx_scale = scale
     scale.follow_the_layer()
     return True
+
+
+def _refresh_layer_controls(viewer, layer) -> None:
+    """Let our additions catch up with whatever the stage just changed."""
+    controls = _layer_controls(viewer, layer)
+    for attribute in ("_haemolynx_feature", "_haemolynx_scale"):
+        widget = getattr(controls, attribute, None)
+        if widget is None:
+            continue
+        if hasattr(widget, "follow_the_layer"):
+            widget.follow_the_layer()
+        else:
+            widget.refresh()
 
 
 def _clear_our_layers(viewer) -> int:
