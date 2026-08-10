@@ -8,6 +8,9 @@ from haemolynx.haemodynamics import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
     calc_two_point_from_laplacian_matrix_nodeID,
+    flow_conservation_residuals,
+    set_edge_flows,
+    solve_flow_from_conductance_matrix,
 )
 
 MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
@@ -196,3 +199,158 @@ def test_two_point_resistance_of_series_edges_is_scale_invariant(resistance_scal
     R = calc_two_point_from_laplacian_matrix_nodeID(L, G, 0, 2)
 
     assert R == pytest.approx(2.0 * resistance_scale, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Flow conservation on networks with disconnected or non-conductive parts.
+#
+# Regression for the cropped-nerve failure: edges without a conductance leave
+# nodes with all-zero Laplacian rows, np.linalg.solve raises, and the old
+# whole-system lstsq fallback then produced pressures that were not audited
+# anywhere. The solve must instead restrict itself to what the boundary
+# conditions can reach, and Kirchhoff's current law must hold exactly there.
+# ---------------------------------------------------------------------------
+
+SI_CONDUCTANCE = 1e-16  # m^3/(Pa.s), the real magnitude for a capillary
+
+
+def _disconnected_network() -> nx.MultiGraph:
+    """A network shaped like the cropped nerve: a conductive diamond carrying
+    both boundary conditions, edges that never got a conductance, and a
+    conductive component no boundary condition reaches."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=2.0 * SI_CONDUCTANCE)
+    G.add_edge(1, 3, conductance=1.0 * SI_CONDUCTANCE)
+    G.add_edge(0, 2, conductance=1.0 * SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=3.0 * SI_CONDUCTANCE)
+    G.add_edge(1, 2, conductance=0.5 * SI_CONDUCTANCE)
+    # Edges that never got a conductance (no branch order -> no diameter).
+    G.add_edge(3, 4)
+    G.add_edge(4, 5)
+    # A conductive component with no path to any boundary node.
+    G.add_edge(6, 7, conductance=2.0 * SI_CONDUCTANCE)
+    G.add_edge(7, 8, conductance=1.0 * SI_CONDUCTANCE)
+    return G
+
+
+def _solve_and_set_flows(G, *, input_p_bc=1000.0, output_p_bc=500.0):
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    flow = solve_flow_from_conductance_matrix(
+        conductance,
+        node_list,
+        input_p_bc=input_p_bc,
+        output_p_bc=output_p_bc,
+        starting_nodes=[0],
+        output_nodes=[3],
+    )
+    set_edge_flows(G, node_list, flow["pressure"])
+    return flow
+
+
+def test_flow_is_conserved_despite_disconnected_parts():
+    G = _disconnected_network()
+    _solve_and_set_flows(G)
+
+    max_flow = max(abs(d["flow_signed"]) for _, _, d in G.edges(data=True) if "flow_signed" in d)
+    assert max_flow > 1e-18  # a real flow, not roundoff noise
+
+    residuals = flow_conservation_residuals(G, boundary_nodes=[0, 3])
+    assert set(residuals) == {1, 2, 6, 7, 8}
+    for node, residual in residuals.items():
+        assert abs(residual) < 1e-9 * max_flow, (
+            f"Flow not conserved at node {node}: residual {residual:.3e} "
+            f"vs max flow {max_flow:.3e}"
+        )
+
+
+def test_unreached_components_get_zero_pressure_and_zero_flow():
+    G = _disconnected_network()
+    flow = _solve_and_set_flows(G)
+
+    idx = {n: i for i, n in enumerate(flow["node_list"])}
+    for node in (6, 7, 8):
+        assert flow["pressure"][idx[node]] == 0.0
+    for u, v, data in G.edges(data=True):
+        if {u, v} <= {6, 7, 8}:
+            assert data["flow_signed"] == 0.0
+
+
+def test_disconnected_parts_do_not_change_the_connected_solution():
+    """The diamond must solve exactly as it would on its own."""
+    disconnected = _disconnected_network()
+    flow_full = _solve_and_set_flows(disconnected)
+
+    diamond = nx.MultiGraph()
+    for u, v, data in disconnected.edges(data=True):
+        if "conductance" in data and {u, v} <= {0, 1, 2, 3}:
+            diamond.add_edge(u, v, conductance=data["conductance"])
+    flow_alone = _solve_and_set_flows(diamond)
+
+    idx_full = {n: i for i, n in enumerate(flow_full["node_list"])}
+    idx_alone = {n: i for i, n in enumerate(flow_alone["node_list"])}
+    for node in (0, 1, 2, 3):
+        assert flow_full["pressure"][idx_full[node]] == pytest.approx(
+            flow_alone["pressure"][idx_alone[node]], rel=1e-12
+        )
+
+
+def test_singular_network_does_not_fall_back_to_lstsq(monkeypatch):
+    """The old whole-system lstsq fallback must not fire for a network that is
+    merely disconnected; only what the boundary conditions reach is solved."""
+
+    def _no_lstsq(*args, **kwargs):
+        raise AssertionError("np.linalg.lstsq must not be needed here")
+
+    monkeypatch.setattr(np.linalg, "lstsq", _no_lstsq)
+    G = _disconnected_network()
+    _solve_and_set_flows(G)
+
+
+def test_solve_warns_when_boundaries_pin_only_one_pressure(caplog):
+    """Boundary nodes that all land outside the conductive part (or on one
+    side of it) leave a component with a single imposed pressure: zero flow."""
+    import logging
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=SI_CONDUCTANCE)
+    G.add_edge(1, 2, conductance=SI_CONDUCTANCE)
+    G.add_edge(3, 4)  # the outlet (3) hangs off a non-conductive edge
+
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
+        flow = solve_flow_from_conductance_matrix(
+            conductance,
+            node_list,
+            input_p_bc=1000.0,
+            output_p_bc=500.0,
+            starting_nodes=[0],
+            output_nodes=[3],
+        )
+    assert any("only" in rec.message and "zero" in rec.message for rec in caplog.records)
+
+    set_edge_flows(G, node_list, flow["pressure"])
+    for u, v, data in G.edges(data=True):
+        if "conductance" in data:
+            assert data["flow_signed"] == pytest.approx(0.0, abs=1e-30)
+
+
+def test_set_edge_flows_writes_node_pressures():
+    G = _disconnected_network()
+    flow = _solve_and_set_flows(G)
+
+    idx = {n: i for i, n in enumerate(flow["node_list"])}
+    for node in G.nodes():
+        assert G.nodes[node]["pressure"] == flow["pressure"][idx[node]]
+
+
+def test_flow_conservation_residuals_reports_an_imbalance():
+    """The auditor itself must flag pressures that violate Kirchhoff."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=1.0)
+    G.add_edge(1, 2, conductance=1.0)
+    G.nodes[0]["pressure"] = 3.0
+    G.nodes[1]["pressure"] = 1.0  # correct value for conservation would be 2.0
+    G.nodes[2]["pressure"] = 1.0
+
+    residuals = flow_conservation_residuals(G, boundary_nodes=[0, 2])
+    assert residuals[1] == pytest.approx(-2.0)
