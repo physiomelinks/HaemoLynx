@@ -501,3 +501,21 @@ def test_watching_the_outputs_does_not_change_the_progress_events(stubbed):
 def test_a_run_nobody_is_watching_still_returns_its_graph(stubbed):
     _called, model = stubbed()
     assert _run() is model.graph
+
+
+def test_the_sixth_stage_is_named_haemodynamics():
+    """#125. One place defines it; the napari tab and the bars both read it."""
+    titles = [stage.title for stage in STAGES]
+
+    assert titles == [
+        "1. Input",
+        "2. Skeletonise",
+        "3. Graph",
+        "4. Boundaries",
+        "5. Diameters",
+        "6. Haemodynamics",
+        "7. Solve",
+        "8. Export",
+    ]
+    haemodynamics = next(s for s in STAGES if s.title == "6. Haemodynamics")
+    assert haemodynamics.call == "build_haemodynamic_model"

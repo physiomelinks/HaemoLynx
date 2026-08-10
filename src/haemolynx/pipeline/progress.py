@@ -113,7 +113,7 @@ STAGES: tuple[Stage, ...] = (
     ),
     Stage(
         call="build_haemodynamic_model",
-        title="6. Resistances",
+        title="6. Haemodynamics",
         summary="Poiseuille resistance per vessel, and any pericyte constriction.",
         settings=("run_haemodynamics", "constriction_by_branch_order"),
         sections=("Diameters and pericytes",),

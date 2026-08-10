@@ -33,7 +33,7 @@ nothing else to set.
 ### The panel: configuring a run
 
 One tab per pipeline stage, in the order they execute -- Input, Skeletonise,
-Graph, Boundaries, Diameters, Resistances, Solve, Export -- so a run is
+Graph, Boundaries, Diameters, Haemodynamics, Solve, Export -- so a run is
 configured the way it runs rather than the way the config file is laid out.
 
 Every row comes from `haemolynx.pipeline.default_schema()`, so a setting
