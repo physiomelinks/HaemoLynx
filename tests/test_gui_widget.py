@@ -528,3 +528,71 @@ def test_the_about_widget_builds(make_napari_viewer):
 
     make_napari_viewer()
     assert about_widget() is not None
+
+
+def test_loading_a_config_keeps_its_paths_as_it_wrote_them(make_napari_viewer):
+    """A FileEdit makes every path absolute, which rewrites the config.
+
+    `resistance_pipeline_config.yaml` names its files relatively. Put those in
+    the form and magicgui stores `/home/you/wherever/classifiers/....ilp`, so
+    "Save config..." would write this machine's layout back into a portable
+    file, and the values then differ from their defaults -- which is what made
+    a run report fourteen settings as set while nothing reads them.
+    """
+    make_napari_viewer()
+    panel = settings_widget()
+
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+    values = panel._haemolynx_values()
+
+    for name in ("input_path", "ilastik_classifier_path",
+                 "ilastik_small_arteriole_classifier_path"):
+        assert not Path(values[name]).is_absolute(), (
+            f"{name} came back as {values[name]}, absolute, not as the config wrote it"
+        )
+
+
+def test_loading_a_config_does_not_make_a_run_warn_about_its_own_defaults(
+    make_napari_viewer,
+):
+    """The symptom the path rewriting caused, pinned at the point it appeared.
+
+    The config leaves ilastik off and still fills its paths in, which is what
+    the schema calls ordinary practice. Absolutised, each of those stopped
+    matching its default and a run warned about all fourteen.
+    """
+    from haemolynx.parsers import IneffectiveSettingWarning
+    from haemolynx.pipeline import resolve_settings
+
+    make_napari_viewer()
+    panel = settings_widget()
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        resolve_settings(
+            panel._haemolynx_values(), schema=default_schema(), config_path=None
+        )
+
+    ineffective = [
+        w for w in caught if issubclass(w.category, IneffectiveSettingWarning)
+    ]
+    assert not ineffective, (
+        f"{len(ineffective)} settings reported as set-but-unread: "
+        f"{[str(w.message)[:60] for w in ineffective]}"
+    )
+
+
+def test_choosing_a_different_file_replaces_what_the_config_said(
+    make_napari_viewer, tmp_path
+):
+    """Only the loaded value is preserved; an edit is the user's own choice."""
+    make_napari_viewer()
+    panel = settings_widget()
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+
+    chosen = tmp_path / "my_own.tif"
+    chosen.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = chosen
+
+    assert Path(panel._haemolynx_values()["input_path"]) == chosen

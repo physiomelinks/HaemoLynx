@@ -981,17 +981,35 @@ def settings_widget(napari_viewer=None):
             index = tab_widget.count() - 1
             tab_widget.setTabToolTip(index, f"{tab.stage.call}(settings, ...)")
 
+    #: What a loaded config said each path setting was, before its FileEdit
+    #: made it absolute. Empty until a config is opened.
+    loaded_paths: dict[str, Any] = {}
+
     def current_values() -> dict[str, Any]:
         """What the panel says, in the settings' own terms.
 
         Read back through the field rather than straight off the widget: an
         empty picker is *unset*, not the working directory, and an empty box is
-        unset rather than zero.
+        unset rather than zero. A path a loaded config gave is handed back as
+        that config wrote it, for as long as the row still names the same file
+        -- see `load_config_file`. Picking a different file in the row replaces
+        it, because then the absolute path is what the user chose.
         """
-        return {
+        values = {
             name: fields[name].to_setting_value(widget.value)
             for name, widget in rows.items()
         }
+        for name, original in loaded_paths.items():
+            current = values.get(name)
+            if current is None:
+                continue
+            try:
+                unchanged = Path(current) == Path(original).resolve()
+            except (TypeError, ValueError, OSError):
+                continue
+            if unchanged:
+                values[name] = original
+        return values
 
     def use_layer(layer) -> None:
         """Point the run at *layer*: its own file, or its array written out."""
@@ -1124,9 +1142,23 @@ def settings_widget(napari_viewer=None):
         routinely written on one machine and read on another. The paths are
         checked when a run is about to start, by "Run checks" and by the run
         itself, which is where a missing file is worth stopping for.
+
+        A FileEdit stores whatever it is given as an absolute path, so putting
+        a config's relative `classifiers/nerve_classifier.ilp` into one turns
+        it into `/home/you/wherever/classifiers/nerve_classifier.ilp`. Left
+        alone that rewrites the config: every relative path in it becomes
+        specific to this machine, "Save config..." writes those back, and the
+        settings then differ from their defaults, so a run warns that fourteen
+        of them are set while nothing reads them. What the file said is kept
+        here, and `current_values` hands it back for any row still naming the
+        same file.
         """
-        for name, value in load_config(Path(path), schema).items():
+        loaded = load_config(Path(path), schema)
+        loaded_paths.clear()
+        for name, value in loaded.items():
             if name in rows:
+                if schema[name].kind == "path" and value is not None:
+                    loaded_paths[name] = value
                 rows[name].value = display_value_for(schema[name], value)
         apply_prerequisites()
         report.value = f"Loaded {path}"
@@ -1203,6 +1235,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_view = view
     panel._haemolynx_show_results = show_results
     panel._haemolynx_load_config = load_config_file
+    panel._haemolynx_report = lambda: report.value
+    panel._haemolynx_rows = lambda: rows
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
