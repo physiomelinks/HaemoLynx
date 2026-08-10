@@ -518,3 +518,13 @@ def test_loading_a_config_naming_a_missing_image_still_fails_the_run_checks(
     result = preflight(settings, schema)
     assert not result.ok
     assert any("input_path" in message for message in result.errors)
+
+
+# --- the About widget --------------------------------------------------------
+
+
+def test_the_about_widget_builds(make_napari_viewer):
+    from haemolynx.gui._widget import about_widget
+
+    make_napari_viewer()
+    assert about_widget() is not None

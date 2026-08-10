@@ -106,6 +106,13 @@ run can be opened, adjusted and run here. It only reads the file: a config whose
 image a run works on is the layer open in napari. Paths are checked when a run
 starts, by **Run checks** and by the run itself.
 
+The menu's second entry, **About**, gives the installed version and the two
+answers people look for in the panel and do not find there: colouring is in
+napari's own layer controls, and a config file is the same YAML the command line
+takes. It is also what makes the menu read **HaemoLynx** — napari titles the
+menu with the plugin name only when a plugin contributes more than one widget,
+and appends `(HaemoLynx)` to the widget name otherwise.
+
 Running the panel does not open plots outside napari: the settings that make
 plotly open a web browser mid-run start switched off, and are ordinary rows you
 can tick back on.

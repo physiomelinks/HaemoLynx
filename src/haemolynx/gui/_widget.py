@@ -888,6 +888,53 @@ def _run_in_background(
     worker.start()
 
 
+#: What the About panel says. Written here rather than in the widget so it can
+#: be checked without a display -- and so the two questions it answers stay
+#: answered: where the colour controls are (napari's own layer controls, not
+#: this plugin's panel) and what a config file is for.
+ABOUT_TEXT = """\
+HaemoLynx {version}
+
+Turns 3D microvascular microscopy into a NetworkX graph with haemodynamic
+edge weights, VTK exports and network statistics.
+
+Pipeline settings runs the pipeline: one tab per stage, in the order they
+run. Point it at the image layer you have open, or load a config file.
+
+Colours are not set here. Select a vessel or node layer and use napari's
+own layer controls on the left: "edge feature:" and "node feature:" choose
+the quantity, "colour range:" sets the scale.
+
+A config file is the same YAML the command line takes, so a run set up
+here repeats with:
+
+    python examples/resistance_network_pipeline.py --config my.yaml
+
+Settings in this build: {settings}
+Docs and issues: https://github.com/physiomelinks/HaemoLynx
+"""
+
+
+def about_text() -> str:
+    """The About panel's text, filled in for this installation."""
+    import haemolynx
+
+    return ABOUT_TEXT.format(
+        version=getattr(haemolynx, "__version__", "unknown"),
+        settings=len(list(default_schema())),
+    )
+
+
+def about_widget():
+    """What HaemoLynx is, and the two things people ask the panel that it
+    cannot answer: where the colour controls live, and what a config is for."""
+    from magicgui.widgets import TextEdit
+
+    report = TextEdit(value=about_text())
+    report.read_only = True
+    return report.native
+
+
 def settings_widget(napari_viewer=None):
     """The HaemoLynx panel: the pipeline's stages, in the order it runs them.
 
