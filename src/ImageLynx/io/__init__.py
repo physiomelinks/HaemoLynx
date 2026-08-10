@@ -3,6 +3,7 @@ from .load import (
     crop_tiff_volume_from_corners,
     load_3d_tif,
     load_3d_h5,
+    read_ilastik_probabilities,
     load_3d_tif_with_voxel_size,
     load_3d_h5_with_voxel_size,
     get_tif_spacing,
@@ -18,6 +19,7 @@ from ..preprocessing.skeleton import bridge_gaps
 __all__ = [
     "load_3d_tif",
     "load_3d_h5",
+    "read_ilastik_probabilities",
     "load_3d_tif_with_voxel_size",
     "load_3d_h5_with_voxel_size",
     "get_tif_spacing",

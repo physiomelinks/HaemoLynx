@@ -323,3 +323,97 @@ def simplify_to_3d(image: np.ndarray) -> np.ndarray:
     if image.ndim == 6:
         return image[:, :, :, 0, 0, 0]
     return image[:, :, :, 0]
+
+
+def read_ilastik_probabilities(
+    path,
+    vessel_class_index: int | None = None,
+    dataset: str | None = None,
+    expected_shape_zyx: tuple | None = None,
+    check_calibration: bool = True,
+) -> np.ndarray:
+    """Read one class channel from an Ilastik headless probability export.
+
+    The export is 4D with one probability channel per class, in label order. Selecting the
+    wrong channel is the one failure in this chain that yields a complete and plausible set
+    of results rather than an error: the background probability is a perfectly well-formed
+    volume, and everything downstream is then computed from the inverse segmentation. So the
+    class index is never defaulted, and the returned channel is checked against the calibre
+    of thing a vessel probability can be - a few percent of the volume, not most of it.
+
+    ``vessel_class_index`` defaults to ``specimens.VESSEL_CLASS_INDEX``, which is unset until
+    the trained project's label order is recorded, and raises while it is.
+
+    ``expected_shape_zyx`` catches a probability map paired with the wrong specimen.
+
+    Returns the selected channel as float32 in (z, y, x).
+    """
+    from ..specimens import PROBABILITIES_DATASET, resolve_vessel_class_index
+
+    if h5py is None:
+        raise ImportError("h5py is required to read Ilastik exports. pip install h5py")
+
+    index = resolve_vessel_class_index(vessel_class_index)
+    dataset = PROBABILITIES_DATASET if dataset is None else dataset
+    path = Path(path)
+
+    with h5py.File(path, "r") as handle:
+        available = list(handle.keys())
+        if dataset not in handle:
+            raise KeyError(
+                f"{path.name} has no dataset {dataset!r}. Available: {available}. Ilastik "
+                f"writes {PROBABILITIES_DATASET!r} by default; --output_internal_path sets it."
+            )
+        volume = np.squeeze(np.asarray(handle[dataset]))
+
+    if volume.ndim != 4:
+        raise ValueError(
+            f"{path.name}/{dataset} has shape {volume.shape}, which carries no class axis "
+            f"after squeezing. A 3D export has already collapsed the classes, so which one "
+            f"survived cannot be recovered - re-export with every class channel."
+        )
+
+    # The class axis is whichever is short; the other three are spatial. Ilastik writes it
+    # last, but the raw acquisitions in this study are ZCYX, so position is not reliable.
+    class_axis = int(np.argmin(volume.shape))
+    n_classes = volume.shape[class_axis]
+    if n_classes > 8:
+        raise ValueError(
+            f"{path.name}/{dataset} has shape {volume.shape} and no axis short enough to be "
+            f"a class axis; the smallest is {n_classes}."
+        )
+    if index >= n_classes:
+        raise ValueError(
+            f"vessel class index {index} is out of range for {n_classes} classes in "
+            f"{path.name}."
+        )
+
+    probabilities = np.ascontiguousarray(
+        np.take(volume, index, axis=class_axis)
+    ).astype(np.float32)
+
+    if expected_shape_zyx is not None and probabilities.shape != tuple(expected_shape_zyx):
+        raise ValueError(
+            f"{path.name} has shape {probabilities.shape}, expected "
+            f"{tuple(expected_shape_zyx)}. This is a probability map paired with the wrong "
+            f"specimen, not a reshaping problem."
+        )
+
+    lo, hi = float(probabilities.min()), float(probabilities.max())
+    if lo < -1e-6 or hi > 1.0 + 1e-6:
+        raise ValueError(
+            f"{path.name} class {index} spans [{lo:.4f}, {hi:.4f}], which is not a "
+            f"probability. Export with --export_dtype=float32 rather than 8-bit."
+        )
+
+    mean = float(probabilities.mean())
+    if check_calibration and mean > 0.5:
+        raise ValueError(
+            f"{path.name} class {index} has mean probability {mean:.3f}. A vessel channel is "
+            f"a few percent of the volume; a mean above 0.5 means this is the background "
+            f"class, and using it would compute every downstream result from the inverse "
+            f"segmentation without erroring anywhere. Check the trained project's label "
+            f"order, or pass check_calibration=False if this really is intended."
+        )
+    logger.info("Read %s class %d: mean probability %.4f", path.name, index, mean)
+    return probabilities
