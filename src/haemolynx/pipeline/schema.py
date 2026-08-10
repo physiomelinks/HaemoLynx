@@ -739,6 +739,18 @@ SCHEMA = Schema(
             requires=("do_graph_building",),
         ),
         Setting(
+            name="save_step_artifacts",
+            kind="bool",
+            default=False,
+            help=(
+                "Write a graph pickle and an overlay PNG after each graph-building "
+                "step. Turn on to debug a bad topology; it dominates the runtime of "
+                "a large run, so it is off by default"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building",),
+        ),
+        Setting(
             name="skeleton_min_component_percent",
             kind="float",
             default=0.0,

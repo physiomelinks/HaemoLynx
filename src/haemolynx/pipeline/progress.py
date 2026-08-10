@@ -79,6 +79,7 @@ STAGES: tuple[Stage, ...] = (
             "final_orphan_reconnect_threshold",
             "cluster_collapse_distance",
             "min_stub_length",
+            "save_step_artifacts",
             # Centreline smoothing is the last thing graph building does.
             "smooth_centrelines",
             "centreline_smoothing_method",

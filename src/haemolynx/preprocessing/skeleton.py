@@ -6,7 +6,6 @@ import logging
 import numpy as np
 from scipy.ndimage import (
     binary_dilation,
-    distance_transform_edt,
     generate_binary_structure,
     label,
     maximum_filter,
@@ -85,16 +84,29 @@ def log_skeleton_connectivity_stats(
     )
     logger.info(f"[skeleton:{name}] top component sizes (up to 10): {top_sizes}")
 
+
+def _euclidean_ball(radius: int) -> np.ndarray:
+    """Offsets whose Euclidean distance from the centre is at most *radius*."""
+    span = np.arange(-radius, radius + 1)
+    grids = np.meshgrid(*([span] * 3), indexing="ij")
+    return sum(g.astype(np.int64) ** 2 for g in grids) <= radius * radius
+
+
 def bridge_gaps(binary_skeleton: np.ndarray, max_gap: int = 4) -> np.ndarray:
-    """Fill small gaps in a binary mask using a distance-transform dilation.
+    """Fill small gaps in a binary mask using a morphological dilation.
 
     Every background voxel within *max_gap* voxels of any foreground voxel is
-    set to foreground.  Equivalent to morphological dilation with radius
-    *max_gap*.
+    set to foreground -- that is, dilation by a Euclidean ball of radius
+    *max_gap*, which is what this does. It used to be phrased as a full
+    Euclidean distance transform thresholded at *max_gap*; the two give
+    identical results, but the distance transform computes an exact distance
+    for every voxel in the volume when all that is needed is whether one voxel
+    of slack is exceeded, and on a full stack that was the single most
+    expensive call in the run.
     """
-    dist = distance_transform_edt(~binary_skeleton)
-    fill_mask = (dist <= max_gap) & (~binary_skeleton)
-    return binary_skeleton | fill_mask
+    if max_gap <= 0:
+        return binary_skeleton
+    return binary_dilation(binary_skeleton, structure=_euclidean_ball(int(max_gap)))
 
 
 def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
@@ -290,12 +302,24 @@ def connect_skeleton_components(
     if n_components <= 1:
         return skeleton
 
+    # One pass over the labels, then split by component. Asking
+    # `labeled == comp_id` per component instead re-reads the whole volume once
+    # for every component, which on a full stack with a hundred-odd fragments
+    # was the bulk of this function's cost.
+    coords_all = np.argwhere(labeled)
+    labels_all = labeled[tuple(coords_all.T)]
+    order = np.argsort(labels_all, kind="stable")
+    coords_all = coords_all[order]
+    labels_all = labels_all[order]
+    starts = np.searchsorted(labels_all, np.arange(1, n_components + 2))
+
     comp_coords: dict[int, np.ndarray] = {}
     comp_trees: dict[int, cKDTree] = {}
     for comp_id in range(1, n_components + 1):
-        coords = np.argwhere(labeled == comp_id)
-        if len(coords) == 0:
+        lo, hi = int(starts[comp_id - 1]), int(starts[comp_id])
+        if hi <= lo:
             continue
+        coords = coords_all[lo:hi]
         comp_coords[comp_id] = coords
         comp_trees[comp_id] = cKDTree(coords)
 

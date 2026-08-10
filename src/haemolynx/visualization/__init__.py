@@ -1,5 +1,6 @@
 """Visualization of vascular networks."""
 from .plot import (
+    overlay_z_projection,
     plot_node_degree_distribution,
     visualize_3d_plotly,
     visualize_3d_plotly_vessel_types,
@@ -16,6 +17,7 @@ from .vtk_io import (
 from .pipeline_artifacts import save_graph_snapshot
 
 __all__ = [
+    "overlay_z_projection",
     "plot_node_degree_distribution",
     "visualize_3d_plotly",
     "visualize_3d_plotly_vessel_types",

@@ -155,3 +155,75 @@ def test_snapshots_of_different_images_do_not_collide_in_the_output_dir(
 
     assert (output_dir / "stack_a_graph_after_build.pkl").is_file()
     assert (output_dir / "stack_b_graph_after_build.pkl").is_file()
+
+
+@pytest.mark.plotting
+def test_extra_plot_names_get_the_same_figure_without_redrawing(
+    snapshot_dirs, snapshot_graph, snapshot_image, monkeypatch
+):
+    """A second filename must cost a file write, not a second render.
+
+    The pipeline wants the same overlay under two names. Drawing it twice was
+    the single most expensive thing a large run did, and the two files came out
+    byte-identical anyway.
+    """
+    from haemolynx.visualization import pipeline_artifacts
+
+    renders = []
+    real_render = pipeline_artifacts.visualize_edges_and_nodes
+
+    def counting_render(*args, **kwargs):
+        renders.append(kwargs.get("save_path"))
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_artifacts, "visualize_edges_and_nodes", counting_render)
+
+    output_dir, plot_dir = snapshot_dirs
+    save_graph_snapshot(
+        snapshot_graph,
+        snapshot_image,
+        output_dir,
+        plot_dir,
+        "sample",
+        "smart_multigraph_degree2_removal_pass1",
+        extra_plot_names=("smart_multigraph_degree2_removal",),
+    )
+
+    assert len(renders) == 1, "the overlay was drawn more than once"
+    canonical = plot_dir / "graph_after_smart_multigraph_degree2_removal_pass1.png"
+    alias = plot_dir / "smart_multigraph_degree2_removal.png"
+    assert canonical.is_file() and alias.is_file()
+    assert canonical.read_bytes() == alias.read_bytes()
+
+
+@pytest.mark.plotting
+def test_a_supplied_projection_is_used_instead_of_reprojecting(
+    snapshot_dirs, snapshot_graph, snapshot_image, monkeypatch
+):
+    """Projecting reads the whole stack; the pipeline passes one in for reuse."""
+    from haemolynx.visualization import plot as plot_mod
+
+    calls = []
+    real_projection = plot_mod.overlay_z_projection
+
+    def counting_projection(image):
+        calls.append(image.shape)
+        return real_projection(image)
+
+    monkeypatch.setattr(plot_mod, "overlay_z_projection", counting_projection)
+
+    output_dir, plot_dir = snapshot_dirs
+    projection = real_projection(snapshot_image)
+    for step in ("build", "prune", "collapse"):
+        save_graph_snapshot(
+            snapshot_graph,
+            snapshot_image,
+            output_dir,
+            plot_dir,
+            "sample",
+            step,
+            projection=projection,
+        )
+
+    assert calls == [], "the image was re-projected despite a projection being supplied"
+    assert len(list(plot_dir.glob("*.png"))) == 3

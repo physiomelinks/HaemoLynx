@@ -379,6 +379,14 @@ def build_network(
 
     if settings["do_graph_building"]:
         # 3) Convert skeleton to graph.
+        # Every snapshot draws the same volume, and projecting it reads the whole
+        # stack, so it is projected once here rather than once per step.
+        step_projection = (
+            visualization.overlay_z_projection(image)
+            if settings["save_step_artifacts"]
+            else None
+        )
+
         def _graph_build_step_callback(graph_obj, label: str) -> None:
             # Report before drawing: the snapshots below are the slow part of
             # this step, so a watcher should see it tick over on arrival.
@@ -389,6 +397,10 @@ def build_network(
             # goes out here rather than being kept.
             if on_step_graph is not None:
                 on_step_graph(label, graph_obj)
+            if not settings["save_step_artifacts"]:
+                return
+            # `graph_after_<label>.png` and `<label>.png` are the same figure
+            # under two names, so it is drawn once and written twice.
             plot_png = label
             if label == "smart_multigraph_degree2_removal_pass1":
                 plot_png = "smart_multigraph_degree2_removal"
@@ -399,12 +411,8 @@ def build_network(
                 settings["plot_dir"],
                 settings["input_path"].stem,
                 label,
-            )
-            visualization.visualize_edges_and_nodes(
-                image,
-                graph_obj,
-                label_nodes=True,
-                save_path=settings["plot_dir"] / f"{plot_png}.png",
+                projection=step_projection,
+                extra_plot_names=(plot_png,),
             )
 
         G = graph.build_graph_from_skeleton(

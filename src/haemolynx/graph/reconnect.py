@@ -11,6 +11,11 @@ from skimage.graph import route_through_array
 
 logger = logging.getLogger(__name__)
 
+#: Voxels of context included around a routing window when its cost field is
+#: built. Distances up to this are exact; beyond it the field only has to stay
+#: large, which it does.
+COST_WINDOW_PAD = 32
+
 
 def _path_length_3d(points) -> float:
     """Compute 3D polyline length from physical coordinates."""
@@ -54,11 +59,28 @@ def reconnect_secondary_loop_edges(
 
     deg = dict(G.degree())
     skeleton_copy = skeleton.astype(bool)
-    try:
-        base_cost = 1 + distance_transform_edt(~skeleton_copy) ** 2
-    except Exception as e:
-        logger.error("Failed to compute distance transform: %s", e)
-        return G
+
+    def window_cost(minc, maxc):
+        """Routing cost `1 + d^2` over one sub-volume, d = distance to skeleton.
+
+        The transform runs on the window padded by :data:`COST_WINDOW_PAD`
+        rather than on the whole stack, because that is the only part the
+        router ever reads and an exact whole-volume transform costs the same
+        whether one window is wanted or all of them. Distances are exact
+        wherever the nearest skeleton voxel lies inside the padded window; past
+        the pad they come out larger than the true distance, which only pushes
+        the router further away from voxels it already avoids -- an accepted
+        path has to lie on the skeleton for `min_overlap` of its length.
+        """
+        plo = np.maximum(minc - COST_WINDOW_PAD, 0)
+        phi = np.minimum(maxc + COST_WINDOW_PAD, skeleton_copy.shape)
+        padded = ~skeleton_copy[plo[0]:phi[0], plo[1]:phi[1], plo[2]:phi[2]]
+        dist = distance_transform_edt(padded)
+        inner = tuple(
+            slice(int(minc[d] - plo[d]), int(minc[d] - plo[d] + maxc[d] - minc[d]))
+            for d in range(3)
+        )
+        return 1 + dist[inner] ** 2
 
     cache_lock = threading.Lock()
     sub_cache = {}
@@ -178,11 +200,7 @@ def reconnect_secondary_loop_edges(
                 cached_result = manage_cache(cache_key)
                 if cached_result is None:
                     try:
-                        sub_cost = base_cost[
-                            minc[0] : maxc[0],
-                            minc[1] : maxc[1],
-                            minc[2] : maxc[2],
-                        ].copy()
+                        sub_cost = window_cost(minc, maxc)
                         if sub_cost.size == 0:
                             continue
                         orig_rel = [vox - minc for vox in orig_voxels]
