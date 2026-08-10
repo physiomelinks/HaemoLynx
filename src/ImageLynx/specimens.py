@@ -285,17 +285,19 @@ GROUPS: Tuple[str, str] = ("WKY", "SHR")
 #: that was made in advance rather than a discovery made afterwards.
 WEAKEST_SPECIMEN_ID = "WKY-C"
 
-#: The classifier the labelling imbalance was accepted for - and the measurement that argues
-#: the acceptance should be revisited.
+#: The trained project every measured number in this module was taken on.
 #:
-#: 2026-08-10: prediction was run against a project that verifies but is lopsided - SHR 79388
-#: labelled voxels against WKY 20142, a factor of 3.9, and WKY-C thinnest of all at 4488 with
-#: vessel:background 2.32 where the SHR volumes sit near 0.9. A forest weights by labelled
-#: voxel count, so this classifier is better calibrated on SHR. The decision was to proceed
-#: and top up WKY later, on the reasoning that downstream pipeline work does not depend on
-#: which way the bias points.
+#: NOT an accepted state. The acceptance it originally recorded has been withdrawn: the plan
+#: is now to relabel before generating the probability maps the study keeps, because the
+#: measurement below showed the imbalance reaching the group contrast rather than staying a
+#: background risk. What survives is the record of what this classifier does, which is the
+#: baseline a relabelled one has to beat.
 #:
-#: Three volumes were then predicted, and that reasoning does not survive them:
+#: 2026-08-10: the project verified but was lopsided - SHR 79388 labelled voxels against WKY
+#: 20142, a factor of 3.9, and WKY-C thinnest of all at 4488 with vessel:background 2.32
+#: where the SHR volumes sit near 0.9. A forest weights by labelled voxel count, so this
+#: classifier is better calibrated on SHR. Three volumes were predicted to find out whether
+#: that reaches the output. It does:
 #:
 #:     specimen  group  mean p  p<0.05  p>0.95  uncertain  fg@0.5  r_med@0.5 um
 #:     WKY-A     WKY    0.2358   0.589   0.106      0.305   0.224          5.60
@@ -314,10 +316,11 @@ WEAKEST_SPECIMEN_ID = "WKY-C"
 #: gives capillary calibre and connectivity at once. That points at background being
 #: under-labelled everywhere rather than at either cohort specifically.
 #:
-#: The hash makes this record self-invalidating. Once the project is relabelled the hash
-#: moves, and an acceptance recorded against the old one no longer describes what is being
-#: run - which is the whole reason it is a hash rather than a date.
-ACCEPTED_LABEL_IMBALANCE_SHA256 = (
+#: The hash makes this record self-invalidating, and is_measured_baseline makes that operate
+#: rather than merely be asserted: once the project is relabelled the hash moves, every
+#: number above describes something that is no longer being run, and verify_classifier says
+#: so instead of leaving a stale measurement to be read as current.
+MEASURED_BASELINE_CLASSIFIER_SHA256 = (
     "79a5f6ac5a5e3d6f5c56d0656deb7f78ec95c5f06be6013e4f0143331136c17a"
 )
 
@@ -426,6 +429,18 @@ def _describe_h5_open_failure(failure: OSError, path: Path) -> str:
             f"ilastik, then run this again. ({detail})"
         )
     return f"{path.name} could not be read as an Ilastik project: {detail}"
+
+
+def is_measured_baseline(path: Optional[Path] = None) -> bool:
+    """Whether this is the project the measurements recorded in this module were taken on.
+
+    Returns False for a missing file rather than raising: "we are not running the measured
+    baseline" is the true and useful answer either way.
+    """
+    path = POOLED_CLASSIFIER if path is None else Path(path)
+    if not path.exists():
+        return False
+    return classifier_sha256(path) == MEASURED_BASELINE_CLASSIFIER_SHA256
 
 
 def read_classifier_metadata(path: Optional[Path] = None) -> Dict[str, object]:
@@ -585,6 +600,14 @@ def verify_classifier(
 
     report["group_label_counts"] = _group_label_counts(lanes)
     report["warnings"] = _label_balance_warnings(lanes, report["group_label_counts"])
+    report["is_measured_baseline"] = is_measured_baseline(Path(report["path"]))
+    if not report["is_measured_baseline"]:
+        report["warnings"].append(
+            "This is not the measured baseline classifier. Every measured number recorded "
+            "in ImageLynx.specimens - probability calibration, label imbalance, per-cohort "
+            "foreground fraction - was taken on a different project and describes something "
+            "that is no longer being run. Re-measure before relying on any of them."
+        )
     return report
 
 

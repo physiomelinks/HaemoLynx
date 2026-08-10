@@ -38,8 +38,20 @@ from typing import Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 
-#: The capillary diameter mode the handover's validation table expects, and the same window
-#: its half-voxel error arithmetic implies independently. An external target, not a fitted one.
+#: The capillary diameter mode the segmentation handover's validation table expects, and the
+#: same window its half-voxel error arithmetic implies independently.
+#:
+#: Deliberately an *external* target rather than an internal optimum: a threshold chosen to
+#: optimise a property of the data has no independent standard to be right or wrong against.
+#: But external here means asserted, not measured - it is not derived from these specimens,
+#: and the handover gives it without citation. It selects the segmentation threshold, so every
+#: downstream geometric and haemodynamic quantity inherits it, and resistance inherits it at
+#: the fourth power.
+#:
+#: That obliges two things in the write-up, recorded in the methods skeleton at section X.9:
+#: state the provenance rather than presenting the threshold as data-derived, and report
+#: sensitivity across the plausible *width of this window* rather than across a band around
+#: the chosen threshold, which tests the wrong quantity.
 CAPILLARY_DIAMETER_RANGE_UM: Tuple[float, float] = (4.0, 7.0)
 
 #: Multiple of the sweep's baseline endpoint density above which the centreline is treated as

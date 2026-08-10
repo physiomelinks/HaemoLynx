@@ -573,9 +573,47 @@ def test_group_label_imbalance_is_reported_without_failing(tmp_path):
     assert any("imbalance" in w for w in report["warnings"])
 
 
-def test_balanced_labelling_produces_no_warnings(tmp_path):
+def test_balanced_labelling_produces_no_balance_warnings(tmp_path):
     from ImageLynx.specimens import verify_classifier
 
     path = tmp_path / "balanced.ilp"
     _write_project(path, _all_lanes([100, 200, 300]))
-    assert verify_classifier(path)["warnings"] == []
+    warnings = verify_classifier(path)["warnings"]
+
+    # A synthetic project is legitimately never the measured baseline, so that warning is
+    # expected here; nothing about the labelling itself should be flagged.
+    balance = [w for w in warnings if "baseline" not in w.lower()]
+    assert balance == []
+
+
+def test_the_baseline_measurement_record_knows_when_it_no_longer_applies(tmp_path):
+    """A recorded measurement against one classifier must not silently describe another.
+
+    specimens.py carries the measured behaviour of a specific trained project - probability
+    calibration, label imbalance, per-cohort foreground. The moment that project is
+    retrained, every one of those numbers describes something that is no longer being run.
+    A comment saying so is not enough; the code has to be able to tell.
+    """
+    from ImageLynx.specimens import MEASURED_BASELINE_CLASSIFIER_SHA256, is_measured_baseline
+
+    assert len(MEASURED_BASELINE_CLASSIFIER_SHA256) == 64
+
+    same = tmp_path / "same.ilp"
+    same.write_bytes(b"whatever")
+    assert is_measured_baseline(same) is False
+
+    if POOLED_CLASSIFIER.exists():
+        # Whatever the answer is, it must be a real comparison rather than an assumption.
+        assert isinstance(is_measured_baseline(), bool)
+
+
+def test_a_retrained_classifier_is_flagged_in_the_warnings(tmp_path):
+    """The recorded imbalance measurement is superseded, and the report has to say so."""
+    from ImageLynx.specimens import verify_classifier
+
+    path = tmp_path / "retrained.ilp"
+    _write_project(path, _all_lanes([100, 200, 300]))
+    report = verify_classifier(path)
+
+    assert report["is_measured_baseline"] is False
+    assert any("baseline" in w.lower() for w in report["warnings"])
