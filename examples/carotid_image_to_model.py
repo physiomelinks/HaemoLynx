@@ -64,19 +64,32 @@ custom_edges= []
 @dataclass
 class PreprocessingConfig:
     """Configuration for probability map noise removal, smoothing, and binary thresholding."""
-    # Applied to the FLOAT probability map BEFORE thresholding, so both can erase capillary
-    # signal outright rather than merely cleaning it up. A 6 um capillary is 3.2 voxels across
-    # at a 1.866 um voxel. Measured at a fixed threshold on the reference subvolume, varying
-    # only this chain: (0, 0) -> 199 connected structures, median radius 1.87 um; (7, 1) -> 71
-    # structures, 2.64 um; (9, 4) -> 3 structures, 5.27 um. Thin structures are being deleted
-    # while fat ones survive.
+    # Applied to the FLOAT probability map BEFORE thresholding, so all of these can erase
+    # capillary signal outright rather than merely cleaning it up. A 6 um capillary is 3.2
+    # voxels across at a 1.866 um voxel. Measured at a fixed threshold on the reference
+    # subvolume, varying only this chain: (0, 0) -> 199 connected structures, median radius
+    # 1.87 um; (7, 1) -> 71 structures, 2.64 um; (9, 4) -> 3 structures, 5.27 um. Thin
+    # structures are being deleted while fat ones survive.
     #
-    # median 3 is the smallest window that suppresses isolated speckle, and it leaves the
-    # calibre distribution capillary-scale (r_p90 4.17 um against 3.73 um unfiltered).
-    # opening 0 because a greyscale opening has no useful radius here: at radius 1 it retains
-    # 51% of a 1.6-voxel-radius tube and at radius 2 it removes the tube entirely, so its only
-    # effect at capillary scale is to delete the anatomy.
-    median_filter_size: int = 3
+    # All four are off. Any filter whose support is comparable to the structure width deletes
+    # the structure: a 3x3x3 median spans 5.6 um against a 3.2-voxel capillary, and a
+    # greyscale opening retains 51% of a 1.6-voxel-radius tube at radius 1 and none of it at
+    # radius 2.
+    #
+    # median 3 was kept until now for speckle suppression, which it does achieve - and a
+    # connected component size filter applied AFTER thresholding achieves identically, without
+    # moving a single boundary. On the three-capillary fixture in tests/test_preprocessing.py:
+    #
+    #     approach                              foreground  components  recall
+    #     truth (clean probability)                    900           3   100.0%
+    #     threshold only                              1644         714   100.0%
+    #     median 3 -> threshold                        181           3    20.1%
+    #     threshold -> 50-voxel size filter            913           3   100.0%
+    #
+    # Same cleanup, 80% of the vessel destroyed, and what survives is thinned (r_p90 1.87 um
+    # against a true 2.64 um), which resistance carries as r^-4. Speckle removal belongs after
+    # thresholding, where it is a topology operation rather than a boundary operation.
+    median_filter_size: int = 0
     probability_smoothing_sigma: float = 0.0
     morphological_opening_radius: int = 0
     morphological_closing_radius: int = 0
