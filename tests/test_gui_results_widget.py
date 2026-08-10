@@ -580,3 +580,105 @@ def test_a_missing_layer_controls_panel_is_not_fatal(make_napari_viewer):
     finally:
         _widget._layer_controls = original
     assert VESSELS in viewer.layers
+
+
+def test_rescaling_repaints_without_reselecting_the_feature(make_napari_viewer):
+    """The colours have to change when the range does, not later.
+
+    `ColorManager.contrast_limits` is a plain field, so setting it recolours
+    the model and emits nothing: the canvas keeps drawing the buffer it has,
+    and the change only showed up once you picked another feature and came
+    back -- that assignment is what fires the event. Pressing "Fit 1-99%"
+    looked like it had done nothing at all.
+    """
+    from haemolynx.gui._widget import _apply_contrast_limits, _colour_layer
+
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+    _colour_layer(layer, "length", "continuous", limits=(0.0, 10.0))
+    scale.follow_the_layer()
+
+    repaints = []
+    layer.events.edge_color.connect(lambda *_a: repaints.append(1))
+
+    assert _apply_contrast_limits(layer, 0.0, 1.0)
+
+    assert repaints, "the canvas was never told the colours changed"
+    assert layer.edge_contrast_limits == (0.0, 1.0)
+
+
+def test_the_fit_buttons_repaint_too(make_napari_viewer):
+    from haemolynx.gui._widget import _colour_layer
+
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+    _colour_layer(layer, "length", "continuous", limits=(0.0, 100.0))
+    scale.follow_the_layer()
+
+    repaints = []
+    layer.events.edge_color.connect(lambda *_a: repaints.append(1))
+
+    assert scale.autoscale(1.0, 99.0)
+    assert repaints, "Fit 1-99% changed the range but not the picture"
+
+
+# --- the colour bar in the canvas -------------------------------------------
+
+
+def test_a_checkbox_puts_the_colour_bar_in_the_viewer(make_napari_viewer):
+    """napari registers a colorbar overlay for Points and none for Vectors.
+
+    What is asserted is the overlay and its visibility, not pixels: an
+    offscreen viewer builds no overlay visuals at all -- not for Image, Points
+    or anything else -- so a screenshot would prove nothing either way. What
+    makes a late-added overlay real is that the canvas connects to
+    `_overlays.events.added`, so the test below checks that event fires.
+    """
+    from haemolynx.gui._widget import _layer_controls, _viewer_colorbar
+
+    viewer, layer, scale = a_drawn_run(make_napari_viewer)
+
+    assert scale.in_viewer.isChecked() is False
+    assert _viewer_colorbar(layer).visible is False
+
+    scale.in_viewer.setChecked(True)
+    assert _viewer_colorbar(layer).visible is True
+
+    scale.in_viewer.setChecked(False)
+    assert _viewer_colorbar(layer).visible is False
+
+    # Points come with theirs already registered; vessels needed one adding.
+    nodes = viewer.layers[NODES]
+    nodes_scale = _layer_controls(viewer, nodes)._haemolynx_scale
+    nodes_scale.in_viewer.setChecked(True)
+    assert nodes._overlays["face_colorbar"].visible is True
+    assert "edge_colorbar" in layer._overlays
+
+
+def test_adding_the_overlay_tells_the_canvas(make_napari_viewer):
+    """A Vectors colorbar is added after the layer was built, so it has to.
+
+    `VispyCanvas` connects to each layer's `_overlays.events.added` and builds
+    the visual from there. Without that event the overlay would sit in the dict
+    and never draw, and the checkbox would be a lie.
+    """
+    from haemolynx.gui._widget import _viewer_colorbar
+
+    _viewer, layer, _scale = a_drawn_run(make_napari_viewer)
+    assert "edge_colorbar" not in layer._overlays
+
+    added = []
+    layer._overlays.events.added.connect(lambda *_a: added.append(1))
+    _viewer_colorbar(layer)
+
+    assert added, "the canvas was never told a new overlay exists"
+
+
+def test_the_checkbox_reports_the_overlay_it_did_not_set(make_napari_viewer):
+    """Someone may switch the overlay on from the console; do not lie about it."""
+    from haemolynx.gui._widget import _viewer_colorbar
+
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+    _viewer_colorbar(layer).visible = True
+
+    scale.follow_the_layer()
+
+    assert scale.in_viewer.isChecked() is True

@@ -14,6 +14,7 @@ GUI installed.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -386,7 +387,17 @@ def _contrast_limits_attribute(layer) -> str:
 
 
 def _apply_contrast_limits(layer, low: float, high: float) -> bool:
-    """Set the range the colormap spans. True if it took."""
+    """Set the range the colormap spans, and get the canvas to show it.
+
+    Setting the limits alone changes the colours on the model and tells nobody:
+    `ColorManager.contrast_limits` is a plain field, so no `edge_color` event is
+    emitted and the canvas keeps drawing the buffer it already has. The change
+    only appeared once you picked a different feature and came back -- because
+    that assignment does fire the event.
+
+    So re-assign the column afterwards, which is exactly what going away and
+    coming back does, and the view updates when the range is set.
+    """
     name = _contrast_limits_attribute(layer)
     if not hasattr(layer, name) or not (np.isfinite(low) and np.isfinite(high)):
         return False
@@ -396,7 +407,49 @@ def _apply_contrast_limits(layer, low: float, high: float) -> bool:
         setattr(layer, name, (float(low), float(high)))
     except (ValueError, TypeError):
         return False
+    column = _active_column(layer)
+    if column:
+        try:
+            setattr(layer, _colour_attribute(layer), column)
+        except (KeyError, TypeError, ValueError):
+            logger.debug("could not repaint %s after rescaling", layer.name)
     return True
+
+
+def _viewer_colorbar(layer, create: bool = True):
+    """The overlay that draws a colour bar in the canvas, made if need be.
+
+    napari registers one for Points -- `face_colorbar`, hidden by default --
+    and none at all for Vectors, so the vessels need theirs adding. The overlay
+    reads the layer's colour manager, so it stays right as the colouring and
+    the range change.
+    """
+    overlays = getattr(layer, "_overlays", None)
+    if overlays is None:
+        return None
+    name = "edge_colorbar" if _colour_attribute(layer) == "edge_color" \
+        else "face_colorbar"
+    if name not in overlays:
+        if not create:
+            # Only looking. Making one here would register an overlay -- and
+            # fire the event the canvas builds visuals from -- for a layer
+            # nobody has asked to show a bar for.
+            return None
+        from napari.components.overlays import ColorBarOverlay
+
+        manager = f"_{name.split('_')[0]}"
+        overlays[name] = ColorBarOverlay(colormanager_attribute=manager)
+    return overlays[name]
+
+
+@contextmanager
+def _blocked(widget):
+    """Change a Qt widget without its own signal coming back at us."""
+    previous = widget.blockSignals(True)
+    try:
+        yield
+    finally:
+        widget.blockSignals(previous)
 
 
 class _ColourScale:
@@ -417,7 +470,8 @@ class _ColourScale:
     def __init__(self, viewer, layer_name: str) -> None:
         from qtpy.QtCore import Qt
         from qtpy.QtWidgets import (
-            QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+            QCheckBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+            QWidget,
         )
 
         self._viewer = viewer
@@ -470,6 +524,13 @@ class _ColourScale:
         buttons.addWidget(self.trim_button)
         buttons.addStretch(1)
         outer.addLayout(buttons)
+
+        self.in_viewer = QCheckBox("Show colour bar in the viewer")
+        self.in_viewer.setToolTip(
+            "Draw the scale in the canvas, beside the data it describes"
+        )
+        self.in_viewer.toggled.connect(self._show_in_viewer)
+        outer.addWidget(self.in_viewer)
         self.native.setVisible(False)
 
     # -- state ------------------------------------------------------------
@@ -517,6 +578,14 @@ class _ColourScale:
             return
 
         self.heading.setText(str(self._column))
+        overlay = None
+        try:
+            overlay = _viewer_colorbar(layer, create=False)
+        except Exception:  # noqa: BLE001 - private napari ground
+            logger.debug("no colour bar overlay available", exc_info=True)
+        if overlay is not None and self.in_viewer.isChecked() != bool(overlay.visible):
+            with _blocked(self.in_viewer):
+                self.in_viewer.setChecked(bool(overlay.visible))
         limits = getattr(layer, _contrast_limits_attribute(layer), None)
         if limits is None:
             limits = _data_range(layer, self._column)
@@ -535,6 +604,19 @@ class _ColourScale:
         self.low.setText(_format_limit(found[0]))
         self.high.setText(_format_limit(found[1]))
         return True
+
+    def _show_in_viewer(self, wanted: bool) -> None:
+        """Put the colour bar in the canvas, or take it away again."""
+        layer = self._layer()
+        if layer is None:
+            return
+        try:
+            overlay = _viewer_colorbar(layer)
+        except Exception:  # noqa: BLE001 - private napari ground
+            logger.debug("no colour bar overlay available", exc_info=True)
+            return
+        if overlay is not None:
+            overlay.visible = bool(wanted)
 
     def _apply_typed(self) -> None:
         layer = self._layer()
