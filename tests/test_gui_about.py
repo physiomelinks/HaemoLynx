@@ -41,3 +41,23 @@ def test_it_is_plain_text_a_read_only_box_can_show():
     text = about_text()
     assert text.strip()
     assert "{" not in text and "}" not in text, "an unfilled format placeholder"
+
+
+def test_it_credits_the_authors():
+    """The credit line is the reason several people will open this panel."""
+    text = about_text()
+    for name in ("Finbar Argus", "Harvey Davis", "Animus Laboratory"):
+        assert name in text, f"{name} is missing from the About text"
+    assert text.rstrip().endswith(
+        "Created by Finbar Argus, Harvey Davis, and the Animus Laboratory."
+    ), "the credit should be the last thing the panel says"
+
+
+def test_it_describes_the_graph_as_solver_input_rather_than_solved_output():
+    """HaemoLynx builds the network; a solver is what turns it into flows.
+
+    Saying it "gives haemodynamic edge weights" on its own reads as though the
+    haemodynamics fall out of the image, which overstates what this does.
+    """
+    text = about_text()
+    assert "fed" in text and "haemodynamic solver" in text

@@ -895,8 +895,9 @@ def _run_in_background(
 ABOUT_TEXT = """\
 HaemoLynx {version}
 
-Turns 3D microvascular microscopy into a NetworkX graph with haemodynamic
-edge weights, VTK exports and network statistics.
+Turns 3D microvascular microscopy into a NetworkX graph that can be fed
+into a haemodynamic solver to give haemodynamic edge weights, VTK exports
+and network statistics.
 
 Pipeline settings runs the pipeline: one tab per stage, in the order they
 run. Point it at the image layer you have open, or load a config file.
@@ -912,6 +913,8 @@ here repeats with:
 
 Settings in this build: {settings}
 Docs and issues: https://github.com/physiomelinks/HaemoLynx
+
+Created by Finbar Argus, Harvey Davis, and the Animus Laboratory.
 """
 
 
