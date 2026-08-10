@@ -73,7 +73,6 @@ def test_npe2_discovers_the_plugin_from_the_installed_entry_point():
     found = manager.get_manifest(declared)
     assert [widget.display_name for widget in found.contributions.widgets] == [
         "Pipeline settings",
-        "Run a saved config",
     ]
 
 
@@ -202,19 +201,26 @@ def test_the_napari_framework_classifier_is_declared():
     assert '"Framework :: napari"' in text
 
 
-def test_more_than_one_widget_is_contributed(manifest):
-    """This is what makes the menu read "HaemoLynx" rather than "x (HaemoLynx)".
+def test_the_panel_is_the_only_widget(manifest):
+    """One widget, and the menu entry reads "Pipeline settings (HaemoLynx)".
 
     napari renders a lone widget as `menu_item_template = "{1} ({0})"`, and
-    `needs_full_title` is True whenever a plugin provides only one, so the
-    suffix cannot be turned off. With two or more it builds a submenu titled
-    with the plugin's display name and lists the bare widget names inside.
+    `needs_full_title` is True whenever a plugin provides only one, so that
+    suffix cannot be turned off; with two or more it builds a submenu titled
+    with the plugin's display name instead. There used to be a second widget --
+    "Run a saved config" -- which bought that submenu, and this test asserted
+    two for exactly that reason.
+
+    It is gone because it could not open the configs in this repository: it ran
+    preflight before doing anything, so a config naming an image that is not on
+    this machine failed with "FAILED: input_path: checked: ..." and there was
+    no way past it. Opening a config into the panel with "Load config..." is
+    the one route now, and it does not need the image, because the image a run
+    works on is the layer open in napari. A nicer menu label is not worth a
+    second way in that does not work.
     """
-    assert len(manifest["contributions"]["widgets"]) >= 2, (
-        "napari only groups a plugin's widgets under its own name when there "
-        "is more than one; with a single widget the menu shows "
-        "'<widget> (HaemoLynx)'."
-    )
+    widgets = manifest["contributions"]["widgets"]
+    assert [widget["display_name"] for widget in widgets] == ["Pipeline settings"]
 
 
 def test_the_display_name_is_what_should_appear_in_the_menu(manifest):

@@ -100,8 +100,11 @@ coloured by flow once a run has solved, nodes by pressure.
 
 ### Other things worth knowing
 
-The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
-without opening the form.
+**Load config...** reads a `.yaml` into the form, so a config written for a CLI
+run can be opened, adjusted and run here. It only reads the file: a config whose
+`input_path` names an image that is not on this machine still loads, because the
+image a run works on is the layer open in napari. Paths are checked when a run
+starts, by **Run checks** and by the run itself.
 
 Running the panel does not open plots outside napari: the settings that make
 plotly open a web browser mid-run start switched off, and are ordinary rows you

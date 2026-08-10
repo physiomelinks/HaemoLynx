@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from haemolynx.gui.form import Field
+from haemolynx.gui.form import Field, display_value_for
 from haemolynx.gui.layers import input_for_layer
 from haemolynx.gui.results import (
     NODES,
@@ -888,59 +888,6 @@ def _run_in_background(
     worker.start()
 
 
-def run_config_widget():
-    """Run a config file as it stands, without opening the settings form.
-
-    The same thing `python examples/resistance_network_pipeline.py --config
-    my.yaml` does, for a config that is already how you want it.
-    """
-    from magicgui.widgets import Container, FileEdit, Label, PushButton, TextEdit
-    from qtpy.QtWidgets import QVBoxLayout, QWidget
-
-    schema = default_schema()
-    chooser = FileEdit(mode="r", filter="*.yaml *.yml", label="Config file")
-    report = TextEdit(value="Choose a config file, then press Run.")
-    report.read_only = True
-    run_button = PushButton(text="Run")
-    bars = ProgressBars()
-
-    def on_run() -> None:
-        path = Path(str(chooser.value))
-        if not path.is_file():
-            report.value = f"Not a file: {path}"
-            return
-        try:
-            settings = resolve_settings(schema=schema, config_path=path)
-        except Exception as error:  # noqa: BLE001 - shown to the user, not raised
-            report.value = f"{type(error).__name__}: {error}"
-            return
-        result = preflight(settings, schema)
-        if not result.ok:
-            report.value = "\n".join(f"FAILED: {message}" for message in result.errors)
-            return
-        _run_in_background(settings, schema, report, run_button, bars)
-
-    run_button.changed.connect(on_run)
-    form = Container(
-        widgets=[
-            Label(value="Run a config file exactly as it stands."),
-            chooser,
-            run_button,
-        ],
-        labels=True,
-    )
-    # A QWidget rather than one more Container: the progress bars are plain
-    # QProgressBars, which a magicgui Container will not hold.
-    panel = QWidget()
-    # What a test would otherwise have to press a button and wait for a run to see.
-    panel._haemolynx_progress = bars
-    layout = QVBoxLayout(panel)
-    layout.addWidget(form.native)
-    layout.addWidget(bars.native)
-    layout.addWidget(report.native)
-    return panel
-
-
 def settings_widget(napari_viewer=None):
     """The HaemoLynx panel: the pipeline's stages, in the order it runs them.
 
@@ -1121,6 +1068,22 @@ def settings_widget(napari_viewer=None):
     def _settings() -> dict[str, Any]:
         return resolve_settings(current_values(), schema=schema, config_path=None)
 
+    def load_config_file(path: Path | str) -> None:
+        """Put a config file's settings into the form.
+
+        Only reads the file. Nothing it names is opened -- an `input_path`
+        pointing at an image that is not on this machine still loads, because
+        the image a run works on is the layer open in napari, and a config is
+        routinely written on one machine and read on another. The paths are
+        checked when a run is about to start, by "Run checks" and by the run
+        itself, which is where a missing file is worth stopping for.
+        """
+        for name, value in load_config(Path(path), schema).items():
+            if name in rows:
+                rows[name].value = display_value_for(schema[name], value)
+        apply_prerequisites()
+        report.value = f"Loaded {path}"
+
     def on_load() -> None:
         from qtpy.QtWidgets import QFileDialog
 
@@ -1129,11 +1092,7 @@ def settings_widget(napari_viewer=None):
         )
         if not path:
             return
-        for name, value in load_config(Path(path), schema).items():
-            if name in rows:
-                rows[name].value = value
-        apply_prerequisites()
-        report.value = f"Loaded {path}"
+        load_config_file(path)
 
     def on_save() -> None:
         from qtpy.QtWidgets import QFileDialog
@@ -1196,6 +1155,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_progress = bars
     panel._haemolynx_view = view
     panel._haemolynx_show_results = show_results
+    panel._haemolynx_load_config = load_config_file
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)

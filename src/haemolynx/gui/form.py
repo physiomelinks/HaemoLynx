@@ -11,6 +11,7 @@ display, which is most of what there is to get wrong.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -74,6 +75,14 @@ class Field:
         if self.kind == "path":
             text = str(raw)
             if text in {"", "."} and self.nullable:
+                return None
+            # A FileEdit built empty reads back as ".", but one *assigned*
+            # empty -- which is what opening a config file does -- resolves it
+            # to the working directory first, so the blank arrives here looking
+            # like a real choice. Every nullable path setting picks a file, and
+            # a file picker cannot legitimately yield a directory, so a
+            # directory here is that blank rather than something anyone chose.
+            if self.nullable and Path(text).is_dir():
                 return None
             return raw
         if self.nullable and self.kind in {"int", "float"} and isinstance(raw, str):
@@ -174,6 +183,17 @@ def _display_value(setting: Setting, value: Any, widget_type: str) -> Any:
     if value is None and widget_type in BLANK_WHEN_UNSET:
         return ""
     return value
+
+
+def display_value_for(setting: Setting, value: Any) -> Any:
+    """What *value* has to become before a built widget will take it.
+
+    :func:`field_for` puts every value through :func:`_display_value` when it
+    builds a row. Anything writing to a row afterwards -- opening a config file
+    into an open form -- has to do the same, or an unset value arrives as None
+    at a widget that raises on it.
+    """
+    return _display_value(setting, value, widget_type_for(setting))
 
 
 def field_for(setting: Setting, value: Any = None) -> Field:
