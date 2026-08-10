@@ -373,6 +373,25 @@ def classifier_sha256(path: Optional[Path] = None) -> str:
     return digest.hexdigest()
 
 
+def _describe_h5_open_failure(failure: OSError, path: Path) -> str:
+    """Turn h5py's open errors into something that says what to do about it.
+
+    The common one by far is a lock: ilastik holds a write lock on the project for as long as
+    it is open, and checking readiness while still labelling is the obvious thing to do. That
+    surfaced as a bare BlockingIOError from deep inside h5py and took the whole specimen
+    listing down with it.
+    """
+    detail = str(failure)
+    locked = isinstance(failure, BlockingIOError) or "lock" in detail.lower()
+    if locked:
+        return (
+            f"{path.name} is open in another program and cannot be read. ilastik holds a "
+            f"write lock on a project for as long as it is open - save the project and close "
+            f"ilastik, then run this again. ({detail})"
+        )
+    return f"{path.name} could not be read as an Ilastik project: {detail}"
+
+
 def read_classifier_metadata(path: Optional[Path] = None) -> Dict[str, object]:
     """What the trained Ilastik project actually contains.
 
@@ -390,7 +409,12 @@ def read_classifier_metadata(path: Optional[Path] = None) -> Dict[str, object]:
     def _text(value):
         return value.decode() if isinstance(value, bytes) else str(value)
 
-    with h5py.File(path, "r") as project:
+    try:
+        project = h5py.File(path, "r")
+    except OSError as failure:
+        raise OSError(_describe_h5_open_failure(failure, path)) from failure
+
+    with project:
         label_names = [_text(n) for n in project["PixelClassification/LabelNames"][()]]
 
         lanes: List[Dict[str, object]] = []
@@ -522,4 +546,79 @@ def verify_classifier(
             f"{Path(report['path']).name} is not ready to segment this study:\n  - "
             + "\n  - ".join(problems)
         )
+
+    report["group_label_counts"] = _group_label_counts(lanes)
+    report["warnings"] = _label_balance_warnings(lanes, report["group_label_counts"])
     return report
+
+
+def _lane_specimen(lane) -> Optional["Specimen"]:
+    return next((s for s in SPECIMENS if s.preproc_stem in str(lane["file_path"])), None)
+
+
+def _group_label_counts(lanes) -> Dict[str, int]:
+    counts = {group: 0 for group in GROUPS}
+    for lane in lanes:
+        specimen = _lane_specimen(lane)
+        if specimen is not None:
+            counts[specimen.group] += int(lane.get("labelled_voxels", 0))
+    return counts
+
+
+def _label_balance_warnings(lanes, group_counts) -> List[str]:
+    """Soft problems: real risks, but matters of degree rather than binary defects.
+
+    Reported rather than raised. A forest weights by labelled voxel count, so lopsided
+    labelling tilts the decision boundary towards whichever cohort or volume was labelled
+    hardest - the original confound in weaker form. But there is no threshold at which it
+    becomes categorically wrong, and failing on one would discard hours of real work over a
+    judgement call that belongs to whoever did the labelling.
+    """
+    warnings: List[str] = []
+
+    labelled = {group: count for group, count in group_counts.items() if count}
+    if len(labelled) == len(GROUPS):
+        low_group = min(labelled, key=labelled.get)
+        high_group = max(labelled, key=labelled.get)
+        ratio = labelled[high_group] / labelled[low_group]
+        if ratio > 2.0:
+            warnings.append(
+                f"Group label imbalance {ratio:.1f}x: {high_group} {labelled[high_group]} "
+                f"voxels against {low_group} {labelled[low_group]}. The forest weights by "
+                f"labelled voxel count, so it is better calibrated on {high_group}, and a "
+                f"group-dependent sensitivity difference lands on the group contrast."
+            )
+
+    per_lane = [(s, int(l.get("labelled_voxels", 0)))
+                for l in lanes for s in [_lane_specimen(l)] if s is not None]
+    if per_lane:
+        mean_count = sum(c for _, c in per_lane) / len(per_lane)
+        thin = [f"{s.specimen_id} ({c})" for s, c in per_lane if c < mean_count / 3]
+        if thin:
+            warnings.append(
+                f"Volumes labelled far below the average of {mean_count:.0f} voxels: "
+                f"{', '.join(thin)}."
+            )
+        weakest = next((s for s, _ in per_lane if s.specimen_id == WEAKEST_SPECIMEN_ID), None)
+        if weakest is not None:
+            weakest_count = dict((s.specimen_id, c) for s, c in per_lane)[WEAKEST_SPECIMEN_ID]
+            if weakest_count < mean_count:
+                warnings.append(
+                    f"{WEAKEST_SPECIMEN_ID} has the fewest labels relative to the average "
+                    f"({weakest_count} against {mean_count:.0f}) and is also the volume with "
+                    f"the weakest signal of the six. Effort is going where it is least needed."
+                )
+
+    for lane in lanes:
+        specimen = _lane_specimen(lane)
+        counts = lane.get("labels_by_value", {})
+        vessel, background = counts.get(1, 0), counts.get(2, 0)
+        if specimen is None or not background:
+            continue
+        ratio = vessel / background
+        if not 0.5 <= ratio <= 2.0:
+            warnings.append(
+                f"{specimen.specimen_id} vessel:background is {ratio:.2f} "
+                f"({vessel} vs {background}); the classes are sampled very unevenly there."
+            )
+    return warnings

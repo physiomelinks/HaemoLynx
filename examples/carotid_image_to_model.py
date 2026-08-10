@@ -1932,7 +1932,10 @@ if __name__ == "__main__":
                 print(f"  verified: {_report['total_labelled_voxels']} labelled voxels "
                       f"across {len(_report['lanes'])} lanes, "
                       f"{_report['selected_features']} feature selections")
-            except ValueError as _problem:
+                print(f"  labels by group: {_report['group_label_counts']}")
+                for _warning in _report["warnings"]:
+                    print(f"  [warning] {_warning}")
+            except (ValueError, OSError) as _problem:
                 print(f"  NOT READY -- {_problem}")
         else:
             print("  present: False")

@@ -498,7 +498,7 @@ def test_the_real_trained_classifier_is_ready_to_segment_the_study():
         pytest.skip(f"no trained classifier at {POOLED_CLASSIFIER}")
     try:
         verify_classifier()
-    except ValueError as problem:
+    except (ValueError, OSError) as problem:
         pytest.skip(f"classifier not ready: {problem}")
 
 
@@ -518,3 +518,64 @@ def test_the_qc_records_are_bundled_with_the_code(tmp_path, monkeypatch):
                         property(lambda self: tmp_path / "gone.json"))
     record = wky_a.qc_record()
     assert record is not None and tuple(record["shape_zyx"]) == wky_a.shape_zyx
+
+
+def test_a_locked_project_is_reported_not_traced_back():
+    """ilastik holds a write lock on the .ilp for as long as the project is open.
+
+    Checking readiness mid-labelling is the obvious thing to do, and it raised
+    BlockingIOError out of h5py and took the whole specimen listing down with it. The cause
+    and the fix both have to be in the message.
+    """
+    from ImageLynx.specimens import _describe_h5_open_failure
+
+    locked = _describe_h5_open_failure(
+        BlockingIOError(11, "unable to lock file"), Path("vessel_segmentation.ilp"))
+    assert "open in another program" in locked
+    assert "ilastik" in locked
+
+    # A genuinely unreadable file must not be blamed on a lock that is not there.
+    broken = _describe_h5_open_failure(OSError("file signature not found"), Path("x.ilp"))
+    assert "open in another program" not in broken
+    assert "signature" in broken
+
+
+def test_read_classifier_metadata_translates_open_failures(tmp_path):
+    from ImageLynx.specimens import read_classifier_metadata
+
+    not_hdf5 = tmp_path / "notreally.ilp"
+    not_hdf5.write_text("this is not an HDF5 file")
+    with pytest.raises(OSError, match="could not be read"):
+        read_classifier_metadata(not_hdf5)
+
+
+def test_group_label_imbalance_is_reported_without_failing(tmp_path):
+    """A forest weights by labelled voxel count, so lopsided labelling tilts the boundary.
+
+    This is the original confound in weaker form: labels concentrated on one cohort make the
+    classifier better calibrated there, which is a group-dependent sensitivity difference that
+    lands directly on the group contrast. It is a matter of degree rather than a binary
+    defect, so it is reported rather than raised - failing here would throw away hours of
+    genuine labelling over a judgement call.
+    """
+    from ImageLynx.specimens import verify_classifier
+
+    lopsided = []
+    for specimen in SPECIMENS:
+        blocks = [100, 200] * (10 if specimen.group == "SHR" else 1)
+        lopsided.append((specimen.preproc_stem, blocks))
+
+    path = tmp_path / "lopsided.ilp"
+    _write_project(path, lopsided)
+
+    report = verify_classifier(path)          # must not raise
+    assert report["group_label_counts"]["SHR"] > report["group_label_counts"]["WKY"]
+    assert any("imbalance" in w for w in report["warnings"])
+
+
+def test_balanced_labelling_produces_no_warnings(tmp_path):
+    from ImageLynx.specimens import verify_classifier
+
+    path = tmp_path / "balanced.ilp"
+    _write_project(path, _all_lanes([100, 200, 300]))
+    assert verify_classifier(path)["warnings"] == []
