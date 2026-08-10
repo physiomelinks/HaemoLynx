@@ -26,7 +26,6 @@ from haemolynx.gui.form import Field
 from haemolynx.gui.layers import input_for_layer
 from haemolynx.gui.results import (
     NODES,
-    TEXT_COLUMNS,
     VESSELS,
     ResultLayers,
     colour_cycle_for,
@@ -333,6 +332,26 @@ def _colorbar_pixmap(colormap_name: str = "viridis", size=COLORBAR_SIZE):
     return QPixmap.fromImage(image.copy())
 
 
+def _is_text_column(layer, column: str | None) -> bool:
+    """Whether a column holds labels rather than numbers, asked of the data.
+
+    Not of a list of names. `TEXT_COLUMNS` names the text columns the results
+    module writes, and `role` -- the one on the boundary nodes -- is not among
+    them, so choosing it tried to map "starting" and "output" onto a colormap
+    and raised `could not convert string to float`. Any column any layer ever
+    carries has a dtype; that is the honest question.
+    """
+    values = getattr(layer, "features", {}).get(column) if column else None
+    if values is None:
+        return False
+    kind = np.asarray(values).dtype.kind
+    if kind in "OUS":
+        # Object arrays can still be numbers stored the long way round.
+        return not all(isinstance(v, (int, float, np.number)) or v is None
+                       for v in np.asarray(values).ravel()[:100])
+    return False
+
+
 def _format_limit(value: float) -> str:
     """Short enough to read, wide enough for a flow of 1e-16."""
     if value is None or not np.isfinite(value):
@@ -352,7 +371,12 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
     """
     if column in {None, "", "none"} or column not in getattr(layer, "features", {}):
         return None
-    values = np.asarray(layer.features[column], dtype=float)
+    if _is_text_column(layer, column):
+        return None
+    try:
+        values = np.asarray(layer.features[column], dtype=float)
+    except (TypeError, ValueError):
+        return None
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return None
@@ -556,7 +580,7 @@ class _ColourScale:
         usable = (
             layer is not None
             and self._column is not None
-            and self._column not in TEXT_COLUMNS
+            and not _is_text_column(layer, self._column)
         )
         # Recorded as well as applied: Qt reports a child of an unshown window
         # as invisible whatever we set, so `isVisible()` cannot tell a test
@@ -672,11 +696,9 @@ class _FeatureChooser:
         layer = self._layer()
         if layer is None or not column:
             return
-        kind = "categorical" if column in TEXT_COLUMNS else "continuous"
-        cycle = ()
-        if kind == "categorical" and column in getattr(layer, "features", {}):
-            cycle = colour_cycle_for(layer.features[column])
-        _colour_layer(layer, column, kind, cycle)
+        text = _is_text_column(layer, column)
+        cycle = colour_cycle_for(layer.features[column]) if text else ()
+        _colour_layer(layer, column, "categorical" if text else "continuous", cycle)
 
 
 def _layer_controls(viewer, layer):

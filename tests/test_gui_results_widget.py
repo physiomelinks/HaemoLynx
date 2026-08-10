@@ -26,6 +26,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     _run_in_background,
 )
 from haemolynx.gui.results import (  # noqa: E402
+    BOUNDARY_NODES,
     IMAGE,
     NODES,
     SKELETON,
@@ -785,3 +786,43 @@ def test_the_vessels_keep_napari_s_own_dropdown(make_napari_viewer):
 
     viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
     assert getattr(_layer_controls(viewer, vessels), "_haemolynx_feature", None) is None
+
+
+def test_a_text_column_is_recognised_by_its_data_not_its_name(make_napari_viewer):
+    """Choosing "role" raised `could not convert string to float: 'starting'`.
+
+    Text-or-number was decided by membership of `TEXT_COLUMNS`, which names the
+    text columns the results module happens to write. `role`, on the boundary
+    nodes, is not one of them, so it was taken for a quantity and its labels
+    were handed to a colormap. Any column any layer carries has a dtype, and
+    that is what is asked now.
+    """
+    from haemolynx.gui._widget import (
+        _active_column, _is_text_column, _layer_controls,
+    )
+
+    viewer, _vessels, _scale = a_drawn_run(make_napari_viewer)
+    results = ResultLayers()
+    results.stage_finished("build_network", network(a_graph()))
+    _apply_layers(viewer, results.stage_finished("assign_boundaries", SimpleNamespace(
+        starting_nodes=[0], output_nodes=[3], arteriole_boundary_nodes=[1],
+        venule_boundary_nodes=[2], resistance_node_pair=None)))
+
+    layer = viewer.layers[BOUNDARY_NODES]
+    controls = _layer_controls(viewer, layer)
+    assert _is_text_column(layer, "role") is True
+
+    controls._haemolynx_feature.native.setCurrentText("role")
+
+    assert _active_column(layer) == "role"
+    assert len(np.unique(np.asarray(layer.face_color), axis=0)) > 1
+    # A cycle of labels has no range, so there is nothing to draw a bar for.
+    assert controls._haemolynx_scale.shown is False
+
+
+def test_a_text_column_has_no_range(make_napari_viewer):
+    from haemolynx.gui._widget import _data_range
+
+    _viewer, layer, _scale = a_drawn_run(make_napari_viewer, branch_order="BO1")
+    assert _data_range(layer, "branch_order") is None
+    assert _data_range(layer, "length") is not None
