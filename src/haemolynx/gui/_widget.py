@@ -14,16 +14,18 @@ GUI installed.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
+
 from haemolynx.gui.form import Field
 from haemolynx.gui.layers import input_for_layer
 from haemolynx.gui.results import (
     NODES,
-    TEXT_COLUMNS,
     VESSELS,
     ResultLayers,
     colour_cycle_for,
@@ -153,6 +155,14 @@ def _apply_layers(viewer, group, report=None) -> None:
             _add_or_update(viewer, spec)
         except Exception:  # noqa: BLE001 - one bad layer must not stop the rest
             logger.exception("could not show layer %s", spec.name)
+            continue
+        if spec.name in viewer.layers:
+            try:
+                _attach_colour_scale(viewer, viewer.layers[spec.name])
+                _refresh_layer_controls(viewer, viewer.layers[spec.name])
+            except Exception:  # noqa: BLE001 - a missing colour bar is survivable
+                logger.debug("could not attach a colour bar to %s",
+                             spec.name, exc_info=True)
     for name, column in group.recolour:
         layer = viewer.layers[name] if name in viewer.layers else None
         if layer is not None and _is_ours(layer):
@@ -163,11 +173,22 @@ def _apply_layers(viewer, group, report=None) -> None:
         report.value = f"{group.title}: {group.note}"
 
 
+def _colour_attribute(layer) -> str:
+    """Where a layer keeps its colour: vessels on the edge, points on the face."""
+    return "edge_color" if layer.__class__.__name__ == "Vectors" else "face_color"
+
+
 def _colour_layer(layer, column: str | None, kind: str = "continuous",
                   cycle=(), limits=None) -> None:
     """Colour a layer by one of its feature columns."""
-    attribute = "edge_color" if layer.__class__.__name__ == "Vectors" else "face_color"
-    if column in {None, "", "none"}:
+    attribute = _colour_attribute(layer)
+    if column is None:
+        # No opinion: a stage that does not name a colouring means "leave what
+        # is there", not "blank it". Most stages after build_network have
+        # nothing to say about colour, and clearing on each would throw away
+        # the previous stage's colouring every time.
+        return
+    if column in {"", "none"}:
         # An explicit "no colouring", which has to be a real branch: leaving the
         # layer as it was would make picking "none" a control that does nothing.
         setattr(layer, attribute, UNCOLOURED)
@@ -175,17 +196,40 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         return
     if column not in getattr(layer, "features", {}):
         return
+    # Drop to a flat colour before naming the new column. A layer keeps
+    # whichever colour mode the last colouring left it in, and neither mode
+    # survives meeting the other kind of column:
+    #
+    #   cycle mode + a column holding NaN  -> `KeyError: nan`, from
+    #     `CategoricalColormap.map`, which decides membership with `np.isin`.
+    #     NaN is never equal to itself, so the value is filed under a key that
+    #     can never be found again and the next lookup raises.
+    #   colormap mode + a text column      -> `TypeError: cannot cast O to
+    #     float64`, from trying to interpolate the strings.
+    #
+    # A run walks straight into the first: the diameters stage colours by
+    # `branch_order`, which is text and leaves the layer cycling, and the solve
+    # then colours by `flow_abs`, which is full of NaN because `set_edge_flows`
+    # skips every edge with no conductance. No user interaction required.
+    #
+    # Setting the mode instead of the colour does not work -- changing mode
+    # re-maps the column that is still active, which is the same crash.
+    setattr(layer, attribute, UNCOLOURED)
     if kind == "categorical" and cycle:
         setattr(layer, f"{attribute}_cycle", [colour for _label, colour in cycle])
         setattr(layer, attribute, column)
     else:
         setattr(layer, f"{attribute}_colormap", "viridis")
         setattr(layer, attribute, column)
+        # After the column, and through the same path the Fit buttons use: the
+        # range has to be applied *and* the colours re-mapped against it. Set
+        # before, and the assignment above maps with the old range; set with a
+        # plain setattr, and nothing re-maps at all -- which is how `flow_abs`
+        # came to be the selected colouring and not the one on screen.
+        if limits is None:
+            limits = _data_range(layer, column)
         if limits is not None:
-            try:
-                setattr(layer, f"{attribute}_contrast_limits", limits)
-            except (AttributeError, ValueError):  # not every layer takes them
-                pass
+            _apply_contrast_limits(layer, *limits)
     _record_colour(layer, column)
 
 
@@ -202,48 +246,23 @@ def _record_colour(layer, column: str | None) -> None:
         tag["colour_by"] = column
 
 
-def _current_colour(viewer, layer_name: str) -> str:
-    """What that layer is coloured by now, as a combo-box value."""
-    layers = getattr(viewer, "layers", {})
-    if layer_name not in layers:
-        return "none"
-    tag = getattr(layers[layer_name], "metadata", {}).get(OURS)
-    column = tag.get("colour_by") if isinstance(tag, dict) else None
-    return column or "none"
+def _active_column(layer) -> str | None:
+    """Which feature the layer is coloured by right now, or None.
 
+    Read off the layer rather than remembered, because the choice is made in
+    napari's own layer controls: anything we noted when we last set a colouring
+    goes stale the moment the user picks something on the left.
 
-def _refresh_colour_choices(viewer, choosers) -> None:
-    """Re-offer what the layers can now be coloured by.
-
-    The combo boxes are built before a run, when the only honest answer is
-    "none" -- a column cannot be offered until the stage that fills it has run.
-    Nothing rebuilt them as stages landed, so `flow_abs` and node `pressure`,
-    which arrive at the very last stage, could never be selected: the features
-    were on the layers and the dropdown did not know.
-
-    A choice the user has made is kept whenever the column still exists; when
-    they have not chosen, the box follows the stage's own default colouring, so
-    it always names what is actually on screen.
-
-    "Has the user chosen?" is a flag rather than "is the value still 'none'":
-    "none" is itself a choice one can make, and inferring it from the value
-    would quietly overrule anyone who picked it at the next stage.
+    `color_properties` is private, so fall back to what we recorded if a napari
+    version moves it -- a stale answer beats no colour bar.
     """
-    for layer_name, chooser in choosers:
-        if chooser is None or viewer is None:
-            continue
-        choices = _colour_choices(viewer, layer_name)
-        chosen = getattr(chooser, "_haemolynx_chosen", False)
-        keep = chooser.value if chosen and chooser.value in choices else None
-        if keep is None:
-            keep = _current_colour(viewer, layer_name)
-        if keep not in choices:
-            keep = "none"
-        if list(chooser.choices) == choices and chooser.value == keep:
-            continue
-        with chooser.changed.blocked():
-            chooser.choices = choices
-            chooser.value = keep
+    manager = getattr(layer, "_edge", None) or getattr(layer, "_face", None)
+    properties = getattr(manager, "color_properties", None)
+    name = getattr(properties, "name", None)
+    if name:
+        return str(name)
+    tag = getattr(layer, "metadata", {}).get(OURS)
+    return tag.get("colour_by") if isinstance(tag, dict) else None
 
 
 def _add_or_update(viewer, spec) -> None:
@@ -285,22 +304,470 @@ _CLASS_FOR = {
 }
 
 
-def _colour_choices(viewer, layer_name: str) -> list[str]:
-    """Columns that layer can be coloured by, or just "none" before a run.
+#: Identifiers rather than quantities: colouring by one shows nothing.
+NOT_WORTH_COLOURING_BY = frozenset({"u", "v", "key", "edge_index", "node_id"})
 
-    Read off the layer itself rather than guessed, so a quantity only appears
-    once the stage that produces it has run.
+#: How wide and tall the colour bar is drawn, in pixels.
+COLORBAR_SIZE = (150, 12)
+
+
+def _colorbar_pixmap(colormap_name: str = "viridis", size=COLORBAR_SIZE):
+    """The colormap as a strip you can actually look at.
+
+    napari draws no colour bar for a Points or Vectors layer coloured by a
+    feature -- the contrast slider in the layer controls belongs to Image
+    layers -- so there is nothing on screen saying which end is which. It does
+    ship the pieces to draw one.
     """
-    choices = ["none"]
-    if viewer is None or layer_name not in getattr(viewer, "layers", {}):
-        return choices
-    layer = viewer.layers[layer_name]
-    if not _is_ours(layer):
-        return choices
-    for column in getattr(layer, "features", {}):
-        if column not in {"u", "v", "key", "edge_index", "node_id"}:
-            choices.append(column)
-    return choices
+    from napari.utils.colormaps import ensure_colormap
+    from napari.utils.colormaps.colorbars import make_colorbar
+    from qtpy.QtGui import QImage, QPixmap
+
+    width, height = size
+    bar = np.ascontiguousarray(
+        make_colorbar(ensure_colormap(colormap_name), size=(height, width),
+                      horizontal=True)
+    )
+    image = QImage(bar.data, width, height, 4 * width, QImage.Format_RGBA8888)
+    return QPixmap.fromImage(image.copy())
+
+
+def _is_text_column(layer, column: str | None) -> bool:
+    """Whether a column holds labels rather than numbers, asked of the data.
+
+    Not of a list of names. `TEXT_COLUMNS` names the text columns the results
+    module writes, and `role` -- the one on the boundary nodes -- is not among
+    them, so choosing it tried to map "starting" and "output" onto a colormap
+    and raised `could not convert string to float`. Any column any layer ever
+    carries has a dtype; that is the honest question.
+    """
+    values = getattr(layer, "features", {}).get(column) if column else None
+    if values is None:
+        return False
+    kind = np.asarray(values).dtype.kind
+    if kind in "OUS":
+        # Object arrays can still be numbers stored the long way round.
+        return not all(isinstance(v, (int, float, np.number)) or v is None
+                       for v in np.asarray(values).ravel()[:100])
+    return False
+
+
+def _format_limit(value: float) -> str:
+    """Short enough to read, wide enough for a flow of 1e-16."""
+    if value is None or not np.isfinite(value):
+        return ""
+    if value == 0:
+        return "0"
+    return f"{value:.4g}"
+
+
+def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=100.0):
+    """The range of the column being shown, ignoring the values it has not got.
+
+    Percentiles rather than only min and max because a flow distribution is
+    long-tailed: on a real run a handful of vessels carry orders of magnitude
+    more than the rest, and against the full range everything else is one
+    colour at the bottom of the map.
+    """
+    if column in {None, "", "none"} or column not in getattr(layer, "features", {}):
+        return None
+    if _is_text_column(layer, column):
+        return None
+    try:
+        values = np.asarray(layer.features[column], dtype=float)
+    except (TypeError, ValueError):
+        return None
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    low = float(np.percentile(finite, low_percentile))
+    high = float(np.percentile(finite, high_percentile))
+    if high <= low:
+        high = low + abs(low) * 1e-6 + 1e-30
+    return low, high
+
+
+def _contrast_limits_attribute(layer) -> str:
+    return f"{_colour_attribute(layer).replace('_color', '')}_contrast_limits"
+
+
+def _apply_contrast_limits(layer, low: float, high: float) -> bool:
+    """Set the range the colormap spans, and get the canvas to show it.
+
+    Setting the limits alone changes the colours on the model and tells nobody:
+    `ColorManager.contrast_limits` is a plain field, so no `edge_color` event is
+    emitted and the canvas keeps drawing the buffer it already has. The change
+    only appeared once you picked a different feature and came back -- because
+    that assignment does fire the event.
+
+    So re-assign the column afterwards, which is exactly what going away and
+    coming back does, and the view updates when the range is set.
+    """
+    name = _contrast_limits_attribute(layer)
+    if not hasattr(layer, name) or not (np.isfinite(low) and np.isfinite(high)):
+        return False
+    if high <= low:
+        return False
+    try:
+        setattr(layer, name, (float(low), float(high)))
+    except (ValueError, TypeError):
+        return False
+    column = _active_column(layer)
+    if column:
+        try:
+            setattr(layer, _colour_attribute(layer), column)
+        except (KeyError, TypeError, ValueError):
+            logger.debug("could not repaint %s after rescaling", layer.name)
+    return True
+
+
+def _viewer_colorbar(layer, create: bool = True):
+    """The overlay that draws a colour bar in the canvas, made if need be.
+
+    napari registers one for Points -- `face_colorbar`, hidden by default --
+    and none at all for Vectors, so the vessels need theirs adding. The overlay
+    reads the layer's colour manager, so it stays right as the colouring and
+    the range change.
+    """
+    overlays = getattr(layer, "_overlays", None)
+    if overlays is None:
+        return None
+    name = "edge_colorbar" if _colour_attribute(layer) == "edge_color" \
+        else "face_colorbar"
+    if name not in overlays:
+        if not create:
+            # Only looking. Making one here would register an overlay -- and
+            # fire the event the canvas builds visuals from -- for a layer
+            # nobody has asked to show a bar for.
+            return None
+        from napari.components.overlays import ColorBarOverlay
+
+        manager = f"_{name.split('_')[0]}"
+        overlays[name] = ColorBarOverlay(colormanager_attribute=manager)
+    return overlays[name]
+
+
+@contextmanager
+def _blocked(widget):
+    """Change a Qt widget without its own signal coming back at us."""
+    previous = widget.blockSignals(True)
+    try:
+        yield
+    finally:
+        widget.blockSignals(previous)
+
+
+class _ColourScale:
+    """A colour bar for one layer, with the range it spans, editable.
+
+    napari draws neither for a Points or Vectors layer coloured by a feature:
+    the contrast slider in the layer controls belongs to Image layers, so a
+    feature colouring arrives with no legend and no way to rescale it except
+    from the console. That hurts most on the quantities this plugin exists to
+    show -- flows span orders of magnitude, and against their own full range
+    almost every vessel sits at the bottom of the colormap.
+
+    Every control here reads and writes the layer directly, so it stays true
+    whether the colouring was changed from this panel or from napari's own
+    dropdown on the left.
+    """
+
+    def __init__(self, viewer, layer_name: str) -> None:
+        from qtpy.QtCore import Qt
+        from qtpy.QtWidgets import (
+            QCheckBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+            QWidget,
+        )
+
+        self._viewer = viewer
+        self._layer_name = layer_name
+        self._column: str | None = None
+        self._connected = None
+        self.shown = False
+
+        self.native = QWidget()
+        outer = QVBoxLayout(self.native)
+        outer.setContentsMargins(0, 2, 0, 2)
+        outer.setSpacing(2)
+
+        self.heading = QLabel("no colouring")
+        self.heading.setToolTip(
+            "The range the colours span. Type a number, or let it fit the data."
+        )
+        outer.addWidget(self.heading)
+
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        self.low = QLineEdit()
+        self.high = QLineEdit()
+        for box in (self.low, self.high):
+            box.setFixedWidth(74)
+            box.setAlignment(Qt.AlignRight)
+            box.editingFinished.connect(self._apply_typed)
+        self.bar = QLabel()
+        self.bar.setFixedHeight(COLORBAR_SIZE[1])
+        self.bar.setPixmap(_colorbar_pixmap())
+        row.addWidget(self.low)
+        row.addWidget(self.bar, 1)
+        row.addWidget(self.high)
+        outer.addLayout(row)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(4)
+        # Full range and a trimmed one. The trimmed one is the useful default
+        # on real data: a handful of vessels carry most of the flow, and
+        # including them flattens everything else to a single colour.
+        self.full_button = QPushButton("Fit all")
+        self.full_button.setToolTip("Span the smallest and largest value")
+        self.full_button.clicked.connect(lambda: self.autoscale(0.0, 100.0))
+        self.trim_button = QPushButton("Fit 1-99%")
+        self.trim_button.setToolTip(
+            "Ignore the extreme 1% at each end, so the bulk of the data spreads"
+        )
+        self.trim_button.clicked.connect(lambda: self.autoscale(1.0, 99.0))
+        buttons.addWidget(self.full_button)
+        buttons.addWidget(self.trim_button)
+        buttons.addStretch(1)
+        outer.addLayout(buttons)
+
+        self.in_viewer = QCheckBox("Show colour bar in the viewer")
+        self.in_viewer.setToolTip(
+            "Draw the scale in the canvas, beside the data it describes"
+        )
+        self.in_viewer.toggled.connect(self._show_in_viewer)
+        outer.addWidget(self.in_viewer)
+        self.native.setVisible(False)
+
+    # -- state ------------------------------------------------------------
+
+    def _layer(self):
+        layers = getattr(self._viewer, "layers", {}) if self._viewer else {}
+        if self._layer_name not in layers:
+            return None
+        layer = layers[self._layer_name]
+        return layer if _is_ours(layer) else None
+
+    def follow_the_layer(self) -> None:
+        """Show whatever the layer is coloured by, however it got that way.
+
+        Also (re)connect to the layer's colour event, so a colouring chosen in
+        napari's controls on the left moves this bar too. Connecting is cheap
+        and idempotent-ish: the layer is replaced on a re-run, so the previous
+        connection dies with it.
+        """
+        layer = self._layer()
+        if layer is not None and layer is not self._connected:
+            events = getattr(layer, "events", None)
+            attribute = _colour_attribute(layer)
+            signal = getattr(events, attribute, None) if events else None
+            if signal is not None:
+                signal.connect(lambda *_a: self.follow_the_layer())
+            self._connected = layer
+        column = _active_column(layer) if layer is not None else None
+        changed = column != self._column
+        self.refresh(column)
+        if changed and self.shown:
+            # A colouring chosen in napari's own dropdown is applied with
+            # whatever range the last one used, so a column of flows lands on
+            # a scale of branch orders and every vessel comes out one colour.
+            # Fit it, exactly as the button does.
+            self.autoscale(0.0, 100.0)
+
+    def refresh(self, column: str | None) -> None:
+        """Show the range of *column*, or hide if there is nothing to show."""
+        layer = self._layer()
+        self._column = None if column in {None, "", "none"} else column
+        usable = (
+            layer is not None
+            and self._column is not None
+            and not _is_text_column(layer, self._column)
+        )
+        # Recorded as well as applied: Qt reports a child of an unshown window
+        # as invisible whatever we set, so `isVisible()` cannot tell a test
+        # whether the bar was hidden on purpose.
+        self.shown = bool(usable)
+        self.native.setVisible(self.shown)
+        if not usable:
+            return
+
+        self.heading.setText(str(self._column))
+        overlay = None
+        try:
+            overlay = _viewer_colorbar(layer, create=False)
+        except Exception:  # noqa: BLE001 - private napari ground
+            logger.debug("no colour bar overlay available", exc_info=True)
+        if overlay is not None and self.in_viewer.isChecked() != bool(overlay.visible):
+            with _blocked(self.in_viewer):
+                self.in_viewer.setChecked(bool(overlay.visible))
+        limits = getattr(layer, _contrast_limits_attribute(layer), None)
+        if limits is None:
+            limits = _data_range(layer, self._column)
+        if limits is not None:
+            self.low.setText(_format_limit(float(limits[0])))
+            self.high.setText(_format_limit(float(limits[1])))
+
+    # -- actions ----------------------------------------------------------
+
+    def autoscale(self, low_percentile: float, high_percentile: float) -> bool:
+        layer = self._layer()
+        found = _data_range(layer, self._column, low_percentile, high_percentile) \
+            if layer is not None else None
+        if found is None or not _apply_contrast_limits(layer, *found):
+            return False
+        self.low.setText(_format_limit(found[0]))
+        self.high.setText(_format_limit(found[1]))
+        return True
+
+    def _show_in_viewer(self, wanted: bool) -> None:
+        """Put the colour bar in the canvas, or take it away again."""
+        layer = self._layer()
+        if layer is None:
+            return
+        try:
+            overlay = _viewer_colorbar(layer)
+        except Exception:  # noqa: BLE001 - private napari ground
+            logger.debug("no colour bar overlay available", exc_info=True)
+            return
+        if overlay is not None:
+            overlay.visible = bool(wanted)
+
+    def _apply_typed(self) -> None:
+        layer = self._layer()
+        if layer is None or self._column is None:
+            return
+        try:
+            low, high = float(self.low.text()), float(self.high.text())
+        except ValueError:
+            self.refresh(self._column)  # unreadable: put back what is real
+            return
+        if not _apply_contrast_limits(layer, low, high):
+            self.refresh(self._column)
+
+
+class _FeatureChooser:
+    """The dropdown napari gives Vectors and does not give Points.
+
+    `QtVectorsControls` has an "edge feature:" box; `QtPointsControls` has a
+    colour swatch and no way to colour by a column at all, so the node layer
+    arrives with `pressure`, `degree` and `node_id` on it and nothing to pick
+    between them.
+
+    Rebuilt from the layer whenever it is refreshed rather than filled once,
+    because napari's own box is filled in its constructor and never updated --
+    the bug that kept flow out of the vessels list -- and there is no reason to
+    repeat it here.
+    """
+
+    def __init__(self, viewer, layer_name: str) -> None:
+        from qtpy.QtWidgets import QComboBox
+
+        self._viewer = viewer
+        self._layer_name = layer_name
+        self.native = QComboBox()
+        self.native.currentTextChanged.connect(self._chosen)
+
+    def _layer(self):
+        layers = getattr(self._viewer, "layers", {}) if self._viewer else {}
+        layer = layers[self._layer_name] if self._layer_name in layers else None
+        return layer if layer is not None and _is_ours(layer) else None
+
+    def refresh(self) -> None:
+        """Offer the columns the layer holds now, keeping the current one."""
+        layer = self._layer()
+        if layer is None:
+            return
+        columns = [
+            name for name in getattr(layer, "features", {})
+            if name not in NOT_WORTH_COLOURING_BY
+        ]
+        active = _active_column(layer)
+        if list(self._items()) == columns and self.native.currentText() == (active or ""):
+            return
+        with _blocked(self.native):
+            self.native.clear()
+            self.native.addItems(columns)
+            if active in columns:
+                self.native.setCurrentIndex(columns.index(active))
+
+    def _items(self):
+        return (self.native.itemText(i) for i in range(self.native.count()))
+
+    def _chosen(self, column: str) -> None:
+        layer = self._layer()
+        if layer is None or not column:
+            return
+        text = _is_text_column(layer, column)
+        cycle = colour_cycle_for(layer.features[column]) if text else ()
+        _colour_layer(layer, column, "categorical" if text else "continuous", cycle)
+
+
+def _layer_controls(viewer, layer):
+    """The controls napari shows on the left for *layer*, if they can be found.
+
+    Entirely private API: a plugin has no supported way to add a row to another
+    layer type's controls, and the alternative -- registering our own controls
+    class -- would change every Vectors and Points layer in the session, not
+    just ours. So this reaches in, and every caller treats failure as normal:
+    the colour bar is worth having, and not worth breaking a run over.
+    """
+    window = getattr(viewer, "window", None)
+    # `_qt_viewer`, not `qt_viewer`: the public spelling is deprecated and warns
+    # on every access, and this is private ground either way.
+    qt_viewer = getattr(window, "_qt_viewer", None) if window else None
+    container = getattr(qt_viewer, "controls", None)
+    widgets = getattr(container, "widgets", None)
+    if widgets is None:
+        return None
+    try:
+        return widgets[layer]
+    except (KeyError, TypeError):
+        return None
+
+
+def _attach_colour_scale(viewer, layer) -> bool:
+    """Put a colour bar in this layer's controls, once.
+
+    napari gives a feature colouring no legend and no way to rescale it: the
+    contrast slider in the layer controls belongs to Image layers. So the range
+    is invisible and unreachable on exactly the quantities this plugin exists to
+    show -- and flows span orders of magnitude, so against their full range
+    nearly every vessel sits at one end of the colormap.
+
+    Keyed on the controls widget rather than the layer, because napari builds a
+    fresh one whenever a layer is removed and re-added.
+    """
+    from qtpy.QtWidgets import QLabel
+
+    controls = _layer_controls(viewer, layer)
+    if controls is None or getattr(controls, "_haemolynx_scale", None) is not None:
+        return controls is not None
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    if _colour_attribute(layer) == "face_color":
+        # Vectors already has "edge feature:"; Points has nothing.
+        chooser = _FeatureChooser(viewer, layer.name)
+        layout.addRow(QLabel("node feature:"), chooser.native)
+        controls._haemolynx_feature = chooser
+        chooser.refresh()
+    scale = _ColourScale(viewer, layer.name)
+    layout.addRow(QLabel("colour range:"), scale.native)
+    controls._haemolynx_scale = scale
+    scale.follow_the_layer()
+    return True
+
+
+def _refresh_layer_controls(viewer, layer) -> None:
+    """Let our additions catch up with whatever the stage just changed."""
+    controls = _layer_controls(viewer, layer)
+    for attribute in ("_haemolynx_feature", "_haemolynx_scale"):
+        widget = getattr(controls, attribute, None)
+        if widget is None:
+            continue
+        if hasattr(widget, "follow_the_layer"):
+            widget.follow_the_layer()
+        else:
+            widget.refresh()
 
 
 def _clear_our_layers(viewer) -> int:
@@ -343,15 +810,11 @@ def _progress_bridge():
 
 
 def _run_in_background(
-    settings, schema, report, button, bars=None, viewer=None, results=None,
-    after_layers=None,
-):
+    settings, schema, report, button, bars=None, viewer=None, results=None):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
-    finishes and shown in the viewer the run was launched from. *after_layers*
-    is called on the GUI thread once each stage's layers are in place, so the
-    panel can offer whatever that stage just made available.
+    finishes and shown in the viewer the run was launched from.
     """
     from napari.qt.threading import thread_worker
 
@@ -366,14 +829,7 @@ def _run_in_background(
 
     bridge.event.connect(progressed)
     if show_layers:
-        def apply(group) -> None:
-            _apply_layers(viewer, group, report)
-            # Right here, and not at the end of the run: a quantity becomes
-            # selectable the moment the stage that fills it lands.
-            if after_layers is not None:
-                after_layers()
-
-        bridge.layers.connect(apply)
+        bridge.layers.connect(lambda group: _apply_layers(viewer, group, report))
 
     def produced(stage: str, output) -> None:
         """Build this stage's layers here, on the run's thread.
@@ -660,12 +1116,6 @@ def settings_widget(napari_viewer=None):
     # where "show it in napari" means nothing.
     show_results = CheckBox(value=True, text="Show each stage in the viewer")
     show_steps = CheckBox(value=False, text="Show each topology step")
-    colour_vessels = ComboBox(
-        label="Colour vessels by", choices=_colour_choices(viewer, VESSELS)
-    )
-    colour_nodes = ComboBox(
-        label="Colour nodes by", choices=_colour_choices(viewer, NODES)
-    )
     view = SimpleNamespace(results=None)
 
     def _settings() -> dict[str, Any]:
@@ -715,7 +1165,6 @@ def settings_widget(napari_viewer=None):
             settings, schema, report, run_button, bars,
             viewer=viewer if show_results.value else None,
             results=results,
-            after_layers=refresh_colours,
         )
 
     def on_clear() -> None:
@@ -723,55 +1172,20 @@ def settings_widget(napari_viewer=None):
             return
         removed = _clear_our_layers(viewer)
         view.results = None
-        refresh_colours()  # the columns went with the layers
         report.value = f"Removed {removed} HaemoLynx layer(s)."
-
-    def refresh_colours() -> None:
-        """Offer whatever the layers now carry, as soon as they carry it."""
-        _refresh_colour_choices(
-            viewer, ((VESSELS, colour_vessels), (NODES, colour_nodes))
-        )
-
-    def on_colour_changed(*_args) -> None:
-        """Recolour what is already there; no geometry is rebuilt."""
-        if viewer is None:
-            return
-        for name, chooser in ((VESSELS, colour_vessels), (NODES, colour_nodes)):
-            if name not in viewer.layers:
-                continue
-            layer = viewer.layers[name]
-            if not _is_ours(layer):
-                continue
-            column = chooser.value
-            kind = "categorical" if column in TEXT_COLUMNS else "continuous"
-            cycle = ()
-            if kind == "categorical" and column in getattr(layer, "features", {}):
-                cycle = colour_cycle_for(layer.features[column])
-            _colour_layer(layer, column, kind, cycle)
 
     load_button.changed.connect(on_load)
     save_button.changed.connect(on_save)
     check_button.changed.connect(on_check)
     run_button.changed.connect(on_run)
     clear_button.changed.connect(on_clear)
-    def chosen_by_hand(chooser):
-        """Note that this box now holds a choice, not just a default."""
-        def handler(*_args) -> None:
-            chooser._haemolynx_chosen = True
-            on_colour_changed()
-
-        return handler
-
-    colour_vessels.changed.connect(chosen_by_hand(colour_vessels))
-    colour_nodes.changed.connect(chosen_by_hand(colour_nodes))
-
     buttons = Container(
         widgets=[load_button, save_button, check_button, run_button, clear_button],
         layout="horizontal",
         labels=False,
     )
     view_controls = Container(
-        widgets=[show_results, show_steps, colour_vessels, colour_nodes],
+        widgets=[show_results, show_steps],
         labels=True,
     )
 
@@ -781,7 +1195,6 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_values = current_values
     panel._haemolynx_progress = bars
     panel._haemolynx_view = view
-    panel._haemolynx_colour = {"vessels": colour_vessels, "nodes": colour_nodes}
     panel._haemolynx_show_results = show_results
     layout = QVBoxLayout(panel)
     if layer_row is not None:
