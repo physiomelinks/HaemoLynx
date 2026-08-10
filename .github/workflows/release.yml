@@ -1,0 +1,170 @@
+name: Release
+
+# Two ways in, deliberately different in how easy they are.
+#
+#   Run the workflow by hand  -> TestPyPI. Free to repeat, nothing permanent,
+#                                except that a version number is spent (see
+#                                below). This is the rehearsal.
+#   Push a tag `v1.2.3`       -> PyPI. Permanent: a version can never be
+#                                reused on PyPI, even after it is deleted.
+#
+# Both go through the same build, and both install what they built into an
+# empty environment before uploading, so a broken artifact is caught here
+# rather than by whoever pip installs it next.
+#
+# Uploading uses Trusted Publishing: GitHub proves who it is to PyPI with a
+# short-lived OIDC token, so there is no API token stored anywhere. It has to
+# be set up once per index, under Manage project -> Publishing on PyPI and
+# TestPyPI:
+#
+#   owner       physiomelinks
+#   repository  HaemoLynx
+#   workflow    release.yml
+#   environment testpypi   (for TestPyPI)  /  pypi   (for PyPI)
+#
+# Without that the upload fails with "invalid-publisher"; there is a token
+# fallback described in the README if Trusted Publishing is not wanted.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build the wheel and the sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+          python -m build
+
+      - name: Check the metadata renders on the index
+        # A README that does not render leaves the project page blank, and the
+        # upload is accepted regardless -- so it has to be checked here.
+        run: twine check dist/*
+
+      - name: The tag and the version must agree
+        # A tag that says v0.2.0 while pyproject says 0.1.0 publishes 0.1.0 and
+        # nobody notices until the install is wrong.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          built=$(ls dist/*.tar.gz | sed -E 's/.*-([0-9][^-]*)\.tar\.gz/\1/')
+          echo "tag $tagged, built $built"
+          test "$tagged" = "$built" || {
+            echo "::error::tag v$tagged does not match version $built in pyproject.toml"
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  smoke-test:
+    name: Install what was built, on ${{ matrix.python-version }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor and a current one: a wheel that only works on the version
+        # it was built with is the thing this is looking for.
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the wheel into an empty environment
+        # Not from a checkout: `src/` on the path would hide a packaging
+        # mistake, which is exactly what this job exists to find.
+        run: |
+          python -m pip install --upgrade pip
+          pip install dist/*.whl
+
+      - name: Use it from somewhere that is not the repository
+        run: |
+          cd "$(mktemp -d)"
+          python -c "
+          import haemolynx
+          from haemolynx.pipeline import default_schema
+          settings = list(default_schema())
+          assert settings, 'the schema is empty'
+          print(f'{haemolynx.__name__} imports, {len(settings)} settings')
+          "
+
+      - name: The napari manifest has to be in the wheel
+        # It is data, not code, so a packaging change can drop it and every
+        # test still passes -- the plugin simply stops appearing in the menu.
+        run: |
+          python - <<'PY'
+          from importlib.metadata import distribution
+          entry_points = distribution("HaemoLynx").entry_points
+          manifests = [e for e in entry_points if e.group == "napari.manifest"]
+          assert manifests, "no napari.manifest entry point"
+          from importlib.resources import files
+          assert (files("haemolynx.gui") / "napari.yaml").is_file(), "napari.yaml missing"
+          print("napari plugin:", [(e.name, e.value) for e in manifests])
+          PY
+
+  testpypi:
+    name: Publish to TestPyPI
+    # Only by hand. A tag is for the real thing.
+    if: github.event_name == 'workflow_dispatch'
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/HaemoLynx
+    permissions:
+      id-token: write        # what Trusted Publishing signs with
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # TestPyPI already has 0.1.0. Re-running with the same version would
+          # otherwise fail the whole workflow; skipping lets a rehearsal be
+          # repeated without inventing a version number for it.
+          skip-existing: true
+
+  pypi:
+    name: Publish to PyPI
+    # Only from a tag, and only from one whose version matched the build.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/HaemoLynx
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        # No skip-existing here: on PyPI a repeated version is a mistake worth
+        # stopping for, not something to pass over quietly.

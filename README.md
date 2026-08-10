@@ -383,6 +383,44 @@ A few things to know before trusting a report:
 * The boundary boxes are in physical (z, y, x) **micrometres**, not voxel
   indices.
 
+## Releasing
+
+`.github/workflows/release.yml` builds, checks and publishes. Two ways in,
+deliberately different in how easy they are:
+
+| | How | Where | Repeatable |
+|---|---|---|---|
+| Rehearsal | Actions → Release → **Run workflow** | TestPyPI | yes |
+| Real | push a tag `v0.2.0` | PyPI | **no** |
+
+Both build the wheel and sdist, run `twine check` on them, and then install
+what was built into an empty environment on 3.9 and 3.12 and use it from a
+directory that is not the repository — so a packaging mistake is caught before
+the upload rather than by whoever installs it next. A tagged run additionally
+refuses to publish if the tag and the version in `pyproject.toml` disagree.
+
+Uploading uses **Trusted Publishing**: GitHub proves who it is with a
+short-lived token, so no API token is stored anywhere. It is configured once
+per index, under *Manage project → Publishing*, with owner `physiomelinks`,
+repository `HaemoLynx`, workflow `release.yml`, and environment `testpypi` or
+`pypi` to match. Without it the upload fails with `invalid-publisher`.
+
+To use an API token instead, add it as a repository secret and give the publish
+step `with: password: ${{ secrets.PYPI_API_TOKEN }}`.
+
+**A version number is spent once.** Neither index lets a version be re-uploaded,
+even after deleting it, so bump `version` in `pyproject.toml` for each attempt.
+TestPyPI already holds `0.1.0`; the rehearsal job passes `skip-existing` so
+repeating it is harmless, and the PyPI job deliberately does not.
+
+Installing from TestPyPI needs a fallback for the dependencies, which only exist
+on the real index:
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ \
+            --extra-index-url https://pypi.org/simple HaemoLynx
+```
+
 ## Licence
 
 HaemoLynx is released under the [Apache License 2.0](LICENSE).
