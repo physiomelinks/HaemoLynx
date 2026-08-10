@@ -251,8 +251,11 @@ def test_the_panel_offers_the_view_controls(make_napari_viewer):
     panel = settings_widget(napari_viewer=make_napari_viewer())
 
     assert panel._haemolynx_show_results.value is True
-    assert set(panel._haemolynx_colour) == {"vessels", "nodes"}
-    assert panel._haemolynx_colour["vessels"].value == "none"
+    # Colouring is not the panel's business at all: which feature the colours
+    # follow, and the range they span, both live in napari's layer controls on
+    # the left. The panel configures and runs the pipeline.
+    assert not hasattr(panel, "_haemolynx_colour")
+    assert not hasattr(panel, "_haemolynx_scales")
 
 
 # --- the colour-by dropdowns learn what a stage made available ---------------
@@ -282,72 +285,7 @@ def _solved_run() -> list[StageLayers]:
     return groups
 
 
-def test_flow_and_pressure_can_be_chosen_once_the_solve_has_run(make_napari_viewer):
-    """The bug: the features were on the layers and the dropdown never knew.
 
-    Both boxes are built before a run, when "none" is the only honest answer,
-    and nothing rebuilt them as stages landed. Flow and pressure arrive at the
-    very last stage, so they were the two quantities you could never pick.
-    """
-    from haemolynx.gui._widget import _refresh_colour_choices, settings_widget
-
-    viewer = make_napari_viewer()
-    panel = settings_widget(napari_viewer=viewer)
-    vessels = panel._haemolynx_colour["vessels"]
-    nodes = panel._haemolynx_colour["nodes"]
-
-    assert list(vessels.choices) == ["none"]
-
-    for group in _solved_run():
-        _apply_layers(viewer, group)
-    _refresh_colour_choices(viewer, ((VESSELS, vessels), (NODES, nodes)))
-
-    assert "flow_abs" in vessels.choices, list(vessels.choices)
-    assert "pressure_drop" in vessels.choices
-    assert "pressure" in nodes.choices, list(nodes.choices)
-    # The endpoint identifiers are not quantities; colouring by them is noise.
-    assert not {"u", "v", "key", "edge_index", "node_id"} & set(vessels.choices)
-    assert not {"node_id"} & set(nodes.choices)
-
-
-def test_the_boxes_name_what_is_actually_on_screen(make_napari_viewer):
-    """Unchosen, each box follows the stage's own default colouring."""
-    from haemolynx.gui._widget import _refresh_colour_choices, settings_widget
-
-    viewer = make_napari_viewer()
-    panel = settings_widget(napari_viewer=viewer)
-    choosers = (
-        (VESSELS, panel._haemolynx_colour["vessels"]),
-        (NODES, panel._haemolynx_colour["nodes"]),
-    )
-
-    for group in _solved_run():
-        _apply_layers(viewer, group)
-    _refresh_colour_choices(viewer, choosers)
-
-    assert panel._haemolynx_colour["vessels"].value == "flow_abs"
-    assert panel._haemolynx_colour["nodes"].value == "pressure"
-
-
-def test_a_choice_survives_the_next_stage(make_napari_viewer):
-    """Re-offering the columns must not overwrite what the user picked."""
-    from haemolynx.gui._widget import _refresh_colour_choices, settings_widget
-
-    viewer = make_napari_viewer()
-    panel = settings_widget(napari_viewer=viewer)
-    vessels = panel._haemolynx_colour["vessels"]
-    choosers = ((VESSELS, vessels), (NODES, panel._haemolynx_colour["nodes"]))
-
-    groups = _solved_run()
-    _apply_layers(viewer, groups[0])
-    _refresh_colour_choices(viewer, choosers)
-    vessels.value = "length"
-
-    _apply_layers(viewer, groups[1])
-    _refresh_colour_choices(viewer, choosers)
-
-    assert vessels.value == "length"
-    assert "flow_abs" in vessels.choices
 
 
 def test_choosing_none_actually_uncolours_the_layer(make_napari_viewer):
@@ -373,72 +311,6 @@ def test_choosing_none_actually_uncolours_the_layer(make_napari_viewer):
     npt.assert_allclose(flat[0][:3], 0.8, atol=0.02)
 
 
-def test_deliberately_choosing_none_is_not_overruled(make_napari_viewer):
-    """"Not chosen" cannot be inferred from the value, because none is a choice.
-
-    Reading "still on none" as "has not chosen" would work until someone picked
-    none on purpose, and then the next stage would silently recolour their
-    layer behind them.
-    """
-    from haemolynx.gui._widget import _refresh_colour_choices, settings_widget
-
-    viewer = make_napari_viewer()
-    panel = settings_widget(napari_viewer=viewer)
-    vessels = panel._haemolynx_colour["vessels"]
-    choosers = ((VESSELS, vessels), (NODES, panel._haemolynx_colour["nodes"]))
-
-    groups = _solved_run()
-    _apply_layers(viewer, groups[0])
-    _refresh_colour_choices(viewer, choosers)
-    vessels.value = "none"          # deliberate, through the signal
-
-    _apply_layers(viewer, groups[1])
-    _refresh_colour_choices(viewer, choosers)
-
-    assert vessels.value == "none"
-
-
-def test_a_real_run_through_the_panel_offers_flow_and_pressure(
-    make_napari_viewer, qtbot, monkeypatch
-):
-    """End to end, through the panel's own button, not by calling the helpers.
-
-    The earlier tests apply layers and refresh the boxes by hand, which proves
-    the refresh works but not that the panel is wired to it. This drives the
-    real `on_run`, so a future change that drops `after_layers` fails here.
-    """
-    from haemolynx.gui import _widget
-
-    viewer = make_napari_viewer()
-    panel = _widget.settings_widget(napari_viewer=viewer)
-    vessels = panel._haemolynx_colour["vessels"]
-    nodes = panel._haemolynx_colour["nodes"]
-    assert list(vessels.choices) == ["none"]
-
-    groups = _solved_run()  # already-built StageLayers, replayed by the fake run
-
-    def fake_run(settings, schema, progress=None, on_stage_output=None):
-        for group in groups:
-            if on_stage_output is not None:
-                on_stage_output(group.stage, None)
-        return None
-
-    def fake_stage_finished(stage, _output, _groups={g.stage: g for g in groups}):
-        return _groups[stage]
-
-    monkeypatch.setattr(_widget, "run_pipeline_stages", fake_run)
-    monkeypatch.setattr(_widget.ResultLayers, "stage_finished",
-                        lambda self, stage, output: fake_stage_finished(stage, output))
-
-    report = SimpleNamespace(value="")
-    button = SimpleNamespace(enabled=True)
-    refresh = panel._haemolynx_refresh_colours
-    _widget._run_in_background({}, None, report, button, None,
-                               viewer=viewer, results=ResultLayers(),
-                               after_layers=refresh)
-
-    qtbot.waitUntil(lambda: "flow_abs" in list(vessels.choices), timeout=5000)
-    assert "pressure" in list(nodes.choices), list(nodes.choices)
 
 
 def test_branch_order_then_flow_does_not_raise_keyerror_nan(make_napari_viewer):
@@ -563,3 +435,148 @@ def test_colouring_by_a_small_column_after_a_large_one_still_spreads(make_napari
     assert len(np.unique(np.asarray(layer.edge_color), axis=0)) > 1, (
         "the tiny column is mapped against the big column's range"
     )
+
+
+# --- the colour bar, which lives in the layer controls on the left ----------
+
+
+def a_drawn_run(make_napari_viewer, **edge_attributes):
+    """A viewer with our layers in it, and the vessels' colour bar."""
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)          # the panel builds no bars
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "build_network", network(a_graph(**edge_attributes))))
+    layer = viewer.layers[VESSELS]
+    controls = _layer_controls(viewer, layer)
+    return viewer, layer, controls._haemolynx_scale
+
+
+def test_the_colour_bar_is_added_to_the_layers_own_controls(make_napari_viewer):
+    """napari draws none for a feature colouring, so we add one where it belongs."""
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, layer, scale = a_drawn_run(make_napari_viewer)
+
+    assert scale.shown is True
+    assert scale.heading.text() == "segment_id"
+    assert scale.bar.pixmap() is not None and not scale.bar.pixmap().isNull()
+    assert float(scale.low.text()) == 0.0
+
+    # And the nodes get their own, in their own controls.
+    nodes_scale = _layer_controls(viewer, viewer.layers[NODES])._haemolynx_scale
+    assert nodes_scale is not scale
+    assert nodes_scale.shown is True
+
+
+def test_the_bar_follows_a_colouring_chosen_on_the_left(make_napari_viewer):
+    """The choice is napari's now, so the bar cannot wait to be told."""
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+
+    layer.edge_color = "length"          # as napari's own dropdown does it
+
+    assert scale.heading.text() == "length"
+    assert float(scale.high.text()) > 0
+
+
+def test_only_one_bar_is_added_however_often_layers_are_applied(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, _layer, scale = a_drawn_run(make_napari_viewer)
+    rows = _layer_controls(viewer, viewer.layers[VESSELS]).layout().rowCount()
+
+    for _ in range(3):
+        _apply_layers(viewer, ResultLayers().stage_finished(
+            "build_network", network(a_graph())))
+
+    controls = _layer_controls(viewer, viewer.layers[VESSELS])
+    assert controls.layout().rowCount() == rows
+    assert controls._haemolynx_scale is scale
+
+
+def test_typing_a_range_changes_what_the_colours_span(make_napari_viewer):
+    from haemolynx.gui._widget import _colour_layer
+
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+    _colour_layer(layer, "length", "continuous", limits=(0.0, 10.0))
+    scale.follow_the_layer()
+
+    scale.low.setText("2")
+    scale.high.setText("8")
+    scale.low.editingFinished.emit()
+
+    assert layer.edge_contrast_limits == (2.0, 8.0)
+
+
+def test_a_range_that_makes_no_sense_is_put_back(make_napari_viewer):
+    from haemolynx.gui._widget import _colour_layer
+
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+    _colour_layer(layer, "length", "continuous", limits=(0.0, 10.0))
+    scale.follow_the_layer()
+
+    for bad_low, bad_high in (("not a number", "8"), ("9", "3")):
+        scale.low.setText(bad_low)
+        scale.high.setText(bad_high)
+        scale.low.editingFinished.emit()
+        assert layer.edge_contrast_limits == (0.0, 10.0)
+        assert float(scale.low.text()) == 0.0
+
+
+def test_both_fit_buttons_apply_a_range(make_napari_viewer):
+    """Why "Fit 1-99%" exists: one huge vessel flattens all the others.
+
+    With only a handful of segments a percentile cannot exclude the outlier;
+    what the trimming does to a real distribution is checked in
+    test_gui_results.py, without a display. Here: both buttons apply.
+    """
+    from haemolynx.gui._widget import _colour_layer
+
+    _viewer, layer, scale = a_drawn_run(make_napari_viewer)
+    features = dict(layer.features)
+    skewed = np.linspace(1e-16, 2e-16, len(layer.data))
+    skewed[-1] = 1e-9
+    features["flow_abs"] = skewed
+    layer.features = features
+    _colour_layer(layer, "flow_abs", "continuous", limits=(0.0, 1e-9))
+    scale.follow_the_layer()
+
+    assert scale.autoscale(0.0, 100.0)
+    wide = layer.edge_contrast_limits
+    assert scale.autoscale(1.0, 99.0)
+
+    assert layer.edge_contrast_limits[1] <= wide[1]
+    assert float(scale.high.text()) == pytest.approx(layer.edge_contrast_limits[1])
+    assert len(np.unique(np.asarray(layer.edge_color), axis=0)) > 1
+
+
+def test_a_text_colouring_has_no_range_to_show(make_napari_viewer):
+    """branch_order is a cycle of colours, not a scale; hide the bar."""
+    _viewer, _layer, scale = a_drawn_run(make_napari_viewer, branch_order="BO1")
+
+    scale.refresh("branch_order")
+    assert scale.shown is False, "a colour cycle has no range to draw"
+
+    scale.refresh("length")
+    assert scale.shown is True
+
+
+def test_a_missing_layer_controls_panel_is_not_fatal(make_napari_viewer):
+    """All of this is private napari API, so it has to fail quietly."""
+    from haemolynx.gui import _widget
+
+    viewer = make_napari_viewer()
+    _widget._apply_layers(viewer, ResultLayers().stage_finished(
+        "build_network", network(a_graph())))
+    assert VESSELS in viewer.layers
+
+    # Pretend a napari version moved the controls out from under us.
+    original = _widget._layer_controls
+    _widget._layer_controls = lambda *_a, **_k: None
+    try:
+        _widget._apply_layers(viewer, ResultLayers().stage_finished(
+            "build_network", network(a_graph())))
+    finally:
+        _widget._layer_controls = original
+    assert VESSELS in viewer.layers

@@ -554,3 +554,52 @@ def test_a_declared_column_still_carries_the_value_once_it_is_filled():
     )
     vessels = next(s for s in group.layers if s.name == VESSELS)
     assert np.allclose(np.asarray(vessels.features["flow_abs"], dtype=float), 7e-16)
+
+
+# --- the range a colour bar should span --------------------------------------
+
+
+def test_trimming_the_extremes_rescues_a_long_tailed_column():
+    """Why the panel offers "Fit 1-99%" as well as "Fit all".
+
+    Flow is long-tailed: a few vessels carry orders of magnitude more than the
+    rest. Against the full range every other vessel lands in the bottom
+    percent of the colormap and the network reads as one flat colour, which is
+    exactly the failure that looks like "the flow is not being shown".
+    """
+    from types import SimpleNamespace
+
+    from haemolynx.gui._widget import _data_range
+
+    values = np.concatenate([np.linspace(1e-16, 2e-16, 200), [1e-9]])
+    layer = SimpleNamespace(features={"flow_abs": values})
+
+    full = _data_range(layer, "flow_abs")
+    trimmed = _data_range(layer, "flow_abs", 1.0, 99.0)
+
+    assert full == (pytest.approx(1e-16), pytest.approx(1e-9))
+    assert trimmed[1] < full[1] / 1000, (full, trimmed)
+    # The bulk of the data now spans most of the bar rather than a sliver.
+    inside = np.mean((values >= trimmed[0]) & (values <= trimmed[1]))
+    assert inside > 0.95
+
+
+def test_a_column_with_nothing_in_it_has_no_range():
+    from types import SimpleNamespace
+
+    from haemolynx.gui._widget import _data_range
+
+    layer = SimpleNamespace(features={"flow_abs": np.full(5, np.nan)})
+    assert _data_range(layer, "flow_abs") is None
+    assert _data_range(layer, "missing") is None
+    assert _data_range(layer, "none") is None
+
+
+def test_an_identical_column_still_gives_a_usable_range():
+    """A degenerate range would make napari refuse the limits outright."""
+    from types import SimpleNamespace
+
+    from haemolynx.gui._widget import _data_range
+
+    low, high = _data_range(SimpleNamespace(features={"q": np.full(4, 3.0)}), "q")
+    assert high > low

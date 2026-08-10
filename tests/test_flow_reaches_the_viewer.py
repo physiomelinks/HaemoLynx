@@ -141,12 +141,30 @@ def test_colouring_the_vessels_by_absolute_flow_works(run_in_a_viewer):
     )
 
 
-def test_the_panel_offers_absolute_flow_once_the_run_has_finished(run_in_a_viewer):
-    from haemolynx.gui._widget import _colour_choices
+def test_the_range_of_the_flow_can_be_read_and_set(run_in_a_viewer):
+    """Seeing the flow means seeing which end of the colour bar is which.
+
+    napari draws no colour bar and no contrast control for a feature colouring,
+    so a scale that cannot be read or changed is the last way flow stays out of
+    reach even once it is on screen.
+    """
+    from haemolynx.gui._widget import (
+        _active_column, _apply_contrast_limits, _colour_layer, _data_range,
+    )
 
     viewer, _results, _graph, _stages, _failures = run_in_a_viewer
-    assert "flow_abs" in _colour_choices(viewer, VESSELS)
-    assert "pressure" in _colour_choices(viewer, NODES)
+    layer = viewer.layers[VESSELS]
+    _colour_layer(layer, "flow_abs", "continuous")
+
+    assert _active_column(layer) == "flow_abs"
+
+    full = _data_range(layer, "flow_abs")
+    trimmed = _data_range(layer, "flow_abs", 1.0, 99.0)
+    assert full is not None and trimmed is not None
+    assert trimmed[1] <= full[1]
+
+    assert _apply_contrast_limits(layer, *trimmed)
+    assert layer.edge_contrast_limits == pytest.approx(trimmed)
 
 
 def test_the_drawn_flow_is_the_graphs_flow(run_in_a_viewer):
