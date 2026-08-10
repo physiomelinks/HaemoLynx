@@ -2,6 +2,113 @@
 
 Converts raw microscopy images of the microvasculature into computational haemodynamics models for hypothesis testing, experimental design, and more.
 
+## Run it in napari
+
+The panel is the quickest way to use HaemoLynx: it builds a settings form from
+the schema, checks the settings before anything runs, and runs the pipeline in a
+background thread while each stage's results appear in the viewer.
+
+```bash
+pip install "HaemoLynx[napari]"    # needs Python 3.11+ (napari's floor, not ours)
+napari                             # Plugins -> HaemoLynx -> Pipeline settings
+```
+
+That extra brings a Qt binding (PyQt6) with it, so the panel opens on a fresh
+environment. If you already run napari with a binding of your own, install
+`HaemoLynx[napari-plugin]` instead and keep it.
+
+Then: **drag an image in, open the panel, press Run pipeline.** The layer you
+have selected is picked up automatically, so on a segmented TIFF there is
+nothing else to set.
+
+### The panel: configuring a run
+
+One tab per pipeline stage, in the order they execute -- Input, Skeletonise,
+Graph, Boundaries, Diameters, Resistances, Solve, Export -- so a run is
+configured the way it runs rather than the way the config file is laid out.
+
+Every row comes from `haemolynx.pipeline.default_schema()`, so a setting
+declared there appears with its help text, range and choices, and greys out with
+a reason when the setting it depends on is off. There is no second list of
+settings to keep in step; a test fails if a setting reaches no tab or more than
+one.
+
+**Load config** and **Save config** read and write the same YAML the examples
+use, so a run set up here can be repeated from the command line and back.
+
+### Running on the image already open in napari
+
+Open an image, then open the panel: the selected layer is picked up
+automatically, and the row at the top lets you choose a different one.
+
+- A layer **read from a TIFF or HDF5** points the run at that file, so the same
+  bytes and metadata are used -- no copy is made.
+- A layer **built in the viewer** (a threshold, a crop) has no file behind it,
+  so its array is written next to the run's outputs and read back. The panel
+  says which of the two happened.
+- If the layer has a **scale**, it becomes the voxel size. napari scales per
+  array axis `(z, y, x)` and the setting is image metadata order `(x, y, z)`,
+  so the two are reversed on the way in.
+
+### Watching a run
+
+Each stage puts its work in the viewer as it finishes -- the volume and
+skeleton, then the vessel network, the boundary nodes, the pericytes -- so a run
+is something to watch rather than a wait for files. Two progress bars show which
+stage is running and how far through it is.
+
+Vessels are drawn as a Vectors layer, which is roughly ten times faster to draw
+than paths at the size of a real run; the per-vessel numbers ride on a hidden
+Points layer at each vessel's midpoint, so hovering still identifies one.
+
+**Show each topology step** additionally redraws the network after each of graph
+building's eleven repair steps, which is worth switching on when skeletonisation
+is behaving oddly and not otherwise.
+
+A second run updates its own layers in place, so anything you hid stays hidden,
+and a layer of your own that happens to share a name is never touched.
+**Clear layers** removes everything the plugin added and nothing else.
+
+### Choosing what the colours mean
+
+That is done in napari's **layer controls, on the left**, with the layer
+selected -- the panel on the right is for the pipeline only.
+
+- **edge feature:** (vessels) and **node feature:** (nodes and boundary nodes)
+  choose the quantity: flow, pressure, branch order, resistance, length,
+  diameter, boundary role, and everything else the run produced. A quantity is
+  listed from the start and fills in when the stage that computes it runs.
+- **colour range:** shows the scale as a colour bar and lets you set its ends.
+  **Fit all** spans the smallest and largest value; **Fit 1-99%** ignores the
+  extreme 1% at each end, which is the useful one for flow -- a handful of
+  vessels carry orders of magnitude more than the rest, and against the full
+  range everything else is one colour.
+- **Show colour bar in the viewer** draws that scale in the canvas, beside the
+  data it describes.
+
+Picking a new quantity fits the range to it automatically. Vessels start
+coloured by flow once a run has solved, nodes by pressure.
+
+### Other things worth knowing
+
+The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
+without opening the form.
+
+Running the panel does not open plots outside napari: the settings that make
+plotly open a web browser mid-run start switched off, and are ordinary rows you
+can tick back on.
+
+The panel's own tests build real Qt widgets, so they need napari and a display.
+They are marked `gui`, skipped without one, and CI runs them on 3.11 under
+xvfb:
+
+```bash
+pytest -m gui           # with "HaemoLynx[napari]" installed
+```
+
+The library itself never imports napari; the extra is optional, and the panel is
+only loaded when you open it.
+
 ## Install
 
 Python 3.9 or newer.
@@ -208,84 +315,6 @@ notebook, not the generated `pipeline_tutorial.py`; regenerate that with:
 ```bash
 pytest tests/integration/test_pipeline_tutorial.py
 ```
-
-## napari plugin (experimental)
-
-A napari panel that builds a settings form from the schema, runs the pre-run
-checks, and runs the pipeline in a background thread:
-
-```bash
-pip install "HaemoLynx[napari]"    # needs Python 3.11+ (napari's floor, not ours)
-napari                             # Plugins -> HaemoLynx -> Pipeline settings
-```
-
-That extra brings a Qt binding (PyQt6) with it, so the panel opens on a fresh
-environment. If you already run napari with a binding of your own, install
-`HaemoLynx[napari-plugin]` instead and keep it.
-
-The panel has **one tab per pipeline stage**, in the order the example runs
-them -- Input, Skeletonise, Graph, Boundaries, Diameters, Resistances, Solve,
-Export -- so a run is configured the way it executes rather than the way the
-config file is laid out.
-
-Every row comes from `haemolynx.pipeline.default_schema()`, so a setting
-declared there appears in the panel with its help text, range and choices, and
-greys out with a reason when the setting it depends on is off. There is no
-second list of settings to keep in step; a test fails if a setting reaches no
-tab or more than one.
-
-### Running on the image already open in napari
-
-Open an image in napari, then open the panel: the selected layer is picked up
-automatically, and the row at the top lets you choose a different one.
-
-- A layer **read from a TIFF or HDF5** points the run at that file, so the same
-  bytes and the same metadata are used -- no copy is made.
-- A layer **built in the viewer** (a threshold, a crop) has no file behind it,
-  so its array is written next to the run's outputs and read back. The panel
-  says which of the two happened.
-- If the layer has a **scale**, it becomes the voxel size. napari scales per
-  array axis `(z, y, x)` and the setting is image metadata order `(x, y, z)`,
-  so the two are reversed on the way in.
-
-### Watching a run
-
-Each stage puts its work in the viewer as it finishes — the volume and skeleton,
-then the vessel network, the boundary nodes, the pericytes — so a run is
-something to watch rather than a wait for files. **Colour vessels by** and
-**Colour nodes by** pick what the colour means: flow, pressure, branch order,
-resistance, or nothing. Switching is instant; the geometry is built once and
-only the colouring changes.
-
-Vessels are drawn as a Vectors layer, which is roughly ten times faster to draw
-than paths at the size of a real run; the per-vessel numbers ride on a hidden
-Points layer at each vessel's midpoint, so hovering still identifies one.
-
-**Show each topology step** additionally redraws the network after each of graph
-building's eleven repair steps, which is worth switching on when skeletonisation
-is behaving oddly and not otherwise.
-
-A second run updates its own layers in place, so anything you hid stays hidden,
-and a layer of your own that happens to share a name is never touched.
-**Clear layers** removes everything the plugin added and nothing else.
-
-The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
-without opening the form.
-
-Running the panel does not open plots outside napari: the settings that make
-plotly open a web browser mid-run start switched off, and are ordinary rows you
-can tick back on.
-
-The panel's own tests build real Qt widgets, so they need napari and a display.
-They are marked `gui`, skipped without one, and CI runs them on 3.11 under
-xvfb:
-
-```bash
-pytest -m gui           # with "HaemoLynx[napari]" installed
-```
-
-The library itself never imports napari; the extra is optional, and the panel
-is only loaded when you open it.
 
 ## Allowable input mask formats
 
