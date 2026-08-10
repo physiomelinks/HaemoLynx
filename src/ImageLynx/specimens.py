@@ -68,6 +68,10 @@ def _resolve_root(env_var: str, candidates: Sequence[Path], marker: str) -> Path
 ACQUISITION_ROOT = _resolve_root(_ACQUISITION_ENV, _ACQUISITION_CANDIDATES, "CB3-WKY")
 CB_DATA_ROOT = _resolve_root(_DATA_ENV, _DATA_CANDIDATES, "ilastik_inputs")
 
+#: Committed copies of the preprocessing QC sidecars. Kilobytes, and they travel with the
+#: code rather than with the 4 GB of volumes they describe.
+_BUNDLED_QC_DIR = Path(__file__).resolve().parent / "data" / "preprocessing_qc"
+
 
 def data_root_provenance() -> Dict[str, object]:
     """Which roots were chosen and why, so a silently stale copy is visible."""
@@ -175,6 +179,27 @@ class Specimen:
     def qc_path(self) -> Path:
         """The machine-readable record of how this volume was preprocessed."""
         return ILASTIK_INPUT_DIR / f"{self.preproc_stem}_qc.json"
+
+    @property
+    def bundled_qc_path(self) -> Path:
+        """The copy committed to the repository.
+
+        The sidecars are the only evidence that all six volumes were preprocessed
+        identically, which is the premise that makes one shared classifier legitimate. They
+        are a few kilobytes each, so keeping a copy in the package means that premise stays
+        checkable on a machine that has no access to 4 GB of HDF5 - and survives the data
+        directory being moved again.
+        """
+        return _BUNDLED_QC_DIR / f"{self.preproc_stem}_qc.json"
+
+    def qc_record(self) -> Optional[dict]:
+        """The preprocessing record, live copy preferred, bundled copy as fallback."""
+        import json
+
+        for candidate in (self.qc_path, self.bundled_qc_path):
+            if candidate.exists():
+                return json.loads(candidate.read_text())
+        return None
 
     # --- Stage 2: headless Ilastik prediction ---
     @property

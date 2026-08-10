@@ -232,10 +232,11 @@ def test_preprocessing_actually_produced_the_contracted_volume(specimen):
     This is the check that catches a stem pointing at the wrong specimen's file: the sidecar
     records the shape and the channel order of the volume that was actually written.
     """
-    if not specimen.qc_path.exists():
-        pytest.skip(f"not preprocessed yet: {specimen.qc_path.name}")
-
-    record = json.loads(specimen.qc_path.read_text())
+    record = specimen.qc_record()
+    assert record is not None, (
+        f"no QC record for {specimen.specimen_id} at {specimen.qc_path} or "
+        f"{specimen.bundled_qc_path}"
+    )
 
     assert tuple(record["shape_zyx"]) == specimen.shape_zyx
     assert tuple(record["channel_names"]) == ILASTIK_INPUT_CHANNELS
@@ -258,10 +259,8 @@ def test_preprocessing_actually_produced_the_contracted_volume(specimen):
 
 def test_every_specimen_was_preprocessed_identically():
     """Per-volume tuning reintroduces the cohort bias the shared classifier exists to prevent."""
-    records = {s.specimen_id: json.loads(s.qc_path.read_text())
-               for s in SPECIMENS if s.qc_path.exists()}
-    if len(records) < 2:
-        pytest.skip("fewer than two QC sidecars present")
+    records = {s.specimen_id: s.qc_record() for s in SPECIMENS}
+    assert all(r is not None for r in records.values()), "a QC record is missing"
 
     keys = ("rolling_ball", "saturated", "sigmas_fine", "sigmas_coarse",
             "single_vesselness", "fast_coarse", "channel", "voxel")
@@ -501,3 +500,21 @@ def test_the_real_trained_classifier_is_ready_to_segment_the_study():
         verify_classifier()
     except ValueError as problem:
         pytest.skip(f"classifier not ready: {problem}")
+
+
+def test_the_qc_records_are_bundled_with_the_code(tmp_path, monkeypatch):
+    """The premise behind one shared classifier has to survive the data moving.
+
+    The sidecars are the only machine-readable evidence that all six volumes were
+    preprocessed identically. They are kilobytes; the volumes they describe are 4 GB. Keeping
+    a committed copy means the check above is a real assertion on any machine rather than a
+    skip on every machine but this one - and the data directory has already moved twice.
+    """
+    for specimen in SPECIMENS:
+        assert specimen.bundled_qc_path.exists(), specimen.bundled_qc_path
+
+    wky_a = get_specimen("WKY-A")
+    monkeypatch.setattr(type(wky_a), "qc_path",
+                        property(lambda self: tmp_path / "gone.json"))
+    record = wky_a.qc_record()
+    assert record is not None and tuple(record["shape_zyx"]) == wky_a.shape_zyx
