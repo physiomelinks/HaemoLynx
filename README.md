@@ -120,11 +120,17 @@ pip install HaemoLynx
 > Not on PyPI yet — until the first release, install from a checkout as below.
 > Everything else on this page already works that way.
 
-To work on HaemoLynx itself, install the checkout instead:
-
 ```bash
+git clone https://github.com/physiomelinks/HaemoLynx.git
+cd HaemoLynx
 python -m venv .venv
 source .venv/bin/activate
+pip install -e .
+```
+
+To work on HaemoLynx itself, take the development extras as well:
+
+```bash
 pip install -e ".[dev]"
 ```
 
