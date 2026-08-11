@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from haemolynx.gui.form import Field
+from haemolynx.gui.form import Field, display_value_for
 from haemolynx.gui.layers import input_for_layer
 from haemolynx.gui.results import (
     NODES,
@@ -888,57 +888,54 @@ def _run_in_background(
     worker.start()
 
 
-def run_config_widget():
-    """Run a config file as it stands, without opening the settings form.
+#: What the About panel says. Written here rather than in the widget so it can
+#: be checked without a display -- and so the two questions it answers stay
+#: answered: where the colour controls are (napari's own layer controls, not
+#: this plugin's panel) and what a config file is for.
+ABOUT_TEXT = """\
+HaemoLynx {version}
 
-    The same thing `python examples/resistance_network_pipeline.py --config
-    my.yaml` does, for a config that is already how you want it.
-    """
-    from magicgui.widgets import Container, FileEdit, Label, PushButton, TextEdit
-    from qtpy.QtWidgets import QVBoxLayout, QWidget
+Turns 3D microvascular microscopy into a NetworkX graph that can be fed
+into a haemodynamic solver to give haemodynamic edge weights, VTK exports
+and network statistics.
 
-    schema = default_schema()
-    chooser = FileEdit(mode="r", filter="*.yaml *.yml", label="Config file")
-    report = TextEdit(value="Choose a config file, then press Run.")
-    report.read_only = True
-    run_button = PushButton(text="Run")
-    bars = ProgressBars()
+Pipeline settings runs the pipeline: one tab per stage, in the order they
+run. Point it at the image layer you have open, or load a config file.
 
-    def on_run() -> None:
-        path = Path(str(chooser.value))
-        if not path.is_file():
-            report.value = f"Not a file: {path}"
-            return
-        try:
-            settings = resolve_settings(schema=schema, config_path=path)
-        except Exception as error:  # noqa: BLE001 - shown to the user, not raised
-            report.value = f"{type(error).__name__}: {error}"
-            return
-        result = preflight(settings, schema)
-        if not result.ok:
-            report.value = "\n".join(f"FAILED: {message}" for message in result.errors)
-            return
-        _run_in_background(settings, schema, report, run_button, bars)
+Colours are not set here. Select a vessel or node layer and use napari's
+own layer controls on the left: "edge feature:" and "node feature:" choose
+the quantity, "colour range:" sets the scale.
 
-    run_button.changed.connect(on_run)
-    form = Container(
-        widgets=[
-            Label(value="Run a config file exactly as it stands."),
-            chooser,
-            run_button,
-        ],
-        labels=True,
+A config file is the same YAML the command line takes, so a run set up
+here repeats with:
+
+    python examples/resistance_network_pipeline.py --config my.yaml
+
+Settings in this build: {settings}
+Docs and issues: https://github.com/physiomelinks/HaemoLynx
+
+Created by Finbar Argus, Harvey Davis, and the Animus Laboratory.
+"""
+
+
+def about_text() -> str:
+    """The About panel's text, filled in for this installation."""
+    import haemolynx
+
+    return ABOUT_TEXT.format(
+        version=getattr(haemolynx, "__version__", "unknown"),
+        settings=len(list(default_schema())),
     )
-    # A QWidget rather than one more Container: the progress bars are plain
-    # QProgressBars, which a magicgui Container will not hold.
-    panel = QWidget()
-    # What a test would otherwise have to press a button and wait for a run to see.
-    panel._haemolynx_progress = bars
-    layout = QVBoxLayout(panel)
-    layout.addWidget(form.native)
-    layout.addWidget(bars.native)
-    layout.addWidget(report.native)
-    return panel
+
+
+def about_widget():
+    """What HaemoLynx is, and the two things people ask the panel that it
+    cannot answer: where the colour controls live, and what a config is for."""
+    from magicgui.widgets import TextEdit
+
+    report = TextEdit(value=about_text())
+    report.read_only = True
+    return report.native
 
 
 def settings_widget(napari_viewer=None):
@@ -987,17 +984,39 @@ def settings_widget(napari_viewer=None):
             index = tab_widget.count() - 1
             tab_widget.setTabToolTip(index, f"{tab.stage.call}(settings, ...)")
 
+    #: What a loaded config said each path setting was, before its FileEdit
+    #: made it absolute. Empty until a config is opened.
+    loaded_paths: dict[str, Any] = {}
+
+    #: What pointing the run at an open layer put into the form, and which
+    #: layer it was. `settings` is None until a layer has been adopted.
+    adopted = SimpleNamespace(settings=None, name=None)
+
     def current_values() -> dict[str, Any]:
         """What the panel says, in the settings' own terms.
 
         Read back through the field rather than straight off the widget: an
         empty picker is *unset*, not the working directory, and an empty box is
-        unset rather than zero.
+        unset rather than zero. A path a loaded config gave is handed back as
+        that config wrote it, for as long as the row still names the same file
+        -- see `load_config_file`. Picking a different file in the row replaces
+        it, because then the absolute path is what the user chose.
         """
-        return {
+        values = {
             name: fields[name].to_setting_value(widget.value)
             for name, widget in rows.items()
         }
+        for name, original in loaded_paths.items():
+            current = values.get(name)
+            if current is None:
+                continue
+            try:
+                unchanged = Path(current) == Path(original).resolve()
+            except (TypeError, ValueError, OSError):
+                continue
+            if unchanged:
+                values[name] = original
+        return values
 
     def use_layer(layer) -> None:
         """Point the run at *layer*: its own file, or its array written out."""
@@ -1015,6 +1034,10 @@ def settings_widget(napari_viewer=None):
         for name, value in chosen.settings.items():
             if name in rows:
                 rows[name].value = value
+        # Kept so that opening a config afterwards does not silently point the
+        # run back at whatever image that file was written for.
+        adopted.settings = dict(chosen.settings)
+        adopted.name = getattr(layer, "name", None)
         apply_prerequisites()
         report.value = chosen.note
 
@@ -1121,6 +1144,49 @@ def settings_widget(napari_viewer=None):
     def _settings() -> dict[str, Any]:
         return resolve_settings(current_values(), schema=schema, config_path=None)
 
+    def load_config_file(path: Path | str) -> None:
+        """Put a config file's settings into the form.
+
+        Only reads the file. Nothing it names is opened -- an `input_path`
+        pointing at an image that is not on this machine still loads, because
+        the image a run works on is the layer open in napari, and a config is
+        routinely written on one machine and read on another. The paths are
+        checked when a run is about to start, by "Run checks" and by the run
+        itself, which is where a missing file is worth stopping for.
+
+        A FileEdit stores whatever it is given as an absolute path, so putting
+        a config's relative `classifiers/nerve_classifier.ilp` into one turns
+        it into `/home/you/wherever/classifiers/nerve_classifier.ilp`. Left
+        alone that rewrites the config: every relative path in it becomes
+        specific to this machine, "Save config..." writes those back, and the
+        settings then differ from their defaults, so a run warns that fourteen
+        of them are set while nothing reads them. What the file said is kept
+        here, and `current_values` hands it back for any row still naming the
+        same file.
+        """
+        loaded = load_config(Path(path), schema)
+        loaded_paths.clear()
+        for name, value in loaded.items():
+            if name in rows:
+                if schema[name].kind == "path" and value is not None:
+                    loaded_paths[name] = value
+                rows[name].value = display_value_for(schema[name], value)
+
+        # A config names the image it was written for, which is rarely the one
+        # on screen -- the shipped one names an image that is not even in the
+        # repository. With a layer open, that layer is the input and the file's
+        # `input_path` is not read; everything else in the file still applies.
+        kept = ""
+        if adopted.settings:
+            for name, value in adopted.settings.items():
+                if name in rows:
+                    rows[name].value = value
+                    loaded_paths.pop(name, None)
+            kept = f", keeping {adopted.name or 'the open layer'} as the input"
+
+        apply_prerequisites()
+        report.value = f"Loaded {path}{kept}"
+
     def on_load() -> None:
         from qtpy.QtWidgets import QFileDialog
 
@@ -1129,11 +1195,7 @@ def settings_widget(napari_viewer=None):
         )
         if not path:
             return
-        for name, value in load_config(Path(path), schema).items():
-            if name in rows:
-                rows[name].value = value
-        apply_prerequisites()
-        report.value = f"Loaded {path}"
+        load_config_file(path)
 
     def on_save() -> None:
         from qtpy.QtWidgets import QFileDialog
@@ -1196,6 +1258,9 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_progress = bars
     panel._haemolynx_view = view
     panel._haemolynx_show_results = show_results
+    panel._haemolynx_load_config = load_config_file
+    panel._haemolynx_report = lambda: report.value
+    panel._haemolynx_rows = lambda: rows
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)

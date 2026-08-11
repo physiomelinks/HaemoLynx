@@ -22,7 +22,6 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
     DISPLAY_SETTINGS_OFF_IN_NAPARI,
-    run_config_widget,
     settings_widget,
 )
 from haemolynx.gui.tabs import STAGES  # noqa: E402
@@ -72,10 +71,6 @@ def test_the_panel_builds(panel):
 def test_the_panel_builds_with_no_viewer():
     """Someone may call this outside napari; it must not require a viewer."""
     assert settings_widget(napari_viewer=None) is not None
-
-
-def test_the_run_a_config_panel_builds():
-    assert run_config_widget() is not None
 
 
 def test_there_is_one_tab_per_stage(panel):
@@ -329,14 +324,6 @@ def test_a_failed_run_leaves_the_bar_where_it_stopped(panel):
     assert bars.stage_bar.format() == "Failed: ValueError"
 
 
-def test_the_run_a_config_panel_has_progress_bars_too():
-    panel = run_config_widget()
-
-    panel._haemolynx_progress.start()
-
-    assert panel._haemolynx_progress.stage_bar.maximum() == len(STAGES)
-
-
 # --- a run, end to end -------------------------------------------------------
 
 
@@ -419,3 +406,269 @@ def test_the_haemodynamics_tab_is_named_for_what_it_does(panel):
 
     assert "6. Haemodynamics" in titles, titles
     assert not any("Resistances" in title for title in titles), titles
+
+
+# --- opening a config in the panel -------------------------------------------
+
+
+#: The config the panel's own schema describes. The brain, carotid and simple
+#: examples each add settings of their own, so `default_schema()` rejects them
+#: by design -- the panel is the pipeline's schema, not theirs.
+RESISTANCE_CONFIG = REPO_ROOT / "examples" / "resistance_pipeline_config.yaml"
+
+
+def test_loading_the_resistance_config_does_not_need_its_input_image(
+    make_napari_viewer,
+):
+    """Opening a config reads the file and nothing the file names.
+
+    `resistance_pipeline_config.yaml` ships with `input_path` pointing at
+    `examples/images/brain_microvessels.tiff`, which is not in the repository,
+    and a config written on one machine is routinely opened on another. Neither
+    is a reason to refuse to open it: the image a run works on is the layer
+    already open in napari. Paths are checked when a run starts instead.
+
+    Loading it used to be impossible two ways over -- through the "Run a saved
+    config" widget, which ran preflight first and stopped at "FAILED:
+    input_path: checked: examples/images/brain_microvessels.tiff", and through
+    "Load config...", which assigned the file's unset values straight onto the
+    widgets and raised TypeError on the first None.
+    """
+    make_napari_viewer()
+    panel = settings_widget()
+
+    assert not (REPO_ROOT / "examples" / "images" / "brain_microvessels.tiff").exists(), (
+        "this test is only meaningful while that image is absent"
+    )
+
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+
+    values = panel._haemolynx_values()
+    default_schema().validate(values)
+    assert Path(values["input_path"]).name == "brain_microvessels.tiff"
+
+
+def test_loading_a_config_whose_unset_values_are_null(make_napari_viewer, tmp_path):
+    """A None in the file must reach the widget as the blank the form uses.
+
+    Rows are built through `form.display_value_for`, which turns an unset value
+    into the empty box a FileEdit will accept. Writing to a row afterwards has
+    to go the same way; assigning the raw None raised
+    "TypeError: value must be a string, or list/tuple of strings".
+    """
+    from haemolynx.parsers import dump_config
+
+    make_napari_viewer()
+    panel = settings_widget()
+    schema = default_schema()
+
+    config = tmp_path / "nulls.yaml"
+    dump_config(config, schema, values={s.name: s.default for s in schema})
+
+    panel._haemolynx_load_config(config)
+
+    assert panel._haemolynx_values()["input_path"] is None
+
+
+def test_loading_a_config_reports_it_and_applies_its_values(make_napari_viewer, tmp_path):
+    """The values in the file end up in the form, not just parsed and dropped."""
+    from haemolynx.parsers import dump_config
+
+    make_napari_viewer()
+    panel = settings_widget()
+    schema = default_schema()
+
+    config = tmp_path / "distinctive.yaml"
+    dump_config(
+        config,
+        schema,
+        values={**{s.name: s.default for s in schema}, "min_stub_length": 42.5,
+                "input_p_bc": 1234.0},
+    )
+
+    panel._haemolynx_load_config(config)
+
+    values = panel._haemolynx_values()
+    assert values["min_stub_length"] == 42.5
+    assert values["input_p_bc"] == 1234.0
+
+
+def test_loading_a_config_naming_a_missing_image_still_fails_the_run_checks(
+    make_napari_viewer, tmp_path
+):
+    """Loading is lenient; starting a run is not. Both halves matter."""
+    from haemolynx.parsers import dump_config
+    from haemolynx.pipeline import preflight, resolve_settings
+
+    make_napari_viewer()
+    panel = settings_widget()
+    schema = default_schema()
+
+    config = tmp_path / "missing_image.yaml"
+    dump_config(
+        config,
+        schema,
+        values={**{s.name: s.default for s in schema},
+                "input_path": tmp_path / "not_here.tif"},
+    )
+
+    panel._haemolynx_load_config(config)  # loads without complaint
+
+    settings = resolve_settings(panel._haemolynx_values(), schema=schema, config_path=None)
+    result = preflight(settings, schema)
+    assert not result.ok
+    assert any("input_path" in message for message in result.errors)
+
+
+# --- the About widget --------------------------------------------------------
+
+
+def test_the_about_widget_builds(make_napari_viewer):
+    from haemolynx.gui._widget import about_widget
+
+    make_napari_viewer()
+    assert about_widget() is not None
+
+
+def test_loading_a_config_keeps_its_paths_as_it_wrote_them(make_napari_viewer):
+    """A FileEdit makes every path absolute, which rewrites the config.
+
+    `resistance_pipeline_config.yaml` names its files relatively. Put those in
+    the form and magicgui stores `/home/you/wherever/classifiers/....ilp`, so
+    "Save config..." would write this machine's layout back into a portable
+    file, and the values then differ from their defaults -- which is what made
+    a run report fourteen settings as set while nothing reads them.
+    """
+    make_napari_viewer()
+    panel = settings_widget()
+
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+    values = panel._haemolynx_values()
+
+    for name in ("input_path", "ilastik_classifier_path",
+                 "ilastik_small_arteriole_classifier_path"):
+        assert not Path(values[name]).is_absolute(), (
+            f"{name} came back as {values[name]}, absolute, not as the config wrote it"
+        )
+
+
+def test_loading_a_config_does_not_make_a_run_warn_about_its_own_defaults(
+    make_napari_viewer,
+):
+    """The symptom the path rewriting caused, pinned at the point it appeared.
+
+    The config leaves ilastik off and still fills its paths in, which is what
+    the schema calls ordinary practice. Absolutised, each of those stopped
+    matching its default and a run warned about all fourteen.
+    """
+    from haemolynx.parsers import IneffectiveSettingWarning
+    from haemolynx.pipeline import resolve_settings
+
+    make_napari_viewer()
+    panel = settings_widget()
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        resolve_settings(
+            panel._haemolynx_values(), schema=default_schema(), config_path=None
+        )
+
+    ineffective = [
+        w for w in caught if issubclass(w.category, IneffectiveSettingWarning)
+    ]
+    assert not ineffective, (
+        f"{len(ineffective)} settings reported as set-but-unread: "
+        f"{[str(w.message)[:60] for w in ineffective]}"
+    )
+
+
+def test_choosing_a_different_file_replaces_what_the_config_said(
+    make_napari_viewer, tmp_path
+):
+    """Only the loaded value is preserved; an edit is the user's own choice."""
+    make_napari_viewer()
+    panel = settings_widget()
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+
+    chosen = tmp_path / "my_own.tif"
+    chosen.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = chosen
+
+    assert Path(panel._haemolynx_values()["input_path"]) == chosen
+
+
+def test_a_config_does_not_steal_the_input_from_the_open_layer(
+    make_napari_viewer,
+):
+    """The image on screen is the input; a config names a different one.
+
+    Every config names the image it was written for, and the shipped one names
+    an image that is not in the repository. Opening it over an adopted layer
+    pointed the run at that file, so "Run checks" failed on an input the user
+    could see was already loaded.
+    """
+    viewer = make_napari_viewer()
+    viewer.open(str(FIXTURE))
+    panel = settings_widget(napari_viewer=viewer)
+
+    from_layer = panel._haemolynx_values()["input_path"]
+    assert Path(from_layer) == FIXTURE
+
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+
+    assert Path(panel._haemolynx_values()["input_path"]) == FIXTURE
+    assert "keeping" in panel._haemolynx_report(), panel._haemolynx_report()
+
+
+def test_the_run_checks_pass_on_a_config_loaded_over_an_open_layer(
+    make_napari_viewer, tmp_path
+):
+    """The whole point: this combination used to fail preflight."""
+    from haemolynx.pipeline import preflight, resolve_settings
+
+    viewer = make_napari_viewer()
+    viewer.open(str(FIXTURE))
+    panel = settings_widget(napari_viewer=viewer)
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+
+    rows = panel._haemolynx_rows()
+    rows["vtk_output_prefix"].value = tmp_path / "run"
+    rows["base_plot_dir"].value = tmp_path / "plots"
+
+    settings = resolve_settings(
+        panel._haemolynx_values(), schema=default_schema(), config_path=None
+    )
+    result = preflight(settings, default_schema())
+    assert result.ok, result.errors
+
+
+def test_a_config_still_supplies_the_input_when_no_layer_is_open(
+    make_napari_viewer,
+):
+    """With nothing adopted there is nothing to defer to, so the file wins."""
+    make_napari_viewer()
+    panel = settings_widget()
+
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+
+    assert Path(panel._haemolynx_values()["input_path"]).name == "brain_microvessels.tiff"
+    assert "keeping" not in panel._haemolynx_report()
+
+
+def test_a_config_still_applies_everything_other_than_the_input(
+    make_napari_viewer,
+):
+    """Only the input is held back; the rest of the file is the point of it."""
+    viewer = make_napari_viewer()
+    viewer.open(str(FIXTURE))
+    panel = settings_widget(napari_viewer=viewer)
+
+    from haemolynx.parsers import load_config
+
+    on_file = load_config(RESISTANCE_CONFIG, default_schema())
+    panel._haemolynx_load_config(RESISTANCE_CONFIG)
+    values = panel._haemolynx_values()
+
+    for name in ("min_stub_length", "input_p_bc", "skeleton_bridge_gap_size"):
+        assert values[name] == on_file[name], name

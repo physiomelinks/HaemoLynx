@@ -100,8 +100,24 @@ coloured by flow once a run has solved, nodes by pressure.
 
 ### Other things worth knowing
 
-The menu also carries **Run a saved config**, which runs a `.yaml` as it stands
-without opening the form.
+**Load config...** reads a `.yaml` into the form, so a config written for a CLI
+run can be opened, adjusted and run here. It only reads the file: a config whose
+`input_path` names an image that is not on this machine still loads, because the
+image a run works on is the layer open in napari. Paths are checked when a run
+starts, by **Run checks** and by the run itself.
+
+With a layer already open, loading a config keeps that layer as the input and
+ignores the file's `input_path` — a config names the image it was written for,
+which is rarely the one on screen. Everything else in the file still applies,
+and the panel says which layer it kept. With no layer open, the file's
+`input_path` is used as written.
+
+The menu's second entry, **About**, gives the installed version and the two
+answers people look for in the panel and do not find there: colouring is in
+napari's own layer controls, and a config file is the same YAML the command line
+takes. It is also what makes the menu read **HaemoLynx** — napari titles the
+menu with the plugin name only when a plugin contributes more than one widget,
+and appends `(HaemoLynx)` to the widget name otherwise.
 
 Running the panel does not open plots outside napari: the settings that make
 plotly open a web browser mid-run start switched off, and are ordinary rows you
