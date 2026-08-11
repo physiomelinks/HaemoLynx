@@ -14,41 +14,28 @@ DEFAULT_IMAGE_RELATIVE = "examples/images/Nerve_capillaries.tif"
 #: Physical voxel size of that dataset, in (x, y, z) microns.
 DEFAULT_VOXEL_SIZE_XYZ = (1.167, 1.167, 2.029)
 
-#: Settings that define the comparison. A side that cannot apply one of these
-#: would be running a different experiment, so the tool refuses to report.
+#: What the tool insists on -- deliberately not the experiment.
+#:
+#: Which stages run, how the skeleton is cleaned, where the boundaries are and
+#: what pressures drive it all come from the config file the checkout ships, so
+#: comparing two branches compares what those branches actually do. Pinning
+#: that here meant the tool ran something neither branch would: while
+#: `examples/resistance_pipeline_config.yaml` could not run at all -- it named
+#: an image that is not in the repository and gave no outlet nodes -- this file
+#: replaced every setting that would have failed, so nothing said so.
+#:
+#: What is left is what the comparison needs mechanically, not scientifically.
+#: Statistics, because the report is largely a diff of the statistics CSVs and
+#: there is nothing to read without them. The display settings, because a
+#: comparison runs unattended and the shipped config asks for a browser tab
+#: (`show_plots_in_ide`) and a window that waits to be closed
+#: (`hold_ide_plots_open`).
 REQUIRED_SETTINGS: dict[str, Any] = {
-    "do_skeletonize": True,
-    "do_graph_building": True,
-    "run_haemodynamics": True,
-    "do_equiv_resistance_calculation": True,
-    "skeleton_closing_radius": 1,
-    "skeleton_bridge_gap_size": 1,
-    "skeleton_min_branch_length": 3,
-    "skeleton_max_bridge_distance": 2,
-    "skeleton_component_connectivity": 3,
-    "skeleton_min_component_percent": 1.0,
-    "starting_node_selection_method": "volume",
-    "output_node_selection_method": "volume",
-    "starting_nodes": [],
-    "output_nodes": [],
-    "input_p_bc": 1000.0,
-    "output_p_bc": 500.0,
-    "min_stub_length": 3.0,
     "statistics": True,
-    "statistics_mode": "fast",
-    "visualize_results": True,
     "show_plots_in_ide": False,
-    "visualize_vtk": False,
-    "final_render_mode": "2d",
-    "verbose_logging": False,
-}
-
-#: Inlet and outlet selection boxes for the nerve dataset, as
-#: ``((min corner), (max corner))`` in physical (z, y, x) MICRONS -- not voxel
-#: indices. Getting that wrong selects no boundary nodes at all.
-NERVE_BOUNDARY_SETTINGS: dict[str, Any] = {
-    "starting_node_volumes": [[[0, 0, 0], [600, 340, 700]]],
-    "output_node_volumes": [[[0, 1308, 0], [600, 1730, 700]]],
+    "hold_ide_plots_open": False,
+    "ide_plot_mode": "none",
+    "interactive_plots": False,
 }
 
 #: Boxes that select something on the 48-voxel test fixture, for `--smoke`.
@@ -59,28 +46,15 @@ SMOKE_BOUNDARY_SETTINGS: dict[str, Any] = {
 }
 
 #: Settings applied where a branch has them, and reported (not fatal) where it
-#: does not: either they keep the run non-interactive, or they switch off an
-#: optional stage that only newer branches know about.
-BEST_EFFORT_SETTINGS: dict[str, Any] = {
-    # `use_volume_boxes` used to live here. It was deleted as a dead setting:
-    # what actually selects volume-box boundaries is a role's selection method
-    # being "volume". Branches old enough to still have it do not need it set.
-    "interactive_plots": False,
-    "hold_ide_plots_open": False,
-    "ide_plot_mode": "none",
-    "vtk_export": True,
-    "automated_vessel_assignment": False,
-    "use_large_vessel_masks": False,
-    "use_small_vessel_masks_for_boundary_assignment": False,
-    "use_ilastik_segmentation": False,
-    "measurement_3d_to_cell_mask": False,
-    "use_fwhm_edge_diameters": False,
-    "do_pericyte_construction": False,
-    "use_pericyte_mask_constriction": False,
-    "use_probabilistic_pericyte_constriction": False,
-    "run_pericyte_resistance_comparison": False,
-    "strict_branch_order_assignment": False,
-}
+#: does not.
+#:
+#: Empty, and kept as a place to put one. What was here switched optional
+#: stages off -- ilastik, the vessel masks, the pericyte models, the FWHM
+#: diameters -- which is the config's business now; the shipped one already
+#: leaves every one of them off, and a config that turns one on is asking for
+#: it to run. The display settings that were also here moved to
+#: REQUIRED_SETTINGS, because an unattended comparison depends on them.
+BEST_EFFORT_SETTINGS: dict[str, Any] = {}
 
 #: Names the same setting has had. The first alias a branch accepts wins.
 SETTING_ALIASES: dict[str, tuple[str, ...]] = {
@@ -118,12 +92,20 @@ def build_settings(
 ) -> tuple[dict[str, Any], set[str]]:
     """The full settings dict for one comparison, and which names are required.
 
+    Everything not named here comes from the checkout's own config, resolved
+    once from the current side and pinned onto both, so the two branches run
+    the same experiment and it is the experiment the config describes.
+
+    ``boundary_settings`` is for `--smoke`, which runs a 48-voxel fixture the
+    config's boxes would select nothing in. Left out, the config's boundaries
+    stand.
+
     ``voxel_size_xyz`` of ``None`` leaves the voxel size to the image metadata;
     otherwise it is pinned on both sides, because every length in the report
     scales with it.
     """
     required = dict(REQUIRED_SETTINGS)
-    required.update(boundary_settings or NERVE_BOUNDARY_SETTINGS)
+    required.update(boundary_settings or {})
     required["input_path"] = image_path
     required["image_axis_order"] = axis_order
     # Both sides must write where the tool looks, or there is nothing to read

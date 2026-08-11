@@ -215,6 +215,11 @@ def test_image_to_model_pipeline_probabilistic_artificial_comparison_cohort_reus
             skeleton_max_bridge_distance=2,
             skeleton_component_connectivity=3,
             skeleton_min_component_percent=1.0,
+            # Named rather than inherited: this fixture is 48 voxels across and
+            # the committed config selects outlets by volume, with boxes sized
+            # for the nerve stack, which would select nothing here.
+            starting_node_selection_method="coordinates",
+            output_node_selection_method="coordinates",
             starting_node_coordinates=[(5.0, 5.0, 5.0)],
             output_node_coordinates=[(42.0, 42.0, 42.0)],
             starting_nodes=[],
