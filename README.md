@@ -12,13 +12,6 @@ The `napari` extra brings a Qt binding (PyQt6) with it, so the panel opens on a
 fresh environment. If you already run napari with a binding of your own, install
 `HaemoLynx[napari-plugin]` instead and keep it.
 
-> While the package is still on TestPyPI, dependencies have to come from the
-> real index:
-> ```bash
-> pip install --index-url https://test.pypi.org/simple/ \
->             --extra-index-url https://pypi.org/simple HaemoLynx==0.1.0
-> ```
-
 ## Use it in napari
 
 ```bash
