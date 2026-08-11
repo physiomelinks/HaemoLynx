@@ -73,7 +73,7 @@ def test_npe2_discovers_the_plugin_from_the_installed_entry_point():
     found = manager.get_manifest(declared)
     assert [widget.display_name for widget in found.contributions.widgets] == [
         "Pipeline settings",
-        "Run a saved config",
+        "About",
     ]
 
 
@@ -202,19 +202,58 @@ def test_the_napari_framework_classifier_is_declared():
     assert '"Framework :: napari"' in text
 
 
-def test_more_than_one_widget_is_contributed(manifest):
-    """This is what makes the menu read "HaemoLynx" rather than "x (HaemoLynx)".
+def test_two_widgets_are_contributed_so_the_menu_reads_haemolynx(manifest):
+    """This is what makes the Plugins menu say "HaemoLynx".
 
-    napari renders a lone widget as `menu_item_template = "{1} ({0})"`, and
-    `needs_full_title` is True whenever a plugin provides only one, so the
-    suffix cannot be turned off. With two or more it builds a submenu titled
-    with the plugin's display name and lists the bare widget names inside.
+    napari appends the plugin name to a lone widget -- "Pipeline settings
+    (HaemoLynx)" -- and nothing turns that off:
+
+        multiprovider = len(widgets) > 1
+        needs_full_title = declares_menu_items or not multiprovider
+        title = full_name if needs_full_title else widget.display_name
+
+    With two or more it builds a submenu titled with the plugin's display name
+    and lists the bare widget names inside. The other two routes are closed:
+    napari never reads a plugin's own `contributions.submenus`, and
+    `napari/plugins` is not in `MenuId.contributables()`. So the widget count
+    is load-bearing, and dropping back to one silently renames the menu entry.
     """
-    assert len(manifest["contributions"]["widgets"]) >= 2, (
-        "napari only groups a plugin's widgets under its own name when there "
-        "is more than one; with a single widget the menu shows "
-        "'<widget> (HaemoLynx)'."
+    widgets = manifest["contributions"]["widgets"]
+    assert len(widgets) >= 2, (
+        "napari only titles the menu with the plugin name when a plugin "
+        "contributes more than one widget; with a single widget it reads "
+        "'<widget> (HaemoLynx)'"
     )
+    assert [widget["display_name"] for widget in widgets] == [
+        "Pipeline settings",
+        "About",
+    ]
+
+
+def test_napari_builds_the_menu_this_manifest_is_written_for():
+    """The claim above, checked against napari rather than restated.
+
+    This reaches into `napari._qt._qplugins._qnpe2`, which is private and may
+    move. That is the point: the manifest is shaped the way it is *because* of
+    what that code does, and a test asserting the widget count only pins our
+    half of the bargain. If this breaks because napari changed, the menu label
+    changed too, and the comment in napari.yaml needs revisiting.
+    """
+    pytest.importorskip("napari")
+    npe2 = pytest.importorskip("npe2")
+    qnpe2 = pytest.importorskip("napari._qt._qplugins._qnpe2")
+
+    manager = npe2.PluginManager()
+    manager.discover()
+    declared = PYPROJECT.read_text(encoding="utf-8").split('name = "', 1)[1].split('"', 1)[0]
+    if declared not in manager._manifests:
+        pytest.skip(f"{declared} is not installed in this environment")
+
+    submenus, actions = qnpe2._build_widgets_submenu_actions(
+        manager.get_manifest(declared)
+    )
+    assert [item.title for _parent, item in submenus] == ["HaemoLynx"]
+    assert [action.title for action in actions] == ["Pipeline settings", "About"]
 
 
 def test_the_display_name_is_what_should_appear_in_the_menu(manifest):

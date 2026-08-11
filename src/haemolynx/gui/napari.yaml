@@ -5,14 +5,19 @@ contributions:
     - id: HaemoLynx.settings_widget
       title: Configure and run a pipeline
       python_name: haemolynx.gui._widget:settings_widget
-    - id: HaemoLynx.run_config_widget
-      title: Run a saved config file
-      python_name: haemolynx.gui._widget:run_config_widget
+    - id: HaemoLynx.about_widget
+      title: About HaemoLynx
+      python_name: haemolynx.gui._widget:about_widget
   widgets:
-    # Two widgets, so napari groups them under a submenu titled with the plugin
-    # display name. With one, it renders "<widget> (HaemoLynx)" and there is no
-    # way to suppress the suffix -- see napari's menu_item_template.
+    # Two widgets, so the Plugins menu reads "HaemoLynx" with these listed
+    # inside it. napari appends the plugin name to a lone widget --
+    # "Pipeline settings (HaemoLynx)" -- and there is no way to turn that off:
+    # `needs_full_title = declares_menu_items or not multiprovider` and
+    # `multiprovider = len(widgets) > 1`. It also never reads a plugin's own
+    # `submenus`, and `napari/plugins` is not in `MenuId.contributables()`, so
+    # declaring the submenu directly is not open either. Contributing a second
+    # widget is the whole of the mechanism.
     - command: HaemoLynx.settings_widget
       display_name: Pipeline settings
-    - command: HaemoLynx.run_config_widget
-      display_name: Run a saved config
+    - command: HaemoLynx.about_widget
+      display_name: About
