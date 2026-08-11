@@ -72,3 +72,73 @@ def test_crop_tiff_volume_from_corners(tmp_path):
     assert out.shape == (3, 4, 6)
     assert tuple(info["source_shape"]) == (10, 8, 6)
     assert tuple(info["cropped_shape"]) == (3, 4, 6)
+
+
+# --- reading a voxel size without reading the pixels -------------------------
+
+
+ANISOTROPIC_XYZ = (0.4, 0.5, 2.0)
+
+
+def _tiff_with_voxel_metadata(path, shape=(4, 6, 8)):
+    import numpy as np
+    import tifffile
+
+    tifffile.imwrite(
+        path,
+        np.zeros(shape, dtype=np.uint8),
+        imagej=True,
+        resolution=(1.0 / ANISOTROPIC_XYZ[0], 1.0 / ANISOTROPIC_XYZ[1]),
+        metadata={"spacing": ANISOTROPIC_XYZ[2], "unit": "um"},
+    )
+    return path
+
+
+def test_read_voxel_size_xyz_agrees_with_the_full_loader(tmp_path):
+    """The cheap read and the real one must not disagree, or the panel scales
+    a layer to something the run will not use."""
+    from haemolynx.io import load_3d_tif_with_voxel_size, read_voxel_size_xyz
+
+    path = _tiff_with_voxel_metadata(tmp_path / "aniso.tif")
+
+    found, _status = read_voxel_size_xyz(path)
+    _image, x, y, z, _meta = load_3d_tif_with_voxel_size(str(path))
+
+    assert found == pytest.approx((x, y, z))
+    assert found == pytest.approx(ANISOTROPIC_XYZ)
+
+
+def test_read_voxel_size_xyz_does_not_read_the_pixels(tmp_path, monkeypatch):
+    """The point of it: the tags are in the header, the stack can be huge."""
+    import tifffile
+
+    from haemolynx.io import read_voxel_size_xyz
+
+    path = _tiff_with_voxel_metadata(tmp_path / "aniso.tif")
+
+    def _refuse(self, *args, **kwargs):
+        raise AssertionError("asarray was called; this should be a header read")
+
+    monkeypatch.setattr(tifffile.TiffFile, "asarray", _refuse)
+    assert read_voxel_size_xyz(path) is not None
+
+
+def test_read_voxel_size_xyz_is_none_when_the_file_says_nothing(tmp_path):
+    """All ones is the absence of an answer, not an answer."""
+    import numpy as np
+    import tifffile
+
+    from haemolynx.io import read_voxel_size_xyz
+
+    path = tmp_path / "plain.tif"
+    tifffile.imwrite(path, np.zeros((4, 6, 8), dtype=np.uint8))
+    assert read_voxel_size_xyz(path) is None
+
+
+def test_read_voxel_size_xyz_is_none_for_what_it_cannot_read(tmp_path):
+    from haemolynx.io import read_voxel_size_xyz
+
+    assert read_voxel_size_xyz(tmp_path / "absent.tif") is None
+    not_a_tiff = tmp_path / "notes.txt"
+    not_a_tiff.write_text("hello")
+    assert read_voxel_size_xyz(not_a_tiff) is None

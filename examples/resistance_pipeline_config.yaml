@@ -6,7 +6,7 @@
 # ------------------------------------------------------------------------
 input_and_segmentation:
   # Read this already-segmented image as the pipeline input  [needs use_ilastik_segmentation off; must exist]
-  input_path: examples/images/brain_microvessels.tiff
+  input_path: examples/images/Nerve_capillaries.tif
   # Segment the main input image with ilastik instead of reading a segmented file
   use_ilastik_segmentation: false
   # Read this raw image as the ilastik input for main-image segmentation  [needs use_ilastik_segmentation; must exist]
@@ -80,7 +80,7 @@ boundary_assignment:
   # Choose how manual starting nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
   starting_node_selection_method: coordinates
   # Choose how manual output nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
-  output_node_selection_method: coordinates
+  output_node_selection_method: volume
   # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
   arteriole_boundary_selection_method: coordinates
   # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
@@ -122,7 +122,13 @@ boundary_assignment:
   # Select starting nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   starting_node_volumes: []
   # Select output nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
-  output_node_volumes: []
+  output_node_volumes:
+  - - - 0.0
+      - 1308.0
+      - 0.0
+    - - 600.0
+      - 1730.0
+      - 700.0
   # Select arteriole boundary nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   arteriole_boundary_node_volumes: []
   # Select venule boundary nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
@@ -200,7 +206,7 @@ pipeline_stages:
   # Write a graph pickle and an overlay PNG after each graph-building step. Turn on to debug a bad topology; it dominates the runtime of a large run, so it is off by default  [needs do_graph_building]
   save_step_artifacts: false
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
-  skeleton_min_component_percent: 0.0
+  skeleton_min_component_percent: 10.0
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true
   # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]
@@ -208,7 +214,7 @@ pipeline_stages:
   # How many smoothing passes; accuracy plateaus around 15, and past that the filter slowly starts inflating a centreline instead  [range 0..50; needs smooth_centrelines]
   centreline_smoothing_iterations: 10
   # How far a smoothed centreline may sit from the skeleton before it is blended back towards the original  [um; range 0.0..; needs smooth_centrelines]
-  centreline_max_deviation: 1.0
+  centreline_max_deviation: 3.0
 
 # ------------------------------------------------------------------------
 # Statistics and measurements

@@ -58,6 +58,12 @@ automatically, and the row at the top lets you choose a different one.
 - If the layer has a **scale**, it becomes the voxel size. napari scales per
   array axis `(z, y, x)` and the setting is image metadata order `(x, y, z)`,
   so the two are reversed on the way in.
+- If it has **no scale and its file says what a voxel is**, the layer is given
+  that scale. napari's readers ignore a TIFF's resolution tags, so a stack
+  dragged in sits at one unit per voxel while everything a run draws is in
+  microns — on an anisotropic stack the image comes out squashed along z and
+  the vessels do not lie on the vessels. This only fills that gap: a scale you
+  set yourself is left alone, and so is a file whose tags say nothing.
 
 ### Watching a run
 

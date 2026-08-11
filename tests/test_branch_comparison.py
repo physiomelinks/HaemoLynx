@@ -541,3 +541,76 @@ def test_report_dataclass_defaults_are_safe_to_render():
 
     assert render_markdown(report)
     assert render_html(report)
+
+
+# --- the config defines the experiment, not this tool -------------------------
+
+
+def test_the_tool_pins_nothing_that_defines_the_experiment():
+    """Which stages run and how they are tuned is the config's business.
+
+    Pinning it here let the tool run something neither branch would: while
+    `resistance_pipeline_config.yaml` could not run at all -- it named an image
+    absent from the repository and gave no outlet nodes -- these overrides
+    replaced every setting that would have failed, so nothing said so.
+    """
+    from branch_comparison import run_settings
+
+    experiment = {
+        "do_skeletonize", "do_graph_building", "run_haemodynamics",
+        "skeleton_closing_radius", "skeleton_bridge_gap_size",
+        "skeleton_min_branch_length", "skeleton_max_bridge_distance",
+        "skeleton_min_component_percent", "starting_node_selection_method",
+        "output_node_selection_method", "starting_node_volumes",
+        "output_node_volumes", "input_p_bc", "output_p_bc", "min_stub_length",
+    }
+    pinned = set(run_settings.REQUIRED_SETTINGS) | set(run_settings.BEST_EFFORT_SETTINGS)
+    assert not (pinned & experiment), (
+        f"these define the experiment and belong in the config: "
+        f"{sorted(pinned & experiment)}"
+    )
+
+
+def test_the_tool_still_pins_what_the_report_cannot_do_without():
+    """Statistics, because the report is largely a diff of those CSVs."""
+    from branch_comparison import run_settings
+
+    assert run_settings.REQUIRED_SETTINGS["statistics"] is True
+
+
+def test_the_tool_still_forces_an_unattended_run():
+    """The shipped config asks for a browser tab and a window to close."""
+    from branch_comparison import run_settings
+
+    for name in ("show_plots_in_ide", "hold_ide_plots_open", "interactive_plots"):
+        assert run_settings.REQUIRED_SETTINGS[name] is False, name
+    assert run_settings.REQUIRED_SETTINGS["ide_plot_mode"] == "none"
+
+
+def test_build_settings_leaves_the_boundaries_to_the_config():
+    """No boundary boxes unless --smoke asks for the fixture's own."""
+    from branch_comparison import run_settings
+
+    settings, required = run_settings.build_settings(
+        image_path="/tmp/image.tif",
+        plot_dir="/tmp/plots",
+        vtk_output_prefix="/tmp/run",
+    )
+    for name in ("starting_node_volumes", "output_node_volumes",
+                 "starting_node_selection_method", "output_node_selection_method"):
+        assert name not in settings, f"{name} should come from the config"
+        assert name not in required
+
+
+def test_smoke_boundaries_are_still_applied_when_asked_for():
+    """The 48-voxel fixture needs its own boxes; the config's select nothing."""
+    from branch_comparison import run_settings
+
+    settings, required = run_settings.build_settings(
+        image_path="/tmp/image.tif",
+        plot_dir="/tmp/plots",
+        vtk_output_prefix="/tmp/run",
+        boundary_settings=run_settings.SMOKE_BOUNDARY_SETTINGS,
+    )
+    assert settings["output_node_volumes"] == [[[0, 0, 28], [47, 47, 47]]]
+    assert "output_node_volumes" in required

@@ -3,6 +3,7 @@ from .load import (
     crop_tiff_volume_from_corners,
     load_3d_h5_with_voxel_size,
     load_3d_tif_with_voxel_size,
+    read_voxel_size_xyz,
     load_and_skeletonize_3d_tif,
     load_and_skeletonize_3d_h5,
     load_binary_mask_and_voxel_size,
@@ -30,6 +31,7 @@ from ..preprocessing import bridge_gaps
 
 __all__ = [
     "load_3d_tif_with_voxel_size",
+    "read_voxel_size_xyz",
     "load_3d_h5_with_voxel_size",
     "load_and_skeletonize_3d_tif",
     "load_and_skeletonize_3d_h5",

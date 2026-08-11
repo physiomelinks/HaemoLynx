@@ -116,3 +116,53 @@ def test_regenerating_is_idempotent_and_preserves_committed_values(tmp_path):
     finally:
         for relpath, text in before.items():
             (REPO_ROOT / relpath).write_text(text, encoding="utf-8")
+
+
+def test_the_resistance_config_names_boundaries_at_both_ends():
+    """A config that selects no outlets cannot run, and this one did not.
+
+    `output_node_selection_method` was "coordinates" with an empty
+    `output_node_coordinates`, so the run died at the boundary stage every
+    time. Nothing caught it because nothing ran the shipped config: the
+    branch-comparison tool replaced these settings with its own, and the
+    integration tests pass their own.
+    """
+    from haemolynx.parsers import load_config
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    settings = load_config(
+        REPO_ROOT / "examples" / "resistance_pipeline_config.yaml", schema
+    )
+
+    for role in ("starting", "output"):
+        method = settings[f"{role}_node_selection_method"]
+        source = {
+            "coordinates": f"{role}_node_coordinates",
+            "volume": f"{role}_node_volumes",
+        }.get(method)
+        if source is None:
+            continue  # edge_percent and friends need no values of their own
+        assert settings[source], (
+            f"{role}_node_selection_method is {method!r} but {source} is empty, "
+            "so the run selects no nodes for that end and stops"
+        )
+
+
+def test_the_resistance_config_points_at_an_image_that_is_here():
+    """It named `examples/images/brain_microvessels.tiff`, which never existed.
+
+    Preflight stops on it, so `python examples/resistance_network_pipeline.py`
+    failed before doing anything -- the same error the napari panel showed.
+    """
+    from haemolynx.parsers import load_config
+    from haemolynx.pipeline import default_schema
+
+    settings = load_config(
+        REPO_ROOT / "examples" / "resistance_pipeline_config.yaml", default_schema()
+    )
+    named = REPO_ROOT / settings["input_path"]
+    assert named.name == "Nerve_capillaries.tif", (
+        f"the config names {settings['input_path']}, which is not the dataset "
+        "this repository ships"
+    )

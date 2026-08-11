@@ -422,11 +422,14 @@ def test_loading_the_resistance_config_does_not_need_its_input_image(
 ):
     """Opening a config reads the file and nothing the file names.
 
-    `resistance_pipeline_config.yaml` ships with `input_path` pointing at
-    `examples/images/brain_microvessels.tiff`, which is not in the repository,
-    and a config written on one machine is routinely opened on another. Neither
-    is a reason to refuse to open it: the image a run works on is the layer
-    already open in napari. Paths are checked when a run starts instead.
+    A config written on one machine is routinely opened on another, and
+    `resistance_pipeline_config.yaml` shipped for a long time naming an image
+    that was not in the repository at all. Neither is a reason to refuse to
+    open it: the image a run works on is the layer already open in napari, and
+    paths are checked when a run starts instead. `test_loading_a_config_
+    naming_a_missing_image_still_fails_the_run_checks` covers the missing-file
+    case directly, so this one does not depend on the shipped config staying
+    broken.
 
     Loading it used to be impossible two ways over -- through the "Run a saved
     config" widget, which ran preflight first and stopped at "FAILED:
@@ -434,18 +437,19 @@ def test_loading_the_resistance_config_does_not_need_its_input_image(
     "Load config...", which assigned the file's unset values straight onto the
     widgets and raised TypeError on the first None.
     """
+    from haemolynx.parsers import load_config
+
     make_napari_viewer()
     panel = settings_widget()
-
-    assert not (REPO_ROOT / "examples" / "images" / "brain_microvessels.tiff").exists(), (
-        "this test is only meaningful while that image is absent"
-    )
 
     panel._haemolynx_load_config(RESISTANCE_CONFIG)
 
     values = panel._haemolynx_values()
     default_schema().validate(values)
-    assert Path(values["input_path"]).name == "brain_microvessels.tiff"
+    # Whatever the config names, not a filename pinned here: which image it
+    # points at is that config's business and has changed once already.
+    on_file = load_config(RESISTANCE_CONFIG, default_schema())["input_path"]
+    assert Path(values["input_path"]) == Path(on_file)
 
 
 def test_loading_a_config_whose_unset_values_are_null(make_napari_viewer, tmp_path):
@@ -652,7 +656,10 @@ def test_a_config_still_supplies_the_input_when_no_layer_is_open(
 
     panel._haemolynx_load_config(RESISTANCE_CONFIG)
 
-    assert Path(panel._haemolynx_values()["input_path"]).name == "brain_microvessels.tiff"
+    from haemolynx.parsers import load_config
+
+    on_file = load_config(RESISTANCE_CONFIG, default_schema())["input_path"]
+    assert Path(panel._haemolynx_values()["input_path"]) == Path(on_file)
     assert "keeping" not in panel._haemolynx_report()
 
 
@@ -672,3 +679,105 @@ def test_a_config_still_applies_everything_other_than_the_input(
 
     for name in ("min_stub_length", "input_p_bc", "skeleton_bridge_gap_size"):
         assert values[name] == on_file[name], name
+
+
+# --- an adopted layer is put in the same frame as the results ----------------
+
+
+ANISOTROPIC_XYZ = (0.4, 0.5, 2.0)
+ANISOTROPIC_ZYX = (2.0, 0.5, 0.4)
+
+
+def _aniso_tiff(path):
+    import numpy as np
+    import tifffile
+
+    tifffile.imwrite(
+        path,
+        np.zeros((6, 12, 16), dtype=np.uint8),
+        imagej=True,
+        resolution=(1.0 / ANISOTROPIC_XYZ[0], 1.0 / ANISOTROPIC_XYZ[1]),
+        metadata={"spacing": ANISOTROPIC_XYZ[2], "unit": "um"},
+    )
+    return path
+
+
+def test_adopting_a_layer_scales_it_from_its_own_file(make_napari_viewer, tmp_path):
+    """napari's readers ignore a TIFF's resolution tags, so a dragged-in stack
+    sits at one unit per voxel while everything the run draws is in microns.
+
+    On the nerve stack that is 2.029 um of z drawn as 1: the image ends up at
+    58% of its depth and the vessels do not lie on the vessels.
+    """
+    viewer = make_napari_viewer()
+    viewer.open(str(_aniso_tiff(tmp_path / "aniso.tif")))
+    layer = viewer.layers[0]
+    assert tuple(float(s) for s in layer.scale) == (1.0, 1.0, 1.0)
+
+    settings_widget(napari_viewer=viewer)
+
+    assert tuple(float(s) for s in layer.scale) == pytest.approx(ANISOTROPIC_ZYX)
+
+
+def test_the_scale_it_applies_is_the_one_the_run_will_use(make_napari_viewer, tmp_path):
+    """The whole point is that the two end up in one frame.
+
+    The run scales its own image layer by `voxel_size_zyx`; if the adopted
+    layer were scaled by anything else the two copies would still not overlay.
+    """
+    from haemolynx.io import load_3d_tif_with_voxel_size, voxel_size_zyx_from_xyz
+
+    path = _aniso_tiff(tmp_path / "aniso.tif")
+    viewer = make_napari_viewer()
+    viewer.open(str(path))
+    settings_widget(napari_viewer=viewer)
+
+    _image, x, y, z, _meta = load_3d_tif_with_voxel_size(str(path))
+    assert tuple(float(s) for s in viewer.layers[0].scale) == pytest.approx(
+        voxel_size_zyx_from_xyz((x, y, z))
+    )
+
+
+def test_a_layer_that_already_has_a_scale_is_left_alone(make_napari_viewer, tmp_path):
+    """Someone who set a scale meant it, and it already reaches the settings."""
+    viewer = make_napari_viewer()
+    viewer.open(str(_aniso_tiff(tmp_path / "aniso.tif")))
+    layer = viewer.layers[0]
+    layer.scale = (3.0, 3.0, 3.0)
+
+    panel = settings_widget(napari_viewer=viewer)
+
+    assert tuple(float(s) for s in layer.scale) == (3.0, 3.0, 3.0)
+    # And it is what the run is told to use, as before.
+    assert panel._haemolynx_values()["voxel_size_override_xyz"] == [3.0, 3.0, 3.0]
+
+
+def test_a_file_with_no_voxel_metadata_leaves_the_layer_alone(
+    make_napari_viewer, tmp_path
+):
+    import numpy as np
+    import tifffile
+
+    path = tmp_path / "plain.tif"
+    tifffile.imwrite(path, np.zeros((6, 12, 16), dtype=np.uint8))
+    viewer = make_napari_viewer()
+    viewer.open(str(path))
+
+    settings_widget(napari_viewer=viewer)
+
+    assert tuple(float(s) for s in viewer.layers[0].scale) == (1.0, 1.0, 1.0)
+
+
+def test_scaling_the_layer_does_not_change_what_the_run_is_told(
+    make_napari_viewer, tmp_path
+):
+    """Display only. The run reads the same file and finds the same metadata,
+    so pinning an override here would be a second source for one number."""
+    viewer = make_napari_viewer()
+    viewer.open(str(_aniso_tiff(tmp_path / "aniso.tif")))
+
+    panel = settings_widget(napari_viewer=viewer)
+
+    values = panel._haemolynx_values()
+    assert values["voxel_size_override_xyz"] is None
+    assert values["voxel_size_policy"] != "override"

@@ -42,7 +42,7 @@ def source() -> str:
 
 def test_settings_come_from_the_committed_config_file(pipeline):
     settings = pipeline.resolve_settings()
-    assert settings["input_path"].name == "brain_microvessels.tiff"
+    assert settings["input_path"].name == "Nerve_capillaries.tif"
     assert set(pipeline.SCHEMA.names) <= set(settings)
 
 
@@ -210,7 +210,7 @@ def test_the_entry_point_runs_the_config_file_with_no_arguments(
 ):
     with pytest.raises(_StopAfterFirstStage):
         pipeline.image_to_model_pipeline()
-    assert settings_reaching_the_first_stage["input_path"].name == "brain_microvessels.tiff"
+    assert settings_reaching_the_first_stage["input_path"].name == "Nerve_capillaries.tif"
 
 
 def test_the_entry_point_still_accepts_individual_overrides(
