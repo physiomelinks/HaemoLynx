@@ -218,9 +218,66 @@ def main():
     diameter_path = RESULTS / "figure2_diameter_distribution.png"
     figure_density(density_path)
     figure_diameter(diameter_path, diameters)
-    print(f"wrote {density_path}")
-    print(f"wrote {diameter_path}")
+    sensitivity_path = RESULTS / "figure3_threshold_sensitivity.png"
+    figure_sensitivity(sensitivity_path)
+    for written in (density_path, diameter_path, sensitivity_path):
+        print(f"wrote {written}")
 
+
+
+def figure_sensitivity(path):
+    """Group ratio against threshold — robustness, and the predicted direction.
+
+    Three series, so identity is carried by a direct label on each line rather than a legend
+    box; the aqua slot sits below 3:1 on the light surface and the relief rule applies.
+    """
+    thresholds = np.array([0.85, 0.90, 0.95])
+    series = [
+        ("β₁ loop density",     np.array([1.297, 1.401, 1.505]), "#2a78d6"),
+        ("Junction density",    np.array([1.229, 1.339, 1.419]), "#eb6834"),
+        ("Vessel length density", np.array([1.230, 1.267, 1.308]), "#1baf7a"),
+    ]
+    fig, ax = plt.subplots(figsize=(8.2, 4.8), facecolor=SURFACE)
+    _style(ax)
+
+    # 0.95 is at or past the fragmentation onset for four of six specimens, where a single
+    # vessel begins to break into several edges and loops appear artefactually.
+    ax.axvspan(0.925, 0.975, color="#0b0b0b", alpha=0.055, zorder=0)
+    ax.text(0.95, 1.055, "fragmentation\ncontaminates\n(4 of 6 specimens)", fontsize=8.5,
+            color=INK_MUTED, ha="center", va="bottom", linespacing=1.35)
+
+    ax.axhline(1.0, color=GRID, linewidth=1.4, zorder=1)
+    ax.text(0.842, 1.006, "no difference", fontsize=8.5, color=INK_MUTED, va="bottom")
+
+    for label, values, colour in series:
+        ax.plot(thresholds[:2], values[:2], color=colour, linewidth=2.4, zorder=3)
+        ax.plot(thresholds[1:], values[1:], color=colour, linewidth=2.4, zorder=3,
+                linestyle=(0, (4, 2)))
+        ax.scatter(thresholds, values, s=64, color=colour, edgecolor=SURFACE,
+                   linewidth=2, zorder=4)
+        ax.text(0.9545, values[-1], f"  {label}", fontsize=9.5, color=INK, va="center")
+
+    ax.set_xticks(thresholds)
+    ax.set_xticklabels([f"{t:.2f}" for t in thresholds], fontsize=10, color=INK)
+    ax.set_xlim(0.833, 1.13)
+    ax.set_ylim(0.98, 1.60)
+    ax.set_xlabel("segmentation probability threshold  (higher = less inclusive)",
+                  fontsize=9.5, color=INK_MUTED)
+    ax.set_ylabel("group ratio, SHR / WKY")
+    ax.grid(axis="y", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.set_title("Threshold sensitivity: the direction holds, and the effect grows as "
+                 "inclusion falls\n", fontsize=11.5, color=INK, loc="left")
+    ax.text(0, 1.005, "solid = clean interval, both endpoints below every specimen's "
+                      "fragmentation onset", transform=ax.transAxes, fontsize=9,
+            color=INK_MUTED, va="bottom")
+    fig.text(0.012, 0.015,
+             "SHR exceeds WKY in all nine comparisons. Groups overlap at every threshold; "
+             "no exact p below 0.20 (n = 3 per group).",
+             fontsize=8.5, color=INK_MUTED)
+    fig.tight_layout(rect=[0, 0.055, 1, 0.94])
+    fig.savefig(path, dpi=200, facecolor=SURFACE)
+    plt.close(fig)
 
 if __name__ == "__main__":
     main()

@@ -22,9 +22,11 @@ Applied to all six specimens under one pooled classifier, one frozen parameter s
 | Junction density | 1.10 × 10⁵ mm⁻³ | 1.47 × 10⁵ mm⁻³ | **1.34** |
 | Vessel length density | 2.53 × 10⁶ µm·mm⁻³ | 3.21 × 10⁶ µm·mm⁻³ | **1.27** |
 
-Three checks show that the segmentation is not producing this difference.
+Four checks show that the segmentation is not producing this difference. The direction holds at every threshold tested, in all nine specimen-group comparisons, and the measured effect grows as segmentation inclusiveness falls — the behaviour predicted if over-inclusive masks are currently suppressing it.
 
 **Three limitations bound what may be concluded.** The groups overlap on every measure, and with n = 3 per group the exact two-sided p cannot fall below 0.10. The segmentation classifier is not final: four of six volumes lack perivascular boundary labels, and vessel calibre is consequently over-estimated. Two of H1's five sub-methods (§1.3, §1.5) cannot be run at all, for want of a glomus-cell channel.
+
+**Reproducing the analysis at three thresholds leaves the direction unchanged**, so the result is not an artefact of the one parameter that most directly controls how much tissue is called vessel.
 
 **Verdict.** §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 await a capability that does not yet exist.
 
@@ -241,7 +243,35 @@ A measure that correlates with how much the classifier includes is measuring the
 
 The three measures reported as results are independent of inclusiveness. Tortuosity is not, and is withheld on that basis (§9).
 
-**These three checks are internal.** They demonstrate that the segmentation is not *differentially* biased between cohorts on the quantities reported. They do not establish that it is accurate in absolute terms — that requires hand-labelled held-out regions scored separately per cohort, which do not yet exist (§11.1).
+### 6.4 Does the result survive a change of threshold — and does it behave as predicted?
+
+The whole analysis was repeated at thresholds 0.85 and 0.95, giving three complete six-specimen runs.
+
+This tests two distinct things. First, **robustness**: does the direction hold if the one frozen parameter that most directly controls how much tissue is called vessel is moved? Second, a **prediction**. If the masks are over-inclusive (§8.2) and over-inclusion merges adjacent capillaries — merging them more in the denser cohort, because its vessels are closer together — then the measured SHR excess is suppressed, and reducing inclusion should *increase* it. That prediction was stated before the sweep was run.
+
+**Group ratio (SHR / WKY) by threshold:**
+
+| Measure | 0.85 | 0.90 | 0.95 | Direction |
+|---|---|---|---|---|
+| β₁ loop density | 1.297 | 1.401 | 1.505 | increases |
+| Junction density | 1.229 | 1.339 | 1.419 | increases |
+| Vessel length density | 1.230 | 1.267 | 1.308 | increases |
+
+**Robustness.** SHR exceeds WKY in all nine specimen-group comparisons — three measures × three thresholds. The groups overlap at every threshold and no exact p falls below 0.20. The direction of C4–C6 does not depend on the threshold chosen.
+
+**The prediction holds, on the interval where it can be tested cleanly.** All three ratios increase monotonically as inclusion falls.
+
+One qualification is necessary. At threshold 0.95, four of the six specimens (WKY-A, WKY-C, SHR-A, SHR-C) are at or beyond their individually determined fragmentation onset, where a single vessel begins to break into multiple graph edges and loops are created artefactually. The 0.95 column is therefore directionally consistent but contaminated, and should not be read quantitatively. **The clean interval is 0.85 → 0.90**, where all six specimens sit below their fragmentation onset; across it β₁ rises 1.297 → 1.401, junction density 1.229 → 1.339, and length density 1.230 → 1.267.
+
+Two points define a direction, not a trend. The prediction is supported rather than established, and it rests on group means over three specimens each.
+
+A competing explanation was considered and is not supported by the data. If raising the threshold simply eroded thin vessels away, and SHR vessels are the narrower of the two (as the published prior in §10 holds), then SHR should lose *more* structure as the threshold rises and the ratio should fall. It rises. The merging interpretation is the one consistent with the observation.
+
+**Consequence for the headline result.** The values reported at the frozen threshold of 0.90 are lower bounds on the effect this instrument would measure with less inclusive segmentation. That is the direction the incomplete boundary labelling (§2.3, §11.1) is expected to move them when it is finished.
+
+> **Figure 3** — `figure3_threshold_sensitivity.png`. Group ratio against threshold for the three topological measures. Solid segments span the clean interval where every specimen sits below its fragmentation onset; dashed segments and the shaded band mark where fragmentation contaminates the measurement. The horizontal rule at 1.0 is no difference between cohorts.
+
+**All four checks are internal.** They demonstrate that the segmentation is not *differentially* biased between cohorts on the quantities reported, and that the result is not an artefact of the one threshold chosen. They do not establish that the segmentation is accurate in absolute terms — that requires hand-labelled held-out regions scored separately per cohort, which do not yet exist (§11.1).
 
 ---
 
@@ -406,14 +436,15 @@ Each claim is graded: **Established** (evidenced and robust to the known limitat
 | C5 | SHR show higher junction density (+34%) | §7.2 | as C4 | **Provisional** |
 | C6 | SHR show higher vessel length density (+27%) | §7.2 | as C4 | **Provisional** |
 | C7 | SHR show a higher branch-node fraction | §7.3 | Gap 0.4 pp vs 4.5 pp spread | **Provisional (weak)** |
-| C8 | The measured effect is a lower bound on the true effect | §6.4 | Sensitivity result | *see §6.4* |
+| C8 | The direction of C4–C6 is robust to the segmentation threshold | §6.4 | Three thresholds, 9/9 comparisons | **Established** |
+| C8b | The reported effect is a lower bound on what this instrument would measure with less inclusive segmentation | §6.4 | Two clean points; n = 3 group means | **Provisional** |
 | C9 | The direction is consistent with the published stereological prior | §10 | Prior unverified against source | **Provisional** |
 | C10 | SHR capillaries are narrower | §8.1 | Gap is 1/20 of the measurement step | **Not supported** |
 | C11 | Tortuosity differs between cohorts | §9 | r = +0.86 with inclusiveness | **Not supported** |
 | C12 | The absolute densities represent the whole organ | §5.3 | Region centred on signal | **Not supported** |
 | C13 | §1.3 and §1.5 are testable | §1 | No TH channel | **Not supported** |
 
-The document's defensible position is C1–C3 (Established) plus C4–C6 (Provisional). Nothing else should be presented as a result.
+The document's defensible position is C1–C3 and C8 (Established) plus C4–C6 and C8b (Provisional). Nothing else should be presented as a result.
 
 ---
 
