@@ -335,7 +335,11 @@ def test_branch_order_then_flow_does_not_raise_keyerror_nan(make_napari_viewer):
 
     _colour_layer(layer, "branch_order", "categorical",
                   (("BO1", (1.0, 0.0, 0.0, 1.0)),))
-    assert layer.edge_color_mode == "cycle"
+    # Direct, not cycle: a categorical colouring is now looked up per item and
+    # written as an array, so `CategoricalColormap.map` -- the thing that
+    # raised on NaN -- is never reached at all. This sequence is now safe by
+    # construction rather than by ordering.
+    assert layer.edge_color_mode == "direct"
 
     # Only some edges get a flow, which is the case that bites.
     partial = np.array([1e-16, np.nan, 5e-17])
@@ -364,7 +368,7 @@ def test_flow_then_branch_order_does_not_raise_either(make_napari_viewer):
 
     _colour_layer(layer, "branch_order", "categorical",
                   (("BO1", (1.0, 0.0, 0.0, 1.0)),))
-    assert layer.edge_color_mode == "cycle"
+    assert layer.edge_color_mode == "direct"      # see the note above
     assert len(layer.edge_color) == len(layer.data)
 
 

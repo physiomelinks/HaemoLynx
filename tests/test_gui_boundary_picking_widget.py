@@ -1,0 +1,379 @@
+"""Picking boundary conditions in a real viewer.
+
+`test_gui_boundary_picking.py` decides what the layers should contain without a
+display. What is left for here is the part only a real viewer answers: that
+editing a layer reaches the settings row in a form the row can read back, that
+the two directions do not fight, and that a picked coordinate lands where the
+image says it should.
+"""
+from __future__ import annotations
+
+import ast
+
+import numpy as np
+import pytest
+
+napari = pytest.importorskip("napari")
+pytest.importorskip("magicgui")
+
+from haemolynx.gui._widget import _clear_our_layers, settings_widget  # noqa: E402
+from haemolynx.gui.boundary_picking import (  # noqa: E402
+    BC_COORDINATES,
+    BC_REGIONS,
+    rectangle_from_box,
+)
+from haemolynx.gui.results import role_colours  # noqa: E402
+
+pytestmark = pytest.mark.gui
+
+#: A stack with an anisotropic voxel, so a coordinate that was quietly read as
+#: a voxel index instead of microns would show up.
+VOXEL_ZYX = (2.0, 1.167, 1.167)
+A_BOX = [[0.0, 100.0, 0.0], [100.0, 180.0, 150.0]]
+
+
+@pytest.fixture
+def panel(make_napari_viewer):
+    viewer = make_napari_viewer()
+    viewer.add_image(np.zeros((60, 200, 200)), name="stack", scale=VOXEL_ZYX)
+    widget = settings_widget(napari_viewer=viewer)
+    return widget, viewer, widget._haemolynx_boundaries
+
+
+def rows_of(widget):
+    return widget._haemolynx_rows()
+
+
+# --- what a config describes, drawn ------------------------------------------
+
+
+def test_showing_a_config_puts_both_layers_in_the_viewer(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[10.0, 20.0, 30.0]]
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+
+    bc.show()
+
+    assert isinstance(viewer.layers[BC_COORDINATES], napari.layers.Points)
+    assert isinstance(viewer.layers[BC_REGIONS], napari.layers.Shapes)
+    assert tuple(viewer.layers[BC_COORDINATES].scale) == (1.0, 1.0, 1.0)
+
+
+def test_a_picked_coordinate_lands_where_the_image_says_it_should(panel):
+    """The claim the whole feature rests on: world coordinates are microns.
+
+    The stack is 60 slices at 2 um, so its far z face is at 118 um. A
+    coordinate there must sit at the far face of the image layer, not at slice
+    118 -- which is off the end of a 60-slice stack.
+    """
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[118.0, 0.0, 0.0]]
+
+    bc.show()
+
+    image_far_z = float(viewer.layers["stack"].extent.world[1][0])
+    assert viewer.layers[BC_COORDINATES].data[0][0] == pytest.approx(image_far_z)
+
+
+def test_the_region_is_drawn_as_a_rectangle_at_the_boxs_centre(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+
+    bc.show()
+
+    corners = viewer.layers[BC_REGIONS].data[0]
+    assert corners.shape == (4, 3)
+    assert corners[:, 0].tolist() == [50.0] * 4, "planar, at the box's z centre"
+    assert corners[:, 1].min() == pytest.approx(100.0)
+    assert corners[:, 2].max() == pytest.approx(150.0)
+
+
+def test_showing_twice_updates_rather_than_duplicates(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+    bc.show()
+    same = viewer.layers[BC_COORDINATES]
+
+    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+    bc.show()
+
+    assert viewer.layers[BC_COORDINATES] is same
+    assert len(viewer.layers[BC_COORDINATES].data) == 2
+    assert sum(l.name == BC_COORDINATES for l in viewer.layers) == 1
+
+
+def test_a_layer_of_someone_elses_with_that_name_is_not_overwritten(panel):
+    widget, viewer, bc = panel
+    theirs = viewer.add_points(np.zeros((1, 3)), name=BC_COORDINATES)
+
+    bc.show()
+
+    assert viewer.layers[BC_COORDINATES] is theirs
+    assert f"{BC_COORDINATES} (HaemoLynx)" in viewer.layers
+
+
+def test_clear_layers_takes_the_picking_layers_with_it(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    _clear_our_layers(viewer)
+
+    assert BC_COORDINATES not in viewer.layers
+    assert BC_REGIONS not in viewer.layers
+
+
+# --- the colours, which were wrong before ------------------------------------
+
+
+def test_each_role_gets_its_own_colour_whatever_order_they_appear_in(panel):
+    """A layer holding only output nodes used to draw them in starting's blue.
+
+    The cycle was handed to napari as a bare list of colours, which it pairs
+    with the values in the order it first encounters them, not by the labels
+    they were declared against.
+    """
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_coordinates"].value = [[1.0, 1.0, 1.0]]
+    rows_of(widget)["starting_node_coordinates"].value = [[2.0, 2.0, 2.0]]
+
+    bc.show()
+
+    expected = dict(role_colours())
+    layer = viewer.layers[BC_COORDINATES]
+    for role, colour in zip(layer.features["role"], layer.face_color):
+        assert np.allclose(colour, expected[role], atol=0.01), role
+
+
+def test_the_colours_survive_a_second_show(panel):
+    """`options` are applied only on first add, so colour has to come through
+    the colour path or it goes stale the moment a layer is updated."""
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 1.0, 1.0]]
+    bc.show()
+    rows_of(widget)["output_node_coordinates"].value = [[2.0, 2.0, 2.0]]
+
+    bc.show()
+
+    expected = dict(role_colours())
+    layer = viewer.layers[BC_COORDINATES]
+    for role, colour in zip(layer.features["role"], layer.face_color):
+        assert np.allclose(colour, expected[role], atol=0.01), role
+
+
+# --- editing a layer edits the settings --------------------------------------
+
+
+def test_adding_a_point_writes_it_into_the_chosen_roles_setting(panel):
+    widget, viewer, bc = panel
+    bc.role.value = "output"
+    bc.pick()
+
+    layer = viewer.layers[BC_COORDINATES]
+    layer.data = np.array([[11.0, 22.0, 33.0]])
+
+    assert widget._haemolynx_values()["output_node_coordinates"] == [[11.0, 22.0, 33.0]]
+    assert widget._haemolynx_values()["starting_node_coordinates"] == []
+
+
+def test_the_row_can_read_back_what_was_written_into_it(panel):
+    """magicgui stores `str(value)` and parses it with `literal_eval`, so a
+    numpy float reaching the row would break it the next time it is touched."""
+    widget, viewer, bc = panel
+    bc.pick()
+    viewer.layers[BC_COORDINATES].data = np.array([[1.5, 2.5, 3.5]])
+
+    value = rows_of(widget)["starting_node_coordinates"].value
+    assert all(type(v) is float for v in value[0]), "a numpy float breaks the row"
+    assert ast.literal_eval(str(value)) == [[1.5, 2.5, 3.5]]
+
+
+def test_deleting_a_point_removes_exactly_that_coordinate(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [
+        [1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [3.0, 3.0, 3.0]
+    ]
+    bc.show()
+
+    layer = viewer.layers[BC_COORDINATES]
+    layer.selected_data = {1}
+    layer.remove_selected()
+
+    assert widget._haemolynx_values()["starting_node_coordinates"] == [
+        [1.0, 1.0, 1.0], [3.0, 3.0, 3.0]
+    ]
+
+
+def test_moving_a_point_updates_it_in_place(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 1.0, 1.0]]
+    bc.show()
+
+    layer = viewer.layers[BC_COORDINATES]
+    layer.data = np.array([[7.0, 8.0, 9.0]])
+
+    assert widget._haemolynx_values()["starting_node_coordinates"] == [[7.0, 8.0, 9.0]]
+
+
+def test_syncing_the_same_edit_twice_changes_nothing(panel):
+    """`events.data` fires twice per edit, so the handler has to be idempotent."""
+    widget, viewer, bc = panel
+    bc.pick()
+    viewer.layers[BC_COORDINATES].data = np.array([[1.0, 2.0, 3.0]])
+    once = widget._haemolynx_values()["starting_node_coordinates"]
+
+    bc.sync()
+    bc.sync()
+
+    assert widget._haemolynx_values()["starting_node_coordinates"] == once
+
+
+def test_editing_points_does_not_wipe_the_regions(panel):
+    """The two layers share a sync; one must not clear the other's settings."""
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    viewer.layers[BC_COORDINATES].data = np.array([[1.0, 2.0, 3.0]])
+
+    assert widget._haemolynx_values()["output_node_volumes"] == [A_BOX]
+
+
+def test_a_region_edited_in_the_viewer_reaches_the_setting(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    layer = viewer.layers[BC_REGIONS]
+    corners, _ = rectangle_from_box([0.0, 10.0, 20.0], [100.0, 60.0, 90.0])
+    layer.data = [corners]
+
+    lo, hi = widget._haemolynx_values()["output_node_volumes"][0]
+    assert lo[1:] == [10.0, 20.0] and hi[1:] == [60.0, 90.0]
+
+
+def test_the_depth_slider_resizes_the_selected_region(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    bc.show()
+    viewer.layers[BC_REGIONS].selected_data = {0}
+
+    bc.depth.value = 20.0
+
+    lo, hi = widget._haemolynx_values()["output_node_volumes"][0]
+    assert hi[0] - lo[0] == pytest.approx(20.0)
+    assert (lo[0] + hi[0]) / 2 == pytest.approx(50.0), "still centred where it was"
+
+
+def test_clearing_a_roles_regions_leaves_the_other_roles_alone(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["starting_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    bc.role.value = "output"
+    bc.clear()
+
+    assert widget._haemolynx_values()["output_node_volumes"] == []
+    assert widget._haemolynx_values()["starting_node_volumes"] == [A_BOX]
+
+
+def test_assigning_a_selected_point_to_another_role_moves_it_between_settings(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+    bc.show()
+
+    viewer.layers[BC_COORDINATES].selected_data = {0}
+    bc.role.value = "venule_boundary"
+    bc.assign()
+
+    values = widget._haemolynx_values()
+    assert values["starting_node_coordinates"] == []
+    assert values["venule_boundary_node_coordinates"] == [[1.0, 2.0, 3.0]]
+
+
+# --- what cannot be done, said rather than silently failing ------------------
+
+
+def test_drawing_a_region_is_refused_in_the_3d_view(panel):
+    """napari forces a Shapes layer out of edit mode when ndisplay is 3."""
+    widget, viewer, bc = panel
+    viewer.dims.ndisplay = 3
+
+    bc.draw()
+
+    assert "2D" in widget._haemolynx_report()
+    assert BC_REGIONS not in viewer.layers
+
+
+def test_snapping_before_a_run_says_why_rather_than_doing_nothing(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+    bc.show()
+
+    bc.snap()
+
+    report = widget._haemolynx_report()
+    assert "run at least" in report
+    assert "still correct" in report, "an unsnapped coordinate is not wrong"
+
+
+def test_snapping_moves_a_coordinate_onto_a_terminal_node(panel):
+    widget, viewer, bc = panel
+    import networkx as nx
+
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    graph.add_node(1, pos=np.array([50.0, 60.0, 70.0]))
+    graph.add_edge(0, 1)
+    bc.state.results = type("R", (), {"graph": graph})()
+
+    rows_of(widget)["starting_node_coordinates"].value = [[48.0, 61.0, 69.0]]
+    bc.show()
+    bc.snap()
+
+    assert widget._haemolynx_values()["starting_node_coordinates"] == [[50.0, 60.0, 70.0]]
+    assert "um" in widget._haemolynx_report()
+
+
+def test_picks_that_the_run_will_not_read_are_called_out(panel):
+    """A role only reads its coordinates when its method says so."""
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+
+    bc.show()
+
+    assert "Not used" in widget._haemolynx_report()
+    assert "edge_percent" in widget._haemolynx_report()
+
+
+def test_a_config_that_cannot_be_read_is_reported_not_raised(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0]]
+
+    bc.show()
+
+    assert "could not be read" in widget._haemolynx_report()
+
+
+# --- the panel is still the panel --------------------------------------------
+
+
+def test_building_the_controls_writes_to_no_row(make_napari_viewer):
+    """The controls must not quietly change the settings just by existing."""
+    from haemolynx.pipeline import default_schema
+
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+
+    schema = default_schema()
+    values = widget._haemolynx_values()
+    for role_setting in ("starting_node_coordinates", "output_node_volumes"):
+        assert values[role_setting] == schema[role_setting].default
+
+
+def test_the_controls_sit_on_the_boundaries_tab(panel):
+    widget, viewer, bc = panel
+    assert bc.widget is not None
+    assert [str(choice) for choice in bc.role.choices][0] == "starting"

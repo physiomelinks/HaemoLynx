@@ -44,6 +44,41 @@ napari. With a layer already open, loading a config keeps that layer as the
 input and ignores the file's `input_path`. Paths are checked when a run starts,
 by **Run checks** and by the run itself.
 
+### Setting boundary conditions by pointing at them
+
+On the **Boundaries** tab, **Show these boundary conditions** draws what the
+config describes, before anything runs:
+
+- **HaemoLynx BC coordinates** — a ring per coordinate, coloured by role.
+- **HaemoLynx BC regions** — a rectangle per volume box, coloured the same way.
+
+Both are editable, and **both are the settings**: a coordinate you drag is a
+coordinate the run will use. Napari's own tools do the work — **Pick coordinates
+in the viewer** puts the points layer into add mode, then click to place, drag to
+move, select and press Delete to remove. Pick the **Role** first; it decides
+which of the four settings a new point lands in, and **Assign selected to this
+role** moves ones you got wrong.
+
+**Draw a region** does the same for a volume box. Draw a rectangle on a slice and
+it becomes a box, centred on that slice, as deep as the **Region depth** slider
+says — which defaults to the whole stack, because a boundary band usually is.
+Select a region and move the slider to resize it. Regions can only be *drawn* in
+the 2D view: napari does not allow editing a Shapes layer in 3D. Switch back to
+3D afterwards to see the box you made.
+
+**Snap selected to nearest terminal** moves each coordinate onto the vessel end
+the run would choose, and says how far it moved — a large move means the click
+missed. It needs a graph, so run at least *3. Graph* first. Coordinates you pick
+without it are still correct: a run snaps every one of them to its nearest
+terminal anyway.
+
+Two things the panel will tell you rather than fix behind your back. A role only
+reads its coordinates when its `*_selection_method` says `coordinates` (and its
+regions when it says `volume`), so picking against a role set to `edge_percent`
+reports *"Not used"* rather than silently rewriting the method you chose. And an
+entry it cannot read — a two-number coordinate from a hand-edited config — is
+reported and skipped, not raised.
+
 ### Running on the image already open
 
 Open an image, then open the panel: the selected layer is picked up

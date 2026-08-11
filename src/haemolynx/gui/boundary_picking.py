@@ -1,0 +1,467 @@
+"""Boundary conditions as things you can point at.
+
+The four boundary roles are configured by two settings each: a list of
+coordinates and a list of volume boxes, both in physical ``(z, y, x)`` microns.
+Typed into a text box they are unreadable, and nothing says whether they land on
+a vessel -- the first sign that they do not is the run stopping with "No
+starting or output nodes found".
+
+This turns those settings into two napari layers and back:
+
+``HaemoLynx BC coordinates``
+    A Points layer, one ring per coordinate. Its data *is* the setting: napari
+    world coordinates are already microns, because graph layers carry
+    ``scale=(1, 1, 1)`` and node ``pos`` is physical. So there is no conversion
+    anywhere in this module, only bookkeeping.
+
+``HaemoLynx BC regions``
+    A Shapes layer, one rectangle per volume box, drawn at the box's z centre
+    with the box's y/x extent. The z extent it came from rides alongside as a
+    ``depth`` feature, so every region keeps its own rather than sharing one.
+    :func:`rectangle_from_box` and :func:`box_from_rectangle` are exact
+    inverses, which is what lets the layer be treated as the setting.
+
+Both layers are editable, and everything here is pure: settings in, layer specs
+out, layer data in, settings out. Nothing imports napari, so it is all testable
+without a display -- the same contract :mod:`haemolynx.gui.results` keeps.
+
+One hazard is worth naming, because it is silent. The settings rows are edited
+by magicgui's ``LiteralEvalLineEdit``, which stores ``str(value)`` and reads it
+back with ``ast.literal_eval``. ``repr(np.float64(1.5))`` is
+``'np.float64(1.5)'`` and ``str(np.array([[1., 2.]]))`` has no commas -- both
+raise on the way back in, and ``yaml.safe_dump`` refuses a ``np.float64``
+outright. So every value leaving this module for a settings row goes through
+:func:`plain`, and there are tests that would fail if it did not.
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping, Sequence
+
+import numpy as np
+
+from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS
+from haemolynx.gui.results import PREFIX, LayerSpec, StageLayers, role_colours
+
+__all__ = [
+    "BC_COORDINATES",
+    "BC_LAYER_NAMES",
+    "BC_REGIONS",
+    "ROLES",
+    "BoundaryPicks",
+    "box_from_rectangle",
+    "coordinate_setting",
+    "group_for",
+    "method_setting",
+    "plain",
+    "rectangle_from_box",
+    "settings_from_layers",
+    "snap",
+    "specs_for",
+    "terminal_points",
+    "volume_setting",
+    "wanted_rows",
+]
+
+#: The four boundary roles, in the order a run assigns them. Taken from the
+#: selector's own table rather than restated, so a fifth role would reach the
+#: panel without anything here changing.
+ROLES: tuple[str, ...] = tuple(BOUNDARY_ROLE_SETTINGS)
+
+BC_COORDINATES = f"{PREFIX}BC coordinates"
+BC_REGIONS = f"{PREFIX}BC regions"
+
+#: Both layers, for "is this one of the picking layers?".
+BC_LAYER_NAMES = frozenset({BC_COORDINATES, BC_REGIONS})
+
+#: How many decimal places a picked coordinate keeps. A micron is the unit and
+#: a nanometre is far below what a click can mean, so three keeps the config
+#: readable without throwing anything away.
+DECIMALS = 3
+
+
+def coordinate_setting(role: str) -> str:
+    """The setting holding *role*'s picked coordinates."""
+    return BOUNDARY_ROLE_SETTINGS[role]["coordinates"]
+
+
+def volume_setting(role: str) -> str:
+    """The setting holding *role*'s volume boxes."""
+    return BOUNDARY_ROLE_SETTINGS[role]["volume_boxes"]
+
+
+def method_setting(role: str) -> str:
+    """The setting saying how *role*'s nodes are selected."""
+    return BOUNDARY_ROLE_SETTINGS[role]["method"]
+
+
+def plain(value: Any) -> Any:
+    """*value* as builtin floats and lists, however deeply nested.
+
+    The one boundary between numpy and a settings row. A numpy scalar's ``repr``
+    is ``np.float64(1.5)``, which ``ast.literal_eval`` rejects, and
+    ``yaml.safe_dump`` will not represent it at all -- so a picked coordinate
+    that reached a row still wearing its numpy type would break the row the next
+    time anyone touched it, and break saving the config outright.
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return [plain(item) for item in value.tolist()]
+    if isinstance(value, (list, tuple)):
+        return [plain(item) for item in value]
+    return value
+
+
+def _entries(value: Any) -> list[Any]:
+    """*value* as a list of entries, whatever container it arrived in.
+
+    Not `value or ()`: a numpy array raises "truth value is ambiguous" there,
+    and a settings dict handed straight from a caller can hold one.
+    """
+    if value is None:
+        return []
+    if isinstance(value, np.ndarray):
+        return list(value)
+    try:
+        return list(value)
+    except TypeError:
+        return []
+
+
+def _finite_point(value: Any) -> list[float] | None:
+    """*value* as three finite floats, or None if it is not a point."""
+    try:
+        numbers = [float(component) for component in value]
+    except (TypeError, ValueError):
+        return None
+    if len(numbers) != 3 or not all(math.isfinite(n) for n in numbers):
+        return None
+    return numbers
+
+
+def _corner_pair(value: Any) -> list[list[float]] | None:
+    """*value* as exactly two corner points, or None if it is not a box."""
+    try:
+        corners = list(value)
+    except TypeError:
+        return None
+    if len(corners) != 2:
+        return None
+    lo, hi = _finite_point(corners[0]), _finite_point(corners[1])
+    if lo is None or hi is None:
+        return None
+    return [lo, hi]
+
+
+def rectangle_from_box(
+    corner_a: Sequence[float], corner_b: Sequence[float]
+) -> tuple[np.ndarray, float]:
+    """A box as the rectangle that draws it, and the depth it was drawn from.
+
+    The rectangle is planar, at the box's z centre, carrying its y/x extent --
+    which is the only thing napari can draw and edit, since a Shapes layer has
+    no 3D box and cannot be edited in the 3D view at all. The z extent comes
+    back as *depth*, so nothing about the box is lost.
+    """
+    lo = np.minimum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
+    hi = np.maximum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
+    centre_z = float((lo[0] + hi[0]) / 2.0)
+    corners = np.array(
+        [
+            [centre_z, lo[1], lo[2]],
+            [centre_z, lo[1], hi[2]],
+            [centre_z, hi[1], hi[2]],
+            [centre_z, hi[1], lo[2]],
+        ],
+        dtype=float,
+    )
+    return corners, float(hi[0] - lo[0])
+
+
+def box_from_rectangle(
+    corners: Sequence[Sequence[float]], *, depth: float
+) -> list[list[float]]:
+    """The two opposite corners a rectangle and a depth describe.
+
+    The inverse of :func:`rectangle_from_box`. The rectangle's own z is the
+    centre of the box, so the depth is spread symmetrically about it: a
+    rectangle drawn on a slice grows equally into the slices either side, which
+    is what someone drawing on the middle of a stack means by it.
+    """
+    points = np.asarray(corners, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
+        raise ValueError(
+            f"A region needs at least three (z, y, x) corners, got {points.shape}."
+        )
+    half = abs(float(depth)) / 2.0
+    centre_z = float(points[:, 0].mean())
+    lo = [centre_z - half, float(points[:, 1].min()), float(points[:, 2].min())]
+    hi = [centre_z + half, float(points[:, 1].max()), float(points[:, 2].max())]
+    return [plain([round(v, DECIMALS) for v in lo]), plain([round(v, DECIMALS) for v in hi])]
+
+
+@dataclass(frozen=True)
+class BoundaryPicks:
+    """What the four roles' coordinate and volume settings currently say."""
+
+    coordinates: Mapping[str, tuple[tuple[float, float, float], ...]]
+    volumes: Mapping[str, tuple[tuple[tuple[float, ...], tuple[float, ...]], ...]]
+    #: One line per entry that could not be read, for the report box. A panel
+    #: must not fall over on a hand-edited config; the run raises for the same
+    #: value later, which is the right place for a hard error.
+    problems: tuple[str, ...] = field(default=())
+
+    @classmethod
+    def from_settings(cls, values: Mapping[str, Any]) -> "BoundaryPicks":
+        """Read all four roles out of a settings dict, skipping what will not read."""
+        coordinates: dict[str, tuple] = {}
+        volumes: dict[str, tuple] = {}
+        problems: list[str] = []
+        for role in ROLES:
+            points: list[tuple[float, float, float]] = []
+            for index, entry in enumerate(_entries(values.get(coordinate_setting(role)))):
+                point = _finite_point(entry)
+                if point is None:
+                    problems.append(
+                        f"{coordinate_setting(role)}[{index}] is not a "
+                        f"(z, y, x) point: {entry!r}"
+                    )
+                    continue
+                points.append(tuple(point))
+            coordinates[role] = tuple(points)
+
+            boxes: list[tuple] = []
+            for index, entry in enumerate(_entries(values.get(volume_setting(role)))):
+                pair = _corner_pair(entry)
+                if pair is None:
+                    problems.append(
+                        f"{volume_setting(role)}[{index}] is not two "
+                        f"(z, y, x) corners: {entry!r}"
+                    )
+                    continue
+                boxes.append((tuple(pair[0]), tuple(pair[1])))
+            volumes[role] = tuple(boxes)
+        return cls(coordinates, volumes, tuple(problems))
+
+    def to_settings(self) -> dict[str, list]:
+        """The eight settings these picks describe, as plain lists of floats."""
+        out: dict[str, list] = {}
+        for role in ROLES:
+            out[coordinate_setting(role)] = [
+                plain([round(float(v), DECIMALS) for v in point])
+                for point in self.coordinates.get(role, ())
+            ]
+            out[volume_setting(role)] = [
+                [
+                    plain([round(float(v), DECIMALS) for v in lo]),
+                    plain([round(float(v), DECIMALS) for v in hi]),
+                ]
+                for lo, hi in self.volumes.get(role, ())
+            ]
+        return out
+
+    def points(self) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        """Every coordinate as ``(N, 3)`` plus the role each one belongs to."""
+        positions: list[tuple[float, float, float]] = []
+        roles: list[str] = []
+        for role in ROLES:
+            for point in self.coordinates.get(role, ()):
+                positions.append(point)
+                roles.append(role)
+        data = (
+            np.asarray(positions, dtype=float)
+            if positions
+            else np.empty((0, 3), dtype=float)
+        )
+        return data, {"role": np.asarray(roles, dtype=object)}
+
+    def rectangles(self) -> tuple[list[np.ndarray], dict[str, np.ndarray]]:
+        """Every box as the rectangle that draws it, plus role and depth."""
+        shapes: list[np.ndarray] = []
+        roles: list[str] = []
+        depths: list[float] = []
+        for role in ROLES:
+            for lo, hi in self.volumes.get(role, ()):
+                corners, depth = rectangle_from_box(lo, hi)
+                shapes.append(corners)
+                roles.append(role)
+                depths.append(depth)
+        return shapes, {
+            "role": np.asarray(roles, dtype=object),
+            "depth": np.asarray(depths, dtype=float),
+        }
+
+    def summary(self) -> str:
+        """One line naming what is configured, for the report box."""
+        parts = [
+            f"{len(self.coordinates.get(role, ()))} {role}"
+            for role in ROLES
+            if self.coordinates.get(role)
+        ]
+        parts += [
+            f"{len(self.volumes.get(role, ()))} {role} "
+            f"region{'' if len(self.volumes[role]) == 1 else 's'}"
+            for role in ROLES
+            if self.volumes.get(role)
+        ]
+        if not parts:
+            return "No boundary conditions configured."
+        return ", ".join(parts)
+
+
+def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
+    """The layers that draw what *values* describes.
+
+    The coordinates layer is emitted even when empty -- it is the surface the
+    user clicks into, so it has to exist before there is anything on it. The
+    regions layer is not: an empty Shapes layer draws nothing and would only be
+    one more row in the layer list until a region is drawn.
+    """
+    picks = BoundaryPicks.from_settings(values)
+    points, point_features = picks.points()
+    specs = [
+        LayerSpec(
+            kind="points",
+            name=BC_COORDINATES,
+            data=points,
+            features=point_features,
+            colour_by="role",
+            colour_kind="categorical",
+            colour_cycle=role_colours(),
+            options={
+                # A ring, so what you asked for cannot be mistaken for
+                # `HaemoLynx boundary nodes`, which is what the run snapped to.
+                "symbol": "ring",
+                "size": 8.0,
+                "border_width": 0.25,
+                "out_of_slice_display": True,
+            },
+        )
+    ]
+    shapes, shape_features = picks.rectangles()
+    if shapes:
+        specs.append(
+            LayerSpec(
+                kind="shapes",
+                name=BC_REGIONS,
+                data=shapes,
+                features=shape_features,
+                colour_by="role",
+                colour_kind="categorical",
+                colour_cycle=role_colours(),
+                options={"shape_type": "rectangle", "edge_width": 2.0, "opacity": 0.3},
+            )
+        )
+    return tuple(specs)
+
+
+def group_for(values: Mapping[str, Any]) -> StageLayers:
+    """The picking layers as a group the panel can hand to `_apply_layers`."""
+    picks = BoundaryPicks.from_settings(values)
+    note = picks.summary()
+    if picks.problems:
+        note = f"{note} ({len(picks.problems)} entry could not be read: {picks.problems[0]})"
+    return StageLayers(
+        stage="boundary_picking",
+        title="Boundary conditions",
+        layers=specs_for(values),
+        note=note,
+    )
+
+
+def settings_from_layers(
+    *,
+    points: Any = None,
+    point_roles: Iterable[str] | None = None,
+    rectangles: Sequence[Any] | None = None,
+    rectangle_roles: Iterable[str] | None = None,
+    depths: Iterable[float] | None = None,
+) -> dict[str, list]:
+    """The eight settings the layers' current contents describe.
+
+    Anything absent is left out rather than emptied, so syncing one layer never
+    clears the other's settings.
+    """
+    out: dict[str, list] = {}
+    if points is not None:
+        by_role: dict[str, list] = {role: [] for role in ROLES}
+        roles = list(point_roles or ())
+        for index, point in enumerate(np.asarray(points, dtype=float)):
+            role = roles[index] if index < len(roles) else ROLES[0]
+            by_role.setdefault(str(role), []).append(tuple(point))
+        for role in ROLES:
+            out[coordinate_setting(role)] = [
+                plain([round(float(v), DECIMALS) for v in point])
+                for point in by_role.get(role, ())
+            ]
+    if rectangles is not None:
+        boxes: dict[str, list] = {role: [] for role in ROLES}
+        roles = list(rectangle_roles or ())
+        sizes = list(depths or ())
+        for index, corners in enumerate(rectangles):
+            role = str(roles[index]) if index < len(roles) else ROLES[0]
+            depth = float(sizes[index]) if index < len(sizes) else 0.0
+            boxes.setdefault(role, []).append(box_from_rectangle(corners, depth=depth))
+        for role in ROLES:
+            out[volume_setting(role)] = boxes.get(role, [])
+    return out
+
+
+def wanted_rows(
+    proposed: Mapping[str, Any], current: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Only the settings whose value would actually change.
+
+    The compare-before-write that keeps a sync from cascading: writing a row
+    fires its `changed`, so writing rows that already hold the value would set
+    the panel talking to itself.
+    """
+    changed: dict[str, Any] = {}
+    for name, value in proposed.items():
+        if plain(value) != plain(current.get(name)):
+            changed[name] = value
+    return changed
+
+
+def terminal_points(graph: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Positions and ids of every degree-1 node that has a position.
+
+    The same candidates the selector uses, so the panel cannot promise a node
+    the run would not choose.
+    """
+    positions: list[Any] = []
+    ids: list[Any] = []
+    if graph is None:
+        return np.empty((0, 3), dtype=float), np.empty((0,), dtype=object)
+    for node, degree in graph.degree():
+        if degree != 1:
+            continue
+        position = graph.nodes[node].get("pos")
+        if position is None:
+            continue
+        positions.append(np.asarray(position, dtype=float)[:3])
+        ids.append(node)
+    data = (
+        np.asarray(positions, dtype=float)
+        if positions
+        else np.empty((0, 3), dtype=float)
+    )
+    return data, np.asarray(ids, dtype=object)
+
+
+def snap(points: Any, candidates: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Move each point onto its nearest candidate; report how far each moved.
+
+    With no candidates the points are returned untouched and every distance is
+    zero -- there is nothing to snap to before a run has built a graph, and
+    that is not an error.
+    """
+    moved = np.asarray(points, dtype=float).reshape(-1, 3).copy()
+    targets = np.asarray(candidates, dtype=float).reshape(-1, 3)
+    if not len(moved) or not len(targets):
+        return moved, np.zeros(len(moved), dtype=float)
+    distances = np.linalg.norm(moved[:, None, :] - targets[None, :, :], axis=2)
+    nearest = np.argmin(distances, axis=1)          # ties take the lowest index
+    return targets[nearest].copy(), distances[np.arange(len(moved)), nearest]

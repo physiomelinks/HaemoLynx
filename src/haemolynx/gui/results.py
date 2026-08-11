@@ -563,7 +563,7 @@ class ResultLayers:
                         features={"role": role_column,
                                   "node_id": np.asarray(ids, dtype=object)},
                         colour_by="role", colour_kind="categorical",
-                        colour_cycle=_role_colours(),
+                        colour_cycle=role_colours(),
                         options={"size": 6.0, "out_of_slice_display": True},
                     )
                 )
@@ -674,7 +674,7 @@ def _colouring(columns: Mapping[str, np.ndarray], colour_by: str | None) -> dict
     return {"colour_kind": "continuous", "contrast_limits": _limits(values)}
 
 
-def _role_colours() -> tuple[tuple[str, tuple[float, float, float, float]], ...]:
+def role_colours() -> tuple[tuple[str, tuple[float, float, float, float]], ...]:
     """Inlets, outlets and vessel-type boundaries, told apart at a glance."""
     return (
         ("starting", (0.13, 0.47, 0.71, 1.0)),
