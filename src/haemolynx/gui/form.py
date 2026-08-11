@@ -105,9 +105,19 @@ class Field:
         return f"Not used while {' and '.join(parts)}."
 
 
-def label_for(name: str) -> str:
-    """`skeleton_closing_radius` -> `Skeleton closing radius`."""
-    return name.replace("_", " ").capitalize()
+def label_for(name: str, unit: str | None = None) -> str:
+    """`skeleton_closing_radius` -> `Skeleton closing radius (voxels)`.
+
+    The unit belongs on the label rather than only in the tooltip. This
+    pipeline measures some lengths in voxels and some in microns, 10 is a
+    reasonable value for either, and a tooltip is only read by someone who
+    already suspects there is something to check.
+
+    Spelled exactly as the schema spells it, so the row and the config file
+    agree -- a GUI that says "µm" where the file says "um" reads as two units.
+    """
+    label = name.replace("_", " ").capitalize()
+    return f"{label} ({unit})" if unit else label
 
 
 #: Which options each widget accepts. magicgui raises on anything else, so a
@@ -201,7 +211,7 @@ def field_for(setting: Setting, value: Any = None) -> Field:
     widget_type = widget_type_for(setting)
     return Field(
         name=setting.name,
-        label=label_for(setting.name),
+        label=label_for(setting.name, setting.unit),
         widget_type=widget_type,
         value=_display_value(
             setting, setting.default if value is None else value, widget_type

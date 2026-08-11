@@ -59,6 +59,12 @@ def test_nerve_pipeline_on_cropped_last_z_quarter_bottom_y_half():
     # surviving connected network sits in the low-y part of the image, so the
     # outlet band must reach 60% in from the far end to touch it, and the
     # inlet band is the complementary first 40%.
+    #
+    # The boxes below are in microns, like every node position -- these bounds
+    # are voxel counts, so they are a generous over-estimate of the crop rather
+    # than a measurement of it, which is all the split needs. Deriving them
+    # from the physical extent would move the split and reselect the boundary
+    # nodes, so it is left for whoever wants that on purpose.
     y_split = max(1, int(0.4 * cropped_y))
 
     plot_dir = REPO_ROOT / "tests" / "plots" / "plots_nerve"
