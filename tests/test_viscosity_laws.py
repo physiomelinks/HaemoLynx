@@ -1,21 +1,25 @@
-"""The selectable viscosity laws, and how far apart they actually are.
+"""The viscosity laws, the diameter each expects, and how far apart they are.
 
 Issue #85 asked for a test that the capillary power law and Pries agree below
-7 um, and said in advance what to do if they did not: "If they do not agree,
-that is the finding -- it would mean the current mu_ref = 3.0 mPa.s at 5 um
-calibration is inconsistent with Pries."
+7 um, and said what to do if they did not: "If they do not agree, that is the
+finding." The first answer here was that they differ by five times -- but that
+was the wrong comparison, and the reason is the point of this file.
 
-They do not agree. Pries in vivo is about five times the power law across the
-whole capillary range, in viscosity, in resistance and in the flow a network
-solves to. That is measured here rather than asserted away, because it is the
-number someone has to decide about: either the 5 um calibration is too low by
-five times, or the in vivo law's endothelial surface layer does not belong in
-this model.
+Pries published two forms. The *in vitro* one is blood in a glass tube of a
+known bore, so its diameter is the channel the fluid occupies. The *in vivo*
+one is the same blood in a living network, where the measured diameter runs
+wall to wall and includes the endothelial surface layer -- so its
+``(D / (D - 1.1))^2`` factors, which appear squared and therefore carry
+``(D / (D - 1.1))^4``, are the Poiseuille correction for quoting a resistance
+against a diameter wider than the channel. That is a diameter correction, not
+a property of blood.
 
-Where the two *do* agree is at the top end -- Pries and the 3.5 mPa.s
-large-vessel constant are within ~13% from 100 um up -- which is what makes
-the constant a defensible placeholder for big vessels and a poor one for
-arterioles.
+HaemoLynx segments plasma-stained images, so its diameters are already the
+channel. Against the right form -- in vitro, `diameter_basis="plasma_column"`
+-- the two laws agree to 2% at 3 um and diverge from there, which is what a
+one-point calibration looks like rather than two rival models. Against the
+wrong form they differ by five times, and a test pins that too, because it is
+the mistake this setting exists to prevent.
 """
 from __future__ import annotations
 
@@ -34,7 +38,9 @@ from haemolynx.haemodynamics.viscosity import (
     PLASMA_VISCOSITY_PA_S,
     PRIES_MAX_DIAMETER_UM,
     PRIES_MIN_DIAMETER_UM,
+    PRIES_SINGULARITY_UM,
     PlaceholderViscosityWarning,
+    pries_in_vitro_viscosity,
     pries_in_vivo_viscosity,
     validity_range_um,
     viscosity_for,
@@ -50,16 +56,23 @@ CAPILLARY_DIAMETERS_UM = (3.3, 4.0, 5.0, 6.0, 7.0)
 LARGE_DIAMETERS_UM = (100.0, 200.0, 500.0, 1000.0)
 
 
-def _model(law: str, haematocrit: float = DEFAULT_HAEMATOCRIT) -> PoiseuilleModel:
+def _model(
+    law: str,
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
+) -> PoiseuilleModel:
     return PoiseuilleModel(
         constriction_length=40.0,
         constriction_spacing=100.0,
         viscosity_law=law,
         haematocrit=haematocrit,
+        diameter_basis=diameter_basis,
     )
 
 
-def _flow_through_a_chain(law: str, diameter_um: float) -> float:
+def _flow_through_a_chain(
+    law: str, diameter_um: float, diameter_basis: str = "plasma_column"
+) -> float:
     """Flow (m^3/s) through three vessels in series, solved end to end.
 
     A resistance test can be satisfied by a law that is wrong in a way the
@@ -83,7 +96,9 @@ def _flow_through_a_chain(law: str, diameter_um: float) -> float:
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", PlaceholderViscosityWarning)
-        _model(law).set_poiseuille_resistances(G, {"B01": diameter_um})
+        _model(law, diameter_basis=diameter_basis).set_poiseuille_resistances(
+            G, {"B01": diameter_um}
+        )
 
     conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
     solved = haemodynamics.solve_flow_from_conductance_matrix(
@@ -103,71 +118,136 @@ def _flow_through_a_chain(law: str, diameter_um: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# The finding: below 7 um the two laws do not agree
+# Below 7 um, against the form that matches how the diameter was measured
 # ---------------------------------------------------------------------------
 
-#: Measured, not chosen. Pries / power law over 3.3-7 um.
-CAPILLARY_DISAGREEMENT = (4.8, 6.0)
+#: In vitro against the power law over 3.3-7 um. They coincide at the bottom
+#: and separate steadily: 1.13x at 3.3 um, 3.16x at 7 um. The power law is
+#: anchored at one point and its d^-1.647 slope is too steep to hold either
+#: side of it -- it crosses below plasma at 8.7 um, which is what its 7 um
+#: guard exists to hide.
+CAPILLARY_AGREEMENT = {3.3: 1.13, 4.0: 1.49, 5.0: 2.03, 6.0: 2.59, 7.0: 3.16}
 
 
-@pytest.mark.parametrize("diameter", CAPILLARY_DIAMETERS_UM)
-def test_pries_is_about_five_times_the_power_law_in_capillaries(diameter):
-    """The agreement test #85 asked for, reporting what is actually there.
+def test_the_two_laws_agree_where_the_power_law_was_calibrated():
+    """At the bottom of the capillary range they are the same law.
 
-    Not a tolerance anyone chose: 4.8-6.0x is what the two laws do. The power
-    law is pinned to 3.0 mPa.s at 5 um; Pries in vivo says 15.1 mPa.s at the
-    same diameter, because it includes the ~1.1 um endothelial surface layer
-    that blood does not flow through, and a 5 um vessel has little else.
+    This is the agreement #85 asked for, and it is real but narrow: 2% at
+    3 um. It is also the evidence that the disagreement further up is the
+    power law's slope rather than a units error or a wrong constant -- a
+    factor-of-five bug does not vanish at one diameter.
     """
-    power = viscosity_for(diameter, law="capillary_power_law")
-    pries = viscosity_for(diameter, law="pries_in_vivo")
-    low, high = CAPILLARY_DISAGREEMENT
-    assert low < pries / power < high, (
-        f"at {diameter} um the laws differ by {pries / power:.2f}x "
-        f"({power * 1e3:.2f} vs {pries * 1e3:.2f} mPa.s); if this has moved, "
-        "one of the laws changed and every resistance moved with it"
+    assert pries_in_vitro_viscosity(3.0) == pytest.approx(
+        viscosity_for(3.0, law="capillary_power_law"), rel=0.02
+    )
+
+
+@pytest.mark.parametrize("diameter,expected", sorted(CAPILLARY_AGREEMENT.items()))
+def test_how_far_apart_they_get_across_the_capillary_range(diameter, expected):
+    """Measured, not chosen. If these move, one of the laws changed."""
+    ratio = pries_in_vitro_viscosity(diameter) / viscosity_for(
+        diameter, law="capillary_power_law"
+    )
+    assert ratio == pytest.approx(expected, rel=0.02), (
+        f"at {diameter} um the laws now differ by {ratio:.2f}x, not {expected}x"
     )
 
 
 @pytest.mark.parametrize("diameter", CAPILLARY_DIAMETERS_UM)
-def test_the_disagreement_carries_straight_into_resistance(diameter):
+def test_the_difference_carries_straight_into_resistance(diameter):
     """Resistance is linear in viscosity, so the same factor, not a softened one."""
     power = _model("capillary_power_law").resistance_of_uniform_segment(
         SEGMENT_LENGTH_UM, diameter
     )
-    pries = _model("pries_in_vivo").resistance_of_uniform_segment(
+    pries = _model("pries").resistance_of_uniform_segment(
         SEGMENT_LENGTH_UM, diameter
     )
-    low, high = CAPILLARY_DISAGREEMENT
-    assert low < pries / power < high
+    assert pries / power == pytest.approx(
+        pries_in_vitro_viscosity(diameter)
+        / viscosity_for(diameter, law="capillary_power_law"),
+        rel=1e-9,
+    )
 
 
 def test_and_into_the_flow_a_network_solves_to():
-    """Five times the resistance is a fifth of the flow, end to end."""
+    """Twice the viscosity at 5 um is half the flow, end to end."""
     power = _flow_through_a_chain("capillary_power_law", 5.0)
-    pries = _flow_through_a_chain("pries_in_vivo", 5.0)
-    assert power / pries == pytest.approx(
-        viscosity_for(5.0, law="pries_in_vivo")
-        / viscosity_for(5.0, law="capillary_power_law"),
-        rel=1e-6,
+    pries = _flow_through_a_chain("pries", 5.0)
+    assert power / pries == pytest.approx(CAPILLARY_AGREEMENT[5.0], rel=0.02)
+
+
+# ---------------------------------------------------------------------------
+# The mistake the diameter_basis setting exists to prevent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("diameter", CAPILLARY_DIAMETERS_UM)
+def test_reading_a_plasma_column_as_anatomical_costs_a_factor_of_several(diameter):
+    """Subtracting the surface layer from a diameter that never included it.
+
+    A plasma stain images the channel the fluid occupies, so the ~1.1 um of
+    glycocalyx is already out of the measurement. Calling that diameter
+    anatomical takes it out again, and in a capillary there is little else to
+    take.
+    """
+    as_measured = viscosity_for(diameter, law="pries")
+    double_counted = viscosity_for(
+        diameter, law="pries", diameter_basis="anatomical"
     )
-    assert 4.8 < power / pries < 6.0
+    assert 1.8 < double_counted / as_measured < 6.0
+
+
+def test_the_two_bases_are_the_same_physics_read_two_ways():
+    """The in vivo form is the in vitro form quoted against a wider diameter.
+
+    A vessel whose anatomical diameter is D carries blood through D - 1.1. Its
+    resistance can be written either as the in vivo viscosity over D^4, or as
+    the in vitro viscosity over (D - 1.1)^4, and the two must agree -- that is
+    what says the surface-layer factors are a diameter correction and not a
+    property of blood. They agree to 15%; the rest is that the two forms were
+    fitted to different datasets.
+    """
+    for anatomical in (4.4, 5.0, 6.0, 8.0, 10.0, 20.0, 50.0):
+        channel = anatomical - PRIES_SINGULARITY_UM
+        quoted_against_anatomical = (
+            pries_in_vivo_viscosity(anatomical) / anatomical**4
+        )
+        quoted_against_channel = pries_in_vitro_viscosity(channel) / channel**4
+        assert quoted_against_anatomical == pytest.approx(
+            quoted_against_channel, rel=0.15
+        ), f"at {anatomical} um the two conventions disagree"
+
+
+def test_the_default_basis_is_the_one_this_projects_images_produce():
+    """HaemoLynx segments plasma-stained volumes: the diameter is the channel."""
+    from haemolynx.pipeline import default_schema
+
+    assert default_schema()["diameter_basis"].default == "plasma_column"
+    assert PoiseuilleModel(40.0, 100.0).diameter_basis == "plasma_column"
+    assert viscosity_for(5.0, law="pries") == pytest.approx(
+        pries_in_vitro_viscosity(5.0)
+    )
+
+
+def test_an_unknown_basis_is_refused_by_name():
+    with pytest.raises(ValueError, match="plasma_column"):
+        viscosity_for(5.0, law="pries", diameter_basis="lumen")
+    with pytest.raises(ValueError, match="diameter_basis"):
+        PoiseuilleModel(40.0, 100.0, diameter_basis="lumen")
 
 
 # ---------------------------------------------------------------------------
-# Where they do agree: large vessels against the constant
+# Where the power law's placeholder does hold up: large vessels
 # ---------------------------------------------------------------------------
 
-#: Pries against the 3.5 mPa.s constant from 100 um up. The constant was
-#: chosen as "whole blood once Fahraeus-Lindqvist has died out", and this is
-#: how close that is to the law that models the whole curve.
-LARGE_VESSEL_TOLERANCE = 0.15
+#: Pries against the 3.5 mPa.s constant from 100 um up.
+LARGE_VESSEL_TOLERANCE = 0.18
 
 
 @pytest.mark.parametrize("diameter", LARGE_DIAMETERS_UM)
 def test_pries_agrees_with_the_large_vessel_constant(diameter):
     """The placeholder is a good answer for big vessels, which is its defence."""
-    pries = viscosity_for(diameter, law="pries_in_vivo")
+    pries = viscosity_for(diameter, law="pries")
     assert pries == pytest.approx(
         LARGE_VESSEL_VISCOSITY_PA_S, rel=LARGE_VESSEL_TOLERANCE
     ), f"at {diameter} um Pries says {pries * 1e3:.3f} mPa.s"
@@ -175,7 +255,7 @@ def test_pries_agrees_with_the_large_vessel_constant(diameter):
 
 @pytest.mark.parametrize("diameter", LARGE_DIAMETERS_UM)
 def test_a_large_vessel_resistance_is_the_same_either_way(diameter):
-    """Same comparison through Poiseuille, where the run actually uses it.
+    """Same comparison through Poiseuille, where a run actually uses it.
 
     `capillary_power_law` returns the constant above 7 um, so this is the
     constant case against the new law on the same vessel.
@@ -185,7 +265,7 @@ def test_a_large_vessel_resistance_is_the_same_either_way(diameter):
         constant = _model("capillary_power_law").resistance_of_uniform_segment(
             SEGMENT_LENGTH_UM, diameter
         )
-    pries = _model("pries_in_vivo").resistance_of_uniform_segment(
+    pries = _model("pries").resistance_of_uniform_segment(
         SEGMENT_LENGTH_UM, diameter
     )
     assert pries == pytest.approx(constant, rel=LARGE_VESSEL_TOLERANCE)
@@ -194,7 +274,7 @@ def test_a_large_vessel_resistance_is_the_same_either_way(diameter):
 def test_a_large_vessel_network_solves_to_the_same_flow_either_way():
     """And end to end, which is what a user would compare."""
     constant = _flow_through_a_chain("capillary_power_law", 200.0)
-    pries = _flow_through_a_chain("pries_in_vivo", 200.0)
+    pries = _flow_through_a_chain("pries", 200.0)
     assert pries == pytest.approx(constant, rel=LARGE_VESSEL_TOLERANCE)
 
 
@@ -257,7 +337,7 @@ def test_a_wider_vessel_is_never_more_resistive_under_pries():
     """What the power law's step gets wrong, stated as the property that matters."""
     diameters = np.linspace(3.5, 300.0, 800)
     resistances = [
-        _model("pries_in_vivo").resistance_of_uniform_segment(SEGMENT_LENGTH_UM, d)
+        _model("pries").resistance_of_uniform_segment(SEGMENT_LENGTH_UM, d)
         for d in diameters
     ]
     assert np.all(np.diff(resistances) < 0)
@@ -317,17 +397,24 @@ def test_a_vessel_narrower_than_the_surface_layer_is_refused():
 # ---------------------------------------------------------------------------
 
 
-def test_the_default_law_is_the_one_that_was_there_before():
-    """Adding a law must not silently move everybody's numbers by five times."""
+def test_the_default_law_is_pries_at_the_measured_diameter():
+    """The default changed, deliberately, and the old law is still selectable.
+
+    The power law was anchored at one point and unphysical above 8.7 um; the
+    default is now the law that covers the tree, read at the diameter this
+    project's imaging actually produces. Runs from before the change are not
+    comparable, which is why the graph records the law.
+    """
     from haemolynx.pipeline import default_schema
 
-    assert default_schema()["viscosity_law"].default == "capillary_power_law"
-    assert PoiseuilleModel(40.0, 100.0).viscosity_law == "capillary_power_law"
+    assert default_schema()["viscosity_law"].default == "pries"
+    assert PoiseuilleModel(40.0, 100.0).viscosity_law == "pries"
+    assert "capillary_power_law" in default_schema()["viscosity_law"].choices
 
 
 def test_an_unknown_law_is_refused_by_name():
-    with pytest.raises(ValueError, match="pries_in_vivo"):
-        PoiseuilleModel(40.0, 100.0, viscosity_law="pries")
+    with pytest.raises(ValueError, match="pries"):
+        PoiseuilleModel(40.0, 100.0, viscosity_law="pries_in_vivo")
     with pytest.raises(ValueError, match="Unknown viscosity_law"):
         viscosity_for(5.0, law="nonsense")
 
@@ -338,23 +425,27 @@ def test_only_the_law_with_a_placeholder_warns():
         viscosity_for(20.0, law="capillary_power_law")
     with warnings.catch_warnings():
         warnings.simplefilter("error", PlaceholderViscosityWarning)
-        viscosity_for(20.0, law="pries_in_vivo")
+        viscosity_for(20.0, law="pries")
 
 
 def test_each_law_states_the_range_it_was_fitted_over():
-    assert validity_range_um("pries_in_vivo") == (
+    assert validity_range_um("pries") == (
         PRIES_MIN_DIAMETER_UM,
         PRIES_MAX_DIAMETER_UM,
     )
     assert validity_range_um("capillary_power_law")[1] == CAPILLARY_REGIME_MAX_DIAMETER_UM
 
 
-def test_the_run_records_which_law_produced_its_numbers():
-    """Resistances are not comparable across laws, so the graph carries it."""
-    description = _model("pries_in_vivo", haematocrit=0.4).describe_viscosity_law()
-    assert "pries_in_vivo" in description
+def test_the_run_records_which_law_and_which_basis_produced_its_numbers():
+    """Comparable across neither, so both travel with the numbers."""
+    description = _model("pries", haematocrit=0.4).describe_viscosity_law()
+    assert "pries" in description and "in vitro" in description
+    assert "plasma_column" in description
     assert "0.4" in description
     assert "3.3" in description and "1978" in description
+
+    anatomical = _model("pries", diameter_basis="anatomical").describe_viscosity_law()
+    assert "in vivo" in anatomical and "anatomical" in anatomical
 
 
 def test_the_law_survives_on_the_graph_a_run_pickles():
@@ -370,7 +461,8 @@ def test_the_law_survives_on_the_graph_a_run_pickles():
     config = haemodynamics.HaemodynamicsApplyConfig(
         diameters={
             "diameter_by_branch_order": {"B01": 5.0},
-            "viscosity_law": "pries_in_vivo",
+            "viscosity_law": "pries",
+            "diameter_basis": "anatomical",
             "haematocrit": 0.42,
         },
         fwhm={},
@@ -380,9 +472,10 @@ def test_the_law_survives_on_the_graph_a_run_pickles():
     G, summary = haemodynamics.apply_poiseuille_haemodynamics(G, config=config)
 
     restored = pickle.loads(pickle.dumps(G))
-    assert restored.graph["viscosity_law"] == "pries_in_vivo"
+    assert restored.graph["viscosity_law"] == "pries"
+    assert restored.graph["diameter_basis"] == "anatomical"
     assert restored.graph["haematocrit"] == pytest.approx(0.42)
-    assert "pries_in_vivo" in summary["viscosity"]
+    assert "in vivo" in summary["viscosity"]
 
 
 def test_choosing_the_law_in_a_config_reaches_the_resistances(tmp_path):
@@ -396,10 +489,10 @@ def test_choosing_the_law_in_a_config_reaches_the_resistances(tmp_path):
         path,
         schema=schema,
         values={**{s.name: s.default for s in schema},
-                "viscosity_law": "pries_in_vivo", "haematocrit": 0.5},
+                "viscosity_law": "pries", "haematocrit": 0.5},
     )
     loaded = load_config(path, schema)
-    assert loaded["viscosity_law"] == "pries_in_vivo"
+    assert loaded["viscosity_law"] == "pries"
     assert loaded["haematocrit"] == pytest.approx(0.5)
 
     model = PoiseuilleModel(
@@ -408,5 +501,5 @@ def test_choosing_the_law_in_a_config_reaches_the_resistances(tmp_path):
         haematocrit=loaded["haematocrit"],
     )
     assert model.calculate_viscosity(5.0) == pytest.approx(
-        pries_in_vivo_viscosity(5.0, haematocrit=0.5)
+        pries_in_vitro_viscosity(5.0, haematocrit=0.5)
     )

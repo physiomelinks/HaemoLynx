@@ -907,15 +907,32 @@ SCHEMA = Schema(
         Setting(
             name="viscosity_law",
             kind="choice",
-            default="capillary_power_law",
-            choices=["capillary_power_law", "pries_in_vivo", "constant"],
+            default="pries",
+            choices=["pries", "capillary_power_law", "constant"],
             help=(
-                "Which apparent-viscosity law sets the resistances: "
-                "capillary_power_law is calibrated for capillaries and holds a "
-                "placeholder constant above 7 um, pries_in_vivo covers "
-                "3.3-1978 um in one expression, constant is plasma everywhere. "
-                "They disagree by several times in small vessels, so "
-                "resistances are not comparable across laws"
+                "Which apparent-viscosity law sets the resistances: pries "
+                "covers 3.3-1978 um in one expression and reads "
+                "diameter_basis, capillary_power_law is the older law "
+                "calibrated at 5 um with a placeholder constant above 7 um, "
+                "constant is plasma everywhere. Resistances are not comparable "
+                "across laws"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="diameter_basis",
+            kind="choice",
+            default="plasma_column",
+            choices=["plasma_column", "anatomical"],
+            help=(
+                "What a vessel diameter in this dataset measures, which the "
+                "pries law needs and no other reads: plasma_column for the "
+                "channel the fluid occupies, as a plasma stain images it, or "
+                "anatomical for a wall-to-wall diameter that includes the "
+                "~1.1 um endothelial surface layer. Choosing anatomical for a "
+                "plasma-stained image subtracts that layer twice and roughly "
+                "quintuples capillary resistance"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
@@ -925,8 +942,8 @@ SCHEMA = Schema(
             kind="float",
             default=0.45,
             help=(
-                "Discharge haematocrit the pries_in_vivo law is evaluated at; "
-                "read by no other law"
+                "Discharge haematocrit the pries law is evaluated at; read by "
+                "no other law"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             unit="fraction",

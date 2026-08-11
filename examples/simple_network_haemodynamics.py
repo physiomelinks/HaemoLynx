@@ -183,12 +183,15 @@ def main(settings: dict) -> dict:
     inlet_idx = node_list.index(inlet_nodes[0])
     inlet_flow = float(np.sum(conductance[inlet_idx, :] * (pressure[inlet_idx] - pressure)))
 
-    law = settings.get("viscosity_law", "capillary_power_law")
+    # These defaults have to be the model's own, or the panel below reports a
+    # law the resistances were not computed with.
+    law = settings.get("viscosity_law", "pries")
     haematocrit = settings.get("haematocrit", 0.45)
-    print(f"\nViscosity by {haemodynamics.describe_law(law, haematocrit)}:")
+    basis = settings.get("diameter_basis", "plasma_column")
+    print(f"\nViscosity by {haemodynamics.describe_law(law, haematocrit, basis)}:")
     for branch_order, diameter in sorted(settings["diameter_by_branch_order"].items()):
         viscosity = haemodynamics.viscosity_for(
-            diameter, law=law, haematocrit=haematocrit
+            diameter, law=law, haematocrit=haematocrit, diameter_basis=basis
         )
         low, high = haemodynamics.validity_range_um(law)
         regime = "fitted" if low <= diameter <= high else "extrapolated"

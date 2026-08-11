@@ -75,6 +75,7 @@ def build_diameter_by_branch_order(
 from .viscosity import (  # noqa: E402  (re-export, must follow the docstring)
     CAPILLARY_REGIME_MAX_DIAMETER_UM,
     DEFAULT_HAEMATOCRIT,
+    DIAMETER_BASES,
     LARGE_VESSEL_VISCOSITY_PA_S,
     PLACEHOLDER_REGIME_MAX_DIAMETER_UM,
     PLASMA_VISCOSITY_PA_S,
@@ -124,13 +125,19 @@ class PoiseuilleModel:
         self,
         constriction_length: float,
         constriction_spacing: float,
-        viscosity_law: str = "capillary_power_law",
+        viscosity_law: str = "pries",
         haematocrit: float = DEFAULT_HAEMATOCRIT,
+        diameter_basis: str = "plasma_column",
     ) -> None:
         if viscosity_law not in VISCOSITY_LAWS:
             raise ValueError(
                 f"Unknown viscosity_law {viscosity_law!r}. Fix: choose one of "
                 f"{', '.join(VISCOSITY_LAWS)}."
+            )
+        if diameter_basis not in DIAMETER_BASES:
+            raise ValueError(
+                f"Unknown diameter_basis {diameter_basis!r}. Fix: choose one "
+                f"of {', '.join(DIAMETER_BASES)}."
             )
         self.constriction_length = constriction_length
         self.constriction_spacing = constriction_spacing
@@ -138,6 +145,8 @@ class PoiseuilleModel:
         #: comparable across laws, so a run records it.
         self.viscosity_law = viscosity_law
         self.haematocrit = float(haematocrit)
+        #: What the graph's diameters mean; see `viscosity.DIAMETER_BASES`.
+        self.diameter_basis = diameter_basis
 
     def get_diameter_at_position(
         self, position: float, length: float, d1: float, d2: float
@@ -162,12 +171,17 @@ class PoiseuilleModel:
         :mod:`haemolynx.haemodynamics.viscosity` for what each covers.
         """
         return viscosity_for(
-            diameter, law=self.viscosity_law, haematocrit=self.haematocrit
+            diameter,
+            law=self.viscosity_law,
+            haematocrit=self.haematocrit,
+            diameter_basis=self.diameter_basis,
         )
 
     def describe_viscosity_law(self) -> str:
         """The law and its range, for a run's metadata."""
-        return describe_law(self.viscosity_law, self.haematocrit)
+        return describe_law(
+            self.viscosity_law, self.haematocrit, self.diameter_basis
+        )
 
     def resistance_of_uniform_segment(self, length: float, diameter: float) -> float:
         """Poiseuille resistance (Pa.s/m^3) of a straight uniform segment.

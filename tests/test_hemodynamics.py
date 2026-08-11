@@ -13,7 +13,13 @@ from haemolynx.haemodynamics import (
     solve_flow_from_conductance_matrix,
 )
 
-MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
+# Named rather than defaulted: these pin the capillary power law's own
+# calibration, and the default law is `pries` now.
+MODEL = PoiseuilleModel(
+    constriction_length=40.0,
+    constriction_spacing=100.0,
+    viscosity_law="capillary_power_law",
+)
 
 
 def test_calculate_viscosity():
