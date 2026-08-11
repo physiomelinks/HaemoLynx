@@ -1897,6 +1897,12 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="ImageLynx Carotid Pipeline")
     parser.add_argument("--sub-volume", type=float, default=None, help="Override sub_volume_percentage (0.0 to 1.0)")
+    parser.add_argument("--hysteresis-low", type=float, default=None,
+                        help="Freeze the lower hysteresis threshold. Must be identical across "
+                             "specimens in a comparison: a per-specimen threshold absorbs "
+                             "classifier differences into what looks like a tissue result.")
+    parser.add_argument("--hysteresis-high", type=float, default=None,
+                        help="Freeze the upper (seed) hysteresis threshold.")
     parser.add_argument("--roi-voxels", type=int, nargs=3, metavar=("Z", "Y", "X"), default=None,
                         help="Explicit ROI size in voxels, overriding --sub-volume. Use this "
                              "when comparing specimens: the same percentage of differently "
@@ -2019,6 +2025,13 @@ if __name__ == "__main__":
             print(f"Warning: Configuration file not found at {config_path}")
 
     # 3. CLI Overrides
+    if args.hysteresis_low is not None:
+        pre_config.hysteresis_threshold_low = args.hysteresis_low
+        if args.hysteresis_high is None and args.hysteresis_low >= pre_config.hysteresis_threshold_high:
+            # The seed threshold must stay above the flood threshold or hysteresis inverts.
+            pre_config.hysteresis_threshold_high = min(0.999, args.hysteresis_low + 0.05)
+    if args.hysteresis_high is not None:
+        pre_config.hysteresis_threshold_high = args.hysteresis_high
     if args.roi_voxels is not None:
         skel_config.sub_volume_voxels = tuple(args.roi_voxels)
     if args.sub_volume is not None:
