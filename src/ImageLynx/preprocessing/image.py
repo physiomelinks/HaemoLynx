@@ -312,6 +312,7 @@ def crop_roi(
     offset_z: float = 0.0,
     offset_y: float = 0.0,
     offset_x: float = 0.0,
+    size_zyx: tuple | None = None,
 ) -> np.ndarray:
     """Crop a 3D ROI from a larger volume using percentage and offsets.
 
@@ -325,8 +326,13 @@ def crop_roi(
     offset_z, offset_y, offset_x:
         Offsets from the image center as a fraction of the total dimension 
         (-0.5 to 0.5).
+    size_zyx:
+        Explicit ROI size in voxels, overriding ``sub_volume_percentage``. Use this whenever
+        volumes of different sizes are being compared: the same percentage of a larger
+        specimen is a larger absolute sample, so counts taken from it carry the specimen's
+        extent as well as its biology. Clipped, never padded, if it exceeds the volume.
     """
-    if not (0 < sub_volume_percentage <= 1.0):
+    if size_zyx is None and not (0 < sub_volume_percentage <= 1.0):
         logger.warning("sub_volume_percentage must be between 0 and 1. Using full volume.")
         return image
 
@@ -342,10 +348,17 @@ def crop_roi(
         spatial_axes = list(range(min(3, image.ndim)))
         c_axis = None
 
-    # Calculate target dimensions for spatial dims
+    # Calculate target dimensions for spatial dims. An explicit size wins over the
+    # percentage: the same fraction of differently sized specimens is not a matched sample,
+    # and any count taken from it is confounded with the specimen's extent.
     target_dims = {}
-    for ax in spatial_axes:
-        target_dims[ax] = max(1, int(orig_shape[ax] * sub_volume_percentage))
+    for i, ax in enumerate(spatial_axes):
+        if size_zyx is not None:
+            # Clipped rather than padded when the request exceeds the volume - padding would
+            # invent tissue, and the caller needs to see that it got a smaller box.
+            target_dims[ax] = max(1, min(int(size_zyx[i]), int(orig_shape[ax])))
+        else:
+            target_dims[ax] = max(1, int(orig_shape[ax] * sub_volume_percentage))
     
     # Calculate centers and offsets for spatial dims
     offsets = [offset_z, offset_y, offset_x]

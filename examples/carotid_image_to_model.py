@@ -45,7 +45,10 @@ RAW_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vessels.tif"
 FRANGI_IMAGE_PATH = RAW_IMAGE_DIR / "C1-CB3-WKY-CB-A-2x2x2_vesselness_map.tif"
 
 INPUT_PATH = None
-H5_DATASET_NAME = None  # For h5 input, e.g. "data"
+# The probability maps are HDF5 now that Ilastik exports headlessly, and every specimen's
+# lives at the same internal path. Defaulting to it means a --specimen run works without a
+# second flag that can only ever have one correct value.
+H5_DATASET_NAME = specimens.PROBABILITIES_DATASET
 
 """Configuration defaults for diameter maps."""
 
@@ -143,6 +146,11 @@ class SkeletonConfig:
     padded_slicing_padding: int = 3
     prune_mask_before: int = 1
     sub_volume_percentage: float = 0.15
+    # Explicit ROI size in voxels, overriding the percentage. Required for any comparison
+    # across specimens: SHR volumes average 89 Mvoxel against 63 for WKY, so the same
+    # percentage samples a larger absolute box from SHR and every count taken from it carries
+    # the specimen's extent as well as its biology.
+    sub_volume_voxels: tuple | None = None
     sub_volume_offset_z: float = 0.0
     sub_volume_offset_y: float = 0.0
     sub_volume_offset_x: float = 0.0
@@ -719,7 +727,8 @@ def _load_raw_probability_field(image_path, input_format, pre_config, skel_confi
 
     print(f"Loaded image shape: {image.shape}")
 
-    if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or \
+    if skel_config.sub_volume_voxels is not None or \
+       0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or \
        skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
         print(f"Applying ROI crop (sub-volume={skel_config.sub_volume_percentage})...")
         image = preprocessing.crop_roi(
@@ -727,7 +736,8 @@ def _load_raw_probability_field(image_path, input_format, pre_config, skel_confi
             sub_volume_percentage=skel_config.sub_volume_percentage,
             offset_z=skel_config.sub_volume_offset_z,
             offset_y=skel_config.sub_volume_offset_y,
-            offset_x=skel_config.sub_volume_offset_x
+            offset_x=skel_config.sub_volume_offset_x,
+            size_zyx=skel_config.sub_volume_voxels,
         )
         print(f"  ROI new shape: {image.shape}")
 
@@ -1887,6 +1897,10 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="ImageLynx Carotid Pipeline")
     parser.add_argument("--sub-volume", type=float, default=None, help="Override sub_volume_percentage (0.0 to 1.0)")
+    parser.add_argument("--roi-voxels", type=int, nargs=3, metavar=("Z", "Y", "X"), default=None,
+                        help="Explicit ROI size in voxels, overriding --sub-volume. Use this "
+                             "when comparing specimens: the same percentage of differently "
+                             "sized volumes is not a matched sample.")
     parser.add_argument("--config", type=str, default=None, help="Path to a YAML configuration file to override default parameters.")
     parser.add_argument("--optimize-skeleton", type=int, default=0, help="Run Bayesian optimization (Optuna) for N trials before continuing.")
     parser.add_argument("--optimize-preprocessing", type=int, default=0, help="Run Bayesian optimization for preprocessing filters for N trials.")
@@ -2005,6 +2019,8 @@ if __name__ == "__main__":
             print(f"Warning: Configuration file not found at {config_path}")
 
     # 3. CLI Overrides
+    if args.roi_voxels is not None:
+        skel_config.sub_volume_voxels = tuple(args.roi_voxels)
     if args.sub_volume is not None:
         skel_config.sub_volume_percentage = args.sub_volume
         

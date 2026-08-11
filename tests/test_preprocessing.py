@@ -197,3 +197,53 @@ def test_closing_twice_is_a_no_op():
     once = close_binary_mask(mask, radius=1)
     assert np.array_equal(close_binary_mask(once, radius=1), once)
     assert not np.array_equal(close_binary_mask(mask, radius=2), once)
+
+
+def test_absolute_roi_gives_matched_volumes_across_differently_sized_specimens():
+    """A percentage ROI is not a matched sample when the specimens differ in size.
+
+    SHR volumes average 89 Mvoxel against 63 for WKY, so the same percentage crops a larger
+    absolute box from SHR - reintroducing the extent confound that any raw count is already
+    exposed to. A comparison needs identical absolute dimensions.
+    """
+    from ImageLynx.preprocessing import crop_roi
+
+    wky_c = np.zeros((435, 315, 255), dtype=np.float32)
+    shr_b = np.zeros((495, 483, 399), dtype=np.float32)
+
+    # The percentage path is what it is: same fraction, very different absolute size.
+    assert crop_roi(wky_c, 0.45).size * 2.5 < crop_roi(shr_b, 0.45).size
+
+    # The absolute path gives the same box from both.
+    box = (160, 160, 160)
+    assert crop_roi(wky_c, size_zyx=box).shape == box
+    assert crop_roi(shr_b, size_zyx=box).shape == box
+
+
+def test_absolute_roi_is_centred_and_respects_offsets():
+    from ImageLynx.preprocessing import crop_roi
+
+    volume = np.arange(60 * 60 * 60, dtype=np.float32).reshape(60, 60, 60)
+    centred = crop_roi(volume, size_zyx=(20, 20, 20))
+    assert centred.shape == (20, 20, 20)
+    assert centred[0, 0, 0] == volume[20, 20, 20]
+
+    shifted = crop_roi(volume, size_zyx=(20, 20, 20), offset_z=0.1)
+    assert shifted.shape == (20, 20, 20)
+    assert shifted[0, 0, 0] != centred[0, 0, 0]
+
+
+def test_an_absolute_roi_larger_than_the_volume_is_clipped_not_padded():
+    """Silently padding would invent tissue; the caller has to see the smaller box."""
+    from ImageLynx.preprocessing import crop_roi
+
+    volume = np.zeros((30, 40, 50), dtype=np.float32)
+    assert crop_roi(volume, size_zyx=(100, 100, 100)).shape == (30, 40, 50)
+
+
+def test_absolute_roi_handles_a_trailing_channel_axis():
+    """Probability volumes arrive as (z, y, x, c) and must not be cropped on the class axis."""
+    from ImageLynx.preprocessing import crop_roi
+
+    volume = np.zeros((60, 60, 60, 2), dtype=np.float32)
+    assert crop_roi(volume, size_zyx=(20, 20, 20)).shape == (20, 20, 20, 2)
