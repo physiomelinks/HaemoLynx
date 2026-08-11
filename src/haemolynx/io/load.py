@@ -308,52 +308,46 @@ def crop_tiff_volume_from_corners(
     }
 
 
-def load_3d_tif_with_voxel_size(
-    filepath: str,
-    *,
-    axis_order: str = CANONICAL_AXIS_ORDER,
-) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
-    """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status.
+def _voxel_size_xyz_from_tiff(tif) -> tuple[float, float, float, dict[str, object]]:
+    """Voxel size (x, y, z) and its provenance, from an open TIFF's tags.
 
-    *axis_order* names what the file's array axes mean (default ``"zyx"``); the
-    volume is transposed into the canonical ``(z, y, x)`` order on load. The
-    returned voxel size is always physical ``(x, y, z)`` — use
-    :func:`haemolynx.io.voxel_size_zyx_from_xyz` before scaling array indices.
+    Split out from :func:`load_3d_tif_with_voxel_size` so the size can be read
+    without the pixels: the tags are in the first page's header, and a caller
+    that only wants to know how big a voxel is should not have to read a
+    300 MB stack to find out. See :func:`read_voxel_size_xyz`.
     """
-    with tifffile.TiffFile(filepath) as tif:
-        image = apply_axis_order(tif.asarray(), axis_order)
-        meta = tif.imagej_metadata or {}
-        tags = tif.pages[0].tags
+    meta = tif.imagej_metadata or {}
+    tags = tif.pages[0].tags
 
-        x_res_tag = tags.get("XResolution")
-        y_res_tag = tags.get("YResolution")
-        missing_axes: list[str] = []
-        invalid_axes: list[str] = []
+    x_res_tag = tags.get("XResolution")
+    y_res_tag = tags.get("YResolution")
+    missing_axes: list[str] = []
+    invalid_axes: list[str] = []
 
-        if x_res_tag:
-            x_res = x_res_tag.value[0] / x_res_tag.value[1]
-        else:
-            logger.warning("No x resolution tag found; defaulting to 1.0")
-            x_res = 1.0
-            missing_axes.append("x")
+    if x_res_tag:
+        x_res = x_res_tag.value[0] / x_res_tag.value[1]
+    else:
+        logger.warning("No x resolution tag found; defaulting to 1.0")
+        x_res = 1.0
+        missing_axes.append("x")
 
-        if y_res_tag:
-            y_res = y_res_tag.value[0] / y_res_tag.value[1]
-        else:
-            logger.warning("No y resolution tag found; defaulting to 1.0")
-            y_res = 1.0
-            missing_axes.append("y")
+    if y_res_tag:
+        y_res = y_res_tag.value[0] / y_res_tag.value[1]
+    else:
+        logger.warning("No y resolution tag found; defaulting to 1.0")
+        y_res = 1.0
+        missing_axes.append("y")
 
-        if "spacing" in meta:
-            z_res = float(meta.get("spacing"))
-        else:
-            logger.warning("No z resolution (spacing) found; defaulting to 1.0")
-            z_res = 1.0
-            missing_axes.append("z")
+    if "spacing" in meta:
+        z_res = float(meta.get("spacing"))
+    else:
+        logger.warning("No z resolution (spacing) found; defaulting to 1.0")
+        z_res = 1.0
+        missing_axes.append("z")
 
-        voxel_size_x = 1.0 / x_res if x_res else 1.0
-        voxel_size_y = 1.0 / y_res if y_res else 1.0
-        voxel_size_z = z_res
+    voxel_size_x = 1.0 / x_res if x_res else 1.0
+    voxel_size_y = 1.0 / y_res if y_res else 1.0
+    voxel_size_z = z_res
 
     if x_res <= 0:
         invalid_axes.append("x")
@@ -387,6 +381,50 @@ def load_3d_tif_with_voxel_size(
         invalid_axes=invalid_axes,
         fallback_applied=bool(missing_axes or invalid_axes),
     )
+    return voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+
+
+def read_voxel_size_xyz(
+    filepath: str | Path,
+) -> tuple[tuple[float, float, float], dict[str, object]] | None:
+    """Physical voxel size ``(x, y, z)`` of a TIFF, without reading the pixels.
+
+    Returns ``None`` for a file that is not a readable TIFF, and for one whose
+    tags say nothing -- a size of all ones is the absence of an answer, not an
+    answer. The panel uses this to give an opened layer the scale its own file
+    describes, which is a header read rather than a second copy of the stack.
+    """
+    path = Path(filepath)
+    if path.suffix.lower() not in {".tif", ".tiff"}:
+        return None
+    try:
+        with tifffile.TiffFile(path) as tif:
+            x, y, z, status = _voxel_size_xyz_from_tiff(tif)
+    except Exception:  # noqa: BLE001 - an unreadable file simply has no size
+        logger.debug("Could not read a voxel size from %s", path, exc_info=True)
+        return None
+    if (x, y, z) == (1.0, 1.0, 1.0):
+        return None
+    return (x, y, z), status
+
+
+def load_3d_tif_with_voxel_size(
+    filepath: str,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
+    """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status.
+
+    *axis_order* names what the file's array axes mean (default ``"zyx"``); the
+    volume is transposed into the canonical ``(z, y, x)`` order on load. The
+    returned voxel size is always physical ``(x, y, z)`` — use
+    :func:`haemolynx.io.voxel_size_zyx_from_xyz` before scaling array indices.
+    """
+    with tifffile.TiffFile(filepath) as tif:
+        image = apply_axis_order(tif.asarray(), axis_order)
+        voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
+            _voxel_size_xyz_from_tiff(tif)
+        )
     return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 

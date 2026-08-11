@@ -679,3 +679,105 @@ def test_a_config_still_applies_everything_other_than_the_input(
 
     for name in ("min_stub_length", "input_p_bc", "skeleton_bridge_gap_size"):
         assert values[name] == on_file[name], name
+
+
+# --- an adopted layer is put in the same frame as the results ----------------
+
+
+ANISOTROPIC_XYZ = (0.4, 0.5, 2.0)
+ANISOTROPIC_ZYX = (2.0, 0.5, 0.4)
+
+
+def _aniso_tiff(path):
+    import numpy as np
+    import tifffile
+
+    tifffile.imwrite(
+        path,
+        np.zeros((6, 12, 16), dtype=np.uint8),
+        imagej=True,
+        resolution=(1.0 / ANISOTROPIC_XYZ[0], 1.0 / ANISOTROPIC_XYZ[1]),
+        metadata={"spacing": ANISOTROPIC_XYZ[2], "unit": "um"},
+    )
+    return path
+
+
+def test_adopting_a_layer_scales_it_from_its_own_file(make_napari_viewer, tmp_path):
+    """napari's readers ignore a TIFF's resolution tags, so a dragged-in stack
+    sits at one unit per voxel while everything the run draws is in microns.
+
+    On the nerve stack that is 2.029 um of z drawn as 1: the image ends up at
+    58% of its depth and the vessels do not lie on the vessels.
+    """
+    viewer = make_napari_viewer()
+    viewer.open(str(_aniso_tiff(tmp_path / "aniso.tif")))
+    layer = viewer.layers[0]
+    assert tuple(float(s) for s in layer.scale) == (1.0, 1.0, 1.0)
+
+    settings_widget(napari_viewer=viewer)
+
+    assert tuple(float(s) for s in layer.scale) == pytest.approx(ANISOTROPIC_ZYX)
+
+
+def test_the_scale_it_applies_is_the_one_the_run_will_use(make_napari_viewer, tmp_path):
+    """The whole point is that the two end up in one frame.
+
+    The run scales its own image layer by `voxel_size_zyx`; if the adopted
+    layer were scaled by anything else the two copies would still not overlay.
+    """
+    from haemolynx.io import load_3d_tif_with_voxel_size, voxel_size_zyx_from_xyz
+
+    path = _aniso_tiff(tmp_path / "aniso.tif")
+    viewer = make_napari_viewer()
+    viewer.open(str(path))
+    settings_widget(napari_viewer=viewer)
+
+    _image, x, y, z, _meta = load_3d_tif_with_voxel_size(str(path))
+    assert tuple(float(s) for s in viewer.layers[0].scale) == pytest.approx(
+        voxel_size_zyx_from_xyz((x, y, z))
+    )
+
+
+def test_a_layer_that_already_has_a_scale_is_left_alone(make_napari_viewer, tmp_path):
+    """Someone who set a scale meant it, and it already reaches the settings."""
+    viewer = make_napari_viewer()
+    viewer.open(str(_aniso_tiff(tmp_path / "aniso.tif")))
+    layer = viewer.layers[0]
+    layer.scale = (3.0, 3.0, 3.0)
+
+    panel = settings_widget(napari_viewer=viewer)
+
+    assert tuple(float(s) for s in layer.scale) == (3.0, 3.0, 3.0)
+    # And it is what the run is told to use, as before.
+    assert panel._haemolynx_values()["voxel_size_override_xyz"] == [3.0, 3.0, 3.0]
+
+
+def test_a_file_with_no_voxel_metadata_leaves_the_layer_alone(
+    make_napari_viewer, tmp_path
+):
+    import numpy as np
+    import tifffile
+
+    path = tmp_path / "plain.tif"
+    tifffile.imwrite(path, np.zeros((6, 12, 16), dtype=np.uint8))
+    viewer = make_napari_viewer()
+    viewer.open(str(path))
+
+    settings_widget(napari_viewer=viewer)
+
+    assert tuple(float(s) for s in viewer.layers[0].scale) == (1.0, 1.0, 1.0)
+
+
+def test_scaling_the_layer_does_not_change_what_the_run_is_told(
+    make_napari_viewer, tmp_path
+):
+    """Display only. The run reads the same file and finds the same metadata,
+    so pinning an override here would be a second source for one number."""
+    viewer = make_napari_viewer()
+    viewer.open(str(_aniso_tiff(tmp_path / "aniso.tif")))
+
+    panel = settings_widget(napari_viewer=viewer)
+
+    values = panel._haemolynx_values()
+    assert values["voxel_size_override_xyz"] is None
+    assert values["voxel_size_policy"] != "override"

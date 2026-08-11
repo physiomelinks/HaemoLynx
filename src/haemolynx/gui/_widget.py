@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 
 from haemolynx.gui.form import Field, display_value_for
-from haemolynx.gui.layers import input_for_layer
+from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
 from haemolynx.gui.results import (
     NODES,
     VESSELS,
@@ -81,6 +81,35 @@ def _build_row(field: Field):
     )
     widget.tooltip = field.help
     return widget
+
+
+def _scale_layer_from_its_file(layer, path) -> tuple[float, float, float] | None:
+    """Give *layer* the voxel size its own file describes, if it has none.
+
+    napari's readers do not apply a TIFF's resolution tags, so a stack opened
+    by dragging it in sits at one unit per voxel while everything this plugin
+    draws is in microns -- node `pos` and edge `voxels` are physical already.
+    On the nerve stack that is 2.029 um of z drawn as 1, so the image ends up
+    at 58% of its depth and the vessels do not lie on the vessels.
+
+    Only ever fills a gap: a layer whose scale someone has already set is left
+    alone, and so is a file whose tags say nothing. Returns the scale applied,
+    or None if it left the layer as it was.
+    """
+    from haemolynx.io import read_voxel_size_xyz, voxel_size_zyx_from_xyz
+
+    if path is None or voxel_size_xyz_from_scale(getattr(layer, "scale", None)):
+        return None
+    found = read_voxel_size_xyz(path)
+    if found is None:
+        return None
+    scale = voxel_size_zyx_from_xyz(found[0])
+    try:
+        layer.scale = scale
+    except Exception:  # noqa: BLE001 - a layer that will not take a scale is survivable
+        logger.debug("Could not scale %s", getattr(layer, "name", "?"), exc_info=True)
+        return None
+    return scale
 
 
 class ProgressBars:
@@ -1039,7 +1068,14 @@ def settings_widget(napari_viewer=None):
         adopted.settings = dict(chosen.settings)
         adopted.name = getattr(layer, "name", None)
         apply_prerequisites()
-        report.value = chosen.note
+        note = chosen.note
+        applied = _scale_layer_from_its_file(layer, chosen.settings.get("input_path"))
+        if applied is not None:
+            note += (
+                f" Scaled the layer to {tuple(round(v, 4) for v in applied)} (z, y, x) "
+                "microns, from the file, so it sits where the results will."
+            )
+        report.value = note
 
     def apply_prerequisites(*_args) -> None:
         """Grey out settings whose prerequisite is unmet, and say why."""
