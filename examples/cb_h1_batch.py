@@ -135,6 +135,7 @@ def stage_run(roi, threshold):
             "--specimen", specimen.specimen_id,
             "--roi-voxels", *[str(v) for v in roi],
             "--hysteresis-low", str(threshold),
+            "--output-dir", str(out),
         ]
         print(f"\n=== {specimen.specimen_id} ({specimen.group}) centre "
               f"{placement.centre_zyx} ===", flush=True)

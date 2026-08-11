@@ -1897,6 +1897,10 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="ImageLynx Carotid Pipeline")
     parser.add_argument("--sub-volume", type=float, default=None, help="Override sub_volume_percentage (0.0 to 1.0)")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="Directory for this run's outputs. Required when running several "
+                             "specimens: they otherwise share one path and each overwrites the "
+                             "last, leaving only the final specimen's per-edge morphometry.")
     parser.add_argument("--hysteresis-low", type=float, default=None,
                         help="Freeze the lower hysteresis threshold. Must be identical across "
                              "specimens in a comparison: a per-specimen threshold absorbs "
@@ -2025,6 +2029,11 @@ if __name__ == "__main__":
             print(f"Warning: Configuration file not found at {config_path}")
 
     # 3. CLI Overrides
+    if args.output_dir is not None:
+        _out = Path(args.output_dir)
+        _out.mkdir(parents=True, exist_ok=True)
+        pipeline_config.vtk_output_prefix = _out / "resistance_network"
+        pipeline_config.plot_dir = _out / "plots"
     if args.hysteresis_low is not None:
         pre_config.hysteresis_threshold_low = args.hysteresis_low
         if args.hysteresis_high is None and args.hysteresis_low >= pre_config.hysteresis_threshold_high:
