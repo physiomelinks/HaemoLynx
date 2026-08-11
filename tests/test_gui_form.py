@@ -129,6 +129,49 @@ def test_labels_read_as_words():
     assert label_for("skeleton_closing_radius") == "Skeleton closing radius"
 
 
+def test_a_label_carries_the_unit_so_the_row_itself_says_it():
+    """A tooltip is only read by someone who already suspects a problem.
+
+    Some lengths here are voxels and some are microns, and 10 is a reasonable
+    value for either, so the row has to say which without being hovered.
+    """
+    assert label_for("min_stub_length", "um") == "Min stub length (um)"
+    assert label_for("skeleton_bridge_gap_size", "voxels") == (
+        "Skeleton bridge gap size (voxels)"
+    )
+
+
+def test_a_label_with_no_unit_gains_no_brackets():
+    assert label_for("do_skeletonize", None) == "Do skeletonize"
+    assert label_for("do_skeletonize", "") == "Do skeletonize"
+
+
+def test_the_row_for_a_setting_with_a_unit_is_labelled_with_it():
+    field = field_for(Setting("length", "float", 1.0, "How long", "S", unit="um"))
+    assert field.label == "Length (um)"
+
+
+def test_every_setting_that_declares_a_unit_shows_it_on_its_row():
+    """The whole point, across the real schema rather than one example."""
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    for field in fields_for(schema):
+        unit = schema[field.name].unit
+        if unit:
+            assert field.label.endswith(f" ({unit})"), (
+                f"{field.name} declares {unit!r} but its row reads {field.label!r}"
+            )
+
+
+def test_the_label_spells_the_unit_the_way_the_config_file_does():
+    """"µm" on the row and "um" in the file reads as two different units."""
+    from haemolynx.pipeline import default_schema
+
+    for field in fields_for(default_schema()):
+        assert "µ" not in field.label, field.label
+
+
 # --- prerequisites gate the row ---------------------------------------------
 
 
