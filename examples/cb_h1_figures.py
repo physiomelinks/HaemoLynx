@@ -66,15 +66,33 @@ def _load_diameters():
     return out
 
 
+def _beta1_density():
+    """beta-1 = E - V + C, the loop count H1 s1.1 names and the pipeline does not report.
+
+    C = 1 because GraphConfig.keep_largest_component_only is set, so the graph handed to
+    morphometry is a single connected component by construction.
+    """
+    out = {}
+    for specimen in SPECIMENS:
+        path = RESULTS / specimen.specimen_id / "per_edge_morphometry.csv"
+        with path.open() as handle:
+            rows = list(csv.DictReader(handle))
+        nodes = {r["u"] for r in rows} | {r["v"] for r in rows}
+        out[specimen.specimen_id] = (len(rows) - len(nodes) + 1) / ROI_MM3
+    return out
+
+
 def figure_density(path):
     """Per-specimen points with a group-mean rule; no bars, because n = 3."""
     panels = [
-        ("Vessel length density", "µm per mm³",
-         {s: TOPOLOGY[s][0] / ROI_MM3 for s in TOPOLOGY}, 1e6, "×10⁶"),
+        ("β₁ loop density", "independent loops per mm³",
+         _beta1_density(), 1e3, "×10³"),
         ("Junction density", "junctions per mm³",
          {s: TOPOLOGY[s][1] / ROI_MM3 for s in TOPOLOGY}, 1e3, "×10³"),
+        ("Vessel length density", "µm per mm³",
+         {s: TOPOLOGY[s][0] / ROI_MM3 for s in TOPOLOGY}, 1e6, "×10⁶"),
     ]
-    fig, axes = plt.subplots(1, 2, figsize=(9.0, 4.4), facecolor=SURFACE)
+    fig, axes = plt.subplots(1, 3, figsize=(12.6, 4.4), facecolor=SURFACE)
 
     for ax, (title, ylabel, values, scale, suffix) in zip(axes, panels):
         _style(ax)
@@ -95,7 +113,7 @@ def figure_density(path):
         shr = np.mean([values[s.specimen_id] for s in SPECIMENS if s.group == "SHR"])
         ax.set_title(f"{title}\n", fontsize=11, color=INK, loc="left")
         ax.text(0, 1.005, f"SHR {100 * (shr - wky) / wky:+.0f}%  ·  groups overlap  ·  p = 0.20",
-                transform=ax.transAxes, fontsize=9, color=INK_MUTED, va="bottom")
+                transform=ax.transAxes, fontsize=9.5, color=INK_MUTED, va="bottom")
         ax.set_xticks([0, 1]); ax.set_xticklabels(["WKY", "SHR"], fontsize=10, color=INK)
         ax.set_xlim(-0.5, 1.5)
         ax.set_ylabel(f"{ylabel}  ({suffix})")
@@ -104,8 +122,8 @@ def figure_density(path):
 
     fig.suptitle("Carotid body network density, matched "
                  f"{ROI_MM3:.4f} mm³ region per specimen",
-                 fontsize=12.5, color=INK, x=0.055, ha="left", y=0.99)
-    fig.text(0.055, 0.015,
+                 fontsize=12.5, color=INK, x=0.040, ha="left", y=0.99)
+    fig.text(0.040, 0.015,
              "One point per specimen (n = 3 per group); rule is the group mean. Preliminary: "
              "segmentation classifier not final.",
              fontsize=8.5, color=INK_MUTED)
