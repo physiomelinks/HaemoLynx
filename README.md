@@ -106,6 +106,12 @@ run can be opened, adjusted and run here. It only reads the file: a config whose
 image a run works on is the layer open in napari. Paths are checked when a run
 starts, by **Run checks** and by the run itself.
 
+With a layer already open, loading a config keeps that layer as the input and
+ignores the file's `input_path` — a config names the image it was written for,
+which is rarely the one on screen. Everything else in the file still applies,
+and the panel says which layer it kept. With no layer open, the file's
+`input_path` is used as written.
+
 The menu's second entry, **About**, gives the installed version and the two
 answers people look for in the panel and do not find there: colouring is in
 napari's own layer controls, and a config file is the same YAML the command line

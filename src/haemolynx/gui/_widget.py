@@ -988,6 +988,10 @@ def settings_widget(napari_viewer=None):
     #: made it absolute. Empty until a config is opened.
     loaded_paths: dict[str, Any] = {}
 
+    #: What pointing the run at an open layer put into the form, and which
+    #: layer it was. `settings` is None until a layer has been adopted.
+    adopted = SimpleNamespace(settings=None, name=None)
+
     def current_values() -> dict[str, Any]:
         """What the panel says, in the settings' own terms.
 
@@ -1030,6 +1034,10 @@ def settings_widget(napari_viewer=None):
         for name, value in chosen.settings.items():
             if name in rows:
                 rows[name].value = value
+        # Kept so that opening a config afterwards does not silently point the
+        # run back at whatever image that file was written for.
+        adopted.settings = dict(chosen.settings)
+        adopted.name = getattr(layer, "name", None)
         apply_prerequisites()
         report.value = chosen.note
 
@@ -1163,8 +1171,21 @@ def settings_widget(napari_viewer=None):
                 if schema[name].kind == "path" and value is not None:
                     loaded_paths[name] = value
                 rows[name].value = display_value_for(schema[name], value)
+
+        # A config names the image it was written for, which is rarely the one
+        # on screen -- the shipped one names an image that is not even in the
+        # repository. With a layer open, that layer is the input and the file's
+        # `input_path` is not read; everything else in the file still applies.
+        kept = ""
+        if adopted.settings:
+            for name, value in adopted.settings.items():
+                if name in rows:
+                    rows[name].value = value
+                    loaded_paths.pop(name, None)
+            kept = f", keeping {adopted.name or 'the open layer'} as the input"
+
         apply_prerequisites()
-        report.value = f"Loaded {path}"
+        report.value = f"Loaded {path}{kept}"
 
     def on_load() -> None:
         from qtpy.QtWidgets import QFileDialog
