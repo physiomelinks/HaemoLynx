@@ -422,11 +422,14 @@ def test_loading_the_resistance_config_does_not_need_its_input_image(
 ):
     """Opening a config reads the file and nothing the file names.
 
-    `resistance_pipeline_config.yaml` ships with `input_path` pointing at
-    `examples/images/brain_microvessels.tiff`, which is not in the repository,
-    and a config written on one machine is routinely opened on another. Neither
-    is a reason to refuse to open it: the image a run works on is the layer
-    already open in napari. Paths are checked when a run starts instead.
+    A config written on one machine is routinely opened on another, and
+    `resistance_pipeline_config.yaml` shipped for a long time naming an image
+    that was not in the repository at all. Neither is a reason to refuse to
+    open it: the image a run works on is the layer already open in napari, and
+    paths are checked when a run starts instead. `test_loading_a_config_
+    naming_a_missing_image_still_fails_the_run_checks` covers the missing-file
+    case directly, so this one does not depend on the shipped config staying
+    broken.
 
     Loading it used to be impossible two ways over -- through the "Run a saved
     config" widget, which ran preflight first and stopped at "FAILED:
@@ -434,18 +437,19 @@ def test_loading_the_resistance_config_does_not_need_its_input_image(
     "Load config...", which assigned the file's unset values straight onto the
     widgets and raised TypeError on the first None.
     """
+    from haemolynx.parsers import load_config
+
     make_napari_viewer()
     panel = settings_widget()
-
-    assert not (REPO_ROOT / "examples" / "images" / "brain_microvessels.tiff").exists(), (
-        "this test is only meaningful while that image is absent"
-    )
 
     panel._haemolynx_load_config(RESISTANCE_CONFIG)
 
     values = panel._haemolynx_values()
     default_schema().validate(values)
-    assert Path(values["input_path"]).name == "brain_microvessels.tiff"
+    # Whatever the config names, not a filename pinned here: which image it
+    # points at is that config's business and has changed once already.
+    on_file = load_config(RESISTANCE_CONFIG, default_schema())["input_path"]
+    assert Path(values["input_path"]) == Path(on_file)
 
 
 def test_loading_a_config_whose_unset_values_are_null(make_napari_viewer, tmp_path):
@@ -652,7 +656,10 @@ def test_a_config_still_supplies_the_input_when_no_layer_is_open(
 
     panel._haemolynx_load_config(RESISTANCE_CONFIG)
 
-    assert Path(panel._haemolynx_values()["input_path"]).name == "brain_microvessels.tiff"
+    from haemolynx.parsers import load_config
+
+    on_file = load_config(RESISTANCE_CONFIG, default_schema())["input_path"]
+    assert Path(panel._haemolynx_values()["input_path"]) == Path(on_file)
     assert "keeping" not in panel._haemolynx_report()
 
 
