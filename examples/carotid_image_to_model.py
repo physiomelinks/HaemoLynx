@@ -1935,6 +1935,15 @@ if __name__ == "__main__":
                 print(f"  labels by group: {_report['group_label_counts']}")
                 for _warning in _report["warnings"]:
                     print(f"  [warning] {_warning}")
+
+                # Where the labels sit matters more than how many there are: a classifier
+                # shown vessel cores and far-field emptiness has no evidence in the band
+                # where the boundary actually lies, and interpolates across it.
+                from ImageLynx.statistics.label_placement import (
+                    analyse_label_placement, format_placement_table,
+                )
+                print()
+                print(format_placement_table(analyse_label_placement()))
             except (ValueError, OSError) as _problem:
                 print(f"  NOT READY -- {_problem}")
         else:
