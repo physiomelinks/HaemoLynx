@@ -161,6 +161,64 @@ def derive_pericyte_points_from_graph(
     }
 
 
+#: Categorical provenance tags and their level order. ParaView cannot colour by a string
+#: array, so each tag is written twice: the string to read, and an integer code to colour by.
+#: An unrecognised level codes to -1 rather than silently joining an existing class.
+_PROVENANCE_LEVELS = {
+    "diameter_provenance": ("measured_edt", "measured_fwhm", "constant",
+                            "synthetic_branch_order"),
+    "edt_junction_trim": ("trimmed", "untrimmed_too_short", "no_junction", "not_applied"),
+    "centreline_smoothing": ("bspline", "bspline_relaxed", "raw_fallback", "raw_too_short"),
+}
+
+#: Numeric per-edge columns worth carrying onto the geometry.
+_MORPHOMETRY_COLUMNS = ("length_um", "euclidean_um", "tortuosity", "curvature",
+                        "edt_diameter_um", "n_centreline_points")
+
+
+def _attach_morphometry(mesh, graph, cell_keys) -> None:
+    """Put the quantities H1 reports onto the geometry they were measured from.
+
+    The exported geometry previously carried an assigned diameter and a branch order and
+    nothing else, so the network could not be coloured by tortuosity, by the EDT diameter
+    section 1.2 reports, or by which edges retained a radius known to be biased.
+
+    Values come from ``export_per_edge_morphometry`` rather than being recomputed here, so
+    the definition of tortuosity in a rendering cannot drift from the definition in the
+    exported table.
+    """
+    import numpy as np
+
+    from ..statistics.stats import export_per_edge_morphometry
+
+    try:
+        rows = export_per_edge_morphometry(graph)
+    except Exception:
+        return
+    lookup = {(r["u"], r["v"], r["key"]): r for r in rows}
+    ordered = [lookup.get(key) for key in cell_keys]
+
+    for column in _MORPHOMETRY_COLUMNS:
+        if column in mesh.cell_data:
+            continue
+        values = []
+        for row in ordered:
+            value = row.get(column) if row else None
+            values.append(float(value) if value is not None else np.nan)
+        mesh.cell_data[column] = np.asarray(values, dtype=float)
+
+    for tag, levels in _PROVENANCE_LEVELS.items():
+        text = [str(row.get(tag)) if row and row.get(tag) is not None else "" for row in ordered]
+        width = max(len(level) for level in levels)
+        mesh.cell_data[tag] = np.asarray(text, dtype=f"<U{width}")
+        index = {level: position for position, level in enumerate(levels)}
+        mesh.cell_data[f"{tag}_code"] = np.asarray(
+            [index.get(value, -1) for value in text], dtype=np.int8)
+
+    mesh.cell_data["reconnected"] = np.asarray(
+        [1 if row and row.get("reconnected") else 0 for row in ordered], dtype=np.int8)
+
+
 def graph_to_vtk(
     graph: nx.Graph,
     output_prefix: str | Path,
@@ -249,6 +307,7 @@ def graph_to_vtk(
         vessel_mesh.cell_data["resistance"] = np.asarray(resistances, dtype=float)
         vessel_mesh.cell_data["assigned_diameter_um"] = np.asarray(assigned_diameters, dtype=float)
         vessel_mesh.cell_data["fwhm_diameter_um"] = np.asarray(fwhm_diameters, dtype=float)
+        _attach_morphometry(vessel_mesh, graph, list(zip(edge_u, edge_v, edge_key)))
     vessel_mesh.save(vessel_path)
 
     pericyte = derive_pericyte_points_from_graph(
@@ -276,6 +335,12 @@ def graph_to_vtk(
         np.asarray(node_points, dtype=float) if node_points else np.empty((0, 3), dtype=float)
     )
     node_mesh.point_data["node_id"] = np.asarray(node_ids, dtype=np.int64)
+    # Section 1.1 counts branch points - nodes joining three or more distinct segments - so
+    # degree is the readout, and a node file carrying only an identifier cannot show it.
+    degrees = np.asarray([int(graph.degree(n)) for n in node_ids], dtype=np.int32)
+    node_mesh.point_data["degree"] = degrees
+    node_mesh.point_data["is_branch_node"] = (degrees >= 3).astype(np.int8)
+    node_mesh.point_data["is_endpoint"] = (degrees == 1).astype(np.int8)
     node_mesh.save(node_path)
 
     return {

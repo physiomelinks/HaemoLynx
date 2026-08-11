@@ -116,7 +116,15 @@ The skeleton is traced into an undirected multigraph. Stub branches below 5.6 µ
 
 The primary data product is `per_edge_morphometry.csv` — one row per graph edge, fifteen columns, including both raw radius estimators and four provenance tags. Every measurement carries the record of how it was obtained, so a distribution that mixes measured and fabricated values can be separated after the fact.
 
-### 2.7 Artefact provenance
+### 2.7 What the measurement is made of
+
+> **Figure 4** — `figure4_reconstruction.png`. All six regions, one 14 µm slab each: the segmented volume translucent, the analysed centrelines inside it. **Illustration, not evidence.** Each panel is a 0.0266 mm³ region and three specimens per group cannot support a visual comparison — the figure shows all six precisely so that no pair is chosen for effect, and WKY-C is visibly denser than SHR-C. A slab is shown because at 26–34% foreground the whole cube is opaque from outside.
+
+> **Figure 5** — `figure5_measured_network.png`. The same network carrying what was measured on it. Left: centrelines coloured by EDT diameter, the estimator §1.2 reports. Right: nodes of degree ≥ 3, the branch points §1.1 counts. Quantities reported as distributions elsewhere in this document are properties of identifiable places in the network.
+
+> **Figure 6** — `figure6_skeleton_detail.png`. Raw skeleton (left) against the analysed centrelines (right), same region. The difference is stub pruning and B-spline smoothing; the voxel staircase visible on the left is what §4.4's calibration and §4.3's operators act on.
+
+### 2.8 Artefact provenance
 
 Each probability map carries a sidecar recording the classifier hash that produced it, its label counts and its boundary-label placement. The pipeline reports each map as `current`, `stale`, `unknown` or `absent`. `unknown` is deliberately distinct from and worse than `stale`: a stale map has a known and wrong origin, whereas an unknown one cannot be ruled out about.
 
@@ -317,7 +325,17 @@ The three measures are internally concordant — length and junction density cor
 | SHR-B | 5,894 | 754 | 212 | 4,746 | 172 | 10 | 2.74 | 83.6% |
 | SHR-C | 3,583 | 503 | 116 | 2,864 | 97 | 3 | 2.72 | 82.7% |
 
+> **Figure 7** — `figure7_node_degree.png`. The degree distribution, three lines per cohort, near-superimposed. The shape is the same in both groups: a dominant degree-3 population with degree-1 tips an order of magnitude below and degree-5 nodes two orders below that.
+
 The branch-node fraction (degree ≥ 3) separates by cohort — WKY 77.8–82.3%, SHR 82.7–85.4% — but by 0.4 percentage points against a within-group spread of 4.5. Complete separation of three against three arises by chance with probability 0.10. This is consistent in direction with §7.2 and is too weak to carry weight alone.
+
+### 7.4 Segment length
+
+Segment length distributions are near-identical between cohorts, overlapping across the whole range. Combined with §7.2 this locates the difference: **SHR networks carry more segments, not longer ones.** Vessel length density rises because segment count rises, which is consistent with the same reading as the junction and loop densities and inconsistent with elongation of an unchanged network.
+
+The distribution also explains a limitation quantitatively. About a third of segments are shorter than 7.46 µm — twice the junction exclusion — and therefore cannot have the junction radius correction applied at all (§11.2).
+
+> **Figure 8** — `figure8_segment_length.png`. Segment length, one line per specimen, with twice the junction exclusion marked.
 
 > **Figure 1** — `figure1_network_density.png`. Three panels, one per measure, each specimen plotted individually with the group mean as a rule. No bars: at n = 3 a bar of group means would conceal that WKY-C exceeds SHR-C and imply a precision three specimens cannot support.
 

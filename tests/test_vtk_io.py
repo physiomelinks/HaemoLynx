@@ -111,3 +111,84 @@ def test_graph_to_vtk_orients_reversed_voxel_paths(tmp_path):
     # If path orientation is wrong before endpoint snapping, exporter creates
     # long endpoint jumps (e.g. 0->9 and 1->10). Guard against that.
     assert float(np.max(seg_lengths)) <= 2.0
+
+
+# --- Morphometry on the geometry (#98) ----------------------------------------------------
+
+def _morphometry_graph():
+    """Two edges carrying the quantities H1 reports, plus their provenance tags."""
+    import networkx as nx
+    import numpy as np
+
+    G = nx.MultiGraph()
+    for n, pos in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 10, 10)}.items():
+        G.add_node(n, pos=np.array(pos, dtype=float))
+    G.add_edge(0, 1, length=14.0, weight=14.0, branch_order="B01",
+               voxels=[[0, 0, 0], [0, 3, 5], [0, 0, 10]],
+               assigned_diameter_um=6.37, edt_diameter_um=6.37, fwhm_diameter_um=8.2,
+               diameter_provenance="measured_edt", edt_junction_trim="trimmed",
+               centreline_smoothing="bspline", resistance=1.0)
+    G.add_edge(1, 2, length=10.0, weight=10.0, branch_order="B02",
+               voxels=[[0, 0, 10], [0, 5, 10], [0, 10, 10]],
+               assigned_diameter_um=4.0, diameter_provenance="synthetic_branch_order",
+               edt_junction_trim="untrimmed_too_short",
+               centreline_smoothing="raw_fallback", resistance=2.0)
+    return G
+
+
+def test_vessel_export_carries_the_quantities_h1_reports(tmp_path):
+    """The geometry was exported without the morphometry measured on it.
+
+    vessels.vtp carried an assigned diameter and a branch order, so the network could not be
+    coloured by tortuosity, by the EDT diameter section 1.2 actually reports, or by which
+    edges retained a known-biased radius. All of it is already on the graph at export time.
+    """
+    import pyvista as pv
+
+    from ImageLynx.visualization.vtk_io import graph_to_vtk
+
+    result = graph_to_vtk(_morphometry_graph(), tmp_path / "net")
+    mesh = pv.read(result["vessels_path"])
+
+    for column in ("length_um", "tortuosity", "edt_diameter_um", "assigned_diameter_um"):
+        assert column in mesh.cell_data, column
+    # Tortuosity is path length over endpoint separation; edge 0-1 detours 14 um over 10.
+    order = list(zip(mesh.cell_data["edge_u"], mesh.cell_data["edge_v"]))
+    detour = order.index((0, 1))
+    assert mesh.cell_data["tortuosity"][detour] == pytest.approx(1.4)
+    assert mesh.cell_data["edt_diameter_um"][detour] == pytest.approx(6.37)
+
+
+def test_provenance_tags_are_exported_with_numeric_codes(tmp_path):
+    """ParaView cannot colour by a string array, so each tag needs a code beside it."""
+    import pyvista as pv
+
+    from ImageLynx.visualization.vtk_io import graph_to_vtk
+
+    result = graph_to_vtk(_morphometry_graph(), tmp_path / "net")
+    mesh = pv.read(result["vessels_path"])
+
+    for tag in ("diameter_provenance", "edt_junction_trim", "centreline_smoothing"):
+        assert tag in mesh.cell_data, tag
+        assert f"{tag}_code" in mesh.cell_data, tag
+        codes = mesh.cell_data[f"{tag}_code"]
+        assert codes.min() >= 0, f"{tag} produced an unmapped level"
+    # A synthetic diameter must not be indistinguishable from a measured one.
+    order = list(zip(mesh.cell_data["edge_u"], mesh.cell_data["edge_v"]))
+    assert (mesh.cell_data["diameter_provenance_code"][order.index((0, 1))]
+            != mesh.cell_data["diameter_provenance_code"][order.index((1, 2))])
+
+
+def test_nodes_carry_degree_which_is_the_section_1_1_readout(tmp_path):
+    """Section 1.1 counts branch points; nodes.vtp carried only an id."""
+    import pyvista as pv
+
+    from ImageLynx.visualization.vtk_io import graph_to_vtk
+
+    result = graph_to_vtk(_morphometry_graph(), tmp_path / "net")
+    nodes = pv.read(result["nodes_path"])
+
+    assert "degree" in nodes.point_data
+    by_id = dict(zip(nodes.point_data["node_id"], nodes.point_data["degree"]))
+    assert by_id[0] == 1 and by_id[1] == 2 and by_id[2] == 1
+    assert "is_branch_node" in nodes.point_data

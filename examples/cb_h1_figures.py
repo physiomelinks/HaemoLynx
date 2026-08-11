@@ -220,7 +220,11 @@ def main():
     figure_diameter(diameter_path, diameters)
     sensitivity_path = RESULTS / "figure3_threshold_sensitivity.png"
     figure_sensitivity(sensitivity_path)
-    for written in (density_path, diameter_path, sensitivity_path):
+    degree_path = RESULTS / "figure7_node_degree.png"
+    figure_degree(degree_path)
+    length_path = RESULTS / "figure8_segment_length.png"
+    figure_segment_length(length_path)
+    for written in (density_path, diameter_path, sensitivity_path, degree_path, length_path):
         print(f"wrote {written}")
 
 
@@ -278,6 +282,101 @@ def figure_sensitivity(path):
     fig.tight_layout(rect=[0, 0.055, 1, 0.94])
     fig.savefig(path, dpi=200, facecolor=SURFACE)
     plt.close(fig)
+
+def _degree_and_length():
+    """Node degree distribution and segment lengths, per specimen, from the per-edge table."""
+    import collections
+    degrees, lengths = {}, {}
+    for specimen in SPECIMENS:
+        path = RESULTS / specimen.specimen_id / "per_edge_morphometry.csv"
+        if not path.exists():
+            continue
+        with path.open() as handle:
+            rows = list(csv.DictReader(handle))
+        counter = collections.Counter()
+        for row in rows:
+            counter[row["u"]] += 1
+            counter[row["v"]] += 1
+        histogram = collections.Counter(counter.values())
+        total = len(counter)
+        degrees[specimen.specimen_id] = {d: histogram.get(d, 0) / total for d in range(1, 7)}
+        lengths[specimen.specimen_id] = np.array(
+            [float(r["length_um"]) for r in rows if r.get("length_um")])
+    return degrees, lengths
+
+
+def figure_degree(path):
+    """Section 1.1 asks for the degree distribution, not only the node count."""
+    degrees, _ = _degree_and_length()
+    fig, ax = plt.subplots(figsize=(8.0, 4.6), facecolor=SURFACE)
+    _style(ax)
+    orders = list(range(1, 6))
+    for specimen in SPECIMENS:
+        if specimen.specimen_id not in degrees:
+            continue
+        values = [degrees[specimen.specimen_id][d] for d in orders]
+        colour = COLOUR[specimen.group]
+        ax.plot(orders, values, color=colour, linewidth=2, marker="o", markersize=7,
+                markeredgecolor=SURFACE, markeredgewidth=1.6, alpha=0.9, zorder=3)
+    ax.set_xticks(orders)
+    ax.set_xlabel("node degree (number of distinct segments met)", fontsize=9.5,
+                  color=INK_MUTED)
+    ax.set_ylabel("fraction of nodes")
+    ax.set_yscale("log")
+    ax.grid(axis="y", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.set_title("Node degree distribution, one line per specimen\n", fontsize=11,
+                 color=INK, loc="left")
+    ax.text(0, 1.005, "degree 3 and above are the branch points section 1.1 counts",
+            transform=ax.transAxes, fontsize=9, color=INK_MUTED, va="bottom")
+    # Six near-superimposed lines cannot carry per-specimen labels without colliding, and
+    # cohort identity is the only distinction the figure is making.
+    for group, y in (("WKY", 0.86), ("SHR", 0.74)):
+        ax.plot([0.60, 0.66], [y, y], color=COLOUR[group], linewidth=2,
+                transform=ax.transAxes, clip_on=False)
+        ax.text(0.68, y, group, transform=ax.transAxes, fontsize=9.5, color=INK,
+                va="center")
+    fig.text(0.012, 0.015,
+             "Log scale. Three lines per cohort, near-superimposed: the same shape in both.",
+             fontsize=8.5, color=INK_MUTED)
+    fig.tight_layout(rect=[0, 0.05, 1, 0.94])
+    fig.savefig(path, dpi=200, facecolor=SURFACE)
+    plt.close(fig)
+
+
+def figure_segment_length(path):
+    """Segment length underlies both the density measures and the junction-trim coverage."""
+    _, lengths = _degree_and_length()
+    fig, ax = plt.subplots(figsize=(8.0, 4.6), facecolor=SURFACE)
+    _style(ax)
+    for specimen in SPECIMENS:
+        values = lengths.get(specimen.specimen_id)
+        if values is None or not len(values):
+            continue
+        ordered = np.sort(values)
+        ax.step(ordered, np.arange(1, len(ordered) + 1) / len(ordered),
+                color=COLOUR[specimen.group], linewidth=2, alpha=0.85, where="post", zorder=3)
+    ax.axvline(2 * 3.73, color=INK, linewidth=1.4, linestyle=(0, (4, 2)), zorder=4)
+    ax.text(2 * 3.73 + 1.2, 0.12, "twice the junction exclusion:\nsegments left of this line\n"
+                                  "cannot be trimmed at all",
+            fontsize=8.5, color=INK_MUTED, va="bottom", linespacing=1.35)
+    ax.set_xlim(0, 60)
+    ax.set_ylim(0, 1)
+    ax.set_xlabel("segment length (um)", fontsize=9.5, color=INK_MUTED)
+    ax.set_ylabel("cumulative fraction of segments")
+    ax.grid(axis="y", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.set_title("Segment length distribution, one line per specimen\n", fontsize=11,
+                 color=INK, loc="left")
+    ax.text(0, 1.005, "why the junction radius correction reaches only 63-68% of edges",
+            transform=ax.transAxes, fontsize=9, color=INK_MUTED, va="bottom")
+    for group, y in (("WKY", 0.72), ("SHR", 0.62)):
+        ax.plot([44, 47], [y, y], color=COLOUR[group], linewidth=2)
+        ax.text(48, y, group, fontsize=9.5, color=INK, va="center")
+    fig.tight_layout(rect=[0, 0.03, 1, 0.94])
+    fig.savefig(path, dpi=200, facecolor=SURFACE)
+    plt.close(fig)
+
 
 if __name__ == "__main__":
     main()
