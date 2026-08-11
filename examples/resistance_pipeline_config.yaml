@@ -52,7 +52,7 @@ vessel_masks:
   use_small_vessel_masks_for_boundary_assignment: false
   # Produce the small-vessel masks with ilastik instead of reading pre-segmented files  [needs use_small_vessel_masks_for_boundary_assignment]
   use_ilastik_small_vessel_segmentation: false
-  # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment]
+  # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
@@ -93,7 +93,7 @@ boundary_assignment:
   boundary_last_percent: 10.0
   # Keep only the terminals further than this from a starting node when the degree_1_from_starting method is used  [um; range 0.0..]
   boundary_distance_from_starting_node: 0.0
-  # Pick starting nodes nearest to these coordinates when the coordinates method is used
+  # Pick starting nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   starting_node_coordinates:
   - - 152.0
     - 340.0
@@ -113,15 +113,15 @@ boundary_assignment:
   - - 321.0
     - 334.0
     - 163.0
-  # Pick output nodes nearest to these coordinates when the coordinates method is used
+  # Pick output nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   output_node_coordinates: []
-  # Pick arteriole boundary nodes nearest to these coordinates when the coordinates method is used
+  # Pick arteriole boundary nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   arteriole_boundary_node_coordinates: []
-  # Pick venule boundary nodes nearest to these coordinates when the coordinates method is used
+  # Pick venule boundary nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   venule_boundary_node_coordinates: []
-  # Select starting nodes falling inside these (min corner, max corner) boxes
+  # Select starting nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   starting_node_volumes: []
-  # Select output nodes falling inside these (min corner, max corner) boxes
+  # Select output nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   output_node_volumes:
   - - - 0.0
       - 1308.0
@@ -129,9 +129,9 @@ boundary_assignment:
     - - 600.0
       - 1730.0
       - 700.0
-  # Select arteriole boundary nodes falling inside these (min corner, max corner) boxes
+  # Select arteriole boundary nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   arteriole_boundary_node_volumes: []
-  # Select venule boundary nodes falling inside these (min corner, max corner) boxes
+  # Select venule boundary nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   venule_boundary_node_volumes: []
   # Hold the starting node IDs chosen during the run; leave empty to let the pipeline fill it
   starting_nodes: []
@@ -185,23 +185,23 @@ pipeline_stages:
   do_equiv_resistance_calculation: true
   # Prefix every VTK artifact and cached stage file with this output path
   vtk_output_prefix: examples/outputs/resistance_network
-  # Close gaps in the mask with a structuring element of this radius before skeletonizing  [range 0..; needs do_skeletonize]
+  # Close gaps in the mask with a structuring element of this radius before skeletonizing  [voxels; range 0..; needs do_skeletonize]
   skeleton_closing_radius: 2
-  # Bridge skeleton gaps no larger than this many voxels  [range 0..; needs do_skeletonize]
+  # Bridge skeleton gaps no larger than this many voxels  [voxels; range 0..; needs do_skeletonize]
   skeleton_bridge_gap_size: 3
-  # Drop skeleton branches shorter than this during cleaning  [range 0..; needs do_skeletonize]
+  # Drop skeleton branches shorter than this many voxels during cleaning  [voxels; range 0..; needs do_skeletonize]
   skeleton_min_branch_length: 3
-  # Reconnect skeleton fragments no further apart than this distance  [range 0..; needs do_skeletonize]
+  # Reconnect skeleton fragments no further apart than this distance  [voxels; range 0..; needs do_skeletonize]
   skeleton_max_bridge_distance: 4
   # Use this voxel connectivity when analysing skeleton components  [range 1..3; needs do_skeletonize]
   skeleton_component_connectivity: 3
-  # Reconnect graph fragments whose endpoints lie within this distance  [range 0.0..; needs do_graph_building]
+  # Reconnect graph fragments whose endpoints lie within this distance  [um; range 0.0..; needs do_graph_building]
   graph_reconnect_threshold: 10.0
-  # Reconnect leftover orphan and dangling nodes within this distance in the final pass  [range 0.0..; needs do_graph_building]
+  # Reconnect leftover orphan and dangling nodes within this distance in the final pass  [um; range 0.0..; needs do_graph_building]
   final_orphan_reconnect_threshold: 3.0
-  # Prune terminal stubs shorter than this length  [range 0.0..; needs do_graph_building]
+  # Prune terminal stubs shorter than this length  [um; range 0.0..; needs do_graph_building]
   min_stub_length: 10.0
-  # Collapse clusters of nodes lying within this distance of each other  [range 0.0..; needs do_graph_building]
+  # Collapse clusters of nodes lying within this distance of each other  [um; range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0
   # Write a graph pickle and an overlay PNG after each graph-building step. Turn on to debug a bad topology; it dominates the runtime of a large run, so it is off by default  [needs do_graph_building]
   save_step_artifacts: false
@@ -213,7 +213,7 @@ pipeline_stages:
   centreline_smoothing_method: taubin
   # How many smoothing passes; accuracy plateaus around 15, and past that the filter slowly starts inflating a centreline instead  [range 0..50; needs smooth_centrelines]
   centreline_smoothing_iterations: 10
-  # How far a smoothed centreline may sit from the skeleton before it is blended back towards the original  [microns; range 0.0..; needs smooth_centrelines]
+  # How far a smoothed centreline may sit from the skeleton before it is blended back towards the original  [um; range 0.0..; needs smooth_centrelines]
   centreline_max_deviation: 3.0
 
 # ------------------------------------------------------------------------
@@ -261,7 +261,7 @@ diameters_and_pericytes:
   pericyte_max_diameter_um: 12.0
   # Activate each candidate pericyte constriction at random rather than activating all of them  [needs run_haemodynamics]
   use_probabilistic_pericyte_constriction: false
-  # Activate each candidate pericyte constriction with this probability  [range 0.0..1.0; needs use_probabilistic_pericyte_constriction]
+  # Activate each candidate pericyte constriction with this probability  [fraction; range 0.0..1.0; needs use_probabilistic_pericyte_constriction]
   pericyte_constriction_probability: 0.8
   # Draw the random pericyte cohort from this seed, so a run repeats; another seed constricts a different set of pericytes, and null draws a fresh cohort every run  [needs use_probabilistic_pericyte_constriction]
   pericyte_constriction_seed: 20240917
@@ -320,17 +320,17 @@ fwhm_diameter_measurement:
   fwhm_allow_junction_crossing: false
   # Estimate the profile baseline from the profile wings or from a percentile  [one of: wings, percentile; needs use_fwhm_edge_diameters]
   fwhm_profile_baseline_mode: wings
-  # Take this fraction of each profile end as the wing used for baseline estimation  [range 0.0..1.0; needs use_fwhm_edge_diameters]
+  # Take this fraction of each profile end as the wing used for baseline estimation  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters]
   fwhm_profile_baseline_wing_fraction: 0.2
   # Hold the fitted baseline near the anchor estimate rather than letting it float  [needs use_fwhm_edge_diameters]
   fwhm_constrain_fitted_baseline: false
-  # Allow the fitted baseline to move this fraction of the profile peak-to-peak range either way  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_constrain_fitted_baseline]
+  # Allow the fitted baseline to move this fraction of the profile peak-to-peak range either way  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_constrain_fitted_baseline]
   fwhm_baseline_constraint_half_width_ptp: 0.35
   # Clip each profile to the central lobe so neighbouring branches do not bias the fit  [needs use_fwhm_edge_diameters]
   fwhm_clip_profile_to_single_vessel: true
-  # Require the profile to fall by this fraction of the centre value before clipping starts  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_clip_profile_to_single_vessel]
+  # Require the profile to fall by this fraction of the centre value before clipping starts  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_clip_profile_to_single_vessel]
   fwhm_clip_min_drop_fraction_of_center: 0.35
-  # End the clipped lobe once the profile rises again by this fraction of the centre value  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_clip_profile_to_single_vessel]
+  # End the clipped lobe once the profile rises again by this fraction of the centre value  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_clip_profile_to_single_vessel]
   fwhm_clip_re_rise_fraction_of_center: 0.08
   # Skip sample positions within this distance of a branch endpoint  [um; range 0.0..; needs use_fwhm_edge_diameters]
   fwhm_branch_endpoint_exclusion_um: 10.0
@@ -348,7 +348,7 @@ fwhm_diameter_measurement:
   fwhm_cap_half_extent_by_nonlocal_same_edge_distance: true
   # Treat same-edge points separated by more than this arc length as nonlocal  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
   fwhm_nonlocal_same_edge_arc_separation_um: 6.0
-  # Cap the profile half-extent at this fraction of the nearest nonlocal same-edge distance  [range 0.0..; needs use_fwhm_edge_diameters and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
+  # Cap the profile half-extent at this fraction of the nearest nonlocal same-edge distance  [fraction; range 0.0..; needs use_fwhm_edge_diameters and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
   fwhm_nonlocal_same_edge_half_extent_factor: 0.45
   # Discard samples whose fitted centre drifts too far from the centerline position  [needs use_fwhm_edge_diameters]
   fwhm_reject_samples_with_center_offset: true
