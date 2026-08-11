@@ -1906,15 +1906,38 @@ if __name__ == "__main__":
                              "probability volume and that specimen's measured voxel size.")
     parser.add_argument("--list-specimens", action="store_true",
                         help="Print each specimen's segmentation status and exit.")
+    parser.add_argument("--record-provenance", action="store_true",
+                        help="Stamp every existing probability map with the classifier that "
+                             "produced it, and exit. Run immediately after predicting.")
     args = parser.parse_args()
+
+    if args.record_provenance:
+        from ImageLynx.artefact_provenance import record_probability_provenance
+        _stamped = 0
+        for _s in specimens.SPECIMENS:
+            if _s.probabilities_path.exists():
+                _rec = record_probability_provenance(_s)
+                print(f"{_s.specimen_id}: stamped with {_rec['classifier_name']} "
+                      f"{_rec['classifier_sha256'][:12]}")
+                _stamped += 1
+            else:
+                print(f"{_s.specimen_id}: no probability map, skipped")
+        print(f"\n{_stamped} artefact(s) stamped. Run this immediately after predicting - "
+              f"stamping later only records what the classifier is now, not what made the map.")
+        raise SystemExit(0)
 
     if args.list_specimens:
         _stages = ("acquired", "preprocessed", "predicted", "masked")
-        print(f"{'specimen':<10}{'group':<7}" + "".join(f"{s:<14}" for s in _stages) + "ready")
-        print("-" * 84)
+        print(f"{'specimen':<10}{'group':<7}" + "".join(f"{s:<14}" for s in _stages)
+              + f"{'ready':<8}probability map")
+        print("-" * 104)
         for _sid, _row in specimens.segmentation_status().items():
             _cells = "".join(f"{('yes' if _row['stages'][s] else '-'):<14}" for s in _stages)
-            print(f"{_sid:<10}{_row['group']:<7}{_cells}{'yes' if _row['ready'] else '-'}")
+            _prov = _row["probability_status"]
+            _flag = {"current": "current", "stale": "STALE - retrain since",
+                     "unknown": "UNKNOWN - no provenance", "absent": "-"}[_prov]
+            print(f"{_sid:<10}{_row['group']:<7}{_cells}"
+                  f"{('yes' if _row['ready'] else '-'):<8}{_flag}")
         _prov = specimens.data_root_provenance()
         print(f"\nAcquisition root: {_prov['acquisition_root']}"
               f"{' (from env)' if _prov['acquisition_root_from_env'] else ''}"

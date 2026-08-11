@@ -212,11 +212,29 @@ def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
     radius:
         Number of erosion/dilation iterations.  Larger values bridge wider
         gaps but risk merging genuinely distinct structures.
+
+    Notes
+    -----
+    The array is padded before closing and unpadded afterwards. ``scipy`` erodes against a
+    zero border, so without the pad every voxel touching the edge of the array is removed:
+    a tube crossing the domain boundary lost its entire first and last slice, 13 voxels to 0
+    on the test fixture. That is not a closing - a closing is extensive, ``X`` is a subset of
+    ``X`` closed - and it moved the point at which a vessel terminates one slice inside the
+    domain, which matters because inlets and outlets are identified by vessels reaching the
+    boundary. Passing ``border_value=1`` instead is not a fix: it treats everything outside
+    the array as foreground and the dilation then floods the border inwards.
+
+    Closing is idempotent for a fixed structuring element, so calling this twice at radius 1
+    does nothing the second time. Radius is not additive across calls; one call at radius 2
+    is a different and larger operation.
     """
     if radius <= 0:
         return binary
     struct = generate_binary_structure(binary.ndim, 1)
-    return binary_closing(binary.astype(bool), structure=struct, iterations=radius)
+    pad = int(radius) + 1
+    padded = np.pad(binary.astype(bool), pad, mode="constant", constant_values=False)
+    closed = binary_closing(padded, structure=struct, iterations=radius)
+    return closed[(slice(pad, -pad),) * binary.ndim]
 
 
 def fill_holes_3d(binary: np.ndarray) -> np.ndarray:

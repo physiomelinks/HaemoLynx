@@ -92,8 +92,18 @@ def test_image_to_model_pipeline_end_to_end_on_static_tiff(tmp_path):
     n_edges = graph.number_of_edges()
     print(f"[integration_static] n_nodes={n_nodes}, n_edges={n_edges}")
 
-    assert n_nodes in (11, 17, 28, 39), f"Expected 11 or 17 nodes, got {n_nodes}"
-    assert n_edges in (10, 16), f"Expected 10 or 16 edges, got {n_edges}"
+    # The accepted sets have grown once per deliberate behavioural change - 11, 17, 28, 39,
+    # and now 42 after close_binary_mask stopped eroding the domain boundary. On this fixture
+    # the old closing deleted 7 voxels, every one of them a vessel voxel touching a domain
+    # face, which is 100% of the population that decides where a vessel terminates and
+    # therefore which nodes become inlets and outlets. Restoring them adds 3 nodes and 1 edge.
+    #
+    # A list of accepted magic numbers is a weak contract: it detects change without saying
+    # what should be true. It is kept because it does catch unintended drift, but the actual
+    # invariants are asserted in tests/test_preprocessing.py, where closing is required to be
+    # extensive and to preserve boundary-crossing vessels.
+    assert n_nodes in (11, 17, 28, 39, 42), f"Expected a known node count, got {n_nodes}"
+    assert n_edges in (10, 11, 16), f"Expected a known edge count, got {n_edges}"
 
 
 @pytest.mark.integration

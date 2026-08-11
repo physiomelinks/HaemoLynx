@@ -242,6 +242,17 @@ class Specimen:
             "masked": self.mask_path.exists() and self.edt_path.exists(),
         }
 
+    def probability_status(self) -> str:
+        """absent / unknown / stale / current - which classifier made the probability map.
+
+        ``predicted: yes`` says a file exists, which is a different claim from the file being
+        usable. A map made by a classifier that has since been retrained is worse than no map,
+        because it looks finished.
+        """
+        from .artefact_provenance import probability_status
+
+        return probability_status(self)
+
     def missing_inputs(self) -> list:
         """Which files still have to be produced before this specimen can be modelled."""
         wanted = (self.ilastik_input_path, self.probabilities_path,
@@ -389,6 +400,7 @@ def segmentation_status() -> Dict[str, Dict[str, object]]:
             "group": s.group,
             "stages": s.stage_status(),
             "missing_inputs": [p.name for p in s.missing_inputs()],
+            "probability_status": s.probability_status(),
             "ready": s.is_ready(),
         }
         for s in SPECIMENS

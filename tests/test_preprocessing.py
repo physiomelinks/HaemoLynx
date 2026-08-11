@@ -147,3 +147,53 @@ def test_pipeline_does_not_median_filter_the_probability_field():
     assert pre.morphological_opening_radius == 0
     assert pre.morphological_closing_radius == 0
     assert pre.probability_smoothing_sigma == 0.0
+
+
+# --- Closing at the domain boundary (#98 Phase B) -----------------------------------------
+
+def test_closing_does_not_delete_vessels_at_the_domain_boundary():
+    """A closing is extensive: X is a subset of X closed. This one was not.
+
+    scipy erodes against a zero border, so every voxel touching the edge of the array was
+    removed. On a boundary-crossing tube the entire first and last slice disappeared - 13
+    voxels to 0 - which moves the point at which a vessel terminates one slice inside the
+    domain. Inlet and outlet identification is defined by vessels reaching the boundary, so
+    this silently changed which nodes became inlets.
+    """
+    from skimage.measure import label
+    from ImageLynx.preprocessing.skeleton import close_binary_mask
+
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    _, yy, xx = np.ogrid[:20, :20, :20]
+    mask |= np.broadcast_to(((yy - 10) ** 2 + (xx - 10) ** 2) <= 2 ** 2, mask.shape)
+    assert mask[0].sum() == 13 and mask[-1].sum() == 13
+
+    closed = close_binary_mask(mask, radius=1)
+
+    assert closed[0].sum() == 13, "the boundary slice was eroded away"
+    assert closed[-1].sum() == 13
+    assert np.all(closed >= mask), "closing must never remove foreground"
+
+    # And it must still do the job it is there for.
+    gapped = mask.copy()
+    gapped[9:11] = False
+    assert label(gapped, connectivity=3).max() == 2
+    assert label(close_binary_mask(gapped, radius=2), connectivity=3).max() == 1
+
+
+def test_closing_twice_is_a_no_op():
+    """Closing is idempotent for a fixed structuring element.
+
+    The pipeline calls close_binary_mask twice in succession, at closing_radius then at
+    bridge_gap_size. The second call has never done anything - which is worth knowing before
+    anyone tunes bridge_gap_size expecting it to bridge wider gaps. Radius is not additive
+    across calls; one call at radius 2 is a different, larger operation.
+    """
+    from ImageLynx.preprocessing.skeleton import close_binary_mask
+
+    rng = np.random.default_rng(0)
+    mask = rng.random((24, 24, 24)) < 0.15
+
+    once = close_binary_mask(mask, radius=1)
+    assert np.array_equal(close_binary_mask(once, radius=1), once)
+    assert not np.array_equal(close_binary_mask(mask, radius=2), once)
