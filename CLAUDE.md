@@ -186,13 +186,22 @@ reports the others).
   conductances back as microns. `graph.assert_no_forbidden_edge_attributes(G)` raises if it
   reappears; NetworkX algorithms must be passed an explicit `weight="length"` / `weight="resistance"`
   rather than relying on their `"weight"` default.
-- **Viscosity model** — piecewise: `µ(d) = 3.0 mPa·s · (5 µm / d)^1.647` up to **7 µm** (above
-  ~8.7 µm it would predict blood thinner than plasma), then a constant large-vessel
-  `µ = 3.5 mPa·s`. The constant branch is a placeholder — it steps up discontinuously at 7 µm, so
-  7–8.4 µm resistances are overestimated. Diameters from 7 µm to 100 µm therefore raise
-  `haemodynamics.PlaceholderViscosityWarning`; above ~100 µm the constant is close to the true
-  macroscale value and no warning is raised. Modelling the real transition is issue #90, and
-  making the law selectable is issue #85.
+- **Viscosity model** — selectable, via the `viscosity_law` setting, and the choice changes every
+  resistance a run produces, so **resistances are not comparable across laws**. The graph records
+  which one made it in `G.graph["viscosity_law"]`. All three live in `haemodynamics/viscosity.py`
+  with their fitted ranges.
+  - `capillary_power_law` (**default**, unchanged behaviour): `µ(d) = 3.0 mPa·s · (5 µm / d)^1.647`
+    up to **7 µm** (above ~8.7 µm it would predict blood thinner than plasma), then a constant
+    `µ = 3.5 mPa·s`. That constant is a placeholder — it steps up discontinuously at 7 µm, so a
+    7.5 µm vessel comes out *more* resistive per unit length than a 7 µm one. 7–100 µm raises
+    `haemodynamics.PlaceholderViscosityWarning`.
+  - `pries_in_vivo`: Pries et al., fitted 3.3–1978 µm, one continuous expression over the whole
+    tree, no warning. Takes `haematocrit` (default 0.45). Includes the ~1.1 µm endothelial surface
+    layer, and **that is why it is ~5× the power law below 7 µm** — the two are calibrated against
+    different things and only agree for large vessels (within ~13% of the 3.5 mPa·s constant above
+    100 µm). Which is right is an open question; `tests/test_viscosity_laws.py` measures the gap
+    rather than papering over it.
+  - `constant`: plasma everywhere, for separating geometry effects from viscosity ones.
 - **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`.
 - **Comments** — only for non-obvious domain logic; prefer self-explanatory code.
 

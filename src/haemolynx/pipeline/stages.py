@@ -792,9 +792,13 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                     "Saved pericyte resistance comparison CSV to: "
                     f"{comparison_results['output_csv_path']}"
                 )
-            weight_results = haemo_results.get("weights", {})
-            for step_name, step_result in weight_results.items():
-                logger.info(f"Haemodynamics weights [{step_name}]: {step_result}")
+            # `weights` has not been a key since resistance and conductance
+            # replaced the overloaded `weight` attribute; the summary calls it
+            # `resistances`, and this loop had been logging nothing.
+            for step_name, step_result in haemo_results.get("resistances", {}).items():
+                logger.info(f"Haemodynamics resistances [{step_name}]: {step_result}")
+            if "viscosity" in haemo_results:
+                logger.info(f"Viscosity law: {haemo_results['viscosity']}")
 
 
     return HaemodynamicModel(graph=G, results=locals().get("haemo_results", {}) or {})

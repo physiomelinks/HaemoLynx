@@ -60,6 +60,8 @@ def set_resistances_for_constriction_strategy(
     prefer_edge_fwhm_baseline: bool,
     constriction_length: float,
     constriction_spacing: float,
+    viscosity_law: str = "capillary_power_law",
+    haematocrit: float = 0.45,
     constriction_probability: float = 1.0,
     pericyte_mask_path: str | Path | None = None,
     pericyte_mask_h5_dataset_name: str | None = None,
@@ -126,6 +128,8 @@ def set_resistances_for_constriction_strategy(
     poiseuille_model = PoiseuilleModel(
         constriction_length=float(constriction_length),
         constriction_spacing=float(constriction_spacing),
+        viscosity_law=viscosity_law,
+        haematocrit=float(haematocrit),
     )
     if prefer_edge_fwhm_baseline:
         graph, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(

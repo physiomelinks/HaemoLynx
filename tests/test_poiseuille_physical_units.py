@@ -204,14 +204,20 @@ def test_the_warning_does_not_change_the_value_returned():
     assert warned == LARGE_VESSEL_VISCOSITY_PA_S
 
 
-def test_warning_names_the_regime_and_the_tracking_issue():
-    """An operator reading the log must be able to act on it."""
+def test_warning_names_the_regime_and_the_way_out():
+    """An operator reading the log must be able to act on it.
+
+    It used to point at issue #90, "model the transition instead of the
+    constant". That is what `pries_in_vivo` is, so the message names the
+    setting rather than an issue to go and read.
+    """
     with pytest.warns(PlaceholderViscosityWarning) as caught:
         MODEL.calculate_viscosity(20.0)
     message = str(caught[0].message)
     assert f"{CAPILLARY_REGIME_MAX_DIAMETER_UM}" in message
     assert f"{PLACEHOLDER_REGIME_MAX_DIAMETER_UM}" in message
-    assert "#90" in message
+    assert "pries_in_vivo" in message
+    assert "viscosity_law" in message
     assert "order-of-magnitude" in message
 
 

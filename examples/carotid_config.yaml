@@ -220,6 +220,10 @@ statistics_and_measurements:
 # Diameters and pericytes
 # ------------------------------------------------------------------------
 diameters_and_pericytes:
+  # Which apparent-viscosity law sets the resistances: capillary_power_law is calibrated for capillaries and holds a placeholder constant above 7 um, pries_in_vivo covers 3.3-1978 um in one expression, constant is plasma everywhere. They disagree by several times in small vessels, so resistances are not comparable across laws  [one of: capillary_power_law, pries_in_vivo, constant; needs run_haemodynamics]
+  viscosity_law: capillary_power_law
+  # Discharge haematocrit the pries_in_vivo law is evaluated at; read by no other law  [fraction; range 0.0..0.99; needs run_haemodynamics]
+  haematocrit: 0.45
   # Give every branch order the same vessel diameter instead of a per-order table
   all_diams_const: true
   # Model pericyte constrictions when assigning Poiseuille resistances  [needs run_haemodynamics]

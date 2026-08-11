@@ -905,6 +905,36 @@ SCHEMA = Schema(
         # Diameters and pericytes
         # ------------------------------------------------------------------
         Setting(
+            name="viscosity_law",
+            kind="choice",
+            default="capillary_power_law",
+            choices=["capillary_power_law", "pries_in_vivo", "constant"],
+            help=(
+                "Which apparent-viscosity law sets the resistances: "
+                "capillary_power_law is calibrated for capillaries and holds a "
+                "placeholder constant above 7 um, pries_in_vivo covers "
+                "3.3-1978 um in one expression, constant is plasma everywhere. "
+                "They disagree by several times in small vessels, so "
+                "resistances are not comparable across laws"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="haematocrit",
+            kind="float",
+            default=0.45,
+            help=(
+                "Discharge haematocrit the pries_in_vivo law is evaluated at; "
+                "read by no other law"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="fraction",
+            minimum=0.0,
+            maximum=0.99,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
             name="all_diams_const",
             kind="bool",
             default=True,
