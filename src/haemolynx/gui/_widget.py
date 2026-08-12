@@ -1026,6 +1026,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         BC_LAYER_NAMES,
         BC_REGIONS,
         HANDLE,
+        band_boxes,
         ROLES,
         orderable_settings,
         outside_extent,
@@ -1040,6 +1041,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         settings_for_method,
         settings_from_layers,
         snap,
+        terminal_axis_span,
         terminal_points,
         volume_setting,
         wanted_rows,
@@ -1133,6 +1135,18 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         return (np.min([e[0] for e in extents], axis=0),
                 np.max([e[1] for e in extents], axis=0))
 
+    def band_note(bands, measured: bool) -> str:
+        """Say which span a band was drawn across, because the two differ."""
+        if not bands:
+            return ""
+        if measured:
+            return "  Bands drawn across the terminals, as a run measures them."
+        return (
+            "  Bands drawn across the image: a run measures them across the "
+            "terminals instead, and a network rarely reaches its image's edge, "
+            "so run '3. Graph' to see where they really fall."
+        )
+
     def offscreen_warning(values) -> str:
         """Say when coordinates fall outside the image rather than drawing them there."""
         box = image_extent()
@@ -1148,6 +1162,20 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             f"{tuple(round(float(v), 1) for v in box[1])} um (z, y, x)."
         )
 
+    def bands_now(values):
+        """The slab each `edge_percent` role selects from, if it can be drawn.
+
+        Returns the boxes and whether they are the real thing: a run measures
+        the band across the terminals, so before a graph exists the image has
+        to stand in and the report has to say so.
+        """
+        box = image_extent()
+        if box is None:
+            return {}, True
+        axis = values.get("boundary_axis")
+        span = terminal_axis_span(graph(), axis) if graph() is not None else None
+        return band_boxes(values, *box, axis_span=span), span is not None
+
     def redraw() -> None:
         """Settings -> layers. One of the two authoritative directions.
 
@@ -1161,9 +1189,11 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         state.applying = True
         try:
             values = current_values()
-            group = group_for(values)
+            bands, measured = bands_now(values)
+            group = group_for(values, bands)
             _apply_layers(viewer, group, report)
             report.value = (f"Boundary conditions: {group.note}"
+                            f"{band_note(bands, measured)}"
                             f"{unused_warning(values)}{offscreen_warning(values)}")
             for name in (BC_COORDINATES, BC_REGIONS):
                 listen(layer(name))
@@ -1578,11 +1608,16 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         write_rows({volume_setting(str(role.value)): []})
         redraw()
 
-    for _role in ROLES:
-        for _name in (method_setting(_role), coordinate_setting(_role),
-                      volume_setting(_role)):
-            if _name in rows:
-                rows[_name].changed.connect(on_settings_changed)
+    for _name in (
+        *(name for _role in ROLES
+          for name in (method_setting(_role), coordinate_setting(_role),
+                       volume_setting(_role))),
+        # The band settings draw a box too, so they move the picture as much
+        # as a coordinate does.
+        *shared_settings(),
+    ):
+        if _name in rows:
+            rows[_name].changed.connect(on_settings_changed)
     refresh_rows()
 
     show.changed.connect(lambda *_: on_show())

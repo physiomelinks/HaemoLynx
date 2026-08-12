@@ -626,3 +626,158 @@ def test_the_percentage_split_matches_the_selector():
     assert set(PERCENT_FOR_NODE_ROLE) == {"input", "output"}
     for role, names in BOUNDARY_ROLE_SETTINGS.items():
         assert names["node_role"] in PERCENT_FOR_NODE_ROLE
+
+
+# --- the band an edge_percent role selects from ------------------------------
+
+FULL_IMAGE = ([0.0, 0.0, 0.0], [500.0, 1000.0, 800.0])
+
+
+def test_an_inlet_band_starts_at_the_low_end_of_the_axis():
+    """`edge_percent` is the one method whose region is implied rather than
+    written down, so the only way to see what it takes was to run it."""
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    boxes = band_boxes(
+        {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+         "boundary_first_percent": 10.0},
+        *FULL_IMAGE,
+    )
+    lo, hi = boxes["starting"]
+    assert lo[1] == pytest.approx(0.0)
+    assert hi[1] == pytest.approx(100.0)
+
+
+def test_an_outlet_band_ends_at_the_high_end_of_the_axis():
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    boxes = band_boxes(
+        {"boundary_axis": 1, "output_node_selection_method": "edge_percent",
+         "boundary_last_percent": 25.0},
+        *FULL_IMAGE,
+    )
+    lo, hi = boxes["output"]
+    assert lo[1] == pytest.approx(750.0)
+    assert hi[1] == pytest.approx(1000.0)
+
+
+def test_a_band_spans_everything_across_the_other_axes():
+    """The selector's rule is on one coordinate alone."""
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    lo, hi = band_boxes(
+        {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+         "boundary_first_percent": 10.0},
+        *FULL_IMAGE,
+    )["starting"]
+    assert (lo[0], hi[0]) == pytest.approx((0.0, 500.0))
+    assert (lo[2], hi[2]) == pytest.approx((0.0, 800.0))
+
+
+def test_a_band_is_measured_across_the_terminals_when_there_are_any():
+    """What a run measures. A network rarely reaches its image's edge, so the
+    image-relative band is a different box -- see `select_boundary_terminal_nodes`."""
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    lo, hi = band_boxes(
+        {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+         "boundary_first_percent": 50.0},
+        *FULL_IMAGE,
+        axis_span=(200.0, 400.0),
+    )["starting"]
+    assert (lo[1], hi[1]) == pytest.approx((200.0, 300.0))
+
+
+@pytest.mark.parametrize("axis", [0, 1, 2])
+def test_the_band_follows_the_axis_it_is_told(axis):
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    lo, hi = band_boxes(
+        {"boundary_axis": axis, "starting_node_selection_method": "edge_percent",
+         "boundary_first_percent": 50.0},
+        *FULL_IMAGE,
+    )["starting"]
+    assert hi[axis] == pytest.approx(FULL_IMAGE[1][axis] / 2)
+    for other in {0, 1, 2} - {axis}:
+        assert hi[other] == pytest.approx(FULL_IMAGE[1][other])
+
+
+def test_only_a_role_using_edge_percent_gets_a_band():
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    boxes = band_boxes(
+        {"boundary_axis": 1,
+         "starting_node_selection_method": "edge_percent",
+         "output_node_selection_method": "coordinates",
+         "boundary_first_percent": 10.0, "boundary_last_percent": 10.0},
+        *FULL_IMAGE,
+    )
+    assert set(boxes) == {"starting"}
+
+
+def test_a_hundred_percent_band_is_the_whole_span():
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    lo, hi = band_boxes(
+        {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+         "boundary_first_percent": 100.0},
+        *FULL_IMAGE,
+    )["starting"]
+    assert (lo[1], hi[1]) == pytest.approx((0.0, 1000.0))
+
+
+def test_a_nonsense_axis_draws_nothing_rather_than_raising():
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    for axis in (7, -1, None, "y"):
+        assert band_boxes(
+            {"boundary_axis": axis, "starting_node_selection_method": "edge_percent",
+             "boundary_first_percent": 10.0},
+            *FULL_IMAGE,
+        ) == {}
+
+
+def test_a_band_is_drawn_as_a_box_with_no_handle():
+    """It is not a region anyone typed, so there is nothing to drag and
+    nothing for the settings to read back out of it."""
+    from haemolynx.gui.boundary_picking import BAND, band_boxes, region_shapes
+
+    values = {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+              "boundary_first_percent": 10.0}
+    bands = band_boxes(values, *FULL_IMAGE)
+    _data, kinds, features = region_shapes(BoundaryPicks.from_settings(values), bands)
+
+    assert kinds == ["line"] * 12
+    assert set(features["part"]) == {BAND}
+    assert set(features["role"]) == {"starting"}
+
+
+def test_a_band_and_a_configured_region_can_be_drawn_together():
+    from haemolynx.gui.boundary_picking import band_boxes, region_shapes
+
+    values = {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+              "boundary_first_percent": 10.0, "output_node_volumes": [list(A_BOX)]}
+    bands = band_boxes(values, *FULL_IMAGE)
+    _data, kinds, features = region_shapes(BoundaryPicks.from_settings(values), bands)
+
+    assert kinds.count("rectangle") == 1, "only the configured region is editable"
+    assert kinds.count("line") == 24
+    assert list(features["part"]).count("handle") == 1
+
+
+def test_the_span_of_the_terminals_needs_a_graph():
+    from haemolynx.gui.boundary_picking import terminal_axis_span
+
+    assert terminal_axis_span(None, 1) is None
+
+
+def test_the_span_of_the_terminals_is_where_they_reach():
+    import networkx as nx
+    from haemolynx.gui.boundary_picking import terminal_axis_span
+
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=np.array([0.0, 40.0, 0.0]))
+    graph.add_node(1, pos=np.array([0.0, 160.0, 0.0]))
+    graph.add_edge(0, 1)
+
+    assert terminal_axis_span(graph, 1) == pytest.approx((40.0, 160.0))

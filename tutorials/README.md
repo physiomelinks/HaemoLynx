@@ -94,6 +94,15 @@ moved in the 2D or the 3D view; regions only in 2D. **Region depth** resizes
 the regions you have selected, or all of that role's regions if none are, and
 sets the depth the next one is drawn at.
 
+`edge_percent` draws its band too: the slab of the volume that percentage
+covers, measured from the near or far end of the boundary axis, as a wireframe
+box in the role's colour. It has no handle to drag — it is what the percentage
+works out to, not a region anyone typed — and it follows the percentage as you
+change it. A run measures the band across the terminals rather than the image,
+because a network rarely reaches its image's edge, so before *3. Graph* has run
+the box is drawn across the image and the report says so; afterwards it is
+exact.
+
 The boundary axis and the band percentage appear under whichever role is
 reading them — there is one of each for the whole network, so the row moves to
 the sub-tab you are on rather than being copied. A role sees the percentage for

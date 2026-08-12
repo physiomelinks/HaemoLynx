@@ -46,6 +46,25 @@ def rows_of(widget):
     return widget._haemolynx_rows()
 
 
+def no_bands(widget):
+    """Take every role off `edge_percent`.
+
+    Three of the four roles default to it, and each one draws the band it
+    would select from -- so a test about a region someone configured has to
+    say it is not also asking for three implied ones.
+    """
+    for role in ROLES:
+        rows_of(widget)[method_setting(role)].value = "coordinates"
+
+
+def drawn_for(viewer, role):
+    """Every vertex of the shapes belonging to one role."""
+    layer = viewer.layers[BC_REGIONS]
+    roles = list(layer.features["role"])
+    mine = [np.asarray(s) for s, owner in zip(layer.data, roles) if owner == role]
+    return np.concatenate(mine) if mine else np.empty((0, 3))
+
+
 # --- what a config describes, drawn ------------------------------------------
 
 
@@ -79,6 +98,7 @@ def test_a_picked_coordinate_lands_where_the_image_says_it_should(panel):
 
 def test_the_region_is_drawn_as_a_rectangle_at_the_boxs_centre(panel):
     widget, viewer, bc = panel
+    no_bands(widget)
     rows_of(widget)["output_node_volumes"].value = [A_BOX]
 
     bc.show()
@@ -243,6 +263,7 @@ def test_editing_points_does_not_wipe_the_regions(panel):
 
 def test_a_region_edited_in_the_viewer_reaches_the_setting(panel):
     widget, viewer, bc = panel
+    no_bands(widget)
     rows_of(widget)["output_node_volumes"].value = [A_BOX]
     bc.show()
 
@@ -256,6 +277,7 @@ def test_a_region_edited_in_the_viewer_reaches_the_setting(panel):
 
 def test_the_depth_slider_resizes_the_selected_region(panel):
     widget, viewer, bc = panel
+    no_bands(widget)
     rows_of(widget)["output_node_volumes"].value = [A_BOX]
     bc.show()
     viewer.layers[BC_REGIONS].selected_data = {0}
@@ -387,6 +409,7 @@ def test_the_controls_sit_on_the_boundaries_tab(panel):
 def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle(panel):
     """A rectangle on one slice says nothing about how deep the box goes."""
     widget, viewer, bc = panel
+    no_bands(widget)
     rows_of(widget)["output_node_volumes"].value = [A_BOX]
 
     bc.show()
@@ -406,6 +429,7 @@ def test_the_outline_survives_a_second_show(panel):
     draw, so `shape_type` has to be re-applied on update, not only on add.
     """
     widget, viewer, bc = panel
+    no_bands(widget)
     rows_of(widget)["output_node_volumes"].value = [A_BOX]
     bc.show()
 
@@ -506,6 +530,7 @@ def test_editing_one_role_does_not_wipe_another(panel):
     looking at.
     """
     widget, viewer, bc = panel
+    no_bands(widget)
     rows_of(widget)["output_node_volumes"].value = [A_BOX]
     bc.show()
 
@@ -797,6 +822,7 @@ def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
     given next, so a box outline handed to a layer holding one rectangle raised
     -- after emptying itself, which lost the region."""
     widget, viewer, bc = panel
+    no_bands(widget)
     rows_of(widget)["output_node_selection_method"].value = "volume"
     bc.actions["output"].draw.changed()
     viewer.layers[BC_REGIONS].add_rectangles(
@@ -815,6 +841,7 @@ def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
 
 
 def draw_a_region(widget, viewer, bc, *, role="output", z=10.0):
+    no_bands(widget)
     rows_of(widget)[method_setting(role)].value = "volume"
     bc.actions[role].draw.changed()
     viewer.layers[BC_REGIONS].add_rectangles(
@@ -935,3 +962,110 @@ def test_move_before_anything_is_drawn_says_so(panel):
     bc.actions["starting"].move.changed()
 
     assert "Nothing to move yet" in widget._haemolynx_report()
+
+
+# --- showing what edge_percent selects from ----------------------------------
+
+
+def a_graph_spanning(low, high, axis=1):
+    import networkx as nx
+
+    graph = nx.MultiGraph()
+    first, second = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+    first[axis], second[axis] = low, high
+    graph.add_node(0, pos=np.array(first))
+    graph.add_node(1, pos=np.array(second))
+    graph.add_edge(0, 1)
+    return graph
+
+
+def test_edge_percent_draws_the_band_it_will_select_from(panel):
+    """The one method whose region is implied rather than written down: before
+    this there was nothing on screen until a run had already used it."""
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["boundary_first_percent"].value = 10.0
+    rows_of(widget)["boundary_axis"].value = 1
+
+    bc.show()
+
+    assert BC_REGIONS in viewer.layers
+    drawn = drawn_for(viewer, "starting")
+    image_y = float(viewer.layers["stack"].extent.world[1][1])
+    assert drawn[:, 1].min() == pytest.approx(0.0)
+    assert drawn[:, 1].max() == pytest.approx(image_y * 0.1, rel=1e-3)
+
+
+def test_the_outlet_band_sits_at_the_far_end(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["boundary_last_percent"].value = 20.0
+
+    bc.show()
+
+    drawn = drawn_for(viewer, "output")
+    image_y = float(viewer.layers["stack"].extent.world[1][1])
+    assert drawn[:, 1].max() == pytest.approx(image_y)
+    assert drawn[:, 1].min() == pytest.approx(image_y * 0.8, rel=1e-3)
+
+
+def test_the_band_says_which_span_it_was_drawn_across(panel):
+    """A run measures across the terminals, so the pre-run band is a guess."""
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+
+    bc.show()
+    assert "across the image" in widget._haemolynx_report()
+    assert "3. Graph" in widget._haemolynx_report()
+
+    bc.state.results = type("R", (), {"graph": a_graph_spanning(40.0, 160.0)})()
+    bc.show()
+    assert "across the terminals" in widget._haemolynx_report()
+
+
+def test_the_band_follows_the_terminals_once_there_are_some(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["boundary_first_percent"].value = 50.0
+    bc.state.results = type("R", (), {"graph": a_graph_spanning(40.0, 160.0)})()
+
+    bc.show()
+
+    drawn = drawn_for(viewer, "starting")
+    assert drawn[:, 1].min() == pytest.approx(40.0)
+    assert drawn[:, 1].max() == pytest.approx(100.0)
+
+
+def test_the_band_follows_the_percentage_as_it_is_typed(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    bc.show()
+
+    rows_of(widget)["boundary_first_percent"].value = 40.0
+
+    drawn = drawn_for(viewer, "starting")
+    image_y = float(viewer.layers["stack"].extent.world[1][1])
+    assert drawn[:, 1].max() == pytest.approx(image_y * 0.4, rel=1e-3)
+
+
+def test_a_band_is_never_read_back_as_a_configured_region(panel):
+    """It is what a percentage works out to, not something anyone typed."""
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    bc.show()
+
+    bc.sync()
+
+    assert widget._haemolynx_values()["starting_node_volumes"] == []
+    assert widget._haemolynx_values()["output_node_volumes"] == []
+
+
+def test_a_band_goes_away_with_the_method_that_made_it(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    bc.show()
+    assert len(drawn_for(viewer, "starting")) == 24, "twelve two-point edges"
+
+    rows_of(widget)["starting_node_selection_method"].value = "all_degree_1"
+
+    assert not len(drawn_for(viewer, "starting"))

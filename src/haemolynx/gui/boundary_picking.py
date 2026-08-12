@@ -66,7 +66,10 @@ __all__ = [
     "snap",
     "specs_for",
     "terminal_points",
+    "BAND",
     "PERCENT_FOR_NODE_ROLE",
+    "band_boxes",
+    "terminal_axis_span",
     "outside_extent",
     "role_settings",
     "role_title",
@@ -359,19 +362,99 @@ def box_outline(
 
 #: What a shape in the regions layer is for: the editable rectangle, or one of
 #: the twelve segments drawing the box it stands for.
+BAND = "band"
 HANDLE = "handle"
 OUTLINE = "outline"
 
 
+def terminal_axis_span(graph, axis: int):
+    """The lowest and highest terminal along *axis*, or None without a graph.
+
+    What the selector measures its bands across -- not the image. A network
+    rarely reaches the edge of its image, so an image-relative band routinely
+    holds no terminal at all (see `select_boundary_terminal_nodes`).
+    """
+    points, _ids = terminal_points(graph)
+    if not len(points) or not 0 <= int(axis) < points.shape[1]:
+        return None
+    column = points[:, int(axis)]
+    return float(column.min()), float(column.max())
+
+
+def band_boxes(
+    values: Mapping[str, Any],
+    lo: Sequence[float],
+    hi: Sequence[float],
+    *,
+    axis_span: tuple[float, float] | None = None,
+) -> dict[str, tuple[list[float], list[float]]]:
+    """The slab each `edge_percent` role takes its terminals from.
+
+    `edge_percent` is the one method whose region is implied rather than
+    written down: a percentage and an axis describe a box, but nothing draws
+    it, so the only way to find out what it selected was to run and look at
+    the answer. The slab spans everything across the other two axes, because
+    the selector's rule is on one coordinate alone.
+
+    *axis_span* is where the terminals actually reach, which is what a run
+    measures across; without a graph the caller passes None and the extent
+    stands in, which is close enough to point at and marked as an estimate.
+    """
+    low = [float(v) for v in lo]
+    high = [float(v) for v in hi]
+    axis = values.get("boundary_axis")
+    try:
+        axis = int(axis)
+    except (TypeError, ValueError):
+        return {}
+    if not 0 <= axis < len(low):
+        return {}
+
+    start, end = axis_span if axis_span is not None else (low[axis], high[axis])
+    span = float(end) - float(start)
+    boxes: dict[str, tuple[list[float], list[float]]] = {}
+    for role in ROLES:
+        if str(values.get(method_setting(role))) != "edge_percent":
+            continue
+        name = PERCENT_FOR_NODE_ROLE[BOUNDARY_ROLE_SETTINGS[role]["node_role"]]
+        try:
+            percent = float(values.get(name))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(percent):
+            continue
+        reach = span * max(0.0, min(100.0, percent)) / 100.0
+        corner_lo, corner_hi = list(low), list(high)
+        if name == "boundary_first_percent":
+            corner_lo[axis], corner_hi[axis] = float(start), float(start) + reach
+        else:
+            corner_lo[axis], corner_hi[axis] = float(end) - reach, float(end)
+        boxes[role] = (corner_lo, corner_hi)
+    return boxes
+
+
 def region_shapes(
     picks: "BoundaryPicks",
+    bands: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
 ) -> tuple[list[np.ndarray], list[str], dict[str, np.ndarray]]:
-    """Every region as one editable rectangle plus the box it describes."""
+    """Every region as one editable rectangle plus the box it describes.
+
+    A band gets the box and no rectangle: it is not a region anyone typed, it
+    is what a percentage works out to, so there is no handle to drag and
+    nothing for the settings to read back.
+    """
     data: list[np.ndarray] = []
     kinds: list[str] = []
     roles: list[str] = []
     depths: list[float] = []
     parts: list[str] = []
+    for role, (lo, hi) in (bands or {}).items():
+        for edge in box_outline(lo, hi):
+            data.append(edge)
+            kinds.append("line")
+            roles.append(role)
+            depths.append(abs(float(hi[0]) - float(lo[0])))
+            parts.append(BAND)
     for role in ROLES:
         for lo, hi in picks.volumes.get(role, ()):
             corners, depth = rectangle_from_box(lo, hi)
@@ -504,7 +587,7 @@ class BoundaryPicks:
         return ", ".join(parts)
 
 
-def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
+def specs_for(values: Mapping[str, Any], bands=None) -> tuple[LayerSpec, ...]:
     """The layers that draw what *values* describes.
 
     The coordinates layer is emitted even when empty -- it is the surface the
@@ -533,7 +616,7 @@ def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
             },
         )
     ]
-    shapes, kinds, shape_features = region_shapes(picks)
+    shapes, kinds, shape_features = region_shapes(picks, bands)
     if shapes:
         specs.append(
             LayerSpec(
@@ -550,16 +633,20 @@ def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
     return tuple(specs)
 
 
-def group_for(values: Mapping[str, Any]) -> StageLayers:
+def group_for(values: Mapping[str, Any], bands=None) -> StageLayers:
     """The picking layers as a group the panel can hand to `_apply_layers`."""
     picks = BoundaryPicks.from_settings(values)
     note = picks.summary()
+    if bands:
+        drawn = ", ".join(f"{role} band" for role in bands)
+        configured = any(picks.coordinates.values()) or any(picks.volumes.values())
+        note = f"{note}, {drawn}" if configured else drawn
     if picks.problems:
         note = f"{note} ({len(picks.problems)} entry could not be read: {picks.problems[0]})"
     return StageLayers(
         stage="boundary_picking",
         title="Boundary conditions",
-        layers=specs_for(values),
+        layers=specs_for(values, bands),
         note=note,
     )
 
