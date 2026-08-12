@@ -6,6 +6,11 @@ import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend for tests
 # Keep PyVista from opening a render window locally; CI already sets this.
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
+# The same for Qt: the gui-marked tests each build a napari viewer, and a
+# plain `pytest` run opens one window per test across the desktop. `setdefault`
+# so `QT_QPA_PLATFORM=xcb pytest -m gui` still shows them when that is what you
+# want.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 import numpy as np

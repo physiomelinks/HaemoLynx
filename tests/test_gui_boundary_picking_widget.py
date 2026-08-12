@@ -20,6 +20,7 @@ from haemolynx.gui._widget import _clear_our_layers, settings_widget  # noqa: E4
 from haemolynx.gui.boundary_picking import (  # noqa: E402
     BC_COORDINATES,
     ROLES,
+    method_setting,
     BC_REGIONS,
     rectangle_from_box,
 )
@@ -586,13 +587,69 @@ def test_a_picked_point_takes_the_role_of_the_open_sub_tab(panel):
     assert widget._haemolynx_values()["starting_node_coordinates"] == []
 
 
-def test_the_shared_band_settings_are_not_on_a_role_page(panel):
-    """One axis and one pair of bands describe the whole network."""
-    widget, viewer, bc = panel
-    axis = rows_of(widget)["boundary_axis"].native
+def page_of(bc, widget_row):
+    """Which role's page a row is sitting on, if any."""
+    for role, holder in bc.holders.items():
+        if widget_row in list(holder):
+            return role
+    return None
 
-    for index in range(bc.state.tabs.count()):
-        assert axis not in bc.state.tabs.widget(index).findChildren(type(axis))
+
+def test_a_shared_row_sits_under_the_role_that_is_reading_it(panel):
+    """There is one axis row and Qt gives it one parent, so it cannot be on
+    all four pages -- it goes to the page being looked at instead."""
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+
+    assert page_of(bc, rows_of(widget)["boundary_axis"]) == "starting"
+    assert page_of(bc, rows_of(widget)["boundary_first_percent"]) == "starting"
+
+
+def test_a_shared_row_follows_the_open_sub_tab(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["output_node_selection_method"].value = "edge_percent"
+
+    bc.state.tabs.setCurrentIndex(1)
+
+    assert page_of(bc, rows_of(widget)["boundary_axis"]) == "output"
+
+
+def test_a_role_reads_the_percentage_for_its_own_end(panel):
+    """A run computes both ends every time and a role takes one of them, so
+    showing an inlet the outlet percentage invites setting a dead number."""
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+
+    assert page_of(bc, rows_of(widget)["boundary_first_percent"]) == "starting"
+    assert page_of(bc, rows_of(widget)["boundary_last_percent"]) is None
+
+    bc.state.tabs.setCurrentIndex(1)
+    rows_of(widget)["output_node_selection_method"].value = "edge_percent"
+
+    assert page_of(bc, rows_of(widget)["boundary_last_percent"]) == "output"
+    assert page_of(bc, rows_of(widget)["boundary_first_percent"]) is None
+
+
+def test_a_shared_row_leaves_when_the_method_stops_reading_it(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+
+    rows_of(widget)["starting_node_selection_method"].value = "coordinates"
+
+    assert page_of(bc, rows_of(widget)["boundary_axis"]) is None
+
+
+def test_a_shared_row_is_never_on_two_pages(panel):
+    """The whole reason it moves rather than being copied."""
+    widget, viewer, bc = panel
+    for name in ROLES:
+        rows_of(widget)[method_setting(name)].value = "edge_percent"
+
+    for name in ("boundary_axis", "boundary_first_percent", "boundary_last_percent"):
+        homes = [role for role in ROLES
+                 if rows_of(widget)[name] in list(bc.holders[role])]
+        assert len(homes) <= 1
 
 
 # --- the depth slider on a real, anisotropic stack ---------------------------
@@ -638,7 +695,7 @@ def test_a_coordinate_on_the_image_is_not_reported(panel):
 # --- a role's controls live on that role's page ------------------------------
 
 
-CONTROLS = ("pick", "draw", "depth", "assign", "clear")
+CONTROLS = ("pick", "draw", "depth", "move", "assign", "clear")
 
 
 @pytest.mark.parametrize("control", CONTROLS)
@@ -686,8 +743,8 @@ def test_a_method_only_shows_the_controls_it_can_use(panel):
     rows_of(widget)["output_node_selection_method"].value = "volume"
     rows_of(widget)["venule_boundary_selection_method"].value = "edge_percent"
 
-    assert bc.state.actions["starting"] == {"pick", "assign"}
-    assert bc.state.actions["output"] == {"draw", "depth", "assign", "clear"}
+    assert bc.state.actions["starting"] == {"pick", "move", "assign"}
+    assert bc.state.actions["output"] == {"draw", "depth", "move", "assign", "clear"}
     assert bc.state.actions["venule_boundary"] == set(), "nothing to point at"
 
 
@@ -752,3 +809,129 @@ def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
 
     assert len(viewer.layers[BC_REGIONS].data) == 13
     assert widget._haemolynx_values()["output_node_volumes"] == before
+
+
+# --- the depth slider is a resize, not just a default ------------------------
+
+
+def draw_a_region(widget, viewer, bc, *, role="output", z=10.0):
+    rows_of(widget)[method_setting(role)].value = "volume"
+    bc.actions[role].draw.changed()
+    viewer.layers[BC_REGIONS].add_rectangles(
+        np.array([[z, 5.0, 5.0], [z, 5.0, 25.0], [z, 25.0, 25.0], [z, 25.0, 5.0]])
+    )
+
+
+def test_the_depth_slider_resizes_this_roles_regions(panel):
+    """Nothing selected used to mean "the size for the next one", which reads
+    as the slider doing nothing at all."""
+    widget, viewer, bc = panel
+    draw_a_region(widget, viewer, bc)
+
+    bc.actions["output"].depth.value = 6.0
+
+    box = widget._haemolynx_values()["output_node_volumes"][0]
+    assert box[0][0] == pytest.approx(7.0)
+    assert box[1][0] == pytest.approx(13.0)
+
+
+def test_the_drawn_box_follows_the_slider(panel):
+    """The outline is drawn from the settings, so it only moves once they do."""
+    widget, viewer, bc = panel
+    draw_a_region(widget, viewer, bc)
+
+    bc.actions["output"].depth.value = 6.0
+
+    drawn = np.concatenate([np.asarray(s) for s in viewer.layers[BC_REGIONS].data])
+    assert drawn[:, 0].min() == pytest.approx(7.0)
+    assert drawn[:, 0].max() == pytest.approx(13.0)
+
+
+def test_the_slider_leaves_another_roles_regions_alone(panel):
+    widget, viewer, bc = panel
+    draw_a_region(widget, viewer, bc, role="output", z=10.0)
+    draw_a_region(widget, viewer, bc, role="starting", z=20.0)
+    before = widget._haemolynx_values()["output_node_volumes"]
+
+    bc.actions["starting"].depth.value = 4.0
+
+    assert widget._haemolynx_values()["output_node_volumes"] == before
+    starting = widget._haemolynx_values()["starting_node_volumes"][0]
+    assert starting[1][0] - starting[0][0] == pytest.approx(4.0)
+
+
+def test_a_selected_region_is_the_one_that_resizes(panel):
+    """So two regions of one role can differ."""
+    widget, viewer, bc = panel
+    draw_a_region(widget, viewer, bc, z=10.0)
+    draw_a_region(widget, viewer, bc, z=30.0)
+    handles = [i for i, part in enumerate(viewer.layers[BC_REGIONS].features["part"])
+               if part == "handle"]
+    viewer.layers[BC_REGIONS].selected_data = {handles[0]}
+
+    bc.actions["output"].depth.value = 8.0
+
+    depths = [box[1][0] - box[0][0]
+              for box in widget._haemolynx_values()["output_node_volumes"]]
+    assert sorted(round(d, 3) for d in depths)[0] == pytest.approx(8.0)
+    assert len({round(d, 3) for d in depths}) == 2
+
+
+# --- moving what you picked --------------------------------------------------
+
+
+def test_move_puts_the_layer_into_naparis_select_tool(panel):
+    """Placing and moving are two modes of one layer, and clicking in `add`
+    mode makes another point rather than picking up the one under it."""
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "coordinates"
+    bc.actions["starting"].pick.changed()
+    assert viewer.layers[BC_COORDINATES].mode == "add"
+
+    bc.actions["starting"].move.changed()
+
+    assert viewer.layers[BC_COORDINATES].mode == "select"
+    assert "drag to move it" in widget._haemolynx_report()
+
+
+def test_dragging_a_coordinate_writes_where_it_landed(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "coordinates"
+    rows_of(widget)["starting_node_coordinates"].value = [[10.0, 8.0, 9.0]]
+    bc.show()
+    points = viewer.layers[BC_COORDINATES]
+
+    points.selected_data = {0}
+    points._move({0}, [10.0, 8.0, 9.0])      # press: records the drag origin
+    points._move({0}, [10.0, 18.0, 19.0])    # and drag
+
+    assert widget._haemolynx_values()["starting_node_coordinates"] == [
+        [10.0, 18.0, 19.0]
+    ]
+
+
+def test_move_on_a_region_role_reaches_for_the_regions(panel):
+    widget, viewer, bc = panel
+    draw_a_region(widget, viewer, bc)
+
+    bc.actions["output"].move.changed()
+
+    assert viewer.layers[BC_REGIONS].mode == "select"
+
+
+def test_regions_cannot_be_moved_in_the_3d_view(panel):
+    widget, viewer, bc = panel
+    draw_a_region(widget, viewer, bc)
+    viewer.dims.ndisplay = 3
+
+    bc.actions["output"].move.changed()
+
+    assert "2D" in widget._haemolynx_report()
+
+
+def test_move_before_anything_is_drawn_says_so(panel):
+    widget, viewer, bc = panel
+
+    bc.actions["starting"].move.changed()
+
+    assert "Nothing to move yet" in widget._haemolynx_report()

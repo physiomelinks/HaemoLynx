@@ -85,7 +85,20 @@ list and a Pick button, `volume` a region list, a Draw button and a depth. The
 boundary axis and the two band percentages sit below the sub-tabs, since one
 axis and one pair of bands describe the whole network rather than any one role.
 **Show** and **Snap** sit above the sub-tabs, since they are about the picture
-rather than about one role. Editing any of it redraws the layers straight away.
+rather than about one role.
+
+Clicking places a new coordinate; to move one you just placed, press **Move or
+delete what you picked**, which is napari's own select tool — click to select,
+drag to move, Delete to remove, drag a box to take several. Coordinates can be
+moved in the 2D or the 3D view; regions only in 2D. **Region depth** resizes
+the regions you have selected, or all of that role's regions if none are, and
+sets the depth the next one is drawn at.
+
+The boundary axis and the band percentage appear under whichever role is
+reading them — there is one of each for the whole network, so the row moves to
+the sub-tab you are on rather than being copied. A role sees the percentage for
+its own end of the axis only: inlets read the first percentage, outlets the
+last. Editing any of it redraws the layers straight away.
 
 Every one of these coordinates is **microns**, not voxel indices. The panel
 says so when it can — a coordinate outside the image is reported with the

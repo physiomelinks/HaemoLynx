@@ -1037,6 +1037,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         coordinate_setting,
         group_for,
         method_setting,
+        settings_for_method,
         settings_from_layers,
         snap,
         terminal_points,
@@ -1064,6 +1065,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             draw=PushButton(text="Draw a region"),
             depth=FloatSlider(value=0.0, min=0.0, max=1000.0,
                               label="Region depth (um)"),
+            move=PushButton(text="Move or delete what you picked"),
             assign=PushButton(text="Assign selected to this role"),
             clear=PushButton(text="Clear this role's regions"),
         )
@@ -1072,13 +1074,18 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     #: Which of a role's controls its chosen method has any use for.
     ACTIONS_FOR_METHOD = {
-        "coordinates": ("pick", "assign"),
-        "volume": ("draw", "depth", "assign", "clear"),
+        "coordinates": ("pick", "move", "assign"),
+        "volume": ("draw", "depth", "move", "assign", "clear"),
     }
 
     state = SimpleNamespace(applying=False, results=None, connected=set(),
                         visible=frozenset(), hidden=frozenset(), tabs=None,
                         actions={})
+
+    #: Each role's page, and where each shared row currently sits. Filled in
+    #: by `page`; empty until the panel has been laid out.
+    holders: dict[str, Any] = {}
+    shared_home: dict[str, Any] = {}
 
     def depth_slider():
         """The region depth on the page the user is looking at."""
@@ -1207,8 +1214,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         return [
             index
             for index in range(len(target.data))
-            # A rectangle the user has just drawn has no `part` yet.
-            if (parts[index] if index < len(parts) else HANDLE) == HANDLE
+            # A rectangle the user has just drawn may have no `part` yet, and
+            # an unfilled column reads back as NaN rather than as a string.
+            if (parts[index] if index < len(parts)
+                and isinstance(parts[index], str) else HANDLE) == HANDLE
             and kinds[index] != "line"
         ]
 
@@ -1245,13 +1254,40 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         if target is None or id(target) in state.connected:
             return
         target.events.data.connect(sync)
+        target.mouse_drag_callbacks.append(redraw_when_the_drag_ends)
         state.connected.add(id(target))
 
+    def redraw_when_the_drag_ends(_layer, event):
+        """Redraw once the mouse comes up, not on every step of the drag.
+
+        A region drawn or moved by hand is one rectangle until it is drawn
+        from the settings again, so without this the box a user just made has
+        no depth on screen -- and redrawing on every `events.data` would be
+        replacing the layer's contents underneath the drag that is producing
+        them.
+        """
+        yield
+        while event.type == "mouse_move":
+            yield
+        redraw()
+
     def set_defaults(target) -> None:
-        """Tag whatever napari adds next with the chosen role and depth."""
-        defaults = {"role": str(role.value)}
-        if "depth" in target.features:
-            defaults["depth"] = float(depth_slider().value)
+        """Tag whatever napari adds next as this role's, and as a handle.
+
+        Every column the layer has, not just the ones this cares about: a
+        default that names a subset is refused outright, and the failure is
+        silent -- the next shape then arrives as the role that was chosen
+        before, with no `part`, which stops it being read back at all.
+        """
+        known = {
+            "role": str(role.value),
+            "depth": float(depth_slider().value),
+            # What the user draws by hand is the region itself; the outline
+            # segments are only ever made from the settings.
+            "part": HANDLE,
+        }
+        defaults = {name: value for name, value in known.items()
+                    if name in target.features}
         try:
             target.feature_defaults = defaults
         except Exception:  # noqa: BLE001 - `roles_of` fills the blank anyway
@@ -1316,6 +1352,38 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         state.visible = wanted
         state.hidden = frozenset(hidden)
         refresh_actions()
+        place_shared()
+
+    def place_shared() -> None:
+        """Put a shared row on the page of whoever is reading it right now.
+
+        One axis and one pair of bands describe the whole network, so there is
+        one row each and Qt gives it one parent -- it cannot sit on all four
+        pages at once. Moving it to the page being looked at is the next best
+        thing, and better than a section underneath: the row is always beneath
+        the method that asked for it, and there is never a second copy of a
+        setting to disagree with the first.
+        """
+        if not holders:
+            return
+        current = str(role.value)
+        reads = settings_for_method(
+            current, current_values().get(method_setting(current))
+        )
+        wanted = [name for name in shared_settings()
+                  if name in rows and name in reads]
+        for name in shared_settings():
+            home = shared_home.get(name)
+            if home is None or (name in wanted and home == current):
+                continue
+            holders[home].remove(rows[name])
+            shared_home[name] = None
+        for offset, name in enumerate(wanted):
+            if shared_home.get(name) is None:
+                # Straight under the method row, which is the first on a page.
+                holders[current].insert(1 + offset, rows[name])
+                rows[name].visible = True
+                shared_home[name] = current
 
     def refresh_actions() -> None:
         """Show a role's controls only where its method has a use for them."""
@@ -1323,7 +1391,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         for name, action in actions.items():
             method = str(values.get(method_setting(name)))
             useful = set(ACTIONS_FOR_METHOD.get(method, ()))
-            for control in ("pick", "draw", "depth", "assign", "clear"):
+            for control in ("pick", "draw", "depth", "move", "assign", "clear"):
                 getattr(action, control).visible = control in useful
             state.actions[name] = frozenset(useful)
 
@@ -1383,15 +1451,23 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         )
 
     def on_depth_changed(*_args) -> None:
-        """The slider edits the depth of the selected regions."""
+        """How deep this role's regions are.
+
+        The selected ones if any are selected, so several boxes can differ;
+        otherwise every region of the role whose page the slider is on, which
+        is what a slider labelled "Region depth" sitting under one role reads
+        as. Either way it also sets the depth the next region will be drawn at.
+        """
         target = layer(BC_REGIONS)
         if target is None or state.applying or not len(target.data):
             return
-        chosen = set(target.selected_data)
+        set_defaults(target)
+        handles = set(handle_indices(target))
+        chosen = set(target.selected_data) & handles
         if not chosen:
-            # Nothing selected means "this is the size for the next one", not
-            # "resize every region I already drew".
-            set_defaults(target)
+            roles = roles_of(target, len(target.data))
+            chosen = {index for index in handles if roles[index] == str(role.value)}
+        if not chosen:
             return
         features = dict(target.features)
         if "depth" not in features:
@@ -1407,6 +1483,37 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         finally:
             state.applying = False
         sync()
+        # The outline is drawn from the settings, so it only follows the
+        # slider once the settings have been told.
+        redraw()
+
+    def on_move() -> None:
+        """Hand over to napari's select tool, which is what moves a pick.
+
+        Placing and moving are different modes of the same layer -- clicking in
+        `add` mode makes another point rather than picking up the one under the
+        cursor -- and nothing on screen says so.
+        """
+        method = str(current_values().get(method_setting(str(role.value))))
+        name = BC_REGIONS if method == "volume" else BC_COORDINATES
+        target = layer(name)
+        if target is None:
+            report.value = "Nothing to move yet -- press Show, then pick or draw."
+            return
+        if name == BC_REGIONS and viewer.dims.ndisplay == 3:
+            report.value = (
+                "Regions can only be edited in the 2D view -- napari does not "
+                "allow editing a Shapes layer in 3D. Coordinates can be moved "
+                "in either view."
+            )
+            return
+        viewer.layers.selection.active = target
+        target.mode = "select"
+        report.value = (
+            f"Select mode on {name}. Click one to select it, drag to move it, "
+            "press Delete to remove it, and drag a box to take several at once. "
+            "Every move is written straight back to the settings."
+        )
 
     def on_assign() -> None:
         """Give the selected items the chosen role."""
@@ -1502,6 +1609,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     for _name, _action in actions.items():
         wire(_name, _action.pick, on_pick)
         wire(_name, _action.draw, on_draw)
+        wire(_name, _action.move, on_move)
         wire(_name, _action.assign, on_assign)
         wire(_name, _action.clear, on_clear)
         wire(_name, _action.depth, on_depth_changed)
@@ -1541,10 +1649,11 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 widgets=[
                     *(rows[n] for n in mine),
                     action.pick, action.draw, action.depth,
-                    action.assign, action.clear,
+                    action.move, action.assign, action.clear,
                 ],
                 labels=True,
             )
+            holders[name] = holder
             role_tabs.addTab(holder.native, role_title(name))
             role_tabs.setTabToolTip(role_tabs.count() - 1,
                                     fields[method_setting(name)].help)
@@ -1561,11 +1670,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                                        labels=True).native)
         layout.addWidget(widget.native)
         layout.addWidget(role_tabs)
-        if shared:
-            layout.addWidget(Label(value="Shared by every role that uses them:").native)
-            layout.addWidget(Container(widgets=[rows[n] for n in shared],
-                                       labels=True).native)
         layout.addStretch(1)
+        for name in shared:
+            shared_home[name] = None
+        place_shared()
 
         def on_tab_changed(index: int) -> None:
             if 0 <= index < len(ROLES):
@@ -1582,6 +1690,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             index = list(ROLES).index(str(role.value))
             if tabs.currentIndex() != index:
                 tabs.setCurrentIndex(index)
+        place_shared()
         for name in (BC_COORDINATES, BC_REGIONS):
             target = layer(name)
             if target is not None:
@@ -1591,9 +1700,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     return SimpleNamespace(
         widget=widget, role=role, actions=actions, depth_slider=depth_slider,
+        holders=holders, shared_home=shared_home,
         state=state, page=page,
         row_order=row_order, refresh_rows=refresh_rows,
-        show=on_show, pick=on_pick, draw=on_draw, snap=on_snap,
+        show=on_show, pick=on_pick, draw=on_draw, snap=on_snap, move=on_move,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
         layer_names=(BC_COORDINATES, BC_REGIONS),
     )

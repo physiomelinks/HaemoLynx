@@ -66,6 +66,7 @@ __all__ = [
     "snap",
     "specs_for",
     "terminal_points",
+    "PERCENT_FOR_NODE_ROLE",
     "outside_extent",
     "role_settings",
     "role_title",
@@ -106,11 +107,25 @@ BAND_SETTINGS: Mapping[str, tuple[str, ...]] = {
 }
 
 
+#: Which of the two band percentages a role reads. `edge_percent` splits the
+#: network along an axis and takes terminals from each end; a run computes both
+#: ends every time, but a role only ever takes the one for its own end, so
+#: showing an inlet role the outlet percentage invites setting a number that
+#: does nothing.
+PERCENT_FOR_NODE_ROLE: Mapping[str, str] = {
+    "input": "boundary_first_percent",
+    "output": "boundary_last_percent",
+}
+
+
 def settings_for_method(role: str, method: str) -> tuple[str, ...]:
     """The settings *role* reads when it selects nodes by *method*."""
     key = METHOD_SETTINGS.get(str(method))
     if key is not None:
         return (BOUNDARY_ROLE_SETTINGS[role][key],)
+    if str(method) == "edge_percent":
+        return ("boundary_axis",
+                PERCENT_FOR_NODE_ROLE[BOUNDARY_ROLE_SETTINGS[role]["node_role"]])
     return BAND_SETTINGS.get(str(method), ())
 
 

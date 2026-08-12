@@ -453,11 +453,17 @@ def test_a_method_shows_only_what_it_reads():
 
 
 def test_the_band_settings_appear_for_any_role_that_uses_them():
-    """They are shared, so one role asking for them is enough."""
+    """They are shared, so one role asking for them is enough -- but a role
+    only asks for the percentage at its own end of the axis."""
     from haemolynx.gui.boundary_picking import visible_settings
 
     wanted = visible_settings({"venule_boundary_selection_method": "edge_percent"})
-    assert {"boundary_axis", "boundary_first_percent", "boundary_last_percent"} <= wanted
+    assert {"boundary_axis", "boundary_last_percent"} <= wanted
+    assert "boundary_first_percent" not in wanted
+
+    both = visible_settings({"venule_boundary_selection_method": "edge_percent",
+                             "starting_node_selection_method": "edge_percent"})
+    assert {"boundary_axis", "boundary_first_percent", "boundary_last_percent"} <= both
 
 
 @pytest.mark.parametrize(
@@ -583,3 +589,40 @@ def test_a_negative_coordinate_is_outside_too():
 def test_the_summary_names_what_it_counted():
     picks = BoundaryPicks.from_settings(CONFIGURED)
     assert picks.summary() == "2 starting coordinates, 1 output region"
+
+
+# --- which band percentage a role actually reads -----------------------------
+
+
+def test_an_inlet_role_reads_the_first_percentage():
+    from haemolynx.gui.boundary_picking import settings_for_method
+
+    assert settings_for_method("starting", "edge_percent") == (
+        "boundary_axis", "boundary_first_percent",
+    )
+    assert settings_for_method("arteriole_boundary", "edge_percent") == (
+        "boundary_axis", "boundary_first_percent",
+    )
+
+
+def test_an_outlet_role_reads_the_last_percentage():
+    """A run computes both ends every time; a role takes only its own."""
+    from haemolynx.gui.boundary_picking import settings_for_method
+
+    assert settings_for_method("output", "edge_percent") == (
+        "boundary_axis", "boundary_last_percent",
+    )
+    assert settings_for_method("venule_boundary", "edge_percent") == (
+        "boundary_axis", "boundary_last_percent",
+    )
+
+
+def test_the_percentage_split_matches_the_selector():
+    """`select_boundary_nodes_by_method` gives `edge_percent` to the input end
+    and `end_percent` to the output end; the panel must agree or it shows a
+    number that changes nothing."""
+    from haemolynx.gui.boundary_picking import PERCENT_FOR_NODE_ROLE
+
+    assert set(PERCENT_FOR_NODE_ROLE) == {"input", "output"}
+    for role, names in BOUNDARY_ROLE_SETTINGS.items():
+        assert names["node_role"] in PERCENT_FOR_NODE_ROLE
