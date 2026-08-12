@@ -48,7 +48,8 @@ from haemolynx.gui.results import PREFIX, LayerSpec, StageLayers, role_colours
 __all__ = [
     "BC_COORDINATES",
     "BC_LAYER_NAMES",
-    "BC_REGIONS",
+    "BC_REGION_NAMES",
+    "regions_name",
     "ROLES",
     "BoundaryPicks",
     "box_from_rectangle",
@@ -84,10 +85,6 @@ __all__ = [
 ROLES: tuple[str, ...] = tuple(BOUNDARY_ROLE_SETTINGS)
 
 BC_COORDINATES = f"{PREFIX}BC coordinates"
-BC_REGIONS = f"{PREFIX}BC regions"
-
-#: Both layers, for "is this one of the picking layers?".
-BC_LAYER_NAMES = frozenset({BC_COORDINATES, BC_REGIONS})
 
 #: How many decimal places a picked coordinate keeps. A micron is the unit and
 #: a nanometre is far below what a click can mean, so three keeps the config
@@ -183,6 +180,23 @@ def role_title(role: str) -> str:
     """What a role's tab is called: 'arteriole_boundary' -> 'Arteriole'."""
     stem = role[: -len("_boundary")] if role.endswith("_boundary") else role
     return stem.replace("_", " ").capitalize()
+
+
+def regions_name(role: str) -> str:
+    """The layer a role's regions and band are drawn in.
+
+    One per role rather than one for all four: a layer carries one colour and
+    one visibility, so sharing them meant inlets and outlets could not be told
+    apart in the layer list, nor either hidden on its own.
+    """
+    return f"{PREFIX}BC {role_title(role).lower()} regions"
+
+
+#: Every region layer, in role order.
+BC_REGION_NAMES = tuple(regions_name(role) for role in ROLES)
+
+#: All of them, for "is this one of the picking layers?".
+BC_LAYER_NAMES = frozenset({BC_COORDINATES, *BC_REGION_NAMES})
 
 
 def outside_extent(
@@ -436,6 +450,8 @@ def band_boxes(
 def region_shapes(
     picks: "BoundaryPicks",
     bands: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
+    *,
+    only: str | None = None,
 ) -> tuple[list[np.ndarray], list[str], dict[str, np.ndarray]]:
     """Every region as one editable rectangle plus the box it describes.
 
@@ -449,13 +465,15 @@ def region_shapes(
     depths: list[float] = []
     parts: list[str] = []
     for role, (lo, hi) in (bands or {}).items():
+        if only is not None and role != only:
+            continue
         for edge in box_outline(lo, hi):
             data.append(edge)
             kinds.append("line")
             roles.append(role)
             depths.append(abs(float(hi[0]) - float(lo[0])))
             parts.append(BAND)
-    for role in ROLES:
+    for role in ROLES if only is None else (only,):
         for lo, hi in picks.volumes.get(role, ()):
             corners, depth = rectangle_from_box(lo, hi)
             data.append(corners)
@@ -616,12 +634,14 @@ def specs_for(values: Mapping[str, Any], bands=None) -> tuple[LayerSpec, ...]:
             },
         )
     ]
-    shapes, kinds, shape_features = region_shapes(picks, bands)
-    if shapes:
+    for role in ROLES:
+        shapes, kinds, shape_features = region_shapes(picks, bands, only=role)
+        if not shapes:
+            continue
         specs.append(
             LayerSpec(
                 kind="shapes",
-                name=BC_REGIONS,
+                name=regions_name(role),
                 data=shapes,
                 features=shape_features,
                 colour_by="role",

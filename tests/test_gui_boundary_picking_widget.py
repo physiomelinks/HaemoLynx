@@ -19,9 +19,10 @@ pytest.importorskip("magicgui")
 from haemolynx.gui._widget import _clear_our_layers, settings_widget  # noqa: E402
 from haemolynx.gui.boundary_picking import (  # noqa: E402
     BC_COORDINATES,
+    BC_REGION_NAMES,
     ROLES,
+    regions_name,
     method_setting,
-    BC_REGIONS,
     rectangle_from_box,
 )
 from haemolynx.gui.results import role_colours  # noqa: E402
@@ -58,11 +59,12 @@ def no_bands(widget):
 
 
 def drawn_for(viewer, role):
-    """Every vertex of the shapes belonging to one role."""
-    layer = viewer.layers[BC_REGIONS]
-    roles = list(layer.features["role"])
-    mine = [np.asarray(s) for s, owner in zip(layer.data, roles) if owner == role]
-    return np.concatenate(mine) if mine else np.empty((0, 3))
+    """Every vertex drawn for one role, from that role's own layer."""
+    name = regions_name(role)
+    if name not in viewer.layers:
+        return np.empty((0, 3))
+    shapes = [np.asarray(s) for s in viewer.layers[name].data]
+    return np.concatenate(shapes) if shapes else np.empty((0, 3))
 
 
 # --- what a config describes, drawn ------------------------------------------
@@ -76,7 +78,7 @@ def test_showing_a_config_puts_both_layers_in_the_viewer(panel):
     bc.show()
 
     assert isinstance(viewer.layers[BC_COORDINATES], napari.layers.Points)
-    assert isinstance(viewer.layers[BC_REGIONS], napari.layers.Shapes)
+    assert isinstance(viewer.layers[regions_name("outlet")], napari.layers.Shapes)
     assert tuple(viewer.layers[BC_COORDINATES].scale) == (1.0, 1.0, 1.0)
 
 
@@ -103,7 +105,7 @@ def test_the_region_is_drawn_as_a_rectangle_at_the_boxs_centre(panel):
 
     bc.show()
 
-    corners = viewer.layers[BC_REGIONS].data[0]
+    corners = viewer.layers[regions_name("outlet")].data[0]
     assert corners.shape == (4, 3)
     assert corners[:, 0].tolist() == [50.0] * 4, "planar, at the box's z centre"
     assert corners[:, 1].min() == pytest.approx(100.0)
@@ -142,7 +144,7 @@ def test_clear_layers_takes_the_picking_layers_with_it(panel):
     _clear_our_layers(viewer)
 
     assert BC_COORDINATES not in viewer.layers
-    assert BC_REGIONS not in viewer.layers
+    assert all(name not in viewer.layers for name in BC_REGION_NAMES)
 
 
 # --- the colours, which were wrong before ------------------------------------
@@ -267,7 +269,7 @@ def test_a_region_edited_in_the_viewer_reaches_the_setting(panel):
     rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
 
-    layer = viewer.layers[BC_REGIONS]
+    layer = viewer.layers[regions_name("outlet")]
     corners, _ = rectangle_from_box([0.0, 10.0, 20.0], [100.0, 60.0, 90.0])
     layer.data = [corners]
 
@@ -280,9 +282,9 @@ def test_the_depth_slider_resizes_the_selected_region(panel):
     no_bands(widget)
     rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
-    viewer.layers[BC_REGIONS].selected_data = {0}
+    viewer.layers[regions_name("outlet")].selected_data = {0}
 
-    bc.depth_slider().value = 20.0
+    bc.actions["outlet"].depth.value = 20.0
 
     lo, hi = widget._haemolynx_values()["outlet_node_volumes"][0]
     assert hi[0] - lo[0] == pytest.approx(20.0)
@@ -327,7 +329,7 @@ def test_drawing_a_region_is_refused_in_the_3d_view(panel):
     bc.draw()
 
     assert "2D" in widget._haemolynx_report()
-    assert BC_REGIONS not in viewer.layers
+    assert regions_name("outlet") not in viewer.layers
 
 
 def test_snapping_before_a_run_says_why_rather_than_doing_nothing(panel):
@@ -414,7 +416,7 @@ def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle(panel):
 
     bc.show()
 
-    regions = viewer.layers[BC_REGIONS]
+    regions = viewer.layers[regions_name("outlet")]
     assert list(regions.shape_type).count("rectangle") == 1
     assert list(regions.shape_type).count("line") == 12
     drawn = np.concatenate([np.asarray(s) for s in regions.data], axis=0)
@@ -436,10 +438,11 @@ def test_the_outline_survives_a_second_show(panel):
     rows_of(widget)["inlet_node_volumes"].value = [[[0.0, 0.0, 0.0], [20.0, 20.0, 20.0]]]
     bc.show()
 
-    regions = viewer.layers[BC_REGIONS]
-    assert len(regions.data) == 26
-    assert list(regions.shape_type).count("line") == 24
-    assert list(regions.shape_type).count("rectangle") == 2
+    for role in ("inlet", "outlet"):
+        regions = viewer.layers[regions_name(role)]
+        assert len(regions.data) == 13, "one box per role, in its own layer"
+        assert list(regions.shape_type).count("line") == 12
+        assert list(regions.shape_type).count("rectangle") == 1
 
 
 def test_reading_the_regions_back_counts_boxes_not_segments(panel):
@@ -478,16 +481,16 @@ def test_changing_a_method_updates_what_the_panel_says_is_used(panel):
     rows_of(widget)["outlet_node_selection_method"].value = "coordinates"
 
     assert "Not used" in widget._haemolynx_report()
-    assert BC_REGIONS in viewer.layers, "a configured region is never silently dropped"
+    assert regions_name("outlet") in viewer.layers, "a configured region is never silently dropped"
 
 
 def test_a_region_drawn_after_a_settings_edit_still_arrives(panel):
     """The redraw must leave the layer editable, not replace it with a picture."""
     widget, viewer, bc = panel
-    bc.draw()
-    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
+    bc.draw()                       # on the inlet page, the one open by default
+    rows_of(widget)["inlet_node_volumes"].value = [A_BOX]
 
-    regions = viewer.layers[BC_REGIONS]
+    regions = viewer.layers[regions_name("inlet")]
     assert regions.mode != "pan_zoom"
 
 
@@ -539,7 +542,8 @@ def test_editing_one_role_does_not_wipe_another(panel):
     values = widget._haemolynx_values()
     assert len(values["outlet_node_volumes"]) == 1
     assert len(values["inlet_node_volumes"]) == 1
-    assert len(viewer.layers[BC_REGIONS].data) == 26
+    assert len(viewer.layers[regions_name("outlet")].data) == 13
+    assert len(viewer.layers[regions_name("inlet")].data) == 13
 
 
 def test_a_setting_sits_below_the_method_that_asks_for_it(panel):
@@ -754,7 +758,7 @@ def test_pressing_a_control_acts_on_the_page_it_sits_on(panel):
     bc.actions["outlet"].draw.changed()
 
     assert str(bc.role.value) == "outlet"
-    viewer.layers[BC_REGIONS].add_rectangles(
+    viewer.layers[regions_name("outlet")].add_rectangles(
         np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
                   [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
     )
@@ -806,7 +810,7 @@ def test_a_region_drawn_into_an_empty_layer_reaches_its_role(panel):
     rows_of(widget)["outlet_node_selection_method"].value = "volume"
 
     bc.actions["outlet"].draw.changed()
-    viewer.layers[BC_REGIONS].add_rectangles(
+    viewer.layers[regions_name("outlet")].add_rectangles(
         np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
                   [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
     )
@@ -825,7 +829,7 @@ def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
     no_bands(widget)
     rows_of(widget)["outlet_node_selection_method"].value = "volume"
     bc.actions["outlet"].draw.changed()
-    viewer.layers[BC_REGIONS].add_rectangles(
+    viewer.layers[regions_name("outlet")].add_rectangles(
         np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
                   [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
     )
@@ -833,7 +837,7 @@ def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
 
     bc.show()
 
-    assert len(viewer.layers[BC_REGIONS].data) == 13
+    assert len(viewer.layers[regions_name("outlet")].data) == 13
     assert widget._haemolynx_values()["outlet_node_volumes"] == before
 
 
@@ -844,7 +848,7 @@ def draw_a_region(widget, viewer, bc, *, role="outlet", z=10.0):
     no_bands(widget)
     rows_of(widget)[method_setting(role)].value = "volume"
     bc.actions[role].draw.changed()
-    viewer.layers[BC_REGIONS].add_rectangles(
+    viewer.layers[regions_name(role)].add_rectangles(
         np.array([[z, 5.0, 5.0], [z, 5.0, 25.0], [z, 25.0, 25.0], [z, 25.0, 5.0]])
     )
 
@@ -869,7 +873,7 @@ def test_the_drawn_box_follows_the_slider(panel):
 
     bc.actions["outlet"].depth.value = 6.0
 
-    drawn = np.concatenate([np.asarray(s) for s in viewer.layers[BC_REGIONS].data])
+    drawn = np.concatenate([np.asarray(s) for s in viewer.layers[regions_name("outlet")].data])
     assert drawn[:, 0].min() == pytest.approx(7.0)
     assert drawn[:, 0].max() == pytest.approx(13.0)
 
@@ -892,9 +896,9 @@ def test_a_selected_region_is_the_one_that_resizes(panel):
     widget, viewer, bc = panel
     draw_a_region(widget, viewer, bc, z=10.0)
     draw_a_region(widget, viewer, bc, z=30.0)
-    handles = [i for i, part in enumerate(viewer.layers[BC_REGIONS].features["part"])
+    handles = [i for i, part in enumerate(viewer.layers[regions_name("outlet")].features["part"])
                if part == "handle"]
-    viewer.layers[BC_REGIONS].selected_data = {handles[0]}
+    viewer.layers[regions_name("outlet")].selected_data = {handles[0]}
 
     bc.actions["outlet"].depth.value = 8.0
 
@@ -943,7 +947,7 @@ def test_move_on_a_region_role_reaches_for_the_regions(panel):
 
     bc.actions["outlet"].move.changed()
 
-    assert viewer.layers[BC_REGIONS].mode == "select"
+    assert viewer.layers[regions_name("outlet")].mode == "select"
 
 
 def test_regions_cannot_be_moved_in_the_3d_view(panel):
@@ -989,7 +993,7 @@ def test_edge_percent_draws_the_band_it_will_select_from(panel):
 
     bc.show()
 
-    assert BC_REGIONS in viewer.layers
+    assert regions_name("inlet") in viewer.layers
     drawn = drawn_for(viewer, "inlet")
     image_y = float(viewer.layers["stack"].extent.world[1][1])
     assert drawn[:, 1].min() == pytest.approx(0.0)
@@ -1103,3 +1107,95 @@ def test_an_inlet_ring_is_green_and_an_outlet_ring_is_red(panel):
     expected = dict(role_colours())
     assert tuple(colours[0]) == pytest.approx(expected["inlet"])
     assert tuple(colours[1]) == pytest.approx(expected["outlet"])
+
+
+# --- a layer per role, in that role's colour ---------------------------------
+
+
+def test_an_inlet_region_is_green_and_an_outlet_region_is_red(panel):
+    """Both attributes, not just the face: a line has no face, so an outline
+    drawn as twelve line shapes kept napari's default white however the faces
+    were coloured."""
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["inlet_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
+
+    bc.show()
+
+    expected = dict(role_colours())
+    for role in ("inlet", "outlet"):
+        layer = viewer.layers[regions_name(role)]
+        for attribute in ("edge_color", "face_color"):
+            colours = np.unique(getattr(layer, attribute), axis=0)
+            assert len(colours) == 1, f"{role} {attribute} is not one colour"
+            assert tuple(colours[0]) == pytest.approx(expected[role])
+
+
+def test_a_roles_regions_can_be_hidden_on_their_own(panel):
+    """The reason for splitting them: one visibility per layer."""
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["inlet_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    viewer.layers[regions_name("inlet")].visible = False
+
+    assert viewer.layers[regions_name("outlet")].visible is True
+
+
+def test_a_hidden_role_stays_hidden_across_a_redraw(panel):
+    """`_add_or_update` keeps what the user set; a fresh layer would not."""
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["inlet_node_volumes"].value = [A_BOX]
+    bc.show()
+    viewer.layers[regions_name("inlet")].visible = False
+
+    bc.show()
+
+    assert viewer.layers[regions_name("inlet")].visible is False
+
+
+def test_a_role_with_nothing_left_loses_its_layer(panel):
+    """`_apply_layers` only adds and updates, so the layer would linger."""
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["inlet_node_volumes"].value = [A_BOX]
+    bc.show()
+    assert regions_name("inlet") in viewer.layers
+
+    rows_of(widget)["inlet_node_volumes"].value = []
+
+    assert regions_name("inlet") not in viewer.layers
+
+
+def test_the_layer_being_drawn_into_is_never_taken_away(panel):
+    """Draw makes an empty layer to draw into, and the next redraw would find
+    a role with nothing to show and remove it from under the tool."""
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["inlet_node_selection_method"].value = "volume"
+    bc.actions["inlet"].draw.changed()
+
+    rows_of(widget)["outlet_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+
+    assert regions_name("inlet") in viewer.layers
+    assert viewer.layers[regions_name("inlet")].mode == "add_rectangle"
+
+
+def test_reassigning_a_region_moves_it_to_the_other_roles_layer(panel):
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["inlet_node_volumes"].value = [A_BOX]
+    bc.show()
+    inlet = viewer.layers[regions_name("inlet")]
+    inlet.selected_data = {list(inlet.features["part"]).index("handle")}
+
+    bc.role.value = "outlet"
+    bc.assign()
+
+    assert widget._haemolynx_values()["inlet_node_volumes"] == []
+    assert len(widget._haemolynx_values()["outlet_node_volumes"]) == 1
+    assert regions_name("outlet") in viewer.layers

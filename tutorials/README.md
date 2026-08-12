@@ -52,9 +52,13 @@ config describes, before anything runs:
 - **HaemoLynx BC coordinates** — a ring per coordinate, coloured by role:
   green for an inlet, red for an outlet, orange and purple for the
   arteriole and venule boundaries.
-- **HaemoLynx BC regions** — a box per volume, coloured the same way: the
-  twelve edges of the volume, plus one rectangle at its centre that is the
+- **HaemoLynx BC inlet regions**, **… outlet regions**, and one each for the
+  arteriole and venule boundaries — a box per volume in that role's colour:
+  the twelve edges of the volume, plus one rectangle at its centre that is the
   handle you drag. Only the handle is a region; the edges just show its depth.
+  One layer per role, so inlets and outlets can be hidden separately and each
+  reads as a single colour. A role's layer appears when it has something to
+  draw and goes when it has not.
 
 Both are editable, and **both are the settings**: a coordinate you drag is a
 coordinate the run will use. Napari's own tools do the work — **Pick coordinates

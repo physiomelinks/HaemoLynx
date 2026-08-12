@@ -21,7 +21,8 @@ from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS  # noqa: E402
 from haemolynx.gui.boundary_picking import (  # noqa: E402
     BC_COORDINATES,
     BC_LAYER_NAMES,
-    BC_REGIONS,
+    BC_REGION_NAMES,
+    regions_name,
     ROLES,
     BoundaryPicks,
     box_from_rectangle,
@@ -216,7 +217,11 @@ def test_the_coordinates_layer_exists_even_with_nothing_on_it():
 
 
 def test_the_regions_layer_appears_only_when_there_is_a_region():
-    assert [s.name for s in specs_for(CONFIGURED)] == [BC_COORDINATES, BC_REGIONS]
+    """One layer per role, and only for a role that has something in it: an
+    empty Shapes layer draws nothing and is one more row in the layer list."""
+    assert [s.name for s in specs_for(CONFIGURED)] == [
+        BC_COORDINATES, regions_name("outlet"),
+    ]
     assert [s.name for s in specs_for({"inlet_node_coordinates": [[1.0, 2.0, 3.0]]})] == [
         BC_COORDINATES
     ]
@@ -811,3 +816,53 @@ def test_both_picking_layers_use_the_same_colours():
     for spec in specs:
         assert spec.colour_by == "role"
         assert spec.colour_cycle == role_colours()
+
+
+# --- one layer per role ------------------------------------------------------
+
+
+def test_each_role_draws_into_its_own_layer():
+    """A layer carries one colour and one visibility, so sharing one meant
+    inlets and outlets could not be told apart or hidden separately."""
+    names = [spec.name for spec in specs_for({
+        "inlet_node_volumes": [list(A_BOX)],
+        "outlet_node_volumes": [[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]],
+    })]
+
+    assert names == [BC_COORDINATES, regions_name("inlet"), regions_name("outlet")]
+
+
+def test_a_region_layer_holds_only_its_own_roles_shapes():
+    specs = {spec.name: spec for spec in specs_for({
+        "inlet_node_volumes": [list(A_BOX)],
+        "outlet_node_volumes": [[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]],
+    })}
+
+    for role in ("inlet", "outlet"):
+        assert set(specs[regions_name(role)].features["role"]) == {role}
+        assert len(specs[regions_name(role)].data) == 13
+
+
+def test_a_band_goes_in_its_roles_layer_too():
+    from haemolynx.gui.boundary_picking import band_boxes
+
+    values = {"boundary_axis": 1, "outlet_node_selection_method": "edge_percent",
+              "boundary_last_percent": 10.0}
+    names = [spec.name
+             for spec in specs_for(values, band_boxes(values, [0, 0, 0], [9.0, 9.0, 9.0]))]
+
+    assert names == [BC_COORDINATES, regions_name("outlet")]
+
+
+def test_the_layer_names_say_which_role_they_are():
+    assert regions_name("inlet") == "HaemoLynx BC inlet regions"
+    assert regions_name("arteriole_boundary") == "HaemoLynx BC arteriole regions"
+    assert len(set(BC_REGION_NAMES)) == len(ROLES)
+
+
+def test_every_picking_layer_is_named_in_one_place():
+    """`_clear_our_layers` and the "is this ours?" check both read this."""
+    from haemolynx.gui.boundary_picking import BC_LAYER_NAMES
+
+    assert BC_LAYER_NAMES == {BC_COORDINATES, *BC_REGION_NAMES}
+    assert BC_LAYER_NAMES.isdisjoint(LAYER_NAMES), "never a run's own layer"

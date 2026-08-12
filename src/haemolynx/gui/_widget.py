@@ -211,6 +211,19 @@ def _colour_attribute(layer) -> str:
     return "edge_color" if layer.__class__.__name__ == "Vectors" else "face_color"
 
 
+def _colour_attributes(layer) -> tuple[str, ...]:
+    """Every attribute that has to be set for a layer to change colour.
+
+    A Shapes layer needs both. A line has no face, so a box outline drawn as
+    twelve line shapes kept napari's default white however its faces were
+    coloured -- the only thing that took the role's colour was the handle
+    rectangle's translucent fill.
+    """
+    if layer.__class__.__name__ == "Shapes":
+        return ("face_color", "edge_color")
+    return (_colour_attribute(layer),)
+
+
 def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
     """One RGBA row per item, looked up from *cycle* by the item's label.
 
@@ -228,7 +241,7 @@ def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
 def _colour_layer(layer, column: str | None, kind: str = "continuous",
                   cycle=(), limits=None) -> None:
     """Colour a layer by one of its feature columns."""
-    attribute = _colour_attribute(layer)
+    attributes = _colour_attributes(layer)
     if column is None:
         # No opinion: a stage that does not name a colouring means "leave what
         # is there", not "blank it". Most stages after build_network have
@@ -238,7 +251,8 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
     if column in {"", "none"}:
         # An explicit "no colouring", which has to be a real branch: leaving the
         # layer as it was would make picking "none" a control that does nothing.
-        setattr(layer, attribute, UNCOLOURED)
+        for attribute in attributes:
+            setattr(layer, attribute, UNCOLOURED)
         _record_colour(layer, None)
         return
     if column not in getattr(layer, "features", {}):
@@ -261,7 +275,8 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
     #
     # Setting the mode instead of the colour does not work -- changing mode
     # re-maps the column that is still active, which is the same crash.
-    setattr(layer, attribute, UNCOLOURED)
+    for attribute in attributes:
+        setattr(layer, attribute, UNCOLOURED)
     if kind == "categorical" and cycle:
         # One colour per item, looked up by label, rather than handing napari
         # the cycle and the column and letting it pair them up. It pairs them
@@ -270,10 +285,13 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         # them in the inlet colour -- the first colour in the cycle. Points
         # and Shapes disagree about that order too, so there is no ordering
         # that would be right for both.
-        setattr(layer, attribute, _categorical_colours(layer, column, cycle))
+        colours = _categorical_colours(layer, column, cycle)
+        for attribute in attributes:
+            setattr(layer, attribute, colours)
     else:
-        setattr(layer, f"{attribute}_colormap", "viridis")
-        setattr(layer, attribute, column)
+        for attribute in attributes:
+            setattr(layer, f"{attribute}_colormap", "viridis")
+            setattr(layer, attribute, column)
         # After the column, and through the same path the Fit buttons use: the
         # range has to be applied *and* the colours re-mapped against it. Set
         # before, and the assignment above maps with the old range; set with a
@@ -1024,7 +1042,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     from haemolynx.gui.boundary_picking import (
         BC_COORDINATES,
         BC_LAYER_NAMES,
-        BC_REGIONS,
+        BC_REGION_NAMES,
         HANDLE,
         band_boxes,
         ROLES,
@@ -1040,6 +1058,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         method_setting,
         settings_for_method,
         settings_from_layers,
+        regions_name,
         snap,
         terminal_axis_span,
         terminal_points,
@@ -1110,6 +1129,18 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     def layer(name):
         return viewer.layers[name] if name in viewer.layers else None
+
+    def regions_layer(which: str | None = None):
+        """The regions layer of *which* role, defaulting to the open page's."""
+        return layer(regions_name(which if which is not None else str(role.value)))
+
+    def region_layers():
+        """Every region layer on screen, role by role."""
+        return [(name, layer(regions_name(name)))
+                for name in ROLES if layer(regions_name(name)) is not None]
+
+    def our_layer_names():
+        return (BC_COORDINATES, *BC_REGION_NAMES)
 
     def unused_warning(values) -> str:
         """Say when a role's picks will not be read, rather than silently fixing it."""
@@ -1195,8 +1226,20 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             report.value = (f"Boundary conditions: {group.note}"
                             f"{band_note(bands, measured)}"
                             f"{unused_warning(values)}{offscreen_warning(values)}")
-            for name in (BC_COORDINATES, BC_REGIONS):
+            for name in our_layer_names():
                 listen(layer(name))
+            drawn = {spec.name for spec in group.layers}
+            for name in BC_REGION_NAMES:
+                # `_apply_layers` only ever adds and updates, so a role that
+                # has nothing left to draw would keep the layer it had --
+                # unless a tool is pointed at it. Pressing Draw makes an empty
+                # layer to draw into, and taking that away would leave the
+                # next click with nowhere to land. Being merely selected is
+                # not enough: napari selects whatever was added last.
+                stale = layer(name)
+                if (name not in drawn and stale is not None
+                        and getattr(stale, "mode", "pan_zoom") == "pan_zoom"):
+                    viewer.layers.remove(stale)
             set_depth_range()
         finally:
             state.applying = False
@@ -1208,21 +1251,29 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         state.applying = True
         try:
             points_layer = layer(BC_COORDINATES)
-            regions_layer = layer(BC_REGIONS)
             proposed: dict[str, Any] = {}
             if points_layer is not None:
                 proposed.update(settings_from_layers(
                     points=points_layer.data,
                     point_roles=roles_of(points_layer, len(points_layer.data)),
                 ))
-            if regions_layer is not None:
-                handles = handle_indices(regions_layer)
-                roles = roles_of(regions_layer, len(regions_layer.data))
-                depths = depths_of(regions_layer, len(regions_layer.data))
+            drawn = region_layers()
+            if drawn:
+                # One call across every layer, not one per layer: each call
+                # writes all four roles' lists, so writing per layer would
+                # empty every role but the last one read.
+                rectangles, rectangle_roles, depths = [], [], []
+                for owner, target in drawn:
+                    handles = handle_indices(target)
+                    roles = roles_of(target, len(target.data), default=owner)
+                    found = depths_of(target, len(target.data))
+                    rectangles += [target.data[index] for index in handles]
+                    rectangle_roles += [roles[index] for index in handles]
+                    depths += [found[index] for index in handles]
                 proposed.update(settings_from_layers(
-                    rectangles=[regions_layer.data[i] for i in handles],
-                    rectangle_roles=[roles[i] for i in handles],
-                    depths=[depths[i] for i in handles],
+                    rectangles=rectangles,
+                    rectangle_roles=rectangle_roles,
+                    depths=depths,
                 ))
             write_rows(proposed)
             values = current_values()
@@ -1251,7 +1302,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             and kinds[index] != "line"
         ]
 
-    def roles_of(target, count) -> list[str]:
+    def roles_of(target, count, default=None) -> list[str]:
         """Each item's role, filling anything unlabelled with the chosen one.
 
         A point added by napari's own tool arrives with whatever
@@ -1262,7 +1313,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         out = []
         for index in range(count):
             found = values[index] if index < len(values) else None
-            out.append(str(found) if found in ROLES else str(role.value))
+            out.append(str(found) if found in ROLES
+                       else str(default if default is not None else role.value))
         return out
 
     def depths_of(target, count) -> list[float]:
@@ -1327,7 +1379,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     def set_depth_range() -> None:
         """Default the depth to the whole stack: a boundary band usually is."""
         extents = [l.extent.world for l in viewer.layers
-                   if l.name not in (BC_COORDINATES, BC_REGIONS) and l.ndim >= 3]
+                   if l.name not in BC_LAYER_NAMES and l.ndim >= 3]
         if not extents:
             return
         span = max(float(e[1][0] - e[0][0]) for e in extents)
@@ -1439,7 +1491,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         refresh_rows()
         if state.applying:
             return
-        if any(name in viewer.layers for name in (BC_COORDINATES, BC_REGIONS)):
+        if any(name in viewer.layers for name in our_layer_names()):
             redraw()
 
     def on_show() -> None:
@@ -1467,10 +1519,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             )
             return
         redraw()
-        target = layer(BC_REGIONS)
+        target = regions_layer()
         if target is None:
             target = viewer.add_shapes(
-                name=BC_REGIONS, ndim=3, scale=(1, 1, 1),
+                name=regions_name(str(role.value)), ndim=3, scale=(1, 1, 1),
                 # Typed, not `[]`: an empty list makes a float64 column, and
                 # a role written into one comes back NaN -- which then reaches
                 # a settings row as `nan`, and `literal_eval` cannot read that
@@ -1497,15 +1549,12 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         is what a slider labelled "Region depth" sitting under one role reads
         as. Either way it also sets the depth the next region will be drawn at.
         """
-        target = layer(BC_REGIONS)
+        target = regions_layer()
         if target is None or state.applying or not len(target.data):
             return
         set_defaults(target)
         handles = set(handle_indices(target))
-        chosen = set(target.selected_data) & handles
-        if not chosen:
-            roles = roles_of(target, len(target.data))
-            chosen = {index for index in handles if roles[index] == str(role.value)}
+        chosen = set(target.selected_data) & handles or handles
         if not chosen:
             return
         features = dict(target.features)
@@ -1534,12 +1583,13 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         cursor -- and nothing on screen says so.
         """
         method = str(current_values().get(method_setting(str(role.value))))
-        name = BC_REGIONS if method == "volume" else BC_COORDINATES
+        regions = method == "volume"
+        name = regions_name(str(role.value)) if regions else BC_COORDINATES
         target = layer(name)
         if target is None:
             report.value = "Nothing to move yet -- press Show, then pick or draw."
             return
-        if name == BC_REGIONS and viewer.dims.ndisplay == 3:
+        if regions and viewer.dims.ndisplay == 3:
             report.value = (
                 "Regions can only be edited in the 2D view -- napari does not "
                 "allow editing a Shapes layer in 3D. Coordinates can be moved "
@@ -1557,7 +1607,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     def on_assign() -> None:
         """Give the selected items the chosen role."""
         changed = 0
-        for name in (BC_COORDINATES, BC_REGIONS):
+        # Reassigning a region moves it to another layer: the role written
+        # here reaches the settings through `sync`, and the redraw after it
+        # rebuilds each layer from the role that now owns the box.
+        for name in our_layer_names():
             target = layer(name)
             if target is None or not len(target.data):
                 continue
@@ -1735,7 +1788,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             if tabs.currentIndex() != index:
                 tabs.setCurrentIndex(index)
         place_shared()
-        for name in (BC_COORDINATES, BC_REGIONS):
+        for name in our_layer_names():
             target = layer(name)
             if target is not None:
                 set_defaults(target)
@@ -1749,7 +1802,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         row_order=row_order, refresh_rows=refresh_rows,
         show=on_show, pick=on_pick, draw=on_draw, snap=on_snap, move=on_move,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
-        layer_names=(BC_COORDINATES, BC_REGIONS),
+        layer_names=(BC_COORDINATES, *BC_REGION_NAMES),
     )
 
 
