@@ -213,17 +213,18 @@ def test_smoothing_beats_the_raw_path_on_every_measure(known_vessels):
 
 
 @pytest.fixture(scope="module")
-def nerve_graph():
+def nerve_graph(tmp_path_factory):
     """The cropped nerve stack, through segmentation and graph building."""
     from haemolynx.pipeline import default_schema, resolve_settings
     from haemolynx.pipeline.stages import build_network, segment, skeletonise
 
-    import tempfile
-
     if not NERVE.exists():
         pytest.skip(f"missing fixture: {NERVE}")
 
-    output = Path(tempfile.mkdtemp())
+    # tmp_path_factory, not mkdtemp: this run writes the skeleton and the
+    # per-step graph snapshots (~40 MB a run), and pytest prunes its base
+    # directories where a bare mkdtemp would leave every one of them behind.
+    output = tmp_path_factory.mktemp("nerve_graph")
     schema = default_schema()
     values = {setting.name: setting.default for setting in schema}
     values.update(
