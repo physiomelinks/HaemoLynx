@@ -75,14 +75,17 @@ without it are still correct: a run snaps every one of them to its nearest
 terminal anyway.
 
 The tab has a sub-tab per role — **Starting**, **Output**, **Arteriole**,
-**Venule** — holding that role's method, whatever the method reads, and the
-node IDs a run fills in. The open sub-tab *is* the role: a coordinate you pick
-or a region you draw belongs to whichever one you are looking at. Within a
-sub-tab only the rows that role's method will read are shown, so choosing
-`coordinates` reveals its coordinate list and `volume` its region list. The
+**Venule** — holding that role's method, whatever the method reads, the node
+IDs a run fills in, and that role's own **Pick coordinates**, **Draw a
+region**, **Region depth**, **Assign selected** and **Clear regions**. The open
+sub-tab *is* the role: a coordinate you pick or a region you draw belongs to
+whichever one you are looking at. Within a sub-tab only the rows and controls
+that role's method can use are shown, so `coordinates` gives you a coordinate
+list and a Pick button, `volume` a region list, a Draw button and a depth. The
 boundary axis and the two band percentages sit below the sub-tabs, since one
 axis and one pair of bands describe the whole network rather than any one role.
-Editing any of it redraws the layers straight away.
+**Show** and **Snap** sit above the sub-tabs, since they are about the picture
+rather than about one role. Editing any of it redraws the layers straight away.
 
 Every one of these coordinates is **microns**, not voxel indices. The panel
 says so when it can — a coordinate outside the image is reported with the

@@ -14,6 +14,7 @@ GUI installed.
 from __future__ import annotations
 
 import logging
+import math
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -328,14 +329,17 @@ def _add_or_update(viewer, spec) -> None:
         existing = viewer.layers[spec.name] if spec.name in viewer.layers else None
 
     if existing is not None and existing.__class__.__name__.lower() == _CLASS_FOR[spec.kind]:
-        existing.data = spec.data
-        # A Shapes layer keeps the types it had only while the count is
-        # unchanged; anything new arrives as a polygon, which turns a
-        # two-point outline segment into a degenerate shape. The spec knows
-        # what each one is, so say so again.
-        shape_type = spec.options.get("shape_type")
-        if shape_type is not None and spec.kind == "shapes":
-            existing.shape_type = shape_type
+        # A Shapes layer applies the types it already holds to whatever data
+        # it is next given, so handing a box outline to a layer holding one
+        # rectangle raises "Rectangle expects four corner vertices, 2
+        # provided" -- after it has emptied itself, which loses the region.
+        # The spec knows what each shape is, so the two go in together.
+        shape_type = spec.options.get("shape_type") if spec.kind == "shapes" else None
+        if shape_type is not None:
+            existing.data = []
+            existing.add(list(spec.data), shape_type=list(shape_type))
+        else:
+            existing.data = spec.data
         if spec.features:
             existing.features = dict(spec.features)
         _colour_layer(existing, spec.colour_by, spec.colour_kind,
@@ -1045,16 +1049,40 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     #: combo as the model means everything downstream still reads one value,
     #: and a role can still be chosen without a display.
     role = ComboBox(choices=list(ROLES), value=ROLES[0], label="Role")
+
+    #: The two controls that are about the picture rather than about one role.
     show = PushButton(text="Show these boundary conditions")
-    pick = PushButton(text="Pick coordinates in the viewer")
-    draw = PushButton(text="Draw a region")
-    depth = FloatSlider(value=0.0, min=0.0, max=1000.0, label="Region depth (um)")
-    assign = PushButton(text="Assign selected to this role")
     snap_button = PushButton(text="Snap selected to nearest terminal")
-    clear = PushButton(text="Clear this role's regions")
+
+    #: Everything else, once per role, so it sits on that role's own page next
+    #: to the settings it fills in. A control that acts on "the chosen role"
+    #: from a page that is not that role's is a control that can be pressed by
+    #: mistake; one per page cannot be.
+    actions = {
+        name: SimpleNamespace(
+            pick=PushButton(text="Pick coordinates in the viewer"),
+            draw=PushButton(text="Draw a region"),
+            depth=FloatSlider(value=0.0, min=0.0, max=1000.0,
+                              label="Region depth (um)"),
+            assign=PushButton(text="Assign selected to this role"),
+            clear=PushButton(text="Clear this role's regions"),
+        )
+        for name in ROLES
+    }
+
+    #: Which of a role's controls its chosen method has any use for.
+    ACTIONS_FOR_METHOD = {
+        "coordinates": ("pick", "assign"),
+        "volume": ("draw", "depth", "assign", "clear"),
+    }
 
     state = SimpleNamespace(applying=False, results=None, connected=set(),
-                        visible=frozenset(), hidden=frozenset(), tabs=None)
+                        visible=frozenset(), hidden=frozenset(), tabs=None,
+                        actions={})
+
+    def depth_slider():
+        """The region depth on the page the user is looking at."""
+        return actions[str(role.value)].depth
 
     def current_values() -> dict[str, Any]:
         return {name: fields[name].to_setting_value(widget.value)
@@ -1204,9 +1232,12 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         for index in range(count):
             found = values[index] if index < len(values) else None
             try:
-                out.append(float(found))
+                depth = float(found)
             except (TypeError, ValueError):
-                out.append(float(depth.value))
+                depth = float("nan")
+            # NaN is what an untyped feature column hands back for a shape
+            # napari added itself, and a NaN depth makes a NaN box.
+            out.append(depth if math.isfinite(depth) else float(depth_slider().value))
         return out
 
     def listen(target) -> None:
@@ -1220,7 +1251,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """Tag whatever napari adds next with the chosen role and depth."""
         defaults = {"role": str(role.value)}
         if "depth" in target.features:
-            defaults["depth"] = float(depth.value)
+            defaults["depth"] = float(depth_slider().value)
         try:
             target.feature_defaults = defaults
         except Exception:  # noqa: BLE001 - `roles_of` fills the blank anyway
@@ -1234,16 +1265,22 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         if not extents:
             return
         span = max(float(e[1][0] - e[0][0]) for e in extents)
-        if span > 0:
-            depth.max = max(span, float(depth.value))
-            if depth.value == 0.0:
+        if span <= 0:
+            return
+        for slider in (action.depth for action in actions.values()):
+            state.applying = True
+            try:
+                slider.max = max(span, float(slider.value))
+            finally:
+                state.applying = False
+            if slider.value == 0.0:
                 # Guarded: assigning the slider fires `on_depth_changed`, and
                 # picking a default is not the user resizing anything. Clamped
                 # to what the slider actually took: it rounds the maximum it
                 # was given, and a value past that raises rather than clips.
                 state.applying = True
                 try:
-                    depth.value = min(span, float(depth.max))
+                    slider.value = min(span, float(slider.max))
                 finally:
                     state.applying = False
 
@@ -1278,6 +1315,17 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                     hidden.add(name)
         state.visible = wanted
         state.hidden = frozenset(hidden)
+        refresh_actions()
+
+    def refresh_actions() -> None:
+        """Show a role's controls only where its method has a use for them."""
+        values = current_values()
+        for name, action in actions.items():
+            method = str(values.get(method_setting(name)))
+            useful = set(ACTIONS_FOR_METHOD.get(method, ()))
+            for control in ("pick", "draw", "depth", "assign", "clear"):
+                getattr(action, control).visible = control in useful
+            state.actions[name] = frozenset(useful)
 
     def on_settings_changed(*_args) -> None:
         """Follow the form: the layers show what the settings currently say."""
@@ -1316,7 +1364,12 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         if target is None:
             target = viewer.add_shapes(
                 name=BC_REGIONS, ndim=3, scale=(1, 1, 1),
-                features={"role": [], "depth": []},
+                # Typed, not `[]`: an empty list makes a float64 column, and
+                # a role written into one comes back NaN -- which then reaches
+                # a settings row as `nan`, and `literal_eval` cannot read that
+                # row ever again.
+                features={"role": np.empty(0, dtype=object),
+                          "depth": np.empty(0, dtype=float)},
                 metadata={OURS: {"kind": "shapes"}},
                 edge_width=2.0, opacity=0.3,
             )
@@ -1326,7 +1379,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         target.mode = "add_rectangle"
         report.value = (
             f"Draw a rectangle for a {role.value} region. It takes the depth "
-            f"below ({depth.value:.0f} um), centred on the slice you draw it on."
+            f"below ({depth_slider().value:.0f} um), centred on the slice you draw it on."
         )
 
     def on_depth_changed(*_args) -> None:
@@ -1346,7 +1399,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         column = list(features["depth"])
         for index in chosen:
             if index < len(column):
-                column[index] = float(depth.value)
+                column[index] = float(depth_slider().value)
         state.applying = True
         try:
             features["depth"] = np.asarray(column, dtype=float)
@@ -1426,27 +1479,45 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     refresh_rows()
 
     show.changed.connect(lambda *_: on_show())
-    pick.changed.connect(lambda *_: on_pick())
-    draw.changed.connect(lambda *_: on_draw())
-    assign.changed.connect(lambda *_: on_assign())
     snap_button.changed.connect(lambda *_: on_snap())
-    clear.changed.connect(lambda *_: on_clear())
-    depth.changed.connect(on_depth_changed)
+
+    def wire(owner: str, control, handler) -> None:
+        """A control on a role's page acts on that role, whatever is selected.
+
+        The page it sits on is the answer to "which role", so pressing it says
+        so rather than assuming the tab bar and the control agree.
+        """
+        def run(*_args) -> None:
+            # The panel writes to these widgets itself -- defaulting every
+            # role's depth slider, for one. That is not the user reaching for
+            # a control, so it must not move the role onto that control's page.
+            if state.applying:
+                return
+            if str(role.value) != owner:
+                role.value = owner
+            handler()
+
+        control.changed.connect(run)
+
+    for _name, _action in actions.items():
+        wire(_name, _action.pick, on_pick)
+        wire(_name, _action.draw, on_draw)
+        wire(_name, _action.assign, on_assign)
+        wire(_name, _action.clear, on_clear)
+        wire(_name, _action.depth, on_depth_changed)
 
     def on_ndisplay(*_args) -> None:
         drawable = viewer.dims.ndisplay == 2
-        draw.enabled = drawable
-        draw.tooltip = ("" if drawable else
-                        "napari cannot edit a Shapes layer in the 3D view. "
-                        "Switch to 2D to draw a region.")
+        for action in actions.values():
+            action.draw.enabled = drawable
+            action.draw.tooltip = ("" if drawable else
+                                   "napari cannot edit a Shapes layer in the "
+                                   "3D view. Switch to 2D to draw a region.")
 
     viewer.dims.events.ndisplay.connect(on_ndisplay)
     on_ndisplay()
 
-    widget = Container(
-        widgets=[show, pick, draw, depth, assign, snap_button, clear],
-        labels=True,
-    )
+    widget = Container(widgets=[show, snap_button], labels=True)
 
     def page(summary, names: Sequence[str]):
         """The Boundaries tab: one sub-tab per role, then what they share.
@@ -1465,7 +1536,15 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         for name in ROLES:
             mine = [n for n in role_settings(name) if n in rows]
             placed.update(mine)
-            holder = Container(widgets=[rows[n] for n in mine], labels=True)
+            action = actions[name]
+            holder = Container(
+                widgets=[
+                    *(rows[n] for n in mine),
+                    action.pick, action.draw, action.depth,
+                    action.assign, action.clear,
+                ],
+                labels=True,
+            )
             role_tabs.addTab(holder.native, role_title(name))
             role_tabs.setTabToolTip(role_tabs.count() - 1,
                                     fields[method_setting(name)].help)
@@ -1511,7 +1590,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     role.changed.connect(on_role_changed)
 
     return SimpleNamespace(
-        widget=widget, role=role, depth=depth, state=state, page=page,
+        widget=widget, role=role, actions=actions, depth_slider=depth_slider,
+        state=state, page=page,
         row_order=row_order, refresh_rows=refresh_rows,
         show=on_show, pick=on_pick, draw=on_draw, snap=on_snap,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,

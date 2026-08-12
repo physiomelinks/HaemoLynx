@@ -19,6 +19,7 @@ pytest.importorskip("magicgui")
 from haemolynx.gui._widget import _clear_our_layers, settings_widget  # noqa: E402
 from haemolynx.gui.boundary_picking import (  # noqa: E402
     BC_COORDINATES,
+    ROLES,
     BC_REGIONS,
     rectangle_from_box,
 )
@@ -258,7 +259,7 @@ def test_the_depth_slider_resizes_the_selected_region(panel):
     bc.show()
     viewer.layers[BC_REGIONS].selected_data = {0}
 
-    bc.depth.value = 20.0
+    bc.depth_slider().value = 20.0
 
     lo, hi = widget._haemolynx_values()["output_node_volumes"][0]
     assert hi[0] - lo[0] == pytest.approx(20.0)
@@ -607,8 +608,8 @@ def test_showing_survives_a_stack_whose_depth_the_slider_rounds(panel):
 
     span = float(viewer.layers["stack"].extent.world[1][0]
                  - viewer.layers["stack"].extent.world[0][0])
-    assert bc.depth.value == pytest.approx(span, abs=1e-3)
-    assert bc.depth.value <= bc.depth.max
+    assert bc.depth_slider().value == pytest.approx(span, abs=1e-3)
+    assert bc.depth_slider().value <= bc.depth_slider().max
 
 
 # --- coordinates that do not lie on the image --------------------------------
@@ -632,3 +633,122 @@ def test_a_coordinate_on_the_image_is_not_reported(panel):
     bc.show()
 
     assert "Outside the image" not in widget._haemolynx_report()
+
+
+# --- a role's controls live on that role's page ------------------------------
+
+
+CONTROLS = ("pick", "draw", "depth", "assign", "clear")
+
+
+@pytest.mark.parametrize("control", CONTROLS)
+def test_each_role_has_its_own_copy_of_a_control(panel, control):
+    """A control that acts on "the chosen role" from another role's page is a
+    control that can be pressed by mistake; one per page cannot be."""
+    widget, viewer, bc = panel
+    natives = {getattr(bc.actions[role], control).native for role in ROLES}
+
+    assert len(natives) == 4
+    page = bc.state.tabs.widget(1)
+    own = getattr(bc.actions["output"], control).native
+    assert own in page.findChildren(type(own))
+    assert getattr(bc.actions["starting"], control).native not in page.findChildren(type(own))
+
+
+def test_the_tab_level_controls_are_the_ones_that_are_not_per_role(panel):
+    widget, viewer, bc = panel
+    labels = [getattr(w, "text", "") for w in bc.widget]
+
+    assert labels == ["Show these boundary conditions",
+                      "Snap selected to nearest terminal"]
+
+
+def test_pressing_a_control_acts_on_the_page_it_sits_on(panel):
+    """Even from another tab: the page it is on is the answer to "which role"."""
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_selection_method"].value = "volume"
+    bc.state.tabs.setCurrentIndex(0)
+
+    bc.actions["output"].draw.changed()
+
+    assert str(bc.role.value) == "output"
+    viewer.layers[BC_REGIONS].add_rectangles(
+        np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
+                  [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
+    )
+    assert len(widget._haemolynx_values()["output_node_volumes"]) == 1
+    assert widget._haemolynx_values()["starting_node_volumes"] == []
+
+
+def test_a_method_only_shows_the_controls_it_can_use(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_selection_method"].value = "coordinates"
+    rows_of(widget)["output_node_selection_method"].value = "volume"
+    rows_of(widget)["venule_boundary_selection_method"].value = "edge_percent"
+
+    assert bc.state.actions["starting"] == {"pick", "assign"}
+    assert bc.state.actions["output"] == {"draw", "depth", "assign", "clear"}
+    assert bc.state.actions["venule_boundary"] == set(), "nothing to point at"
+
+
+def test_each_role_keeps_its_own_region_depth(panel):
+    widget, viewer, bc = panel
+    bc.show()
+
+    bc.actions["output"].depth.value = 12.0
+
+    assert bc.actions["starting"].depth.value != pytest.approx(12.0)
+    bc.role.value = "output"
+    assert bc.depth_slider().value == pytest.approx(12.0)
+
+
+def test_defaulting_the_depths_does_not_move_the_role(panel):
+    """Every slider is written when the range is set, and each is wired to its
+    own role -- so an unguarded write walked the role to the last one."""
+    widget, viewer, bc = panel
+
+    bc.show()
+
+    assert str(bc.role.value) == "starting"
+    assert bc.state.tabs.currentIndex() == 0
+
+
+# --- drawing into a layer that already holds a region ------------------------
+
+
+def test_a_region_drawn_into_an_empty_layer_reaches_its_role(panel):
+    """The first thing anyone does, and it had two faults at once: an empty
+    feature column is float64, so the role default came back NaN and made a
+    NaN box that no settings row could ever parse again."""
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_selection_method"].value = "volume"
+
+    bc.actions["output"].draw.changed()
+    viewer.layers[BC_REGIONS].add_rectangles(
+        np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
+                  [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
+    )
+
+    boxes = widget._haemolynx_values()["output_node_volumes"]
+    assert len(boxes) == 1
+    assert np.isfinite(np.asarray(boxes, dtype=float)).all(), "a NaN corner is a lost box"
+    assert ast.literal_eval(str(boxes)) == boxes, "the row must survive being read back"
+
+
+def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
+    """A Shapes layer applies the types it already holds to whatever data it is
+    given next, so a box outline handed to a layer holding one rectangle raised
+    -- after emptying itself, which lost the region."""
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_selection_method"].value = "volume"
+    bc.actions["output"].draw.changed()
+    viewer.layers[BC_REGIONS].add_rectangles(
+        np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
+                  [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
+    )
+    before = widget._haemolynx_values()["output_node_volumes"]
+
+    bc.show()
+
+    assert len(viewer.layers[BC_REGIONS].data) == 13
+    assert widget._haemolynx_values()["output_node_volumes"] == before
