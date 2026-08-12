@@ -24,7 +24,7 @@ from browser_diagnostics import open_diagnostic_html
 def _write_rotatable_assignment_graph(
     G: nx.Graph,
     input_nodes: list[int],
-    output_nodes: list[int],
+    outlet_nodes: list[int],
     arteriole_mask: np.ndarray,
     venule_mask: np.ndarray,
     html_path: Path,
@@ -66,7 +66,7 @@ def _write_rotatable_assignment_graph(
             edge_z += [float(pu[0]), float(pv[0]), None]
 
     input_set = set(input_nodes)
-    output_set = set(output_nodes)
+    output_set = set(outlet_nodes)
     other_nodes = [n for n in G.nodes if n not in input_set and n not in output_set]
 
     def _coords(nodes: list[int]) -> tuple[list[float], list[float], list[float]]:
@@ -137,8 +137,8 @@ def _write_rotatable_assignment_graph(
                 name="Input Nodes",
             )
         )
-    if output_nodes:
-        ox, oy, oz = _coords(output_nodes)
+    if outlet_nodes:
+        ox, oy, oz = _coords(outlet_nodes)
         fig.add_trace(
             go.Scatter3d(
                 x=ox,
@@ -196,7 +196,7 @@ def _parallel_cylinder_mask_along_x(
 def test_automated_vessel_detection(tmp_path):
     """Assign degree-1 nodes via mask overlap, with and without dilation."""
     # Build a richer graph with multiple degree>1 pass-through/junction nodes.
-    # Terminals should still be the only selectable input/output nodes.
+    # Terminals should still be the only selectable input/outlet nodes.
     G = nx.MultiGraph()
     # Terminals intended for automated assignment.
     G.add_node(0, pos=np.array([1.0, 1.0, 1.0]))  # terminal in arteriole volume
@@ -244,7 +244,7 @@ def test_automated_vessel_detection(tmp_path):
     _write_rotatable_assignment_graph(
         G=G,
         input_nodes=start_nodes,
-        output_nodes=out_nodes,
+        outlet_nodes=out_nodes,
         arteriole_mask=arteriole_mask,
         venule_mask=venule_mask,
         html_path=tmp_path / "automated_vessel_detection_before_dilation_3d.html",
@@ -272,7 +272,7 @@ def test_automated_vessel_detection(tmp_path):
     _write_rotatable_assignment_graph(
         G=G,
         input_nodes=start_nodes_dilated,
-        output_nodes=out_nodes_dilated,
+        outlet_nodes=out_nodes_dilated,
         arteriole_mask=dilated_arteriole_mask,
         venule_mask=dilated_venule_mask,
         html_path=tmp_path / "automated_vessel_detection_after_dilation_3d.html",
@@ -329,7 +329,7 @@ def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
     _write_rotatable_assignment_graph(
         G=G,
         input_nodes=start_nodes,
-        output_nodes=out_nodes,
+        outlet_nodes=out_nodes,
         arteriole_mask=arteriole_mask,
         venule_mask=venule_mask,
         html_path=tmp_path / "overlap_resolution_cross_section_priority_3d.html",

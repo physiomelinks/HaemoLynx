@@ -244,7 +244,7 @@ def test_select_boundary_nodes_by_method_coordinates():
         G,
         (10, 10, 10),
         method="coordinates",
-        node_role="input",
+        node_role="inlet",
         coordinates=[(0.0, 0.0, 0.0)],
     )
     assert nodes == [0]
@@ -262,7 +262,7 @@ def test_select_boundary_nodes_by_method_volume_and_exclude():
         G,
         (10, 10, 10),
         method="volume",
-        node_role="output",
+        node_role="outlet",
         volume_boxes=[((0.0, 0.0, 0.0), (9.0, 9.0, 9.0))],
         exclude_nodes=[0],
     )
@@ -282,10 +282,10 @@ def test_select_boundary_nodes_by_method_degree_1_from_starting():
     nodes = select_boundary_nodes_by_method(
         G,
         (20, 20, 20),
-        method="degree_1_from_starting",
-        node_role="output",
-        starting_nodes_for_distance=[0],
-        distance_from_starting_node=5.0,
+        method="degree_1_from_inlet",
+        node_role="outlet",
+        inlet_nodes_for_distance=[0],
+        distance_from_inlet_node=5.0,
         exclude_nodes=[0],
     )
     assert nodes == [3]

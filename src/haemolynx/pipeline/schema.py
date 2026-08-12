@@ -44,7 +44,7 @@ NODE_SELECTION_METHODS = (
     "all_degree_1",
     "volume",
     "edge_percent",
-    "degree_1_from_starting",
+    "degree_1_from_inlet",
 )
 
 _INPUT_AND_SEGMENTATION = "Input and segmentation"
@@ -154,7 +154,7 @@ SCHEMA = Schema(
             name="use_large_vessel_masks",
             kind="bool",
             default=False,
-            help="Load large arteriole and venule masks for automated start/output node assignment",
+            help="Load large arteriole and venule masks for automated inlet/outlet node assignment",
             section=_VESSEL_MASKS,
         ),
         Setting(
@@ -339,7 +339,7 @@ SCHEMA = Schema(
             name="automated_vessel_assignment",
             kind="bool",
             default=False,
-            help="Select start and output nodes automatically from the large-vessel masks instead of manually",
+            help="Select inlet and outlet nodes automatically from the large-vessel masks instead of manually",
             section=_BOUNDARY_ASSIGNMENT,
             requires=("use_large_vessel_masks",),
         ),
@@ -350,18 +350,18 @@ SCHEMA = Schema(
         # outlets. "coordinates" and "volume" describe one dataset and no
         # other, which is why they are chosen rather than defaulted to.
         Setting(
-            name="starting_node_selection_method",
+            name="inlet_node_selection_method",
             kind="choice",
             default="edge_percent",
-            help="Choose how manual starting nodes are picked from the graph",
+            help="Choose how manual inlet nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
         ),
         Setting(
-            name="output_node_selection_method",
+            name="outlet_node_selection_method",
             kind="choice",
             default="edge_percent",
-            help="Choose how manual output nodes are picked from the graph",
+            help="Choose how manual outlet nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
         ),
@@ -413,10 +413,10 @@ SCHEMA = Schema(
             maximum=100.0,
         ),
         Setting(
-            name="boundary_distance_from_starting_node",
+            name="boundary_distance_from_inlet_node",
             kind="float",
             default=0.0,
-            help="Keep only the terminals further than this from a starting node when the degree_1_from_starting method is used",
+            help="Keep only the terminals further than this from an inlet node when the degree_1_from_inlet method is used",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
             minimum=0.0,
@@ -427,18 +427,18 @@ SCHEMA = Schema(
         # one brain stack, which selected six arbitrary terminals in anything
         # else and left the outlets, whose list was empty, unfindable.
         Setting(
-            name="starting_node_coordinates",
+            name="inlet_node_coordinates",
             kind="any",
             default=[],
-            help="Pick starting nodes nearest to these (z, y, x) coordinates when the coordinates method is used",
+            help="Pick inlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
         Setting(
-            name="output_node_coordinates",
+            name="outlet_node_coordinates",
             kind="any",
             default=[],
-            help="Pick output nodes nearest to these (z, y, x) coordinates when the coordinates method is used",
+            help="Pick outlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
@@ -461,18 +461,18 @@ SCHEMA = Schema(
         # The volume boxes below apply whenever a role's selection method is
         # "volume"; that choice is the switch, so there is no separate flag.
         Setting(
-            name="starting_node_volumes",
+            name="inlet_node_volumes",
             kind="any",
             default=[],
-            help="Select starting nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
+            help="Select inlet nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
         Setting(
-            name="output_node_volumes",
+            name="outlet_node_volumes",
             kind="any",
             default=[],
-            help="Select output nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
+            help="Select outlet nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
@@ -493,20 +493,20 @@ SCHEMA = Schema(
             unit="um",
         ),
         Setting(
-            # The pipeline fills these in place (`starting_nodes[:] = []`), so
+            # The pipeline fills these in place (`inlet_nodes[:] = []`), so
             # they must stay mutable lists rather than fixed-length tuples.
-            name="starting_nodes",
+            name="inlet_nodes",
             kind="any",
             default=[],
-            help="Hold the starting node IDs chosen during the run; leave empty to let the pipeline fill it",
+            help="Hold the inlet node IDs chosen during the run; leave empty to let the pipeline fill it",
             section=_BOUNDARY_ASSIGNMENT,
             advanced=True,
         ),
         Setting(
-            name="output_nodes",
+            name="outlet_nodes",
             kind="any",
             default=[],
-            help="Hold the output node IDs chosen during the run; leave empty to let the pipeline fill it",
+            help="Hold the outlet node IDs chosen during the run; leave empty to let the pipeline fill it",
             section=_BOUNDARY_ASSIGNMENT,
             advanced=True,
         ),
@@ -537,7 +537,7 @@ SCHEMA = Schema(
         # Solver and output
         # ------------------------------------------------------------------
         Setting(
-            name="input_p_bc",
+            name="inlet_p_bc",
             kind="float",
             default=4500.0,
             help="Apply this pressure boundary condition at the inlet nodes",
@@ -546,7 +546,7 @@ SCHEMA = Schema(
             unit="Pa",
         ),
         Setting(
-            name="output_p_bc",
+            name="outlet_p_bc",
             kind="float",
             default=1000.0,
             help="Apply this pressure boundary condition at the outlet nodes",

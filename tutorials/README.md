@@ -44,6 +44,91 @@ napari. With a layer already open, loading a config keeps that layer as the
 input and ignores the file's `input_path`. Paths are checked when a run starts,
 by **Run checks** and by the run itself.
 
+### Setting boundary conditions by pointing at them
+
+On the **Boundaries** tab, **Show these boundary conditions** draws what the
+config describes, before anything runs:
+
+- **HaemoLynx BC coordinates** — a ring per coordinate, coloured by role:
+  green for an inlet, red for an outlet, orange and purple for the
+  arteriole and venule boundaries.
+- **HaemoLynx BC inlet regions**, **… outlet regions**, and one each for the
+  arteriole and venule boundaries — a box per volume in that role's colour:
+  the twelve edges of the volume, plus one rectangle at its centre that is the
+  handle you drag. Only the handle is a region; the edges just show its depth.
+  One layer per role, so inlets and outlets can be hidden separately and each
+  reads as a single colour. A role's layer appears when it has something to
+  draw and goes when it has not.
+
+Both are editable, and **both are the settings**: a coordinate you drag is a
+coordinate the run will use. Napari's own tools do the work — **Pick coordinates
+in the viewer** puts the points layer into add mode, then click to place, drag to
+move, select and press Delete to remove. Pick the **Role** first; it decides
+which of the four settings a new point lands in, and **Assign selected to this
+role** moves ones you got wrong.
+
+**Draw a region** does the same for a volume box. Draw a rectangle on a slice and
+it becomes a box, centred on that slice, as deep as the **Region depth** slider
+says — which defaults to the whole stack, because a boundary band usually is.
+Select a region and move the slider to resize it. Regions can only be *drawn* in
+the 2D view: napari does not allow editing a Shapes layer in 3D. Switch back to
+3D afterwards to see the box you made.
+
+**Snap selected to nearest terminal** moves each coordinate onto the vessel end
+the run would choose, and says how far it moved — a large move means the click
+missed. It needs a graph, so run at least *3. Graph* first. Coordinates you pick
+without it are still correct: a run snaps every one of them to its nearest
+terminal anyway.
+
+The tab has a sub-tab per role — **Inlet**, **Outlet**, **Arteriole**,
+**Venule** — holding that role's method, whatever the method reads, the node
+IDs a run fills in, and that role's own **Pick coordinates**, **Draw a
+region**, **Region depth**, **Assign selected** and **Clear regions**. The open
+sub-tab *is* the role: a coordinate you pick or a region you draw belongs to
+whichever one you are looking at. Within a sub-tab only the rows and controls
+that role's method can use are shown, so `coordinates` gives you a coordinate
+list and a Pick button, `volume` a region list, a Draw button and a depth. The
+boundary axis and the two band percentages sit below the sub-tabs, since one
+axis and one pair of bands describe the whole network rather than any one role.
+**Show** and **Snap** sit above the sub-tabs, since they are about the picture
+rather than about one role.
+
+Clicking places a new coordinate; to move one you just placed, press **Move or
+delete what you picked**, which is napari's own select tool — click to select,
+drag to move, Delete to remove, drag a box to take several. Coordinates can be
+moved in the 2D or the 3D view; regions only in 2D. **Region depth** resizes
+the regions you have selected, or all of that role's regions if none are, and
+sets the depth the next one is drawn at.
+
+`edge_percent` draws its band too: the slab of the volume that percentage
+covers, measured from the near or far end of the boundary axis, as a wireframe
+box in the role's colour. It has no handle to drag — it is what the percentage
+works out to, not a region anyone typed — and it follows the percentage as you
+change it. A run measures the band across the terminals rather than the image,
+because a network rarely reaches its image's edge, so before *3. Graph* has run
+the box is drawn across the image and the report says so; afterwards it is
+exact.
+
+The boundary axis and the band percentage appear under whichever role is
+reading them — there is one of each for the whole network, so the row moves to
+the sub-tab you are on rather than being copied. A role sees the percentage for
+its own end of the axis only: inlets read the first percentage, outlets the
+last. Editing any of it redraws the layers straight away.
+
+Every one of these coordinates is **microns**, not voxel indices. The panel
+says so when it can — a coordinate outside the image is reported with the
+image's size in microns — but a voxel index that happens to land inside the
+volume cannot be detected, and a run will snap it to the nearest vessel end
+rather than fail. If a config's coordinates came from a viewer showing voxel
+indices, multiply each by the voxel size.
+
+Two things the panel will tell you rather than fix behind your back. A role only
+reads its coordinates when its `*_selection_method` says `coordinates` (and its
+regions when it says `volume`), so picking against a role set to `edge_percent`
+reports *"Not used"* rather than silently rewriting the method you chose. And an
+entry it cannot read — a two-number coordinate from a hand-edited config — is
+reported and skipped, not raised.
+
 ### Running on the image already open
 
 Open an image, then open the panel: the selected layer is picked up
@@ -142,12 +227,12 @@ prerequisite as a comment.
 
 ```yaml
 boundary_assignment:
-  # Choose the method for selecting input boundary nodes  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
-  starting_node_selection_method: edge_percent
+  # Choose the method for selecting input boundary nodes  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  inlet_node_selection_method: edge_percent
 
 solver_and_output:
   # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
-  input_p_bc: 4500.0
+  inlet_p_bc: 4500.0
 ```
 
 **Or override one value for a single run** — every setting has a command-line

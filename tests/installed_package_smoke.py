@@ -49,8 +49,8 @@ G, _ = haemodynamics.apply_poiseuille_haemodynamics(
 conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
 flow = haemodynamics.solve_flow_from_conductance_matrix(
     conductance, node_list,
-    input_p_bc=1000.0, output_p_bc=500.0,
-    starting_nodes=[0], output_nodes=[2],
+    inlet_p_bc=1000.0, outlet_p_bc=500.0,
+    inlet_nodes=[0], outlet_nodes=[2],
 )
 haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
 

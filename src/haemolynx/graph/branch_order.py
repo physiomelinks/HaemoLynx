@@ -17,7 +17,7 @@ PostAssignCallback = Callable[[nx.MultiGraph], None]
 
 def _compute_node_distances(
     G: nx.MultiGraph,
-    start_nodes: list[int],
+    inlet_nodes: list[int],
     stop_nodes: set[int] | None = None,
 ) -> dict[int, int]:
     """Compute unweighted BFS node distances with optional stop nodes."""
@@ -25,13 +25,13 @@ def _compute_node_distances(
     node_distances: dict[int, int] = {}
     queue: deque[tuple[int, int]] = deque()
 
-    for start_node in start_nodes:
-        if start_node in G.nodes():
-            if start_node not in node_distances:
-                node_distances[start_node] = 0
-                queue.append((start_node, 0))
+    for inlet_node in inlet_nodes:
+        if inlet_node in G.nodes():
+            if inlet_node not in node_distances:
+                node_distances[inlet_node] = 0
+                queue.append((inlet_node, 0))
         else:
-            logger.warning("Starting node %s not found in graph", start_node)
+            logger.warning("Inlet node %s not found in graph", inlet_node)
 
     while queue:
         current_node, distance = queue.popleft()
@@ -55,16 +55,16 @@ def _compute_node_distances(
 
 def assign_branch_orders(
     G: nx.MultiGraph,
-    starting_nodes: list[int],
+    inlet_nodes: list[int],
     prefix: str = "B",
     stop_nodes: set[int] | None = None,
     excluded_edges: set[tuple[int, int, int]] | None = None,
     included_edges: set[tuple[int, int, int]] | None = None,
 ) -> dict:
-    """Assign branch-order labels to edges from BFS distance to starting nodes."""
+    """Assign branch-order labels to edges from BFS distance to inlet nodes."""
     node_distances = _compute_node_distances(
         G,
-        starting_nodes,
+        inlet_nodes,
         stop_nodes=stop_nodes,
     )
     excluded_edges = excluded_edges or set()
@@ -113,8 +113,8 @@ def assign_branch_orders(
 
 def assign_hierarchical_branch_orders(
     G: nx.MultiGraph,
-    starting_nodes: list[int],
-    output_nodes: list[int],
+    inlet_nodes: list[int],
+    outlet_nodes: list[int],
     arteriole_boundary_nodes: list[int],
     venule_boundary_nodes: list[int],
 ) -> dict:
@@ -124,7 +124,7 @@ def assign_hierarchical_branch_orders(
 
     arteriole_node_distances = _compute_node_distances(
         G,
-        starting_nodes,
+        inlet_nodes,
         stop_nodes=arteriole_boundary_set,
     )
     arteriole_nodes = set(arteriole_node_distances.keys())
@@ -135,7 +135,7 @@ def assign_hierarchical_branch_orders(
     }
     arteriole_results = assign_branch_orders(
         G,
-        starting_nodes,
+        inlet_nodes,
         prefix="Art",
         stop_nodes=arteriole_boundary_set,
         included_edges=arteriole_edges,
@@ -143,7 +143,7 @@ def assign_hierarchical_branch_orders(
 
     venule_node_distances = _compute_node_distances(
         G,
-        output_nodes,
+        outlet_nodes,
         stop_nodes=venule_boundary_set,
     )
     venule_nodes = set(venule_node_distances.keys())
@@ -154,14 +154,14 @@ def assign_hierarchical_branch_orders(
     }
     venule_results = assign_branch_orders(
         G,
-        output_nodes,
+        outlet_nodes,
         prefix="Ven",
         stop_nodes=venule_boundary_set,
         excluded_edges=arteriole_edges,
         included_edges=venule_edges,
     )
 
-    capillary_start_nodes = arteriole_boundary_nodes if arteriole_boundary_nodes else starting_nodes
+    capillary_start_nodes = arteriole_boundary_nodes if arteriole_boundary_nodes else inlet_nodes
     capillary_excluded_edges = arteriole_edges | venule_edges
     capillary_results = assign_branch_orders(
         G,
@@ -182,9 +182,9 @@ def assign_hierarchical_branch_orders(
 
 def assign_vessel_branch_orders(
     G: nx.MultiGraph,
-    starting_nodes: list[int],
+    inlet_nodes: list[int],
     *,
-    output_nodes: list[int] | None = None,
+    outlet_nodes: list[int] | None = None,
     arteriole_boundary_nodes: list[int] | None = None,
     venule_boundary_nodes: list[int] | None = None,
     strict_hierarchical: bool = False,
@@ -194,17 +194,17 @@ def assign_vessel_branch_orders(
     """
     Assign branch orders on ``G`` using capillary-only or hierarchical rules.
 
-    When arteriole boundary nodes, venule boundary nodes, and output nodes are
+    When arteriole boundary nodes, venule boundary nodes, and outlet nodes are
     all non-empty, uses :func:`assign_hierarchical_branch_orders`; otherwise
-    assigns capillary ``B*`` orders from ``starting_nodes`` only.
+    assigns capillary ``B*`` orders from ``inlet_nodes`` only.
 
     Parameters
     ----------
     G
         Vascular graph (modified in place).
-    starting_nodes
+    inlet_nodes
         Inlet / arteriole-side seed nodes for capillary or hierarchical assignment.
-    output_nodes, arteriole_boundary_nodes, venule_boundary_nodes
+    outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes
         Optional node sets for hierarchical assignment.
     strict_hierarchical
         Raise if hierarchical assignment was expected but prerequisites are missing.
@@ -218,23 +218,23 @@ def assign_vessel_branch_orders(
     dict
         Summary with ``mode`` of ``"hierarchical"``, ``"capillary"``, or ``"skipped"``.
     """
-    if not starting_nodes:
-        return {"mode": "skipped", "reason": "no_starting_nodes"}
+    if not inlet_nodes:
+        return {"mode": "skipped", "reason": "no_inlet_nodes"}
 
-    output_nodes = list(output_nodes or [])
+    outlet_nodes = list(outlet_nodes or [])
     arteriole_boundary_nodes = list(arteriole_boundary_nodes or [])
     venule_boundary_nodes = list(venule_boundary_nodes or [])
 
     use_hierarchical = bool(
-        arteriole_boundary_nodes and venule_boundary_nodes and output_nodes
+        arteriole_boundary_nodes and venule_boundary_nodes and outlet_nodes
     )
     if strict_hierarchical and expects_hierarchical and not use_hierarchical:
         raise ValueError(
             "Strict branch-order assignment is enabled, but hierarchical "
             "assignment prerequisites are missing. "
-            f"Need non-empty output_nodes, arteriole_boundary_nodes, and "
+            f"Need non-empty outlet_nodes, arteriole_boundary_nodes, and "
             f"venule_boundary_nodes. Got counts: "
-            f"output_nodes={len(output_nodes)}, "
+            f"outlet_nodes={len(outlet_nodes)}, "
             f"arteriole_boundary_nodes={len(arteriole_boundary_nodes)}, "
             f"venule_boundary_nodes={len(venule_boundary_nodes)}. "
             "Fix mask inputs/thresholds or disable strict_hierarchical."
@@ -243,14 +243,14 @@ def assign_vessel_branch_orders(
     if use_hierarchical:
         branch_results = assign_hierarchical_branch_orders(
             G,
-            starting_nodes=starting_nodes,
-            output_nodes=output_nodes,
+            inlet_nodes=inlet_nodes,
+            outlet_nodes=outlet_nodes,
             arteriole_boundary_nodes=arteriole_boundary_nodes,
             venule_boundary_nodes=venule_boundary_nodes,
         )
         summary: dict[str, Any] = {"mode": "hierarchical", **branch_results}
     else:
-        capillary_results = assign_branch_orders(G, starting_nodes)
+        capillary_results = assign_branch_orders(G, inlet_nodes)
         summary = {"mode": "capillary", "capillary": capillary_results}
 
     if post_assign_callback is not None:

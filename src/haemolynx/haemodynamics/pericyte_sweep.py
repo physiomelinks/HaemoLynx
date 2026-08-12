@@ -43,20 +43,20 @@ def solve_pressure_and_boundary_flow(
     conductance: np.ndarray,
     node_list: list[int],
     *,
-    input_p_bc: float,
-    output_p_bc: float,
-    starting_nodes: list[int],
-    output_nodes: list[int],
+    inlet_p_bc: float,
+    outlet_p_bc: float,
+    inlet_nodes: list[int],
+    outlet_nodes: list[int],
 ) -> dict[str, Any]:
     """Solve nodal pressures and total flow through the boundary node sets.
 
     Returns the pressure field, the flow summed over the inlets and over the
     outlets, and the network's equivalent resistance.
     """
-    if not starting_nodes:
-        raise ValueError("starting_nodes cannot be empty for flow/resistance sweep.")
-    if not output_nodes:
-        raise ValueError("output_nodes cannot be empty for flow/resistance sweep.")
+    if not inlet_nodes:
+        raise ValueError("inlet_nodes cannot be empty for flow/resistance sweep.")
+    if not outlet_nodes:
+        raise ValueError("outlet_nodes cannot be empty for flow/resistance sweep.")
 
     n_nodes = conductance.shape[0]
     if conductance.ndim != 2 or conductance.shape[1] != n_nodes:
@@ -65,28 +65,28 @@ def solve_pressure_and_boundary_flow(
         raise ValueError("node_list length must match conductance matrix dimensions.")
 
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-    missing_start = [n for n in starting_nodes if n not in node_to_idx]
-    missing_out = [n for n in output_nodes if n not in node_to_idx]
+    missing_start = [n for n in inlet_nodes if n not in node_to_idx]
+    missing_out = [n for n in outlet_nodes if n not in node_to_idx]
     if missing_start or missing_out:
         raise ValueError(
             "Boundary nodes missing from node_list "
-            f"(missing_starting={missing_start}, missing_output={missing_out})."
+            f"(missing_inlet={missing_start}, missing_output={missing_out})."
         )
 
     laplacian = calc_laplacian_from_conductance_matrix(conductance)
     pressure = np.zeros(n_nodes, dtype=float)
     bc_idx_to_p: dict[int, float] = {}
-    for node_id in starting_nodes:
-        bc_idx_to_p[node_to_idx[node_id]] = float(input_p_bc)
-    for node_id in output_nodes:
+    for node_id in inlet_nodes:
+        bc_idx_to_p[node_to_idx[node_id]] = float(inlet_p_bc)
+    for node_id in outlet_nodes:
         idx = node_to_idx[node_id]
         existing = bc_idx_to_p.get(idx)
-        if existing is not None and not np.isclose(existing, float(output_p_bc)):
+        if existing is not None and not np.isclose(existing, float(outlet_p_bc)):
             raise ValueError(
                 f"Node {node_id} receives conflicting BC pressures "
-                f"{existing} and {output_p_bc}."
+                f"{existing} and {outlet_p_bc}."
             )
-        bc_idx_to_p[idx] = float(output_p_bc)
+        bc_idx_to_p[idx] = float(outlet_p_bc)
 
     known_idx = np.array(sorted(bc_idx_to_p.keys()), dtype=int)
     pressure[known_idx] = np.array([bc_idx_to_p[idx] for idx in known_idx], dtype=float)
@@ -109,10 +109,10 @@ def solve_pressure_and_boundary_flow(
             total += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
         return total
 
-    total_inlet_flow = _boundary_flow(starting_nodes)
-    total_outlet_flow = _boundary_flow(output_nodes)
+    total_inlet_flow = _boundary_flow(inlet_nodes)
+    total_outlet_flow = _boundary_flow(outlet_nodes)
 
-    pressure_drop = float(input_p_bc - output_p_bc)
+    pressure_drop = float(inlet_p_bc - outlet_p_bc)
     # Exact zero only: flows are in m^3/s and physiologically ~1e-14, so any
     # absolute tolerance would swallow every real result.
     equivalent_resistance = (
@@ -143,8 +143,8 @@ def run_pericyte_dilation_pressure_sweep(
     G: nx.MultiGraph,
     settings: Mapping[str, Any],
     *,
-    starting_nodes: list[int],
-    output_nodes: list[int],
+    inlet_nodes: list[int],
+    outlet_nodes: list[int],
     output_dir: Path | str,
 ) -> dict[str, Any]:
     """Sweep pericyte dilation against inlet pressure, writing a CSV of curves.
@@ -163,7 +163,7 @@ def run_pericyte_dilation_pressure_sweep(
     )
     diameter_by_branch_order = settings["diameter_by_branch_order"]
     custom_edges = settings.get("custom_edges") or []
-    outlet_pressure_pa = float(settings["output_p_bc"])
+    outlet_pressure_pa = float(settings["outlet_p_bc"])
 
     dilation_values = range(
         int(settings["pericyte_dilation_min_percent"]),
@@ -202,10 +202,10 @@ def run_pericyte_dilation_pressure_sweep(
             solved = solve_pressure_and_boundary_flow(
                 conductance,
                 node_list,
-                input_p_bc=float(inlet_pressure_pa),
-                output_p_bc=outlet_pressure_pa,
-                starting_nodes=starting_nodes,
-                output_nodes=output_nodes,
+                inlet_p_bc=float(inlet_pressure_pa),
+                outlet_p_bc=outlet_pressure_pa,
+                inlet_nodes=inlet_nodes,
+                outlet_nodes=outlet_nodes,
             )
             results.append(
                 {

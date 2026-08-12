@@ -189,23 +189,23 @@ def resolve_overlapping_terminal_node_assignment(
     arteriole_cross_section_dist = float(metrics["arteriole_cross_section_midpoint_distance"])
     venule_cross_section_dist = float(metrics["venule_cross_section_midpoint_distance"])
     if arteriole_cross_section_dist < venule_cross_section_dist:
-        return "input"
+        return "inlet"
     if venule_cross_section_dist < arteriole_cross_section_dist:
-        return "output"
+        return "outlet"
 
     arteriole_dist = float(metrics["arteriole_midpoint_distance"])
     venule_dist = float(metrics["venule_midpoint_distance"])
     if arteriole_dist < venule_dist:
-        return "input"
+        return "inlet"
     if venule_dist < arteriole_dist:
-        return "output"
+        return "outlet"
 
     if arteriole_overlap > venule_overlap:
-        return "input"
+        return "inlet"
     if venule_overlap > arteriole_overlap:
-        return "output"
+        return "outlet"
     # Final deterministic tie-break.
-    return "input"
+    return "inlet"
 
 
 def compute_overlapping_terminal_assignment_metrics(
@@ -292,8 +292,8 @@ def select_terminal_nodes_from_large_vessel_masks(
     if not terminal_nodes:
         return [], []
 
-    starting_nodes: set[Any] = set()
-    output_nodes: set[Any] = set()
+    inlet_nodes: set[Any] = set()
+    outlet_nodes: set[Any] = set()
     for node_id, node_pos in terminal_nodes:
         index_zyx = _position_to_mask_index(
             node_pos,
@@ -313,20 +313,20 @@ def select_terminal_nodes_from_large_vessel_masks(
                 large_venule_mask=venule_mask,
                 voxel_size_zyx=voxel_size_zyx,
             )
-            if assignment == "input":
-                starting_nodes.add(node_id)
+            if assignment == "inlet":
+                inlet_nodes.add(node_id)
             else:
-                output_nodes.add(node_id)
+                outlet_nodes.add(node_id)
             continue
         if in_arteriole:
-            starting_nodes.add(node_id)
+            inlet_nodes.add(node_id)
         if in_venule:
-            output_nodes.add(node_id)
+            outlet_nodes.add(node_id)
 
     if not allow_overlap:
-        output_nodes -= starting_nodes
+        outlet_nodes -= inlet_nodes
 
-    return _sort_nodes(starting_nodes), _sort_nodes(output_nodes)
+    return _sort_nodes(inlet_nodes), _sort_nodes(outlet_nodes)
 
 
 def _edge_sample_points_from_data(
@@ -559,7 +559,7 @@ def write_automated_vessel_assignment_3d_html(
     large_arteriole_mask: np.ndarray,
     large_venule_mask: np.ndarray,
     input_nodes: list[Any],
-    output_nodes: list[Any],
+    outlet_nodes: list[Any],
     voxel_size_zyx: tuple[float, float, float],
     output_html_path: str | Path,
 ) -> bool:
@@ -603,7 +603,7 @@ def write_automated_vessel_assignment_3d_html(
             edge_z += [float(pu[0]), float(pv[0]), None]
 
     input_set = set(input_nodes)
-    output_set = set(output_nodes)
+    output_set = set(outlet_nodes)
     other_nodes = [n for n in G.nodes if n not in input_set and n not in output_set]
 
     def _coords(nodes: list[Any]) -> tuple[list[float], list[float], list[float]]:
@@ -681,8 +681,8 @@ def write_automated_vessel_assignment_3d_html(
                 name="Input Nodes",
             )
         )
-    if output_nodes:
-        ox, oy, oz = _coords(output_nodes)
+    if outlet_nodes:
+        ox, oy, oz = _coords(outlet_nodes)
         fig.add_trace(
             go.Scatter3d(
                 x=ox,

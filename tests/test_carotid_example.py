@@ -62,13 +62,13 @@ def test_the_schema_is_the_pipeline_schema_with_this_dataset_s_values(carotid):
     PIPELINE_SCHEMA = default_schema()
 
     assert set(carotid.SCHEMA.names) == set(PIPELINE_SCHEMA.names)
-    assert carotid.SCHEMA["input_p_bc"].default != PIPELINE_SCHEMA["input_p_bc"].default
+    assert carotid.SCHEMA["inlet_p_bc"].default != PIPELINE_SCHEMA["inlet_p_bc"].default
 
 
 def test_the_boundary_nodes_come_from_the_ends_of_the_image(carotid):
     settings = carotid.resolve_settings()
-    assert settings["starting_node_selection_method"] == "edge_percent"
-    assert settings["output_node_selection_method"] == "edge_percent"
+    assert settings["inlet_node_selection_method"] == "edge_percent"
+    assert settings["outlet_node_selection_method"] == "edge_percent"
 
 
 def test_plots_go_in_their_own_directory(carotid):

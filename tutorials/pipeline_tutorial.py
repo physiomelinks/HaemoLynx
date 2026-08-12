@@ -77,6 +77,7 @@ import haemolynx
 
 print(f"HaemoLynx {haemolynx.__version__} from {haemolynx.__file__}")
 
+
 # In[ ]:
 
 
@@ -172,6 +173,7 @@ except ModuleNotFoundError:
 print(f"Repository root: {REPO_ROOT if REPO_ROOT else 'none - running from an installed HaemoLynx'}")
 print(f"Running in Jupyter: {in_jupyter()}")
 
+
 # ## Configuration: one settings dict
 # 
 # Every stage below reads this dict. It comes from a YAML config file validated
@@ -222,12 +224,12 @@ TUTORIAL_OVERRIDES = {
     "cluster_collapse_distance": 5.0,
     "min_stub_length": 3.0,
     # Boundary conditions: inlet and outlet pressures, in Pa.
-    "input_p_bc": 1000.0,
-    "output_p_bc": 500.0,
+    "inlet_p_bc": 1000.0,
+    "outlet_p_bc": 500.0,
     # Inlet and outlet are picked by the box they fall in; the boxes are set in
     # Stage 1, once the volume's shape is known.
-    "starting_node_selection_method": "volume",
-    "output_node_selection_method": "volume",
+    "inlet_node_selection_method": "volume",
+    "outlet_node_selection_method": "volume",
     "statistics": True,
     "statistics_mode": "fast",
     # Figures are saved and shown by the cells here, so the stages must not try
@@ -245,6 +247,7 @@ print(f"Settings from: {CONFIG_PATH}")
 print(f"Outputs: {OUTPUT_DIR}")
 print(f"Plots: {PLOT_DIR}")
 print(f"Inline stage plots enabled: {SHOW_STAGE_PLOTS and in_jupyter()}")
+
 
 # ## Stage 0: Segment **your** raw image with ilastik
 # 
@@ -310,6 +313,7 @@ if RUN_STAGE_0_ILASTIK:
     print("Stage 0: segment() will run ilastik and analyse the mask it writes.")
 else:
     print("Stage 0 skipped (RUN_STAGE_0_ILASTIK=False): Stage 1 analyses an existing mask.")
+
 
 # ## Stage 1: `segment()` and `skeletonise()`
 # 
@@ -399,6 +403,7 @@ settings = resolve_settings(schema=SCHEMA, config_path=CONFIG_PATH, overrides=TU
 report = preflight(settings, SCHEMA)
 assert report.ok, "settings are not runnable; see the checklist above"
 
+
 # In[ ]:
 
 
@@ -419,12 +424,12 @@ extent_zyx = [
     for dimension, spacing in zip(volume.image.shape[:3], volume.voxel_size_zyx)
 ]
 y_band = 0.2 * extent_zyx[1]
-settings["starting_node_volumes"] = [((0.0, 0.0, 0.0), (extent_zyx[0], y_band, extent_zyx[2]))]
-settings["output_node_volumes"] = [
+settings["inlet_node_volumes"] = [((0.0, 0.0, 0.0), (extent_zyx[0], y_band, extent_zyx[2]))]
+settings["outlet_node_volumes"] = [
     ((0.0, extent_zyx[1] - y_band, 0.0), (extent_zyx[0], extent_zyx[1], extent_zyx[2]))
 ]
-print(f"Inlet box (um):  {settings['starting_node_volumes'][0]}")
-print(f"Outlet box (um): {settings['output_node_volumes'][0]}")
+print(f"Inlet box (um):  {settings['inlet_node_volumes'][0]}")
+print(f"Outlet box (um): {settings['outlet_node_volumes'][0]}")
 
 # Both are written by skeletonise(): the skeleton as loaded, and after the
 # cleaning pass that bridges gaps and drops the smallest components.
@@ -433,6 +438,7 @@ show_stage_plots(
     [PLOT_DIR / "raw_skeleton.png", PLOT_DIR / "skeleton_projection.png"],
     enabled=SHOW_STAGE_PLOTS,
 )
+
 
 # ## Stage 2: `build_network()`
 # 
@@ -459,22 +465,23 @@ step_plots = sorted(PLOT_DIR.glob("graph_after_*.png"))
 print(f"Step overlays saved: {len(step_plots)}")
 show_stage_plots("Stage 2: Graph topology steps", step_plots, enabled=SHOW_STAGE_PLOTS)
 
+
 # ## Stage 3: `assign_boundaries()`
 # 
 # Chooses where flow enters and leaves, from the boxes set in Stage 1, and
 # returns a `BoundaryNodes`. Only degree-1 terminals are eligible: pinning a
 # pressure on an interior junction would make it inject or remove flow mid-network.
 # 
-# `starting_node_selection_method` decides how they are picked, and each method
+# `inlet_node_selection_method` decides how they are picked, and each method
 # reads a different setting:
 # 
 # | Method | Reads |
 # |---|---|
-# | `"volume"` | `starting_node_volumes` — corner pairs in (z, y, x) microns |
-# | `"coordinates"` | `starting_node_coordinates` — each point snaps to the nearest terminal |
+# | `"volume"` | `inlet_node_volumes` — corner pairs in (z, y, x) microns |
+# | `"coordinates"` | `inlet_node_coordinates` — each point snaps to the nearest terminal |
 # | `"edge_percent"` | `boundary_first_percent` / `boundary_last_percent` / `boundary_axis` — the first and last bands of the network along one axis |
 # | `"all_degree_1"` | every terminal in the graph |
-# | `"degree_1_from_starting"` | `boundary_distance_from_starting_node` — every terminal further than that from a starting node |
+# | `"degree_1_from_inlet"` | `boundary_distance_from_inlet_node` — every terminal further than that from a inlet node |
 # 
 # `"edge_percent"` is the default, and the only one that asks nothing of the
 # dataset: it needs no coordinate, box or mask, so it has something to say about
@@ -488,12 +495,13 @@ show_stage_plots("Stage 2: Graph topology steps", step_plots, enabled=SHOW_STAGE
 
 
 boundaries = assign_boundaries(settings, network)
-print(f"Inlet nodes:  {boundaries.starting_nodes}")
-print(f"Outlet nodes: {boundaries.output_nodes}")
+print(f"Inlet nodes:  {boundaries.inlet_nodes}")
+print(f"Outlet nodes: {boundaries.outlet_nodes}")
 print(f"Node pair for the equivalent resistance: {boundaries.resistance_node_pair}")
-assert boundaries.starting_nodes and boundaries.output_nodes, (
+assert boundaries.inlet_nodes and boundaries.outlet_nodes, (
     "no boundary nodes: widen the boxes above, or pick another selection method"
 )
+
 
 # ## Stage 4: `assign_diameters()` and `build_haemodynamic_model()`
 # 
@@ -530,10 +538,11 @@ if resistances:
 
 # The branch-order figure is drawn by Stage 6, once flows are on the graph too.
 
+
 # ## Stage 5: `solve()`
 # 
-# Builds the conductance matrix from the edge conductances, pins `input_p_bc` at
-# the inlets and `output_p_bc` at the outlets, and solves for the pressure at
+# Builds the conductance matrix from the edge conductances, pins `inlet_p_bc` at
+# the inlets and `outlet_p_bc` at the outlets, and solves for the pressure at
 # every node — then writes the resulting flow onto each edge. With
 # `do_equiv_resistance_calculation` on it also computes the two-point resistance
 # between the boundary pair, which is the whole network reduced to a single
@@ -551,6 +560,7 @@ print(f"Equivalent resistance (Pa.s/m^3): {solution.equivalent_resistance:.6e}")
 
 flows = [abs(data["flow_signed"]) for _u, _v, data in model.graph.edges(data=True) if "flow_signed" in data]
 print(f"Edge flows (m^3/s): {min(flows):.3e} to {max(flows):.3e}")
+
 
 # ## Stage 6: `export_results()`
 # 
@@ -582,6 +592,7 @@ show_stage_plots(
     ],
     enabled=SHOW_STAGE_PLOTS,
 )
+
 
 # ### View VTK outputs in ParaView
 # 
@@ -619,7 +630,7 @@ show_stage_plots(
 # 2. **Your own mask:** put its path in `TUTORIAL_OVERRIDES["input_path"]`.
 # 3. **Your own raw image:** set `RUN_STAGE_0_ILASTIK = True` in Stage 0 and fill in
 #    the three ilastik paths; `segment()` runs the classifier and analyses what it writes.
-# 4. **Boundaries:** change `starting_node_selection_method` and the setting it
+# 4. **Boundaries:** change `inlet_node_selection_method` and the setting it
 #    reads (see the table in Stage 3), or set `automated_vessel_assignment` to take
 #    them from arteriole/venule masks.
 # 5. **Tuning:** every skeleton and graph threshold is a key in `TUTORIAL_OVERRIDES`.

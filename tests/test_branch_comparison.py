@@ -560,9 +560,9 @@ def test_the_tool_pins_nothing_that_defines_the_experiment():
         "do_skeletonize", "do_graph_building", "run_haemodynamics",
         "skeleton_closing_radius", "skeleton_bridge_gap_size",
         "skeleton_min_branch_length", "skeleton_max_bridge_distance",
-        "skeleton_min_component_percent", "starting_node_selection_method",
-        "output_node_selection_method", "starting_node_volumes",
-        "output_node_volumes", "input_p_bc", "output_p_bc", "min_stub_length",
+        "skeleton_min_component_percent", "inlet_node_selection_method",
+        "outlet_node_selection_method", "inlet_node_volumes",
+        "outlet_node_volumes", "inlet_p_bc", "outlet_p_bc", "min_stub_length",
     }
     pinned = set(run_settings.REQUIRED_SETTINGS) | set(run_settings.BEST_EFFORT_SETTINGS)
     assert not (pinned & experiment), (
@@ -596,8 +596,8 @@ def test_build_settings_leaves_the_boundaries_to_the_config():
         plot_dir="/tmp/plots",
         vtk_output_prefix="/tmp/run",
     )
-    for name in ("starting_node_volumes", "output_node_volumes",
-                 "starting_node_selection_method", "output_node_selection_method"):
+    for name in ("inlet_node_volumes", "outlet_node_volumes",
+                 "inlet_node_selection_method", "outlet_node_selection_method"):
         assert name not in settings, f"{name} should come from the config"
         assert name not in required
 
@@ -612,5 +612,5 @@ def test_smoke_boundaries_are_still_applied_when_asked_for():
         vtk_output_prefix="/tmp/run",
         boundary_settings=run_settings.SMOKE_BOUNDARY_SETTINGS,
     )
-    assert settings["output_node_volumes"] == [[[0, 0, 28], [47, 47, 47]]]
-    assert "output_node_volumes" in required
+    assert settings["outlet_node_volumes"] == [[[0, 0, 28], [47, 47, 47]]]
+    assert "outlet_node_volumes" in required

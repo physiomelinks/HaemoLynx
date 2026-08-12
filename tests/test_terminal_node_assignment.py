@@ -226,7 +226,7 @@ def test_resolution_is_deterministic_when_the_two_masks_are_identical():
         for _ in range(3)
     }
 
-    assert assignments == {"input"}
+    assert assignments == {"inlet"}
 
 
 def test_the_node_closer_to_the_venule_midline_is_assigned_to_the_outputs():
@@ -245,7 +245,7 @@ def test_the_node_closer_to_the_venule_midline_is_assigned_to_the_outputs():
         voxel_size_zyx=ISOTROPIC,
     )
 
-    assert assignment == "output"
+    assert assignment == "outlet"
 
 
 # --- infer_boundary_nodes_from_small_vessel_masks ---------------------------

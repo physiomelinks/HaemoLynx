@@ -61,8 +61,8 @@ def main(settings: dict) -> dict:
     sweep = run_pericyte_dilation_pressure_sweep(
         G,
         settings,
-        starting_nodes=boundaries.starting_nodes,
-        output_nodes=boundaries.output_nodes,
+        inlet_nodes=boundaries.inlet_nodes,
+        outlet_nodes=boundaries.outlet_nodes,
         output_dir=settings["sweep_output_dir"],
     )
     curves = plot_dilation_curves(sweep["results"], settings["sweep_output_dir"])

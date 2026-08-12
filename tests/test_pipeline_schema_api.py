@@ -33,7 +33,7 @@ def test_default_schema_is_the_pipelines_settings():
     for name in (
         "input_path",
         "voxel_size_override_xyz",
-        "input_p_bc",
+        "inlet_p_bc",
         "vtk_output_prefix",
     ):
         assert name in schema, f"{name} missing from the pipeline schema"
@@ -90,10 +90,10 @@ def test_the_generated_config_loads_back_as_the_schema_defaults(tmp_path):
 
 def test_write_default_config_keeps_the_values_it_is_given(tmp_path):
     path = write_default_config(
-        tmp_path / "cfg.yaml", values={"input_p_bc": 1234.0, "do_skeletonize": False}
+        tmp_path / "cfg.yaml", values={"inlet_p_bc": 1234.0, "do_skeletonize": False}
     )
     settings = load_config(path, default_schema())
-    assert settings["input_p_bc"] == 1234.0
+    assert settings["inlet_p_bc"] == 1234.0
     assert settings["do_skeletonize"] is False
 
 

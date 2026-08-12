@@ -14,11 +14,12 @@ GUI installed.
 from __future__ import annotations
 
 import logging
+import math
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -40,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 #: What a layer looks like when the user asks for no colouring at all.
 UNCOLOURED = "#cccccc"
+
+#: The same grey, as RGBA, for the places that build a colour array by hand.
+UNCOLOURED_RGBA = (0.8, 0.8, 0.8, 1.0)
 
 #: Settings the panel starts with switched off, because they put a run's
 #: results somewhere other than napari: `show_plots_in_ide` makes the 3D graph
@@ -207,10 +211,37 @@ def _colour_attribute(layer) -> str:
     return "edge_color" if layer.__class__.__name__ == "Vectors" else "face_color"
 
 
+def _colour_attributes(layer) -> tuple[str, ...]:
+    """Every attribute that has to be set for a layer to change colour.
+
+    A Shapes layer needs both. A line has no face, so a box outline drawn as
+    twelve line shapes kept napari's default white however its faces were
+    coloured -- the only thing that took the role's colour was the handle
+    rectangle's translucent fill.
+    """
+    if layer.__class__.__name__ == "Shapes":
+        return ("face_color", "edge_color")
+    return (_colour_attribute(layer),)
+
+
+def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
+    """One RGBA row per item, looked up from *cycle* by the item's label.
+
+    A value the cycle does not name -- a role from a newer config, a blank in a
+    half-filled column -- takes the uncoloured grey rather than borrowing some
+    other label's colour.
+    """
+    lookup = {label: colour for label, colour in cycle}
+    values = layer.features[column]
+    return np.array(
+        [lookup.get(value, UNCOLOURED_RGBA) for value in values], dtype=float
+    )
+
+
 def _colour_layer(layer, column: str | None, kind: str = "continuous",
                   cycle=(), limits=None) -> None:
     """Colour a layer by one of its feature columns."""
-    attribute = _colour_attribute(layer)
+    attributes = _colour_attributes(layer)
     if column is None:
         # No opinion: a stage that does not name a colouring means "leave what
         # is there", not "blank it". Most stages after build_network have
@@ -220,7 +251,8 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
     if column in {"", "none"}:
         # An explicit "no colouring", which has to be a real branch: leaving the
         # layer as it was would make picking "none" a control that does nothing.
-        setattr(layer, attribute, UNCOLOURED)
+        for attribute in attributes:
+            setattr(layer, attribute, UNCOLOURED)
         _record_colour(layer, None)
         return
     if column not in getattr(layer, "features", {}):
@@ -243,13 +275,23 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
     #
     # Setting the mode instead of the colour does not work -- changing mode
     # re-maps the column that is still active, which is the same crash.
-    setattr(layer, attribute, UNCOLOURED)
+    for attribute in attributes:
+        setattr(layer, attribute, UNCOLOURED)
     if kind == "categorical" and cycle:
-        setattr(layer, f"{attribute}_cycle", [colour for _label, colour in cycle])
-        setattr(layer, attribute, column)
+        # One colour per item, looked up by label, rather than handing napari
+        # the cycle and the column and letting it pair them up. It pairs them
+        # by the order the values are first *encountered*, not by the labels
+        # they were declared against, so a layer holding only outlet nodes drew
+        # them in the inlet colour -- the first colour in the cycle. Points
+        # and Shapes disagree about that order too, so there is no ordering
+        # that would be right for both.
+        colours = _categorical_colours(layer, column, cycle)
+        for attribute in attributes:
+            setattr(layer, attribute, colours)
     else:
-        setattr(layer, f"{attribute}_colormap", "viridis")
-        setattr(layer, attribute, column)
+        for attribute in attributes:
+            setattr(layer, f"{attribute}_colormap", "viridis")
+            setattr(layer, attribute, column)
         # After the column, and through the same path the Fit buttons use: the
         # range has to be applied *and* the colours re-mapped against it. Set
         # before, and the assignment above maps with the old range; set with a
@@ -305,7 +347,17 @@ def _add_or_update(viewer, spec) -> None:
         existing = viewer.layers[spec.name] if spec.name in viewer.layers else None
 
     if existing is not None and existing.__class__.__name__.lower() == _CLASS_FOR[spec.kind]:
-        existing.data = spec.data
+        # A Shapes layer applies the types it already holds to whatever data
+        # it is next given, so handing a box outline to a layer holding one
+        # rectangle raises "Rectangle expects four corner vertices, 2
+        # provided" -- after it has emptied itself, which loses the region.
+        # The spec knows what each shape is, so the two go in together.
+        shape_type = spec.options.get("shape_type") if spec.kind == "shapes" else None
+        if shape_type is not None:
+            existing.data = []
+            existing.add(list(spec.data), shape_type=list(shape_type))
+        else:
+            existing.data = spec.data
         if spec.features:
             existing.features = dict(spec.features)
         _colour_layer(existing, spec.colour_by, spec.colour_kind,
@@ -366,7 +418,7 @@ def _is_text_column(layer, column: str | None) -> bool:
 
     Not of a list of names. `TEXT_COLUMNS` names the text columns the results
     module writes, and `role` -- the one on the boundary nodes -- is not among
-    them, so choosing it tried to map "starting" and "output" onto a colormap
+    them, so choosing it tried to map "inlet" and "outlet" onto a colormap
     and raised `could not convert string to float`. Any column any layer ever
     carries has a dtype; that is the honest question.
     """
@@ -967,6 +1019,793 @@ def about_widget():
     return report.native
 
 
+def _boundary_controls(viewer, rows, fields, schema, report):
+    """The Boundaries tab's "point at it instead of typing it" controls.
+
+    Two layers, both editable, both holding exactly what the settings hold --
+    napari world coordinates are already the microns the settings store, so the
+    layers are the settings rather than a view of them. Which direction wins is
+    the only rule worth stating: *the layers are authoritative while the user
+    is editing them; the rows are authoritative when a config is loaded or
+    "Show" is pressed.* The two directions are therefore never both live, which
+    is why there is no cycle to break -- the `applying` guard below is for the
+    fact that `events.data` fires twice per edit, not for a feedback loop.
+
+    Returns None without a viewer: the panel is buildable outside napari.
+    """
+    if viewer is None:
+        return None
+
+    import napari
+    from magicgui.widgets import ComboBox, Container, FloatSlider, Label, PushButton
+
+    from haemolynx.gui.boundary_picking import (
+        BC_COORDINATES,
+        BC_LAYER_NAMES,
+        BC_REGION_NAMES,
+        HANDLE,
+        band_boxes,
+        ROLES,
+        orderable_settings,
+        outside_extent,
+        role_settings,
+        role_title,
+        shared_settings,
+        visible_settings,
+        BoundaryPicks,
+        coordinate_setting,
+        group_for,
+        method_setting,
+        settings_for_method,
+        settings_from_layers,
+        regions_name,
+        snap,
+        terminal_axis_span,
+        terminal_points,
+        volume_setting,
+        wanted_rows,
+    )
+
+    #: Which role a new point or region belongs to. Not shown: the sub-tab bar
+    #: built in `page` is what the user sees, and this follows it. Keeping the
+    #: combo as the model means everything downstream still reads one value,
+    #: and a role can still be chosen without a display.
+    role = ComboBox(choices=list(ROLES), value=ROLES[0], label="Role")
+
+    #: The two controls that are about the picture rather than about one role.
+    show = PushButton(text="Show these boundary conditions")
+    snap_button = PushButton(text="Snap selected to nearest terminal")
+
+    #: Everything else, once per role, so it sits on that role's own page next
+    #: to the settings it fills in. A control that acts on "the chosen role"
+    #: from a page that is not that role's is a control that can be pressed by
+    #: mistake; one per page cannot be.
+    actions = {
+        name: SimpleNamespace(
+            pick=PushButton(text="Pick coordinates in the viewer"),
+            draw=PushButton(text="Draw a region"),
+            depth=FloatSlider(value=0.0, min=0.0, max=1000.0,
+                              label="Region depth (um)"),
+            move=PushButton(text="Move or delete what you picked"),
+            assign=PushButton(text="Assign selected to this role"),
+            clear=PushButton(text="Clear this role's regions"),
+        )
+        for name in ROLES
+    }
+
+    #: Which of a role's controls its chosen method has any use for.
+    ACTIONS_FOR_METHOD = {
+        "coordinates": ("pick", "move", "assign"),
+        "volume": ("draw", "depth", "move", "assign", "clear"),
+    }
+
+    state = SimpleNamespace(applying=False, results=None, connected=set(),
+                        visible=frozenset(), hidden=frozenset(), tabs=None,
+                        actions={})
+
+    #: Each role's page, and where each shared row currently sits. Filled in
+    #: by `page`; empty until the panel has been laid out.
+    holders: dict[str, Any] = {}
+    shared_home: dict[str, Any] = {}
+
+    def depth_slider():
+        """The region depth on the page the user is looking at."""
+        return actions[str(role.value)].depth
+
+    def current_values() -> dict[str, Any]:
+        return {name: fields[name].to_setting_value(widget.value)
+                for name, widget in rows.items()}
+
+    def write_rows(proposed: dict[str, Any]) -> None:
+        """Put values into the form, touching only the rows that would change."""
+        for name, value in wanted_rows(proposed, current_values()).items():
+            if name in rows:
+                rows[name].value = display_value_for(schema[name], value)
+
+    def graph():
+        """The graph a run built, if there is one yet."""
+        results = state.results
+        return getattr(results, "graph", None) if results is not None else None
+
+    def layer(name):
+        return viewer.layers[name] if name in viewer.layers else None
+
+    def regions_layer(which: str | None = None):
+        """The regions layer of *which* role, defaulting to the open page's."""
+        return layer(regions_name(which if which is not None else str(role.value)))
+
+    def region_layers():
+        """Every region layer on screen, role by role."""
+        return [(name, layer(regions_name(name)))
+                for name in ROLES if layer(regions_name(name)) is not None]
+
+    def our_layer_names():
+        return (BC_COORDINATES, *BC_REGION_NAMES)
+
+    def unused_warning(values) -> str:
+        """Say when a role's picks will not be read, rather than silently fixing it."""
+        notes = []
+        for name in ROLES:
+            method = values.get(method_setting(name))
+            picked = len(values.get(coordinate_setting(name)) or ())
+            boxed = len(values.get(volume_setting(name)) or ())
+            if picked and method != "coordinates":
+                notes.append(f"{picked} {name} coordinate(s) but "
+                             f"{method_setting(name)} is {method!r}")
+            if boxed and method != "volume":
+                notes.append(f"{boxed} {name} region(s) but "
+                             f"{method_setting(name)} is {method!r}")
+        return "  Not used: " + "; ".join(notes) + "." if notes else ""
+
+    def image_extent():
+        """The world box the open images occupy, in microns."""
+        extents = [layer.extent.world for layer in viewer.layers
+                   if layer.name not in BC_LAYER_NAMES and layer.ndim >= 3]
+        if not extents:
+            return None
+        return (np.min([e[0] for e in extents], axis=0),
+                np.max([e[1] for e in extents], axis=0))
+
+    def band_note(bands, measured: bool) -> str:
+        """Say which span a band was drawn across, because the two differ."""
+        if not bands:
+            return ""
+        if measured:
+            return "  Bands drawn across the terminals, as a run measures them."
+        return (
+            "  Bands drawn across the image: a run measures them across the "
+            "terminals instead, and a network rarely reaches its image's edge, "
+            "so run '3. Graph' to see where they really fall."
+        )
+
+    def offscreen_warning(values) -> str:
+        """Say when coordinates fall outside the image rather than drawing them there."""
+        box = image_extent()
+        if box is None:
+            return ""
+        stray = outside_extent(values, *box)
+        if not stray:
+            return ""
+        return (
+            "  Outside the image: " + "; ".join(stray) + ". These settings are "
+            "microns, not voxel indices -- if they came from a viewer showing "
+            f"indices, multiply by the voxel size. The image spans "
+            f"{tuple(round(float(v), 1) for v in box[1])} um (z, y, x)."
+        )
+
+    def bands_now(values):
+        """The slab each `edge_percent` role selects from, if it can be drawn.
+
+        Returns the boxes and whether they are the real thing: a run measures
+        the band across the terminals, so before a graph exists the image has
+        to stand in and the report has to say so.
+        """
+        box = image_extent()
+        if box is None:
+            return {}, True
+        axis = values.get("boundary_axis")
+        span = terminal_axis_span(graph(), axis) if graph() is not None else None
+        return band_boxes(values, *box, axis_span=span), span is not None
+
+    def redraw() -> None:
+        """Settings -> layers. One of the two authoritative directions.
+
+        Guarded, because writing a layer fires its own `events.data`: without
+        this the redraw's half-applied layer would be read straight back as if
+        the user had edited it, and a role whose features had not been written
+        yet would lose its boxes.
+        """
+        if state.applying:
+            return
+        state.applying = True
+        try:
+            values = current_values()
+            bands, measured = bands_now(values)
+            group = group_for(values, bands)
+            _apply_layers(viewer, group, report)
+            report.value = (f"Boundary conditions: {group.note}"
+                            f"{band_note(bands, measured)}"
+                            f"{unused_warning(values)}{offscreen_warning(values)}")
+            for name in our_layer_names():
+                listen(layer(name))
+            drawn = {spec.name for spec in group.layers}
+            for name in BC_REGION_NAMES:
+                # `_apply_layers` only ever adds and updates, so a role that
+                # has nothing left to draw would keep the layer it had --
+                # unless a tool is pointed at it. Pressing Draw makes an empty
+                # layer to draw into, and taking that away would leave the
+                # next click with nowhere to land. Being merely selected is
+                # not enough: napari selects whatever was added last.
+                stale = layer(name)
+                if (name not in drawn and stale is not None
+                        and getattr(stale, "mode", "pan_zoom") == "pan_zoom"):
+                    viewer.layers.remove(stale)
+            set_depth_range()
+        finally:
+            state.applying = False
+
+    def sync(*_args) -> None:
+        """Layers -> settings. The other authoritative direction."""
+        if state.applying:
+            return
+        state.applying = True
+        try:
+            points_layer = layer(BC_COORDINATES)
+            proposed: dict[str, Any] = {}
+            if points_layer is not None:
+                proposed.update(settings_from_layers(
+                    points=points_layer.data,
+                    point_roles=roles_of(points_layer, len(points_layer.data)),
+                ))
+            drawn = region_layers()
+            if drawn:
+                # One call across every layer, not one per layer: each call
+                # writes all four roles' lists, so writing per layer would
+                # empty every role but the last one read.
+                rectangles, rectangle_roles, depths = [], [], []
+                for owner, target in drawn:
+                    handles = handle_indices(target)
+                    roles = roles_of(target, len(target.data), default=owner)
+                    found = depths_of(target, len(target.data))
+                    rectangles += [target.data[index] for index in handles]
+                    rectangle_roles += [roles[index] for index in handles]
+                    depths += [found[index] for index in handles]
+                proposed.update(settings_from_layers(
+                    rectangles=rectangles,
+                    rectangle_roles=rectangle_roles,
+                    depths=depths,
+                ))
+            write_rows(proposed)
+            values = current_values()
+            picks = BoundaryPicks.from_settings(values)
+            report.value = (f"Boundary conditions: {picks.summary()}"
+                            f"{unused_warning(values)}{offscreen_warning(values)}")
+        finally:
+            state.applying = False
+
+    def handle_indices(target) -> list[int]:
+        """Which shapes are the editable rectangles, not the box outlines.
+
+        A region is drawn as a rectangle plus the twelve segments of the box it
+        stands for. Only the rectangle is a region; reading the segments back
+        would turn one box into thirteen.
+        """
+        parts = list(target.features.get("part", [])) if len(target.features) else []
+        kinds = list(target.shape_type)
+        return [
+            index
+            for index in range(len(target.data))
+            # A rectangle the user has just drawn may have no `part` yet, and
+            # an unfilled column reads back as NaN rather than as a string.
+            if (parts[index] if index < len(parts)
+                and isinstance(parts[index], str) else HANDLE) == HANDLE
+            and kinds[index] != "line"
+        ]
+
+    def roles_of(target, count, default=None) -> list[str]:
+        """Each item's role, filling anything unlabelled with the chosen one.
+
+        A point added by napari's own tool arrives with whatever
+        `feature_defaults` said, and a point added any other way arrives with
+        nothing -- so the blank is filled here rather than relied upon there.
+        """
+        values = list(target.features.get("role", [])) if len(target.features) else []
+        out = []
+        for index in range(count):
+            found = values[index] if index < len(values) else None
+            out.append(str(found) if found in ROLES
+                       else str(default if default is not None else role.value))
+        return out
+
+    def depths_of(target, count) -> list[float]:
+        values = list(target.features.get("depth", [])) if len(target.features) else []
+        out = []
+        for index in range(count):
+            found = values[index] if index < len(values) else None
+            try:
+                depth = float(found)
+            except (TypeError, ValueError):
+                depth = float("nan")
+            # NaN is what an untyped feature column hands back for a shape
+            # napari added itself, and a NaN depth makes a NaN box.
+            out.append(depth if math.isfinite(depth) else float(depth_slider().value))
+        return out
+
+    def listen(target) -> None:
+        """Follow a layer's edits, once per layer."""
+        if target is None or id(target) in state.connected:
+            return
+        target.events.data.connect(sync)
+        target.mouse_drag_callbacks.append(redraw_when_the_drag_ends)
+        state.connected.add(id(target))
+
+    def redraw_when_the_drag_ends(_layer, event):
+        """Redraw once the mouse comes up, not on every step of the drag.
+
+        A region drawn or moved by hand is one rectangle until it is drawn
+        from the settings again, so without this the box a user just made has
+        no depth on screen -- and redrawing on every `events.data` would be
+        replacing the layer's contents underneath the drag that is producing
+        them.
+        """
+        yield
+        while event.type == "mouse_move":
+            yield
+        redraw()
+
+    def set_defaults(target) -> None:
+        """Tag whatever napari adds next as this role's, and as a handle.
+
+        Every column the layer has, not just the ones this cares about: a
+        default that names a subset is refused outright, and the failure is
+        silent -- the next shape then arrives as the role that was chosen
+        before, with no `part`, which stops it being read back at all.
+        """
+        known = {
+            "role": str(role.value),
+            "depth": float(depth_slider().value),
+            # What the user draws by hand is the region itself; the outline
+            # segments are only ever made from the settings.
+            "part": HANDLE,
+        }
+        defaults = {name: value for name, value in known.items()
+                    if name in target.features}
+        try:
+            target.feature_defaults = defaults
+        except Exception:  # noqa: BLE001 - `roles_of` fills the blank anyway
+            logger.debug("could not set feature defaults on %s", target.name,
+                         exc_info=True)
+
+    def set_depth_range() -> None:
+        """Default the depth to the whole stack: a boundary band usually is."""
+        extents = [l.extent.world for l in viewer.layers
+                   if l.name not in BC_LAYER_NAMES and l.ndim >= 3]
+        if not extents:
+            return
+        span = max(float(e[1][0] - e[0][0]) for e in extents)
+        if span <= 0:
+            return
+        for slider in (action.depth for action in actions.values()):
+            state.applying = True
+            try:
+                slider.max = max(span, float(slider.value))
+            finally:
+                state.applying = False
+            if slider.value == 0.0:
+                # Guarded: assigning the slider fires `on_depth_changed`, and
+                # picking a default is not the user resizing anything. Clamped
+                # to what the slider actually took: it rounds the maximum it
+                # was given, and a value past that raises rather than clips.
+                state.applying = True
+                try:
+                    slider.value = min(span, float(slider.max))
+                finally:
+                    state.applying = False
+
+    def row_order(names: Sequence[str]) -> list[str]:
+        """The Boundaries tab, grouped so a method is followed by what it reads.
+
+        The schema lists all four methods, then all four coordinate lists, then
+        all four volume lists -- a fine way to declare them and a poor way to
+        read them. Here each role's method is followed immediately by the
+        settings that method uses, so the row you have to fill in sits under
+        the row that decided you have to fill it in.
+        """
+        remaining = list(names)
+        ordered: list[str] = []
+        for name in orderable_settings():
+            if name in remaining:
+                remaining.remove(name)
+                ordered.append(name)
+        return ordered + remaining
+
+    def refresh_rows(*_args) -> None:
+        """Show only the settings the chosen methods will actually read."""
+        wanted = visible_settings(current_values())
+        methods = {method_setting(role) for role in ROLES}
+        # A shared row's visibility belongs to `place_shared`, which knows
+        # whether it is on a page at all. Showing one that is on no page makes
+        # a parentless Qt widget visible, and a visible widget with no parent
+        # is a window: "Boundary last percent (percent)", floating on its own.
+        owned = set(shared_settings())
+        hidden = set()
+        for name in orderable_settings():
+            # A method row always stays: it is the row that decides which of
+            # the others you need to fill in.
+            if name in rows and name not in methods and name not in owned:
+                rows[name].visible = name in wanted
+                if name not in wanted:
+                    hidden.add(name)
+        refresh_actions()
+        place_shared()
+        state.visible = wanted
+        state.hidden = frozenset(hidden | {name for name in shared_settings()
+                                           if shared_home.get(name) is None})
+
+    def place_shared() -> None:
+        """Put a shared row on the page of whoever is reading it right now.
+
+        One axis and one pair of bands describe the whole network, so there is
+        one row each and Qt gives it one parent -- it cannot sit on all four
+        pages at once. Moving it to the page being looked at is the next best
+        thing, and better than a section underneath: the row is always beneath
+        the method that asked for it, and there is never a second copy of a
+        setting to disagree with the first.
+        """
+        if not holders:
+            return
+        current = str(role.value)
+        reads = settings_for_method(
+            current, current_values().get(method_setting(current))
+        )
+        wanted = [name for name in shared_settings()
+                  if name in rows and name in reads]
+        for name in shared_settings():
+            home = shared_home.get(name)
+            if home is None or (name in wanted and home == current):
+                continue
+            holders[home].remove(rows[name])
+            # Removed from its page it has no parent, and a visible widget
+            # with no parent is a window of its own.
+            rows[name].visible = False
+            shared_home[name] = None
+        for offset, name in enumerate(wanted):
+            if shared_home.get(name) is None:
+                # Straight under the method row, which is the first on a page.
+                holders[current].insert(1 + offset, rows[name])
+                rows[name].visible = True
+                shared_home[name] = current
+
+    def refresh_actions() -> None:
+        """Show a role's controls only where its method has a use for them."""
+        values = current_values()
+        for name, action in actions.items():
+            method = str(values.get(method_setting(name)))
+            useful = set(ACTIONS_FOR_METHOD.get(method, ()))
+            for control in ("pick", "draw", "depth", "move", "assign", "clear"):
+                getattr(action, control).visible = control in useful
+            state.actions[name] = frozenset(useful)
+
+    def on_settings_changed(*_args) -> None:
+        """Follow the form: the layers show what the settings currently say."""
+        refresh_rows()
+        if state.applying:
+            return
+        if any(name in viewer.layers for name in our_layer_names()):
+            redraw()
+
+    def on_show() -> None:
+        redraw()
+
+    def on_pick() -> None:
+        redraw()
+        target = layer(BC_COORDINATES)
+        if target is None:
+            return
+        viewer.layers.selection.active = target
+        set_defaults(target)
+        target.mode = "add"
+        report.value = (
+            f"Click in the viewer to place {role.value} coordinates. "
+            "Drag one to move it, select and press Delete to remove it."
+        )
+
+    def on_draw() -> None:
+        if viewer.dims.ndisplay == 3:
+            report.value = (
+                "Regions can only be drawn in the 2D view -- napari does not "
+                "allow editing a Shapes layer in 3D. Switch to 2D, draw the "
+                "rectangle, then come back to 3D to see the box it makes."
+            )
+            return
+        redraw()
+        target = regions_layer()
+        if target is None:
+            target = viewer.add_shapes(
+                name=regions_name(str(role.value)), ndim=3, scale=(1, 1, 1),
+                # Typed, not `[]`: an empty list makes a float64 column, and
+                # a role written into one comes back NaN -- which then reaches
+                # a settings row as `nan`, and `literal_eval` cannot read that
+                # row ever again.
+                features={"role": np.empty(0, dtype=object),
+                          "depth": np.empty(0, dtype=float)},
+                metadata={OURS: {"kind": "shapes"}},
+                edge_width=2.0, opacity=0.3,
+            )
+            listen(target)
+        viewer.layers.selection.active = target
+        set_defaults(target)
+        target.mode = "add_rectangle"
+        report.value = (
+            f"Draw a rectangle for a {role.value} region. It takes the depth "
+            f"below ({depth_slider().value:.0f} um), centred on the slice you draw it on."
+        )
+
+    def on_depth_changed(*_args) -> None:
+        """How deep this role's regions are.
+
+        The selected ones if any are selected, so several boxes can differ;
+        otherwise every region of the role whose page the slider is on, which
+        is what a slider labelled "Region depth" sitting under one role reads
+        as. Either way it also sets the depth the next region will be drawn at.
+        """
+        target = regions_layer()
+        if target is None or state.applying or not len(target.data):
+            return
+        set_defaults(target)
+        handles = set(handle_indices(target))
+        chosen = set(target.selected_data) & handles or handles
+        if not chosen:
+            return
+        features = dict(target.features)
+        if "depth" not in features:
+            return
+        column = list(features["depth"])
+        for index in chosen:
+            if index < len(column):
+                column[index] = float(depth_slider().value)
+        state.applying = True
+        try:
+            features["depth"] = np.asarray(column, dtype=float)
+            target.features = features
+        finally:
+            state.applying = False
+        sync()
+        # The outline is drawn from the settings, so it only follows the
+        # slider once the settings have been told.
+        redraw()
+
+    def on_move() -> None:
+        """Hand over to napari's select tool, which is what moves a pick.
+
+        Placing and moving are different modes of the same layer -- clicking in
+        `add` mode makes another point rather than picking up the one under the
+        cursor -- and nothing on screen says so.
+        """
+        method = str(current_values().get(method_setting(str(role.value))))
+        regions = method == "volume"
+        name = regions_name(str(role.value)) if regions else BC_COORDINATES
+        target = layer(name)
+        if target is None:
+            report.value = "Nothing to move yet -- press Show, then pick or draw."
+            return
+        if regions and viewer.dims.ndisplay == 3:
+            report.value = (
+                "Regions can only be edited in the 2D view -- napari does not "
+                "allow editing a Shapes layer in 3D. Coordinates can be moved "
+                "in either view."
+            )
+            return
+        viewer.layers.selection.active = target
+        target.mode = "select"
+        report.value = (
+            f"Select mode on {name}. Click one to select it, drag to move it, "
+            "press Delete to remove it, and drag a box to take several at once. "
+            "Every move is written straight back to the settings."
+        )
+
+    def on_assign() -> None:
+        """Give the selected items the chosen role."""
+        changed = 0
+        # Reassigning a region moves it to another layer: the role written
+        # here reaches the settings through `sync`, and the redraw after it
+        # rebuilds each layer from the role that now owns the box.
+        for name in our_layer_names():
+            target = layer(name)
+            if target is None or not len(target.data):
+                continue
+            chosen = target.selected_data
+            if not chosen:
+                continue
+            features = dict(target.features)
+            column = [str(v) for v in features.get("role", [])]
+            column += [str(role.value)] * (len(target.data) - len(column))
+            for index in chosen:
+                if index < len(column):
+                    column[index] = str(role.value)
+                    changed += 1
+            state.applying = True
+            try:
+                features["role"] = np.asarray(column, dtype=object)
+                target.features = features
+            finally:
+                state.applying = False
+        if changed:
+            sync()
+            redraw()
+        else:
+            report.value = "Select the points or regions to reassign first."
+
+    def on_snap() -> None:
+        target = layer(BC_COORDINATES)
+        candidates, ids = terminal_points(graph())
+        if target is None or not len(target.data):
+            report.value = "No picked coordinates to snap."
+            return
+        if not len(candidates):
+            report.value = (
+                "Nothing to snap to yet: snapping uses the graph's terminal "
+                "nodes, so run at least '3. Graph' first. The coordinates you "
+                "have are still correct -- a run snaps each one to its nearest "
+                "terminal anyway."
+            )
+            return
+        chosen = sorted(target.selected_data) or list(range(len(target.data)))
+        data = np.asarray(target.data, dtype=float).copy()
+        snapped, moved = snap(data[chosen], candidates)
+        data[chosen] = snapped
+        state.applying = True
+        try:
+            target.data = data
+        finally:
+            state.applying = False
+        sync()
+        report.value = (
+            f"Snapped {len(chosen)} coordinate(s) onto terminal nodes; "
+            f"the furthest moved {float(np.max(moved)):.1f} um. "
+            "A large move means the click missed the vessel."
+        )
+
+    def on_clear() -> None:
+        write_rows({volume_setting(str(role.value)): []})
+        redraw()
+
+    for _name in (
+        *(name for _role in ROLES
+          for name in (method_setting(_role), coordinate_setting(_role),
+                       volume_setting(_role))),
+        # The band settings draw a box too, so they move the picture as much
+        # as a coordinate does.
+        *shared_settings(),
+    ):
+        if _name in rows:
+            rows[_name].changed.connect(on_settings_changed)
+    refresh_rows()
+
+    show.changed.connect(lambda *_: on_show())
+    snap_button.changed.connect(lambda *_: on_snap())
+
+    def wire(owner: str, control, handler) -> None:
+        """A control on a role's page acts on that role, whatever is selected.
+
+        The page it sits on is the answer to "which role", so pressing it says
+        so rather than assuming the tab bar and the control agree.
+        """
+        def run(*_args) -> None:
+            # The panel writes to these widgets itself -- defaulting every
+            # role's depth slider, for one. That is not the user reaching for
+            # a control, so it must not move the role onto that control's page.
+            if state.applying:
+                return
+            if str(role.value) != owner:
+                role.value = owner
+            handler()
+
+        control.changed.connect(run)
+
+    for _name, _action in actions.items():
+        wire(_name, _action.pick, on_pick)
+        wire(_name, _action.draw, on_draw)
+        wire(_name, _action.move, on_move)
+        wire(_name, _action.assign, on_assign)
+        wire(_name, _action.clear, on_clear)
+        wire(_name, _action.depth, on_depth_changed)
+
+    def on_ndisplay(*_args) -> None:
+        drawable = viewer.dims.ndisplay == 2
+        for action in actions.values():
+            action.draw.enabled = drawable
+            action.draw.tooltip = ("" if drawable else
+                                   "napari cannot edit a Shapes layer in the "
+                                   "3D view. Switch to 2D to draw a region.")
+
+    viewer.dims.events.ndisplay.connect(on_ndisplay)
+    on_ndisplay()
+
+    widget = Container(widgets=[show, snap_button], labels=True)
+
+    def page(summary, names: Sequence[str]):
+        """The Boundaries tab: one sub-tab per role, then what they share.
+
+        Four roles times a method, a coordinate list, a region list and a node
+        list is twenty rows on one page, and all four look alike -- picking a
+        role at the top and reading its settings underneath is the only way the
+        tab says which of the four you are configuring. The sub-tab is also the
+        role a picked point takes, so there is one answer to "which role am I
+        working on" rather than a tab and a dropdown that can disagree.
+        """
+        from qtpy.QtWidgets import QTabWidget, QVBoxLayout, QWidget
+
+        role_tabs = QTabWidget()
+        placed: set[str] = set()
+        for name in ROLES:
+            mine = [n for n in role_settings(name) if n in rows]
+            placed.update(mine)
+            action = actions[name]
+            holder = Container(
+                widgets=[
+                    *(rows[n] for n in mine),
+                    action.pick, action.draw, action.depth,
+                    action.move, action.assign, action.clear,
+                ],
+                labels=True,
+            )
+            holders[name] = holder
+            role_tabs.addTab(holder.native, role_title(name))
+            role_tabs.setTabToolTip(role_tabs.count() - 1,
+                                    fields[method_setting(name)].help)
+
+        shared = [n for n in shared_settings() if n in rows]
+        rest = [n for n in names if n not in placed and n not in shared]
+
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(summary.native)
+        if rest:
+            layout.addWidget(Container(widgets=[rows[n] for n in rest],
+                                       labels=True).native)
+        layout.addWidget(widget.native)
+        layout.addWidget(role_tabs)
+        layout.addStretch(1)
+        for name in shared:
+            shared_home[name] = None
+        place_shared()
+
+        def on_tab_changed(index: int) -> None:
+            if 0 <= index < len(ROLES):
+                role.value = ROLES[index]
+
+        role_tabs.currentChanged.connect(on_tab_changed)
+        state.tabs = role_tabs
+        return body
+
+    def on_role_changed(*_args) -> None:
+        """Follow the role: the tab bar, and what the next pick will be."""
+        tabs = getattr(state, "tabs", None)
+        if tabs is not None:
+            index = list(ROLES).index(str(role.value))
+            if tabs.currentIndex() != index:
+                tabs.setCurrentIndex(index)
+        place_shared()
+        for name in our_layer_names():
+            target = layer(name)
+            if target is not None:
+                set_defaults(target)
+
+    role.changed.connect(on_role_changed)
+
+    return SimpleNamespace(
+        widget=widget, role=role, actions=actions, depth_slider=depth_slider,
+        holders=holders, shared_home=shared_home,
+        state=state, page=page,
+        row_order=row_order, refresh_rows=refresh_rows,
+        show=on_show, pick=on_pick, draw=on_draw, snap=on_snap, move=on_move,
+        assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
+        layer_names=(BC_COORDINATES, *BC_REGION_NAMES),
+    )
+
+
 def settings_widget(napari_viewer=None):
     """The HaemoLynx panel: the pipeline's stages, in the order it runs them.
 
@@ -990,15 +1829,36 @@ def settings_widget(napari_viewer=None):
     rows: dict[str, Any] = {}
     fields: dict[str, Field] = {}
     tab_widget = QTabWidget()
+
+    report = TextEdit(value="Ready.")
+    report.read_only = True
+
+    # Two passes. Every row has to exist before anything that reads them can be
+    # built, and the boundary controls read them -- so rows first, pages second.
     for tab in tabs:
         for field in tab.fields:
             rows[field.name] = _build_row(field)
             fields[field.name] = field
+
+    #: Stages that lay their own page out, keyed by the stage function they
+    #: belong to rather than by the tab's title, so renaming a tab cannot
+    #: silently drop them. Any future stage-specific page has a home here.
+    pages: dict[str, Any] = {}
+    boundaries = _boundary_controls(viewer, rows, fields, schema, report)
+    if boundaries is not None:
+        pages["assign_boundaries"] = boundaries.page
+
+    for tab in tabs:
         summary = Label(value=tab.stage.summary)
-        page = Container(
-            widgets=[summary, *(rows[field.name] for field in tab.fields)],
-            labels=True,
-        )
+        build = pages.get(tab.stage.call or "")
+        names = [field.name for field in tab.fields]
+        if build is not None:
+            native = build(summary, names)
+        else:
+            native = Container(
+                widgets=[summary, *(rows[name] for name in names)],
+                labels=True,
+            ).native
         # A plain QScrollArea rather than `Container(scrollable=True)`: the
         # magicgui one reports the full height of its contents, so a tab with
         # 39 rows stretches the whole napari window instead of scrolling.
@@ -1007,7 +1867,7 @@ def settings_widget(napari_viewer=None):
         # to appearing only when needed, vertically and horizontally.
         scroller = QScrollArea()
         scroller.setWidgetResizable(True)
-        scroller.setWidget(page.native)
+        scroller.setWidget(native)
         tab_widget.addTab(scroller, tab.stage.title)
         if tab.stage.call:
             index = tab_widget.count() - 1
@@ -1094,8 +1954,6 @@ def settings_widget(napari_viewer=None):
         widget.changed.connect(apply_prerequisites)
     apply_prerequisites()
 
-    report = TextEdit(value="Ready.")
-    report.read_only = True
     bars = ProgressBars()
 
     layer_row: Any = None
@@ -1222,6 +2080,12 @@ def settings_widget(napari_viewer=None):
 
         apply_prerequisites()
         report.value = f"Loaded {path}{kept}"
+        if boundaries is not None and any(
+            name in viewer.layers for name in boundaries.layer_names
+        ):
+            # Only if they are already on screen: opening a config should not
+            # add layers nobody asked for.
+            boundaries.redraw()
 
     def on_load() -> None:
         from qtpy.QtWidgets import QFileDialog
@@ -1259,6 +2123,8 @@ def settings_widget(napari_viewer=None):
         if show_results.value and viewer is not None:
             results = ResultLayers(show_steps=bool(show_steps.value))
             view.results = results
+            if boundaries is not None:
+                boundaries.state.results = results
         _run_in_background(
             settings, schema, report, run_button, bars,
             viewer=viewer if show_results.value else None,
@@ -1270,6 +2136,8 @@ def settings_widget(napari_viewer=None):
             return
         removed = _clear_our_layers(viewer)
         view.results = None
+        if boundaries is not None:
+            boundaries.state.results = None
         report.value = f"Removed {removed} HaemoLynx layer(s)."
 
     load_button.changed.connect(on_load)
@@ -1297,6 +2165,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_load_config = load_config_file
     panel._haemolynx_report = lambda: report.value
     panel._haemolynx_rows = lambda: rows
+    panel._haemolynx_boundaries = boundaries
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)

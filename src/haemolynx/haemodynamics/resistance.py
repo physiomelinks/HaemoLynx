@@ -111,10 +111,10 @@ def solve_flow_from_conductance_matrix(
     conductance: np.ndarray,
     node_list: list,
     *,
-    input_p_bc: float,
-    output_p_bc: float,
-    starting_nodes: list,
-    output_nodes: list,
+    inlet_p_bc: float,
+    outlet_p_bc: float,
+    inlet_nodes: list,
+    outlet_nodes: list,
 ) -> dict:
     """Solve nodal pressures from a conductance matrix with Dirichlet BCs.
 
@@ -129,24 +129,24 @@ def solve_flow_from_conductance_matrix(
         raise ValueError(
             f"node_list length ({len(node_list)}) must match matrix size ({n_nodes})"
         )
-    if not starting_nodes:
-        raise ValueError("starting_nodes cannot be empty")
-    if not output_nodes:
-        raise ValueError("output_nodes cannot be empty")
+    if not inlet_nodes:
+        raise ValueError("inlet_nodes cannot be empty")
+    if not outlet_nodes:
+        raise ValueError("outlet_nodes cannot be empty")
 
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-    missing_in = [n for n in starting_nodes if n not in node_to_idx]
-    missing_out = [n for n in output_nodes if n not in node_to_idx]
+    missing_in = [n for n in inlet_nodes if n not in node_to_idx]
+    missing_out = [n for n in outlet_nodes if n not in node_to_idx]
     if missing_in or missing_out:
         raise ValueError(
             "Boundary-condition nodes missing from node_list. "
-            f"missing_starting={missing_in}, missing_output={missing_out}"
+            f"missing_inlet={missing_in}, missing_output={missing_out}"
         )
 
-    overlap = set(starting_nodes).intersection(output_nodes)
-    if overlap and input_p_bc != output_p_bc:
+    overlap = set(inlet_nodes).intersection(outlet_nodes)
+    if overlap and inlet_p_bc != outlet_p_bc:
         raise ValueError(
-            "Overlapping starting/output nodes have conflicting pressures: "
+            "Overlapping inlet/outlet nodes have conflicting pressures: "
             f"{sorted(overlap)}"
         )
 
@@ -154,16 +154,16 @@ def solve_flow_from_conductance_matrix(
     pressure = np.zeros(n_nodes, dtype=float)
 
     bc_idx_to_p: dict[int, float] = {}
-    for node_id in starting_nodes:
-        bc_idx_to_p[node_to_idx[node_id]] = float(input_p_bc)
-    for node_id in output_nodes:
+    for node_id in inlet_nodes:
+        bc_idx_to_p[node_to_idx[node_id]] = float(inlet_p_bc)
+    for node_id in outlet_nodes:
         idx = node_to_idx[node_id]
-        if idx in bc_idx_to_p and bc_idx_to_p[idx] != float(output_p_bc):
+        if idx in bc_idx_to_p and bc_idx_to_p[idx] != float(outlet_p_bc):
             raise ValueError(
                 f"Node {node_id} receives conflicting BC pressures "
-                f"{bc_idx_to_p[idx]} and {output_p_bc}"
+                f"{bc_idx_to_p[idx]} and {outlet_p_bc}"
             )
-        bc_idx_to_p[idx] = float(output_p_bc)
+        bc_idx_to_p[idx] = float(outlet_p_bc)
 
     known_idx = np.array(sorted(bc_idx_to_p.keys()), dtype=int)
     for idx in known_idx:
@@ -188,7 +188,7 @@ def solve_flow_from_conductance_matrix(
             "conductive path to any boundary node; their pressure stays 0 "
             "and their edges carry zero flow."
         )
-    if float(input_p_bc) != float(output_p_bc):
+    if float(inlet_p_bc) != float(outlet_p_bc):
         _warn_components_pinned_to_one_pressure(adjacency, bc_idx_to_p)
 
     # Heuristic dense-solve estimate using cubic complexity.

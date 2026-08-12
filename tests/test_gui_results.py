@@ -266,12 +266,12 @@ def test_boundary_roles_are_disjoint_and_carry_their_names():
     results = built()
     group = results.stage_finished(
         "assign_boundaries",
-        SimpleNamespace(starting_nodes=[0], output_nodes=[3],
+        SimpleNamespace(inlet_nodes=[0], outlet_nodes=[3],
                         arteriole_boundary_nodes=[], venule_boundary_nodes=[],
                         resistance_node_pair=(0, 3)),
     )
     boundaries = spec_named(group, BOUNDARY_NODES)
-    assert boundaries.features["role"].tolist() == ["starting", "output"]
+    assert boundaries.features["role"].tolist() == ["inlet", "outlet"]
     assert boundaries.colour_kind == "categorical"
     assert len(boundaries.data) == 2
 
@@ -279,7 +279,7 @@ def test_boundary_roles_are_disjoint_and_carry_their_names():
 def test_a_run_with_no_boundary_nodes_says_so_rather_than_drawing_nothing():
     group = built().stage_finished(
         "assign_boundaries",
-        SimpleNamespace(starting_nodes=[], output_nodes=[],
+        SimpleNamespace(inlet_nodes=[], outlet_nodes=[],
                         arteriole_boundary_nodes=[], venule_boundary_nodes=[],
                         resistance_node_pair=None),
     )
@@ -400,7 +400,7 @@ def test_every_name_a_builder_emits_is_declared():
     results = built()
     results.stage_finished(
         "assign_boundaries",
-        SimpleNamespace(starting_nodes=[0], output_nodes=[3],
+        SimpleNamespace(inlet_nodes=[0], outlet_nodes=[3],
                         arteriole_boundary_nodes=[], venule_boundary_nodes=[],
                         resistance_node_pair=None),
     )

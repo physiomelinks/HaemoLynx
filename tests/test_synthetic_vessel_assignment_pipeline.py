@@ -144,8 +144,8 @@ def build_synthetic_integrated_vessel_model() -> tuple[
     )
 
     expected = {
-        "starting_nodes": [0],
-        "output_nodes": [6],
+        "inlet_nodes": [0],
+        "outlet_nodes": [6],
         "arteriole_boundary_nodes": [2],
         "venule_boundary_nodes": [4],
     }
@@ -171,7 +171,7 @@ def write_integrated_vessel_pipeline_3d_html(
     small_arteriole_mask: np.ndarray,
     small_venule_mask: np.ndarray,
     input_nodes: list[int],
-    output_nodes: list[int],
+    outlet_nodes: list[int],
     arteriole_boundary_nodes: list[int],
     venule_boundary_nodes: list[int],
     voxel_size_zyx: tuple[float, float, float],
@@ -298,7 +298,7 @@ def write_integrated_vessel_pipeline_3d_html(
         zs = [float(np.asarray(pos[n], dtype=float)[0]) for n in nodes if n in pos]
         return xs, ys, zs
 
-    in_s, out_s = set(input_nodes), set(output_nodes)
+    in_s, out_s = set(input_nodes), set(outlet_nodes)
     ab_s, vb_s = set(arteriole_boundary_nodes), set(venule_boundary_nodes)
     special = in_s | out_s | ab_s | vb_s
     neutral = [n for n in G.nodes if n not in special]
@@ -326,8 +326,8 @@ def write_integrated_vessel_pipeline_3d_html(
                 name="Input terminals (large mask)",
             )
         )
-    if output_nodes:
-        ox, oy, oz = coords(output_nodes)
+    if outlet_nodes:
+        ox, oy, oz = coords(outlet_nodes)
         fig.add_trace(
             go.Scatter3d(
                 x=ox,
@@ -418,15 +418,15 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         expected,
     ) = build_synthetic_integrated_vessel_model()
 
-    starting_nodes, output_nodes = select_terminal_nodes_from_large_vessel_masks(
+    inlet_nodes, outlet_nodes = select_terminal_nodes_from_large_vessel_masks(
         G,
         large_arteriole_mask=large_art,
         large_venule_mask=large_ven,
         voxel_size_zyx=voxel_size_zyx,
         allow_overlap=False,
     )
-    assert starting_nodes == expected["starting_nodes"]
-    assert output_nodes == expected["output_nodes"]
+    assert inlet_nodes == expected["inlet_nodes"]
+    assert outlet_nodes == expected["outlet_nodes"]
 
     boundary_result = infer_boundary_nodes_from_small_vessel_masks(
         G,
@@ -443,13 +443,13 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
 
     assign_hierarchical_branch_orders(
         G,
-        starting_nodes=starting_nodes,
-        output_nodes=output_nodes,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
         arteriole_boundary_nodes=art_b,
         venule_boundary_nodes=ven_b,
     )
 
-    s0, s6 = expected["starting_nodes"][0], expected["output_nodes"][0]
+    s0, s6 = expected["inlet_nodes"][0], expected["outlet_nodes"][0]
     ab, vb = art_b[0], ven_b[0]
     path_in_to_ab = nx.shortest_path(G, s0, ab)
     path_out_to_vb = nx.shortest_path(G, s6, vb)
@@ -472,8 +472,8 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         large_venule_mask=large_ven,
         small_arteriole_mask=small_art,
         small_venule_mask=small_ven,
-        input_nodes=starting_nodes,
-        output_nodes=output_nodes,
+        input_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
         arteriole_boundary_nodes=art_b,
         venule_boundary_nodes=ven_b,
         voxel_size_zyx=voxel_size_zyx,
@@ -488,8 +488,8 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         large_venule_mask=large_ven,
         small_arteriole_mask=small_art,
         small_venule_mask=small_ven,
-        input_nodes=starting_nodes,
-        output_nodes=output_nodes,
+        input_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
         arteriole_boundary_nodes=art_b,
         venule_boundary_nodes=ven_b,
         voxel_size_zyx=voxel_size_zyx,

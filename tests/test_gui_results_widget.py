@@ -335,7 +335,11 @@ def test_branch_order_then_flow_does_not_raise_keyerror_nan(make_napari_viewer):
 
     _colour_layer(layer, "branch_order", "categorical",
                   (("BO1", (1.0, 0.0, 0.0, 1.0)),))
-    assert layer.edge_color_mode == "cycle"
+    # Direct, not cycle: a categorical colouring is now looked up per item and
+    # written as an array, so `CategoricalColormap.map` -- the thing that
+    # raised on NaN -- is never reached at all. This sequence is now safe by
+    # construction rather than by ordering.
+    assert layer.edge_color_mode == "direct"
 
     # Only some edges get a flow, which is the case that bites.
     partial = np.array([1e-16, np.nan, 5e-17])
@@ -364,7 +368,7 @@ def test_flow_then_branch_order_does_not_raise_either(make_napari_viewer):
 
     _colour_layer(layer, "branch_order", "categorical",
                   (("BO1", (1.0, 0.0, 0.0, 1.0)),))
-    assert layer.edge_color_mode == "cycle"
+    assert layer.edge_color_mode == "direct"      # see the note above
     assert len(layer.edge_color) == len(layer.data)
 
 
@@ -789,7 +793,7 @@ def test_the_vessels_keep_napari_s_own_dropdown(make_napari_viewer):
 
 
 def test_a_text_column_is_recognised_by_its_data_not_its_name(make_napari_viewer):
-    """Choosing "role" raised `could not convert string to float: 'starting'`.
+    """Choosing "role" raised `could not convert string to float: 'inlet'`.
 
     Text-or-number was decided by membership of `TEXT_COLUMNS`, which names the
     text columns the results module happens to write. `role`, on the boundary
@@ -805,7 +809,7 @@ def test_a_text_column_is_recognised_by_its_data_not_its_name(make_napari_viewer
     results = ResultLayers()
     results.stage_finished("build_network", network(a_graph()))
     _apply_layers(viewer, results.stage_finished("assign_boundaries", SimpleNamespace(
-        starting_nodes=[0], output_nodes=[3], arteriole_boundary_nodes=[1],
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[1],
         venule_boundary_nodes=[2], resistance_node_pair=None)))
 
     layer = viewer.layers[BOUNDARY_NODES]

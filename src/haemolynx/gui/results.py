@@ -538,8 +538,8 @@ class ResultLayers:
 
     def _from_assign_boundaries(self, output: Any) -> StageLayers:
         roles = {
-            "starting": getattr(output, "starting_nodes", ()) or (),
-            "output": getattr(output, "output_nodes", ()) or (),
+            "inlet": getattr(output, "inlet_nodes", ()) or (),
+            "outlet": getattr(output, "outlet_nodes", ()) or (),
             "arteriole_boundary": getattr(output, "arteriole_boundary_nodes", ()) or (),
             "venule_boundary": getattr(output, "venule_boundary_nodes", ()) or (),
         }
@@ -563,7 +563,7 @@ class ResultLayers:
                         features={"role": role_column,
                                   "node_id": np.asarray(ids, dtype=object)},
                         colour_by="role", colour_kind="categorical",
-                        colour_cycle=_role_colours(),
+                        colour_cycle=role_colours(),
                         options={"size": 6.0, "out_of_slice_display": True},
                     )
                 )
@@ -674,13 +674,18 @@ def _colouring(columns: Mapping[str, np.ndarray], colour_by: str | None) -> dict
     return {"colour_kind": "continuous", "contrast_limits": _limits(values)}
 
 
-def _role_colours() -> tuple[tuple[str, tuple[float, float, float, float]], ...]:
-    """Inlets, outlets and vessel-type boundaries, told apart at a glance."""
+def role_colours() -> tuple[tuple[str, tuple[float, float, float, float]], ...]:
+    """Inlets, outlets and vessel-type boundaries, told apart at a glance.
+
+    Green in, red out: where flow enters and where it leaves is the thing
+    being looked for, so those two carry the plainest colours and the two
+    vessel-type boundaries take colours that cannot be mistaken for either.
+    """
     return (
-        ("starting", (0.13, 0.47, 0.71, 1.0)),
-        ("output", (0.84, 0.15, 0.16, 1.0)),
+        ("inlet", (0.17, 0.63, 0.17, 1.0)),
+        ("outlet", (0.84, 0.15, 0.16, 1.0)),
         ("arteriole_boundary", (1.0, 0.5, 0.05, 1.0)),
-        ("venule_boundary", (0.17, 0.63, 0.17, 1.0)),
+        ("venule_boundary", (0.58, 0.40, 0.74, 1.0)),
     )
 
 

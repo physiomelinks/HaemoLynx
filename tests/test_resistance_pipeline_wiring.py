@@ -170,7 +170,7 @@ def test_settings_reach_the_run_under_their_own_names(pipeline):
 def test_node_lists_stay_mutable(pipeline):
     """The stages fill these in place, so a tuple would raise mid-run."""
     settings = pipeline.resolve_settings()
-    for name in ("starting_nodes", "output_nodes"):
+    for name in ("inlet_nodes", "outlet_nodes"):
         settings[name][:] = [1, 2]
         assert settings[name] == [1, 2]
 

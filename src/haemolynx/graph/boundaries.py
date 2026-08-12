@@ -53,14 +53,14 @@ def select_boundary_terminal_nodes(
     top_limit = lowest + span * (edge_percent / 100.0)
     bottom_start = highest - span * (end_percent / 100.0)
 
-    starting = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
-    outputs = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
-    starting_set = set(starting)
-    outputs = [node for node in outputs if node not in starting_set]
+    inlets = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
+    outlets = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
+    inlet_set = set(inlets)
+    outlets = [node for node in outlets if node not in inlet_set]
 
-    starting.sort(key=lambda n: (axis_coord(n), n))
-    outputs.sort(key=lambda n: (-axis_coord(n), n))
-    return starting, outputs
+    inlets.sort(key=lambda n: (axis_coord(n), n))
+    outlets.sort(key=lambda n: (-axis_coord(n), n))
+    return inlets, outlets
 
 
 def _terminal_nodes_and_position_map(G: nx.Graph) -> tuple[list[Any], dict[Any, np.ndarray]]:
@@ -89,12 +89,12 @@ def select_boundary_nodes_by_method(
     end_percent: float = 10.0,
     axis: int = 1,
     exclude_nodes: Iterable[Any] | None = None,
-    starting_nodes_for_distance: Iterable[Any] | None = None,
-    distance_from_starting_node: float = 0.0,
+    inlet_nodes_for_distance: Iterable[Any] | None = None,
+    distance_from_inlet_node: float = 0.0,
 ) -> list[Any]:
     """Select boundary nodes for one role using the specified method."""
-    if node_role not in {"input", "output"}:
-        raise ValueError("node_role must be 'input' or 'output'.")
+    if node_role not in {"inlet", "outlet"}:
+        raise ValueError("node_role must be 'inlet' or 'outlet'.")
 
     terminals, pos = _terminal_nodes_and_position_map(G)
     if not terminals:
@@ -140,38 +140,38 @@ def select_boundary_nodes_by_method(
             if any(np.all(p >= lo) and np.all(p <= hi) for lo, hi in normalized_boxes):
                 selected.append(node_id)
     elif method_norm == "edge_percent":
-        start_nodes, out_nodes = select_boundary_terminal_nodes(
+        inlet_nodes, outlet_nodes = select_boundary_terminal_nodes(
             G,
             image_shape,
             edge_percent=edge_percent,
             end_percent=end_percent,
             axis=axis,
         )
-        selected = start_nodes if node_role == "input" else out_nodes
-    elif method_norm == "degree_1_from_starting":
-        if distance_from_starting_node < 0:
-            raise ValueError("distance_from_starting_node must be non-negative.")
+        selected = inlet_nodes if node_role == "inlet" else outlet_nodes
+    elif method_norm == "degree_1_from_inlet":
+        if distance_from_inlet_node < 0:
+            raise ValueError("distance_from_inlet_node must be non-negative.")
         node_pos_all = nx.get_node_attributes(G, "pos")
-        starting_positions = [
+        inlet_positions = [
             np.asarray(node_pos_all[node_id], dtype=float)
-            for node_id in (starting_nodes_for_distance or [])
+            for node_id in (inlet_nodes_for_distance or [])
             if node_id in node_pos_all
         ]
-        if not starting_positions:
+        if not inlet_positions:
             return []
         selected = []
         for node_id in terminals:
             nearest_start_dist = min(
                 float(np.linalg.norm(pos[node_id] - start_pos))
-                for start_pos in starting_positions
+                for start_pos in inlet_positions
             )
-            if nearest_start_dist > distance_from_starting_node:
+            if nearest_start_dist > distance_from_inlet_node:
                 selected.append(node_id)
     else:
         raise ValueError(
             "Unknown boundary-node method. Supported methods are: "
             "'coordinates', 'all_degree_1', 'volume', 'edge_percent', "
-            "'degree_1_from_starting'."
+            "'degree_1_from_inlet'."
         )
 
     return [node for node in sort_nodes(selected) if node not in excluded]
@@ -181,29 +181,29 @@ def select_boundary_nodes_by_method(
 #: Config settings naming each boundary role's selection method, coordinates and
 #: volume boxes, plus the ``node_role`` the selector expects.
 BOUNDARY_ROLE_SETTINGS: dict[str, dict[str, str]] = {
-    "starting": {
-        "method": "starting_node_selection_method",
-        "coordinates": "starting_node_coordinates",
-        "volume_boxes": "starting_node_volumes",
-        "node_role": "input",
+    "inlet": {
+        "method": "inlet_node_selection_method",
+        "coordinates": "inlet_node_coordinates",
+        "volume_boxes": "inlet_node_volumes",
+        "node_role": "inlet",
     },
-    "output": {
-        "method": "output_node_selection_method",
-        "coordinates": "output_node_coordinates",
-        "volume_boxes": "output_node_volumes",
-        "node_role": "output",
+    "outlet": {
+        "method": "outlet_node_selection_method",
+        "coordinates": "outlet_node_coordinates",
+        "volume_boxes": "outlet_node_volumes",
+        "node_role": "outlet",
     },
     "arteriole_boundary": {
         "method": "arteriole_boundary_selection_method",
         "coordinates": "arteriole_boundary_node_coordinates",
         "volume_boxes": "arteriole_boundary_node_volumes",
-        "node_role": "input",
+        "node_role": "inlet",
     },
     "venule_boundary": {
         "method": "venule_boundary_selection_method",
         "coordinates": "venule_boundary_node_coordinates",
         "volume_boxes": "venule_boundary_node_volumes",
-        "node_role": "output",
+        "node_role": "outlet",
     },
 }
 
@@ -216,7 +216,7 @@ BOUNDARY_BAND_SETTINGS: dict[str, str] = {
     "boundary_axis": "axis",
     "boundary_first_percent": "edge_percent",
     "boundary_last_percent": "end_percent",
-    "boundary_distance_from_starting_node": "distance_from_starting_node",
+    "boundary_distance_from_inlet_node": "distance_from_inlet_node",
 }
 
 
@@ -247,7 +247,7 @@ def select_boundary_nodes_for_role(
     method = str(settings[names["method"]]).strip().lower()
     coordinates = list(settings.get(names["coordinates"]) or [])
     volume_boxes = list(settings.get(names["volume_boxes"]) or [])
-    starting_nodes = list(settings.get("starting_nodes") or [])
+    inlet_nodes = list(settings.get("inlet_nodes") or [])
 
     if method == "coordinates" and not coordinates:
         raise ValueError(
@@ -265,12 +265,12 @@ def select_boundary_nodes_for_role(
             f"{names['method']} to 'edge_percent', which needs no boxes from "
             "this dataset."
         )
-    if method == "degree_1_from_starting" and not starting_nodes:
+    if method == "degree_1_from_inlet" and not inlet_nodes:
         raise ValueError(
-            f"{names['method']}='degree_1_from_starting' measures each terminal's "
-            "distance from the starting nodes, and none have been chosen. Fix: "
-            f"set {names['method']} to another method, or pick the starting "
-            "nodes first by giving starting_node_selection_method one of the "
+            f"{names['method']}='degree_1_from_inlet' measures each terminal's "
+            "distance from the inlet nodes, and none have been chosen. Fix: "
+            f"set {names['method']} to another method, or pick the inlet "
+            "nodes first by giving inlet_node_selection_method one of the "
             "other methods."
         )
 
@@ -289,6 +289,6 @@ def select_boundary_nodes_for_role(
         coordinates=coordinates,
         volume_boxes=volume_boxes,
         exclude_nodes=exclude_nodes,
-        starting_nodes_for_distance=starting_nodes,
+        inlet_nodes_for_distance=inlet_nodes,
         **band,
     )

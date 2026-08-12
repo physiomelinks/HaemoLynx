@@ -233,15 +233,15 @@ def _disconnected_network() -> nx.MultiGraph:
     return G
 
 
-def _solve_and_set_flows(G, *, input_p_bc=1000.0, output_p_bc=500.0):
+def _solve_and_set_flows(G, *, inlet_p_bc=1000.0, outlet_p_bc=500.0):
     conductance, node_list = build_conductance_matrix_from_graph(G)
     flow = solve_flow_from_conductance_matrix(
         conductance,
         node_list,
-        input_p_bc=input_p_bc,
-        output_p_bc=output_p_bc,
-        starting_nodes=[0],
-        output_nodes=[3],
+        inlet_p_bc=inlet_p_bc,
+        outlet_p_bc=outlet_p_bc,
+        inlet_nodes=[0],
+        outlet_nodes=[3],
     )
     set_edge_flows(G, node_list, flow["pressure"])
     return flow
@@ -321,10 +321,10 @@ def test_solve_warns_when_boundaries_pin_only_one_pressure(caplog):
         flow = solve_flow_from_conductance_matrix(
             conductance,
             node_list,
-            input_p_bc=1000.0,
-            output_p_bc=500.0,
-            starting_nodes=[0],
-            output_nodes=[3],
+            inlet_p_bc=1000.0,
+            outlet_p_bc=500.0,
+            inlet_nodes=[0],
+            outlet_nodes=[3],
         )
     assert any("only" in rec.message and "zero" in rec.message for rec in caplog.records)
 
