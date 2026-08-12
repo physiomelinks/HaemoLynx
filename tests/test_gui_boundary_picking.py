@@ -483,3 +483,103 @@ def test_the_ordering_puts_a_method_above_what_it_reads():
                            else BOUNDARY_ROLE_SETTINGS[role]["method"]) < order.index(
             coordinate_setting(role)
         )
+
+
+# --- a role's own settings, and what no role owns ----------------------------
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_a_roles_settings_start_with_the_method_that_chooses_them(role):
+    from haemolynx.gui.boundary_picking import role_settings
+
+    mine = role_settings(role)
+    assert mine[0] == BOUNDARY_ROLE_SETTINGS[role]["method"]
+    assert set(mine) == {
+        BOUNDARY_ROLE_SETTINGS[role]["method"],
+        coordinate_setting(role),
+        volume_setting(role),
+        f"{role}_nodes",
+    }
+    for name in mine:
+        assert name in default_schema(), "a page cannot show a row that does not exist"
+
+
+def test_no_setting_belongs_to_two_roles():
+    """A row lives in one page, so an overlap would lose it from the other."""
+    from haemolynx.gui.boundary_picking import role_settings
+
+    seen = [name for role in ROLES for name in role_settings(role)]
+    assert len(seen) == len(set(seen))
+
+
+def test_the_band_settings_belong_to_no_role():
+    """One axis and one pair of bands describe the whole network."""
+    from haemolynx.gui.boundary_picking import role_settings, shared_settings
+
+    owned = {name for role in ROLES for name in role_settings(role)}
+    assert set(shared_settings()).isdisjoint(owned)
+    assert "boundary_axis" in shared_settings()
+
+
+def test_between_them_the_pages_place_every_boundary_setting():
+    """Anything neither owns falls through to the tab, which is fine -- but it
+    must not fall through by accident, so the split is pinned."""
+    from haemolynx.gui.boundary_picking import (
+        orderable_settings, role_settings, shared_settings,
+    )
+
+    placed = {n for role in ROLES for n in role_settings(role)} | set(shared_settings())
+    assert set(orderable_settings()) <= placed
+
+
+@pytest.mark.parametrize(
+    "role,title",
+    [("starting", "Starting"), ("output", "Output"),
+     ("arteriole_boundary", "Arteriole"), ("venule_boundary", "Venule")],
+)
+def test_a_role_reads_as_a_tab_name(role, title):
+    from haemolynx.gui.boundary_picking import role_title
+
+    assert role_title(role) == title
+
+
+# --- coordinates that fall outside the image ---------------------------------
+
+
+def test_a_coordinate_outside_the_image_is_called_out():
+    """Microns mistaken for voxel indices is the one error that self-conceals.
+
+    A run snaps every coordinate to its nearest terminal, so a wrong one does
+    not fail -- it quietly selects the wrong vessel.
+    """
+    from haemolynx.gui.boundary_picking import outside_extent
+
+    notes = outside_extent(
+        {"starting_node_coordinates": [[10.0, 10.0, 10.0], [900.0, 10.0, 10.0]]},
+        [0.0, 0.0, 0.0],
+        [509.0, 1624.0, 1098.0],
+    )
+    assert notes == ("1 of 2 starting coordinate(s)",)
+
+
+def test_coordinates_inside_the_image_say_nothing():
+    from haemolynx.gui.boundary_picking import outside_extent
+
+    assert outside_extent(
+        {"starting_node_coordinates": [[10.0, 10.0, 10.0]]},
+        [0.0, 0.0, 0.0], [509.0, 1624.0, 1098.0],
+    ) == ()
+
+
+def test_a_negative_coordinate_is_outside_too():
+    from haemolynx.gui.boundary_picking import outside_extent
+
+    assert outside_extent(
+        {"output_node_coordinates": [[-1.0, 10.0, 10.0]]},
+        [0.0, 0.0, 0.0], [509.0, 1624.0, 1098.0],
+    ) == ("1 of 1 output coordinate(s)",)
+
+
+def test_the_summary_names_what_it_counted():
+    picks = BoundaryPicks.from_settings(CONFIGURED)
+    assert picks.summary() == "2 starting coordinates, 1 output region"

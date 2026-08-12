@@ -1015,14 +1015,19 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         return None
 
     import napari
-    from magicgui.widgets import ComboBox, Container, FloatSlider, PushButton
+    from magicgui.widgets import ComboBox, Container, FloatSlider, Label, PushButton
 
     from haemolynx.gui.boundary_picking import (
         BC_COORDINATES,
+        BC_LAYER_NAMES,
         BC_REGIONS,
         HANDLE,
         ROLES,
         orderable_settings,
+        outside_extent,
+        role_settings,
+        role_title,
+        shared_settings,
         visible_settings,
         BoundaryPicks,
         coordinate_setting,
@@ -1035,6 +1040,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         wanted_rows,
     )
 
+    #: Which role a new point or region belongs to. Not shown: the sub-tab bar
+    #: built in `page` is what the user sees, and this follows it. Keeping the
+    #: combo as the model means everything downstream still reads one value,
+    #: and a role can still be chosen without a display.
     role = ComboBox(choices=list(ROLES), value=ROLES[0], label="Role")
     show = PushButton(text="Show these boundary conditions")
     pick = PushButton(text="Pick coordinates in the viewer")
@@ -1045,7 +1054,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     clear = PushButton(text="Clear this role's regions")
 
     state = SimpleNamespace(applying=False, results=None, connected=set(),
-                        visible=frozenset(), hidden=frozenset())
+                        visible=frozenset(), hidden=frozenset(), tabs=None)
 
     def current_values() -> dict[str, Any]:
         return {name: fields[name].to_setting_value(widget.value)
@@ -1080,6 +1089,30 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                              f"{method_setting(name)} is {method!r}")
         return "  Not used: " + "; ".join(notes) + "." if notes else ""
 
+    def image_extent():
+        """The world box the open images occupy, in microns."""
+        extents = [layer.extent.world for layer in viewer.layers
+                   if layer.name not in BC_LAYER_NAMES and layer.ndim >= 3]
+        if not extents:
+            return None
+        return (np.min([e[0] for e in extents], axis=0),
+                np.max([e[1] for e in extents], axis=0))
+
+    def offscreen_warning(values) -> str:
+        """Say when coordinates fall outside the image rather than drawing them there."""
+        box = image_extent()
+        if box is None:
+            return ""
+        stray = outside_extent(values, *box)
+        if not stray:
+            return ""
+        return (
+            "  Outside the image: " + "; ".join(stray) + ". These settings are "
+            "microns, not voxel indices -- if they came from a viewer showing "
+            f"indices, multiply by the voxel size. The image spans "
+            f"{tuple(round(float(v), 1) for v in box[1])} um (z, y, x)."
+        )
+
     def redraw() -> None:
         """Settings -> layers. One of the two authoritative directions.
 
@@ -1095,7 +1128,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             values = current_values()
             group = group_for(values)
             _apply_layers(viewer, group, report)
-            report.value = f"Boundary conditions: {group.note}{unused_warning(values)}"
+            report.value = (f"Boundary conditions: {group.note}"
+                            f"{unused_warning(values)}{offscreen_warning(values)}")
             for name in (BC_COORDINATES, BC_REGIONS):
                 listen(layer(name))
             set_depth_range()
@@ -1128,7 +1162,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             write_rows(proposed)
             values = current_values()
             picks = BoundaryPicks.from_settings(values)
-            report.value = f"Boundary conditions: {picks.summary()}{unused_warning(values)}"
+            report.value = (f"Boundary conditions: {picks.summary()}"
+                            f"{unused_warning(values)}{offscreen_warning(values)}")
         finally:
             state.applying = False
 
@@ -1203,10 +1238,12 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             depth.max = max(span, float(depth.value))
             if depth.value == 0.0:
                 # Guarded: assigning the slider fires `on_depth_changed`, and
-                # picking a default is not the user resizing anything.
+                # picking a default is not the user resizing anything. Clamped
+                # to what the slider actually took: it rounds the maximum it
+                # was given, and a value past that raises rather than clips.
                 state.applying = True
                 try:
-                    depth.value = span
+                    depth.value = min(span, float(depth.max))
                 finally:
                     state.applying = False
 
@@ -1407,11 +1444,74 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     on_ndisplay()
 
     widget = Container(
-        widgets=[role, show, pick, draw, depth, assign, snap_button, clear],
+        widgets=[show, pick, draw, depth, assign, snap_button, clear],
         labels=True,
     )
+
+    def page(summary, names: Sequence[str]):
+        """The Boundaries tab: one sub-tab per role, then what they share.
+
+        Four roles times a method, a coordinate list, a region list and a node
+        list is twenty rows on one page, and all four look alike -- picking a
+        role at the top and reading its settings underneath is the only way the
+        tab says which of the four you are configuring. The sub-tab is also the
+        role a picked point takes, so there is one answer to "which role am I
+        working on" rather than a tab and a dropdown that can disagree.
+        """
+        from qtpy.QtWidgets import QTabWidget, QVBoxLayout, QWidget
+
+        role_tabs = QTabWidget()
+        placed: set[str] = set()
+        for name in ROLES:
+            mine = [n for n in role_settings(name) if n in rows]
+            placed.update(mine)
+            holder = Container(widgets=[rows[n] for n in mine], labels=True)
+            role_tabs.addTab(holder.native, role_title(name))
+            role_tabs.setTabToolTip(role_tabs.count() - 1,
+                                    fields[method_setting(name)].help)
+
+        shared = [n for n in shared_settings() if n in rows]
+        rest = [n for n in names if n not in placed and n not in shared]
+
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(summary.native)
+        if rest:
+            layout.addWidget(Container(widgets=[rows[n] for n in rest],
+                                       labels=True).native)
+        layout.addWidget(widget.native)
+        layout.addWidget(role_tabs)
+        if shared:
+            layout.addWidget(Label(value="Shared by every role that uses them:").native)
+            layout.addWidget(Container(widgets=[rows[n] for n in shared],
+                                       labels=True).native)
+        layout.addStretch(1)
+
+        def on_tab_changed(index: int) -> None:
+            if 0 <= index < len(ROLES):
+                role.value = ROLES[index]
+
+        role_tabs.currentChanged.connect(on_tab_changed)
+        state.tabs = role_tabs
+        return body
+
+    def on_role_changed(*_args) -> None:
+        """Follow the role: the tab bar, and what the next pick will be."""
+        tabs = getattr(state, "tabs", None)
+        if tabs is not None:
+            index = list(ROLES).index(str(role.value))
+            if tabs.currentIndex() != index:
+                tabs.setCurrentIndex(index)
+        for name in (BC_COORDINATES, BC_REGIONS):
+            target = layer(name)
+            if target is not None:
+                set_defaults(target)
+
+    role.changed.connect(on_role_changed)
+
     return SimpleNamespace(
-        widget=widget, role=role, depth=depth, state=state,
+        widget=widget, role=role, depth=depth, state=state, page=page,
         row_order=row_order, refresh_rows=refresh_rows,
         show=on_show, pick=on_pick, draw=on_draw, snap=on_snap,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
@@ -1453,28 +1553,25 @@ def settings_widget(napari_viewer=None):
             rows[field.name] = _build_row(field)
             fields[field.name] = field
 
-    #: Stage-specific controls, keyed by the stage function they belong to
-    #: rather than by the tab's title, so renaming a tab cannot silently drop
-    #: them. Any future stage-specific control has a home here.
-    extras: dict[str, Any] = {}
+    #: Stages that lay their own page out, keyed by the stage function they
+    #: belong to rather than by the tab's title, so renaming a tab cannot
+    #: silently drop them. Any future stage-specific page has a home here.
+    pages: dict[str, Any] = {}
     boundaries = _boundary_controls(viewer, rows, fields, schema, report)
     if boundaries is not None:
-        extras["assign_boundaries"] = boundaries.widget
+        pages["assign_boundaries"] = boundaries.page
 
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
-        extra = extras.get(tab.stage.call or "")
+        build = pages.get(tab.stage.call or "")
         names = [field.name for field in tab.fields]
-        if boundaries is not None and tab.stage.call == "assign_boundaries":
-            names = boundaries.row_order(names)
-        page = Container(
-            widgets=[
-                summary,
-                *([extra] if extra is not None else []),
-                *(rows[name] for name in names),
-            ],
-            labels=True,
-        )
+        if build is not None:
+            native = build(summary, names)
+        else:
+            native = Container(
+                widgets=[summary, *(rows[name] for name in names)],
+                labels=True,
+            ).native
         # A plain QScrollArea rather than `Container(scrollable=True)`: the
         # magicgui one reports the full height of its contents, so a tab with
         # 39 rows stretches the whole napari window instead of scrolling.
@@ -1483,7 +1580,7 @@ def settings_widget(napari_viewer=None):
         # to appearing only when needed, vertically and horizontally.
         scroller = QScrollArea()
         scroller.setWidgetResizable(True)
-        scroller.setWidget(page.native)
+        scroller.setWidget(native)
         tab_widget.addTab(scroller, tab.stage.title)
         if tab.stage.call:
             index = tab_widget.count() - 1

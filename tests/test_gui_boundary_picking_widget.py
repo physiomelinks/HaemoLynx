@@ -530,3 +530,105 @@ def test_the_ordering_keeps_every_row_it_was_given(panel):
     names = list(rows_of(widget))
 
     assert sorted(bc.row_order(names)) == sorted(names)
+
+
+# --- one sub-tab per role ----------------------------------------------------
+
+
+def test_there_is_one_sub_tab_per_role(panel):
+    widget, viewer, bc = panel
+    tabs = bc.state.tabs
+
+    assert tabs.count() == 4
+    assert [tabs.tabText(i) for i in range(4)] == [
+        "Starting", "Output", "Arteriole", "Venule"
+    ]
+
+
+def test_choosing_a_sub_tab_chooses_the_role(panel):
+    """The tab is the role: two ways to say it could disagree."""
+    widget, viewer, bc = panel
+
+    bc.state.tabs.setCurrentIndex(1)
+
+    assert str(bc.role.value) == "output"
+
+
+def test_choosing_the_role_moves_the_sub_tab(panel):
+    widget, viewer, bc = panel
+
+    bc.role.value = "venule_boundary"
+
+    assert bc.state.tabs.currentIndex() == 3
+
+
+def test_a_role_only_shows_its_own_settings(panel):
+    """The complaint this answers: four near-identical methods on one page."""
+    widget, viewer, bc = panel
+    starting_page = bc.state.tabs.widget(0)
+    natives = set(starting_page.findChildren(type(rows_of(widget)[
+        "starting_node_selection_method"].native)))
+
+    assert rows_of(widget)["starting_node_selection_method"].native in natives
+    assert rows_of(widget)["output_node_selection_method"].native not in natives
+
+
+def test_a_picked_point_takes_the_role_of_the_open_sub_tab(panel):
+    widget, viewer, bc = panel
+    bc.show()
+    bc.state.tabs.setCurrentIndex(1)
+
+    points = viewer.layers[BC_COORDINATES]
+    points.add([[7.0, 8.0, 9.0]])
+
+    assert widget._haemolynx_values()["output_node_coordinates"] == [[7.0, 8.0, 9.0]]
+    assert widget._haemolynx_values()["starting_node_coordinates"] == []
+
+
+def test_the_shared_band_settings_are_not_on_a_role_page(panel):
+    """One axis and one pair of bands describe the whole network."""
+    widget, viewer, bc = panel
+    axis = rows_of(widget)["boundary_axis"].native
+
+    for index in range(bc.state.tabs.count()):
+        assert axis not in bc.state.tabs.widget(index).findChildren(type(axis))
+
+
+# --- the depth slider on a real, anisotropic stack ---------------------------
+
+
+def test_showing_survives_a_stack_whose_depth_the_slider_rounds(panel):
+    """`FloatSlider` rounds the maximum it is given and raises on a value past
+    it, so defaulting the depth to the stack's exact span blew up on any stack
+    whose depth was not a round number -- which is any anisotropic one."""
+    widget, viewer, bc = panel
+
+    bc.show()
+
+    span = float(viewer.layers["stack"].extent.world[1][0]
+                 - viewer.layers["stack"].extent.world[0][0])
+    assert bc.depth.value == pytest.approx(span, abs=1e-3)
+    assert bc.depth.value <= bc.depth.max
+
+
+# --- coordinates that do not lie on the image --------------------------------
+
+
+def test_a_coordinate_off_the_image_is_reported_with_the_images_size(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[5000.0, 5.0, 5.0]]
+
+    bc.show()
+
+    report = widget._haemolynx_report()
+    assert "Outside the image" in report
+    assert "microns, not voxel indices" in report
+
+
+def test_a_coordinate_on_the_image_is_not_reported(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["starting_node_coordinates"].value = [[10.0, 20.0, 30.0]]
+
+    bc.show()
+
+    assert "Outside the image" not in widget._haemolynx_report()

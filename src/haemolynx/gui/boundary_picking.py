@@ -66,6 +66,10 @@ __all__ = [
     "snap",
     "specs_for",
     "terminal_points",
+    "outside_extent",
+    "role_settings",
+    "role_title",
+    "shared_settings",
     "volume_setting",
     "wanted_rows",
 ]
@@ -127,10 +131,73 @@ def orderable_settings() -> list[str]:
     """Every boundary setting this module places, method-first, role by role."""
     ordered: list[str] = []
     for role in ROLES:
-        ordered += [method_setting(role), coordinate_setting(role), volume_setting(role)]
+        ordered += list(role_settings(role))
+    ordered += list(shared_settings())
+    return ordered
+
+
+def role_settings(role: str) -> tuple[str, ...]:
+    """Everything that belongs to one role, its method first.
+
+    A role's own page: how it selects, whatever that method reads, and the node
+    IDs the run fills in. The band settings are deliberately absent -- one axis
+    and one pair of bands describe the whole network, so they belong to no role
+    (see :data:`BAND_SETTINGS`).
+    """
+    names = [
+        method_setting(role),
+        coordinate_setting(role),
+        volume_setting(role),
+        f"{role}_nodes",
+    ]
+    return tuple(dict.fromkeys(names))
+
+
+def shared_settings() -> tuple[str, ...]:
+    """The settings more than one role can read, so they sit under all of them."""
+    ordered: list[str] = []
     for names in BAND_SETTINGS.values():
         ordered += list(names)
-    return ordered
+    return tuple(dict.fromkeys(ordered))
+
+
+def role_title(role: str) -> str:
+    """What a role's tab is called: 'arteriole_boundary' -> 'Arteriole'."""
+    stem = role[: -len("_boundary")] if role.endswith("_boundary") else role
+    return stem.replace("_", " ").capitalize()
+
+
+def outside_extent(
+    values: Mapping[str, Any],
+    lo: Sequence[float],
+    hi: Sequence[float],
+) -> tuple[str, ...]:
+    """Which configured coordinates fall outside the image, role by role.
+
+    The one mistake this cannot self-correct. Every one of these settings is
+    microns, and a coordinate read off a viewer that was showing voxel indices
+    looks entirely plausible -- it is a small positive triple in the right
+    ballpark. On an anisotropic stack it lands at a fraction of the depth it
+    should, on no vessel, and the run snaps it to whatever terminal happens to
+    be nearest instead of failing. Outside the volume altogether is the part
+    that can be detected, and it is the common half of the mistake, since a
+    voxel index is smaller than the micron it stands for.
+    """
+    low = np.asarray(lo, dtype=float)
+    high = np.asarray(hi, dtype=float)
+    notes = []
+    for role in ROLES:
+        points = BoundaryPicks.from_settings(values).coordinates[role]
+        if not points:
+            continue
+        stray = sum(
+            1 for point in points
+            if np.any(np.asarray(point, dtype=float) < low)
+            or np.any(np.asarray(point, dtype=float) > high)
+        )
+        if stray:
+            notes.append(f"{stray} of {len(points)} {role} coordinate(s)")
+    return tuple(notes)
 
 
 def coordinate_setting(role: str) -> str:
@@ -406,7 +473,8 @@ class BoundaryPicks:
     def summary(self) -> str:
         """One line naming what is configured, for the report box."""
         parts = [
-            f"{len(self.coordinates.get(role, ()))} {role}"
+            f"{len(self.coordinates[role])} {role} "
+            f"coordinate{'' if len(self.coordinates[role]) == 1 else 's'}"
             for role in ROLES
             if self.coordinates.get(role)
         ]

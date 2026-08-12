@@ -74,12 +74,22 @@ missed. It needs a graph, so run at least *3. Graph* first. Coordinates you pick
 without it are still correct: a run snaps every one of them to its nearest
 terminal anyway.
 
-The tab shows only the rows the methods you chose will actually read, each
-under the method that asks for it: pick `coordinates` for the inlet and its
-coordinate list appears, pick `volume` and its region list does instead. The
-four `*_selection_method` rows are always there, since they are what decides
-the rest. Editing any of those rows redraws the layers straight away, so the
-picture always matches the form.
+The tab has a sub-tab per role — **Starting**, **Output**, **Arteriole**,
+**Venule** — holding that role's method, whatever the method reads, and the
+node IDs a run fills in. The open sub-tab *is* the role: a coordinate you pick
+or a region you draw belongs to whichever one you are looking at. Within a
+sub-tab only the rows that role's method will read are shown, so choosing
+`coordinates` reveals its coordinate list and `volume` its region list. The
+boundary axis and the two band percentages sit below the sub-tabs, since one
+axis and one pair of bands describe the whole network rather than any one role.
+Editing any of it redraws the layers straight away.
+
+Every one of these coordinates is **microns**, not voxel indices. The panel
+says so when it can — a coordinate outside the image is reported with the
+image's size in microns — but a voxel index that happens to land inside the
+volume cannot be detected, and a run will snap it to the nearest vessel end
+rather than fail. If a config's coordinates came from a viewer showing voxel
+indices, multiply each by the voxel size.
 
 Two things the panel will tell you rather than fix behind your back. A role only
 reads its coordinates when its `*_selection_method` says `coordinates` (and its
