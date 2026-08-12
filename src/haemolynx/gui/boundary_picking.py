@@ -4,7 +4,7 @@ The four boundary roles are configured by two settings each: a list of
 coordinates and a list of volume boxes, both in physical ``(z, y, x)`` microns.
 Typed into a text box they are unreadable, and nothing says whether they land on
 a vessel -- the first sign that they do not is the run stopping with "No
-starting or output nodes found".
+inlet or outlet nodes found".
 
 This turns those settings into two napari layers and back:
 
@@ -106,7 +106,7 @@ METHOD_SETTINGS: Mapping[str, str] = {
 #: cannot belong under any one role.
 BAND_SETTINGS: Mapping[str, tuple[str, ...]] = {
     "edge_percent": ("boundary_axis", "boundary_first_percent", "boundary_last_percent"),
-    "degree_1_from_starting": ("boundary_distance_from_starting_node",),
+    "degree_1_from_inlet": ("boundary_distance_from_inlet_node",),
 }
 
 
@@ -116,8 +116,8 @@ BAND_SETTINGS: Mapping[str, tuple[str, ...]] = {
 #: showing an inlet role the outlet percentage invites setting a number that
 #: does nothing.
 PERCENT_FOR_NODE_ROLE: Mapping[str, str] = {
-    "input": "boundary_first_percent",
-    "output": "boundary_last_percent",
+    "inlet": "boundary_first_percent",
+    "outlet": "boundary_last_percent",
 }
 
 

@@ -266,8 +266,8 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         # One colour per item, looked up by label, rather than handing napari
         # the cycle and the column and letting it pair them up. It pairs them
         # by the order the values are first *encountered*, not by the labels
-        # they were declared against, so a layer holding only output nodes drew
-        # them in the starting colour -- the first colour in the cycle. Points
+        # they were declared against, so a layer holding only outlet nodes drew
+        # them in the inlet colour -- the first colour in the cycle. Points
         # and Shapes disagree about that order too, so there is no ordering
         # that would be right for both.
         setattr(layer, attribute, _categorical_colours(layer, column, cycle))
@@ -400,7 +400,7 @@ def _is_text_column(layer, column: str | None) -> bool:
 
     Not of a list of names. `TEXT_COLUMNS` names the text columns the results
     module writes, and `role` -- the one on the boundary nodes -- is not among
-    them, so choosing it tried to map "starting" and "output" onto a colormap
+    them, so choosing it tried to map "inlet" and "outlet" onto a colormap
     and raised `could not convert string to float`. Any column any layer ever
     carries has a dtype; that is the honest question.
     """
@@ -1371,18 +1371,24 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """Show only the settings the chosen methods will actually read."""
         wanted = visible_settings(current_values())
         methods = {method_setting(role) for role in ROLES}
+        # A shared row's visibility belongs to `place_shared`, which knows
+        # whether it is on a page at all. Showing one that is on no page makes
+        # a parentless Qt widget visible, and a visible widget with no parent
+        # is a window: "Boundary last percent (percent)", floating on its own.
+        owned = set(shared_settings())
         hidden = set()
         for name in orderable_settings():
             # A method row always stays: it is the row that decides which of
             # the others you need to fill in.
-            if name in rows and name not in methods:
+            if name in rows and name not in methods and name not in owned:
                 rows[name].visible = name in wanted
                 if name not in wanted:
                     hidden.add(name)
-        state.visible = wanted
-        state.hidden = frozenset(hidden)
         refresh_actions()
         place_shared()
+        state.visible = wanted
+        state.hidden = frozenset(hidden | {name for name in shared_settings()
+                                           if shared_home.get(name) is None})
 
     def place_shared() -> None:
         """Put a shared row on the page of whoever is reading it right now.
@@ -1407,6 +1413,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             if home is None or (name in wanted and home == current):
                 continue
             holders[home].remove(rows[name])
+            # Removed from its page it has no parent, and a visible widget
+            # with no parent is a window of its own.
+            rows[name].visible = False
             shared_home[name] = None
         for offset, name in enumerate(wanted):
             if shared_home.get(name) is None:

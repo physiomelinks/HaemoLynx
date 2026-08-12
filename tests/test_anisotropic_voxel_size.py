@@ -134,7 +134,7 @@ def test_terminal_node_mask_lookup_uses_array_axis_spacing():
     G.add_node(1, pos=np.array([6 * 2.0, 2 * 0.5, 3 * 0.4]))
     G.add_edge(0, 1, voxels=[G.nodes[0]["pos"], G.nodes[1]["pos"]])
 
-    start_nodes, output_nodes = select_terminal_nodes_from_large_vessel_masks(
+    start_nodes, outlet_nodes = select_terminal_nodes_from_large_vessel_masks(
         G,
         large_arteriole_mask=arteriole,
         large_venule_mask=venule,
@@ -143,4 +143,4 @@ def test_terminal_node_mask_lookup_uses_array_axis_spacing():
     )
 
     assert start_nodes == [0]
-    assert output_nodes == [1]
+    assert outlet_nodes == [1]

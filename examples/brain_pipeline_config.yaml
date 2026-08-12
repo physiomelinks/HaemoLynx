@@ -31,7 +31,7 @@ input_and_segmentation:
 # Vessel masks
 # ------------------------------------------------------------------------
 vessel_masks:
-  # Load large arteriole and venule masks for automated start/output node assignment
+  # Load large arteriole and venule masks for automated inlet/outlet node assignment
   use_large_vessel_masks: false
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks]
   use_ilastik_large_vessel_segmentation: false
@@ -76,15 +76,15 @@ vessel_masks:
 boundary_assignment:
   # Write plot artifacts under this base directory
   base_plot_dir: examples/plots
-  # Select start and output nodes automatically from the large-vessel masks instead of manually  [needs use_large_vessel_masks]
+  # Select inlet and outlet nodes automatically from the large-vessel masks instead of manually  [needs use_large_vessel_masks]
   automated_vessel_assignment: false
-  # Choose how manual starting nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
-  starting_node_selection_method: coordinates
-  # Choose how manual output nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
-  output_node_selection_method: coordinates
-  # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
+  # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  inlet_node_selection_method: coordinates
+  # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  outlet_node_selection_method: coordinates
+  # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
   arteriole_boundary_selection_method: coordinates
-  # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
+  # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
   venule_boundary_selection_method: coordinates
   # Split inlets from outlets along this array axis when the edge_percent method is used (0=z, 1=y, 2=x)  [range 0..2]
   boundary_axis: 1
@@ -92,10 +92,10 @@ boundary_assignment:
   boundary_first_percent: 10.0
   # Take outlets from the terminals in this much of the network, measured back from its end along the boundary axis  [percent; range 0.0..100.0]
   boundary_last_percent: 10.0
-  # Keep only the terminals further than this from a starting node when the degree_1_from_starting method is used  [um; range 0.0..]
-  boundary_distance_from_starting_node: 0.0
-  # Pick starting nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
-  starting_node_coordinates:
+  # Keep only the terminals further than this from an inlet node when the degree_1_from_inlet method is used  [um; range 0.0..]
+  boundary_distance_from_inlet_node: 0.0
+  # Pick inlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
+  inlet_node_coordinates:
   - - 152.0
     - 340.0
     - 527.0
@@ -114,24 +114,24 @@ boundary_assignment:
   - - 321.0
     - 334.0
     - 163.0
-  # Pick output nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
-  output_node_coordinates: []
+  # Pick outlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
+  outlet_node_coordinates: []
   # Pick arteriole boundary nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   arteriole_boundary_node_coordinates: []
   # Pick venule boundary nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   venule_boundary_node_coordinates: []
-  # Select starting nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
-  starting_node_volumes: []
-  # Select output nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
-  output_node_volumes: []
+  # Select inlet nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
+  inlet_node_volumes: []
+  # Select outlet nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
+  outlet_node_volumes: []
   # Select arteriole boundary nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   arteriole_boundary_node_volumes: []
   # Select venule boundary nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   venule_boundary_node_volumes: []
-  # Hold the starting node IDs chosen during the run; leave empty to let the pipeline fill it
-  starting_nodes: []
-  # Hold the output node IDs chosen during the run; leave empty to let the pipeline fill it
-  output_nodes: []
+  # Hold the inlet node IDs chosen during the run; leave empty to let the pipeline fill it
+  inlet_nodes: []
+  # Hold the outlet node IDs chosen during the run; leave empty to let the pipeline fill it
+  outlet_nodes: []
   # Hold the arteriole boundary node IDs chosen during the run; leave empty to let the pipeline fill it
   arteriole_boundary_nodes: []
   # Hold the venule boundary node IDs chosen during the run; leave empty to let the pipeline fill it
@@ -144,9 +144,9 @@ boundary_assignment:
 # ------------------------------------------------------------------------
 solver_and_output:
   # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
-  input_p_bc: 4500.0
+  inlet_p_bc: 4500.0
   # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
-  output_p_bc: 1000.0
+  outlet_p_bc: 1000.0
   # Generate the matplotlib visualizations at the end of the run
   visualize_results: true
   # Show plots interactively instead of saving them to the plot directory  [needs visualize_results]

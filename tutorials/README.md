@@ -49,7 +49,9 @@ by **Run checks** and by the run itself.
 On the **Boundaries** tab, **Show these boundary conditions** draws what the
 config describes, before anything runs:
 
-- **HaemoLynx BC coordinates** — a ring per coordinate, coloured by role.
+- **HaemoLynx BC coordinates** — a ring per coordinate, coloured by role:
+  green for an inlet, red for an outlet, orange and purple for the
+  arteriole and venule boundaries.
 - **HaemoLynx BC regions** — a box per volume, coloured the same way: the
   twelve edges of the volume, plus one rectangle at its centre that is the
   handle you drag. Only the handle is a region; the edges just show its depth.
@@ -74,7 +76,7 @@ missed. It needs a graph, so run at least *3. Graph* first. Coordinates you pick
 without it are still correct: a run snaps every one of them to its nearest
 terminal anyway.
 
-The tab has a sub-tab per role — **Starting**, **Output**, **Arteriole**,
+The tab has a sub-tab per role — **Inlet**, **Outlet**, **Arteriole**,
 **Venule** — holding that role's method, whatever the method reads, the node
 IDs a run fills in, and that role's own **Pick coordinates**, **Draw a
 region**, **Region depth**, **Assign selected** and **Clear regions**. The open
@@ -221,12 +223,12 @@ prerequisite as a comment.
 
 ```yaml
 boundary_assignment:
-  # Choose the method for selecting input boundary nodes  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_starting]
-  starting_node_selection_method: edge_percent
+  # Choose the method for selecting input boundary nodes  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  inlet_node_selection_method: edge_percent
 
 solver_and_output:
   # Apply this pressure boundary condition at the inlet nodes  [Pa; range 0.0..]
-  input_p_bc: 4500.0
+  inlet_p_bc: 4500.0
 ```
 
 **Or override one value for a single run** — every setting has a command-line

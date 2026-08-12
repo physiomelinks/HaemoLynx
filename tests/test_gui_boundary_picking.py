@@ -42,8 +42,8 @@ from haemolynx.pipeline import default_schema  # noqa: E402
 A_BOX = ([0.0, 1308.0, 0.0], [600.0, 1730.0, 700.0])
 
 CONFIGURED = {
-    "starting_node_coordinates": [[152.0, 340.0, 527.0], [160.0, 350.0, 545.0]],
-    "output_node_volumes": [list(A_BOX)],
+    "inlet_node_coordinates": [[152.0, 340.0, 527.0], [160.0, 350.0, 545.0]],
+    "outlet_node_volumes": [list(A_BOX)],
 }
 
 
@@ -117,9 +117,9 @@ def test_a_region_with_too_few_corners_is_refused():
 
 def test_it_reads_every_role_from_a_config():
     picks = BoundaryPicks.from_settings(CONFIGURED)
-    assert len(picks.coordinates["starting"]) == 2
-    assert len(picks.volumes["output"]) == 1
-    assert picks.coordinates["output"] == ()
+    assert len(picks.coordinates["inlet"]) == 2
+    assert len(picks.volumes["outlet"]) == 1
+    assert picks.coordinates["outlet"] == ()
     assert not picks.problems
 
 
@@ -127,21 +127,21 @@ def test_an_unreadable_entry_is_reported_rather_than_raised():
     """A panel must not fall over on a hand-edited config."""
     picks = BoundaryPicks.from_settings(
         {
-            "starting_node_coordinates": [[1.0, 2.0], [1.0, 2.0, 3.0], "nonsense"],
-            "output_node_volumes": [[[0.0, 0.0, 0.0]]],
+            "inlet_node_coordinates": [[1.0, 2.0], [1.0, 2.0, 3.0], "nonsense"],
+            "outlet_node_volumes": [[[0.0, 0.0, 0.0]]],
         }
     )
-    assert picks.coordinates["starting"] == ((1.0, 2.0, 3.0),), "the good one survives"
-    assert picks.volumes["output"] == ()
+    assert picks.coordinates["inlet"] == ((1.0, 2.0, 3.0),), "the good one survives"
+    assert picks.volumes["outlet"] == ()
     assert len(picks.problems) == 3
-    assert "starting_node_coordinates[0]" in picks.problems[0]
+    assert "inlet_node_coordinates[0]" in picks.problems[0]
 
 
 def test_a_coordinate_that_is_not_finite_is_not_a_coordinate():
     picks = BoundaryPicks.from_settings(
-        {"starting_node_coordinates": [[float("nan"), 1.0, 2.0]]}
+        {"inlet_node_coordinates": [[float("nan"), 1.0, 2.0]]}
     )
-    assert picks.coordinates["starting"] == ()
+    assert picks.coordinates["inlet"] == ()
     assert picks.problems
 
 
@@ -157,8 +157,8 @@ def test_reading_nothing_is_not_an_error():
 def test_settings_survive_a_round_trip():
     picks = BoundaryPicks.from_settings(CONFIGURED)
     out = picks.to_settings()
-    assert out["starting_node_coordinates"] == CONFIGURED["starting_node_coordinates"]
-    assert out["output_node_volumes"] == CONFIGURED["output_node_volumes"]
+    assert out["inlet_node_coordinates"] == CONFIGURED["inlet_node_coordinates"]
+    assert out["outlet_node_volumes"] == CONFIGURED["outlet_node_volumes"]
 
 
 def test_a_second_round_trip_changes_nothing():
@@ -178,9 +178,9 @@ def test_values_written_to_a_row_are_builtin_floats():
     numpy scalar in a row breaks that row the next time anyone touches it.
     """
     picks = BoundaryPicks.from_settings(
-        {"starting_node_coordinates": np.array([[1.5, 2.5, 3.5]])}
+        {"inlet_node_coordinates": np.array([[1.5, 2.5, 3.5]])}
     )
-    value = picks.to_settings()["starting_node_coordinates"]
+    value = picks.to_settings()["inlet_node_coordinates"]
     assert all(type(v) is float for v in value[0])
     assert ast.literal_eval(str(value)) == value
 
@@ -188,7 +188,7 @@ def test_values_written_to_a_row_are_builtin_floats():
 def test_values_written_to_a_row_can_be_saved_as_yaml():
     """`yaml.safe_dump` refuses a np.float64 outright, so saving would fail."""
     settings = BoundaryPicks.from_settings(
-        {"output_node_volumes": np.array([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]])}
+        {"outlet_node_volumes": np.array([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]])}
     ).to_settings()
     assert yaml.safe_load(yaml.safe_dump(settings)) == settings
 
@@ -217,7 +217,7 @@ def test_the_coordinates_layer_exists_even_with_nothing_on_it():
 
 def test_the_regions_layer_appears_only_when_there_is_a_region():
     assert [s.name for s in specs_for(CONFIGURED)] == [BC_COORDINATES, BC_REGIONS]
-    assert [s.name for s in specs_for({"starting_node_coordinates": [[1.0, 2.0, 3.0]]})] == [
+    assert [s.name for s in specs_for({"inlet_node_coordinates": [[1.0, 2.0, 3.0]]})] == [
         BC_COORDINATES
     ]
 
@@ -230,11 +230,11 @@ def test_both_layers_stay_in_micron_space():
 
 def test_points_carry_their_role_in_settings_order():
     values = {
-        "output_node_coordinates": [[9.0, 9.0, 9.0]],
-        "starting_node_coordinates": [[1.0, 1.0, 1.0]],
+        "outlet_node_coordinates": [[9.0, 9.0, 9.0]],
+        "inlet_node_coordinates": [[1.0, 1.0, 1.0]],
     }
     spec = specs_for(values)[0]
-    assert list(spec.features["role"]) == ["starting", "output"]
+    assert list(spec.features["role"]) == ["inlet", "outlet"]
     assert spec.data[0].tolist() == [1.0, 1.0, 1.0]
 
 
@@ -242,7 +242,7 @@ def test_regions_carry_their_role_and_their_own_depth():
     """Every shape of a region is tagged, handle and outline alike, so the
     colouring covers the whole box and the sync can tell them apart."""
     spec = specs_for(CONFIGURED)[1]
-    assert set(spec.features["role"]) == {"output"}
+    assert set(spec.features["role"]) == {"outlet"}
     assert list(spec.features["depth"]) == pytest.approx([600.0] * 13)
     handles = [i for i, part in enumerate(spec.features["part"]) if part == "handle"]
     assert len(handles) == 1
@@ -262,11 +262,11 @@ def test_the_layers_are_coloured_by_the_same_roles_a_run_uses():
 
 def test_the_group_says_what_is_configured():
     group = group_for(CONFIGURED)
-    assert "2 starting" in group.note and "1 output region" in group.note
+    assert "2 inlet coordinates" in group.note and "1 outlet region" in group.note
 
 
 def test_the_group_says_when_something_could_not_be_read():
-    group = group_for({"starting_node_coordinates": ["nonsense"]})
+    group = group_for({"inlet_node_coordinates": ["nonsense"]})
     assert "could not be read" in group.note
 
 
@@ -276,41 +276,41 @@ def test_the_group_says_when_something_could_not_be_read():
 def test_points_become_the_coordinate_settings():
     out = settings_from_layers(
         points=np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
-        point_roles=["output", "starting"],
+        point_roles=["outlet", "inlet"],
     )
-    assert out["starting_node_coordinates"] == [[4.0, 5.0, 6.0]]
-    assert out["output_node_coordinates"] == [[1.0, 2.0, 3.0]]
+    assert out["inlet_node_coordinates"] == [[4.0, 5.0, 6.0]]
+    assert out["outlet_node_coordinates"] == [[1.0, 2.0, 3.0]]
     assert out["arteriole_boundary_node_coordinates"] == []
 
 
 def test_rectangles_become_the_volume_settings():
     corners, depth = rectangle_from_box(*A_BOX)
     out = settings_from_layers(
-        rectangles=[corners], rectangle_roles=["output"], depths=[depth]
+        rectangles=[corners], rectangle_roles=["outlet"], depths=[depth]
     )
-    assert out["output_node_volumes"] == [list(A_BOX)]
-    assert out["starting_node_volumes"] == []
+    assert out["outlet_node_volumes"] == [list(A_BOX)]
+    assert out["inlet_node_volumes"] == []
 
 
 def test_syncing_one_layer_leaves_the_others_settings_alone():
     """Otherwise editing a point would silently clear every region."""
     out = settings_from_layers(points=np.empty((0, 3)), point_roles=[])
-    assert "starting_node_volumes" not in out
-    assert out["starting_node_coordinates"] == []
+    assert "inlet_node_volumes" not in out
+    assert out["inlet_node_coordinates"] == []
 
 
 def test_only_the_settings_that_would_change_are_written():
     """Writing a row fires its `changed`, so writing an unchanged one is noise."""
-    current = {"starting_node_coordinates": [[1.0, 2.0, 3.0]], "output_node_volumes": []}
-    same = wanted_rows({"starting_node_coordinates": [[1.0, 2.0, 3.0]]}, current)
+    current = {"inlet_node_coordinates": [[1.0, 2.0, 3.0]], "outlet_node_volumes": []}
+    same = wanted_rows({"inlet_node_coordinates": [[1.0, 2.0, 3.0]]}, current)
     assert same == {}
-    different = wanted_rows({"starting_node_coordinates": [[9.0, 9.0, 9.0]]}, current)
-    assert different == {"starting_node_coordinates": [[9.0, 9.0, 9.0]]}
+    different = wanted_rows({"inlet_node_coordinates": [[9.0, 9.0, 9.0]]}, current)
+    assert different == {"inlet_node_coordinates": [[9.0, 9.0, 9.0]]}
 
 
 def test_a_numpy_value_is_not_mistaken_for_a_change():
-    current = {"starting_node_coordinates": [[1.0, 2.0, 3.0]]}
-    assert wanted_rows({"starting_node_coordinates": np.array([[1.0, 2.0, 3.0]])},
+    current = {"inlet_node_coordinates": [[1.0, 2.0, 3.0]]}
+    assert wanted_rows({"inlet_node_coordinates": np.array([[1.0, 2.0, 3.0]])},
                        current) == {}
 
 
@@ -391,13 +391,13 @@ def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle():
     """
     from haemolynx.gui.boundary_picking import region_shapes
 
-    picks = BoundaryPicks.from_settings({"output_node_volumes": [list(A_BOX)]})
+    picks = BoundaryPicks.from_settings({"outlet_node_volumes": [list(A_BOX)]})
     _data, kinds, features = region_shapes(picks)
 
     assert kinds.count("rectangle") == 1, "one editable handle per region"
     assert kinds.count("line") == 12, "the twelve edges of the box"
     assert list(features["part"]).count("handle") == 1
-    assert set(features["role"]) == {"output"}
+    assert set(features["role"]) == {"outlet"}
 
 
 def test_the_outline_spans_the_boxs_full_depth():
@@ -423,7 +423,7 @@ def test_a_flat_region_still_draws_its_rectangle():
     from haemolynx.gui.boundary_picking import region_shapes
 
     picks = BoundaryPicks.from_settings(
-        {"output_node_volumes": [[[5.0, 0.0, 0.0], [5.0, 9.0, 9.0]]]}
+        {"outlet_node_volumes": [[[5.0, 0.0, 0.0], [5.0, 9.0, 9.0]]]}
     )
     _data, kinds, _features = region_shapes(picks)
     assert kinds.count("rectangle") == 1
@@ -437,18 +437,18 @@ def test_a_method_shows_only_what_it_reads():
 
     wanted = visible_settings(
         {
-            "starting_node_selection_method": "coordinates",
-            "output_node_selection_method": "volume",
+            "inlet_node_selection_method": "coordinates",
+            "outlet_node_selection_method": "volume",
             "arteriole_boundary_selection_method": "all_degree_1",
-            "venule_boundary_selection_method": "degree_1_from_starting",
+            "venule_boundary_selection_method": "degree_1_from_inlet",
         }
     )
-    assert "starting_node_coordinates" in wanted
-    assert "output_node_volumes" in wanted
-    assert "boundary_distance_from_starting_node" in wanted
+    assert "inlet_node_coordinates" in wanted
+    assert "outlet_node_volumes" in wanted
+    assert "boundary_distance_from_inlet_node" in wanted
     # `all_degree_1` takes every terminal, so it configures nothing.
     assert "arteriole_boundary_node_coordinates" not in wanted
-    assert "starting_node_volumes" not in wanted
+    assert "inlet_node_volumes" not in wanted
     assert "boundary_axis" not in wanted
 
 
@@ -462,20 +462,20 @@ def test_the_band_settings_appear_for_any_role_that_uses_them():
     assert "boundary_first_percent" not in wanted
 
     both = visible_settings({"venule_boundary_selection_method": "edge_percent",
-                             "starting_node_selection_method": "edge_percent"})
+                             "inlet_node_selection_method": "edge_percent"})
     assert {"boundary_axis", "boundary_first_percent", "boundary_last_percent"} <= both
 
 
 @pytest.mark.parametrize(
     "method", ["coordinates", "volume", "edge_percent", "all_degree_1",
-               "degree_1_from_starting"]
+               "degree_1_from_inlet"]
 )
 def test_every_method_the_schema_allows_is_accounted_for(method):
     """A method with no rule would silently show nothing."""
     from haemolynx.gui.boundary_picking import settings_for_method
 
-    assert method in default_schema()["starting_node_selection_method"].choices
-    for name in settings_for_method("starting", method):
+    assert method in default_schema()["inlet_node_selection_method"].choices
+    for name in settings_for_method("inlet", method):
         assert name in default_schema()
 
 
@@ -540,7 +540,7 @@ def test_between_them_the_pages_place_every_boundary_setting():
 
 @pytest.mark.parametrize(
     "role,title",
-    [("starting", "Starting"), ("output", "Output"),
+    [("inlet", "Inlet"), ("outlet", "Outlet"),
      ("arteriole_boundary", "Arteriole"), ("venule_boundary", "Venule")],
 )
 def test_a_role_reads_as_a_tab_name(role, title):
@@ -561,18 +561,18 @@ def test_a_coordinate_outside_the_image_is_called_out():
     from haemolynx.gui.boundary_picking import outside_extent
 
     notes = outside_extent(
-        {"starting_node_coordinates": [[10.0, 10.0, 10.0], [900.0, 10.0, 10.0]]},
+        {"inlet_node_coordinates": [[10.0, 10.0, 10.0], [900.0, 10.0, 10.0]]},
         [0.0, 0.0, 0.0],
         [509.0, 1624.0, 1098.0],
     )
-    assert notes == ("1 of 2 starting coordinate(s)",)
+    assert notes == ("1 of 2 inlet coordinate(s)",)
 
 
 def test_coordinates_inside_the_image_say_nothing():
     from haemolynx.gui.boundary_picking import outside_extent
 
     assert outside_extent(
-        {"starting_node_coordinates": [[10.0, 10.0, 10.0]]},
+        {"inlet_node_coordinates": [[10.0, 10.0, 10.0]]},
         [0.0, 0.0, 0.0], [509.0, 1624.0, 1098.0],
     ) == ()
 
@@ -581,14 +581,14 @@ def test_a_negative_coordinate_is_outside_too():
     from haemolynx.gui.boundary_picking import outside_extent
 
     assert outside_extent(
-        {"output_node_coordinates": [[-1.0, 10.0, 10.0]]},
+        {"outlet_node_coordinates": [[-1.0, 10.0, 10.0]]},
         [0.0, 0.0, 0.0], [509.0, 1624.0, 1098.0],
-    ) == ("1 of 1 output coordinate(s)",)
+    ) == ("1 of 1 outlet coordinate(s)",)
 
 
 def test_the_summary_names_what_it_counted():
     picks = BoundaryPicks.from_settings(CONFIGURED)
-    assert picks.summary() == "2 starting coordinates, 1 output region"
+    assert picks.summary() == "2 inlet coordinates, 1 outlet region"
 
 
 # --- which band percentage a role actually reads -----------------------------
@@ -597,7 +597,7 @@ def test_the_summary_names_what_it_counted():
 def test_an_inlet_role_reads_the_first_percentage():
     from haemolynx.gui.boundary_picking import settings_for_method
 
-    assert settings_for_method("starting", "edge_percent") == (
+    assert settings_for_method("inlet", "edge_percent") == (
         "boundary_axis", "boundary_first_percent",
     )
     assert settings_for_method("arteriole_boundary", "edge_percent") == (
@@ -609,7 +609,7 @@ def test_an_outlet_role_reads_the_last_percentage():
     """A run computes both ends every time; a role takes only its own."""
     from haemolynx.gui.boundary_picking import settings_for_method
 
-    assert settings_for_method("output", "edge_percent") == (
+    assert settings_for_method("outlet", "edge_percent") == (
         "boundary_axis", "boundary_last_percent",
     )
     assert settings_for_method("venule_boundary", "edge_percent") == (
@@ -623,7 +623,7 @@ def test_the_percentage_split_matches_the_selector():
     number that changes nothing."""
     from haemolynx.gui.boundary_picking import PERCENT_FOR_NODE_ROLE
 
-    assert set(PERCENT_FOR_NODE_ROLE) == {"input", "output"}
+    assert set(PERCENT_FOR_NODE_ROLE) == {"inlet", "outlet"}
     for role, names in BOUNDARY_ROLE_SETTINGS.items():
         assert names["node_role"] in PERCENT_FOR_NODE_ROLE
 
@@ -639,11 +639,11 @@ def test_an_inlet_band_starts_at_the_low_end_of_the_axis():
     from haemolynx.gui.boundary_picking import band_boxes
 
     boxes = band_boxes(
-        {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+        {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
          "boundary_first_percent": 10.0},
         *FULL_IMAGE,
     )
-    lo, hi = boxes["starting"]
+    lo, hi = boxes["inlet"]
     assert lo[1] == pytest.approx(0.0)
     assert hi[1] == pytest.approx(100.0)
 
@@ -652,11 +652,11 @@ def test_an_outlet_band_ends_at_the_high_end_of_the_axis():
     from haemolynx.gui.boundary_picking import band_boxes
 
     boxes = band_boxes(
-        {"boundary_axis": 1, "output_node_selection_method": "edge_percent",
+        {"boundary_axis": 1, "outlet_node_selection_method": "edge_percent",
          "boundary_last_percent": 25.0},
         *FULL_IMAGE,
     )
-    lo, hi = boxes["output"]
+    lo, hi = boxes["outlet"]
     assert lo[1] == pytest.approx(750.0)
     assert hi[1] == pytest.approx(1000.0)
 
@@ -666,10 +666,10 @@ def test_a_band_spans_everything_across_the_other_axes():
     from haemolynx.gui.boundary_picking import band_boxes
 
     lo, hi = band_boxes(
-        {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+        {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
          "boundary_first_percent": 10.0},
         *FULL_IMAGE,
-    )["starting"]
+    )["inlet"]
     assert (lo[0], hi[0]) == pytest.approx((0.0, 500.0))
     assert (lo[2], hi[2]) == pytest.approx((0.0, 800.0))
 
@@ -680,11 +680,11 @@ def test_a_band_is_measured_across_the_terminals_when_there_are_any():
     from haemolynx.gui.boundary_picking import band_boxes
 
     lo, hi = band_boxes(
-        {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+        {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
          "boundary_first_percent": 50.0},
         *FULL_IMAGE,
         axis_span=(200.0, 400.0),
-    )["starting"]
+    )["inlet"]
     assert (lo[1], hi[1]) == pytest.approx((200.0, 300.0))
 
 
@@ -693,10 +693,10 @@ def test_the_band_follows_the_axis_it_is_told(axis):
     from haemolynx.gui.boundary_picking import band_boxes
 
     lo, hi = band_boxes(
-        {"boundary_axis": axis, "starting_node_selection_method": "edge_percent",
+        {"boundary_axis": axis, "inlet_node_selection_method": "edge_percent",
          "boundary_first_percent": 50.0},
         *FULL_IMAGE,
-    )["starting"]
+    )["inlet"]
     assert hi[axis] == pytest.approx(FULL_IMAGE[1][axis] / 2)
     for other in {0, 1, 2} - {axis}:
         assert hi[other] == pytest.approx(FULL_IMAGE[1][other])
@@ -707,22 +707,22 @@ def test_only_a_role_using_edge_percent_gets_a_band():
 
     boxes = band_boxes(
         {"boundary_axis": 1,
-         "starting_node_selection_method": "edge_percent",
-         "output_node_selection_method": "coordinates",
+         "inlet_node_selection_method": "edge_percent",
+         "outlet_node_selection_method": "coordinates",
          "boundary_first_percent": 10.0, "boundary_last_percent": 10.0},
         *FULL_IMAGE,
     )
-    assert set(boxes) == {"starting"}
+    assert set(boxes) == {"inlet"}
 
 
 def test_a_hundred_percent_band_is_the_whole_span():
     from haemolynx.gui.boundary_picking import band_boxes
 
     lo, hi = band_boxes(
-        {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+        {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
          "boundary_first_percent": 100.0},
         *FULL_IMAGE,
-    )["starting"]
+    )["inlet"]
     assert (lo[1], hi[1]) == pytest.approx((0.0, 1000.0))
 
 
@@ -731,7 +731,7 @@ def test_a_nonsense_axis_draws_nothing_rather_than_raising():
 
     for axis in (7, -1, None, "y"):
         assert band_boxes(
-            {"boundary_axis": axis, "starting_node_selection_method": "edge_percent",
+            {"boundary_axis": axis, "inlet_node_selection_method": "edge_percent",
              "boundary_first_percent": 10.0},
             *FULL_IMAGE,
         ) == {}
@@ -742,21 +742,21 @@ def test_a_band_is_drawn_as_a_box_with_no_handle():
     nothing for the settings to read back out of it."""
     from haemolynx.gui.boundary_picking import BAND, band_boxes, region_shapes
 
-    values = {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
+    values = {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
               "boundary_first_percent": 10.0}
     bands = band_boxes(values, *FULL_IMAGE)
     _data, kinds, features = region_shapes(BoundaryPicks.from_settings(values), bands)
 
     assert kinds == ["line"] * 12
     assert set(features["part"]) == {BAND}
-    assert set(features["role"]) == {"starting"}
+    assert set(features["role"]) == {"inlet"}
 
 
 def test_a_band_and_a_configured_region_can_be_drawn_together():
     from haemolynx.gui.boundary_picking import band_boxes, region_shapes
 
-    values = {"boundary_axis": 1, "starting_node_selection_method": "edge_percent",
-              "boundary_first_percent": 10.0, "output_node_volumes": [list(A_BOX)]}
+    values = {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
+              "boundary_first_percent": 10.0, "outlet_node_volumes": [list(A_BOX)]}
     bands = band_boxes(values, *FULL_IMAGE)
     _data, kinds, features = region_shapes(BoundaryPicks.from_settings(values), bands)
 
@@ -781,3 +781,33 @@ def test_the_span_of_the_terminals_is_where_they_reach():
     graph.add_edge(0, 1)
 
     assert terminal_axis_span(graph, 1) == pytest.approx((40.0, 160.0))
+
+
+# --- green in, red out -------------------------------------------------------
+
+
+def test_an_inlet_is_green_and_an_outlet_is_red():
+    """Where flow enters and where it leaves is the thing being looked for."""
+    colours = dict(role_colours())
+
+    assert colours["inlet"][1] > 0.5, "green channel dominant"
+    assert colours["inlet"][0] < 0.3 and colours["inlet"][2] < 0.3
+    assert colours["outlet"][0] > 0.5, "red channel dominant"
+    assert colours["outlet"][1] < 0.3 and colours["outlet"][2] < 0.3
+
+
+def test_no_two_roles_share_a_colour():
+    colours = dict(role_colours())
+
+    assert len(colours) == len(ROLES)
+    assert len({tuple(v) for v in colours.values()}) == len(ROLES)
+
+
+def test_both_picking_layers_use_the_same_colours():
+    """A coordinate and the region around it must not disagree about the role."""
+    specs = specs_for(CONFIGURED)
+
+    assert len(specs) == 2
+    for spec in specs:
+        assert spec.colour_by == "role"
+        assert spec.colour_cycle == role_colours()

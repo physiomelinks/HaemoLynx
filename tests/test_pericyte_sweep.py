@@ -79,8 +79,8 @@ def _build_synthetic_network() -> tuple[
         voxels=[(0, 0, 30), (0, 0, 40)],
     )
 
-    starting_nodes = [0]
-    output_nodes = [4]
+    inlet_nodes = [0]
+    outlet_nodes = [4]
     arteriole_boundary_nodes = [1]
     venule_boundary_nodes = [3]
     diameter_by_branch_order = {
@@ -90,8 +90,8 @@ def _build_synthetic_network() -> tuple[
     }
     return (
         G,
-        starting_nodes,
-        output_nodes,
+        inlet_nodes,
+        outlet_nodes,
         arteriole_boundary_nodes,
         venule_boundary_nodes,
         diameter_by_branch_order,
@@ -107,8 +107,8 @@ def _run_synthetic_sweep(
     """Run a reduced sweep and return its results and output paths."""
     (
         G,
-        starting_nodes,
-        output_nodes,
+        inlet_nodes,
+        outlet_nodes,
         arteriole_boundary_nodes,
         venule_boundary_nodes,
         diameter_by_branch_order,
@@ -120,7 +120,7 @@ def _run_synthetic_sweep(
 
     settings = {
         "diameter_by_branch_order": diameter_by_branch_order,
-        "output_p_bc": 1000.0,
+        "outlet_p_bc": 1000.0,
         "constriction_length_um": 40.0,
         "constriction_spacing_um": 100.0,
         "pericyte_dilation_min_percent": min_dilation_percent,
@@ -133,8 +133,8 @@ def _run_synthetic_sweep(
     sweep = run_pericyte_dilation_pressure_sweep(
         G,
         settings,
-        starting_nodes=starting_nodes,
-        output_nodes=output_nodes,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
         output_dir=output_dir,
     )
     sweep["plot_outputs"] = plot_dilation_curves(sweep["results"], output_dir)

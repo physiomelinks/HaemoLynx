@@ -447,12 +447,12 @@ def test_an_output_lands_before_the_next_stage_starts(stubbed):
 
     _run(
         recorder=lambda event: timeline.append((event.kind, event.stage)),
-        on_stage_output=lambda name, _output: timeline.append(("output", name)),
+        on_stage_output=lambda name, _output: timeline.append(("outlet", name)),
     )
 
     for index, stage in enumerate(STAGE_NAMES):
         finished = timeline.index((STAGE_FINISHED, stage))
-        output = timeline.index(("output", stage))
+        output = timeline.index(("outlet", stage))
         assert output > finished, f"{stage} handed over its output before finishing"
         if index + 1 < len(STAGE_NAMES):
             next_started = timeline.index((STAGE_STARTED, STAGE_NAMES[index + 1]))

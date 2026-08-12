@@ -32,10 +32,10 @@ from haemolynx.pipeline.schema import default_schema  # noqa: E402
 #: what this dataset needs. This is also the pipeline default now, so it is
 #: named here only to say that it was chosen rather than inherited.
 _BOUNDARIES_FROM_NETWORK_ENDS = {
-    "starting_node_selection_method": "edge_percent",
-    "output_node_selection_method": "edge_percent",
-    "starting_node_coordinates": [],
-    "output_node_coordinates": [],
+    "inlet_node_selection_method": "edge_percent",
+    "outlet_node_selection_method": "edge_percent",
+    "inlet_node_coordinates": [],
+    "outlet_node_coordinates": [],
 }
 
 #: Defaults that differ from the standard pipeline's, keyed by setting name.
@@ -46,8 +46,8 @@ CAROTID_DEFAULTS: dict[str, Any] = {
     "ilastik_classifier_path": "examples/classifiers/carotid_classifier.ilp",
     **_BOUNDARIES_FROM_NETWORK_ENDS,
     # Perfusion pressures measured for this preparation.
-    "input_p_bc": 1000.0,
-    "output_p_bc": 500.0,
+    "inlet_p_bc": 1000.0,
+    "outlet_p_bc": 500.0,
     # This stack skeletonises into well-separated fragments, so bridging is off
     # and the small components are dropped rather than reconnected.
     "skeleton_max_bridge_distance": 0,

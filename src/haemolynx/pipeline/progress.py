@@ -123,7 +123,7 @@ STAGES: tuple[Stage, ...] = (
         call="solve",
         title="7. Solve",
         summary="Pressures and flows, from the boundary pressures.",
-        settings=("input_p_bc", "output_p_bc", "do_equiv_resistance_calculation"),
+        settings=("inlet_p_bc", "outlet_p_bc", "do_equiv_resistance_calculation"),
     ),
     Stage(
         call="export_results",

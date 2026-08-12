@@ -70,8 +70,8 @@ def drawn_for(viewer, role):
 
 def test_showing_a_config_puts_both_layers_in_the_viewer(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[10.0, 20.0, 30.0]]
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["inlet_node_coordinates"].value = [[10.0, 20.0, 30.0]]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
 
     bc.show()
 
@@ -88,7 +88,7 @@ def test_a_picked_coordinate_lands_where_the_image_says_it_should(panel):
     118 -- which is off the end of a 60-slice stack.
     """
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[118.0, 0.0, 0.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[118.0, 0.0, 0.0]]
 
     bc.show()
 
@@ -99,7 +99,7 @@ def test_a_picked_coordinate_lands_where_the_image_says_it_should(panel):
 def test_the_region_is_drawn_as_a_rectangle_at_the_boxs_centre(panel):
     widget, viewer, bc = panel
     no_bands(widget)
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
 
     bc.show()
 
@@ -112,11 +112,11 @@ def test_the_region_is_drawn_as_a_rectangle_at_the_boxs_centre(panel):
 
 def test_showing_twice_updates_rather_than_duplicates(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 2.0, 3.0]]
     bc.show()
     same = viewer.layers[BC_COORDINATES]
 
-    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
     bc.show()
 
     assert viewer.layers[BC_COORDINATES] is same
@@ -136,7 +136,7 @@ def test_a_layer_of_someone_elses_with_that_name_is_not_overwritten(panel):
 
 def test_clear_layers_takes_the_picking_layers_with_it(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
 
     _clear_our_layers(viewer)
@@ -149,15 +149,15 @@ def test_clear_layers_takes_the_picking_layers_with_it(panel):
 
 
 def test_each_role_gets_its_own_colour_whatever_order_they_appear_in(panel):
-    """A layer holding only output nodes used to draw them in starting's blue.
+    """A layer holding only outlet nodes used to draw them in starting's blue.
 
     The cycle was handed to napari as a bare list of colours, which it pairs
     with the values in the order it first encounters them, not by the labels
     they were declared against.
     """
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_coordinates"].value = [[1.0, 1.0, 1.0]]
-    rows_of(widget)["starting_node_coordinates"].value = [[2.0, 2.0, 2.0]]
+    rows_of(widget)["outlet_node_coordinates"].value = [[1.0, 1.0, 1.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[2.0, 2.0, 2.0]]
 
     bc.show()
 
@@ -171,9 +171,9 @@ def test_the_colours_survive_a_second_show(panel):
     """`options` are applied only on first add, so colour has to come through
     the colour path or it goes stale the moment a layer is updated."""
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 1.0, 1.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 1.0, 1.0]]
     bc.show()
-    rows_of(widget)["output_node_coordinates"].value = [[2.0, 2.0, 2.0]]
+    rows_of(widget)["outlet_node_coordinates"].value = [[2.0, 2.0, 2.0]]
 
     bc.show()
 
@@ -188,14 +188,14 @@ def test_the_colours_survive_a_second_show(panel):
 
 def test_adding_a_point_writes_it_into_the_chosen_roles_setting(panel):
     widget, viewer, bc = panel
-    bc.role.value = "output"
+    bc.role.value = "outlet"
     bc.pick()
 
     layer = viewer.layers[BC_COORDINATES]
     layer.data = np.array([[11.0, 22.0, 33.0]])
 
-    assert widget._haemolynx_values()["output_node_coordinates"] == [[11.0, 22.0, 33.0]]
-    assert widget._haemolynx_values()["starting_node_coordinates"] == []
+    assert widget._haemolynx_values()["outlet_node_coordinates"] == [[11.0, 22.0, 33.0]]
+    assert widget._haemolynx_values()["inlet_node_coordinates"] == []
 
 
 def test_the_row_can_read_back_what_was_written_into_it(panel):
@@ -205,14 +205,14 @@ def test_the_row_can_read_back_what_was_written_into_it(panel):
     bc.pick()
     viewer.layers[BC_COORDINATES].data = np.array([[1.5, 2.5, 3.5]])
 
-    value = rows_of(widget)["starting_node_coordinates"].value
+    value = rows_of(widget)["inlet_node_coordinates"].value
     assert all(type(v) is float for v in value[0]), "a numpy float breaks the row"
     assert ast.literal_eval(str(value)) == [[1.5, 2.5, 3.5]]
 
 
 def test_deleting_a_point_removes_exactly_that_coordinate(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [
+    rows_of(widget)["inlet_node_coordinates"].value = [
         [1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [3.0, 3.0, 3.0]
     ]
     bc.show()
@@ -221,20 +221,20 @@ def test_deleting_a_point_removes_exactly_that_coordinate(panel):
     layer.selected_data = {1}
     layer.remove_selected()
 
-    assert widget._haemolynx_values()["starting_node_coordinates"] == [
+    assert widget._haemolynx_values()["inlet_node_coordinates"] == [
         [1.0, 1.0, 1.0], [3.0, 3.0, 3.0]
     ]
 
 
 def test_moving_a_point_updates_it_in_place(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 1.0, 1.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 1.0, 1.0]]
     bc.show()
 
     layer = viewer.layers[BC_COORDINATES]
     layer.data = np.array([[7.0, 8.0, 9.0]])
 
-    assert widget._haemolynx_values()["starting_node_coordinates"] == [[7.0, 8.0, 9.0]]
+    assert widget._haemolynx_values()["inlet_node_coordinates"] == [[7.0, 8.0, 9.0]]
 
 
 def test_syncing_the_same_edit_twice_changes_nothing(panel):
@@ -242,69 +242,69 @@ def test_syncing_the_same_edit_twice_changes_nothing(panel):
     widget, viewer, bc = panel
     bc.pick()
     viewer.layers[BC_COORDINATES].data = np.array([[1.0, 2.0, 3.0]])
-    once = widget._haemolynx_values()["starting_node_coordinates"]
+    once = widget._haemolynx_values()["inlet_node_coordinates"]
 
     bc.sync()
     bc.sync()
 
-    assert widget._haemolynx_values()["starting_node_coordinates"] == once
+    assert widget._haemolynx_values()["inlet_node_coordinates"] == once
 
 
 def test_editing_points_does_not_wipe_the_regions(panel):
     """The two layers share a sync; one must not clear the other's settings."""
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
 
     viewer.layers[BC_COORDINATES].data = np.array([[1.0, 2.0, 3.0]])
 
-    assert widget._haemolynx_values()["output_node_volumes"] == [A_BOX]
+    assert widget._haemolynx_values()["outlet_node_volumes"] == [A_BOX]
 
 
 def test_a_region_edited_in_the_viewer_reaches_the_setting(panel):
     widget, viewer, bc = panel
     no_bands(widget)
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
 
     layer = viewer.layers[BC_REGIONS]
     corners, _ = rectangle_from_box([0.0, 10.0, 20.0], [100.0, 60.0, 90.0])
     layer.data = [corners]
 
-    lo, hi = widget._haemolynx_values()["output_node_volumes"][0]
+    lo, hi = widget._haemolynx_values()["outlet_node_volumes"][0]
     assert lo[1:] == [10.0, 20.0] and hi[1:] == [60.0, 90.0]
 
 
 def test_the_depth_slider_resizes_the_selected_region(panel):
     widget, viewer, bc = panel
     no_bands(widget)
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
     viewer.layers[BC_REGIONS].selected_data = {0}
 
     bc.depth_slider().value = 20.0
 
-    lo, hi = widget._haemolynx_values()["output_node_volumes"][0]
+    lo, hi = widget._haemolynx_values()["outlet_node_volumes"][0]
     assert hi[0] - lo[0] == pytest.approx(20.0)
     assert (lo[0] + hi[0]) / 2 == pytest.approx(50.0), "still centred where it was"
 
 
 def test_clearing_a_roles_regions_leaves_the_other_roles_alone(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
-    rows_of(widget)["starting_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
+    rows_of(widget)["inlet_node_volumes"].value = [A_BOX]
     bc.show()
 
-    bc.role.value = "output"
+    bc.role.value = "outlet"
     bc.clear()
 
-    assert widget._haemolynx_values()["output_node_volumes"] == []
-    assert widget._haemolynx_values()["starting_node_volumes"] == [A_BOX]
+    assert widget._haemolynx_values()["outlet_node_volumes"] == []
+    assert widget._haemolynx_values()["inlet_node_volumes"] == [A_BOX]
 
 
 def test_assigning_a_selected_point_to_another_role_moves_it_between_settings(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 2.0, 3.0]]
     bc.show()
 
     viewer.layers[BC_COORDINATES].selected_data = {0}
@@ -312,7 +312,7 @@ def test_assigning_a_selected_point_to_another_role_moves_it_between_settings(pa
     bc.assign()
 
     values = widget._haemolynx_values()
-    assert values["starting_node_coordinates"] == []
+    assert values["inlet_node_coordinates"] == []
     assert values["venule_boundary_node_coordinates"] == [[1.0, 2.0, 3.0]]
 
 
@@ -332,7 +332,7 @@ def test_drawing_a_region_is_refused_in_the_3d_view(panel):
 
 def test_snapping_before_a_run_says_why_rather_than_doing_nothing(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 2.0, 3.0]]
     bc.show()
 
     bc.snap()
@@ -352,19 +352,19 @@ def test_snapping_moves_a_coordinate_onto_a_terminal_node(panel):
     graph.add_edge(0, 1)
     bc.state.results = type("R", (), {"graph": graph})()
 
-    rows_of(widget)["starting_node_coordinates"].value = [[48.0, 61.0, 69.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[48.0, 61.0, 69.0]]
     bc.show()
     bc.snap()
 
-    assert widget._haemolynx_values()["starting_node_coordinates"] == [[50.0, 60.0, 70.0]]
+    assert widget._haemolynx_values()["inlet_node_coordinates"] == [[50.0, 60.0, 70.0]]
     assert "um" in widget._haemolynx_report()
 
 
 def test_picks_that_the_run_will_not_read_are_called_out(panel):
     """A role only reads its coordinates when its method says so."""
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
-    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0, 3.0]]
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 2.0, 3.0]]
 
     bc.show()
 
@@ -374,7 +374,7 @@ def test_picks_that_the_run_will_not_read_are_called_out(panel):
 
 def test_a_config_that_cannot_be_read_is_reported_not_raised(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[1.0, 2.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[1.0, 2.0]]
 
     bc.show()
 
@@ -393,14 +393,14 @@ def test_building_the_controls_writes_to_no_row(make_napari_viewer):
 
     schema = default_schema()
     values = widget._haemolynx_values()
-    for role_setting in ("starting_node_coordinates", "output_node_volumes"):
+    for role_setting in ("inlet_node_coordinates", "outlet_node_volumes"):
         assert values[role_setting] == schema[role_setting].default
 
 
 def test_the_controls_sit_on_the_boundaries_tab(panel):
     widget, viewer, bc = panel
     assert bc.widget is not None
-    assert [str(choice) for choice in bc.role.choices][0] == "starting"
+    assert [str(choice) for choice in bc.role.choices][0] == "inlet"
 
 
 # --- a region reads as the volume it is --------------------------------------
@@ -410,7 +410,7 @@ def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle(panel):
     """A rectangle on one slice says nothing about how deep the box goes."""
     widget, viewer, bc = panel
     no_bands(widget)
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
 
     bc.show()
 
@@ -430,10 +430,10 @@ def test_the_outline_survives_a_second_show(panel):
     """
     widget, viewer, bc = panel
     no_bands(widget)
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
 
-    rows_of(widget)["starting_node_volumes"].value = [[[0.0, 0.0, 0.0], [20.0, 20.0, 20.0]]]
+    rows_of(widget)["inlet_node_volumes"].value = [[[0.0, 0.0, 0.0], [20.0, 20.0, 20.0]]]
     bc.show()
 
     regions = viewer.layers[BC_REGIONS]
@@ -445,12 +445,12 @@ def test_the_outline_survives_a_second_show(panel):
 def test_reading_the_regions_back_counts_boxes_not_segments(panel):
     """Thirteen shapes are one region; a sync that missed that would multiply."""
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
 
     bc.sync()
 
-    assert len(widget._haemolynx_values()["output_node_volumes"]) == 1
+    assert len(widget._haemolynx_values()["outlet_node_volumes"]) == 1
 
 
 # --- the layers follow the form ----------------------------------------------
@@ -462,7 +462,7 @@ def test_editing_a_setting_redraws_the_layers(panel):
     bc.show()
     assert len(viewer.layers[BC_COORDINATES].data) == 0
 
-    rows_of(widget)["starting_node_coordinates"].value = [[10.0, 20.0, 30.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[10.0, 20.0, 30.0]]
 
     assert len(viewer.layers[BC_COORDINATES].data) == 1
     assert viewer.layers[BC_COORDINATES].data[0] == pytest.approx([10.0, 20.0, 30.0])
@@ -470,12 +470,12 @@ def test_editing_a_setting_redraws_the_layers(panel):
 
 def test_changing_a_method_updates_what_the_panel_says_is_used(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
-    rows_of(widget)["output_node_selection_method"].value = "volume"
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_selection_method"].value = "volume"
     bc.show()
     assert "Not used" not in widget._haemolynx_report()
 
-    rows_of(widget)["output_node_selection_method"].value = "coordinates"
+    rows_of(widget)["outlet_node_selection_method"].value = "coordinates"
 
     assert "Not used" in widget._haemolynx_report()
     assert BC_REGIONS in viewer.layers, "a configured region is never silently dropped"
@@ -485,7 +485,7 @@ def test_a_region_drawn_after_a_settings_edit_still_arrives(panel):
     """The redraw must leave the layer editable, not replace it with a picture."""
     widget, viewer, bc = panel
     bc.draw()
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
 
     regions = viewer.layers[BC_REGIONS]
     assert regions.mode != "pan_zoom"
@@ -496,18 +496,18 @@ def test_a_region_drawn_after_a_settings_edit_still_arrives(panel):
 
 def test_only_the_settings_the_chosen_method_reads_are_shown(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_selection_method"].value = "coordinates"
-    rows_of(widget)["starting_node_selection_method"].value = "volume"
+    rows_of(widget)["outlet_node_selection_method"].value = "coordinates"
+    rows_of(widget)["inlet_node_selection_method"].value = "volume"
 
     visible = bc.state.visible
-    assert "output_node_coordinates" in visible
-    assert "starting_node_volumes" in visible
-    assert "output_node_volumes" not in visible
-    assert "starting_node_coordinates" not in visible
+    assert "outlet_node_coordinates" in visible
+    assert "inlet_node_volumes" in visible
+    assert "outlet_node_volumes" not in visible
+    assert "inlet_node_coordinates" not in visible
     # `.visible` on a row of a tab that is not on screen reads False whatever
     # was set, so what the panel hid is recorded rather than queried.
-    assert "output_node_volumes" in bc.state.hidden
-    assert "output_node_coordinates" not in bc.state.hidden
+    assert "outlet_node_volumes" in bc.state.hidden
+    assert "outlet_node_coordinates" not in bc.state.hidden
 
 
 def test_a_method_row_is_never_hidden(panel):
@@ -515,10 +515,10 @@ def test_a_method_row_is_never_hidden(panel):
     widget, viewer, bc = panel
     # `all_degree_1` takes every terminal, so it configures nothing at all --
     # the case where hiding everything would hide the way back.
-    rows_of(widget)["output_node_selection_method"].value = "all_degree_1"
+    rows_of(widget)["outlet_node_selection_method"].value = "all_degree_1"
 
-    assert "output_node_selection_method" not in bc.state.hidden
-    assert "output_node_coordinates" in bc.state.hidden
+    assert "outlet_node_selection_method" not in bc.state.hidden
+    assert "outlet_node_coordinates" in bc.state.hidden
 
 
 def test_editing_one_role_does_not_wipe_another(panel):
@@ -531,24 +531,24 @@ def test_editing_one_role_does_not_wipe_another(panel):
     """
     widget, viewer, bc = panel
     no_bands(widget)
-    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["outlet_node_volumes"].value = [A_BOX]
     bc.show()
 
-    rows_of(widget)["starting_node_volumes"].value = [[[0.0, 0.0, 0.0], [20.0, 20.0, 20.0]]]
+    rows_of(widget)["inlet_node_volumes"].value = [[[0.0, 0.0, 0.0], [20.0, 20.0, 20.0]]]
 
     values = widget._haemolynx_values()
-    assert len(values["output_node_volumes"]) == 1
-    assert len(values["starting_node_volumes"]) == 1
+    assert len(values["outlet_node_volumes"]) == 1
+    assert len(values["inlet_node_volumes"]) == 1
     assert len(viewer.layers[BC_REGIONS].data) == 26
 
 
 def test_a_setting_sits_below_the_method_that_asks_for_it(panel):
     widget, viewer, bc = panel
     names = list(rows_of(widget))
-    order = bc.row_order([n for n in names if n.startswith(("starting_", "output_"))])
+    order = bc.row_order([n for n in names if n.startswith(("inlet_", "outlet_"))])
 
-    assert order.index("output_node_selection_method") < order.index("output_node_coordinates")
-    assert order.index("starting_node_volumes") < order.index("output_node_selection_method")
+    assert order.index("outlet_node_selection_method") < order.index("outlet_node_coordinates")
+    assert order.index("inlet_node_volumes") < order.index("outlet_node_selection_method")
 
 
 def test_the_ordering_keeps_every_row_it_was_given(panel):
@@ -568,7 +568,7 @@ def test_there_is_one_sub_tab_per_role(panel):
 
     assert tabs.count() == 4
     assert [tabs.tabText(i) for i in range(4)] == [
-        "Starting", "Output", "Arteriole", "Venule"
+        "Inlet", "Outlet", "Arteriole", "Venule"
     ]
 
 
@@ -578,7 +578,7 @@ def test_choosing_a_sub_tab_chooses_the_role(panel):
 
     bc.state.tabs.setCurrentIndex(1)
 
-    assert str(bc.role.value) == "output"
+    assert str(bc.role.value) == "outlet"
 
 
 def test_choosing_the_role_moves_the_sub_tab(panel):
@@ -592,12 +592,12 @@ def test_choosing_the_role_moves_the_sub_tab(panel):
 def test_a_role_only_shows_its_own_settings(panel):
     """The complaint this answers: four near-identical methods on one page."""
     widget, viewer, bc = panel
-    starting_page = bc.state.tabs.widget(0)
-    natives = set(starting_page.findChildren(type(rows_of(widget)[
-        "starting_node_selection_method"].native)))
+    inlet_page = bc.state.tabs.widget(0)
+    natives = set(inlet_page.findChildren(type(rows_of(widget)[
+        "inlet_node_selection_method"].native)))
 
-    assert rows_of(widget)["starting_node_selection_method"].native in natives
-    assert rows_of(widget)["output_node_selection_method"].native not in natives
+    assert rows_of(widget)["inlet_node_selection_method"].native in natives
+    assert rows_of(widget)["outlet_node_selection_method"].native not in natives
 
 
 def test_a_picked_point_takes_the_role_of_the_open_sub_tab(panel):
@@ -608,8 +608,8 @@ def test_a_picked_point_takes_the_role_of_the_open_sub_tab(panel):
     points = viewer.layers[BC_COORDINATES]
     points.add([[7.0, 8.0, 9.0]])
 
-    assert widget._haemolynx_values()["output_node_coordinates"] == [[7.0, 8.0, 9.0]]
-    assert widget._haemolynx_values()["starting_node_coordinates"] == []
+    assert widget._haemolynx_values()["outlet_node_coordinates"] == [[7.0, 8.0, 9.0]]
+    assert widget._haemolynx_values()["inlet_node_coordinates"] == []
 
 
 def page_of(bc, widget_row):
@@ -624,43 +624,43 @@ def test_a_shared_row_sits_under_the_role_that_is_reading_it(panel):
     """There is one axis row and Qt gives it one parent, so it cannot be on
     all four pages -- it goes to the page being looked at instead."""
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
 
-    assert page_of(bc, rows_of(widget)["boundary_axis"]) == "starting"
-    assert page_of(bc, rows_of(widget)["boundary_first_percent"]) == "starting"
+    assert page_of(bc, rows_of(widget)["boundary_axis"]) == "inlet"
+    assert page_of(bc, rows_of(widget)["boundary_first_percent"]) == "inlet"
 
 
 def test_a_shared_row_follows_the_open_sub_tab(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
-    rows_of(widget)["output_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["outlet_node_selection_method"].value = "edge_percent"
 
     bc.state.tabs.setCurrentIndex(1)
 
-    assert page_of(bc, rows_of(widget)["boundary_axis"]) == "output"
+    assert page_of(bc, rows_of(widget)["boundary_axis"]) == "outlet"
 
 
 def test_a_role_reads_the_percentage_for_its_own_end(panel):
     """A run computes both ends every time and a role takes one of them, so
     showing an inlet the outlet percentage invites setting a dead number."""
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
 
-    assert page_of(bc, rows_of(widget)["boundary_first_percent"]) == "starting"
+    assert page_of(bc, rows_of(widget)["boundary_first_percent"]) == "inlet"
     assert page_of(bc, rows_of(widget)["boundary_last_percent"]) is None
 
     bc.state.tabs.setCurrentIndex(1)
-    rows_of(widget)["output_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["outlet_node_selection_method"].value = "edge_percent"
 
-    assert page_of(bc, rows_of(widget)["boundary_last_percent"]) == "output"
+    assert page_of(bc, rows_of(widget)["boundary_last_percent"]) == "outlet"
     assert page_of(bc, rows_of(widget)["boundary_first_percent"]) is None
 
 
 def test_a_shared_row_leaves_when_the_method_stops_reading_it(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
 
-    rows_of(widget)["starting_node_selection_method"].value = "coordinates"
+    rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
 
     assert page_of(bc, rows_of(widget)["boundary_axis"]) is None
 
@@ -699,7 +699,7 @@ def test_showing_survives_a_stack_whose_depth_the_slider_rounds(panel):
 
 def test_a_coordinate_off_the_image_is_reported_with_the_images_size(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[5000.0, 5.0, 5.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[5000.0, 5.0, 5.0]]
 
     bc.show()
 
@@ -710,7 +710,7 @@ def test_a_coordinate_off_the_image_is_reported_with_the_images_size(panel):
 
 def test_a_coordinate_on_the_image_is_not_reported(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_coordinates"].value = [[10.0, 20.0, 30.0]]
+    rows_of(widget)["inlet_node_coordinates"].value = [[10.0, 20.0, 30.0]]
 
     bc.show()
 
@@ -732,9 +732,9 @@ def test_each_role_has_its_own_copy_of_a_control(panel, control):
 
     assert len(natives) == 4
     page = bc.state.tabs.widget(1)
-    own = getattr(bc.actions["output"], control).native
+    own = getattr(bc.actions["outlet"], control).native
     assert own in page.findChildren(type(own))
-    assert getattr(bc.actions["starting"], control).native not in page.findChildren(type(own))
+    assert getattr(bc.actions["inlet"], control).native not in page.findChildren(type(own))
 
 
 def test_the_tab_level_controls_are_the_ones_that_are_not_per_role(panel):
@@ -748,28 +748,28 @@ def test_the_tab_level_controls_are_the_ones_that_are_not_per_role(panel):
 def test_pressing_a_control_acts_on_the_page_it_sits_on(panel):
     """Even from another tab: the page it is on is the answer to "which role"."""
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_selection_method"].value = "volume"
+    rows_of(widget)["outlet_node_selection_method"].value = "volume"
     bc.state.tabs.setCurrentIndex(0)
 
-    bc.actions["output"].draw.changed()
+    bc.actions["outlet"].draw.changed()
 
-    assert str(bc.role.value) == "output"
+    assert str(bc.role.value) == "outlet"
     viewer.layers[BC_REGIONS].add_rectangles(
         np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
                   [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
     )
-    assert len(widget._haemolynx_values()["output_node_volumes"]) == 1
-    assert widget._haemolynx_values()["starting_node_volumes"] == []
+    assert len(widget._haemolynx_values()["outlet_node_volumes"]) == 1
+    assert widget._haemolynx_values()["inlet_node_volumes"] == []
 
 
 def test_a_method_only_shows_the_controls_it_can_use(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "coordinates"
-    rows_of(widget)["output_node_selection_method"].value = "volume"
+    rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
+    rows_of(widget)["outlet_node_selection_method"].value = "volume"
     rows_of(widget)["venule_boundary_selection_method"].value = "edge_percent"
 
-    assert bc.state.actions["starting"] == {"pick", "move", "assign"}
-    assert bc.state.actions["output"] == {"draw", "depth", "move", "assign", "clear"}
+    assert bc.state.actions["inlet"] == {"pick", "move", "assign"}
+    assert bc.state.actions["outlet"] == {"draw", "depth", "move", "assign", "clear"}
     assert bc.state.actions["venule_boundary"] == set(), "nothing to point at"
 
 
@@ -777,10 +777,10 @@ def test_each_role_keeps_its_own_region_depth(panel):
     widget, viewer, bc = panel
     bc.show()
 
-    bc.actions["output"].depth.value = 12.0
+    bc.actions["outlet"].depth.value = 12.0
 
-    assert bc.actions["starting"].depth.value != pytest.approx(12.0)
-    bc.role.value = "output"
+    assert bc.actions["inlet"].depth.value != pytest.approx(12.0)
+    bc.role.value = "outlet"
     assert bc.depth_slider().value == pytest.approx(12.0)
 
 
@@ -791,7 +791,7 @@ def test_defaulting_the_depths_does_not_move_the_role(panel):
 
     bc.show()
 
-    assert str(bc.role.value) == "starting"
+    assert str(bc.role.value) == "inlet"
     assert bc.state.tabs.currentIndex() == 0
 
 
@@ -803,15 +803,15 @@ def test_a_region_drawn_into_an_empty_layer_reaches_its_role(panel):
     feature column is float64, so the role default came back NaN and made a
     NaN box that no settings row could ever parse again."""
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_selection_method"].value = "volume"
+    rows_of(widget)["outlet_node_selection_method"].value = "volume"
 
-    bc.actions["output"].draw.changed()
+    bc.actions["outlet"].draw.changed()
     viewer.layers[BC_REGIONS].add_rectangles(
         np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
                   [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
     )
 
-    boxes = widget._haemolynx_values()["output_node_volumes"]
+    boxes = widget._haemolynx_values()["outlet_node_volumes"]
     assert len(boxes) == 1
     assert np.isfinite(np.asarray(boxes, dtype=float)).all(), "a NaN corner is a lost box"
     assert ast.literal_eval(str(boxes)) == boxes, "the row must survive being read back"
@@ -823,24 +823,24 @@ def test_redrawing_over_a_hand_drawn_region_keeps_it(panel):
     -- after emptying itself, which lost the region."""
     widget, viewer, bc = panel
     no_bands(widget)
-    rows_of(widget)["output_node_selection_method"].value = "volume"
-    bc.actions["output"].draw.changed()
+    rows_of(widget)["outlet_node_selection_method"].value = "volume"
+    bc.actions["outlet"].draw.changed()
     viewer.layers[BC_REGIONS].add_rectangles(
         np.array([[10.0, 5.0, 5.0], [10.0, 5.0, 25.0],
                   [10.0, 25.0, 25.0], [10.0, 25.0, 5.0]])
     )
-    before = widget._haemolynx_values()["output_node_volumes"]
+    before = widget._haemolynx_values()["outlet_node_volumes"]
 
     bc.show()
 
     assert len(viewer.layers[BC_REGIONS].data) == 13
-    assert widget._haemolynx_values()["output_node_volumes"] == before
+    assert widget._haemolynx_values()["outlet_node_volumes"] == before
 
 
 # --- the depth slider is a resize, not just a default ------------------------
 
 
-def draw_a_region(widget, viewer, bc, *, role="output", z=10.0):
+def draw_a_region(widget, viewer, bc, *, role="outlet", z=10.0):
     no_bands(widget)
     rows_of(widget)[method_setting(role)].value = "volume"
     bc.actions[role].draw.changed()
@@ -855,9 +855,9 @@ def test_the_depth_slider_resizes_this_roles_regions(panel):
     widget, viewer, bc = panel
     draw_a_region(widget, viewer, bc)
 
-    bc.actions["output"].depth.value = 6.0
+    bc.actions["outlet"].depth.value = 6.0
 
-    box = widget._haemolynx_values()["output_node_volumes"][0]
+    box = widget._haemolynx_values()["outlet_node_volumes"][0]
     assert box[0][0] == pytest.approx(7.0)
     assert box[1][0] == pytest.approx(13.0)
 
@@ -867,7 +867,7 @@ def test_the_drawn_box_follows_the_slider(panel):
     widget, viewer, bc = panel
     draw_a_region(widget, viewer, bc)
 
-    bc.actions["output"].depth.value = 6.0
+    bc.actions["outlet"].depth.value = 6.0
 
     drawn = np.concatenate([np.asarray(s) for s in viewer.layers[BC_REGIONS].data])
     assert drawn[:, 0].min() == pytest.approx(7.0)
@@ -876,14 +876,14 @@ def test_the_drawn_box_follows_the_slider(panel):
 
 def test_the_slider_leaves_another_roles_regions_alone(panel):
     widget, viewer, bc = panel
-    draw_a_region(widget, viewer, bc, role="output", z=10.0)
-    draw_a_region(widget, viewer, bc, role="starting", z=20.0)
-    before = widget._haemolynx_values()["output_node_volumes"]
+    draw_a_region(widget, viewer, bc, role="outlet", z=10.0)
+    draw_a_region(widget, viewer, bc, role="inlet", z=20.0)
+    before = widget._haemolynx_values()["outlet_node_volumes"]
 
-    bc.actions["starting"].depth.value = 4.0
+    bc.actions["inlet"].depth.value = 4.0
 
-    assert widget._haemolynx_values()["output_node_volumes"] == before
-    starting = widget._haemolynx_values()["starting_node_volumes"][0]
+    assert widget._haemolynx_values()["outlet_node_volumes"] == before
+    starting = widget._haemolynx_values()["inlet_node_volumes"][0]
     assert starting[1][0] - starting[0][0] == pytest.approx(4.0)
 
 
@@ -896,10 +896,10 @@ def test_a_selected_region_is_the_one_that_resizes(panel):
                if part == "handle"]
     viewer.layers[BC_REGIONS].selected_data = {handles[0]}
 
-    bc.actions["output"].depth.value = 8.0
+    bc.actions["outlet"].depth.value = 8.0
 
     depths = [box[1][0] - box[0][0]
-              for box in widget._haemolynx_values()["output_node_volumes"]]
+              for box in widget._haemolynx_values()["outlet_node_volumes"]]
     assert sorted(round(d, 3) for d in depths)[0] == pytest.approx(8.0)
     assert len({round(d, 3) for d in depths}) == 2
 
@@ -911,11 +911,11 @@ def test_move_puts_the_layer_into_naparis_select_tool(panel):
     """Placing and moving are two modes of one layer, and clicking in `add`
     mode makes another point rather than picking up the one under it."""
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "coordinates"
-    bc.actions["starting"].pick.changed()
+    rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
+    bc.actions["inlet"].pick.changed()
     assert viewer.layers[BC_COORDINATES].mode == "add"
 
-    bc.actions["starting"].move.changed()
+    bc.actions["inlet"].move.changed()
 
     assert viewer.layers[BC_COORDINATES].mode == "select"
     assert "drag to move it" in widget._haemolynx_report()
@@ -923,8 +923,8 @@ def test_move_puts_the_layer_into_naparis_select_tool(panel):
 
 def test_dragging_a_coordinate_writes_where_it_landed(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "coordinates"
-    rows_of(widget)["starting_node_coordinates"].value = [[10.0, 8.0, 9.0]]
+    rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
+    rows_of(widget)["inlet_node_coordinates"].value = [[10.0, 8.0, 9.0]]
     bc.show()
     points = viewer.layers[BC_COORDINATES]
 
@@ -932,7 +932,7 @@ def test_dragging_a_coordinate_writes_where_it_landed(panel):
     points._move({0}, [10.0, 8.0, 9.0])      # press: records the drag origin
     points._move({0}, [10.0, 18.0, 19.0])    # and drag
 
-    assert widget._haemolynx_values()["starting_node_coordinates"] == [
+    assert widget._haemolynx_values()["inlet_node_coordinates"] == [
         [10.0, 18.0, 19.0]
     ]
 
@@ -941,7 +941,7 @@ def test_move_on_a_region_role_reaches_for_the_regions(panel):
     widget, viewer, bc = panel
     draw_a_region(widget, viewer, bc)
 
-    bc.actions["output"].move.changed()
+    bc.actions["outlet"].move.changed()
 
     assert viewer.layers[BC_REGIONS].mode == "select"
 
@@ -951,7 +951,7 @@ def test_regions_cannot_be_moved_in_the_3d_view(panel):
     draw_a_region(widget, viewer, bc)
     viewer.dims.ndisplay = 3
 
-    bc.actions["output"].move.changed()
+    bc.actions["outlet"].move.changed()
 
     assert "2D" in widget._haemolynx_report()
 
@@ -959,7 +959,7 @@ def test_regions_cannot_be_moved_in_the_3d_view(panel):
 def test_move_before_anything_is_drawn_says_so(panel):
     widget, viewer, bc = panel
 
-    bc.actions["starting"].move.changed()
+    bc.actions["inlet"].move.changed()
 
     assert "Nothing to move yet" in widget._haemolynx_report()
 
@@ -983,14 +983,14 @@ def test_edge_percent_draws_the_band_it_will_select_from(panel):
     """The one method whose region is implied rather than written down: before
     this there was nothing on screen until a run had already used it."""
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
     rows_of(widget)["boundary_first_percent"].value = 10.0
     rows_of(widget)["boundary_axis"].value = 1
 
     bc.show()
 
     assert BC_REGIONS in viewer.layers
-    drawn = drawn_for(viewer, "starting")
+    drawn = drawn_for(viewer, "inlet")
     image_y = float(viewer.layers["stack"].extent.world[1][1])
     assert drawn[:, 1].min() == pytest.approx(0.0)
     assert drawn[:, 1].max() == pytest.approx(image_y * 0.1, rel=1e-3)
@@ -998,12 +998,12 @@ def test_edge_percent_draws_the_band_it_will_select_from(panel):
 
 def test_the_outlet_band_sits_at_the_far_end(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["output_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["outlet_node_selection_method"].value = "edge_percent"
     rows_of(widget)["boundary_last_percent"].value = 20.0
 
     bc.show()
 
-    drawn = drawn_for(viewer, "output")
+    drawn = drawn_for(viewer, "outlet")
     image_y = float(viewer.layers["stack"].extent.world[1][1])
     assert drawn[:, 1].max() == pytest.approx(image_y)
     assert drawn[:, 1].min() == pytest.approx(image_y * 0.8, rel=1e-3)
@@ -1012,7 +1012,7 @@ def test_the_outlet_band_sits_at_the_far_end(panel):
 def test_the_band_says_which_span_it_was_drawn_across(panel):
     """A run measures across the terminals, so the pre-run band is a guess."""
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
 
     bc.show()
     assert "across the image" in widget._haemolynx_report()
@@ -1025,25 +1025,25 @@ def test_the_band_says_which_span_it_was_drawn_across(panel):
 
 def test_the_band_follows_the_terminals_once_there_are_some(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
     rows_of(widget)["boundary_first_percent"].value = 50.0
     bc.state.results = type("R", (), {"graph": a_graph_spanning(40.0, 160.0)})()
 
     bc.show()
 
-    drawn = drawn_for(viewer, "starting")
+    drawn = drawn_for(viewer, "inlet")
     assert drawn[:, 1].min() == pytest.approx(40.0)
     assert drawn[:, 1].max() == pytest.approx(100.0)
 
 
 def test_the_band_follows_the_percentage_as_it_is_typed(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
     bc.show()
 
     rows_of(widget)["boundary_first_percent"].value = 40.0
 
-    drawn = drawn_for(viewer, "starting")
+    drawn = drawn_for(viewer, "inlet")
     image_y = float(viewer.layers["stack"].extent.world[1][1])
     assert drawn[:, 1].max() == pytest.approx(image_y * 0.4, rel=1e-3)
 
@@ -1051,21 +1051,55 @@ def test_the_band_follows_the_percentage_as_it_is_typed(panel):
 def test_a_band_is_never_read_back_as_a_configured_region(panel):
     """It is what a percentage works out to, not something anyone typed."""
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
     bc.show()
 
     bc.sync()
 
-    assert widget._haemolynx_values()["starting_node_volumes"] == []
-    assert widget._haemolynx_values()["output_node_volumes"] == []
+    assert widget._haemolynx_values()["inlet_node_volumes"] == []
+    assert widget._haemolynx_values()["outlet_node_volumes"] == []
 
 
 def test_a_band_goes_away_with_the_method_that_made_it(panel):
     widget, viewer, bc = panel
-    rows_of(widget)["starting_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["inlet_node_selection_method"].value = "edge_percent"
     bc.show()
-    assert len(drawn_for(viewer, "starting")) == 24, "twelve two-point edges"
+    assert len(drawn_for(viewer, "inlet")) == 24, "twelve two-point edges"
 
-    rows_of(widget)["starting_node_selection_method"].value = "all_degree_1"
+    rows_of(widget)["inlet_node_selection_method"].value = "all_degree_1"
 
-    assert not len(drawn_for(viewer, "starting"))
+    assert not len(drawn_for(viewer, "inlet"))
+
+
+def test_a_shared_row_with_no_page_is_not_a_window(panel):
+    """A magicgui row removed from its container has no Qt parent, and a
+    visible widget with no parent is a top-level window: "Boundary last
+    percent (percent)", floating on its own next to napari."""
+    from qtpy.QtWidgets import QApplication
+
+    widget, viewer, bc = panel
+    widget.show()
+    before = {id(w) for w in QApplication.topLevelWidgets() if w.isVisible()}
+
+    for role in ROLES:
+        rows_of(widget)[method_setting(role)].value = "edge_percent"
+    for role in ROLES:
+        rows_of(widget)[method_setting(role)].value = "coordinates"
+
+    appeared = [w for w in QApplication.topLevelWidgets()
+                if w.isVisible() and id(w) not in before]
+    assert appeared == []
+    assert rows_of(widget)["boundary_last_percent"].visible is False
+
+
+def test_an_inlet_ring_is_green_and_an_outlet_ring_is_red(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["inlet_node_coordinates"].value = [[10.0, 20.0, 30.0]]
+    rows_of(widget)["outlet_node_coordinates"].value = [[40.0, 50.0, 60.0]]
+
+    bc.show()
+
+    colours = viewer.layers[BC_COORDINATES].face_color
+    expected = dict(role_colours())
+    assert tuple(colours[0]) == pytest.approx(expected["inlet"])
+    assert tuple(colours[1]) == pytest.approx(expected["outlet"])

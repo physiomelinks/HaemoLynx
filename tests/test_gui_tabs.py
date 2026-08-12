@@ -136,15 +136,15 @@ def test_a_tab_carries_the_rows_for_its_settings():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     solve = tabs["7. Solve"]
     assert {field.name for field in solve.fields} == {
-        "input_p_bc",
-        "output_p_bc",
+        "inlet_p_bc",
+        "outlet_p_bc",
         "do_equiv_resistance_calculation",
     }
 
 
 def test_supplied_values_reach_the_right_tab():
-    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA, {"input_p_bc": 1234.0})}
-    row = next(f for f in tabs["7. Solve"].fields if f.name == "input_p_bc")
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA, {"inlet_p_bc": 1234.0})}
+    row = next(f for f in tabs["7. Solve"].fields if f.name == "inlet_p_bc")
     assert row.value == 1234.0
 
 

@@ -133,14 +133,14 @@ def main(settings: dict) -> dict:
     #                                 axis; the imaging pipeline's default,
     #                                 since it needs nothing from the dataset
     #      "all_degree_1"          -> every terminal in the graph
-    #      "degree_1_from_starting"-> `starting_nodes_for_distance` +
-    #                                 `distance_from_starting_node`
+    #      "degree_1_from_inlet"-> `inlet_nodes_for_distance` +
+    #                                 `distance_from_inlet_node`
     #    With segmented masks, use graph.select_terminal_nodes_from_large_vessel_masks
     #    instead, which assigns terminals from anatomy rather than geometry.
     #    `image_shape` is what "edge_percent" checks its `axis` against; the
     #    bands themselves span the network, so a real run passes the loaded
     #    image's shape and this hand-built network synthesises one.
-    #    `starting_nodes`/`output_nodes` are lists, so several inlets or outlets
+    #    `inlet_nodes`/`outlet_nodes` are lists, so several inlets or outlets
     #    are simply named together and share that list's pressure.
     positions = np.asarray([G.nodes[n]["pos"] for n in G.nodes], dtype=float)
     image_shape = tuple(int(np.ceil(hi)) + 1 for hi in positions.max(axis=0))
@@ -148,14 +148,14 @@ def main(settings: dict) -> dict:
         G,
         image_shape,
         method="coordinates",
-        node_role="input",
+        node_role="inlet",
         coordinates=[settings["inlet_coordinate_zyx"]],
     )
     outlet_nodes = graph_tools.select_boundary_nodes_by_method(
         G,
         image_shape,
         method="coordinates",
-        node_role="output",
+        node_role="outlet",
         coordinates=[settings["outlet_coordinate_zyx"]],
         exclude_nodes=inlet_nodes,
     )
@@ -165,10 +165,10 @@ def main(settings: dict) -> dict:
     flow_result = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
-        input_p_bc=settings["inlet_pressure_pa"],
-        output_p_bc=settings["outlet_pressure_pa"],
-        starting_nodes=inlet_nodes,
-        output_nodes=outlet_nodes,
+        inlet_p_bc=settings["inlet_pressure_pa"],
+        outlet_p_bc=settings["outlet_pressure_pa"],
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
     )
     # Flows live on the graph, so the export below writes them like any other
     # edge attribute.

@@ -5,7 +5,7 @@ This test builds a synthetic network with:
 - defined arteriole->capillary transition node
 - branched capillary tree
 - defined capillary->venule transition node
-- defined output node
+- defined outlet node
 
 It then runs the in-package branch-order/statistics pipeline, exports:
 - <image_stem>_statistics.csv
@@ -80,7 +80,7 @@ def _build_synthetic_network() -> tuple[nx.MultiGraph, dict[str, int]]:
         "input_node": 0,
         "arteriole_boundary_node": 2,
         "venule_boundary_node": 5,
-        "output_node": 6,
+        "outlet_node": 6,
     }
     return G, node_roles
 
@@ -318,8 +318,8 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
 
     assign_hierarchical_branch_orders(
         G,
-        starting_nodes=[roles["input_node"]],
-        output_nodes=[roles["output_node"]],
+        inlet_nodes=[roles["input_node"]],
+        outlet_nodes=[roles["outlet_node"]],
         arteriole_boundary_nodes=[roles["arteriole_boundary_node"]],
         venule_boundary_nodes=[roles["venule_boundary_node"]],
     )

@@ -121,8 +121,8 @@ def test_regenerating_is_idempotent_and_preserves_committed_values(tmp_path):
 def test_the_resistance_config_names_boundaries_at_both_ends():
     """A config that selects no outlets cannot run, and this one did not.
 
-    `output_node_selection_method` was "coordinates" with an empty
-    `output_node_coordinates`, so the run died at the boundary stage every
+    `outlet_node_selection_method` was "coordinates" with an empty
+    `outlet_node_coordinates`, so the run died at the boundary stage every
     time. Nothing caught it because nothing ran the shipped config: the
     branch-comparison tool replaced these settings with its own, and the
     integration tests pass their own.
@@ -135,7 +135,7 @@ def test_the_resistance_config_names_boundaries_at_both_ends():
         REPO_ROOT / "examples" / "resistance_pipeline_config.yaml", schema
     )
 
-    for role in ("starting", "output"):
+    for role in ("inlet", "outlet"):
         method = settings[f"{role}_node_selection_method"]
         source = {
             "coordinates": f"{role}_node_coordinates",

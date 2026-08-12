@@ -37,12 +37,12 @@ EXPECTED_UNITS = {
     "centreline_max_deviation": "um",
     # Compared against node `pos` directly -- microns, despite reading like
     # voxel indices, which is the mistake these invite.
-    "starting_node_coordinates": "um",
-    "output_node_coordinates": "um",
+    "inlet_node_coordinates": "um",
+    "outlet_node_coordinates": "um",
     "arteriole_boundary_node_coordinates": "um",
     "venule_boundary_node_coordinates": "um",
-    "starting_node_volumes": "um",
-    "output_node_volumes": "um",
+    "inlet_node_volumes": "um",
+    "outlet_node_volumes": "um",
     "arteriole_boundary_node_volumes": "um",
     "venule_boundary_node_volumes": "um",
     # Applied to the binary volume, so they index the array: voxels.
@@ -51,8 +51,8 @@ EXPECTED_UNITS = {
     "skeleton_min_branch_length": "voxels",
     "skeleton_max_bridge_distance": "voxels",
     # Pressures.
-    "input_p_bc": "Pa",
-    "output_p_bc": "Pa",
+    "inlet_p_bc": "Pa",
+    "outlet_p_bc": "Pa",
 }
 
 #: Names that look like a measurement but hold a dimensionless number. Listed
@@ -67,8 +67,8 @@ DIMENSIONLESS = {
     "centreline_smoothing_iterations",
     "max_branch_order",
     "pericyte_constriction_seed",
-    "starting_nodes",
-    "output_nodes",
+    "inlet_nodes",
+    "outlet_nodes",
     "arteriole_boundary_nodes",
     "venule_boundary_nodes",
     "custom_edges",

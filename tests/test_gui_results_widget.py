@@ -793,7 +793,7 @@ def test_the_vessels_keep_napari_s_own_dropdown(make_napari_viewer):
 
 
 def test_a_text_column_is_recognised_by_its_data_not_its_name(make_napari_viewer):
-    """Choosing "role" raised `could not convert string to float: 'starting'`.
+    """Choosing "role" raised `could not convert string to float: 'inlet'`.
 
     Text-or-number was decided by membership of `TEXT_COLUMNS`, which names the
     text columns the results module happens to write. `role`, on the boundary
@@ -809,7 +809,7 @@ def test_a_text_column_is_recognised_by_its_data_not_its_name(make_napari_viewer
     results = ResultLayers()
     results.stage_finished("build_network", network(a_graph()))
     _apply_layers(viewer, results.stage_finished("assign_boundaries", SimpleNamespace(
-        starting_nodes=[0], output_nodes=[3], arteriole_boundary_nodes=[1],
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[1],
         venule_boundary_nodes=[2], resistance_node_pair=None)))
 
     layer = viewer.layers[BOUNDARY_NODES]

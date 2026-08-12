@@ -3,10 +3,10 @@
 They used to name six coordinates from one brain stack and an empty list of
 outlet coordinates, so every run on any other image ended at
 
-    ValueError: No starting or output nodes found from manual input coordinates.
+    ValueError: No inlets or outlet nodes found from manual input coordinates.
 
 before a single vessel was solved. These tests pin the two properties that
-stops: the schema's own defaults select non-empty, disjoint inlet and outlet
+stops: the schema's own defaults select non-empty, disjoint inlets and outlet
 sets, and a configuration that genuinely cannot be satisfied says which setting
 to change rather than that nothing was found.
 """
@@ -54,35 +54,35 @@ def _branching_network() -> nx.MultiGraph:
 
 
 def _select_both_roles(G, settings, image_shape=IMAGE_SHAPE):
-    starting = graph.select_boundary_nodes_for_role(G, image_shape, settings, "starting")
-    outputs = graph.select_boundary_nodes_for_role(
-        G, image_shape, settings, "output", exclude_nodes=starting
+    inlets = graph.select_boundary_nodes_for_role(G, image_shape, settings, "inlet")
+    outlets = graph.select_boundary_nodes_for_role(
+        G, image_shape, settings, "outlet", exclude_nodes=inlets
     )
-    return starting, outputs
+    return inlets, outlets
 
 
 # --- the defaults on their own ---------------------------------------------
 
 
 def test_the_defaults_select_inlets_and_outlets_from_a_graph_alone():
-    starting, outputs = _select_both_roles(_branching_network(), _defaults())
+    inlets, outlets = _select_both_roles(_branching_network(), _defaults())
 
-    assert starting, "the default settings found no inlet"
-    assert outputs, "the default settings found no outlet"
-    assert set(starting).isdisjoint(outputs)
+    assert inlets, "the default settings found no inlet"
+    assert outlets, "the default settings found no outlet"
+    assert set(inlets).isdisjoint(outlets)
 
 
 def test_the_defaults_name_no_dataset_of_their_own():
     """A default coordinate or box describes one image and misleads on the rest."""
     defaults = _defaults()
 
-    assert defaults["starting_node_selection_method"] == "edge_percent"
-    assert defaults["output_node_selection_method"] == "edge_percent"
+    assert defaults["inlet_node_selection_method"] == "edge_percent"
+    assert defaults["outlet_node_selection_method"] == "edge_percent"
     for name in (
-        "starting_node_coordinates",
-        "output_node_coordinates",
-        "starting_node_volumes",
-        "output_node_volumes",
+        "inlet_node_coordinates",
+        "outlet_node_coordinates",
+        "inlet_node_volumes",
+        "outlet_node_volumes",
     ):
         assert defaults[name] == [], f"{name} defaults to values from one dataset"
 
@@ -116,26 +116,26 @@ def test_the_band_width_settings_reach_the_selector():
 
 def test_an_empty_coordinate_list_names_the_setting_to_fix():
     settings = _defaults(
-        output_node_selection_method="coordinates", output_node_coordinates=[]
+        outlet_node_selection_method="coordinates", outlet_node_coordinates=[]
     )
 
-    with pytest.raises(ValueError, match="output_node_coordinates"):
+    with pytest.raises(ValueError, match="outlet_node_coordinates"):
         _select_both_roles(_branching_network(), settings)
 
 
 def test_an_empty_volume_list_names_the_setting_to_fix():
     settings = _defaults(
-        starting_node_selection_method="volume", starting_node_volumes=[]
+        inlet_node_selection_method="volume", inlet_node_volumes=[]
     )
 
-    with pytest.raises(ValueError, match="starting_node_volumes"):
+    with pytest.raises(ValueError, match="inlet_node_volumes"):
         _select_both_roles(_branching_network(), settings)
 
 
-def test_distance_from_starting_nodes_that_do_not_exist_yet_names_the_method():
-    settings = _defaults(starting_node_selection_method="degree_1_from_starting")
+def test_distance_from_inlet_nodes_that_do_not_exist_yet_names_the_method():
+    settings = _defaults(inlet_node_selection_method="degree_1_from_inlet")
 
-    with pytest.raises(ValueError, match="starting_node_selection_method"):
+    with pytest.raises(ValueError, match="inlet_node_selection_method"):
         _select_both_roles(_branching_network(), settings)
 
 
@@ -147,8 +147,8 @@ def test_a_stage_that_finds_no_outlets_names_both_methods(tmp_path):
     settings did that.
     """
     settings = _defaults(
-        starting_node_selection_method="all_degree_1",
-        output_node_selection_method="all_degree_1",
+        inlet_node_selection_method="all_degree_1",
+        outlet_node_selection_method="all_degree_1",
         plot_dir=tmp_path,
     )
     network = _network_for_stages(_branching_network(), tmp_path)
@@ -157,8 +157,8 @@ def test_a_stage_that_finds_no_outlets_names_both_methods(tmp_path):
         stages.assign_boundaries(settings, network)
 
     message = str(failure.value)
-    assert "starting_node_selection_method" in message
-    assert "output_node_selection_method" in message
+    assert "inlet_node_selection_method" in message
+    assert "outlet_node_selection_method" in message
     assert "'all_degree_1'" in message
 
 
@@ -213,7 +213,7 @@ def test_the_defaults_find_inlets_and_outlets_on_the_fixture_image(tmp_path):
     settings = _defaults(
         input_path=input_tiff,
         # Every artefact the stages write is placed beside the VTK prefix.
-        vtk_output_prefix=tmp_path / "outputs" / "network",
+        vtk_output_prefix=tmp_path / "outlets" / "network",
         base_plot_dir=tmp_path / "plots",
         plot_dir=tmp_path / "plots",
         verbose_logging=False,
@@ -224,8 +224,8 @@ def test_the_defaults_find_inlets_and_outlets_on_the_fixture_image(tmp_path):
     network = stages.build_network(settings, volume, schema)
     boundaries = stages.assign_boundaries(settings, network)
 
-    assert boundaries.starting_nodes, "no inlet found with the shipped defaults"
-    assert boundaries.output_nodes, "no outlet found with the shipped defaults"
-    assert set(boundaries.starting_nodes).isdisjoint(boundaries.output_nodes)
+    assert boundaries.inlet_nodes, "no inlets found with the shipped defaults"
+    assert boundaries.outlet_nodes, "no outlet found with the shipped defaults"
+    assert set(boundaries.inlet_nodes).isdisjoint(boundaries.outlet_nodes)
     assert boundaries.resistance_node_pair is not None
     assert boundaries.resistance_node_pair[0] != boundaries.resistance_node_pair[1]

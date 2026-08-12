@@ -92,8 +92,8 @@ class VesselNetwork:
 class BoundaryNodes:
     """Where flow enters and leaves, and where vessel types change."""
 
-    starting_nodes: list[int] = field(default_factory=list)
-    output_nodes: list[int] = field(default_factory=list)
+    inlet_nodes: list[int] = field(default_factory=list)
+    outlet_nodes: list[int] = field(default_factory=list)
     arteriole_boundary_nodes: list[int] = field(default_factory=list)
     venule_boundary_nodes: list[int] = field(default_factory=list)
     resistance_node_pair: tuple[int, int] | None = None
@@ -505,15 +505,15 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     large_venule_mask = network.large_venule_mask
     small_arteriole_mask = network.small_arteriole_mask
     small_venule_mask = network.small_venule_mask
-    auto_start_nodes: list[int] = []
-    auto_output_nodes: list[int] = []
+    auto_inlet_nodes: list[int] = []
+    auto_outlet_nodes: list[int] = []
     if settings["automated_vessel_assignment"]:
         if large_arteriole_mask is None or large_venule_mask is None:
             raise ValueError(
                 "automated_vessel_assignment=True requires arteriole and venule masks. "
                 "Set use_large_vessel_masks=True and provide mask paths."
             )
-        auto_start_nodes, auto_output_nodes = (
+        auto_inlet_nodes, auto_outlet_nodes = (
             graph.select_terminal_nodes_from_large_vessel_masks(
                 G,
                 large_arteriole_mask=large_arteriole_mask,
@@ -522,31 +522,31 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 allow_overlap=False,
             )
         )
-        if not auto_start_nodes:
+        if not auto_inlet_nodes:
             raise ValueError(
                 "automated_vessel_assignment=True found no terminal nodes in the "
                 "arteriole mask (after any configured dilation)."
             )
-        if not auto_output_nodes:
+        if not auto_outlet_nodes:
             raise ValueError(
                 "automated_vessel_assignment=True found no terminal nodes in the "
                 "venule mask (after any configured dilation)."
             )
-        settings["starting_node_coordinates"] = [
+        settings["inlet_node_coordinates"] = [
             tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
-            for node_id in auto_start_nodes
+            for node_id in auto_inlet_nodes
         ]
-        settings["output_node_coordinates"] = [
+        settings["outlet_node_coordinates"] = [
             tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
-            for node_id in auto_output_nodes
+            for node_id in auto_outlet_nodes
         ]
         automated_assignment_html_path = settings["plot_dir"] / "automated_vessel_assignment_3d.html"
         wrote_assignment_html = graph.write_automated_vessel_assignment_3d_html(
             G,
             large_arteriole_mask=large_arteriole_mask,
             large_venule_mask=large_venule_mask,
-            input_nodes=auto_start_nodes,
-            output_nodes=auto_output_nodes,
+            input_nodes=auto_inlet_nodes,
+            outlet_nodes=auto_outlet_nodes,
             voxel_size_zyx=voxel_size_zyx,
             output_html_path=automated_assignment_html_path,
         )
@@ -562,29 +562,29 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             )
         logger.info(
             "Automated vessel assignment selected "
-            f"{len(settings['starting_node_coordinates'])} input coordinates from arteriole-mask overlap "
-            f"and {len(settings['output_node_coordinates'])} output coordinates from venule-mask overlap."
+            f"{len(settings['inlet_node_coordinates'])} input coordinates from arteriole-mask overlap "
+            f"and {len(settings['outlet_node_coordinates'])} outlet coordinates from venule-mask overlap."
         )
 
-    settings["starting_nodes"][:] = []
-    settings["output_nodes"][:] = []
+    settings["inlet_nodes"][:] = []
+    settings["outlet_nodes"][:] = []
     settings["arteriole_boundary_nodes"][:] = []
     settings["venule_boundary_nodes"][:] = []
     if settings["automated_vessel_assignment"]:
         # Use direct terminal-node overlap assignment from vessel masks.
-        start_nodes = auto_start_nodes
-        out_nodes = [node_id for node_id in auto_output_nodes if node_id not in set(start_nodes)]
+        inlet_nodes = auto_inlet_nodes
+        outlet_nodes = [node_id for node_id in auto_outlet_nodes if node_id not in set(inlet_nodes)]
     else:
         # Each role reads its own three settings; naming the role is enough.
-        start_nodes = graph.select_boundary_nodes_for_role(
-            G, image.shape, settings, "starting"
+        inlet_nodes = graph.select_boundary_nodes_for_role(
+            G, image.shape, settings, "inlet"
         )
-        out_nodes = graph.select_boundary_nodes_for_role(
-            G, image.shape, settings, "output", exclude_nodes=start_nodes
+        outlet_nodes = graph.select_boundary_nodes_for_role(
+            G, image.shape, settings, "outlet", exclude_nodes=inlet_nodes
         )
-    settings["starting_nodes"].extend(start_nodes)
-    settings["output_nodes"].extend(out_nodes)
-    used_nodes = set(settings["starting_nodes"]) | set(settings["output_nodes"])
+    settings["inlet_nodes"].extend(inlet_nodes)
+    settings["outlet_nodes"].extend(outlet_nodes)
+    used_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
     if settings["arteriole_boundary_node_coordinates"] or settings["arteriole_boundary_node_volumes"]:
         art_boundary = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "arteriole_boundary", exclude_nodes=list(used_nodes)
@@ -647,28 +647,28 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 )
     if settings["automated_vessel_assignment"]:
         logger.info(
-            f"Selected {len(settings['starting_nodes'])} STARTING_NODES and {len(settings['output_nodes'])} "
+            f"Selected {len(settings['inlet_nodes'])} STARTING_NODES and {len(settings['outlet_nodes'])} "
             "OUTPUT_NODES directly from terminal-node overlap with vessel masks."
         )
     else:
         logger.info(
-            f"Selected {len(settings['starting_nodes'])} STARTING_NODES "
-            f"({settings['starting_node_selection_method']}) and "
-            f"{len(settings['output_nodes'])} OUTPUT_NODES "
-            f"({settings['output_node_selection_method']})."
+            f"Selected {len(settings['inlet_nodes'])} STARTING_NODES "
+            f"({settings['inlet_node_selection_method']}) and "
+            f"{len(settings['outlet_nodes'])} OUTPUT_NODES "
+            f"({settings['outlet_node_selection_method']})."
         )
-    logger.info(f"Starting nodes are: {settings['starting_nodes']}")
-    logger.info(f"Output nodes are: {settings['output_nodes']}")
+    logger.info(f"Inlet nodes are: {settings['inlet_nodes']}")
+    logger.info(f"Outlet nodes are: {settings['outlet_nodes']}")
     logger.info(f"Arteriole boundary nodes are: {settings['arteriole_boundary_nodes']}")
     logger.info(f"Venule boundary nodes are: {settings['venule_boundary_nodes']}")
 
-    if settings["starting_nodes"] and settings["output_nodes"]:
-        resistance_node_pair = (settings["starting_nodes"][0], settings["output_nodes"][0])
+    if settings["inlet_nodes"] and settings["outlet_nodes"]:
+        resistance_node_pair = (settings["inlet_nodes"][0], settings["outlet_nodes"][0])
         logger.info(f"Auto-selected resistance node pair: {resistance_node_pair}")
     else:
         if settings["automated_vessel_assignment"]:
             raise ValueError(
-                "No starting or output nodes found from terminal-node overlap with "
+                "No inlet or outlet nodes found from terminal-node overlap with "
                 "arteriole/venule masks."
             )
         # Name the settings and what each of them found: the graph, not the
@@ -676,13 +676,13 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         # counts are what say which of the two to look at.
         terminal_count = sum(1 for _, degree in G.degree() if degree == 1)
         raise ValueError(
-            "No starting or output nodes found: "
-            f"starting_node_selection_method="
-            f"{settings['starting_node_selection_method']!r} selected "
-            f"{len(settings['starting_nodes'])} inlet(s) and "
-            f"output_node_selection_method="
-            f"{settings['output_node_selection_method']!r} selected "
-            f"{len(settings['output_nodes'])} outlet(s), from the "
+            "No inlet or outlet nodes found: "
+            f"inlet_node_selection_method="
+            f"{settings['inlet_node_selection_method']!r} selected "
+            f"{len(settings['inlet_nodes'])} inlet(s) and "
+            f"outlet_node_selection_method="
+            f"{settings['outlet_node_selection_method']!r} selected "
+            f"{len(settings['outlet_nodes'])} outlet(s), from the "
             f"{terminal_count} terminal node(s) in the graph. Fix: change those "
             "two settings or the values they read, or check that the graph has "
             "terminals at both ends of boundary_axis."
@@ -690,8 +690,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
 
 
     return BoundaryNodes(
-        starting_nodes=settings["starting_nodes"],
-        output_nodes=settings["output_nodes"],
+        inlet_nodes=settings["inlet_nodes"],
+        outlet_nodes=settings["outlet_nodes"],
         arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
         venule_boundary_nodes=settings["venule_boundary_nodes"],
         resistance_node_pair=resistance_node_pair,
@@ -706,7 +706,7 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
     voxel_size_zyx = network.volume.voxel_size_zyx
     resistance_node_pair = boundaries.resistance_node_pair
     # 4) Add branch orders and hemodynamic edge weights.
-    if settings["starting_nodes"]:
+    if settings["inlet_nodes"]:
 
         def _vessel_types_after_branch_assign(graph_obj) -> None:
             vessel_type_3d_path = settings["plot_dir"] / "vessel_types_assigned_3d.html"
@@ -723,8 +723,8 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
 
         branch_summary = graph.assign_vessel_branch_orders(
             G,
-            settings["starting_nodes"],
-            output_nodes=settings["output_nodes"],
+            settings["inlet_nodes"],
+            outlet_nodes=settings["outlet_nodes"],
             arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
             venule_boundary_nodes=settings["venule_boundary_nodes"],
             strict_hierarchical=settings["strict_branch_order_assignment"],
@@ -850,10 +850,10 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
         flow = haemodynamics.solve_flow_from_conductance_matrix(
             conductance,
             node_list,
-            input_p_bc=settings["input_p_bc"],
-            output_p_bc=settings["output_p_bc"],
-            starting_nodes=settings["starting_nodes"],
-            output_nodes=settings["output_nodes"],
+            inlet_p_bc=settings["inlet_p_bc"],
+            outlet_p_bc=settings["outlet_p_bc"],
+            inlet_nodes=settings["inlet_nodes"],
+            outlet_nodes=settings["outlet_nodes"],
         )
         haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
         logger.info("Flow through the network solved")
@@ -1059,7 +1059,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             )
         #HD note - need visualisation of pericyte localisations (ie based upon constriction data)
         
-        if settings["starting_nodes"]:
+        if settings["inlet_nodes"]:
             visualization.visualize_geometry_with_branch_orders(
                 image,
                 G,

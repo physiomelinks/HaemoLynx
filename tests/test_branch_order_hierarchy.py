@@ -82,17 +82,17 @@ def _build_demo_graph() -> tuple[nx.MultiGraph, list[int], list[int], list[int],
         G.add_edge(u, v, length=1.0, weight=1.0)
 
     input_nodes = [0]
-    output_nodes = [9]
+    outlet_nodes = [9]
     arteriole_boundary_nodes = [2]
     venule_boundary_nodes = [6]
-    return G, input_nodes, output_nodes, arteriole_boundary_nodes, venule_boundary_nodes
+    return G, input_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes
 
 
 def _render_rotatable_3d_html(
     G: nx.MultiGraph,
     output_html_path: Path,
     input_nodes: list[int],
-    output_nodes: list[int],
+    outlet_nodes: list[int],
     arteriole_boundary_nodes: list[int],
     venule_boundary_nodes: list[int],
 ) -> Path:
@@ -205,7 +205,7 @@ def _render_rotatable_3d_html(
     # Mark assigned special nodes with thin black arrows and labels above nodes.
     special_nodes = [
         ("Input", input_nodes),
-        ("Output", output_nodes),
+        ("Output", outlet_nodes),
         ("Terminal arteriole", arteriole_boundary_nodes),
         ("Terminal venule", venule_boundary_nodes),
     ]
@@ -251,20 +251,20 @@ def _render_rotatable_3d_html(
 
 
 def test_hierarchical_branch_order_pipeline_flow():
-    G, input_nodes, output_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
+    G, input_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
         _build_demo_graph()
     )
 
     assign_hierarchical_branch_orders(
         G,
-        starting_nodes=input_nodes,
-        output_nodes=output_nodes,
+        inlet_nodes=input_nodes,
+        outlet_nodes=outlet_nodes,
         arteriole_boundary_nodes=arteriole_boundary_nodes,
         venule_boundary_nodes=venule_boundary_nodes,
     )
 
     input_to_art_path = nx.shortest_path(G, input_nodes[0], arteriole_boundary_nodes[0])
-    output_to_ven_path = nx.shortest_path(G, output_nodes[0], venule_boundary_nodes[0])
+    output_to_ven_path = nx.shortest_path(G, outlet_nodes[0], venule_boundary_nodes[0])
     art_to_ven_path = nx.shortest_path(
         G, arteriole_boundary_nodes[0], venule_boundary_nodes[0]
     )
@@ -303,13 +303,13 @@ def test_hierarchical_branch_order_pipeline_flow():
 
 
 if __name__ == "__main__":
-    G, input_nodes, output_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
+    G, input_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
         _build_demo_graph()
     )
     assign_hierarchical_branch_orders(
         G,
-        starting_nodes=input_nodes,
-        output_nodes=output_nodes,
+        inlet_nodes=input_nodes,
+        outlet_nodes=outlet_nodes,
         arteriole_boundary_nodes=arteriole_boundary_nodes,
         venule_boundary_nodes=venule_boundary_nodes,
     )
@@ -320,7 +320,7 @@ if __name__ == "__main__":
         / "plots"
         / "branch_order_hierarchy_demo_3d.html",
         input_nodes=input_nodes,
-        output_nodes=output_nodes,
+        outlet_nodes=outlet_nodes,
         arteriole_boundary_nodes=arteriole_boundary_nodes,
         venule_boundary_nodes=venule_boundary_nodes,
     )

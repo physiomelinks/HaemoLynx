@@ -343,10 +343,10 @@ def test_the_panel_runs_the_pipeline_on_the_open_layer(make_napari_viewer, tmp_p
     # Inlets from one end of the volume and outlets from the other. Both set to
     # "all_degree_1" would leave outlets empty, because the outlet call excludes
     # the inlets it was already given.
-    values["starting_node_selection_method"] = "volume"
-    values["output_node_selection_method"] = "volume"
-    values["starting_node_volumes"] = [INLET_BOX]
-    values["output_node_volumes"] = [OUTLET_BOX]
+    values["inlet_node_selection_method"] = "volume"
+    values["outlet_node_selection_method"] = "volume"
+    values["inlet_node_volumes"] = [INLET_BOX]
+    values["outlet_node_volumes"] = [OUTLET_BOX]
     schema = default_schema()
     settings = resolve_settings(values, schema=schema, config_path=None)
 
@@ -376,10 +376,10 @@ def test_a_run_from_the_panel_opens_no_browser(make_napari_viewer, tmp_path, mon
     values["vtk_output_prefix"] = tmp_path / "run"
     values["plot_dir"] = tmp_path / "plots"
     values["statistics"] = False
-    values["starting_node_selection_method"] = "volume"
-    values["output_node_selection_method"] = "volume"
-    values["starting_node_volumes"] = [INLET_BOX]
-    values["output_node_volumes"] = [OUTLET_BOX]
+    values["inlet_node_selection_method"] = "volume"
+    values["outlet_node_selection_method"] = "volume"
+    values["inlet_node_volumes"] = [INLET_BOX]
+    values["outlet_node_volumes"] = [OUTLET_BOX]
     schema = default_schema()
 
     run_pipeline_stages(resolve_settings(values, schema=schema, config_path=None), schema)
@@ -487,14 +487,14 @@ def test_loading_a_config_reports_it_and_applies_its_values(make_napari_viewer, 
         config,
         schema,
         values={**{s.name: s.default for s in schema}, "min_stub_length": 42.5,
-                "input_p_bc": 1234.0},
+                "inlet_p_bc": 1234.0},
     )
 
     panel._haemolynx_load_config(config)
 
     values = panel._haemolynx_values()
     assert values["min_stub_length"] == 42.5
-    assert values["input_p_bc"] == 1234.0
+    assert values["inlet_p_bc"] == 1234.0
 
 
 def test_loading_a_config_naming_a_missing_image_still_fails_the_run_checks(
@@ -677,7 +677,7 @@ def test_a_config_still_applies_everything_other_than_the_input(
     panel._haemolynx_load_config(RESISTANCE_CONFIG)
     values = panel._haemolynx_values()
 
-    for name in ("min_stub_length", "input_p_bc", "skeleton_bridge_gap_size"):
+    for name in ("min_stub_length", "inlet_p_bc", "skeleton_bridge_gap_size"):
         assert values[name] == on_file[name], name
 
 

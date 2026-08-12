@@ -41,8 +41,8 @@ REQUIRED_SETTINGS: dict[str, Any] = {
 #: Boxes that select something on the 48-voxel test fixture, for `--smoke`.
 #: These prove the plumbing, not the science.
 SMOKE_BOUNDARY_SETTINGS: dict[str, Any] = {
-    "starting_node_volumes": [[[0, 0, 0], [47, 47, 20]]],
-    "output_node_volumes": [[[0, 0, 28], [47, 47, 47]]],
+    "inlet_node_volumes": [[[0, 0, 0], [47, 47, 20]]],
+    "outlet_node_volumes": [[[0, 0, 28], [47, 47, 47]]],
 }
 
 #: Settings applied where a branch has them, and reported (not fatal) where it
