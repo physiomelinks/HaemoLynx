@@ -377,3 +377,156 @@ def test_the_controls_sit_on_the_boundaries_tab(panel):
     widget, viewer, bc = panel
     assert bc.widget is not None
     assert [str(choice) for choice in bc.role.choices][0] == "starting"
+
+
+# --- a region reads as the volume it is --------------------------------------
+
+
+def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle(panel):
+    """A rectangle on one slice says nothing about how deep the box goes."""
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+
+    bc.show()
+
+    regions = viewer.layers[BC_REGIONS]
+    assert list(regions.shape_type).count("rectangle") == 1
+    assert list(regions.shape_type).count("line") == 12
+    drawn = np.concatenate([np.asarray(s) for s in regions.data], axis=0)
+    assert drawn[:, 0].min() == pytest.approx(A_BOX[0][0])
+    assert drawn[:, 0].max() == pytest.approx(A_BOX[1][0])
+
+
+def test_the_outline_survives_a_second_show(panel):
+    """Growing a Shapes layer through `.data` turns every shape into a polygon.
+
+    The box would quietly flatten back into thirteen polygons on the second
+    draw, so `shape_type` has to be re-applied on update, not only on add.
+    """
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    rows_of(widget)["starting_node_volumes"].value = [[[0.0, 0.0, 0.0], [20.0, 20.0, 20.0]]]
+    bc.show()
+
+    regions = viewer.layers[BC_REGIONS]
+    assert len(regions.data) == 26
+    assert list(regions.shape_type).count("line") == 24
+    assert list(regions.shape_type).count("rectangle") == 2
+
+
+def test_reading_the_regions_back_counts_boxes_not_segments(panel):
+    """Thirteen shapes are one region; a sync that missed that would multiply."""
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    bc.sync()
+
+    assert len(widget._haemolynx_values()["output_node_volumes"]) == 1
+
+
+# --- the layers follow the form ----------------------------------------------
+
+
+def test_editing_a_setting_redraws_the_layers(panel):
+    """The form is one of the two authoritative directions, so it has to show."""
+    widget, viewer, bc = panel
+    bc.show()
+    assert len(viewer.layers[BC_COORDINATES].data) == 0
+
+    rows_of(widget)["starting_node_coordinates"].value = [[10.0, 20.0, 30.0]]
+
+    assert len(viewer.layers[BC_COORDINATES].data) == 1
+    assert viewer.layers[BC_COORDINATES].data[0] == pytest.approx([10.0, 20.0, 30.0])
+
+
+def test_changing_a_method_updates_what_the_panel_says_is_used(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    rows_of(widget)["output_node_selection_method"].value = "volume"
+    bc.show()
+    assert "Not used" not in widget._haemolynx_report()
+
+    rows_of(widget)["output_node_selection_method"].value = "coordinates"
+
+    assert "Not used" in widget._haemolynx_report()
+    assert BC_REGIONS in viewer.layers, "a configured region is never silently dropped"
+
+
+def test_a_region_drawn_after_a_settings_edit_still_arrives(panel):
+    """The redraw must leave the layer editable, not replace it with a picture."""
+    widget, viewer, bc = panel
+    bc.draw()
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+
+    regions = viewer.layers[BC_REGIONS]
+    assert regions.mode != "pan_zoom"
+
+
+# --- only the settings the chosen method reads ------------------------------
+
+
+def test_only_the_settings_the_chosen_method_reads_are_shown(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_selection_method"].value = "coordinates"
+    rows_of(widget)["starting_node_selection_method"].value = "volume"
+
+    visible = bc.state.visible
+    assert "output_node_coordinates" in visible
+    assert "starting_node_volumes" in visible
+    assert "output_node_volumes" not in visible
+    assert "starting_node_coordinates" not in visible
+    # `.visible` on a row of a tab that is not on screen reads False whatever
+    # was set, so what the panel hid is recorded rather than queried.
+    assert "output_node_volumes" in bc.state.hidden
+    assert "output_node_coordinates" not in bc.state.hidden
+
+
+def test_a_method_row_is_never_hidden(panel):
+    """It is the row that decides which of the others you need."""
+    widget, viewer, bc = panel
+    # `all_degree_1` takes every terminal, so it configures nothing at all --
+    # the case where hiding everything would hide the way back.
+    rows_of(widget)["output_node_selection_method"].value = "all_degree_1"
+
+    assert "output_node_selection_method" not in bc.state.hidden
+    assert "output_node_coordinates" in bc.state.hidden
+
+
+def test_editing_one_role_does_not_wipe_another(panel):
+    """Applying a layer fires its own data event.
+
+    Unguarded, that event reads the half-written layer straight back into the
+    settings, and the role whose features had not been written yet loses its
+    boxes -- silently, since the row it emptied is the one you were not
+    looking at.
+    """
+    widget, viewer, bc = panel
+    rows_of(widget)["output_node_volumes"].value = [A_BOX]
+    bc.show()
+
+    rows_of(widget)["starting_node_volumes"].value = [[[0.0, 0.0, 0.0], [20.0, 20.0, 20.0]]]
+
+    values = widget._haemolynx_values()
+    assert len(values["output_node_volumes"]) == 1
+    assert len(values["starting_node_volumes"]) == 1
+    assert len(viewer.layers[BC_REGIONS].data) == 26
+
+
+def test_a_setting_sits_below_the_method_that_asks_for_it(panel):
+    widget, viewer, bc = panel
+    names = list(rows_of(widget))
+    order = bc.row_order([n for n in names if n.startswith(("starting_", "output_"))])
+
+    assert order.index("output_node_selection_method") < order.index("output_node_coordinates")
+    assert order.index("starting_node_volumes") < order.index("output_node_selection_method")
+
+
+def test_the_ordering_keeps_every_row_it_was_given(panel):
+    """A row this module does not know about must not disappear off the tab."""
+    widget, viewer, bc = panel
+    names = list(rows_of(widget))
+
+    assert sorted(bc.row_order(names)) == sorted(names)

@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -329,6 +329,13 @@ def _add_or_update(viewer, spec) -> None:
 
     if existing is not None and existing.__class__.__name__.lower() == _CLASS_FOR[spec.kind]:
         existing.data = spec.data
+        # A Shapes layer keeps the types it had only while the count is
+        # unchanged; anything new arrives as a polygon, which turns a
+        # two-point outline segment into a degenerate shape. The spec knows
+        # what each one is, so say so again.
+        shape_type = spec.options.get("shape_type")
+        if shape_type is not None and spec.kind == "shapes":
+            existing.shape_type = shape_type
         if spec.features:
             existing.features = dict(spec.features)
         _colour_layer(existing, spec.colour_by, spec.colour_kind,
@@ -1013,7 +1020,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     from haemolynx.gui.boundary_picking import (
         BC_COORDINATES,
         BC_REGIONS,
+        HANDLE,
         ROLES,
+        orderable_settings,
+        visible_settings,
         BoundaryPicks,
         coordinate_setting,
         group_for,
@@ -1034,7 +1044,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     snap_button = PushButton(text="Snap selected to nearest terminal")
     clear = PushButton(text="Clear this role's regions")
 
-    state = SimpleNamespace(applying=False, results=None, connected=set())
+    state = SimpleNamespace(applying=False, results=None, connected=set(),
+                        visible=frozenset(), hidden=frozenset())
 
     def current_values() -> dict[str, Any]:
         return {name: fields[name].to_setting_value(widget.value)
@@ -1070,14 +1081,26 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         return "  Not used: " + "; ".join(notes) + "." if notes else ""
 
     def redraw() -> None:
-        """Settings -> layers. One of the two authoritative directions."""
-        values = current_values()
-        group = group_for(values)
-        _apply_layers(viewer, group, report)
-        report.value = f"Boundary conditions: {group.note}{unused_warning(values)}"
-        for name in (BC_COORDINATES, BC_REGIONS):
-            listen(layer(name))
-        set_depth_range()
+        """Settings -> layers. One of the two authoritative directions.
+
+        Guarded, because writing a layer fires its own `events.data`: without
+        this the redraw's half-applied layer would be read straight back as if
+        the user had edited it, and a role whose features had not been written
+        yet would lose its boxes.
+        """
+        if state.applying:
+            return
+        state.applying = True
+        try:
+            values = current_values()
+            group = group_for(values)
+            _apply_layers(viewer, group, report)
+            report.value = f"Boundary conditions: {group.note}{unused_warning(values)}"
+            for name in (BC_COORDINATES, BC_REGIONS):
+                listen(layer(name))
+            set_depth_range()
+        finally:
+            state.applying = False
 
     def sync(*_args) -> None:
         """Layers -> settings. The other authoritative direction."""
@@ -1094,10 +1117,13 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                     point_roles=roles_of(points_layer, len(points_layer.data)),
                 ))
             if regions_layer is not None:
+                handles = handle_indices(regions_layer)
+                roles = roles_of(regions_layer, len(regions_layer.data))
+                depths = depths_of(regions_layer, len(regions_layer.data))
                 proposed.update(settings_from_layers(
-                    rectangles=list(regions_layer.data),
-                    rectangle_roles=roles_of(regions_layer, len(regions_layer.data)),
-                    depths=depths_of(regions_layer, len(regions_layer.data)),
+                    rectangles=[regions_layer.data[i] for i in handles],
+                    rectangle_roles=[roles[i] for i in handles],
+                    depths=[depths[i] for i in handles],
                 ))
             write_rows(proposed)
             values = current_values()
@@ -1105,6 +1131,23 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             report.value = f"Boundary conditions: {picks.summary()}{unused_warning(values)}"
         finally:
             state.applying = False
+
+    def handle_indices(target) -> list[int]:
+        """Which shapes are the editable rectangles, not the box outlines.
+
+        A region is drawn as a rectangle plus the twelve segments of the box it
+        stands for. Only the rectangle is a region; reading the segments back
+        would turn one box into thirteen.
+        """
+        parts = list(target.features.get("part", [])) if len(target.features) else []
+        kinds = list(target.shape_type)
+        return [
+            index
+            for index in range(len(target.data))
+            # A rectangle the user has just drawn has no `part` yet.
+            if (parts[index] if index < len(parts) else HANDLE) == HANDLE
+            and kinds[index] != "line"
+        ]
 
     def roles_of(target, count) -> list[str]:
         """Each item's role, filling anything unlabelled with the chosen one.
@@ -1166,6 +1209,46 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                     depth.value = span
                 finally:
                     state.applying = False
+
+    def row_order(names: Sequence[str]) -> list[str]:
+        """The Boundaries tab, grouped so a method is followed by what it reads.
+
+        The schema lists all four methods, then all four coordinate lists, then
+        all four volume lists -- a fine way to declare them and a poor way to
+        read them. Here each role's method is followed immediately by the
+        settings that method uses, so the row you have to fill in sits under
+        the row that decided you have to fill it in.
+        """
+        remaining = list(names)
+        ordered: list[str] = []
+        for name in orderable_settings():
+            if name in remaining:
+                remaining.remove(name)
+                ordered.append(name)
+        return ordered + remaining
+
+    def refresh_rows(*_args) -> None:
+        """Show only the settings the chosen methods will actually read."""
+        wanted = visible_settings(current_values())
+        methods = {method_setting(role) for role in ROLES}
+        hidden = set()
+        for name in orderable_settings():
+            # A method row always stays: it is the row that decides which of
+            # the others you need to fill in.
+            if name in rows and name not in methods:
+                rows[name].visible = name in wanted
+                if name not in wanted:
+                    hidden.add(name)
+        state.visible = wanted
+        state.hidden = frozenset(hidden)
+
+    def on_settings_changed(*_args) -> None:
+        """Follow the form: the layers show what the settings currently say."""
+        refresh_rows()
+        if state.applying:
+            return
+        if any(name in viewer.layers for name in (BC_COORDINATES, BC_REGIONS)):
+            redraw()
 
     def on_show() -> None:
         redraw()
@@ -1298,6 +1381,13 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         write_rows({volume_setting(str(role.value)): []})
         redraw()
 
+    for _role in ROLES:
+        for _name in (method_setting(_role), coordinate_setting(_role),
+                      volume_setting(_role)):
+            if _name in rows:
+                rows[_name].changed.connect(on_settings_changed)
+    refresh_rows()
+
     show.changed.connect(lambda *_: on_show())
     pick.changed.connect(lambda *_: on_pick())
     draw.changed.connect(lambda *_: on_draw())
@@ -1322,6 +1412,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     )
     return SimpleNamespace(
         widget=widget, role=role, depth=depth, state=state,
+        row_order=row_order, refresh_rows=refresh_rows,
         show=on_show, pick=on_pick, draw=on_draw, snap=on_snap,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
         layer_names=(BC_COORDINATES, BC_REGIONS),
@@ -1373,11 +1464,14 @@ def settings_widget(napari_viewer=None):
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
         extra = extras.get(tab.stage.call or "")
+        names = [field.name for field in tab.fields]
+        if boundaries is not None and tab.stage.call == "assign_boundaries":
+            names = boundaries.row_order(names)
         page = Container(
             widgets=[
                 summary,
-                *( [extra] if extra is not None else [] ),
-                *(rows[field.name] for field in tab.fields),
+                *([extra] if extra is not None else []),
+                *(rows[name] for name in names),
             ],
             labels=True,
         )

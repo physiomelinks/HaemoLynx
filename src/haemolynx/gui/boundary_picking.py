@@ -35,6 +35,7 @@ outright. So every value leaving this module for a settings row goes through
 """
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
@@ -51,7 +52,12 @@ __all__ = [
     "ROLES",
     "BoundaryPicks",
     "box_from_rectangle",
+    "box_outline",
+    "region_shapes",
     "coordinate_setting",
+    "orderable_settings",
+    "settings_for_method",
+    "visible_settings",
     "group_for",
     "method_setting",
     "plain",
@@ -79,6 +85,52 @@ BC_LAYER_NAMES = frozenset({BC_COORDINATES, BC_REGIONS})
 #: a nanometre is far below what a click can mean, so three keeps the config
 #: readable without throwing anything away.
 DECIMALS = 3
+
+
+#: What each selection method needs configured beyond itself. A method absent
+#: from here needs nothing: `all_degree_1` takes every terminal there is.
+METHOD_SETTINGS: Mapping[str, str] = {
+    "coordinates": "coordinates",
+    "volume": "volume_boxes",
+}
+
+#: Settings shared by every role that selects by band or by distance, so they
+#: cannot belong under any one role.
+BAND_SETTINGS: Mapping[str, tuple[str, ...]] = {
+    "edge_percent": ("boundary_axis", "boundary_first_percent", "boundary_last_percent"),
+    "degree_1_from_starting": ("boundary_distance_from_starting_node",),
+}
+
+
+def settings_for_method(role: str, method: str) -> tuple[str, ...]:
+    """The settings *role* reads when it selects nodes by *method*."""
+    key = METHOD_SETTINGS.get(str(method))
+    if key is not None:
+        return (BOUNDARY_ROLE_SETTINGS[role][key],)
+    return BAND_SETTINGS.get(str(method), ())
+
+
+def visible_settings(values: Mapping[str, Any]) -> set[str]:
+    """Which boundary settings the chosen methods will actually read.
+
+    The Boundaries tab declares twenty-one rows and a run reads a handful of
+    them: four methods, plus whatever those four methods ask for. Showing the
+    rest invites filling in a coordinate list that nothing will look at.
+    """
+    wanted: set[str] = set()
+    for role in ROLES:
+        wanted.update(settings_for_method(role, values.get(method_setting(role))))
+    return wanted
+
+
+def orderable_settings() -> list[str]:
+    """Every boundary setting this module places, method-first, role by role."""
+    ordered: list[str] = []
+    for role in ROLES:
+        ordered += [method_setting(role), coordinate_setting(role), volume_setting(role)]
+    for names in BAND_SETTINGS.values():
+        ordered += list(names)
+    return ordered
 
 
 def coordinate_setting(role: str) -> str:
@@ -200,6 +252,64 @@ def box_from_rectangle(
     lo = [centre_z - half, float(points[:, 1].min()), float(points[:, 2].min())]
     hi = [centre_z + half, float(points[:, 1].max()), float(points[:, 2].max())]
     return [plain([round(v, DECIMALS) for v in lo]), plain([round(v, DECIMALS) for v in hi])]
+
+
+def box_outline(
+    corner_a: Sequence[float], corner_b: Sequence[float]
+) -> list[np.ndarray]:
+    """The twelve edges of a box, as two-point segments.
+
+    A rectangle is the only thing napari can *edit*, and it is flat -- so on
+    its own it says nothing about how deep a region is. These draw the box the
+    rectangle stands for. They are regenerated from the setting every time, so
+    dragging one does nothing lasting; the rectangle is the handle.
+    """
+    lo = np.minimum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
+    hi = np.maximum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
+    corners = np.array(list(itertools.product(*zip(lo, hi))), dtype=float)
+    edges = []
+    for a, b in itertools.combinations(range(len(corners)), 2):
+        # An edge joins two corners that differ along exactly one axis.
+        if int(np.count_nonzero(corners[a] != corners[b])) == 1:
+            edges.append(np.array([corners[a], corners[b]], dtype=float))
+    return edges
+
+
+#: What a shape in the regions layer is for: the editable rectangle, or one of
+#: the twelve segments drawing the box it stands for.
+HANDLE = "handle"
+OUTLINE = "outline"
+
+
+def region_shapes(
+    picks: "BoundaryPicks",
+) -> tuple[list[np.ndarray], list[str], dict[str, np.ndarray]]:
+    """Every region as one editable rectangle plus the box it describes."""
+    data: list[np.ndarray] = []
+    kinds: list[str] = []
+    roles: list[str] = []
+    depths: list[float] = []
+    parts: list[str] = []
+    for role in ROLES:
+        for lo, hi in picks.volumes.get(role, ()):
+            corners, depth = rectangle_from_box(lo, hi)
+            data.append(corners)
+            kinds.append("rectangle")
+            roles.append(role)
+            depths.append(depth)
+            parts.append(HANDLE)
+            for edge in box_outline(lo, hi):
+                data.append(edge)
+                kinds.append("line")
+                roles.append(role)
+                depths.append(depth)
+                parts.append(OUTLINE)
+    features = {
+        "role": np.asarray(roles, dtype=object),
+        "depth": np.asarray(depths, dtype=float),
+        "part": np.asarray(parts, dtype=object),
+    }
+    return data, kinds, features
 
 
 @dataclass(frozen=True)
@@ -340,7 +450,7 @@ def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
             },
         )
     ]
-    shapes, shape_features = picks.rectangles()
+    shapes, kinds, shape_features = region_shapes(picks)
     if shapes:
         specs.append(
             LayerSpec(
@@ -351,7 +461,7 @@ def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
                 colour_by="role",
                 colour_kind="categorical",
                 colour_cycle=role_colours(),
-                options={"shape_type": "rectangle", "edge_width": 2.0, "opacity": 0.3},
+                options={"shape_type": kinds, "edge_width": 1.5, "opacity": 0.25},
             )
         )
     return tuple(specs)

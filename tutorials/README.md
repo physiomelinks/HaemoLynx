@@ -50,7 +50,9 @@ On the **Boundaries** tab, **Show these boundary conditions** draws what the
 config describes, before anything runs:
 
 - **HaemoLynx BC coordinates** — a ring per coordinate, coloured by role.
-- **HaemoLynx BC regions** — a rectangle per volume box, coloured the same way.
+- **HaemoLynx BC regions** — a box per volume, coloured the same way: the
+  twelve edges of the volume, plus one rectangle at its centre that is the
+  handle you drag. Only the handle is a region; the edges just show its depth.
 
 Both are editable, and **both are the settings**: a coordinate you drag is a
 coordinate the run will use. Napari's own tools do the work — **Pick coordinates
@@ -71,6 +73,13 @@ the run would choose, and says how far it moved — a large move means the click
 missed. It needs a graph, so run at least *3. Graph* first. Coordinates you pick
 without it are still correct: a run snaps every one of them to its nearest
 terminal anyway.
+
+The tab shows only the rows the methods you chose will actually read, each
+under the method that asks for it: pick `coordinates` for the inlet and its
+coordinate list appears, pick `volume` and its region list does instead. The
+four `*_selection_method` rows are always there, since they are what decides
+the rest. Editing any of those rows redraws the layers straight away, so the
+picture always matches the form.
 
 Two things the panel will tell you rather than fix behind your back. A role only
 reads its coordinates when its `*_selection_method` says `coordinates` (and its

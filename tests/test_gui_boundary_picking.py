@@ -239,9 +239,14 @@ def test_points_carry_their_role_in_settings_order():
 
 
 def test_regions_carry_their_role_and_their_own_depth():
+    """Every shape of a region is tagged, handle and outline alike, so the
+    colouring covers the whole box and the sync can tell them apart."""
     spec = specs_for(CONFIGURED)[1]
-    assert list(spec.features["role"]) == ["output"]
-    assert spec.features["depth"][0] == pytest.approx(600.0)
+    assert set(spec.features["role"]) == {"output"}
+    assert list(spec.features["depth"]) == pytest.approx([600.0] * 13)
+    handles = [i for i, part in enumerate(spec.features["part"]) if part == "handle"]
+    assert len(handles) == 1
+    assert spec.options["shape_type"][handles[0]] == "rectangle"
 
 
 def test_the_picking_layers_never_collide_with_a_runs_layers():
@@ -373,3 +378,108 @@ def test_importing_it_does_not_drag_in_a_gui():
         cwd=Path(__file__).resolve().parents[1],
     )
     assert out.stdout.strip() == "[]", out.stdout
+
+
+# --- a region is drawn as the box it stands for, not just a rectangle --------
+
+
+def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle():
+    """The rectangle is the handle; the twelve segments are the box.
+
+    A rectangle alone is planar, so on its own it says nothing about how deep
+    a region is -- which is the whole of what a volume box adds.
+    """
+    from haemolynx.gui.boundary_picking import region_shapes
+
+    picks = BoundaryPicks.from_settings({"output_node_volumes": [list(A_BOX)]})
+    _data, kinds, features = region_shapes(picks)
+
+    assert kinds.count("rectangle") == 1, "one editable handle per region"
+    assert kinds.count("line") == 12, "the twelve edges of the box"
+    assert list(features["part"]).count("handle") == 1
+    assert set(features["role"]) == {"output"}
+
+
+def test_the_outline_spans_the_boxs_full_depth():
+    from haemolynx.gui.boundary_picking import box_outline
+
+    edges = box_outline(*A_BOX)
+    corners = np.concatenate(edges, axis=0)
+    assert corners[:, 0].min() == pytest.approx(A_BOX[0][0])
+    assert corners[:, 0].max() == pytest.approx(A_BOX[1][0])
+    assert corners[:, 2].max() == pytest.approx(A_BOX[1][2])
+
+
+def test_every_outline_segment_lies_along_one_axis():
+    """An edge of a box changes in exactly one coordinate."""
+    from haemolynx.gui.boundary_picking import box_outline
+
+    for edge in box_outline(*A_BOX):
+        assert int(np.count_nonzero(edge[0] != edge[1])) == 1
+
+
+def test_a_flat_region_still_draws_its_rectangle():
+    """Zero depth is a legitimate box; it just has no z edges to draw."""
+    from haemolynx.gui.boundary_picking import region_shapes
+
+    picks = BoundaryPicks.from_settings(
+        {"output_node_volumes": [[[5.0, 0.0, 0.0], [5.0, 9.0, 9.0]]]}
+    )
+    _data, kinds, _features = region_shapes(picks)
+    assert kinds.count("rectangle") == 1
+
+
+# --- only the settings a method reads are shown ------------------------------
+
+
+def test_a_method_shows_only_what_it_reads():
+    from haemolynx.gui.boundary_picking import visible_settings
+
+    wanted = visible_settings(
+        {
+            "starting_node_selection_method": "coordinates",
+            "output_node_selection_method": "volume",
+            "arteriole_boundary_selection_method": "all_degree_1",
+            "venule_boundary_selection_method": "degree_1_from_starting",
+        }
+    )
+    assert "starting_node_coordinates" in wanted
+    assert "output_node_volumes" in wanted
+    assert "boundary_distance_from_starting_node" in wanted
+    # `all_degree_1` takes every terminal, so it configures nothing.
+    assert "arteriole_boundary_node_coordinates" not in wanted
+    assert "starting_node_volumes" not in wanted
+    assert "boundary_axis" not in wanted
+
+
+def test_the_band_settings_appear_for_any_role_that_uses_them():
+    """They are shared, so one role asking for them is enough."""
+    from haemolynx.gui.boundary_picking import visible_settings
+
+    wanted = visible_settings({"venule_boundary_selection_method": "edge_percent"})
+    assert {"boundary_axis", "boundary_first_percent", "boundary_last_percent"} <= wanted
+
+
+@pytest.mark.parametrize(
+    "method", ["coordinates", "volume", "edge_percent", "all_degree_1",
+               "degree_1_from_starting"]
+)
+def test_every_method_the_schema_allows_is_accounted_for(method):
+    """A method with no rule would silently show nothing."""
+    from haemolynx.gui.boundary_picking import settings_for_method
+
+    assert method in default_schema()["starting_node_selection_method"].choices
+    for name in settings_for_method("starting", method):
+        assert name in default_schema()
+
+
+def test_the_ordering_puts_a_method_above_what_it_reads():
+    from haemolynx.gui.boundary_picking import orderable_settings
+
+    order = orderable_settings()
+    for role in ROLES:
+        assert order.index(f"{role}_selection_method"
+                           if f"{role}_selection_method" in order
+                           else BOUNDARY_ROLE_SETTINGS[role]["method"]) < order.index(
+            coordinate_setting(role)
+        )
