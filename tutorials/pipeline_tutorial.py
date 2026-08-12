@@ -85,7 +85,6 @@ import json
 import os
 import pickle
 import sys
-import tempfile
 from pathlib import Path
 
 import networkx as nx
@@ -202,7 +201,7 @@ PLOT_DIR.mkdir(parents=True, exist_ok=True)
 # installed user.
 CONFIG_PATH = REPO_ROOT / "examples" / "resistance_pipeline_config.yaml" if REPO_ROOT else None
 if CONFIG_PATH is None or not CONFIG_PATH.exists():
-    CONFIG_PATH = write_default_config(Path(tempfile.mkdtemp()) / "tutorial_config.yaml")
+    CONFIG_PATH = write_default_config(OUTPUT_DIR / "tutorial_config.yaml")
 
 TUTORIAL_OVERRIDES = {
     # Where everything is written.
