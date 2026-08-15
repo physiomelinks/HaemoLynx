@@ -1,18 +1,25 @@
 """Measurements behind Part 1 of the H2 capability assessment.
 
-Four questions, all answered from the exported H1 artefacts rather than from a pipeline run, so
-that they stand independently of the fact that the haemodynamics stack has never been executed on
-real specimen data.
+Four questions, all answered from the exported H1 artefacts rather than from a pipeline run.
 
-**Why solve the network here rather than call the pipeline.** The question is how calibre error
-propagates, not whether ``resistance.py`` is wired correctly. Building the conductance network
-directly from the measured edges isolates the propagation from every other defect in the chain, and
-runs in seconds rather than hours. Exercising the pipeline's own solve is a separate item.
+**Why solve the network here rather than read the pipeline's own flow output.** The pipeline has
+run on all six specimens and its flow output exists, but it was produced with
+``constrict_at_pericytes = True``, so 12.3% of edges carry a fabricated narrowing that inflates
+their resistance by a median of about 12x (assessment finding S14). Building the conductance
+network directly from measured calibre and length sidesteps that entirely, and isolates the
+propagation question from every other defect in the chain.
 
-**Why one voxel is the right perturbation.** The H1 whitepaper section 8.2 disqualifies calibre as a
-reportable finding because the between-group gap sits at one twentieth of a single EDM quantisation
-step of 1.87 um. One voxel is therefore the scale at which a diameter difference stops being
-physically resolved, and it is the honest size for a diameter uncertainty.
+**Two perturbation sizes, and why both are reported.** One voxel, 1.866 um, is the scale at which a
+diameter difference stops being physically resolved: H1 section 8.2 disqualifies calibre as a
+finding because the between-group gap sits at one twentieth of that step. It is the conservative
+bound.
+
+The threshold-calibrated size is the empirical one. Measured across the three sensitivity runs, the
+median calibre moves 0.922 um over the clean 0.85 to 0.90 interval, about half a voxel, in the same
+direction for all six specimens. Since the threshold is the dominant correlated error term, that is
+the size of the correlated perturbation actually at play. Resistance goes as the inverse fourth
+power of diameter, so the two do not simply scale, and the smaller one is measured rather than
+inferred from the larger.
 
 **Why independent and correlated are both run.** Resistance goes as the inverse fourth power of
 diameter, so the per-edge uncertainty is near 94% at the median. Whether that matters at the network
@@ -24,6 +31,7 @@ Run with::
 
     venv/bin/python examples/cb_h2_error_propagation.py
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -44,6 +52,9 @@ SPECIMENS = ("WKY-A", "WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C")
 AXIS = 2
 EDGE_PERCENT = END_PERCENT = 25.0
 VOXEL_UM = 1.866
+# Median calibre shift over the clean 0.85 to 0.90 threshold interval, averaged over the six
+# specimens. Measured by cb_h2_threshold_calibre.py, not assumed.
+THRESHOLD_SHIFT_UM = 0.922
 DRAWS = 24
 SEED = 20260815
 
@@ -116,8 +127,10 @@ def solve_edge_flows(u, v, length, diameter, inlets, outlets, n_nodes):
     return np.abs(conductance * (pressure[u] - pressure[v]))
 
 
-def main():
+def main(perturbation_um=VOXEL_UM):
     rng = np.random.default_rng(SEED)
+    print(f"perturbation = {perturbation_um} um "
+          f"({perturbation_um / VOXEL_UM:.2f} voxel)\n")
 
     print("=== S10: terminal-node census, and where the boundary nodes come from ===")
     print(f"{'spec':8}{'term':>6}{'on face':>9}{'interior':>10}{'inlet':>7}{'outlet':>8}"
@@ -154,7 +167,7 @@ def main():
               f"edges between an inlet and an outlet: {solvable}/{total} "
               f"({100*solvable/total:.1f}%)")
 
-    print("\n=== S12 and S13: how one voxel of calibre error propagates ===")
+    print("\n=== S12 and S13: how correlated calibre error propagates ===")
     print(f"{'spec':8}{'independent':>13}{'correlated':>12}{'shunt ratio':>13}")
     independent_all, correlated_all, ratio_all = [], [], []
     for specimen_id in SPECIMENS:
@@ -182,10 +195,10 @@ def main():
         base_total, base_ratio = total_and_ratio(diameter)
 
         independent = [
-            total_and_ratio(np.clip(diameter + VOXEL_UM * rng.choice([-1, 1], len(diameter)), 0.5, None))[0]
+            total_and_ratio(np.clip(diameter + perturbation_um * rng.choice([-1, 1], len(diameter)), 0.5, None))[0]
             for _ in range(DRAWS)
         ]
-        correlated = [total_and_ratio(np.clip(diameter + VOXEL_UM * sign, 0.5, None)) for sign in (-1, 1)]
+        correlated = [total_and_ratio(np.clip(diameter + perturbation_um * sign, 0.5, None)) for sign in (-1, 1)]
 
         ind = 100 * np.std(independent) / base_total
         cor = 100 * (max(c[0] for c in correlated) - min(c[0] for c in correlated)) / 2 / base_total
@@ -203,4 +216,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--perturbation-um", type=float, default=VOXEL_UM,
+                        help=f"diameter perturbation in um (default {VOXEL_UM}, one voxel; "
+                             f"pass {THRESHOLD_SHIFT_UM} for the measured threshold shift)")
+    main(parser.parse_args().perturbation_um)

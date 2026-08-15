@@ -11,8 +11,8 @@
 > the equivalent review for the morphology hypothesis. H2 consumes H1 outputs directly, so its
 > findings are inherited rather than restated.
 >
-> **Assessment date:** 2026-08-15
-> **Branch:** `cb_pipeline_improvements_sweep` @ `c3c236c`
+> **Assessment date:** 2026-08-15 (Phase 1), extended by Phase 2 Part 1 the same day
+> **Branch:** `cb_pipeline_improvements_sweep`, Phase 1 at `c3c236c`, Part 1 at `1472a83`
 > **Test data:** the six-specimen H1 artefact set in `examples/outputs/cb_h1_paraview/`
 > (34,900 edges, frozen threshold 0.90, matched 0.0266 mm³ ROI per specimen)
 >
@@ -25,13 +25,15 @@
 
 ## Document status
 
-**Phase 1 of 3 complete.** This document is being built in phases so that the headline verdict is
-available before the full stage-by-stage review lands.
+**Phase 1 complete; Phase 2 Part 1 complete.** This document is being built in phases so that the
+headline verdict is available before the full stage-by-stage review lands. Findings are numbered in
+the order they were reached, not in the order they are best read, and superseded ones are annotated
+rather than rewritten so that the sequence stays auditable. **S2 is retracted; read S14 with it.**
 
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Survey, call-graph trace, benchmark execution, headline verdict | **complete** |
-| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S14); Parts 2 to 4 not started |
+| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S15); Parts 2 to 4 not started |
 | 3 | Per-method verdicts and tiered plan of attack | not started |
 
 Unlike the H1 assessment, which had its status-marker convention retrofitted after a remediation
@@ -105,17 +107,29 @@ Finding S6 is the governing constraint on H2 and it is not a solver defect. It c
 the physics. It is inherited directly from the measurement H1 declined to report as a finding, and
 it will bound every H2 result until the underlying calibre measurement improves.
 
+A fourth, found while acting on the constriction decision, belongs with these: **the pipeline was
+multiplying a fabricated constriction ratio onto measured diameters** (S9), reaching 12.3% of edges
+and inflating their resistance by a median of about 12× (S14). Fixed in `1ee46a1`.
+
 **Consequence.** H2 is not blocked by the perfusion code. It is blocked by the TH channel, which is
 a data-availability decision, and it is bounded by calibre precision, which is an imaging and
 segmentation problem. Effort spent hardening the solvers before those two are addressed is effort
 spent on the part of the chain that is already working.
 
 **Updated after Phase 2, Part 1.** S6's bound has been resolved into something more useful than a
-warning. Independent calibre error averages down 23-fold across a real network solve and is
-negligible at 4.1%. Correlated error, which is what a shared threshold and classifier produce, does
-not average down at all: **absolute network flow carries ±95% uncertainty** (S12). A within-specimen
-ratio cancels 86% of that, bringing it to 13.2% (S13). The practical rule that follows governs how
-H2 should be posed:
+warning. Independent calibre error averages down more than twentyfold across a real network solve
+and is negligible. Correlated error, which is what a shared threshold and classifier produce, does
+not average down at all (S12). Calibrated against the threshold shift the H1 sweep actually
+measured, 0.922 µm (S15), the operative noise floor is:
+
+| Quantity | Floor | Against H1's 27% to 40% effects |
+|---|---|---|
+| Absolute network flow | ±45% | cannot resolve them |
+| Within-specimen ratio | **±6.3%** | **can resolve them** |
+
+A within-specimen ratio cancels 86% of the correlated error, at both perturbation sizes tested
+(S13). The rule that follows is the difference between an answerable question and an unanswerable
+one, not a caution:
 
 > **Express H2 as ratios computed within a specimen, never as absolute flows compared between
 > specimens.** §2.1 and §2.3 already satisfy this. §2.4 does not, and needs re-posing.
@@ -587,6 +601,60 @@ directly and never touch the exported resistance.
 
 `STATUS — FIXED` at source by `1ee46a1`; the stale artefacts remain to be regenerated.
 
+### S15. The noise floor, calibrated against the real threshold shift
+
+S12 used one voxel as the perturbation because that is the scale at which a diameter difference
+stops being physically resolved. That is the conservative bound, not the operative one. Since the
+threshold is the dominant correlated term, the operative perturbation is however far the threshold
+actually moves calibre, and the H1 sensitivity sweep already contains the answer.
+
+**Measured**, median calibre per specimen across the three complete runs:
+
+| Specimen | 0.85 | 0.90 | 0.95 | 0.85 → 0.90 | 0.90 → 0.95 |
+|---|---|---|---|---|---|
+| WKY-A | 10.462 | 8.345 | 7.464 | −2.117 | −0.881 |
+| WKY-B | 9.010 | 8.343 | 7.460 | −0.667 | −0.883 |
+| WKY-C | 8.345 | 7.905 | 6.462 | −0.441 | −1.443 |
+| SHR-A | 8.343 | 7.464 | 6.369 | −0.879 | −1.095 |
+| SHR-B | 8.345 | 7.798 | 6.371 | −0.547 | −1.427 |
+| SHR-C | 8.343 | 7.464 | 5.868 | −0.879 | −1.596 |
+
+Calibre falls monotonically with threshold in **6 of 6 specimens**. That shared direction is exactly
+what makes the error correlated rather than independent, and so what stops it averaging down. Over
+the clean 0.85 to 0.90 interval the mean shift is **0.922 µm, about half a voxel**, giving a
+per-edge `δd/d` of 11.7% and an analytic `δR/R` of 46.7%.
+
+**Measured** by re-solving the networks at that perturbation rather than scaling S12's numbers,
+since d⁻⁴ is not linear:
+
+| Perturbation | Independent | **Correlated** | **Within-specimen ratio** |
+|---|---|---|---|
+| One voxel, 1.866 µm (conservative bound) | 4.1% | 95.3% | 13.2% |
+| **Measured threshold shift, 0.922 µm** | 2.2% | **45.3%** | **6.3%** |
+
+The measured 45.3% sits close to the 46.7% the analytic `4·δd/d` predicts, which confirms the
+propagation is near-linear at this scale even though the underlying law is not. The ratio cancels
+**86% of the correlated error at both perturbation sizes**, so that cancellation is a property of
+the ratio rather than an artefact of the size chosen.
+
+**This is the finding that makes H2 worth attempting.** The operative noise floor is:
+
+| Quantity | Floor | Against H1's 27% to 40% effects |
+|---|---|---|
+| Absolute network flow | ±45% | cannot resolve them |
+| Within-specimen ratio | **±6.3%** | **can resolve them** |
+
+A ratio measure has roughly a fourfold margin over the smallest effect H1 measured. Absolute flow
+has none. S13's design rule is therefore not a caution but the difference between an answerable
+question and an unanswerable one.
+
+Two qualifications. The per-specimen shift is itself uneven, from 0.441 µm (WKY-C) to 2.117 µm
+(WKY-A), so the correlated error is not identical across specimens and does not cancel perfectly in
+a between-group comparison. And the group means differ, 1.075 µm for WKY against 0.768 µm for SHR,
+which is the right shape to become a confound; with n = 3 it is noted, not established.
+
+`STATUS — OUTSTANDING`
+
 ### A suspected frame transpose, checked and refuted
 
 Worth recording because it would have invalidated every figure in the H1 report. In `_nodes.vtp` the
@@ -651,9 +719,8 @@ Recorded rather than resolved, because each needs either a measurement in Phase 
 5. **Is a 10 µm perfusion grid adequate?** `grid_resolution_xyz = (10.0, 10.0, 10.0)` against a
    median vessel calibre of 7.9 µm means the grid cell is larger than the vessel. The Krogh-type
    diffusion geometry H2 §2.3 depends on is not resolved at that spacing.
-6. **Does H1's threshold sensitivity propagate?** §6.4 measured topology across thresholds 0.85,
-   0.90 and 0.95. Calibre was not tracked across that sweep, and through d⁻⁴ a small calibre shift
-   is a large resistance shift.
+6. ~~**Does H1's threshold sensitivity propagate?**~~ **RESOLVED by S15.** Calibre moves 0.922 µm
+   over the clean interval, monotonically in 6 of 6 specimens, which sets the 45.3% floor.
 
 ---
 
@@ -670,9 +737,8 @@ Remaining, in priority order:
    produced with `constrict_at_pericytes = True`, so 12.3% of edges carry an inflated resistance.
    The solve itself is sound, so this is a re-run rather than a repair.
 4. **Discretisation consistency across the three solvers** (S4).
-5. **Calibre sensitivity across the 0.85 / 0.90 / 0.95 threshold sweep** (open ambiguity 6). Now
-   sharper than when it was written: S12 makes the threshold the dominant correlated error term, so
-   its effect on calibre sets the size of the noise floor.
+5. ~~Calibre sensitivity across the threshold sweep~~ **done, S15.** 0.922 µm over the clean
+   interval, giving the operative noise floor.
 6. Stage-by-stage review of `resistance.py`, `rheology.py`, `probability.py` and `perfusion.py`, in
    the H1 assessment's per-stage format. The pericyte and constriction modules are **excluded** by
    the decision recorded in S9.
