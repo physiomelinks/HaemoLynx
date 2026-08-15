@@ -25,7 +25,7 @@
 
 ## Document status
 
-**Phases 1 and 2 complete; Phase 3 remains.** This document is being built in phases so that the
+**All three phases complete.** This document is being built in phases so that the
 headline verdict is available before the full stage-by-stage review lands. Findings are numbered in
 the order they were reached, not in the order they are best read, and superseded ones are annotated
 rather than rewritten so that the sequence stays auditable. **S2 is retracted; read S14 with it.**
@@ -34,7 +34,7 @@ rather than rewritten so that the sequence stays auditable. **S2 is retracted; r
 |---|---|---|
 | 1 | Survey, call-graph trace, benchmark execution, headline verdict | **complete** |
 | 2 | Stage-by-stage review | **complete** (S10–S20) |
-| 3 | Per-method verdicts and tiered plan of attack | not started |
+| 3 | Per-method verdicts and tiered plan of attack | **complete** |
 
 Unlike the H1 assessment, which had its status-marker convention retrofitted after a remediation
 sweep, this document is born with it. Every finding carries a stable identifier (`S1`, `S2`, ...) so
@@ -743,7 +743,26 @@ is what the change was supposed to do. Every edge now sits exactly on Hagen–Po
 **The fabricated constriction was suppressing total network flow by 14.5%.** That is the size of
 the error S9 and S14 describe, expressed as the quantity H2 §2.1 would actually report.
 
-`STATUS — FIXED`, verified. Regeneration of the remaining five specimens is in progress.
+**All six regenerated.** Every specimen now has zero constricted edges and a maximum
+resistance ratio of exactly 1.000 against the closed form, with edge counts identical to the
+originals:
+
+| Specimen | Edges | Constricted | Flow before | Flow after | Change |
+|---|---|---|---|---|---|
+| WKY-A | 4,512 | 0 | 1.423 × 10¹² | 1.629 × 10¹² | +14.5% |
+| WKY-B | 3,932 | 0 | 8.058 × 10¹¹ | 9.613 × 10¹¹ | +19.3% |
+| WKY-C | 6,699 | 0 | 6.681 × 10¹¹ | 7.815 × 10¹¹ | +17.0% |
+| SHR-A | 6,815 | 0 | 9.725 × 10¹¹ | 1.095 × 10¹² | +12.6% |
+| SHR-B | 8,077 | 0 | 1.115 × 10¹² | 1.272 × 10¹² | +14.1% |
+| SHR-C | 4,865 | 0 | 4.691 × 10¹¹ | 5.307 × 10¹¹ | +13.1% |
+
+**The fabrication was differentially biased between cohorts**, and that is the part worth keeping.
+It suppressed WKY flow by 16.9% on average against SHR by 13.3%, a 3.6 percentage-point gap in a
+quantity H2 would compare between groups. A uniform bias would largely cancel in the ratios S13
+recommends; a group-differential one does not. This is the failure mode H1 §6 exists to detect, and
+it was present in the shipped flow output for all six specimens.
+
+`STATUS — FIXED`, verified on all six.
 
 ### S18. Review notes on `resistance.py` and `rheology.py`
 
@@ -919,12 +938,12 @@ frames agree, and the ParaView README's claim that the files overlay without a t
 
 ## Effect on the four H2 methods
 
-| Method | TH gate | Physics gate | Survives S12/S13? | Net |
+| Method | TH gate | Physics | Noise floor | Also needs |
 |---|---|---|---|---|
-| §2.1 Functional shunting and glomus bypass | **blocked** | usable, bounded by S6, S10 | **yes**, already a within-specimen ratio | blocked on TH only |
-| §2.2 Spatial haematocrit profiling | **blocked** | validated (S1 Part 3), bounded by S6 | **yes** if posed as a distribution or ratio | blocked on TH only |
-| §2.3 Glomus-specific 3D hypoxic fraction | **blocked** | validated (S1 Parts 2, 4), bounded by S6 | **yes**, a fraction by definition | blocked on TH only |
-| §2.4 Oxygen depletion and transit time | **blocked** | validated (S1 Parts 4, 5), bounded by S6, S10 | **no**, absolute unless re-posed | blocked, and needs redefinition |
+| §2.1 Functional shunting and glomus bypass | **blocked** | sound (S1, S16, S17) | ≈26%, boundary-dominated (S20) | boundary conditions settled |
+| §2.2 Spatial haematocrit profiling | **blocked** | validated (S1 Part 3) | as §2.1 if posed as a ratio | Pries–Secomb question settled (S18) |
+| §2.3 Glomus-specific 3D hypoxic fraction | **blocked** | validated (S1 Parts 2, 4); ADR correct (S16); Picard converges (S19) | as §2.1 | **grid 137× finer** (S19) |
+| §2.4 Oxygen depletion and transit time | **blocked** | validated (S1 Parts 4, 5) | ±45%, it is an absolute quantity | re-posing as a ratio (S13, S20) |
 
 All four are blocked, and all four for the same reason: there is no TH channel. H1's Stage 1
 measured the probability volume as `(435, 2, 456, 507)` with exactly two classes, vessel and
@@ -997,10 +1016,123 @@ Remaining, in priority order:
 
 ---
 
+## Phase 3: Per-method verdicts and the plan of attack
+
+### The one-paragraph answer
+
+**H2 is not blocked by its physics.** The solvers pass fifty-two analytic benchmarks against
+closed-form solutions (S1), the ADR discretisation is exactly correct including anisotropically
+(S16), the Picard loop converges on real networks (S19), and the resistance integrator reduces to
+Hagen–Poiseuille to 1.0000 (S14). What blocks H2 is, in order: **no TH channel**, which is a data
+decision and stops all four methods dead; **arbitrary boundary conditions**, which put a ±25% band
+on every ratio the pipeline can produce (S20); and **calibre precision**, which puts ±45% on any
+absolute flow (S15). The first is not a code problem, the second is fixable in software today, and
+the third is bounded by imaging and by H1's outstanding segmentation work.
+
+### Consolidated plan of attack
+
+**Tier 0. Blocking. No H2 result is valid until these land.**
+
+| | Item | Blocks | Findings |
+|---|---|---|---|
+| T0.1 | **Acquire and segment the TH channel.** Not a code task; the same decision that blocks H1 §1.3 and §1.5. | all four methods | S2 (H1 Stage 1) |
+| T0.2 | **Settle the boundary conditions.** Inlets and outlets are chosen by an axis and a band width with no anatomical basis, moving any ratio by 25.3%. | §2.1, §2.4, and any flow-derived quantity | S7, S10, S20 |
+
+T0.2 is the highest-value item in this document that is **not** gated on new data. Three routes, in
+increasing order of merit: report the ensemble across boundary choices so the uncertainty is visible
+rather than hidden; fix the band width on a principle, which addresses the larger sub-term; or
+determine the vascular axis anatomically, the only route that removes the 14.0% rather than
+quantifying it.
+
+**Tier 1. Required before a given method produces a meaningful number.**
+
+| | Item | For | Findings |
+|---|---|---|---|
+| T1.1 | Refine the perfusion grid from 10 µm to roughly 1.5 to 2 µm, a factor of 137 in cells. Benchmark the iterative solver at that size before committing. | §2.3 | S19 |
+| T1.2 | Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation. Worth about 3.4× in apparent viscosity. | §2.2 | S18 |
+| T1.3 | Re-pose transit time as a within-specimen ratio. As an absolute quantity it sits under a ±45% floor. | §2.4 | S13, S15, S20 |
+| T1.4 | ~~Regenerate the flow and perfusion artefacts without the fabricated constriction.~~ **Done**, all six. | all | S17 |
+
+**Tier 2. Precision and safety. None blocks a result; each is a trap already sprung once.**
+
+| | Item | Findings |
+|---|---|---|
+| T2.1 | Assert on `diameter_provenance_counts` so a partial fallback to synthetic calibre fails rather than passing silently. The guard is whole-graph; the fallback is per-edge. | S5 |
+| T2.2 | Remove the silent 5.0 µm diameter default in `map_vessels_to_grid`, which feeds the surface area driving transvascular flux. | S19 |
+| T2.3 | Count and report edges dropped from the conductance matrix for missing or non-positive resistance. | S18 |
+| T2.4 | Rename the perfusion grid axes to match reality. Safe now that the stencil is guarded by a test, and unsafe before. | S16 |
+| T2.5 | Improve calibre precision. Gated on H1's outstanding perivascular labelling rather than on anything here. | S6, S15 |
+
+**Tier 3. Experimental design, inherited from H1 and unchanged by anything in this document.**
+
+| | Item |
+|---|---|
+| T3.1 | n = 3 per group. The exact two-sided permutation p cannot fall below 2/C(6,3) = 0.10, whatever the effect size. |
+| T3.2 | Each ROI is 0.0266 mm³, roughly a fortieth of a cubic millimetre, centred on tissue signal and so sampling mid-organ where the network is denser than the whole. |
+| T3.3 | Reconcile the two conflicting definitions of H2 in the source documents. |
+
+### Coverage
+
+**Assessed:** `poiseuille.py`, `resistance.py`, `rheology.py`, `perfusion.py`, the boundary
+selection in `graph/boundaries.py`, the analytic benchmark suite, and the six-specimen flow,
+rheology and perfusion output.
+
+**Out of scope by the S9 decision, not merely unreviewed:** `pericyte_mask.py`,
+`pericyte_comparison.py`, `probability.py`, and the constriction path through `PoiseuilleModel`.
+All remain live for `examples/resistance_network_pipeline.py`, which owns the capability.
+
+**Not assessed:** the multi-species solver's Bohr–Haldane and Henderson–Hasselbalch coupling beyond
+its analytic tests, and `automated.py`, which belongs to the H1 measurement chain rather than to H2.
+
+### Cross-cutting themes
+
+Four patterns recur, and each has bitten more than once.
+
+1. **Silent fallback to a fabricated constant.** Four separate instances: per-edge synthetic
+   diameter when EDT is missing (S5), the constriction ratio multiplied onto measured calibre (S9),
+   edges dropped from the conductance matrix (S18), and the 5.0 µm default in the perfusion source
+   term (S19). In every case the fabricated value is indistinguishable downstream from a measured
+   one. This is the same theme the H1 assessment found, in different code.
+
+2. **A positional proxy standing in for anatomy.** The inlet and outlet selection (S7, S10), and the
+   ROI placement it inherits. This is now measured as **the single largest error source in H2**
+   (S20), larger than the calibre problem that the assessment was planned around.
+
+3. **Names that invert their meaning.** The perfusion grid calls `nz` what is actually `nx`, and
+   `D_x` what is actually the z coefficient (S16). The code is correct only because two inversions
+   cancel, which no reader would infer from the names.
+
+4. **Reading produced false positives; execution produced the answers.** The S2 retraction, the
+   suspected index-ordering bug, the 16× coefficient mismatch, and the suspected frame transpose
+   were all wrong, and all four were resolved by running something. Set against S9, S14, S19 and
+   S20, which are real and were also found by running something. The method stated in this
+   document's header is not a formality.
+
+---
+
 ## Provenance
 
-Phase 1 authored 2026-08-15 against `cb_pipeline_improvements_sweep` @ `c3c236c`. Measured figures
-are reproducible from the six-specimen artefact set in `examples/outputs/cb_h1_paraview/` and the
-test suite invocation quoted in S1. Two priors held by the assessment plan were refuted by
-measurement and are recorded as refuted rather than removed: the EDT quantisation comb (S6) and the
-duplicate US-spelled package (S8).
+All three phases authored 2026-08-15 on `cb_pipeline_improvements_sweep`. Measured figures are
+reproducible from the six-specimen artefact set in `examples/outputs/cb_h1_paraview/`, the
+regenerated flow output in `examples/outputs/cb_h2_regen/`, and three scripts:
+
+```bash
+venv/bin/python examples/cb_h2_error_propagation.py                      # S10-S13, S20
+venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.922   # S15
+venv/bin/python examples/cb_h2_threshold_calibre.py                      # S15
+venv/bin/python -m pytest tests/test_haemodynamics_analytical.py         # S1
+```
+
+**Claims withdrawn or revised by later measurement**, kept visible rather than edited away:
+
+| Claim | Fate |
+|---|---|
+| The stack has never run on real data (S2) | **retracted**; it had run on all six specimens |
+| EDT quantisation forms a coarse comb (S6) | refuted; 823 distinct values, median gap 0.0023 µm |
+| `hemodynamics` is an accidental duplicate (S8) | refuted; a deliberate deprecation shim |
+| Most terminals are crop-severed vessels (S7) | refuted; about 86% are interior |
+| A ratio has a fourfold margin over H1 effects (S15) | **revised to 1.1× to 1.6×** by S20 |
+| The exported resistance disagrees with Poiseuille (S14 draft) | withdrawn; compared against the wrong viscosity |
+| The ADR index ordering is mismatched (S16 draft) | withdrawn; the inversions cancel |
+| The ADR coefficients are swapped by 16× (S16 draft) | withdrawn; error was in the check |
+| Geometry and mask are in transposed frames | refuted; 100.0% foreground as stored |
