@@ -33,7 +33,7 @@ rather than rewritten so that the sequence stays auditable. **S2 is retracted; r
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Survey, call-graph trace, benchmark execution, headline verdict | **complete** |
-| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S15); Parts 2 to 4 not started |
+| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S16); Parts 2 to 4 not started |
 | 3 | Per-method verdicts and tiered plan of attack | not started |
 
 Unlike the H1 assessment, which had its status-marker convention retrofitted after a remediation
@@ -224,9 +224,12 @@ assembled and thrown away.
 
 Wasted assembly is the minor half of this. The material question is whether the coupled solvers
 rebuild the operator internally on the same discretisation, or on a different one. If they differ,
-the three solvers are not three treatments of one problem. Phase 2 measures this.
+the three solvers are not three treatments of one problem.
 
-`STATUS — OUTSTANDING`
+**Answered by S16: they build an identical and correct discretisation.** The wasted assembly under
+the default configuration stands.
+
+`STATUS — OUTSTANDING` (the redundant assembly only)
 
 ### S5. Radii reaching the flow solve are measured, but the fallback to synthetic is silent per edge
 
@@ -655,6 +658,62 @@ which is the right shape to become a confound; with n = 3 it is noted, not estab
 
 `STATUS — OUTSTANDING`
 
+### S16. The three solvers build an identical and correct discretisation, under inverted names
+
+This resolves S4's open question, and resolves it as no defect. It also cost two wrong readings
+before it was right, both recorded.
+
+**The three builders agree exactly.** `build_adr_matrix`
+([perfusion.py:212](src/ImageLynx/haemodynamics/perfusion.py:212)), the closure inside
+`solve_multi_species_perfusion` ([:393](src/ImageLynx/haemodynamics/perfusion.py:393)) and the
+inline assembly in `solve_coupled_1d3d_perfusion`
+([:618](src/ImageLynx/haemodynamics/perfusion.py:618)) unpack the dimensions the same way, use the
+same coefficient formulas and lay out the same seven-point stencil. Comparing their outputs is
+therefore meaningful, which is what S4 asked.
+
+**The naming is inverted throughout, and the inversions cancel.** Two of them:
+
+1. `grid.dims` is `(nz, ny, nx)`, as the constructor's own log records, but every builder unpacks it
+   as `nx, ny, nz` and then reshapes as `(nz_dim, ny_dim, nx_dim)`, which is the reverse.
+2. `D_x` is built from `(res[1] * res[2]) / res[0]`. With `res` in `(z, y, x)` that is
+   `(y·x)/z`, the **z** coefficient, not the x one.
+
+Because the reshape's last axis is the grid's z, and `D_x` is the z coefficient, the two errors
+compose into the right answer. Nothing about that is guessable from the names.
+
+**Measured**, on a deliberately non-cubic grid `(3, 7, 29)` with anisotropic spacing
+`(20, 10, 5)` µm, both chosen so an isotropic or cubic case could not hide a fault:
+
+| Direction | Matrix coupling | Correct value | Ratio |
+|---|---|---|---|
+| z | 3,750 | 3,750 | 1.0000 |
+| y | 15,000 | 15,000 | 1.0000 |
+| x | 60,000 | 60,000 | 1.0000 |
+
+The centre cell has exactly six off-diagonal neighbours, each one unit step away. **The
+discretisation is correct.**
+
+**Two wrong readings, recorded because the method is the point.** The first was a suspected
+index-ordering mismatch between `get_cell_index` (z fastest) and the C-order reshape (x fastest);
+they do differ, and the stencil is still right, so the inference was wrong. The second reported a
+16× coefficient mismatch, which was an error in the check rather than in the code:
+`PerfusionGrid` reverses the `grid_resolution_xyz` tuple on the way in, so the expectation had been
+computed with the spacing in the wrong order. Reading alone produced two false positives here and
+execution produced the answer, which is why the assessment's method insists on the latter.
+
+**The residual risk is real even though the code is right.** The arithmetic survives only because
+two inversions cancel, so any future edit that corrects one name in isolation breaks the solver
+silently, and an isotropic grid, which is the default at `(10, 10, 10)`, cannot detect it. This is
+now locked by `test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weights`,
+verified by mutation: swapping `D_x` and `D_z` makes it fail with
+`z-neighbour coupling is not the z diffusion coefficient`.
+
+Renaming the axes to match reality would be a genuine readability improvement and is safe to do now
+that the test exists. It is deliberately not done here, because it is a change to a solver in a
+document whose job is to assess one.
+
+`STATUS — OUTSTANDING` (no numerical defect; the naming remains a hazard, now guarded)
+
 ### A suspected frame transpose, checked and refuted
 
 Worth recording because it would have invalidated every figure in the H1 report. In `_nodes.vtp` the
@@ -704,8 +763,8 @@ stain.
 
 Recorded rather than resolved, because each needs either a measurement in Phase 2 or a decision.
 
-1. **Are the three solvers solving the same discretisation?** (from S4) If `build_adr_matrix` and
-   the coupled solvers' internal assembly differ, comparing their outputs is meaningless.
+1. ~~**Are the three solvers solving the same discretisation?**~~ **RESOLVED by S16.** Identical,
+   and correct, though the axis naming is inverted throughout and now guarded by a test.
 2. ~~**Do resistance errors average down?**~~ **RESOLVED by S12.** Independent error does, by 23×.
    Correlated error does not at all, and this pipeline's error is correlated. S13 gives the way
    round it.
@@ -736,7 +795,7 @@ Remaining, in priority order:
 3. **Regenerate the six-specimen flow and perfusion output** (S2, S14). The existing files were
    produced with `constrict_at_pericytes = True`, so 12.3% of edges carry an inflated resistance.
    The solve itself is sound, so this is a re-run rather than a repair.
-4. **Discretisation consistency across the three solvers** (S4).
+4. ~~Discretisation consistency across the three solvers~~ **done, S16.**
 5. ~~Calibre sensitivity across the threshold sweep~~ **done, S15.** 0.922 µm over the clean
    interval, giving the operative noise floor.
 6. Stage-by-stage review of `resistance.py`, `rheology.py`, `probability.py` and `perfusion.py`, in

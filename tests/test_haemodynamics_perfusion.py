@@ -305,3 +305,68 @@ def test_analytical_transmural_exponential_decay():
     po2_num = solve_coupled_1d3d_perfusion(grid, G_mock, [0], cell_to_vessels_mock, config)
     assert len(po2_num) == 1
     assert po2_num[0] < 1e-3
+
+
+def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weights():
+    """Lock the ADR discretisation against a well-meant rename.
+
+    The axis naming in ``build_adr_matrix`` is systematically inverted: ``grid.dims`` is
+    (nz, ny, nx) but is unpacked as ``nx, ny, nz`` ([perfusion.py:212]), and ``D_x`` is built
+    from ``(res[1]*res[2])/res[0]``, which with ``res`` in (z, y, x) is the *z* coefficient.
+    The two inversions cancel and the assembled matrix is correct, which this test pins down.
+
+    It exists because the arithmetic is right for a reason no reader would guess from the
+    names. Correcting either inversion on its own would silently produce a wrong stencil that
+    an isotropic grid could not detect, so the grid here is deliberately non-cubic and the
+    spacing anisotropic.
+    """
+    import networkx as nx_lib
+    import numpy as np
+
+    from ImageLynx.haemodynamics.perfusion import PerfusionGrid, build_adr_matrix
+
+    class _Config:
+        sigma_diff = 1.5e-9
+        M_max = 0.005
+        k_reduce = 0.1
+        C_arterial = 0.13
+        po2_arterial_mmHg = 100.0
+        picard_max_iterations = 5
+        picard_tolerance = 1e-4
+
+    graph = nx_lib.MultiGraph()
+    graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    graph.add_node(1, pos=np.array([40.0, 60.0, 140.0]))
+    graph.add_edge(0, 1, key=0, length=10.0, radius=2.0, flow=1.0)
+
+    grid = PerfusionGrid(graph, (5.0, 10.0, 20.0))
+    n_z, n_y, n_x = grid.dims
+    assert (n_z, n_y, n_x) != (n_x, n_y, n_z), "grid must be non-cubic for this test to bite"
+
+    matrix = build_adr_matrix(grid, {}, _Config())[0]
+    res = grid.res
+    sigma = _Config.sigma_diff * 1e12
+    expected = {
+        "z": sigma * (res[1] * res[2]) / res[0],
+        "y": sigma * (res[0] * res[2]) / res[1],
+        "x": sigma * (res[0] * res[1]) / res[2],
+    }
+
+    def linear_index(z, y, x):
+        # The grid's own convention, z fastest ([perfusion.py:138]).
+        return int(z + y * n_z + x * n_z * n_y)
+
+    centre = linear_index(1, 1, 1)
+    for axis, (dz, dy, dx) in (("z", (1, 0, 0)), ("y", (0, 1, 0)), ("x", (0, 0, 1))):
+        neighbour = linear_index(1 + dz, 1 + dy, 1 + dx)
+        assert matrix[centre, neighbour] == pytest.approx(-expected[axis], rel=1e-12), (
+            f"{axis}-neighbour coupling is not the {axis} diffusion coefficient"
+        )
+
+    # Exactly six off-diagonal neighbours, each one physical step away. Catches an ordering
+    # change that preserved the weights but connected the wrong cells.
+    neighbours = sorted(set(matrix[centre].nonzero()[1]) - {centre})
+    assert len(neighbours) == 6
+    for j in neighbours:
+        offset = (j % n_z - 1, (j // n_z) % n_y - 1, j // (n_z * n_y) - 1)
+        assert sum(abs(o) for o in offset) == 1, f"index {j} is not one step from the centre"
