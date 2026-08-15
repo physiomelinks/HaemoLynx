@@ -1,4 +1,10 @@
-"""Probability helpers for stochastic pericyte constriction."""
+"""Probability helpers for stochastic pericyte constriction.
+
+**Frozen for the carotid body work**, for the reasons given in :mod:`pericyte_mask`. Every
+function here serves the constriction capability, and nothing on the carotid path imports this
+module: its only importers are :mod:`pericyte_mask` and :mod:`pericyte_comparison`, which are
+themselves frozen. Still live for ``examples/resistance_network_pipeline.py``.
+"""
 from __future__ import annotations
 
 from typing import Any, Iterable

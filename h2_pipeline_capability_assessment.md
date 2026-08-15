@@ -25,7 +25,7 @@
 
 ## Document status
 
-**Phase 1 complete; Phase 2 Part 1 complete.** This document is being built in phases so that the
+**Phases 1 and 2 complete; Phase 3 remains.** This document is being built in phases so that the
 headline verdict is available before the full stage-by-stage review lands. Findings are numbered in
 the order they were reached, not in the order they are best read, and superseded ones are annotated
 rather than rewritten so that the sequence stays auditable. **S2 is retracted; read S14 with it.**
@@ -33,7 +33,7 @@ rather than rewritten so that the sequence stays auditable. **S2 is retracted; r
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Survey, call-graph trace, benchmark execution, headline verdict | **complete** |
-| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S17); Part 2 opened (S18); Parts 3 to 4 not started |
+| 2 | Stage-by-stage review | **complete** (S10–S19) |
 | 3 | Per-method verdicts and tiered plan of attack | not started |
 
 Unlike the H1 assessment, which had its status-marker convention retrofitted after a remediation
@@ -785,6 +785,61 @@ haematocrit most directly, is TH-blocked regardless. It should be settled before
 
 `STATUS — OUTSTANDING`
 
+### S19. The perfusion grid does not resolve the tissue-to-vessel distance
+
+Completes the Part 2 module review, covering `perfusion.py` outside the ADR assembly that S16
+handles. `probability.py` is **out of scope**, not merely unreviewed: every function in it serves
+the constriction capability, and its only importers are `pericyte_mask` and `pericyte_comparison`,
+both frozen by the S9 decision. Nothing on the carotid path imports it.
+
+**Two positives first.** The Picard loop converges: across all regenerated runs there is not one
+`hit max_iter` or non-convergence warning, so the non-linear solve is reaching its `1e-4` tolerance
+inside 50 iterations on real networks rather than being truncated. And `map_vessels_to_grid`
+point-samples each edge's voxels and accumulates length and surface area per cell, which is a
+defensible discretisation of the 1D-to-3D coupling.
+
+**The grid is too coarse for §2.3.** `grid_resolution_xyz` defaults to `(10, 10, 10)` µm, giving a
+31³ grid of 29,791 cells over the ROI, of which 5,534 (18.6%) contain a vessel. So unperfused tissue
+does exist for a gradient to form across, which is the first thing to check. The problem is the
+scale of that gradient.
+
+**Measured**, as the Euclidean distance from every background voxel to the nearest vessel voxel at
+native resolution, which is the tissue-to-vessel distance H1 §1.5 defines:
+
+| Specimen | Foreground | TVD p50 | p90 | p99 | max | Grid cells across p90 |
+|---|---|---|---|---|---|---|
+| WKY-A | 23.5% | 7.92 µm | 53.06 | 113.15 | 172.26 | 5.31 |
+| WKY-B | 23.4% | 6.98 µm | 29.01 | 60.95 | 90.58 | 2.90 |
+| WKY-C | 29.4% | 5.28 µm | 25.90 | 65.30 | 109.07 | 2.59 |
+
+**The median tissue voxel sits 5.3 to 7.9 µm from a vessel, which is less than one grid cell.** For
+half the tissue the oxygen gradient that decides whether it is hypoxic falls entirely inside a
+single cell and is not represented at all. Only the p90 tail spans two to five cells, and even there
+the resolution is marginal.
+
+A hypoxic fraction computed on this grid would therefore be dominated by the discretisation rather
+than by the physiology, which is precisely what §2.3 sets out to measure. **The ADR grid needs to be
+several times finer than the median TVD**, which puts it at roughly 1.5 to 2 µm, essentially the
+acquisition voxel of 1.866 µm. That is a 160³ grid of 4.1 million cells against the current 29,791,
+a factor of 137. A sparse seven-point Laplacian at that size is tractable with the iterative path
+`_solve_system_smart` already contains, but it is not free, and it should be measured before §2.3 is
+attempted rather than discovered during it.
+
+**Two smaller points.**
+
+1. `map_vessels_to_grid` falls back to a hard-coded **5.0 µm** diameter when
+   `assigned_diameter_um` and `fwhm_diameter_um` are both absent or non-positive
+   ([perfusion.py:154](src/ImageLynx/haemodynamics/perfusion.py:154)), silently. That diameter sets
+   the surface area driving transvascular flux, so a fabricated calibre would enter the oxygen
+   budget the same way S5 describes for resistance. Flow defaults to `0.0` on the line above, which
+   silently zeroes a source.
+2. **The far field is bounded by the crop, not by anatomy.** Maximum TVD is 90 to 172 µm against an
+   ROI half-width of 148 µm, so the most hypoxic tissue in each volume sits at a distance comparable
+   to the box itself. Whatever the grid resolution, the deepest part of the gradient is a property
+   of where the ROI was cut.
+
+`STATUS — OUTSTANDING`
+
 ### A suspected frame transpose, checked and refuted
 
 Worth recording because it would have invalidated every figure in the H1 report. In `_nodes.vtp` the
@@ -846,9 +901,9 @@ Recorded rather than resolved, because each needs either a measurement in Phase 
    boundary specifications coexist in `PerfusionConfig`
    ([:373](examples/carotid_image_to_model.py:373), [:388](examples/carotid_image_to_model.py:388)),
    consumed by different solvers. Whether they describe the same blood is unverified.
-5. **Is a 10 µm perfusion grid adequate?** `grid_resolution_xyz = (10.0, 10.0, 10.0)` against a
-   median vessel calibre of 7.9 µm means the grid cell is larger than the vessel. The Krogh-type
-   diffusion geometry H2 §2.3 depends on is not resolved at that spacing.
+5. ~~**Is a 10 µm perfusion grid adequate?**~~ **RESOLVED by S19: no.** The median tissue voxel is
+   5.3 to 7.9 µm from a vessel, less than one cell, so for half the tissue the gradient is not
+   represented at all. Needs roughly 1.5 to 2 µm, a factor of 137 more cells.
 6. ~~**Does H1's threshold sensitivity propagate?**~~ **RESOLVED by S15.** Calibre moves 0.922 µm
    over the clean interval, monotonically in 6 of 6 specimens, which sets the 45.3% floor.
 
@@ -868,9 +923,9 @@ Remaining, in priority order:
 4. ~~Discretisation consistency across the three solvers~~ **done, S16.**
 5. ~~Calibre sensitivity across the threshold sweep~~ **done, S15.** 0.922 µm over the clean
    interval, giving the operative noise floor.
-6. Stage-by-stage review, **opened in S18**: `resistance.py` and `rheology.py` are covered.
-   `probability.py` and the non-ADR parts of `perfusion.py` remain. The pericyte and constriction
-   modules are **excluded** by the decision recorded in S9.
+6. ~~Stage-by-stage review~~ **done, S18 and S19.** `resistance.py`, `rheology.py` and
+   `perfusion.py` are covered. `probability.py`, the pericyte modules and the constriction path are
+   **out of scope** by the S9 decision, not merely unreviewed.
 
 7. **Settle the Pries-Secomb in vitro against in vivo question** (S18) before §2.2 is attempted.
    Worth about 3.4× in apparent viscosity.
