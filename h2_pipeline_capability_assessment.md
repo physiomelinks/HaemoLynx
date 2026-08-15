@@ -31,7 +31,7 @@ available before the full stage-by-stage review lands.
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Survey, call-graph trace, benchmark execution, headline verdict | **complete** |
-| 2 | Stage-by-stage review, Parts 1 to 4 | not started |
+| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S13); Parts 2 to 4 not started |
 | 3 | Per-method verdicts and tiered plan of attack | not started |
 
 Unlike the H1 assessment, which had its status-marker convention retrofitted after a remediation
@@ -109,6 +109,16 @@ it will bound every H2 result until the underlying calibre measurement improves.
 a data-availability decision, and it is bounded by calibre precision, which is an imaging and
 segmentation problem. Effort spent hardening the solvers before those two are addressed is effort
 spent on the part of the chain that is already working.
+
+**Updated after Phase 2, Part 1.** S6's bound has been resolved into something more useful than a
+warning. Independent calibre error averages down 23-fold across a real network solve and is
+negligible at 4.1%. Correlated error, which is what a shared threshold and classifier produce, does
+not average down at all: **absolute network flow carries ±95% uncertainty** (S12). A within-specimen
+ratio cancels 86% of that, bringing it to 13.2% (S13). The practical rule that follows governs how
+H2 should be posed:
+
+> **Express H2 as ratios computed within a specimen, never as absolute flows compared between
+> specimens.** §2.1 and §2.3 already satisfy this. §2.4 does not, and needs re-posing.
 
 ---
 
@@ -379,14 +389,160 @@ modules are marked frozen for the CB work and are **out of scope for Phase 2**.
 
 ---
 
+## Part 1: The network solve and how calibre error propagates through it
+
+Phase 2, first tranche. Everything here is measured on the six-specimen artefact set using a
+Poiseuille conductance network built from the measured edges, with inlet and outlet nodes chosen
+exactly as `select_boundary_terminal_nodes` would choose them. No pipeline re-run was needed, so
+these results stand independently of S2.
+
+### S10. The crop is not the boundary problem; interior dead ends are
+
+S7 argued that most degree-1 nodes would be vessels severed by the ROI crop. **That is wrong, and
+measured to be wrong.** Counting terminals within one voxel of each of the six ROI faces:
+
+| Specimen | Terminals | On any face | Interior | Interior share |
+|---|---|---|---|---|
+| WKY-A | 544 | 71 | 473 | 86.9% |
+| WKY-B | 534 | 88 | 446 | 83.5% |
+| WKY-C | 674 | 91 | 583 | 86.5% |
+| SHR-A | 545 | 80 | 465 | 85.3% |
+| SHR-B | 754 | 104 | 650 | 86.2% |
+| SHR-C | 503 | 67 | 436 | 86.7% |
+
+**About 86% of terminals are interior**, nowhere near a crop plane. They are skeletonisation spurs
+and segmentation breaks, not severed vessels. A real capillary bed has few genuine interior dead
+ends, so this is a statement about mask quality, and it inherits directly from the incomplete
+perivascular labelling H1 §2.3 records.
+
+The consequence is worse than the one S7 described. The selection rule assigns arterial pressure to
+whichever degree-1 nodes fall in the top 25% band, and since 86% of candidates are interior spurs,
+**most selected inlets are arbitrary interior skeleton artefacts** rather than boundary vessels.
+
+**Measured**, under the default `edge_percent = end_percent = 25.0` on graph axis 0:
+
+| Specimen | Inlets | Outlets | Inlet:outlet | Stranded | Stranded share |
+|---|---|---|---|---|---|
+| WKY-A | 176 | 66 | 2.67 | 302 | 55.5% |
+| WKY-B | 150 | 95 | 1.58 | 289 | 54.1% |
+| WKY-C | 188 | 138 | 1.36 | 348 | 51.6% |
+| SHR-A | 157 | 140 | 1.12 | 248 | 45.5% |
+| SHR-B | 224 | 176 | 1.27 | 354 | 46.9% |
+| SHR-C | 33 | 132 | 0.25 | 338 | 67.2% |
+
+Two things to take from this. Roughly half of all terminals are stranded as no-flow dead ends under
+`"caged"`. And the inlet-to-outlet ratio spans **10.7×** across six specimens, from 2.67 to 0.25,
+which under a fixed pressure boundary condition directly scales how much flow the network carries.
+Group means are 1.87 (WKY) against 0.88 (SHR); dropping the SHR-C outlier still leaves 1.87 against
+1.20. With n = 3 that is not established as a systematic confound, but it is the right size and the
+right direction to become one, and it is set by ROI placement rather than by biology.
+
+`STATUS — OUTSTANDING`
+
+### S11. The networks are singly connected, so the solve is well posed
+
+**Measured.** Every specimen's extracted graph is a **single connected component**, and 100% of
+edges lie in a component containing at least one inlet and at least one outlet. There are no
+orphaned subnetworks carrying zero flow.
+
+This closes the worst case for open ambiguity 3. Whatever else is wrong with the boundary selection,
+it does not leave part of the network unsolvable.
+
+`STATUS — OUTSTANDING` (recorded as a positive; no action)
+
+### S12. Independent calibre error averages down; correlated error does not
+
+The decisive Phase 2 result, and the one that determines whether H2 is answerable.
+
+S6 established a per-edge resistance uncertainty near 94% at the median. Whether that matters at the
+network level depends entirely on whether the per-edge errors are independent. **Measured**, by
+perturbing every edge's diameter by one voxel and re-solving the network:
+
+| Perturbation | Network flow spread |
+|---|---|
+| **Independent** (random sign per edge, 24 draws, 1 s.d.) | **4.1%** |
+| **Correlated** (every edge shifted the same way, half-range) | **95.3%** |
+
+| Specimen | Independent | Correlated |
+|---|---|---|
+| WKY-A | 5.3% | 80.8% |
+| WKY-B | 2.9% | 87.9% |
+| WKY-C | 3.1% | 100.1% |
+| SHR-A | 2.7% | 97.9% |
+| SHR-B | 4.1% | 101.0% |
+| SHR-C | 6.4% | 104.1% |
+
+Independent error averages down by a factor of 23, exactly as the law of large numbers over roughly
+5,000 edges predicts. Correlated error does not average down **at all**: essentially the full
+per-edge uncertainty survives to the network total.
+
+**The error in this pipeline is the correlated kind.** Every edge in a specimen is measured from one
+mask, produced by one classifier at one threshold. A threshold shift moves every diameter the same
+way, which is precisely the correlated perturbation. H1 §6.4 measured that directly: moving the
+threshold from 0.85 to 0.95 moved every topological measure monotonically, in the same direction,
+for all six specimens.
+
+**Consequence.** Absolute network flow carries roughly **±95%** uncertainty. H1's topological group
+effects were 27% to 40%. A quantity with 95% uncertainty cannot resolve a 40% difference, so
+**absolute flow comparisons between cohorts are not answerable at current calibre precision**, and
+no improvement to the solver changes that.
+
+`STATUS — OUTSTANDING`
+
+### S13. A within-specimen ratio cancels 86% of the correlated error
+
+This is the constructive half of S12, and it is the finding that keeps H2 alive.
+
+If the correlated component moves numerator and denominator together, a ratio taken inside one
+specimen should largely cancel it. **Measured**, using the fraction of total flow carried by the top
+decile of edges by calibre as a geometric stand-in for a thoroughfare channel, with the edge set
+held fixed at baseline so that flow redistribution is measured rather than reclassification:
+
+| Specimen | Shunt fraction | Correlated half-range |
+|---|---|---|
+| WKY-A | 0.2766 | 5.6% |
+| WKY-B | 0.2884 | 14.1% |
+| WKY-C | 0.2310 | 11.1% |
+| SHR-A | 0.3199 | 16.8% |
+| SHR-B | 0.2622 | 14.3% |
+| SHR-C | 0.2776 | 17.3% |
+
+**Mean 13.2%, against 95.3% for absolute flow: the ratio cancels 86% of the correlated error.**
+
+This yields a concrete design rule, and it should govern how H2 is posed:
+
+> **H2 must be expressed as ratios computed within a specimen, never as absolute flows compared
+> between specimens.**
+
+H2 §2.1 is already defined that way, as flow bypassing against flow penetrating glomus tissue, and
+so is §2.3's hypoxic *fraction*. Both survive this constraint. §2.4's transit time is an absolute
+quantity and does not, unless it is re-posed as a ratio against a within-specimen reference.
+
+A 13.2% residual is not small, and it still has to be cleared by any claimed group difference. But
+it is in the range where the 27% to 40% effects H1 measured could be resolved, which ±95% is not.
+
+`STATUS — OUTSTANDING`
+
+### A suspected frame transpose, checked and refuted
+
+Worth recording because it would have invalidated every figure in the H1 report. In `_nodes.vtp` the
+anisotropic axis appears at coordinate index 0, while `_mask.vti` declares its anisotropic spacing at
+index 2, which suggested geometry and mask were written in transposed frames.
+
+**Measured:** sampling the mask at every raw skeleton point, which must by construction be
+foreground, gives **100.0%** foreground as stored against 24.4% under the transposed reading. The
+frames agree, and the ParaView README's claim that the files overlay without a transform is correct.
+
+---
+
 ## Effect on the four H2 methods
 
-| Method | TH gate | Physics gate | Net |
-|---|---|---|---|
-| §2.1 Functional shunting and glomus bypass | **blocked** | usable, bounded by S6, S7 | blocked |
-| §2.2 Spatial haematocrit profiling | **blocked** | validated (S1 Part 3), bounded by S6 | blocked |
-| §2.3 Glomus-specific 3D hypoxic fraction | **blocked** | validated (S1 Parts 2, 4), bounded by S6 | blocked |
-| §2.4 Oxygen depletion and transit time | **blocked** | validated (S1 Parts 4, 5), bounded by S6, S7 | blocked |
+| Method | TH gate | Physics gate | Survives S12/S13? | Net |
+|---|---|---|---|---|
+| §2.1 Functional shunting and glomus bypass | **blocked** | usable, bounded by S6, S10 | **yes**, already a within-specimen ratio | blocked on TH only |
+| §2.2 Spatial haematocrit profiling | **blocked** | validated (S1 Part 3), bounded by S6 | **yes** if posed as a distribution or ratio | blocked on TH only |
+| §2.3 Glomus-specific 3D hypoxic fraction | **blocked** | validated (S1 Parts 2, 4), bounded by S6 | **yes**, a fraction by definition | blocked on TH only |
+| §2.4 Oxygen depletion and transit time | **blocked** | validated (S1 Parts 4, 5), bounded by S6, S10 | **no**, absolute unless re-posed | blocked, and needs redefinition |
 
 All four are blocked, and all four for the same reason: there is no TH channel. H1's Stage 1
 measured the probability volume as `(435, 2, 456, 507)` with exactly two classes, vessel and
@@ -418,10 +574,12 @@ Recorded rather than resolved, because each needs either a measurement in Phase 
 
 1. **Are the three solvers solving the same discretisation?** (from S4) If `build_adr_matrix` and
    the coupled solvers' internal assembly differ, comparing their outputs is meaningless.
-2. **Do resistance errors average down?** (from S6) The highest-value open question in this
-   document. Requires per-edge error propagation through an actual network solve.
-3. **How much of each network is stranded by `"caged"` boundaries?** (from S7) Needs the
-   terminal-node census per face.
+2. ~~**Do resistance errors average down?**~~ **RESOLVED by S12.** Independent error does, by 23×.
+   Correlated error does not at all, and this pipeline's error is correlated. S13 gives the way
+   round it.
+3. ~~**How much of each network is stranded by `"caged"` boundaries?**~~ **RESOLVED by S10 and
+   S11.** Roughly half of terminals are stranded, but the networks stay singly connected, so the
+   solve remains well posed. The live concern moved to the 10.7× inlet-to-outlet asymmetry.
 4. **Is `C_arterial = 0.13` mmol/L consistent with `po2_arterial_mmHg = 100.0`?** Two arterial
    boundary specifications coexist in `PerfusionConfig`
    ([:373](examples/carotid_image_to_model.py:373), [:388](examples/carotid_image_to_model.py:388)),
@@ -435,19 +593,23 @@ Recorded rather than resolved, because each needs either a measurement in Phase 
 
 ---
 
-## What Phase 2 will measure
+## What Phase 2 has measured, and what remains
 
-In priority order, by the value of the answer rather than the ease of getting it:
+Done, in Part 1 above:
 
-1. **Per-edge resistance error propagation through a real network solve** (open ambiguity 2, S6).
-   Whether correlated calibre error averages down or survives to the network level decides whether
-   H2 is answerable at all, independently of TH.
-2. **Terminal-node census per ROI face, per specimen** (S7). Cheap, and it either clears the
-   boundary-condition concern or establishes it as a between-group confound.
-3. **First execution of the flow solve on real specimen data** (S2). Everything else is prediction
-   until this runs.
+1. ~~Per-edge resistance error propagation through a real network solve~~ **done, S12 and S13.**
+2. ~~Terminal-node census per ROI face, per specimen~~ **done, S10.**
+
+Remaining, in priority order:
+
+3. **First execution of the full flow solve on real specimen data through the pipeline itself**
+   (S2). Part 1 solved the network directly from the exported artefacts, which answers the error
+   propagation question but does not exercise `resistance.py`, the rheology loop, or the boundary
+   code as the pipeline calls them. This is the expensive one.
 4. **Discretisation consistency across the three solvers** (S4).
-5. **Calibre sensitivity across the 0.85 / 0.90 / 0.95 threshold sweep** (open ambiguity 6).
+5. **Calibre sensitivity across the 0.85 / 0.90 / 0.95 threshold sweep** (open ambiguity 6). Now
+   sharper than when it was written: S12 makes the threshold the dominant correlated error term, so
+   its effect on calibre sets the size of the noise floor.
 6. Stage-by-stage review of `resistance.py`, `rheology.py`, `probability.py` and `perfusion.py`, in
    the H1 assessment's per-stage format. The pericyte and constriction modules are **excluded** by
    the decision recorded in S9.
