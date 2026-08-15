@@ -31,7 +31,7 @@ available before the full stage-by-stage review lands.
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Survey, call-graph trace, benchmark execution, headline verdict | **complete** |
-| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S13); Parts 2 to 4 not started |
+| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S14); Parts 2 to 4 not started |
 | 3 | Per-method verdicts and tiered plan of attack | not started |
 
 Unlike the H1 assessment, which had its status-marker convention retrofitted after a remediation
@@ -93,9 +93,9 @@ Three findings determine everything else:
    Bohr–Haldane, and Henderson–Hasselbalch. This is a real analytic benchmark suite covering
    precisely the physics H2 requires, and it is in far better shape than the H1 review would predict.
 
-2. **None of it has ever been run on real carotid body data** (S2). The H1 batch driver contains no
-   reference to haemodynamics, resistance, perfusion, or flow. Every figure the stack has ever
-   produced came from synthetic test fixtures.
+2. ~~**None of it has ever been run on real carotid body data** (S2).~~ **This was wrong and is
+   retracted.** The flow solve, the rheology loop and the perfusion solve have all run on all six
+   specimens. See the corrected S2 and the new S14, which is what looking properly turned up.
 
 3. **Resistance goes as d⁻⁴, and the diameters are not good enough to survive that** (S6). At the
    median edge, one voxel of diameter uncertainty implies **94% uncertainty in that edge's
@@ -151,19 +151,33 @@ network. That is a Phase 2 measurement.
 
 `STATUS — OUTSTANDING` (no action needed; recorded as the baseline)
 
-### S2. The perfusion stack has never been executed on real specimen data
+### S2. RETRACTED. The stack has run on all six specimens
 
-**Measured.** `examples/cb_h1_batch.py` contains zero matches for `haemodynamics`, `resistance`,
-`perfusion`, or `flow`. The six-specimen H1 run stopped at morphometry.
+**This finding was wrong.** It is left in place rather than deleted, because Phase 2's priorities
+were set by it and the correction is what produced S14.
 
-Every number the haemodynamics stack has ever produced came from synthetic fixtures. The first run
-on a real extracted network will be the first time the solvers meet a graph with thousands of edges,
-real connectivity, terminal reconnection artefacts, and cut boundaries.
+**What was claimed:** that `examples/cb_h1_batch.py` contains no reference to `haemodynamics`,
+`resistance`, `perfusion` or `flow`, and therefore that the six-specimen run stopped at morphometry.
 
-This is not a defect. It is a statement about how much is unknown, and it is the reason S1 must not
-be read as "the stack is ready".
+**Why it was wrong.** The grep was accurate and the inference from it was not.
+`cb_h1_batch.py` does not import the haemodynamics modules because it shells out to the pipeline,
+`subprocess.run(...)` at [cb_h1_batch.py:144](examples/cb_h1_batch.py:144), and
+`carotid_image_to_model.py` then runs every phase including haemodynamics. Absence of a symbol in a
+driver is not absence of the behaviour it drives.
 
-`STATUS — OUTSTANDING`
+**Measured, correcting it.** `examples/outputs/cb_h1_batch/<SPEC>/resistance_network_vessels_flow.vtp`
+exists for all six specimens and carries populated `resistance`, `pressure_u`, `pressure_v`,
+`pressure_drop`, `flow_signed`, `flow_abs`, `hematocrit`, `viscosity` and `wall_shear_stress_pa`.
+For WKY-A: 4,512 edges, `flow_abs` non-zero on 92.9%, `viscosity` spanning 1.2 to 8.71, which means
+the Fåhræus–Lindqvist loop genuinely ran rather than returning the plasma baseline.
+`resistance_network_perfusion.vti` exists alongside it.
+
+Zero-flow edges run 4.6% to 7.1% per specimen, consistent with the stranded terminals of S10.
+
+`STATUS — FIXED` by retraction. The consequence is not that things are better than reported: it is
+that **six specimens' worth of flow, rheology and perfusion output already exist, and were produced
+with `constrict_at_pericytes = True`**, so every one of those numbers carries the S9 fabrication.
+They must be regenerated, not read.
 
 ### S3. The endothelial barrier model is unreachable under default configuration
 
@@ -523,6 +537,56 @@ it is in the range where the 27% to 40% effects H1 measured could be resolved, w
 
 `STATUS — OUTSTANDING`
 
+### S14. The S9 constriction inflated resistance on 12.3% of edges in the shipped flow output
+
+Found by following the S2 retraction into the flow output that turned out to exist, and it puts a
+measured number on how much S9 actually cost.
+
+**One false start, recorded because the method matters.** The exported resistance first appeared to
+disagree with Hagen–Poiseuille by a factor of ~55, with a ~15× spread between edges. That comparison
+was wrong: it used the exported `viscosity` array, which is the **post-rheology** value in cP, where
+the resistance was built from `PoiseuilleModel.calculate_viscosity(d)`, a different quantity in
+different units. The apparent spread was just the two viscosities not tracking each other. A finding
+that a solver disagrees with its own closed form deserves this level of checking before it is
+written down as one.
+
+**Measured, correctly.** Against the viscosity actually used, `calculate_integrated_resistance`
+reduces to Hagen–Poiseuille exactly. Direct check at `d1 == d2`:
+
+| L (µm) | d (µm) | R model | R closed form | ratio |
+|---|---|---|---|---|
+| 20 | 8 | 0.00647651 | 0.00647651 | 1.0000 |
+| 50 | 4 | 0.81133 | 0.81133 | 1.0000 |
+| 10 | 12 | 0.000328038 | 0.000328038 | 1.0000 |
+| 100 | 6 | 0.164377 | 0.164377 | 1.0000 |
+
+Across the shipped six-specimen output the median ratio is likewise exactly `1.0000`. **The
+integrator is correct**, which corroborates S1's analytic result on real data rather than fixtures.
+
+**What is left is the constriction.** The edges that do not match are the ones the S9 fabrication
+narrowed:
+
+| Specimen | Edges | Constricted | Share | Median inflation | Max |
+|---|---|---|---|---|---|
+| WKY-A | 4,512 | 653 | 14.5% | 12.66× | 36.8× |
+| WKY-B | 3,932 | 426 | 10.8% | 8.62× | 36.8× |
+| WKY-C | 6,699 | 901 | 13.4% | 12.30× | 36.8× |
+| SHR-A | 6,815 | 846 | 12.4% | 11.75× | 36.8× |
+| SHR-B | 8,077 | 1,026 | 12.7% | 12.54× | 36.8× |
+| SHR-C | 4,865 | 494 | 10.2% | 10.03× | 36.8× |
+
+**12.3% of edges carry a fabricated constriction that inflates their resistance by a median of
+about 12× and by up to 36.8×.** The identical 36.8× ceiling across all six specimens is the
+signature of a shared hard-coded ratio rather than anything measured, which is exactly S9's
+complaint.
+
+**Consequence.** The existing `resistance_network_vessels_flow.vtp` and `_perfusion.vti` for all six
+specimens must be **regenerated, not read**. Nothing in the H1 report depends on them. Part 1 is
+also unaffected: S12 and S13 build the conductance network from measured calibre and length
+directly and never touch the exported resistance.
+
+`STATUS — FIXED` at source by `1ee46a1`; the stale artefacts remain to be regenerated.
+
 ### A suspected frame transpose, checked and refuted
 
 Worth recording because it would have invalidated every figure in the H1 report. In `_nodes.vtp` the
@@ -602,10 +666,9 @@ Done, in Part 1 above:
 
 Remaining, in priority order:
 
-3. **First execution of the full flow solve on real specimen data through the pipeline itself**
-   (S2). Part 1 solved the network directly from the exported artefacts, which answers the error
-   propagation question but does not exercise `resistance.py`, the rheology loop, or the boundary
-   code as the pipeline calls them. This is the expensive one.
+3. **Regenerate the six-specimen flow and perfusion output** (S2, S14). The existing files were
+   produced with `constrict_at_pericytes = True`, so 12.3% of edges carry an inflated resistance.
+   The solve itself is sound, so this is a re-run rather than a repair.
 4. **Discretisation consistency across the three solvers** (S4).
 5. **Calibre sensitivity across the 0.85 / 0.90 / 0.95 threshold sweep** (open ambiguity 6). Now
    sharper than when it was written: S12 makes the threshold the dominant correlated error term, so
