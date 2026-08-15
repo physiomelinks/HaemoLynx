@@ -229,7 +229,13 @@ from `export_per_edge_morphometry`. It establishes that every edge *carries* a m
 establish that the flow solve consumes that same value, because the flow solve has never been run
 here (S2). Phase 2 closes that gap.
 
-`STATUS — OUTSTANDING`
+**Understated, see S9.** This finding concluded that the synthetic law reached only edges lacking an
+EDT measurement. That holds for the baseline diameter and fails for the constricted one: the
+constriction ratio was applied multiplicatively to measured diameters as well, and the constricted
+path was the default. S9 records the mechanism and the fix.
+
+`STATUS — OUTSTANDING` (the per-edge silent fallback on the baseline diameter; the constriction half
+is `FIXED` in `1ee46a1`)
 
 ### S6. The d⁻⁴ amplification is the governing constraint on H2
 
@@ -339,6 +345,38 @@ US-spelled duplicate. It is not: it is a deliberate one-line re-export shim that
 
 `STATUS — OUTSTANDING` (S8 only; the shim finding is closed)
 
+### S9. Variable constriction fabricated a constricted calibre on every measured edge
+
+Found after Phase 1 was committed, while acting on the decision to disable the constriction
+capability. It is recorded here because it is the strongest instance of the pattern S5 describes,
+and because S5 as written understated it.
+
+**Measured**, by the fail-first test accompanying the fix: with constriction enabled, branch order
+B01 resolved to `{"d1": 15.0, "d2": 9.0}`, which is the 0.60 intimal-cushion ratio applied to a
+synthetic 15 µm anchor.
+
+The mechanism is what makes this serious. Under `edt_radius` the measured diameter becomes `d1`, and
+the constricted calibre is then computed as
+`d2 = d1 * (d2_dict / d1_dict)`
+([poiseuille.py:333–338](src/ImageLynx/haemodynamics/poiseuille.py:333)), with the ratio taken from
+the synthetic branch-order dict. **The fabricated ratio multiplied every edge, including fully
+measured ones.** S5 concluded that the synthetic law reached only edges lacking an EDT measurement.
+That is true of the *baseline* diameter and false of the *constricted* one, and with
+`constrict_at_pericytes` defaulting to `True` the constricted path was the live path.
+
+Resistance scales as d⁻⁴, so the 0.5 ratio at the capillary anchor is a 16× local resistance error
+applied to a measured vessel. Combined with S6, an H2 flow solve run before this fix would have
+carried both a 94% median uncertainty and a systematic fabricated narrowing.
+
+The sites came from a hard-coded topological rule (branch order 1, and the midpoint branch order)
+rather than from the imaging, and the severity ratios from fixed constants rather than from any
+model of vasomotor tone.
+
+`STATUS — FIXED` in `1ee46a1`. `constrict_at_pericytes` now defaults `False` and raises if set
+`True`; the branch-order fallback stores `d2 = d1`. The capability remains live for
+`examples/resistance_network_pipeline.py`, which owns it and supplies a measured mask. The pericyte
+modules are marked frozen for the CB work and are **out of scope for Phase 2**.
+
 ---
 
 ## Effect on the four H2 methods
@@ -410,8 +448,9 @@ In priority order, by the value of the answer rather than the ease of getting it
    until this runs.
 4. **Discretisation consistency across the three solvers** (S4).
 5. **Calibre sensitivity across the 0.85 / 0.90 / 0.95 threshold sweep** (open ambiguity 6).
-6. Stage-by-stage review of `resistance.py`, `rheology.py`, `probability.py`, `perfusion.py` and the
-   pericyte modules, in the H1 assessment's per-stage format.
+6. Stage-by-stage review of `resistance.py`, `rheology.py`, `probability.py` and `perfusion.py`, in
+   the H1 assessment's per-stage format. The pericyte and constriction modules are **excluded** by
+   the decision recorded in S9.
 
 ---
 
