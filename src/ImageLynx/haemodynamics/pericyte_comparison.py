@@ -1,4 +1,8 @@
-"""Utilities to compare baseline vs constricted pericyte haemodynamics."""
+"""Utilities to compare baseline vs constricted pericyte haemodynamics.
+
+**Frozen for the carotid body work**, for the reasons given in :mod:`pericyte_mask`. Still live
+for ``examples/resistance_network_pipeline.py``.
+"""
 from __future__ import annotations
 
 import csv

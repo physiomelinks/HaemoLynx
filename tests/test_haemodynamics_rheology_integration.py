@@ -98,8 +98,13 @@ def test_coupled_solver_matrix_singularity_safety(caplog):
         # Just verifying it raises some form of Error and doesn't get stuck in an infinite loop
         assert isinstance(e, Exception)
 
-def test_carotid_pipeline_end_to_end_sphincter_and_skimming():
-    """Smoke test to ensure the main carotid pipeline classes and execution logic don't break."""
+def test_carotid_pipeline_end_to_end_resistance_and_skimming():
+    """Smoke test to ensure the main carotid pipeline classes and execution logic don't break.
+
+    Previously exercised the sphincter path with ``constrict_at_pericytes=True``. That
+    capability is disabled for the carotid config, so the wiring this covers is now the
+    unconstricted resistance path, which is the only one reachable.
+    """
     import sys
     from pathlib import Path
     examples_path = Path(__file__).parent.parent / "examples"
@@ -126,10 +131,6 @@ def test_carotid_pipeline_end_to_end_sphincter_and_skimming():
     )
     hemo_config = HaemodynamicsConfig(
         diameter_by_branch_order={"DEFAULT": {"d1": 10.0, "d2": 10.0}},
-        constrict_at_pericytes=True,
-        constriction_mode="sphincter",
-        sphincter_length_um=5.0,
-        intimal_cushion_constriction_ratio=0.5,
         # Stated explicitly rather than inherited: the default moved to "edt_radius" (#98
         # Phase 3), and this is a graph-only smoke test with a mock image and no binary mask,
         # so EDT correctly refuses to run. What is being exercised here is the haemodynamics

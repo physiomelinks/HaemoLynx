@@ -1,4 +1,11 @@
-"""Pericyte-mask driven constriction mapping for Poiseuille edge weights."""
+"""Pericyte-mask driven constriction mapping for Poiseuille edge weights.
+
+**Frozen for the carotid body work.** This module is not reachable from
+``examples/carotid_image_to_model.py`` and is not being developed further for it: there is no
+data placing pericytes anatomically in the CB specimens, and no model of vasomotor tone to set
+how much they constrict. It remains live for ``examples/resistance_network_pipeline.py``, which
+owns the capability and supplies its own measured mask, so nothing here is deprecated.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

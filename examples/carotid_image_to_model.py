@@ -52,7 +52,9 @@ H5_DATASET_NAME = specimens.PROBABILITIES_DATASET
 
 """Configuration defaults for diameter maps."""
 
-# Diameter by branch order (dict with d1 and d2 for pericyte constriction simulation)
+# Diameter by branch order. d2 is the constricted calibre; constriction is disabled for this
+# pipeline, so d1 and d2 must agree. The pair is kept because the resistance-network pipelines
+# share the dict shape.
 DIAMETER_BY_BRANCH_ORDER = {
     "DEFAULT": {"d1": 4.0, "d2": 4.0},
 }
@@ -234,7 +236,10 @@ class GraphConfig:
 @dataclass
 class HaemodynamicsConfig:
     """Configuration for fluid dynamics simulation, pressures, and vessel diameters."""
-    constrict_at_pericytes: bool = True
+    # Disabled. There is no data placing the constriction sites anatomically and no model of
+    # vasomotor tone to modulate their severity, so every constricted calibre this pipeline
+    # produced was fabricated. Setting it True raises; see __post_init__ for the reasoning.
+    constrict_at_pericytes: bool = False
     # To match dimensions of viscosity (mPa*s) and lengths (um) yielding flow (Q) in um^3/s:
     # Pressure must be provided in milliPascals (mPa).
     input_p_bc: float = 13.332e6 ### mPa (MAP of 100 mmHg = 13.332 kPa = 13.332e6 mPa)
@@ -324,6 +329,21 @@ class HaemodynamicsConfig:
         """Validates configuration bounds to prevent mathematical crashes in the physics engines."""
         if self.input_p_bc <= self.output_p_bc:
             raise ValueError(f"Input pressure ({self.input_p_bc}) must be strictly greater than Output pressure ({self.output_p_bc}).")
+
+        if self.constrict_at_pericytes:
+            raise ValueError(
+                "constrict_at_pericytes is disabled for the carotid pipeline. The constriction "
+                "sites are placed by a hard-coded topological rule (branch order 1 for the "
+                "intimal cushion, the midpoint branch order for pre-capillary sphincters) rather "
+                "than measured from the imaging, and their severity ratios are not derived from "
+                "any model of vasomotor tone. With this enabled the ratio is read from the "
+                "synthetic branch-order dict and multiplied onto whatever diameter was measured, "
+                "including a real EDT measurement, so the fabrication reaches every edge rather "
+                "than only the unmeasured ones. Resistance scales as the inverse fourth power of "
+                "diameter, so the 0.5 ratio at the capillary anchor is a 16x local resistance "
+                "error on a measured vessel. Re-enable only alongside measured constriction "
+                "locations and a modulation model that sets their severity."
+            )
 
         if self.radius_assignment_mode not in ("fwhm_radius", "edt_radius", "constant_radius"):
             raise ValueError(f"radius_assignment_mode must be 'fwhm_radius', 'edt_radius', or 'constant_radius', got: {self.radius_assignment_mode}")
@@ -1068,9 +1088,9 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         import re
         
         # Define your three biological anchor points
-        D_start_d1, D_start_d2 = 15.0, 15.0  # Arterial Inlet (B01)
-        D_mid_d1,   D_mid_d2   = 4.0,  2.0   # Capillary Bed (Middle)
-        D_end_d1,   D_end_d2   = 20.0, 20.0  # Venous Outlet (Max Branch)
+        D_start_d1 = 15.0  # Arterial Inlet (B01)
+        D_mid_d1   = 4.0   # Capillary Bed (Middle)
+        D_end_d1   = 20.0  # Venous Outlet (Max Branch)
         
         # Find the network boundaries
         all_generations = []
@@ -1088,10 +1108,7 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         delta_ven = max(n_end - n_mid, 1e-6)
         
         factor_art_d1 = (D_start_d1 / D_mid_d1) ** (1.0 / delta_art)
-        factor_art_d2 = (D_start_d2 / D_mid_d2) ** (1.0 / delta_art)
-        
         factor_ven_d1 = (D_end_d1 / D_mid_d1) ** (1.0 / delta_ven)
-        factor_ven_d2 = (D_end_d2 / D_mid_d2) ** (1.0 / delta_ven)
 
         for bo_label in unique_branch_orders:
             if bo_label not in current_diam_dict:
@@ -1109,20 +1126,11 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
                             dist = n - n_mid
                             calc_d1 = D_mid_d1 * (factor_ven_d1 ** dist)
                             
-                        # Apply Physiological Sphincter Constrictions (d2)
-                        # By default, vessels are unconstricted (d2 = d1)
-                        calc_d2 = calc_d1
-                        
-                        # (i) Intimal Cushion at the origin of the carotid (B01)
-                        if n == 1:
-                            calc_d2 = calc_d1 * hemo_config.intimal_cushion_constriction_ratio
-                            
-                        # (ii) Pre-Capillary Sphincters at the origin of capillary beds
-                        # We define the transition zone (n_mid) as the start of the capillary beds
-                        elif n == int(n_mid) or n == int(n_mid) - hemo_config.pre_capillary_topological_offset:
-                            calc_d2 = calc_d1 * hemo_config.pre_capillary_constriction_ratio
-                        
-                        current_diam_dict[bo_label] = {"d1": calc_d1, "d2": calc_d2}
+                        # d2 is the constricted calibre. Constriction is disabled, so it equals
+                        # d1. The pair is kept rather than collapsed to a scalar so the dict shape
+                        # stays valid for the resistance-network pipelines that still own the
+                        # capability, and so re-enabling cannot inherit a stale fabricated ratio.
+                        current_diam_dict[bo_label] = {"d1": calc_d1, "d2": calc_d1}
                     else:
                         current_diam_dict[bo_label] = default_diam_vals
                 except Exception as e:
