@@ -33,7 +33,7 @@ rather than rewritten so that the sequence stays auditable. **S2 is retracted; r
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Survey, call-graph trace, benchmark execution, headline verdict | **complete** |
-| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S16); Parts 2 to 4 not started |
+| 2 | Stage-by-stage review, Parts 1 to 4 | **Part 1 complete** (S10–S17); Part 2 opened (S18); Parts 3 to 4 not started |
 | 3 | Per-method verdicts and tiered plan of attack | not started |
 
 Unlike the H1 assessment, which had its status-marker convention retrofitted after a remediation
@@ -714,6 +714,77 @@ document whose job is to assess one.
 
 `STATUS — OUTSTANDING` (no numerical defect; the naming remains a hazard, now guarded)
 
+### S17. The constriction disable, verified end to end on real data
+
+`1ee46a1` was verified by unit test at the configuration surface. This checks it where it matters,
+by re-running the whole pipeline on WKY-A with the same frozen parameters as the H1 batch (ROI
+160³, threshold 0.90) into a separate output directory, so the pre-fix artefacts survive as
+evidence.
+
+**Measured**, comparing the same specimen before and after:
+
+| | Edges | Constricted | Max R inflation | Total flow |
+|---|---|---|---|---|
+| Before, `constrict_at_pericytes = True` | 4,512 | 653 (14.5%) | 36.79× | 1.4233 × 10¹² |
+| **After, disabled** | 4,512 | **0 (0.0%)** | **1.00×** | 1.6292 × 10¹² |
+
+Edge count is identical, so the morphometry is unchanged and only the resistance model moved, which
+is what the change was supposed to do. Every edge now sits exactly on Hagen–Poiseuille.
+
+**The fabricated constriction was suppressing total network flow by 14.5%.** That is the size of
+the error S9 and S14 describe, expressed as the quantity H2 §2.1 would actually report.
+
+`STATUS — FIXED`, verified. Regeneration of the remaining five specimens is in progress.
+
+### S18. Review notes on `resistance.py` and `rheology.py`
+
+Opening of the Part 2 module review. `probability.py` and the non-ADR parts of `perfusion.py` are
+not yet covered.
+
+**`resistance.py` is sound in its core.** The Dirichlet partition
+([resistance.py:199](src/ImageLynx/haemodynamics/resistance.py:199)) is the standard reduction, the
+two-point effective resistance ([:100](src/ImageLynx/haemodynamics/resistance.py:100)) uses the
+correct inject-and-ground construction, and parallel edges sum conductance correctly. Three smaller
+points:
+
+1. **Edges with missing or non-positive resistance are dropped silently**
+   ([:34](src/ImageLynx/haemodynamics/resistance.py:34)), with no count and no warning. A dropped
+   edge is an edge carrying no flow, which changes the network's topology without saying so.
+   Upstream validation currently makes this unreachable, so it is a latent trap rather than a live
+   defect, but it is the same silent-fallback shape H1 kept finding.
+2. **`output_nodes` is mutated in place** ([:154](src/ImageLynx/haemodynamics/resistance.py:154))
+   when a Robin ghost node exists, which modifies a list the caller owns.
+3. **`1.0 / edge_resistance` is unguarded** ([:241](src/ImageLynx/haemodynamics/resistance.py:241)).
+   Measured minimum resistance in the shipped output is 3.1 × 10⁻⁶, so it does not fire.
+
+It also **confirms the S10 mechanism in code**: identical Dirichlet pressures are applied at every
+selected terminal, so total flow scales with how many terminals were selected. That is exactly why
+the 10.7× inlet-to-outlet asymmetry S10 measured matters.
+
+**`rheology.py` carries one question worth settling before any haematocrit result is quoted.**
+`calculate_pries_secomb_viscosity` ([rheology.py:41](src/ImageLynx/haemodynamics/rheology.py:41))
+computes
+
+```
+mu_45 = 220.0 * exp(-1.3 * D) + 3.2 - 2.44 * exp(-0.06 * D**0.645)
+```
+
+The `220·e^(−1.3D)` term is the **in vitro** Pries et al. (1992) relation for glass tubes. The
+in vivo relation, which the docstring says the function implements, uses `6·e^(−0.085D)` in that
+position. The wall-layer correction `(D/(D−1.1))²` applied at
+[:51](src/ImageLynx/haemodynamics/rheology.py:51) is from the in vivo law.
+
+At D = 8 µm and H = 0.45 the two give μ₄₅ of about 1.27 against 4.30, roughly a **3.4× difference in
+apparent viscosity**, and resistance is linear in viscosity.
+
+**This is flagged for verification against the source, not asserted as an error.** Both relations
+are real and published, and which one is appropriate is a modelling judgement rather than a coding
+one. Two things make it lower priority than it first looks: the discrepancy is close to a uniform
+multiplier, so S13's within-specimen ratios largely cancel it; and §2.2, the method that depends on
+haematocrit most directly, is TH-blocked regardless. It should be settled before §2.2 is attempted.
+
+`STATUS — OUTSTANDING`
+
 ### A suspected frame transpose, checked and refuted
 
 Worth recording because it would have invalidated every figure in the H1 report. In `_nodes.vtp` the
@@ -792,15 +863,17 @@ Done, in Part 1 above:
 
 Remaining, in priority order:
 
-3. **Regenerate the six-specimen flow and perfusion output** (S2, S14). The existing files were
-   produced with `constrict_at_pericytes = True`, so 12.3% of edges carry an inflated resistance.
-   The solve itself is sound, so this is a re-run rather than a repair.
+3. ~~Regenerate the six-specimen flow and perfusion output~~ **WKY-A done and verified (S17);
+   the other five are running.** Constricted edges fall from 653 to 0 and total flow rises 14.5%.
 4. ~~Discretisation consistency across the three solvers~~ **done, S16.**
 5. ~~Calibre sensitivity across the threshold sweep~~ **done, S15.** 0.922 µm over the clean
    interval, giving the operative noise floor.
-6. Stage-by-stage review of `resistance.py`, `rheology.py`, `probability.py` and `perfusion.py`, in
-   the H1 assessment's per-stage format. The pericyte and constriction modules are **excluded** by
-   the decision recorded in S9.
+6. Stage-by-stage review, **opened in S18**: `resistance.py` and `rheology.py` are covered.
+   `probability.py` and the non-ADR parts of `perfusion.py` remain. The pericyte and constriction
+   modules are **excluded** by the decision recorded in S9.
+
+7. **Settle the Pries-Secomb in vitro against in vivo question** (S18) before §2.2 is attempted.
+   Worth about 3.4× in apparent viscosity.
 
 ---
 
