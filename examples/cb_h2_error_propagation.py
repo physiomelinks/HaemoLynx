@@ -221,3 +221,71 @@ if __name__ == "__main__":
                         help=f"diameter perturbation in um (default {VOXEL_UM}, one voxel; "
                              f"pass {THRESHOLD_SHIFT_UM} for the measured threshold shift)")
     main(parser.parse_args().perturbation_um)
+    boundary_sensitivity()
+
+
+def boundary_sensitivity():
+    """S20: how much does the shunt ratio move when the boundary choice moves?
+
+    S13 established that a within-specimen ratio cancels calibre error. That is only half the
+    picture. S10 showed the inlet and outlet nodes are chosen positionally, by axis and by band
+    width, with no anatomical basis for either. If the ratio moves when that choice moves, being
+    a ratio does not save it.
+
+    The axis and the band width are separated because they are not equally fixable. There is no
+    anatomical reason to prefer one axis over another in a mid-organ ROI, so that term is
+    irreducible without new information. The band width is a free parameter that could be argued
+    to a principled value.
+    """
+    cases = (("axis0 25%", 2, 25.0), ("axis1 25%", 1, 25.0), ("axis2 25%", 0, 25.0),
+             ("axis0 10%", 2, 10.0), ("axis0 40%", 2, 40.0))
+
+    def ratio_for(specimen_id, axis, percent):
+        u0, v0, length, diameter, nodes, bounds = load(specimen_id)
+        ids = np.unique(np.concatenate([u0, v0]))
+        remap = {x: i for i, x in enumerate(ids)}
+        u = np.array([remap[x] for x in u0])
+        v = np.array([remap[x] for x in v0])
+        node_id = np.asarray(nodes.point_data["node_id"]).astype(int)
+        degree = np.asarray(nodes.point_data["degree"]).astype(int)
+        points = nodes.points
+        low, high = bounds[axis]
+        extent = high - low
+        terminal = degree == 1
+        coord = points[terminal][:, axis]
+        inlets = np.array([remap[x] for x in node_id[terminal][coord <= low + extent * percent / 100.0]
+                           if x in remap])
+        outlets = np.array([remap[x] for x in node_id[terminal][coord >= low + extent * (1 - percent / 100.0)]
+                            if x in remap])
+        if len(inlets) == 0 or len(outlets) == 0:
+            return None
+        shunt = diameter >= np.percentile(diameter, 90)
+        flows = solve_edge_flows(u, v, length, diameter, inlets, outlets, len(ids))
+        return flows[shunt].sum() / flows.sum()
+
+    print("\n=== S20: shunt ratio against the boundary choice ===")
+    print(f"{'spec':8}" + "".join(f"{name:>12}" for name, _, _ in cases)
+          + f"{'axis':>8}{'band':>8}{'total':>8}")
+    axis_spread, band_spread, total_spread = [], [], []
+    for specimen_id in SPECIMENS:
+        values = [ratio_for(specimen_id, axis, percent) for _, axis, percent in cases]
+        present = [v for v in values if v is not None]
+        by_axis = [v for v in values[:3] if v is not None]
+        # The band triple must hold the axis fixed, so index 0 (axis0 25%), not index 1 (axis1).
+        by_band = [values[3], values[0], values[4]]
+        by_band = [v for v in by_band if v is not None]
+
+        def full_range(xs):
+            return 100.0 * (max(xs) - min(xs)) / np.mean(xs) if len(xs) > 1 else float("nan")
+
+        axis_spread.append(full_range(by_axis))
+        band_spread.append(full_range(by_band))
+        total_spread.append(full_range(present))
+        print(f"{specimen_id:8}"
+              + "".join(f"{(v if v is not None else float('nan')):12.4f}" for v in values)
+              + f"{axis_spread[-1]:7.1f}%{band_spread[-1]:7.1f}%{total_spread[-1]:7.1f}%")
+
+    print(f"\nmean spread of the shunt ratio: axis {np.nanmean(axis_spread):.1f}%, "
+          f"band {np.nanmean(band_spread):.1f}%, combined {np.nanmean(total_spread):.1f}%")
+    print("Calibre error moves the same ratio 6.3% (S13, S15), so the boundary choice, "
+          "not calibre, is the dominant term.")

@@ -33,7 +33,7 @@ rather than rewritten so that the sequence stays auditable. **S2 is retracted; r
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Survey, call-graph trace, benchmark execution, headline verdict | **complete** |
-| 2 | Stage-by-stage review | **complete** (S10–S19) |
+| 2 | Stage-by-stage review | **complete** (S10–S20) |
 | 3 | Per-method verdicts and tiered plan of attack | not started |
 
 Unlike the H1 assessment, which had its status-marker convention retrofitted after a remediation
@@ -122,17 +122,26 @@ and is negligible. Correlated error, which is what a shared threshold and classi
 not average down at all (S12). Calibrated against the threshold shift the H1 sweep actually
 measured, 0.922 µm (S15), the operative noise floor is:
 
-| Quantity | Floor | Against H1's 27% to 40% effects |
+| Quantity | Calibre floor | Against H1's 27% to 40% effects |
 |---|---|---|
 | Absolute network flow | ±45% | cannot resolve them |
-| Within-specimen ratio | **±6.3%** | **can resolve them** |
+| Within-specimen ratio | ±6.3% | comfortably, **but see below** |
 
-A within-specimen ratio cancels 86% of the correlated error, at both perturbation sizes tested
-(S13). The rule that follows is the difference between an answerable question and an unanswerable
-one, not a caution:
+A within-specimen ratio cancels 86% of the correlated calibre error, at both perturbation sizes
+tested (S13). The rule that follows still holds:
 
 > **Express H2 as ratios computed within a specimen, never as absolute flows compared between
 > specimens.** §2.1 and §2.3 already satisfy this. §2.4 does not, and needs re-posing.
+
+**Revised again by S20, and this is the number to carry away.** Calibre is not the only error
+source, and it is not the largest. The boundary nodes are chosen by an axis and a band width with
+no anatomical basis, and varying only that choice moves the same shunt ratio by **25.3%**, four
+times the calibre term. The operative floor for a within-specimen ratio is therefore about **26%**,
+against H1 effects of 27% to 40%: a margin of roughly 1.1× to 1.6×, not the fourfold this section
+claimed before S20 was measured.
+
+**H2's binding constraint is its boundary conditions, not its calibre and not its physics.** That is
+the one piece of good news in it, because unlike calibre it is fixable in software.
 
 ---
 
@@ -839,6 +848,62 @@ attempted rather than discovered during it.
    of where the ROI was cut.
 
 `STATUS — OUTSTANDING`
+
+### S20. The boundary choice, not calibre, is the dominant error on a ratio
+
+**This revises S13 and S15 downward, and it is the most consequential finding in Phase 2.**
+
+S13 and S15 established that a within-specimen ratio cancels 86% of the correlated calibre error,
+leaving 6.3%, and concluded that ratio measures therefore had a comfortable margin over H1's effect
+sizes. That conclusion tested one error source and treated it as the only one. S10 had already shown
+that the inlet and outlet nodes are chosen positionally, by an axis and a band width with no
+anatomical basis for either, and that was never propagated into the ratio.
+
+**Measured**, taking the same shunt fraction through the same solve while varying only the boundary
+choice:
+
+| Specimen | axis0 25% | axis1 25% | axis2 25% | axis0 10% | axis0 40% | Axis | Band | Total |
+|---|---|---|---|---|---|---|---|---|
+| WKY-A | 0.2766 | 0.2773 | 0.2745 | 0.3156 | 0.3165 | 1.0% | 13.2% | 14.4% |
+| WKY-B | 0.2884 | 0.2876 | 0.3262 | 0.2792 | 0.3417 | 12.8% | 20.6% | 20.5% |
+| WKY-C | 0.2310 | 0.1870 | 0.1675 | 0.2744 | 0.2844 | 32.6% | 20.3% | 51.1% |
+| SHR-A | 0.3199 | 0.3216 | 0.2828 | 0.3157 | 0.3597 | 12.6% | 13.3% | 24.0% |
+| SHR-B | 0.2622 | 0.2933 | 0.2444 | 0.3008 | 0.2338 | 18.4% | 25.2% | 25.1% |
+| SHR-C | 0.2776 | 0.2968 | 0.2914 | 0.2791 | 0.3271 | 6.7% | 16.8% | 16.8% |
+
+**Mean spread: axis 14.0%, band width 18.2%, combined 25.3%.** Against 6.3% from calibre, the
+boundary choice moves the ratio **four times more**. Neither sub-term dominates, so fixing one alone
+buys little. WKY-C moves 51.1%, which is larger than any group difference H1 reported.
+
+**The revised noise floor**, combining the two independent sources in quadrature:
+
+| Source | Effect on a within-specimen ratio |
+|---|---|
+| Correlated calibre error (S13, S15) | 6.3% |
+| Boundary axis choice | 14.0% |
+| Boundary band width | 18.2% |
+| **Combined boundary arbitrariness** | **25.3%** |
+| **Operative floor** | **≈ 26%** |
+
+Against H1's 27% to 40% effects that is a margin of roughly **1.1× to 1.6×**, not the fourfold S15
+claimed. A ratio measure is no longer comfortably above the floor; it is marginally above it.
+
+**Why this is still better news than the calibre bound.** The calibre floor needs better imaging or
+a sub-voxel estimator, neither of which is near. The boundary floor is a modelling choice and is
+addressable in software today, three ways in increasing order of merit:
+
+1. **Report the ensemble.** Solve across the boundary choices and report the ratio with its spread.
+   This does not reduce the uncertainty but stops it being invisible, and it is available now.
+2. **Fix the band width on a principle** rather than a default, which addresses the larger of the
+   two sub-terms.
+3. **Determine the vascular axis anatomically** rather than taking the acquisition axis, which is
+   the only route that genuinely removes the 14.0% rather than quantifying it.
+
+**Consequence for §2.1.** It remains the best-placed method, but its readiness claim changes: it is
+not merely waiting on TH data. Its boundary conditions need to be settled first, or every number it
+produces carries a ±25% band set by an arbitrary choice.
+
+`STATUS — OUTSTANDING` (the highest-priority H2 item that is not TH-gated)
 
 ### A suspected frame transpose, checked and refuted
 
