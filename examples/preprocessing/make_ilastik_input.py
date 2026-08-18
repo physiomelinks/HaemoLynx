@@ -136,7 +136,8 @@ def write_h5(path, channels, names, voxel_size):
             "data",
             shape=shape,
             dtype=np.float32,
-            chunks=(min(32, shape[0]), 128, 128, shape[3]),
+            chunks=(min(32, shape[0]), min(128, shape[1]),
+                    min(128, shape[2]), shape[3]),
             compression="gzip",
             compression_opts=4,
         )

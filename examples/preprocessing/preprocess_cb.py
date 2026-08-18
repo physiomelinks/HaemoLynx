@@ -201,7 +201,13 @@ def diagnose_z(vol):
 def _rb_slice(args):
     from skimage.restoration import rolling_ball
     sl, radius = args
-    return sl - rolling_ball(sl, radius=radius, workers=1)
+    # The thread-count keyword was renamed: `workers` in older scikit-image,
+    # `num_threads` from 0.20. Either way it must be 1, because the outer
+    # ProcessPoolExecutor already owns the parallelism.
+    import inspect
+    kw = ("num_threads" if "num_threads" in
+          inspect.signature(rolling_ball).parameters else "workers")
+    return sl - rolling_ball(sl, radius=radius, **{kw: 1})
 
 
 def subtract_background(vol, radius, workers):
@@ -321,8 +327,12 @@ def write_h5(path, channels, names, voxel):
         for k in "zyxc"]})
 
     with h5py.File(path, "w") as f:
+        # Chunks are clamped to the data shape: h5py rejects a chunk larger
+        # than the dataset in any dimension, which a small volume would hit.
+        chunks = (min(32, shape[0]), min(128, shape[1]),
+                  min(128, shape[2]), shape[3])
         ds = f.create_dataset("data", shape=shape, dtype=np.float32,
-                              chunks=(min(32, shape[0]), 128, 128, shape[3]),
+                              chunks=chunks,
                               compression="gzip", compression_opts=4)
         for i in range(len(channels)):
             ds[..., i] = channels[i]
