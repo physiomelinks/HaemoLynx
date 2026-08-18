@@ -65,6 +65,13 @@ Downstream, `prob_to_mask.py` turns an Ilastik probability export into a binary 
 calibrated distance transform. It expects channel-last `zyxc` and a dataset named `data`, which
 both preprocessors write.
 
+## Segmenting in Ilastik
+
+`ilastik-segmentation-guide.md` covers both channels end to end: the system requirements, the
+project layout and pooled-labelling rule they share, the trained state of the vessel project,
+the step-by-step for labelling the TH volumes, export settings and sizing, and the
+`prob_to_mask.py` invocation for each channel.
+
 ## Tests
 
 `tests/test_preprocess_th.py` in the repository root, run by the normal suite. Each test encodes
