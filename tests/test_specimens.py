@@ -362,8 +362,9 @@ def test_the_vessel_class_index_is_recorded():
 def _write_project(path, lanes, label_names=("vessel", "background"), compute_in_2d=False):
     """Build a minimal .ilp with the structure verify_classifier reads.
 
-    ``lanes`` is a sequence of (preproc_stem, [z_start, ...]); an empty depth list means the
-    lane is registered but never labelled, which is the real failure this guards against.
+    ``lanes`` is a sequence of (input_file_name, [z_start, ...]); an empty depth list means
+    the lane is registered but never labelled, which is the real failure this guards against.
+    The name is the full HDF5 file name so that either channel's project can be built here.
     """
     import h5py
     import numpy as np
@@ -372,10 +373,10 @@ def _write_project(path, lanes, label_names=("vessel", "background"), compute_in
         project["PixelClassification/LabelNames"] = np.array(
             [n.encode() for n in label_names], dtype="S32")
 
-        for position, (stem, depths) in enumerate(lanes):
+        for position, (input_name, depths) in enumerate(lanes):
             lane = f"lane{position:04d}"
             project[f"Input Data/infos/{lane}/Raw Data/filePath"] = \
-                f"{stem}_ilastik.h5/data".encode()
+                f"/some/where/{input_name}/data".encode()
 
             group = project.create_group(f"PixelClassification/LabelSets/labels{position:03d}")
             for block_index, z in enumerate(depths):
@@ -387,8 +388,11 @@ def _write_project(path, lanes, label_names=("vessel", "background"), compute_in
         project["FeatureSelections/SelectionMatrix"] = np.zeros((6, 7), dtype=bool)
 
 
-def _all_lanes(depths):
-    return [(s.preproc_stem, list(depths)) for s in SPECIMENS]
+def _all_lanes(depths, channel=None):
+    from ImageLynx.specimens import VESSEL_CHANNEL
+
+    channel = VESSEL_CHANNEL if channel is None else channel
+    return [(channel.input_name(s), list(depths)) for s in SPECIMENS]
 
 
 def test_a_properly_pooled_project_verifies(tmp_path):
@@ -412,7 +416,9 @@ def test_labels_on_one_cohort_only_are_refused(tmp_path):
     """
     from ImageLynx.specimens import verify_classifier
 
-    lanes = [(s.preproc_stem, [214] if s.specimen_id == "WKY-A" else []) for s in SPECIMENS]
+    from ImageLynx.specimens import VESSEL_CHANNEL
+    lanes = [(VESSEL_CHANNEL.input_name(s),
+              [214] if s.specimen_id == "WKY-A" else []) for s in SPECIMENS]
     path = tmp_path / "one_cohort.ilp"
     _write_project(path, lanes)
 
@@ -560,10 +566,12 @@ def test_group_label_imbalance_is_reported_without_failing(tmp_path):
     """
     from ImageLynx.specimens import verify_classifier
 
+    from ImageLynx.specimens import VESSEL_CHANNEL
+
     lopsided = []
     for specimen in SPECIMENS:
         blocks = [100, 200] * (10 if specimen.group == "SHR" else 1)
-        lopsided.append((specimen.preproc_stem, blocks))
+        lopsided.append((VESSEL_CHANNEL.input_name(specimen), blocks))
 
     path = tmp_path / "lopsided.ilp"
     _write_project(path, lopsided)
@@ -617,3 +625,193 @@ def test_a_retrained_classifier_is_flagged_in_the_warnings(tmp_path):
 
     assert report["is_measured_baseline"] is False
     assert any("baseline" in w.lower() for w in report["warnings"])
+
+
+# --- The same verification, for the TH glomus cell project ---------------------------------
+
+TH_LABELS = ("Cytoplasm", "Nucleus", "Boundary", "Background")
+
+
+def test_the_two_channels_name_distinct_projects_inputs_and_targets():
+    """Nothing about the vessel channel may leak into the TH one.
+
+    Both are pixel classification over the same six specimens, so a shared default is easy to
+    introduce and produces confident nonsense rather than an error.
+    """
+    from ImageLynx.specimens import (
+        SEGMENTATION_CHANNELS, TH_CHANNEL, VESSEL_CHANNEL, POOLED_CLASSIFIER)
+
+    assert set(SEGMENTATION_CHANNELS) == {"vessel", "th"}
+    assert VESSEL_CHANNEL.project != TH_CHANNEL.project
+    assert VESSEL_CHANNEL.project == POOLED_CLASSIFIER
+    assert VESSEL_CHANNEL.target_label != TH_CHANNEL.target_label
+    assert VESSEL_CHANNEL.input_channels != TH_CHANNEL.input_channels
+    for channel in (VESSEL_CHANNEL, TH_CHANNEL):
+        assert channel.project.parent == ILASTIK_INPUT_DIR, (
+            "an ilastik project registers its datasets by relative path, so it has to sit "
+            "beside them")
+
+
+def test_channel_input_names_are_mutually_unambiguous():
+    """The SHR preproc stem is a prefix of its own TH input name.
+
+    Lane matching is a substring test against the path ilastik stored, so matching on the
+    stem alone would let a vessel project claim TH lanes for the three SHR specimens and not
+    for the three WKY ones. That is worse than failing outright.
+    """
+    from ImageLynx.specimens import TH_CHANNEL, VESSEL_CHANNEL
+
+    for specimen in SPECIMENS:
+        vessel_name = VESSEL_CHANNEL.input_name(specimen)
+        th_name = TH_CHANNEL.input_name(specimen)
+        assert vessel_name != th_name
+        assert vessel_name not in th_name, (
+            f"{vessel_name} is a substring of {th_name}, so lane matching cannot tell the "
+            f"two channels apart for {specimen.specimen_id}")
+        assert th_name not in vessel_name
+
+
+def test_a_properly_pooled_th_project_verifies(tmp_path):
+    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
+
+    path = tmp_path / "th.ilp"
+    _write_project(path, _all_lanes([100, 200, 300], TH_CHANNEL), label_names=TH_LABELS)
+
+    report = verify_classifier(path, channel=TH_CHANNEL)
+    assert report["label_names"] == list(TH_LABELS)
+    assert report["total_labelled_voxels"] == 6 * 3 * 16
+    assert report["channel"] == "th"
+
+
+def test_the_channel_can_be_named_by_its_key(tmp_path):
+    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
+
+    path = tmp_path / "th.ilp"
+    _write_project(path, _all_lanes([100, 200], TH_CHANNEL), label_names=TH_LABELS)
+    assert verify_classifier(path, channel="th")["channel"] == "th"
+    with pytest.raises(ValueError, match="Unknown segmentation channel"):
+        verify_classifier(path, channel="nonsense")
+
+
+def test_a_th_project_is_refused_when_a_lane_is_unlabelled(tmp_path):
+    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
+
+    lanes = _all_lanes([100, 200], TH_CHANNEL)
+    lanes[3] = (lanes[3][0], [])
+    path = tmp_path / "th_partial.ilp"
+    _write_project(path, lanes, label_names=TH_LABELS)
+
+    with pytest.raises(ValueError) as excinfo:
+        verify_classifier(path, channel=TH_CHANNEL)
+    assert "no labels at all" in str(excinfo.value)
+
+
+def test_a_th_project_is_refused_when_the_target_label_is_not_first(tmp_path):
+    """The exported probability channel order follows label order."""
+    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
+
+    path = tmp_path / "th_reordered.ilp"
+    _write_project(path, _all_lanes([100, 200], TH_CHANNEL),
+                   label_names=("Nucleus", "Cytoplasm", "Boundary", "Background"))
+
+    with pytest.raises(ValueError) as excinfo:
+        verify_classifier(path, channel=TH_CHANNEL)
+    assert "Cytoplasm" in str(excinfo.value)
+
+
+def test_the_vessel_channel_refuses_a_th_project_and_the_reverse(tmp_path):
+    """Verifying against the wrong channel must fail loudly, not pass by accident."""
+    from ImageLynx.specimens import TH_CHANNEL, VESSEL_CHANNEL, verify_classifier
+
+    th = tmp_path / "th.ilp"
+    _write_project(th, _all_lanes([100, 200], TH_CHANNEL), label_names=TH_LABELS)
+    with pytest.raises(ValueError) as excinfo:
+        verify_classifier(th, channel=VESSEL_CHANNEL)
+    assert "not registered as lanes" in str(excinfo.value)
+
+    vessel = tmp_path / "vessel.ilp"
+    _write_project(vessel, _all_lanes([100, 200], VESSEL_CHANNEL))
+    with pytest.raises(ValueError) as excinfo:
+        verify_classifier(vessel, channel=TH_CHANNEL)
+    assert "not registered as lanes" in str(excinfo.value)
+
+
+def test_th_verification_carries_no_measured_baseline_warning(tmp_path):
+    """There is no measured TH baseline, so claiming to deviate from one is noise."""
+    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
+
+    path = tmp_path / "th.ilp"
+    _write_project(path, _all_lanes([100, 200, 300], TH_CHANNEL), label_names=TH_LABELS)
+
+    warnings = " ".join(verify_classifier(path, channel=TH_CHANNEL)["warnings"])
+    assert "measured baseline" not in warnings
+    assert TH_CHANNEL.has_measured_baseline is False
+
+
+def test_group_label_counts_are_reported_for_a_th_project(tmp_path):
+    """Lane-to-specimen matching has to work per channel, or every soft check goes silent."""
+    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
+
+    lanes = [(TH_CHANNEL.input_name(s), [100, 200] * (5 if s.group == "SHR" else 1))
+             for s in SPECIMENS]
+    path = tmp_path / "th_lopsided.ilp"
+    _write_project(path, lanes, label_names=TH_LABELS)
+
+    report = verify_classifier(path, channel=TH_CHANNEL)
+    counts = report["group_label_counts"]
+    assert counts["SHR"] > counts["WKY"] > 0, (
+        "zero counts mean the lanes were never matched to specimens")
+    assert any("imbalance" in w for w in report["warnings"])
+
+
+def test_specimens_expose_the_th_input_path():
+    from ImageLynx.specimens import TH_CHANNEL
+
+    for specimen in SPECIMENS:
+        assert specimen.th_input_path.name == TH_CHANNEL.input_name(specimen)
+        assert specimen.th_input_path.parent == ILASTIK_INPUT_DIR
+        assert specimen.th_input_path != specimen.ilastik_input_path
+
+
+def test_channel_input_names_match_what_the_preprocessors_actually_wrote():
+    """Pin both channels' file naming against committed evidence.
+
+    Without this, the naming constants are only checked against themselves: pointing the TH
+    channel at the vessel stem is self-consistent and produces a project that registers no
+    lanes at all. The QC sidecars record the output path each preprocessing run wrote, and
+    they are committed, so this holds without needing the 5 GB of volumes.
+    """
+    import json
+
+    from ImageLynx.specimens import TH_CHANNEL, VESSEL_CHANNEL, _BUNDLED_QC_DIR
+
+    for channel in (VESSEL_CHANNEL, TH_CHANNEL):
+        for specimen in SPECIMENS:
+            sidecar = _BUNDLED_QC_DIR / channel.qc_name(specimen)
+            assert sidecar.exists(), (
+                f"no committed sidecar {sidecar.name} for {specimen.specimen_id} "
+                f"on the {channel.key} channel")
+            written = Path(json.loads(sidecar.read_text())["output_h5"]).name
+            assert written == channel.input_name(specimen), (
+                f"{channel.key} channel expects {channel.input_name(specimen)} for "
+                f"{specimen.specimen_id}, but preprocessing wrote {written}")
+
+
+def test_the_th_sidecars_record_the_th_acquisition_channel():
+    """Channel 1 is TH. Channel 0 is lectin, and reading it would segment the vessels."""
+    import json
+
+    from ImageLynx.specimens import TH_CHANNEL, _BUNDLED_QC_DIR
+
+    for specimen in SPECIMENS:
+        record = json.loads((_BUNDLED_QC_DIR / TH_CHANNEL.qc_name(specimen)).read_text())
+        assert record["channel_used"] == 1, (
+            f"{specimen.specimen_id} TH input was built from acquisition channel "
+            f"{record['channel_used']}, not 1")
+        assert record["n_channels_in_file"] == 2
+
+
+def test_specimens_expose_the_bundled_th_qc_sidecar():
+    for specimen in SPECIMENS:
+        assert specimen.bundled_th_qc_path.exists()
+        assert specimen.bundled_th_qc_path != specimen.bundled_qc_path

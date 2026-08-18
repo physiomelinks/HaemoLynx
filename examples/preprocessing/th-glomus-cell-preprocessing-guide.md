@@ -410,8 +410,15 @@ case combining channels 0 and 1 is the more honest route.
 
 ### A note on validation
 
-`ImageLynx.specimens.verify_classifier` enforces all of the above for the vessel project:
-label order, no 2D features, all six lanes registered, every lane labelled, at least two depths
-per lane. It is currently written against the vessel label name and class index, so it will not
-validate a TH project as it stands. Extending it to take the label name and index as arguments
-is small, and worth doing before the TH segmentation is used for any measurement.
+`ImageLynx.specimens.verify_classifier` enforces all of the above: label order, no 2D
+features, all six lanes registered, every lane labelled, at least two depths per lane. Pass
+`channel="th"` to check the TH project:
+
+```bash
+venv/bin/python -c "
+from ImageLynx.specimens import verify_classifier
+print(verify_classifier(channel='th')['group_label_counts'])"
+```
+
+Run it before using a TH segmentation for any measurement. It raises `ValueError` listing every
+problem at once, since relabelling is one trip back to the GUI either way.

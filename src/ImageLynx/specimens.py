@@ -150,6 +150,100 @@ VESSEL_LABEL_NAME = "vessel"
 PROCESSING_VOXEL_UM: Tuple[float, float, float] = (1.8639, 1.866, 1.866)
 
 
+# --- The two pixel-classification channels -------------------------------------------------
+#
+# Both channels are pixel classification over the same six specimens, so everything that
+# differs between them is collected here rather than left as module constants that quietly
+# mean "vessel". A shared default between the two produces confident nonsense rather than an
+# error, because a classifier trained on different channels still predicts happily.
+
+@dataclass(frozen=True)
+class SegmentationChannel:
+    """One Ilastik pixel-classification channel: its project, inputs and target class."""
+
+    key: str
+    project: Path
+    #: How the preprocessor named its outputs. The two differ by more than a suffix: the
+    #: lectin volumes were preprocessed from separately extracted C1 TIFFs and carry a
+    #: ``C1-..._vessels`` stem for WKY, whereas the TH volumes were read straight out of the
+    #: two-channel acquisition and are named after it.
+    stem_attr: str
+    input_suffix: str
+    #: The label whose probability channel downstream code reads, and where it sits in the
+    #: project's label order. Ilastik exports one channel per class in label order, so the
+    #: wrong index silently yields a different segmentation rather than an error.
+    target_label: str
+    target_index: int
+    input_channels: Tuple[str, ...]
+    #: Whether a measured baseline hash exists for this project. Only the vessel channel has
+    #: one; warning that a TH project deviates from a baseline that was never measured would
+    #: be noise dressed up as provenance.
+    has_measured_baseline: bool
+
+    def qc_name(self, specimen: "Specimen") -> str:
+        """The preprocessing sidecar that records how this channel's input was produced."""
+        return self.input_name(specimen).replace("_ilastik.h5", "_qc.json")
+
+    def input_name(self, specimen: "Specimen") -> str:
+        """The HDF5 file name this channel's preprocessing wrote for that specimen.
+
+        Deliberately the whole file name rather than the stem. Lane matching is a substring
+        test against the path Ilastik stored, and the SHR stems are prefixes of their own TH
+        input names, so matching on the stem alone would let the vessel channel claim the TH
+        lanes for the three SHR specimens and not for the three WKY ones.
+        """
+        return f"{getattr(specimen, self.stem_attr)}{self.input_suffix}"
+
+
+VESSEL_CHANNEL = SegmentationChannel(
+    key="vessel",
+    project=POOLED_CLASSIFIER,
+    stem_attr="preproc_stem",
+    input_suffix="_ilastik.h5",
+    target_label=VESSEL_LABEL_NAME,
+    target_index=0,
+    input_channels=ILASTIK_INPUT_CHANNELS,
+    has_measured_baseline=True,
+)
+
+#: preprocess_th.py output. Two channels, the second signed: it reads strongly positive on
+#: the bright cytoplasmic ring, about -0.23 in the dark nuclear core and about 0.00 in
+#: background, and that sign is the only thing separating "inside the nucleus" from "outside
+#: the cell". Cytoplasm is first so that reading channel 0 stays the convention both
+#: channels share.
+TH_INPUT_CHANNELS: Tuple[str, str] = ("grayscale", "soma_dog_signed")
+
+TH_CHANNEL = SegmentationChannel(
+    key="th",
+    project=ILASTIK_INPUT_DIR / "th_glomus_segmentation.ilp",
+    stem_attr="stem",
+    input_suffix="_TH_ilastik.h5",
+    target_label="Cytoplasm",
+    target_index=0,
+    input_channels=TH_INPUT_CHANNELS,
+    has_measured_baseline=False,
+)
+
+SEGMENTATION_CHANNELS: Dict[str, SegmentationChannel] = {
+    channel.key: channel for channel in (VESSEL_CHANNEL, TH_CHANNEL)
+}
+
+
+def resolve_channel(channel) -> SegmentationChannel:
+    """Accept a channel, its key, or None for the vessel default."""
+    if channel is None:
+        return VESSEL_CHANNEL
+    if isinstance(channel, SegmentationChannel):
+        return channel
+    try:
+        return SEGMENTATION_CHANNELS[str(channel)]
+    except KeyError:
+        raise ValueError(
+            f"Unknown segmentation channel {channel!r}. "
+            f"Known channels: {sorted(SEGMENTATION_CHANNELS)}."
+        ) from None
+
+
 @dataclass(frozen=True)
 class Specimen:
     """One carotid body, and every path and constant that is specific to it."""
@@ -174,6 +268,21 @@ class Specimen:
     def ilastik_input_path(self) -> Path:
         """3-channel float32 HDF5 at /data, axistags zyxc, each channel in [0, 1]."""
         return ILASTIK_INPUT_DIR / f"{self.preproc_stem}_ilastik.h5"
+
+    @property
+    def bundled_th_qc_path(self) -> Path:
+        """The committed record of how this specimen's TH input was preprocessed."""
+        return _BUNDLED_QC_DIR / TH_CHANNEL.qc_name(self)
+
+    @property
+    def th_input_path(self) -> Path:
+        """preprocess_th.py output: 2-channel float32 HDF5 at /data, axistags zyxc.
+
+        Named after the acquisition stem rather than ``preproc_stem``, because the TH channel
+        was read straight out of the two-channel acquisition while the lectin channel went
+        through a separately extracted C1 TIFF.
+        """
+        return ILASTIK_INPUT_DIR / TH_CHANNEL.input_name(self)
 
     @property
     def qc_path(self) -> Path:
@@ -455,7 +564,10 @@ def is_measured_baseline(path: Optional[Path] = None) -> bool:
     return classifier_sha256(path) == MEASURED_BASELINE_CLASSIFIER_SHA256
 
 
-def read_classifier_metadata(path: Optional[Path] = None) -> Dict[str, object]:
+def read_classifier_metadata(
+    path: Optional[Path] = None,
+    channel=None,
+) -> Dict[str, object]:
     """What the trained Ilastik project actually contains.
 
     Reads the label names, the registered dataset lanes, how many voxels were labelled on
@@ -465,7 +577,8 @@ def read_classifier_metadata(path: Optional[Path] = None) -> Dict[str, object]:
     import h5py
     import numpy as np
 
-    path = POOLED_CLASSIFIER if path is None else Path(path)
+    channel = resolve_channel(channel)
+    path = channel.project if path is None else Path(path)
     if not path.exists():
         raise FileNotFoundError(f"No trained classifier at {path}")
 
@@ -519,6 +632,7 @@ def read_classifier_metadata(path: Optional[Path] = None) -> Dict[str, object]:
 
     return {
         "path": str(path),
+        "channel": channel.key,
         "label_names": label_names,
         "lanes": lanes,
         "compute_in_2d": compute_in_2d,
@@ -531,6 +645,7 @@ def verify_classifier(
     path: Optional[Path] = None,
     require_pooled_labels: bool = True,
     min_depths_per_lane: int = 2,
+    channel=None,
 ) -> Dict[str, object]:
     """Refuse a classifier that cannot support a between-group comparison.
 
@@ -551,15 +666,17 @@ def verify_classifier(
     Returns the metadata report on success. Raises ValueError listing every problem at once,
     since relabelling is one trip back to the GUI either way.
     """
-    report = read_classifier_metadata(path)
+    channel = resolve_channel(channel)
+    report = read_classifier_metadata(path, channel)
     problems: List[str] = []
 
     names = report["label_names"]
-    index = VESSEL_CLASS_INDEX
-    if index is None or index >= len(names) or names[index] != VESSEL_LABEL_NAME:
+    index = channel.target_index
+    if index is None or index >= len(names) or names[index] != channel.target_label:
         problems.append(
-            f"VESSEL_CLASS_INDEX is {index} but the project's label order is {names}; "
-            f"reading the wrong channel yields the inverse segmentation without an error."
+            f"The {channel.key} channel reads probability channel {index}, expecting "
+            f"'{channel.target_label}' there, but the project's label order is {names}; "
+            f"reading the wrong channel yields a different segmentation without an error."
         )
 
     if any(report["compute_in_2d"]):
@@ -570,7 +687,7 @@ def verify_classifier(
 
     lanes = report["lanes"]
     registered = {
-        s.specimen_id: any(s.preproc_stem in str(l["file_path"]) for l in lanes)
+        s.specimen_id: any(channel.input_name(s) in str(l["file_path"]) for l in lanes)
         for s in SPECIMENS
     }
     unregistered = sorted(sid for sid, present in registered.items() if not present)
@@ -584,7 +701,7 @@ def verify_classifier(
         empty, shallow = [], []
         for lane in lanes:
             who = next((s.specimen_id for s in SPECIMENS
-                        if s.preproc_stem in str(lane["file_path"])), lane["lane"])
+                        if channel.input_name(s) in str(lane["file_path"])), lane["lane"])
             labelled = int(lane.get("labelled_voxels", 0))
             if labelled == 0:
                 empty.append(who)
@@ -610,10 +727,13 @@ def verify_classifier(
             + "\n  - ".join(problems)
         )
 
-    report["group_label_counts"] = _group_label_counts(lanes)
-    report["warnings"] = _label_balance_warnings(lanes, report["group_label_counts"])
-    report["is_measured_baseline"] = is_measured_baseline(Path(report["path"]))
-    if not report["is_measured_baseline"]:
+    report["group_label_counts"] = _group_label_counts(lanes, channel)
+    report["warnings"] = _label_balance_warnings(
+        lanes, report["group_label_counts"], channel)
+    report["is_measured_baseline"] = (
+        is_measured_baseline(Path(report["path"])) if channel.has_measured_baseline else None
+    )
+    if channel.has_measured_baseline and not report["is_measured_baseline"]:
         report["warnings"].append(
             "This is not the measured baseline classifier. Every measured number recorded "
             "in ImageLynx.specimens - probability calibration, label imbalance, per-cohort "
@@ -623,20 +743,23 @@ def verify_classifier(
     return report
 
 
-def _lane_specimen(lane) -> Optional["Specimen"]:
-    return next((s for s in SPECIMENS if s.preproc_stem in str(lane["file_path"])), None)
+def _lane_specimen(lane, channel=None) -> Optional["Specimen"]:
+    channel = resolve_channel(channel)
+    return next(
+        (s for s in SPECIMENS if channel.input_name(s) in str(lane["file_path"])), None
+    )
 
 
-def _group_label_counts(lanes) -> Dict[str, int]:
+def _group_label_counts(lanes, channel=None) -> Dict[str, int]:
     counts = {group: 0 for group in GROUPS}
     for lane in lanes:
-        specimen = _lane_specimen(lane)
+        specimen = _lane_specimen(lane, channel)
         if specimen is not None:
             counts[specimen.group] += int(lane.get("labelled_voxels", 0))
     return counts
 
 
-def _label_balance_warnings(lanes, group_counts) -> List[str]:
+def _label_balance_warnings(lanes, group_counts, channel=None) -> List[str]:
     """Soft problems: real risks, but matters of degree rather than binary defects.
 
     Reported rather than raised. A forest weights by labelled voxel count, so lopsided
@@ -645,6 +768,7 @@ def _label_balance_warnings(lanes, group_counts) -> List[str]:
     becomes categorically wrong, and failing on one would discard hours of real work over a
     judgement call that belongs to whoever did the labelling.
     """
+    channel = resolve_channel(channel)
     warnings: List[str] = []
 
     labelled = {group: count for group, count in group_counts.items() if count}
@@ -661,7 +785,7 @@ def _label_balance_warnings(lanes, group_counts) -> List[str]:
             )
 
     per_lane = [(s, int(l.get("labelled_voxels", 0)))
-                for l in lanes for s in [_lane_specimen(l)] if s is not None]
+                for l in lanes for s in [_lane_specimen(l, channel)] if s is not None]
     if per_lane:
         mean_count = sum(c for _, c in per_lane) / len(per_lane)
         thin = [f"{s.specimen_id} ({c})" for s, c in per_lane if c < mean_count / 3]
@@ -680,16 +804,22 @@ def _label_balance_warnings(lanes, group_counts) -> List[str]:
                     f"the weakest signal of the six. Effort is going where it is least needed."
                 )
 
+    # Ilastik label values are 1-based and follow label order, so the target class is
+    # target_index + 1. Comparing it against everything else reduces to the old
+    # vessel-against-background ratio when there are only two classes, and stays meaningful
+    # for the four-class TH project.
+    target_value = channel.target_index + 1
     for lane in lanes:
-        specimen = _lane_specimen(lane)
+        specimen = _lane_specimen(lane, channel)
         counts = lane.get("labels_by_value", {})
-        vessel, background = counts.get(1, 0), counts.get(2, 0)
-        if specimen is None or not background:
+        target = counts.get(target_value, 0)
+        rest = sum(count for value, count in counts.items() if value != target_value)
+        if specimen is None or not rest:
             continue
-        ratio = vessel / background
+        ratio = target / rest
         if not 0.5 <= ratio <= 2.0:
             warnings.append(
-                f"{specimen.specimen_id} vessel:background is {ratio:.2f} "
-                f"({vessel} vs {background}); the classes are sampled very unevenly there."
+                f"{specimen.specimen_id} {channel.target_label}:rest is {ratio:.2f} "
+                f"({target} vs {rest}); the classes are sampled very unevenly there."
             )
     return warnings

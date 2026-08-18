@@ -337,8 +337,29 @@ Run `verify_classifier()`. It checks the label order against the class index the
 no feature is computed in 2D, that all six specimens are registered as lanes, that every lane
 carries labels, and that each has at least two depths.
 
-**It does not yet work for the TH project.** It is written against the vessel label name and
-class index, so it will reject a TH project on the first check regardless of how well labelled it
-is. Extending it to take the label name and index as arguments is small, and worth doing before
-any TH segmentation is used for a measurement. Until then the TH project has no automated guard,
-so the pooled-labelling rule has to be held by hand.
+It takes a `channel` argument, so it works for either project:
+
+```bash
+cd /home/dsas627/PycharmProjects/ImageLynx
+venv/bin/python -c "
+from ImageLynx.specimens import verify_classifier
+import json; print(json.dumps(verify_classifier(channel='th'), indent=2, default=str))"
+```
+
+`channel` accepts `'vessel'`, `'th'`, or a `SegmentationChannel`, and defaults to the vessel
+channel so existing call sites are unchanged. The two channels are defined in
+`ImageLynx.specimens` as `VESSEL_CHANNEL` and `TH_CHANNEL`, each carrying its own project path,
+input file naming, target label and index, and input channel names.
+
+Verifying against the wrong channel fails loudly rather than passing by accident: a TH project
+checked as `vessel` reports all six specimens unregistered, because the lane match is on the
+full input file name.
+
+One asymmetry worth knowing, since it is the reason the channel carries a stem rule rather than
+just a suffix. The lectin volumes were preprocessed from separately extracted C1 TIFFs, so their
+inputs are named `C1-CB3-WKY-CB-A-2x2x2_vessels_ilastik.h5` for WKY but
+`CB3-SHR-CB-A-2x2x2_ilastik.h5` for SHR. The TH volumes were read straight out of the
+two-channel acquisition and are all named after it, `CB3-WKY-CB-A-2x2x2_TH_ilastik.h5`. The SHR
+lectin stem is therefore a prefix of its own TH input name, so matching on the stem alone would
+let the vessel channel claim the TH lanes for the three SHR specimens and not for the three WKY
+ones, which is worse than failing outright.
