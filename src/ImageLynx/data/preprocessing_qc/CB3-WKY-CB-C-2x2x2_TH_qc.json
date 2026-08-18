@@ -1,0 +1,82 @@
+{
+  "input": "./CB3-WKY-CB-C-2x2x2.tif",
+  "parameters": {
+    "input": [
+      "./CB3-WKY-CB-A-2x2x2.tif",
+      "./CB3-WKY-CB-B-2x2x2.tif",
+      "./CB3-WKY-CB-C-2x2x2.tif",
+      "/home/dsas627/Desktop/LCFM Images/CB3-SHR/CB3-SHR-CB-A-2x2x2.tif",
+      "/home/dsas627/Desktop/LCFM Images/CB3-SHR/CB3-SHR-CB-B-2x2x2.tif",
+      "/home/dsas627/Desktop/LCFM Images/CB3-SHR/CB3-SHR-CB-C-2x2x2.tif"
+    ],
+    "output_dir": "/home/dsas627/Desktop/LCFM Images/ilastik_inputs",
+    "channel": 1,
+    "with_vessel_channel": false,
+    "vessel_channel": 0,
+    "z_correct": "none",
+    "force_z_correct": false,
+    "rolling_ball": 12.0,
+    "remove_outliers": 0,
+    "saturated": 0.35,
+    "anchors": [
+      708.0,
+      10578.0
+    ],
+    "tissue_smooth": 15,
+    "dog_sigmas": [
+      1.0,
+      3.0
+    ],
+    "split_dog": false,
+    "workers": 8,
+    "voxel": [
+      1.8639,
+      1.866,
+      1.866
+    ],
+    "diagnose": false,
+    "save_tif": false
+  },
+  "channel_used": 1,
+  "shape_zyx": [
+    435,
+    315,
+    255
+  ],
+  "n_channels_in_file": 2,
+  "z_profile": {
+    "peak_slice": 163,
+    "peak_position_fraction": 0.376,
+    "p99_first_quarter_mean": 1102.6,
+    "p99_last_quarter_mean": 5636.3,
+    "background_p50_range": [
+      93.0,
+      917.0
+    ],
+    "verdict": "hump / tissue-extent dominated",
+    "advice": "Do NOT apply bleach correction. This shape is the tissue block, not photobleaching. Label at several depths in ilastik instead."
+  },
+  "tissue_occupancy": 0.1766,
+  "z_correction": null,
+  "anchor_source": "supplied",
+  "normalisation_anchors": [
+    708.0,
+    10578.0
+  ],
+  "normalisation_anchors_whole_volume": [
+    4.110433578491211,
+    5950.6455078125
+  ],
+  "dog_sigmas_px": [
+    1.0,
+    3.0
+  ],
+  "dog_symmetric_scale": 0.2114368166178497,
+  "fraction_negative": 0.3941846593043348,
+  "output_h5": "/home/dsas627/Desktop/LCFM Images/ilastik_inputs/CB3-WKY-CB-C-2x2x2_TH_ilastik.h5",
+  "channel_names": [
+    "grayscale",
+    "soma_dog_signed"
+  ],
+  "elapsed_seconds": 9.4
+}
