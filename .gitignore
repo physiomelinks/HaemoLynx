@@ -54,3 +54,6 @@ examples/thesis_methods_computational_modelling.tex
 /ilastik_inputs/
 /ilastik_probabilities/
 /masks/
+
+# Claude Code local state: settings plus a nested git worktree (23 MB).
+.claude/
