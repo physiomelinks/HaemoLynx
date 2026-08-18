@@ -254,3 +254,164 @@ the same correction possible here.
 
 Downstream, hand the Ilastik probability export to `prob_to_mask.py`, which expects channel-last
 `zyxc` and the dataset named `data`, both of which this pipeline now writes.
+
+---
+
+## 6. Step by step in the Ilastik GUI
+
+The six files in `ilastik_inputs/` are ready to label. Verified before writing this section:
+dataset `data` at the file root, axistags `zyxc` parsing in ilastik 1.4.1's own vigra on all
+six, `float32`, two channels named `grayscale` and `soma_dog_signed`, chunked
+`(32, 128, 128, 2)`.
+
+### Before you start: free disk space
+
+`/home` is at 99%, with about 6.5 GB free. The probability export does not fit at the default
+settings:
+
+| export | size across the six |
+|---|---|
+| 4 classes, float32 (the default) | **7.31 GB, will not fit** |
+| 4 classes, uint8 | 1.83 GB |
+| 2 classes, float32 | 3.66 GB |
+
+Either free space first or export as `uint8`, which step 7 does. `prob_to_mask.py` already
+handles 8-bit exports: it detects `max > 1.5` and rescales by 255, so nothing downstream
+changes.
+
+### Step 1: New project, saved in the right place
+
+Launch ilastik, choose **Pixel Classification**, and save the project as
+`th_glomus_segmentation.ilp` **inside `~/Desktop/LCFM Images/ilastik_inputs/`**.
+
+The location is not cosmetic. An ilastik project registers its datasets by path relative to
+itself, so a project saved elsewhere breaks the moment the folder moves. `vessel_segmentation.ilp`
+already lives there for the same reason.
+
+This is a **separate project from the vessel one**. Do not add TH lanes to
+`vessel_segmentation.ilp`: its classifier is trained on different channels and a different
+number of them.
+
+### Step 2: Add all six volumes as separate lanes
+
+**Input Data** applet, `Add New...` then `Add separate Image(s)...`, and select all six
+`*_TH_ilastik.h5` files at once. If prompted for the internal dataset, choose `data`.
+
+Check the axes column reads `zyxc` and that each lane shows 2 channels. Add all six now,
+before labelling. A volume the classifier was never shown cannot be part of a pooled training
+set, and `ImageLynx.specimens.verify_classifier` rejects a project with unregistered lanes.
+
+### Step 3: Features, in 3D only
+
+**Feature Selection**, `Select Features...`. Suggested set, following the scales measured on
+this data (ring peak at 4.0 px, nucleus 2.4 to 3.2 px):
+
+* **Colour/Intensity**: sigma 0.3, 0.7, 1.0, 1.6, 3.5, 5.0
+* **Edge**: sigma 1.0, 1.6, 3.5
+* **Texture**: sigma 1.6, 3.5
+
+Leave every feature computing in **3D**. Per-slice 2D features give z-anisotropic predictions
+and staircase artefacts downstream, and `verify_classifier` refuses a project that uses them.
+
+### Step 4: Four labels, in this order
+
+Create four labels and **keep this order**, because the exported probability channels follow
+label order and the index is what downstream code selects on:
+
+| label | name | what to paint | signed DoG reads |
+|---|---|---|---|
+| 1 | Cytoplasm | thin strokes along the bright rings, away from where cells touch | strongly positive |
+| 2 | Nucleus | small dots in the dark cores only | about -0.23 |
+| 3 | Boundary | thin lines in the dim gaps between touching somas | near zero, negative |
+| 4 | Background | empty space outside the cell clusters | about 0.00 |
+
+Classes 2 and 4 are separate on purpose. Merging them, as revision 1 did, makes the segmented
+object a hollow shell and biases cell volume low by roughly 8%. Keeping the nucleus separate
+also gives you a watershed seed, which is far more robust for counting than seeding from
+cytoplasm. Whole-cell volume is then classes 1 and 2 together.
+
+### Step 5: Label every lane, at three depths each
+
+Every one of the six lanes needs labels, at a minimum of two depths and preferably three. This
+is the project's existing standard and it exists because of a real failure: the first trained
+vessel project had all 454 of its labels on WKY-A, on a single z slice, with the other five
+lanes registered and empty. A decision boundary learned from one cohort and applied to the
+other reintroduces exactly the confound the study is trying to measure.
+
+Tissue does not sit at the same depth in every stack, so label where there is tissue:
+
+| specimen | z extent | tissue-bearing z | suggested depths |
+|---|---|---|---|
+| WKY-A | 435 | 0 - 430 | 86, 215, 344 |
+| WKY-B | 435 | 15 - 360 | 84, 187, 291 |
+| WKY-C | 435 | 100 - 430 | 166, 265, 364 |
+| SHR-A | 495 | 0 - 320 | 64, 160, 256 |
+| SHR-B | 495 | 70 - 450 | 146, 260, 374 |
+| SHR-C | 495 | 0 - 345 | 69, 172, 276 |
+
+**Avoid the TH-positive structures that are not carotid body.** Sympathetic neurons and nerve
+fibres label too, and in WKY-A the brightest TH structure in the whole stack is a fibrous body
+at z = 40 to 140, well away from the parenchyma at z = 200 to 350. If you paint it as
+Cytoplasm the classifier will find it everywhere. Either avoid it, or give it its own label.
+
+Use a small brush, 1 or 2 px. Turn on **Live Update** periodically rather than continuously;
+it recomputes features over the whole lane and is slow on these volumes.
+
+### Step 6: Check before exporting
+
+With Live Update on, step through z and confirm that adjacent cells in a dense nest are
+separated by a Boundary or Nucleus prediction rather than fused into one blob. That separation
+is the entire purpose of the two-channel input, and it is cheaper to fix with more labels now
+than to discover after a six-volume export.
+
+### Step 7: Export probabilities as 8-bit
+
+**Prediction Export**, `Choose Export Image Settings...`:
+
+* Source: **Probabilities**
+* Convert to Data Type: **unsigned 8-bit**, and tick **Renormalize** so the full range is used
+* Format: **hdf5**
+* Output path:
+  `~/Desktop/LCFM Images/ilastik_probabilities/{nickname}_Probabilities.h5`
+
+Then `Export All Lanes`. This matches the naming the vessel exports already use and keeps the
+whole cohort inside 1.83 GB.
+
+Headless equivalent, if you would rather not hold the GUI open:
+
+```bash
+~/Desktop/ilastik-1.4.1rc2-gpu-Linux/run_ilastik.sh --headless \
+  --project="$OUT/th_glomus_segmentation.ilp" \
+  --export_source="Probabilities" \
+  --export_dtype=uint8 \
+  --output_format=hdf5 \
+  --output_filename_format="$DATA/ilastik_probabilities/{nickname}_Probabilities.h5" \
+  "$OUT"/*_TH_ilastik.h5
+```
+
+Note that `ImageLynx.io.ilastik.run_ilastik_headless_segmentation` is **not** the right helper
+here: it exports `Simple Segmentation`, not `Probabilities`, and `prob_to_mask.py` expects
+probabilities.
+
+### Step 8: Threshold on evidence, not by eye
+
+```bash
+python3 prob_to_mask.py --prob ".../CB3-WKY-CB-A-2x2x2_TH_ilastik_Probabilities.h5" \
+                        --channel 0 --sweep
+```
+
+`--channel 0` is Cytoplasm under the label order in step 4. The sweep prints the fragmentation
+curve; pick the operating point just above where the component count starts climbing steeply.
+
+One caveat carried over from the vessel path: `prob_to_mask.py` fills 3D cavities by default,
+which for glomus cells would fill the nuclear cores you worked to preserve. Pass
+`--no-fill-holes` unless you specifically want whole-cell masks including nuclei, in which
+case combining channels 0 and 1 is the more honest route.
+
+### A note on validation
+
+`ImageLynx.specimens.verify_classifier` enforces all of the above for the vessel project:
+label order, no 2D features, all six lanes registered, every lane labelled, at least two depths
+per lane. It is currently written against the vessel label name and class index, so it will not
+validate a TH project as it stands. Extending it to take the label name and index as arguments
+is small, and worth doing before the TH segmentation is used for any measurement.
