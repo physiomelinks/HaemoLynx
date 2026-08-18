@@ -186,13 +186,30 @@ reports the others).
   conductances back as microns. `graph.assert_no_forbidden_edge_attributes(G)` raises if it
   reappears; NetworkX algorithms must be passed an explicit `weight="length"` / `weight="resistance"`
   rather than relying on their `"weight"` default.
-- **Viscosity model** — piecewise: `µ(d) = 3.0 mPa·s · (5 µm / d)^1.647` up to **7 µm** (above
-  ~8.7 µm it would predict blood thinner than plasma), then a constant large-vessel
-  `µ = 3.5 mPa·s`. The constant branch is a placeholder — it steps up discontinuously at 7 µm, so
-  7–8.4 µm resistances are overestimated. Diameters from 7 µm to 100 µm therefore raise
-  `haemodynamics.PlaceholderViscosityWarning`; above ~100 µm the constant is close to the true
-  macroscale value and no warning is raised. Modelling the real transition is issue #90, and
-  making the law selectable is issue #85.
+- **Viscosity model** — selectable, and the choice changes every resistance a run produces, so
+  **resistances are not comparable across laws or across diameter bases**. The graph records both
+  in `G.graph["viscosity_law"]` / `["diameter_basis"]`. All of it is in
+  `haemodynamics/viscosity.py`.
+  - The question that decides the answer is **which diameter you measured**, not which law you
+    prefer. `diameter_basis="plasma_column"` (**default**) means the segmented diameter is the
+    channel the fluid occupies — what a plasma stain images, which is what this project's data is.
+    `"anatomical"` means wall-to-wall, including the ~1.1 µm endothelial surface layer.
+  - `viscosity_law="pries"` (**default**) is Pries et al., fitted 3.3–1978 µm, continuous across
+    the whole tree, no placeholder and no warning. Reads `diameter_basis`: `plasma_column` selects
+    the *in vitro* (tube) form, `anatomical` the *in vivo* form. The in vivo form's
+    `(D/(D−1.1))²` factors appear squared, so the leading term carries `(D/(D−1.1))⁴` — that is
+    the Poiseuille correction for quoting a resistance against a diameter wider than the channel,
+    i.e. **a diameter correction, not a property of blood**. Applying it to a plasma-column
+    diameter subtracts the glycocalyx twice and costs ~2.5× in a capillary.
+  - `viscosity_law="capillary_power_law"` is the law used before: `µ(d) = 3.0 mPa·s · (5 µm/d)^1.647`
+    up to 7 µm, then a constant 3.5 mPa·s, raising `haemodynamics.PlaceholderViscosityWarning`
+    between 7 and 100 µm. Kept for comparison with earlier results. It agrees with Pries in vitro
+    to 2% at 3 µm and diverges from there (2.0× at 5 µm, 3.2× at 7 µm): a one-point calibration
+    whose slope is too steep, crossing below plasma viscosity at 8.7 µm.
+  - `viscosity_law="constant"` is plasma everywhere, for separating geometry effects from
+    viscosity ones.
+  - Switching the default from the power law to Pries **roughly doubles capillary resistance**
+    (2.03× at 5 µm). `tests/test_viscosity_laws.py` pins the ratios at each diameter.
 - **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`.
 - **Comments** — only for non-obvious domain logic; prefer self-explanatory code.
 

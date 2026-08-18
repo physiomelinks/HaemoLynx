@@ -15,6 +15,7 @@ from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 from haemolynx.parsers import prefixed_arguments
 from haemolynx.haemodynamics import automated
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+from haemolynx.haemodynamics.viscosity import describe_law
 from haemolynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from haemolynx.haemodynamics.constriction import resolve_generator
 from haemolynx.haemodynamics.constriction_strategy import (
@@ -43,6 +44,9 @@ DIAMETER_DEFAULTS: dict[str, Any] = {
     "constriction_spacing": 100.0,
     "constriction_by_branch_order": {},
     "custom_edges": [],
+    "viscosity_law": "pries",
+    "diameter_basis": "plasma_column",
+    "haematocrit": 0.45,
 }
 
 
@@ -218,6 +222,9 @@ def _assign_poiseuille_resistances(
     poiseuille_model = PoiseuilleModel(
         constriction_length=config.diameter("constriction_length"),
         constriction_spacing=config.diameter("constriction_spacing"),
+        viscosity_law=config.diameter("viscosity_law"),
+        haematocrit=config.diameter("haematocrit"),
+        diameter_basis=config.diameter("diameter_basis"),
     )
     results: dict[str, Any] = {}
 
@@ -238,6 +245,9 @@ def _assign_poiseuille_resistances(
             prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
             constriction_length=config.diameter("constriction_length"),
             constriction_spacing=config.diameter("constriction_spacing"),
+            viscosity_law=config.diameter("viscosity_law"),
+            haematocrit=config.diameter("haematocrit"),
+            diameter_basis=config.diameter("diameter_basis"),
             constriction_probability=(
                 1.0 if configured_probability is None else float(configured_probability)
             ),
@@ -266,6 +276,12 @@ def _assign_poiseuille_resistances(
         config.diameter("custom_edges"),
         edge_diameter=config.diameter("custom_edge_diameter"),
     )
+    # Which law produced these resistances travels with them. They are not
+    # comparable across laws -- several times apart in the smallest vessels --
+    # so a graph pickled today and read next month has to say which it was.
+    G.graph["viscosity_law"] = poiseuille_model.viscosity_law
+    G.graph["haematocrit"] = poiseuille_model.haematocrit
+    G.graph["diameter_basis"] = poiseuille_model.diameter_basis
     return results
 
 
@@ -319,6 +335,13 @@ def apply_poiseuille_haemodynamics(
         active_pericyte_indices=active_pericyte_indices,
         active_center_indices_by_edge=active_center_indices_by_edge,
         rng=pericyte_rng,
+    )
+    # Top level rather than beside a step's counters: it describes every
+    # resistance in the graph, and they are not comparable across laws.
+    summary["viscosity"] = describe_law(
+        G.graph["viscosity_law"],
+        G.graph["haematocrit"],
+        G.graph["diameter_basis"],
     )
 
     return G, summary
