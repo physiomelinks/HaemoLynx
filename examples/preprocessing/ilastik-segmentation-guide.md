@@ -205,24 +205,41 @@ morphology (ring peak at r = 4.0 px, nucleus 2.4 to 3.2 px across):
 That is a little broader than the vessel set, because cells are blobs at two scales (the ring
 and the whole soma) where vessels are ridges at one. Everything in 3D.
 
-### Step 4: four labels, in this order
+### Step 4: two labels, in this order
 
-The exported probability channels follow label order, and the index is what downstream code
-selects on, so the order is part of the contract:
+Exactly parallel to the vessel project. The exported probability channels follow label order and
+the index is what downstream code selects on, so the order is part of the contract:
 
 | label | name | what to paint | signed DoG reads |
 |---|---|---|---|
-| 1 | Cytoplasm | thin strokes along the bright rings, away from where cells touch | strongly positive |
-| 2 | Nucleus | small dots in the dark cores only | about -0.23 |
-| 3 | Boundary | thin lines in the dim gaps between touching somas | near zero, negative |
-| 4 | Background | empty space outside the cell clusters | about 0.00 |
+| 1 | glomus | the bright rings **and** the dark cores inside them | positive on the ring, about -0.23 in the core |
+| 2 | background | empty space outside the clusters, and the gaps between touching cells | about 0.00 |
 
-Nucleus and Background are **separate classes**, unlike the three-class scheme an earlier draft
-of the protocol proposed. Merging them makes the segmented object a hollow cytoplasmic shell and
-biases cell volume low by roughly 8%, and a 3D fill will not reliably close a shell two to three
-voxels thick. Keeping the nucleus separate also hands you a natural watershed seed, which is far
-more robust for counting than seeding from cytoplasm. Whole-cell volume is classes 1 and 2
-together.
+**Two classes, not four.** An earlier draft of this guide proposed Cytoplasm, Nucleus, Boundary
+and Background, carried over from a protocol whose stated goal was watershed segmentation and
+cell counting. Every H1 and H2 analysis that consumes this channel asks for a TH-positive volume,
+voxel set or cluster boundary: parenchymal volume and length density (H1 1.3), tissue-to-vessel
+distance (H1 1.5), flow overlay (H2 2.1), which edges supply the clusters (H2 2.2), metabolic
+rate assignment and hypoxic fraction (H2 2.3), depletion within the boundaries (H2 2.4). **None
+of them counts cells**, so the classes that exist to split touching somas would do no work while
+roughly doubling the labelling effort.
+
+Two decisions inside the two-class scheme do matter, because they are worth 9 to 15% of the
+measured TH volume. Make each once and hold it for all six specimens:
+
+* **Nuclear cores are glomus.** Every analysis means "where are the glomus cells", not "where is
+  the TH protein". Painting cores as background gives you hollow shells and a volume biased low.
+  This is also the one thing a plain intensity threshold gets wrong, and the reason channel 1 is
+  kept signed: it reads about -0.23 in a core against about 0.00 in true background, so the
+  classifier has a feature that separates them.
+* **Intercellular gaps are background.** They are genuinely extracellular.
+
+Measured stake, taken on the six preprocessed volumes: the interior region (cores plus gaps)
+is 8.7 to 15.1% of whole-cell volume, averaging 10.9% in WKY against 13.1% in SHR. The direction
+is what denser nests would produce, but the per-specimen ranges overlap and n = 3 per group gives
+a permutation p floor of 0.10, so **no group difference is claimed**. What the number establishes
+is that the decision is worth about a tenth of the headline volume and must therefore be
+consistent, not that it needs more classes.
 
 ### Step 5: label every lane, at three depths
 
@@ -242,9 +259,9 @@ brush.
 
 **Avoid the TH-positive structures that are not carotid body.** Sympathetic neurons and nerve
 fibres are TH-positive too. In WKY-A the brightest TH structure in the entire stack is a fibrous
-body at z = 40 to 140, well away from the parenchyma at z = 200 to 350. Painting it as Cytoplasm
-teaches the classifier to find it everywhere. Either avoid those regions or give them a fifth
-label of their own.
+body at z = 40 to 140, well away from the parenchyma at z = 200 to 350. Painting it as glomus
+teaches the classifier to find it everywhere. Either avoid those regions, or give them a third
+label of their own so they are explicitly not glomus.
 
 This is not a hypothetical risk. The first pass of the doughnut measurement during the pipeline
 review ran on that slab and concluded there was no doughnut at all, 7.7% of detections showing a
@@ -252,10 +269,11 @@ core. Repeating it on genuine parenchyma gave 79.4%. The premise was fine; the r
 
 ### Step 6: check before exporting
 
-With Live Update on, step through z and confirm that adjacent cells in a dense nest are separated
-by a Boundary or Nucleus prediction rather than fused into one blob. That separation is the
-entire purpose of the two-channel input, and it is much cheaper to fix with more labels now than
-to discover after a six-volume export.
+With Live Update on, step through z and confirm two things. That the dark nuclear cores inside
+bright rings are predicted **glomus** and not background, which is what the signed DoG channel is
+there to make possible. And that the clusters have plausible outer boundaries rather than
+bleeding into stroma. Both are much cheaper to fix with more labels now than to discover after a
+six-volume export.
 
 ---
 
@@ -274,9 +292,8 @@ Sizing across all six volumes, 457 M voxels total:
 
 | export | size |
 |---|---|
-| 2 classes, float32 (the lectin export, already on disk) | 3.66 GB |
-| 4 classes, float32 | 7.31 GB |
-| 4 classes, **uint8** | **1.83 GB** |
+| 2 classes, float32 | 3.66 GB |
+| 2 classes, **uint8** | **0.91 GB** |
 
 With 23 GB free, float32 now fits. uint8 is still the better default: it is four times smaller
 and four times faster to read, and `prob_to_mask.py` already handles it, detecting `max > 1.5`
@@ -317,8 +334,9 @@ python3 prob_to_mask.py --prob "$PROB/<name>_Probabilities.h5" --channel 0 --swe
 python3 prob_to_mask.py --prob "$PROB/C1-CB3-WKY-CB-A-2x2x2_vessels_ilastik_Probabilities.h5" \
     --channel 0 --out-prefix CB3-WKY-CB-A
 
-# TH: channel 0 is 'Cytoplasm'. Pass --no-fill-holes, or the 3D fill closes the
-# nuclear cores the whole pipeline was built to preserve.
+# TH: channel 0 is 'glomus'. Cores were labelled glomus, so they are already
+# inside the mask; --no-fill-holes stops the 3D fill closing genuine gaps
+# between adjacent nests as well.
 python3 prob_to_mask.py --prob "$PROB/CB3-WKY-CB-A-2x2x2_TH_ilastik_Probabilities.h5" \
     --channel 0 --no-fill-holes --out-prefix CB3-WKY-CB-A-TH
 ```
@@ -326,8 +344,8 @@ python3 prob_to_mask.py --prob "$PROB/CB3-WKY-CB-A-2x2x2_TH_ilastik_Probabilitie
 Pick the `low` threshold just above where the component count starts climbing steeply and the
 largest-component share starts falling. That is where genuine structure begins to be stranded.
 
-For whole-cell TH volume rather than cytoplasm alone, combine channels 0 and 1 (Cytoplasm plus
-Nucleus) before thresholding, rather than filling holes in the cytoplasm mask.
+Channel 0 is already whole-cell volume, because nuclear cores were labelled glomus rather than
+left to a hole-filling step that cannot reliably close a shell two to three voxels thick.
 
 ---
 

@@ -208,17 +208,25 @@ VESSEL_CHANNEL = SegmentationChannel(
 
 #: preprocess_th.py output. Two channels, the second signed: it reads strongly positive on
 #: the bright cytoplasmic ring, about -0.23 in the dark nuclear core and about 0.00 in
-#: background, and that sign is the only thing separating "inside the nucleus" from "outside
-#: the cell". Cytoplasm is first so that reading channel 0 stays the convention both
-#: channels share.
+#: background. That sign is what lets a two-class classifier call a dim nuclear core glomus
+#: rather than background, which is the one thing a plain intensity threshold gets wrong.
 TH_INPUT_CHANNELS: Tuple[str, str] = ("grayscale", "soma_dog_signed")
 
+#: Two classes, exactly parallel to the vessel project, and glomus is index 0 so that
+#: reading probability channel 0 is the convention both channels share.
+#:
+#: Every H1 and H2 analysis that consumes this channel asks for a TH-positive volume, voxel
+#: set or cluster boundary: H1 1.3 parenchymal volume and length density, H1 1.5
+#: tissue-to-vessel distance, H2 2.1 flow overlay, H2 2.2 which edges supply the clusters,
+#: H2 2.3 metabolic rate assignment and hypoxic fraction, H2 2.4 depletion within the
+#: boundaries. None of them counts cells, so the extra classes that exist to split touching
+#: somas for a watershed would do no work here while roughly doubling the labelling effort.
 TH_CHANNEL = SegmentationChannel(
     key="th",
     project=ILASTIK_INPUT_DIR / "th_glomus_segmentation.ilp",
     stem_attr="stem",
     input_suffix="_TH_ilastik.h5",
-    target_label="Cytoplasm",
+    target_label="glomus",
     target_index=0,
     input_channels=TH_INPUT_CHANNELS,
     has_measured_baseline=False,
@@ -805,9 +813,9 @@ def _label_balance_warnings(lanes, group_counts, channel=None) -> List[str]:
                 )
 
     # Ilastik label values are 1-based and follow label order, so the target class is
-    # target_index + 1. Comparing it against everything else reduces to the old
-    # vessel-against-background ratio when there are only two classes, and stays meaningful
-    # for the four-class TH project.
+    # target_index + 1. Comparing it against everything else is the target-against-background
+    # ratio while both projects are two-class, and stays meaningful if either ever grows a
+    # third class.
     target_value = channel.target_index + 1
     for lane in lanes:
         specimen = _lane_specimen(lane, channel)

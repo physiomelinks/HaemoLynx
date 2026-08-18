@@ -335,13 +335,31 @@ gave 79.4% contrast. The premise was fine, my region was wrong. Any pipeline tha
 even a coarse manual one, needs to come before quantification, and `diagnose_z` on the TH
 channel is measuring that nerve structure rather than the CB in volume A.
 
-**C2. The 3-class scheme yields hollow cells.** Class 2 deliberately merges nuclei with external
-background, so the segmented object is a cytoplasmic shell. Nuclear volume fraction is roughly
-(5 / 11.5)^3, about 8%, so any cell-volume or TH-volume measurement is biased low by that much
-unless the shells are filled. A 3D fill will not close them reliably at 2 to 3 voxels. Prefer
-four classes (cytoplasm, nucleus, intercellular boundary, background), which also gives you the
-nucleus as a natural watershed seed and makes counting far more robust than seeding from the
-cytoplasm.
+**C2. Nuclear cores must be labelled as tissue, but two classes is the right scheme.**
+*(Revised. This item originally recommended four classes; see the provenance table.)*
+
+The defect in revision 1's 3-class scheme is real: it merges nuclei with external background, so
+the segmented object is a cytoplasmic shell, and a 3D fill will not close a shell 2 to 3 voxels
+thick. But the fix is to label the cores as tissue, not to add classes.
+
+Checked against what the hypotheses consume, every H1 and H2 analysis using this channel asks for
+a TH-positive volume, voxel set or cluster boundary: parenchymal volume and length density
+(H1 1.3), tissue-to-vessel distance (H1 1.5), flow overlay (H2 2.1), which edges supply the
+clusters (H2 2.2), metabolic rate assignment and hypoxic fraction (H2 2.3), depletion within the
+boundaries (H2 2.4). None counts cells. The intercellular boundary class exists solely to let a
+watershed split touching somas, so it would do no work here while roughly doubling the labelling
+effort, and splitting the positive class three ways gives each fewer training examples.
+
+The project is therefore two-class, `glomus` and `background`, parallel to the vessel project.
+Two judgement calls inside it carry real weight, measured on the six preprocessed volumes: the
+interior region (nuclear cores plus intercellular gaps) is **8.7 to 15.1% of whole-cell volume**,
+averaging 10.9% in WKY against 13.1% in SHR. The direction is what denser nests would produce,
+but the ranges overlap and n = 3 gives a permutation p floor of 0.10, so no group difference is
+claimed. Cores are labelled glomus, gaps background, and both decisions are held across all six.
+
+This is also what makes the signed DoG of R4 load-bearing rather than decorative. A two-class
+classifier has to call a dim nuclear core glomus, which is exactly what a plain intensity
+threshold gets wrong; channel 1 reads about -0.23 there against about 0.00 in true background.
 
 **C3. `white_tophat` with a flat disk is not the rolling ball.** The status message says
 "Rolling Ball radius" but the call is `skimage.morphology.white_tophat` with `disk(12)`;
@@ -388,8 +406,9 @@ in both scripts.
    `diagnose_z` from `preprocess_cb.py` fixes all three and removes the duplication.
 2. R6 (stop tiling) and R7 (targeted outlier removal instead of the blanket median). Both are
    deletions, both immediately reduce risk.
-3. R4 (signed DoG) and C2 (four classes). These two together are what actually separates
-   touching cells, which is the whole point of the design.
+3. R4 (signed DoG) and C2 (two classes, cores labelled as tissue). Together these are what
+   let the segmentation include the nuclear cores, which is roughly a tenth of the volume every
+   downstream analysis is measuring.
 4. R5 and C4. Anchor on tissue, write the QC file, then measure the sensitivity of the
    segmentation to the anchor before trusting any cohort comparison.
 5. C1. Define the CB region of interest before any quantification.
@@ -403,3 +422,4 @@ Claims I made from reading and then overturned by measurement, kept visible:
 | The doughnut is not resolvable at 1.866 um; cells are solid blobs | **Withdrawn.** Measured on the wrong slab (a TH-positive nerve structure, not CB parenchyma). On true parenchyma the core-to-ring contrast is 79.4%. |
 | Only 7.7% of cells show any interior darkening | **Withdrawn**, same cause. |
 | The 3x3x3 median destroys the nuclear core | **Revised.** It costs 18% of the contrast, not all of it. |
+| C2 should use four classes, so a watershed can split touching cells | **Revised.** Checked against the six analyses that consume this channel: all ask for a TH-positive volume, voxel set or cluster boundary, none counts cells. The boundary class had no consumer. Two classes, with nuclear cores labelled as tissue, meets every stated requirement at roughly half the labelling effort. |

@@ -629,7 +629,11 @@ def test_a_retrained_classifier_is_flagged_in_the_warnings(tmp_path):
 
 # --- The same verification, for the TH glomus cell project ---------------------------------
 
-TH_LABELS = ("Cytoplasm", "Nucleus", "Boundary", "Background")
+#: The TH project is two-class, exactly parallel to the vessel project. Every H1 and H2
+#: analysis that consumes this channel asks for a TH-positive volume, voxel set or
+#: boundary; none asks for individual cells, so nothing needs the classes that exist to
+#: split touching somas for a watershed.
+TH_LABELS = ("glomus", "background")
 
 
 def test_the_two_channels_name_distinct_projects_inputs_and_targets():
@@ -712,11 +716,11 @@ def test_a_th_project_is_refused_when_the_target_label_is_not_first(tmp_path):
 
     path = tmp_path / "th_reordered.ilp"
     _write_project(path, _all_lanes([100, 200], TH_CHANNEL),
-                   label_names=("Nucleus", "Cytoplasm", "Boundary", "Background"))
+                   label_names=("background", "glomus"))
 
     with pytest.raises(ValueError) as excinfo:
         verify_classifier(path, channel=TH_CHANNEL)
-    assert "Cytoplasm" in str(excinfo.value)
+    assert "glomus" in str(excinfo.value)
 
 
 def test_the_vessel_channel_refuses_a_th_project_and_the_reverse(tmp_path):

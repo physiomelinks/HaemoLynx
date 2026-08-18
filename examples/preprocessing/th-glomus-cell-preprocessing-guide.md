@@ -191,26 +191,42 @@ silently falls back to guessing axes from shape. Channel order is
 *   **Texture (Hessian / Tensor):** $\sigma = 1.6$ (3D) and $\sigma = 3.5$ (2D) for the rounded,
     blob-like boundaries.
 
-### The 4-class labelling strategy. **CHANGED from 3 classes.**
+### The 2-class labelling strategy. **CHANGED from the 3 and 4 class schemes.**
 
-Revision 1 merged nuclei with external background into a single class. That makes the segmented
-object a hollow cytoplasmic shell: nuclear volume fraction is roughly $(5/11.5)^3 \approx 8\%$,
-so any cell-volume or TH-volume measurement is biased low by about that much, and a 3D fill will
-not reliably close a shell only 2 to 3 voxels thick.
+Revision 1 proposed three classes and an earlier revision of this section proposed four, both
+aimed at separating touching somas so that a watershed could count individual cells. Checked
+against what the hypotheses actually consume, that is work with no consumer.
 
-Separate them:
+Every H1 and H2 analysis that uses this channel asks for a TH-positive **volume, voxel set or
+cluster boundary**: parenchymal volume and length density (H1 1.3), tissue-to-vessel distance
+(H1 1.5), flow overlay (H2 2.1), which edges supply the clusters (H2 2.2), metabolic rate
+assignment and hypoxic fraction (H2 2.3), depletion within the boundaries (H2 2.4). **None of
+them counts cells.** So the project is two-class, exactly parallel to the vessel one:
 
-1. **Cytoplasm/Soma.** Sparse thin strokes on the bright cytoplasmic rings. Do not paint near
-   where cells touch.
-2. **Nucleus.** Small dots inside the dark central cores *only*. The signed DoG reads about
-   $-0.23$ here.
-3. **Intercellular boundary.** Thin precise lines in the narrow dim gaps between touching somas.
-4. **External background.** Empty space outside cell clusters. The signed DoG reads about
-   $0.00$ here, which is what separates it from class 2.
+1. **glomus.** The bright cytoplasmic rings **and** the dark nuclear cores inside them.
+2. **background.** Empty space outside the clusters, and the dim gaps between touching cells.
 
-Keeping the nucleus as its own class gives you a natural watershed seed, which is far more
-robust for counting than seeding from cytoplasm, and lets you reconstruct whole-cell volume as
-cytoplasm plus nucleus.
+Two decisions inside that scheme are worth 9 to 15% of the measured volume, so make each once
+and hold it across all six specimens.
+
+**Nuclear cores are glomus.** Every analysis means "where are the glomus cells", not "where is
+the TH protein". Calling cores background yields hollow shells, and a 3D fill cannot reliably
+close a shell only 2 to 3 voxels thick. This is also precisely what a plain intensity threshold
+gets wrong, and the reason channel 2 is kept signed: it reads about $-0.23$ in a core against
+about $0.00$ in true background, so the classifier has a feature that tells them apart.
+
+**Intercellular gaps are background.** They are genuinely extracellular.
+
+Measured on the six preprocessed volumes, the interior region (cores plus gaps) is 8.7 to 15.1%
+of whole-cell volume, averaging 10.9% in WKY against 13.1% in SHR. The direction is what denser
+nests would produce, but the per-specimen ranges overlap and n = 3 per group gives a permutation
+p floor of 0.10, so **no group difference is claimed**. The number establishes that the choice is
+worth about a tenth of the headline volume and has to be consistent, not that it needs more
+classes.
+
+If individual cell counts are ever wanted, for instance to test hyperplasia as a cell-number
+claim rather than a volume claim, that is a different segmentation problem and a harder one than
+it looks: a whole soma is only 4.3 to 8.0 voxels across at this resolution.
 
 ---
 
@@ -264,20 +280,24 @@ dataset `data` at the file root, axistags `zyxc` parsing in ilastik 1.4.1's own 
 six, `float32`, two channels named `grayscale` and `soma_dog_signed`, chunked
 `(32, 128, 128, 2)`.
 
-### Before you start: free disk space
+### Before you start: disk and memory
 
-`/home` is at 99%, with about 6.5 GB free. The probability export does not fit at the default
-settings:
+Both are comfortable as of 2026-08-18: about 23 GB free on `/home`, and 19 GB of the 31 GB of
+RAM available. The probability export across all six volumes:
 
 | export | size across the six |
 |---|---|
-| 4 classes, float32 (the default) | **7.31 GB, will not fit** |
-| 4 classes, uint8 | 1.83 GB |
 | 2 classes, float32 | 3.66 GB |
+| 2 classes, **uint8** | **0.91 GB** |
 
-Either free space first or export as `uint8`, which step 7 does. `prob_to_mask.py` already
-handles 8-bit exports: it detects `max > 1.5` and rescales by 255, so nothing downstream
-changes.
+Either fits now, but step 7 exports `uint8`: four times smaller, four times faster to read, and
+`prob_to_mask.py` already handles it by detecting `max > 1.5` and rescaling by 255, so nothing
+downstream changes.
+
+This was tighter when the inputs were written, at 6.5 GB free, which is why the earlier
+four-class float32 figure of 7.31 GB mattered. Two classes removes the constraint entirely.
+
+Closing the browser before a long export is worth more than any ilastik memory setting.
 
 ### Step 1: New project, saved in the right place
 
@@ -313,22 +333,18 @@ this data (ring peak at 4.0 px, nucleus 2.4 to 3.2 px):
 Leave every feature computing in **3D**. Per-slice 2D features give z-anisotropic predictions
 and staircase artefacts downstream, and `verify_classifier` refuses a project that uses them.
 
-### Step 4: Four labels, in this order
+### Step 4: Two labels, in this order
 
-Create four labels and **keep this order**, because the exported probability channels follow
+Create two labels and **keep this order**, because the exported probability channels follow
 label order and the index is what downstream code selects on:
 
 | label | name | what to paint | signed DoG reads |
 |---|---|---|---|
-| 1 | Cytoplasm | thin strokes along the bright rings, away from where cells touch | strongly positive |
-| 2 | Nucleus | small dots in the dark cores only | about -0.23 |
-| 3 | Boundary | thin lines in the dim gaps between touching somas | near zero, negative |
-| 4 | Background | empty space outside the cell clusters | about 0.00 |
+| 1 | glomus | the bright rings **and** the dark cores inside them | positive on the ring, about -0.23 in the core |
+| 2 | background | empty space outside the clusters, and the gaps between touching cells | about 0.00 |
 
-Classes 2 and 4 are separate on purpose. Merging them, as revision 1 did, makes the segmented
-object a hollow shell and biases cell volume low by roughly 8%. Keeping the nucleus separate
-also gives you a watershed seed, which is far more robust for counting than seeding from
-cytoplasm. Whole-cell volume is then classes 1 and 2 together.
+See section 3 for why this is two classes rather than four, and for the two judgement calls
+inside it that are worth about a tenth of the measured volume.
 
 ### Step 5: Label every lane, at three depths each
 
@@ -352,7 +368,8 @@ Tissue does not sit at the same depth in every stack, so label where there is ti
 **Avoid the TH-positive structures that are not carotid body.** Sympathetic neurons and nerve
 fibres label too, and in WKY-A the brightest TH structure in the whole stack is a fibrous body
 at z = 40 to 140, well away from the parenchyma at z = 200 to 350. If you paint it as
-Cytoplasm the classifier will find it everywhere. Either avoid it, or give it its own label.
+glomus the classifier will find it everywhere. Either avoid it, or give it a third label of
+its own so that it is explicitly not glomus.
 
 Use a small brush, 1 or 2 px. Turn on **Live Update** periodically rather than continuously;
 it recomputes features over the whole lane and is slow on these volumes.
@@ -400,7 +417,7 @@ python3 prob_to_mask.py --prob ".../CB3-WKY-CB-A-2x2x2_TH_ilastik_Probabilities.
                         --channel 0 --sweep
 ```
 
-`--channel 0` is Cytoplasm under the label order in step 4. The sweep prints the fragmentation
+`--channel 0` is glomus under the label order in step 4. The sweep prints the fragmentation
 curve; pick the operating point just above where the component count starts climbing steeply.
 
 One caveat carried over from the vessel path: `prob_to_mask.py` fills 3D cavities by default,
