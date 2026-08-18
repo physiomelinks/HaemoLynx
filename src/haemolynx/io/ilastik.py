@@ -43,11 +43,13 @@ def run_ilastik_headless_segmentation(
 
     # ilastik expects output placeholders in the pattern string.
     output_pattern = str(output_path.parent / f"{{nickname}}{output_suffix}")
+    output_format = "hdf5" if output_suffix == ".h5" else "multipage tiff"
     command = [
         str(ilastik_executable),
         "--headless",
         f"--project={classifier_path}",
         "--export_source=Simple Segmentation",
+        f"--output_format={output_format}",
         f"--output_filename_format={output_pattern}",
         str(input_image_path),
     ]

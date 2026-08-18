@@ -119,7 +119,8 @@ class Solution:
 
 def segment(settings: dict):
     """Produce the segmented mask to analyse, running ilastik when asked to."""
-    settings["input_path"] = Path(settings["input_path"])
+    if settings["input_path"] is not None:
+        settings["input_path"] = Path(settings["input_path"])
     if settings["use_ilastik_segmentation"]:
         unsegmented_image_path = Path(settings["ilastik_unsegmented_image_path"])
         unsegmented_image_path = io.resolve_image_path_with_optional_zip(unsegmented_image_path)
