@@ -1,12 +1,123 @@
 """Boundary-based node selection helpers."""
 from __future__ import annotations
 
+import warnings
 from typing import Any, Iterable, Mapping
 
 import numpy as np
 import networkx as nx
 
 from ._helpers import sort_nodes
+
+
+class BoundaryCoordinateWarning(UserWarning):
+    """A configured coordinate did not land on the network it points at.
+
+    The ``coordinates`` method snaps each point to the *nearest* terminal, so
+    it never fails -- a point on no vessel at all still selects something, and
+    the run goes on to solve a network whose inlets are somewhere else
+    entirely. This warning is the only sign, so it says which setting, which
+    point, and how far the snap went.
+    """
+
+
+#: How far a point may snap before it is reported, in voxels of the graph's own
+#: image. A pick read off a viewer is accurate to a few voxels, and pruning and
+#: cluster collapse move a terminal a few more; past ten the point is not
+#: describing the terminal it selects. Voxels rather than microns so the same
+#: number means the same thing on any stack.
+SNAP_WARNING_VOXELS = 10.0
+
+#: Microns to fall back on when the graph carries no voxel size.
+SNAP_WARNING_MICRONS = 10.0
+
+
+def _voxel_size_zyx(G: nx.Graph) -> np.ndarray | None:
+    """The per-array-axis voxel size ``build_graph_from_skeleton`` recorded."""
+    voxel_size = G.graph.get("voxel_size")
+    if voxel_size is None:
+        return None
+    arr = np.asarray(voxel_size, dtype=float)
+    if arr.shape != (3,) or not np.all(np.isfinite(arr)) or np.any(arr <= 0):
+        return None
+    return arr
+
+
+def _snap_warning_distance(voxel_size_zyx: np.ndarray | None) -> float:
+    if voxel_size_zyx is None:
+        return SNAP_WARNING_MICRONS
+    return SNAP_WARNING_VOXELS * float(np.max(voxel_size_zyx))
+
+
+def _nearest_distance(pos: Mapping[Any, np.ndarray], terminals: list[Any], point: np.ndarray) -> float:
+    return min(float(np.linalg.norm(pos[node_id] - point)) for node_id in terminals)
+
+
+def _terminal_extent(
+    pos: Mapping[Any, np.ndarray], terminals: list[Any]
+) -> tuple[np.ndarray, np.ndarray]:
+    """The corners of the box the terminal nodes occupy, in microns."""
+    stacked = np.asarray([pos[node_id] for node_id in terminals], dtype=float)
+    return stacked.min(axis=0), stacked.max(axis=0)
+
+
+def warn_about_coordinate_snaps(
+    G: nx.Graph,
+    points: list[np.ndarray],
+    distances: list[float],
+    *,
+    setting_name: str,
+    pos: Mapping[Any, np.ndarray],
+    terminals: list[Any],
+) -> None:
+    """Report coordinates that snapped to a terminal far from where they point.
+
+    Node ``pos`` is physical microns, and so is every coordinate setting. The
+    mistake this catches is a coordinate read off a viewer showing voxel
+    indices: on the anisotropic stacks this pipeline is built for it lands at a
+    fraction of the depth it should, on no vessel, and snaps to whatever
+    terminal happens to be nearest. It is detectable because the *right*
+    reading is still available -- multiplying the point by the voxel size lands
+    it on a terminal, and by a wide margin -- so that is what is checked, and
+    the fix is named in the message.
+
+    A point outside the network's own extent is left alone unless it carries
+    that signature: pointing at a corner and taking the terminal nearest it is
+    a deliberate way to use this method, and it is always "far" from anything.
+    """
+    voxel_size = _voxel_size_zyx(G)
+    threshold = _snap_warning_distance(voxel_size)
+    lo, hi = _terminal_extent(pos, terminals)
+    for index, (point, distance) in enumerate(zip(points, distances)):
+        if distance <= threshold:
+            continue
+        as_voxel_distance = None
+        if voxel_size is not None:
+            as_microns = point * voxel_size
+            candidate = _nearest_distance(pos, terminals, as_microns)
+            if candidate * 2.0 < distance:
+                as_voxel_distance = candidate
+        # A point outside the network's own extent is the deliberate idiom
+        # "take the terminal nearest this corner", so only the reading that
+        # says the units are wrong is worth reporting there.
+        inside = bool(np.all(point >= lo) and np.all(point <= hi))
+        if as_voxel_distance is None and not inside:
+            continue
+        message = (
+            f"{setting_name}[{index}] = {tuple(round(float(v), 1) for v in point)} "
+            f"is {distance:.1f} um from the nearest terminal node, which is the "
+            "one it selects. Coordinates are physical (z, y, x) microns, the "
+            "same units as node positions."
+        )
+        if as_voxel_distance is not None:
+            message += (
+                " Read as voxel indices it would be "
+                f"{tuple(round(float(v), 1) for v in point * voxel_size)} um, "
+                f"{as_voxel_distance:.1f} um from a terminal -- so this "
+                "point looks like a voxel index. Fix: multiply it by the "
+                f"voxel size {tuple(round(float(v), 4) for v in voxel_size)}."
+            )
+        warnings.warn(message, BoundaryCoordinateWarning, stacklevel=2)
 
 
 def select_boundary_terminal_nodes(
@@ -91,8 +202,13 @@ def select_boundary_nodes_by_method(
     exclude_nodes: Iterable[Any] | None = None,
     inlet_nodes_for_distance: Iterable[Any] | None = None,
     distance_from_inlet_node: float = 0.0,
+    coordinates_setting_name: str = "coordinates",
 ) -> list[Any]:
-    """Select boundary nodes for one role using the specified method."""
+    """Select boundary nodes for one role using the specified method.
+
+    ``coordinates_setting_name`` only names the setting the points came from,
+    so a :class:`BoundaryCoordinateWarning` can say which one to edit.
+    """
     if node_role not in {"inlet", "outlet"}:
         raise ValueError("node_role must be 'inlet' or 'outlet'.")
 
@@ -111,6 +227,8 @@ def select_boundary_nodes_by_method(
         if not points:
             return []
         selected = []
+        targets: list[np.ndarray] = []
+        distances: list[float] = []
         for idx, point in enumerate(points):
             target = _normalize_point(point, name=f"coordinates[{idx}]")
             nearest = min(
@@ -118,6 +236,16 @@ def select_boundary_nodes_by_method(
                 key=lambda node_id: float(np.linalg.norm(pos[node_id] - target)),
             )
             selected.append(nearest)
+            targets.append(target)
+            distances.append(float(np.linalg.norm(pos[nearest] - target)))
+        warn_about_coordinate_snaps(
+            G,
+            targets,
+            distances,
+            setting_name=coordinates_setting_name,
+            pos=pos,
+            terminals=terminals,
+        )
     elif method_norm == "volume":
         boxes = list(volume_boxes or [])
         if not boxes:
@@ -290,5 +418,6 @@ def select_boundary_nodes_for_role(
         volume_boxes=volume_boxes,
         exclude_nodes=exclude_nodes,
         inlet_nodes_for_distance=inlet_nodes,
+        coordinates_setting_name=names["coordinates"],
         **band,
     )

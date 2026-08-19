@@ -95,24 +95,21 @@ boundary_assignment:
   boundary_distance_from_inlet_node: 0.0
   # Pick inlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   inlet_node_coordinates:
-  - - 152.0
-    - 340.0
-    - 527.0
-  - - 160.0
-    - 350.0
-    - 545.0
-  - - 202.0
-    - 1303.0
-    - 132.0
-  - - 104.0
-    - 1321.0
-    - 133.0
-  - - 361.0
-    - 332.0
-    - 120.0
-  - - 321.0
-    - 334.0
-    - 163.0
+  - - 308.4
+    - 396.8
+    - 615.1
+  - - 324.6
+    - 408.5
+    - 636.1
+  - - 267.8
+    - 1520.8
+    - 235.8
+  - - 243.5
+    - 387.5
+    - 421.3
+  - - 330.7
+    - 389.8
+    - 374.6
   # Pick outlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   outlet_node_coordinates: []
   # Pick arteriole boundary nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
