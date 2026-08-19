@@ -46,7 +46,7 @@ def provenance_path_for(artefact_path) -> Path:
     return artefact_path.with_name(artefact_path.name + PROVENANCE_SUFFIX)
 
 
-def _label_summary(classifier_path: Path) -> Optional[Dict[str, object]]:
+def _label_summary(classifier_path: Path, channel=None) -> Optional[Dict[str, object]]:
     """Label counts and boundary placement, or None if the project cannot be read.
 
     A hash says two classifiers differ; it does not say how. Carrying the labelling state
@@ -60,17 +60,25 @@ def _label_summary(classifier_path: Path) -> Optional[Dict[str, object]]:
         from .specimens import read_classifier_metadata
         from .statistics.label_placement import analyse_label_placement
 
-        metadata = read_classifier_metadata(classifier_path)
-        placement = analyse_label_placement(classifier_path)
-        return {
+        metadata = read_classifier_metadata(classifier_path, channel)
+        summary = {
             "total_labelled_voxels": metadata["total_labelled_voxels"],
             "selected_features": metadata["selected_features"],
             "label_names": metadata["label_names"],
-            "boundary_fraction_by_specimen": {
-                row.specimen_id: round(row.background_within_band_fraction, 4)
-                for row in placement
-            },
         }
+        try:
+            # Label placement is measured against the vessel band, so it means nothing for
+            # another channel. Omitted rather than reported as a number with no referent.
+            from .specimens import resolve_channel
+
+            if resolve_channel(channel).key == "vessel":
+                summary["boundary_fraction_by_specimen"] = {
+                    row.specimen_id: round(row.background_within_band_fraction, 4)
+                    for row in analyse_label_placement(classifier_path)
+                }
+        except Exception:
+            pass
+        return summary
     except Exception:
         return None
 
@@ -79,6 +87,8 @@ def record_probability_provenance(
     specimen,
     artefact_path=None,
     classifier_path: Optional[Path] = None,
+    channel=None,
+    notes: Optional[str] = None,
 ) -> Dict[str, object]:
     """Stamp a probability map with the classifier that produced it.
 
@@ -88,21 +98,37 @@ def record_probability_provenance(
     """
     from . import specimens as registry
 
-    artefact_path = Path(artefact_path or specimen.probabilities_path)
-    classifier_path = Path(classifier_path or registry.POOLED_CLASSIFIER)
+    channel = registry.resolve_channel(channel)
+    default_artefact = (specimen.probabilities_path if channel.key == "vessel"
+                        else specimen.th_probabilities_path)
+    artefact_path = Path(artefact_path or default_artefact)
+    # For the vessel channel, resolve through the module attribute rather than the frozen
+    # channel record. POOLED_CLASSIFIER is the binding every other consumer reads and the
+    # one tests redirect; a Path captured on the dataclass at import time would silently
+    # ignore that redirection and report a hash for a different file.
+    default_classifier = (registry.POOLED_CLASSIFIER if channel.key == "vessel"
+                          else channel.project)
+    classifier_path = Path(classifier_path or default_classifier)
 
     record: Dict[str, object] = {
         "specimen_id": specimen.specimen_id,
         "group": specimen.group,
         "artefact": artefact_path.name,
+        "channel": channel.key,
         "shape_zyx": list(specimen.shape_zyx),
         "classifier_name": classifier_path.name,
         "classifier_sha256": registry.classifier_sha256(classifier_path),
-        "vessel_class_index": registry.VESSEL_CLASS_INDEX,
+        "target_label": channel.target_label,
+        "target_class_index": channel.target_index,
         "processing_voxel_um": list(registry.PROCESSING_VOXEL_UM),
         "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "labelling": _label_summary(classifier_path),
+        "labelling": _label_summary(classifier_path, channel),
     }
+    if channel.key == "vessel":
+        # Kept for the maps already on disk, which were written with this key.
+        record["vessel_class_index"] = registry.VESSEL_CLASS_INDEX
+    if notes:
+        record["notes"] = notes
     provenance_path_for(artefact_path).write_text(json.dumps(record, indent=2))
     return record
 

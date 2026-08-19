@@ -324,6 +324,12 @@ class Specimen:
         """Ilastik names the export after the input's nickname, i.e. its HDF5 stem."""
         return PROBABILITIES_DIR / f"{self.preproc_stem}_ilastik_Probabilities.h5"
 
+    @property
+    def th_probabilities_path(self) -> Path:
+        """The TH channel's export, named after its own input for the same reason."""
+        return PROBABILITIES_DIR / TH_CHANNEL.input_name(self).replace(
+            ".h5", "_Probabilities.h5")
+
     # --- Stage 3: prob_to_mask.py ---
     @property
     def mask_path(self) -> Path:

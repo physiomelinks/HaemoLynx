@@ -33,7 +33,8 @@ def fake_classifier(tmp_path, monkeypatch):
     classifier = tmp_path / "vessel_segmentation.ilp"
     classifier.write_bytes(b"classifier version one")
     monkeypatch.setattr(specimens, "POOLED_CLASSIFIER", classifier)
-    monkeypatch.setattr(provenance_module, "_label_summary", lambda _p: {"stub": True})
+    monkeypatch.setattr(provenance_module, "_label_summary",
+                        lambda _p, _c=None: {"stub": True})
 
     specimen = get_specimen("WKY-C")
     artefact = tmp_path / "probs.h5"
