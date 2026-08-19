@@ -6,6 +6,66 @@ import networkx as nx
 
 logger = logging.getLogger(__name__)
 
+#: How much fabricated calibre an EDT run may carry before it is refused. EDT has no
+#: legitimate per-edge failure mode on a mask that covers the vessel, and S5 measured 100%
+#: measured_edt provenance across 34,900 edges, so any fallback is a defect rather than an
+#: expected shortfall. FWHM is different and is exempted below.
+MAX_SYNTHETIC_FRACTION_EDT = 0.0
+
+
+def check_diameter_provenance(
+    provenance_counts: dict,
+    *,
+    radius_assignment_mode: str,
+    max_synthetic_fraction: float | None = None,
+) -> dict:
+    """Refuse a diameter distribution that is partly fabricated without saying so.
+
+    ``_raise_if_measurement_mode_measured_nothing`` catches the total failure: a mode selected
+    when nothing populated its attribute, so every edge falls back. It cannot catch the
+    partial one, because the guard is whole-graph and the fallback is per-edge. A run where
+    EDT measured most edges and fabricated the rest passed silently, and resistance goes as
+    the inverse fourth power of diameter, so a fabricated calibre is not a small perturbation
+    on the edges carrying it.
+
+    ``fwhm_radius`` is exempt by default, for the reason given in the other guard: Gaussian
+    fitting genuinely fails on individual edges of a probability field, so partial measurement
+    there is an outcome rather than a misconfiguration. The fraction is still reported.
+
+    Returns the counts and the synthetic fraction so a caller can record them even when the
+    check passes, which is what makes the fabricated share auditable rather than merely absent.
+    """
+    counts = dict(provenance_counts or {})
+    edges = sum(counts.values())
+    synthetic = sum(v for k, v in counts.items() if k.startswith("synthetic"))
+    fraction = (synthetic / edges) if edges else 0.0
+
+    if max_synthetic_fraction is None:
+        max_synthetic_fraction = (
+            MAX_SYNTHETIC_FRACTION_EDT if radius_assignment_mode == "edt_radius" else 1.0
+        )
+
+    result = {
+        "ok": True,
+        "edges": edges,
+        "synthetic_edges": synthetic,
+        "synthetic_fraction": fraction,
+        "counts": counts,
+        "max_synthetic_fraction": float(max_synthetic_fraction),
+    }
+    if edges and fraction > max_synthetic_fraction:
+        raise ValueError(
+            f"{synthetic} of {edges} edges ({100 * fraction:.1f}%) carry a synthetic "
+            f"branch-order diameter rather than a measured one, above the "
+            f"{100 * max_synthetic_fraction:.1f}% allowed for "
+            f"radius_assignment_mode={radius_assignment_mode!r}. Resistance goes as the "
+            f"inverse fourth power of diameter, so those edges carry a fabricated resistance "
+            f"of unknown size. Provenance counts: {counts}. Raise "
+            f"max_synthetic_fraction only if the fabricated share is acceptable and recorded."
+        )
+    return result
+
+
 def _raise_if_measurement_mode_measured_nothing(radius_assignment_mode, edges_processed, edges_measured):
     """Refuse to return a diameter distribution that is entirely fabricated.
 
@@ -268,8 +328,15 @@ class PoiseuilleModel:
         *,
         radius_assignment_mode: str = "fwhm_radius",
         constant_radius_um: float = 5.0,
+        max_synthetic_fraction: float | None = None,
     ) -> dict:
-        """Set edge resistances using integrated resistance with constrictions."""
+        """Set edge resistances using integrated resistance with constrictions.
+
+        ``max_synthetic_fraction`` bounds how much of the graph may end up carrying a
+        synthetic branch-order diameter instead of a measured one. ``None`` uses the
+        per-mode default: zero for ``edt_radius``, unbounded for the others. See
+        :func:`check_diameter_provenance`.
+        """
         results = {
             "resistances_set": 0,
             "missing_branch_order": [],
@@ -367,6 +434,14 @@ class PoiseuilleModel:
         # edt_diameter_um - no error, no warning, and a fabricated calibre distribution.
         _raise_if_measurement_mode_measured_nothing(
             radius_assignment_mode, results["resistances_set"], results["used_fwhm_baseline"]
+        )
+        # And on a *partial* fallback, which the guard above cannot see: it is whole-graph
+        # while the fallback is per-edge. The report is kept either way, so the fabricated
+        # share travels with the result rather than only being absent when it is zero.
+        results["diameter_provenance_check"] = check_diameter_provenance(
+            results.get("diameter_provenance_counts", {}),
+            radius_assignment_mode=radius_assignment_mode,
+            max_synthetic_fraction=max_synthetic_fraction,
         )
         return G, results
 

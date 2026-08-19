@@ -137,13 +137,50 @@ def _numba_get_linear_index(pos_xyz, min_xyz, res, dims):
     # Linear index (z fastest)
     return idx_z + idx_y * dims[0] + idx_x * dims[0] * dims[1]
 
-def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List[Dict[str, Any]]]:
+def _edge_diameter_um(data, default_diameter_um):
+    """The edge's measured diameter, or the caller's deliberate stand-in.
+
+    This used to substitute 5.0 um silently whenever the attribute was absent or
+    non-positive. The value feeds vessel surface area, which drives transvascular flux and so
+    every tissue PO2 downstream of it: a fabricated lumen produces a surface area, a flux and
+    a PO2 that are each arithmetically fine and none of which mean anything.
+    """
+    diameter = data.get("assigned_diameter_um", data.get("fwhm_diameter_um"))
+    if diameter is not None and float(diameter) > 0:
+        return float(diameter)
+    return None if default_diameter_um is None else float(default_diameter_um)
+
+
+def map_vessels_to_grid(
+    G: nx.MultiGraph,
+    grid: PerfusionGrid,
+    default_diameter_um: float | None = None,
+) -> Dict[int, List[Dict[str, Any]]]:
     """
     Step 2: Map 1D vessel segments (edges) to the 3D tissue grid cells.
+
+    Raises if any edge lacks a usable diameter, unless ``default_diameter_um`` is given.
+    Passing it is a deliberate choice to model unmeasured vessels at a stated calibre; the
+    previous behaviour made that choice silently, at 5.0 um, on the caller's behalf.
+
     Returns:
         Mapping of linear_cell_index -> list of segments passing through that cell.
         Each segment info includes the edge ID, flow, and length in that cell.
     """
+    missing = [
+        (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+        if _edge_diameter_um(data, default_diameter_um) is None
+    ]
+    if missing:
+        shown = ", ".join(str(e) for e in missing[:3])
+        raise ValueError(
+            f"{len(missing)} of {G.number_of_edges()} edges have no usable diameter "
+            f"(absent or non-positive), for example {shown}. Diameter feeds vessel surface "
+            f"area and therefore every transvascular flux and tissue PO2 computed from it, so "
+            f"it is not substituted silently. Assign diameters first, or pass "
+            f"default_diameter_um to model the unmeasured edges at a stated calibre."
+        )
+
     cell_to_vessels = {}
     
     for u, v, key, data in G.edges(keys=True, data=True):
@@ -151,9 +188,7 @@ def map_vessels_to_grid(G: nx.MultiGraph, grid: PerfusionGrid) -> Dict[int, List
         flow = data.get("flow_abs", 0.0)
         edge_len = data.get("length", 0.0)
         
-        diameter = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
-        if diameter is None or diameter <= 0:
-            diameter = 5.0
+        diameter = _edge_diameter_um(data, default_diameter_um)
         radius = diameter / 2.0
         
         if voxels is None or len(voxels) < 2:

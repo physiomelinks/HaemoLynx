@@ -1154,9 +1154,9 @@ quantifying it.
 
 | | Item | Findings |
 |---|---|---|
-| T2.1 | Assert on `diameter_provenance_counts` so a partial fallback to synthetic calibre fails rather than passing silently. The guard is whole-graph; the fallback is per-edge. | S5 |
-| T2.2 | Remove the silent 5.0 µm diameter default in `map_vessels_to_grid`, which feeds the surface area driving transvascular flux. | S19 |
-| T2.3 | Count and report edges dropped from the conductance matrix for missing or non-positive resistance. | S18 |
+| T2.1 | ~~Assert on `diameter_provenance_counts`.~~ **Done.** `check_diameter_provenance` refuses an `edt_radius` run carrying any synthetic calibre and reports the fabricated share whatever the mode. `fwhm_radius` stays exempt for the reason the older guard gives. | S5 |
+| T2.2 | ~~Remove the silent 5.0 µm diameter default in `map_vessels_to_grid`.~~ **Done.** Missing or non-positive calibre now raises, naming how many edges. `default_diameter_um` makes the substitution available but deliberate. | S19 |
+| T2.3 | ~~Count and report edges dropped from the conductance matrix.~~ **Done.** Counted separately by cause, returned through an opt-in `report`, and logged as a warning regardless. Return arity unchanged, so the ten existing call sites are untouched. | S18 |
 | T2.4 | Rename the perfusion grid axes to match reality. Safe now that the stencil is guarded by a test, and unsafe before. | S16 |
 | T2.5 | Improve calibre precision. Gated on H1's outstanding perivascular labelling rather than on anything here. | S6, S15 |
 

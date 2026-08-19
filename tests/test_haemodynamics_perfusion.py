@@ -84,7 +84,10 @@ def test_grid_out_of_bounds_handling(mock_graph):
 def test_map_vessels_to_grid_straight_line(mock_graph):
     """Verify 1D physical line segments map precisely into 3D voxel buckets."""
     grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
-    cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
+    # The fixture graph carries no diameter. map_vessels_to_grid used to
+    # substitute 5.0 um silently; naming it keeps these tests about the grid
+    # mapping rather than about calibre.
+    cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
     
     # The line goes from Z=5 to Z=20 at Y=5, X=5.
     # Grid goes from -5 to 25.
@@ -102,7 +105,7 @@ def test_map_vessels_to_grid_straight_line(mock_graph):
 def test_build_adr_matrix_structure(mock_graph):
     """Test the physical structure of the 7-Point Stencil Laplacian."""
     grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
-    cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
+    cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
     config = MockPerfusionConfig()
     
     A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
@@ -122,7 +125,7 @@ def test_build_adr_matrix_structure(mock_graph):
 def test_advective_source_vector(mock_graph):
     """Verify that oxygen is only sourced from cells containing vessels."""
     grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
-    cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
+    cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
     config = MockPerfusionConfig()
     
     A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
@@ -143,7 +146,7 @@ def test_perfusion_solver_zero_flow(mock_graph):
     for u, v, k in mock_graph.edges(keys=True):
         mock_graph[u][v][k]["flow_abs"] = 0.0
         
-    cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
+    cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
     config = MockPerfusionConfig()
     A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
     
@@ -153,7 +156,7 @@ def test_perfusion_solver_zero_flow(mock_graph):
 def test_perfusion_solver_no_metabolism(mock_graph):
     """If tissue doesn't consume oxygen, diffusion spreads the arterial concentration."""
     grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
-    cell_to_vessels = map_vessels_to_grid(mock_graph, grid)
+    cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
     config = MockPerfusionConfig()
     config.M_max = 0.0 # Shut off metabolism
     

@@ -1,4 +1,5 @@
 """Network resistance from Laplacian."""
+import logging
 from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
@@ -6,17 +7,30 @@ import scipy.sparse.linalg as splinalg
 import networkx as nx
 import pyvista as pv
 
+logger = logging.getLogger(__name__)
+
 
 def build_conductance_matrix_from_graph(
     G: nx.Graph, 
     weight_attr: str = "resistance",
-    robin_multiplier: float = 10.0
+    robin_multiplier: float = 10.0,
+    report: dict | None = None,
 ) -> tuple[sp.csr_matrix, list]:
     """Build symmetric conductance matrix from graph edge resistances.
     
     If nodes in the graph are tagged with `is_robin_boundary=True`, this mathematically
     hallucinates a 'ROBIN_GHOST_NODE' into the matrix, coupling the dead-ends to a virtual
     venous ground to simulate flow bleeding out of severed capillaries.
+
+    Edges whose resistance is absent or non-positive cannot contribute a conductance and are
+    dropped. That is unavoidable, but it used to be invisible: the network solved happily on
+    whatever remained, and a graph missing a tenth of its edges produced a smaller, entirely
+    plausible flow field. The two causes are counted separately because they mean different
+    upstream faults. Absent means the assignment step never reached that edge; non-positive
+    means it ran and produced a short circuit or an unphysical value.
+
+    Pass ``report`` to receive the counts. A warning is logged regardless, since most call
+    sites do not. The return value is unchanged, so existing callers are unaffected.
     """
     node_list = list(G.nodes())
     has_robin = any(G.nodes[n].get("is_robin_boundary", False) for n in G.nodes())
@@ -29,9 +43,18 @@ def build_conductance_matrix_from_graph(
 
     rows, cols, data_vals = [], [], []
 
+    dropped_missing = 0
+    dropped_non_positive = 0
+    edges_total = 0
+
     for u, v, data in G.edges(data=True):
+        edges_total += 1
         resistance = data.get(weight_attr)
-        if resistance is None or resistance <= 0:
+        if resistance is None:
+            dropped_missing += 1
+            continue
+        if resistance <= 0:
+            dropped_non_positive += 1
             continue
         i = node_to_idx[u]
         j = node_to_idx[v]
@@ -41,6 +64,25 @@ def build_conductance_matrix_from_graph(
         cols.extend([j, i])
         data_vals.extend([edge_conductance, edge_conductance])
         
+    dropped = dropped_missing + dropped_non_positive
+    counts = {
+        "edges_total": edges_total,
+        "edges_dropped": dropped,
+        "dropped_missing": dropped_missing,
+        "dropped_non_positive": dropped_non_positive,
+        "dropped_fraction": (dropped / edges_total) if edges_total else 0.0,
+    }
+    if report is not None:
+        report.update(counts)
+    if dropped:
+        logger.warning(
+            "Conductance matrix dropped %d of %d edges (%.1f%%): %d with no '%s' attribute, "
+            "%d with a non-positive value. The network solves on the remainder, so this does "
+            "not raise, but every flow below is for a smaller network than the graph.",
+            dropped, edges_total, 100.0 * counts["dropped_fraction"],
+            dropped_missing, weight_attr, dropped_non_positive,
+        )
+
     if has_robin:
         ghost_idx = node_to_idx["ROBIN_GHOST_NODE"]
         for n in G.nodes():
