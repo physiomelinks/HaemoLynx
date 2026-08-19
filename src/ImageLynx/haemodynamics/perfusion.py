@@ -244,16 +244,22 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     import scipy.sparse as sp
     
     N = grid.n_cells
-    nx, ny, nz = grid.dims
+    # grid.dims is (nz, ny, nx) and grid.res is (rz, ry, rx), as PerfusionGrid's own
+    # constructor log records. Both were previously unpacked reversed and the conductances
+    # named for the wrong axes; the reshape below reversed them a second time and the two
+    # errors cancelled. The arithmetic was right and unguessable from the names.
+    nz, ny, nx = grid.dims
     res = grid.res
     
     # Convert diffusion coefficient from m^2/s to µm^2/s
     sigma_diff_um2_s = perf_config.sigma_diff * 1e12
     
     # Diffusive conductance between cells (µm^3/s)
-    D_x = sigma_diff_um2_s * (res[1] * res[2]) / res[0]
+    # Diffusive conductance across a cell face: sigma * (face area) / (spacing normal to
+    # it). res is (rz, ry, rx), so the z conductance uses the y-x face.
+    D_z = sigma_diff_um2_s * (res[1] * res[2]) / res[0]
     D_y = sigma_diff_um2_s * (res[0] * res[2]) / res[1]
-    D_z = sigma_diff_um2_s * (res[0] * res[1]) / res[2]
+    D_x = sigma_diff_um2_s * (res[0] * res[1]) / res[2]
     
     rows, cols, data = [], [], []
     diag_A = np.zeros(N, dtype=np.float64)
@@ -280,30 +286,35 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     # Build diffusion matrix (Standard 7-point stencil)
     logger.info("Building 3D Diffusion sparse matrix...")
     
-    # x-direction edges
-    idx_x = np.arange(N).reshape((nz, ny, nx))
-    left = idx_x[:, :, :-1].flatten()
-    right = idx_x[:, :, 1:].flatten()
-    rows.extend(left); cols.extend(right); data.extend([-D_x] * len(left))
-    rows.extend(right); cols.extend(left); data.extend([-D_x] * len(right))
-    np.add.at(diag_A, left, D_x)
-    np.add.at(diag_A, right, D_x)
+    # The grid's linear index is z-fastest, idx = z + y*nz + x*nz*ny, as get_cell_index
+    # defines it. A C-order reshape makes the LAST axis fastest, so the index array is
+    # shaped (nx, ny, nz) and steps along its last axis are steps in z.
+    idx = np.arange(N).reshape((nx, ny, nz))
+
+    # z-direction edges (last axis)
+    back = idx[:, :, :-1].flatten()
+    front = idx[:, :, 1:].flatten()
+    rows.extend(back); cols.extend(front); data.extend([-D_z] * len(back))
+    rows.extend(front); cols.extend(back); data.extend([-D_z] * len(front))
+    np.add.at(diag_A, back, D_z)
+    np.add.at(diag_A, front, D_z)
     
     # y-direction edges
-    bottom = idx_x[:, :-1, :].flatten()
-    top = idx_x[:, 1:, :].flatten()
+    bottom = idx[:, :-1, :].flatten()
+    top = idx[:, 1:, :].flatten()
     rows.extend(bottom); cols.extend(top); data.extend([-D_y] * len(bottom))
     rows.extend(top); cols.extend(bottom); data.extend([-D_y] * len(top))
     np.add.at(diag_A, bottom, D_y)
     np.add.at(diag_A, top, D_y)
     
     # z-direction edges
-    back = idx_x[:-1, :, :].flatten()
-    front = idx_x[1:, :, :].flatten()
-    rows.extend(back); cols.extend(front); data.extend([-D_z] * len(back))
-    rows.extend(front); cols.extend(back); data.extend([-D_z] * len(front))
-    np.add.at(diag_A, back, D_z)
-    np.add.at(diag_A, front, D_z)
+    # x-direction edges (first axis)
+    lo = idx[:-1, :, :].flatten()
+    hi = idx[1:, :, :].flatten()
+    rows.extend(lo); cols.extend(hi); data.extend([-D_x] * len(lo))
+    rows.extend(hi); cols.extend(lo); data.extend([-D_x] * len(hi))
+    np.add.at(diag_A, lo, D_x)
+    np.add.at(diag_A, hi, D_x)
     
     # Add diagonal elements
     all_indices = np.arange(N)
@@ -425,7 +436,8 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     import networkx as nx
 
     N = grid.n_cells
-    nx_dim, ny_dim, nz_dim = grid.dims
+    # grid.dims is (nz, ny, nx). See build_adr_matrix for why this was reversed.
+    nz_dim, ny_dim, nx_dim = grid.dims
     res = grid.res
 
     PO2_tissue = np.zeros(N, dtype=np.float64) # mmHg
@@ -474,28 +486,31 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     def build_diffusion_matrix(sigma_diff, alpha):
         sigma_um2_s = sigma_diff * 1e12
         # Scale D by alpha so the matrix solves for PO2 but outputs mmol/s
-        D_x = sigma_um2_s * alpha * (res[1] * res[2]) / res[0]
+        # res is (rz, ry, rx); the z conductance uses the y-x face. The index array is
+        # shaped (nx, ny, nz) so its last axis is z, matching the grid's z-fastest linear
+        # index. See build_adr_matrix for the full account.
+        D_z = sigma_um2_s * alpha * (res[1] * res[2]) / res[0]
         D_y = sigma_um2_s * alpha * (res[0] * res[2]) / res[1]
-        D_z = sigma_um2_s * alpha * (res[0] * res[1]) / res[2]
+        D_x = sigma_um2_s * alpha * (res[0] * res[1]) / res[2]
 
         rows, cols, data = [], [], []
         diag_A = np.zeros(N, dtype=np.float64)
 
-        idx_x = np.arange(N).reshape((nz_dim, ny_dim, nx_dim))
-        left = idx_x[:, :, :-1].flatten(); right = idx_x[:, :, 1:].flatten()
-        rows.extend(left); cols.extend(right); data.extend([-D_x] * len(left))
-        rows.extend(right); cols.extend(left); data.extend([-D_x] * len(right))
-        np.add.at(diag_A, left, D_x); np.add.at(diag_A, right, D_x)
+        idx = np.arange(N).reshape((nx_dim, ny_dim, nz_dim))
+        back = idx[:, :, :-1].flatten(); front = idx[:, :, 1:].flatten()
+        rows.extend(back); cols.extend(front); data.extend([-D_z] * len(back))
+        rows.extend(front); cols.extend(back); data.extend([-D_z] * len(front))
+        np.add.at(diag_A, back, D_z); np.add.at(diag_A, front, D_z)
 
-        bottom = idx_x[:, :-1, :].flatten(); top = idx_x[:, 1:, :].flatten()
+        bottom = idx[:, :-1, :].flatten(); top = idx[:, 1:, :].flatten()
         rows.extend(bottom); cols.extend(top); data.extend([-D_y] * len(bottom))
         rows.extend(top); cols.extend(bottom); data.extend([-D_y] * len(top))
         np.add.at(diag_A, bottom, D_y); np.add.at(diag_A, top, D_y)
 
-        back = idx_x[:-1, :, :].flatten(); front = idx_x[1:, :, :].flatten()
-        rows.extend(back); cols.extend(front); data.extend([-D_z] * len(back))
-        rows.extend(front); cols.extend(back); data.extend([-D_z] * len(front))
-        np.add.at(diag_A, back, D_z); np.add.at(diag_A, front, D_z)
+        lo = idx[:-1, :, :].flatten(); hi = idx[1:, :, :].flatten()
+        rows.extend(lo); cols.extend(hi); data.extend([-D_x] * len(lo))
+        rows.extend(hi); cols.extend(lo); data.extend([-D_x] * len(hi))
+        np.add.at(diag_A, lo, D_x); np.add.at(diag_A, hi, D_x)
 
         all_indices = np.arange(N)
         rows.extend(all_indices); cols.extend(all_indices); data.extend(diag_A)
@@ -650,32 +665,34 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
     import networkx as nx
     
     N = grid.n_cells
-    nx_dim, ny_dim, nz_dim = grid.dims
+    nz_dim, ny_dim, nx_dim = grid.dims
     res = grid.res
     
     sigma_diff_um2_s = perf_config.sigma_diff * 1e12
-    D_x = sigma_diff_um2_s * (res[1] * res[2]) / res[0]
+    # res is (rz, ry, rx); the z conductance uses the y-x face. See build_adr_matrix.
+    D_z = sigma_diff_um2_s * (res[1] * res[2]) / res[0]
     D_y = sigma_diff_um2_s * (res[0] * res[2]) / res[1]
-    D_z = sigma_diff_um2_s * (res[0] * res[1]) / res[2]
+    D_x = sigma_diff_um2_s * (res[0] * res[1]) / res[2]
     
     rows, cols, data = [], [], []
     diag_A = np.zeros(N, dtype=np.float64)
     
-    idx_x = np.arange(N).reshape((nz_dim, ny_dim, nx_dim))
-    left = idx_x[:, :, :-1].flatten(); right = idx_x[:, :, 1:].flatten()
-    rows.extend(left); cols.extend(right); data.extend([-D_x] * len(left))
-    rows.extend(right); cols.extend(left); data.extend([-D_x] * len(right))
-    np.add.at(diag_A, left, D_x); np.add.at(diag_A, right, D_x)
+    # Shaped (nx, ny, nz) so the last axis is z, matching the z-fastest linear index.
+    idx = np.arange(N).reshape((nx_dim, ny_dim, nz_dim))
+    back = idx[:, :, :-1].flatten(); front = idx[:, :, 1:].flatten()
+    rows.extend(back); cols.extend(front); data.extend([-D_z] * len(back))
+    rows.extend(front); cols.extend(back); data.extend([-D_z] * len(front))
+    np.add.at(diag_A, back, D_z); np.add.at(diag_A, front, D_z)
     
-    bottom = idx_x[:, :-1, :].flatten(); top = idx_x[:, 1:, :].flatten()
+    bottom = idx[:, :-1, :].flatten(); top = idx[:, 1:, :].flatten()
     rows.extend(bottom); cols.extend(top); data.extend([-D_y] * len(bottom))
     rows.extend(top); cols.extend(bottom); data.extend([-D_y] * len(top))
     np.add.at(diag_A, bottom, D_y); np.add.at(diag_A, top, D_y)
     
-    back = idx_x[:-1, :, :].flatten(); front = idx_x[1:, :, :].flatten()
-    rows.extend(back); cols.extend(front); data.extend([-D_z] * len(back))
-    rows.extend(front); cols.extend(back); data.extend([-D_z] * len(front))
-    np.add.at(diag_A, back, D_z); np.add.at(diag_A, front, D_z)
+    lo = idx[:-1, :, :].flatten(); hi = idx[1:, :, :].flatten()
+    rows.extend(lo); cols.extend(hi); data.extend([-D_x] * len(lo))
+    rows.extend(hi); cols.extend(lo); data.extend([-D_x] * len(hi))
+    np.add.at(diag_A, lo, D_x); np.add.at(diag_A, hi, D_x)
     
     all_indices = np.arange(N)
     rows.extend(all_indices); cols.extend(all_indices); data.extend(diag_A)

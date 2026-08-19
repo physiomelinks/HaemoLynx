@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""H2 §2.1 functional shunting and §2.2 spatial haematocrit, at the glomus cell level.
+"""H2 §2.1 shunting, §2.2 spatial haematocrit and §2.4 transit time, at the glomus cell level.
 
     python3 examples/cb_h2_glomus_perfusion.py
 
@@ -40,6 +40,7 @@ from ImageLynx.haemodynamics.rheology import (                         # noqa: E
     solve_coupled_flow_and_hematocrit,
 )
 from ImageLynx.haemodynamics.tissue_regions import edge_tissue_fraction  # noqa: E402
+from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa: E402
 from ImageLynx.roi_placement import place_roi                          # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS         # noqa: E402
 
@@ -97,10 +98,16 @@ def analyse(specimen):
         G, inlets, outlets, INLET_P, OUTLET_P)
 
     frac = edge_tissue_fraction(G, _th_mask(specimen), PROCESSING_VOXEL_UM)
+    # §2.4: accumulated transit time from the arterial inlets to every node, along the solved
+    # flow directions. Absolute values are in arbitrary units, so only the ratio is reported.
+    arrival = transit_time_from_inlets(G, inlets)
 
     rows = []
     for u, v, key, data in G.edges(keys=True, data=True):
         f = frac.get((u, v, key), float("nan"))
+        # The transit time to reach this edge's far end, taking the later of its two ends so
+        # a penetrating capillary is scored by how long blood takes to get through it.
+        reach = max(arrival.get(u, float("inf")), arrival.get(v, float("inf")))
         rows.append({
             "th_fraction": f,
             # solve_coupled_flow_and_hematocrit writes flow_abs and flow_signed.
@@ -108,6 +115,7 @@ def analyse(specimen):
             "hematocrit": float(data.get("hematocrit", float("nan"))),
             "diameter": float(data.get("assigned_diameter_um", float("nan"))),
             "length": float(data.get("length", 0.0)),
+            "transit": reach,
         })
     return {
         "specimen_id": specimen.specimen_id,
@@ -153,6 +161,11 @@ def _summarise(result):
         "hct_ratio": hct_pen / hct_byp if hct_byp else float("nan"),
         "median_diameter_penetrating": q(pen, "diameter"),
         "median_diameter_bypass": q(byp, "diameter"),
+        "median_transit_penetrating": q(pen, "transit"),
+        "median_transit_bypass": q(byp, "transit"),
+        "transit_ratio": (q(pen, "transit") / q(byp, "transit")
+                          if np.isfinite(q(byp, "transit")) and q(byp, "transit") > 0
+                          else float("nan")),
     }
 
 
@@ -197,9 +210,19 @@ def main():
               f"{s['median_hct_bypass']:8.4f} {s['hct_ratio']:7.3f} "
               f"{s['median_diameter_penetrating']:6.2f}u {s['median_diameter_bypass']:6.2f}u")
 
+    print(f"\n§2.4 transit time to the glomus clusters")
+    print(f"  {'spec':7s} {'t pen':>12s} {'t bypass':>12s} {'ratio':>7s}")
+    for s in summaries:
+        print(f"  {s['specimen_id']:7s} {s['median_transit_penetrating']:12.4g} "
+              f"{s['median_transit_bypass']:12.4g} {s['transit_ratio']:7.3f}")
+    print("  Absolute values are in arbitrary units: the pressure, viscosity and length units\n"
+          "  are not reconciled to one system, and S15 puts an absolute flow quantity under a\n"
+          "  +/-45% calibre floor regardless. Only the ratio is a result.")
+
     for field, label in (("shunt_index", "§2.1 shunt index"),
                          ("flow_ratio", "§2.1 median flow ratio pen/byp"),
                          ("hct_ratio", "§2.2 haematocrit ratio pen/byp"),
+                         ("transit_ratio", "§2.4 transit ratio pen/byp"),
                          ("flow_share_penetrating", "§2.1 share of flow in penetrating edges")):
         out = {}
         for grp in ("WKY", "SHR"):

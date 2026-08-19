@@ -1033,6 +1033,54 @@ question from the viscosity law and changing the skimming model is not what T1.2
 
 `STATUS — T1.2 RESOLVED; a new open question on the skimming model recorded above.`
 
+### S23. Transit time posed as a ratio separates the cohorts; the axis rename changed no number
+
+**T1.3.** §2.4 asks for the transit time from the arterial inlet to the distal ends of the
+capillaries inside the TH boundaries. As an absolute that sits under the ±45% calibre floor of
+S15, and S22 has just moved apparent viscosity by a factor of three or four without shifting any
+ratio. The pipeline's pressure, viscosity and length units are also not reconciled to one system,
+so the magnitude is in arbitrary units. Posed as the ratio of transit time to TH-penetrating
+edges against transit time to bypassing edges, all of that divides out.
+
+Transit time per edge is lumen volume over flow, accumulated along the **solved flow
+directions** rather than along adjacency: an edge carrying blood away from a node cannot deliver
+blood to it. Dijkstra rather than a topological pass, because flow directions come from a
+numerical solve and can contain a small cycle.
+
+| Specimen | penetrating | bypassing | ratio |
+|---|---|---|---|
+| WKY-A | 2.381e7 | 1.889e7 | 1.261 |
+| WKY-B | 1.715e7 | 1.547e7 | 1.109 |
+| WKY-C | 2.811e7 | 2.516e7 | 1.117 |
+| SHR-A | 1.245e7 | 1.518e7 | 0.820 |
+| SHR-B | 1.463e7 | 1.674e7 | 0.874 |
+| SHR-C | 1.382e7 | 2.017e7 | 0.685 |
+
+**The cohorts separate without overlap**, WKY 1.109 to 1.261 against SHR 0.685 to 0.874, giving
+the design floor of p = 0.10. The direction is the opposite of what §2.4 anticipates. It expects
+sluggish transit to the sensors in SHR; blood reaches the SHR clusters in about two thirds of the
+time it takes to reach the surrounding tissue, where in WKY it takes about a fifth longer.
+
+That is consistent with §2.1, which finds no bypass, and with §1.3, which finds a smaller and
+more densely vascularised parenchyma. Whether it means the sensors are well perfused or merely
+that a smaller cluster is closer to its supply is not answerable from a ratio, and no claim
+beyond the measurement is made.
+
+**T2.4.** The perfusion grid axes are renamed at all three assembly sites. S16 established that
+the naming was inverted twice and that the inversions cancelled: `grid.dims` is `(nz, ny, nx)`
+but was unpacked as `nx, ny, nz`, and `D_x` was built from `(res[1]·res[2])/res[0]`, which with
+`res` in `(z, y, x)` is the z coefficient. The rename fixes the unpacking, the coefficient names,
+the index-array shape and which coefficient each stencil direction uses, all together, because
+fixing any one alone would change the arithmetic.
+
+Verified rather than asserted: the assembled matrix, its indices, the flow and source vectors
+were hashed on a deliberately non-cubic anisotropic grid `(3, 7, 29)` at `(20, 10, 5)` µm before
+and after. **Identical SHA256.** One further reversed unpack was found in
+`solve_multi_species_perfusion` that the snapshot could not see, since it exercises only
+`build_adr_matrix`; it is fixed too.
+
+`STATUS — T1.3 and T2.4 RESOLVED.`
+
 ## Effect on the four H2 methods
 
 | Method | TH gate | Physics | Noise floor | Also needs |
@@ -1147,7 +1195,7 @@ quantifying it.
 |---|---|---|---|
 | T1.1 | Refine the perfusion grid from 10 µm to roughly 1.5 to 2 µm, a factor of 137 in cells. Benchmark the iterative solver at that size before committing. | §2.3 | S19 |
 | T1.2 | ~~Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation.~~ **Done.** In vivo, and the function was a hybrid of both with the wall factor applied once instead of twice. §2.1 and §2.2 conclusions unchanged. | §2.2 | S18, **S22** |
-| T1.3 | Re-pose transit time as a within-specimen ratio. As an absolute quantity it sits under a ±45% floor. | §2.4 | S13, S15, S20 |
+| T1.3 | ~~Re-pose transit time as a within-specimen ratio.~~ **Done.** Ratio of transit time to penetrating against bypassing edges, along solved flow directions. Cohorts separate without overlap. | §2.4 | S13, S15, S20, **S23** |
 | T1.4 | ~~Regenerate the flow and perfusion artefacts without the fabricated constriction.~~ **Done**, all six. | all | S17 |
 
 **Tier 2. Precision and safety. None blocks a result; each is a trap already sprung once.**
@@ -1157,7 +1205,7 @@ quantifying it.
 | T2.1 | ~~Assert on `diameter_provenance_counts`.~~ **Done.** `check_diameter_provenance` refuses an `edt_radius` run carrying any synthetic calibre and reports the fabricated share whatever the mode. `fwhm_radius` stays exempt for the reason the older guard gives. | S5 |
 | T2.2 | ~~Remove the silent 5.0 µm diameter default in `map_vessels_to_grid`.~~ **Done.** Missing or non-positive calibre now raises, naming how many edges. `default_diameter_um` makes the substitution available but deliberate. | S19 |
 | T2.3 | ~~Count and report edges dropped from the conductance matrix.~~ **Done.** Counted separately by cause, returned through an opt-in `report`, and logged as a warning regardless. Return arity unchanged, so the ten existing call sites are untouched. | S18 |
-| T2.4 | Rename the perfusion grid axes to match reality. Safe now that the stencil is guarded by a test, and unsafe before. | S16 |
+| T2.4 | ~~Rename the perfusion grid axes to match reality.~~ **Done.** All three assembly sites, verified by identical matrix hash on a non-cubic anisotropic grid. | S16, **S23** |
 | T2.5 | Improve calibre precision. Gated on H1's outstanding perivascular labelling rather than on anything here. | S6, S15 |
 
 **Tier 3. Experimental design, inherited from H1 and unchanged by anything in this document.**
