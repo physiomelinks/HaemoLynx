@@ -277,15 +277,36 @@ def test_verify_fails_when_the_mask_does_not_reach_the_edges_it_claims_to_contai
     assert result["ok"] is False
 
 
-def test_verify_fails_when_the_glomus_volume_escapes_the_perfusion_grid():
-    """A mask larger than the solved grid means part of the tissue has no oxygen field, and
-    ParaView shows the missing part as empty space rather than as an error."""
-    tall = np.zeros((100, 20, 20), dtype=bool)       # same tissue, extended past the grid
-    tall[0:43, 4:8, 4:8] = True
+def test_glomus_outside_the_grid_is_measured_and_does_not_block_the_export():
+    """Coverage and registration are different failures and must not share a verdict.
+
+    A grid that does not span the mask gives an overlay that is right as far as it goes: the
+    tissue in the gap simply has no oxygen field. Blocking on it refused two of the six real
+    specimens whose frames were as well registered as any that passed. What it must not do is
+    pass unmentioned, so the shortfall is measured.
+    """
+    tall = np.zeros((100, 20, 20), dtype=bool)
+    tall[0:43, 4:8, 4:8] = True                      # inside the grid, which reaches ~112 um
+    tall[80:100, 4:8, 4:8] = True                    # genuinely beyond it
     result = verify(_Spec(), _verifiable_state(tall))
 
-    # Everything else about this state is sound, so containment is the only thing left to fail.
-    assert result["penetrating_midpoint_inside_pct"] == 100.0
-    assert result["non_penetrating_midpoint_inside_pct"] == 0.0
     assert result["perfusion_grid_contains_glomus_volume"] is False
-    assert result["ok"] is False
+    assert result["glomus_outside_grid_pct"] > 0.0
+    assert result["ok"] is True                      # registration is sound, so it is written
+
+
+def test_a_grid_that_spans_the_mask_reports_nothing_outside_it():
+    result = verify(_Spec(), _verifiable_state(_tube_mask()))
+
+    assert result["perfusion_grid_contains_glomus_volume"] is True
+    assert result["glomus_outside_grid_pct"] == 0.0
+
+
+def test_the_shortfall_is_the_true_fraction_of_tissue_the_grid_misses():
+    """A percentage that is merely non-zero would pass the test above while being wrong."""
+    mask = np.zeros((100, 20, 20), dtype=bool)
+    mask[0:43, 4:8, 4:8] = True                      # inside the grid, which reaches ~112 um
+    mask[80:100, 4:8, 4:8] = True                    # beyond it: 20 of 63 slabs
+
+    result = verify(_Spec(), _verifiable_state(mask))
+    assert result["glomus_outside_grid_pct"] == pytest.approx(100.0 * 20 / 63, abs=0.5)

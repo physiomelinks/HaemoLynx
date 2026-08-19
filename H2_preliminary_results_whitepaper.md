@@ -442,6 +442,13 @@ cannot produce a local gradient. The consumption rate is not at fault: `M_max = 
 one.** That is a statement about the carotid body, not about the implementation, and it is the
 most substantive negative result in this document.
 
+**Two specimens are additionally solved on less tissue than they contain.** The perfusion grid
+takes its extent from the vascular bounding box, so where vessels stop short of the region edge
+the glomus tissue beyond them is not represented: 4.35% of SHR-A's glomus volume and 7.54% of
+SHR-C's. §2.1, §2.2 and §2.4 are unaffected, being computed against the mask in voxel space
+rather than on the grid. For §2.3 it compounds a result already reported as not usable, and it is
+recorded as S28.
+
 ### 10.3 The solution is grid-converged
 
 Median PO2 on WKY-C runs 27.34, 27.92, 28.21 at 10, 6 and 4 µm, the increment halving each time
@@ -555,12 +562,16 @@ python examples/cb_h2_boundary_selection.py          # §4.2
 python examples/cb_h2_glomus_perfusion.py            # §7, §8, §9
 python examples/cb_h2_hypoxic_fraction.py            # §10
 python examples/cb_h2_error_propagation.py           # the noise floor
+python examples/cb_h2_vtk.py                         # ParaView artefacts, not a result
 ```
+
+`examples/cb_h2_paraview_guide.md` covers the exports and which arrays carry which section.
 
 | Artefact | Supplies |
 |---|---|
 | `cb_h2_glomus_perfusion.json` | §7, §8, §9 |
 | `cb_h2_hypoxic_fraction.json` | §10 |
+| `cb_h2_paraview/export_summary.json` | the frame check behind the ParaView exports |
 | `<SPECIMEN>/per_edge_morphometry.csv` | diameters; the cached graph carries none |
 | `ilastik_probabilities/*_TH_ilastik_Probabilities.h5.provenance.json` | TH classifier attribution |
 

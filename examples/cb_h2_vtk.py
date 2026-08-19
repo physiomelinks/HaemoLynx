@@ -31,6 +31,11 @@ same physical frame.
 whose centreline is more than half inside the mask have their midpoint inside the exported
 volume 90.7% of the time, against 0.8% for edges less than a tenth inside, and 39.5% if the
 volume is transposed. That is the check, not the argument.
+
+Coverage is reported separately and does not block writing. The perfusion grid is the graph's
+node bounding box, so a specimen whose vessels stop short of the region edge gets a grid
+smaller than the glomus mask: SHR-A loses 4.35% of its glomus volume that way and SHR-C 7.54%.
+Those exports are correctly registered and simply have no oxygen field in the gap.
 """
 import argparse
 import csv
@@ -283,7 +288,20 @@ def verify(specimen, state):
     grid_lo = np.asarray(grid.min_xyz)
     grid_hi = grid_lo + np.asarray(grid.dims) * np.asarray(grid.res)
     mask_hi = np.asarray(mask.shape) * voxel
-    frames_agree = bool(np.all(grid_lo <= 0.0) and np.all(grid_hi >= mask_hi - 1e-6))
+    contains = bool(np.all(grid_lo <= 0.0) and np.all(grid_hi >= mask_hi - 1e-6))
+
+    # How much glomus tissue the grid does not reach. The grid is the graph's node bounding
+    # box, so a specimen whose vessels stop short of the region edge leaves real tissue with
+    # no oxygen field. That is a coverage fact about the specimen, not a registration fault,
+    # and the two must not share a verdict: conflating them refuses sound exports for SHR-A
+    # and SHR-C, whose frames are as well registered as any specimen that passes.
+    idx = np.argwhere(mask)
+    if idx.size:
+        centres = (idx + 0.5) * voxel
+        covered = np.all((centres >= grid_lo) & (centres < grid_hi), axis=1)
+        outside_pct = 100.0 * float((~covered).mean())
+    else:
+        outside_pct = 0.0
 
     perfused = state["q_total"] > 0
     node_cells = set()
@@ -296,14 +314,18 @@ def verify(specimen, state):
             node_cells.add(int(cell))
     node_perfused = (100.0 * np.mean([perfused[c] for c in node_cells])) if node_cells else 0.0
 
-    ok = inside > 70.0 and outside < 15.0 and inside > reversed_inside * 1.5 and frames_agree
+    # Registration only. A transposed or shifted volume produces an overlay that renders
+    # perfectly and is wrong; a grid that does not span the mask produces one that is right
+    # as far as it goes. Only the first is a reason to refuse to write.
+    ok = inside > 70.0 and outside < 15.0 and inside > reversed_inside * 1.5
     return {
         "specimen_id": specimen.specimen_id,
         "penetrating_midpoint_inside_pct": round(float(inside), 1),
         "non_penetrating_midpoint_inside_pct": round(float(outside), 1),
         "transposed_control_pct": round(float(reversed_inside), 1),
         "graph_nodes_in_perfused_cells_pct": round(float(node_perfused), 1),
-        "perfusion_grid_contains_glomus_volume": frames_agree,
+        "perfusion_grid_contains_glomus_volume": contains,
+        "glomus_outside_grid_pct": round(outside_pct, 2),
         "ok": bool(ok),
     }
 
@@ -336,6 +358,10 @@ def main():
               f"penetrating {check['penetrating_midpoint_inside_pct']}% inside, "
               f"non-penetrating {check['non_penetrating_midpoint_inside_pct']}%, "
               f"transposed control {check['transposed_control_pct']}%")
+        if not check["perfusion_grid_contains_glomus_volume"]:
+            print(f"    note: {check['glomus_outside_grid_pct']}% of the glomus volume lies "
+                  f"outside the perfusion grid and carries no PO2. The grid is the graph's "
+                  f"node bounding box, so this is where the vessels stop, not a frame fault.")
         if args.verify:
             continue
         if not check["ok"]:

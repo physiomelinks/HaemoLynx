@@ -6,6 +6,8 @@ a per-cell array first. The grid is coarse relative to the segmentation, roughly
 voxels to a 10 µm cell, so a cell is rarely all tissue or all stroma and sampling the mask at
 the cell centre would discard almost all of it.
 """
+import warnings
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -258,3 +260,40 @@ def test_every_edge_is_reported_exactly_once_keyed_by_u_v_key():
     frac = edge_tissue_fraction(G, mask, VOX)
     assert len(frac) == G.number_of_edges()
     assert all(len(k) == 3 for k in frac)
+
+
+def test_tissue_falling_outside_the_grid_is_reported_not_just_dropped():
+    """Dropping is correct; dropping quietly is not.
+
+    The grid comes from the graph's node bounding box, so a specimen whose vessels stop short
+    of the region edge gets a grid smaller than the mask. Every returned fraction is then
+    valid and describes less tissue than was handed in, which nothing downstream can detect.
+    Two of the six carotid body specimens lose 4.35% and 7.54% of their glomus volume this way.
+    """
+    G = nx.MultiGraph()
+    G.add_node("a", pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node("b", pos=np.array([20.0, 20.0, 20.0]))
+    grid = PerfusionGrid(G, (4.0, 4.0, 4.0))          # spans about -2 to 22 um
+
+    mask = np.zeros((30, 8, 8), dtype=bool)
+    mask[:, 2:5, 2:5] = True                          # runs well past the grid in z
+
+    with pytest.warns(RuntimeWarning, match="fall outside the grid"):
+        fraction = mask_fraction_per_cell(mask, grid, (1.0, 1.0, 1.0))
+
+    assert fraction.shape == (grid.n_cells,)
+    assert np.all((fraction >= 0.0) & (fraction <= 1.0))
+
+
+def test_a_mask_that_fits_the_grid_warns_about_nothing():
+    G = nx.MultiGraph()
+    G.add_node("a", pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node("b", pos=np.array([20.0, 20.0, 20.0]))
+    grid = PerfusionGrid(G, (4.0, 4.0, 4.0))
+
+    mask = np.zeros((16, 16, 16), dtype=bool)
+    mask[4:10, 4:10, 4:10] = True
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        mask_fraction_per_cell(mask, grid, (1.0, 1.0, 1.0))

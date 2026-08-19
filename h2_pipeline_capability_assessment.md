@@ -1357,6 +1357,46 @@ this bites.
 `STATUS — T1.8 RESOLVED as a property of the tissue, not a defect. T1.7 withdrawn and replaced by
 T1.9.`
 
+### S28. The perfusion grid does not span two specimens, and the missing tissue was silent
+
+Found while exporting the H2 results to ParaView, which put the glomus mask and the perfusion
+grid in one scene and made the mismatch visible.
+
+`PerfusionGrid` takes its extent from the graph's node bounding box. Where a specimen's vessels
+stop short of the region edge, the grid is smaller than the 160-voxel glomus mask, and
+`mask_fraction_per_cell` drops the tissue in the gap. Dropping is the correct behaviour and is
+documented: clipping would pile distal tissue onto the boundary cells and wrapping would deposit
+it in cell 0, and both are invisible in the output. What was missing is that the quantity dropped
+was never reported.
+
+**Measured** across the cohort, glomus voxels falling outside the solved grid:
+
+| Specimen | Glomus voxels | Outside the grid | Share | Gap |
+|---|---|---|---|---|
+| WKY-A | 827,804 | 0 | 0.00% | - |
+| WKY-B | 1,424,365 | 0 | 0.00% | - |
+| WKY-C | 978,989 | 0 | 0.00% | - |
+| SHR-A | 832,476 | 36,248 | 4.35% | 12.2 µm at the far z face |
+| SHR-B | 700,324 | 0 | 0.00% | - |
+| SHR-C | 391,921 | 29,558 | 7.54% | 12.9 µm at the near x face |
+
+**Scope.** §2.1, §2.2 and §2.4 are unaffected: they use `edge_tissue_fraction`, which works in
+voxel space against the mask directly and never consults the grid. Only §2.3 is affected, because
+only §2.3 assigns metabolic rates per grid cell. §2.3 is already reported as not a result (S27,
+§10.2), so nothing in the whitepaper's conclusions moves. The correction is to reporting.
+
+**Two changes.** `mask_fraction_per_cell` now warns above 1% dropped, which covers every caller
+rather than this one. And the exporter's frame check no longer conflates coverage with
+registration: a grid that does not span the mask gives an overlay that is right as far as it goes,
+where a transposed volume gives one that renders perfectly and is wrong. Only the second is a
+reason to refuse to write. Conflating them refused SHR-A and SHR-C, whose registration figures
+(90.7% / 0.6% and 87.4% / 0.2%) are as good as any specimen that passed.
+
+**Not fixed:** the grid is still the node bounding box. Padding it to the mask would solve oxygen
+into tissue with no vessels in it, which is a modelling decision rather than a bug fix, and it is
+recorded as T2.6 rather than taken here.
+
+
 ## Effect on the four H2 methods
 
 | Method | TH gate | Physics | Noise floor | Also needs |

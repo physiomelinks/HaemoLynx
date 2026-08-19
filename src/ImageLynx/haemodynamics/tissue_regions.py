@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Sequence
 
+import warnings
+
 import numpy as np
 
 
@@ -39,6 +41,12 @@ def mask_fraction_per_cell(
     Mask voxels falling outside the grid are dropped. They must not be clipped or wrapped: a
     wrapped index would deposit distal tissue into cell 0 and a clipped one would pile it onto
     the boundary cells, and in both cases the error is invisible in the output.
+
+    Dropping is the right behaviour and is still worth hearing about, so more than 1% lost
+    warns. The grid is built from the graph's node bounding box, so a specimen whose vessels
+    stop short of the region edge gets a grid smaller than the mask, and the tissue in the gap
+    leaves the analysis without changing anything that looks wrong: the returned fractions are
+    all valid, and simply describe less tissue than was passed in.
     """
     mask = np.asarray(mask, dtype=bool)
     if mask.ndim != 3:
@@ -59,6 +67,14 @@ def mask_fraction_per_cell(
     rel = (centres - np.asarray(grid.min_xyz, dtype=float)) / np.asarray(grid.res, dtype=float)
     ijk = np.floor(rel).astype(np.int64)
     inside = np.all((ijk >= 0) & (ijk < dims), axis=1)
+    dropped = int(inside.size - inside.sum())
+    if dropped and dropped > 0.01 * inside.size:
+        warnings.warn(
+            f"{dropped} of {inside.size} mask voxels ({100.0 * dropped / inside.size:.2f}%) "
+            f"fall outside the grid and are not represented in the returned fractions; the "
+            f"grid spans {np.round(np.asarray(grid.min_xyz), 1)} to "
+            f"{np.round(np.asarray(grid.min_xyz) + dims * np.asarray(grid.res), 1)} um",
+            RuntimeWarning, stacklevel=2)
     ijk = ijk[inside]
     if ijk.size == 0:
         return np.zeros(n_cells, dtype=np.float64)
