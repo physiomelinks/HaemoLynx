@@ -31,6 +31,7 @@ from .branch_order import (
     assign_vessel_branch_orders,
 )
 from .boundaries import (
+    BoundaryCoordinateWarning,
     select_boundary_nodes_by_method,
     select_boundary_nodes_for_role,
     select_boundary_terminal_nodes,
@@ -100,6 +101,7 @@ __all__ = [
     "assign_branch_orders",
     "assign_hierarchical_branch_orders",
     "assign_vessel_branch_orders",
+    "BoundaryCoordinateWarning",
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
     "select_boundary_nodes_for_role",
