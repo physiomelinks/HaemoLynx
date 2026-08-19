@@ -984,6 +984,55 @@ Reproduced by `examples/cb_h2_boundary_selection.py`.
 
 `STATUS — T0.2 RESOLVED.`
 
+### S22. The viscosity law was a hybrid of two, and correcting it exposed a third question
+
+T1.2 asked whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo
+Pries-Secomb relation. The answer is in vivo, since H2 models perfusion of living tissue where
+the endothelial surface layer is present. But the function was not using either.
+
+**It was a hybrid.** The `mu_45` base was the in vitro relation, `220·e^(−1.3D)`, and the
+wall-layer correction `(D/(D−1.1))²` applied on top of it is from the in vivo law. That
+combination is not a version of either relation.
+
+**And the in vivo wall factor appears twice, not once.** The published form is
+
+    mu_rel = (1 + (mu_45 − 1) · f(H, C) · W) · W,   W = (D / (D − 1.1))²
+
+with the factor scaling the haematocrit term inside the bracket and applied again outside.
+Applying it once understates apparent viscosity by 1.26× at 8 µm and 2.2× at 3 µm, which is the
+calibre range every vessel in this study occupies. This was found by checking the first
+correction against the published relation rather than by the tests, which passed either way.
+
+**Measured effect at the study's median calibre**, against the hybrid it replaces:
+
+| D (µm) | hybrid | in vitro | in vivo | in vivo / hybrid |
+|---|---|---|---|---|
+| 7.46 | 2.070 | 1.505 | 8.02 | 3.9× |
+| 8.35 | 2.033 | 1.532 | 7.30 | 3.6× |
+
+Resistance is linear in viscosity, so absolute flows fall by about an order of magnitude once
+the haematocrit coupling settles. **The §2.1 and §2.2 conclusions are unchanged**: the shunt
+index moves from WKY 0.924 / SHR 1.016 to WKY 0.909 / SHR 1.056, and the haematocrit ratio from
+0.90× to 0.92×, both still overlapping and both still pointing the same way. This is S13's
+lesson again in a second variable: absolute quantities move by multiples, within-specimen
+ratios do not.
+
+**The third question, which is open.** Under the in vitro law this pipeline's test bifurcation
+sends 84% of flow down the wide branch, which is then also the faster of the two, and it skims
+red cells as expected. Under the in vivo law the narrow branch is penalised harder, the split
+evens to 64/36, and 36% of flow through a quarter of the area makes the **narrow** branch the
+faster one. The skimming model then concentrates red cells there, inverting the classic
+picture.
+
+The call site pairs each flow with its own diameter correctly, so this is the model's own
+behaviour: it keys on velocity, where the Pries phase-separation law is normally posed in
+fractional blood flow with a diameter-dependent threshold. At a near-even split the two
+parameterisations can disagree in direction. That matters directly for §2.2, whose whole
+subject is where red cells end up. It is recorded rather than fixed, because it is a separate
+question from the viscosity law and changing the skimming model is not what T1.2 asked.
+
+`STATUS — T1.2 RESOLVED; a new open question on the skimming model recorded above.`
+
 ## Effect on the four H2 methods
 
 | Method | TH gate | Physics | Noise floor | Also needs |
@@ -1097,7 +1146,7 @@ quantifying it.
 | | Item | For | Findings |
 |---|---|---|---|
 | T1.1 | Refine the perfusion grid from 10 µm to roughly 1.5 to 2 µm, a factor of 137 in cells. Benchmark the iterative solver at that size before committing. | §2.3 | S19 |
-| T1.2 | Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation. Worth about 3.4× in apparent viscosity. | §2.2 | S18 |
+| T1.2 | ~~Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation.~~ **Done.** In vivo, and the function was a hybrid of both with the wall factor applied once instead of twice. §2.1 and §2.2 conclusions unchanged. | §2.2 | S18, **S22** |
 | T1.3 | Re-pose transit time as a within-specimen ratio. As an absolute quantity it sits under a ±45% floor. | §2.4 | S13, S15, S20 |
 | T1.4 | ~~Regenerate the flow and perfusion artefacts without the fabricated constriction.~~ **Done**, all six. | all | S17 |
 

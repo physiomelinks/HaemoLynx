@@ -373,19 +373,43 @@ def test_analytical_sphincter_resistance_calculus():
     assert np.isclose(num_r, exact_r, rtol=1e-3)
 
 def test_rheology_fahraeus_lindqvist_curve():
-    """Verify the Pries-Secomb viscosity follows the expected biological diameter curve."""
-    visc_100 = calculate_pries_secomb_viscosity(100.0, 0.45)
-    visc_30 = calculate_pries_secomb_viscosity(30.0, 0.45)
-    visc_10 = calculate_pries_secomb_viscosity(10.0, 0.45)
-    
+    """The Fahraeus-Lindqvist curve, which is a property of the *in vitro* relation.
+
+    This test previously called the function with no ``law`` and asserted this shape. It was
+    passing against a hybrid that used the in vitro base with the in vivo wall correction, so
+    the shape it checked was the in vitro one. The default is now the in vivo relation, whose
+    shape is genuinely different, so the in vitro law is named explicitly here and the in vivo
+    behaviour is asserted separately below.
+    """
+    visc_100 = calculate_pries_secomb_viscosity(100.0, 0.45, law="in_vitro")
+    visc_30 = calculate_pries_secomb_viscosity(30.0, 0.45, law="in_vitro")
+    visc_10 = calculate_pries_secomb_viscosity(10.0, 0.45, law="in_vitro")
+
     assert visc_100 > visc_30
     assert visc_30 > visc_10
-    
-    visc_6 = calculate_pries_secomb_viscosity(6.0, 0.45)
-    visc_3 = calculate_pries_secomb_viscosity(3.0, 0.45)
-    
-    assert visc_10 < visc_6
-    assert visc_6 < visc_3
+
+    # Probed at 4 um rather than 6: the pure in vitro minimum sits near 7 um, so 6 and 10
+    # straddle it too closely to order. The hybrid this replaced had its minimum pushed out
+    # by the wall correction it should not have been applying, which is why 6 worked there.
+    visc_4 = calculate_pries_secomb_viscosity(4.0, 0.45, law="in_vitro")
+    visc_3 = calculate_pries_secomb_viscosity(3.0, 0.45, law="in_vitro")
+
+    assert visc_10 < visc_4
+    assert visc_4 < visc_3
+
+
+def test_rheology_in_vivo_curve_rises_monotonically_as_vessels_narrow():
+    """The in vivo relation has no capillary-range minimum.
+
+    The endothelial surface layer occupies a larger share of a narrow lumen, so apparent
+    viscosity keeps rising as diameter falls rather than turning over around 6 to 8 um. This
+    is the default the pipeline runs on, and it is a different curve from the one above.
+    """
+    diameters = (3.0, 5.0, 8.0, 10.0, 20.0, 30.0)
+    visc = [calculate_pries_secomb_viscosity(d, 0.45) for d in diameters]
+
+    assert all(a > b for a, b in zip(visc, visc[1:])), visc
+    assert visc[0] > 3.0 * visc[-1], "the in vivo law should span a wide range over this window"
 
 
 # --- Part 4: Endothelial Permeability Tests ---

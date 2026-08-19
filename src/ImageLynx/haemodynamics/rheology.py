@@ -6,51 +6,85 @@ Plasma Skimming (unequal hematocrit splitting at bifurcations).
 import numpy as np
 import networkx as nx
 
-def calculate_pries_secomb_viscosity(diameter_um: float, hematocrit: float, mu_plasma: float = 1.2) -> float:
-    """
-    Calculates the apparent in-vivo blood viscosity using the empirical Pries-Secomb model.
-    Accounts for the Fåhræus–Lindqvist effect where viscosity drops in small capillaries 
-    but skyrockets when diameters approach RBC dimensions (< 5um).
+#: The two Pries-Secomb relations for relative apparent viscosity at a discharge haematocrit
+#: of 0.45. They differ only in the first term, and that term is the whole disagreement.
+#:
+#: ``in_vitro`` is Pries et al. (1992), fitted to blood in glass tubes.
+#: ``in_vivo`` is Pries et al. (1994), fitted to microvessels in living tissue, where the
+#: endothelial surface layer narrows the effective lumen and raises resistance.
+#:
+#: At D = 8 um and H = 0.45 the two give apparent viscosities differing by roughly 3.4x, and
+#: resistance is linear in viscosity, so this is not a refinement.
+PRIES_SECOMB_LAWS = ("in_vivo", "in_vitro")
 
-    Parameters:
-    -----------
-    diameter_um : float
-        Vessel diameter in micrometers.
-    hematocrit : float
-        Discharge hematocrit (fraction 0.0 to 1.0).
-    mu_plasma : float
-        Viscosity of blood plasma (default ~1.2 cP or mPa*s).
 
-    Returns:
-    --------
-    float
-        Apparent dynamic viscosity.
+def _mu_45(diameter_um: float, law: str) -> float:
+    """Relative apparent viscosity at H = 0.45, under the requested relation."""
+    d = diameter_um
+    tail = 3.2 - 2.44 * np.exp(-0.06 * (d ** 0.645))
+    if law == "in_vitro":
+        return 220.0 * np.exp(-1.3 * d) + tail
+    return 6.0 * np.exp(-0.085 * d) + tail
+
+
+def calculate_pries_secomb_viscosity(
+    diameter_um: float,
+    hematocrit: float,
+    mu_plasma: float = 1.2,
+    law: str = "in_vivo",
+) -> float:
+    """Apparent blood viscosity, accounting for the Fahraeus-Lindqvist effect.
+
+    ``law`` selects the relation, and the wall-layer correction follows it rather than being
+    applied unconditionally. A glass tube has no endothelial surface layer, so correcting for
+    one there is not a refinement of the in vitro law but a departure from both.
+
+    This function previously combined the in vitro base with the in vivo wall correction,
+    which is neither. **in vivo is the default**: H2 models perfusion of living tissue, where
+    the surface layer is present, and the glass-tube relation is the special case.
+
+    Parameters
+    ----------
+    diameter_um:
+        Vessel diameter. Capped below at 3.0 um, since an RBC cannot pass a smaller lumen
+        intact and the relation runs away there.
+    hematocrit:
+        Discharge haematocrit, 0 to 1. Returns plasma viscosity at zero.
+    mu_plasma:
+        Plasma viscosity, default 1.2 cP.
+    law:
+        ``"in_vivo"`` (default) or ``"in_vitro"``.
     """
+    if law not in PRIES_SECOMB_LAWS:
+        raise ValueError(
+            f"Unknown viscosity law {law!r}. Expected one of {PRIES_SECOMB_LAWS}. "
+            f"The two differ by about 3.4x in the capillary range, so there is no safe default "
+            f"beyond the in vivo relation this pipeline uses."
+        )
     if diameter_um <= 0 or hematocrit <= 0.0:
         return mu_plasma
 
-    D = diameter_um
-    H = hematocrit
+    d = max(float(diameter_um), 3.0)
+    h = float(hematocrit)
 
-    # To avoid mathematical singularities for extremely small vessels, cap D at 3.0 um 
-    # (RBCs physically cannot enter vessels smaller than ~3 um without lysing)
-    D = max(D, 3.0)
+    mu_45 = _mu_45(d, law)
 
-    # 1. Calculate relative apparent viscosity at a standard hematocrit of 0.45
-    # Pries et al. (1992) empirical formulation
-    mu_45 = 220.0 * np.exp(-1.3 * D) + 3.2 - 2.44 * np.exp(-0.06 * (D ** 0.645))
+    # Shape parameter for the haematocrit dependence. Common to both relations.
+    tail = 1.0 / (1.0 + 1e-11 * d ** 12)
+    c_shape = (0.8 + np.exp(-0.075 * d)) * (-1.0 + tail) + tail
+    h_term = ((1.0 - h) ** c_shape - 1.0) / ((1.0 - 0.45) ** c_shape - 1.0)
 
-    # 2. Shape parameter C describing hematocrit dependence
-    C_shape = (0.8 + np.exp(-0.075 * D)) * (-1.0 + 1.0 / (1.0 + 10**-11 * D**12)) + (1.0 / (1.0 + 10**-11 * D**12))
+    if law == "in_vitro":
+        mu_rel = 1.0 + (mu_45 - 1.0) * h_term
+    else:
+        # The cell-depleted layer near the wall, W = (D / (D - 1.1))^2. It appears *twice* in
+        # the published in vivo relation, once scaling the haematocrit term inside the bracket
+        # and once outside it. Applying it once understates apparent viscosity by 1.26x at
+        # 8 um and 2.2x at 3 um, which is the calibre range every vessel here sits in.
+        wall = (d / (d - 1.1)) ** 2
+        mu_rel = (1.0 + (mu_45 - 1.0) * h_term * wall) * wall
 
-    # 3. Calculate relative apparent viscosity at actual hematocrit H
-    mu_rel = 1.0 + (mu_45 - 1.0) * (((1.0 - H)**C_shape - 1.0) / ((1.0 - 0.45)**C_shape - 1.0))
-
-    # 4. Correct for the cell-depleted layer near the vessel wall (D / (D - 1.1))^2
-    # In-vivo empirical adjustment
-    mu_app = mu_rel * ((D / (D - 1.1)) ** 2)
-
-    return float(mu_app * mu_plasma)
+    return float(mu_rel * mu_plasma)
 
 
 def calculate_phase_separation_hematocrit(
