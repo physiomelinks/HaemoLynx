@@ -337,12 +337,12 @@ until flows converge.
 
 | Specimen | Hct penetrating | Hct bypassing | Ratio |
 |---|---|---|---|
-| WKY-A | 0.4109 | 0.3976 | 1.020 |
-| WKY-B | 0.4060 | 0.3926 | 1.031 |
-| WKY-C | 0.3915 | 0.3887 | 1.023 |
-| SHR-A | 0.3886 | 0.3783 | 1.054 |
-| SHR-B | 0.3805 | 0.3775 | 1.033 |
-| SHR-C | 0.3364 | 0.4240 | 0.770 |
+| WKY-A | 0.3972 | 0.3893 | 1.020 |
+| WKY-B | 0.3906 | 0.3790 | 1.031 |
+| WKY-C | 0.3926 | 0.3839 | 1.023 |
+| SHR-A | 0.3681 | 0.3492 | 1.054 |
+| SHR-B | 0.3854 | 0.3730 | 1.033 |
+| SHR-C | 0.2957 | 0.3840 | 0.770 |
 
 | | WKY | SHR | Ratio |
 |---|---|---|---|
@@ -351,8 +351,8 @@ until flows converge.
 **Directionally what the method anticipates, and not supported.** §2.2 proposes RBC starvation in
 the glomus microenvironment of the hypertensive network: a dense capillary bed carrying mostly
 plasma. SHR does show a lower ratio. But the ranges overlap heavily and the group mean rests
-almost entirely on SHR-C at 0.770, with the other two SHR specimens at 1.054 and 1.033, above the
-WKY mean.
+almost entirely on SHR-C at 0.770, with the other two SHR specimens at 1.054 and 1.033, both
+above the WKY mean of 1.025.
 
 ### 8.1 An open question about the skimming model
 
