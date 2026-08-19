@@ -56,7 +56,7 @@ leaving it on throughout.
 
 ### One project per channel, never mixed
 
-`vessel_segmentation.ilp` and `th_glomus_segmentation.ilp` are separate projects. They are
+`vessel_segmentation.ilp` and `glomus_cell_segmentation.ilp` are separate projects. They are
 trained on different channels, different numbers of them, and different label sets. Adding TH
 lanes to the vessel project produces confident nonsense rather than an error.
 
@@ -178,7 +178,7 @@ identical across the cohort by construction.
 
 ### Step 1: new project
 
-Launch ilastik, choose **Pixel Classification**, save as `th_glomus_segmentation.ilp` inside
+Launch ilastik, choose **Pixel Classification**, save as `glomus_cell_segmentation.ilp` inside
 `ilastik_inputs/`.
 
 ### Step 2: add all six lanes
@@ -304,7 +304,7 @@ Headless equivalent:
 ```bash
 DATA=~/Desktop/"LCFM Images"
 ~/Desktop/ilastik-1.4.1rc2-gpu-Linux/run_ilastik.sh --headless \
-  --project="$DATA/ilastik_inputs/th_glomus_segmentation.ilp" \
+  --project="$DATA/ilastik_inputs/glomus_cell_segmentation.ilp" \
   --export_source="Probabilities" \
   --export_dtype=uint8 \
   --output_format=hdf5 \

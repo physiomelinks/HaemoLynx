@@ -223,7 +223,7 @@ TH_INPUT_CHANNELS: Tuple[str, str] = ("grayscale", "soma_dog_signed")
 #: somas for a watershed would do no work here while roughly doubling the labelling effort.
 TH_CHANNEL = SegmentationChannel(
     key="th",
-    project=ILASTIK_INPUT_DIR / "th_glomus_segmentation.ilp",
+    project=ILASTIK_INPUT_DIR / "glomus_cell_segmentation.ilp",
     stem_attr="stem",
     input_suffix="_TH_ilastik.h5",
     target_label="glomus",

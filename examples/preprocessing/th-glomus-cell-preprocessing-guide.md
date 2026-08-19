@@ -302,7 +302,7 @@ Closing the browser before a long export is worth more than any ilastik memory s
 ### Step 1: New project, saved in the right place
 
 Launch ilastik, choose **Pixel Classification**, and save the project as
-`th_glomus_segmentation.ilp` **inside `~/Desktop/LCFM Images/ilastik_inputs/`**.
+`glomus_cell_segmentation.ilp` **inside `~/Desktop/LCFM Images/ilastik_inputs/`**.
 
 The location is not cosmetic. An ilastik project registers its datasets by path relative to
 itself, so a project saved elsewhere breaks the moment the folder moves. `vessel_segmentation.ilp`
@@ -398,7 +398,7 @@ Headless equivalent, if you would rather not hold the GUI open:
 
 ```bash
 ~/Desktop/ilastik-1.4.1rc2-gpu-Linux/run_ilastik.sh --headless \
-  --project="$OUT/th_glomus_segmentation.ilp" \
+  --project="$OUT/glomus_cell_segmentation.ilp" \
   --export_source="Probabilities" \
   --export_dtype=uint8 \
   --output_format=hdf5 \
