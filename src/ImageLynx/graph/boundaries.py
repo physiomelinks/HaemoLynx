@@ -85,6 +85,108 @@ def select_boundary_terminal_nodes(
     return starting, outputs
 
 
+def select_boundary_terminal_nodes_by_face(
+    G: nx.Graph,
+    image_shape: tuple[int, ...],
+    *,
+    axis: int = 0,
+    face_tolerance_voxels: float = 1.0,
+    voxel_size: tuple[float, ...] = None,
+    boundary_permeability_mode: str = "caged",
+) -> tuple[list[Any], list[Any]]:
+    """Select pressure boundaries from terminals that cross a region face.
+
+    ``select_boundary_terminal_nodes`` assigns arterial pressure to whichever degree-1 nodes
+    fall inside a positional band. On these graphs about **86% of degree-1 nodes are interior**,
+    nowhere near a region face: they are skeletonisation spurs and segmentation breaks, not
+    vessels entering the volume. The band rule therefore puts arterial pressure on mask defects,
+    and the fraction it catches depends on a band width with no anatomical meaning.
+
+    A vessel supplying this region has to cross one of its faces. A dead end in the middle of
+    the volume cannot be a pressure inlet whatever its coordinate. This selects on that basis:
+    terminals within ``face_tolerance_voxels`` of the low face of ``axis`` are inlets, those on
+    the high face are outlets, and everything else is not a pressure boundary.
+
+    **Measured against the band rule** on the six CB3 graphs, varying each rule's own free
+    parameter over its plausible range and taking the spread of the shunt ratio per specimen:
+
+    ========================================  ==============
+    Rule and parameter range                  Ratio spread
+    ========================================  ==============
+    band, axis 1, band width 10/25/40%              75.8%
+    face, axis 1, tolerance 1/2/4 voxels            13.3%
+    ========================================  ==============
+
+    A 5.7-fold reduction, and it comes from the parameter rather than the axis. The band width
+    has no principled value, so its whole plausible range is live. The face tolerance is
+    anchored to the voxel size: one voxel means "on the face", and the other values are only
+    there to show the answer does not depend on it.
+
+    Comparing at a *fixed* second parameter is misleading and initially pointed the other way.
+    Axis spread alone is 28.4% for the band rule against 31.5% here, which flatters the band
+    rule by holding the parameter that damages it at its default. Both parameters have to move.
+
+    ``axis`` remains a choice without anatomical justification in a mid-organ region. For this
+    cohort axis 1 is the only one solvable in all six specimens; axis 0 has no outlet terminal
+    in SHR-A and axis 2 has no inlet terminal in SHR-C. That is a selection criterion rather
+    than a preference, but it is a property of these graphs and not a general rule.
+
+    Raises rather than falling back when a face carries no terminals. The band method drops to
+    the extreme 10% of *all* nodes in that case, which converts an unsolvable region into a
+    solved one with invented boundaries.
+    """
+    if axis < 0 or axis >= len(image_shape):
+        raise ValueError(f"axis={axis} out of bounds for image shape {image_shape}.")
+    if face_tolerance_voxels < 0:
+        raise ValueError("face_tolerance_voxels must be non-negative.")
+
+    node_pos = nx.get_node_attributes(G, "pos")
+    if not node_pos:
+        return [], []
+
+    spacing = 1.0 if voxel_size is None else float(voxel_size[axis])
+    axis_size = float(image_shape[axis] - 1) * spacing
+    tol = float(face_tolerance_voxels) * spacing
+
+    terminals = [node for node, degree in G.degree() if degree == 1 and node in node_pos]
+
+    def axis_coord(node_id: Any) -> float:
+        return float(np.asarray(node_pos[node_id], dtype=float)[axis])
+
+    inlets = [n for n in terminals if axis_coord(n) <= tol]
+    inlet_set = set(inlets)
+    # A terminal on both faces would be a region only one voxel thick; assigning it to both
+    # would short the solve, so the low face wins and the ambiguity is not silently doubled.
+    outlets = [n for n in terminals
+               if axis_coord(n) >= axis_size - tol and n not in inlet_set]
+
+    if not inlets or not outlets:
+        raise ValueError(
+            f"axis {axis}: no terminal nodes on the "
+            f"{'low' if not inlets else 'high'} face within "
+            f"{face_tolerance_voxels} voxel(s). This region cannot be solved with a pressure "
+            f"boundary on this axis. Choose another axis, widen the tolerance deliberately, or "
+            f"treat the region as unsuitable. Falling back to a positional band would invent "
+            f"boundaries that no vessel crosses."
+        )
+
+    if boundary_permeability_mode == "universal_sink":
+        outlet_set = set(outlets)
+        for node in terminals:
+            if node not in inlet_set and node not in outlet_set:
+                outlets.append(node)
+                outlet_set.add(node)
+    elif boundary_permeability_mode == "robin_resistance":
+        outlet_set = set(outlets)
+        for node in terminals:
+            if node not in inlet_set and node not in outlet_set:
+                G.nodes[node]["is_robin_boundary"] = True
+
+    inlets.sort(key=lambda n: (axis_coord(n), str(n)))
+    outlets.sort(key=lambda n: (-axis_coord(n), str(n)))
+    return inlets, outlets
+
+
 def _terminal_nodes_with_positions(G: nx.Graph) -> tuple[list[Any], dict[Any, np.ndarray]]:
     node_pos = nx.get_node_attributes(G, "pos")
     terminals = [node for node, degree in G.degree() if degree == 1 and node in node_pos]

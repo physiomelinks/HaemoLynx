@@ -936,6 +936,54 @@ frames agree, and the ParaView README's claim that the files overlay without a t
 
 ---
 
+### S21. The boundary sensitivity is a property of the rule, and a better rule exists
+
+S20 left the boundary choice as the dominant error and T0.2 as the highest-value item not gated
+on new data. It is now settled, by building the alternative and measuring it rather than by
+argument.
+
+**The rule.** A vessel supplying this region has to cross one of its faces. A dead end in the
+middle of the volume cannot be a pressure inlet whatever its coordinate, and S10 measured 86% of
+degree-1 nodes to be exactly that. `select_boundary_terminal_nodes_by_face` therefore admits only
+terminals within a tolerance of a region face, and raises rather than falling back when a face
+carries none.
+
+**Measured**, as the spread of the shunt ratio per specimen while each rule's free parameters
+move over their plausible range:
+
+| Rule | Parameters varied | Ratio spread | Failed solves |
+|---|---|---|---|
+| band | axis 0/1/2 x width 10/25/40% | **118.8%** | 0 of 54 |
+| face | axis 0/1/2 x tolerance 1/2/4 voxels | **43.1%** | 6 of 54 |
+| band, axis fixed at 1 | width 10/25/40% | **75.8%** | 0 of 18 |
+| face, axis fixed at 1 | tolerance 1/2/4 voxels | **13.3%** | 0 of 18 |
+
+**A 5.7-fold reduction at fixed axis**, and it comes from the parameter rather than the axis. The
+band width has no principled value, so its whole range is live. The face tolerance is anchored to
+the voxel size: one voxel means "on the face", and the other values exist only to show the answer
+does not depend on it.
+
+**Axis 1 is a selection, not a preference.** It is the only axis with terminals on both faces in
+all six specimens. Axis 0 has no outlet terminal in SHR-A; axis 2 has no inlet terminal in SHR-C.
+That is a property of these graphs rather than a general rule, and it is why the face rule raises
+on an empty face instead of inventing boundaries.
+
+**A comparison that pointed the wrong way first.** Holding each rule's second parameter at its
+default and varying only the axis gives 28.4% for the band rule against 31.5% for the face rule,
+which reads as the face rule being worse. That comparison flatters the band rule by fixing the
+parameter that damages it. Both parameters have to move, and when they do the ordering reverses
+by a factor of nearly three. This is recorded because the first measurement was taken that way
+and was briefly believed.
+
+**What this does not do.** It does not make the boundary anatomical. There is still no anatomical
+inlet inside a mid-organ cube, and the axis choice is still a choice. It reduces the residual to
+13.3%, which is below the ~26% operative floor S20 reported and below the 27 to 40% effects H1
+measures, so a within-specimen ratio is no longer boundary-dominated.
+
+Reproduced by `examples/cb_h2_boundary_selection.py`.
+
+`STATUS — T0.2 RESOLVED.`
+
 ## Effect on the four H2 methods
 
 | Method | TH gate | Physics | Noise floor | Also needs |
@@ -1035,8 +1083,8 @@ the third is bounded by imaging and by H1's outstanding segmentation work.
 
 | | Item | Blocks | Findings |
 |---|---|---|---|
-| T0.1 | **Acquire and segment the TH channel.** Not a code task; the same decision that blocks H1 §1.3 and §1.5. | all four methods | S2 (H1 Stage 1) |
-| T0.2 | **Settle the boundary conditions.** Inlets and outlets are chosen by an axis and a band width with no anatomical basis, moving any ratio by 25.3%. | §2.1, §2.4, and any flow-derived quantity | S7, S10, S20 |
+| T0.1 | ~~**Acquire and segment the TH channel.**~~ **Done.** Six TH probability maps from a two-class classifier; H1 §1.3 and §1.5 report on them. | all four methods | S2 (H1 Stage 1) |
+| T0.2 | ~~**Settle the boundary conditions.**~~ **Done.** `select_boundary_terminal_nodes_by_face` admits only terminals crossing a region face, cutting the residual ratio spread from 75.8% to 13.3% at fixed axis. | §2.1, §2.4, and any flow-derived quantity | S7, S10, S20, **S21** |
 
 T0.2 is the highest-value item in this document that is **not** gated on new data. Three routes, in
 increasing order of merit: report the ensemble across boundary choices so the uncertainty is visible
