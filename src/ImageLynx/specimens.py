@@ -736,8 +736,10 @@ def verify_classifier(
         )
 
     report["group_label_counts"] = _group_label_counts(lanes, channel)
+    report["target_label_counts_by_group"] = _group_target_counts(lanes, channel)
     report["warnings"] = _label_balance_warnings(
-        lanes, report["group_label_counts"], channel)
+        lanes, report["group_label_counts"], channel,
+        report["target_label_counts_by_group"])
     report["is_measured_baseline"] = (
         is_measured_baseline(Path(report["path"])) if channel.has_measured_baseline else None
     )
@@ -758,6 +760,27 @@ def _lane_specimen(lane, channel=None) -> Optional["Specimen"]:
     )
 
 
+def _group_target_counts(lanes, channel=None) -> Dict[str, int]:
+    """Labelled voxels of the TARGET class only, per group.
+
+    The plain group count is over all labels, and the background class dominates it:
+    painting empty space is cheap and adds almost nothing, so a project can look evenly
+    labelled by total voxels while nearly all of its positive-class examples come from one
+    cohort. The decision boundary for the class actually being measured is then learned from
+    that cohort and applied to the other, which is the confound the pooled rule exists to
+    prevent, surviving in the form the empty-lane check cannot see.
+    """
+    channel = resolve_channel(channel)
+    target_value = channel.target_index + 1
+    counts = {group: 0 for group in GROUPS}
+    for lane in lanes:
+        specimen = _lane_specimen(lane, channel)
+        if specimen is not None:
+            counts[specimen.group] += int(
+                lane.get("labels_by_value", {}).get(target_value, 0))
+    return counts
+
+
 def _group_label_counts(lanes, channel=None) -> Dict[str, int]:
     counts = {group: 0 for group in GROUPS}
     for lane in lanes:
@@ -767,7 +790,9 @@ def _group_label_counts(lanes, channel=None) -> Dict[str, int]:
     return counts
 
 
-def _label_balance_warnings(lanes, group_counts, channel=None) -> List[str]:
+def _label_balance_warnings(
+    lanes, group_counts, channel=None, target_counts=None
+) -> List[str]:
     """Soft problems: real risks, but matters of degree rather than binary defects.
 
     Reported rather than raised. A forest weights by labelled voxel count, so lopsided
@@ -778,6 +803,47 @@ def _label_balance_warnings(lanes, group_counts, channel=None) -> List[str]:
     """
     channel = resolve_channel(channel)
     warnings: List[str] = []
+    target_counts = (_group_target_counts(lanes, channel)
+                     if target_counts is None else target_counts)
+    label = channel.target_label
+
+    # The positive class, cohort by cohort. Checked before the totals because a project can
+    # pass the totals check on background alone.
+    absent = sorted(group for group, count in target_counts.items() if not count)
+    present = {group: count for group, count in target_counts.items() if count}
+    if absent and present:
+        warnings.append(
+            f"{', '.join(absent)} has no {label} labels at all, only background. Every "
+            f"positive example the forest has comes from {', '.join(sorted(present))}, so "
+            f"the boundary for the class being measured is learned from one cohort and "
+            f"applied to the other."
+        )
+    elif len(present) == len(GROUPS):
+        low = min(present, key=present.get)
+        high = max(present, key=present.get)
+        skew = present[high] / present[low]
+        if skew > 2.0:
+            warnings.append(
+                f"{label} labels are {skew:.1f}x more numerous in {high} "
+                f"({present[high]} against {present[low]} in {low}). Totals can look even "
+                f"while the positive class does not: background is cheap to paint and adds "
+                f"little, so this is the cohort skew that survives the empty-lane check."
+            )
+
+    # Pooled class balance. Ilastik's forest does not reweight by class.
+    pooled_target = sum(target_counts.values())
+    pooled_rest = sum(int(l.get("labelled_voxels", 0)) for l in lanes) - pooled_target
+    if pooled_target and pooled_rest:
+        ratio = pooled_rest / pooled_target
+        if ratio > 5.0 or ratio < 0.2:
+            heavier, lighter = ("background", label) if ratio > 1 else (label, "background")
+            warnings.append(
+                f"Pooled class balance is 1:{ratio:.0f} {label} to background "
+                f"({pooled_target} against {pooled_rest}). The forest weights by labelled "
+                f"voxel count and does not rebalance, so it is calibrated on {heavier} and "
+                f"will under-call {lighter}. Add {lighter} labels rather than lowering the "
+                f"threshold to compensate."
+            )
 
     labelled = {group: count for group, count in group_counts.items() if count}
     if len(labelled) == len(GROUPS):

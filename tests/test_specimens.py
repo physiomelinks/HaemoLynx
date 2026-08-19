@@ -373,15 +373,20 @@ def _write_project(path, lanes, label_names=("vessel", "background"), compute_in
         project["PixelClassification/LabelNames"] = np.array(
             [n.encode() for n in label_names], dtype="S32")
 
-        for position, (input_name, depths) in enumerate(lanes):
+        for position, entry in enumerate(lanes):
+            input_name, depths = entry[0], entry[1]
+            # Optional third element: the label value for each block, so a lane can carry a
+            # deliberate mix of classes. Defaults to the target class throughout.
+            values = entry[2] if len(entry) > 2 else [1] * len(depths)
             lane = f"lane{position:04d}"
             project[f"Input Data/infos/{lane}/Raw Data/filePath"] = \
                 f"/some/where/{input_name}/data".encode()
 
             group = project.create_group(f"PixelClassification/LabelSets/labels{position:03d}")
-            for block_index, z in enumerate(depths):
+            for block_index, (z, value) in enumerate(zip(depths, values)):
                 block = group.create_dataset(
-                    f"block{block_index:04d}", data=np.ones((1, 4, 4, 1), dtype=np.uint8))
+                    f"block{block_index:04d}",
+                    data=np.full((1, 4, 4, 1), value, dtype=np.uint8))
                 block.attrs["blockSlice"] = f"[{z}:{z + 1},0:4,0:4,0:1]".encode()
 
         project["FeatureSelections/ComputeIn2d"] = np.array([compute_in_2d] * 7)
@@ -819,3 +824,83 @@ def test_specimens_expose_the_bundled_th_qc_sidecar():
     for specimen in SPECIMENS:
         assert specimen.bundled_th_qc_path.exists()
         assert specimen.bundled_th_qc_path != specimen.bundled_qc_path
+
+
+# --- Imbalance that survives the empty-lane check ------------------------------------------
+
+def _th_project(tmp_path, per_lane, name="th.ilp"):
+    """per_lane maps specimen_id -> (depths, label values parallel to depths)."""
+    from ImageLynx.specimens import TH_CHANNEL
+
+    lanes = []
+    for specimen in SPECIMENS:
+        depths, values = per_lane[specimen.specimen_id]
+        lanes.append((TH_CHANNEL.input_name(specimen), list(depths), list(values)))
+    path = tmp_path / name
+    _write_project(path, lanes, label_names=TH_LABELS)
+    return path
+
+
+def test_target_class_group_skew_is_reported_even_when_totals_look_balanced(tmp_path):
+    """The confound that survives every hard check.
+
+    Painting background is cheap and adds little, so a project can carry a similar total
+    label count in both cohorts while nearly all of its positive-class examples come from
+    one. The decision boundary for the class being measured is then learned from one cohort
+    and applied to the other, which is what the pooled rule exists to prevent.
+    """
+    from ImageLynx.specimens import verify_classifier
+
+    # Equal totals per lane; WKY lanes are mostly target, SHR lanes mostly background.
+    per_lane = {}
+    for specimen in SPECIMENS:
+        if specimen.group == "WKY":
+            per_lane[specimen.specimen_id] = ([10, 20, 30, 40], [1, 1, 1, 2])
+        else:
+            per_lane[specimen.specimen_id] = ([10, 20, 30, 40], [1, 2, 2, 2])
+    report = verify_classifier(_th_project(tmp_path, per_lane), channel="th")
+
+    totals = report["group_label_counts"]
+    assert abs(totals["WKY"] - totals["SHR"]) < 1, "totals are balanced by construction"
+
+    target = report["target_label_counts_by_group"]
+    assert target["WKY"] == 3 * 3 * 16 and target["SHR"] == 3 * 1 * 16
+    assert any("glomus" in w and "cohort" in w for w in report["warnings"]), (
+        f"no target-class skew warning in {report['warnings']}")
+
+
+def test_a_target_class_absent_from_one_cohort_is_reported(tmp_path):
+    from ImageLynx.specimens import verify_classifier
+
+    per_lane = {s.specimen_id: (([10, 20], [1, 2]) if s.group == "WKY" else ([10, 20], [2, 2]))
+                for s in SPECIMENS}
+    report = verify_classifier(_th_project(tmp_path, per_lane), channel="th")
+
+    assert report["target_label_counts_by_group"]["SHR"] == 0
+    assert any("no glomus labels at all" in w for w in report["warnings"]), report["warnings"]
+
+
+def test_a_forest_calibrated_on_the_majority_class_is_reported(tmp_path):
+    """1 target block against 39 background blocks is the real project's ratio."""
+    from ImageLynx.specimens import verify_classifier
+
+    depths = list(range(40))
+    values = [1] + [2] * 39
+    per_lane = {s.specimen_id: (depths, values) for s in SPECIMENS}
+    report = verify_classifier(_th_project(tmp_path, per_lane), channel="th")
+
+    assert any("weights by labelled voxel count" in w and "1:39" in w
+               for w in report["warnings"]), report["warnings"]
+
+
+def test_a_balanced_project_raises_neither_new_warning(tmp_path):
+    from ImageLynx.specimens import verify_classifier
+
+    per_lane = {s.specimen_id: ([10, 20, 30, 40], [1, 1, 2, 2]) for s in SPECIMENS}
+    report = verify_classifier(_th_project(tmp_path, per_lane), channel="th")
+
+    joined = " ".join(report["warnings"])
+    assert "cohort" not in joined
+    assert "weights by labelled voxel count" not in joined
+    assert report["target_label_counts_by_group"]["WKY"] == \
+           report["target_label_counts_by_group"]["SHR"]
