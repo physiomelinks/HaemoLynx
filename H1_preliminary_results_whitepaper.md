@@ -24,11 +24,13 @@ Applied to all six specimens under one pooled classifier, one frozen parameter s
 
 Four checks show that the segmentation is not producing this difference. The direction holds at every threshold tested, in all nine specimen-group comparisons, and the measured effect grows as segmentation inclusiveness falls, which is the behaviour predicted if over-inclusive masks are currently suppressing it.
 
-**Three limitations bound what may be concluded.** The groups overlap on every measure, and with n = 3 per group the exact two-sided p cannot fall below 0.10. The segmentation classifier is not final: four of six volumes lack perivascular boundary labels, and vessel calibre is consequently over-estimated. Two of H1's five sub-methods (§1.3, §1.5) cannot be run at all, for want of a glomus-cell channel.
+**Three limitations bound what may be concluded.** The groups overlap on every measure, and with n = 3 per group the exact two-sided p cannot fall below 0.10. The segmentation classifier is not final: four of six volumes lack perivascular boundary labels, and vessel calibre is consequently over-estimated. The two TH-dependent sub-methods (§1.3, §1.5) are now implemented and are reported for WKY only, because the glomus-cell classifier that feeds them is labelled almost entirely on one cohort.
 
 **Reproducing the analysis at three thresholds leaves the direction unchanged**, so the result is not an artefact of the one parameter that most directly controls how much tissue is called vessel.
 
-**Verdict.** §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 await a capability that does not yet exist.
+**Verdict.** All five sub-methods now have a working implementation, where three did at the previous revision. §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 are implemented and reported within WKY (§9A); their between-group contrast is withheld, because the classifier behind them carries 22.9 times more glomus labels in WKY than SHR and none at all in two SHR volumes.
+
+Implementation is not the same as answerability. Two of the five are fully answerable, two are answerable within one cohort, and one is not answerable at any labelling effort with the current voxel size.
 
 ---
 
@@ -40,13 +42,15 @@ H1 and its five sub-methods are defined in `hypothesis_testing_methods.md`; that
 |---|---|---|---|
 | **1.1** | Topological node counting | **Implemented** | Graph extraction yields nodes, degree distribution and β₁ |
 | **1.2** | EDM geometric profiling | **Implemented, not conclusive** | Estimator runs on 100% of edges; calibre resolution insufficient (§8) |
-| **1.3** | Proportional capillary density | **Not implementable** | Requires TH-positive glomus volume; no TH channel exists |
+| **1.3** | Proportional capillary density | **Implemented, WKY only** | TH channel now segmented; group contrast withheld (§9A) |
 | **1.4** | Tortuosity | **Implemented, confounded** | Correlates with segmentation inclusiveness (§9) |
-| **1.5** | Tissue-to-vessel distance | **Not implementable** | Requires TH channel |
+| **1.5** | Tissue-to-vessel distance | **Implemented, WKY only** | as §1.3 |
 
-§1.3 and §1.5 are not shortcomings of this run. The Ilastik output is two-class (vessel, background); there is no parenchymal landmark to measure against. The same gap blocks all four H2 perfusion methods, which depend on TH-masked analyses.
+§1.3 and §1.5 were unimplementable at the previous revision: the Ilastik output was two-class (vessel, background) with no parenchymal landmark to measure against. A second two-class project now segments the TH channel of the same acquisitions, and both methods are implemented in `ImageLynx.statistics.th_morphometry`. The same capability unblocks all four H2 perfusion methods, which depend on TH-masked analyses.
 
-This document therefore reports §1.1 in full, §1.2 with an explicit disqualification, and §1.4 with an explicit confound.
+What is not yet available is the between-group contrast for those two methods. The TH classifier carries 23,262 glomus labels in WKY against 1,016 in SHR, and two of the three SHR volumes carry none at all, so a WKY-against-SHR difference drawn from it would be partly the labelling and partly the tissue with no way to separate them. §9A therefore reports WKY alone.
+
+This document therefore reports §1.1 in full, §1.2 with an explicit disqualification, §1.4 with an explicit confound, and §1.3 and §1.5 within WKY with the between-group contrast withheld.
 
 ---
 
@@ -56,7 +60,9 @@ Every quantity reported here is the output of an eight-stage chain. Each stage c
 
 ### 2.1 Acquisition
 
-Six carotid bodies, three per cohort, imaged by confocal fluorescence. Lectin labels the vascular endothelium and is the sole channel used; the 640 nm TH channel was verified as punctate glomus-cell clusters rather than tubular structure, and is not part of the ingest path.
+Six carotid bodies, three per cohort, imaged by confocal fluorescence. Each acquisition is a single `ZCYX` file with two channels: channel 0 is lectin, labelling the vascular endothelium, and channel 1 is tyrosine hydroxylase (TH), labelling the type I glomus cells. Channel identity was confirmed by byte-comparison against the separately extracted `C1-*_vessels.tif` and `C2-*_glomus_cells.tif` rather than assumed from the acquisition order.
+
+At the previous revision only the lectin channel entered the ingest path. Both channels now do, through separate preprocessing and separate classifiers (§2.2, §2.3). Being two channels of one acquisition, they are co-registered by construction on an identical grid, which is what makes the §9A joins sound without a registration step.
 
 Volumes are 2×2×2-binned, uint16, ZCYX. Physical voxel size, read from each acquisition's own ImageJ metadata rather than assumed:
 
@@ -95,6 +101,21 @@ The error asymmetry justifies the choice. A single classifier slightly suboptima
 | SHR-C | 28,690 | 1.3% |
 
 Only WKY-B and SHR-B have had perivascular background labelled. The consequence is developed in §11.1.
+
+**The TH channel** is segmented by a second, separate project (`glomus_cell_segmentation.ilp`), also two-class (`glomus`, `background`) and also shared across all six volumes. It is separate rather than an extra class in the vessel project because the two are trained on different input channels: the vessel project sees grayscale plus two vesselness bands, the TH project sees grayscale plus a signed Difference-of-Gaussians tuned to the glomus soma scale.
+
+Its labelling is markedly less complete than the vessel project's, and asymmetrically so:
+
+| Specimen | `glomus` labels | `background` labels | Depths |
+|---|---|---|---|
+| WKY-A | 11,067 | 442,936 | 3 |
+| WKY-B | 6,654 | 267,063 | 3 |
+| WKY-C | 5,541 | 124,257 | 3 |
+| SHR-A | 1,016 | 110,855 | **1** |
+| SHR-B | **0** | **0** | **0** |
+| SHR-C | **0** | **0** | **0** |
+
+Two properties of this table bound §9A. The positive class is 22.9 times more numerous in WKY than SHR, which is the cohort skew the pooled-classifier rule exists to prevent, in the continuous form that an empty-lane check alone does not catch. And the pooled balance is 1:39 glomus to background; Ilastik's random forest weights by labelled voxel count and does not rebalance, so it is calibrated on background and will under-call glomus. Both are reported by `ImageLynx.specimens.verify_classifier(channel="th")`, which refuses this project outright on the two unlabelled lanes.
 
 ### 2.4 Threshold selection
 
@@ -179,6 +200,17 @@ Three assertions made during this work were overturned by subsequent measurement
 - A proposal to replace the preprocessing objective with soft Dice was retracted before implementation: measurement showed its optimum sits at a flooded mask, because scoring against the probability field reproduces the classifier's over-prediction.
 - A claim that centreline-smoothing error concentrates on twisty edges was falsified by the per-edge export, which showed the affected edges to be the shortest and straightest.
 - A claim that the doubled morphological closing compounded vessel fusion was wrong: closing is idempotent for a fixed structuring element, so the second call had never had any effect at all.
+
+### 4.6 The capability that did not exist
+
+§3.4 is the only defect in that list whose remediation is new at this revision. The TH channel is now preprocessed by `examples/preprocessing/preprocess_th.py`, which shares its stages with the lectin preprocessor so both channels of one acquisition are treated identically, and segmented by a second two-class Ilastik project (§2.3). §1.3 and §1.5 are implemented in `ImageLynx.statistics.th_morphometry` and reported in §9A.
+
+Four measurements made during that work are recorded because each overturned a decision that had already been taken.
+
+- The TH preprocessing protocol specified histogram-matching bleach correction. Measured on WKY-C, it multiplies the top slice by 26.9× and raises the TH-positive fraction in the near-empty top of the stack from 0.004% to 1.413%. Worse, it forces every slice to the same intensity distribution, which hard-codes TH density to be uniform in depth. Removed.
+- The protocol specified a four-class labelling scheme (cytoplasm, nucleus, intercellular boundary, background) to support watershed cell counting. Checked against what H1 and H2 actually consume, every one of the six analyses asks for a TH-positive volume, voxel set or cluster boundary and none counts cells. Reduced to two classes.
+- The secondary Difference-of-Gaussians channel was clipped at zero. The dark nuclear core is exactly where that difference is negative: 99.8% of cores were being mapped to the same value as background. The map is now signed.
+- Normalisation anchors were taken from the whole volume, which is dominated by empty frame. Tissue occupancy spans 7.9% to 17.7% across the six, and the resulting anchor gap between cohorts was 17.3%. Anchors are now taken inside tissue, and one shared pair is used for all six.
 
 ---
 
@@ -390,6 +422,67 @@ That the two measures which correlate with segmentation (§1.2 calibre, §1.4 to
 
 ---
 
+## 9A. Results: §1.3 proportional capillary density and §1.5 tissue-to-vessel distance
+
+Both are new at this revision and both are reported for WKY only, for the reason given in §1 and quantified in §2.3. They are placed together because they share an input, a region and a caveat.
+
+### 9A.1 What is being measured
+
+§1.3 asks for the parenchymal volume of the TH-positive glomus clusters, and for centreline length density *within* those clusters rather than within the whole region. §1.5 asks for the distance from every TH-positive voxel to the nearest lectin-positive centreline.
+
+Both are joins between the two channels, which is only sound because they are two channels of a single `ZCYX` acquisition on an identical grid: co-registered by construction, with no registration step to introduce error. Both channels are cropped to the same region (§5.3) and the vessel channel is thresholded at the same frozen 0.9 (§5.2).
+
+Two definitional choices are worth stating because the obvious alternative is wrong in each case.
+
+**Length is summed over steps, not counted in voxels.** A 26-connected diagonal step spans 3.23 µm on this grid where an axial step spans 1.87. Counting skeleton voxels understates a tortuous path by up to √3, and §1.4 turns on tortuosity, so the two measures must not disagree about what length means. Within a mask, a step is counted only when both of its endpoints are inside it; a step straddling the boundary belongs to neither side.
+
+**Distance is to the centreline, not the vessel surface.** The two differ by the local radius. On a capillary that is roughly 1.5 µm everywhere, which would be absorbed into any group difference rather than appearing as one, and §1.2 has already established that this instrument cannot resolve calibre well enough to correct for it.
+
+### 9A.2 Per-specimen values, WKY
+
+At TH probability > 0.5, vessel > 0.9, in the same 0.0266 mm³ region as §7–§9.
+
+| Specimen | TH volume (mm³) | TH % of region | Centreline in region (mm) | Centreline within TH (mm) | §1.3 length density (mm·mm⁻³) | §1.5 TVD median (µm) |
+|---|---|---|---|---|---|---|
+| WKY-A | 0.00603 | 22.68% | 168.63 | 20.73 | 3,438.7 | 7.69 |
+| WKY-B | 0.01011 | 38.03% | 141.42 | 33.04 | 3,268.2 | 7.69 |
+| WKY-C | 0.00695 | 26.13% | 147.80 | 23.75 | 3,419.0 | 7.69 |
+| **Mean** | **0.00769** | **28.9%** | **152.6** | **25.8** | **3,375** | **7.69** |
+
+The full tissue-to-vessel distribution, over 0.9 to 1.6 million TH-positive voxels per specimen:
+
+| Specimen | p25 | median | p75 | p90 |
+|---|---|---|---|---|
+| WKY-A | 5.27 | 7.69 | 10.05 | 12.52 |
+| WKY-B | 5.28 | 7.69 | 10.71 | 13.19 |
+| WKY-C | 5.27 | 7.69 | 10.22 | 13.18 |
+
+### 9A.3 Threshold sensitivity
+
+The TH threshold is not frozen the way the vessel threshold is, because no equivalent selection exercise has been run for it. All three values are therefore reported.
+
+| TH threshold | Mean TH volume (mm³) | Mean length density (mm·mm⁻³) | Mean TVD median (µm) |
+|---|---|---|---|
+| 0.5 | 0.00769 | 3,375 | 7.69 |
+| 0.7 | 0.00662 | 3,067 | 7.77 |
+| 0.9 | 0.00519 | 2,650 | 7.91 |
+
+Parenchymal volume falls by a third across the range and length density by 21%, so **neither absolute level is a result**. What is stable is the within-group ordering and the spread: length density holds within 5% across the three specimens at every threshold, and the TVD median moves by 0.22 µm across the whole range, which is an eighth of one voxel.
+
+### 9A.4 Two independent agreements
+
+Neither is proof, and both are recorded because they were not designed for.
+
+**The tissue-to-vessel distance reproduces a figure obtained by a different route.** The H2 capability assessment measured a median TVD of 5.3–7.9 µm from the perfusion grid, to decide whether a 10 µm grid cell could resolve the oxygen gradient. §1.5 obtains 7.69 µm from the skeleton and the TH mask, with no shared code. Two methods agreeing on a quantity neither was tuned to is the best evidence available that it is being measured rather than constructed.
+
+**Length density within TH is close to vessel length density per region.** §7.2 reports vessel length density per unit region volume; §1.3 reports centreline length per unit TH volume, a different denominator. If TH tissue were distributed uniformly through the region the two would coincide. They are within a few per cent of each other, which is consistent with the TH mask not grossly distorting where vessels are found. It is not independent confirmation of the TH segmentation, because both quantities share a numerator.
+
+### 9A.5 What is deliberately not reported here
+
+The WKY-against-SHR contrast for both methods. It has been computed, and it is available from the same driver under `--all`, where every row carries the labelling caveat. It is withheld from this document because the direction of both differences runs opposite to the published prior §1.3 cites, and is stable across thresholds in the way a systematic segmentation bias is stable and a biological effect generally is not. Reporting a number whose most parsimonious explanation is the state of the labelling would make this document say something it cannot support.
+
+---
+
 ## 10. Interpretation against the published prior
 
 §1.2 of the hypothesis document cites stereological data reporting that SHR capillary network length approximately doubles (10.66 m vs 5.36 m) while mean capillary cross-sectional area decreases (20.6 µm² vs 57.8 µm²): a hypervascular state accommodated by elongation of narrower vessels rather than by vasodilation.
@@ -419,7 +512,9 @@ Limitations are separated by what they constrain. Some bound what may be *claime
 
 **The classifier is not final.** Four of six volumes lack perivascular boundary labels (§2.3). The consequence is measurable: median calibre is 7.5–8.4 µm against an expected 4–7 µm, so masks are over-inclusive. Every number in this document will change when labelling is completed. *Resolution:* approximately a day of labelling plus 90 minutes of computation; the procedure and the acceptance criterion are both defined.
 
-**§1.3 and §1.5 cannot be run.** No TH channel exists in the ingest path, so proportional capillary density and tissue-to-vessel distance are unimplementable, as are all four H2 methods. *Resolution:* a decision on the TH route (§13, item 2), then labelling.
+**The TH classifier is labelled almost entirely on one cohort.** 23,262 glomus labels in WKY against 1,016 in SHR, with SHR-B and SHR-C carrying none and SHR-A labelled at a single depth (§2.3). §1.3 and §1.5 are therefore reported for WKY only, and their between-group contrast is withheld. The pooled class balance of 1:39 glomus to background separately biases the segmentation towards under-calling glomus in *both* cohorts, which shifts the absolute level of every §9A quantity without necessarily affecting the within-WKY comparison. *Resolution:* label SHR-B and SHR-C at three depths, SHR-A at two more, and weight new labelling towards the positive class. Hours of GUI work; prediction is 5 minutes for all six.
+
+**The TH threshold is not frozen.** The vessel threshold was selected by an explicit exercise and checked for a cohort split (§5.2, §6.1); no equivalent has been run for TH. §9A reports three values instead, and the absolute level moves by a third across them. *Resolution:* the same selection exercise, once the labelling supports it.
 
 **§1.2 is below resolution.** The between-group difference in median diameter is 0.10 µm against a quantisation step of 1.87 µm. No claim about vessel calibre is supported. *Resolution:* unbinned 1×1×1 acquisition halves the step, at the cost of complete relabelling.
 
@@ -460,9 +555,12 @@ Each claim is graded: **Established** (evidenced and robust to the known limitat
 | C10 | SHR capillaries are narrower | §8.1 | Gap is 1/20 of the measurement step | **Not supported** |
 | C11 | Tortuosity differs between cohorts | §9 | r = +0.86 with inclusiveness | **Not supported** |
 | C12 | The absolute densities represent the whole organ | §5.3 | Region centred on signal | **Not supported** |
-| C13 | §1.3 and §1.5 are testable | §1 | No TH channel | **Not supported** |
+| C13 | §1.3 and §1.5 are implemented and produce stable within-WKY values | §9A.2, §9A.3 | Nine unit tests against hand arithmetic; four mutations caught | **Established** |
+| C14 | Glomus-cell tissue in WKY sits a median 7.69 µm from the nearest centreline | §9A.2 | n = 3; TH threshold not frozen; moves 0.22 µm across thresholds | **Provisional** |
+| C15 | Centreline length density within WKY glomus tissue is approximately 3,375 mm·mm⁻³ | §9A.2 | as C14; absolute level moves 21% across thresholds | **Provisional (weak)** |
+| C16 | §1.3 and §1.5 differ between cohorts | §9A.5 | TH labels 22.9× skewed to WKY; two SHR volumes unlabelled | **Not supported** |
 
-The document's defensible position is C1–C3 and C8 (Established) plus C4–C6 and C8b (Provisional). Nothing else should be presented as a result.
+The document's defensible position is C1–C3, C8 and C13 (Established) plus C4–C6, C8b and C14 (Provisional). Nothing else should be presented as a result.
 
 ---
 
@@ -471,7 +569,7 @@ The document's defensible position is C1–C3 and C8 (Established) plus C4–C6 
 | Priority | Work | Unblocks | Cost |
 |---|---|---|---|
 | 1 | Complete perivascular boundary labelling on WKY-A, WKY-C, SHR-A, SHR-C | All results; §1.2 and §1.4 in particular | Hours of GUI work; 40 min prediction; 45 min re-run |
-| 2 | Decide the TH channel route (retrain three-class, or separate segmentation) | **§1.3, §1.5, and all four H2 methods** | Decision, then labelling |
+| 2 | Complete the SHR TH labelling: SHR-B and SHR-C at three depths, SHR-A at two more, weighted towards the positive class | **The §1.3 and §1.5 between-group contrast, and all four H2 methods** | Hours of GUI work; 5 min prediction; minutes to re-run §9A |
 | 3 | Hand-labelled held-out regions in both cohorts | Per-cohort validation scores | Hours |
 | 4 | Verify the §1.2 stereological prior against its source | §10 | Literature check |
 | 5 | Out-of-core processing, or accept region sampling | Whole-organ densities | Engineering |
@@ -514,6 +612,8 @@ Every number in this document derives from artefacts under `examples/outputs/cb_
 python examples/cb_h1_batch.py --stage placement            # region placement (Appendix D)
 python examples/cb_h1_batch.py --stage threshold            # §6.1, §6.2, threshold_selection.json
 python examples/cb_h1_batch.py --stage run --threshold 0.90 # §7, §8, §9
+python examples/cb_h1_th_metrics.py                         # §9A, WKY only
+python examples/cb_h1_th_metrics.py --all                   # the withheld contrast, caveated
 python examples/cb_h1_figures.py                            # Figures 1 and 2
 ```
 
@@ -524,6 +624,7 @@ python examples/cb_h1_figures.py                            # Figures 1 and 2
 | `threshold_selection.json` | §5.2, §6.1, §6.2 |
 | `<SPECIMEN>/*.provenance.json` | §2.7 classifier attribution |
 | `figure1_network_density.png`, `figure2_diameter_distribution.png` | Figures 1, 2 |
+| `cb_h1_th_metrics.json` | §9A.2, §9A.3 |
 
 Classifier state at the time of the run is recoverable from any specimen's provenance sidecar, and the labelling table in §2.3 from `python examples/carotid_image_to_model.py --list-specimens`.
 
@@ -533,14 +634,14 @@ The reference sub-volume used for the "before" measurements quoted in §3 and §
 
 ## Appendix C: Audit finding to remediation map
 
-Forty-one changes on branch `cb_pipeline_improvements_sweep`, all tagged `(#98)`, from `efcaf5a` to `e72e74c`. Grouped by the audit finding each closes.
+Forty-one changes on branch `cb_pipeline_improvements_sweep`, all tagged `(#98)`, from `efcaf5a` to `e72e74c`, grouped by the audit finding each closes. The 3.4 row was added at this revision and its commits post-date that range.
 
 | Audit finding (§3) | Commits | What closed it |
 |---|---|---|
 | **3.1** Entropy band evacuating vessel walls | `8424ea0`, `b89104c`, `510d597` | Entropy criterion gated on class count; hysteresis search range raised above the band |
 | **3.2** Objectives penalising loop topology | `a079048`, `2b6d9ef`, `4bf9f88`, `5b6a507`, `0684082`, `1974cc6` | Loop and Euler terms removed; objectives reduced to fidelity terms; bundle collapse disabled; samplers seeded |
 | **3.3** EDM estimator never called | `79baf86`, `89bc841`, `5c1de57`, `162b51e` | Estimator wired in and made the default; raises if it measures nothing; junction exclusion added and measured |
-| **3.4** No TH channel | none | **Not closed.** Requires a segmentation decision (§13) |
+| **3.4** No TH channel | `0d5f471`, `c33bbdc`, `244cef5`, `c5ad164`, `82db392`, `853853c` | Preprocessing and a second two-class classifier for the TH channel; §1.3 and §1.5 implemented and tested. **Partially closed:** the between-group contrast still awaits SHR labelling (§11.1) |
 | **3.5** Voxel/physical unit confusion | `2705b38`, `436143f` | Calibrated from acquisition metadata; unit handling corrected in the same change |
 | Signal destruction not in the original five | `431c069`, `5be3389`, `462ac53`, `7c9563b`, `e5f4bad` | Dilation replaced by closing; median filter removed; closing stopped eroding the domain boundary |
 | Provenance and reproducibility | `610da99`, `89ca8b3`, `471e062`, `06769b4`, `6b924a3`, `8e7baa9`, `ad40171`, `f237e10`, `82cef82`, `7330609`, `e5f4bad` | Per-edge provenance tags; specimen registry; pooled-classifier enforcement; artefact provenance sidecars; label-placement check |
