@@ -24,11 +24,11 @@ Applied to all six specimens under one pooled classifier, one frozen parameter s
 
 Four checks show that the segmentation is not producing this difference. The direction holds at every threshold tested, in all nine specimen-group comparisons, and the measured effect grows as segmentation inclusiveness falls, which is the behaviour predicted if over-inclusive masks are currently suppressing it.
 
-**Three limitations bound what may be concluded.** The groups overlap on every measure, and with n = 3 per group the exact two-sided p cannot fall below 0.10. The segmentation classifier is not final: four of six volumes lack perivascular boundary labels, and vessel calibre is consequently over-estimated. The two TH-dependent sub-methods (§1.3, §1.5) are now implemented and are reported for WKY only, because the glomus-cell classifier that feeds them is labelled almost entirely on one cohort.
+**Three limitations bound what may be concluded.** The groups overlap on every measure, and with n = 3 per group the exact two-sided p cannot fall below 0.10. The segmentation classifier is not final: four of six volumes lack perivascular boundary labels, and vessel calibre is consequently over-estimated. The two TH-dependent sub-methods (§1.3, §1.5) are now implemented and are reported for WKY only, because the glomus-cell classifier that feeds them is 98% background-labelled and cannot be shown to have had the opportunity to disagree (§9A.5).
 
 **Reproducing the analysis at three thresholds leaves the direction unchanged**, so the result is not an artefact of the one parameter that most directly controls how much tissue is called vessel.
 
-**Verdict.** All five sub-methods now have a working implementation, where three did at the previous revision. §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 are implemented and reported within WKY (§9A); their between-group contrast is withheld, because the classifier behind them carries 22.9 times more glomus labels in WKY than SHR and none at all in two SHR volumes.
+**Verdict.** All five sub-methods now have a working implementation, where three did at the previous revision. §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 are implemented and reported within WKY (§9A); their between-group contrast is withheld, though the reason has narrowed: relabelling the TH classifier so that all six volumes carry labels moved every §9A value by under 1.5%, which removes the labelling gap as an explanation without yet establishing the difference (§9A.5).
 
 Implementation is not the same as answerability. Two of the five are fully answerable, two are answerable within one cohort, and one is not answerable at any labelling effort with the current voxel size.
 
@@ -48,7 +48,7 @@ H1 and its five sub-methods are defined in `hypothesis_testing_methods.md`; that
 
 §1.3 and §1.5 were unimplementable at the previous revision: the Ilastik output was two-class (vessel, background) with no parenchymal landmark to measure against. A second two-class project now segments the TH channel of the same acquisitions, and both methods are implemented in `ImageLynx.statistics.th_morphometry`. The same capability unblocks all four H2 perfusion methods, which depend on TH-masked analyses.
 
-What is not yet available is the between-group contrast for those two methods. The TH classifier carries 23,262 glomus labels in WKY against 1,016 in SHR, and two of the three SHR volumes carry none at all, so a WKY-against-SHR difference drawn from it would be partly the labelling and partly the tissue with no way to separate them. §9A therefore reports WKY alone.
+What is not yet available is the between-group contrast for those two methods. The TH classifier now labels all six volumes at three depths and passes `verify_classifier`, but 98% of its labels are background, so it under-calls the class being measured and the stability test in §9A.5 cannot distinguish a boundary that is right from labels too few to move it. §9A therefore reports WKY alone.
 
 This document therefore reports §1.1 in full, §1.2 with an explicit disqualification, §1.4 with an explicit confound, and §1.3 and §1.5 within WKY with the between-group contrast withheld.
 
@@ -106,16 +106,20 @@ Only WKY-B and SHR-B have had perivascular background labelled. The consequence 
 
 Its labelling is markedly less complete than the vessel project's, and asymmetrically so:
 
-| Specimen | `glomus` labels | `background` labels | Depths |
-|---|---|---|---|
-| WKY-A | 11,067 | 442,936 | 3 |
-| WKY-B | 6,654 | 267,063 | 3 |
-| WKY-C | 5,541 | 124,257 | 3 |
-| SHR-A | 1,016 | 110,855 | **1** |
-| SHR-B | **0** | **0** | **0** |
-| SHR-C | **0** | **0** | **0** |
+| Specimen | `glomus` labels | `background` labels | Ratio | Depths |
+|---|---|---|---|---|
+| WKY-A | 11,067 | 442,936 | 1:40 | 3 |
+| WKY-B | 6,654 | 267,063 | 1:40 | 3 |
+| WKY-C | 5,541 | 124,257 | 1:22 | 3 |
+| SHR-A | 2,267 | 247,951 | 1:109 | 3 |
+| SHR-B | 1,578 | 313,117 | 1:198 | 3 |
+| SHR-C | 1,732 | 312,307 | 1:180 | 3 |
 
-Two properties of this table bound §9A. The positive class is 22.9 times more numerous in WKY than SHR, which is the cohort skew the pooled-classifier rule exists to prevent, in the continuous form that an empty-lane check alone does not catch. And the pooled balance is 1:39 glomus to background; Ilastik's random forest weights by labelled voxel count and does not rebalance, so it is calibrated on background and will under-call glomus. Both are reported by `ImageLynx.specimens.verify_classifier(channel="th")`, which refuses this project outright on the two unlabelled lanes.
+This is the state after the relabelling of 2026-08-19. `verify_classifier(channel="th")` passes: all six volumes are registered and labelled, each at three depths. Its two soft checks still fire, and they bound §9A.
+
+The positive class is **4.2 times more numerous in WKY** than SHR (23,262 against 5,577), improved from 22.9 times before relabelling but still above the 2× reporting threshold. This is the cohort skew the pooled-classifier rule exists to prevent, in the continuous form an empty-lane check cannot see.
+
+The pooled balance is **1:59 glomus to background**, which is *worse* than the 1:39 it replaced: the new SHR labelling added 762,520 background voxels against 4,561 glomus. Ilastik's random forest weights by labelled voxel count and does not rebalance, so it is calibrated on background and will under-call glomus in both cohorts. This is now the binding limitation on §9A rather than the cohort skew.
 
 ### 2.4 Threshold selection
 
@@ -444,18 +448,18 @@ At TH probability > 0.5, vessel > 0.9, in the same 0.0266 mm³ region as §7–�
 
 | Specimen | TH volume (mm³) | TH % of region | Centreline in region (mm) | Centreline within TH (mm) | §1.3 length density (mm·mm⁻³) | §1.5 TVD median (µm) |
 |---|---|---|---|---|---|---|
-| WKY-A | 0.00603 | 22.68% | 168.63 | 20.73 | 3,438.7 | 7.69 |
-| WKY-B | 0.01011 | 38.03% | 141.42 | 33.04 | 3,268.2 | 7.69 |
-| WKY-C | 0.00695 | 26.13% | 147.80 | 23.75 | 3,419.0 | 7.69 |
-| **Mean** | **0.00769** | **28.9%** | **152.6** | **25.8** | **3,375** | **7.69** |
+| WKY-A | 0.00608 | 22.89% | 168.63 | 21.01 | 3,452.9 | 7.69 |
+| WKY-B | 0.01023 | 38.48% | 141.42 | 33.61 | 3,285.9 | 7.69 |
+| WKY-C | 0.00702 | 26.42% | 147.80 | 24.17 | 3,441.5 | 7.69 |
+| **Mean** | **0.00778** | **29.3%** | **152.6** | **26.3** | **3,393** | **7.69** |
 
-The full tissue-to-vessel distribution, over 0.9 to 1.6 million TH-positive voxels per specimen:
+The full tissue-to-vessel distribution, over 0.94 to 1.58 million TH-positive voxels per specimen:
 
 | Specimen | p25 | median | p75 | p90 |
 |---|---|---|---|---|
 | WKY-A | 5.27 | 7.69 | 10.05 | 12.52 |
 | WKY-B | 5.28 | 7.69 | 10.71 | 13.19 |
-| WKY-C | 5.27 | 7.69 | 10.22 | 13.18 |
+| WKY-C | 5.27 | 7.69 | 10.22 | 13.06 |
 
 ### 9A.3 Threshold sensitivity
 
@@ -463,9 +467,9 @@ The TH threshold is not frozen the way the vessel threshold is, because no equiv
 
 | TH threshold | Mean TH volume (mm³) | Mean length density (mm·mm⁻³) | Mean TVD median (µm) |
 |---|---|---|---|
-| 0.5 | 0.00769 | 3,375 | 7.69 |
-| 0.7 | 0.00662 | 3,067 | 7.77 |
-| 0.9 | 0.00519 | 2,650 | 7.91 |
+| 0.5 | 0.00778 | 3,393 | 7.69 |
+| 0.7 | 0.00672 | 3,108 | 7.77 |
+| 0.9 | 0.00532 | 2,701 | 7.91 |
 
 Parenchymal volume falls by a third across the range and length density by 21%, so **neither absolute level is a result**. What is stable is the within-group ordering and the spread: length density holds within 5% across the three specimens at every threshold, and the TVD median moves by 0.22 µm across the whole range, which is an eighth of one voxel.
 
@@ -477,9 +481,28 @@ Neither is proof, and both are recorded because they were not designed for.
 
 **Length density within TH is close to vessel length density per region.** §7.2 reports vessel length density per unit region volume; §1.3 reports centreline length per unit TH volume, a different denominator. If TH tissue were distributed uniformly through the region the two would coincide. They are within a few per cent of each other, which is consistent with the TH mask not grossly distorting where vessels are found. It is not independent confirmation of the TH segmentation, because both quantities share a numerator.
 
-### 9A.5 What is deliberately not reported here
+### 9A.5 The between-group contrast, and why it is still withheld
 
-The WKY-against-SHR contrast for both methods. It has been computed, and it is available from the same driver under `--all`, where every row carries the labelling caveat. It is withheld from this document because the direction of both differences runs opposite to the published prior §1.3 cites, and is stable across thresholds in the way a systematic segmentation bias is stable and a biological effect generally is not. Reporting a number whose most parsimonious explanation is the state of the labelling would make this document say something it cannot support.
+The WKY-against-SHR contrast for both methods has been computed and is available from the same driver under `--all`, where every row carries the labelling caveat. It is withheld from this document, but the reason has narrowed considerably and the narrowing is itself a result.
+
+**The relabelling did not move it.** The first TH classifier had 1,016 glomus labels in SHR, all in one volume at one depth, with SHR-B and SHR-C carrying none at all. The classifier was relabelled on 2026-08-19 so that all six volumes carry labels at three depths, raising SHR glomus labels 5.5-fold to 5,577 and cutting the cohort skew from 22.9× to 4.2×. All six volumes were then re-predicted and §9A recomputed.
+
+| Specimen | TH volume before (mm³) | after | change |
+|---|---|---|---|
+| WKY-A | 0.00603 | 0.00608 | +0.9% |
+| WKY-B | 0.01011 | 0.01023 | +1.2% |
+| WKY-C | 0.00695 | 0.00702 | +1.1% |
+| SHR-A | 0.00591 | 0.00596 | +0.9% |
+| SHR-B | 0.00505 | 0.00511 | +1.1% |
+| SHR-C | 0.00287 | 0.00288 | +0.4% |
+
+Every tissue-to-vessel median was unchanged to two decimal places, and all three group ratios were unchanged: parenchymal volume 0.60×, length density 1.28×, TVD median 0.92×.
+
+**What that does and does not establish.** Filling two entirely unlabelled SHR volumes and increasing SHR positive examples 5.5-fold moved SHR parenchymal volume by under 1.5%. Had the contrast been produced by the classifier's unfamiliarity with SHR tissue, that intervention should have moved it. It did not, which is evidence that the decision boundary generalises across cohorts and that the difference is a property of the data.
+
+The test is weaker than it looks, and the weakness is now the reason for withholding. Those 5,577 SHR glomus labels are 0.3% of a training set of 1,736,470 voxels that is 98% background, and the pooled balance got *worse* over the relabelling, from 1:39 to 1:59. A forest weighting by labelled voxel count may have been unable to shift regardless of whether the new labels agreed with it, so "the prediction did not change" is consistent both with the boundary being correct and with the new labels being swamped. The two cannot be separated at this class balance.
+
+**The position this document takes** is therefore that the contrast is no longer attributable to the labelling gap that was tested, but is not yet a finding. Promoting it requires raising the positive-class fraction, not adding more background, and re-running the same comparison: if 0.60× survives a classifier that is not background-dominated, the explanation of last resort has been removed. That is item 2 of §13.
 
 ---
 
@@ -512,7 +535,9 @@ Limitations are separated by what they constrain. Some bound what may be *claime
 
 **The classifier is not final.** Four of six volumes lack perivascular boundary labels (§2.3). The consequence is measurable: median calibre is 7.5–8.4 µm against an expected 4–7 µm, so masks are over-inclusive. Every number in this document will change when labelling is completed. *Resolution:* approximately a day of labelling plus 90 minutes of computation; the procedure and the acceptance criterion are both defined.
 
-**The TH classifier is labelled almost entirely on one cohort.** 23,262 glomus labels in WKY against 1,016 in SHR, with SHR-B and SHR-C carrying none and SHR-A labelled at a single depth (§2.3). §1.3 and §1.5 are therefore reported for WKY only, and their between-group contrast is withheld. The pooled class balance of 1:39 glomus to background separately biases the segmentation towards under-calling glomus in *both* cohorts, which shifts the absolute level of every §9A quantity without necessarily affecting the within-WKY comparison. *Resolution:* label SHR-B and SHR-C at three depths, SHR-A at two more, and weight new labelling towards the positive class. Hours of GUI work; prediction is 5 minutes for all six.
+**The TH classifier is calibrated on its background class.** The pooled balance is 1:59 glomus to background (§2.3), and Ilastik's forest weights by labelled voxel count without rebalancing, so it under-calls glomus in both cohorts. This shifts the absolute level of every §9A quantity, and it is what prevents the §9A.5 stability test from being conclusive: at this balance a new positive label cannot be shown to have had the opportunity to change anything. The residual 4.2× cohort skew compounds it. *Resolution:* raise the positive-class fraction towards 1:5, by adding glomus labels or removing background rather than adding more of either. Hours of GUI work; prediction is 5 minutes for all six.
+
+The limitation this replaces is closed: all six volumes now carry TH labels at three depths and `verify_classifier(channel="th")` passes.
 
 **The TH threshold is not frozen.** The vessel threshold was selected by an explicit exercise and checked for a cohort split (§5.2, §6.1); no equivalent has been run for TH. §9A reports three values instead, and the absolute level moves by a third across them. *Resolution:* the same selection exercise, once the labelling supports it.
 
@@ -557,8 +582,9 @@ Each claim is graded: **Established** (evidenced and robust to the known limitat
 | C12 | The absolute densities represent the whole organ | §5.3 | Region centred on signal | **Not supported** |
 | C13 | §1.3 and §1.5 are implemented and produce stable within-WKY values | §9A.2, §9A.3 | Nine unit tests against hand arithmetic; four mutations caught | **Established** |
 | C14 | Glomus-cell tissue in WKY sits a median 7.69 µm from the nearest centreline | §9A.2 | n = 3; TH threshold not frozen; moves 0.22 µm across thresholds | **Provisional** |
-| C15 | Centreline length density within WKY glomus tissue is approximately 3,375 mm·mm⁻³ | §9A.2 | as C14; absolute level moves 21% across thresholds | **Provisional (weak)** |
-| C16 | §1.3 and §1.5 differ between cohorts | §9A.5 | TH labels 22.9× skewed to WKY; two SHR volumes unlabelled | **Not supported** |
+| C15 | Centreline length density within WKY glomus tissue is approximately 3,393 mm·mm⁻³ | §9A.2 | as C14; absolute level moves 20% across thresholds | **Provisional (weak)** |
+| C16 | §1.3 and §1.5 differ between cohorts | §9A.5 | Contrast unmoved by a 5.5× increase in SHR positive labels, but the classifier is still 98% background-labelled | **Not supported (weakened)** |
+| C17 | The §9A contrast is not attributable to the SHR labelling gap that was tested | §9A.5 | Relabelling moved every value under 1.5%; the new labels are 0.3% of the training set | **Provisional** |
 
 The document's defensible position is C1–C3, C8 and C13 (Established) plus C4–C6, C8b and C14 (Provisional). Nothing else should be presented as a result.
 
@@ -569,7 +595,7 @@ The document's defensible position is C1–C3, C8 and C13 (Established) plus C4�
 | Priority | Work | Unblocks | Cost |
 |---|---|---|---|
 | 1 | Complete perivascular boundary labelling on WKY-A, WKY-C, SHR-A, SHR-C | All results; §1.2 and §1.4 in particular | Hours of GUI work; 40 min prediction; 45 min re-run |
-| 2 | Complete the SHR TH labelling: SHR-B and SHR-C at three depths, SHR-A at two more, weighted towards the positive class | **The §1.3 and §1.5 between-group contrast, and all four H2 methods** | Hours of GUI work; 5 min prediction; minutes to re-run §9A |
+| 2 | Raise the TH positive-class fraction from 1:59 towards 1:5, by adding `glomus` labels or removing `background`, not by adding more of either | **The §1.3 and §1.5 between-group contrast** (§9A.5), and the confidence of all four H2 methods | Hours of GUI work; 5 min prediction; minutes to re-run §9A |
 | 3 | Hand-labelled held-out regions in both cohorts | Per-cohort validation scores | Hours |
 | 4 | Verify the §1.2 stereological prior against its source | §10 | Literature check |
 | 5 | Out-of-core processing, or accept region sampling | Whole-organ densities | Engineering |
