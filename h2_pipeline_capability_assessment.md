@@ -1210,6 +1210,73 @@ input, but any absolute perfusion quantity inherits that choice.
 `STATUS — T1.5 RESOLVED. §2.3 is unblocked and awaits grid refinement (T1.1) to be
 grid-converged.`
 
+### S26. The source grew with the grid, and §2.3 now runs and predicts no hypoxia
+
+**T1.6** asked for §2.3 at native resolution, because S25 had found the answer moving with the
+grid. Checking *why* it moved found a conservation defect rather than a discretisation error.
+
+**`map_vessels_to_grid` recorded each edge's whole flow against every cell it crossed.** An edge
+spanning five cells injected five times its own oxygen. Refining the grid makes edges cross more
+cells, so the total source grew with resolution:
+
+| Resolution | Cells | Mean cells per edge | Total source | Source per crossing |
+|---|---|---|---|---|
+| 10 µm | 29,791 | 2.73 | 8.87e6 | 3.25e6 |
+| 6 µm | 132,651 | 3.70 | 1.20e7 | 3.25e6 |
+| 4 µm | 438,976 | 4.74 | 1.54e7 | 3.25e6 |
+| 3 µm | 1,000,000 | 5.58 | 1.80e7 | 3.23e6 |
+
+The last column is constant to three figures, so the source was exactly proportional to cells
+crossed. Refining the grid 137-fold, as T1.1 proposed, would have manufactured 137-fold more
+oxygen.
+
+Each edge is now shared among its cells by length. Total source is grid-independent to the digit:
+371,000 and 3.21512e6 at all four resolutions above.
+
+**And the solution converges.** Median PO2 on WKY-C, with the sharing fixed:
+
+| Resolution | Median PO2 | Increment |
+|---|---|---|
+| 10 µm | 27.34 | |
+| 6 µm | 27.92 | +0.58 |
+| 4 µm | 28.21 | +0.29 |
+
+The increment halves each time, extrapolating to about 28.5, so **4 µm is within roughly 1% of
+the limit** at a twenty-seventh of native resolution's cost. Before the fix the same sequence ran
+42.0, 46.9, 50.5 with increments of +4.9 and +3.6 and no sign of a limit. T1.6 is answered without
+needing the 70-minute-per-specimen run T1.1 priced.
+
+**§2.3, across the cohort at 4 µm.** Metabolic rate assigned per cell from the TH fraction, with
+the volume-weighted mean held constant so contrasts are comparable rather than merely scaled:
+
+| Specimen | TH volume | PO2 within TH | Hypoxic < 5 | < 10 | < 20 mmHg |
+|---|---|---|---|---|---|
+| WKY-A | 17.7% | 32.62 | 0% | 0% | 0% |
+| WKY-B | 30.4% | 32.32 | 0% | 0% | 0% |
+| WKY-C | 20.8% | 28.20 | 0% | 0% | 0% |
+| SHR-A | 17.9% | 40.10 | 0% | 0% | 0% |
+| SHR-B | 15.0% | 40.95 | 0% | 0% | 0% |
+| SHR-C | 8.2% | 28.72 | 0% | 0% | 0% |
+
+**No hypoxia at any threshold, in either cohort.** PO2 inside the glomus clusters is 31.0 mmHg in
+WKY against 36.6 in SHR, a ratio of 1.18. The direction agrees with §2.4, where blood reaches the
+SHR clusters faster, and with §2.1, where nothing bypasses them.
+
+**Two reasons not to read that as a finding yet.**
+
+The metabolic contrast does almost nothing. Raising the glomus rate from one to four times the
+stromal rate moves PO2 within TH by 0.01 mmHg, from 32.62 to 32.61 on WKY-A. Diffusion at these
+parameters homogenises the field faster than any local sink can deplete it: the spatial spread is
+2 to 3% throughout. So the *glomus-specific* part of §2.3 is not functioning, even though the
+machinery runs. Recorded as T1.8.
+
+And T1.7 stands: at the 60/20 mmHg boundary the implied capillary velocity is roughly ten times
+physiological, so oxygen delivery is correspondingly inflated and a hypoxic fraction of zero is
+the optimistic end of the range.
+
+`STATUS — T1.6 RESOLVED, at 4 µm rather than native. §2.3 runs; its hypoxic fraction is zero and
+its glomus-specific mechanism is inert pending T1.7 and T1.8.`
+
 ## Effect on the four H2 methods
 
 | Method | TH gate | Physics | Noise floor | Also needs |
@@ -1324,7 +1391,8 @@ quantifying it.
 |---|---|---|---|
 | T1.1 | ~~Refine the perfusion grid, benchmarking the solver first.~~ **Benchmarked.** Native resolution costs about 70 min per specimen and 4 to 5 GB, which is affordable. Deferred: the CG preconditioner was breaking the solve, and with it fixed the field is zero at any resolution for the reason below. | §2.3 | S19, **S24** |
 | T1.5 | ~~Reconcile the units.~~ **Done.** `POISEUILLE_FLOW_TO_UM3_PER_S`, derived from unit definitions and checked against an independent SI computation. Sink/source moves from 2.2e4× to 0.168×, a 17% implied extraction, and §2.3 produces a 42 mmHg field where it produced zero. | §2.3, and the absolute scale of §2.4 | S24, **S25** |
-| T1.6 | **New.** Run §2.3 at native resolution. The solution is not grid-converged: median PO2 moves 42 to 50 mmHg between 10 µm and 4 µm without plateauing. T1.1 benchmarked the cost at about 70 min per specimen. | §2.3 | **S25** |
+| T1.6 | ~~Run §2.3 at native resolution.~~ **Done, and not needed.** The drift was a conservation defect: each edge's whole flow was recorded against every cell it crossed. Shared by length, the source is grid-independent and PO2 converges at 4 µm to within 1%. | §2.3 | S25, **S26** |
+| T1.8 | **New.** The glomus-specific metabolic rate has no effect. A fourfold glomus-to-stroma contrast moves PO2 within TH by 0.01 mmHg, because diffusion homogenises the field faster than any local sink depletes it. §2.3's central mechanism is inert. | §2.3 | **S26** |
 | T1.7 | **New.** Revisit the 60/20 mmHg boundary pressures. Across a 300 µm region they imply a mean capillary velocity near 8,900 µm/s against a physiological 200 to 1,000. | absolute scale of §2.1 to §2.4 | **S25** |
 | T1.2 | ~~Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation.~~ **Done.** In vivo, and the function was a hybrid of both with the wall factor applied once instead of twice. §2.1 and §2.2 conclusions unchanged. | §2.2 | S18, **S22** |
 | T1.3 | ~~Re-pose transit time as a within-specimen ratio.~~ **Done.** Ratio of transit time to penetrating against bypassing edges, along solved flow directions. Cohorts separate without overlap. | §2.4 | S13, S15, S20, **S23** |

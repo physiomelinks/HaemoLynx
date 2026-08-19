@@ -244,6 +244,27 @@ def map_vessels_to_grid(
                         'surface_area': 2.0 * np.pi * radius * len_per_vox
                     })
                     
+    # Share each edge among the cells it crosses, by length.
+    #
+    # Without this an edge's whole flow is recorded against every cell it passes through, so
+    # an edge crossing five cells injects five times its own oxygen. Refining the grid makes
+    # edges cross more cells, so the total source grew with resolution: on WKY-C the summed
+    # s_incoming went 8.87e6, 1.20e7, 1.54e7, 1.80e7 at 10, 6, 4 and 3 um, in exact proportion
+    # to the mean cells crossed per edge. Section 2.3's PO2 rose with refinement for that
+    # reason and not a physical one.
+    #
+    # Normalised against the accumulated length rather than the edge's own `length` attribute,
+    # so the shares sum to exactly one even though point sampling counts the endpoints of each
+    # sub-segment.
+    length_by_edge: Dict[Any, float] = {}
+    for vessels in cell_to_vessels.values():
+        for item in vessels:
+            length_by_edge[item['edge']] = length_by_edge.get(item['edge'], 0.0) + item['length']
+    for vessels in cell_to_vessels.values():
+        for item in vessels:
+            total = length_by_edge.get(item['edge'], 0.0)
+            item['length_fraction'] = (item['length'] / total) if total > 0 else 0.0
+
     logger.info(f"Vessel-to-Grid mapping complete. {len(cell_to_vessels)} tissue cells are perfused by vessels.")
     return cell_to_vessels
 
@@ -317,16 +338,17 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     
     # Advection arrays (Vessel coupling)
     for idx, vessels in cell_to_vessels.items():
-        total_q = sum(v['flow'] for v in vessels)
-        q_total[idx] = total_q
+        # Each edge contributes the share of its flow that lies in this cell, so summing over
+        # cells recovers the edge's flow once rather than once per cell crossed.
+        q_total[idx] = sum(v['flow'] * v.get('length_fraction', 1.0) for v in vessels)
         
         # Calculate exactly how much oxygen is delivered to this cell based on the Hill Equation
-        # S_incoming = Sum( Q * C_blood_arterial )
+        # S_incoming = Sum( Q_share * C_blood_arterial )
         total_o2_flux = 0.0
         for v in vessels:
             h = v.get('hematocrit', 0.45)
             c_art = calculate_blood_oxygen_content(po2_arterial, h)
-            total_o2_flux += v['flow'] * c_art
+            total_o2_flux += v['flow'] * v.get('length_fraction', 1.0) * c_art
             
         s_incoming[idx] = total_o2_flux
 
