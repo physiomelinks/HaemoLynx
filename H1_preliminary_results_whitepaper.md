@@ -24,11 +24,11 @@ Applied to all six specimens under one pooled classifier, one frozen parameter s
 
 Four checks show that the segmentation is not producing this difference. The direction holds at every threshold tested, in all nine specimen-group comparisons, and the measured effect grows as segmentation inclusiveness falls, which is the behaviour predicted if over-inclusive masks are currently suppressing it.
 
-**Three limitations bound what may be concluded.** The groups overlap on every measure, and with n = 3 per group the exact two-sided p cannot fall below 0.10. The segmentation classifier is not final: four of six volumes lack perivascular boundary labels, and vessel calibre is consequently over-estimated. The two TH-dependent sub-methods (§1.3, §1.5) are now implemented and are reported for WKY only, because the glomus-cell classifier that feeds them is 98% background-labelled and cannot be shown to have had the opportunity to disagree (§9A.5).
+**Three limitations bound what may be concluded.** The groups overlap on every measure, and with n = 3 per group the exact two-sided p cannot fall below 0.10. The segmentation classifier is not final: four of six volumes lack perivascular boundary labels, and vessel calibre is consequently over-estimated. The two TH-dependent sub-methods (§1.3, §1.5) are reported for WKY only, because the glomus-cell classifier that feeds them is 98% background-labelled, which bounds what a sensitivity analysis on it can establish (§9A.5).
 
 **Reproducing the analysis at three thresholds leaves the direction unchanged**, so the result is not an artefact of the one parameter that most directly controls how much tissue is called vessel.
 
-**Verdict.** All five sub-methods now have a working implementation, where three did at the previous revision. §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 are implemented and reported within WKY (§9A); their between-group contrast is withheld, though the reason has narrowed: relabelling the TH classifier so that all six volumes carry labels moved every §9A value by under 1.5%, which removes the labelling gap as an explanation without yet establishing the difference (§9A.5).
+**Verdict.** All five sub-methods have a working implementation. §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 are implemented and reported within WKY (§9A); their between-group contrast is withheld, because the classifier that produces the TH mask is calibrated overwhelmingly on its background class, which bounds what a sensitivity analysis on it can establish (§9A.5).
 
 Implementation is not the same as answerability. Two of the five are fully answerable, two are answerable within one cohort, and one is not answerable at any labelling effort with the current voxel size.
 
@@ -42,13 +42,13 @@ H1 and its five sub-methods are defined in `hypothesis_testing_methods.md`; that
 |---|---|---|---|
 | **1.1** | Topological node counting | **Implemented** | Graph extraction yields nodes, degree distribution and β₁ |
 | **1.2** | EDM geometric profiling | **Implemented, not conclusive** | Estimator runs on 100% of edges; calibre resolution insufficient (§8) |
-| **1.3** | Proportional capillary density | **Implemented, WKY only** | TH channel now segmented; group contrast withheld (§9A) |
+| **1.3** | Proportional capillary density | **Implemented, WKY only** | Requires the TH channel; group contrast withheld (§9A) |
 | **1.4** | Tortuosity | **Implemented, confounded** | Correlates with segmentation inclusiveness (§9) |
 | **1.5** | Tissue-to-vessel distance | **Implemented, WKY only** | as §1.3 |
 
-§1.3 and §1.5 were unimplementable at the previous revision: the Ilastik output was two-class (vessel, background) with no parenchymal landmark to measure against. A second two-class project now segments the TH channel of the same acquisitions, and both methods are implemented in `ImageLynx.statistics.th_morphometry`. The same capability unblocks all four H2 perfusion methods, which depend on TH-masked analyses.
+§1.3 and §1.5 require a parenchymal landmark to measure against, which the vessel segmentation alone cannot supply. A second two-class Ilastik project segments the TH channel of the same acquisitions, and both methods are implemented in `ImageLynx.statistics.th_morphometry`. The same capability supports all four H2 perfusion methods, which depend on TH-masked analyses.
 
-What is not yet available is the between-group contrast for those two methods. The TH classifier now labels all six volumes at three depths and passes `verify_classifier`, but 98% of its labels are background, so it under-calls the class being measured and the stability test in §9A.5 cannot distinguish a boundary that is right from labels too few to move it. §9A therefore reports WKY alone.
+What is not available is the between-group contrast for those two methods. The TH classifier labels all six volumes at three depths and passes `verify_classifier`, but 98% of its labels are background, so it under-calls the class being measured, and the sensitivity analysis in §9A.5 cannot distinguish a correct decision boundary from one that had too few positive examples to move. §9A therefore reports WKY alone.
 
 This document therefore reports §1.1 in full, §1.2 with an explicit disqualification, §1.4 with an explicit confound, and §1.3 and §1.5 within WKY with the between-group contrast withheld.
 
@@ -62,7 +62,7 @@ Every quantity reported here is the output of an eight-stage chain. Each stage c
 
 Six carotid bodies, three per cohort, imaged by confocal fluorescence. Each acquisition is a single `ZCYX` file with two channels: channel 0 is lectin, labelling the vascular endothelium, and channel 1 is tyrosine hydroxylase (TH), labelling the type I glomus cells. Channel identity was confirmed by byte-comparison against the separately extracted `C1-*_vessels.tif` and `C2-*_glomus_cells.tif` rather than assumed from the acquisition order.
 
-At the previous revision only the lectin channel entered the ingest path. Both channels now do, through separate preprocessing and separate classifiers (§2.2, §2.3). Being two channels of one acquisition, they are co-registered by construction on an identical grid, which is what makes the §9A joins sound without a registration step.
+Both channels enter the ingest path, through separate preprocessing and separate classifiers (§2.2, §2.3). Being two channels of one acquisition, they are co-registered by construction on an identical grid, which is what makes the §9A joins sound without a registration step.
 
 Volumes are 2×2×2-binned, uint16, ZCYX. Physical voxel size, read from each acquisition's own ImageJ metadata rather than assumed:
 
@@ -115,11 +115,11 @@ Its labelling is markedly less complete than the vessel project's, and asymmetri
 | SHR-B | 1,578 | 313,117 | 1:198 | 3 |
 | SHR-C | 1,732 | 312,307 | 1:180 | 3 |
 
-This is the state after the relabelling of 2026-08-19. `verify_classifier(channel="th")` passes: all six volumes are registered and labelled, each at three depths. Its two soft checks still fire, and they bound §9A.
+`verify_classifier(channel="th")` passes: all six volumes are registered and labelled, each at three depths. Its two soft checks fire, and they bound §9A.
 
-The positive class is **4.2 times more numerous in WKY** than SHR (23,262 against 5,577), improved from 22.9 times before relabelling but still above the 2× reporting threshold. This is the cohort skew the pooled-classifier rule exists to prevent, in the continuous form an empty-lane check cannot see.
+The positive class is **4.2 times more numerous in WKY** than SHR (23,262 against 5,577), above the 2× reporting threshold. This is the cohort skew the pooled-classifier rule exists to prevent, in the continuous form an empty-lane check cannot see.
 
-The pooled balance is **1:59 glomus to background**, which is *worse* than the 1:39 it replaced: the new SHR labelling added 762,520 background voxels against 4,561 glomus. Ilastik's random forest weights by labelled voxel count and does not rebalance, so it is calibrated on background and will under-call glomus in both cohorts. This is now the binding limitation on §9A rather than the cohort skew.
+The pooled balance is **1:59 glomus to background**. Ilastik's random forest weights by labelled voxel count and does not rebalance, so it is calibrated on background and under-calls glomus in both cohorts. This is the binding limitation on §9A, and the reason its between-group contrast is withheld (§9A.5).
 
 ### 2.4 Threshold selection
 
@@ -207,7 +207,7 @@ Three assertions made during this work were overturned by subsequent measurement
 
 ### 4.6 The capability that did not exist
 
-§3.4 is the only defect in that list whose remediation is new at this revision. The TH channel is now preprocessed by `examples/preprocessing/preprocess_th.py`, which shares its stages with the lectin preprocessor so both channels of one acquisition are treated identically, and segmented by a second two-class Ilastik project (§2.3). §1.3 and §1.5 are implemented in `ImageLynx.statistics.th_morphometry` and reported in §9A.
+§3.4 is closed as follows. The TH channel is preprocessed by `examples/preprocessing/preprocess_th.py`, which shares its stages with the lectin preprocessor so both channels of one acquisition are treated identically, and is segmented by a second two-class Ilastik project (§2.3). §1.3 and §1.5 are implemented in `ImageLynx.statistics.th_morphometry` and reported in §9A.
 
 Four measurements made during that work are recorded because each overturned a decision that had already been taken.
 
@@ -428,7 +428,7 @@ That the two measures which correlate with segmentation (§1.2 calibre, §1.4 to
 
 ## 9A. Results: §1.3 proportional capillary density and §1.5 tissue-to-vessel distance
 
-Both are new at this revision and both are reported for WKY only, for the reason given in §1 and quantified in §2.3. They are placed together because they share an input, a region and a caveat.
+Both are reported for WKY only, for the reason given in §1 and quantified in §2.3. They are placed together because they share an input, a region and a caveat.
 
 ### 9A.1 What is being measured
 
@@ -481,13 +481,22 @@ Neither is proof, and both are recorded because they were not designed for.
 
 **Length density within TH is close to vessel length density per region.** §7.2 reports vessel length density per unit region volume; §1.3 reports centreline length per unit TH volume, a different denominator. If TH tissue were distributed uniformly through the region the two would coincide. They are within a few per cent of each other, which is consistent with the TH mask not grossly distorting where vessels are found. It is not independent confirmation of the TH segmentation, because both quantities share a numerator.
 
-### 9A.5 The between-group contrast, and why it is still withheld
+### 9A.5 Sensitivity of the between-group contrast to TH labelling
 
-The WKY-against-SHR contrast for both methods has been computed and is available from the same driver under `--all`, where every row carries the labelling caveat. It is withheld from this document, but the reason has narrowed considerably and the narrowing is itself a result.
+The WKY-against-SHR contrast for both methods is computed and available from the same driver under `--all`, where every row carries the labelling caveat. It is withheld from this document. This section sets out what bounds it and what has been tested.
 
-**The relabelling did not move it.** The first TH classifier had 1,016 glomus labels in SHR, all in one volume at one depth, with SHR-B and SHR-C carrying none at all. The classifier was relabelled on 2026-08-19 so that all six volumes carry labels at three depths, raising SHR glomus labels 5.5-fold to 5,577 and cutting the cohort skew from 22.9× to 4.2×. All six volumes were then re-predicted and §9A recomputed.
+**The test.** The quantity most likely to produce a spurious group difference is the composition of the TH training set: a classifier whose positive examples come predominantly from one cohort may not generalise to the other, and would then report a difference that is its own. The contrast was therefore evaluated against two TH classifiers differing substantially in that composition.
 
-| Specimen | TH volume before (mm³) | after | change |
+| | Classifier A | Classifier B |
+|---|---|---|
+| SHR volumes carrying labels | 1 of 3 | 3 of 3 |
+| Depths labelled per SHR volume | 1 | 3 |
+| SHR `glomus` labels | 1,016 | 5,577 |
+| Cohort skew in the positive class | 22.9× | 4.2× |
+
+All six volumes were predicted from each and §9A recomputed. Parenchymal volume per specimen:
+
+| Specimen | Classifier A (mm³) | Classifier B (mm³) | Difference |
 |---|---|---|---|
 | WKY-A | 0.00603 | 0.00608 | +0.9% |
 | WKY-B | 0.01011 | 0.01023 | +1.2% |
@@ -496,13 +505,15 @@ The WKY-against-SHR contrast for both methods has been computed and is available
 | SHR-B | 0.00505 | 0.00511 | +1.1% |
 | SHR-C | 0.00287 | 0.00288 | +0.4% |
 
-Every tissue-to-vessel median was unchanged to two decimal places, and all three group ratios were unchanged: parenchymal volume 0.60×, length density 1.28×, TVD median 0.92×.
+Every tissue-to-vessel median is identical to two decimal places under both, and all three group ratios are unchanged: parenchymal volume 0.60×, length density 1.28×, tissue-to-vessel median 0.92×.
 
-**What that does and does not establish.** Filling two entirely unlabelled SHR volumes and increasing SHR positive examples 5.5-fold moved SHR parenchymal volume by under 1.5%. Had the contrast been produced by the classifier's unfamiliarity with SHR tissue, that intervention should have moved it. It did not, which is evidence that the decision boundary generalises across cohorts and that the difference is a property of the data.
+**What the test establishes.** A 5.5-fold increase in SHR positive examples, including two SHR volumes going from no labels at all to labels at three depths, changes the contrast by less than 1.5% on any specimen and not at all on the group ratios. Cohort composition of the training set is therefore not what produces the contrast, over the range tested.
 
-The test is weaker than it looks, and the weakness is now the reason for withholding. Those 5,577 SHR glomus labels are 0.3% of a training set of 1,736,470 voxels that is 98% background, and the pooled balance got *worse* over the relabelling, from 1:39 to 1:59. A forest weighting by labelled voxel count may have been unable to shift regardless of whether the new labels agreed with it, so "the prediction did not change" is consistent both with the boundary being correct and with the new labels being swamped. The two cannot be separated at this class balance.
+**What it does not establish, and why the contrast is withheld.** The 5,577 SHR positive labels are 0.3% of a training set of 1,736,470 voxels that is 98% background, and the pooled class balance is 1:59 (§2.3). Ilastik's forest weights by labelled voxel count without rebalancing, so an unchanged prediction is consistent both with the decision boundary being correct and with the added positive examples being too few to move it. The test cannot separate those two, and it is the class balance rather than the cohort skew that prevents it.
 
-**The position this document takes** is therefore that the contrast is no longer attributable to the labelling gap that was tested, but is not yet a finding. Promoting it requires raising the positive-class fraction, not adding more background, and re-running the same comparison: if 0.60× survives a classifier that is not background-dominated, the explanation of last resort has been removed. That is item 2 of §13.
+Both §1.3 and §1.5 differences also run counter to the published prior §1.3 cites, which expects parenchymal expansion in SHR rather than contraction. A contrast that opposes its prior needs a stronger instrument than one that confirms it.
+
+**The document's position** is that the contrast is not attributable to cohort composition, and is not yet a finding. Establishing it requires a TH classifier that is not background-dominated, and re-running the same comparison: if 0.60× survives at a pooled balance near 1:5, the remaining explanation is removed. That is item 2 of §13.
 
 ---
 
@@ -535,9 +546,9 @@ Limitations are separated by what they constrain. Some bound what may be *claime
 
 **The classifier is not final.** Four of six volumes lack perivascular boundary labels (§2.3). The consequence is measurable: median calibre is 7.5–8.4 µm against an expected 4–7 µm, so masks are over-inclusive. Every number in this document will change when labelling is completed. *Resolution:* approximately a day of labelling plus 90 minutes of computation; the procedure and the acceptance criterion are both defined.
 
-**The TH classifier is calibrated on its background class.** The pooled balance is 1:59 glomus to background (§2.3), and Ilastik's forest weights by labelled voxel count without rebalancing, so it under-calls glomus in both cohorts. This shifts the absolute level of every §9A quantity, and it is what prevents the §9A.5 stability test from being conclusive: at this balance a new positive label cannot be shown to have had the opportunity to change anything. The residual 4.2× cohort skew compounds it. *Resolution:* raise the positive-class fraction towards 1:5, by adding glomus labels or removing background rather than adding more of either. Hours of GUI work; prediction is 5 minutes for all six.
+**The TH classifier is calibrated on its background class.** The pooled balance is 1:59 glomus to background (§2.3), and Ilastik's forest weights by labelled voxel count without rebalancing, so it under-calls glomus in both cohorts. This shifts the absolute level of every §9A quantity, and it is what prevents the §9A.5 sensitivity analysis from being conclusive: at this balance a positive example cannot be shown to have had the opportunity to change anything. The 4.2× cohort skew compounds it. *Resolution:* raise the positive-class fraction towards 1:5, by adding glomus labels or removing background rather than adding more of either. Hours of GUI work; prediction is 5 minutes for all six.
 
-The limitation this replaces is closed: all six volumes now carry TH labels at three depths and `verify_classifier(channel="th")` passes.
+All six volumes carry TH labels at three depths, and `verify_classifier(channel="th")` passes on its blocking checks.
 
 **The TH threshold is not frozen.** The vessel threshold was selected by an explicit exercise and checked for a cohort split (§5.2, §6.1); no equivalent has been run for TH. §9A reports three values instead, and the absolute level moves by a third across them. *Resolution:* the same selection exercise, once the labelling supports it.
 
@@ -583,8 +594,8 @@ Each claim is graded: **Established** (evidenced and robust to the known limitat
 | C13 | §1.3 and §1.5 are implemented and produce stable within-WKY values | §9A.2, §9A.3 | Nine unit tests against hand arithmetic; four mutations caught | **Established** |
 | C14 | Glomus-cell tissue in WKY sits a median 7.69 µm from the nearest centreline | §9A.2 | n = 3; TH threshold not frozen; moves 0.22 µm across thresholds | **Provisional** |
 | C15 | Centreline length density within WKY glomus tissue is approximately 3,393 mm·mm⁻³ | §9A.2 | as C14; absolute level moves 20% across thresholds | **Provisional (weak)** |
-| C16 | §1.3 and §1.5 differ between cohorts | §9A.5 | Contrast unmoved by a 5.5× increase in SHR positive labels, but the classifier is still 98% background-labelled | **Not supported (weakened)** |
-| C17 | The §9A contrast is not attributable to the SHR labelling gap that was tested | §9A.5 | Relabelling moved every value under 1.5%; the new labels are 0.3% of the training set | **Provisional** |
+| C16 | §1.3 and §1.5 differ between cohorts | §9A.5 | Contrast insensitive to a 5.5× change in SHR positive examples, but the classifier is 98% background-labelled | **Not supported** |
+| C17 | The §9A contrast is not attributable to cohort composition of the TH training set | §9A.5 | Every value within 1.5% across two classifiers differing 22.9× to 4.2× in cohort skew | **Provisional** |
 
 The document's defensible position is C1–C3, C8 and C13 (Established) plus C4–C6, C8b and C14 (Provisional). Nothing else should be presented as a result.
 
@@ -660,7 +671,7 @@ The reference sub-volume used for the "before" measurements quoted in §3 and §
 
 ## Appendix C: Audit finding to remediation map
 
-Forty-one changes on branch `cb_pipeline_improvements_sweep`, all tagged `(#98)`, from `efcaf5a` to `e72e74c`, grouped by the audit finding each closes. The 3.4 row was added at this revision and its commits post-date that range.
+Changes on branch `cb_pipeline_improvements_sweep`, all tagged `(#98)`, grouped by the audit finding each closes. Findings 3.1 to 3.3 and 3.5 were closed by forty-one changes between `efcaf5a` and `e72e74c`; finding 3.4 by the six named in its row.
 
 | Audit finding (§3) | Commits | What closed it |
 |---|---|---|
