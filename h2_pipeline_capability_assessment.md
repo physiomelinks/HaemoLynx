@@ -1201,11 +1201,13 @@ is the same conclusion by a second route.
 T1.1's benchmark says native 1.866 µm resolution costs about 70 minutes per specimen. That is now
 the remaining step for §2.3, and it is a compute cost rather than a defect.
 
-**One caveat on the boundary pressures.** At the 60 to 20 mmHg used here, the converted flow
-implies a mean capillary velocity of roughly 8,900 µm/s against a physiological 200 to 1,000. A
-40 mmHg drop across a 300 µm region is a very large gradient; the whole capillary bed drops about
-that much across millimetres. The conversion is right and the pressures are a separate modelling
-input, but any absolute perfusion quantity inherits that choice.
+**One caveat on the boundary pressures.** `STATUS — WITHDRAWN, see S27.` This section originally
+reported that the 60 to 20 mmHg boundary implies a capillary velocity near 8,900 µm/s against a
+physiological 200 to 1,000, and concluded that the pressures were too aggressive. That figure was
+computed for a *single straight tube* spanning the region, not for the network. Measured on the
+six networks the flow-weighted velocity is 4 to 10 µm/s, so the error was in the opposite
+direction and by a factor of about a thousand. The conclusion that follows is different and is
+recorded in S27.
 
 `STATUS — T1.5 RESOLVED. §2.3 is unblocked and awaits grid refinement (T1.1) to be
 grid-converged.`
@@ -1276,6 +1278,84 @@ the optimistic end of the range.
 
 `STATUS — T1.6 RESOLVED, at 4 µm rather than native. §2.3 runs; its hypoxic fraction is zero and
 its glomus-specific mechanism is inert pending T1.7 and T1.8.`
+
+### S27. Absolute perfusion is far below physiological, and the boundary pressure is not the cause
+
+**T1.7 and T1.8, and a withdrawal.**
+
+**T1.8 first, because it resolves cleanly.** §2.3's premise is that a higher glomus metabolic rate
+produces glomus-specific hypoxia. S26 measured that raising the glomus rate to four times the
+stromal one moves PO2 within TH by 0.01 mmHg. The reason is physical rather than a coding fault.
+The oxygen diffusion length is
+
+    sqrt(D · alpha · PO2 / M) = 20 µm at PO2 10, 35 µm at 30, 45 µm at 50
+
+against a **median tissue-to-vessel distance of 5.3 to 7.9 µm** (H1 §1.5, S19). Every tissue point
+sits at roughly a fifth of its supply radius, so the tissue is not diffusion-limited and a local
+sink cannot produce a local gradient. The consumption rate is not the problem: `M_max = 0.05`
+mmol/L/s is 0.067 mL O2 per mL per minute, against roughly 0.040 for brain, so it is the right
+order for a metabolically active organ.
+
+**§2.3's central mechanism therefore cannot operate on this geometry at these parameters.** That
+is a statement about the tissue, not about the code. A glomus-specific hypoxic fraction requires
+the sensors to be diffusion-limited, and in a bed this dense they are not.
+
+**T1.7 is withdrawn as posed, and replaced.** S25 reported a capillary velocity near 8,900 µm/s
+and concluded the boundary pressures were too aggressive. That figure came from a single straight
+tube spanning the region rather than from the network, and the network does not behave like one
+tube. Measured across all six with the face rule at 60/20 mmHg:
+
+| Specimen | Inlets | Total inlet flow (µm³/s) | Flow-weighted velocity |
+|---|---|---|---|
+| WKY-A | 18 | 8,924 | 6.2 µm/s |
+| WKY-B | 10 | 8,699 | 6.4 µm/s |
+| WKY-C | 11 | 6,511 | 4.1 µm/s |
+| SHR-A | 12 | 16,240 | 9.7 µm/s |
+| SHR-B | 12 | 14,870 | 6.3 µm/s |
+| SHR-C | 7 | 6,560 | 6.6 µm/s |
+
+**4 to 10 µm/s against a physiological 200 to 1,000**, so absolute perfusion is 20 to 100 times too
+*low*, the opposite of what S25 said. Raising the pressure is not the remedy: reaching 500 µm/s
+would need about **3,257 mmHg**.
+
+**The boundary rule accounts for part of it, and that is a cost of T0.2 that S21 did not measure.**
+Under the band rule the same networks carry five to seven times more flow and roughly two and a
+half times the velocity:
+
+| Rule | Inlets | Total inlet flow | Flow-weighted velocity |
+|---|---|---|---|
+| face (S21) | 7 to 18 | 6.5e3 to 1.6e4 | 4.1 to 9.7 µm/s |
+| band 25% | 100 to 196 | 3.9e4 to 7.7e4 | 10.8 to 18.1 µm/s |
+
+S21 measured the face rule on ratio stability, where it is 5.7 times better, and did not measure
+absolute throughput, where it is worse. Both are true. The face rule remains the right choice for
+a ratio, and the trade is now recorded rather than implicit.
+
+**Even the band rule leaves a residual factor of 30**, so most of the shortfall is neither the
+pressure nor the boundary rule but the network's own resistance over a 300 µm span.
+
+**Why §2.3 still returns a plausible PO2.** The solve settles where extraction matches
+consumption, not where absolute turnover is right:
+
+| Quantity | Value |
+|---|---|
+| Arterial content, C(100) | 8.999 mmol/L |
+| Tissue-equilibrated content, C(30) | 5.457 mmol/L |
+| Net delivery, q·(C_art − C_30) | 1.314e6 |
+| Metabolic sink | 1.490e6 |
+| **Net delivery / sink** | **0.882** |
+
+The two nearly balance, which is why PO2 lands near 30 mmHg. The model is internally consistent;
+what is not established is that its absolute turnover corresponds to a real carotid body.
+
+**What this means for the four methods.** It is the same conclusion S13 reached for calibre and
+S22 for viscosity, now for perfusion: **absolute quantities are not defensible, within-specimen
+ratios are.** §2.1, §2.2 and §2.4 are all posed as ratios and are unaffected. §2.3's hypoxic
+fraction is an absolute threshold on an absolute field, and is the one method of the four that
+this bites.
+
+`STATUS — T1.8 RESOLVED as a property of the tissue, not a defect. T1.7 withdrawn and replaced by
+T1.9.`
 
 ## Effect on the four H2 methods
 
@@ -1392,8 +1472,9 @@ quantifying it.
 | T1.1 | ~~Refine the perfusion grid, benchmarking the solver first.~~ **Benchmarked.** Native resolution costs about 70 min per specimen and 4 to 5 GB, which is affordable. Deferred: the CG preconditioner was breaking the solve, and with it fixed the field is zero at any resolution for the reason below. | §2.3 | S19, **S24** |
 | T1.5 | ~~Reconcile the units.~~ **Done.** `POISEUILLE_FLOW_TO_UM3_PER_S`, derived from unit definitions and checked against an independent SI computation. Sink/source moves from 2.2e4× to 0.168×, a 17% implied extraction, and §2.3 produces a 42 mmHg field where it produced zero. | §2.3, and the absolute scale of §2.4 | S24, **S25** |
 | T1.6 | ~~Run §2.3 at native resolution.~~ **Done, and not needed.** The drift was a conservation defect: each edge's whole flow was recorded against every cell it crossed. Shared by length, the source is grid-independent and PO2 converges at 4 µm to within 1%. | §2.3 | S25, **S26** |
-| T1.8 | **New.** The glomus-specific metabolic rate has no effect. A fourfold glomus-to-stroma contrast moves PO2 within TH by 0.01 mmHg, because diffusion homogenises the field faster than any local sink depletes it. §2.3's central mechanism is inert. | §2.3 | **S26** |
-| T1.7 | **New.** Revisit the 60/20 mmHg boundary pressures. Across a 300 µm region they imply a mean capillary velocity near 8,900 µm/s against a physiological 200 to 1,000. | absolute scale of §2.1 to §2.4 | **S25** |
+| T1.8 | ~~The glomus-specific metabolic rate has no effect.~~ **Resolved as a property of the tissue.** The oxygen diffusion length is 20 to 45 µm against a median tissue-to-vessel distance of 5 to 8 µm, so the tissue is not diffusion-limited and a local sink cannot make a local gradient. §2.3's mechanism cannot operate on this geometry, whatever the code does. | §2.3 | S26, **S27** |
+| T1.7 | ~~Revisit the boundary pressures.~~ **Withdrawn.** The 8,900 µm/s figure was a single-tube calculation, not the network. Measured velocity is 4 to 10 µm/s. Replaced by T1.9. | absolute scale of §2.1 to §2.4 | S25, **S27** |
+| T1.9 | **New.** Absolute perfusion is 20 to 100 times below physiological and raising the pressure cannot fix it, needing about 3,257 mmHg. The face rule costs 5 to 7 times the throughput of the band rule, and a residual factor of 30 is the network's own resistance. Blocks any absolute perfusion claim; ratios are unaffected. | §2.3, absolute scale of all four | **S27** |
 | T1.2 | ~~Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation.~~ **Done.** In vivo, and the function was a hybrid of both with the wall factor applied once instead of twice. §2.1 and §2.2 conclusions unchanged. | §2.2 | S18, **S22** |
 | T1.3 | ~~Re-pose transit time as a within-specimen ratio.~~ **Done.** Ratio of transit time to penetrating against bypassing edges, along solved flow directions. Cohorts separate without overlap. | §2.4 | S13, S15, S20, **S23** |
 | T1.4 | ~~Regenerate the flow and perfusion artefacts without the fabricated constriction.~~ **Done**, all six. | all | S17 |
