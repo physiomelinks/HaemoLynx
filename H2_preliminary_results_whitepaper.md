@@ -449,6 +449,11 @@ SHR-C's. §2.1, §2.2 and §2.4 are unaffected, being computed against the mask 
 rather than on the grid. For §2.3 it compounds a result already reported as not usable, and it is
 recorded as S28.
 
+`--pad-grid` extends the grid to the segmented volume and recovers that tissue. It moves mean PO2
+within TH by -0.77 and -0.66 mmHg on the two specimens and leaves the hypoxic fraction at zero, for
+the same reason §2.3 is inert: the diffusion length exceeds the unvascularised rim, so the recovered
+cells are supplied by their neighbours. The results in this document are unpadded (S29).
+
 ### 10.3 The solution is grid-converged
 
 Median PO2 on WKY-C runs 27.34, 27.92, 28.21 at 10, 6 and 4 µm, the increment halving each time

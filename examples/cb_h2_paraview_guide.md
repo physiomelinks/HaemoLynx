@@ -29,6 +29,11 @@ edge gets a grid smaller than the glomus mask. **SHR-A and SHR-C are affected**:
 perfusion volume visibly ends before the glomus surface does — SHR-A's stops at 286 µm where
 the tissue runs to 298 µm. That is where the vessels stop, not a misalignment.
 
+`--pad-grid` extends the grid to the segmented volume instead, so the oxygen field covers all
+the tissue. It costs about 0.7 mmHg of mean PO₂ within TH and nothing in hypoxic fraction, and
+it leaves the other four specimens byte-identical. Use it when the view should show a field
+under all the tissue; leave it off to match the numbers in the report, which are unpadded.
+
 ## The files
 
 | File | Type | What it is |

@@ -93,6 +93,34 @@ def mask_fraction_per_cell(
     return np.clip(counts / voxels_per_cell, 0.0, 1.0)
 
 
+def mask_bounds_um(
+    mask_shape: Sequence[int],
+    voxel_um: Sequence[float],
+    *,
+    origin_um: Sequence[float] | None = None,
+) -> tuple:
+    """Physical extent of a mask volume, as ``(min_zyx, max_zyx)`` in micrometres.
+
+    Ready to hand to ``PerfusionGrid(..., bounds_zyx=...)``, which is the whole point: the
+    conversion is two lines and getting it wrong is invisible, because a grid built from
+    slightly wrong bounds still solves and still looks like a field.
+
+    The extent is the outer corners of the volume, not the centres of the corner voxels, so it
+    matches the convention ``mask_fraction_per_cell`` uses when it places voxel centres.
+    """
+    shape = np.asarray(mask_shape, dtype=float)
+    if shape.shape != (3,) or np.any(shape <= 0):
+        raise ValueError(f"mask_shape must be three positive lengths, got {mask_shape}")
+    voxel = np.asarray(voxel_um, dtype=float)
+    if voxel.shape != (3,) or np.any(voxel <= 0):
+        raise ValueError(f"voxel_um must be three positive values, got {voxel_um}")
+
+    origin = np.zeros(3) if origin_um is None else np.asarray(origin_um, dtype=float)
+    if origin.shape != (3,):
+        raise ValueError(f"origin_um must be a (z, y, x) triple, got {origin_um}")
+    return origin, origin + shape * voxel
+
+
 def blend_per_cell_rate(
     fraction: np.ndarray,
     *,

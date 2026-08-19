@@ -14,6 +14,7 @@ import pytest
 
 from ImageLynx.haemodynamics.perfusion import PerfusionGrid
 from ImageLynx.haemodynamics.tissue_regions import (
+    mask_bounds_um,
     blend_per_cell_rate,
     mask_fraction_per_cell,
 )
@@ -297,3 +298,51 @@ def test_a_mask_that_fits_the_grid_warns_about_nothing():
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
         mask_fraction_per_cell(mask, grid, (1.0, 1.0, 1.0))
+
+
+# --- deriving grid bounds from a mask (T2.6) ---
+
+def test_mask_bounds_are_the_outer_corners_not_the_corner_voxel_centres():
+    """Half a voxel matters: the centre convention would leave the outermost half-voxel of
+    tissue outside a grid built to contain it, which is the very gap this exists to close."""
+    lo, hi = mask_bounds_um((160, 160, 160), (1.8639, 1.866, 1.866))
+
+    assert np.allclose(lo, [0.0, 0.0, 0.0])
+    assert np.allclose(hi, [160 * 1.8639, 160 * 1.866, 160 * 1.866])
+
+
+def test_mask_bounds_respect_a_non_zero_origin():
+    lo, hi = mask_bounds_um((10, 10, 10), (2.0, 2.0, 2.0), origin_um=(5.0, -3.0, 0.0))
+
+    assert np.allclose(lo, [5.0, -3.0, 0.0])
+    assert np.allclose(hi, [25.0, 17.0, 20.0])
+
+
+def test_a_grid_built_from_mask_bounds_contains_every_mask_voxel():
+    """The property the whole feature is for, checked against the join that drops them."""
+    G = nx.MultiGraph()
+    G.add_node("a", pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node("b", pos=np.array([10.0, 10.0, 10.0]))     # vessels stop well short
+    mask = np.zeros((30, 12, 12), dtype=bool)
+    mask[:, 2:6, 2:6] = True
+
+    bounds = mask_bounds_um(mask.shape, (1.0, 1.0, 1.0))
+    grid = PerfusionGrid(G, (4.0, 4.0, 4.0), bounds_zyx=bounds)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)     # nothing may be dropped now
+        fraction = mask_fraction_per_cell(mask, grid, (1.0, 1.0, 1.0))
+
+    voxel_volume = 1.0
+    recovered = float(fraction.sum()) * float(np.prod(grid.res)) / voxel_volume
+    assert recovered == pytest.approx(float(mask.sum()), rel=0.02)
+
+
+@pytest.mark.parametrize("shape,voxel", [
+    ((160, 160), (1.0, 1.0, 1.0)),
+    ((0, 10, 10), (1.0, 1.0, 1.0)),
+    ((10, 10, 10), (1.0, -1.0, 1.0)),
+])
+def test_malformed_mask_bounds_raise(shape, voxel):
+    with pytest.raises(ValueError):
+        mask_bounds_um(shape, voxel)

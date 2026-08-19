@@ -1392,9 +1392,55 @@ where a transposed volume gives one that renders perfectly and is wrong. Only th
 reason to refuse to write. Conflating them refused SHR-A and SHR-C, whose registration figures
 (90.7% / 0.6% and 87.4% / 0.2%) are as good as any specimen that passed.
 
-**Not fixed:** the grid is still the node bounding box. Padding it to the mask would solve oxygen
-into tissue with no vessels in it, which is a modelling decision rather than a bug fix, and it is
-recorded as T2.6 rather than taken here.
+**Not fixed here:** the grid is still the node bounding box. Padding it to the mask solves oxygen
+into tissue with no vessels in it, which is a modelling decision rather than a bug fix. Taken up
+separately as T2.6 and measured in S29.
+
+`STATUS — S28 RESOLVED as reporting. Padding implemented and measured under T2.6, see S29.`
+
+### S29. Padding the grid to the segmented volume, and a prediction that did not hold
+
+**T2.6.** `PerfusionGrid` takes an optional `bounds_zyx`, a **union** with the node bounding box
+and never a replacement, because a bound tighter than the vasculature would leave graph nodes
+outside the grid where `get_cell_index` returns -1 and their flow silently stops being a source.
+`mask_bounds_um` derives the bounds from a segmented volume. Both drivers expose it as
+`--pad-grid`, off by default: turning it on by default would move existing results.
+
+**The recovery is what S28 predicted, from an independent direction.** S28 counted the dropped
+glomus voxels directly; this counts the tissue the padded grid represents that the tight one did
+not:
+
+| Specimen | TH volume, tight | TH volume, padded | Recovered | S28 predicts |
+|---|---|---|---|---|
+| SHR-A | 74,280 | 77,545 | 4.40% | 4.55% |
+| SHR-C | 34,251 | 36,972 | 7.94% | 8.16% |
+| WKY-A | 77,878 | 77,878 | 0.00% | 0.00% |
+
+The residual is the 4 µm grid rounding partial cells against a 1.866 µm mask. WKY-A is an exact
+no-op, which is the property that makes the flag safe to leave on across a mixed cohort: four of
+the six specimens already reach the region edge and must not move at all.
+
+**The predicted cost did not appear.** Padding was expected to drive the added cells, which
+contain tissue and no vessels, to artefactual anoxia. Measured:
+
+| Specimen | PO2 in TH, tight | Padded | Change | Hypoxic below 10 mmHg |
+|---|---|---|---|---|
+| SHR-A | 40.088 | 39.318 | -0.771 | 0.0000 to 0.0000 |
+| SHR-C | 28.704 | 28.043 | -0.660 | 0.0000 to 0.0000 |
+| WKY-A | 32.618 | 32.618 | +0.000 | 0.0000 to 0.0000 |
+
+About 2% in PO2 and nothing in hypoxic fraction. The reason is the property that already makes
+§2.3 inert (S27): the oxygen diffusion length is 20 to 45 µm against an unvascularised rim of 12
+to 13 µm, so the added cells are supplied by diffusion from their neighbours. Tissue this densely
+vascularised does not go hypoxic for want of a local vessel.
+
+**The claim is corrected rather than quietly dropped.** "Expect artefactual anoxia at the padded
+faces" was written into the class docstring and both flag help texts before it was measured, and
+was wrong. It is a fact about carotid body vascular density, not a general property of padding,
+and it should be re-measured on a sparser bed rather than assumed.
+
+`STATUS — T2.6 RESOLVED. Padding available and off by default; on this cohort it recovers the
+tissue S28 identified at a cost of roughly 2% in PO2 and none in hypoxic fraction.`
 
 
 ## Effect on the four H2 methods
@@ -1602,3 +1648,4 @@ venv/bin/python -m pytest tests/test_haemodynamics_analytical.py         # S1
 | The ADR index ordering is mismatched (S16 draft) | withdrawn; the inversions cancel |
 | The ADR coefficients are swapped by 16× (S16 draft) | withdrawn; error was in the check |
 | Geometry and mask are in transposed frames | refuted; 100.0% foreground as stored |
+| Padding the grid causes artefactual anoxia (S29 draft) | withdrawn; -0.7 mmHg and no hypoxia, measured |

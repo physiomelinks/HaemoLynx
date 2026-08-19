@@ -373,3 +373,97 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
     for j in neighbours:
         offset = (j % n_z - 1, (j // n_z) % n_y - 1, j // (n_z * n_y) - 1)
         assert sum(abs(o) for o in offset) == 1, f"index {j} is not one step from the centre"
+
+
+# --- Grid extent: padding past the vasculature (S28, T2.6) ---
+
+def _two_node_graph():
+    G = nx.MultiGraph()
+    G.add_node("a", pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node("b", pos=np.array([20.0, 20.0, 20.0]))
+    return G
+
+
+def test_the_grid_still_stops_at_the_vasculature_when_no_bounds_are_asked_for():
+    """The default is unchanged, because changing it would move every existing result."""
+    grid = PerfusionGrid(_two_node_graph(), (4.0, 4.0, 4.0))
+
+    assert np.allclose(grid.min_xyz, [-2.0, -2.0, -2.0])
+    assert np.allclose(grid.min_xyz + grid.dims * grid.res, [22.0, 22.0, 22.0])
+
+
+def test_requested_bounds_extend_the_grid_to_cover_them():
+    """What S28 needs: a grid that reaches the segmented tissue, not just the vessels."""
+    grid = PerfusionGrid(_two_node_graph(), (4.0, 4.0, 4.0),
+                         bounds_zyx=((-10.0, 0.0, 0.0), (40.0, 30.0, 22.0)))
+
+    lo, hi = grid.min_xyz, grid.min_xyz + grid.dims * grid.res
+    assert lo[0] <= -10.0 and hi[0] >= 40.0
+    assert hi[1] >= 30.0
+    assert hi[2] >= 22.0
+
+
+def test_a_tighter_bound_never_shrinks_the_grid_off_the_vasculature():
+    """The failure this rules out is silent: a node outside the grid indexes to -1, and its
+    flow simply stops being a source, leaving a solve that runs and describes less network."""
+    G = _two_node_graph()
+    grid = PerfusionGrid(G, (4.0, 4.0, 4.0), bounds_zyx=((5.0, 5.0, 5.0), (10.0, 10.0, 10.0)))
+
+    assert np.allclose(grid.min_xyz, [-2.0, -2.0, -2.0])
+    for node in G.nodes:
+        assert grid.get_cell_index(G.nodes[node]["pos"]) != -1
+
+
+def test_nodes_stay_addressable_after_the_origin_moves():
+    """Padding shifts min_xyz, so every cell index changes. The nodes must still resolve, and
+    to the cell that actually contains them."""
+    G = _two_node_graph()
+    grid = PerfusionGrid(G, (4.0, 4.0, 4.0),
+                         bounds_zyx=((-40.0, -40.0, -40.0), (60.0, 60.0, 60.0)))
+
+    for node in G.nodes:
+        pos = G.nodes[node]["pos"]
+        index = grid.get_cell_index(pos)
+        assert index != -1
+        assert np.all(np.abs(grid.get_xyz_from_index(index) - pos) <= grid.res)
+
+
+def test_padding_costs_cells_in_proportion_to_the_volume_added():
+    tight = PerfusionGrid(_two_node_graph(), (4.0, 4.0, 4.0))
+    padded = PerfusionGrid(_two_node_graph(), (4.0, 4.0, 4.0),
+                           bounds_zyx=((-2.0, -2.0, -2.0), (42.0, 42.0, 42.0)))
+
+    assert padded.n_cells > tight.n_cells
+    assert padded.n_cells == 11 ** 3          # 44 um at 4 um in each axis
+
+
+@pytest.mark.parametrize("bounds", [
+    (( 0.0, 0.0), (10.0, 10.0)),                          # not triples
+    ((0.0, 0.0, 0.0), (0.0, 10.0, 10.0)),                 # max not above min on one axis
+    ((0.0, 0.0, 0.0), (-1.0, 10.0, 10.0)),                # inverted
+])
+def test_malformed_bounds_raise_rather_than_producing_a_grid(bounds):
+    with pytest.raises(ValueError):
+        PerfusionGrid(_two_node_graph(), (4.0, 4.0, 4.0), bounds_zyx=bounds)
+
+
+def test_bounds_already_inside_the_vasculature_change_nothing_at_all():
+    """The property that makes the flag safe to leave on across a mixed cohort.
+
+    Four of the six carotid body specimens already have vessels reaching the region edge, and
+    padding them must be a byte-for-byte no-op rather than a small perturbation: WKY-A's mean
+    PO2 within TH is identical to three decimals with and without the flag. A grid that shifted
+    its origin by a rounding step would renumber every cell and move results for reasons
+    unrelated to the tissue.
+    """
+    G = _two_node_graph()
+    tight = PerfusionGrid(G, (4.0, 4.0, 4.0))
+    padded = PerfusionGrid(G, (4.0, 4.0, 4.0),
+                           bounds_zyx=((0.0, 0.0, 0.0), (20.0, 20.0, 20.0)))
+
+    assert np.array_equal(tight.dims, padded.dims)
+    assert np.allclose(tight.min_xyz, padded.min_xyz)
+    assert tight.n_cells == padded.n_cells
+    for node in G.nodes:
+        pos = G.nodes[node]["pos"]
+        assert tight.get_cell_index(pos) == padded.get_cell_index(pos)

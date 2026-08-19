@@ -45,7 +45,7 @@ from ImageLynx.haemodynamics.rheology import (                           # noqa:
     solve_coupled_flow_and_hematocrit,
 )
 from ImageLynx.haemodynamics.tissue_regions import (                     # noqa: E402
-    blend_per_cell_rate, mask_fraction_per_cell,
+    blend_per_cell_rate, mask_bounds_um, mask_fraction_per_cell,
 )
 from ImageLynx.roi_placement import place_roi                            # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS           # noqa: E402
@@ -96,14 +96,25 @@ def _th_mask(specimen):
     return block > TH_THRESHOLD
 
 
-def analyse(specimen, contrast, grid_um=GRID_UM):
+def _unsupplied_pct(q_total):
+    """Share of cells receiving no oxygen source at all. Padding raises this by construction."""
+    q = np.asarray(q_total, dtype=float)
+    return float(100.0 * (q <= 0).mean()) if q.size else float("nan")
+
+
+def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False):
     G = _load_graph(specimen)
     inlets, outlets = select_boundary_terminal_nodes_by_face(
         G, ROI, axis=BOUNDARY_AXIS, voxel_size=PROCESSING_VOXEL_UM)
     G, _ = solve_coupled_flow_and_hematocrit(G, inlets, outlets, INLET_P, OUTLET_P)
 
-    grid = PerfusionGrid(G, (grid_um, grid_um, grid_um))
-    th_fraction = mask_fraction_per_cell(_th_mask(specimen), grid, PROCESSING_VOXEL_UM)
+    mask = _th_mask(specimen)
+    # Default: the grid stops at the vasculature, and glomus tissue beyond it is dropped (S28).
+    # --pad-grid extends it to the segmented volume, which represents that tissue at the cost
+    # of solving it with no vessels in it. Neither is free; see the flag's help.
+    bounds = mask_bounds_um(mask.shape, PROCESSING_VOXEL_UM) if pad_grid else None
+    grid = PerfusionGrid(G, (grid_um, grid_um, grid_um), bounds_zyx=bounds)
+    th_fraction = mask_fraction_per_cell(mask, grid, PROCESSING_VOXEL_UM)
 
     # A contrast of c puts the glomus rate c times the stromal one, holding the volume-weighted
     # mean at BASE_M_MAX so the runs are comparable rather than simply scaled.
@@ -121,6 +132,8 @@ def analyse(specimen, contrast, grid_um=GRID_UM):
     result = {
         "specimen_id": specimen.specimen_id, "group": specimen.group,
         "contrast": contrast, "grid_um": grid_um, "cells": int(grid.n_cells),
+        "padded_to_segmented_volume": bool(pad_grid),
+        "cells_without_vessels_pct": _unsupplied_pct(q),
         "th_volume_fraction": mean_fraction,
         "po2_median_all": float(np.median(po2)),
         "po2_median_th": float(np.average(po2, weights=weight)) if total else float("nan"),
@@ -141,6 +154,14 @@ def main():
     ap.add_argument("--contrast", type=float, nargs="+", default=[1.0, 2.0, 4.0],
                     help="Glomus metabolic rate as a multiple of stromal. 1.0 is uniform.")
     ap.add_argument("--grid-um", type=float, default=GRID_UM)
+    ap.add_argument("--pad-grid", action="store_true",
+                    help="Extend the perfusion grid to the segmented volume rather than "
+                         "stopping at the vascular bounding box. This represents glomus "
+                         "tissue the default drops (4.35%% of SHR-A, 7.54%% of SHR-C), at the "
+                         "cost of solving the added cells with no local oxygen source. "
+                         "Measured on this cohort that costs 0.7 mmHg of mean PO2 within TH "
+                         "and no change in hypoxic fraction, because the diffusion length "
+                         "exceeds the unvascularised rim; do not assume that on a sparser bed.")
     ap.add_argument("--out", default="examples/outputs/cb_h2_hypoxic_fraction.json")
     args = ap.parse_args()
 
@@ -154,7 +175,7 @@ def main():
         print(f"  {'spec':7s} {'TH vol':>7s} {'PO2 TH':>8s} {'PO2 stroma':>11s} "
               + " ".join(f"{'hyp<' + format(t, 'g'):>9s}" for t in HYPOXIC_THRESHOLDS))
         for specimen in SPECIMENS:
-            r = analyse(specimen, contrast, args.grid_um)
+            r = analyse(specimen, contrast, args.grid_um, pad_grid=args.pad_grid)
             rows.append(r)
             print(f"  {r['specimen_id']:7s} {100*r['th_volume_fraction']:6.1f}% "
                   f"{r['po2_median_th']:8.2f} {r['po2_median_stroma']:11.2f} "

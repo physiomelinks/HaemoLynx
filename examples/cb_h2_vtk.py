@@ -66,7 +66,8 @@ from ImageLynx.haemodynamics.rheology import (                           # noqa:
     solve_coupled_flow_and_hematocrit,
 )
 from ImageLynx.haemodynamics.tissue_regions import (                     # noqa: E402
-    blend_per_cell_rate, edge_tissue_fraction, mask_fraction_per_cell,
+    blend_per_cell_rate, edge_tissue_fraction, mask_bounds_um,
+    mask_fraction_per_cell,
 )
 from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa: E402
 from ImageLynx.roi_placement import place_roi                            # noqa: E402
@@ -124,7 +125,7 @@ def load_th(specimen):
     return block / 255.0 if block.max() > 1.5 else block
 
 
-def solve(specimen):
+def solve(specimen, pad_grid=False):
     """Everything the exports need, computed once."""
     G, attached = load_graph(specimen)
     inlets, outlets = select_boundary_terminal_nodes_by_face(
@@ -136,7 +137,8 @@ def solve(specimen):
     frac = edge_tissue_fraction(G, mask, PROCESSING_VOXEL_UM)
     arrival = transit_time_from_inlets(G, inlets)
 
-    grid = PerfusionGrid(G, (GRID_UM, GRID_UM, GRID_UM))
+    bounds = mask_bounds_um(mask.shape, PROCESSING_VOXEL_UM) if pad_grid else None
+    grid = PerfusionGrid(G, (GRID_UM, GRID_UM, GRID_UM), bounds_zyx=bounds)
     th_cell = mask_fraction_per_cell(mask, grid, PROCESSING_VOXEL_UM)
     stroma = BASE_M_MAX / (1.0 + float(th_cell.mean()) * (2.0 - 1.0))
     m_max = blend_per_cell_rate(th_cell, tissue_rate=stroma * 2.0, stroma_rate=stroma)
@@ -146,7 +148,7 @@ def solve(specimen):
 
     return dict(graph=G, inlets=inlets, outlets=outlets, attached=attached,
                 prob=prob, mask=mask, edge_fraction=frac, arrival=arrival,
-                grid=grid, th_cell=th_cell, m_max=m_max,
+                grid=grid, th_cell=th_cell, m_max=m_max, padded=bool(pad_grid),
                 q_total=q_total, s_incoming=s_incoming, po2=po2)
 
 
@@ -338,6 +340,12 @@ def main():
     ap.add_argument("--decimate", type=float, default=0.9,
                     help="Surface decimation fraction. 0 disables. The undecimated glomus "
                          "surface runs to tens of megabytes per specimen.")
+    ap.add_argument("--pad-grid", action="store_true",
+                    help="Extend the perfusion grid to the segmented volume rather than "
+                         "stopping at the vascular bounding box. Represents glomus tissue the "
+                         "default drops, at the cost of solving cells that contain tissue and "
+                         "no vessels. Measured cost on this cohort is 0.7 mmHg of mean PO2 "
+                         "within TH and no change in hypoxic fraction. See the H2 guide.")
     ap.add_argument("--specimen", nargs="*", default=None)
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args()
@@ -350,7 +358,7 @@ def main():
 
     summary, checks = [], []
     for specimen in chosen:
-        state = solve(specimen)
+        state = solve(specimen, pad_grid=args.pad_grid)
         check = verify(specimen, state)
         checks.append(check)
         status = "ok" if check["ok"] else "FAILED"
@@ -388,6 +396,9 @@ def main():
             "glomus_clusters": n_clusters,
             "largest_cluster_um3": float(big.max()) if big.size else 0.0,
             "grid_cells": int(state["grid"].n_cells),
+            "padded_to_segmented_volume": state["padded"],
+            "cells_without_vessels_pct": round(
+                float(100.0 * (np.asarray(state["q_total"]) <= 0).mean()), 2),
             "po2_median_mmHg": float(np.median(state["po2"])),
             "files": written, "frame_check": check,
         })
@@ -399,6 +410,7 @@ def main():
         return
     (out_dir / "export_summary.json").write_text(json.dumps(
         {"roi_zyx": list(ROI), "grid_um": GRID_UM, "th_threshold": TH_THRESHOLD,
+         "padded_to_segmented_volume": bool(args.pad_grid),
          "boundary_axis": BOUNDARY_AXIS, "penetration_cutoff": PENETRATION,
          "specimens": summary}, indent=2))
     print(f"\nWrote {len(summary)} specimens to {out_dir}")

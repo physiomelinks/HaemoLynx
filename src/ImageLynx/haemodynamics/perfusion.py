@@ -2,7 +2,7 @@ import numpy as np
 import networkx as nx
 from numba import jit
 import logging
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Sequence, Tuple, Any
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,36 @@ class PerfusionGrid:
     A 3D structured grid for tissue diffusion modeling.
     Coordinates are natively handled in [z, y, x] to perfectly align with ImageLynx graph conventions
     and VTK exports without flipping.
+
+    **Extent.** By default the grid spans the graph's node bounding box, so it stops where the
+    vasculature stops. Where a segmented tissue volume reaches past that, the tissue in the gap
+    is not represented at all: ``mask_fraction_per_cell`` drops it, and the solve describes less
+    tissue than was handed in. Two of the six carotid body specimens lose 4.35% and 7.54% of
+    their glomus volume that way (S28).
+
+    ``bounds_zyx`` extends the grid to cover a requested region, given as ``(min_zyx, max_zyx)``
+    in micrometres. It is a **union** with the node bounding box and never a replacement: a
+    requested bound tighter than the vasculature would leave graph nodes outside the grid, where
+    ``get_cell_index`` returns -1 and their flow silently stops being a source.
+
+    Padding is a modelling choice rather than a correction. The added cells contain tissue but
+    no vessels, because the vessels supplying them were cut off by the region crop rather than
+    absent from the organ, so they consume without a local source.
+
+    That was expected to drive the padded faces to artefactual anoxia, and **measured, it does
+    not**: on SHR-A and SHR-C, padding moves mean PO2 within TH by -0.77 and -0.66 mmHg, and the
+    hypoxic fraction below 10 mmHg stays at exactly zero. The reason is the same property that
+    makes H2 section 2.3 inert. The oxygen diffusion length is 20 to 45 um against an
+    unvascularised rim of 12 to 13 um, so the added cells are supplied by diffusion from their
+    neighbours. Tissue this densely vascularised does not go hypoxic for want of a local vessel.
+
+    Read a padded solve as tissue-complete and supply-incomplete at its edges; the default is
+    the reverse. On this cohort the difference is about 2% in PO2 and nothing in hypoxic
+    fraction, but that is a fact about carotid body vascular density and should be re-measured
+    rather than assumed on a sparser bed.
     """
-    def __init__(self, G: nx.MultiGraph, grid_resolution_xyz: Tuple[float, float, float]):
+    def __init__(self, G: nx.MultiGraph, grid_resolution_xyz: Tuple[float, float, float],
+                 bounds_zyx: Tuple[Sequence[float], Sequence[float]] | None = None):
         # 1. Get physical bounds from graph nodes
         pos = nx.get_node_attributes(G, "pos")
         if not pos:
@@ -98,8 +126,25 @@ class PerfusionGrid:
         self.res = np.array([grid_resolution_xyz[2], grid_resolution_xyz[1], grid_resolution_xyz[0]], dtype=float)
         
         # Pad by half resolution to ensure all nodes are inside
-        self.min_xyz = np.min(nodes_zyx, axis=0) - self.res * 0.5  # min_xyz is actually min_zyx here
-        self.max_xyz = np.max(nodes_zyx, axis=0) + self.res * 0.5  # max_xyz is actually max_zyx here
+        lo = np.min(nodes_zyx, axis=0) - self.res * 0.5             # actually min_zyx here
+        hi = np.max(nodes_zyx, axis=0) + self.res * 0.5             # actually max_zyx here
+
+        if bounds_zyx is not None:
+            want_lo = np.asarray(bounds_zyx[0], dtype=float)
+            want_hi = np.asarray(bounds_zyx[1], dtype=float)
+            if want_lo.shape != (3,) or want_hi.shape != (3,):
+                raise ValueError(
+                    f"bounds_zyx must be two (z, y, x) triples, got shapes "
+                    f"{want_lo.shape} and {want_hi.shape}")
+            if np.any(want_hi <= want_lo):
+                raise ValueError(
+                    f"bounds_zyx must have max strictly above min, got {want_lo} to {want_hi}")
+            # Union, never replacement. See the class docstring.
+            lo = np.minimum(lo, want_lo)
+            hi = np.maximum(hi, want_hi)
+
+        self.min_xyz = lo
+        self.max_xyz = hi
         
         self.dims = np.ceil((self.max_xyz - self.min_xyz) / self.res).astype(int)
         self.n_cells = int(np.prod(self.dims))
