@@ -99,3 +99,72 @@ def blend_per_cell_rate(
             f"fraction must lie in [0, 1], got [{fraction.min():.4g}, {fraction.max():.4g}]"
         )
     return stroma_rate + (tissue_rate - stroma_rate) * fraction
+
+
+def edge_tissue_fraction(
+    G,
+    mask: np.ndarray,
+    voxel_um: Sequence[float],
+    *,
+    origin_um: Sequence[float] | None = None,
+    step_um: float | None = None,
+) -> dict:
+    """Fraction of each edge's centreline length that lies inside ``mask``.
+
+    The graph-side counterpart of :func:`mask_fraction_per_cell`, and what H2 §2.1 and §2.2
+    need: §2.1 asks where flow goes relative to the glomus clusters, §2.2 asks which edges
+    supply them, and both are the same question about edges rather than grid cells.
+
+    Sampled along the whole centreline, not at the endpoints. A capillary penetrating a glomus
+    cluster typically begins and ends in stroma, so an endpoint test would classify exactly the
+    vessels §2.1 is about as extra-glomus. Weighted by length rather than by point count,
+    because the stored polylines are not uniformly spaced and a densely sampled stretch would
+    otherwise outvote a long one.
+
+    Returns ``{(u, v, key): fraction}``. Centreline points outside the mask array count as
+    outside rather than being clipped to its border.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 3:
+        raise ValueError(f"mask must be a 3D volume, got shape {mask.shape}")
+    voxel = np.asarray(voxel_um, dtype=float)
+    origin = np.zeros(3) if origin_um is None else np.asarray(origin_um, dtype=float)
+    # Half the finest voxel, so a crossing cannot be stepped over.
+    step = float(step_um) if step_um else float(voxel.min()) * 0.5
+
+    def inside(points: np.ndarray) -> np.ndarray:
+        idx = np.floor((points - origin) / voxel).astype(np.int64)
+        ok = np.all((idx >= 0) & (idx < np.asarray(mask.shape)), axis=1)
+        out = np.zeros(len(points), dtype=bool)
+        if ok.any():
+            sel = idx[ok]
+            out[ok] = mask[sel[:, 0], sel[:, 1], sel[:, 2]]
+        return out
+
+    result: dict = {}
+    for u, v, key, data in G.edges(keys=True, data=True):
+        pts = data.get("voxels")
+        if pts is None or len(pts) < 2:
+            pos = G.nodes[u].get("pos"), G.nodes[v].get("pos")
+            if pos[0] is None or pos[1] is None:
+                result[(u, v, key)] = float("nan")
+                continue
+            pts = [pos[0], pos[1]]
+        poly = np.asarray(pts, dtype=float)
+
+        inside_length = 0.0
+        total_length = 0.0
+        for a, b in zip(poly[:-1], poly[1:]):
+            seg = float(np.linalg.norm(b - a))
+            if seg <= 0:
+                continue
+            n = max(1, int(np.ceil(seg / step)))
+            # Midpoints of n equal sub-steps: each carries the same length, so the average
+            # over them is a length-weighted average along this segment.
+            t = (np.arange(n) + 0.5) / n
+            samples = a + np.outer(t, b - a)
+            inside_length += float(inside(samples).mean()) * seg
+            total_length += seg
+
+        result[(u, v, key)] = (inside_length / total_length) if total_length > 0 else float("nan")
+    return result

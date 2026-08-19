@@ -161,3 +161,100 @@ def test_origin_um_places_the_mask_in_physical_space():
         "a mask at the coordinate origin must not land in a grid spanning 100 to 140 um")
     shifted = mask_fraction_per_cell(mask, grid, VOX, origin_um=(100.0, 100.0, 100.0))
     assert shifted.any(), "origin_um did not move the mask into the grid"
+
+
+# --- The graph-side join: which edges lie inside the tissue -------------------------------
+
+from ImageLynx.haemodynamics.tissue_regions import edge_tissue_fraction   # noqa: E402
+
+
+def _edge_graph(polylines):
+    G = nx.MultiGraph()
+    for i, (name, pts) in enumerate(polylines.items()):
+        a, b = f"{name}_a", f"{name}_b"
+        pts = np.asarray(pts, dtype=float)
+        G.add_node(a, pos=pts[0])
+        G.add_node(b, pos=pts[-1])
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()
+        G.add_edge(a, b, key=0, voxels=[tuple(p) for p in pts], length=float(seg))
+    return G
+
+
+def test_an_edge_inside_the_mask_is_wholly_inside():
+    mask = np.ones((40, 40, 40), bool)
+    G = _edge_graph({"e": [(10.0, 10.0, 10.0), (10.0, 30.0, 10.0)]})
+    frac = edge_tissue_fraction(G, mask, VOX)
+    assert list(frac.values())[0] == pytest.approx(1.0)
+
+
+def test_an_edge_outside_the_mask_is_wholly_outside():
+    mask = np.zeros((40, 40, 40), bool)
+    G = _edge_graph({"e": [(10.0, 10.0, 10.0), (10.0, 30.0, 10.0)]})
+    assert list(edge_tissue_fraction(G, mask, VOX).values())[0] == pytest.approx(0.0)
+
+
+def test_an_edge_crossing_the_boundary_is_partly_inside():
+    mask = np.zeros((60, 60, 60), bool)
+    mask[:, :30, :] = True                       # tissue below y index 30, i.e. y < 56 um
+    G = _edge_graph({"e": [(20.0, 10.0, 20.0), (20.0, 100.0, 20.0)]})
+    frac = list(edge_tissue_fraction(G, mask, VOX).values())[0]
+    assert 0.3 < frac < 0.7, f"got {frac}"
+
+
+def test_the_whole_centreline_is_sampled_not_just_the_endpoints():
+    """An edge whose ends are in stroma but whose middle runs through tissue.
+
+    Sampling endpoints alone would call this edge entirely extra-glomus, which is exactly the
+    penetrating capillary section 2.1 is about.
+    """
+    mask = np.zeros((60, 60, 60), bool)
+    mask[:, 25:35, :] = True                     # a slab in the middle
+    G = _edge_graph({"e": [(20.0, 10.0, 20.0), (20.0, 56.0, 20.0), (20.0, 100.0, 20.0)]})
+    frac = list(edge_tissue_fraction(G, mask, VOX).values())[0]
+    assert frac > 0.05, "the mid-edge tissue crossing was missed"
+    assert frac < 0.5
+
+
+def test_the_fraction_is_weighted_by_length_not_by_point_count():
+    """Many closely spaced vertices outside must not outvote one long run inside.
+
+    Counting vertices rather than length would call this edge 2% inside; by length it is 90%.
+    The stored polylines are not uniformly spaced, so the two genuinely differ.
+    """
+    mask = np.zeros((120, 120, 120), bool)
+    mask[:, 40:, :] = True                       # tissue above y index 40, i.e. y > 74.6 um
+    dense_outside = [(20.0, y, 20.0) for y in np.linspace(60.0, 74.0, 40)]   # 14 um, 40 pts
+    long_inside = [(20.0, 200.0, 20.0)]                                      # 126 um, 1 pt
+    G = _edge_graph({"e": dense_outside + long_inside})
+
+    frac = list(edge_tissue_fraction(G, mask, VOX).values())[0]
+    assert frac > 0.8, f"length weighting failed: {frac}"
+    assert frac < 0.95
+
+
+def test_centreline_points_outside_the_array_count_as_outside():
+    mask = np.ones((20, 20, 20), bool)
+    G = _edge_graph({"inside": [(10.0, 10.0, 10.0), (10.0, 20.0, 10.0)],
+                     "beyond": [(10.0, 500.0, 10.0), (10.0, 600.0, 10.0)]})
+    frac = edge_tissue_fraction(G, mask, VOX)
+    vals = {k[0]: v for k, v in frac.items()}
+    assert vals["inside_a"] == pytest.approx(1.0)
+    assert vals["beyond_a"] == pytest.approx(0.0)
+
+
+def test_an_edge_without_a_polyline_falls_back_to_its_endpoints():
+    mask = np.ones((40, 40, 40), bool)
+    G = nx.MultiGraph()
+    G.add_node("a", pos=np.array([10.0, 10.0, 10.0]))
+    G.add_node("b", pos=np.array([10.0, 30.0, 10.0]))
+    G.add_edge("a", "b", key=0, length=20.0)          # no 'voxels'
+    assert list(edge_tissue_fraction(G, mask, VOX).values())[0] == pytest.approx(1.0)
+
+
+def test_every_edge_is_reported_exactly_once_keyed_by_u_v_key():
+    mask = np.ones((40, 40, 40), bool)
+    G = _edge_graph({"p": [(10.0, 10.0, 10.0), (10.0, 30.0, 10.0)],
+                     "q": [(12.0, 10.0, 10.0), (12.0, 30.0, 10.0)]})
+    frac = edge_tissue_fraction(G, mask, VOX)
+    assert len(frac) == G.number_of_edges()
+    assert all(len(k) == 3 for k in frac)
