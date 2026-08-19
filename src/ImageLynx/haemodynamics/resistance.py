@@ -10,6 +10,39 @@ import pyvista as pv
 logger = logging.getLogger(__name__)
 
 
+#: Pascals per mmHg, exact by definition of the conventional millimetre of mercury.
+PASCALS_PER_MMHG = 133.322387415
+
+#: Converts this pipeline's Poiseuille flow to um^3/s.
+#:
+#: The flow solve computes ``Q = dP / R`` with ``R = 128 mu L / (pi d^4)``, taking pressure in
+#: mmHg, viscosity in cP and lengths in um. That mixture is not an SI-derived system, so Q
+#: carries units of mmHg um^4 / (cP um) and is not a volumetric flow rate.
+#:
+#: Rewriting R wholly in SI multiplies it by ``(1e-3 Pa s/cP) * (1e-6 m/um) / (1e-6 m/um)^4``,
+#: which is 1e15. So
+#:
+#:     Q_SI [m^3/s] = (dP_mmHg * PASCALS_PER_MMHG) / (R_pipeline * 1e15)
+#:                  = Q_pipeline * PASCALS_PER_MMHG * 1e-15
+#:
+#: and multiplying by 1e18 um^3/m^3 leaves ``Q_pipeline * PASCALS_PER_MMHG * 1e3``.
+#:
+#: This mattered because the perfusion coupling put the unconverted flow against a metabolic
+#: sink in mmol/L/s times um^3. The sink then exceeded the source by 2.2e4 times and the
+#: steady-state PO2 was correctly zero everywhere. Converted, the same system implies about a
+#: 17% oxygen extraction, which is the right order for perfused tissue.
+POISEUILLE_FLOW_TO_UM3_PER_S = PASCALS_PER_MMHG * 1e3
+
+
+def poiseuille_flow_to_um3_per_s(flow, factor: float = POISEUILLE_FLOW_TO_UM3_PER_S):
+    """Convert flow from this pipeline's mixed units to um^3/s.
+
+    ``factor=1.0`` leaves the value untouched, for a caller deliberately working in solver
+    units or comparing against output produced before the conversion existed.
+    """
+    return flow * factor
+
+
 def build_conductance_matrix_from_graph(
     G: nx.Graph, 
     weight_attr: str = "resistance",

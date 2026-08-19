@@ -6,6 +6,10 @@ from typing import Optional, Dict, List, Tuple, Any
 
 logger = logging.getLogger(__name__)
 
+# Flow leaves the resistance solve in mmHg um^3 / cP, not um^3/s. See the constant's own
+# definition for the derivation and for what coupling the two unconverted did.
+from .resistance import POISEUILLE_FLOW_TO_UM3_PER_S  # noqa: E402
+
 def calculate_blood_oxygen_content(po2_mmHg: float, hematocrit: float, pco2_mmHg: float = 40.0, ph: float = 7.4) -> float:
     """
     Calculates total oxygen content in blood (mmol/L) using the Hill Equation.
@@ -155,9 +159,20 @@ def map_vessels_to_grid(
     G: nx.MultiGraph,
     grid: PerfusionGrid,
     default_diameter_um: float | None = None,
+    flow_to_um3_per_s: float = POISEUILLE_FLOW_TO_UM3_PER_S,
 ) -> Dict[int, List[Dict[str, Any]]]:
     """
     Step 2: Map 1D vessel segments (edges) to the 3D tissue grid cells.
+
+    This is where the 1D flow solve meets the 3D tissue, and therefore where the two unit
+    systems have to be made to agree. Edge ``flow_abs`` is in the flow solve's own units,
+    mmHg um^3 / cP, because ``R = 128 mu L / (pi d^4)`` is evaluated with pressure in mmHg,
+    viscosity in cP and lengths in um. The metabolic sink downstream is in mmol/L/s times
+    um^3. Coupling them unconverted asked the tissue to consume 2.2e4 times the oxygen the
+    blood delivered, and the steady-state PO2 was correctly zero everywhere.
+
+    ``flow_to_um3_per_s=1.0`` leaves flow in solver units, for a caller comparing against
+    output produced before the conversion existed.
 
     Raises if any edge lacks a usable diameter, unless ``default_diameter_um`` is given.
     Passing it is a deliberate choice to model unmeasured vessels at a stated calibre; the
@@ -165,7 +180,7 @@ def map_vessels_to_grid(
 
     Returns:
         Mapping of linear_cell_index -> list of segments passing through that cell.
-        Each segment info includes the edge ID, flow, and length in that cell.
+        Each segment info includes the edge ID, flow in um^3/s, and length in that cell.
     """
     missing = [
         (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
@@ -185,7 +200,7 @@ def map_vessels_to_grid(
     
     for u, v, key, data in G.edges(keys=True, data=True):
         voxels = data.get("voxels")
-        flow = data.get("flow_abs", 0.0)
+        flow = float(data.get("flow_abs", 0.0)) * flow_to_um3_per_s
         edge_len = data.get("length", 0.0)
         
         diameter = _edge_diameter_um(data, default_diameter_um)

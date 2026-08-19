@@ -1146,6 +1146,70 @@ zero field and would stop earlier against a real one.
 
 `STATUS — T1.1 BENCHMARKED; the CG preconditioner FIXED; §2.3 now blocked on unit reconciliation.`
 
+### S25. The units reconciled, and §2.3 produces a field for the first time
+
+**T1.5.** The flow solve computes `Q = dP / R` with `R = 128 mu L / (pi d^4)`, taking pressure in
+mmHg, viscosity in cP and lengths in µm. That mixture is not an SI-derived system, so Q is not a
+volumetric flow rate. The perfusion coupling put it straight against a metabolic sink in
+mmol/L/s times µm³, and S24 measured the consequence: the sink exceeded the source by 2.2e4.
+
+**The conversion, derived rather than fitted.** Rewriting `R` wholly in SI multiplies it by
+`(1e-3 Pa·s/cP)·(1e-6 m/µm)/(1e-6 m/µm)^4 = 1e15`, so
+
+    Q [µm³/s] = Q_pipeline · PASCALS_PER_MMHG · 1e3 = Q_pipeline · 133322.387
+
+Checked numerically on a single tube by computing Poiseuille twice, once in the pipeline's units
+and once wholly in SI: the two agree to 1e-9 relative.
+
+**What it does to the balance**, on WKY-C at 10 µm:
+
+| | before | after |
+|---|---|---|
+| Total oxygen source | 66.5 | 8.87e6 |
+| Total metabolic sink | 1.49e6 | 1.49e6 |
+| Sink / source | **2.24e4×** | **0.168×** |
+
+An implied oxygen extraction of 16.8%, against a physiological 25 to 30% for perfused tissue.
+The right order, from a conversion derived from unit definitions alone.
+
+**§2.3 produces a field.** The three states of the perfusion solve on WKY-C at 10 µm:
+
+| | median PO2 | hypoxic fraction | time | solver |
+|---|---|---|---|---|
+| As shipped | 4.4e-4 mmHg | 100% | 97.7 s | CG diverged, residual 19 |
+| S24 preconditioner fixed | 0 mmHg | 100% | 2.5 s | Picard hit its cap |
+| **This change** | **42.0 mmHg** | **0%** | **1.5 s** | converged |
+
+42 mmHg is a plausible tissue PO2. The hypoxic fraction §2.3 asks for is computable for the
+first time.
+
+**It is not yet grid-converged, and that is what T1.1 is for.** Refining WKY-C with the solve and
+units both fixed:
+
+| Resolution | Cells | Solve | Median PO2 | Spread |
+|---|---|---|---|---|
+| 10 µm | 29,791 | 1.5 s | 42.02 | 2.1% |
+| 6 µm | 132,651 | 12.2 s | 46.94 | 2.4% |
+| 4 µm | 438,976 | 74.6 s | 50.46 | 2.6% |
+
+**The level moves 42 to 50 mmHg and has not plateaued**, so a hypoxic fraction computed at any of
+these resolutions is a property of the discretisation. That is S19's prediction, now demonstrable
+rather than inferred: the quantity moves when the grid moves. The spatial spread stays near 2%
+throughout, so at these cell sizes diffusion smooths the gradient §2.3 exists to measure, which
+is the same conclusion by a second route.
+
+T1.1's benchmark says native 1.866 µm resolution costs about 70 minutes per specimen. That is now
+the remaining step for §2.3, and it is a compute cost rather than a defect.
+
+**One caveat on the boundary pressures.** At the 60 to 20 mmHg used here, the converted flow
+implies a mean capillary velocity of roughly 8,900 µm/s against a physiological 200 to 1,000. A
+40 mmHg drop across a 300 µm region is a very large gradient; the whole capillary bed drops about
+that much across millimetres. The conversion is right and the pressures are a separate modelling
+input, but any absolute perfusion quantity inherits that choice.
+
+`STATUS — T1.5 RESOLVED. §2.3 is unblocked and awaits grid refinement (T1.1) to be
+grid-converged.`
+
 ## Effect on the four H2 methods
 
 | Method | TH gate | Physics | Noise floor | Also needs |
@@ -1259,7 +1323,9 @@ quantifying it.
 | | Item | For | Findings |
 |---|---|---|---|
 | T1.1 | ~~Refine the perfusion grid, benchmarking the solver first.~~ **Benchmarked.** Native resolution costs about 70 min per specimen and 4 to 5 GB, which is affordable. Deferred: the CG preconditioner was breaking the solve, and with it fixed the field is zero at any resolution for the reason below. | §2.3 | S19, **S24** |
-| T1.5 | **New, and now the only block on §2.3.** Reconcile the units. Flow leaves the flow solve in ΔP/R units, not µm³/s, while the metabolic sink is in mmol/L/s times µm³; the sink exceeds the source by 2.2e4×. | §2.3, and the absolute scale of §2.4 | **S24** |
+| T1.5 | ~~Reconcile the units.~~ **Done.** `POISEUILLE_FLOW_TO_UM3_PER_S`, derived from unit definitions and checked against an independent SI computation. Sink/source moves from 2.2e4× to 0.168×, a 17% implied extraction, and §2.3 produces a 42 mmHg field where it produced zero. | §2.3, and the absolute scale of §2.4 | S24, **S25** |
+| T1.6 | **New.** Run §2.3 at native resolution. The solution is not grid-converged: median PO2 moves 42 to 50 mmHg between 10 µm and 4 µm without plateauing. T1.1 benchmarked the cost at about 70 min per specimen. | §2.3 | **S25** |
+| T1.7 | **New.** Revisit the 60/20 mmHg boundary pressures. Across a 300 µm region they imply a mean capillary velocity near 8,900 µm/s against a physiological 200 to 1,000. | absolute scale of §2.1 to §2.4 | **S25** |
 | T1.2 | ~~Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation.~~ **Done.** In vivo, and the function was a hybrid of both with the wall factor applied once instead of twice. §2.1 and §2.2 conclusions unchanged. | §2.2 | S18, **S22** |
 | T1.3 | ~~Re-pose transit time as a within-specimen ratio.~~ **Done.** Ratio of transit time to penetrating against bypassing edges, along solved flow directions. Cohorts separate without overlap. | §2.4 | S13, S15, S20, **S23** |
 | T1.4 | ~~Regenerate the flow and perfusion artefacts without the fabricated constriction.~~ **Done**, all six. | all | S17 |
