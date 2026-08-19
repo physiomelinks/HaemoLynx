@@ -233,6 +233,38 @@ def map_vessels_to_grid(
     return cell_to_vessels
 
 
+def _jacobi_preconditioner(A):
+    """Diagonal (Jacobi) preconditioner, which conjugate gradient requires to be SPD.
+
+    This replaces an incomplete-LU preconditioner. ``spilu`` is a general-purpose
+    factorisation and carries no guarantee of symmetry or positive definiteness; CG assumes
+    both of its preconditioner, and given one that is neither it does not merely converge
+    slowly, it diverges. Measured on the production 10 µm grid for WKY-C, CG under the ILU
+    preconditioner reached a relative residual of **19** after 1000 iterations, where the
+    initial residual is 1 by construction. The resulting PO2 field was 4e-4 mmHg everywhere
+    against an arterial 100, so every cell read as hypoxic.
+
+    The diagonal here is a sum of face conductances plus a positive regulariser plus a
+    non-negative washout term, so it is strictly positive and its inverse is SPD by
+    construction. Measured on the same system: relative residual 8.8e-7 in 0.05 s, against
+    5.8 s for the ILU version that failed.
+    """
+    import scipy.sparse.linalg as splinalg
+
+    diagonal = A.diagonal()
+    if np.any(diagonal <= 0):
+        # Nothing here should produce a non-positive diagonal; if it does, an SPD
+        # preconditioner cannot be formed and unpreconditioned CG is the honest fallback.
+        logger.warning(
+            "Diffusion matrix has %d non-positive diagonal entries; skipping the Jacobi "
+            "preconditioner rather than forming a non-SPD one.",
+            int((diagonal <= 0).sum()),
+        )
+        return None
+    inverse = 1.0 / diagonal
+    return splinalg.LinearOperator(A.shape, lambda v: inverse * v)
+
+
 def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[str, Any]]], perf_config) -> Tuple[Any, np.ndarray, np.ndarray]:
     """
     Step 4: Build the pure Diffusion sparse matrix and Advection vectors.
@@ -376,12 +408,7 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     A_stable = A_reg.copy()
     A_stable.setdiag(A_stable.diagonal() + pseudo_washout_diag)
     
-    try:
-        ilu = splinalg.spilu(A_stable.tocsc(), drop_tol=1e-4, fill_factor=10)
-        M_pre = splinalg.LinearOperator(A_stable.shape, ilu.solve)
-    except Exception as e:
-        logger.warning(f"ILU preconditioning failed: {e}. Falling back to standard CG.")
-        M_pre = None
+    M_pre = _jacobi_preconditioner(A_stable)
 
     logger.info("Starting Non-Linear Picard Iteration loop solving for PO2...")
     for iteration in range(max_iter):
@@ -537,12 +564,8 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     A_o2.setdiag(A_o2.diagonal() + pseudo_washout_o2)
     A_co2.setdiag(A_co2.diagonal() + pseudo_washout_co2)
 
-    try:
-        M_pre_o2 = splinalg.LinearOperator(A_o2.shape, splinalg.spilu(A_o2.tocsc(), drop_tol=1e-4, fill_factor=10).solve)
-        M_pre_co2 = splinalg.LinearOperator(A_co2.shape, splinalg.spilu(A_co2.tocsc(), drop_tol=1e-4, fill_factor=10).solve)
-    except Exception:
-        M_pre_o2 = None
-        M_pre_co2 = None
+    M_pre_o2 = _jacobi_preconditioner(A_o2)
+    M_pre_co2 = _jacobi_preconditioner(A_co2)
 
     for iteration in range(max_iter):
         PO2_clamped = np.maximum(PO2_tissue, 0.0)
@@ -741,11 +764,7 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
     pseudo_washout_diag = P_perm * area_total * gamma_relax
     A_stable.setdiag(A_stable.diagonal() + pseudo_washout_diag)
     
-    try:
-        ilu = splinalg.spilu(A_stable.tocsc(), drop_tol=1e-4, fill_factor=10)
-        M_pre = splinalg.LinearOperator(A_stable.shape, ilu.solve)
-    except Exception:
-        M_pre = None
+    M_pre = _jacobi_preconditioner(A_stable)
 
     logger.info("Starting Fully Coupled 1D-3D Picard Loop...")
     for iteration in range(50):

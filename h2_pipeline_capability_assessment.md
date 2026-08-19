@@ -1081,6 +1081,71 @@ and after. **Identical SHA256.** One further reversed unpack was found in
 
 `STATUS — T1.3 and T2.4 RESOLVED.`
 
+### S24. The perfusion solve never converged, and the grid was not what was blocking §2.3
+
+T1.1 asked for the perfusion grid to be refined from 10 µm to roughly 1.5 to 2 µm, a factor of
+137 in cells, and for the iterative solver to be benchmarked at that size before committing. The
+benchmark was run and found two things ahead of the grid.
+
+**The conjugate gradient solve has never converged.** `solve_perfusion_steady_state` preconditions
+CG with an incomplete-LU factorisation. CG assumes its preconditioner is symmetric positive
+definite; `spilu` is a general-purpose approximation and guarantees neither, and given one that is
+neither, CG does not converge slowly, it diverges.
+
+**Measured** on WKY-C at the production 10 µm grid, with real solved flows:
+
+| Preconditioner | Converged | Relative residual | Time |
+|---|---|---|---|
+| ILU (`spilu`), as shipped | no, `info=1000` | **19.06** | 5.81 s |
+| none | yes | 8.9e-7 | 0.05 s |
+| Jacobi, the inverse diagonal | yes | **8.8e-7** | **0.05 s** |
+
+The initial residual is 1 by construction, so 19 is divergence rather than slow progress. The
+diagonal of the assembled matrix is a sum of face conductances plus a positive regulariser plus a
+non-negative washout term, so it is strictly positive and its inverse is SPD by construction.
+Substituting it makes the whole steady-state solve **39 times faster**, 97.7 s to 2.5 s, and
+converge.
+
+S19 reported that the Picard loop converges and that no run showed a non-convergence warning.
+That is about the **outer** loop. The inner CG emits a differently worded message at every Picard
+step, and every run has been emitting it.
+
+**But the field is zero either way, and that is the real block on §2.3.** With the solve fixed,
+PO2 comes out at 0 everywhere and Picard now reports hitting its iteration cap. Checking the
+balance the equations are being asked to satisfy:
+
+| Quantity | Value |
+|---|---|
+| Total oxygen source, `sum(s_incoming)` | 66.5 |
+| Total metabolic sink, `M_max · V_cell · n_cells` | 1.49e6 |
+| **Sink / source** | **2.2e4×** |
+
+The tissue is being asked to consume twenty-two thousand times the oxygen the blood delivers, so
+PO2 → 0 everywhere is the correct answer to the system as posed. The cause is the unit
+incommensurability T1.3 already had to work around: flow leaves the flow solve in the units of
+ΔP/R with mmHg, cP and µm mixed, which is not µm³/s, while the sink is mmol/L/s times µm³. The
+two sides of the balance are in different unit systems.
+
+**A hypoxic fraction is therefore not computable at any grid resolution**, and refining the grid
+137-fold would have produced a zero field 137 times more finely. §2.3's remaining blocker is the
+unit reconciliation, not the discretisation.
+
+**The benchmark answer, for when it matters.** With the preconditioner fixed, on WKY-C:
+
+| Resolution | Cells | Build | Solve | Peak memory |
+|---|---|---|---|---|
+| 10 µm | 29,791 | 0.31 s | 2.7 s | 400 MB |
+| 6 µm | 132,651 | 0.36 s | 19.8 s | 491 MB |
+| 4 µm | 438,976 | 0.99 s | 119.9 s | 762 MB |
+
+Time scales at roughly N^1.6, as CG iteration count grows with problem size on a Laplacian.
+Extrapolating to native 1.866 µm resolution, 4.1 M cells, gives about **70 minutes per specimen
+and 4 to 5 GB**, so around seven hours for the cohort on this machine. That is affordable. These
+timings are an upper bound, since Picard currently runs its full 50 iterations against a pinned
+zero field and would stop earlier against a real one.
+
+`STATUS — T1.1 BENCHMARKED; the CG preconditioner FIXED; §2.3 now blocked on unit reconciliation.`
+
 ## Effect on the four H2 methods
 
 | Method | TH gate | Physics | Noise floor | Also needs |
@@ -1193,7 +1258,8 @@ quantifying it.
 
 | | Item | For | Findings |
 |---|---|---|---|
-| T1.1 | Refine the perfusion grid from 10 µm to roughly 1.5 to 2 µm, a factor of 137 in cells. Benchmark the iterative solver at that size before committing. | §2.3 | S19 |
+| T1.1 | ~~Refine the perfusion grid, benchmarking the solver first.~~ **Benchmarked.** Native resolution costs about 70 min per specimen and 4 to 5 GB, which is affordable. Deferred: the CG preconditioner was breaking the solve, and with it fixed the field is zero at any resolution for the reason below. | §2.3 | S19, **S24** |
+| T1.5 | **New, and now the only block on §2.3.** Reconcile the units. Flow leaves the flow solve in ΔP/R units, not µm³/s, while the metabolic sink is in mmol/L/s times µm³; the sink exceeds the source by 2.2e4×. | §2.3, and the absolute scale of §2.4 | **S24** |
 | T1.2 | ~~Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation.~~ **Done.** In vivo, and the function was a hybrid of both with the wall factor applied once instead of twice. §2.1 and §2.2 conclusions unchanged. | §2.2 | S18, **S22** |
 | T1.3 | ~~Re-pose transit time as a within-specimen ratio.~~ **Done.** Ratio of transit time to penetrating against bypassing edges, along solved flow directions. Cohorts separate without overlap. | §2.4 | S13, S15, S20, **S23** |
 | T1.4 | ~~Regenerate the flow and perfusion artefacts without the fabricated constriction.~~ **Done**, all six. | all | S17 |
