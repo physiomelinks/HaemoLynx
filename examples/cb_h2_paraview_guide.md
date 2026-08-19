@@ -17,9 +17,17 @@ transform even though the glomus mask is at 1.866 µm and the perfusion grid at 
 
 `--verify` re-checks that rather than assuming it. It measures how often an edge scored as
 penetrating actually has its midpoint inside the exported mask, against edges scored as
-outside, and against a deliberately transposed copy of the same mask. On WKY-C that is 90.7%
-against 0.8%, with the transposed control at 39.5%. A specimen failing the check is skipped
-rather than written, because a misaligned overlay renders perfectly well and is wrong.
+outside, and against a deliberately transposed copy of the same mask. Across the six that is
+87.4–90.7% against 0.2–1.7%, with the transposed control at 13.8–42.7%. A specimen failing
+that is skipped rather than written, because a misaligned overlay renders perfectly well and
+is wrong.
+
+Coverage is reported separately and does not block writing. The perfusion grid takes its
+extent from the vascular bounding box, so a specimen whose vessels stop short of the region
+edge gets a grid smaller than the glomus mask. **SHR-A and SHR-C are affected**: 4.35% and
+7.54% of their glomus volume lies outside the solved grid and carries no PO₂. In ParaView the
+perfusion volume visibly ends before the glomus surface does — SHR-A's stops at 286 µm where
+the tissue runs to 298 µm. That is where the vessels stop, not a misalignment.
 
 ## The files
 
