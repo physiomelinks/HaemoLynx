@@ -150,15 +150,15 @@ solver_and_output:
   # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
   outlet_p_bc: 1000.0
   # Generate the matplotlib visualizations at the end of the run
-  visualize_results: true
+  visualize_results: false
   # Show plots interactively instead of saving them to the plot directory  [needs visualize_results]
   interactive_plots: false
   # Open saved plots in IDE windows while the run proceeds  [needs visualize_results]
-  show_plots_in_ide: true
+  show_plots_in_ide: false
   # Choose which plots are shown in IDE windows  [one of: all, final_only, none; needs visualize_results and show_plots_in_ide]
   ide_plot_mode: final_only
   # Block at the end of the script so the IDE plot windows stay open  [needs visualize_results and show_plots_in_ide]
-  hold_ide_plots_open: true
+  hold_ide_plots_open: false
   # Render the final graph views as a 2D overlay or an interactive 3D plot  [one of: 2d, 3d; needs visualize_results]
   final_render_mode: 3d
   # Export vessels, pericytes and nodes as VTK files  [needs run_haemodynamics]
