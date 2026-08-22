@@ -37,3 +37,8 @@ comparison_outputs/
 
 # Local agent worktrees and scratch state
 .claude/
+*.tif
+*.tiff
+*.nd2
+*.czi
+raw_images/
