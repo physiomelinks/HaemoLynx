@@ -328,8 +328,24 @@ Findability beats flow. In practice:
   the number · source file and line · the test that covers it*;
 - `path.py:123` references everywhere, because the usual next move after reading is to open
   the code;
-- a lookup index at the front, mapping likely questions ("why is absolute perfusion low?",
-  "which viscosity law ran?") to sections.
+- a lookup index at the front — **written as a list of questions, not a table of contents**
+  (decided 2026-08-24). Future-you arrives with a question, not with a section number. Each
+  entry is a question in the words it would actually be asked, pointing at one section.
+
+Starter set for the question index, to be extended as the document is written:
+
+- Which viscosity law actually ran, and would the other one change my answer?
+- Why is absolute perfusion so far below physiological?
+- Why is vessel diameter measured by EDT and not FWHM?
+- How much of my diameter distribution was measured rather than fabricated?
+- Which coupling tier produced the oxygen field in the whitepaper?
+- What grid resolution was used, and is the answer converged?
+- Why is transit time reported as a ratio instead of a number?
+- Which pressure boundary rule is in force, and how much does it move the result?
+- Why can I not use SHR for the glomus-channel comparisons?
+- Is calibre a defensible H1 finding? (No — and §13 says why.)
+- What is turned off in the model, and why was it turned off?
+- What would invalidate this document?
 
 ### 3.3 Assume the reader knows the project
 
@@ -354,6 +370,7 @@ what is broken, what is unvalidated, and what a number cannot support, in those 
 | Frozen / unreachable capabilities? | Full geometry for the constriction models (live on the `resistance_network_pipeline` path); a paragraph and a pointer for the rest. |
 | Citations? | Enough to re-find the source for class (i) and (ii) parameters. No formatted bibliography. |
 | Figures? | Two at most — model hierarchy, coupling tiers. Drawn for clarity, not for polish. |
+| Error budget — one section or spread across the model sections? | **One standalone section (§13)** (decided 2026-08-24). One place to check before quoting any number. Individual sections may point *into* it, but must not restate it. |
 
 ### 3.6 Two things to keep in view
 
@@ -368,8 +385,63 @@ what is broken, what is unvalidated, and what a number cannot support, in those 
 
 - Nothing blocking. Writing can start.
 
-## 4. Suggested order of writing
+## 4. Citations and the bibliography
 
+The project keeps a biblatex file, `all_academic_references.bib` — 204 entries, mostly
+`@article`. It is held outside this repository; the path is recorded in the author's own notes
+rather than here. **Recommendation:** sync a copy to `docs/references.bib` so the documentation
+resolves its own citations without depending on an external path.
+
+Cite by biblatex key inline, e.g. `[pries_shunt_2010]`. Do not build a formatted bibliography —
+the key is enough for future-you to find the paper.
+
+### 4.1 What the bibliography is for, section by section
+
+| Section | Role of citations | Coverage in the current .bib |
+|---|---|---|
+| §1 Scope | Why the carotid body, why hypoxia sensing, why SHR vs WKY | **Strong** — the largest cluster in the file |
+| §2 Image → graph | Segmentation and skeletonisation method precedent | Thin; may not be worth citing |
+| §3 Network flow | How other groups pose the 1D network problem — vascular graph models, distributed lumped-parameter models, 3D–1D coupling | **Good** — a real modelling cluster is present |
+| §4 Rheology | Primary source for every constitutive law used | **Gap — see §4.2** |
+| §5 Blood gas chemistry | Primary source for Hill, Bohr, Haldane, Henderson–Hasselbalch | **Gap — see §4.2** |
+| §6 Tissue transport | Precedent for ADR tissue models and 3D–1D coupled oxygen transport | Partial — coupled-transport papers present, classical sources absent |
+| §7 Derived quantities | Definitional support, especially for functional shunting | **Strong** — `pries_shunt_2010` defines the shunt problem directly |
+| §10 Parameter table | One key per class (i) and class (ii) parameter — this is the main consumer | **Gap — see §4.2** |
+| §11 Assumptions | Show which assumptions are standard practice rather than local shortcuts | Good |
+| §12 Verification | Standard V&V framing | Present — 7 matching entries |
+| §13 Error budget | Compare this model's error magnitudes against published ones | Partial |
+
+### 4.2 The gap to close first
+
+The bibliography is strong on the **biology** and on **other people's models**. It does not yet
+contain the primary sources for the constitutive laws this pipeline actually implements.
+Checked directly against the file:
+
+| Needed for | Present? |
+|---|---|
+| Pries et al. 1992 — in vitro apparent viscosity | **No.** Only `pries_shunt_2010` is present |
+| Pries et al. 1994 — in vivo apparent viscosity (the active default) | **No** |
+| Pries — phase separation / plasma skimming at bifurcations | **No** |
+| Hill — oxyhaemoglobin dissociation | **No** |
+| Severinghaus / Kelman — Bohr shift form | **No** (zero matches) |
+| Krogh — tissue oxygen transport | **No** (zero matches) |
+| Murray's law | **No** (one abstract mention, no entry) |
+
+So §10 cannot be completed from the current file. Add these entries before writing the
+parameter table — that is the step the writing order already puts first, and this is why.
+
+### 4.3 Two housekeeping items
+
+- **Duplicate entry.** `pries_shunt_2010` and `axel_r_pries_shunt_2010` are the same paper. The
+  second has malformed authors (each name doubled, once braced and once parsed). Delete it and
+  keep `pries_shunt_2010`, or the same source will cite two ways.
+- **A citation is not a justification.** Where a parameter is class (iii) — chosen or estimated —
+  citing a paper that used a similar value does not upgrade it. Keep the class tag and cite the
+  paper as precedent, not as source.
+
+## 5. Suggested order of writing
+
+0. **Fill the bibliography gaps in §4.2** — the parameter table cannot be finished without them.
 1. §10 parameter table and Appendix A — mechanical, and it forces every provenance question to be
    resolved before prose is committed around a shaky value.
 2. §11 assumptions — sets the honest scope everything else must respect.
