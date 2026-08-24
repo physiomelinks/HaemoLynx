@@ -46,9 +46,21 @@ The sweep landed 2026-08-19 to 08-20 and changed physics, not presentation:
   (`7e273aa`).
 
 **So the deliverable is not a new eighth document sitting alongside seven stale ones.** It is one
-current document that explicitly supersedes the four-rung ladder, and a decision about what
-happens to the ladder. Proposal: keep the ladder in place, add a superseded banner to each of the
-four with a pointer, and delete none of them until the new document is complete.
+current document that replaces the four-rung ladder, plus a decision about what happens to the
+ladder.
+
+Under §1.6 the new document keeps no account of superseded models, so it offers no bridge back to
+the ladder's content. That makes a "superseded, see instead…" banner pointless — it would point a
+reader at physics that is simply wrong. **Proposal:** move all four to an `archive/` directory (or
+delete them) once the new document is complete, and rely on git history if any of it is ever
+needed again.
+
+**The cost, stated once.** The H1 and H2 whitepapers and every exported artefact predate or
+straddle the sweep. With no superseded-model record anywhere, there is no way to tell from the
+documentation whether a given published figure came from the corrected physics or the old.
+Cheapest mitigation if that ever bites: a single dated line per changed model in §14
+(provenance) — *"flow units corrected at `535bcb1`"* — which is a pointer, not a description of
+the old model, and so stays inside §1.6. Not planned; noted in case it is wanted.
 
 **Second framing decision.** The old ladder documents `carotid_image_to_model.py` — the generic
 image-to-model pipeline. The thing worth documenting now is the **carotid-body simulation
@@ -66,7 +78,7 @@ unreviewable.
 
 ### 1.1 A status label on every capability
 
-Every model in the pipeline sits in one of five states, and mixing them silently is how the
+Every model in the pipeline sits in one of four states, and mixing them silently is how the
 existing documents mislead. Proposed labels, carried as a badge on every subsection heading:
 
 | Label | Meaning | Examples |
@@ -75,7 +87,11 @@ existing documents mislead. Proposed labels, carried as a badge on every subsect
 | **Available, not default** | Implemented and reachable, off by default | FWHM calibre, `constant_radius`, in vitro viscosity law, multi-species solver |
 | **Frozen** | Deliberately disabled for CB with a stated reason; live elsewhere | `pericyte_mask`, `probability`, `pericyte_comparison`, `constrict_at_pericytes` (raises) |
 | **Implemented, unreachable** | Code exists, no configuration path reaches it | endothelial barrier model under CB defaults (S3); EDT-from-binary-mask measurement (Stage 20) |
-| **Superseded** | Replaced during the sweep; documented so old outputs remain readable | band boundary rule, hybrid viscosity law, pre-conversion flow units |
+
+There is deliberately **no "superseded" label** — see §1.6. All four states above describe the
+code as it stands today. *Frozen* and *unreachable* are not history: those models are still in
+the tree and still reachable by configuration or by another pipeline, so future-you can switch
+one on by accident and needs to know it exists.
 
 ### 1.2 Symbol table, with the collisions already resolved
 
@@ -88,9 +104,9 @@ ladder's symbols.
 
 ### 1.3 Units, stated per equation
 
-The pipeline is not in one consistent unit system and this has already caused one order-of-10⁴
-defect. Every equation gets its units annotated inline, and §9 carries the conversion constants
-explicitly, including `POISEUILLE_FLOW_TO_UM3_PER_S = 133.322387415 × 10³` and its derivation.
+The pipeline does not work in one consistent unit system, and that is exactly the kind of thing
+future-you will get wrong. Every equation gets its units annotated inline, and §9 carries the
+conversion constants explicitly, including `POISEUILLE_FLOW_TO_UM3_PER_S = 133.322387415 × 10³` and its derivation.
 
 ### 1.4 Parameter provenance class, on every number
 
@@ -103,6 +119,23 @@ A number with no class is a defect in the document.
 
 File and line, in the `path.py:123` form the assessment documents already use, so every claim is
 checkable. Equations stay code-free in the body; the reference lives in a margin/footnote column.
+
+### 1.6 No superseded models — decided 2026-08-24
+
+**The document describes the model as it is now. It carries no history.**
+
+Concretely, none of the following appear anywhere: the band boundary rule, the hybrid viscosity
+law, the pre-conversion flow units, the grid-mapping conservation defect, the non-SPD
+preconditioner, or the unpadded perfusion grid. No "this used to be X" asides, no defect
+narratives, no before-and-after numbers.
+
+**What survives, and why it is not history.** A measurement that *justifies a current choice*
+stays, stated as evidence for the thing in force rather than as a story about what it replaced.
+So the face rule keeps its sensitivity figure, because that number is the reason the rule is
+what it is. What goes is the account of how the band rule behaved.
+
+Rule of thumb: if the sentence is *"why the model is like this"*, keep it. If it is *"what the
+model used to do"*, cut it.
 
 ---
 
@@ -117,7 +150,8 @@ checkable. Equations stay code-free in the body; the reference lives in a margin
 - What the model is *for*: H1 (morphology) and H2 (perfusion), stated as the two questions.
 - What the model deliberately does not do: no compliance, no pulsatility, no autoregulation,
   no growth/remodelling, no neural output.
-- Freshness contract: "current as of commit X; supersedes the four capability summaries."
+- Freshness contract: "current as of commit X", plus the short list of changes that would
+  invalidate the document (§3.6).
 
 ### §2 — Geometric model: from voxels to a vascular graph
 
@@ -132,8 +166,9 @@ downstream physical quantity inherits its error and resistance goes as *d*⁻⁴
   data's topology.
 - **2.3 Mask formation** — joint hysteresis threshold (`image.py:179`), entropy map, morphological
   cleanup, component filtering.
-- **2.4 Skeletonisation and graph construction** — `skeleton.py`, `graph/build.py`; gap bridging
-  and the mask-inflation artefact it introduces (which contaminated the EDT/FWHM correlation).
+- **2.4 Skeletonisation and graph construction** — `skeleton.py`, `graph/build.py`; gap bridging,
+  and the uniform foreground shell it adds to the mask, which is the wall EDT measures distance
+  to and so feeds straight into §2.6.
 - **2.5 Topology conditioning** — pruning, degree-2 collapse, reconnection, optimisation; what
   each does to node/edge counts, and what H1's topological node counting therefore measures.
 - **2.6 Calibre assignment — the single most consequential modelling choice.**
@@ -146,9 +181,10 @@ downstream physical quantity inherits its error and resistance goes as *d*⁻⁴
     distribution must refuse rather than warn.
 - **2.7 Branch-order assignment** (`branch_order.py`) — BFS from boundary nodes; hierarchical
   variant; what "B01" means and where the labels are consumed.
-- **2.8 Boundary terminal node selection** (`boundaries.py`) — band rule (superseded) vs
-  face-crossing rule (active), the 86%-of-degree-1-nodes-are-spurs finding, and the sensitivity
-  numbers that decided it.
+- **2.8 Boundary terminal node selection** (`boundaries.py`) — the face-crossing rule: how it
+  works, its axis-1 restriction, and the two measurements that justify it — about 86% of
+  degree-1 nodes are interior skeletonisation spurs rather than vessels crossing a face, and the
+  rule holds residual boundary sensitivity to 13.3%.
 
 ### §3 — Haemodynamic model: 1D network flow
 
@@ -164,14 +200,16 @@ downstream physical quantity inherits its error and resistance goes as *d*⁻⁴
 - **3.5 Effective two-point resistance** — the Laplacian pseudo-inverse form; state whether it is
   reported.
 - **3.6 Wall shear stress** (`rheology.py:371`) — derived, exported; state whether reported.
-- **3.7 Units of flow** — the mixed-unit trap and the conversion constant, with the failure it
-  caused.
+- **3.7 Units of flow** — the solve works in mixed units (mmHg, cP, µm), so its flow is not a
+  volumetric rate. State what leaves the solver, the conversion constant
+  `POISEUILLE_FLOW_TO_UM3_PER_S` with its derivation, and where the conversion is applied.
 
 ### §4 — Blood rheology
 
-- **4.1 Apparent viscosity and the Fåhræus–Lindqvist effect** — Pries–Secomb μ₄₅, both relations
-  side by side, the 3.4×-at-8-µm disagreement, the endothelial surface layer term and why it
-  follows the law rather than being applied unconditionally. In vivo is the active default.
+- **4.1 Apparent viscosity and the Fåhræus–Lindqvist effect** — Pries–Secomb μ₄₅. In vivo is the
+  active default; in vitro is available and not default. Both relations side by side, the
+  3.4×-at-8-µm difference between them, and the endothelial surface layer term, which applies
+  under the in vivo relation only because a glass tube has no such layer.
 - **4.2 Phase separation / plasma skimming** — the bifurcation split relation, erythrocyte mass
   conservation, binary-bifurcation-only assumption.
 - **4.3 Coupled flow–haematocrit–viscosity solution** — Picard iteration, tolerance, iteration
@@ -192,10 +230,10 @@ downstream physical quantity inherits its error and resistance goes as *d*⁻⁴
 ### §6 — Tissue transport: the 3D advection–diffusion–reaction model
 
 - **6.1 The perfusion grid** (`PerfusionGrid`) — construction, resolution, indexing, and the
-  padding-to-segmented-volume fix (`8a2b81c`) plus the prediction it falsified (S29).
-- **6.2 Vessel-to-grid mapping** — how edges deposit source terms; the conservation defect where
-  an edge's whole flow was recorded against every cell it crossed, and why grid-convergence is the
-  test that catches it.
+  fact that the grid is padded to span the segmented volume rather than the graph's own extent.
+- **6.2 Vessel-to-grid mapping** — how edges deposit source terms, and the conservation property
+  that makes the total source independent of grid resolution. Grid-convergence is the test that
+  holds it honest; say so here.
 - **6.3 The ADR operator** — seven-point stencil, Neumann boundaries, diagonal regularisation,
   Jacobi preconditioning, CG.
 - **6.4 Metabolic consumption** — the phenomenological `M_max`/`k_reduce` form, and how it differs
@@ -257,8 +295,8 @@ and `PerfusionConfig` appears exactly once.
 
 ### §11 — Assumptions, with expected direction of bias
 
-Adopt the thesis skeleton's 20-row table wholesale, then extend with the sweep-era additions it
-predates: the metabolic contrast assumption (§6.5), the face-rule axis restriction (§8), the
+Adopt the thesis skeleton's 20-row table wholesale, then extend with the assumptions it does not
+yet cover: the metabolic contrast assumption (§6.5), the face-rule axis restriction (§8), the
 ratio-only reporting convention (§7.6), and grid padding (§6.1).
 
 ### §12 — Verification status
@@ -301,7 +339,6 @@ Commit hash the document describes; which script produces which artefact; seeds;
 - **A** — solver settings table (purely numerical, separated from §10 model parameters).
 - **B** — full symbol table.
 - **C** — map from every model to its source file, line and test.
-- **D** — superseded models, with the numbers they produced, so pre-sweep outputs stay readable.
 
 ---
 
@@ -366,7 +403,7 @@ what is broken, what is unvalidated, and what a number cannot support, in those 
 | One file or a folder? | **One file.** Ctrl-F across the whole thing is the main access method. |
 | Depth? | **One depth.** Full equations, reasoning inline, no conceptual tier. The ladder existed for an outside reader. |
 | Length? | Roughly **half** the earlier 60–80 page estimate, once §3.3 padding is removed. |
-| The four ladder documents? | **Superseded banner, keep the files.** Pre-sweep outputs still need to be readable against them. |
+| The four ladder documents? | **Archive or delete them once this lands.** With §1.6 in force the new document keeps no bridge to their content, so a banner pointing at stale physics has no reader. See §0. |
 | Frozen / unreachable capabilities? | Full geometry for the constriction models (live on the `resistance_network_pipeline` path); a paragraph and a pointer for the rest. |
 | Citations? | Enough to re-find the source for class (i) and (ii) parameters. No formatted bibliography. |
 | Figures? | Two at most — model hierarchy, coupling tiers. Drawn for clarity, not for polish. |
