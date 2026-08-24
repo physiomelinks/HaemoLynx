@@ -9,8 +9,8 @@
 > **What would invalidate this document:** a change to the viscosity law, the boundary selection
 > rule, the unit conversion constants, the calibre estimator, or which coupling tier is run.
 >
-> **Written so far:** §10 (parameter reference), §11 (assumptions) and Appendix A (solver
-> settings). The remaining sections are listed at the end in the order they will be written.
+> **Written so far:** §10 (parameters), §11 (assumptions), §13 (error budget) and Appendix A
+> (solver settings). The remaining sections are listed at the end in the order they will be written.
 
 ---
 
@@ -190,7 +190,7 @@ These are **not** configurable. They live in the function bodies.
 | `po2_arterial_mmHg` | 100.0 | mmHg | (i) | `[CITE]` — but see open item 3 | assumed |
 | `pco2_arterial` | 40.0 | mmHg | (i) | `[CITE]` | assumed |
 | `hco3_tissue` | 24.0 | mmol/L | (i) | Fixed bicarbonate buffer; no renal compensation `[CITE]` | assumed |
-| `M_max` | 0.005 | mmol/L/s | (iii) | Maximum metabolic consumption rate. Chosen | **unswept — and it sets the hypoxic fraction** |
+| `M_max` | **config 0.005; H2 driver 0.05** | mmol/L/s | (iii) | Maximum metabolic consumption rate. The two disagree by 10× — see open item 8. The driver's 0.05 is the defensible one: it is 0.067 mL O₂ per mL per minute against roughly 0.040 for brain, the right order for a metabolically active organ | unswept in magnitude; the glomus:stroma *ratio* is swept |
 | `k_reduce` | 0.1 | per mmol | (iii) | Phenomenological metabolic reduction in hypoxic zones. **Not Michaelis–Menten** — that form is used nowhere in the pipeline, and the two differ most in the low-PO₂ regime, which is exactly where §2.3 reads its answer | unswept |
 | `C_arterial` | 0.13 | mmol/L | (iii) | **Dead configuration.** Declared in three places (`PerfusionConfig` and the two H2 driver `PerfConfig` classes) and read nowhere in `src/` or `examples/`. Superseded in practice by the blood-gas path, which computes arterial oxygen content from PO₂ and haematocrit | n/a |
 | `use_endothelial_barrier_model` | True | — | — | **Implemented, unreachable.** The dispatch is `if use_multi_species_model: … elif use_endothelial_barrier_model: …`, and multi-species is also True by default, so the `elif` never fires. Setting this flag alone changes nothing | — |
@@ -296,6 +296,183 @@ Not the most numerous, the most consequential:
 
 ---
 
+## §13 — Error budget and known limits
+
+**Check this section before quoting any number.** It is the one place that says how much the model
+can carry. Other sections point here; none of them restate it.
+
+These are properties of the model, not a list of things to fix. Most are bounded by voxel size
+against vessel calibre, or by tissue geometry, and no change to the solver touches either.
+
+### 13.1 The governing constraint: resistance goes as *d*⁻⁴
+
+Fractional calibre error propagates as `δR/R ≈ 4·δd/d`. Measured over the pooled 34,900 edges,
+taking one voxel (1.866 µm) as the diameter uncertainty:
+
+| Percentile | Diameter (µm) | δd/d | δR/R |
+|---|---|---|---|
+| p5 | 3.732 | 50.0% | **200.0%** |
+| p25 | 5.868 | 31.8% | **127.2%** |
+| p50 | 7.904 | 23.6% | **94.4%** |
+| p75 | 10.550 | 17.7% | **70.8%** |
+| p95 | 13.963 | 13.4% | **53.5%** |
+
+- **95.9%** of edges carry more than 50% resistance uncertainty
+- **37.2%** carry more than 100%
+- The measured p5–p95 calibre spread of 3.74× becomes a **196× spread in resistance**
+
+The network's resistance structure is dominated by a quantity measured to roughly a quarter of its
+own value. **This is not fixable in the solver** — not by the Picard iteration, the ADR
+discretisation, or the rheology.
+
+> **Not a quantisation problem.** The pooled diameters take 823 distinct values with a median gap
+> of 0.0023 µm — junction trimming and B-spline smoothing break the raw EDT lattice, so the values
+> are numerically dense. The 1.87 µm figure is the scale below which a difference is not
+> *physically* resolved, not the spacing of the values. The problem is uncertainty, not
+> discretisation.
+
+### 13.2 Independent error averages down; correlated error does not
+
+The segmentation threshold is the dominant correlated term: every edge in a specimen is measured
+from one mask at one threshold, so moving it moves every diameter together.
+
+Measured median calibre falls monotonically with threshold in **6 of 6 specimens**. Over the clean
+0.85–0.90 interval the mean shift is **0.922 µm, about half a voxel** — a per-edge `δd/d` of 11.7%
+and an analytic `δR/R` of 46.7%.
+
+Measured by re-solving the networks at that perturbation rather than scaling, since *d*⁻⁴ is not
+linear:
+
+| Perturbation | Independent | Correlated | Within-specimen ratio |
+|---|---|---|---|
+| One voxel, 1.866 µm (conservative bound) | 4.1% | 95.3% | 13.2% |
+| **Measured threshold shift, 0.922 µm** | 2.2% | **45.3%** | **6.3%** |
+
+The measured 45.3% sits close to the 46.7% that `4·δd/d` predicts, so propagation is near-linear at
+this scale even though the underlying law is not. **The ratio cancels 86% of the correlated error
+at both perturbation sizes**, which makes that cancellation a property of the ratio rather than an
+artefact of the size chosen.
+
+### 13.3 The two noise floors
+
+| Quantity | Floor | Against H1's measured 27–40% effects |
+|---|---|---|
+| Absolute network flow | **±45%** | Cannot resolve them |
+| Within-specimen ratio | **±6.3%** | Can resolve them — roughly fourfold margin |
+
+**This is why §7.6 reports ratios and never absolutes.** It is not caution; it is the difference
+between an answerable question and an unanswerable one.
+
+**One residual, in the ratio itself.** The per-specimen shift is uneven — 0.441 µm (WKY-C) to
+2.117 µm (WKY-A) — so the correlated error is not identical across specimens and does not cancel
+perfectly in a *between-group* comparison. Group means differ: 1.075 µm for WKY against 0.768 µm
+for SHR. That is the right shape to become a confound. With n = 3 it is noted, not established.
+
+### 13.4 Boundary selection is the largest single lever
+
+Larger than calibre error. The face-crossing rule on axis 1 holds residual boundary sensitivity to
+**13.3%**, against **75.8%** for the alternative band rule, and cuts total sensitivity from 118.8%
+to 43.1%. Axis 1 is the only axis with terminals on both faces in all six specimens.
+
+Below the operative floor of §13.3 and below the effects H1 measures — but only because the rule
+and its axis are pinned. See open item 2 in §10: they are not yet pinned in one place.
+
+### 13.5 Absolute perfusion is 20–100× below physiological
+
+Measured across all six with the face rule at 60/20 mmHg:
+
+| Specimen | Inlets | Total inlet flow (µm³/s) | Flow-weighted velocity |
+|---|---|---|---|
+| WKY-A | 18 | 8,924 | 6.2 µm/s |
+| WKY-B | 10 | 8,699 | 6.4 µm/s |
+| WKY-C | 11 | 6,511 | 4.1 µm/s |
+| SHR-A | 12 | 16,240 | 9.7 µm/s |
+| SHR-B | 12 | 14,870 | 6.3 µm/s |
+| SHR-C | 7 | 6,560 | 6.6 µm/s |
+
+**4–10 µm/s against a physiological 200–1,000 µm/s.**
+
+**Boundary pressure is not the cause.** Reaching 500 µm/s would require about **3,257 mmHg**. The
+boundary rule accounts for part of the gap — the alternative rule carries five to seven times more
+flow and about two and a half times the velocity — but not for its size.
+
+Every absolute perfusion figure inherits this. It is a further reason ratios are the only reportable
+form.
+
+### 13.6 The tissue is not diffusion-limited
+
+**The most consequential limit in this document**, because it constrains the mechanism rather than
+the precision.
+
+The oxygen diffusion length is
+
+```
+sqrt(D · α · PO₂ / M)  =  20 µm at PO₂ 10,  35 µm at 30,  45 µm at 50
+```
+
+against a **median tissue-to-vessel distance of 5.3–7.9 µm**. Every tissue point sits at roughly a
+fifth of its supply radius, so the tissue is not diffusion-limited and a local sink cannot produce
+a local gradient.
+
+Measured consequence: raising the glomus metabolic rate to **four times** the stromal one moves PO₂
+within the TH-positive volume by **0.01 mmHg**.
+
+So the premise of §7.5 — that a higher glomus metabolic rate produces glomus-specific hypoxia —
+cannot operate on this geometry at these parameters. **This is a statement about the tissue, not
+about the code.** A glomus-specific hypoxic fraction requires the sensors to be diffusion-limited,
+and in a bed this dense they are not.
+
+The consumption rate is not the problem: `M_max = 0.05` mmol/L/s is 0.067 mL O₂ per mL per minute,
+against roughly 0.040 for brain — the right order for a metabolically active organ.
+
+### 13.7 Grid resolution against the gradient that matters
+
+Measured tissue-to-vessel distance at native resolution:
+
+| Specimen | Foreground | TVD p50 | p90 | p99 | max |
+|---|---|---|---|---|---|
+| WKY-A | 23.5% | 7.92 µm | 53.06 | 113.15 | 172.26 |
+| WKY-B | 23.4% | 6.98 µm | 29.01 | 60.95 | 90.58 |
+| WKY-C | 29.4% | 5.28 µm | 25.90 | 65.30 | 109.07 |
+
+At the 4 µm grid the median tissue voxel sits **1.3–2.0 cells** from a vessel. The gradient that
+decides whether tissue is hypoxic is therefore spanned by one or two cells for half the tissue —
+resolved, but barely. Only the p90 tail, 25.9–53.1 µm, spans a comfortable number of cells.
+
+Refining further is cheap in principle and was tested: PO₂ converges (§10.9). The limit is that the
+gradient is physically short, not that the solve is inaccurate.
+
+### 13.8 Calibre is not a reportable H1 finding
+
+The between-group calibre gap sits at **one twentieth of the smallest resolvable difference**.
+Within-group spread is 0.45 µm (WKY) and 0.34 µm (SHR) — three to four times the gap itself.
+
+A separation that small is a coincidence of where six medians happened to fall. Any claim that SHR
+capillaries are narrower is **not supported**.
+
+### 13.9 The TH classifier carries a residual cohort skew
+
+The positive class holds **24,935 labels in WKY against 11,673 in SHR — a 2.1× skew**, above the 2×
+reporting threshold.
+
+Bounded, not eliminated. The contrast was evaluated against three classifiers spanning that skew
+from 22.9× down to 2.1×, and pooled class balance from 1:59 to 1:0.8. **The ratios move by at most
+0.01.** So a further reduction would be expected to change little — but the argument is a
+sensitivity analysis, not a proof, and it remains the stated bound on any TH-channel contrast.
+
+### 13.10 What the budget permits
+
+| Claim type | Supported? |
+|---|---|
+| Within-specimen ratios of flow-derived quantities | **Yes** — ±6.3% floor against 27–40% effects |
+| Absolute flow, velocity or perfusion | **No** — ±45% floor, and 20–100× below physiological |
+| Between-group calibre differences | **No** — gap is 1/20 of the measurement step |
+| Glomus-specific hypoxic fraction as a number | **No** — the mechanism cannot operate (§13.6); report as a curve in the assumed metabolic contrast |
+| Between-group TH-channel contrasts | **Qualified** — bounded by §13.9's sensitivity analysis, not by proof |
+| Topological counts (β₁) | **Yes** — unaffected by calibre, and stub pruning cannot move it |
+
+---
+
 ## Appendix A — Solver settings
 
 Purely numerical. Nothing here is a model parameter; changing these should change runtime and
@@ -361,6 +538,7 @@ tuning opportunity.
 | 5 | `C_arterial` is dead configuration — declared 3×, read 0× | §6 |
 | 6 | Solver tolerances disagree between config and code | Appendix A |
 | 7 | 13 parameters still marked `[CITE]`, including every blood-gas solubility and the Spencer CO₂ curve | §10 completeness |
+| 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and the H2 driver's `BASE_M_MAX` (0.05). The published §2.3 results used 0.05 | §6.4, §13.6 |
 
 ---
 
@@ -368,11 +546,10 @@ tuning opportunity.
 
 In order:
 
-1. **§13** — error budget
-2. **§2** — geometric model, image to graph
-3. **§3–§6** — the physics core
-4. **§7** — derived physiological quantities
-5. **§8, §9, §12, §14**
-6. **§1** — scope and overview, last
-7. **Front matter** — the question index, once there are sections to point at
-8. **Appendices B and C** — symbol table; model → file → test map
+1. **§2** — geometric model, image to graph
+2. **§3–§6** — the physics core
+3. **§7** — derived physiological quantities
+4. **§8, §9, §12, §14**
+5. **§1** — scope and overview, last
+6. **Front matter** — the question index, once there are sections to point at
+7. **Appendices B and C** — symbol table; model → file → test map
