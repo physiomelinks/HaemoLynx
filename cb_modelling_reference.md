@@ -9,8 +9,8 @@
 > **What would invalidate this document:** a change to the viscosity law, the boundary selection
 > rule, the unit conversion constants, the calibre estimator, or which coupling tier is run.
 >
-> **Written so far:** §10 (parameter reference) and Appendix A (solver settings). The remaining
-> sections are listed at the end in the order they will be written.
+> **Written so far:** §10 (parameter reference), §11 (assumptions) and Appendix A (solver
+> settings). The remaining sections are listed at the end in the order they will be written.
 
 ---
 
@@ -211,6 +211,91 @@ These are **not** configurable. They live in the function bodies.
 
 ---
 
+## §11 — Assumptions, with expected direction of bias
+
+Every row is something the model takes to be true without establishing it here. The point of the
+table is the **direction** column: when a result looks wrong, this is where to look for which way
+the model would push it.
+
+"Enters at" names the section where the assumption first does work. Where a direction is
+*unquantified*, that is stated rather than guessed — an unmeasured bias is not a small one.
+
+### 11.1 Geometry and network construction
+
+| # | Assumption | Enters at | Expected direction of effect |
+|---|---|---|---|
+| 1 | The imaged sub-volume represents the organ | §2.1 | Any regional gradient in vessel density is sampled rather than averaged. Tissue-centroid ROI placement removes the systematic part; residual unquantified |
+| 2 | One segmentation threshold for all six specimens | §2.2 | **Deliberate.** Per-specimen thresholds would absorb the classifier's cohort bias into the mask, where nothing downstream could see it. A shared threshold leaves that bias visible as measurement error instead of converting it into a group difference |
+| 3 | Skeletonisation preserves network topology | §2.4–§2.5 | Gap bridging adds a uniform foreground shell — the same wall EDT measures to — so calibre is biased outward |
+| 4 | Vessel lumens are circular in cross-section | §3.1 | Non-circular lumens have higher resistance at equal area → resistance **underestimated** |
+| 5 | EDT returns the vessel's inscribed radius | §2.6 | Near bifurcations it returns the junction's sphere instead, biasing calibre **upward**; suppressed by the 3.73 µm exclusion, which cannot be applied to segments shorter than it |
+| 6 | The branch-order fallback diameter law is exponential; Murray's law is not used | §2.6 | Active on the fallback path only — and under the default EDT mode that path **refuses rather than fabricates**, so the law cannot silently activate |
+| 7 | Terminal branches shorter than 5.6 µm are skeletonisation artefacts | §2.5 | Cannot affect β₁ (degree-1 nodes lie on no cycle). Shortens the per-edge length distribution by removing its lower tail |
+
+### 11.2 Haemodynamics and rheology
+
+| # | Assumption | Enters at | Expected direction of effect |
+|---|---|---|---|
+| 8 | Rigid vessel walls; no compliance | §3.1 | Removes pressure-dependent flow redistribution; resistance is static |
+| 9 | Steady state; no cardiac pulsatility | §3.4 | Removes cyclic wall-shear variation; mean flow largely unaffected |
+| 10 | No-slip at the vessel wall | §3.1 | Standard; negligible |
+| 11 | Plug flow; no radial intraluminal gradient | §6.6 | Transmural driving force slightly **overestimated** |
+| 12 | Newtonian fluid at initialisation | §4.3 | Biases initial resistances; largely relaxed by the resistance-rescaling step |
+| 13 | Rheological correlations transferred from rat mesentery | §4.1–§4.2 | Transferability to carotid body microvasculature **unquantified** |
+| 14 | Phase separation occurs at binary bifurcations only | §4.2 | Higher-order divisions mix proportionally → haematocrit heterogeneity **underestimated** |
+| 15 | The full MAP-to-CVP gradient falls across the imaged sub-volume | §8 | ~98 mmHg across roughly 1 mm. Perfusion pressure and absolute flow **overestimated** |
+| 16 | No vasoregulation of any kind | §3.3 | Constriction is disabled entirely, so there is neither active feedback (myogenic, metabolic, shear-mediated) nor a static constriction geometry. The network is a fixed passive resistor array |
+
+### 11.3 Blood gas chemistry
+
+| # | Assumption | Enters at | Expected direction of effect |
+|---|---|---|---|
+| 17 | Human haemoglobin parameters applied to rat tissue | §5.1–§5.2 | Species mismatch. Direction **not established** |
+| 18 | Constant bicarbonate buffer; no renal compensation | §5.4 | Fixes the pH response to PCO₂ |
+| 19 | Haldane saturation evaluated at fixed P₅₀ = 26 mmHg rather than the Bohr-shifted value | §5.3 | CO₂ carriage **underestimated** in hypoxic tissue; magnitude small (<5%) |
+
+### 11.4 Tissue transport
+
+| # | Assumption | Enters at | Expected direction of effect |
+|---|---|---|---|
+| 20 | Uniform tissue diffusivity | §6.3 | A single scalar σ for the whole domain. Smooths the PO₂ field across tissue types. **Note:** metabolic rate is *not* uniform — see row 22 |
+| 21 | Metabolism is phenomenological, M(PO₂) = M_max·(1 − e^(−k·PO₂)) | §6.4 | Not Michaelis–Menten, which is the literature standard. The two differ most in the low-PO₂ regime — exactly where §2.3 reads its answer |
+| 22 | The glomus-to-stroma metabolic ratio | §6.5 | **Nothing in this study measures it.** Reported across a swept range rather than at one value, so the hypoxic fraction is a curve in this parameter, not a number |
+| 23 | Neumann tissue boundary; no exchange beyond the imaged volume | §6.3 | Tissue PO₂ **overestimated** near the domain boundary |
+| 24 | Vessel-to-grid mapping is point-sampled along the centreline | §6.2 | An approximation to line–plane intersection, so *where* a vessel deposits carries discretisation error. The *total* is conserved: shares are normalised by accumulated length, so an edge's flow sums to exactly one across the cells it crosses |
+| 25 | The grid spans the segmented volume, not the graph's extent | §6.1 | Tissue beyond the graph is represented; tissue beyond the segmentation is not represented at all |
+| 26 | No lymphatic drainage or interstitial fluid flow | §6.3 | Omits a minor transport pathway |
+| 27 | Fixed baseline haematocrit in the Tier 1 washout | §6.6 | `h_baseline = 0.45` is hard-coded, so Tier 1 washout is decoupled from local haematocrit. Tier 1 only |
+
+### 11.5 Study design and reporting
+
+| # | Assumption | Enters at | Expected direction of effect |
+|---|---|---|---|
+| 28 | The two channels are co-registered by construction | §7.2 | Two channels of one acquisition on an identical grid, with no registration step. This is what makes a join between them sound; it would not hold across separate acquisitions |
+| 29 | Absolute flow quantities are reported only as within-specimen ratios | §7.6 | Not a modelling assumption but a reporting rule forced by two of them — the ±45% calibre floor and the unreconciled unit magnitude. See §13 |
+| 30 | Boundary terminals are selected on axis 1 only | §8 | The only axis with terminals on both faces in all six specimens. A specimen whose true inflow is off-axis is served by the wrong terminals |
+
+### 11.6 Four rows that changed against the earlier understanding
+
+Recorded because the old wording is still in circulation elsewhere.
+
+| Row | Was | Is |
+|---|---|---|
+| 20 / 22 | "Homogeneous tissue; uniform diffusivity **and metabolic rate**" | Metabolic rate is heterogeneous — blended per cell from TH volume fraction and applied elementwise. Only diffusivity is uniform |
+| 16 | "Static constriction ratios; no active vasoregulation" | Stronger: constriction is disabled outright, so there is no constriction geometry at all |
+| 6 | "Exponential branch-order scaling; bounded by the fallback rate" | Under the default EDT mode the fallback refuses rather than fabricating, so the bound is zero, not small |
+| 24 | "Point-sampled vessel-to-grid mapping — discretisation error in deposited exchange area" | Point sampling remains, but the conservation half is fixed: shares now normalise to one per edge |
+
+### 11.7 The three that most constrain what can be claimed
+
+Not the most numerous, the most consequential:
+
+- **Row 22** — the glomus-to-stroma metabolic ratio is assumed. The hypoxic fraction cannot be quoted as a number, only as a function of it.
+- **Row 15** — the full arterial-to-venous pressure drop is placed across a 1 mm block. Every absolute flow and perfusion figure inherits this.
+- **Row 13** — the rheology is transferred from a different tissue, and the size of that error has never been measured.
+
+---
+
 ## Appendix A — Solver settings
 
 Purely numerical. Nothing here is a model parameter; changing these should change runtime and
@@ -283,12 +368,11 @@ tuning opportunity.
 
 In order:
 
-1. **§11** — assumptions, with expected direction of bias
-2. **§13** — error budget
-3. **§2** — geometric model, image to graph
-4. **§3–§6** — the physics core
-5. **§7** — derived physiological quantities
-6. **§8, §9, §12, §14**
-7. **§1** — scope and overview, last
-8. **Front matter** — the question index, once there are sections to point at
-9. **Appendices B and C** — symbol table; model → file → test map
+1. **§13** — error budget
+2. **§2** — geometric model, image to graph
+3. **§3–§6** — the physics core
+4. **§7** — derived physiological quantities
+5. **§8, §9, §12, §14**
+6. **§1** — scope and overview, last
+7. **Front matter** — the question index, once there are sections to point at
+8. **Appendices B and C** — symbol table; model → file → test map
