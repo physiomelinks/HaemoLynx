@@ -9,8 +9,8 @@
 > **What would invalidate this document:** a change to the viscosity law, the boundary selection
 > rule, the unit conversion constants, the calibre estimator, or which coupling tier is run.
 >
-> **Written so far:** §2–§7 (image to graph, the physics core, derived quantities),
-> §10 (parameters), §11 (assumptions), §13 (error budget) and Appendix A (solver settings). The remaining sections are listed at the end in the order they will be written.
+> **Written so far:** §2–§8 (image to graph, the physics core, derived quantities, boundary
+> conditions), §10 (parameters), §11 (assumptions), §13 (error budget) and Appendix A. The remaining sections are listed at the end in the order they will be written.
 
 ---
 
@@ -1009,6 +1009,138 @@ on; separation with a gap wider than the noise is worth stopping for.
 
 ---
 
+## §8 — Boundary and initial conditions
+
+The mechanism for *choosing* boundary nodes is §2.8. This section is about what is *imposed* on them
+once chosen, and what happens to everything else.
+
+### 8.1 Pressure boundary conditions
+
+Dirichlet at both ends: a fixed pressure at inlet terminals, a fixed pressure at outlet terminals,
+and nothing imposed anywhere else.
+
+| Source | Inlet | Outlet | Gradient | Interpretation |
+|---|---|---|---|---|
+| `HaemodynamicsConfig` | 100 mmHg | 2 mmHg | 98 mmHg | Systemic MAP to central venous pressure |
+| **H2 drivers (what ran)** | **60 mmHg** | **20 mmHg** | **40 mmHg** | Arteriolar to venular |
+
+**These disagree by 2.45× in driving pressure, and every published H2 number used the second row.**
+See open item 10.
+
+**What the config value assumes.** That the entire arterial-to-venous pressure drop of the systemic
+circulation falls across roughly 1 mm of tissue. It does not — most of it falls across the arterial
+tree upstream and the venous tree downstream. This overestimates perfusion pressure and therefore
+absolute flow (§11 row 15). The driver's arteriolar-to-venular pair is the more defensible framing
+of the same sub-volume.
+
+**Neither choice rescues absolute perfusion.** §13.5 measures flow-weighted velocities of 4–10 µm/s
+against a physiological 200–1,000, and reaching 500 µm/s would require about 3,257 mmHg. The
+boundary pressure is not what is missing.
+
+**Within-specimen ratios are insensitive to this.** Flow is linear in the pressure difference, so a
+uniform change scales every edge's flow and cancels from any ratio taken within one specimen — the
+same cancellation §4.4 describes for viscosity.
+
+### 8.2 What happens to terminals that are not boundaries
+
+**About 86% of degree-1 nodes are interior** — nowhere near a region face. Counting terminals within
+one voxel of each of the six ROI faces:
+
+| Specimen | Terminals | On any face | Interior | Interior share |
+|---|---|---|---|---|
+| WKY-A | 544 | 71 | 473 | 86.9% |
+| WKY-B | 534 | 88 | 446 | 83.5% |
+| WKY-C | 674 | 91 | 583 | 86.5% |
+| SHR-A | 545 | 80 | 465 | 85.3% |
+| SHR-B | 754 | 104 | 650 | 86.2% |
+| SHR-C | 503 | 67 | 436 | 86.7% |
+
+**The crop is not the boundary problem; interior dead ends are.** These are skeletonisation spurs
+and segmentation breaks, not vessels severed by the ROI. A real capillary bed has few genuine
+interior dead ends, so this is a statement about mask quality rather than about the crop.
+
+Three modes decide what happens to them:
+
+| Mode | Behaviour | Consequence |
+|---|---|---|
+| **`caged`** (default) | Interior terminals are not boundaries at all | They become no-flow dead ends. Under the band rule roughly **half of all terminals** were stranded this way |
+| `universal_sink` | Every non-inlet terminal becomes an outlet | No stranding, but every mask defect becomes a drain |
+| `robin_resistance` | Non-boundary terminals are tagged for a distal resistance | A middle course; multiplier 10.0, unswept |
+
+**Why the inlet:outlet ratio matters.** Under a fixed pressure boundary it directly scales how much
+flow the network carries. Measured under the band rule the ratio spanned **10.7×** across six
+specimens, from 2.67 to 0.25, with group means 1.87 (WKY) against 0.88 (SHR). That is the right size
+and the right direction to become a confound, and it is set by ROI placement rather than by biology.
+The face rule (§2.8) is what reduces this; it is the reason boundary selection is the largest single
+lever in §13.4.
+
+### 8.3 Domain truncation
+
+The graph is a crop of a larger organ, so vessels genuinely do cross the region faces. The face rule
+treats exactly those as pressure boundaries and refuses when a face carries none — it does not
+invent them.
+
+**What is not modelled:** any pressure or flow condition representing the vasculature upstream of
+the inlet face or downstream of the outlet face. The network is solved as if it were the whole
+circuit between those two pressures.
+
+### 8.4 Tissue boundary conditions
+
+**Zero-flux (Neumann) on all six faces, by construction.** The seven-point stencil simply writes no
+conductance across the domain faces, so no oxygen enters or leaves there.
+
+**Consequence:** tissue PO₂ is **overestimated** near the domain boundary, because the model gives
+that tissue no route to lose oxygen to the tissue beyond the crop (§11 row 23).
+
+**A null space, and how it is handled.** Pure diffusion under Neumann boundaries has rows summing to
+zero, so a constant offset in PO₂ is unconstrained and the matrix is singular. Two regularisations
+address it: a 10⁻¹² sink added to the diagonal at assembly, and a further 10⁻⁶ before the solve. The
+pseudo-washout of §6.7 also contributes diagonal dominance.
+
+**Grid extent.** The grid is padded to span the segmented volume rather than the graph's own extent
+(§6.1). Tissue beyond the segmentation is not represented at all — it is outside the domain, not
+merely unperfused.
+
+### 8.5 Blood gas inlet conditions
+
+Values carried by blood entering the tissue, all constants (§10.8, §10.9):
+
+| Quantity | Value | Notes |
+|---|---|---|
+| Arterial PO₂ | 100 mmHg | Also hard-coded in two solver bodies — open item 3 |
+| Arterial PCO₂ | 40 mmHg | |
+| Systemic haematocrit | 0.45 | Tier 1 washout hard-codes the same value — open item 4 |
+| Tissue bicarbonate | 24 mmol/L | Constant buffer; no renal compensation |
+
+Arterial oxygen **content** is not imposed directly — it is computed from arterial PO₂ and the
+edge's own haematocrit through the Hill equation (§5.1), then delivered per cell in proportion to
+each edge's length share (§6.2).
+
+### 8.6 Initial conditions
+
+The tissue solves are steady-state, so the initial field is a starting guess for Picard iteration,
+not a physical condition. It affects convergence, not the answer.
+
+| Field | Initial value |
+|---|---|
+| Tissue PO₂ | 0 mmHg everywhere |
+| Tissue PCO₂ (Tier 3) | 40 mmHg — arterial baseline |
+| Tissue pH (Tier 3) | 7.4 |
+
+**PO₂ starting at zero is deliberate.** It approaches the steady state from below, and each iterate
+is clamped to ≥ 0, so the sequence cannot enter the non-physical region that drives Picard
+oscillation.
+
+The rheology loop starts every edge at systemic haematocrit 0.45 with the corresponding
+Pries–Secomb viscosity (§4.3) — likewise a starting guess, replaced on the first pass.
+
+> **At a glance** — Dirichlet pressure at face terminals, everything else caged; Neumann on tissue ·
+> config 100/2 mmHg but H2 ran 60/20; 86% of terminals interior · `boundaries.py:88`,
+> `perfusion.py:349`, `perfusion.py:461` · `tests/test_boundary_faces.py`,
+> `tests/test_flow_conservation.py`
+
+---
+
 ## §10 — Parameter reference
 
 ### 10.1 Imaging and domain
@@ -1520,7 +1652,7 @@ tuning opportunity.
 
 In order:
 
-1. **§8, §9, §12, §14**
+1. **§9, §12, §14**
 2. **§1** — scope and overview, last
 3. **Front matter** — the question index, once there are sections to point at
 4. **Appendices B and C** — symbol table; model → file → test map
