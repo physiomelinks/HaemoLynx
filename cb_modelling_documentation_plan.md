@@ -3,6 +3,10 @@
 > **Status:** structure plan only. No content written yet. This document says what the
 > modelling documentation should contain, in what order, and what each section must resolve.
 > Iterate on this file first; write the real document once the shape is agreed.
+>
+> **Audience — decided 2026-08-24.** A personal working record. One reader: the author,
+> mostly six months from now. Not a supervisor document, not a reviewer document, not thesis
+> prose. See §3 for what that decision settles.
 
 ---
 
@@ -301,23 +305,68 @@ Commit hash the document describes; which script produces which artefact; seeds;
 
 ---
 
-## 3. Open questions to settle before writing
+## 3. Audience: a personal working record
 
-1. **Audience and destination.** Three plausible readers, and they want different documents:
-   an engineering reference living in the repo; a supervisor/reviewer critique document (the role
-   the ladder served, uploaded to NotebookLM against literature); or methods source material.
-   Recorded preference is that thesis drafting stays outside this repository, so if it is the
-   third, the destination is `~/Desktop/me_bioeng_thesis_drafting/`, not here.
-2. **One document or a set?** §2–§9 is roughly 60–80 pages at ladder density. A single file is
-   easier to keep consistent; a `docs/modelling/` directory is easier to review in pieces.
-3. **Depth.** The ladder ran summary → detailed → conceptual. Recommend one depth: full equations
-   with physiological reasoning inline, no separate conceptual tier.
-4. **What happens to the four ladder documents** — superseded banner, or removal once this lands.
-5. **Do frozen and unreachable capabilities get full equations, or a paragraph and a pointer?**
-   Recommend full geometry for the constriction models (they are real capabilities, live on the
-   `resistance_network_pipeline` path) and a paragraph for the rest.
-6. **Figures.** Which of the model-hierarchy, Pries–Secomb curve, coupling-tier and
-   grid-convergence figures are worth drawing, and in what tool.
+**Settled 2026-08-24.** The document is written for the author, to record and look up work
+already done. That is not a soft constraint. It changes six things.
+
+### 3.1 Write for future-you, not present-you
+
+Present-you knows why EDT beat FWHM and why transit time is reported as a ratio. Six-months-you
+will not. So the *reasoning* and the *numbers* behind every choice get written down even though
+they feel obvious now. This is the single rule the document is optimised for.
+
+The test for every subsection: **can it answer a question in thirty seconds, six months from
+now, without opening the code?** Not "does it read well."
+
+### 3.2 Optimise for lookup, not for narrative
+
+Findability beats flow. In practice:
+
+- tables over prose wherever a table will carry the content;
+- every subsection follows the same six-slot shape — *what it does · what was chosen · why ·
+  the number · source file and line · the test that covers it*;
+- `path.py:123` references everywhere, because the usual next move after reading is to open
+  the code;
+- a lookup index at the front, mapping likely questions ("why is absolute perfusion low?",
+  "which viscosity law ran?") to sections.
+
+### 3.3 Assume the reader knows the project
+
+No introduction to the carotid body. No definition of Poiseuille's law. H1 and H2 get one line
+each as a reminder, not a rationale. This is where most of the ladder's length went, and it all
+comes out.
+
+### 3.4 Be blunt
+
+No audience to persuade means no hedging. §13 (error budget) and the "gaps" half of §12
+(verification) become the most useful parts of the document rather than the risky ones. State
+what is broken, what is unvalidated, and what a number cannot support, in those words.
+
+### 3.5 Consequences for the open questions
+
+| Question | Settled as |
+|---|---|
+| One file or a folder? | **One file.** Ctrl-F across the whole thing is the main access method. |
+| Depth? | **One depth.** Full equations, reasoning inline, no conceptual tier. The ladder existed for an outside reader. |
+| Length? | Roughly **half** the earlier 60–80 page estimate, once §3.3 padding is removed. |
+| The four ladder documents? | **Superseded banner, keep the files.** Pre-sweep outputs still need to be readable against them. |
+| Frozen / unreachable capabilities? | Full geometry for the constriction models (live on the `resistance_network_pipeline` path); a paragraph and a pointer for the rest. |
+| Citations? | Enough to re-find the source for class (i) and (ii) parameters. No formatted bibliography. |
+| Figures? | Two at most — model hierarchy, coupling tiers. Drawn for clarity, not for polish. |
+
+### 3.6 Two things to keep in view
+
+- **Destination.** A personal engineering record is not thesis drafting, so it belongs in the
+  repo. If it later becomes source material for methods prose, that derived version moves to
+  `~/Desktop/me_bioeng_thesis_drafting/` and this file stays put.
+- **It will go stale, exactly as the other seven did.** Carry a commit hash at the top and a
+  short "what would invalidate this" list — a change to the viscosity law, the boundary rule,
+  the unit constants, the calibre estimator, or the coupling tier in use.
+
+### 3.7 Still open
+
+- Nothing blocking. Writing can start.
 
 ## 4. Suggested order of writing
 
