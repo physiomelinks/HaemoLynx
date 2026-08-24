@@ -8,10 +8,74 @@
 >
 > **What would invalidate this document:** a change to the viscosity law, the boundary selection
 > rule, the unit conversion constants, the calibre estimator, or which coupling tier is run.
->
-> **Written so far:** §2–§8 (image to graph, the physics core, derived quantities, boundary
-> conditions), §10 (parameters), §11 (assumptions), §13 (error budget) and Appendix A. The remaining sections are listed at the end in the order they will be written.
 
+---
+
+## Start here: questions
+
+| If you are asking… | Go to |
+|---|---|
+| Which viscosity law actually ran? | §3.2 — there are two, and one overwrites the other |
+| Would the other viscosity law change my answer? | §4.4 — not for ratios; yes for absolutes |
+| Why is vessel diameter measured by EDT and not FWHM? | §2.6 |
+| How much of my diameter distribution was measured rather than fabricated? | §2.6 — the guard refuses at any fabrication |
+| Why is absolute perfusion so far below physiological? | §13.5 — and pressure is not the cause |
+| What pressure boundaries did the published H2 numbers use? | §7.8 and §8.1 — 60/20, not the config's 100/2 |
+| Which coupling tier produced the oxygen field? | §6.6 — Tier 1; Tier 2 is unreachable |
+| What grid resolution was used, and is it converged? | §6.8 — 4 µm, within ~1% of the limit |
+| Why is transit time reported as a ratio instead of a number? | §7.6, then §13.3 |
+| Which boundary rule is in force, and how much does it move things? | §2.8, then §13.4 |
+| Why can I not quote a glomus hypoxic fraction? | §13.6 — the tissue is not diffusion-limited |
+| Is calibre a defensible H1 finding? | §13.8 — no |
+| Can I use the TH channel for a between-group contrast? | §13.9 — qualified, bounded by sensitivity analysis |
+| What is turned off in the model, and why? | §10.6 constriction; §6.6 Tier 2; §2.5 bundle collapse |
+| What am I allowed to claim? | **§13.10** |
+| What was a given parameter set to? | §10 |
+| What has never been validated? | §12.4 — nothing has |
+| What is still unresolved in the code? | The open items table at the end |
+
+---
+
+## §1 — Scope
+
+### 1.1 What is modelled
+
+A roughly 1–2 mm³ imaged sub-volume of rat carotid body, in six specimens — three WKY, three SHR —
+with two channels from one acquisition: lectin for the vasculature and TH for the glomus cells.
+
+The chain is five stages, and each inherits the errors of the one before it:
+
+```
+3D probability field
+   → binary mask                    §2.2–§2.3
+   → 1D vascular graph              §2.4–§2.8
+   → network flow + rheology        §3, §4
+   → 3D tissue gas transport        §5, §6
+   → derived physiological numbers  §7
+```
+
+### 1.2 What it is for
+
+**H1, morphology.** Does carotid body microvascular structure differ between WKY and SHR?
+
+**H2, perfusion.** Does the perfusion profile differ, and specifically at the glomus cells?
+
+### 1.3 What the model deliberately does not do
+
+- No vessel compliance — walls are rigid
+- No cardiac pulsatility — the solve is steady-state
+- No autoregulation, and with constriction disabled, no vasomotor tone at all
+- No growth or remodelling
+- No neural output — the model stops at gas transport and does not represent chemoreception
+- No lymphatic drainage or interstitial fluid flow
+
+### 1.4 How to use this document
+
+Every section states what was chosen and why, with the measured evidence that decided it. Sections
+end with an **At a glance** line: the choice, the number, the code, and the test.
+
+**Before quoting any number, read §13.10.** Several quantities here are computed correctly and are
+still not reportable.
 ---
 
 ## How to read the tables
@@ -35,6 +99,7 @@ A number with no class is a defect in this document.
 Citations are biblatex keys from the project bibliography. `[CITE]` marks a number that needs a
 source added before it can be quoted anywhere.
 
+---
 ---
 
 ## §2 — Geometric model: from voxels to a vascular graph
@@ -1140,6 +1205,73 @@ Pries–Secomb viscosity (§4.3) — likewise a starting guess, replaced on the 
 > `tests/test_flow_conservation.py`
 
 ---
+---
+
+## §9 — Numerical methods
+
+Settings live in Appendix A. This section is about *why* each choice is what it is.
+
+### 9.1 Spatial discretisation
+
+One scheme, used everywhere in the tissue domain: a **seven-point finite-volume stencil** on a
+regular Cartesian grid, with conductance across each face equal to σ × (face area) / (normal
+spacing). Second-order accurate in space on a uniform grid.
+
+The 1D network needs no discretisation — the graph *is* the discretisation, and each edge is one
+lumped resistor.
+
+### 9.2 Non-linear solution — Picard, not Newton
+
+Three non-linearities, all handled the same way:
+
+| Loop | Non-linearity | Damping |
+|---|---|---|
+| Rheology (§4.3) | Viscosity depends on haematocrit, which depends on flow | None; 15 iterations at 10⁻⁴ |
+| Tissue Tier 1 (§6.7) | Metabolic sink and venous washout both depend on PO₂ | γ = 0.5 |
+| Tissue Tier 3 | The same, coupled across O₂, CO₂ and pH | γ = 1.0 each |
+
+**Why Picard rather than Newton.** No Jacobian is assembled anywhere. Picard costs one linear solve
+per iteration and converges reliably here because the non-linearities are saturating and
+monotonic — an exponential approach in the metabolic sink, a sigmoid in the Hill equation. Newton
+would converge faster but requires derivatives of the blood-gas chemistry that nothing currently
+provides.
+
+**The stabilisation is the interesting part.** The pseudo-washout of §6.7 moves a term from the
+right-hand side onto the diagonal and adds it back on the right, leaving the steady-state roots
+unchanged while making the matrix strictly diagonally dominant. This converts a system conjugate
+gradient handles badly into one it handles well, without changing the answer.
+
+### 9.3 Linear solvers
+
+| System | Solver | Why |
+|---|---|---|
+| Network Laplacian | Direct below 50,000 nodes, iterative above | CB graphs sit far below the threshold, so the flow solve is exact to machine precision |
+| Tissue diffusion | Conjugate gradient, Jacobi preconditioned | The matrix is large, sparse, symmetric and positive definite once regularised |
+
+**The preconditioner must be SPD**, which is what conjugate gradient requires. A diagonal
+(Jacobi) preconditioner is trivially SPD when the diagonal is positive, and the perfusion matrix's
+diagonal is positive by construction. Non-positive diagonals are detected and declined rather than
+silently inverted.
+
+### 9.4 Numerical safeguards
+
+| Safeguard | Where | Purpose |
+|---|---|---|
+| Diagonal regularisation, 10⁻¹² then 10⁻⁶ | ADR assembly and solve | Neumann boundaries leave a null space |
+| PO₂ clamped ≥ 0 | Each Picard iterate | Negative PO₂ is non-physical and drives oscillation |
+| Haematocrit clamped to [0, 0.95] | Phase separation | Keeps skimming outputs physical |
+| Constriction ratio clamped ≥ 0.01 | Config validation | A zero ratio gives infinite resistance and a singular matrix |
+| Degenerate bifurcation handled explicitly | Phase separation | Avoids the logit at flow fractions near 0 or 1 |
+| Non-convergence warns, never fails silently | Both Picard loops | A truncated solve is reported, not returned as converged |
+
+### 9.5 Quadrature and root finding
+
+Trapezoidal quadrature over 1,000 points for the variable-diameter resistance integral (§3.3,
+frozen). Inverting the Hill equation for PO₂ from oxygen content is done by bracketed root finding
+in the coupled solvers.
+
+---
+---
 
 ## §10 — Parameter reference
 
@@ -1314,6 +1446,7 @@ These are **not** configurable. They live in the function bodies.
 > expect an effect.
 
 ---
+---
 
 ## §11 — Assumptions, with expected direction of bias
 
@@ -1398,6 +1531,94 @@ Not the most numerous, the most consequential:
 - **Row 15** — the full arterial-to-venous pressure drop is placed across a 1 mm block. Every absolute flow and perfusion figure inherits this.
 - **Row 13** — the rheology is transferred from a different tissue, and the size of that error has never been measured.
 
+---
+---
+
+## §12 — Verification status
+
+**Verification asks whether the equations are solved correctly. Validation asks whether those
+equations describe the carotid body.** This section covers the first. There is no second — see
+§12.4.
+
+The suite is **547 tests** across 55 files, run under continuous integration.
+
+### 12.1 The six strategies
+
+1. **Analytical closed-form comparison** — solver output against an independently derived exact
+   solution.
+2. **Conservation and invariant checks** — mass and flux balance asserted directly, with no target
+   value needed.
+3. **Synthetic phantoms with a prescribed answer** — volumes and graphs built so the correct result
+   is known by construction.
+4. **Equivalence oracles** — independent code paths checked for mutual agreement.
+5. **Graceful degradation** — pathological inputs must fail safely rather than crash, hang, or
+   return a plausible wrong number.
+6. **Physical bounds** — extreme configurations checked against known limits.
+
+### 12.2 Coverage
+
+| Component | Oracle | Tolerance |
+|---|---|---|
+| Poiseuille resistance in series | Closed-form series reduction | 10⁻¹⁰ |
+| Poiseuille resistance in parallel | Closed-form parallel reduction | 10⁻¹⁰ |
+| Variable-diameter resistance (§3.3) | Term-by-term analytic integration | rtol 10⁻³ |
+| Wall shear stress | Closed-form recomputation | 10⁻¹⁰ |
+| 1D pure diffusion | Closed-form linear gradient | 10⁻¹⁰ |
+| Zero-order metabolism | Exact parabolic profile `c₀ − (M/2σ)x(L−x)` | 10⁻¹⁰ |
+| Radial point source | Qualitative 1/r decay | Bracketed |
+| Krogh cylinder radial diffusion | Analytic radial profile | Bracketed |
+| Plasma skimming | Erythrocyte mass conservation | 10⁻⁸ |
+| Skimming direction | Inequality (larger branch takes more) | Qualitative |
+| Fåhræus–Lindqvist curve | Curve shape, inequality chain | Qualitative |
+| In vivo viscosity monotonicity | Rises as vessels narrow | Qualitative |
+| Bohr and Haldane shifts | Direction only | Qualitative |
+| Henderson–Hasselbalch | Closed form at anchor points | 10⁻² |
+| Multi-species 0D Fick balance | Coupled Fick + Henderson–Hasselbalch root | 10⁻² PO₂/PCO₂, 10⁻³ pH |
+| **Flow unit conversion** | Independent SI computation on a single tube | Derivation, not a fit |
+| **Grid-coupling conversion** | End-to-end through `map_vessels_to_grid` | Exact |
+| **Length-fraction conservation** | Shares sum to one per edge | Exact |
+| **Grid independence of the source** | Source unchanged under refinement, end to end | Exact |
+| **Jacobi preconditioner** | Is the inverse diagonal; is SPD | Exact |
+| **CG convergence** | On a production-like ill-conditioned system | Converges |
+| **Non-positive diagonal** | Declines rather than forming a bad preconditioner | Behavioural |
+| **Face boundary rule** | Interior terminal is never a boundary; empty face raises | Behavioural |
+| **Two-faced node** | Assigned once, not to both | Exact |
+| **Tissue volume fraction** | Occupied volume, not a centre sample | Exact |
+| FWHM diameter | Analytical Gaussian phantom | 0.2–0.35 µm |
+| EDT junction trimming | Synthetic junction fixture | Behavioural |
+| Silent fallback guards | Refuses fabricated calibre | Behavioural |
+| Transit time | τ = πr²L/Q by hand; `inf` for zero flow | Exact |
+| Cohort split | Exact permutation p against enumeration | Exact |
+| Threshold selection | Refuses when calibre unreachable | Behavioural |
+
+Rows in **bold** postdate the earlier coverage table and close the gaps it recorded.
+
+### 12.3 What is verified weakly
+
+Stated as fact, not softened:
+
+- **Directionally only** — the apparent viscosity curve, the skimming output *value* (its mass
+  conservation is exact; its magnitude is not checked against a target), and the Bohr and Haldane
+  shifts.
+- **Transitively only, through integration tests rather than directly** — the resistance rescaling
+  rule, the branch-order diameter formulae, the default boundary permeability mode, and the
+  numerical Hill inversion.
+- **Bracketed rather than to a tolerance** — the radial point source and the Krogh cylinder.
+
+### 12.4 The two gaps
+
+**No grid-convergence or order-of-accuracy study exists for any PDE solver.** Every result runs at a
+single fixed resolution. §6.8 records that PO₂ converges as the grid refines, which is evidence of
+convergence but not a measured *order*. The cheapest closing move is the zero-order metabolism case,
+which already has an exact closed-form solution verified to 10⁻¹⁰ at one resolution: run it at 20,
+10, 5 and 2.5 µm, plot L² error against spacing on log axes, and fit the slope. A slope near 2 would
+demonstrate the expected second-order accuracy of the seven-point stencil.
+
+**No validation exists.** Nothing in this pipeline has been compared against an experimental
+measurement of carotid body perfusion or tissue oxygenation. Every claim in §13.10 marked
+"supported" is supported *as a verified computation*, not as a validated physiological prediction.
+
+---
 ---
 
 ## §13 — Error budget and known limits
@@ -1576,6 +1797,80 @@ sensitivity analysis, not a proof, and it remains the stated bound on any TH-cha
 | Topological counts (β₁) | **Yes** — unaffected by calibre, and stub pruning cannot move it |
 
 ---
+---
+
+## §14 — Provenance and reproducibility
+
+### 14.1 What this document describes
+
+Branch `cb_pipeline_improvements_sweep`, commit `8a2b81c`. Read from the source, not from prior
+documentation.
+
+### 14.2 Artefact provenance
+
+**The classifier's identity travels with its output.** Probability maps carry a
+`.provenance.json` sidecar recording which classifier produced them, plus a label summary — counts
+and boundary placement — so a result can be attributed to a *decision* ("the round before boundary
+labelling") rather than to an opaque hash.
+
+Four states, and the distinction between the middle two is the point:
+
+| Status | Meaning |
+|---|---|
+| `absent` | No artefact |
+| `unknown` | Artefact present, no sidecar. **The worse of the two failure states** — nothing can be ruled out about it |
+| `stale` | Origin known, and wrong |
+| `current` | Origin known, and right |
+
+Treating a missing sidecar as current is precisely the assumption the module exists to refuse. The
+sidecar is written after the fact, because prediction is a headless Ilastik invocation this codebase
+does not drive — `record_probability_provenance` makes it a deliberate step rather than an
+assumption.
+
+**Other quantities carry their own provenance**: diameters carry `diameter_provenance`, centrelines
+carry `centreline_smoothing`, radii carry `edt_junction_trim`.
+
+### 14.3 Which script produces what
+
+| Script | Produces |
+|---|---|
+| `preprocessing/preprocess_cb.py` | Ilastik input volumes from raw acquisition |
+| `preprocessing/prob_to_mask.py` | Binary mask and EDT from the probability field |
+| `carotid_image_to_model.py` | The general image-to-model pipeline: mask → skeleton → graph → flow |
+| `cb_h1_batch.py` | The six-specimen H1 cohort run, including threshold selection |
+| `cb_h1_th_metrics.py` | H1 §1.3 and §1.5 — glomus volume, length density, tissue-to-vessel distance |
+| `cb_h1_figures.py`, `cb_h1_renders.py`, `cb_h1_vtk.py` | H1 figures and ParaView artefacts |
+| `cb_h2_boundary_selection.py` | The boundary rule comparison behind §13.4 |
+| `cb_h2_threshold_calibre.py` | The correlated-error size behind §13.2 |
+| `cb_h2_error_propagation.py` | The independent/correlated/ratio floors behind §13.3 |
+| `cb_h2_glomus_perfusion.py` | §7.3 shunting, §7.4 haematocrit, §7.6 transit time |
+| `cb_h2_hypoxic_fraction.py` | §7.5 hypoxic fraction on the heterogeneous grid |
+| `cb_h2_vtk.py` | H2 ParaView artefacts |
+
+### 14.4 Randomness
+
+The pipeline is deterministic except for hyperparameter search. Optuna's TPE sampler takes an
+explicit seed, defaulting to a fixed value, and **the seed is written into the tuning provenance
+record** rather than only into a log line — a tuned parameter set whose search trajectory cannot be
+reproduced is not a reproducible parameter set.
+
+Pericyte constriction draws a random cohort per run (§10.6). It is frozen, so nothing on the CB path
+is stochastic.
+
+### 14.5 Reproducing a result
+
+1. Preprocess to Ilastik input with the recorded parameters — identical for all six volumes.
+2. Predict headlessly with the classifier named in the sidecar.
+3. Threshold to a mask; the H1 cohort used a single frozen value for all six (open item 1).
+4. Run the H1 batch to produce graphs and per-edge morphometry.
+5. Run the H2 driver for the method in question, at 60/20 mmHg on axis 1 (open item 10).
+
+**One invariant.** One classifier for all six volumes, never one per cohort, and identical
+parameters everywhere. Violating either invalidates the cohort comparison, because a per-cohort
+difference in the instrument becomes indistinguishable from a difference in the tissue (§7.7).
+
+---
+---
 
 ## Appendix A — Solver settings
 
@@ -1630,8 +1925,94 @@ tuning opportunity.
 > descriptive of the code, not of the config.
 
 ---
+---
 
-## Summary of open items raised by this table
+## Appendix B — Symbol table
+
+Five symbols are triple- or double-booked across the source material. The resolutions below are
+binding for this document.
+
+| Symbol | Meaning | Units |
+|---|---|---|
+| *d* | Vessel diameter | µm |
+| *r* | Vessel radius | µm |
+| *L* | Segment centreline length | µm |
+| *R* | Hydraulic resistance | mmHg·cP·µm⁻³ (mixed; see §3.7) |
+| *G* | Hydraulic conductance, 1/*R* | — |
+| **L** | Graph Laplacian | — |
+| *p* | Nodal pressure | mmHg |
+| *Q* | Volumetric flow | µm³/s after conversion; solver units before |
+| *μ* | Apparent viscosity | cP |
+| *μ₄₅* | Relative apparent viscosity at *H* = 0.45 | dimensionless |
+| *H* | Discharge haematocrit | fraction |
+| *f_Q* | Bulk flow fraction into a branch | fraction |
+| *f_E* | Erythrocyte flux fraction into a branch | fraction |
+| *α* | Asymmetry parameter in the skimming logit | — |
+| *β* | Steepness parameter in the skimming logit | — |
+| *x₀* | Skimming threshold | 0.05 |
+| *C* | Blood gas content | mmol/L |
+| *α_O₂*, *α_CO₂* | Gas solubility in plasma | mmol/L/mmHg |
+| *S* | Haemoglobin oxygen saturation | fraction |
+| *n_H* | Hill coefficient | 2.7 |
+| *P₅₀* | Half-saturation partial pressure | mmHg |
+| *σ* | Tissue diffusivity | m²/s in config, µm²/s internally |
+| *D_x*, *D_y*, *D_z* | Diffusive conductance across a cell face | µm³/s |
+| *M* | Metabolic consumption rate | mmol/L/s |
+| *M_max* | Maximum consumption rate | mmol/L/s |
+| *k* | Metabolic reduction constant | per mmol |
+| *γ* | Picard relaxation / pseudo-washout slope | — |
+| *V_cell* | Grid cell volume | µm³ |
+| *b* | Branch order (hop count from an inlet) | integer, `B01`… |
+| *β₁* | First Betti number, fundamental loop count | integer |
+| *c* | Glomus-to-stroma metabolic contrast | multiple |
+| *f_TH* | TH mask volume fraction per cell | fraction |
+| *τ* | Transit time | solver units; report as a ratio only |
+
+**Deliberately distinguished:** *G* (conductance) from **L** (Laplacian); *α* and *β* (skimming)
+from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) from **L**
+(Laplacian); *C* (gas content) never used for conductance.
+
+---
+
+## Appendix C — Model to code to test
+
+| Model | Code | Test |
+|---|---|---|
+| ROI placement | `roi_placement.py:96` | `test_roi_placement.py` |
+| Threshold selection | `threshold_selection.py:222` | `test_threshold_selection.py` |
+| Joint hysteresis mask | `image.py:179` | `test_preprocessing.py`, `test_new_preprocessing.py` |
+| Skeletonisation | `skeleton.py:472` | `test_graph.py`, `test_length_measurements.py` |
+| Graph construction | `build.py:22` | `test_graph.py` |
+| EDT calibre | `automated.py:1238` | `test_edt_diameter.py` |
+| FWHM calibre | `automated.py:971` | `test_haemodynamics_automated_fwhm.py`, `test_integration_synthetic_vessel_fwhm.py` |
+| Calibre provenance guard | `poiseuille.py:16` | `test_silent_fallback_guards.py` |
+| Branch order | `branch_order.py:95` | `test_branch_order_hierarchy.py` |
+| Face boundary rule | `boundaries.py:88` | `test_boundary_faces.py` |
+| Poiseuille resistance | `poiseuille.py:160` | `test_haemodynamics_analytical.py` |
+| Variable-diameter resistance | `poiseuille.py:146` | `test_haemodynamics_analytical.py` |
+| Network Laplacian solve | `resistance.py:46`, `resistance.py:138` | `test_haemodynamics_analytical.py` |
+| Flow unit conversion | `resistance.py:37` | `test_flow_units.py`, `test_physical_units.py` |
+| Pries–Secomb viscosity | `rheology.py:30` | `test_rheology_laws.py` |
+| Phase separation | `rheology.py:90` | `test_haemodynamics_analytical.py` |
+| Coupled flow–haematocrit | `rheology.py:164` | `test_haemodynamics_rheology_integration.py` |
+| Blood oxygen content | `perfusion.py:13` | `test_haemodynamics_analytical.py` |
+| Blood CO₂ content | `perfusion.py:37` | `test_haemodynamics_analytical.py` |
+| Tissue pH | `perfusion.py:65` | `test_haemodynamics_analytical.py` |
+| Perfusion grid | `perfusion.py:82` | `test_haemodynamics_perfusion.py`, `test_fractional_grid.py` |
+| Vessel-to-grid mapping | `perfusion.py:203` | `test_flow_conservation.py` |
+| ADR assembly | `perfusion.py:349` | `test_haemodynamics_perfusion.py` |
+| Jacobi preconditioner | `perfusion.py:317` | `test_perfusion_preconditioner.py` |
+| Tier 1 steady state | `perfusion.py:453` | `test_haemodynamics_analytical.py` |
+| Tier 3 multi-species | `perfusion.py:537` | `test_haemodynamics_analytical.py` |
+| Heterogeneous metabolism | `tissue_regions.py:28`, `tissue_regions.py:124` | `test_tissue_regions.py` |
+| Morphometry | `stats.py:147`, `stats.py:349` | `test_statistics.py`, `test_synthetic_network_statistics.py` |
+| Two-channel morphometry | `th_morphometry.py:34`, `th_morphometry.py:78` | `test_th_morphometry.py` |
+| Transit time | `transit.py:28`, `transit.py:57` | `test_transit.py` |
+| Cohort split | `cohort_split.py:56` | `test_cohort_split.py` |
+| Artefact provenance | `artefact_provenance.py` | `test_artefact_provenance.py` |
+---
+
+## Open items
 
 | # | Item | Blocks |
 |---|---|---|
@@ -1647,12 +2028,3 @@ tuning opportunity.
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, H2 drivers 60/20 mmHg. Every published H2 number used 60/20 | §7.8, §8, §11 row 15 |
 
 ---
-
-## Still to write
-
-In order:
-
-1. **§9, §12, §14**
-2. **§1** — scope and overview, last
-3. **Front matter** — the question index, once there are sections to point at
-4. **Appendices B and C** — symbol table; model → file → test map
