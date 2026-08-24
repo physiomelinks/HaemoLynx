@@ -9,8 +9,8 @@
 > **What would invalidate this document:** a change to the viscosity law, the boundary selection
 > rule, the unit conversion constants, the calibre estimator, or which coupling tier is run.
 >
-> **Written so far:** §10 (parameters), §11 (assumptions), §13 (error budget) and Appendix A
-> (solver settings). The remaining sections are listed at the end in the order they will be written.
+> **Written so far:** §2 (image to graph), §10 (parameters), §11 (assumptions), §13 (error
+> budget) and Appendix A (solver settings). The remaining sections are listed at the end in the order they will be written.
 
 ---
 
@@ -34,6 +34,352 @@ A number with no class is a defect in this document.
 
 Citations are biblatex keys from the project bibliography. `[CITE]` marks a number that needs a
 source added before it can be quoted anywhere.
+
+---
+
+## §2 — Geometric model: from voxels to a vascular graph
+
+Everything downstream inherits from this section. Resistance goes as *d*⁻⁴ (§13.1), so a choice
+made here about where the vessel wall sits is amplified fourfold in every flow quantity.
+
+Each subsection ends with **At a glance** — the choice, the number, the code, and the test.
+
+---
+
+### 2.1 ROI placement
+
+**What it does.** Picks where the analysed sub-volume sits inside each specimen's imaged block.
+
+**What was chosen.** Tissue-centroid placement, computed from each specimen's own data, rather
+than a centred box.
+
+**Why.** A matched ROI *size* makes the samples the same size; it does not make them the same
+anatomy. The carotid body does not sit in the middle of its imaged block, and it does not sit in
+the same place in every block — the axial tissue peak ranges from slice 106 of 435 to slice 230 of
+435. A centred box therefore lands mid-organ in one specimen and in its sparse margin in another,
+and the resulting density difference is a difference in where the box was put.
+
+**Worse, the misplacement is not random with respect to the comparison.** WKY peaks at a mean depth
+fraction of 0.40 and SHR at 0.34, so a centred box systematically samples a different part of the
+organ in each cohort.
+
+**How.** The axial centre comes from the QC record's `peak_slice`. The lateral centre comes from the
+tissue centroid of channel 0 — the background-subtracted grayscale — subsampled (4, 2, 2). Channel 0
+is used deliberately: the vesselness channels are derived from it and would weight the centroid
+towards whichever filter scale happened to dominate.
+
+**No silent fallback.** If neither the QC record nor the preprocessed volume is reachable it falls
+back to the volume centre *and records that in `source`*. A silent fallback would reintroduce
+precisely the bias the function exists to remove.
+
+> **At a glance** — tissue centroid, not centre · peak slice ranges 106–230 of 435; cohort depth
+> fractions 0.40 vs 0.34 · `roi_placement.py:96`, `roi_placement.py:77` ·
+> `tests/test_roi_placement.py`
+
+---
+
+### 2.2 Segmentation threshold selection
+
+**What it does.** Chooses the probability threshold that turns the classifier's output into a
+binary mask.
+
+**What was chosen.** *Calibre chooses, fragmentation vetoes.* Take the **highest** threshold whose
+median mask diameter falls in the capillary window, provided it lies below the fragmentation onset.
+
+**Why calibre and not component statistics.** The conventional criterion — the value just above
+where component count climbs and the largest component's share falls — does not discriminate on
+this data. The largest component's share never falls; it is *higher* at 0.99, where the network has
+visibly shattered into 7,151 pieces, than at 0.70. Share is counted in voxels, and this network is
+one dominant mass at every threshold with fragments too small to move a voxel fraction. Counting
+components above a 50-voxel floor is equally flat, wandering between 94 and 139 across the whole
+range with no structure. That is a property of the data's topology, not of any one classifier.
+
+**Why the highest, not the middle.** Calibre falls monotonically with threshold, and the risk being
+traded is over-inclusion: the lower the threshold, the fatter the vessel, and resistance carries
+that as *r*⁻⁴.
+
+**How fragmentation is measured.** Not by component count but by **endpoint density per mm of
+skeleton**. The baseline is the median density across the sweep; the onset is the lowest threshold
+whose density exceeds 1.5× that baseline. A network breaking into beads gains endpoints far faster
+than it gains components.
+
+**It can refuse.** Two refusals, both reported as segmentation problems rather than resolved by
+picking something: no threshold reaches capillary calibre at all, or every threshold at capillary
+calibre is at or beyond the fragmentation onset.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `CAPILLARY_DIAMETER_RANGE_UM` | (4.0, 7.0) µm | The calibre window that selects |
+| `FRAGMENTATION_TOLERANCE` | 1.5× | Endpoint-density multiple defining onset |
+| `MIN_COMPONENT_VOXELS` | 50 | Floor for the component count that is reported but not used to select |
+
+> **At a glance** — highest intact threshold in a 4–7 µm calibre window · fragmentation onset at
+> 1.5× baseline endpoint density · `threshold_selection.py:222`, `threshold_selection.py:137` ·
+> `tests/test_threshold_selection.py`
+
+---
+
+### 2.3 Mask formation
+
+**What it does.** Converts the probability field to a binary mask.
+
+**What was chosen.** Joint hysteresis on probability **and** Shannon entropy, with all pre-threshold
+filtering disabled.
+
+**Why no pre-threshold filtering.** Every filter whose support is comparable to the structure width
+deletes the structure. A 6 µm capillary is 3.2 voxels across at 1.866 µm. A 3×3×3 median spans
+5.6 µm; a greyscale opening retains 51% of a 1.6-voxel-radius tube at radius 1 and none at radius 2.
+Measured at fixed threshold, varying only this chain: (0, 0) → 199 structures at median radius
+1.87 µm; (7, 1) → 71 structures at 2.64 µm; (9, 4) → 3 structures at 5.27 µm. Thin structures are
+deleted while fat ones survive.
+
+Speckle removal still happens — but *after* thresholding, as a connected-component size filter,
+where it is a topology operation rather than a boundary operation:
+
+| Approach | Foreground | Components | Recall |
+|---|---|---|---|
+| Truth (clean probability) | 900 | 3 | 100.0% |
+| Threshold only | 1,644 | 714 | 100.0% |
+| Median 3 → threshold | 181 | 3 | **20.1%** |
+| Threshold → 50-voxel size filter | 913 | 3 | **100.0%** |
+
+Same cleanup, 80% of the vessel destroyed, and what survives is thinned.
+
+**How the joint threshold works.** Seeds are voxels above `high` *and* below `shannon_core`.
+Candidates are voxels above `low` *and* below `shannon_max`. Seeds are then morphologically
+reconstructed into the candidate mask by dilation. Entropy acts as a confidence gate: a voxel of
+moderate probability is kept only if the classifier was not simultaneously uncertain across classes.
+
+**It requires at least three classes, and raises otherwise.** For a 2-class softmax the entropy
+H(p) is a deterministic, symmetric function of p, so `entropy ≤ t` resolves to `p ≤ r OR p ≥ 1 − r`.
+That carves a band out of the *middle* of the probability range and leaves the mask non-monotonic
+in p — retaining lower-probability voxels while excluding higher-probability ones.
+
+> **At a glance** — joint probability–entropy hysteresis, no pre-threshold filtering · median-3
+> costs 80% recall · `image.py:179`, `image.py:261` · `tests/test_preprocessing.py`,
+> `tests/test_new_preprocessing.py`
+
+---
+
+### 2.4 Skeletonisation and graph construction
+
+**What it does.** Reduces the mask to a one-voxel-wide centreline, then converts that centreline
+into a graph of nodes and edges carrying physical coordinates and lengths.
+
+**What was chosen.** Skeletonisation at native resolution, with gap bridging at 1 voxel, then
+skan-based segment extraction with loop stitching.
+
+**Why it matters here rather than later.** Two consequences propagate:
+
+- **Gap bridging adds a uniform foreground shell to the mask.** That shell is precisely the wall
+  the EDT measures distance to, so it biases every EDT calibre outward (§2.6). This is why the
+  EDT/FWHM correlation measured on an unrepaired mask was contaminated.
+- **Edge `voxels` are stored natively in physical ZYX space**, not index space. Nothing downstream
+  multiplies by spacing again. Getting this wrong once would scale every length, and therefore
+  every resistance and every transit time.
+
+**Anisotropy.** The voxel is (1.8639, 1.866, 1.866) µm — axial-to-lateral 1.0011, near enough to
+isotropic that a single pitch is exact enough for skeleton length. Diameter measurement does *not*
+rely on that: FWHM samples transverse profiles in the physical y–x plane only, with no displacement
+along z.
+
+> **At a glance** — native-resolution skeletonisation, 1-voxel bridging, physical-space voxels ·
+> voxel (1.8639, 1.866, 1.866) µm · `skeleton.py:472`, `skeleton.py:21`, `build.py:22` ·
+> `tests/test_graph.py`, `tests/test_length_measurements.py`
+
+---
+
+### 2.5 Topology conditioning
+
+**What it does.** Removes skeletonisation artefacts and simplifies the graph without changing what
+it represents.
+
+**Four operators, and what each is allowed to touch:**
+
+| Operator | Setting | Effect on β₁ |
+|---|---|---|
+| Terminal stub pruning | 5.6 µm | **None.** Removes only degree-1 nodes, which lie on no cycle. Verified constant at 307 from 0 to 30 µm |
+| Degree-2 collapse | on | None — merges chains, preserving cycles |
+| Bundle collapse | **disabled** | Would destroy it. See below |
+| Component filtering | 5% | Removes disconnected fragments entirely |
+
+**Why bundle collapse is disabled.** The operator deletes dense skeleton regions and replaces each
+with one hub node. Density is a uniform filter over the *skeleton*, so a single centreline crossing
+the 9³ window contributes 9/729 = 0.0123 and two contribute 0.0247. Its former setting of 0.025 was
+therefore "collapse anywhere two capillaries pass within 16.8 µm" — in a capillary bed, the normal
+condition rather than a defect.
+
+Measured on the reference subvolume:
+
+| `bundle_density_fraction` | Skeleton voxels | V | E | β₁ |
+|---|---|---|---|---|
+| 0.025 | 4,788 | 398 | 496 | **99** |
+| 0.050 | 6,805 | 1,007 | 1,318 | 312 |
+| disabled | 6,789 | 991 | 1,297 | **307** |
+
+It destroyed 208 of 307 fundamental loops — 68% of β₁, which *is* the H1 §1.1 readout — and 29% of
+the skeleton with them. It is also group-dependent in the false-negative direction: a denser network
+exceeds the threshold in more places, fires more hubs, and loses proportionally more loops, so it
+actively suppresses the SHR/WKY difference it is meant to be measuring.
+
+**There is no better operating point, only no operating point.** The density distribution has no
+gap — it runs smoothly from 0.02 to 0.06 — so no threshold separates "pathological bundle" from
+"capillary bed".
+
+**Why the stub threshold is 5.6 µm.** A skeletonisation spur at a branch point cannot be longer than
+the local vessel radius, and the measured inscribed radius is p90 3.73 µm, p99 5.60 µm. Measured
+terminal-stub lengths run 3.47–129.83 µm with p25 = 10.94 µm, so a 10 µm cut would sit just below
+the lower quartile of *genuine* terminal branches.
+
+> **At a glance** — stubs pruned at 5.6 µm, bundle collapse disabled · β₁ = 307, invariant to stub
+> length · `skeleton.py:472`, `graph/prune.py`, `graph/degree2.py` · `tests/test_graph.py`
+
+---
+
+### 2.6 Calibre assignment
+
+**The single most consequential choice in the pipeline.** Everything in §13.1 follows from it.
+
+**What it does.** Assigns each edge a diameter, from which resistance, lumen volume, surface area
+and transit time all follow.
+
+**What was chosen.** EDT — the Euclidean distance transform's inscribed radius — with a
+junction-proximity exclusion of 3.73 µm.
+
+**The alternative.** FWHM: fit a Gaussian plus baseline to the intensity profile across the vessel
+and report `2√(2 ln 2)·σ`.
+
+**Why EDT, on the evidence.** Both estimators run over the same 1,330 edges:
+
+| Estimator | Coverage | Median | p95 | Max |
+|---|---|---|---|---|
+| EDT | 1,330 (100.0%) | 6.37 µm | 11.34 | 20.09 |
+| FWHM | 1,017 (76.5%) | 8.20 µm | 16.78 | 39.16 |
+
+They correlate weakly — Pearson *r* = 0.245, Spearman ρ = 0.284, median ratio FWHM/EDT = 1.359. The
+two genuinely disagree.
+
+FWHM reads 36% larger at the median and its tail is not physical for a bed whose measured inscribed
+radius is p99 5.60 µm. Two mechanisms account for it: the pipeline hands FWHM the *probability
+field*, which saturates at 1.0 inside a vessel, so the Gaussian is fitted to a plateau; and the
+transverse half-extent of 15.0 µm is about 8 voxels, roughly 4.7 vessel radii, so in a bed this
+dense the profile runs into neighbouring vessels. EDT is bounded by the mask and can do neither.
+
+**The junction exclusion.** Within about one radius of a bifurcation the EDT returns the *junction's*
+inscribed sphere rather than the vessel's, biasing calibre upward. Measured over 3,882 edges,
+sweeping the exclusion in half-voxel steps:
+
+| Exclusion (µm) | Voxels | Trimmed | Too short | Moved | Mean (µm) | Mean shift | *r*⁻⁴ factor |
+|---|---|---|---|---|---|---|---|
+| 0.93 | 0.5 | 77.6% | 22.3% | 29.8% | 5.516 | −0.060 | 1.044 |
+| 1.87 | 1.0 | 74.9% | 25.0% | 28.9% | 5.509 | −0.067 | 1.049 |
+| 2.80 | 1.5 | 50.0% | 49.9% | 25.9% | 5.470 | −0.106 | 1.080 |
+| **3.73** | **2.0** | 38.5% | 61.4% | 19.7% | 5.473 | −0.102 | 1.077 |
+| 5.60 | 3.0 | 20.0% | 79.9% | 12.1% | 5.516 | −0.060 | 1.044 |
+
+The delivered correction peaks near 1.5 voxels and falls away on both sides — too small removes
+nothing, too large leaves most segments untrimmable and carrying the full bias. 3.73 µm is kept
+because it is specified externally and corresponds to about one capillary inscribed radius, whereas
+2.80 µm would be tuned to this subvolume. The difference between them is **0.3% on resistance**.
+
+**Two corrections this measurement makes.** The population-level effect is ~8% on resistance, not
+the 3.2× a synthetic single-edge fixture shows. And the bias is *not* concentrated on short
+segments: median segment length is 7.2 µm — 3.9 voxels — so every segment is short relative to the
+exclusion, and the shift is if anything larger on longer ones (−0.181 µm in the shortest quartile
+rising to −0.298 µm in the longest), because a junction's inscribed sphere scales with the vessel it
+belongs to. 176 of 765 moved edges got *wider*, where the junction sat on the narrow side of a
+calibre step.
+
+**Fabricated calibre is refused, not warned about.** `MAX_SYNTHETIC_FRACTION_EDT = 0.0`. EDT has no
+legitimate per-edge failure mode on a mask that covers the vessel — 100% measured provenance was
+observed across 34,900 edges — so any fallback is a defect rather than an expected shortfall. FWHM
+is exempt by default, because Gaussian fitting genuinely fails on individual edges of a probability
+field; the fraction is still reported.
+
+**The branch-order fallback law.** Where a diameter must be synthesised it comes from an exponential
+function of branch order. **Murray's law is not used** [`murray_physiological_1926`]. Under the
+default EDT mode this path cannot silently activate at all — the guard above refuses first.
+
+> **At a glance** — EDT inscribed radius, 3.73 µm junction exclusion, zero tolerance for synthetic
+> calibre · EDT 100%/6.37 µm vs FWHM 76.5%/8.20 µm, *r* = 0.245 · `poiseuille.py:160`,
+> `poiseuille.py:16`, `automated.py:1238`, `automated.py:971` · `tests/test_edt_diameter.py`,
+> `tests/test_haemodynamics_automated_fwhm.py`, `tests/test_silent_fallback_guards.py`
+
+---
+
+### 2.7 Branch-order assignment
+
+**What it does.** Labels each edge with its topological distance from the inlet set.
+
+**How.** BFS from the starting nodes gives every node a hop distance. An edge takes
+`min(dist(u), dist(v)) + 1`, formatted `B01`, `B02`, ….
+
+**What the label is, and is not.** It is a **hop count from an inlet**. It is not a Strahler order,
+not a Horton order, and not a calibre class. `B01` means "one edge from a pressure inlet", so what
+it denotes depends entirely on the boundary selection of §2.8 — change the inlets and every label
+moves.
+
+**Edges that cannot be labelled.** An edge unreachable from every starting node is recorded in
+`unreachable_edges` and skipped rather than given a default order.
+
+**Where the labels are consumed.** The synthetic diameter law (§2.6) and the frozen constriction
+geometry (§3.3). Neither is active on the default CB path, so branch order is currently
+descriptive rather than load-bearing.
+
+> **At a glance** — BFS hop count from inlets, `min(u,v)+1` · labels `B01…`, unreachable edges
+> skipped not defaulted · `branch_order.py:95`, `branch_order.py:153` ·
+> `tests/test_branch_order_hierarchy.py`
+
+---
+
+### 2.8 Boundary terminal node selection
+
+**What it does.** Decides which degree-1 nodes receive arterial pressure and which receive venous.
+
+**What was chosen.** The face-crossing rule on **axis 1**, with a tolerance of one voxel.
+
+**Why not a positional band.** About **86% of degree-1 nodes in these graphs are interior** — nowhere
+near a region face. They are skeletonisation spurs and segmentation breaks, not vessels entering the
+volume. A band rule therefore assigns arterial pressure to mask defects, and the fraction it catches
+depends on a band width with no anatomical meaning.
+
+A vessel supplying this region has to cross one of its faces. A dead end in the middle of the volume
+cannot be a pressure inlet whatever its coordinate.
+
+**Measured**, varying each rule's own free parameter over its plausible range and taking the spread
+of the shunt ratio per specimen:
+
+| Rule and parameter range | Ratio spread |
+|---|---|
+| Band, axis 1, width 10/25/40% | 75.8% |
+| **Face, axis 1, tolerance 1/2/4 voxels** | **13.3%** |
+
+A 5.7-fold reduction, and it comes from the *parameter*, not the axis. The band width has no
+principled value, so its whole plausible range is live. The face tolerance is anchored to the voxel
+size — one voxel means "on the face" — and the other values exist only to show the answer does not
+depend on it.
+
+> **Comparing at a fixed second parameter is misleading, and initially pointed the other way.**
+> Axis spread alone is 28.4% for the band rule against 31.5% for the face rule, which flatters the
+> band rule by holding the parameter that damages it at its default. Both parameters have to move.
+
+**Why axis 1.** Not anatomy — availability. It is the only axis solvable in all six specimens: axis 0
+has no outlet terminal in SHR-A, and axis 2 has no inlet terminal in SHR-C. That is a selection
+criterion, and a property of these graphs rather than a general rule.
+
+**It raises rather than falling back.** If a face carries no terminals the rule refuses. A band
+fallback would drop to the extreme 10% of *all* nodes, converting an unsolvable region into a solved
+one with invented boundaries.
+
+**One tie-break.** A terminal within tolerance of both faces would mean a region one voxel thick.
+The low face wins; the ambiguity is not silently doubled into both sets.
+
+**Permeability modes.** Under `caged` (default) non-face terminals are simply not boundaries.
+`universal_sink` adds them all as outlets; `robin_resistance` tags them for a distal resistance.
+
+> **At a glance** — face-crossing rule, axis 1, 1-voxel tolerance, raises on an empty face ·
+> 86% of degree-1 nodes are interior; ratio spread 13.3% vs 75.8% · `boundaries.py:88`,
+> `boundaries.py:208` · `tests/test_boundary_faces.py`
 
 ---
 
@@ -546,10 +892,9 @@ tuning opportunity.
 
 In order:
 
-1. **§2** — geometric model, image to graph
-2. **§3–§6** — the physics core
-3. **§7** — derived physiological quantities
-4. **§8, §9, §12, §14**
-5. **§1** — scope and overview, last
-6. **Front matter** — the question index, once there are sections to point at
-7. **Appendices B and C** — symbol table; model → file → test map
+1. **§3–§6** — the physics core
+2. **§7** — derived physiological quantities
+3. **§8, §9, §12, §14**
+4. **§1** — scope and overview, last
+5. **Front matter** — the question index, once there are sections to point at
+6. **Appendices B and C** — symbol table; model → file → test map
