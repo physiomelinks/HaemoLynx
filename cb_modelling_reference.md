@@ -9,8 +9,8 @@
 > **What would invalidate this document:** a change to the viscosity law, the boundary selection
 > rule, the unit conversion constants, the calibre estimator, or which coupling tier is run.
 >
-> **Written so far:** §2 (image to graph), §10 (parameters), §11 (assumptions), §13 (error
-> budget) and Appendix A (solver settings). The remaining sections are listed at the end in the order they will be written.
+> **Written so far:** §2 (image to graph), §3–§6 (the physics core), §10 (parameters),
+> §11 (assumptions), §13 (error budget) and Appendix A (solver settings). The remaining sections are listed at the end in the order they will be written.
 
 ---
 
@@ -380,6 +380,419 @@ The low face wins; the ambiguity is not silently doubled into both sets.
 > **At a glance** — face-crossing rule, axis 1, 1-voxel tolerance, raises on an empty face ·
 > 86% of degree-1 nodes are interior; ratio spread 13.3% vs 75.8% · `boundaries.py:88`,
 > `boundaries.py:208` · `tests/test_boundary_faces.py`
+
+---
+
+## §3 — Haemodynamic model: 1D network flow
+
+### 3.1 Segment resistance
+
+Each edge is a rigid cylinder obeying Hagen–Poiseuille:
+
+```
+R = 128 · μ · L / (π · d⁴)
+```
+
+with *L* the centreline length in µm, *d* the assigned diameter in µm, and *μ* an apparent
+viscosity in cP.
+
+**The *d*⁻⁴ term governs everything downstream.** A fractional calibre error becomes roughly four
+times itself in resistance. §13.1 gives the measured size of that; it is not restated here.
+
+### 3.2 Two viscosity models exist, and which one is in force depends on the path
+
+This is the easiest thing in the pipeline to get wrong.
+
+**The initial assignment uses a power law.** `PoiseuilleModel.set_poiseuille_resistances` computes
+
+```
+μ = 1 / d^1.647
+```
+
+which is not a viscosity in cP and is not Pries–Secomb. It is an empirical stand-in that produces
+the right ordering of resistances but not their physical magnitudes.
+
+**The rheology solver overwrites it.** On entry, `solve_coupled_flow_and_hematocrit` recomputes both
+viscosity and resistance for every edge from Pries–Secomb at the systemic haematocrit, discarding
+whatever `set_poiseuille_resistances` assigned:
+
+```
+μ_app = pries_secomb(d, H = 0.45)
+R     = 128 · μ_app · L / (π · d⁴)
+```
+
+**So the power law survives only if the rheology solve is not run.** When it is run, it is an
+initial condition that is replaced rather than blended — which is what §11 row 12 means by
+"relaxed by the rescaling step".
+
+> ⚠ **Open item 9 — the rheology solver falls back to 5.0 µm silently.** On initialisation it
+> reads `assigned_diameter_um`, then `fwhm_diameter_um`, then defaults to **5.0 µm** without
+> raising. A cached graph carrying no calibre therefore solves at a uniform 5 µm for every edge and
+> reports nothing. The H2 drivers work around this by loading diameters from
+> `per_edge_morphometry.csv` first. Contrast `map_vessels_to_grid`, which raises on a missing
+> diameter. The two should behave the same way.
+
+### 3.3 Variable-diameter segments · **Frozen**
+
+Where a segment's diameter varies along its length, resistance is integrated rather than evaluated
+once:
+
+```
+R = ∫₀ᴸ  128 · μ(d(x)) / (π · d(x)⁴)  dx
+```
+
+by trapezoidal quadrature over 1,000 sample points, with `μ(d) = 1/d^1.647` as above.
+
+Two geometries are implemented. **Sphincter**: one constriction at the vessel origin — ramp down
+over the first quarter of the constriction length, hold at *d₂* through the middle half, ramp back
+up over the last quarter. **Periodic**: the same shape repeated at a fixed spacing.
+
+Both are disabled on the CB path (§10.6), so this integral is not evaluated in any current run.
+
+### 3.4 Network solve
+
+Mass conservation at every internal node is Kirchhoff's current law. With conductance
+*C_uv* = 1/*R_uv*, the system is the weighted graph Laplacian **L** = **D** − **C**:
+
+```
+L · p = 0     at every unconstrained node
+p = p_in      at inlet terminals
+p = p_out     at outlet terminals
+```
+
+Solved by partitioning into known and unknown nodes and taking the Schur complement:
+
+```
+L_uu · p_u = − L_uk · p_k
+```
+
+Edge flow then follows directly from `Q = (p_u − p_v) / R`, signed, and the edge is directed from
+high pressure to low.
+
+**Solver dispatch.** Direct factorisation below 50,000 nodes, iterative above. The CB graphs sit
+far below that, so the flow solve is direct and exact to machine precision.
+
+### 3.5 Effective two-point resistance
+
+Available from the Laplacian pseudo-inverse, giving the resistance between any node pair as if the
+rest of the network were a passive medium. Implemented and exported; not part of the H1 or H2
+readouts.
+
+### 3.6 Wall shear stress
+
+Derived per edge from flow and calibre and written to `wall_shear_stress_pa`. Exported to the
+reporting layer and the VTK artefacts. Not part of the H1 or H2 readouts, and no assumption in §11
+constrains it — treat it as diagnostic rather than reportable.
+
+### 3.7 Units of flow
+
+**The flow solve does not work in one unit system.** `R = 128 μ L / (π d⁴)` is evaluated with
+pressure in mmHg, viscosity in cP and lengths in µm, so its *Q* carries mmHg·µm⁴/(cP·µm) and is
+**not a volumetric flow rate**.
+
+Rewriting *R* wholly in SI multiplies it by `(10⁻³ Pa·s/cP) · (10⁻⁶ m/µm) / (10⁻⁶ m/µm)⁴` = 10¹⁵.
+So
+
+```
+Q_SI [m³/s] = (ΔP_mmHg · 133.322387415) / (R_pipeline · 10¹⁵)
+            = Q_pipeline · 133.322387415 · 10⁻¹⁵
+```
+
+and multiplying by 10¹⁸ µm³/m³ leaves
+
+```
+POISEUILLE_FLOW_TO_UM3_PER_S = 133.322387415 × 10³
+```
+
+**Where it is applied.** In `map_vessels_to_grid`, at the boundary between the 1D solve and the 3D
+tissue — the one place the two unit systems have to agree. Passing `flow_to_um3_per_s=1.0` leaves
+flow in solver units deliberately, for comparison against output produced in those units.
+
+---
+
+## §4 — Blood rheology
+
+### 4.1 Apparent viscosity and the Fåhræus–Lindqvist effect
+
+Relative apparent viscosity at a discharge haematocrit of 0.45, as a function of diameter in µm:
+
+```
+in vivo   μ₄₅ = 6.0 · e^(−0.085 d)  + 3.2 − 2.44 · e^(−0.06 d^0.645)
+in vitro  μ₄₅ = 220 · e^(−1.3 d)    + 3.2 − 2.44 · e^(−0.06 d^0.645)
+```
+
+They differ **only in the first term**, and that term is the whole disagreement. At *d* = 8 µm and
+*H* = 0.45 the two give apparent viscosities differing by roughly **3.4×**, and resistance is linear
+in viscosity, so this is not a refinement.
+
+`in_vivo` is the default and is fitted to microvessels in living tissue, where the endothelial
+surface layer narrows the effective lumen and raises resistance [`pries_resistance_1994`].
+`in_vitro` is fitted to blood in glass tubes [`pries_blood_1992`].
+
+**The wall-layer correction follows the law rather than being applied unconditionally.** A glass
+tube has no endothelial surface layer, so correcting for one there would be a departure from both
+laws rather than a refinement of either.
+
+### 4.2 Phase separation at bifurcations
+
+At a diverging bifurcation, red cells do not split in the same proportion as plasma: they
+disproportionately favour the branch with higher flow fraction and larger diameter
+[`pries_red_1989`].
+
+With *f_Q1* the fraction of bulk flow entering branch 1:
+
+```
+A = −13.29 · [(d₁²/d₂²) − 1] / [(d₁²/d₂²) + 1] · (1 − H_in) / d₁
+B = 1 + 6.98 · (1 − H_in) / d₁
+
+logit(f_E1) = A + B · logit( (f_Q1 − x₀) / (1 − f_Q1 − x₀) )
+```
+
+where *f_E1* is the fraction of the **erythrocyte** flux entering branch 1, and *x₀* = 0.05 is the
+skimming threshold — red cells effectively fail to enter a branch drawing less than about 5% of the
+flow.
+
+**Erythrocyte mass is conserved exactly**: *f_E2* = 1 − *f_E1*. Outlet haematocrits follow as
+*H_out* = *H_in* · *f_E* / *f_Q*, then clamped to [0, 0.95].
+
+**Degenerate cases are handled explicitly** rather than by the logit: if either branch takes less
+than 10⁻⁶ of the flow, all red cells follow the other.
+
+**Binary bifurcations only** (§11 row 14). A higher-order division mixes proportionally, so
+haematocrit heterogeneity is underestimated wherever one occurs.
+
+### 4.3 The coupled flow–haematocrit–viscosity solve
+
+Flow depends on resistance, resistance on viscosity, viscosity on haematocrit, and haematocrit on
+flow. The loop closes it by Picard iteration:
+
+1. **Initialise** — every edge at systemic haematocrit 0.45, viscosity from Pries–Secomb,
+   resistance from Poiseuille.
+2. **Solve** the Laplacian system for nodal pressure (§3.4).
+3. **Direct** every edge high-pressure to low-pressure, producing a DAG.
+4. **Traverse** the DAG from inlets to outlets, applying §4.2 at every bifurcation to assign child
+   haematocrits.
+5. **Update** viscosity and resistance from the new haematocrit distribution.
+6. **Repeat** until the maximum relative flow change falls below tolerance.
+
+Limits: 15 iterations, tolerance 10⁻⁴.
+
+### 4.4 What the viscosity law does and does not move
+
+The two laws differ by 3.4× in apparent viscosity at capillary calibre. Measured, that difference
+**moves no within-specimen ratio**.
+
+Resistance is linear in viscosity, so a change applied to every edge scales the whole network's
+resistance and cancels out of any ratio taken within one specimen. This is the same cancellation
+§13.2 measures for correlated calibre error, arriving by a different route, and it is a second
+independent reason the reportable quantities are ratios.
+
+It does **not** cancel from absolute flow, which is one of the reasons §13.5 exists.
+
+---
+
+## §5 — Blood gas chemistry
+
+All four relations are hard-coded in `perfusion.py`; none is configurable (§10.8).
+
+### 5.1 Oxygen content
+
+Total blood oxygen content in mmol/L, dissolved plus haemoglobin-bound:
+
+```
+C_O₂ = α_O₂ · PO₂  +  H · c_Hb,max · S(PO₂)
+
+S(PO₂) = PO₂ⁿ / (PO₂ⁿ + P₅₀ⁿ)          n = 2.7   [hill_possible_1910]
+α_O₂   = 1.34 × 10⁻³ mmol/L/mmHg
+c_Hb,max = 0.446 × 20.4 / 0.45 ≈ 20.22 mmol/L     (scaled to pure red cell)
+```
+
+Returns zero for PO₂ ≤ 0 rather than extrapolating.
+
+### 5.2 The Bohr effect
+
+P₅₀ is not fixed. It shifts with pH and PCO₂ on the Kelman/Severinghaus empirical form
+[`severinghaus_simple_1979`, `kelman_digital_1966`]:
+
+```
+log₁₀ P₅₀ = log₁₀(26.0) − 0.4 · (pH − 7.4) + 0.06 · log₁₀( PCO₂ / 40 )
+```
+
+Baseline 26.0 mmHg at pH 7.4 and PCO₂ 40 mmHg. Acidosis or hypercapnia raises P₅₀ — the curve
+shifts right and haemoglobin releases oxygen more readily.
+
+### 5.3 Carbon dioxide content and the Haldane effect
+
+```
+C_CO₂ = α_CO₂ · PCO₂  +  H · [ 11.02 · PCO₂^0.396  +  (0.15 − 0.05 · S_O₂) · PCO₂ ]
+
+α_CO₂ = 0.03 mmol/L/mmHg
+```
+
+The first bracketed term is the base carrying capacity; the second is the Haldane shift —
+deoxygenated blood carries more CO₂.
+
+> **One inconsistency, deliberate and small.** The saturation *S_O₂* used in the Haldane term is
+> evaluated at a **fixed** P₅₀ = 26 mmHg, not the Bohr-shifted value from §5.2. CO₂ carriage is
+> therefore underestimated in hypoxic tissue, by under 5% (§11 row 19).
+
+### 5.4 Tissue pH
+
+Henderson–Hasselbalch, with a constant bicarbonate buffer:
+
+```
+pH = 6.1 + log₁₀( [HCO₃⁻] / (α_CO₂ · PCO₂) )      [HCO₃⁻] = 24 mmol/L
+```
+
+No renal compensation, so the pH response to PCO₂ is fixed by this relation alone. Accepts scalars
+or arrays, so it can be applied per grid cell.
+
+### 5.5 Species mismatch
+
+Every constant above is human. The tissue is rat. The direction of the resulting bias is not
+established (§11 row 17).
+
+---
+
+## §6 — Tissue transport
+
+### 6.1 The perfusion grid
+
+A regular Cartesian grid over the region, `dims = (nz, ny, nx)` at spacing `res = (rz, ry, rx)`,
+with linear index **z-fastest**: `idx = z + y·nz + x·nz·ny`.
+
+**The grid spans the segmented volume, not the graph's extent.** Padding to the segmentation is
+what lets tissue with no vessel in it be represented at all; tissue beyond the segmentation is not
+represented (§11 row 25).
+
+> **An indexing trap worth knowing.** The stencil assembly reshapes to `(nx, ny, nz)` because a
+> C-order reshape makes the *last* axis fastest, matching the z-fastest linear index. Reading
+> `dims` as `(nx, ny, nz)` and reshaping the same way gives an arithmetically correct matrix under
+> wrong axis names — two reversals that cancel. If the conductances ever look mislabelled, they
+> may be; check the arithmetic, not the names.
+
+### 6.2 Vessel-to-grid mapping
+
+Each edge's centreline voxels are point-sampled. For every cell an edge passes through, the mapping
+accumulates that edge's length and lateral surface area (2π·r·ΔL) within the cell.
+
+**Flow is then shared by length, not repeated.** Each cell's entry carries a `length_fraction`
+normalised against the edge's *accumulated* length, so the shares sum to exactly one:
+
+```
+q_total[cell]   = Σ_edges  Q_edge · length_fraction
+s_incoming[cell] = Σ_edges  Q_edge · length_fraction · C_O₂(PO₂_art, H_edge)
+```
+
+Without this an edge crossing five cells injects five times its own oxygen, and the total source
+grows with grid refinement rather than converging.
+
+**Point sampling remains an approximation** to line–plane intersection, so *where* a vessel deposits
+carries discretisation error even though the total is conserved (§11 row 24).
+
+**It raises on a missing diameter.** Diameter feeds surface area and therefore every transvascular
+flux, so it is not substituted silently. Passing `default_diameter_um` is available and is a
+deliberate choice to model unmeasured vessels at a stated calibre. Contrast §3.2's open item 9.
+
+### 6.3 The transport operator — diffusion plus per-cell exchange
+
+**The name "ADR" is loose, and the distinction matters.** The assembled matrix is **pure diffusion**.
+There is no advective transport *between* grid cells. Blood delivers oxygen into a cell and carries
+it away from the same cell; it does not carry oxygen from one cell to the next.
+
+Diffusive conductance across each cell face, in µm³/s:
+
+```
+D_z = σ · (r_y · r_x) / r_z          σ in µm²/s = σ_config × 10¹²
+D_y = σ · (r_z · r_x) / r_y
+D_x = σ · (r_z · r_y) / r_x
+```
+
+assembled as a standard **seven-point stencil** — each cell coupled to its six face neighbours,
+with the diagonal accumulating the conductances it participates in. No flux is written at the
+domain faces, which is a **Neumann (zero-flux) boundary** by construction (§11 row 23).
+
+**Regularisation.** Pure diffusion under Neumann boundaries has a null space — the rows sum to zero
+— so a constant offset is unconstrained. A tiny sink of 10⁻¹² is added to the diagonal at assembly,
+and a further 10⁻⁶ before solving.
+
+**Preconditioner.** Jacobi (diagonal), which conjugate gradient requires to be symmetric positive
+definite. Non-positive diagonals are detected and reported rather than silently inverted.
+
+### 6.4 Metabolic consumption
+
+```
+M(PO₂) = M_max · ( 1 − e^(−k · PO₂) )        k = k_reduce = 0.1 per mmol
+```
+
+applied per cell as `M(PO₂) · V_cell`.
+
+**This is not Michaelis–Menten**, which is the literature standard. The forms agree in shape — both
+saturate — but differ most at low PO₂, which is exactly the regime the hypoxic fraction is read
+from (§11 row 21).
+
+### 6.5 Heterogeneous metabolism from the TH segmentation
+
+`M_max` may be a scalar **or a per-cell array**, and the solver applies it elementwise.
+
+The glomus mask is joined to the grid by **volume fraction per cell**, not by sampling the mask at
+the cell centre. At 4 µm against 1.866 µm voxels there are roughly a dozen mask voxels to a cell,
+and at the former 10 µm resolution about 154 — so a cell is rarely wholly tissue or wholly stroma,
+and a centre sample would discard almost all of the mask and make the answer depend on where cell
+centres happened to fall.
+
+Rates are then blended:
+
+```
+stroma = BASE_M_MAX / (1 + f̄ · (c − 1))
+M_max[cell] = blend( f_TH[cell],  tissue_rate = stroma · c,  stroma_rate = stroma )
+```
+
+where *c* is the glomus:stroma contrast and *f̄* the mean TH fraction. **The volume-weighted mean is
+held at `BASE_M_MAX` across contrasts**, so runs at different *c* are comparable rather than simply
+scaled versions of each other.
+
+**The contrast is a swept parameter, not a measurement** (§11 row 22). The driver defaults to
+`c ∈ {1.0, 2.0, 4.0}`.
+
+### 6.6 The three coupling tiers
+
+| Tier | Solver | Couples | Status |
+|---|---|---|---|
+| 1 | `solve_perfusion_steady_state` | O₂ only; blood as a well-mixed source and sink per cell | **Active** — this is what §2.3 runs |
+| 2 | `solve_coupled_1d3d_perfusion` | O₂ across an endothelial permeability barrier | **Implemented, unreachable** — the dispatch is `if multi_species … elif barrier …`, and multi-species is also on |
+| 3 | `solve_multi_species_perfusion` | O₂, CO₂ and pH, linked by the respiratory quotient | Reachable; reads Picard settings from config where Tier 1 hard-codes them |
+
+**Tier 1 uses a fixed baseline haematocrit** of 0.45 for the washout, hard-coded rather than read
+from the edge (§11 row 27).
+
+### 6.7 Numerical stabilisation of the Picard loop
+
+The non-linear washout acts as a sink on the right-hand side, which is unstable for conjugate
+gradient. The loop applies a **pseudo-washout**: add `q_total · γ` to the LHS diagonal *and the
+same term* to the RHS.
+
+```
+b = s_incoming − s_washout − M(PO₂)·V_cell + (q_total · γ · PO₂)
+```
+
+The true steady-state roots are unchanged, but the matrix becomes strictly diagonally dominant and
+well conditioned. γ = 0.5 in Tier 1, damping the Picard step and preventing sigmoidal oscillation;
+γ = 1.0 in Tier 3.
+
+**PO₂ is clamped to ≥ 0** at each iteration. Negative values are non-physical and drive Picard
+oscillation.
+
+The loop warns rather than raising if it hits its iteration cap without reaching tolerance.
+
+### 6.8 Grid resolution
+
+Median PO₂ moves 27.34 → 27.92 → 28.21 at 10, 6 and 4 µm — increments halving each time and
+extrapolating to about 28.5. **4 µm is within roughly 1% of that limit at a twenty-seventh of the
+cost** of native resolution, and is what §2.3 runs at.
+
+What refinement cannot fix is §13.6: the gradient the model is trying to resolve is physically
+short, because the tissue is not diffusion-limited.
 
 ---
 
@@ -885,6 +1298,7 @@ tuning opportunity.
 | 6 | Solver tolerances disagree between config and code | Appendix A |
 | 7 | 13 parameters still marked `[CITE]`, including every blood-gas solubility and the Spencer CO₂ curve | §10 completeness |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and the H2 driver's `BASE_M_MAX` (0.05). The published §2.3 results used 0.05 | §6.4, §13.6 |
+| 9 | The rheology solver falls back to a silent 5.0 µm diameter; `map_vessels_to_grid` raises on the same condition | §3.2 |
 
 ---
 
@@ -892,9 +1306,8 @@ tuning opportunity.
 
 In order:
 
-1. **§3–§6** — the physics core
-2. **§7** — derived physiological quantities
-3. **§8, §9, §12, §14**
-4. **§1** — scope and overview, last
-5. **Front matter** — the question index, once there are sections to point at
-6. **Appendices B and C** — symbol table; model → file → test map
+1. **§7** — derived physiological quantities
+2. **§8, §9, §12, §14**
+3. **§1** — scope and overview, last
+4. **Front matter** — the question index, once there are sections to point at
+5. **Appendices B and C** — symbol table; model → file → test map
