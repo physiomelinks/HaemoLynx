@@ -1,8 +1,8 @@
 # Plan: documenting the mathematical and physiological modelling in the CB pipeline
 
-> **Status:** structure plan only. No content written yet. This document says what the
-> modelling documentation should contain, in what order, and what each section must resolve.
-> Iterate on this file first; write the real document once the shape is agreed.
+> **Status: complete.** The document this plan describes is written —
+> `cb_modelling_reference.md`, all sections §1–§14 plus appendices A–C. This file is kept as
+> the record of what was decided and why, not as outstanding work.
 >
 > **Audience — decided 2026-08-24.** A personal working record. One reader: the author,
 > mostly six months from now. Not a supervisor document, not a reviewer document, not thesis
