@@ -9,8 +9,8 @@
 > **What would invalidate this document:** a change to the viscosity law, the boundary selection
 > rule, the unit conversion constants, the calibre estimator, or which coupling tier is run.
 >
-> **Written so far:** §2 (image to graph), §3–§6 (the physics core), §10 (parameters),
-> §11 (assumptions), §13 (error budget) and Appendix A (solver settings). The remaining sections are listed at the end in the order they will be written.
+> **Written so far:** §2–§7 (image to graph, the physics core, derived quantities),
+> §10 (parameters), §11 (assumptions), §13 (error budget) and Appendix A (solver settings). The remaining sections are listed at the end in the order they will be written.
 
 ---
 
@@ -796,6 +796,219 @@ short, because the tissue is not diffusion-limited.
 
 ---
 
+## §7 — Derived physiological quantities
+
+The layer between a solved field and a number in a whitepaper. **Check §13.10 before quoting
+anything from here** — several of these quantities are computed but not reportable.
+
+---
+
+### 7.1 Network morphometry
+
+Computed from the graph alone, with no physics.
+
+| Quantity | Definition | Reportable? |
+|---|---|---|
+| Total centreline length | Sum of edge lengths, µm | Yes |
+| β₁ (fundamental loops) | E − V + components | **Yes** — the H1 §1.1 readout |
+| Tortuosity index | Path length / straight-line distance, per edge | Yes |
+| Curvature | Per edge, from the smoothed centreline | Yes |
+| Branching angle | Angle between every neighbour pair at nodes of degree ≥ 3 | Diagnostic |
+| Branching points | Count of nodes with degree > 2 | Yes |
+| Tree asymmetry | Partition asymmetry index | Diagnostic |
+| Fractal dimension | Box counting | Diagnostic |
+| Path efficiency | Shortest-path vs Euclidean over node pairs | Diagnostic |
+| Betweenness, communities | Graph-theoretic centrality and modularity | Diagnostic |
+
+**Tortuosity is derived from the per-edge table rather than recomputed**, so the summary and the
+per-edge CSV cannot disagree about what an edge's tortuosity is.
+
+> ⚠ **"Vessel density" means two different things, and neither is parenchymal density.**
+> `compute_vessel_density` reports *Density in Tissue* as total length divided by the **bounding box
+> of the node positions**, and *Density in Whole Image* as total length divided by the full image
+> volume. The first is a graph-extent density; the second includes everything that is not tissue.
+> The parenchymal quantity H1 §1.3 asks for is the one in §7.2, not either of these.
+
+> **At a glance** — graph-only metrics, tortuosity shared with the per-edge table ·
+> `stats.py:147`, `stats.py:349`, `stats.py:213` · `tests/test_statistics.py`,
+> `tests/test_synthetic_network_statistics.py`
+
+---
+
+### 7.2 Two-channel morphometry
+
+Joins the vessel channel to the TH channel. **Sound only because they are two channels of one
+acquisition** — identical grid, co-registered by construction, no registration step (§11 row 28).
+
+**Centreline length within the glomus.** Length is summed over real steps, not by counting skeleton
+voxels:
+
+```
+length = Σ_steps  |step ⊙ voxel_um| · count(step)
+```
+
+Counting voxels and multiplying by voxel size is the obvious estimator and is wrong by up to √3 — a
+diagonal step covers 3.23 µm on this grid where an axial one covers 1.87 µm. On a tortuous network
+that is not a small correction, and H1 §1.4 turns on tortuosity, so the two must not disagree about
+what length means.
+
+**Steps at the mask boundary count for neither side.** A step is included only when *both*
+endpoints lie inside the mask. Assigning a straddling step to the tissue it half touches would
+inflate whichever mask is more fragmented.
+
+**Tissue-to-vessel distance.** Euclidean distance transform from every TH-positive voxel to the
+nearest **centreline** voxel, with `sampling` set to the voxel size so the result is in µm directly.
+
+> **To the centreline, not the vessel surface.** The two differ by the local radius. On a 3 µm
+> capillary the surface is 1.5 µm closer everywhere, and that offset would be absorbed into any
+> group difference rather than appearing as one. H1 §1.5 asks for the centreline distance.
+
+**It raises on an empty centreline** rather than returning infinity, which would propagate as a very
+large distance instead of as an error.
+
+> **At a glance** — real-step length, centreline distance, boundary steps excluded · median TVD
+> 5.3–7.9 µm (§13.7) · `th_morphometry.py:34`, `th_morphometry.py:78` ·
+> `tests/test_th_morphometry.py`
+
+---
+
+### 7.3 Functional shunting (H2 §2.1)
+
+**The question.** Does steady-state flow bypass the capillaries that penetrate the TH-positive
+clusters, running instead through thoroughfare channels?
+
+**Edge classification.** An edge counts as *penetrating* when at least **50%** of its centreline
+length lies inside the TH mask, sampled along the **whole polyline**.
+
+> **Why not an endpoint test.** A capillary penetrating a cluster usually starts and ends in
+> stroma. An endpoint test would classify exactly the vessels the question is about as
+> extra-glomus.
+
+**The quantity is a shunt index, not a flow share:**
+
+```
+shunt index = (flow share penetrating) / (edge share penetrating)
+```
+
+An index of 1 means flow is indifferent to the clusters. Below 1 means flow is carried
+preferentially by the vessels that bypass them — the shunting the method is trying to detect.
+
+**Flow share alone cannot answer it**, because flow share tracks how many edges penetrate, which is
+itself downstream of the parenchymal volume difference H1 §1.3 reports. The ratio removes that.
+
+**This is a within-specimen ratio**, so it sits under the ±6.3% floor rather than the ±45% one
+(§13.3).
+
+> **At a glance** — 50% length-in-mask classification, flow share over edge share ·
+> TH threshold 0.5, ROI 160³, boundary axis 1 · `examples/cb_h2_glomus_perfusion.py` ·
+> `tests/test_cb_h2_vtk_export.py`
+
+---
+
+### 7.4 Spatial haematocrit profiling (H2 §2.2)
+
+**The question.** Do the vessels supplying the glomus clusters carry a lower discharge haematocrit
+than the rest — a dense capillary bed largely filled with cell-free plasma?
+
+Same edge classification as §7.3. The readout is the median haematocrit of penetrating edges against
+that of bypassing edges, taken from the converged rheology solve (§4.3).
+
+Haematocrit is produced by the phase-separation model, so this quantity inherits every assumption in
+§4.2 — in particular that separation occurs at binary bifurcations only.
+
+---
+
+### 7.5 Glomus-specific hypoxic fraction (H2 §2.3)
+
+**The question.** With a higher metabolic rate assigned to TH-positive voxels and a lower one to
+stroma, what fraction of the TH-positive volume falls below a hypoxic PO₂?
+
+**How.** Solve the tissue field on the heterogeneous grid (§6.5), then take the fraction of
+TH-weighted cell volume below each threshold. Thresholds swept at **5, 10 and 20 mmHg**; metabolic
+contrast swept at **1×, 2× and 4×**; grid at 4 µm.
+
+> ⚠ **Read §13.6 before using this.** The tissue is not diffusion-limited — the oxygen diffusion
+> length is 20–45 µm against a median tissue-to-vessel distance of 5.3–7.9 µm. Raising the glomus
+> rate to four times stromal moves PO₂ inside the TH volume by **0.01 mmHg**. The mechanism this
+> method is built on cannot operate on this geometry.
+>
+> The output is still meaningful as a curve in the assumed contrast. It is not a number.
+
+---
+
+### 7.6 Transit time and PO₂ depletion (H2 §2.4)
+
+**Per-edge transit time** is lumen volume over volumetric flow:
+
+```
+τ_edge = π · (d/2)² · L / Q
+```
+
+**Quadratic in diameter**, where resistance is quartic — so this carries a different sensitivity to
+calibre than the flow solve does, and its own share of the floor in §13.3.
+
+**An edge carrying no flow gets `inf`, not a large number.** Blood that does not move does not
+arrive, and a finite stand-in would propagate as a merely slow path.
+
+**Path transit time** is the minimum accumulated τ from any inlet, by Dijkstra over the
+flow-directed graph.
+
+> **Reported as a ratio, never an absolute.** Two independent reasons, and they compound. An
+> absolute flow quantity sits under the ±45% floor from calibre alone (§13.3). And the pressure,
+> viscosity and length units are not reconciled to one system (§3.7), so the magnitude is in
+> arbitrary units. Both have the same answer: compare transit time to one set of terminals against
+> another, computed identically, and the shared error divides out.
+
+**It raises on a missing diameter** rather than substituting one.
+
+> **At a glance** — τ = πr²L/Q, Dijkstra from inlets, `inf` for zero flow, ratios only ·
+> `transit.py:28`, `transit.py:57` · `tests/test_transit.py`
+
+---
+
+### 7.7 Cohort-split diagnostics
+
+**Not a physiological quantity — a check on the others.**
+
+Some quantities in this study are supposed to be properties of the *instrument* rather than the
+tissue: the segmentation threshold, the foreground fraction at a frozen threshold, the classifier's
+mean output probability. If one of those separates cleanly by cohort, part of the measured group
+difference is the measuring device, and the biological reading is contaminated in a way nothing
+downstream can undo.
+
+**Checking by eye does not work at n = 3.** Complete separation happens by chance with probability
+2/C(6,3) = **0.10**, so "all the WKY values are below all the SHR values" is weak evidence on its
+own. It is also the exact floor of a two-sided rank test at this n — no arrangement of three against
+three can reach a smaller p.
+
+**What the test does.** Computes the exact two-sided permutation p for the difference in means over
+every group assignment, and reports the floor alongside it so the p is read against what is
+achievable rather than against 0.05.
+
+**The verdict is not "separated" but "concerning":** set only when the groups separate completely
+**and** the gap between them exceeds the within-group spread. Separation alone is too weak to act
+on; separation with a gap wider than the noise is worth stopping for.
+
+> **At a glance** — exact permutation p with its own floor reported · floor p = 0.10 at n = 3 ·
+> `cohort_split.py:56`, `cohort_split.py:41` · `tests/test_cohort_split.py`
+
+---
+
+### 7.8 Pressure boundaries used by these methods
+
+> ⚠ **Open item 10 — the H2 methods do not use the config pressures.** `HaemodynamicsConfig`
+> declares 100 mmHg in and 2 mmHg out — MAP to CVP. The H2 drivers use **60 mmHg to 20 mmHg**,
+> arteriolar to venular, across the same sub-volume.
+>
+> The driver value is the more defensible of the two: placing the full systemic gradient across
+> roughly 1 mm of tissue is what §11 row 15 flags. But the two disagree by a factor of 2.45 in
+> driving pressure, every published H2 number used 60/20, and nothing in the config records that.
+>
+> Resolve before quoting any absolute flow. It does not affect the within-specimen ratios, which
+> are the reportable quantities anyway.
+
+---
+
 ## §10 — Parameter reference
 
 ### 10.1 Imaging and domain
@@ -1002,7 +1215,7 @@ the model would push it.
 | 12 | Newtonian fluid at initialisation | §4.3 | Biases initial resistances; largely relaxed by the resistance-rescaling step |
 | 13 | Rheological correlations transferred from rat mesentery | §4.1–§4.2 | Transferability to carotid body microvasculature **unquantified** |
 | 14 | Phase separation occurs at binary bifurcations only | §4.2 | Higher-order divisions mix proportionally → haematocrit heterogeneity **underestimated** |
-| 15 | The full MAP-to-CVP gradient falls across the imaged sub-volume | §8 | ~98 mmHg across roughly 1 mm. Perfusion pressure and absolute flow **overestimated** |
+| 15 | A systemic-scale pressure gradient falls across the imaged sub-volume | §8 | The config declares MAP-to-CVP, ~98 mmHg across roughly 1 mm, which **overestimates** perfusion pressure. The H2 drivers instead use 60→20 mmHg, arteriolar to venular, and every published H2 number used that. See open item 10 |
 | 16 | No vasoregulation of any kind | §3.3 | Constriction is disabled entirely, so there is neither active feedback (myogenic, metabolic, shear-mediated) nor a static constriction geometry. The network is a fixed passive resistor array |
 
 ### 11.3 Blood gas chemistry
@@ -1299,6 +1512,7 @@ tuning opportunity.
 | 7 | 13 parameters still marked `[CITE]`, including every blood-gas solubility and the Spencer CO₂ curve | §10 completeness |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and the H2 driver's `BASE_M_MAX` (0.05). The published §2.3 results used 0.05 | §6.4, §13.6 |
 | 9 | The rheology solver falls back to a silent 5.0 µm diameter; `map_vessels_to_grid` raises on the same condition | §3.2 |
+| 10 | Pressure boundaries disagree: config 100/2 mmHg, H2 drivers 60/20 mmHg. Every published H2 number used 60/20 | §7.8, §8, §11 row 15 |
 
 ---
 
@@ -1306,8 +1520,7 @@ tuning opportunity.
 
 In order:
 
-1. **§7** — derived physiological quantities
-2. **§8, §9, §12, §14**
-3. **§1** — scope and overview, last
-4. **Front matter** — the question index, once there are sections to point at
-5. **Appendices B and C** — symbol table; model → file → test map
+1. **§8, §9, §12, §14**
+2. **§1** — scope and overview, last
+3. **Front matter** — the question index, once there are sections to point at
+4. **Appendices B and C** — symbol table; model → file → test map
