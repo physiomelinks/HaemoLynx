@@ -40,7 +40,8 @@
 
 ### 1.1 What is modelled
 
-A roughly 1–2 mm³ imaged sub-volume of rat carotid body, in six specimens — three WKY, three SHR —
+A **0.027 mm³** sub-volume of rat carotid body — a 160³-voxel box, about 298 µm on a side — in six
+specimens, three WKY and three SHR —
 with two channels from one acquisition: lectin for the vasculature and TH for the glomus cells.
 
 The chain is five stages, and each inherits the errors of the one before it:
@@ -127,18 +128,46 @@ and the resulting density difference is a difference in where the box was put.
 fraction of 0.40 and SHR at 0.34, so a centred box systematically samples a different part of the
 organ in each cohort.
 
-**How.** The axial centre comes from the QC record's `peak_slice`. The lateral centre comes from the
-tissue centroid of channel 0 — the background-subtracted grayscale — subsampled (4, 2, 2). Channel 0
-is used deliberately: the vesselness channels are derived from it and would weight the centroid
-towards whichever filter scale happened to dominate.
+**How — two different rules for z and for y/x.** They are not one 3D centroid.
+
+*Axial (z)* comes from the QC record's `peak_slice`, which `preprocess_cb.py` derived from tissue
+extent per slice. Nothing is recomputed here; the value is read.
+
+*Lateral (y, x)* comes from `tissue_centroid_yx` on channel 0, subsampled (4, 2, 2): take the
+**maximum-intensity projection along z**, threshold at the **99th percentile**, then take the
+intensity-weighted centre of mass of the surviving voxels. The percentile threshold is the point —
+the mean of a background-subtracted volume is dominated by near-zero voxels, which drags the
+centroid back towards the geometric middle and defeats the measurement.
+
+**No vesselness is used, deliberately.** Channel 0 is the background-subtracted grayscale. The
+vesselness channels exist in the same file — multiscale **Sato**, fine at σ 1.0/1.4/2.0 px and
+coarse at σ 4.0/8.0 px — and are *deliberately not read here*, because they are derived from
+channel 0 and would weight the centroid towards whichever filter scale happened to dominate.
 
 **No silent fallback.** If neither the QC record nor the preprocessed volume is reachable it falls
 back to the volume centre *and records that in `source`*. A silent fallback would reintroduce
 precisely the bias the function exists to remove.
 
-> **At a glance** — tissue centroid, not centre · peak slice ranges 106–230 of 435; cohort depth
-> fractions 0.40 vs 0.34 · `roi_placement.py:96`, `roi_placement.py:77` ·
-> `tests/test_roi_placement.py`
+**The box is clamped, never truncated.** `clamp_centre` pulls the centre inwards until the box fits
+wholly inside the volume. A box hanging over an edge would be silently cropped, making that
+specimen's sample smaller than the others — the exact thing a matched size exists to prevent. So in
+a small volume the box is no longer centred on the tissue centroid, and that is the intended trade.
+
+**Size.** `DEFAULT_ROI = (160, 160, 160)` voxels in all three drivers — H1 batch and both H2
+drivers — which at the processing voxel `(1.8639, 1.866, 1.866)` µm is **298.2 × 298.6 × 298.6 µm,
+or 0.0266 mm³**. The imaged blocks it is cut from run 0.227 mm³ (WKY-C) to 0.653 mm³ (WKY-A), so
+the ROI is **4–12% of the block** depending on specimen. That spread is why the ROI is matched by
+size: raw counts would otherwise track block extent rather than biology.
+
+| | z | y | x |
+|---|---|---|---|
+| ROI, voxels | 160 | 160 | 160 |
+| ROI, µm | 298.2 | 298.6 | 298.6 |
+| Subsample for the centroid | 4 | 2 | 2 |
+
+> **At a glance** — tissue centroid, not centre · 160³ voxels = 0.0266 mm³, 4–12% of the block ·
+> peak slice ranges 106–230 of 435; cohort depth fractions 0.40 vs 0.34 · `roi_placement.py:96`,
+> `roi_placement.py:77`, `roi_placement.py:54` · `tests/test_roi_placement.py`
 
 ---
 
