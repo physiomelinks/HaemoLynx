@@ -253,6 +253,76 @@ where it is a topology operation rather than a boundary operation:
 
 Same cleanup, 80% of the vessel destroyed, and what survives is thinned.
 
+That 50-voxel row is a **test-fixture demonstration**, not a pipeline stage. In the real pipeline no
+size filter is applied to the mask at all — speckle removal happens later, on the *skeleton*
+(§2.5), at `min_branch_length = 3` voxels and a 5% component fraction. The row is here to justify
+why the pre-threshold filters are off, not to describe a step.
+
+### The operative path: plain hysteresis
+
+Two thresholds, `low = 0.65` and `high = 0.75`, applied as a connectivity rule rather than a cut:
+
+1. **Seed.** Every voxel with `p ≥ 0.75` is a seed.
+2. **Grow.** Every voxel with `p ≥ 0.65` is a candidate.
+3. **Keep** only the candidates that are connected to at least one seed.
+
+A voxel at p = 0.70 is therefore kept or discarded *depending on its neighbours* — kept if it hangs
+off a confident core, discarded if it is isolated. This is the whole point: a single global cut at
+0.75 severs vessels wherever the classifier dipped, while a single cut at 0.65 admits every
+scattered speck. Hysteresis takes the connected interior of the first and the extent of the second.
+
+**Why this matters more here than in a typical image.** Classifier confidence falls at vessel
+*walls* — the boundary voxels are genuinely mixed. A hard cut therefore erodes every vessel from
+the outside in, and resistance carries that as *d*⁻⁴. Hysteresis lets the mask grow out to the wall
+provided it started somewhere confident.
+
+**The band is narrow — 0.65 to 0.75.** With only 0.10 of separation, the growth step is a modest
+dilation of the seed set rather than a long reach, so the mask is closer to a plain cut at 0.75
+than the two numbers suggest. Widening the band would recover more wall at the cost of admitting
+more speckle.
+
+> ⚠ **Neither number is what H1 ran at.** These are the `PreprocessingConfig` defaults. H1 passed
+> the frozen 0.90 as `--hysteresis-low`, which auto-raises `high` to 0.95 (§2.2). So the operative
+> band was **0.90 / 0.95**, not 0.65 / 0.75 — a much stricter seed and a much narrower band.
+
+**Where the values came from.** Chosen, not tuned, and the config comment says why the tuner cannot
+choose them: the preprocessing objective is `1 − mean probability inside the mask`, which rises
+monotonically across the whole plausible band, so its argmin is always the top of the search range
+rather than a property of the data. The yield cliff meant to stop it never engages — probability
+yield is still 0.071 at `low = 0.85`, well above the 0.05 trigger. The values were set instead from
+calibre and connectivity, measured on the reference subvolume:
+
+| `low` | Foreground | r_p90 (µm) | Components | |
+|---|---|---|---|---|
+| 0.20 | 0.847 | 31.55 | 1 | floods into one blob |
+| 0.60 | 0.154 | 4.57 | 61 | |
+| **0.65** | 0.118 | **4.17** | 116 | **chosen** |
+| 0.70 | 0.090 | 3.73 | 84 | |
+| 0.80 | 0.045 | 3.23 | 367 | breaking into fragments |
+| 0.85 | 0.031 | 2.64 | 414 | |
+
+r_p90 of 4.17 µm is the right scale for a ~3 µm capillary radius, and component count is stable
+from 0.60 to 0.73 before exploding above 0.80. Both criteria agree on 0.60–0.75, and 0.65 sits
+inside that range rather than against a search bound.
+
+**The full mask-formation order**, as executed:
+
+| Step | Status on the CB path |
+|---|---|
+| Virtual padding, 10 voxels in z | **On** (`caged` mode); removed again after thresholding |
+| Median filter | Off (`median_filter_size = 0`) |
+| Morphological opening | Off (radius 0) |
+| Morphological closing | Off (radius 0) |
+| Probability smoothing | Off (sigma 0.0) |
+| Entropy map construction | **Skipped** — 2-class classifier |
+| Hysteresis threshold | **On**, plain variant |
+| Hole filling, 3D | **On** |
+| Un-pad | **On** |
+
+Note the padding is `mode='edge'`, so the pad replicates the boundary probability rather than
+adding background. It exists to stop the boundary caging the mask, and it is stripped before the
+mask is returned.
+
 **What the entropy map is.** Per voxel, across the classifier's class probabilities:
 
 ```
