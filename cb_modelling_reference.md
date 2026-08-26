@@ -100,7 +100,6 @@ Citations are biblatex keys from the project bibliography. `[CITE]` marks a numb
 source added before it can be quoted anywhere.
 
 ---
----
 
 ## §2 — Geometric model: from voxels to a vascular graph
 
@@ -1205,7 +1204,6 @@ Pries–Secomb viscosity (§4.3) — likewise a starting guess, replaced on the 
 > `tests/test_flow_conservation.py`
 
 ---
----
 
 ## §9 — Numerical methods
 
@@ -1270,7 +1268,6 @@ Trapezoidal quadrature over 1,000 points for the variable-diameter resistance in
 frozen). Inverting the Hill equation for PO₂ from oxygen content is done by bracketed root finding
 in the coupled solvers.
 
----
 ---
 
 ## §10 — Parameter reference
@@ -1446,7 +1443,6 @@ These are **not** configurable. They live in the function bodies.
 > expect an effect.
 
 ---
----
 
 ## §11 — Assumptions, with expected direction of bias
 
@@ -1531,7 +1527,6 @@ Not the most numerous, the most consequential:
 - **Row 15** — the full arterial-to-venous pressure drop is placed across a 1 mm block. Every absolute flow and perfusion figure inherits this.
 - **Row 13** — the rheology is transferred from a different tissue, and the size of that error has never been measured.
 
----
 ---
 
 ## §12 — Verification status
@@ -1618,7 +1613,6 @@ demonstrate the expected second-order accuracy of the seven-point stencil.
 measurement of carotid body perfusion or tissue oxygenation. Every claim in §13.10 marked
 "supported" is supported *as a verified computation*, not as a validated physiological prediction.
 
----
 ---
 
 ## §13 — Error budget and known limits
@@ -1797,7 +1791,6 @@ sensitivity analysis, not a proof, and it remains the stated bound on any TH-cha
 | Topological counts (β₁) | **Yes** — unaffected by calibre, and stub pruning cannot move it |
 
 ---
----
 
 ## §14 — Provenance and reproducibility
 
@@ -1870,7 +1863,6 @@ parameters everywhere. Violating either invalidates the cohort comparison, becau
 difference in the instrument becomes indistinguishable from a difference in the tissue (§7.7).
 
 ---
----
 
 ## Appendix A — Solver settings
 
@@ -1924,7 +1916,6 @@ tuning opportunity.
 > solvers, with two values that disagree. Until this is reconciled, treat Appendix A as
 > descriptive of the code, not of the config.
 
----
 ---
 
 ## Appendix B — Symbol table
