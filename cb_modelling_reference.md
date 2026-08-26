@@ -1320,7 +1320,8 @@ in the coupled solvers.
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
 | `PROCESSING_VOXEL_UM` | (1.8639, 1.866, 1.866) | µm, (z, y, x) | (i) | Acquisition. The single spacing every calculation uses; per-specimen values are kept as provenance only. Slightly anisotropic in z. | fixed |
-| Imaged sub-volume | ~1–2 | mm³ | (i) | Acquisition | fixed |
+| `DEFAULT_ROI` | (160, 160, 160) | voxels | (iii) | Analysed sub-volume: 298.2 × 298.6 × 298.6 µm = **0.0266 mm³**. Same value in `cb_h1_batch.py`, `cb_h2_glomus_perfusion.py` and `cb_h2_hypoxic_fraction.py` | matched across specimens by construction |
+| Imaged block | 0.227–0.653 | mm³ | (i) | Acquisition. WKY-C smallest, WKY-A largest; the ROI is 4–12% of it | fixed |
 | Cohort | 3 WKY, 3 SHR | — | (i) | Study design | — |
 | Channels | lectin (vasculature), TH (glomus) | — | (i) | Two channels of one acquisition, so co-registered by construction | — |
 
