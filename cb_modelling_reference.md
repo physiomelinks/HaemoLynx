@@ -230,8 +230,9 @@ config's 0.65 / 0.75 with an inverted ordering.
 
 **What it does.** Converts the probability field to a binary mask.
 
-**What was chosen.** Joint hysteresis on probability **and** Shannon entropy, with all pre-threshold
-filtering disabled.
+**What was chosen.** Hysteresis thresholding with all pre-threshold filtering disabled. A joint
+probability-and-entropy variant exists and is enabled by default, but **it does not run on the CB
+vessel data** — see below.
 
 **Why no pre-threshold filtering.** Every filter whose support is comparable to the structure width
 deletes the structure. A 6 µm capillary is 3.2 voxels across at 1.866 µm. A 3×3×3 median spans
@@ -252,18 +253,63 @@ where it is a topology operation rather than a boundary operation:
 
 Same cleanup, 80% of the vessel destroyed, and what survives is thinned.
 
-**How the joint threshold works.** Seeds are voxels above `high` *and* below `shannon_core`.
-Candidates are voxels above `low` *and* below `shannon_max`. Seeds are then morphologically
-reconstructed into the candidate mask by dilation. Entropy acts as a confidence gate: a voxel of
-moderate probability is kept only if the classifier was not simultaneously uncertain across classes.
+**What the entropy map is.** Per voxel, across the classifier's class probabilities:
 
-**It requires at least three classes, and raises otherwise.** For a 2-class softmax the entropy
-H(p) is a deterministic, symmetric function of p, so `entropy ≤ t` resolves to `p ≤ r OR p ≥ 1 − r`.
-That carves a band out of the *middle* of the probability range and leaves the mask non-monotonic
-in p — retaining lower-probability voxels while excluding higher-probability ones.
+```
+H = −Σ_c p_c · log₂ p_c        normalised by log₂(n_classes) → H ∈ [0, 1]
+```
 
-> **At a glance** — joint probability–entropy hysteresis, no pre-threshold filtering · median-3
-> costs 80% recall · `image.py:179`, `image.py:261` · `tests/test_preprocessing.py`,
+It measures **how undecided the classifier was at that voxel**, not how likely the voxel is to be
+vessel. H = 0 means the classifier put everything on one class; H = 1 means it split evenly across
+all of them. Probability answers *which class*; entropy answers *how sure*.
+
+**The two entropy parameters are confidence gates on the two hysteresis tiers.**
+
+| | Probability test | Entropy test | Meaning |
+|---|---|---|---|
+| **Seed** | `p ≥ high` | `H ≤ shannon_core` = **0.6** | Where the mask is allowed to start |
+| **Candidate** | `p ≥ low` | `H ≤ shannon_max` = **0.95** | Where it is allowed to grow into |
+
+Seeds are then morphologically reconstructed into the candidate mask by dilation, so a candidate is
+kept only if it connects back to a seed.
+
+So `shannon_core` is the **strict** gate and `shannon_max` the **permissive** one — the same
+high/low logic as ordinary hysteresis, applied to confidence instead of probability.
+`shannon_core ≤ shannon_max` is enforced, and reversing them raises.
+
+- **`shannon_core = 0.6`** — to *start* a vessel, the classifier must have been fairly decided.
+- **`shannon_max = 0.95`** — to *continue* one, almost any confidence will do; this rejects only
+  near-total confusion.
+
+The intent is to stop the mask seeding inside ambiguous tissue while still letting it grow through
+vessel walls, where a classifier is legitimately less certain.
+
+**It needs three or more classes to mean anything.** With two classes, H(p) is a deterministic
+function of p alone, folded about p = 0.5 — so it carries **no information the probability does not
+already carry**. `H ≤ t` then resolves to `p ≤ r OR p ≥ 1 − r`, which carves a band out of the
+*middle* of the probability range: the mask becomes non-monotonic in p, keeping low-probability
+voxels while discarding higher-probability ones. Every vessel would come out as a core plus a
+detached shell, with the wall voxels evacuated — the opposite of the intent.
+
+> ⚠ **Open item 11 — both entropy parameters are inert on the CB path.** The pooled vessel
+> classifier's `LabelNames` are `['vessel', 'background']`: **two classes**. The pipeline detects
+> this, warns, leaves `entropy_map` as `None`, and routes to plain `hysteresis_threshold`. So
+> `shannon_core` and `shannon_max` never affect any CB mask, and `enable_shannon_entropy = True`
+> in the config describes a path that does not execute.
+>
+> Two consequences worth knowing. The library function `joint_hysteresis_threshold` *raises* on
+> `n_classes < 3`, but the pipeline only *warns and falls back* — the safety net is real, but it is
+> silent in the run log rather than fatal. And **`shannon_entropy_core` is not a field of
+> `PreprocessingConfig` at all** — it is read as `pre_config_dict.get("shannon_entropy_core", 0.6)`
+> and exists only in the auto-tuner's search space, so even on a 3-class classifier it could not be
+> set from config and would silently sit at 0.6. Same shape as open item 5 (`C_arterial`).
+>
+> The joint path re-engages by itself if the classifier is retrained with a third class — glomus
+> being the obvious candidate, since the TH channel already exists.
+
+> **At a glance** — plain hysteresis in practice; the joint probability–entropy path is dead at
+> 2 classes · no pre-threshold filtering, median-3 costs 80% recall · `image.py:179`,
+> `image.py:261`, `carotid_image_to_model.py:769` · `tests/test_preprocessing.py`,
 > `tests/test_new_preprocessing.py`
 
 ---
@@ -1338,8 +1384,9 @@ in the coupled solvers.
 | `hysteresis_threshold_high` | 0.75 | probability | (iii) | Provisional, as above | measured, in sensitivity scope |
 | `enable_hole_filling` | True | — | (iii) | — | unswept |
 | `ilastik_vessel_channel` | 0 | index | (i) | Classifier output layout | — |
-| `enable_shannon_entropy` | True | — | (iii) | — | unswept |
-| `shannon_entropy_threshold` | 0.95 | — | (iii) | Chosen | unswept |
+| `enable_shannon_entropy` | True | — | (iii) | **Inert** — the vessel classifier has 2 classes, so the joint path is skipped (§2.3, open item 11) | no effect |
+| `shannon_entropy_threshold` | 0.95 | normalised entropy | (iii) | Chosen. Max entropy for a *candidate* voxel; permissive gate | no effect on the CB path |
+| `shannon_entropy_core` | 0.6 | normalised entropy | (iii) | Chosen. Max entropy for a *seed* voxel; strict gate. **Not a `PreprocessingConfig` field** — only reachable through the auto-tuner | no effect on the CB path |
 
 > ⚠ **Open item 1 — two different thresholds are in play.** The config defaults above are
 > 0.65 / 0.75. The H1 cohort runs instead froze the vessel threshold at **0.90**, which is not
@@ -2063,5 +2110,6 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and the H2 driver's `BASE_M_MAX` (0.05). The published §2.3 results used 0.05 | §6.4, §13.6 |
 | 9 | The rheology solver falls back to a silent 5.0 µm diameter; `map_vessels_to_grid` raises on the same condition | §3.2 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, H2 drivers 60/20 mmHg. Every published H2 number used 60/20 | §7.8, §8, §11 row 15 |
+| 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
 
 ---
