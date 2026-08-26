@@ -171,6 +171,20 @@ than it gains components.
 picking something: no threshold reaches capillary calibre at all, or every threshold at capillary
 calibre is at or beyond the fragmentation onset.
 
+**One threshold for all six, and where 0.90 came from.** The selector runs *per specimen*, but no
+specimen runs at its own choice. `cb_h1_batch.py --stage threshold` sweeps the grid
+`[0.30, 0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99]`, selects per specimen, then takes
+the **median of the six selections and snaps it to the nearest grid value**. That is the frozen
+0.90. The rationale is in the driver: per-specimen thresholds would absorb exactly the
+classifier-quality differences that H1 is trying to measure, turning a confound into an apparently
+clean result. The per-specimen choices are still reported and passed to `assess_cohort_split`, so a
+threshold that splits by group is visible rather than hidden.
+
+**The hysteresis pair follows the frozen value.** `--stage run` passes the frozen threshold as
+`--hysteresis-low` only. The pipeline raises the high bound automatically when the low one would
+overtake it (`carotid_image_to_model.py:2047`), so a frozen 0.90 gives a 0.90 / 0.95 pair, not the
+config's 0.65 / 0.75 with an inverted ordering.
+
 | Constant | Value | Meaning |
 |---|---|---|
 | `CAPILLARY_DIAMETER_RANGE_UM` | (4.0, 7.0) µm | The calibre window that selects |
@@ -1298,10 +1312,12 @@ in the coupled solvers.
 | `shannon_entropy_threshold` | 0.95 | — | (iii) | Chosen | unswept |
 
 > ⚠ **Open item 1 — two different thresholds are in play.** The config defaults above are
-> 0.65 / 0.75, but the H1 cohort runs froze the vessel threshold at **0.90** (`cb_h1_batch.py
-> --threshold 0.90`, and `cb_h1_th_metrics.py` reads "the frozen 0.9 that cb_h1_batch
-> selected"). Which value is in force depends entirely on which driver ran. Resolve before
-> quoting either.
+> 0.65 / 0.75. The H1 cohort runs instead froze the vessel threshold at **0.90**, which is not
+> arbitrary: it is the median of the six per-specimen selections, snapped to the sweep grid
+> (§2.2). Passed as `--hysteresis-low`, it auto-raises the high bound to 0.95. So the config
+> defaults are *never* the values H1 ran at, and anything reading `PreprocessingConfig` alone
+> will describe a segmentation that did not happen. Which value is in force depends entirely on
+> which driver ran. Resolve before quoting either.
 
 ### 10.3 Skeletonisation and topology — `SkeletonConfig`
 
