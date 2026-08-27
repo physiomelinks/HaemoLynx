@@ -386,29 +386,92 @@ detached shell, with the wall voxels evacuated — the opposite of the intent.
 
 ### 2.4 Skeletonisation and graph construction
 
-**What it does.** Reduces the mask to a one-voxel-wide centreline, then converts that centreline
-into a graph of nodes and edges carrying physical coordinates and lengths.
+**What it does.** Reduces the binary mask to a one-voxel-wide centreline, then converts that
+centreline into a graph of nodes and edges carrying physical coordinates and lengths.
 
-**What was chosen.** Skeletonisation at native resolution, with gap bridging at 1 voxel, then
-skan-based segment extraction with loop stitching.
+**What was chosen.** Mask repair by morphological *closing* (not dilation), largest-component-only
+pruning, skeletonisation at native resolution, then skan-based segment extraction with loop
+stitching and a 5.6 µm terminal reconnection.
 
-**Why it matters here rather than later.** Two consequences propagate:
+**The order of operations.**
 
-- **Gap bridging adds a uniform foreground shell to the mask.** That shell is precisely the wall
-  the EDT measures distance to, so it biases every EDT calibre outward (§2.6). This is why the
-  EDT/FWHM correlation measured on an unrepaired mask was contaminated.
-- **Edge `voxels` are stored natively in physical ZYX space**, not index space. Nothing downstream
-  multiplies by spacing again. Getting this wrong once would scale every length, and therefore
-  every resistance and every transit time.
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Morphological closing of the mask | radius 1 | **On** | `carotid_image_to_model.py:839` |
+| 2 | "Gap bridging" of the mask | size 1 | **On, but a no-op** — also a radius-1 closing, and closing is idempotent | `carotid_image_to_model.py:840` |
+| 3 | Keep only the N largest mask components | N = 1 | **On** | `carotid_image_to_model.py:847` |
+| 4 | Skeletonise | downsample 1.0 | **On**, native resolution | `skeleton.py:21` |
+| 5 | Remove small skeleton objects | 3 voxels | **On** | `skeleton.py:526` |
+| 6 | Bundle collapse | density 1.0 | **Disabled** — see §2.5 | `skeleton.py:532` |
+| 7 | Component fraction filter | 5% | **On** | `skeleton.py:540` |
+| 8 | Re-skeletonise | — | **On** | `skeleton.py:546` |
+| 9 | Bridge separated skeleton components | 0 | **Disabled** | `skeleton.py:547` |
+| 10 | skan path extraction → NetworkX MultiGraph | — | **On** | `build.py:22` |
+| 11 | Terminal reconnection | 5.6 µm | **On** | `build.py:157` |
+
+**Bridging is a closing, not a dilation.** `bridge_gaps` — a plain distance-transform dilation — was
+replaced by `close_binary_mask` at both call sites. This matters because a dilation never erodes
+back: every vessel would gain a voxel of radius unconditionally, anything within two voxels would
+fuse, and the bias is *not* size-neutral. Cross-sectional area goes as radius squared, so +1 voxel
+on a 2-voxel radius is +125% area against +36% on a 6-voxel radius — narrow vessels inflated
+hardest. It also thickens the wall that EDT calibre measures against (§2.6), which is why an
+EDT/FWHM correlation measured on a dilated mask was contaminated. A closing bridges the same gaps
+without permanently expanding boundaries. ⚠ The two are *not* interchangeable on a 1-voxel
+skeleton, where the erosion step would remove the bridge again — closing is only correct on the
+thick mask.
+
+**Closing at radius 1 runs twice and acts once.** `closing_radius` and `bridge_gap_size` are both 1
+and both call the same function. Closing is idempotent for a fixed structuring element, so step 2
+changes nothing. Radius is not additive across calls: one call at radius 2 would be a different and
+larger operation, not equivalent to two at radius 1.
+
+**Padding inside the closing.** `scipy` erodes against a zero border, so without a pad every voxel
+touching the array edge is removed — a tube crossing the domain boundary lost its entire first and
+last slice. That is not a closing (closing is extensive: X ⊆ close(X)), and it moved the point at
+which a vessel terminates one slice inside the domain — which matters directly, because inlets and
+outlets are identified by vessels reaching the boundary (§2.8). The array is padded and un-padded
+around the operation instead.
+
+**Largest-component-only is a hard cut.** `prune_mask_before = 1` keeps a single connected component
+of the *mask*. Anything not connected to the main tree is discarded before skeletonisation — not by
+size, but by connectivity. This is separate from, and stricter than, the 3-voxel and 5% filters
+applied later to the skeleton.
+
+**What skan produces.** `csr.Skeleton` traces the centreline into *paths*. Each path becomes one
+edge; its two endpoints become nodes. A **MultiGraph** is used deliberately, so two distinct vessel
+segments running between the same pair of junctions are both kept rather than one overwriting the
+other — that would silently delete parallel capillaries and, with them, the loops β₁ counts.
+
+**Loop stitching.** Biconnected components of the voxel graph with ≥ 3 members are flagged as voxel
+loops (via `igraph`, O(V+E)). This exists because tiny circular skeletonisation artefacts otherwise
+shatter the graph. Edges whose two endpoints both lie in a loop cluster are tagged, and are excluded
+from terminal reconnection so the repair cannot fuse a genuine loop shut.
+
+**Terminal reconnection is in microns.** Degree-1 nodes within **5.6 µm** of each other are joined,
+closest pair first, each node used at most once, skipping any pair already connected or tagged as a
+loop edge. 5.6 µm is the p99 inscribed radius — the same figure that sets the stub-pruning threshold
+in §2.5. The reconnected edge is straight: its `voxels` list holds only the two endpoints.
+
+**Edge lengths are summed along the path, not endpoint-to-endpoint.** `length` is the sum of
+successive step distances through the physical path, so a tortuous segment is longer than the
+straight line between its ends. `weight` is the same value floored at 1e-6 to keep shortest-path
+routines finite.
+
+**Coordinates are stored in physical ZYX space**, not index space — node `pos` and edge `voxels` are
+both multiplied by the voxel size at build time. Nothing downstream multiplies by spacing again.
+Getting this wrong once would scale every length, and therefore every resistance and every transit
+time. The spacing is resolved *before* the build for this reason; it was previously detected after,
+leaving the graph in voxel units.
 
 **Anisotropy.** The voxel is (1.8639, 1.866, 1.866) µm — axial-to-lateral 1.0011, near enough to
 isotropic that a single pitch is exact enough for skeleton length. Diameter measurement does *not*
 rely on that: FWHM samples transverse profiles in the physical y–x plane only, with no displacement
 along z.
 
-> **At a glance** — native-resolution skeletonisation, 1-voxel bridging, physical-space voxels ·
-> voxel (1.8639, 1.866, 1.866) µm · `skeleton.py:472`, `skeleton.py:21`, `build.py:22` ·
-> `tests/test_graph.py`, `tests/test_length_measurements.py`
+> **At a glance** — closing not dilation, largest component only, native-resolution skeletonisation,
+> skan MultiGraph with loop stitching, 5.6 µm terminal reconnection ·
+> voxel (1.8639, 1.866, 1.866) µm · `skeleton.py:199`, `skeleton.py:477`, `build.py:22`,
+> `_helpers.py:27` · `tests/test_graph.py`, `tests/test_length_measurements.py`
 
 ---
 
