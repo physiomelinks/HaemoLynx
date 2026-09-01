@@ -37,51 +37,6 @@
 
 ---
 
-## Where each figure is owned
-
-Some figures appear in several sections, because a reader who lands in one section needs the
-context there. That is deliberate. What is not deliberate is two copies drifting apart, so
-every load-bearing figure has exactly **one owning section**: the place where it is derived,
-and the only place to change it. Everywhere else quotes it with a pointer back.
-
-| Figure | Value | Owner | Also appears in |
-|---|---|---|---|
-| Processing voxel | 1.8639 × 1.866 × 1.866 µm | §10.1 | §2.1, §2.4, §7.2 |
-| ROI size | 160³ voxels = 0.0266 mm³, 4–12% of the imaged block | §2.1 | §1.1, §10.1 |
-| Imaged block volume | 0.227 mm³ (WKY-C) – 0.653 mm³ (WKY-A) | §10.1 | §2.1 |
-| Frozen segmentation threshold | 0.90, band 0.90 / 0.95 as run | §2.2 | §2.3, §10.2, §13.8 |
-| Config hysteresis band | 0.65 / 0.75 — **not what ran** | §2.3 | §10.2, open item 1 |
-| Capillary calibre window | 4.0–7.0 µm | §2.2 | §10.2 |
-| Fragmentation tolerance | 1.5 × median endpoint density | §2.2 | §10.2 |
-| Stub / reconnection threshold | 5.6 µm = p99 inscribed radius | §2.5 | §2.4, §10.3, §11.1 |
-| β₁ | 307 on the reference subvolume | §2.5 | §7.1, §10.3 |
-| Junction exclusion | 3.73 µm ≈ one capillary inscribed radius | §2.6 | §10.5, §11.1, §13.3 |
-| Median EDT diameter | 6.37 µm (EDT) against 8.20 µm (FWHM), *r* = 0.245 | §2.6 | §3.1, §10.5 |
-| Boundary rule and axis | face rule, axis 1, 1-voxel tolerance | §2.8 | §8.1, §8.2, §13.4 |
-| Boundary sensitivity | 13.3% (face) against 75.8% (band) | §2.8 | §13.4 |
-| Interior terminal share | 83.5–86.9%, mean ≈ 86% | §8.2 | §2.8, §13.4 |
-| Pressure boundaries **as run** | 60 / 20 mmHg, arteriolar to venular | §8.1 | §7.8, §11, §13.5, §14 |
-| Pressure boundaries in config | 100 / 2 mmHg — **not what ran** | §8.1 | §10.7, open item 10 |
-| Systemic haematocrit | 0.45 | §4.1 | §4.3, §6.7, §10.7 |
-| Perfusion grid pitch | 4 µm, PO₂ within ~1% of the converged limit | §6.8 | §6.1, §6.5, §10.9, §13.7 |
-| Metabolic rate **as run** | `BASE_M_MAX` = 0.05 mmol/L/s | §6.4 | §6.5, §13.6, open item 8 |
-| Metabolic contrasts | 1×, 2×, 4× | §6.5 | §7.5, §13.6 |
-| Hypoxic thresholds | 5, 10, 20 mmHg | §7.5 | §13.6 |
-| Tissue-to-vessel distance | median 5.28–7.92 µm, p90 25.9–53.1 µm | §13.7 | §6.8, §7.2 |
-| Oxygen diffusion length | 20 µm at PO₂ 10, 35 at 30, 45 at 50 | §13.6 | §6.8 |
-| Total inlet flow | 6,511–16,240 µm³/s | §13.5 | §7.6 |
-| Flow-weighted velocity | 4.1–9.7 µm/s against a physiological 200–1,000 | §13.5 | §11, §13.10 |
-| Calibre error floor | ±45% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
-| Within-specimen floor | ±6.3% | §13.3 | §7.3 |
-| Pre-threshold filter cost | median-3 destroys 80% of the vessel | §2.3 | §11.1 |
-
-**In code, these live in `src/ImageLynx/cb_settings.py`**, which is the single owner for every
-value a driver needs. `specimens.py` owns the voxel size and the specimen list. Anything not
-in one of those two is either a `carotid_image_to_model.py` config default — several of which
-disagree with what ran, and are listed as open items — or a figure measured rather than set.
-
----
-
 ## §1 — Scope
 
 ### 1.1 What is modelled
@@ -145,6 +100,51 @@ A number with no class is a defect in this document.
 
 Citations are biblatex keys from the project bibliography. `[CITE]` marks a number that needs a
 source added before it can be quoted anywhere.
+
+---
+
+## Where each figure is owned
+
+Some figures appear in several sections, because a reader who lands in one section needs the
+context there. That is deliberate. What is not deliberate is two copies drifting apart, so
+every load-bearing figure has exactly **one owning section**: the place where it is derived,
+and the only place to change it. Everywhere else quotes it with a pointer back.
+
+| Figure | Value | Owner | Also appears in |
+|---|---|---|---|
+| Processing voxel | 1.8639 × 1.866 × 1.866 µm | §10.1 | §2.1, §2.4, §7.2 |
+| ROI size | 160³ voxels = 0.0266 mm³, 4–12% of the imaged block | §2.1 | §1.1, §10.1 |
+| Imaged block volume | 0.227 mm³ (WKY-C) – 0.653 mm³ (WKY-A) | §10.1 | §2.1 |
+| Frozen segmentation threshold | 0.90, band 0.90 / 0.95 as run | §2.2 | §2.3, §10.2, §13.8 |
+| Config hysteresis band | 0.65 / 0.75 — **not what ran** | §2.3 | §10.2, open item 1 |
+| Capillary calibre window | 4.0–7.0 µm | §2.2 | §10.2 |
+| Fragmentation tolerance | 1.5 × median endpoint density | §2.2 | §10.2 |
+| Stub / reconnection threshold | 5.6 µm = p99 inscribed radius | §2.5 | §2.4, §10.3, §11.1 |
+| β₁ | 307 on the reference subvolume | §2.5 | §7.1, §10.3 |
+| Junction exclusion | 3.73 µm ≈ one capillary inscribed radius | §2.6 | §10.5, §11.1, §13.3 |
+| Median EDT diameter | 6.37 µm (EDT) against 8.20 µm (FWHM), *r* = 0.245 | §2.6 | §3.1, §10.5 |
+| Boundary rule and axis | face rule, axis 1, 1-voxel tolerance | §2.8 | §8.1, §8.2, §13.4 |
+| Boundary sensitivity | 13.3% (face) against 75.8% (band) | §2.8 | §13.4 |
+| Interior terminal share | 83.5–86.9%, mean ≈ 86% | §8.2 | §2.8, §13.4 |
+| Pressure boundaries **as run** | 60 / 20 mmHg, arteriolar to venular | §8.1 | §7.8, §11, §13.5, §14 |
+| Pressure boundaries in config | 100 / 2 mmHg — **not what ran** | §8.1 | §10.7, open item 10 |
+| Systemic haematocrit | 0.45 | §4.1 | §4.3, §6.7, §10.7 |
+| Perfusion grid pitch | 4 µm, PO₂ within ~1% of the converged limit | §6.8 | §6.1, §6.5, §10.9, §13.7 |
+| Metabolic rate **as run** | `BASE_M_MAX` = 0.05 mmol/L/s | §6.4 | §6.5, §13.6, open item 8 |
+| Metabolic contrasts | 1×, 2×, 4× | §6.5 | §7.5, §13.6 |
+| Hypoxic thresholds | 5, 10, 20 mmHg | §7.5 | §13.6 |
+| Tissue-to-vessel distance | median 5.28–7.92 µm, p90 25.9–53.1 µm | §13.7 | §6.8, §7.2 |
+| Oxygen diffusion length | 20 µm at PO₂ 10, 35 at 30, 45 at 50 | §13.6 | §6.8 |
+| Total inlet flow | 6,511–16,240 µm³/s | §13.5 | §7.6 |
+| Flow-weighted velocity | 4.1–9.7 µm/s against a physiological 200–1,000 | §13.5 | §11, §13.10 |
+| Calibre error floor | ±45% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
+| Within-specimen floor | ±6.3% | §13.3 | §7.3 |
+| Pre-threshold filter cost | median-3 destroys 80% of the vessel | §2.3 | §11.1 |
+
+**In code, these live in `src/ImageLynx/cb_settings.py`**, which is the single owner for every
+value a driver needs. `specimens.py` owns the voxel size and the specimen list. Anything not
+in one of those two is either a `carotid_image_to_model.py` config default — several of which
+disagree with what ran, and are listed as open items — or a figure measured rather than set.
 
 ---
 
