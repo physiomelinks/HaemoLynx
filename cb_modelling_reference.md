@@ -130,18 +130,18 @@ organ in each cohort.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Read the specimen's QC record | — | **On** | `roi_placement.py:113` |
-| 2 | z ← `z_profile.peak_slice` | — | **On**; falls back to `shape[0] // 2` and records `z=volume_centre` | `roi_placement.py:118` |
-| 3 | Open the Ilastik input HDF5, **channel 0 only** | subsample (4, 2, 2) | **On** | `roi_placement.py:133` |
-| 4 | Maximum-intensity projection along z | — | **On** | `roi_placement.py:85` |
-| 5 | Threshold the projection | 99th percentile | **On** | `roi_placement.py:86` |
-| 6 | Intensity-weighted centroid of the survivors → y, x | — | **On**; falls back to the volume centre and records why | `roi_placement.py:92` |
-| 7 | Rescale the centroid back to full resolution | × 2 in y and x | **On** | `roi_placement.py:135` |
-| 8 | Clamp the centre so the box fits whole | 160³ | **On** | `roi_placement.py:142` |
-| 9 | Centre → fractional offsets for `crop_roi` | — | **On** | `roi_placement.py:147` |
-| 10 | Crop the probability field to the ROI | 160³ voxels | **On** | `carotid_image_to_model.py:754` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Read the specimen's QC record | — | The axial tissue peak was measured once, in preprocessing; recomputing it here could disagree with the recorded value | **On** | `roi_placement.py:113` |
+| 2 | z ← `z_profile.peak_slice` | — | The organ sits at slice 106 of 435 in one specimen and 230 in another, so a fixed z samples different anatomy in each | **On**; falls back to `shape[0] // 2` and records `z=volume_centre` | `roi_placement.py:118` |
+| 3 | Open the Ilastik input HDF5, **channel 0 only** | subsample (4, 2, 2) | The vesselness channels are derived from channel 0 and would pull the centroid towards whichever Sato scale happened to dominate | **On** | `roi_placement.py:133` |
+| 4 | Maximum-intensity projection along z | — | Collapses the stack to one plane so the lateral centre is not weighted by how many slices happen to contain tissue | **On** | `roi_placement.py:85` |
+| 5 | Threshold the projection | 99th percentile | The mean of a background-subtracted volume is dominated by near-zero voxels, which drags the centroid back to the geometric middle | **On** | `roi_placement.py:86` |
+| 6 | Intensity-weighted centroid of the survivors → y, x | — | Centres the box on signal rather than on the array — the entire reason placement is computed per specimen | **On**; falls back to the volume centre and records why | `roi_placement.py:92` |
+| 7 | Rescale the centroid back to full resolution | × 2 in y and x | The centroid was measured on a subsampled block; the crop needs full-resolution indices | **On** | `roi_placement.py:135` |
+| 8 | Clamp the centre so the box fits whole | 160³ | A box hanging over an edge would be silently cropped, making that specimen's sample smaller than the rest | **On** | `roi_placement.py:142` |
+| 9 | Centre → fractional offsets for `crop_roi` | — | `crop_roi` takes offsets from the volume centre as a fraction of each dimension, not absolute indices | **On** | `roi_placement.py:147` |
+| 10 | Crop the probability field to the ROI | 160³ voxels | Everything downstream counts things inside this box; a matched size is what makes those counts comparable across specimens | **On** | `carotid_image_to_model.py:754` |
 
 Steps 1–2 and 3–7 are independent of each other, which is the point of the next paragraph.
 
@@ -198,22 +198,22 @@ median mask diameter falls in the capillary window, provided it lies below the f
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Place the ROI and crop the probability volume | 160³ | **On** | `cb_h1_batch.py:79` |
-| 2 | Cut a mask at each threshold in the grid | `p > t`, a **plain cut** | **On** | `threshold_selection.py:157` |
-| 3 | EDT → median and p90 diameter | `sampling` = voxel size | **On**, decisive | `threshold_selection.py:161` |
-| 4 | Label mask components, largest share, count above floor | 50 voxels | **On**, reported but not decisive | `threshold_selection.py:166` |
-| 5 | Skeletonise the cut mask | raw, **no cleanup** | **On** | `threshold_selection.py:176` |
-| 6 | Skeleton length from voxel count | × in-plane pitch | **On** | `threshold_selection.py:181` |
-| 7 | Count degree-1 voxels → endpoint density | per mm of skeleton | **On**, decisive | `threshold_selection.py:185` |
-| 8 | Drop thresholds whose mask is empty | — | **On** — a legitimate outcome, not an error | `threshold_selection.py:217` |
-| 9 | Baseline = **median** endpoint density across the sweep | — | **On** | `threshold_selection.py:241` |
-| 10 | Onset = lowest threshold above 1.5 × baseline | `FRAGMENTATION_TOLERANCE` | **On** | `threshold_selection.py:246` |
-| 11 | Calibre window = thresholds with median d in range | 4.0–7.0 µm | **On** | `threshold_selection.py:249` |
-| 12 | Chosen = **highest** window threshold below onset | — | **On**, or a refusal | `threshold_selection.py:271` |
-| 13 | Repeat 1–12 per specimen; median of six, snapped to grid | 6 specimens | **On** | `cb_h1_batch.py:104` |
-| 14 | Cohort-split check on the per-specimen choices | — | **On**, reported | `cb_h1_batch.py:99` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Place the ROI and crop the probability volume | 160³ | The threshold has to be chosen on the same sub-volume it will be applied to | **On** | `cb_h1_batch.py:79` |
+| 2 | Cut a mask at each threshold in the grid | `p > t`, a **plain cut** | A cheap monotone family of masks to rank against each other; the sweep is a ranking, not an absolute measurement | **On** | `threshold_selection.py:157` |
+| 3 | EDT → median and p90 diameter | `sampling` = voxel size | Calibre is the criterion that selects, and EDT is bounded by the mask so it cannot read a neighbouring vessel | **On**, decisive | `threshold_selection.py:161` |
+| 4 | Label mask components, largest share, count above floor | 50 voxels | Kept for continuity with `prob_to_mask.py`; component statistics are flat across the whole range here and cannot discriminate | **On**, reported but not decisive | `threshold_selection.py:166` |
+| 5 | Skeletonise the cut mask | raw, **no cleanup** | Endpoint density needs a centreline; there is no other way to count where the network has broken | **On** | `threshold_selection.py:176` |
+| 6 | Skeleton length from voxel count | × in-plane pitch | An endpoint count alone scales with network size, so it needs a per-length denominator to compare across thresholds | **On** | `threshold_selection.py:181` |
+| 7 | Count degree-1 voxels → endpoint density | per mm of skeleton | A network breaking into beads gains endpoints far faster than it gains components, so this detects fragmentation earlier | **On**, decisive | `threshold_selection.py:185` |
+| 8 | Drop thresholds whose mask is empty | — | At the top of a sweep an empty mask is the expected outcome, not a failure worth reporting as one | **On** — a legitimate outcome, not an error | `threshold_selection.py:217` |
+| 9 | Baseline = **median** endpoint density across the sweep | — | The minimum is a single noisy sample; using it would flag ordinary variation as fragmentation | **On** | `threshold_selection.py:241` |
+| 10 | Onset = lowest threshold above 1.5 × baseline | `FRAGMENTATION_TOLERANCE` | Marks where the centreline is demonstrably breaking, so every threshold at or above it can be vetoed | **On** | `threshold_selection.py:246` |
+| 11 | Calibre window = thresholds with median d in range | 4.0–7.0 µm | An external target rather than an internal optimum — a threshold tuned to a property of the data has no independent standard to be wrong against | **On** | `threshold_selection.py:249` |
+| 12 | Chosen = **highest** window threshold below onset | — | Calibre falls monotonically with threshold and the risk being traded is over-inclusion, which resistance carries as $r^{-4}$ | **On**, or a refusal | `threshold_selection.py:271` |
+| 13 | Repeat 1–12 per specimen; median of six, snapped to grid | 6 specimens | Per-specimen thresholds would absorb exactly the classifier-quality differences H1 is trying to measure | **On** | `cb_h1_batch.py:104` |
+| 14 | Cohort-split check on the per-specimen choices | — | A threshold that splits by group is a confound; reporting it makes that visible rather than hidden | **On**, reported | `cb_h1_batch.py:99` |
 
 **The selector does not measure the mask the pipeline builds.** Step 2 is a plain cut (`p > t`) and
 step 5 skeletonises it raw. The pipeline instead builds a *hysteresis* mask, closes it, prunes to
@@ -358,20 +358,20 @@ inside that range rather than against a search bound.
 
 **The full mask-formation order**, as executed:
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | ROI crop of the probability field | 160³ voxels | **On** | `carotid_image_to_model.py:754` |
-| 2 | Class-axis detection, then entropy map | `n_classes` | **Skipped** — 2 classes, warns and leaves `entropy_map = None` | `carotid_image_to_model.py:781` |
-| 3 | Vessel channel selection | `ilastik_vessel_channel` | **On** | `carotid_image_to_model.py:789` |
-| 4 | Virtual padding in z | 10 voxels, `mode='edge'` | **On** (`caged`) | `carotid_image_to_model.py:680` |
-| 5 | Median filter | size 0 | Off | `carotid_image_to_model.py:684` |
-| 6 | Morphological opening | radius 0 | Off | `carotid_image_to_model.py:688` |
-| 7 | Morphological closing | radius 0 | Off | `carotid_image_to_model.py:692` |
-| 8 | Probability smoothing | sigma 0.0 | Off | `carotid_image_to_model.py:696` |
-| 9 | Joint probability–entropy hysteresis | core 0.6 / max 0.95 | **Unreachable** — guarded on `entropy_map is not None` | `carotid_image_to_model.py:701` |
-| 10 | Plain hysteresis threshold | 0.90 / 0.95 **as run** (config 0.65 / 0.75) | **On** | `carotid_image_to_model.py:710` |
-| 11 | Hole filling, 3D | — | **On** | `carotid_image_to_model.py:720` |
-| 12 | Un-pad | 10 voxels in z | **On** | `carotid_image_to_model.py:722` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | ROI crop of the probability field | 160³ voxels | Bounds the work and fixes the volume every later count is taken from (§2.1) | **On** | `carotid_image_to_model.py:754` |
+| 2 | Class-axis detection, then entropy map | `n_classes` | Entropy is independent evidence only at three or more classes; at two it is a folded function of $p$ and would evacuate the vessel walls | **Skipped** — 2 classes, warns and leaves `entropy_map = None` | `carotid_image_to_model.py:781` |
+| 3 | Vessel channel selection | `ilastik_vessel_channel` | The threshold operates on one scalar probability field, not on the class stack | **On** | `carotid_image_to_model.py:789` |
+| 4 | Virtual padding in z | 10 voxels, `mode='edge'` | Stops the array boundary caging the mask; `edge` replicates the boundary probability rather than introducing background | **On** (`caged`) | `carotid_image_to_model.py:680` |
+| 5 | Median filter | size 0 | Off — a 3×3×3 median spans 5.6 µm against a 3.2-voxel capillary, and costs 80% of the vessel | Off | `carotid_image_to_model.py:684` |
+| 6 | Morphological opening | radius 0 | Off — radius 1 retains 51% of a 1.6-voxel-radius tube and radius 2 retains none | Off | `carotid_image_to_model.py:688` |
+| 7 | Morphological closing | radius 0 | Off — same objection: any operator whose support matches the structure width deletes the structure | Off | `carotid_image_to_model.py:692` |
+| 8 | Probability smoothing | sigma 0.0 | Off — blurring the field moves the wall the threshold lands on, which resistance carries as $d^{-4}$ | Off | `carotid_image_to_model.py:696` |
+| 9 | Joint probability–entropy hysteresis | core 0.6 / max 0.95 | Would gate seeding and growth on classifier confidence as well as probability; the guard keeps it out of reach at 2 classes | **Unreachable** — guarded on `entropy_map is not None` | `carotid_image_to_model.py:701` |
+| 10 | Plain hysteresis threshold | 0.90 / 0.95 **as run** (config 0.65 / 0.75) | Confidence legitimately falls at vessel walls, so a single hard cut erodes every vessel from the outside in | **On** | `carotid_image_to_model.py:710` |
+| 11 | Hole filling, 3D | — | A lumen voxel the classifier missed would otherwise stay a permanent hole and shrink the EDT inscribed radius through it | **On** | `carotid_image_to_model.py:720` |
+| 12 | Un-pad | 10 voxels in z | The pad is scaffolding; leaving it would extend every boundary vessel by 10 slices of replicated probability | **On** | `carotid_image_to_model.py:722` |
 
 Steps 5–8 are the pre-threshold chain, and all four are off. Step 9 is the config default and never
 executes. Nothing between the crop and the threshold changes a single probability value on the CB
@@ -453,19 +453,19 @@ stitching and a 5.6 µm terminal reconnection.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Morphological closing of the mask | radius 1 | **On** | `carotid_image_to_model.py:839` |
-| 2 | "Gap bridging" of the mask | size 1 | **On, but a no-op** — also a radius-1 closing, and closing is idempotent | `carotid_image_to_model.py:840` |
-| 3 | Keep only the N largest mask components | N = 1 | **On** | `carotid_image_to_model.py:847` |
-| 4 | Skeletonise | downsample 1.0 | **On**, native resolution | `skeleton.py:21` |
-| 5 | Remove small skeleton objects | 3 voxels | **On** | `skeleton.py:526` |
-| 6 | Bundle collapse | density 1.0 | **Disabled** — see §2.5 | `skeleton.py:532` |
-| 7 | Component fraction filter | 5% | **On** | `skeleton.py:540` |
-| 8 | Re-skeletonise | — | **On** | `skeleton.py:546` |
-| 9 | Bridge separated skeleton components | 0 | **Disabled** | `skeleton.py:547` |
-| 10 | skan path extraction → NetworkX MultiGraph | — | **On** | `build.py:22` |
-| 11 | Terminal reconnection | 5.6 µm | **On** | `build.py:157` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Morphological closing of the mask | radius 1 | Seals segmentation dropouts up to about 2 voxels without moving the vessel surface, which a dilation would | **On** | `carotid_image_to_model.py:839` |
+| 2 | "Gap bridging" of the mask | size 1 | A second call left from when this was a dilation; harmless now only because closing is idempotent at a fixed radius | **On, but a no-op** — also a radius-1 closing, and closing is idempotent | `carotid_image_to_model.py:840` |
+| 3 | Keep only the N largest mask components | N = 1 | Anything not connected to the main tree cannot carry flow between boundaries, and would generate spurious skeleton if kept | **On** | `carotid_image_to_model.py:847` |
+| 4 | Skeletonise | downsample 1.0 | The whole haemodynamic model is 1D; native resolution because downsampling fuses capillaries a voxel or two apart | **On**, native resolution | `skeleton.py:21` |
+| 5 | Remove small skeleton objects | 3 voxels | A 3-voxel fragment is skeletonisation noise, and each one contributes two spurious endpoints to every density measure | **On** | `skeleton.py:526` |
+| 6 | Bundle collapse | density 1.0 | Disabled — it destroyed 208 of 307 loops, and $\beta_1$ is the H1 §1.1 readout | **Disabled** — see §2.5 | `skeleton.py:532` |
+| 7 | Component fraction filter | 5% | Catches floating fragments large enough to survive the voxel-count filter but still too small to be vessel | **On** | `skeleton.py:540` |
+| 8 | Re-skeletonise | — | Removing objects can leave one-voxel remnants that are no longer proper centrelines | **On** | `skeleton.py:546` |
+| 9 | Bridge separated skeleton components | 0 | Disabled — repair belongs on the thick mask, where a closing works; on a 1-voxel skeleton the erosion removes the bridge again | **Disabled** | `skeleton.py:547` |
+| 10 | skan path extraction → NetworkX MultiGraph | — | Turns the voxel centreline into nodes and edges; a MultiGraph so two capillaries between the same junctions both survive | **On** | `build.py:22` |
+| 11 | Terminal reconnection | 5.6 µm | Dead ends within one p99 vessel radius of each other are segmentation breaks, not real terminations | **On** | `build.py:157` |
 
 **Bridging is a closing, not a dilation.** `bridge_gaps` — a plain distance-transform dilation — was
 replaced by `close_binary_mask` at both call sites. This matters because a dilation never erodes
@@ -542,16 +542,16 @@ it represents.
 The skeleton-level filters (small-object removal, bundle collapse, component fraction) belong to
 §2.4 steps 5–9 and are listed there; the table below picks up where that one stops.
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Reconnect branches that touched a stitched loop | — | **On** | `carotid_image_to_model.py:944` |
-| 2 | Merge near-coincident nodes, resolve triangles into Y-junctions | 5.6 µm | **On** | `carotid_image_to_model.py:949` |
-| 3 | Degree-2 collapse, curvature-preserving | — | **On** | `carotid_image_to_model.py:960` |
-| 4 | Terminal stub pruning, iterated to convergence | 5.6 µm, ≤ 100 passes | **On**; counts printed unconditionally | `carotid_image_to_model.py:973` |
-| 5 | Remove self-loop edges on otherwise isolated nodes | — | **On** | `carotid_image_to_model.py:986` |
-| 6 | Core dead-end resolution (`eradicate` / `stitch`) | mode `"none"` | **Disabled** | `carotid_image_to_model.py:991` |
-| 7 | B-spline smoothing of every edge centreline | `smoothing_alpha` 0.75 | **On** | `carotid_image_to_model.py:1014` |
-| 8 | Keep largest connected component of the graph | `True` | **On** | `carotid_image_to_model.py:1028` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Reconnect branches that touched a stitched loop | — | Loop stitching replaces a cluster with one hub node; branches that met the old loop would otherwise be orphaned | **On** | `carotid_image_to_model.py:944` |
+| 2 | Merge near-coincident nodes, resolve triangles into Y-junctions | 5.6 µm | Skeletonisation renders one anatomical junction as several nodes a voxel apart, splitting a single bifurcation into a triangle | **On** | `carotid_image_to_model.py:949` |
+| 3 | Degree-2 collapse, curvature-preserving | — | A node with exactly two edges is not a junction; keeping it inflates node counts and chops one vessel into several segments | **On** | `carotid_image_to_model.py:960` |
+| 4 | Terminal stub pruning, iterated to convergence | 5.6 µm, ≤ 100 passes | Spurs at branch points are artefacts; iterated because removing one stub can expose another behind it | **On**; counts printed unconditionally | `carotid_image_to_model.py:973` |
+| 5 | Remove self-loop edges on otherwise isolated nodes | — | An edge from a node to itself with no other connection is geometrically impossible and carries no pressure drop | **On** | `carotid_image_to_model.py:986` |
+| 6 | Core dead-end resolution (`eradicate` / `stitch`) | mode `"none"` | Disabled — both modes invent topology: `eradicate` deletes real capillaries, `stitch` fabricates connections that were never imaged | **Disabled** | `carotid_image_to_model.py:991` |
+| 7 | B-spline smoothing of every edge centreline | `smoothing_alpha` 0.75 | The voxel centreline is a staircase; tortuosity read off it would measure the sampling lattice rather than the vessel | **On** | `carotid_image_to_model.py:1014` |
+| 8 | Keep largest connected component of the graph | `True` | The operators above can sever pieces the mask held together, and a component with no boundary node makes the Laplacian singular | **On** | `carotid_image_to_model.py:1028` |
 
 Three of these are not in the four-operator table below and are worth naming separately.
 
@@ -624,20 +624,20 @@ junction-proximity exclusion of 3.73 µm.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Branch orders assigned from the inlets (§2.7) | — | **On** | `carotid_image_to_model.py:1076` |
-| 2 | Synthetic branch-order diameter table filled by exponential fit | 3 anchor points | **On**, but never consumed under `edt_radius` | `carotid_image_to_model.py:1141` |
-| 3 | FWHM ray-casting over the raw field | half-extent 15.0 µm | **Off** — `radius_assignment_mode = "edt_radius"` | `carotid_image_to_model.py:1144` |
-| 4 | 3D EDT of the binary mask, in physical units | `sampling` = voxel size | **On** | `automated.py:1283` |
-| 5 | Sample the EDT at every centreline voxel of every edge | — | **On** | `automated.py:1305` |
-| 6 | Drop samples outside the mask or at radius 0 | — | **On** | `automated.py:1316` |
-| 7 | Flag which of an edge's two ends are junctions | — | **On** | `automated.py:1323` |
-| 8 | Trim samples within the exclusion of a junction end | 3.73 µm | **On** | `automated.py:1327` |
-| 9 | If nothing survives, keep the untrimmed median and tag it | — | **On** — `untrimmed_too_short`, 61% of edges | `automated.py:1338` |
-| 10 | Per-edge diameter = 2 × **median** surviving radius | — | **On** | `automated.py:1345` |
-| 11 | Refuse if any edge fell back to a synthetic diameter | `MAX_SYNTHETIC_FRACTION_EDT = 0.0` | **On**, raises | `poiseuille.py:13` |
-| 12 | Resistance from the assigned diameter | Hagen–Poiseuille | **On** | `poiseuille.py:160` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Branch orders assigned from the inlets (§2.7) | — | The synthetic fallback law is indexed by branch order, so the labels have to exist even on the path that refuses to use them | **On** | `carotid_image_to_model.py:1076` |
+| 2 | Synthetic branch-order diameter table filled by exponential fit | 3 anchor points | Fills every observed order so the fallback dict cannot raise on a lookup; the zero-tolerance guard then forbids its use anyway | **On**, but never consumed under `edt_radius` | `carotid_image_to_model.py:1141` |
+| 3 | FWHM ray-casting over the raw field | half-extent 15.0 µm | Off — it is fitted to a probability field that saturates at 1.0 inside a vessel, and its half-extent reaches about 4.7 vessel radii into the neighbours | **Off** — `radius_assignment_mode = "edt_radius"` | `carotid_image_to_model.py:1144` |
+| 4 | 3D EDT of the binary mask, in physical units | `sampling` = voxel size | The inscribed radius is bounded by the mask, so unlike FWHM it cannot read across into an adjacent vessel | **On** | `automated.py:1283` |
+| 5 | Sample the EDT at every centreline voxel of every edge | — | One reading per edge would land wherever the polyline happened to start; sampling the whole centreline gives a distribution instead | **On** | `automated.py:1305` |
+| 6 | Drop samples outside the mask or at radius 0 | — | A centreline point that rounds to outside the mask has no inscribed radius to report | **On** | `automated.py:1316` |
+| 7 | Flag which of an edge's two ends are junctions | — | The trim must fire only at ends that actually abut a junction — trimming a free terminal would discard real vessel | **On** | `automated.py:1323` |
+| 8 | Trim samples within the exclusion of a junction end | 3.73 µm | Within about one radius of a bifurcation the EDT returns the junction's inscribed sphere rather than the vessel's, biasing calibre upward | **On** | `automated.py:1327` |
+| 9 | If nothing survives, keep the untrimmed median and tag it | — | Dropping segments shorter than the exclusion would delete short inter-junction capillaries and bias the distribution towards long vessels | **On** — `untrimmed_too_short`, 61% of edges | `automated.py:1338` |
+| 10 | Per-edge diameter = 2 × **median** surviving radius | — | Robust against a single local bottleneck or bulge setting the calibre of the whole edge | **On** | `automated.py:1345` |
+| 11 | Refuse if any edge fell back to a synthetic diameter | `MAX_SYNTHETIC_FRACTION_EDT = 0.0` | EDT has no legitimate per-edge failure mode on a mask that covers the vessel, so any fallback is a defect rather than an expected shortfall | **On**, raises | `poiseuille.py:13` |
+| 12 | Resistance from the assigned diameter | Hagen–Poiseuille | Converts the measured geometry into the one quantity the flow solve consumes | **On** | `poiseuille.py:160` |
 
 **Median, not mean, along the edge.** Step 10 takes the median of the per-voxel diameters so a
 single local bottleneck or bulge cannot set the edge's calibre. The full sample list is retained as
@@ -722,14 +722,14 @@ default EDT mode this path cannot silently activate at all — the guard above r
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | BFS from the starting node set → per-node hop distance | — | **On** | `branch_order.py:104` |
-| 2 | Skip edges outside `included_edges` / inside `excluded_edges` | both empty | **On**, but vacuous | `branch_order.py:122` |
-| 3 | Edges with both ends unreachable → `unreachable_edges` | — | **On**; skipped, not defaulted | `branch_order.py:131` |
-| 4 | Edge order = `min(dist(u), dist(v)) + 1` | — | **On** | `branch_order.py:135` |
-| 5 | Format as `B01`, `B02`, … and write to the edge | zero-padded to 2 | **On** | `branch_order.py:136` |
-| 6 | Count edges per order, report the unique set | — | **On**, printed | `carotid_image_to_model.py:1077` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | BFS from the starting node set → per-node hop distance | — | Hop distance from the inlets is the only ordering available without assuming a calibre hierarchy | **On** | `branch_order.py:104` |
+| 2 | Skip edges outside `included_edges` / inside `excluded_edges` | both empty | Lets a caller label a sub-network; both sets are empty here, so every edge is considered | **On**, but vacuous | `branch_order.py:122` |
+| 3 | Edges with both ends unreachable → `unreachable_edges` | — | An edge no inlet can reach has no defined order; listing it keeps the gap countable instead of inventing a value | **On**; skipped, not defaulted | `branch_order.py:131` |
+| 4 | Edge order = `min(dist(u), dist(v)) + 1` | — | An edge sits one hop beyond whichever of its two ends the blood reaches first | **On** | `branch_order.py:135` |
+| 5 | Format as `B01`, `B02`, … and write to the edge | zero-padded to 2 | Zero padding keeps the labels sorting correctly as strings, which the diameter dictionary relies on | **On** | `branch_order.py:136` |
+| 6 | Count edges per order, report the unique set | — | Reports how deep the network goes, and is what the exponential fill in §2.6 is sized against | **On**, printed | `carotid_image_to_model.py:1077` |
 
 `assign_hierarchical_branch_orders` (`branch_order.py:153`) is a separate, richer labelling that the
 CB path does not call.
@@ -781,28 +781,28 @@ in the H2 drivers. The main pipeline still runs the band rule on axis 0; see the
 
 **The order of operations — the face rule, as the H2 drivers run it.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Collect degree-1 nodes that carry a `pos` | — | **On** | `boundaries.py:45` |
-| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | **On** | `boundaries.py:40` |
-| 3 | Low-face terminals within tolerance → inlets | 1 voxel | **On** | `boundaries.py:88` |
-| 4 | High-face terminals within tolerance → outlets | 1 voxel | **On** | `boundaries.py:88` |
-| 5 | A terminal within tolerance of both faces → low face wins | — | **On** | `boundaries.py:88` |
-| 6 | Raise if either face carries no terminal | — | **On**, no fallback | `boundaries.py:88` |
-| 7 | Non-face terminals: nothing under `caged` | `caged` | **On** | `boundaries.py:95` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Collect degree-1 nodes that carry a `pos` | — | Only a dead end can be a vessel entering or leaving the region; an interior junction is already connected on both sides | **On** | `boundaries.py:45` |
+| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | `image_shape` is in voxels while node `pos` is in microns — comparing them unscaled shrinks the apparent volume and drags interior dead ends into range | **On** | `boundaries.py:40` |
+| 3 | Low-face terminals within tolerance → inlets | 1 voxel | A vessel supplying this region has to cross one of its faces; a dead end mid-volume cannot be an inlet whatever its coordinate | **On** | `boundaries.py:88` |
+| 4 | High-face terminals within tolerance → outlets | 1 voxel | The opposite face is where that blood has to leave | **On** | `boundaries.py:88` |
+| 5 | A terminal within tolerance of both faces → low face wins | — | A terminal within tolerance of both faces would mean a region one voxel thick; the ambiguity is resolved rather than silently doubled into both sets | **On** | `boundaries.py:88` |
+| 6 | Raise if either face carries no terminal | — | An unsolvable region should stay unsolvable rather than be solved with invented boundaries | **On**, no fallback | `boundaries.py:88` |
+| 7 | Non-face terminals: nothing under `caged` | `caged` | An interior dead end is a mask defect, not a vessel, so it earns no pressure | **On** | `boundaries.py:95` |
 
 **And the band rule, as the main pipeline runs it.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Collect degree-1 nodes that carry a `pos` | — | **On** | `boundaries.py:45` |
-| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | **On** | `boundaries.py:40` |
-| 3 | Terminals in the lowest `edge_percent` of the axis → inlets | 25% | **On** | `boundaries.py:47` |
-| 4 | Terminals in the highest `end_percent` of the axis → outlets | 25% | **On** | `boundaries.py:48` |
-| 5 | If either set is empty, fall back to the extreme 10% of **all** nodes | — | **On** — silent, logged at INFO only | `boundaries.py:52` |
-| 6 | Route the remainder by permeability mode | `caged` | **On** — non-band terminals are not boundaries | `boundaries.py:66` |
-| 7 | Drop any node that landed in both sets | — | **On**, inlets win | `boundaries.py:81` |
-| 8 | Sort inlets ascending, outlets descending, by axis coordinate | — | **On** | `boundaries.py:83` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Collect degree-1 nodes that carry a `pos` | — | Only a dead end can be a vessel entering or leaving the region; an interior junction is already connected on both sides | **On** | `boundaries.py:45` |
+| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | `image_shape` is in voxels while node `pos` is in microns — comparing them unscaled shrinks the apparent volume and drags interior dead ends into the band | **On** | `boundaries.py:40` |
+| 3 | Terminals in the lowest `edge_percent` of the axis → inlets | 25% | A positional proxy for "near the arterial end", with no anatomical anchor behind the width | **On** | `boundaries.py:47` |
+| 4 | Terminals in the highest `end_percent` of the axis → outlets | 25% | The same proxy at the other end of the axis | **On** | `boundaries.py:48` |
+| 5 | If either set is empty, fall back to the extreme 10% of **all** nodes | — | Guarantees the solve always has boundaries — which is precisely the failure the face rule refuses to paper over | **On** — silent, logged at INFO only | `boundaries.py:52` |
+| 6 | Route the remainder by permeability mode | `caged` | Decides whether the remaining interior dead ends drain, resist, or simply stop | **On** — non-band terminals are not boundaries | `boundaries.py:66` |
+| 7 | Drop any node that landed in both sets | — | A node cannot carry two different Dirichlet pressures at once | **On**, inlets win | `boundaries.py:81` |
+| 8 | Sort inlets ascending, outlets descending, by axis coordinate | — | Makes `resistance_node_pair` deterministic across runs, since it takes the first entry of each list | **On** | `boundaries.py:83` |
 
 ⚠ Step 5 of the band rule is the fallback this section warns about below, and it is **live** on the H1 path.
 It converts a graph with no terminal in the band into a solved one by promoting the extreme decile
@@ -889,13 +889,13 @@ R &= \frac{128\,\mu_\text{app} L}{\pi d^{4}}
 
 **The order of operations — which viscosity is in force, when.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | `set_poiseuille_resistances` writes R from the power law | $\mu = 1/d^{1.647}$ | **On** | `poiseuille.py:160` |
-| 2 | Rheology solver **overwrites** R from Pries–Secomb at systemic Hct | H = 0.45, µ_plasma 1.2 cP, in vivo law | **On**, before the loop | `rheology.py:196` |
-| 3 | Each Picard pass recomputes µ_app from the edge's current Hct | in vivo Pries–Secomb | **On** | `rheology.py:349` |
-| 4 | R **rescaled** as $\texttt{original\_resistance} \times \mu_\text{app} / \mu_\text{old}$ | $\mu_\text{old} = 1/d^{1.647}$ | **On** — see the warning below | `rheology.py:363` |
-| 5 | `original_resistance` captured once, on the first pass through step 4 | — | **On**, never updated after | `rheology.py:355` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | `set_poiseuille_resistances` writes R from the power law | $\mu = 1/d^{1.647}$ | Gives every edge a resistance with the right ordering cheaply, so the graph is solvable before any rheology runs | **On** | `poiseuille.py:160` |
+| 2 | Rheology solver **overwrites** R from Pries–Secomb at systemic Hct | H = 0.45, µ_plasma 1.2 cP, in vivo law | The power-law µ is not a viscosity in cP; physical magnitudes have to come from a real relation | **On**, before the loop | `rheology.py:196` |
+| 3 | Each Picard pass recomputes µ_app from the edge's current Hct | in vivo Pries–Secomb | Apparent viscosity depends on the local haematocrit, which the previous pass has just changed | **On** | `rheology.py:349` |
+| 4 | R **rescaled** as $\texttt{original\_resistance} \times \mu_\text{app} / \mu_\text{old}$ | $\mu_\text{old} = 1/d^{1.647}$ | Meant to preserve the geometric constriction profile rather than overwrite it with a straight-tube formula — see the defect below | **On** — see the warning below | `rheology.py:363` |
+| 5 | `original_resistance` captured once, on the first pass through step 4 | — | Freezing the base is what makes the rescale a pure viscosity update; here it freezes the wrong base | **On**, never updated after | `rheology.py:355` |
 
 > ⚠ **Open item 12 — step 4 double-applies viscosity, inflating every resistance by roughly
 > 200–540×.**
@@ -984,18 +984,18 @@ $$\mathbf{L}_{uu}\,\mathbf{p}_u = -\,\mathbf{L}_{uk}\,\mathbf{p}_k$$
 standalone; `solve_flow_from_conductance_matrix` (`resistance.py:201`) is the equivalent entry point
 for graph-only callers and adds VTK export.
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Build the sparse conductance matrix, C_uv = 1/R_uv | — | **On** | `resistance.py:46` |
-| 2 | Laplacian **L** = **D** − **C** | — | **On** | `resistance.py:138` |
-| 3 | Map inlet node ids → p_in, outlet node ids → p_out | 60/20 mmHg as run (§8.1) | **On** | `rheology.py:219` |
-| 4 | Partition indices into known and unknown | — | **On** | `rheology.py:227` |
-| 5 | Schur complement: $\mathbf{L}_{uu}\,\mathbf{p}_u = -\,\mathbf{L}_{uk}\,\mathbf{p}_k$ | — | **On** | `rheology.py:234` |
-| 6 | Direct sparse factorisation | `spsolve`, below 50,000 unknowns | **On** — CB graphs are ~10³ nodes | `resistance.py:152` |
-| 7 | On a singular matrix, fall back to least squares | `lsqr` | **On**, and **silent** | `resistance.py:155` |
-| 8 | Above 50,000: CG with an **ILU** preconditioner | `drop_tol` 1e-4, `fill_factor` 10, `rtol` 1e-8, `maxiter` 1000 | **Off** — threshold never reached | `resistance.py:161` |
-| 9 | Per edge, $Q = (p_u - p_v) / R$, signed | — | **On** | `rheology.py:252` |
-| 10 | Direct the edge from high pressure to low | — | **On**, builds the DAG | `rheology.py:261` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Build the sparse conductance matrix, C_uv = 1/R_uv | — | The Laplacian is assembled from conductances, and inverting each resistance once is cheaper than doing it per matrix entry | **On** | `resistance.py:46` |
+| 2 | Laplacian **L** = **D** − **C** | — | Kirchhoff's current law at every internal node is exactly $\mathbf{L}\mathbf{p} = 0$ | **On** | `resistance.py:138` |
+| 3 | Map inlet node ids → p_in, outlet node ids → p_out | 60/20 mmHg as run (§8.1) | Without a pressure fixed somewhere the system is singular — only differences would be determined, not levels | **On** | `rheology.py:219` |
+| 4 | Partition indices into known and unknown | — | Boundary pressures are already known, so those rows are removed rather than solved for | **On** | `rheology.py:227` |
+| 5 | Schur complement: $\mathbf{L}_{uu}\,\mathbf{p}_u = -\,\mathbf{L}_{uk}\,\mathbf{p}_k$ | — | Reduces the system to the unknown block, carrying the known pressures across to the right-hand side | **On** | `rheology.py:234` |
+| 6 | Direct sparse factorisation | `spsolve`, below 50,000 unknowns | Exact to machine precision, and cheap at the ~10³ nodes these graphs carry | **On** — CB graphs are ~10³ nodes | `resistance.py:152` |
+| 7 | On a singular matrix, fall back to least squares | `lsqr` | A singular Laplacian would otherwise abort the run; least squares returns a minimum-norm answer instead | **On**, and **silent** | `resistance.py:155` |
+| 8 | Above 50,000: CG with an **ILU** preconditioner | `drop_tol` 1e-4, `fill_factor` 10, `rtol` 1e-8, `maxiter` 1000 | Off — a direct factorisation of a 50,000-node system would exhaust memory, so the large case needs an iterative path | **Off** — threshold never reached | `resistance.py:161` |
+| 9 | Per edge, $Q = (p_u - p_v) / R$, signed | — | Ohm's law for the hydraulic analogue: once pressures are known, flow follows without another solve | **On** | `rheology.py:252` |
+| 10 | Direct the edge from high pressure to low | — | Haematocrit transport and transit time both need to know which way blood actually moves along each edge | **On**, builds the DAG | `rheology.py:261` |
 
 **The iterative branch uses ILU, not Jacobi.** The Jacobi preconditioner described in §9.3 belongs
 to the *tissue diffusion* solve (`perfusion.py`), which is a different matrix. The network branch at
@@ -1117,24 +1117,24 @@ flow. The loop closes it by Picard iteration:
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Every edge set to systemic haematocrit | H = 0.45 | **On**, once | `rheology.py:195` |
-| 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | **On**, once | `rheology.py:196` |
-| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um` → **5.0 µm** | — | **On** — silent fallback, open item 9 | `rheology.py:191` |
-| 4 | Solve the Laplacian for nodal pressure (§3.4) | — | **On**, every iteration | `rheology.py:211` |
-| 5 | Per-edge signed flow; direct high → low into a DAG | — | **On**, every iteration | `rheology.py:252` |
-| 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | **On**, from iteration 1 | `rheology.py:268` |
-| 7 | Topological sort of the DAG | — | **On**; a cycle breaks the loop with a warning | `rheology.py:278` |
-| 8 | Force systemic haematocrit at every inlet | H = 0.45 | **On** | `rheology.py:288` |
-| 9 | Node haematocrit = flow-weighted mix of inflows | — | **On** | `rheology.py:295` |
-| 10 | Degree-2 pass-through: child inherits the mix | — | **On** | `rheology.py:303` |
-| 11 | Bifurcation: phase separation (§4.2) | — | **On** | `rheology.py:319` |
-| 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | **On** | `rheology.py:333` |
-| 13 | Recompute µ_app from the new haematocrit | in vivo law | **On** | `rheology.py:349` |
-| 14 | Rescale R by $\mu_\text{app} / \mu_\text{old}$ | $\mu_\text{old} = 1/d^{1.647}$ | **On** — ⚠ open item 12, §3.2 | `rheology.py:363` |
-| 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | **On** | `rheology.py:371` |
-| 16 | Repeat from step 4 | ≤ 15 iterations | **On** | `rheology.py:207` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Every edge set to systemic haematocrit | H = 0.45 | The loop needs a starting haematocrit, and systemic is the only value known independently of the network | **On**, once | `rheology.py:195` |
+| 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | Gives the first pressure solve a physically scaled resistance rather than the power-law stand-in | **On**, once | `rheology.py:196` |
+| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um` → **5.0 µm** | — | Diameter is the one input with no safe default, yet the chain still supplies one — hence the open item | **On** — silent fallback, open item 9 | `rheology.py:191` |
+| 4 | Solve the Laplacian for nodal pressure (§3.4) | — | Flow cannot be known until pressures are, and pressures change as resistances do | **On**, every iteration | `rheology.py:211` |
+| 5 | Per-edge signed flow; direct high → low into a DAG | — | Phase separation is defined on a directed tree, so the flow directions have to be resolved first | **On**, every iteration | `rheology.py:252` |
+| 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | Stops the loop once further passes would not move the answer | **On**, from iteration 1 | `rheology.py:268` |
+| 7 | Topological sort of the DAG | — | Haematocrit has to be propagated downstream in order, parent before child | **On**; a cycle breaks the loop with a warning | `rheology.py:278` |
+| 8 | Force systemic haematocrit at every inlet | H = 0.45 | The inlets are the one place where haematocrit is prescribed rather than inherited | **On** | `rheology.py:288` |
+| 9 | Node haematocrit = flow-weighted mix of inflows | — | A node fed by several vessels carries the flow-weighted mixture, not any one parent's value | **On** | `rheology.py:295` |
+| 10 | Degree-2 pass-through: child inherits the mix | — | With one outlet there is nothing to separate, so the child simply inherits | **On** | `rheology.py:303` |
+| 11 | Bifurcation: phase separation (§4.2) | — | Red cells do not divide in proportion to plasma at a bifurcation — this is the whole Fåhræus effect the model exists to capture | **On** | `rheology.py:319` |
+| 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | The Pries–Secomb relation is defined for a Y-split only, so higher-order junctions fall back to proportional mixing | **On** | `rheology.py:333` |
+| 13 | Recompute µ_app from the new haematocrit | in vivo law | Closes the loop: the new haematocrit changes viscosity, which changes resistance, which changes flow | **On** | `rheology.py:349` |
+| 14 | Rescale R by $\mu_\text{app} / \mu_\text{old}$ | $\mu_\text{old} = 1/d^{1.647}$ | Applies the new viscosity to the resistance — the step that carries the defect in open item 12 | **On** — ⚠ open item 12, §3.2 | `rheology.py:363` |
+| 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | Shear stress is a per-edge diagnostic that depends on both the new viscosity and the current flow | **On** | `rheology.py:371` |
+| 16 | Repeat from step 4 | ≤ 15 iterations | Repeats until converged or capped, because the system is non-linear and one pass is not a solution | **On** | `rheology.py:207` |
 
 **Three things the numbered summary above does not say.**
 
@@ -1248,13 +1248,13 @@ represented (§11 row 25).
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Read every node's `pos`; raise if absent | — | **On** | `perfusion.py:118` |
-| 2 | Flip the resolution triple from (x, y, x) order into (z, y, x) | 4 µm isotropic | **On** | `perfusion.py:126` |
-| 3 | Bounding box of the node cloud, padded by half a cell each way | — | **On** | `perfusion.py:129` |
-| 4 | **Union** with `bounds_zyx` if supplied — never replacement | segmentation extent | **Only under `--pad-grid`** | `perfusion.py:143` |
-| 5 | $\text{dims} = \lceil (\max - \min) / \text{res} \rceil$, cell volume = ∏ res | — | **On** | `perfusion.py:149` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Read every node's `pos`; raise if absent | — | The grid has to cover the vasculature it will exchange oxygen with, and node positions are the only record of that extent | **On** | `perfusion.py:118` |
+| 2 | Flip the resolution triple from (x, y, x) order into (z, y, x) | 4 µm isotropic | The caller passes resolution in (x, y, z) while everything internal is (z, y, x); flipping once here avoids a silent axis swap later | **On** | `perfusion.py:126` |
+| 3 | Bounding box of the node cloud, padded by half a cell each way | — | Half a cell of padding guarantees no node sits exactly on a face, where its cell index would be ambiguous | **On** | `perfusion.py:129` |
+| 4 | **Union** with `bounds_zyx` if supplied — never replacement | segmentation extent | Lets a caller represent tissue beyond the vasculature; a union rather than a replacement so a bound can never shrink the grid below the vessels it must contain | **Only under `--pad-grid`** | `perfusion.py:143` |
+| 5 | $\text{dims} = \lceil (\max - \min) / \text{res} \rceil$, cell volume = ∏ res | — | Fixes the cell count and the volume each metabolic sink is multiplied by | **On** | `perfusion.py:149` |
 
 **Step 3 is why the default grid is smaller than the tissue.** The box is fitted to the *graph*, so
 a specimen whose vessels stop short of the region edge gets a grid that stops there too, and the
@@ -1279,16 +1279,16 @@ accumulates that edge's length and lateral surface area ($2\pi r\,\Delta L$) wit
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Scan every edge for a usable diameter; **raise** if any lacks one | no default supplied | **On** | `perfusion.py:230` |
-| 2 | Convert `flow_abs` out of solver units into µm³/s | `POISEUILLE_FLOW_TO_UM3_PER_S` | **On** | `perfusion.py:248` |
-| 3 | Per-voxel length share = `length / (n_voxels − 1)` | — | **On** | `perfusion.py:264` |
-| 4 | Point-sample each centreline voxel to a linear cell index | — | **On** | `perfusion.py:268` |
-| 5 | Accumulate length and lateral surface area $2\pi r\,\Delta L$ per (cell, edge) | — | **On** | `perfusion.py:289` |
-| 6 | Voxels outside the grid are dropped, not clipped or wrapped | — | **On** | `perfusion.py:270` |
-| 7 | Total each edge's accumulated length across all cells it entered | — | **On** | `perfusion.py:307` |
-| 8 | `length_fraction` = cell length ÷ that total, so shares sum to 1 | — | **On** | `perfusion.py:311` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Scan every edge for a usable diameter; **raise** if any lacks one | no default supplied | Diameter feeds surface area and therefore every transvascular flux, so it is not substituted silently | **On** | `perfusion.py:230` |
+| 2 | Convert `flow_abs` out of solver units into µm³/s | `POISEUILLE_FLOW_TO_UM3_PER_S` | Edge flow carries mmHg·µm³/cP while the metabolic sink is mmol/L/s·µm³; coupling them unconverted asked the tissue to consume 2.2 × 10⁴ times the oxygen delivered | **On** | `perfusion.py:248` |
+| 3 | Per-voxel length share = `length / (n_voxels − 1)` | — | Spreads an edge's length evenly along its polyline so each sampled point carries a known share | **On** | `perfusion.py:264` |
+| 4 | Point-sample each centreline voxel to a linear cell index | — | Maps the 1D network onto the 3D grid — the only place the two representations meet | **On** | `perfusion.py:268` |
+| 5 | Accumulate length and lateral surface area $2\pi r\,\Delta L$ per (cell, edge) | — | A cell needs both length (for flow share) and surface area (for exchange) from every edge that crosses it | **On** | `perfusion.py:289` |
+| 6 | Voxels outside the grid are dropped, not clipped or wrapped | — | A wrapped index would deposit distal tissue into cell 0 and a clipped one would pile it onto the boundary; both errors are invisible in the output | **On** | `perfusion.py:270` |
+| 7 | Total each edge's accumulated length across all cells it entered | — | Normalising against the accumulated length rather than the edge's own `length` is what makes the shares sum to exactly one | **On** | `perfusion.py:307` |
+| 8 | `length_fraction` = cell length ÷ that total, so shares sum to 1 | — | Without it an edge crossing five cells injects five times its own oxygen, and the total source grows with grid refinement rather than converging | **On** | `perfusion.py:311` |
 
 **Step 2 is the unit join, and it was once absent.** Edge `flow_abs` carries mmHg·µm³/cP because
 $R = 128\,\mu L/(\pi d^{4})$ is evaluated with pressure in mmHg, viscosity in cP and length in µm (§3.7).
@@ -1333,17 +1333,17 @@ it away from the same cell; it does not carry oxygen from one cell to the next.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Convert the diffusion coefficient m²/s → µm²/s | × 10¹² | **On** | `perfusion.py:368` |
-| 2 | Face conductances D_z, D_y, D_x from σ, face area and normal spacing | — | **On** | `perfusion.py:373` |
-| 3 | Per perfused cell, `q_total` = Σ flow × `length_fraction` | — | **On** | `perfusion.py:388` |
-| 4 | Per perfused cell, `s_incoming` = Σ flow-share × C_O₂(PO₂_art, H_edge) | PO₂_art **hard-coded 100 mmHg** | **On** — open item 3 | `perfusion.py:382` |
-| 5 | Reshape the index array `(nx, ny, nz)` so the last axis is z | C-order | **On** | `perfusion.py:406` |
-| 6 | Off-diagonals for the six face neighbours, both directions | −D per face | **On** | `perfusion.py:409` |
-| 7 | Diagonal accumulates every conductance the cell participates in | — | **On** | `perfusion.py:437` |
-| 8 | Add a tiny sink to the diagonal | 10⁻¹² | **On** | `perfusion.py:442` |
-| 9 | Assemble COO → CSR | — | **On** | `perfusion.py:447` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Convert the diffusion coefficient m²/s → µm²/s | × 10¹² | `sigma_diff` is stored in SI while the whole grid is in microns; converting once here keeps every conductance in µm³/s | **On** | `perfusion.py:368` |
+| 2 | Face conductances D_z, D_y, D_x from σ, face area and normal spacing | — | Fick's law across a cell face: flux scales with the face area and inversely with the distance between cell centres | **On** | `perfusion.py:373` |
+| 3 | Per perfused cell, `q_total` = Σ flow × `length_fraction` | — | Blood entering a cell is the only oxygen source the tissue has | **On** | `perfusion.py:388` |
+| 4 | Per perfused cell, `s_incoming` = Σ flow-share × C_O₂(PO₂_art, H_edge) | PO₂_art **hard-coded 100 mmHg** | Converts that flow into an oxygen delivery rate using the arterial content at the edge's own haematocrit | **On** — open item 3 | `perfusion.py:382` |
+| 5 | Reshape the index array `(nx, ny, nz)` so the last axis is z | C-order | The linear index is z-fastest, and a C-order reshape makes the last axis fastest — so the shape has to be reversed to match | **On** | `perfusion.py:406` |
+| 6 | Off-diagonals for the six face neighbours, both directions | −D per face | A cell exchanges with each face neighbour symmetrically, which is what makes the matrix symmetric and CG-solvable | **On** | `perfusion.py:409` |
+| 7 | Diagonal accumulates every conductance the cell participates in | — | Conservation: whatever leaves a cell across its faces must appear on its own diagonal | **On** | `perfusion.py:437` |
+| 8 | Add a tiny sink to the diagonal | 10⁻¹² | Pure diffusion under Neumann boundaries has a null space, so a constant offset would otherwise be unconstrained | **On** | `perfusion.py:442` |
+| 9 | Assemble COO → CSR | — | COO is cheap to build incrementally; CSR is what the solver needs | **On** | `perfusion.py:447` |
 
 **No advection appears anywhere in this matrix.** Steps 3 and 4 build *vectors*, not matrix
 entries: blood delivers oxygen into a cell and carries it away from the same cell, and nothing
@@ -1396,17 +1396,17 @@ centres happened to fall.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Threshold the TH probability field into a glomus mask | `TH_THRESHOLD` | **On** | `cb_h2_hypoxic_fraction.py:111` |
-| 2 | Build the perfusion grid from the graph (§6.1) | 4 µm | **On** | `cb_h2_hypoxic_fraction.py:116` |
-| 3 | Per-cell **volume fraction** of the mask, not a centre sample | — | **On** | `cb_h2_hypoxic_fraction.py:117` |
-| 4 | Warn if more than 1% of mask voxels fell outside the grid | 1% | **On** | `tissue_regions.py:45` |
-| 5 | Mean TH fraction f̄ over all cells | — | **On** | `cb_h2_hypoxic_fraction.py:121` |
-| 6 | Stromal rate = `BASE_M_MAX / (1 + f̄(c − 1))` | `BASE_M_MAX` = 0.05 | **On** — open item 8 | `cb_h2_hypoxic_fraction.py:122` |
-| 7 | Per-cell `M_max` blended between $\text{stroma}\cdot c$ and `stroma` | c ∈ {1, 2, 4} | **On** | `cb_h2_hypoxic_fraction.py:123` |
-| 8 | Solver applies the array elementwise | — | **On** | `perfusion.py:501` |
-| 9 | Readouts weighted by TH occupancy, not by cell count | — | **On** | `cb_h2_hypoxic_fraction.py:130` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Threshold the TH probability field into a glomus mask | `TH_THRESHOLD` | The metabolic contrast is defined against glomus tissue, so the TH channel has to become a binary region first | **On** | `cb_h2_hypoxic_fraction.py:111` |
+| 2 | Build the perfusion grid from the graph (§6.1) | 4 µm | The metabolic field has to live on the same cells the transport operator solves on | **On** | `cb_h2_hypoxic_fraction.py:116` |
+| 3 | Per-cell **volume fraction** of the mask, not a centre sample | — | At 4 µm against 1.866 µm voxels a cell holds about a dozen mask voxels, so most cells are mixed and a centre sample would discard nearly all of the mask | **On** | `cb_h2_hypoxic_fraction.py:117` |
+| 4 | Warn if more than 1% of mask voxels fell outside the grid | 1% | The grid is fitted to the graph, so a specimen whose vessels stop short loses tissue silently — worth hearing about | **On** | `tissue_regions.py:45` |
+| 5 | Mean TH fraction f̄ over all cells | — | The normalisation in the next step needs to know how much of the volume is glomus | **On** | `cb_h2_hypoxic_fraction.py:121` |
+| 6 | Stromal rate = `BASE_M_MAX / (1 + f̄(c − 1))` | `BASE_M_MAX` = 0.05 | Holds the volume-weighted mean rate at `BASE_M_MAX` for every contrast, so runs differ in distribution rather than in total consumption | **On** — open item 8 | `cb_h2_hypoxic_fraction.py:122` |
+| 7 | Per-cell `M_max` blended between $\text{stroma}\cdot c$ and `stroma` | c ∈ {1, 2, 4} | Puts the glomus rate at $c$ times the stromal one while preserving that mean | **On** | `cb_h2_hypoxic_fraction.py:123` |
+| 8 | Solver applies the array elementwise | — | A per-cell rate is the only way heterogeneous metabolism can enter a single linear system | **On** | `perfusion.py:501` |
+| 9 | Readouts weighted by TH occupancy, not by cell count | — | A cell that is 40% glomus should contribute 40% of its volume to the glomus readout, not be classified wholly one way | **On** | `cb_h2_hypoxic_fraction.py:130` |
 
 **Step 6 is what makes the contrast sweep interpretable.** Dividing by `1 + f̄(c − 1)` holds the
 volume-weighted mean rate at `BASE_M_MAX` for every c, so a run at c = 4 differs from one at c = 1
@@ -1466,21 +1466,21 @@ The loop warns rather than raising if it hits its iteration cap without reaching
 
 **The order of operations — the Tier 1 steady-state Picard loop.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Initial guess: PO₂ = 0 mmHg everywhere | — | **On** | `perfusion.py:461` |
-| 2 | Copy A and add a diagonal regulariser | 10⁻⁶ | **On**, once | `perfusion.py:478` |
-| 3 | Add a linear pseudo-washout $q_\text{total}\,\gamma$ to the diagonal | γ = 0.5 | **On**, once | `perfusion.py:489` |
-| 4 | Build the Jacobi preconditioner from the stabilised matrix | diagonal | **On**, once | `perfusion.py:493` |
-| 5 | Clamp PO₂ ≥ 0 | — | **On**, every iteration | `perfusion.py:497` |
-| 6 | Metabolic sink $M_\text{max}\bigl(1 - e^{-k P_{\mathrm{O_2}}}\bigr)$ | k = 0.1 | **On** | `perfusion.py:501` |
-| 7 | Advective washout $q_\text{total} \cdot C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H)$ per perfused cell | H **hard-coded 0.45** | **On** — open item 4 | `perfusion.py:507` |
-| 8 | RHS = $s_\text{incoming} - s_\text{washout} - M V_\text{cell} + q\gamma P_{\mathrm{O_2}}$ | — | **On** | `perfusion.py:512` |
-| 9 | CG solve, warm-started from the previous iterate | `rtol` 1e-6, `maxiter` 1000 | **On** | `perfusion.py:515` |
-| 10 | Non-convergence warns, never fails silently | — | **On** | `perfusion.py:517` |
-| 11 | Clamp the new iterate ≥ 0 | — | **On** | `perfusion.py:521` |
-| 12 | Convergence on the **relative** L2 change | tol 1e-5 | **On** | `perfusion.py:524` |
-| 13 | Hitting `max_iter` warns and returns the last iterate | 50 | **On** — open item 6 | `perfusion.py:533` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Initial guess: PO₂ = 0 mmHg everywhere | — | Starting from zero is the safe end: the iteration climbs towards the solution rather than descending through non-physical values | **On** | `perfusion.py:461` |
+| 2 | Copy A and add a diagonal regulariser | 10⁻⁶ | ILU and CG both need a non-singular matrix, and pure diffusion under Neumann boundaries is not | **On**, once | `perfusion.py:478` |
+| 3 | Add a linear pseudo-washout $q_\text{total}\,\gamma$ to the diagonal | γ = 0.5 | Adding a linear pseudo-washout makes the matrix strictly diagonally dominant, turning a system CG handles badly into one it handles well | **On**, once | `perfusion.py:489` |
+| 4 | Build the Jacobi preconditioner from the stabilised matrix | diagonal | Built once because the stabilised matrix never changes; only the right-hand side does | **On**, once | `perfusion.py:493` |
+| 5 | Clamp PO₂ ≥ 0 | — | Negative PO₂ is non-physical and would drive the oxygen-content curve into an oscillation | **On**, every iteration | `perfusion.py:497` |
+| 6 | Metabolic sink $M_\text{max}\bigl(1 - e^{-k P_{\mathrm{O_2}}}\bigr)$ | k = 0.1 | The sink saturates with PO₂, so it has to be re-evaluated from the current iterate rather than held fixed | **On** | `perfusion.py:501` |
+| 7 | Advective washout $q_\text{total} \cdot C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H)$ per perfused cell | H **hard-coded 0.45** | Blood leaves each cell carrying oxygen at the local tissue PO₂, which is exactly what the previous iterate just changed | **On** — open item 4 | `perfusion.py:507` |
+| 8 | RHS = $s_\text{incoming} - s_\text{washout} - M V_\text{cell} + q\gamma P_{\mathrm{O_2}}$ | — | Assembles delivery, removal and consumption into one right-hand side, with the pseudo-washout added back so the fixed point is unchanged | **On** | `perfusion.py:512` |
+| 9 | CG solve, warm-started from the previous iterate | `rtol` 1e-6, `maxiter` 1000 | Warm-starting from the previous iterate means later Picard passes cost far fewer inner iterations than the first | **On** | `perfusion.py:515` |
+| 10 | Non-convergence warns, never fails silently | — | A truncated inner solve is reported rather than returned as if it had converged | **On** | `perfusion.py:517` |
+| 11 | Clamp the new iterate ≥ 0 | — | Keeps the next iterate inside the physical domain before it is used as a starting point | **On** | `perfusion.py:521` |
+| 12 | Convergence on the **relative** L2 change | tol 1e-5 | A relative test makes the tolerance mean the same thing regardless of the field's absolute magnitude | **On** | `perfusion.py:524` |
+| 13 | Hitting `max_iter` warns and returns the last iterate | 50 | A solve that ran out of iterations is a different object from a converged one, and the caller has to be able to tell | **On** — open item 6 | `perfusion.py:533` |
 
 **Steps 3 and 8 are the same term, added twice on purpose.** $q\gamma$ goes onto the diagonal of the
 left-hand side and $q\gamma P_{\mathrm{O_2}}$ onto the right. At the fixed point the two cancel exactly, so the true
@@ -1535,19 +1535,19 @@ Computed from the graph alone, with no physics.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Collapse the MultiGraph to a simple graph for the topological measures | — | **On** | `stats.py:651` |
-| 2 | Basic counts: nodes, edges, total and mean edge length, mean degree | uses `weight` | **On** | `stats.py:16` |
-| 3 | Tortuosity per edge and its summary | — | **On** | `stats.py:147` |
-| 4 | Branching statistics: junction count, branching angles | degree ≥ 3 | **On** | `stats.py:175` |
-| 5 | Tree asymmetry | — | **On** | `stats.py:213` |
-| 6 | Fractal dimension by box counting | — | **On** | `stats.py:241` |
-| 7 | Vessel density, both definitions | ⚠ voxel size **not passed** | **On** | `stats.py:349` |
-| 8 | Path efficiency | sampled — `max_pairs` capped in `fast` | **On** | `stats.py:268` |
-| 9 | Communities and betweenness | summaries only in `fast` | **On** | `stats.py:402`, `stats.py:436` |
-| 10 | Per-edge morphometry table → CSV | 16 fixed columns | **On** | `stats.py:56`, `stats.py:135` |
-| 11 | Benchmarking suite, including `graph_fundamental_loops` | `run_benchmarking = False` | **Off** | `benchmarking.py:180` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Collapse the MultiGraph to a simple graph for the topological measures | — | Most graph-theoretic measures are undefined or ambiguous on a MultiGraph, so a simple view is taken for those | **On** | `stats.py:651` |
+| 2 | Basic counts: nodes, edges, total and mean edge length, mean degree | uses `weight` | The counts every other quantity is normalised against | **On** | `stats.py:16` |
+| 3 | Tortuosity per edge and its summary | — | H1 §1.4 is a tortuosity claim, and it is computed once here so the summary and the per-edge CSV cannot disagree | **On** | `stats.py:147` |
+| 4 | Branching statistics: junction count, branching angles | degree ≥ 3 | Junction density is an H1 readout, and branching angle is the diagnostic that shows whether junctions were resolved sensibly | **On** | `stats.py:175` |
+| 5 | Tree asymmetry | — | Distinguishes a balanced bed from a network dominated by one trunk | **On** | `stats.py:213` |
+| 6 | Fractal dimension by box counting | — | A scale-invariant descriptor of how densely the network fills the volume | **On** | `stats.py:241` |
+| 7 | Vessel density, both definitions | ⚠ voxel size **not passed** | Both definitions are reported because neither is the parenchymal density H1 §1.3 asks for, and saying so requires showing both | **On** | `stats.py:349` |
+| 8 | Path efficiency | sampled — `max_pairs` capped in `fast` | Exhaustive all-pairs shortest paths are quadratic in node count, so `fast` samples instead | **On** | `stats.py:268` |
+| 9 | Communities and betweenness | summaries only in `fast` | Diagnostic centrality and modularity; reduced to summaries because the full objects are large and unused | **On** | `stats.py:402`, `stats.py:436` |
+| 10 | Per-edge morphometry table → CSV | 16 fixed columns | With n = 3 per group the per-edge table is the only place with enough data to describe a distribution at all | **On** | `stats.py:56`, `stats.py:135` |
+| 11 | Benchmarking suite, including `graph_fundamental_loops` | `run_benchmarking = False` | Off — and with it the only function in the library that computes $E - V + C$, which is why $\beta_1$ is derived post hoc | **Off** | `benchmarking.py:180` |
 
 **`statistics_mode` is `"fast"` and the caller does not override it.** In `fast`, path efficiency is
 sampled rather than exhaustive and communities and betweenness are reduced to summaries. The `full`
@@ -1600,16 +1600,16 @@ where $\mathbf{s}$ is the integer step offset and $\mathbf{v}$ the voxel size in
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Enumerate the 13 unique 26-connected steps, once per pair not per direction | — | **On** | `th_morphometry.py:28` |
-| 2 | Physical length of each step, $\sqrt{\sum_i (s_i v_i)^2}$ | voxel (1.8639, 1.866, 1.866) | **On** | `th_morphometry.py:59` |
-| 3 | Count skeleton voxel pairs joined by that step | — | **On** | `th_morphometry.py:60` |
-| 4 | With `within`, keep a step only if **both** endpoints are in the mask | — | **On** | `th_morphometry.py:63` |
-| 5 | Total = Σ step length × pair count | — | **On** | `th_morphometry.py:65` |
-| 6 | Raise if the centreline is empty | — | **On**, never returns ∞ | `th_morphometry.py:100` |
-| 7 | EDT from every non-centreline voxel, `sampling` = voxel size | µm directly | **On** | `th_morphometry.py:108` |
-| 8 | Read the distance at every TH-positive voxel | — | **On** | `th_morphometry.py:109` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Enumerate the 13 unique 26-connected steps, once per pair not per direction | — | Visiting each unordered neighbour pair once is what stops every step being counted twice | **On** | `th_morphometry.py:28` |
+| 2 | Physical length of each step, $\sqrt{\sum_i (s_i v_i)^2}$ | voxel (1.8639, 1.866, 1.866) | A diagonal step covers 3.23 µm where an axial one covers 1.87, so counting voxels would be wrong by up to $\sqrt{3}$ | **On** | `th_morphometry.py:59` |
+| 3 | Count skeleton voxel pairs joined by that step | — | The number of joined pairs in each direction is what the step length multiplies | **On** | `th_morphometry.py:60` |
+| 4 | With `within`, keep a step only if **both** endpoints are in the mask | — | A step straddling the boundary belongs to neither side, and assigning it to the tissue it half touches would inflate whichever mask is more fragmented | **On** | `th_morphometry.py:63` |
+| 5 | Total = Σ step length × pair count | — | Summing per step class rather than applying a global factor gives the exact correction rather than an average one | **On** | `th_morphometry.py:65` |
+| 6 | Raise if the centreline is empty | — | A distance transform against an empty mask returns infinity everywhere, which would propagate as a very large distance rather than as an error | **On**, never returns ∞ | `th_morphometry.py:100` |
+| 7 | EDT from every non-centreline voxel, `sampling` = voxel size | µm directly | `sampling` puts the answer in microns directly and carries the 1.0011 axial-to-lateral ratio, so nothing downstream converts again | **On** | `th_morphometry.py:108` |
+| 8 | Read the distance at every TH-positive voxel | — | H1 §1.5 asks how far glomus tissue sits from its supply, which is a question about tissue voxels rather than about vessels | **On** | `th_morphometry.py:109` |
 
 **Step 1 is why the count is 13 and not 26.** Each unordered neighbour pair is visited once, so no
 step is double-counted. Steps 2–3 then give the exact √3 correction the paragraph below describes,
@@ -1650,18 +1650,18 @@ length lies inside the TH mask, sampled along the **whole polyline**.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Load the graph and attach EDT diameters from the per-edge CSV | — | **On** | `cb_h2_glomus_perfusion.py:93` |
-| 2 | Select boundaries by the **face** rule | axis 1, 1 voxel | **On** | `cb_h2_glomus_perfusion.py:94` |
-| 3 | Coupled flow / haematocrit / viscosity solve (§4.3) | 60 / 20 mmHg | **On** | `cb_h2_glomus_perfusion.py:97` |
-| 4 | Threshold the TH probability field | `TH_THRESHOLD` = 0.5 | **On** | `cb_h2_glomus_perfusion.py:88` |
-| 5 | Resample each edge polyline at half the finest voxel | 0.93 µm | **On** | `tissue_regions.py:177` |
-| 6 | Sample the mask at sub-step **midpoints**, length-weighted | — | **On** | `tissue_regions.py:209` |
-| 7 | Points outside the mask array count as outside, never clipped | — | **On** | `tissue_regions.py:181` |
-| 8 | Per-edge fraction = inside length ÷ total length | — | **On** | `tissue_regions.py:213` |
-| 9 | Classify: fraction ≥ 0.5 penetrating, below 0.5 bypassing | `PENETRATION` = 0.5 | **On** | `cb_h2_glomus_perfusion.py:132` |
-| 10 | Flow share of penetrating edges ÷ their edge share | — | **On** | `cb_h2_glomus_perfusion.py:156` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Load the graph and attach EDT diameters from the per-edge CSV | — | Calibre lives in the per-edge CSV rather than the graph, and every quantity here is quadratic or quartic in it | **On** | `cb_h2_glomus_perfusion.py:93` |
+| 2 | Select boundaries by the **face** rule | axis 1, 1 voxel | The shunt index compares flow against edge count, so which vessels are inlets sets the entire flow field | **On** | `cb_h2_glomus_perfusion.py:94` |
+| 3 | Coupled flow / haematocrit / viscosity solve (§4.3) | 60 / 20 mmHg | There is no shunting to measure until flow has been solved on the network | **On** | `cb_h2_glomus_perfusion.py:97` |
+| 4 | Threshold the TH probability field | `TH_THRESHOLD` = 0.5 | The question is about vessels relative to the glomus clusters, so the clusters have to be a region first | **On** | `cb_h2_glomus_perfusion.py:88` |
+| 5 | Resample each edge polyline at half the finest voxel | 0.93 µm | The stored polylines are unevenly spaced after B-spline smoothing, so counting points would let a densely sampled stretch outvote a long one | **On** | `tissue_regions.py:177` |
+| 6 | Sample the mask at sub-step **midpoints**, length-weighted | — | Each sub-step carries the same length, so averaging over midpoints is exactly a length-weighted average along the segment | **On** | `tissue_regions.py:209` |
+| 7 | Points outside the mask array count as outside, never clipped | — | Clipping would pile distal centreline onto the mask border and count it as inside | **On** | `tissue_regions.py:181` |
+| 8 | Per-edge fraction = inside length ÷ total length | — | Turns a geometric relationship into one number per edge that the classification can threshold | **On** | `tissue_regions.py:213` |
+| 9 | Classify: fraction ≥ 0.5 penetrating, below 0.5 bypassing | `PENETRATION` = 0.5 | A capillary penetrating a cluster usually starts and ends in stroma, so an endpoint test would classify exactly the vessels the question is about as extra-glomus | **On** | `cb_h2_glomus_perfusion.py:132` |
+| 10 | Flow share of penetrating edges ÷ their edge share | — | Flow share alone tracks how many edges penetrate, which is itself downstream of the parenchymal volume difference H1 §1.3 reports; the ratio removes that | **On** | `cb_h2_glomus_perfusion.py:156` |
 
 **Step 5 is what makes the classification independent of polyline sampling density.** The stored
 `voxels` lists are not uniformly spaced after B-spline smoothing (§2.5 step 7), so counting points
@@ -1705,12 +1705,12 @@ that of bypassing edges, taken from the converged rheology solve (§4.3).
 **The order of operations.** Steps 1–9 are identical to §7.3 — the same run produces both
 readouts. Only the final reduction differs:
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1–9 | As §7.3, through to the penetrating / bypassing split | — | **On** | `cb_h2_glomus_perfusion.py` |
-| 10 | Median `hematocrit` of penetrating edges | — | **On** | `cb_h2_glomus_perfusion.py:143` |
-| 11 | Median `hematocrit` of bypassing edges | — | **On** | `cb_h2_glomus_perfusion.py:143` |
-| 12 | Report the ratio, not either median alone | — | **On** | `cb_h2_glomus_perfusion.py:161` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1–9 | As §7.3, through to the penetrating / bypassing split | — | The classification and the flow field are the same ones §7.3 needs, so one run answers both questions | **On** | `cb_h2_glomus_perfusion.py` |
+| 10 | Median `hematocrit` of penetrating edges | — | The median resists the long tail that a few near-zero-flow edges put into the haematocrit distribution | **On** | `cb_h2_glomus_perfusion.py:143` |
+| 11 | Median `hematocrit` of bypassing edges | — | The comparison group, computed identically so the two are commensurable | **On** | `cb_h2_glomus_perfusion.py:143` |
+| 12 | Report the ratio, not either median alone | — | Absolute haematocrit inherits every assumption in §4.2; the ratio is what survives them | **On** | `cb_h2_glomus_perfusion.py:161` |
 
 **Medians, and non-finite values dropped before taking them.** An edge whose haematocrit did not
 resolve is excluded rather than counted as zero.
@@ -1731,17 +1731,17 @@ contrast swept at **1×, 2× and 4×**; grid at 4 µm.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Load the graph; select boundaries by the face rule | axis 1 | **On** | `cb_h2_hypoxic_fraction.py:107` |
-| 2 | Coupled flow / haematocrit solve (§4.3) | 60 / 20 mmHg | **On** | `cb_h2_hypoxic_fraction.py:109` |
-| 3 | Threshold the TH field into a glomus mask | 0.5 | **On** | `cb_h2_hypoxic_fraction.py:111` |
-| 4 | Build the perfusion grid (§6.1) | 4 µm | **On** | `cb_h2_hypoxic_fraction.py:116` |
-| 5 | Per-cell TH volume fraction, then the blended `M_max` field (§6.5) | c ∈ {1, 2, 4} | **On** | `cb_h2_hypoxic_fraction.py:117` |
-| 6 | Map vessels to the grid (§6.2), assemble the operator (§6.3) | — | **On** | `cb_h2_hypoxic_fraction.py:126` |
-| 7 | Picard solve for the tissue PO₂ field (§6.7) | 50 iterations, tol 1e-5 | **On** | `cb_h2_hypoxic_fraction.py:127` |
-| 8 | Report the share of cells with no oxygen source at all | — | **On**, diagnostic | `cb_h2_hypoxic_fraction.py:102` |
-| 9 | Hypoxic fraction = TH-weighted volume below each threshold | 5, 10, 20 mmHg | **On** | `cb_h2_hypoxic_fraction.py:145` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Load the graph; select boundaries by the face rule | axis 1 | PO₂ depends on where blood enters, so boundary selection sets the entire tissue field | **On** | `cb_h2_hypoxic_fraction.py:107` |
+| 2 | Coupled flow / haematocrit solve (§4.3) | 60 / 20 mmHg | The oxygen source term is flow times content, so neither is known until the network is solved | **On** | `cb_h2_hypoxic_fraction.py:109` |
+| 3 | Threshold the TH field into a glomus mask | 0.5 | The metabolic contrast is defined against glomus tissue, which has to be a region before it can carry a rate | **On** | `cb_h2_hypoxic_fraction.py:111` |
+| 4 | Build the perfusion grid (§6.1) | 4 µm | The tissue field needs a discretisation, and 4 µm is within about 1% of the converged limit (§6.8) | **On** | `cb_h2_hypoxic_fraction.py:116` |
+| 5 | Per-cell TH volume fraction, then the blended `M_max` field (§6.5) | c ∈ {1, 2, 4} | A heterogeneous metabolic field is the entire mechanism this method proposes to detect | **On** | `cb_h2_hypoxic_fraction.py:117` |
+| 6 | Map vessels to the grid (§6.2), assemble the operator (§6.3) | — | Couples the 1D network to the 3D tissue and assembles the operator that will be solved | **On** | `cb_h2_hypoxic_fraction.py:126` |
+| 7 | Picard solve for the tissue PO₂ field (§6.7) | 50 iterations, tol 1e-5 | Metabolism saturates with PO₂, so the system is non-linear and needs iteration rather than one solve | **On** | `cb_h2_hypoxic_fraction.py:127` |
+| 8 | Report the share of cells with no oxygen source at all | — | Padding the grid raises this share by construction, so it is reported rather than left to be inferred from the PO₂ distribution | **On**, diagnostic | `cb_h2_hypoxic_fraction.py:102` |
+| 9 | Hypoxic fraction = TH-weighted volume below each threshold | 5, 10, 20 mmHg | Weighting by TH occupancy rather than by cell count is what makes it a fraction of glomus volume rather than of grid | **On** | `cb_h2_hypoxic_fraction.py:145` |
 
 **Step 8 exists because step 4 can produce cells no vessel reaches.** Under `--pad-grid` that share
 rises by construction, which is the stated cost of representing tissue beyond the vasculature
@@ -1770,16 +1770,16 @@ arrive, and a finite stand-in would propagate as a merely slow path.
 
 **The order of operations.**
 
-| # | Step | Setting | On the CB path | Where |
-|---|---|---|---|---|
-| 1 | Scan every edge for a usable diameter; **raise** if any lacks one | — | **On** | `transit.py:38` |
-| 2 | Per edge, lumen volume $\pi (d/2)^{2} L$ | — | **On** | `transit.py:52` |
-| 3 | $\tau = \text{volume} / \lvert Q \rvert$, or `inf` when Q = 0 | — | **On** | `transit.py:53` |
-| 4 | Direct each edge by its solved `flow_signed` | — | **On** | `transit.py:77` |
-| 5 | Dijkstra from all inlets at cost 0 | — | **On** | `transit.py:86` |
-| 6 | Unreachable nodes carry `inf`, never absent | — | **On** | `transit.py:84` |
-| 7 | Score an edge by the **later** of its two ends | — | **On** | `cb_h2_glomus_perfusion.py:110` |
-| 8 | Report the penetrating / bypassing median ratio | — | **On** | `cb_h2_glomus_perfusion.py:166` |
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Scan every edge for a usable diameter; **raise** if any lacks one | — | Transit time is lumen volume over flow, so a fabricated calibre would produce a fabricated transit time quadratically | **On** | `transit.py:38` |
+| 2 | Per edge, lumen volume $\pi (d/2)^{2} L$ | — | The blood in an edge is its lumen volume, and that is what has to be displaced for blood to cross it | **On** | `transit.py:52` |
+| 3 | $\tau = \text{volume} / \lvert Q \rvert$, or `inf` when Q = 0 | — | Blood that does not move does not arrive; a finite stand-in would propagate as a merely slow path | **On** | `transit.py:53` |
+| 4 | Direct each edge by its solved `flow_signed` | — | An edge carrying blood away from a node cannot deliver blood to it, so adjacency alone would report routes no blood takes | **On** | `transit.py:77` |
+| 5 | Dijkstra from all inlets at cost 0 | — | Every inlet is an equally valid origin, so the arrival time is the earliest over all of them | **On** | `transit.py:86` |
+| 6 | Unreachable nodes carry `inf`, never absent | — | A missing key could be read as zero, which is the opposite of what an unreachable node means | **On** | `transit.py:84` |
+| 7 | Score an edge by the **later** of its two ends | — | A penetrating capillary should be scored by how long blood takes to get through it, not to reach its nearer end | **On** | `cb_h2_glomus_perfusion.py:110` |
+| 8 | Report the penetrating / bypassing median ratio | — | The magnitude is in arbitrary units (§3.7) and sits under the ±45% calibre floor, so only a ratio computed identically means anything | **On** | `cb_h2_glomus_perfusion.py:166` |
 
 **Step 4 follows flow, not adjacency.** An edge carrying blood *away* from a node cannot deliver
 blood *to* it, and ignoring the direction would report a transit time along a route no blood takes.
@@ -2800,6 +2800,6 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 9 | The rheology solver falls back to a silent 5.0 µm diameter; `map_vessels_to_grid` raises on the same condition | §3.2 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, H2 drivers 60/20 mmHg. Every published H2 number used 60/20 | §7.8, §8, §11 row 15 |
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
-| 12 | The rheology loop rescales resistance by `$\mu_\text{app} / \mu_\text{old}$` against a base that no longer contains `µ_old`, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
+| 12 | The rheology loop rescales resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contains $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
 
 ---
