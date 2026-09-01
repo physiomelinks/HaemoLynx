@@ -128,6 +128,23 @@ and the resulting density difference is a difference in where the box was put.
 fraction of 0.40 and SHR at 0.34, so a centred box systematically samples a different part of the
 organ in each cohort.
 
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Read the specimen's QC record | — | **On** | `roi_placement.py:113` |
+| 2 | z ← `z_profile.peak_slice` | — | **On**; falls back to `shape[0] // 2` and records `z=volume_centre` | `roi_placement.py:118` |
+| 3 | Open the Ilastik input HDF5, **channel 0 only** | subsample (4, 2, 2) | **On** | `roi_placement.py:133` |
+| 4 | Maximum-intensity projection along z | — | **On** | `roi_placement.py:85` |
+| 5 | Threshold the projection | 99th percentile | **On** | `roi_placement.py:86` |
+| 6 | Intensity-weighted centroid of the survivors → y, x | — | **On**; falls back to the volume centre and records why | `roi_placement.py:92` |
+| 7 | Rescale the centroid back to full resolution | × 2 in y and x | **On** | `roi_placement.py:135` |
+| 8 | Clamp the centre so the box fits whole | 160³ | **On** | `roi_placement.py:142` |
+| 9 | Centre → fractional offsets for `crop_roi` | — | **On** | `roi_placement.py:147` |
+| 10 | Crop the probability field to the ROI | 160³ voxels | **On** | `carotid_image_to_model.py:754` |
+
+Steps 1–2 and 3–7 are independent of each other, which is the point of the next paragraph.
+
 **How — two different rules for z and for y/x.** They are not one 3D centroid.
 
 *Axial (z)* comes from the QC record's `peak_slice`, which `preprocess_cb.py` derived from tissue
@@ -178,6 +195,40 @@ binary mask.
 
 **What was chosen.** *Calibre chooses, fragmentation vetoes.* Take the **highest** threshold whose
 median mask diameter falls in the capillary window, provided it lies below the fragmentation onset.
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Place the ROI and crop the probability volume | 160³ | **On** | `cb_h1_batch.py:79` |
+| 2 | Cut a mask at each threshold in the grid | `p > t`, a **plain cut** | **On** | `threshold_selection.py:157` |
+| 3 | EDT → median and p90 diameter | `sampling` = voxel size | **On**, decisive | `threshold_selection.py:161` |
+| 4 | Label mask components, largest share, count above floor | 50 voxels | **On**, reported but not decisive | `threshold_selection.py:166` |
+| 5 | Skeletonise the cut mask | raw, **no cleanup** | **On** | `threshold_selection.py:176` |
+| 6 | Skeleton length from voxel count | × in-plane pitch | **On** | `threshold_selection.py:181` |
+| 7 | Count degree-1 voxels → endpoint density | per mm of skeleton | **On**, decisive | `threshold_selection.py:185` |
+| 8 | Drop thresholds whose mask is empty | — | **On** — a legitimate outcome, not an error | `threshold_selection.py:217` |
+| 9 | Baseline = **median** endpoint density across the sweep | — | **On** | `threshold_selection.py:241` |
+| 10 | Onset = lowest threshold above 1.5 × baseline | `FRAGMENTATION_TOLERANCE` | **On** | `threshold_selection.py:246` |
+| 11 | Calibre window = thresholds with median d in range | 4.0–7.0 µm | **On** | `threshold_selection.py:249` |
+| 12 | Chosen = **highest** window threshold below onset | — | **On**, or a refusal | `threshold_selection.py:271` |
+| 13 | Repeat 1–12 per specimen; median of six, snapped to grid | 6 specimens | **On** | `cb_h1_batch.py:104` |
+| 14 | Cohort-split check on the per-specimen choices | — | **On**, reported | `cb_h1_batch.py:99` |
+
+**The selector does not measure the mask the pipeline builds.** Step 2 is a plain cut (`p > t`) and
+step 5 skeletonises it raw. The pipeline instead builds a *hysteresis* mask, closes it, prunes to
+the largest component and cleans the skeleton (§2.3, §2.4). So the calibre and fragmentation figures
+that choose the threshold are measured on a **thinner, noisier** object than the one that reaches
+the haemodynamics. The direction of the discrepancy is knowable — hysteresis and closing both add
+voxels, so the real mask is at least as fat and at least as connected — but its size is not
+measured. Treating the sweep as a *ranking* over thresholds rather than an absolute calibre
+measurement is what makes this acceptable.
+
+**Skeleton length has no diagonal correction.** Step 6 multiplies the skeleton voxel count by the
+in-plane pitch alone, so a diagonal step counts as 1 voxel rather than √2 or √3. Length is therefore
+underestimated and endpoint density per mm overestimated in absolute terms. It cancels out of the
+1.5 × ratio, which is why the criterion survives it, but the `ep/mm` column in the printed table is
+not a physical density.
 
 **Why calibre and not component statistics.** The conventional criterion — the value just above
 where component count climbs and the largest component's share falls — does not discriminate on
@@ -307,17 +358,24 @@ inside that range rather than against a search bound.
 
 **The full mask-formation order**, as executed:
 
-| Step | Status on the CB path |
-|---|---|
-| Virtual padding, 10 voxels in z | **On** (`caged` mode); removed again after thresholding |
-| Median filter | Off (`median_filter_size = 0`) |
-| Morphological opening | Off (radius 0) |
-| Morphological closing | Off (radius 0) |
-| Probability smoothing | Off (sigma 0.0) |
-| Entropy map construction | **Skipped** — 2-class classifier |
-| Hysteresis threshold | **On**, plain variant |
-| Hole filling, 3D | **On** |
-| Un-pad | **On** |
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | ROI crop of the probability field | 160³ voxels | **On** | `carotid_image_to_model.py:754` |
+| 2 | Class-axis detection, then entropy map | `n_classes` | **Skipped** — 2 classes, warns and leaves `entropy_map = None` | `carotid_image_to_model.py:781` |
+| 3 | Vessel channel selection | `ilastik_vessel_channel` | **On** | `carotid_image_to_model.py:789` |
+| 4 | Virtual padding in z | 10 voxels, `mode='edge'` | **On** (`caged`) | `carotid_image_to_model.py:680` |
+| 5 | Median filter | size 0 | Off | `carotid_image_to_model.py:684` |
+| 6 | Morphological opening | radius 0 | Off | `carotid_image_to_model.py:688` |
+| 7 | Morphological closing | radius 0 | Off | `carotid_image_to_model.py:692` |
+| 8 | Probability smoothing | sigma 0.0 | Off | `carotid_image_to_model.py:696` |
+| 9 | Joint probability–entropy hysteresis | core 0.6 / max 0.95 | **Unreachable** — guarded on `entropy_map is not None` | `carotid_image_to_model.py:701` |
+| 10 | Plain hysteresis threshold | 0.90 / 0.95 **as run** (config 0.65 / 0.75) | **On** | `carotid_image_to_model.py:710` |
+| 11 | Hole filling, 3D | — | **On** | `carotid_image_to_model.py:720` |
+| 12 | Un-pad | 10 voxels in z | **On** | `carotid_image_to_model.py:722` |
+
+Steps 5–8 are the pre-threshold chain, and all four are off. Step 9 is the config default and never
+executes. Nothing between the crop and the threshold changes a single probability value on the CB
+path — the mask is the threshold, the hole fill, and nothing else.
 
 Note the padding is `mode='edge'`, so the pad replicates the boundary probability rather than
 adding background. It exists to stop the boundary caging the mask, and it is stripped before the
