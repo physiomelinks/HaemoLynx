@@ -113,22 +113,41 @@ def test_solve_system_smart_routing(monkeypatch):
     assert np.allclose(x_iter, [0.66666667, 0.33333333])
 
 
-def test_solve_system_smart_singular_fallback():
-    from ImageLynx.haemodynamics.resistance import _solve_system_smart
-    import scipy.sparse as sp
+def test_solve_system_smart_raises_on_a_singular_system():
+    """A singular network Laplacian is a graph defect, not a solve to approximate.
+
+    This used to fall back to lsqr in both branches. Least squares answers a singular
+    Laplacian with a minimum-norm pressure field over a component that nothing is driving:
+    well-formed, and meaningless. The graph-level largest-component prune is what normally
+    prevents the condition, so a silent fallback here hid the prune being turned off.
+    """
     import numpy as np
-    
-    # Singular matrix
+    import pytest
+    import scipy.sparse as sp
+
+    from ImageLynx.haemodynamics.resistance import _solve_system_smart
+
     A = sp.csr_matrix([[1.0, 1.0], [1.0, 1.0]])
     b = np.array([1.0, 0.0])
-    
-    # Direct solver singular fallback
-    x = _solve_system_smart(A, b, iterative_threshold=50000)
-    assert x is not None  # Should not crash
-    
-    # Iterative solver singular fallback
-    x_iter = _solve_system_smart(A, b, iterative_threshold=1)
-    assert x_iter is not None  # Should not crash
+
+    with pytest.raises(ValueError, match="singular|did not converge"):
+        _solve_system_smart(A, b, iterative_threshold=50000)
+
+    with pytest.raises(ValueError, match="singular|did not converge|failed"):
+        _solve_system_smart(A, b, iterative_threshold=1)
+
+
+def test_solve_system_smart_still_solves_a_well_posed_system():
+    """The raise policy must not have cost the ordinary path."""
+    import numpy as np
+    import scipy.sparse as sp
+
+    from ImageLynx.haemodynamics.resistance import _solve_system_smart
+
+    A = sp.csr_matrix([[2.0, -1.0], [-1.0, 2.0]])
+    b = np.array([1.0, 0.0])
+    assert np.allclose(_solve_system_smart(A, b, iterative_threshold=50000),
+                       [0.66666667, 0.33333333])
 
 
 def test_solve_system_smart_preconditioner_failure(monkeypatch):
@@ -144,10 +163,12 @@ def test_solve_system_smart_preconditioner_failure(monkeypatch):
         raise RuntimeError("Mock spilu failure")
         
     monkeypatch.setattr(splinalg, "spilu", mock_spilu)
-    
-    # Should fall back to lsqr and not crash
-    x = _solve_system_smart(A, b, iterative_threshold=1)
-    assert np.allclose(x, [0.66666667, 0.33333333])
+
+    # A preconditioner that cannot be built is reported, not papered over with lsqr:
+    # the fallback returned a field that looked solved and was not.
+    import pytest
+    with pytest.raises(ValueError, match="Preconditioning"):
+        _solve_system_smart(A, b, iterative_threshold=1)
 
 def test_boundary_mode_universal_sink():
     from ImageLynx.graph.boundaries import select_boundary_terminal_nodes

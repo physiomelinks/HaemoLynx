@@ -137,8 +137,15 @@ class PreprocessingConfig:
 @dataclass
 class SkeletonConfig:
     """Configuration for 3D skeletonization, artifact pruning, and topological cleanup."""
+    # One closing parameter, not two. closing_radius and bridge_gap_size both called
+    # close_binary_mask, one after the other, and closing is idempotent for a fixed
+    # structuring element - so the second call could never do anything at equal radii, and
+    # at unequal ones it was a second, differently sized closing masquerading as a "bridge".
+    # Radius is not additive across calls: set this to 2 rather than reaching for a
+    # second field. Mask gap repair is a closing and not the bridge_gaps dilation, which
+    # inflates every vessel unconditionally and biases the EDT calibre the wall is measured
+    # against - see close_binary_mask and section 2.4.
     closing_radius: int = 1
-    bridge_gap_size: int = 1
     min_branch_length: int = 3
     max_bridge_distance: int = 0
     component_connectivity: int = 3
@@ -837,13 +844,6 @@ def _preprocess_local_mask(raw_prob_map, entropy_map, pre_config, skel_config, g
 
     if skel_config.closing_radius > 0:
         binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.closing_radius)
-    if skel_config.bridge_gap_size > 0:
-        # Was bridge_gaps(), which is a plain dilation: it never erodes back, so every vessel
-        # gained bridge_gap_size voxels of radius unconditionally and anything within twice
-        # that fused. On a thick mask a closing bridges the same gaps without expanding
-        # boundaries. (It is not a substitute on a 1-voxel skeleton, where the erosion step
-        # would remove the bridge again - see bridge_gaps' docstring.)
-        binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.bridge_gap_size)
     if skel_config.prune_mask_before > 0:
         binary = preprocessing.skeleton.keep_largest_mask_components(
             binary, n_components=skel_config.prune_mask_before, connectivity=skel_config.component_connectivity
@@ -987,27 +987,11 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     if pipeline_config.enable_diagnostic_plots:
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "prune_vascular_stubs.png")
     
-    # --- Plan A & B: Core Dead-End Resolution ---
-    if skel_config.core_dead_end_resolution_mode in ["eradicate", "stitch"]:
-        voxel_size_xyz = tuple(float(v) for v in current_spacing)
-        stats = graph.resolve_core_dead_ends(
-            G,
-            image_shape=image.shape,
-            voxel_size_xyz=voxel_size_xyz,
-            mode=skel_config.core_dead_end_resolution_mode,
-            safe_zone_percent=skel_config.core_safe_zone_percent,
-            max_stitch_distance_um=skel_config.core_stitch_max_distance_um,
-            max_degree=skel_config.core_stitch_max_degree
-        )
-        print(f"\n--- Core Dead-End Resolution [{skel_config.core_dead_end_resolution_mode.upper()} MODE] ---")
-        print(f"Initial edges: {stats.get('initial_edges', 0)}")
-        if stats.get('edges_added', 0) > 0:
-            print(f"Stitched edges added: {stats['edges_added']} ({stats['edges_added_pct']}%)")
-        if stats.get('edges_removed', 0) > 0:
-            print(f"Eradicated edges removed: {stats['edges_removed']} ({stats['edges_removed_pct']}%)")
-            if stats.get('fallback_eradicated', 0) > 0:
-                print(f" (Includes {stats['fallback_eradicated']} un-stitchable edges safely eradicated as fallback)")
-    # --------------------------------------------
+    # Core dead-end resolution is deliberately absent from this path. Both of its modes
+    # invent topology: `eradicate` deletes capillaries that are real but unresolved, and
+    # `stitch` fabricates connections that were never imaged. About 86% of degree-1 nodes
+    # in these graphs are interior, so either mode acts on most of the network. The
+    # operator remains in ImageLynx.graph.prune for resistance_network_pipeline.py.
     
     # Smooth the physical 3D paths (voxels) of all edges using B-Splines to ensure realistic biological curvature
     print("Smoothing all edge centerlines in parallel using Joblib and B-Splines...")
@@ -1189,15 +1173,14 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             constriction_spacing=100.0, # Not used in sphincter mode
             mode=hemo_config.constriction_mode
         )
-        if hemo_config.constrict_at_pericytes:
-            poiseuille_model.set_poiseuille_resistances_with_constrictions(
-                G,
-                hemo_config.diameter_by_branch_order,
-                radius_assignment_mode=hemo_config.radius_assignment_mode,
-                constant_radius_um=hemo_config.constant_radius_um
-            )
-        else:
-            # For non-constricted mode, extract d1 from the config dicts
+        # No constriction branch. HaemodynamicsConfig.__post_init__ raises when
+        # constrict_at_pericytes is True, so the sphincter path was already unreachable from
+        # here: its sites come from a hard-coded topological rule rather than from imaging,
+        # and the ratio multiplies whatever diameter was measured, so a 0.5 capillary ratio
+        # is a 16x local resistance error on a real vessel. The capability stays on
+        # PoiseuilleModel for the pipelines that own it.
+        if True:
+            # Extract d1 from the config dicts
             simple_diameters = {
                 k: (v["d1"] if isinstance(v, dict) else v)
                 for k, v in hemo_config.diameter_by_branch_order.items()
@@ -1923,7 +1906,6 @@ if __name__ == "__main__":
     parser.add_argument("--optimize-skeleton", type=int, default=0, help="Run Bayesian optimization (Optuna) for N trials before continuing.")
     parser.add_argument("--optimize-preprocessing", type=int, default=0, help="Run Bayesian optimization for preprocessing filters for N trials.")
     parser.add_argument("--optimize-patience", type=int, default=None, help="Override the EarlyStoppingCallback patience limit.")
-    parser.add_argument("--core-resolution", type=str, choices=["eradicate", "stitch", "none"], default=None, help="Mode for resolving internal core dead-ends.")
     parser.add_argument("--boundary-mode", type=str, choices=["caged", "universal_sink", "robin_resistance"], default=None, help="Mode for handling X/Y boundary permeability.")
     parser.add_argument("--radius-mode", type=str, choices=["fwhm_radius", "edt_radius", "constant_radius"], default=None, help="Radius assignment mode for physical flow.")
     parser.add_argument("--voxel-size-um", type=float, nargs=3, metavar=("Z", "Y", "X"), default=None,
@@ -2054,8 +2036,6 @@ if __name__ == "__main__":
     if args.sub_volume is not None:
         skel_config.sub_volume_percentage = args.sub_volume
         
-    if args.core_resolution is not None:
-        skel_config.core_dead_end_resolution_mode = args.core_resolution
         
     if args.boundary_mode is not None:
         graph_config.boundary_permeability_mode = args.boundary_mode

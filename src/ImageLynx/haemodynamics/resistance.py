@@ -143,16 +143,35 @@ def calc_laplacian_from_conductance_matrix(C: sp.csr_matrix) -> sp.csr_matrix:
 
 
 def _solve_system_smart(A: sp.csr_matrix, b: np.ndarray, iterative_threshold: int = 50000) -> np.ndarray:
-    """Solve Ax=b using direct solver for small systems and iterative for large ones."""
+    """Solve Ax=b, directly for small systems and iteratively for large ones.
+
+    **A singular system raises rather than falling back to least squares.** A singular
+    network Laplacian means a connected component with no pressure boundary on it, which is
+    a graph defect rather than a hard linear-algebra problem. The graph-level
+    largest-component prune is what normally prevents it, so the two are coupled: turning
+    that prune off used to route silently into a least-squares answer that looked solved.
+    """
     n = A.shape[0]
     
     # Direct solver (spsolve) is very fast for small to medium systems
     if n < iterative_threshold:
         try:
-            return splinalg.spsolve(A, b)
-        except Exception:
-            # Fallback to least squares if singular
-            return splinalg.lsqr(A, b)[0]
+            x = splinalg.spsolve(A, b)
+        except Exception as exc:
+            raise ValueError(
+                f"The {n}x{n} system is singular and cannot be solved directly "
+                f"({exc}). For a network Laplacian this means a connected component "
+                f"carries no pressure boundary."
+            ) from exc
+        if not np.all(np.isfinite(x)):
+            raise ValueError(
+                f"The direct solve returned non-finite pressures for a {n}x{n} "
+                f"system, so the matrix is singular: a connected component carries "
+                f"no pressure boundary. Prune to the largest component, or supply "
+                f"boundaries on every component. A least-squares fallback here "
+                f"returns a minimum-norm field over a component nothing is driving."
+            )
+        return x
 
     # Iterative solver (CG) for massive systems to save RAM
     # Use Incomplete LU factorization as a preconditioner
@@ -162,20 +181,33 @@ def _solve_system_smart(A: sp.csr_matrix, b: np.ndarray, iterative_threshold: in
         ilu = splinalg.spilu(A.tocsc(), drop_tol=1e-4, fill_factor=10)
         M = splinalg.LinearOperator(A.shape, ilu.solve)
         x, info = splinalg.cg(A, b, M=M, rtol=1e-8, maxiter=1000)
-        if info == 0:
-            return x
-        else:
-            print(f"[flow-solve] Warning: Iterative solver did not converge (info={info}). Falling back to lsqr.")
-            return splinalg.lsqr(A, b)[0]
-    except Exception as e:
-        print(f"[flow-solve] Preconditioning failed: {e}. Falling back to lsqr.")
-        return splinalg.lsqr(A, b)[0]
+    except Exception as exc:
+        raise ValueError(
+            f"Preconditioning or the iterative solve failed on a {n}x{n} system ({exc}). "
+            f"A least-squares fallback here would return a pressure field that looks "
+            f"solved and is not, so the failure is reported instead."
+        ) from exc
+    if info != 0:
+        raise ValueError(
+            f"The iterative solve did not converge on a {n}x{n} system (info={info}). "
+            f"A truncated solve is not a solution; raise the iteration cap or fix the "
+            f"conditioning rather than accepting a least-squares answer."
+        )
+    return x
 
 
 def calc_two_point_from_laplacian_matrix_nodeID(
     L: sp.csr_matrix, G: nx.MultiGraph, node_id1, node_id2
 ) -> float:
-    """Effective resistance between two nodes from Laplacian."""
+    """Effective resistance between two nodes, from the graph Laplacian.
+
+    Grounding one node leaves every *other* connected component ungrounded, so the full
+    matrix is singular whenever the graph is disconnected - which it routinely is after
+    skeletonisation. That used to reach a least-squares fallback and return a finite number
+    with no meaning. The solve is now restricted to the component the two nodes share, and
+    two nodes in different components raise: there is no resistance between them, and
+    infinity is the honest answer rather than whatever least squares produced.
+    """
     node_list = list(G.nodes())
     node_to_idx = {n: i for i, n in enumerate(node_list)}
     try:
@@ -183,19 +215,33 @@ def calc_two_point_from_laplacian_matrix_nodeID(
         node_idx2 = node_to_idx[node_id2]
     except KeyError as e:
         raise ValueError(f"Node {e} not found in graph")
-        
+
     n = L.shape[0]
-    b = np.zeros(n)
-    b[node_idx1] = 1.0
-    
-    L_lil = L.tolil()
-    L_lil[node_idx2, :] = 0
-    L_lil[:, node_idx2] = 0
-    L_lil[node_idx2, node_idx2] = 1.0
-    
-    L_csr = L_lil.tocsr()
-    x = _solve_system_smart(L_csr, b)
-    return float(x[node_idx1])
+    _, labels = sp.csgraph.connected_components(L, directed=False, return_labels=True)
+    if labels[node_idx1] != labels[node_idx2]:
+        # Infinity is the physical answer, and an unambiguous one: no current can pass
+        # between two nodes in different components. The old least-squares fallback
+        # returned a finite number here that read as a real resistance.
+        logger.warning(
+            "Nodes %r and %r lie in different connected components, so no current can pass "
+            "between them. Effective resistance is infinite.", node_id1, node_id2,
+        )
+        return float("inf")
+
+    # Solve inside the shared component only; everything else is ungrounded and singular.
+    member = np.flatnonzero(labels == labels[node_idx1])
+    local = {g: i for i, g in enumerate(member.tolist())}
+    L_sub = L[member, :][:, member].tolil()
+    local1, local2 = local[node_idx1], local[node_idx2]
+
+    b = np.zeros(len(member))
+    b[local1] = 1.0
+    L_sub[local2, :] = 0
+    L_sub[:, local2] = 0
+    L_sub[local2, local2] = 1.0
+
+    x = _solve_system_smart(L_sub.tocsr(), b)
+    return float(x[local1])
 
 
 def solve_flow_from_conductance_matrix(
@@ -266,6 +312,35 @@ def solve_flow_from_conductance_matrix(
         sorted(set(range(n_nodes)).difference(set(known_idx))), dtype=int
     )
 
+    # A connected component carrying no pressure boundary has no defined pressure: nothing
+    # drives it, and its block of the Laplacian is singular. This used to reach spsolve,
+    # return NaN, and be answered with a least-squares minimum-norm field - a well-formed
+    # pressure map over a component nothing is driving, indistinguishable in the output from
+    # a real one. Such nodes are now excluded from the solve and reported, and their
+    # pressure is left as NaN so nothing downstream can read it as a number.
+    n_components, labels = sp.csgraph.connected_components(
+        conductance, directed=False, return_labels=True)
+    supported = set(labels[known_idx].tolist()) if len(known_idx) else set()
+    solvable_mask = np.array([labels[i] in supported for i in unknown_idx], dtype=bool)
+    unsupported_idx = unknown_idx[~solvable_mask]
+    unknown_idx = unknown_idx[solvable_mask]
+
+    if len(unsupported_idx):
+        pressure[unsupported_idx] = np.nan
+        logger.warning(
+            "%d of %d nodes lie in %d connected component(s) with no pressure boundary and "
+            "have no defined pressure. They are excluded from the solve and their pressure "
+            "is NaN. Every flow reported below is for the boundary-supported part of the "
+            "network only.",
+            len(unsupported_idx), n_nodes,
+            len(set(labels[unsupported_idx].tolist())),
+        )
+    if not supported:
+        raise ValueError(
+            f"No connected component carries a pressure boundary: {n_components} "
+            f"component(s), {len(known_idx)} boundary node(s). There is nothing to solve."
+        )
+
     n_free = int(len(unknown_idx))
     print(
         f"[flow-solve] Solving sparse matrix with {n_nodes} nodes, {n_free} degrees of freedom..."
@@ -276,7 +351,7 @@ def solve_flow_from_conductance_matrix(
         l_uk = laplacian[unknown_idx, :][:, known_idx]
         p_k = pressure[known_idx]
         rhs = -l_uk.dot(p_k)
-        
+
         pressure[unknown_idx] = _solve_system_smart(l_uu, rhs)
 
     flow_result = {

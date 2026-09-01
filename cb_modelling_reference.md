@@ -31,8 +31,54 @@
 | What is turned off in the model, and why? | §10.6 constriction; §6.6 Tier 2; §2.5 bundle collapse |
 | What am I allowed to claim? | **§13.10** |
 | What was a given parameter set to? | §10 |
+| Which section owns a figure I need to change? | "Where each figure is owned", just below |
 | What has never been validated? | §12.4 — nothing has |
 | What is still unresolved in the code? | The open items table at the end |
+
+---
+
+## Where each figure is owned
+
+Some figures appear in several sections, because a reader who lands in one section needs the
+context there. That is deliberate. What is not deliberate is two copies drifting apart, so
+every load-bearing figure has exactly **one owning section**: the place where it is derived,
+and the only place to change it. Everywhere else quotes it with a pointer back.
+
+| Figure | Value | Owner | Also appears in |
+|---|---|---|---|
+| Processing voxel | 1.8639 × 1.866 × 1.866 µm | §10.1 | §2.1, §2.4, §7.2 |
+| ROI size | 160³ voxels = 0.0266 mm³, 4–12% of the imaged block | §2.1 | §1.1, §10.1 |
+| Imaged block volume | 0.227 mm³ (WKY-C) – 0.653 mm³ (WKY-A) | §10.1 | §2.1 |
+| Frozen segmentation threshold | 0.90, band 0.90 / 0.95 as run | §2.2 | §2.3, §10.2, §13.8 |
+| Config hysteresis band | 0.65 / 0.75 — **not what ran** | §2.3 | §10.2, open item 1 |
+| Capillary calibre window | 4.0–7.0 µm | §2.2 | §10.2 |
+| Fragmentation tolerance | 1.5 × median endpoint density | §2.2 | §10.2 |
+| Stub / reconnection threshold | 5.6 µm = p99 inscribed radius | §2.5 | §2.4, §10.3, §11.1 |
+| β₁ | 307 on the reference subvolume | §2.5 | §7.1, §10.3 |
+| Junction exclusion | 3.73 µm ≈ one capillary inscribed radius | §2.6 | §10.5, §11.1, §13.3 |
+| Median EDT diameter | 6.37 µm (EDT) against 8.20 µm (FWHM), *r* = 0.245 | §2.6 | §3.1, §10.5 |
+| Boundary rule and axis | face rule, axis 1, 1-voxel tolerance | §2.8 | §8.1, §8.2, §13.4 |
+| Boundary sensitivity | 13.3% (face) against 75.8% (band) | §2.8 | §13.4 |
+| Interior terminal share | 83.5–86.9%, mean ≈ 86% | §8.2 | §2.8, §13.4 |
+| Pressure boundaries **as run** | 60 / 20 mmHg, arteriolar to venular | §8.1 | §7.8, §11, §13.5, §14 |
+| Pressure boundaries in config | 100 / 2 mmHg — **not what ran** | §8.1 | §10.7, open item 10 |
+| Systemic haematocrit | 0.45 | §4.1 | §4.3, §6.7, §10.7 |
+| Perfusion grid pitch | 4 µm, PO₂ within ~1% of the converged limit | §6.8 | §6.1, §6.5, §10.9, §13.7 |
+| Metabolic rate **as run** | `BASE_M_MAX` = 0.05 mmol/L/s | §6.4 | §6.5, §13.6, open item 8 |
+| Metabolic contrasts | 1×, 2×, 4× | §6.5 | §7.5, §13.6 |
+| Hypoxic thresholds | 5, 10, 20 mmHg | §7.5 | §13.6 |
+| Tissue-to-vessel distance | median 5.28–7.92 µm, p90 25.9–53.1 µm | §13.7 | §6.8, §7.2 |
+| Oxygen diffusion length | 20 µm at PO₂ 10, 35 at 30, 45 at 50 | §13.6 | §6.8 |
+| Total inlet flow | 6,511–16,240 µm³/s | §13.5 | §7.6 |
+| Flow-weighted velocity | 4.1–9.7 µm/s against a physiological 200–1,000 | §13.5 | §11, §13.10 |
+| Calibre error floor | ±45% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
+| Within-specimen floor | ±6.3% | §13.3 | §7.3 |
+| Pre-threshold filter cost | median-3 destroys 80% of the vessel | §2.3 | §11.1 |
+
+**In code, these live in `src/ImageLynx/cb_settings.py`**, which is the single owner for every
+value a driver needs. `specimens.py` owns the voxel size and the specimen list. Anything not
+in one of those two is either a `carotid_image_to_model.py` config default — several of which
+disagree with what ran, and are listed as open items — or a figure measured rather than set.
 
 ---
 
@@ -102,7 +148,7 @@ source added before it can be quoted anywhere.
 
 ---
 
-## §2 — Geometric model: from voxels to a vascular graph
+## §2 — Geometric model, part 1: from voxels to a binary mask
 
 Everything downstream inherits from this section. Resistance goes as $d^{-4}$ (§13.1), so a choice
 made here about where the vessel wall sits is amplified fourfold in every flow quantity.
@@ -309,7 +355,7 @@ size filter is applied to the mask at all — speckle removal happens later, on 
 (§2.5), at `min_branch_length = 3` voxels and a 5% component fraction. The row is here to justify
 why the pre-threshold filters are off, not to describe a step.
 
-### The operative path: plain hysteresis
+### 2.3.1 The operative path: plain hysteresis
 
 Two thresholds, `low = 0.65` and `high = 0.75`, applied as a connectivity rule rather than a cut:
 
@@ -442,6 +488,14 @@ detached shell, with the wall voxels evacuated — the opposite of the intent.
 
 ---
 
+## §2 — Geometric model, part 2: from mask to graph
+
+Sections 2.4 and 2.5 turn the binary mask into a graph of nodes and edges. The subsection
+numbers continue from part 1 rather than restarting, because they are cross-referenced from
+throughout the document.
+
+---
+
 ### 2.4 Skeletonisation and graph construction
 
 **What it does.** Reduces the binary mask to a one-voxel-wide centreline, then converts that
@@ -456,16 +510,15 @@ stitching and a 5.6 µm terminal reconnection.
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
 | 1 | Morphological closing of the mask | radius 1 | Seals segmentation dropouts up to about 2 voxels without moving the vessel surface, which a dilation would | **On** | `carotid_image_to_model.py:839` |
-| 2 | "Gap bridging" of the mask | size 1 | A second call left from when this was a dilation; harmless now only because closing is idempotent at a fixed radius | **On, but a no-op** — also a radius-1 closing, and closing is idempotent | `carotid_image_to_model.py:840` |
-| 3 | Keep only the N largest mask components | N = 1 | Anything not connected to the main tree cannot carry flow between boundaries, and would generate spurious skeleton if kept | **On** | `carotid_image_to_model.py:847` |
-| 4 | Skeletonise | downsample 1.0 | The whole haemodynamic model is 1D; native resolution because downsampling fuses capillaries a voxel or two apart | **On**, native resolution | `skeleton.py:21` |
-| 5 | Remove small skeleton objects | 3 voxels | A 3-voxel fragment is skeletonisation noise, and each one contributes two spurious endpoints to every density measure | **On** | `skeleton.py:526` |
-| 6 | Bundle collapse | density 1.0 | Disabled — it destroyed 208 of 307 loops, and $\beta_1$ is the H1 §1.1 readout | **Disabled** — see §2.5 | `skeleton.py:532` |
-| 7 | Component fraction filter | 5% | Catches floating fragments large enough to survive the voxel-count filter but still too small to be vessel | **On** | `skeleton.py:540` |
-| 8 | Re-skeletonise | — | Removing objects can leave one-voxel remnants that are no longer proper centrelines | **On** | `skeleton.py:546` |
-| 9 | Bridge separated skeleton components | 0 | Disabled — repair belongs on the thick mask, where a closing works; on a 1-voxel skeleton the erosion removes the bridge again | **Disabled** | `skeleton.py:547` |
-| 10 | skan path extraction → NetworkX MultiGraph | — | Turns the voxel centreline into nodes and edges; a MultiGraph so two capillaries between the same junctions both survive | **On** | `build.py:22` |
-| 11 | Terminal reconnection | 5.6 µm | Dead ends within one p99 vessel radius of each other are segmentation breaks, not real terminations | **On** | `build.py:157` |
+| 2 | Keep only the N largest mask components | N = 1 | Anything not connected to the main tree cannot carry flow between boundaries, and would generate spurious skeleton if kept | **On** | `carotid_image_to_model.py:847` |
+| 3 | Skeletonise | downsample 1.0 | The whole haemodynamic model is 1D; native resolution because downsampling fuses capillaries a voxel or two apart | **On**, native resolution | `skeleton.py:21` |
+| 4 | Remove small skeleton objects | 3 voxels | A 3-voxel fragment is skeletonisation noise, and each one contributes two spurious endpoints to every density measure | **On** | `skeleton.py:526` |
+| 5 | Bundle collapse | density 1.0 | Disabled — it destroyed 208 of 307 loops, and $\beta_1$ is the H1 §1.1 readout | **Not called** — guarded out at density ≥ 1.0 rather than called and short-circuited | `skeleton.py:536` |
+| 6 | Component fraction filter | 5% | Catches floating fragments large enough to survive the voxel-count filter but still too small to be vessel | **On** | `skeleton.py:540` |
+| 7 | Re-skeletonise | — | Removing objects can leave one-voxel remnants that are no longer proper centrelines | **On** | `skeleton.py:546` |
+| 8 | Bridge separated skeleton components | 0 | Disabled — repair belongs on the thick mask, where a closing works; on a 1-voxel skeleton the erosion removes the bridge again | **Disabled** | `skeleton.py:547` |
+| 9 | skan path extraction → NetworkX MultiGraph | — | Turns the voxel centreline into nodes and edges; a MultiGraph so two capillaries between the same junctions both survive | **On** | `build.py:22` |
+| 10 | Terminal reconnection | 5.6 µm | Dead ends within one p99 vessel radius of each other are segmentation breaks, not real terminations | **On** | `build.py:157` |
 
 **Bridging is a closing, not a dilation.** `bridge_gaps` — a plain distance-transform dilation — was
 replaced by `close_binary_mask` at both call sites. This matters because a dilation never erodes
@@ -478,10 +531,13 @@ without permanently expanding boundaries. ⚠ The two are *not* interchangeable 
 skeleton, where the erosion step would remove the bridge again — closing is only correct on the
 thick mask.
 
-**Closing at radius 1 runs twice and acts once.** `closing_radius` and `bridge_gap_size` are both 1
-and both call the same function. Closing is idempotent for a fixed structuring element, so step 2
-changes nothing. Radius is not additive across calls: one call at radius 2 would be a different and
-larger operation, not equivalent to two at radius 1.
+**There is one closing parameter, and there used to be two.** `closing_radius` and
+`bridge_gap_size` both called `close_binary_mask`, one after the other. Closing is idempotent for a
+fixed structuring element, so at equal radii the second call could never do anything, and at unequal
+ones it was a second, differently sized closing wearing the name of a bridge. `bridge_gap_size` has
+been removed from `SkeletonConfig`. Radius is not additive across calls: set `closing_radius` to 2
+rather than reaching for a second field, because one call at radius 2 is a different and larger
+operation than two at radius 1.
 
 **Padding inside the closing.** `scipy` erodes against a zero border, so without a pad every voxel
 touching the array edge is removed — a tube crossing the domain boundary lost its entire first and
@@ -549,7 +605,7 @@ The skeleton-level filters (small-object removal, bundle collapse, component fra
 | 3 | Degree-2 collapse, curvature-preserving | — | A node with exactly two edges is not a junction; keeping it inflates node counts and chops one vessel into several segments | **On** | `carotid_image_to_model.py:960` |
 | 4 | Terminal stub pruning, iterated to convergence | 5.6 µm, ≤ 100 passes | Spurs at branch points are artefacts; iterated because removing one stub can expose another behind it | **On**; counts printed unconditionally | `carotid_image_to_model.py:973` |
 | 5 | Remove self-loop edges on otherwise isolated nodes | — | An edge from a node to itself with no other connection is geometrically impossible and carries no pressure drop | **On** | `carotid_image_to_model.py:986` |
-| 6 | Core dead-end resolution (`eradicate` / `stitch`) | mode `"none"` | Disabled — both modes invent topology: `eradicate` deletes real capillaries, `stitch` fabricates connections that were never imaged | **Disabled** | `carotid_image_to_model.py:991` |
+| 6 | Core dead-end resolution (`eradicate` / `stitch`) | — | Both modes invent topology: `eradicate` deletes real capillaries, `stitch` fabricates connections that were never imaged | **Removed from this path**; the operator remains in `graph/prune.py` for `resistance_network_pipeline.py` | `prune.py:111` |
 | 7 | B-spline smoothing of every edge centreline | `smoothing_alpha` 0.75 | The voxel centreline is a staircase; tortuosity read off it would measure the sampling lattice rather than the vessel | **On** | `carotid_image_to_model.py:1014` |
 | 8 | Keep largest connected component of the graph | `True` | The operators above can sever pieces the mask held together, and a component with no boundary node makes the Laplacian singular | **On** | `carotid_image_to_model.py:1028` |
 
@@ -609,6 +665,13 @@ the lower quartile of *genuine* terminal branches.
 
 > **At a glance** — stubs pruned at 5.6 µm, bundle collapse disabled · β₁ = 307, invariant to stub
 > length · `skeleton.py:472`, `graph/prune.py`, `graph/degree2.py` · `tests/test_graph.py`
+
+---
+
+## §2 — Geometric model, part 3: measuring the graph
+
+Sections 2.6 to 2.8 attach the physical quantities the haemodynamics needs — a diameter, a
+topological order, and a set of pressure boundaries — to the graph part 2 produced.
 
 ---
 
@@ -799,7 +862,7 @@ in the H2 drivers. The main pipeline still runs the band rule on axis 0; see the
 | 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | `image_shape` is in voxels while node `pos` is in microns — comparing them unscaled shrinks the apparent volume and drags interior dead ends into the band | **On** | `boundaries.py:40` |
 | 3 | Terminals in the lowest `edge_percent` of the axis → inlets | 25% | A positional proxy for "near the arterial end", with no anatomical anchor behind the width | **On** | `boundaries.py:47` |
 | 4 | Terminals in the highest `end_percent` of the axis → outlets | 25% | The same proxy at the other end of the axis | **On** | `boundaries.py:48` |
-| 5 | If either set is empty, fall back to the extreme 10% of **all** nodes | — | Guarantees the solve always has boundaries — which is precisely the failure the face rule refuses to paper over | **On** — silent, logged at INFO only | `boundaries.py:52` |
+| 5 | If either set is empty, **raise** | — | An unsolvable region should stay unsolvable rather than be solved with boundaries picked from nodes that are not vessel terminations | **On** — the silent fallback to the extreme decile of *all* nodes has been removed | `boundaries.py:52` |
 | 6 | Route the remainder by permeability mode | `caged` | Decides whether the remaining interior dead ends drain, resist, or simply stop | **On** — non-band terminals are not boundaries | `boundaries.py:66` |
 | 7 | Drop any node that landed in both sets | — | A node cannot carry two different Dirichlet pressures at once | **On**, inlets win | `boundaries.py:81` |
 | 8 | Sort inlets ascending, outlets descending, by axis coordinate | — | Makes `resistance_node_pair` deterministic across runs, since it takes the first entry of each list | **On** | `boundaries.py:83` |
@@ -992,7 +1055,7 @@ for graph-only callers and adds VTK export.
 | 4 | Partition indices into known and unknown | — | Boundary pressures are already known, so those rows are removed rather than solved for | **On** | `rheology.py:227` |
 | 5 | Schur complement: $\mathbf{L}_{uu}\,\mathbf{p}_u = -\,\mathbf{L}_{uk}\,\mathbf{p}_k$ | — | Reduces the system to the unknown block, carrying the known pressures across to the right-hand side | **On** | `rheology.py:234` |
 | 6 | Direct sparse factorisation | `spsolve`, below 50,000 unknowns | Exact to machine precision, and cheap at the ~10³ nodes these graphs carry | **On** — CB graphs are ~10³ nodes | `resistance.py:152` |
-| 7 | On a singular matrix, fall back to least squares | `lsqr` | A singular Laplacian would otherwise abort the run; least squares returns a minimum-norm answer instead | **On**, and **silent** | `resistance.py:155` |
+| 7 | Exclude components carrying no pressure boundary, then **raise** if the solve is still singular | — | Nothing drives such a component, so it has no defined pressure; least squares used to answer it with a well-formed field that meant nothing | **On** — excluded nodes get NaN and a warning naming the count | `resistance.py:288` |
 | 8 | Above 50,000: CG with an **ILU** preconditioner | `drop_tol` 1e-4, `fill_factor` 10, `rtol` 1e-8, `maxiter` 1000 | Off — a direct factorisation of a 50,000-node system would exhaust memory, so the large case needs an iterative path | **Off** — threshold never reached | `resistance.py:161` |
 | 9 | Per edge, $Q = (p_u - p_v) / R$, signed | — | Ohm's law for the hydraulic analogue: once pressures are known, flow follows without another solve | **On** | `rheology.py:252` |
 | 10 | Direct the edge from high pressure to low | — | Haematocrit transport and transit time both need to know which way blood actually moves along each edge | **On**, builds the DAG | `rheology.py:261` |
@@ -1121,7 +1184,7 @@ flow. The loop closes it by Picard iteration:
 |---|---|---|---|---|---|
 | 1 | Every edge set to systemic haematocrit | H = 0.45 | The loop needs a starting haematocrit, and systemic is the only value known independently of the network | **On**, once | `rheology.py:195` |
 | 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | Gives the first pressure solve a physically scaled resistance rather than the power-law stand-in | **On**, once | `rheology.py:196` |
-| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um` → **5.0 µm** | — | Diameter is the one input with no safe default, yet the chain still supplies one — hence the open item | **On** — silent fallback, open item 9 | `rheology.py:191` |
+| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um`, else **raise** | `default_diameter_um` opt-in | Resistance goes as $d^{-4}$, so a substituted calibre produces a fabricated flow field rather than an approximate one | **On** — the silent 5.0 µm fallback has been removed; open item 9 closed | `rheology.py:191` |
 | 4 | Solve the Laplacian for nodal pressure (§3.4) | — | Flow cannot be known until pressures are, and pressures change as resistances do | **On**, every iteration | `rheology.py:211` |
 | 5 | Per-edge signed flow; direct high → low into a DAG | — | Phase separation is defined on a directed tree, so the flow directions have to be resolved first | **On**, every iteration | `rheology.py:252` |
 | 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | Stops the loop once further passes would not move the answer | **On**, from iteration 1 | `rheology.py:268` |
@@ -2605,7 +2668,31 @@ assumption.
 **Other quantities carry their own provenance**: diameters carry `diameter_provenance`, centrelines
 carry `centreline_smoothing`, radii carry `edt_junction_trim`.
 
-### 14.3 Which script produces what
+### 14.3 Changes made for tractability, and what they can and cannot affect
+
+These changes were made **after** every H1 and H2 number in this document was produced. None
+alters an equation, a parameter value, or a result. They are recorded here because a
+repository that has moved on from the one that produced the published figures has to say so.
+
+| # | Change | Can it move a published number? |
+|---|---|---|
+| 1 | `src/ImageLynx/cb_settings.py` owns the analysis constants; every `cb_*` driver imports them | **No.** Same values, one definition. `tests/test_cb_settings.py` pins them |
+| 2 | Missing or degenerate data raises instead of being substituted | **No** for any run that completed. A run that silently used a 5.0 µm diameter, a least-squares pressure field, or the extreme-decile boundary fallback would now fail loudly instead |
+| 3 | `SkeletonConfig.bridge_gap_size` removed | **No.** It applied a second radius-1 closing, and closing is idempotent, so it could not act |
+| 4 | Core dead-end resolution and the constriction branch removed from the CB driver; bundle collapse guarded out | **No.** All three were already inert: mode `"none"`, a validator that raises, and a density threshold no window can reach |
+
+**What change 2 found.** Three integration tests of `resistance_network_pipeline.py` — a
+different pipeline, not the carotid body path — had been passing on least-squares answers to
+singular systems. Their synthetic fixture skeletonises into 54 components with the largest
+holding 53% of voxels, so components with no pressure boundary reached the solver and were
+answered with a minimum-norm field over a network nothing was driving. The solve now excludes
+those components, reports how many nodes it dropped, and leaves their pressure as NaN.
+Effective resistance between two nodes in different components returns infinity, which is the
+physical answer, rather than a finite least-squares value.
+
+**No CB result depended on any of those paths**, which is why no figure in this document moves.
+
+### 14.4 Which script produces what
 
 | Script | Produces |
 |---|---|
@@ -2622,7 +2709,7 @@ carry `centreline_smoothing`, radii carry `edt_junction_trim`.
 | `cb_h2_hypoxic_fraction.py` | §7.5 hypoxic fraction on the heterogeneous grid |
 | `cb_h2_vtk.py` | H2 ParaView artefacts |
 
-### 14.4 Randomness
+### 14.5 Randomness
 
 The pipeline is deterministic except for hyperparameter search. Optuna's TPE sampler takes an
 explicit seed, defaulting to a fixed value, and **the seed is written into the tuning provenance
@@ -2632,7 +2719,7 @@ reproduced is not a reproducible parameter set.
 Pericyte constriction draws a random cohort per run (§10.6). It is frozen, so nothing on the CB path
 is stochastic.
 
-### 14.5 Reproducing a result
+### 14.6 Reproducing a result
 
 1. Preprocess to Ilastik input with the recorded parameters — identical for all six volumes.
 2. Predict headlessly with the classifier named in the sidecar.
@@ -2789,17 +2876,23 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 
 | # | Item | Blocks |
 |---|---|---|
-| 1 | Two segmentation thresholds in play — config 0.65/0.75 vs the frozen 0.90 used for H1 | §2.2, and any quoted calibre |
-| 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1 | §2.8, §8, §13 — the largest sensitivity in the model |
+| 1 | Two segmentation thresholds in play — config 0.65/0.75 vs the frozen 0.90 used for H1. **Now pinned**: `cb_settings.FROZEN_THRESHOLD` owns the value and `test_cb_settings.py` asserts the config default has not moved | §2.2, and any quoted calibre |
+| 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1. **Now pinned**: `cb_settings.BOUNDARY_AXIS` owns the axis, and the band rule's silent decile fallback has been removed | §2.8, §8, §13 — the largest sensitivity in the model |
 | 3 | Arterial PO₂ set in both config and solver bodies | §5, §6 |
 | 4 | Baseline haematocrit duplicated in the Tier 1 washout path | §6.6 |
 | 5 | `C_arterial` is dead configuration — declared 3×, read 0× | §6 |
 | 6 | Solver tolerances disagree between config and code | Appendix A |
 | 7 | 13 parameters still marked `[CITE]`, including every blood-gas solubility and the Spencer CO₂ curve | §10 completeness |
-| 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and the H2 driver's `BASE_M_MAX` (0.05). The published §2.3 results used 0.05 | §6.4, §13.6 |
-| 9 | The rheology solver falls back to a silent 5.0 µm diameter; `map_vessels_to_grid` raises on the same condition | §3.2 |
-| 10 | Pressure boundaries disagree: config 100/2 mmHg, H2 drivers 60/20 mmHg. Every published H2 number used 60/20 | §7.8, §8, §11 row 15 |
+| 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |
+| ~~9~~ | **Closed.** The rheology solver raised a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. The same pass removed the least-squares pressure fallback and the extreme-decile boundary fallback | §3.2, §3.4, §2.8 |
+| 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
 | 12 | The rheology loop rescales resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contains $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
+
+**"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
+twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
+config default drifts further. What is still open is the *decision*: which of the two values is
+right. That is a modelling judgement, not a refactor, and changing either one re-dates every
+number in §7 and §13. Item 12 is the only remaining item that is known to move a result.
 
 ---

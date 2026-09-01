@@ -161,6 +161,37 @@ def calculate_phase_separation_hematocrit(
     return float(h_out1), float(h_out2)
 
 
+def _edge_diameter_um(data, default_diameter_um=None):
+    """The edge's measured diameter, or the caller's deliberate stand-in.
+
+    This used to substitute 5.0 um silently whenever the attribute was absent or
+    non-positive - open item 9 in ``cb_modelling_reference.md``. Resistance goes as the
+    fourth power of diameter, so a cached graph carrying no calibre solved at a uniform
+    5 um for every edge and produced a flow field that was arithmetically fine and meant
+    nothing. ``map_vessels_to_grid`` and ``edge_transit_times`` already raised on exactly
+    this condition; this function makes the third site agree with them.
+    """
+    diameter = data.get("assigned_diameter_um", data.get("fwhm_diameter_um"))
+    if diameter is not None and float(diameter) > 0:
+        return float(diameter)
+    return None if default_diameter_um is None else float(default_diameter_um)
+
+
+def _require_diameters(G, default_diameter_um=None):
+    """Raise unless every edge carries a usable diameter."""
+    missing = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
+               if _edge_diameter_um(d, default_diameter_um) is None]
+    if missing:
+        shown = ", ".join(str(e) for e in missing[:3])
+        raise ValueError(
+            f"{len(missing)} of {G.number_of_edges()} edges have no usable diameter "
+            f"(absent or non-positive), for example {shown}. Resistance goes as the fourth "
+            f"power of diameter, so a substituted calibre produces a fabricated flow field "
+            f"rather than an approximate one. Assign diameters first, or pass "
+            f"default_diameter_um to model the unmeasured edges at a stated calibre."
+        )
+
+
 def solve_coupled_flow_and_hematocrit(
     G: nx.MultiGraph, 
     starting_nodes: list[int],
@@ -169,7 +200,8 @@ def solve_coupled_flow_and_hematocrit(
     output_p_bc: float,
     systemic_hematocrit: float = 0.45,
     max_iterations: int = 15,
-    tolerance: float = 1e-4
+    tolerance: float = 1e-4,
+    default_diameter_um: float | None = None,
 ) -> tuple[nx.MultiGraph, np.ndarray]:
     """
     Solves the highly non-linear coupled system of Flow, Resistance, and Hematocrit.
@@ -312,9 +344,9 @@ def solve_coupled_flow_and_hematocrit(
                 # Bifurcation -> Plasma Skimming
                 e1, e2 = out_edges[0], out_edges[1]
                 q1 = e1[3]["flow_abs"]
-                d1 = e1[3].get("assigned_diameter_um", e1[3].get("fwhm_diameter_um", 5.0))
+                d1 = _edge_diameter_um(e1[3], default_diameter_um)
                 q2 = e2[3]["flow_abs"]
-                d2 = e2[3].get("assigned_diameter_um", e2[3].get("fwhm_diameter_um", 5.0))
+                d2 = _edge_diameter_um(e2[3], default_diameter_um)
                 
                 h1, h2 = calculate_phase_separation_hematocrit(
                     q1 + q2, h_mix, q1, d1, q2, d2

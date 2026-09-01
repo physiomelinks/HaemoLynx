@@ -529,13 +529,18 @@ def preprocess_skeleton_for_graph(
         connectivity=conn,
     )
     # Refine dense local bundles into single hub nodes with clean in/out links.
-    cleaned = skeletonize_voxel_bundles_into_paths(
-        cleaned,
-        scan_size=bundle_scan_size,
-        density_fraction=bundle_density_fraction,
-        max_connections_per_hub=bundle_max_connections_per_hub,
-        hub_min_spacing=bundle_hub_min_spacing,
-    )
+    # Skipped outright at density_fraction >= 1.0 rather than called and short-circuited
+    # inside. A sliding window can never be 100% skeleton, so at that setting the operator
+    # was doing nothing while still appearing in every trace of the carotid body path. The
+    # guard is behaviour-preserving: it returns its input unchanged at that setting anyway.
+    if bundle_density_fraction < 1.0:
+        cleaned = skeletonize_voxel_bundles_into_paths(
+            cleaned,
+            scan_size=bundle_scan_size,
+            density_fraction=bundle_density_fraction,
+            max_connections_per_hub=bundle_max_connections_per_hub,
+            hub_min_spacing=bundle_hub_min_spacing,
+        )
 
     if min_component_fraction > 0.0:
         cleaned = _filter_components_by_total_fraction(
