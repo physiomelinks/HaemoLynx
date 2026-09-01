@@ -43,14 +43,16 @@ from ImageLynx.haemodynamics.tissue_regions import edge_tissue_fraction  # noqa:
 from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa: E402
 from ImageLynx.roi_placement import place_roi                          # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS         # noqa: E402
+from ImageLynx import cb_settings                                     # noqa: E402
 
 BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
-ROI = (160, 160, 160)
-BOUNDARY_AXIS = 1
-TH_THRESHOLD = 0.5
+# Analysis settings come from ImageLynx.cb_settings, which is their single owner.
+ROI = cb_settings.ROI_VOXELS
+BOUNDARY_AXIS = cb_settings.BOUNDARY_AXIS
+TH_THRESHOLD = cb_settings.TH_THRESHOLD
 #: An edge counts as penetrating when this much of its length lies inside the TH mask.
-PENETRATION = 0.5
-INLET_P, OUTLET_P = 60.0, 20.0        # mmHg, arteriolar to venular
+PENETRATION = cb_settings.PENETRATION_FRACTION
+INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
 
 
 def _load_graph(specimen):

@@ -41,12 +41,14 @@ from ImageLynx.specimens import (                                       # noqa: 
     PROCESSING_VOXEL_UM, SPECIMENS, get_specimen,
 )
 from ImageLynx.statistics.cohort_split import assess_cohort_split       # noqa: E402
+from ImageLynx import cb_settings                                       # noqa: E402
 from ImageLynx.statistics.threshold_selection import (                  # noqa: E402
     select_threshold, sweep_thresholds,
 )
 
-DEFAULT_ROI = (160, 160, 160)
-DEFAULT_GRID = [0.30, 0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99]
+# Analysis settings come from ImageLynx.cb_settings, which is their single owner.
+DEFAULT_ROI = cb_settings.ROI_VOXELS
+DEFAULT_GRID = list(cb_settings.THRESHOLD_GRID)
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
 
 

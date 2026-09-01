@@ -49,14 +49,16 @@ from ImageLynx.haemodynamics.tissue_regions import (                     # noqa:
 )
 from ImageLynx.roi_placement import place_roi                            # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS           # noqa: E402
+from ImageLynx import cb_settings                                       # noqa: E402
 
 BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
-ROI = (160, 160, 160)
-BOUNDARY_AXIS = 1
-TH_THRESHOLD = 0.5
-GRID_UM = 4.0
-INLET_P, OUTLET_P = 60.0, 20.0
-BASE_M_MAX = 0.05
+# Analysis settings come from ImageLynx.cb_settings, which is their single owner.
+ROI = cb_settings.ROI_VOXELS
+BOUNDARY_AXIS = cb_settings.BOUNDARY_AXIS
+TH_THRESHOLD = cb_settings.TH_THRESHOLD
+GRID_UM = cb_settings.GRID_UM
+INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
+BASE_M_MAX = cb_settings.BASE_M_MAX
 HYPOXIC_THRESHOLDS = (5.0, 10.0, 20.0)
 
 

@@ -35,10 +35,11 @@ from ImageLynx.specimens import (                                      # noqa: E
     PROCESSING_VOXEL_UM, SPECIMENS, TH_CHANNEL, VESSEL_CHANNEL,
 )
 from ImageLynx.statistics.th_morphometry import ThMorphometry, summarise  # noqa: E402
+from ImageLynx import cb_settings                                      # noqa: E402
 
 #: The threshold cb_h1_batch froze for all six after checking it does not split the cohorts.
-FROZEN_VESSEL_THRESHOLD = 0.9
-ROI = (160, 160, 160)
+FROZEN_VESSEL_THRESHOLD = cb_settings.FROZEN_THRESHOLD
+ROI = cb_settings.ROI_VOXELS
 
 #: Why any SHR row here is provisional. Carried into the JSON and printed beside the table,
 #: because a caveat that lives only in a commit message is a caveat nobody reads.

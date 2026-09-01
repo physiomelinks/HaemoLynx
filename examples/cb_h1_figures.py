@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS
+from ImageLynx import cb_settings
 
 # Categorical slots 1 and 2 of the reference palette, validated for CVD separation
 # (worst adjacent pair dE 24.7 protan) and >= 3:1 contrast on the light surface.
@@ -32,7 +33,7 @@ INK_MUTED = "#52514e"
 GRID = "#e3e2df"
 
 RESULTS = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
-ROI_VOXELS = 160 ** 3
+ROI_VOXELS = int(np.prod(cb_settings.ROI_VOXELS))
 ROI_MM3 = ROI_VOXELS * float(np.prod(PROCESSING_VOXEL_UM)) / 1e9
 VOXEL_UM = PROCESSING_VOXEL_UM[1]
 

@@ -40,10 +40,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ImageLynx.artefact_provenance import read_provenance          # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS     # noqa: E402
+from ImageLynx import cb_settings                                 # noqa: E402
 
 RESULTS = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
 OUTPUT = Path(__file__).resolve().parent / "outputs" / "cb_h1_paraview"
-FROZEN_THRESHOLD = 0.90
+FROZEN_THRESHOLD = cb_settings.FROZEN_THRESHOLD
 
 #: Numeric codes for the categorical provenance tags. ParaView cannot colour by a string
 #: array, so each tag is written twice: the string for reading, the code for colouring.
