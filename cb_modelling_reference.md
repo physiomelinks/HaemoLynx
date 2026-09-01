@@ -804,7 +804,7 @@ in the H2 drivers. The main pipeline still runs the band rule on axis 0; see the
 | 7 | Drop any node that landed in both sets | — | **On**, inlets win | `boundaries.py:81` |
 | 8 | Sort inlets ascending, outlets descending, by axis coordinate | — | **On** | `boundaries.py:83` |
 
-⚠ Step 5 of the band rule is the fallback §2.8 warns about below, and it is **live** on the H1 path.
+⚠ Step 5 of the band rule is the fallback this section warns about below, and it is **live** on the H1 path.
 It converts a graph with no terminal in the band into a solved one by promoting the extreme decile
 of *all* nodes — interior spurs included — to pressure boundaries. The face rule raises instead.
 
@@ -891,6 +891,58 @@ whatever `set_poiseuille_resistances` assigned:
 R     = 128 · μ_app · L / (π · d⁴)
 ```
 
+**The order of operations — which viscosity is in force, when.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | `set_poiseuille_resistances` writes R from the power law | µ = 1/d^1.647 | **On** | `poiseuille.py:160` |
+| 2 | Rheology solver **overwrites** R from Pries–Secomb at systemic Hct | H = 0.45, µ_plasma 1.2 cP, in vivo law | **On**, before the loop | `rheology.py:196` |
+| 3 | Each Picard pass recomputes µ_app from the edge's current Hct | in vivo Pries–Secomb | **On** | `rheology.py:349` |
+| 4 | R **rescaled** as `original_resistance × µ_app / µ_old` | µ_old = 1/d^1.647 | **On** — see the warning below | `rheology.py:363` |
+| 5 | `original_resistance` captured once, on the first pass through step 4 | — | **On**, never updated after | `rheology.py:355` |
+
+> ⚠ **Open item 12 — step 4 double-applies viscosity, inflating every resistance by roughly
+> 200–540×.**
+>
+> The rescale is correct *if* `original_resistance` holds the power-law resistance, because
+> `R_old × µ_app/µ_old` then telescopes to `128 µ_app L / (π d⁴)`. It does not. Step 2 overwrites
+> `data["resistance"]` with the **Pries–Secomb** value before the loop starts, and step 5 captures
+> `original_resistance` from that overwritten value on the first pass. The power-law µ_old therefore
+> divides a resistance that no longer contains it, and the surviving factor is
+> `µ_PS(d, 0.45) · d^1.647`:
+>
+> | d (µm) | µ_PS(d, 0.45) cP | µ_old = 1/d^1.647 | Inflation factor |
+> |---|---|---|---|
+> | 3 | 37.97 | 0.1638 | **232×** |
+> | 4 | 21.24 | 0.1020 | **208×** |
+> | 5 | 15.14 | 0.0706 | **215×** |
+> | 6 | 12.01 | 0.0523 | **230×** |
+> | 8 | 8.77 | 0.0326 | **269×** |
+> | 12 | 5.95 | 0.0167 | **357×** |
+> | 20 | 3.88 | 0.0072 | **539×** |
+>
+> **It does not cancel from ratios.** The factor is a function of diameter, not a constant, so it
+> varies 1.3× across the capillary band (3–8 µm) and 2.3× across the full measured range. Wider
+> vessels are penalised hardest, which redistributes flow away from them. This is unlike the uniform
+> pressure and viscosity scalings of §4.4 and §8.1, which genuinely do cancel.
+>
+> **Iteration 0 is clean; every later iteration is not.** The first pressure solve runs on the
+> step-2 resistances, which are correct. The corruption enters at the end of iteration 0 and the
+> solver converges on the inflated values, so the returned graph carries them.
+>
+> **A candidate — not a demonstrated — explanation for §13.5.** Absolute perfusion there is 20–100×
+> low, and §13.5 computes that reaching 500 µm/s would need about 3,257 mmHg against the 40 mmHg
+> used: an implied excess resistance of roughly 81×. That is the same order as the factor above,
+> which sits near 230× at the median measured diameter of 6.37 µm. The two are not equal and the
+> comparison is loose — velocity is flow-weighted across a diameter distribution — so this is a
+> hypothesis to test by re-running with step 4 corrected, not a conclusion. **No H1 or H2 number in
+> this document has been re-derived against it.**
+>
+> **Ratios and topology are unaffected in kind but not in value.** β₁, calibre, length and
+> tortuosity are all fixed before any resistance is computed (§2.4–§2.6). Anything downstream of
+> the flow solve — shunt ratio, transit time, PO₂ depletion, wall shear stress — is computed on the
+> inflated field.
+
 **So the power law survives only if the rheology solve is not run.** When it is run, it is an
 initial condition that is replaced rather than blended — which is what §11 row 12 means by
 "relaxed by the rescaling step".
@@ -935,6 +987,32 @@ Solved by partitioning into known and unknown nodes and taking the Schur complem
 ```
 L_uu · p_u = − L_uk · p_k
 ```
+
+**The order of operations.** On the CB path this runs inside the rheology loop (§4.3) rather than
+standalone; `solve_flow_from_conductance_matrix` (`resistance.py:201`) is the equivalent entry point
+for graph-only callers and adds VTK export.
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Build the sparse conductance matrix, C_uv = 1/R_uv | — | **On** | `resistance.py:46` |
+| 2 | Laplacian **L** = **D** − **C** | — | **On** | `resistance.py:138` |
+| 3 | Map inlet node ids → p_in, outlet node ids → p_out | 60/20 mmHg as run (§8.1) | **On** | `rheology.py:219` |
+| 4 | Partition indices into known and unknown | — | **On** | `rheology.py:227` |
+| 5 | Schur complement: `L_uu · p_u = − L_uk · p_k` | — | **On** | `rheology.py:234` |
+| 6 | Direct sparse factorisation | `spsolve`, below 50,000 unknowns | **On** — CB graphs are ~10³ nodes | `resistance.py:152` |
+| 7 | On a singular matrix, fall back to least squares | `lsqr` | **On**, and **silent** | `resistance.py:155` |
+| 8 | Above 50,000: CG with an **ILU** preconditioner | `drop_tol` 1e-4, `fill_factor` 10, `rtol` 1e-8, `maxiter` 1000 | **Off** — threshold never reached | `resistance.py:161` |
+| 9 | Per edge, `Q = (p_u − p_v) / R`, signed | — | **On** | `rheology.py:252` |
+| 10 | Direct the edge from high pressure to low | — | **On**, builds the DAG | `rheology.py:261` |
+
+**The iterative branch uses ILU, not Jacobi.** The Jacobi preconditioner described in §9.3 belongs
+to the *tissue diffusion* solve (`perfusion.py`), which is a different matrix. The network branch at
+step 8 is incomplete-LU, and it never executes on these graphs in any case.
+
+**Step 7 is a silent fallback.** A singular Laplacian — which is what a disconnected component with
+no boundary node produces — is caught and answered with a least-squares solution rather than raised.
+The graph-level largest-component prune (§2.5 step 8) is what keeps this from firing, so the two are
+coupled: turning that prune off would route this path into a silent approximation.
 
 Edge flow then follows directly from `Q = (p_u − p_v) / R`, signed, and the edge is directed from
 high pressure to low.
@@ -1044,6 +1122,44 @@ flow. The loop closes it by Picard iteration:
    haematocrits.
 5. **Update** viscosity and resistance from the new haematocrit distribution.
 6. **Repeat** until the maximum relative flow change falls below tolerance.
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Every edge set to systemic haematocrit | H = 0.45 | **On**, once | `rheology.py:195` |
+| 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | **On**, once | `rheology.py:196` |
+| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um` → **5.0 µm** | — | **On** — silent fallback, open item 9 | `rheology.py:191` |
+| 4 | Solve the Laplacian for nodal pressure (§3.4) | — | **On**, every iteration | `rheology.py:211` |
+| 5 | Per-edge signed flow; direct high → low into a DAG | — | **On**, every iteration | `rheology.py:252` |
+| 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | **On**, from iteration 1 | `rheology.py:268` |
+| 7 | Topological sort of the DAG | — | **On**; a cycle breaks the loop with a warning | `rheology.py:278` |
+| 8 | Force systemic haematocrit at every inlet | H = 0.45 | **On** | `rheology.py:288` |
+| 9 | Node haematocrit = flow-weighted mix of inflows | — | **On** | `rheology.py:295` |
+| 10 | Degree-2 pass-through: child inherits the mix | — | **On** | `rheology.py:303` |
+| 11 | Bifurcation: phase separation (§4.2) | — | **On** | `rheology.py:319` |
+| 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | **On** | `rheology.py:333` |
+| 13 | Recompute µ_app from the new haematocrit | in vivo law | **On** | `rheology.py:349` |
+| 14 | Rescale R by µ_app / µ_old | µ_old = 1/d^1.647 | **On** — ⚠ open item 12, §3.2 | `rheology.py:363` |
+| 15 | Wall shear stress from µ_app and \|Q\| | 32µQ/(πd³), mPa → Pa | **On** | `rheology.py:371` |
+| 16 | Repeat from step 4 | ≤ 15 iterations | **On** | `rheology.py:207` |
+
+**Three things the numbered summary above does not say.**
+
+**The convergence test is on an absolute flow difference, not a relative one.** Step 6 takes
+`max |Q_new − Q_old|` and compares it against 1e-4 — in the flow units of §3.7, not as a fraction.
+Whether that is tight or loose therefore depends on the magnitude of the flows themselves, and on
+this network's units it is a demanding test rather than a lenient one.
+
+**Junctions above degree 3 get no phase separation.** Step 12 splits haematocrit in proportion to
+flow, because the Pries–Secomb phase-separation relation is defined for a Y-split only. Skimming is
+therefore absent at every higher-order junction, and after the degree-2 collapse of §2.5 those are
+exactly the unresolved multi-way crossings.
+
+**The check runs before the update, so the loop always does at least two passes.** Step 6 is
+evaluated at the top of iteration 1 against iteration 0's flows. Since step 14 changes every
+resistance by two orders of magnitude between those two passes (open item 12), the iteration-1 test
+can never pass, and convergence is reached on the inflated resistances or not at all.
 
 Limits: 15 iterations, tolerance 10⁻⁴.
 
@@ -2428,5 +2544,6 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 9 | The rheology solver falls back to a silent 5.0 µm diameter; `map_vessels_to_grid` raises on the same condition | §3.2 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, H2 drivers 60/20 mmHg. Every published H2 number used 60/20 | §7.8, §8, §11 row 15 |
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
+| 12 | The rheology loop rescales resistance by `µ_app / µ_old` against a base that no longer contains `µ_old`, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
 
 ---
