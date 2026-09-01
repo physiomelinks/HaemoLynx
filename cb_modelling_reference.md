@@ -1251,6 +1251,26 @@ with linear index **z-fastest**: `idx = z + y·nz + x·nz·ny`.
 what lets tissue with no vessel in it be represented at all; tissue beyond the segmentation is not
 represented (§11 row 25).
 
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Read every node's `pos`; raise if absent | — | **On** | `perfusion.py:118` |
+| 2 | Flip the resolution triple from (x, y, x) order into (z, y, x) | 4 µm isotropic | **On** | `perfusion.py:126` |
+| 3 | Bounding box of the node cloud, padded by half a cell each way | — | **On** | `perfusion.py:129` |
+| 4 | **Union** with `bounds_zyx` if supplied — never replacement | segmentation extent | **Only under `--pad-grid`** | `perfusion.py:143` |
+| 5 | `dims = ceil((max − min) / res)`, cell volume = ∏ res | — | **On** | `perfusion.py:149` |
+
+**Step 3 is why the default grid is smaller than the tissue.** The box is fitted to the *graph*, so
+a specimen whose vessels stop short of the region edge gets a grid that stops there too, and the
+glomus tissue in the gap leaves the analysis silently — the returned fractions stay valid and simply
+describe less tissue than was passed in. Step 4 is the opt-in fix, and it is off by default: padding
+to the segmentation represents that tissue at the cost of solving cells with no vessel in them
+(§11 row 25). Losing more than 1% of the mask warns.
+
+**Step 4 is a union, not an override.** A supplied bound can only ever grow the grid. A caller
+cannot accidentally shrink it below the vasculature it has to contain.
+
 > **An indexing trap worth knowing.** The stencil assembly reshapes to `(nx, ny, nz)` because a
 > C-order reshape makes the *last* axis fastest, matching the z-fastest linear index. Reading
 > `dims` as `(nx, ny, nz)` and reshaping the same way gives an arithmetically correct matrix under
@@ -1261,6 +1281,33 @@ represented (§11 row 25).
 
 Each edge's centreline voxels are point-sampled. For every cell an edge passes through, the mapping
 accumulates that edge's length and lateral surface area (2π·r·ΔL) within the cell.
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Scan every edge for a usable diameter; **raise** if any lacks one | no default supplied | **On** | `perfusion.py:230` |
+| 2 | Convert `flow_abs` out of solver units into µm³/s | `POISEUILLE_FLOW_TO_UM3_PER_S` | **On** | `perfusion.py:248` |
+| 3 | Per-voxel length share = `length / (n_voxels − 1)` | — | **On** | `perfusion.py:264` |
+| 4 | Point-sample each centreline voxel to a linear cell index | — | **On** | `perfusion.py:268` |
+| 5 | Accumulate length and lateral surface area 2π·r·ΔL per (cell, edge) | — | **On** | `perfusion.py:289` |
+| 6 | Voxels outside the grid are dropped, not clipped or wrapped | — | **On** | `perfusion.py:270` |
+| 7 | Total each edge's accumulated length across all cells it entered | — | **On** | `perfusion.py:307` |
+| 8 | `length_fraction` = cell length ÷ that total, so shares sum to 1 | — | **On** | `perfusion.py:311` |
+
+**Step 2 is the unit join, and it was once absent.** Edge `flow_abs` carries mmHg·µm³/cP because
+`R = 128 µ L/(π d⁴)` is evaluated with pressure in mmHg, viscosity in cP and length in µm (§3.7).
+The metabolic sink downstream is mmol/L/s × µm³. Coupling them unconverted asked the tissue to
+consume **2.2 × 10⁴** times the oxygen the blood delivered, and the steady-state PO₂ was correctly
+zero everywhere.
+
+**Step 8 normalises against the accumulated length, not the edge's `length` attribute.** Point
+sampling counts the endpoints of each sub-segment, so the two differ; normalising against the
+accumulation is what makes the shares sum to exactly one rather than approximately one.
+
+**Step 6 drops rather than clamps, deliberately.** A wrapped index would deposit distal tissue into
+cell 0 and a clipped one would pile it onto the boundary cells. Both errors are invisible in the
+output; dropping is visible as missing tissue.
 
 **Flow is then shared by length, not repeated.** Each cell's entry carries a `length_fraction`
 normalised against the edge's *accumulated* length, so the shares sum to exactly one:
@@ -1285,6 +1332,29 @@ deliberate choice to model unmeasured vessels at a stated calibre. Contrast §3.
 **The name "ADR" is loose, and the distinction matters.** The assembled matrix is **pure diffusion**.
 There is no advective transport *between* grid cells. Blood delivers oxygen into a cell and carries
 it away from the same cell; it does not carry oxygen from one cell to the next.
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Convert the diffusion coefficient m²/s → µm²/s | × 10¹² | **On** | `perfusion.py:368` |
+| 2 | Face conductances D_z, D_y, D_x from σ, face area and normal spacing | — | **On** | `perfusion.py:373` |
+| 3 | Per perfused cell, `q_total` = Σ flow × `length_fraction` | — | **On** | `perfusion.py:388` |
+| 4 | Per perfused cell, `s_incoming` = Σ flow-share × C_O₂(PO₂_art, H_edge) | PO₂_art **hard-coded 100 mmHg** | **On** — open item 3 | `perfusion.py:382` |
+| 5 | Reshape the index array `(nx, ny, nz)` so the last axis is z | C-order | **On** | `perfusion.py:406` |
+| 6 | Off-diagonals for the six face neighbours, both directions | −D per face | **On** | `perfusion.py:409` |
+| 7 | Diagonal accumulates every conductance the cell participates in | — | **On** | `perfusion.py:437` |
+| 8 | Add a tiny sink to the diagonal | 10⁻¹² | **On** | `perfusion.py:442` |
+| 9 | Assemble COO → CSR | — | **On** | `perfusion.py:447` |
+
+**No advection appears anywhere in this matrix.** Steps 3 and 4 build *vectors*, not matrix
+entries: blood delivers oxygen into a cell and carries it away from the same cell, and nothing
+transports it from one cell to the next. Step 6 is the entire off-diagonal structure and it is
+diffusion only.
+
+**The Neumann boundary is implicit, not imposed.** Step 6 only writes entries for pairs that exist,
+so a cell on the domain face simply has fewer neighbours and its diagonal accumulates less. No
+boundary row is ever written (§11 row 23).
 
 Diffusive conductance across each cell face, in µm³/s:
 
@@ -1326,6 +1396,30 @@ the cell centre. At 4 µm against 1.866 µm voxels there are roughly a dozen mas
 and at the former 10 µm resolution about 154 — so a cell is rarely wholly tissue or wholly stroma,
 and a centre sample would discard almost all of the mask and make the answer depend on where cell
 centres happened to fall.
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Threshold the TH probability field into a glomus mask | `TH_THRESHOLD` | **On** | `cb_h2_hypoxic_fraction.py:111` |
+| 2 | Build the perfusion grid from the graph (§6.1) | 4 µm | **On** | `cb_h2_hypoxic_fraction.py:116` |
+| 3 | Per-cell **volume fraction** of the mask, not a centre sample | — | **On** | `cb_h2_hypoxic_fraction.py:117` |
+| 4 | Warn if more than 1% of mask voxels fell outside the grid | 1% | **On** | `tissue_regions.py:45` |
+| 5 | Mean TH fraction f̄ over all cells | — | **On** | `cb_h2_hypoxic_fraction.py:121` |
+| 6 | Stromal rate = `BASE_M_MAX / (1 + f̄(c − 1))` | `BASE_M_MAX` = 0.05 | **On** — open item 8 | `cb_h2_hypoxic_fraction.py:122` |
+| 7 | Per-cell `M_max` blended between `stroma · c` and `stroma` | c ∈ {1, 2, 4} | **On** | `cb_h2_hypoxic_fraction.py:123` |
+| 8 | Solver applies the array elementwise | — | **On** | `perfusion.py:501` |
+| 9 | Readouts weighted by TH occupancy, not by cell count | — | **On** | `cb_h2_hypoxic_fraction.py:130` |
+
+**Step 6 is what makes the contrast sweep interpretable.** Dividing by `1 + f̄(c − 1)` holds the
+volume-weighted mean rate at `BASE_M_MAX` for every c, so a run at c = 4 differs from one at c = 1
+in *distribution* only. Without it, raising the contrast would also raise total consumption and the
+hypoxic fraction would move for two reasons at once.
+
+**Step 9 matters as much as step 7.** A cell that is 40% glomus contributes 40% of its volume to the
+glomus readout and 60% to the stromal one. Taking a hard per-cell classification instead would put
+whole mixed cells on one side or the other, and at 4 µm against 1.866 µm voxels — roughly a dozen
+mask voxels per cell — most cells are mixed.
 
 Rates are then blended:
 
@@ -1370,6 +1464,40 @@ well conditioned. γ = 0.5 in Tier 1, damping the Picard step and preventing sig
 oscillation.
 
 The loop warns rather than raising if it hits its iteration cap without reaching tolerance.
+
+**The order of operations — the Tier 1 steady-state Picard loop.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Initial guess: PO₂ = 0 mmHg everywhere | — | **On** | `perfusion.py:461` |
+| 2 | Copy A and add a diagonal regulariser | 10⁻⁶ | **On**, once | `perfusion.py:478` |
+| 3 | Add a linear pseudo-washout `q_total · γ` to the diagonal | γ = 0.5 | **On**, once | `perfusion.py:489` |
+| 4 | Build the Jacobi preconditioner from the stabilised matrix | diagonal | **On**, once | `perfusion.py:493` |
+| 5 | Clamp PO₂ ≥ 0 | — | **On**, every iteration | `perfusion.py:497` |
+| 6 | Metabolic sink `M_max(1 − e^(−k·PO₂))` | k = 0.1 | **On** | `perfusion.py:501` |
+| 7 | Advective washout `q_total · C_O₂(PO₂, H)` per perfused cell | H **hard-coded 0.45** | **On** — open item 4 | `perfusion.py:507` |
+| 8 | RHS = `s_incoming − s_washout − M·V_cell + (q·γ)·PO₂` | — | **On** | `perfusion.py:512` |
+| 9 | CG solve, warm-started from the previous iterate | `rtol` 1e-6, `maxiter` 1000 | **On** | `perfusion.py:515` |
+| 10 | Non-convergence warns, never fails silently | — | **On** | `perfusion.py:517` |
+| 11 | Clamp the new iterate ≥ 0 | — | **On** | `perfusion.py:521` |
+| 12 | Convergence on the **relative** L2 change | tol 1e-5 | **On** | `perfusion.py:524` |
+| 13 | Hitting `max_iter` warns and returns the last iterate | 50 | **On** — open item 6 | `perfusion.py:533` |
+
+**Steps 3 and 8 are the same term, added twice on purpose.** `q·γ` goes onto the diagonal of the
+left-hand side and `q·γ·PO₂` onto the right. At the fixed point the two cancel exactly, so the true
+steady-state roots are unchanged — but the matrix becomes strictly diagonally dominant, which turns
+a system CG handles badly into one it handles well. It also damps the Picard step, which is what
+stops the sigmoidal oxygen-content curve driving an oscillation.
+
+**Step 9 warm-starts from the previous iterate.** `x0=PO2` means each CG solve begins where the last
+one finished, so later Picard passes cost far fewer inner iterations than the first.
+
+**Step 7 is a Python loop over every cell, every iteration.** At 4 µm over a 298 µm box that is on
+the order of 10⁵ cells × up to 50 iterations of interpreted work, and it dominates the runtime of
+the tissue solve. Correct, but it is the reason grid refinement gets expensive quickly (§6.8).
+
+**Note the two tolerances are different quantities.** Step 12's 10⁻⁵ is a relative L2 change on the
+PO₂ field — unlike §4.3 step 6, which is an *absolute* flow difference.
 
 ### 6.8 Grid resolution
 
