@@ -538,6 +538,38 @@ along z.
 **What it does.** Removes skeletonisation artefacts and simplifies the graph without changing what
 it represents.
 
+**The order of operations.** Everything here runs on the *graph*, after §2.4 has built it.
+The skeleton-level filters (small-object removal, bundle collapse, component fraction) belong to
+§2.4 steps 5–9 and are listed there; the table below picks up where that one stops.
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Reconnect branches that touched a stitched loop | — | **On** | `carotid_image_to_model.py:944` |
+| 2 | Merge near-coincident nodes, resolve triangles into Y-junctions | 5.6 µm | **On** | `carotid_image_to_model.py:949` |
+| 3 | Degree-2 collapse, curvature-preserving | — | **On** | `carotid_image_to_model.py:960` |
+| 4 | Terminal stub pruning, iterated to convergence | 5.6 µm, ≤ 100 passes | **On**; counts printed unconditionally | `carotid_image_to_model.py:973` |
+| 5 | Remove self-loop edges on otherwise isolated nodes | — | **On** | `carotid_image_to_model.py:986` |
+| 6 | Core dead-end resolution (`eradicate` / `stitch`) | mode `"none"` | **Disabled** | `carotid_image_to_model.py:991` |
+| 7 | B-spline smoothing of every edge centreline | `smoothing_alpha` 0.75 | **On** | `carotid_image_to_model.py:1014` |
+| 8 | Keep largest connected component of the graph | `True` | **On** | `carotid_image_to_model.py:1028` |
+
+Three of these are not in the four-operator table below and are worth naming separately.
+
+**Step 4 iterates.** Pruning is run to convergence, up to 100 passes, not once: removing a stub can
+expose a new degree-1 node behind it. This cannot change β₁ at any threshold — only degree-1 nodes
+are removed and a degree-1 node lies on no cycle — but it *does* change the length and tortuosity
+distributions, because it removes the shortest terminal segments first.
+
+**Step 7 changes every edge length.** B-spline smoothing rewrites the `voxels` polyline, and `length`
+is measured along it (§2.4), so tortuosity and therefore resistance both move. It is **frozen and
+deliberately not tuned**: it sets the centreline curvature that H1 §1.4 reads tortuosity from, and
+no Optuna objective can see tortuosity, so tuning it would optimise against a proxy for the very
+thing being measured. It is also why the EDT lattice is broken by the time calibre is read (§13.3).
+
+**Step 8 is the second largest-component cut.** §2.4 step 3 already kept one component of the
+*mask*. This keeps one component of the *graph*, because the topology operators above can sever
+pieces that the mask held together. Both are on.
+
 **Four operators, and what each is allowed to touch:**
 
 | Operator | Setting | Effect on β₁ |
@@ -589,6 +621,36 @@ and transit time all follow.
 
 **What was chosen.** EDT — the Euclidean distance transform's inscribed radius — with a
 junction-proximity exclusion of 3.73 µm.
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Branch orders assigned from the inlets (§2.7) | — | **On** | `carotid_image_to_model.py:1076` |
+| 2 | Synthetic branch-order diameter table filled by exponential fit | 3 anchor points | **On**, but never consumed under `edt_radius` | `carotid_image_to_model.py:1141` |
+| 3 | FWHM ray-casting over the raw field | half-extent 15.0 µm | **Off** — `radius_assignment_mode = "edt_radius"` | `carotid_image_to_model.py:1144` |
+| 4 | 3D EDT of the binary mask, in physical units | `sampling` = voxel size | **On** | `automated.py:1283` |
+| 5 | Sample the EDT at every centreline voxel of every edge | — | **On** | `automated.py:1305` |
+| 6 | Drop samples outside the mask or at radius 0 | — | **On** | `automated.py:1316` |
+| 7 | Flag which of an edge's two ends are junctions | — | **On** | `automated.py:1323` |
+| 8 | Trim samples within the exclusion of a junction end | 3.73 µm | **On** | `automated.py:1327` |
+| 9 | If nothing survives, keep the untrimmed median and tag it | — | **On** — `untrimmed_too_short`, 61% of edges | `automated.py:1338` |
+| 10 | Per-edge diameter = 2 × **median** surviving radius | — | **On** | `automated.py:1345` |
+| 11 | Refuse if any edge fell back to a synthetic diameter | `MAX_SYNTHETIC_FRACTION_EDT = 0.0` | **On**, raises | `poiseuille.py:13` |
+| 12 | Resistance from the assigned diameter | Hagen–Poiseuille | **On** | `poiseuille.py:160` |
+
+**Median, not mean, along the edge.** Step 10 takes the median of the per-voxel diameters so a
+single local bottleneck or bulge cannot set the edge's calibre. The full sample list is retained as
+`edt_diameter_samples_um`, so the within-edge spread stays recoverable.
+
+**The trim is recorded, not just applied.** Every edge carries `edt_junction_trim` as one of
+`trimmed`, `no_junction`, `untrimmed_too_short` or `not_applied`. This is what makes the 61%
+figure below countable rather than an estimate.
+
+**Step 2 runs even though step 11 forbids its output.** The branch-order diameter table is built on
+every run, then never read under `edt_radius` — and if it ever were read, the zero-tolerance guard
+would raise first. It is live code on a dead path, the same shape as the entropy parameters
+(§2.3, open item 11).
 
 **The alternative.** FWHM: fit a Gaussian plus baseline to the intensity profile across the vessel
 and report `2√(2 ln 2)·σ`.
@@ -658,6 +720,20 @@ default EDT mode this path cannot silently activate at all — the guard above r
 **How.** BFS from the starting nodes gives every node a hop distance. An edge takes
 `min(dist(u), dist(v)) + 1`, formatted `B01`, `B02`, ….
 
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | BFS from the starting node set → per-node hop distance | — | **On** | `branch_order.py:104` |
+| 2 | Skip edges outside `included_edges` / inside `excluded_edges` | both empty | **On**, but vacuous | `branch_order.py:122` |
+| 3 | Edges with both ends unreachable → `unreachable_edges` | — | **On**; skipped, not defaulted | `branch_order.py:131` |
+| 4 | Edge order = `min(dist(u), dist(v)) + 1` | — | **On** | `branch_order.py:135` |
+| 5 | Format as `B01`, `B02`, … and write to the edge | zero-padded to 2 | **On** | `branch_order.py:136` |
+| 6 | Count edges per order, report the unique set | — | **On**, printed | `carotid_image_to_model.py:1077` |
+
+`assign_hierarchical_branch_orders` (`branch_order.py:153`) is a separate, richer labelling that the
+CB path does not call.
+
 **What the label is, and is not.** It is a **hop count from an inlet**. It is not a Strahler order,
 not a Horton order, and not a calibre class. `B01` means "one edge from a pressure inlet", so what
 it denotes depends entirely on the boundary selection of §2.8 — change the inlets and every label
@@ -680,7 +756,57 @@ descriptive rather than load-bearing.
 
 **What it does.** Decides which degree-1 nodes receive arterial pressure and which receive venous.
 
-**What was chosen.** The face-crossing rule on **axis 1**, with a tolerance of one voxel.
+**What was chosen.** The face-crossing rule on **axis 1**, with a tolerance of one voxel —
+in the H2 drivers. The main pipeline still runs the band rule on axis 0; see the warning below.
+
+> ⚠ **Two different rules are in use, and the main pipeline does not use the face rule.**
+>
+> | Driver | Function | Rule | Axis | Parameter |
+> |---|---|---|---|---|
+> | `carotid_image_to_model.py` (**H1**) | `select_boundary_terminal_nodes` | **Band** | **0** | `edge_percent` / `end_percent` = 25 / 25 |
+> | `cb_h2_vtk.py`, `cb_h2_hypoxic_fraction.py`, `cb_h2_glomus_perfusion.py` (**H2**) | `select_boundary_terminal_nodes_by_face` | **Face** | **1** | tolerance 1 voxel |
+>
+> The face rule is the reasoned choice and the evidence below is why. It is **only reached by the
+> three H2 drivers**, which load a graph and select boundaries themselves. Every H1 run went through
+> the band rule on axis 0 at a 25% band — the rule this section argues against, on the axis that the
+> axis analysis did not select. This is the same shape as the pressure split recorded in §8.1: the
+> H2 drivers carry the considered settings and the main pipeline carries the config defaults.
+>
+> **This is open item 2**, and the table above is the concrete form of it. Either the main pipeline
+> is switched to the face rule, or every H1 boundary-dependent quantity is reported as
+> band-rule-derived. The affected H1 readouts are
+> those that depend on inlet identity: branch order (§2.7), transit time, and anything routed
+> through `resistance_node_pair`. β₁, calibre and length distributions are unaffected — they are
+> fixed before boundaries are chosen.
+
+**The order of operations — the face rule, as the H2 drivers run it.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Collect degree-1 nodes that carry a `pos` | — | **On** | `boundaries.py:45` |
+| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | **On** | `boundaries.py:40` |
+| 3 | Low-face terminals within tolerance → inlets | 1 voxel | **On** | `boundaries.py:88` |
+| 4 | High-face terminals within tolerance → outlets | 1 voxel | **On** | `boundaries.py:88` |
+| 5 | A terminal within tolerance of both faces → low face wins | — | **On** | `boundaries.py:88` |
+| 6 | Raise if either face carries no terminal | — | **On**, no fallback | `boundaries.py:88` |
+| 7 | Non-face terminals: nothing under `caged` | `caged` | **On** | `boundaries.py:95` |
+
+**And the band rule, as the main pipeline runs it.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Collect degree-1 nodes that carry a `pos` | — | **On** | `boundaries.py:45` |
+| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | **On** | `boundaries.py:40` |
+| 3 | Terminals in the lowest `edge_percent` of the axis → inlets | 25% | **On** | `boundaries.py:47` |
+| 4 | Terminals in the highest `end_percent` of the axis → outlets | 25% | **On** | `boundaries.py:48` |
+| 5 | If either set is empty, fall back to the extreme 10% of **all** nodes | — | **On** — silent, logged at INFO only | `boundaries.py:52` |
+| 6 | Route the remainder by permeability mode | `caged` | **On** — non-band terminals are not boundaries | `boundaries.py:66` |
+| 7 | Drop any node that landed in both sets | — | **On**, inlets win | `boundaries.py:81` |
+| 8 | Sort inlets ascending, outlets descending, by axis coordinate | — | **On** | `boundaries.py:83` |
+
+⚠ Step 5 of the band rule is the fallback §2.8 warns about below, and it is **live** on the H1 path.
+It converts a graph with no terminal in the band into a solved one by promoting the extreme decile
+of *all* nodes — interior spurs included — to pressure boundaries. The face rule raises instead.
 
 **Why not a positional band.** About **86% of degree-1 nodes in these graphs are interior** — nowhere
 near a region face. They are skeletonisation spurs and segmentation breaks, not vessels entering the
@@ -2292,7 +2418,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | # | Item | Blocks |
 |---|---|---|
 | 1 | Two segmentation thresholds in play — config 0.65/0.75 vs the frozen 0.90 used for H1 | §2.2, and any quoted calibre |
-| 2 | Two boundary rules coexist with disagreeing axis and percentage defaults | §2.8, §8, §13 — the largest sensitivity in the model |
+| 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1 | §2.8, §8, §13 — the largest sensitivity in the model |
 | 3 | Arterial PO₂ set in both config and solver bodies | §5, §6 |
 | 4 | Baseline haematocrit duplicated in the Tier 1 washout path | §6.6 |
 | 5 | `C_arterial` is dead configuration — declared 3×, read 0× | §6 |
