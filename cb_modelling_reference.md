@@ -1141,7 +1141,7 @@ flow. The loop closes it by Picard iteration:
 | 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | **On** | `rheology.py:333` |
 | 13 | Recompute µ_app from the new haematocrit | in vivo law | **On** | `rheology.py:349` |
 | 14 | Rescale R by µ_app / µ_old | µ_old = 1/d^1.647 | **On** — ⚠ open item 12, §3.2 | `rheology.py:363` |
-| 15 | Wall shear stress from µ_app and \|Q\| | 32µQ/(πd³), mPa → Pa | **On** | `rheology.py:371` |
+| 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | **On** | `rheology.py:371` |
 | 16 | Repeat from step 4 | ≤ 15 iterations | **On** | `rheology.py:207` |
 
 **Three things the numbered summary above does not say.**
@@ -1534,6 +1534,43 @@ Computed from the graph alone, with no physics.
 | Path efficiency | Shortest-path vs Euclidean over node pairs | Diagnostic |
 | Betweenness, communities | Graph-theoretic centrality and modularity | Diagnostic |
 
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Collapse the MultiGraph to a simple graph for the topological measures | — | **On** | `stats.py:651` |
+| 2 | Basic counts: nodes, edges, total and mean edge length, mean degree | uses `weight` | **On** | `stats.py:16` |
+| 3 | Tortuosity per edge and its summary | — | **On** | `stats.py:147` |
+| 4 | Branching statistics: junction count, branching angles | degree ≥ 3 | **On** | `stats.py:175` |
+| 5 | Tree asymmetry | — | **On** | `stats.py:213` |
+| 6 | Fractal dimension by box counting | — | **On** | `stats.py:241` |
+| 7 | Vessel density, both definitions | ⚠ voxel size **not passed** | **On** | `stats.py:349` |
+| 8 | Path efficiency | sampled — `max_pairs` capped in `fast` | **On** | `stats.py:268` |
+| 9 | Communities and betweenness | summaries only in `fast` | **On** | `stats.py:402`, `stats.py:436` |
+| 10 | Per-edge morphometry table → CSV | 16 fixed columns | **On** | `stats.py:56`, `stats.py:135` |
+| 11 | Benchmarking suite, including `graph_fundamental_loops` | `run_benchmarking = False` | **Off** | `benchmarking.py:180` |
+
+**`statistics_mode` is `"fast"` and the caller does not override it.** In `fast`, path efficiency is
+sampled rather than exhaustive and communities and betweenness are reduced to summaries. The `full`
+mode exists and is never selected on the CB path.
+
+> ⚠ **β₁ is not produced by this step at all.** The pipeline never computes it: `run_benchmarking`
+> is `False`, so `graph_fundamental_loops` — the one place in the library that evaluates E − V + C —
+> does not run. The β₁ figures quoted throughout this document are computed **post hoc** by
+> `cb_h1_figures.py:69` from the per-edge CSV, as `len(rows) − len(unique nodes) + 1`, with **C = 1
+> asserted** rather than measured. That assertion is sound only because
+> `keep_largest_component_only` is `True` (§2.5 step 8), so the graph is a single component by
+> construction. If that setting were ever turned off, every β₁ in this document would be wrong by
+> the number of components, silently.
+
+> ⚠ **"Vessel Density in Whole Image" is numerically wrong, not just conceptually.**
+> `compute_comprehensive_vessel_statistics` is called without `voxel_size`
+> (`carotid_image_to_model.py:1277`), so it defaults to `(1.0, 1.0, 1.0)` and the denominator is
+> `prod(image_dimensions)` in **voxels³** while the numerator is length in **µm**. The reported
+> density is therefore too high by `prod(1.8639, 1.866, 1.866)` = **6.49×**. The graph-extent
+> density above it is unaffected — it is computed from physical node positions. Neither is the
+> parenchymal quantity H1 §1.3 asks for; that one is in §7.2.
+
 **Tortuosity is derived from the per-edge table rather than recomputed**, so the summary and the
 per-edge CSV cannot disagree about what an edge's tortuosity is.
 
@@ -1560,6 +1597,23 @@ voxels:
 ```
 length = Σ_steps  |step ⊙ voxel_um| · count(step)
 ```
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Enumerate the 13 unique 26-connected steps, once per pair not per direction | — | **On** | `th_morphometry.py:28` |
+| 2 | Physical length of each step, `√Σ(sᵢ·vᵢ)²` | voxel (1.8639, 1.866, 1.866) | **On** | `th_morphometry.py:59` |
+| 3 | Count skeleton voxel pairs joined by that step | — | **On** | `th_morphometry.py:60` |
+| 4 | With `within`, keep a step only if **both** endpoints are in the mask | — | **On** | `th_morphometry.py:63` |
+| 5 | Total = Σ step length × pair count | — | **On** | `th_morphometry.py:65` |
+| 6 | Raise if the centreline is empty | — | **On**, never returns ∞ | `th_morphometry.py:100` |
+| 7 | EDT from every non-centreline voxel, `sampling` = voxel size | µm directly | **On** | `th_morphometry.py:108` |
+| 8 | Read the distance at every TH-positive voxel | — | **On** | `th_morphometry.py:109` |
+
+**Step 1 is why the count is 13 and not 26.** Each unordered neighbour pair is visited once, so no
+step is double-counted. Steps 2–3 then give the exact √3 correction the paragraph below describes,
+per step class rather than as a global factor.
 
 Counting voxels and multiplying by voxel size is the obvious estimator and is wrong by up to √3 — a
 diagonal step covers 3.23 µm on this grid where an axial one covers 1.87 µm. On a tortuous network
@@ -1594,6 +1648,29 @@ clusters, running instead through thoroughfare channels?
 **Edge classification.** An edge counts as *penetrating* when at least **50%** of its centreline
 length lies inside the TH mask, sampled along the **whole polyline**.
 
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Load the graph and attach EDT diameters from the per-edge CSV | — | **On** | `cb_h2_glomus_perfusion.py:93` |
+| 2 | Select boundaries by the **face** rule | axis 1, 1 voxel | **On** | `cb_h2_glomus_perfusion.py:94` |
+| 3 | Coupled flow / haematocrit / viscosity solve (§4.3) | 60 / 20 mmHg | **On** | `cb_h2_glomus_perfusion.py:97` |
+| 4 | Threshold the TH probability field | `TH_THRESHOLD` = 0.5 | **On** | `cb_h2_glomus_perfusion.py:88` |
+| 5 | Resample each edge polyline at half the finest voxel | 0.93 µm | **On** | `tissue_regions.py:177` |
+| 6 | Sample the mask at sub-step **midpoints**, length-weighted | — | **On** | `tissue_regions.py:209` |
+| 7 | Points outside the mask array count as outside, never clipped | — | **On** | `tissue_regions.py:181` |
+| 8 | Per-edge fraction = inside length ÷ total length | — | **On** | `tissue_regions.py:213` |
+| 9 | Classify: fraction ≥ 0.5 penetrating, below 0.5 bypassing | `PENETRATION` = 0.5 | **On** | `cb_h2_glomus_perfusion.py:132` |
+| 10 | Flow share of penetrating edges ÷ their edge share | — | **On** | `cb_h2_glomus_perfusion.py:156` |
+
+**Step 5 is what makes the classification independent of polyline sampling density.** The stored
+`voxels` lists are not uniformly spaced after B-spline smoothing (§2.5 step 7), so counting points
+would let a densely sampled stretch outvote a long one. Resampling at half the finest voxel also
+guarantees a mask crossing cannot be stepped over.
+
+**Step 6 samples midpoints, not endpoints.** Each sub-step contributes its own length, so the
+average over sub-steps is exactly a length-weighted average along the segment.
+
 > **Why not an endpoint test.** A capillary penetrating a cluster usually starts and ends in
 > stroma. An endpoint test would classify exactly the vessels the question is about as
 > extra-glomus.
@@ -1627,6 +1704,19 @@ than the rest — a dense capillary bed largely filled with cell-free plasma?
 Same edge classification as §7.3. The readout is the median haematocrit of penetrating edges against
 that of bypassing edges, taken from the converged rheology solve (§4.3).
 
+**The order of operations.** Steps 1–9 are identical to §7.3 — the same run produces both
+readouts. Only the final reduction differs:
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1–9 | As §7.3, through to the penetrating / bypassing split | — | **On** | `cb_h2_glomus_perfusion.py` |
+| 10 | Median `hematocrit` of penetrating edges | — | **On** | `cb_h2_glomus_perfusion.py:143` |
+| 11 | Median `hematocrit` of bypassing edges | — | **On** | `cb_h2_glomus_perfusion.py:143` |
+| 12 | Report the ratio, not either median alone | — | **On** | `cb_h2_glomus_perfusion.py:161` |
+
+**Medians, and non-finite values dropped before taking them.** An edge whose haematocrit did not
+resolve is excluded rather than counted as zero.
+
 Haematocrit is produced by the phase-separation model, so this quantity inherits every assumption in
 §4.2 — in particular that separation occurs at binary bifurcations only.
 
@@ -1640,6 +1730,24 @@ stroma, what fraction of the TH-positive volume falls below a hypoxic PO₂?
 **How.** Solve the tissue field on the heterogeneous grid (§6.5), then take the fraction of
 TH-weighted cell volume below each threshold. Thresholds swept at **5, 10 and 20 mmHg**; metabolic
 contrast swept at **1×, 2× and 4×**; grid at 4 µm.
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Load the graph; select boundaries by the face rule | axis 1 | **On** | `cb_h2_hypoxic_fraction.py:107` |
+| 2 | Coupled flow / haematocrit solve (§4.3) | 60 / 20 mmHg | **On** | `cb_h2_hypoxic_fraction.py:109` |
+| 3 | Threshold the TH field into a glomus mask | 0.5 | **On** | `cb_h2_hypoxic_fraction.py:111` |
+| 4 | Build the perfusion grid (§6.1) | 4 µm | **On** | `cb_h2_hypoxic_fraction.py:116` |
+| 5 | Per-cell TH volume fraction, then the blended `M_max` field (§6.5) | c ∈ {1, 2, 4} | **On** | `cb_h2_hypoxic_fraction.py:117` |
+| 6 | Map vessels to the grid (§6.2), assemble the operator (§6.3) | — | **On** | `cb_h2_hypoxic_fraction.py:126` |
+| 7 | Picard solve for the tissue PO₂ field (§6.7) | 50 iterations, tol 1e-5 | **On** | `cb_h2_hypoxic_fraction.py:127` |
+| 8 | Report the share of cells with no oxygen source at all | — | **On**, diagnostic | `cb_h2_hypoxic_fraction.py:102` |
+| 9 | Hypoxic fraction = TH-weighted volume below each threshold | 5, 10, 20 mmHg | **On** | `cb_h2_hypoxic_fraction.py:145` |
+
+**Step 8 exists because step 4 can produce cells no vessel reaches.** Under `--pad-grid` that share
+rises by construction, which is the stated cost of representing tissue beyond the vasculature
+(§6.1 step 4). It is reported rather than left for the reader to infer from the PO₂ distribution.
 
 > ⚠ **Read §13.6 before using this.** The tissue is not diffusion-limited — the oxygen diffusion
 > length is 20–45 µm against a median tissue-to-vessel distance of 5.3–7.9 µm. Raising the glomus
@@ -1663,6 +1771,29 @@ calibre than the flow solve does, and its own share of the floor in §13.3.
 
 **An edge carrying no flow gets `inf`, not a large number.** Blood that does not move does not
 arrive, and a finite stand-in would propagate as a merely slow path.
+
+**The order of operations.**
+
+| # | Step | Setting | On the CB path | Where |
+|---|---|---|---|---|
+| 1 | Scan every edge for a usable diameter; **raise** if any lacks one | — | **On** | `transit.py:38` |
+| 2 | Per edge, lumen volume `π(d/2)²L` | — | **On** | `transit.py:52` |
+| 3 | `τ = volume / abs(Q)`, or `inf` when Q = 0 | — | **On** | `transit.py:53` |
+| 4 | Direct each edge by its solved `flow_signed` | — | **On** | `transit.py:77` |
+| 5 | Dijkstra from all inlets at cost 0 | — | **On** | `transit.py:86` |
+| 6 | Unreachable nodes carry `inf`, never absent | — | **On** | `transit.py:84` |
+| 7 | Score an edge by the **later** of its two ends | — | **On** | `cb_h2_glomus_perfusion.py:110` |
+| 8 | Report the penetrating / bypassing median ratio | — | **On** | `cb_h2_glomus_perfusion.py:166` |
+
+**Step 4 follows flow, not adjacency.** An edge carrying blood *away* from a node cannot deliver
+blood *to* it, and ignoring the direction would report a transit time along a route no blood takes.
+
+**Step 5 is Dijkstra rather than a topological pass, deliberately.** The flow directions come from a
+numerical solve and can contain a small cycle. A topological sort raises on those; Dijkstra returns
+the same answer where the directions are acyclic and terminates where they are not.
+
+**Step 7 takes the later end.** A penetrating capillary is scored by how long blood takes to get
+*through* it, not to reach its nearer end.
 
 **Path transit time** is the minimum accumulated τ from any inlet, by Dijkstra over the
 flow-directed graph.
