@@ -104,7 +104,7 @@ source added before it can be quoted anywhere.
 
 ## §2 — Geometric model: from voxels to a vascular graph
 
-Everything downstream inherits from this section. Resistance goes as *d*⁻⁴ (§13.1), so a choice
+Everything downstream inherits from this section. Resistance goes as $d^{-4}$ (§13.1), so a choice
 made here about where the vessel wall sits is amplified fourfold in every flow quantity.
 
 Each subsection ends with **At a glance** — the choice, the number, the code, and the test.
@@ -240,7 +240,7 @@ range with no structure. That is a property of the data's topology, not of any o
 
 **Why the highest, not the middle.** Calibre falls monotonically with threshold, and the risk being
 traded is over-inclusion: the lower the threshold, the fatter the vessel, and resistance carries
-that as *r*⁻⁴.
+that as $r^{-4}$.
 
 **How fragmentation is measured.** Not by component count but by **endpoint density per mm of
 skeleton**. The baseline is the median density across the sweep; the onset is the lowest threshold
@@ -313,8 +313,8 @@ why the pre-threshold filters are off, not to describe a step.
 
 Two thresholds, `low = 0.65` and `high = 0.75`, applied as a connectivity rule rather than a cut:
 
-1. **Seed.** Every voxel with `p ≥ 0.75` is a seed.
-2. **Grow.** Every voxel with `p ≥ 0.65` is a candidate.
+1. **Seed.** Every voxel with $p \ge 0.75$ is a seed.
+2. **Grow.** Every voxel with $p \ge 0.65$ is a candidate.
 3. **Keep** only the candidates that are connected to at least one seed.
 
 A voxel at p = 0.70 is therefore kept or discarded *depending on its neighbours* — kept if it hangs
@@ -324,7 +324,7 @@ scattered speck. Hysteresis takes the connected interior of the first and the ex
 
 **Why this matters more here than in a typical image.** Classifier confidence falls at vessel
 *walls* — the boundary voxels are genuinely mixed. A hard cut therefore erodes every vessel from
-the outside in, and resistance carries that as *d*⁻⁴. Hysteresis lets the mask grow out to the wall
+the outside in, and resistance carries that as $d^{-4}$. Hysteresis lets the mask grow out to the wall
 provided it started somewhere confident.
 
 **The band is narrow — 0.65 to 0.75.** With only 0.10 of separation, the growth step is a modest
@@ -383,9 +383,9 @@ mask is returned.
 
 **What the entropy map is.** Per voxel, across the classifier's class probabilities:
 
-```
-H = −Σ_c p_c · log₂ p_c        normalised by log₂(n_classes) → H ∈ [0, 1]
-```
+$$H = -\sum_{c} p_c \log_2 p_c
+\qquad\text{normalised by }\log_2(n_\text{classes})
+\;\Longrightarrow\; H \in [0, 1]$$
 
 It measures **how undecided the classifier was at that voxel**, not how likely the voxel is to be
 vessel. H = 0 means the classifier put everything on one class; H = 1 means it split evenly across
@@ -395,15 +395,15 @@ all of them. Probability answers *which class*; entropy answers *how sure*.
 
 | | Probability test | Entropy test | Meaning |
 |---|---|---|---|
-| **Seed** | `p ≥ high` | `H ≤ shannon_core` = **0.6** | Where the mask is allowed to start |
-| **Candidate** | `p ≥ low` | `H ≤ shannon_max` = **0.95** | Where it is allowed to grow into |
+| **Seed** | $p \ge \text{high}$ | $H \le \texttt{shannon\_core}$ = **0.6** | Where the mask is allowed to start |
+| **Candidate** | $p \ge \text{low}$ | $H \le \texttt{shannon\_max}$ = **0.95** | Where it is allowed to grow into |
 
 Seeds are then morphologically reconstructed into the candidate mask by dilation, so a candidate is
 kept only if it connects back to a seed.
 
 So `shannon_core` is the **strict** gate and `shannon_max` the **permissive** one — the same
 high/low logic as ordinary hysteresis, applied to confidence instead of probability.
-`shannon_core ≤ shannon_max` is enforced, and reversing them raises.
+$\texttt{shannon\_core} \le \texttt{shannon\_max}$ is enforced, and reversing them raises.
 
 - **`shannon_core = 0.6`** — to *start* a vessel, the classifier must have been fairly decided.
 - **`shannon_max = 0.95`** — to *continue* one, almost any confidence will do; this rejects only
@@ -412,9 +412,9 @@ high/low logic as ordinary hysteresis, applied to confidence instead of probabil
 The intent is to stop the mask seeding inside ambiguous tissue while still letting it grow through
 vessel walls, where a classifier is legitimately less certain.
 
-**It needs three or more classes to mean anything.** With two classes, H(p) is a deterministic
+**It needs three or more classes to mean anything.** With two classes, $H(p)$ is a deterministic
 function of p alone, folded about p = 0.5 — so it carries **no information the probability does not
-already carry**. `H ≤ t` then resolves to `p ≤ r OR p ≥ 1 − r`, which carves a band out of the
+already carry**. $H \le t$ then resolves to $p \le r$ or $p \ge 1 - r$, which carves a band out of the
 *middle* of the probability range: the mask becomes non-monotonic in p, keeping low-probability
 voxels while discarding higher-probability ones. Every vessel would come out as a core plus a
 detached shell, with the wall voxels evacuated — the opposite of the intent.
@@ -653,7 +653,7 @@ would raise first. It is live code on a dead path, the same shape as the entropy
 (§2.3, open item 11).
 
 **The alternative.** FWHM: fit a Gaussian plus baseline to the intensity profile across the vessel
-and report `2√(2 ln 2)·σ`.
+and report $2\sqrt{2 \ln 2}\,\sigma$.
 
 **Why EDT, on the evidence.** Both estimators run over the same 1,330 edges:
 
@@ -675,7 +675,7 @@ dense the profile runs into neighbouring vessels. EDT is bounded by the mask and
 inscribed sphere rather than the vessel's, biasing calibre upward. Measured over 3,882 edges,
 sweeping the exclusion in half-voxel steps:
 
-| Exclusion (µm) | Voxels | Trimmed | Too short | Moved | Mean (µm) | Mean shift | *r*⁻⁴ factor |
+| Exclusion (µm) | Voxels | Trimmed | Too short | Moved | Mean (µm) | Mean shift | $r^{-4}$ factor |
 |---|---|---|---|---|---|---|---|
 | 0.93 | 0.5 | 77.6% | 22.3% | 29.8% | 5.516 | −0.060 | 1.044 |
 | 1.87 | 1.0 | 74.9% | 25.0% | 28.9% | 5.509 | −0.067 | 1.049 |
@@ -859,14 +859,12 @@ The low face wins; the ambiguity is not silently doubled into both sets.
 
 Each edge is a rigid cylinder obeying Hagen–Poiseuille:
 
-```
-R = 128 · μ · L / (π · d⁴)
-```
+$$R = \frac{128\,\mu L}{\pi d^{4}}$$
 
-with *L* the centreline length in µm, *d* the assigned diameter in µm, and *μ* an apparent
+with $L$ the centreline length in µm, $d$ the assigned diameter in µm, and $\mu$ an apparent
 viscosity in cP.
 
-**The *d*⁻⁴ term governs everything downstream.** A fractional calibre error becomes roughly four
+**The $d^{-4}$ term governs everything downstream.** A fractional calibre error becomes roughly four
 times itself in resistance. §13.1 gives the measured size of that; it is not restated here.
 
 ### 3.2 Two viscosity models exist, and which one is in force depends on the path
@@ -875,9 +873,7 @@ This is the easiest thing in the pipeline to get wrong.
 
 **The initial assignment uses a power law.** `PoiseuilleModel.set_poiseuille_resistances` computes
 
-```
-μ = 1 / d^1.647
-```
+$$\mu = \frac{1}{d^{1.647}}$$
 
 which is not a viscosity in cP and is not Pries–Secomb. It is an empirical stand-in that produces
 the right ordering of resistances but not their physical magnitudes.
@@ -886,32 +882,32 @@ the right ordering of resistances but not their physical magnitudes.
 viscosity and resistance for every edge from Pries–Secomb at the systemic haematocrit, discarding
 whatever `set_poiseuille_resistances` assigned:
 
-```
-μ_app = pries_secomb(d, H = 0.45)
-R     = 128 · μ_app · L / (π · d⁴)
-```
+$$\begin{aligned}
+\mu_\text{app} &= \operatorname{pries\_secomb}(d,\; H = 0.45) \\[2pt]
+R &= \frac{128\,\mu_\text{app} L}{\pi d^{4}}
+\end{aligned}$$
 
 **The order of operations — which viscosity is in force, when.**
 
 | # | Step | Setting | On the CB path | Where |
 |---|---|---|---|---|
-| 1 | `set_poiseuille_resistances` writes R from the power law | µ = 1/d^1.647 | **On** | `poiseuille.py:160` |
+| 1 | `set_poiseuille_resistances` writes R from the power law | $\mu = 1/d^{1.647}$ | **On** | `poiseuille.py:160` |
 | 2 | Rheology solver **overwrites** R from Pries–Secomb at systemic Hct | H = 0.45, µ_plasma 1.2 cP, in vivo law | **On**, before the loop | `rheology.py:196` |
 | 3 | Each Picard pass recomputes µ_app from the edge's current Hct | in vivo Pries–Secomb | **On** | `rheology.py:349` |
-| 4 | R **rescaled** as `original_resistance × µ_app / µ_old` | µ_old = 1/d^1.647 | **On** — see the warning below | `rheology.py:363` |
+| 4 | R **rescaled** as $\texttt{original\_resistance} \times \mu_\text{app} / \mu_\text{old}$ | $\mu_\text{old} = 1/d^{1.647}$ | **On** — see the warning below | `rheology.py:363` |
 | 5 | `original_resistance` captured once, on the first pass through step 4 | — | **On**, never updated after | `rheology.py:355` |
 
 > ⚠ **Open item 12 — step 4 double-applies viscosity, inflating every resistance by roughly
 > 200–540×.**
 >
 > The rescale is correct *if* `original_resistance` holds the power-law resistance, because
-> `R_old × µ_app/µ_old` then telescopes to `128 µ_app L / (π d⁴)`. It does not. Step 2 overwrites
+> $R_\text{old} \times \mu_\text{app}/\mu_\text{old}$ then telescopes to $128\,\mu_\text{app} L / (\pi d^{4})$. It does not. Step 2 overwrites
 > `data["resistance"]` with the **Pries–Secomb** value before the loop starts, and step 5 captures
 > `original_resistance` from that overwritten value on the first pass. The power-law µ_old therefore
 > divides a resistance that no longer contains it, and the surviving factor is
-> `µ_PS(d, 0.45) · d^1.647`:
+> $\mu_\text{PS}(d, 0.45)\cdot d^{1.647}$:
 >
-> | d (µm) | µ_PS(d, 0.45) cP | µ_old = 1/d^1.647 | Inflation factor |
+> | d (µm) | $\mu_\text{PS}(d, 0.45)$ cP | $\mu_\text{old} = 1/d^{1.647}$ | Inflation factor |
 > |---|---|---|---|
 > | 3 | 37.97 | 0.1638 | **232×** |
 > | 4 | 21.24 | 0.1020 | **208×** |
@@ -959,11 +955,9 @@ initial condition that is replaced rather than blended — which is what §11 ro
 Where a segment's diameter varies along its length, resistance is integrated rather than evaluated
 once:
 
-```
-R = ∫₀ᴸ  128 · μ(d(x)) / (π · d(x)⁴)  dx
-```
+$$R = \int_{0}^{L} \frac{128\,\mu\bigl(d(x)\bigr)}{\pi\, d(x)^{4}}\, dx$$
 
-by trapezoidal quadrature over 1,000 sample points, with `μ(d) = 1/d^1.647` as above.
+by trapezoidal quadrature over 1,000 sample points, with $\mu(d) = 1/d^{1.647}$ as above.
 
 Two geometries are implemented. **Sphincter**: one constriction at the vessel origin — ramp down
 over the first quarter of the constriction length, hold at *d₂* through the middle half, ramp back
@@ -976,17 +970,15 @@ Both are disabled on the CB path (§10.6), so this integral is not evaluated in 
 Mass conservation at every internal node is Kirchhoff's current law. With conductance
 *C_uv* = 1/*R_uv*, the system is the weighted graph Laplacian **L** = **D** − **C**:
 
-```
-L · p = 0     at every unconstrained node
-p = p_in      at inlet terminals
-p = p_out     at outlet terminals
-```
+$$\begin{aligned}
+\mathbf{L}\,\mathbf{p} &= 0 && \text{at every unconstrained node} \\[2pt]
+p &= p_\text{in} && \text{at inlet terminals} \\[2pt]
+p &= p_\text{out} && \text{at outlet terminals}
+\end{aligned}$$
 
 Solved by partitioning into known and unknown nodes and taking the Schur complement:
 
-```
-L_uu · p_u = − L_uk · p_k
-```
+$$\mathbf{L}_{uu}\,\mathbf{p}_u = -\,\mathbf{L}_{uk}\,\mathbf{p}_k$$
 
 **The order of operations.** On the CB path this runs inside the rheology loop (§4.3) rather than
 standalone; `solve_flow_from_conductance_matrix` (`resistance.py:201`) is the equivalent entry point
@@ -998,11 +990,11 @@ for graph-only callers and adds VTK export.
 | 2 | Laplacian **L** = **D** − **C** | — | **On** | `resistance.py:138` |
 | 3 | Map inlet node ids → p_in, outlet node ids → p_out | 60/20 mmHg as run (§8.1) | **On** | `rheology.py:219` |
 | 4 | Partition indices into known and unknown | — | **On** | `rheology.py:227` |
-| 5 | Schur complement: `L_uu · p_u = − L_uk · p_k` | — | **On** | `rheology.py:234` |
+| 5 | Schur complement: $\mathbf{L}_{uu}\,\mathbf{p}_u = -\,\mathbf{L}_{uk}\,\mathbf{p}_k$ | — | **On** | `rheology.py:234` |
 | 6 | Direct sparse factorisation | `spsolve`, below 50,000 unknowns | **On** — CB graphs are ~10³ nodes | `resistance.py:152` |
 | 7 | On a singular matrix, fall back to least squares | `lsqr` | **On**, and **silent** | `resistance.py:155` |
 | 8 | Above 50,000: CG with an **ILU** preconditioner | `drop_tol` 1e-4, `fill_factor` 10, `rtol` 1e-8, `maxiter` 1000 | **Off** — threshold never reached | `resistance.py:161` |
-| 9 | Per edge, `Q = (p_u − p_v) / R`, signed | — | **On** | `rheology.py:252` |
+| 9 | Per edge, $Q = (p_u - p_v) / R$, signed | — | **On** | `rheology.py:252` |
 | 10 | Direct the edge from high pressure to low | — | **On**, builds the DAG | `rheology.py:261` |
 
 **The iterative branch uses ILU, not Jacobi.** The Jacobi preconditioner described in §9.3 belongs
@@ -1014,7 +1006,7 @@ no boundary node produces — is caught and answered with a least-squares soluti
 The graph-level largest-component prune (§2.5 step 8) is what keeps this from firing, so the two are
 coupled: turning that prune off would route this path into a silent approximation.
 
-Edge flow then follows directly from `Q = (p_u − p_v) / R`, signed, and the edge is directed from
+Edge flow then follows directly from $Q = (p_u - p_v) / R$, signed, and the edge is directed from
 high pressure to low.
 
 **Solver dispatch.** Direct factorisation below 50,000 nodes, iterative above. The CB graphs sit
@@ -1034,23 +1026,22 @@ constrains it — treat it as diagnostic rather than reportable.
 
 ### 3.7 Units of flow
 
-**The flow solve does not work in one unit system.** `R = 128 μ L / (π d⁴)` is evaluated with
+**The flow solve does not work in one unit system.** $R = 128\,\mu L / (\pi d^{4})$ is evaluated with
 pressure in mmHg, viscosity in cP and lengths in µm, so its *Q* carries mmHg·µm⁴/(cP·µm) and is
 **not a volumetric flow rate**.
 
-Rewriting *R* wholly in SI multiplies it by `(10⁻³ Pa·s/cP) · (10⁻⁶ m/µm) / (10⁻⁶ m/µm)⁴` = 10¹⁵.
+Rewriting *R* wholly in SI multiplies it by $(10^{-3}\,\mathrm{Pa\,s/cP}) \cdot (10^{-6}\,\mathrm{m/\mu m}) / (10^{-6}\,\mathrm{m/\mu m})^{4}$ = 10¹⁵.
 So
 
-```
-Q_SI [m³/s] = (ΔP_mmHg · 133.322387415) / (R_pipeline · 10¹⁵)
-            = Q_pipeline · 133.322387415 · 10⁻¹⁵
-```
+$$\begin{aligned}
+Q_\text{SI}\;[\mathrm{m^3/s}]
+&= \frac{\Delta P_\text{mmHg} \times 133.322387415}{R_\text{pipeline} \times 10^{15}} \\[4pt]
+&= Q_\text{pipeline} \times 133.322387415 \times 10^{-15}
+\end{aligned}$$
 
 and multiplying by 10¹⁸ µm³/m³ leaves
 
-```
-POISEUILLE_FLOW_TO_UM3_PER_S = 133.322387415 × 10³
-```
+$$\texttt{POISEUILLE\_FLOW\_TO\_UM3\_PER\_S} = 133.322387415 \times 10^{3}$$
 
 **Where it is applied.** In `map_vessels_to_grid`, at the boundary between the 1D solve and the 3D
 tissue — the one place the two unit systems have to agree. Passing `flow_to_um3_per_s=1.0` leaves
@@ -1064,12 +1055,12 @@ flow in solver units deliberately, for comparison against output produced in tho
 
 Relative apparent viscosity at a discharge haematocrit of 0.45, as a function of diameter in µm:
 
-```
-in vivo   μ₄₅ = 6.0 · e^(−0.085 d)  + 3.2 − 2.44 · e^(−0.06 d^0.645)
-in vitro  μ₄₅ = 220 · e^(−1.3 d)    + 3.2 − 2.44 · e^(−0.06 d^0.645)
-```
+$$\begin{aligned}
+\text{in vivo:}\quad  \mu_{45} &= 6.0\,e^{-0.085 d} + 3.2 - 2.44\,e^{-0.06\, d^{0.645}} \\[2pt]
+\text{in vitro:}\quad \mu_{45} &= 220\,e^{-1.3 d}   + 3.2 - 2.44\,e^{-0.06\, d^{0.645}}
+\end{aligned}$$
 
-They differ **only in the first term**, and that term is the whole disagreement. At *d* = 8 µm and
+They differ **only in the first term**, and that term is the whole disagreement. At $d = 8$ µm and
 *H* = 0.45 the two give apparent viscosities differing by roughly **3.4×**, and resistance is linear
 in viscosity, so this is not a refinement.
 
@@ -1089,12 +1080,13 @@ disproportionately favour the branch with higher flow fraction and larger diamet
 
 With *f_Q1* the fraction of bulk flow entering branch 1:
 
-```
-A = −13.29 · [(d₁²/d₂²) − 1] / [(d₁²/d₂²) + 1] · (1 − H_in) / d₁
-B = 1 + 6.98 · (1 − H_in) / d₁
-
-logit(f_E1) = A + B · logit( (f_Q1 − x₀) / (1 − f_Q1 − x₀) )
-```
+$$\begin{aligned}
+A &= -13.29 \cdot \frac{(d_1^{2}/d_2^{2}) - 1}{(d_1^{2}/d_2^{2}) + 1}
+     \cdot \frac{1 - H_\text{in}}{d_1} \\[4pt]
+B &= 1 + 6.98 \cdot \frac{1 - H_\text{in}}{d_1} \\[6pt]
+\operatorname{logit}(f_{E1}) &= A + B \cdot
+     \operatorname{logit}\!\left(\frac{f_{Q1} - x_0}{1 - f_{Q1} - x_0}\right)
+\end{aligned}$$
 
 where *f_E1* is the fraction of the **erythrocyte** flux entering branch 1, and *x₀* = 0.05 is the
 skimming threshold — red cells effectively fail to enter a branch drawing less than about 5% of the
@@ -1140,7 +1132,7 @@ flow. The loop closes it by Picard iteration:
 | 11 | Bifurcation: phase separation (§4.2) | — | **On** | `rheology.py:319` |
 | 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | **On** | `rheology.py:333` |
 | 13 | Recompute µ_app from the new haematocrit | in vivo law | **On** | `rheology.py:349` |
-| 14 | Rescale R by µ_app / µ_old | µ_old = 1/d^1.647 | **On** — ⚠ open item 12, §3.2 | `rheology.py:363` |
+| 14 | Rescale R by $\mu_\text{app} / \mu_\text{old}$ | $\mu_\text{old} = 1/d^{1.647}$ | **On** — ⚠ open item 12, §3.2 | `rheology.py:363` |
 | 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | **On** | `rheology.py:371` |
 | 16 | Repeat from step 4 | ≤ 15 iterations | **On** | `rheology.py:207` |
 
@@ -1185,35 +1177,38 @@ All four relations are hard-coded in `perfusion.py`; none is configurable (§10.
 
 Total blood oxygen content in mmol/L, dissolved plus haemoglobin-bound:
 
-```
-C_O₂ = α_O₂ · PO₂  +  H · c_Hb,max · S(PO₂)
+$$\begin{aligned}
+C_{\mathrm{O_2}} &= \alpha_{\mathrm{O_2}}\,P_{\mathrm{O_2}}
+   \;+\; H \cdot c_{\mathrm{Hb,max}} \cdot S(P_{\mathrm{O_2}}) \\[6pt]
+S(P_{\mathrm{O_2}}) &= \frac{P_{\mathrm{O_2}}^{\,n}}
+   {P_{\mathrm{O_2}}^{\,n} + P_{50}^{\,n}}, \qquad n = 2.7 \\[4pt]
+\alpha_{\mathrm{O_2}} &= 1.34 \times 10^{-3}\ \mathrm{mmol\,L^{-1}\,mmHg^{-1}} \\[4pt]
+c_{\mathrm{Hb,max}} &= \frac{0.446 \times 20.4}{0.45} \approx 20.22\ \mathrm{mmol/L}
+\end{aligned}$$
 
-S(PO₂) = PO₂ⁿ / (PO₂ⁿ + P₅₀ⁿ)          n = 2.7   [hill_possible_1910]
-α_O₂   = 1.34 × 10⁻³ mmol/L/mmHg
-c_Hb,max = 0.446 × 20.4 / 0.45 ≈ 20.22 mmol/L     (scaled to pure red cell)
-```
+The Hill exponent $n = 2.7$ is [`hill_possible_1910`]; $c_{\mathrm{Hb,max}}$ is scaled to pure red cell.
 
-Returns zero for PO₂ ≤ 0 rather than extrapolating.
+Returns zero for $P_{\mathrm{O_2}} \le 0$ rather than extrapolating.
 
 ### 5.2 The Bohr effect
 
 P₅₀ is not fixed. It shifts with pH and PCO₂ on the Kelman/Severinghaus empirical form
 [`severinghaus_simple_1979`, `kelman_digital_1966`]:
 
-```
-log₁₀ P₅₀ = log₁₀(26.0) − 0.4 · (pH − 7.4) + 0.06 · log₁₀( PCO₂ / 40 )
-```
+$$\log_{10} P_{50} = \log_{10}(26.0) - 0.4\,(\mathrm{pH} - 7.4)
++ 0.06 \log_{10}\!\left(\frac{P_{\mathrm{CO_2}}}{40}\right)$$
 
 Baseline 26.0 mmHg at pH 7.4 and PCO₂ 40 mmHg. Acidosis or hypercapnia raises P₅₀ — the curve
 shifts right and haemoglobin releases oxygen more readily.
 
 ### 5.3 Carbon dioxide content and the Haldane effect
 
-```
-C_CO₂ = α_CO₂ · PCO₂  +  H · [ 11.02 · PCO₂^0.396  +  (0.15 − 0.05 · S_O₂) · PCO₂ ]
-
-α_CO₂ = 0.03 mmol/L/mmHg
-```
+$$\begin{aligned}
+C_{\mathrm{CO_2}} &= \alpha_{\mathrm{CO_2}}\,P_{\mathrm{CO_2}}
+  \;+\; H \left[\, 11.02\,P_{\mathrm{CO_2}}^{\,0.396}
+  \;+\; \bigl(0.15 - 0.05\,S_{\mathrm{O_2}}\bigr) P_{\mathrm{CO_2}} \right] \\[4pt]
+\alpha_{\mathrm{CO_2}} &= 0.03\ \mathrm{mmol\,L^{-1}\,mmHg^{-1}}
+\end{aligned}$$
 
 The first bracketed term is the base carrying capacity; the second is the Haldane shift —
 deoxygenated blood carries more CO₂.
@@ -1226,9 +1221,9 @@ deoxygenated blood carries more CO₂.
 
 Henderson–Hasselbalch, with a constant bicarbonate buffer:
 
-```
-pH = 6.1 + log₁₀( [HCO₃⁻] / (α_CO₂ · PCO₂) )      [HCO₃⁻] = 24 mmol/L
-```
+$$\mathrm{pH} = 6.1 + \log_{10}\!\left(
+\frac{[\mathrm{HCO_3^-}]}{\alpha_{\mathrm{CO_2}}\,P_{\mathrm{CO_2}}}\right),
+\qquad [\mathrm{HCO_3^-}] = 24\ \mathrm{mmol/L}$$
 
 No renal compensation, so the pH response to PCO₂ is fixed by this relation alone. Accepts scalars
 or arrays, so it can be applied per grid cell.
@@ -1245,7 +1240,7 @@ established (§11 row 17).
 ### 6.1 The perfusion grid
 
 A regular Cartesian grid over the region, `dims = (nz, ny, nx)` at spacing `res = (rz, ry, rx)`,
-with linear index **z-fastest**: `idx = z + y·nz + x·nz·ny`.
+with linear index **z-fastest**: $\text{idx} = z + y\,n_z + x\,n_z n_y$.
 
 **The grid spans the segmented volume, not the graph's extent.** Padding to the segmentation is
 what lets tissue with no vessel in it be represented at all; tissue beyond the segmentation is not
@@ -1259,7 +1254,7 @@ represented (§11 row 25).
 | 2 | Flip the resolution triple from (x, y, x) order into (z, y, x) | 4 µm isotropic | **On** | `perfusion.py:126` |
 | 3 | Bounding box of the node cloud, padded by half a cell each way | — | **On** | `perfusion.py:129` |
 | 4 | **Union** with `bounds_zyx` if supplied — never replacement | segmentation extent | **Only under `--pad-grid`** | `perfusion.py:143` |
-| 5 | `dims = ceil((max − min) / res)`, cell volume = ∏ res | — | **On** | `perfusion.py:149` |
+| 5 | $\text{dims} = \lceil (\max - \min) / \text{res} \rceil$, cell volume = ∏ res | — | **On** | `perfusion.py:149` |
 
 **Step 3 is why the default grid is smaller than the tissue.** The box is fitted to the *graph*, so
 a specimen whose vessels stop short of the region edge gets a grid that stops there too, and the
@@ -1280,7 +1275,7 @@ cannot accidentally shrink it below the vasculature it has to contain.
 ### 6.2 Vessel-to-grid mapping
 
 Each edge's centreline voxels are point-sampled. For every cell an edge passes through, the mapping
-accumulates that edge's length and lateral surface area (2π·r·ΔL) within the cell.
+accumulates that edge's length and lateral surface area ($2\pi r\,\Delta L$) within the cell.
 
 **The order of operations.**
 
@@ -1290,13 +1285,13 @@ accumulates that edge's length and lateral surface area (2π·r·ΔL) within the
 | 2 | Convert `flow_abs` out of solver units into µm³/s | `POISEUILLE_FLOW_TO_UM3_PER_S` | **On** | `perfusion.py:248` |
 | 3 | Per-voxel length share = `length / (n_voxels − 1)` | — | **On** | `perfusion.py:264` |
 | 4 | Point-sample each centreline voxel to a linear cell index | — | **On** | `perfusion.py:268` |
-| 5 | Accumulate length and lateral surface area 2π·r·ΔL per (cell, edge) | — | **On** | `perfusion.py:289` |
+| 5 | Accumulate length and lateral surface area $2\pi r\,\Delta L$ per (cell, edge) | — | **On** | `perfusion.py:289` |
 | 6 | Voxels outside the grid are dropped, not clipped or wrapped | — | **On** | `perfusion.py:270` |
 | 7 | Total each edge's accumulated length across all cells it entered | — | **On** | `perfusion.py:307` |
 | 8 | `length_fraction` = cell length ÷ that total, so shares sum to 1 | — | **On** | `perfusion.py:311` |
 
 **Step 2 is the unit join, and it was once absent.** Edge `flow_abs` carries mmHg·µm³/cP because
-`R = 128 µ L/(π d⁴)` is evaluated with pressure in mmHg, viscosity in cP and length in µm (§3.7).
+$R = 128\,\mu L/(\pi d^{4})$ is evaluated with pressure in mmHg, viscosity in cP and length in µm (§3.7).
 The metabolic sink downstream is mmol/L/s × µm³. Coupling them unconverted asked the tissue to
 consume **2.2 × 10⁴** times the oxygen the blood delivered, and the steady-state PO₂ was correctly
 zero everywhere.
@@ -1312,10 +1307,13 @@ output; dropping is visible as missing tissue.
 **Flow is then shared by length, not repeated.** Each cell's entry carries a `length_fraction`
 normalised against the edge's *accumulated* length, so the shares sum to exactly one:
 
-```
-q_total[cell]   = Σ_edges  Q_edge · length_fraction
-s_incoming[cell] = Σ_edges  Q_edge · length_fraction · C_O₂(PO₂_art, H_edge)
-```
+$$\begin{aligned}
+q_\text{total}[\text{cell}] &= \sum_\text{edges} Q_\text{edge}
+   \cdot \texttt{length\_fraction} \\[4pt]
+s_\text{incoming}[\text{cell}] &= \sum_\text{edges} Q_\text{edge}
+   \cdot \texttt{length\_fraction}
+   \cdot C_{\mathrm{O_2}}\bigl(P_{\mathrm{O_2,art}},\, H_\text{edge}\bigr)
+\end{aligned}$$
 
 Without this an edge crossing five cells injects five times its own oxygen, and the total source
 grows with grid refinement rather than converging.
@@ -1358,11 +1356,11 @@ boundary row is ever written (§11 row 23).
 
 Diffusive conductance across each cell face, in µm³/s:
 
-```
-D_z = σ · (r_y · r_x) / r_z          σ in µm²/s = σ_config × 10¹²
-D_y = σ · (r_z · r_x) / r_y
-D_x = σ · (r_z · r_y) / r_x
-```
+$$D_z = \frac{\sigma\, r_y r_x}{r_z}, \qquad
+D_y = \frac{\sigma\, r_z r_x}{r_y}, \qquad
+D_x = \frac{\sigma\, r_z r_y}{r_x}$$
+
+with $\sigma$ in $\mathrm{\mu m^2/s} = \sigma_\text{config} \times 10^{12}$.
 
 assembled as a standard **seven-point stencil** — each cell coupled to its six face neighbours,
 with the diagonal accumulating the conductances it participates in. No flux is written at the
@@ -1377,11 +1375,10 @@ definite. Non-positive diagonals are detected and reported rather than silently 
 
 ### 6.4 Metabolic consumption
 
-```
-M(PO₂) = M_max · ( 1 − e^(−k · PO₂) )        k = k_reduce = 0.1 per mmol
-```
+$$M(P_{\mathrm{O_2}}) = M_\text{max}\left(1 - e^{-k\,P_{\mathrm{O_2}}}\right),
+\qquad k = \texttt{k\_reduce} = 0.1\ \text{per mmol}$$
 
-applied per cell as `M(PO₂) · V_cell`.
+applied per cell as $M(P_{\mathrm{O_2}}) \cdot V_\text{cell}$.
 
 **This is not Michaelis–Menten**, which is the literature standard. The forms agree in shape — both
 saturate — but differ most at low PO₂, which is exactly the regime the hypoxic fraction is read
@@ -1407,7 +1404,7 @@ centres happened to fall.
 | 4 | Warn if more than 1% of mask voxels fell outside the grid | 1% | **On** | `tissue_regions.py:45` |
 | 5 | Mean TH fraction f̄ over all cells | — | **On** | `cb_h2_hypoxic_fraction.py:121` |
 | 6 | Stromal rate = `BASE_M_MAX / (1 + f̄(c − 1))` | `BASE_M_MAX` = 0.05 | **On** — open item 8 | `cb_h2_hypoxic_fraction.py:122` |
-| 7 | Per-cell `M_max` blended between `stroma · c` and `stroma` | c ∈ {1, 2, 4} | **On** | `cb_h2_hypoxic_fraction.py:123` |
+| 7 | Per-cell `M_max` blended between $\text{stroma}\cdot c$ and `stroma` | c ∈ {1, 2, 4} | **On** | `cb_h2_hypoxic_fraction.py:123` |
 | 8 | Solver applies the array elementwise | — | **On** | `perfusion.py:501` |
 | 9 | Readouts weighted by TH occupancy, not by cell count | — | **On** | `cb_h2_hypoxic_fraction.py:130` |
 
@@ -1423,12 +1420,14 @@ mask voxels per cell — most cells are mixed.
 
 Rates are then blended:
 
-```
-stroma = BASE_M_MAX / (1 + f̄ · (c − 1))
-M_max[cell] = blend( f_TH[cell],  tissue_rate = stroma · c,  stroma_rate = stroma )
-```
+$$\begin{aligned}
+\text{stroma} &= \frac{\texttt{BASE\_M\_MAX}}{1 + \bar{f}\,(c - 1)} \\[4pt]
+M_\text{max}[\text{cell}] &= \operatorname{blend}\!\Bigl(f_\text{TH}[\text{cell}],\;
+   \text{tissue rate} = \text{stroma}\cdot c,\;
+   \text{stroma rate} = \text{stroma}\Bigr)
+\end{aligned}$$
 
-where *c* is the glomus:stroma contrast and *f̄* the mean TH fraction. **The volume-weighted mean is
+where $c$ is the glomus:stroma contrast and $\bar{f}$ the mean TH fraction. **The volume-weighted mean is
 held at `BASE_M_MAX` across contrasts**, so runs at different *c* are comparable rather than simply
 scaled versions of each other.
 
@@ -1449,12 +1448,12 @@ from the edge (§11 row 27).
 ### 6.7 Numerical stabilisation of the Picard loop
 
 The non-linear washout acts as a sink on the right-hand side, which is unstable for conjugate
-gradient. The loop applies a **pseudo-washout**: add `q_total · γ` to the LHS diagonal *and the
+gradient. The loop applies a **pseudo-washout**: add $q_\text{total}\,\gamma$ to the LHS diagonal *and the
 same term* to the RHS.
 
-```
-b = s_incoming − s_washout − M(PO₂)·V_cell + (q_total · γ · PO₂)
-```
+$$b = s_\text{incoming} - s_\text{washout}
+- M(P_{\mathrm{O_2}})\,V_\text{cell}
++ q_\text{total}\,\gamma\,P_{\mathrm{O_2}}$$
 
 The true steady-state roots are unchanged, but the matrix becomes strictly diagonally dominant and
 well conditioned. γ = 0.5 in Tier 1, damping the Picard step and preventing sigmoidal oscillation;
@@ -1471,20 +1470,20 @@ The loop warns rather than raising if it hits its iteration cap without reaching
 |---|---|---|---|---|
 | 1 | Initial guess: PO₂ = 0 mmHg everywhere | — | **On** | `perfusion.py:461` |
 | 2 | Copy A and add a diagonal regulariser | 10⁻⁶ | **On**, once | `perfusion.py:478` |
-| 3 | Add a linear pseudo-washout `q_total · γ` to the diagonal | γ = 0.5 | **On**, once | `perfusion.py:489` |
+| 3 | Add a linear pseudo-washout $q_\text{total}\,\gamma$ to the diagonal | γ = 0.5 | **On**, once | `perfusion.py:489` |
 | 4 | Build the Jacobi preconditioner from the stabilised matrix | diagonal | **On**, once | `perfusion.py:493` |
 | 5 | Clamp PO₂ ≥ 0 | — | **On**, every iteration | `perfusion.py:497` |
-| 6 | Metabolic sink `M_max(1 − e^(−k·PO₂))` | k = 0.1 | **On** | `perfusion.py:501` |
-| 7 | Advective washout `q_total · C_O₂(PO₂, H)` per perfused cell | H **hard-coded 0.45** | **On** — open item 4 | `perfusion.py:507` |
-| 8 | RHS = `s_incoming − s_washout − M·V_cell + (q·γ)·PO₂` | — | **On** | `perfusion.py:512` |
+| 6 | Metabolic sink $M_\text{max}\bigl(1 - e^{-k P_{\mathrm{O_2}}}\bigr)$ | k = 0.1 | **On** | `perfusion.py:501` |
+| 7 | Advective washout $q_\text{total} \cdot C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H)$ per perfused cell | H **hard-coded 0.45** | **On** — open item 4 | `perfusion.py:507` |
+| 8 | RHS = $s_\text{incoming} - s_\text{washout} - M V_\text{cell} + q\gamma P_{\mathrm{O_2}}$ | — | **On** | `perfusion.py:512` |
 | 9 | CG solve, warm-started from the previous iterate | `rtol` 1e-6, `maxiter` 1000 | **On** | `perfusion.py:515` |
 | 10 | Non-convergence warns, never fails silently | — | **On** | `perfusion.py:517` |
 | 11 | Clamp the new iterate ≥ 0 | — | **On** | `perfusion.py:521` |
 | 12 | Convergence on the **relative** L2 change | tol 1e-5 | **On** | `perfusion.py:524` |
 | 13 | Hitting `max_iter` warns and returns the last iterate | 50 | **On** — open item 6 | `perfusion.py:533` |
 
-**Steps 3 and 8 are the same term, added twice on purpose.** `q·γ` goes onto the diagonal of the
-left-hand side and `q·γ·PO₂` onto the right. At the fixed point the two cancel exactly, so the true
+**Steps 3 and 8 are the same term, added twice on purpose.** $q\gamma$ goes onto the diagonal of the
+left-hand side and $q\gamma P_{\mathrm{O_2}}$ onto the right. At the fixed point the two cancel exactly, so the true
 steady-state roots are unchanged — but the matrix becomes strictly diagonally dominant, which turns
 a system CG handles badly into one it handles well. It also damps the Picard step, which is what
 stops the sigmoidal oxygen-content curve driving an oscillation.
@@ -1524,7 +1523,7 @@ Computed from the graph alone, with no physics.
 | Quantity | Definition | Reportable? |
 |---|---|---|
 | Total centreline length | Sum of edge lengths, µm | Yes |
-| β₁ (fundamental loops) | E − V + components | **Yes** — the H1 §1.1 readout |
+| $\beta_1$ (fundamental loops) | $E - V + C$ | **Yes** — the H1 §1.1 readout |
 | Tortuosity index | Path length / straight-line distance, per edge | Yes |
 | Curvature | Per edge, from the smoothed centreline | Yes |
 | Branching angle | Angle between every neighbour pair at nodes of degree ≥ 3 | Diagnostic |
@@ -1555,9 +1554,9 @@ sampled rather than exhaustive and communities and betweenness are reduced to su
 mode exists and is never selected on the CB path.
 
 > ⚠ **β₁ is not produced by this step at all.** The pipeline never computes it: `run_benchmarking`
-> is `False`, so `graph_fundamental_loops` — the one place in the library that evaluates E − V + C —
+> is `False`, so `graph_fundamental_loops` — the one place in the library that evaluates $E - V + C$ —
 > does not run. The β₁ figures quoted throughout this document are computed **post hoc** by
-> `cb_h1_figures.py:69` from the per-edge CSV, as `len(rows) − len(unique nodes) + 1`, with **C = 1
+> `cb_h1_figures.py:69` from the per-edge CSV, as $\lvert\text{rows}\rvert - \lvert\text{unique nodes}\rvert + 1$, with **C = 1
 > asserted** rather than measured. That assertion is sound only because
 > `keep_largest_component_only` is `True` (§2.5 step 8), so the graph is a single component by
 > construction. If that setting were ever turned off, every β₁ in this document would be wrong by
@@ -1594,16 +1593,17 @@ acquisition** — identical grid, co-registered by construction, no registration
 **Centreline length within the glomus.** Length is summed over real steps, not by counting skeleton
 voxels:
 
-```
-length = Σ_steps  |step ⊙ voxel_um| · count(step)
-```
+$$\text{length} = \sum_\text{steps}
+\bigl\lVert \mathbf{s} \odot \mathbf{v} \bigr\rVert \cdot \operatorname{count}(\mathbf{s})$$
+
+where $\mathbf{s}$ is the integer step offset and $\mathbf{v}$ the voxel size in µm.
 
 **The order of operations.**
 
 | # | Step | Setting | On the CB path | Where |
 |---|---|---|---|---|
 | 1 | Enumerate the 13 unique 26-connected steps, once per pair not per direction | — | **On** | `th_morphometry.py:28` |
-| 2 | Physical length of each step, `√Σ(sᵢ·vᵢ)²` | voxel (1.8639, 1.866, 1.866) | **On** | `th_morphometry.py:59` |
+| 2 | Physical length of each step, $\sqrt{\sum_i (s_i v_i)^2}$ | voxel (1.8639, 1.866, 1.866) | **On** | `th_morphometry.py:59` |
 | 3 | Count skeleton voxel pairs joined by that step | — | **On** | `th_morphometry.py:60` |
 | 4 | With `within`, keep a step only if **both** endpoints are in the mask | — | **On** | `th_morphometry.py:63` |
 | 5 | Total = Σ step length × pair count | — | **On** | `th_morphometry.py:65` |
@@ -1677,9 +1677,7 @@ average over sub-steps is exactly a length-weighted average along the segment.
 
 **The quantity is a shunt index, not a flow share:**
 
-```
-shunt index = (flow share penetrating) / (edge share penetrating)
-```
+$$\text{shunt index} = \frac{\text{flow share penetrating}}{\text{edge share penetrating}}$$
 
 An index of 1 means flow is indifferent to the clusters. Below 1 means flow is carried
 preferentially by the vessels that bypass them — the shunting the method is trying to detect.
@@ -1762,9 +1760,7 @@ rises by construction, which is the stated cost of representing tissue beyond th
 
 **Per-edge transit time** is lumen volume over volumetric flow:
 
-```
-τ_edge = π · (d/2)² · L / Q
-```
+$$\tau_\text{edge} = \frac{\pi (d/2)^{2} L}{Q}$$
 
 **Quadratic in diameter**, where resistance is quartic — so this carries a different sensitivity to
 calibre than the flow solve does, and its own share of the floor in §13.3.
@@ -1777,8 +1773,8 @@ arrive, and a finite stand-in would propagate as a merely slow path.
 | # | Step | Setting | On the CB path | Where |
 |---|---|---|---|---|
 | 1 | Scan every edge for a usable diameter; **raise** if any lacks one | — | **On** | `transit.py:38` |
-| 2 | Per edge, lumen volume `π(d/2)²L` | — | **On** | `transit.py:52` |
-| 3 | `τ = volume / abs(Q)`, or `inf` when Q = 0 | — | **On** | `transit.py:53` |
+| 2 | Per edge, lumen volume $\pi (d/2)^{2} L$ | — | **On** | `transit.py:52` |
+| 3 | $\tau = \text{volume} / \lvert Q \rvert$, or `inf` when Q = 0 | — | **On** | `transit.py:53` |
 | 4 | Direct each edge by its solved `flow_signed` | — | **On** | `transit.py:77` |
 | 5 | Dijkstra from all inlets at cost 0 | — | **On** | `transit.py:86` |
 | 6 | Unreachable nodes carry `inf`, never absent | — | **On** | `transit.py:84` |
@@ -1806,7 +1802,7 @@ flow-directed graph.
 
 **It raises on a missing diameter** rather than substituting one.
 
-> **At a glance** — τ = πr²L/Q, Dijkstra from inlets, `inf` for zero flow, ratios only ·
+> **At a glance** — $\tau = \pi r^{2} L / Q$, Dijkstra from inlets, `inf` for zero flow, ratios only ·
 > `transit.py:28`, `transit.py:57` · `tests/test_transit.py`
 
 ---
@@ -2149,7 +2145,7 @@ Present in the code, disabled for the CB path, and `__post_init__` raises if re-
 
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
-| `constrict_at_pericytes` | False (raises if True) | — | (iii) | Sites are placed by a hard-coded topological rule rather than measured from imaging, and severities come from no model of vasomotor tone. Because the ratio multiplies whatever diameter was measured, the fabrication reaches measured edges too — and resistance goes as *d*⁻⁴, so the 0.5 capillary ratio is a 16× local resistance error on a real vessel | measured |
+| `constrict_at_pericytes` | False (raises if True) | — | (iii) | Sites are placed by a hard-coded topological rule rather than measured from imaging, and severities come from no model of vasomotor tone. Because the ratio multiplies whatever diameter was measured, the fabrication reaches measured edges too — and resistance goes as $d^{-4}$, so the 0.5 capillary ratio is a 16× local resistance error on a real vessel | measured |
 | `constriction_mode` | "sphincter" | — | (iii) | Alternative: "periodic" | — |
 | `sphincter_length_um` | 5.0 | µm | (iii) | Chosen | — |
 | `intimal_cushion_constriction_ratio` | 0.60 | fraction | (iii) | Chosen; no vasomotor model behind it | — |
@@ -2367,7 +2363,7 @@ The suite is **547 tests** across 55 files, run under continuous integration.
 | FWHM diameter | Analytical Gaussian phantom | 0.2–0.35 µm |
 | EDT junction trimming | Synthetic junction fixture | Behavioural |
 | Silent fallback guards | Refuses fabricated calibre | Behavioural |
-| Transit time | τ = πr²L/Q by hand; `inf` for zero flow | Exact |
+| Transit time | $\tau = \pi r^{2} L / Q$ by hand; `inf` for zero flow | Exact |
 | Cohort split | Exact permutation p against enumeration | Exact |
 | Threshold selection | Refuses when calibre unreachable | Behavioural |
 
@@ -2408,12 +2404,12 @@ can carry. Other sections point here; none of them restate it.
 These are properties of the model, not a list of things to fix. Most are bounded by voxel size
 against vessel calibre, or by tissue geometry, and no change to the solver touches either.
 
-### 13.1 The governing constraint: resistance goes as *d*⁻⁴
+### 13.1 The governing constraint: resistance goes as $d^{-4}$
 
-Fractional calibre error propagates as `δR/R ≈ 4·δd/d`. Measured over the pooled 34,900 edges,
+Fractional calibre error propagates as $\delta R/R \approx 4\,\delta d/d$. Measured over the pooled 34,900 edges,
 taking one voxel (1.866 µm) as the diameter uncertainty:
 
-| Percentile | Diameter (µm) | δd/d | δR/R |
+| Percentile | Diameter (µm) | $\delta d/d$ | $\delta R/R$ |
 |---|---|---|---|
 | p5 | 3.732 | 50.0% | **200.0%** |
 | p25 | 5.868 | 31.8% | **127.2%** |
@@ -2441,10 +2437,10 @@ The segmentation threshold is the dominant correlated term: every edge in a spec
 from one mask at one threshold, so moving it moves every diameter together.
 
 Measured median calibre falls monotonically with threshold in **6 of 6 specimens**. Over the clean
-0.85–0.90 interval the mean shift is **0.922 µm, about half a voxel** — a per-edge `δd/d` of 11.7%
+0.85–0.90 interval the mean shift is **0.922 µm, about half a voxel** — a per-edge $\delta d/d$ of 11.7%
 and an analytic `δR/R` of 46.7%.
 
-Measured by re-solving the networks at that perturbation rather than scaling, since *d*⁻⁴ is not
+Measured by re-solving the networks at that perturbation rather than scaling, since $d^{-4}$ is not
 linear:
 
 | Perturbation | Independent | Correlated | Within-specimen ratio |
@@ -2452,7 +2448,7 @@ linear:
 | One voxel, 1.866 µm (conservative bound) | 4.1% | 95.3% | 13.2% |
 | **Measured threshold shift, 0.922 µm** | 2.2% | **45.3%** | **6.3%** |
 
-The measured 45.3% sits close to the 46.7% that `4·δd/d` predicts, so propagation is near-linear at
+The measured 45.3% sits close to the 46.7% that $4\,\delta d/d$ predicts, so propagation is near-linear at
 this scale even though the underlying law is not. **The ratio cancels 86% of the correlated error
 at both perturbation sizes**, which makes that cancellation a property of the ratio rather than an
 artefact of the size chosen.
@@ -2510,9 +2506,10 @@ the precision.
 
 The oxygen diffusion length is
 
-```
-sqrt(D · α · PO₂ / M)  =  20 µm at PO₂ 10,  35 µm at 30,  45 µm at 50
-```
+$$\sqrt{\frac{D\,\alpha\,P_{\mathrm{O_2}}}{M}}
+\;=\; 20\ \mathrm{\mu m}\ \text{at}\ P_{\mathrm{O_2}} = 10,
+\quad 35\ \mathrm{\mu m}\ \text{at}\ 30,
+\quad 45\ \mathrm{\mu m}\ \text{at}\ 50$$
 
 against a **median tissue-to-vessel distance of 5.3–7.9 µm**. Every tissue point sits at roughly a
 fifth of its supply radius, so the tissue is not diffusion-limited and a local sink cannot produce
@@ -2803,6 +2800,6 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 9 | The rheology solver falls back to a silent 5.0 µm diameter; `map_vessels_to_grid` raises on the same condition | §3.2 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, H2 drivers 60/20 mmHg. Every published H2 number used 60/20 | §7.8, §8, §11 row 15 |
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
-| 12 | The rheology loop rescales resistance by `µ_app / µ_old` against a base that no longer contains `µ_old`, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
+| 12 | The rheology loop rescales resistance by `$\mu_\text{app} / \mu_\text{old}$` against a base that no longer contains `µ_old`, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
 
 ---
