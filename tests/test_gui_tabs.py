@@ -367,6 +367,9 @@ def test_the_perturbations_tab_shows_the_sweep_settings():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     shown = {field.name for field in tabs["7. Perturbations"].fields}
     assert shown == {
+        "run_perturbations",
+        "perturbations",
+        "perturbation_output_dir",
         "run_pericyte_dilation_sweep",
         "pericyte_dilation_min_percent",
         "pericyte_dilation_max_percent",

@@ -143,7 +143,7 @@ def test_the_sweep_settings_are_declared_in_the_package_schema():
 
     schema = default_schema()
     section = set(schema.section_names("Perturbation runs"))
-    assert section == {"run_pericyte_dilation_sweep", *BRAIN_SWEEP_VALUES}
+    assert {"run_pericyte_dilation_sweep", *BRAIN_SWEEP_VALUES} <= section
 
 
 def test_the_brain_schema_adds_nothing_the_pipeline_schema_does_not_have():

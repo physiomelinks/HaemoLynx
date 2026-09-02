@@ -53,6 +53,10 @@ EXPECTED_UNITS = {
     # Pressures.
     "inlet_p_bc": "Pa",
     "outlet_p_bc": "Pa",
+    # Walked along an edge's centreline in `get_diameter_at_position`, whose
+    # position runs over edge `length`: microns.
+    "constriction_length_um": "um",
+    "constriction_spacing_um": "um",
 }
 
 #: Names that look like a measurement but hold a dimensionless number. Listed
@@ -76,6 +80,7 @@ DIMENSIONLESS = {
     "pericyte_comparison_baseline_value",
     "pericyte_comparison_constricted_value",
     "constriction_by_branch_order",
+    "arteriole_diameter_scale",
     "fwhm_min_total_extent_multiplier",
     "fwhm_same_edge_arc_window_multiplier",
     # Label sentinels written into the int32 branch-label volume.

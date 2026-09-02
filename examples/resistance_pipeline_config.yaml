@@ -250,6 +250,8 @@ diameters_and_pericytes:
   all_diams_const: true
   # Model pericyte constrictions when assigning Poiseuille resistances  [needs run_haemodynamics]
   do_pericyte_construction: false
+  # Scale every arteriole branch order's diameter by this factor  [range 0.0..]
+  arteriole_diameter_scale: 1.0
   # Hold each pericyte constriction over this much of the vessel  [um; range 0.0..]
   constriction_length_um: 40.0
   # Place regularly spaced constrictions this far apart along a vessel  [um; range 0.0..]
@@ -370,6 +372,12 @@ fwhm_diameter_measurement:
 # Perturbation runs
 # ------------------------------------------------------------------------
 perturbation_runs:
+  # Re-solve the finished network once per configured perturbation
+  run_perturbations: false
+  # Re-solve the network once for each of these, as a list of {name, type, overrides} entries; each runs from the same baseline rather than on top of the one before
+  perturbations: []
+  # Write each perturbation's CSVs here; leave unset for a 'perturbations' directory beside the other output  [needs run_perturbations]
+  perturbation_output_dir: null
   # Sweep pericyte dilation against inlet pressure after the pipeline run
   run_pericyte_dilation_sweep: true
   # Start the dilation sweep at this percentage  [percent; range 0..100]

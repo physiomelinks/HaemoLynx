@@ -1,0 +1,333 @@
+"""A perturbation: a named, typed settings override to re-solve a network for.
+
+Once a run has a network with resistances on it, the question is usually not
+"what does this network do" but "what does it do if". Each answer is a full
+re-solve of the same baseline with a few settings changed -- a different inlet
+pressure, wider arterioles, tighter pericytes -- so a perturbation is described
+the same way a preset is: a name, and the settings it sets.
+
+    perturbations:
+      - name: art_dilate_20
+        type: arteriole_diameter_change
+        overrides:
+          arteriole_diameter_scale: 1.2
+
+The ``type`` is what a run dispatches on and what the panel reveals rows for:
+:data:`SETTINGS_FOR_TYPE` says which settings each type reads, so an override
+that type will not look at can be reported rather than silently ignored. It
+cannot be expressed as a setting's ``requires`` -- a prerequisite must be a
+bool and a type is a choice -- which is the same problem
+:mod:`haemolynx.gui.boundary_picking` solves for the boundary selection
+methods, and this follows it.
+
+Every perturbation runs **from the same baseline**: two of them do not compose,
+and neither changes the run that produced the network.
+
+Nothing here executes anything, imports a GUI, or raises for a badly written
+entry. A hand-edited config must not stop a panel from opening, so reading one
+collects :attr:`PerturbationSpec.problems` and carries on; the run is where a
+bad entry is an error, and :func:`haemolynx.pipeline.preflight` says so before
+any work starts.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path, PurePath
+from typing import Any, Mapping, Sequence
+
+import numpy as np
+
+__all__ = [
+    "PERTURBATION_TYPES",
+    "SETTINGS_FOR_TYPE",
+    "DEFAULT_PERTURBATION_DIRNAME",
+    "PerturbationSpec",
+    "perturbation_output_dir",
+    "perturbation_problems",
+    "perturbations_from_settings",
+    "perturbations_to_settings",
+    "settings_for_perturbation_type",
+    "visible_perturbation_settings",
+]
+
+#: What a perturbation can be. ``none`` re-solves the baseline unchanged, which
+#: is how a run gets a comparison arm that shares every other setting.
+PERTURBATION_TYPES: tuple[str, ...] = (
+    "none",
+    "pressure_sweep",
+    "arteriole_diameter_change",
+    "pericyte_diameter_change",
+)
+
+#: Which settings each type reads. This is the table the panel shows rows from
+#: -- a type's options stay hidden until that type is chosen, rather than
+#: greyed out -- and what tells a user that an override is doing nothing.
+SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
+    "none": (),
+    "pressure_sweep": (
+        "pericyte_dilation_min_percent",
+        "pericyte_dilation_max_percent",
+        "pericyte_dilation_step_percent",
+        "inlet_pressure_min_pa",
+        "inlet_pressure_max_pa",
+        "inlet_pressure_step_pa",
+    ),
+    "arteriole_diameter_change": ("arteriole_diameter_scale",),
+    "pericyte_diameter_change": (
+        "do_pericyte_construction",
+        "constriction_by_branch_order",
+        "constriction_length_um",
+        "constriction_spacing_um",
+        "use_pericyte_mask_constriction",
+        "pericyte_mask_path",
+        "pericyte_mask_h5_dataset_name",
+        "use_probabilistic_pericyte_constriction",
+        "pericyte_constriction_probability",
+    ),
+}
+
+#: Where perturbation output goes when `perturbation_output_dir` is unset: a
+#: directory beside the rest of the run's output rather than in among it,
+#: because there is one subdirectory per perturbation.
+DEFAULT_PERTURBATION_DIRNAME = "perturbations"
+
+
+def settings_for_perturbation_type(perturbation_type: Any) -> tuple[str, ...]:
+    """The settings a perturbation of *perturbation_type* reads.
+
+    An unknown type reads nothing, so a panel showing a hand-edited config
+    shows no options rather than the previous type's.
+    """
+    return tuple(SETTINGS_FOR_TYPE.get(str(perturbation_type), ()))
+
+
+def visible_perturbation_settings(specs: Sequence["PerturbationSpec"]) -> set[str]:
+    """Every setting the configured perturbations between them read."""
+    wanted: set[str] = set()
+    for spec in specs:
+        wanted.update(settings_for_perturbation_type(spec.type))
+    return wanted
+
+
+def plain(value: Any) -> Any:
+    """*value* as builtins, however deeply nested.
+
+    The one boundary between this module and YAML. ``yaml.safe_dump`` refuses a
+    ``np.float64`` or a ``Path`` outright, and a perturbation's overrides are
+    ordinary settings values -- so one that has been coerced by the schema
+    arrives as a ``Path``, and one picked up from a graph as a numpy scalar.
+    Paths become forward-slashed strings for the same reason the config writer
+    does it: a file written on Windows must match one written on Linux.
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return [plain(item) for item in value.tolist()]
+    if isinstance(value, PurePath):
+        return PurePath(value).as_posix()
+    if isinstance(value, Mapping):
+        return {str(key): plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True)
+class PerturbationSpec:
+    """One perturbation: what to call it, what kind it is, what it changes.
+
+    Read leniently -- a malformed entry becomes a spec carrying a line in
+    :attr:`problems` rather than an exception -- so a panel can report a
+    hand-edited config while a run refuses it.
+    """
+
+    name: str
+    type: str
+    overrides: Mapping[str, Any] = field(default_factory=dict)
+    #: One line per thing wrong with this entry that needs no schema to see.
+    problems: tuple[str, ...] = ()
+
+    @classmethod
+    def from_entry(cls, entry: Any, *, index: int = 0) -> "PerturbationSpec":
+        """One entry of the `perturbations` list, however badly written."""
+        where = f"perturbations[{index}]"
+        problems: list[str] = []
+        if not isinstance(entry, Mapping):
+            return cls(
+                name=f"perturbation_{index + 1}",
+                type="none",
+                problems=(f"{where} is not a name/type/overrides entry: {entry!r}",),
+            )
+
+        unknown_keys = sorted(set(entry) - {"name", "type", "overrides"})
+        if unknown_keys:
+            problems.append(
+                f"{where} has unexpected key(s) {unknown_keys}; an entry is "
+                "name, type and overrides"
+            )
+
+        name = entry.get("name")
+        if name is None or not str(name).strip():
+            problems.append(f"{where} has no name")
+            name = f"perturbation_{index + 1}"
+
+        perturbation_type = entry.get("type")
+        if perturbation_type is None:
+            problems.append(
+                f"{where} ('{name}') has no type; one of "
+                f"{', '.join(PERTURBATION_TYPES)}"
+            )
+            perturbation_type = "none"
+        elif str(perturbation_type) not in PERTURBATION_TYPES:
+            problems.append(
+                f"{where} ('{name}') has unknown type {perturbation_type!r}; one "
+                f"of {', '.join(PERTURBATION_TYPES)}"
+            )
+
+        overrides = entry.get("overrides") or {}
+        if not isinstance(overrides, Mapping):
+            problems.append(
+                f"{where} ('{name}') overrides is not a mapping of setting name "
+                f"to value: {overrides!r}"
+            )
+            overrides = {}
+
+        return cls(
+            name=str(name),
+            type=str(perturbation_type),
+            overrides={str(key): value for key, value in overrides.items()},
+            problems=tuple(problems),
+        )
+
+    def to_entry(self) -> dict[str, Any]:
+        """This perturbation as the entry a config file holds."""
+        return {
+            "name": str(self.name),
+            "type": str(self.type),
+            "overrides": {key: plain(value) for key, value in self.overrides.items()},
+        }
+
+    def unused_overrides(self) -> tuple[str, ...]:
+        """Override keys this type does not read, so nothing would apply them."""
+        reads = set(settings_for_perturbation_type(self.type))
+        return tuple(sorted(key for key in self.overrides if key not in reads))
+
+    def schema_problems(self, schema) -> tuple[str, ...]:
+        """What only the schema can see: an unknown key, or a value it rejects.
+
+        Each override is coerced **on its own** rather than through
+        ``Schema.validate``: a perturbation is a partial config, so its
+        prerequisites are met by the run it is applied to and not by itself, and
+        validating the fragment would raise `IneffectiveSettingWarning` for
+        every override whose bool prerequisite lives outside it. This is the
+        same reason `examples/pipeline_presets.py` checks its presets one value
+        at a time.
+        """
+        problems: list[str] = []
+        for key, value in self.overrides.items():
+            try:
+                setting = schema[key]
+            except Exception as exc:  # ConfigError, with a spelling suggestion
+                problems.append(f"perturbation '{self.name}' sets {exc}")
+                continue
+            try:
+                setting.coerce(value)
+            except Exception as exc:
+                problems.append(f"perturbation '{self.name}': {exc}")
+        return tuple(problems)
+
+    def coerced_overrides(self, schema) -> dict[str, Any]:
+        """The overrides this perturbation applies, as the schema's own types.
+
+        Anything the schema rejects is left out -- `schema_problems` is what
+        reports it -- so a caller gets the part of a bad entry that does work
+        rather than nothing at all.
+        """
+        coerced: dict[str, Any] = {}
+        for key, value in self.overrides.items():
+            if key not in schema:
+                continue
+            try:
+                coerced[key] = schema[key].coerce(value)
+            except Exception:
+                continue
+        return coerced
+
+
+def perturbations_from_settings(values: Mapping[str, Any]) -> tuple[PerturbationSpec, ...]:
+    """Every perturbation the `perturbations` setting describes, in order."""
+    raw = values.get("perturbations")
+    if raw is None:
+        return ()
+    if isinstance(raw, Mapping):
+        entries: list[Any] = [raw]
+    elif isinstance(raw, (str, bytes)):
+        # A single string cannot be an entry, and iterating one would report a
+        # problem per character.
+        return (
+            PerturbationSpec(
+                name="perturbation_1",
+                type="none",
+                problems=(f"perturbations is not a list of entries: {raw!r}",),
+            ),
+        )
+    else:
+        try:
+            entries = list(raw)
+        except TypeError:
+            return (
+                PerturbationSpec(
+                    name="perturbation_1",
+                    type="none",
+                    problems=(f"perturbations is not a list of entries: {raw!r}",),
+                ),
+            )
+    return tuple(
+        PerturbationSpec.from_entry(entry, index=index)
+        for index, entry in enumerate(entries)
+    )
+
+
+def perturbations_to_settings(
+    specs: Sequence[PerturbationSpec],
+) -> dict[str, list[dict[str, Any]]]:
+    """The `perturbations` setting these specs describe, as plain YAML data."""
+    return {"perturbations": [spec.to_entry() for spec in specs]}
+
+
+def perturbation_problems(values: Mapping[str, Any], schema) -> tuple[str, ...]:
+    """Everything wrong with the configured perturbations, as lines.
+
+    What both the panel's report box and the pre-run checks read; neither
+    raises, so they say the same thing in the two places a user meets it.
+    """
+    specs = perturbations_from_settings(values)
+    problems: list[str] = []
+    seen: dict[str, int] = {}
+    for index, spec in enumerate(specs):
+        problems.extend(spec.problems)
+        problems.extend(spec.schema_problems(schema))
+        first = seen.get(spec.name)
+        if first is not None:
+            problems.append(
+                f"perturbations[{index}] repeats the name '{spec.name}' from "
+                f"perturbations[{first}]; each one names its own output"
+            )
+        else:
+            seen[spec.name] = index
+    return tuple(problems)
+
+
+def perturbation_output_dir(values: Mapping[str, Any]) -> Path:
+    """Where perturbation output goes, configured or derived.
+
+    Unset means beside the run's other output, which is what
+    `vtk_output_prefix` names the directory of -- so a perturbation lands with
+    the run it perturbs without anyone configuring a second path.
+    """
+    configured = values.get("perturbation_output_dir")
+    if configured:
+        return Path(configured)
+    prefix = values.get("vtk_output_prefix")
+    parent = Path(prefix).parent if prefix else Path(".")
+    return parent / DEFAULT_PERTURBATION_DIRNAME

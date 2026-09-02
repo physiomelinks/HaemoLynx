@@ -20,6 +20,17 @@ from .resistance import (
     solve_flow_from_conductance_matrix,
 )
 from .apply import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
+from .perturbations import (
+    PERTURBATION_TYPES,
+    SETTINGS_FOR_TYPE,
+    PerturbationSpec,
+    perturbation_output_dir,
+    perturbation_problems,
+    perturbations_from_settings,
+    perturbations_to_settings,
+    settings_for_perturbation_type,
+    visible_perturbation_settings,
+)
 
 __all__ = [
     "automated",
@@ -38,4 +49,13 @@ __all__ = [
     "solve_flow_from_conductance_matrix",
     "HaemodynamicsApplyConfig",
     "apply_poiseuille_haemodynamics",
+    "PERTURBATION_TYPES",
+    "SETTINGS_FOR_TYPE",
+    "PerturbationSpec",
+    "perturbation_output_dir",
+    "perturbation_problems",
+    "perturbations_from_settings",
+    "perturbations_to_settings",
+    "settings_for_perturbation_type",
+    "visible_perturbation_settings",
 ]

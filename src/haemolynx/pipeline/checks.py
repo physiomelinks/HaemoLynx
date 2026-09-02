@@ -11,6 +11,10 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
+from haemolynx.haemodynamics.perturbations import (
+    perturbation_problems,
+    perturbations_from_settings,
+)
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport, check_settings, resolve_existing_path
 
@@ -88,6 +92,61 @@ def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
+    """Every configured perturbation must name a type and settings that exist.
+
+    A perturbation is a partial config the run applies to a finished network,
+    so nothing validates it when the config file loads: an entry naming a
+    setting that does not exist, or a path that is not there, would not be
+    found until the re-solve, after the whole pipeline had run. Hence here.
+    """
+    report = CheckReport()
+    specs = perturbations_from_settings(settings)
+    if not specs:
+        return report
+
+    for message in perturbation_problems(settings, schema):
+        report.add_error(message)
+
+    for spec in specs:
+        unused = spec.unused_overrides()
+        if unused:
+            report.add_warning(
+                f"perturbation '{spec.name}' sets {list(unused)}, which a "
+                f"{spec.type} perturbation does not read, so they will have no "
+                "effect."
+            )
+        # A path named by a perturbation is read once that perturbation runs,
+        # which is after the pipeline. Check it against the settings as they
+        # will be then -- the overrides are what switch its feature on.
+        overrides = spec.coerced_overrides(schema)
+        paths = [
+            name
+            for name in overrides
+            if schema[name].kind == "path" and schema[name].must_exist
+        ]
+        if not paths:
+            continue
+        # Not `schema.subset(paths)`: a path's prerequisite is a setting of its
+        # own, and a schema missing it will not build at all.
+        checked = check_settings(
+            schema,
+            {**settings, **overrides},
+            skip=[name for name in schema.names if name not in set(paths)],
+        )
+        for message in checked.errors:
+            report.add_error(f"perturbation '{spec.name}': {message}")
+        for label, detail in checked.passed:
+            report.add_pass(f"perturbation '{spec.name}' {label}", detail)
+
+    if report.ok:
+        report.add_pass(
+            "perturbations",
+            f"{len(specs)} configured: " + ", ".join(spec.name for spec in specs),
+        )
+    return report
+
+
 def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every pre-run check, printed as a checklist.
 
@@ -97,5 +156,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report = check_settings(schema, settings)
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
+    report.extend(check_perturbations(settings, schema))
     report.print("Preflight")
     return report

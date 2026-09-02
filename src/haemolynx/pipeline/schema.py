@@ -970,6 +970,15 @@ SCHEMA = Schema(
             requires=("run_haemodynamics",),
         ),
         Setting(
+            name="arteriole_diameter_scale",
+            kind="float",
+            default=1.0,
+            help="Scale every arteriole branch order's diameter by this factor",
+            section=_DIAMETERS_AND_PERICYTES,
+            # Dimensionless, like the constriction factors it sits beside.
+            minimum=0.0,
+        ),
+        Setting(
             name="constriction_length_um",
             kind="float",
             default=40.0,
@@ -1508,6 +1517,35 @@ SCHEMA = Schema(
         # about to be decided by a perturbation's type, and a prerequisite can
         # only be a bool.
         # ------------------------------------------------------------------
+        Setting(
+            name="run_perturbations",
+            kind="bool",
+            default=False,
+            help="Re-solve the finished network once per configured perturbation",
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="perturbations",
+            kind="any",
+            default=[],
+            help=(
+                "Re-solve the network once for each of these, as a list of "
+                "{name, type, overrides} entries; each runs from the same "
+                "baseline rather than on top of the one before"
+            ),
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="perturbation_output_dir",
+            kind="path",
+            default=None,
+            help=(
+                "Write each perturbation's CSVs here; leave unset for a "
+                "'perturbations' directory beside the other output"
+            ),
+            section=_PERTURBATION_RUNS,
+            requires=("run_perturbations",),
+        ),
         Setting(
             name="run_pericyte_dilation_sweep",
             kind="bool",
