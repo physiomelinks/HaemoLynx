@@ -335,6 +335,32 @@ class Quittable:
         self.quits += 1
 
 
+def a_graph_with_depth() -> nx.MultiGraph:
+    """`a_graph`'s four nodes, moved off its straight line.
+
+    napari fits the camera to the layers by dividing the canvas by their
+    bounding box, so a box with a zero-width side divides by zero and vispy
+    then refuses the projection. `a_graph` runs dead straight along z, giving
+    it no width at all in y or x. Nothing notices while the viewer is in 2D, or
+    while a layer is being updated rather than added -- but the second of two
+    runs adds one into a viewer the first already turned to 3D, and that is the
+    run these tests are about. No real vessel network is a straight line.
+    """
+    graph = nx.MultiGraph()
+    corners = ((0.0, 0.0, 0.0), (10.0, 4.0, 2.0), (20.0, 1.0, 6.0), (30.0, 7.0, 3.0))
+    for node_id, pos in enumerate(corners):
+        graph.add_node(node_id, pos=np.array(pos))
+    for u, v in ((0, 1), (1, 2), (2, 3)):
+        start, end = graph.nodes[u]["pos"], graph.nodes[v]["pos"]
+        graph.add_edge(
+            u, v, key=0,
+            voxels=[start.tolist(), end.tolist()],
+            length=float(np.linalg.norm(end - start)),
+            segment_id=u,
+        )
+    return graph
+
+
 @pytest.fixture
 def paused_run(monkeypatch):
     """A fake pipeline that waits after `build_network` until it is released.
@@ -346,7 +372,7 @@ def paused_run(monkeypatch):
     """
     from haemolynx.gui import _widget
 
-    graph = a_graph()
+    graph = a_graph_with_depth()
     script = SimpleNamespace(
         graph=graph,
         drawn=threading.Event(),
