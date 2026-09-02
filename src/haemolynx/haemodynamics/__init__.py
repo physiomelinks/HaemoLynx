@@ -20,6 +20,11 @@ from .resistance import (
     solve_flow_from_conductance_matrix,
 )
 from .apply import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
+from .arteriole import (
+    ARTERIOLE_PREFIX,
+    is_arteriole_branch_order,
+    scale_arteriole_diameters,
+)
 from .perturbations import (
     PERTURBATION_TYPES,
     SETTINGS_FOR_TYPE,
@@ -49,6 +54,9 @@ __all__ = [
     "solve_flow_from_conductance_matrix",
     "HaemodynamicsApplyConfig",
     "apply_poiseuille_haemodynamics",
+    "ARTERIOLE_PREFIX",
+    "is_arteriole_branch_order",
+    "scale_arteriole_diameters",
     "PERTURBATION_TYPES",
     "SETTINGS_FOR_TYPE",
     "PerturbationSpec",
