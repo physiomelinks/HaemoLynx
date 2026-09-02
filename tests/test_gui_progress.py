@@ -84,7 +84,9 @@ def test_the_whole_run_moves_the_bar_one_stage_at_a_time():
     display = ProgressDisplay()
     display.start()
     seen = []
-    for stage in STAGES:
+    # Only the stages a run performs: a panel-only tab reports nothing, so it
+    # is not one of the eight the bar counts through.
+    for stage in [stage for stage in STAGES if stage.call]:
         display.update(_stage_event(STAGE_STARTED, stage.call))
         seen.append(display.stages.value)
         display.update(_stage_event(STAGE_FINISHED, stage.call))

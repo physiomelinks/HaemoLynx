@@ -515,10 +515,25 @@ def test_the_sixth_stage_is_named_haemodynamics():
         "5. Diameters",
         "6. Haemodynamics",
         "Solve",
+        "7. Perturbations",
         "8. Export",
     ]
     haemodynamics = next(s for s in STAGES if s.title == "6. Haemodynamics")
     assert haemodynamics.call == "build_haemodynamic_model"
+
+
+def test_the_perturbations_tab_is_not_a_stage_a_run_counts():
+    """It configures a re-solve nothing performs yet, so it has no `call`.
+
+    A panel-only entry must not enter the count a progress bar reads, or every
+    run would stop one stage short of full.
+    """
+    perturbations = next(s for s in STAGES if s.title == "7. Perturbations")
+
+    assert perturbations.call is None
+    assert perturbations.sections == ("Perturbation runs",)
+    assert RunProgress(None).total == 8
+    assert "7. Perturbations" not in [stage.title for stage in RunProgress(None).stages]
 
 
 def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
@@ -532,4 +547,5 @@ def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
 
     assert solve.tab == "6. Haemodynamics"
     assert solve.settings == ("inlet_p_bc", "outlet_p_bc", "do_equiv_resistance_calculation")
-    assert [stage.tab for stage in STAGES if stage.call != "solve"] == [None] * 7
+    others = [stage.tab for stage in STAGES if stage.call != "solve"]
+    assert others == [None] * len(others)

@@ -57,6 +57,9 @@ _PIPELINE_STAGES = "Pipeline stages"
 _STATISTICS = "Statistics and measurements"
 _DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
 _FWHM = "FWHM diameter measurement"
+# Not "Perturbations": the YAML key of a section may not collide with a
+# setting name, and `perturbations` is one of the settings in it.
+_PERTURBATION_RUNS = "Perturbation runs"
 
 
 SCHEMA = Schema(
@@ -967,6 +970,24 @@ SCHEMA = Schema(
             requires=("run_haemodynamics",),
         ),
         Setting(
+            name="constriction_length_um",
+            kind="float",
+            default=40.0,
+            help="Hold each pericyte constriction over this much of the vessel",
+            section=_DIAMETERS_AND_PERICYTES,
+            minimum=0.0,
+            unit="um",
+        ),
+        Setting(
+            name="constriction_spacing_um",
+            kind="float",
+            default=100.0,
+            help="Place regularly spaced constrictions this far apart along a vessel",
+            section=_DIAMETERS_AND_PERICYTES,
+            minimum=0.0,
+            unit="um",
+        ),
+        Setting(
             name="use_pericyte_mask_constriction",
             kind="bool",
             default=False,
@@ -1476,6 +1497,87 @@ SCHEMA = Schema(
             help="Apply the custom edge-diameter assignment behaviour to these edge IDs",
             section=_DIAMETERS_AND_PERICYTES,
             advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # Perturbation runs
+        #
+        # What to re-solve the finished network for. These were declared
+        # beside the whole-brain example, which meant the napari panel --
+        # which builds its form from this schema alone -- could not show them
+        # at all. None of them carries `requires`: whether a sweep runs is
+        # about to be decided by a perturbation's type, and a prerequisite can
+        # only be a bool.
+        # ------------------------------------------------------------------
+        Setting(
+            name="run_pericyte_dilation_sweep",
+            kind="bool",
+            default=True,
+            help="Sweep pericyte dilation against inlet pressure after the pipeline run",
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="pericyte_dilation_min_percent",
+            kind="int",
+            default=1,
+            help="Start the dilation sweep at this percentage",
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=0,
+            maximum=100,
+        ),
+        Setting(
+            name="pericyte_dilation_max_percent",
+            kind="int",
+            default=30,
+            help="End the dilation sweep at this percentage",
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=0,
+            maximum=100,
+        ),
+        Setting(
+            name="pericyte_dilation_step_percent",
+            kind="int",
+            default=1,
+            help="Step the dilation sweep by this percentage",
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=1,
+            maximum=100,
+        ),
+        Setting(
+            name="inlet_pressure_min_pa",
+            kind="int",
+            default=4500,
+            help="Start the inlet-pressure sweep at this pressure",
+            section=_PERTURBATION_RUNS,
+            unit="Pa",
+            minimum=0,
+        ),
+        Setting(
+            name="inlet_pressure_max_pa",
+            kind="int",
+            default=6000,
+            help="End the inlet-pressure sweep at this pressure",
+            section=_PERTURBATION_RUNS,
+            unit="Pa",
+            minimum=0,
+        ),
+        Setting(
+            name="inlet_pressure_step_pa",
+            kind="int",
+            default=500,
+            help="Step the inlet-pressure sweep by this much",
+            section=_PERTURBATION_RUNS,
+            unit="Pa",
+            minimum=1,
+        ),
+        Setting(
+            name="sweep_output_dir",
+            kind="path",
+            default=f"{_OUTPUTS}/pericyte_dilation_sweep",
+            help="Write the sweep CSV and its curves here",
+            section=_PERTURBATION_RUNS,
         ),
     ],
     title="Resistance network pipeline",

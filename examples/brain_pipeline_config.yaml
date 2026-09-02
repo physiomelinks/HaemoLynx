@@ -248,6 +248,10 @@ diameters_and_pericytes:
   all_diams_const: true
   # Model pericyte constrictions when assigning Poiseuille resistances  [needs run_haemodynamics]
   do_pericyte_construction: false
+  # Hold each pericyte constriction over this much of the vessel  [um; range 0.0..]
+  constriction_length_um: 40.0
+  # Place regularly spaced constrictions this far apart along a vessel  [um; range 0.0..]
+  constriction_spacing_um: 100.0
   # Place constrictions at pericyte centroids taken from a mask rather than at regular spacing  [needs run_haemodynamics]
   use_pericyte_mask_constriction: false
   # Read pericyte locations from this mask  [needs use_pericyte_mask_constriction; must exist]
@@ -361,22 +365,22 @@ fwhm_diameter_measurement:
   fwhm_min_fit_r2: 0.85
 
 # ------------------------------------------------------------------------
-# Pericyte dilation sweep
+# Perturbation runs
 # ------------------------------------------------------------------------
-pericyte_dilation_sweep:
+perturbation_runs:
   # Sweep pericyte dilation against inlet pressure after the pipeline run
   run_pericyte_dilation_sweep: true
-  # Start the dilation sweep at this percentage  [percent; range 0..100; needs run_pericyte_dilation_sweep]
+  # Start the dilation sweep at this percentage  [percent; range 0..100]
   pericyte_dilation_min_percent: 1
-  # End the dilation sweep at this percentage  [percent; range 0..100; needs run_pericyte_dilation_sweep]
+  # End the dilation sweep at this percentage  [percent; range 0..100]
   pericyte_dilation_max_percent: 30
-  # Step the dilation sweep by this percentage  [percent; range 1..100; needs run_pericyte_dilation_sweep]
+  # Step the dilation sweep by this percentage  [percent; range 1..100]
   pericyte_dilation_step_percent: 1
-  # Start the inlet-pressure sweep at this pressure  [Pa; range 0..; needs run_pericyte_dilation_sweep]
+  # Start the inlet-pressure sweep at this pressure  [Pa; range 0..]
   inlet_pressure_min_pa: 4500
-  # End the inlet-pressure sweep at this pressure  [Pa; range 0..; needs run_pericyte_dilation_sweep]
+  # End the inlet-pressure sweep at this pressure  [Pa; range 0..]
   inlet_pressure_max_pa: 6000
-  # Step the inlet-pressure sweep by this much  [Pa; range 1..; needs run_pericyte_dilation_sweep]
+  # Step the inlet-pressure sweep by this much  [Pa; range 1..]
   inlet_pressure_step_pa: 500
-  # Write the sweep CSV and its curves here  [needs run_pericyte_dilation_sweep]
+  # Write the sweep CSV and its curves here
   sweep_output_dir: examples/outputs/brain_dilation_sweep

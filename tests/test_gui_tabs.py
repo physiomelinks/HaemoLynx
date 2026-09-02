@@ -211,8 +211,9 @@ def test_the_tabs_read_in_pipeline_order():
         "4. Boundaries",
         "5. Diameters",
         "6. Haemodynamics",
-        # `solve` renders its rows onto the haemodynamics tab, so there is no
-        # tab of its own between these two.
+        # `solve` renders its rows onto the haemodynamics tab rather than
+        # opening one of its own.
+        "7. Perturbations",
         "8. Export",
     ]
 
@@ -355,6 +356,26 @@ def test_the_blood_and_pericyte_settings_are_on_the_stage_that_reads_them():
         "constriction_by_branch_order",
     ):
         assert name in shown, f"{name} is not on the Diameters tab"
+
+
+def test_the_perturbations_tab_shows_the_sweep_settings():
+    """They were declared beside an example, so the panel could not show them.
+
+    The panel builds its form from `default_schema()` alone; a setting only
+    `brain_pipeline_schema` knew about had no row anywhere.
+    """
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    shown = {field.name for field in tabs["7. Perturbations"].fields}
+    assert shown == {
+        "run_pericyte_dilation_sweep",
+        "pericyte_dilation_min_percent",
+        "pericyte_dilation_max_percent",
+        "pericyte_dilation_step_percent",
+        "inlet_pressure_min_pa",
+        "inlet_pressure_max_pa",
+        "inlet_pressure_step_pa",
+        "sweep_output_dir",
+    }
 
 
 def test_supplied_values_reach_the_right_tab():
