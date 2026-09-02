@@ -104,10 +104,10 @@ def _flow_through_a_chain(
     solved = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
-        input_p_bc=1000.0,
-        output_p_bc=500.0,
-        starting_nodes=[0],
-        output_nodes=[3],
+        inlet_p_bc=1000.0,
+        outlet_p_bc=500.0,
+        inlet_nodes=[0],
+        outlet_nodes=[3],
     )
     haemodynamics.set_edge_flows(G, node_list, solved["pressure"])
     flows = [abs(data["flow_signed"]) for _u, _v, data in G.edges(data=True)]
