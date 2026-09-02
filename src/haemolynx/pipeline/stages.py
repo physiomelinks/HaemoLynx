@@ -26,7 +26,6 @@ import inspect
 import json
 import logging
 import pickle
-from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -984,6 +983,42 @@ def _poiseuille_model_for(settings: dict) -> PoiseuilleModel:
     )
 
 
+def _perturbation_copy(G: nx.MultiGraph) -> nx.MultiGraph:
+    """The graph a perturbation is allowed to write on, without the deep copy.
+
+    `nx.MultiGraph.copy` gives every node and every edge a **new attribute
+    dict** whose values are the originals: the copy's `voxels` list and `pos`
+    array are the very same objects the baseline holds, but a `data["x"] = ...`
+    on the copy cannot reach them. `G.graph` is shallow-copied the same way.
+
+    That is enough here because every write a perturbation makes is a rebind
+    of a whole attribute:
+
+    * `poiseuille.set_edge_resistance` -- `resistance`, `conductance`
+    * `resistance.set_edge_flows` -- `pressure` on nodes; `pressure_u`,
+      `pressure_v`, `pressure_drop`, `flow_signed`, `flow_abs` on edges
+    * `arteriole.scale_arteriole_diameters` and
+      `pericyte_sweep.dilate_graph_diameters` -- `fwhm_diameter_um`
+    * `constriction.apply_constriction_sites` -- `pericyte_count_assigned`,
+      and `pericyte_centers_um` rebound to a freshly built list
+
+    Nothing reachable from a perturbation mutates a shared value in place, and
+    the geometry (`voxels`, `pos`) is only ever read. Deep-copying it instead
+    costs ~10x the time and ~2x the peak memory of this, which on a 200k-edge
+    whole-brain graph is minutes of a run spent duplicating arrays nobody
+    writes to.
+
+    So: **anything added to a perturbation path that mutates an attribute
+    value rather than replacing it -- `voxels.append(...)`,
+    `pos[0] = ...`, `data["pericyte_centers_um"].append(...)`,
+    `G.graph["some_dict"]["k"] = ...` -- would edit the baseline and every
+    other perturbation through this copy.** Rebind instead. The guard tests in
+    `tests/test_perturbation_stage.py` snapshot the baseline's `voxels` and
+    `pos` across a run of every perturbation type and fail if one moves.
+    """
+    return G.copy()
+
+
 def _solve_network(
     G: nx.MultiGraph, settings: dict, boundaries: BoundaryNodes
 ) -> dict[str, Any]:
@@ -1116,11 +1151,12 @@ def _perturb_one(
     result.output_dir = root / spec.name
     result.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # A copy per perturbation, deep enough that nothing it does reaches the
-    # baseline or another perturbation: they answer independent questions of
-    # the same network, and the run's own graph is still exported afterwards.
+    # A copy per perturbation, so that nothing it does reaches the baseline or
+    # another perturbation: they answer independent questions of the same
+    # network, and the run's own graph is still exported afterwards. See
+    # `_perturbation_copy` for why a shallow graph copy is enough.
     # `G`, not `graph`, because `graph` is this module's imported subpackage.
-    G = deepcopy(model.graph)
+    G = _perturbation_copy(model.graph)
     diameter_table = perturbed["diameter_by_branch_order"]
     prefer_measured = bool(perturbed["use_fwhm_edge_diameters"])
     summary: dict[str, Any] = {"overrides": overrides}
@@ -1254,7 +1290,9 @@ def run_perturbations(
     # from the same solver as the perturbations' -- but the run's own graph,
     # which `export_results` is about to write out, must leave this stage
     # exactly as it arrived.
-    run.baseline = _solve_network(deepcopy(model.graph), settings, boundaries)
+    run.baseline = _solve_network(
+        _perturbation_copy(model.graph), settings, boundaries
+    )
     logger.info(
         f"Perturbations: {len(specs)} to run from a baseline equivalent "
         f"resistance of {run.baseline['equivalent_resistance']:.6g}, into {root}"

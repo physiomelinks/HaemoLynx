@@ -10,11 +10,19 @@ one's effect as the pair's, and nobody would see it happen.
 So what is pinned here is mostly what does *not* change: the baseline's
 resistances after the stage, and one perturbation's result with and without
 another beside it.
+
+Independence is cheaper than it looks. `_perturbation_copy` is a *shallow*
+graph copy, so a perturbation holds the very same `voxels` lists and `pos`
+arrays as the baseline -- only the attribute dicts around them are new. That is
+sound exactly as long as nothing on a perturbation path mutates one of those
+values in place, so the geometry guards below snapshot them before the stage
+and compare element by element after it.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import networkx as nx
 import numpy as np
@@ -35,6 +43,7 @@ from haemolynx.pipeline import (  # noqa: E402
     run_perturbations,
 )
 from haemolynx.pipeline.progress import STEP, ProgressEvent, RunProgress  # noqa: E402
+from haemolynx.pipeline.stages import _perturbation_copy  # noqa: E402
 
 SCHEMA = default_schema()
 
@@ -125,6 +134,57 @@ def _resistances(graph: nx.MultiGraph) -> dict[tuple, float]:
         (u, v, key): float(data["resistance"])
         for u, v, key, data in graph.edges(keys=True, data=True)
     }
+
+
+def _geometry(graph: nx.MultiGraph) -> dict[Any, np.ndarray]:
+    """Every node's `pos` and every edge's `voxels`, copied out of the graph.
+
+    Copied, because a snapshot has to survive an in-place edit of the thing it
+    is a snapshot of -- holding the graph's own objects would compare them with
+    themselves and pass whatever happened to them.
+    """
+    snapshot: dict[Any, np.ndarray] = {
+        node: np.asarray(data["pos"], dtype=float).copy()
+        for node, data in graph.nodes(data=True)
+    }
+    snapshot.update(
+        {
+            (u, v, key): np.asarray(data["voxels"], dtype=float).copy()
+            for u, v, key, data in graph.edges(keys=True, data=True)
+        }
+    )
+    return snapshot
+
+
+def _assert_geometry_unmoved(
+    graph: nx.MultiGraph, before: dict[Any, np.ndarray]
+) -> None:
+    """Element-by-element, not object identity: the sharing is expected."""
+    assert _geometry(graph).keys() == before.keys()
+    for node, data in graph.nodes(data=True):
+        np.testing.assert_array_equal(
+            np.asarray(data["pos"], dtype=float), before[node], f"node {node} moved"
+        )
+    for u, v, key, data in graph.edges(keys=True, data=True):
+        np.testing.assert_array_equal(
+            np.asarray(data["voxels"], dtype=float),
+            before[(u, v, key)],
+            f"the centreline of edge ({u}, {v}, {key}) moved",
+        )
+
+
+def _attribute_names(graph: nx.MultiGraph) -> dict[Any, frozenset]:
+    """What each node and edge carries, so a leaked write shows up as a new key."""
+    names: dict[Any, frozenset] = {
+        node: frozenset(data) for node, data in graph.nodes(data=True)
+    }
+    names.update(
+        {
+            (u, v, key): frozenset(data)
+            for u, v, key, data in graph.edges(keys=True, data=True)
+        }
+    )
+    return names
 
 
 ARTERIOLE_DILATION = {
@@ -248,6 +308,8 @@ def test_the_baseline_graph_is_unchanged_by_the_stage(tmp_path):
     model = _model()
     before = _resistances(model.graph)
     edges_before = frozenset(model.graph.edges(keys=True))
+    geometry_before = _geometry(model.graph)
+    attributes_before = _attribute_names(model.graph)
 
     run_perturbations(
         _settings(tmp_path, [ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP]),
@@ -258,6 +320,85 @@ def test_the_baseline_graph_is_unchanged_by_the_stage(tmp_path):
 
     assert _resistances(model.graph) == before
     assert frozenset(model.graph.edges(keys=True)) == edges_before
+    _assert_geometry_unmoved(model.graph, geometry_before)
+    # The re-solve writes pressures and flows onto whatever it solves; none of
+    # them may appear here.
+    assert _attribute_names(model.graph) == attributes_before
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP),
+    ids=lambda entry: entry["type"],
+)
+def test_no_perturbation_type_edits_the_baselines_geometry(tmp_path, entry):
+    """The invariant `_perturbation_copy` rests on, per type.
+
+    A perturbation holds the baseline's own `voxels` lists and `pos` arrays --
+    a shallow graph copy shares them deliberately, because duplicating the
+    centrelines of a whole-brain network costs minutes and nothing writes to
+    them. Anything that started mutating one in place instead of rebinding it
+    would silently rewrite the network the run exports, and this is what would
+    notice.
+    """
+    model = _model()
+    before = _geometry(model.graph)
+
+    run = run_perturbations(_settings(tmp_path, [entry]), model, _boundaries(), SCHEMA)
+
+    assert run.results[0].error is None, run.results[0].error
+    _assert_geometry_unmoved(model.graph, before)
+
+
+# --- the copy a perturbation is given ----------------------------------------
+
+
+def test_the_perturbation_copy_keeps_its_rebindings_to_itself():
+    """New attribute dicts are what make a shallow copy safe to write on."""
+    original = _network()
+    original.graph["viscosity_law"] = "constant"
+    copy = _perturbation_copy(original)
+    node = next(iter(original.nodes))
+    edge = next(iter(original.edges(keys=True)))
+
+    copy.nodes[node]["pressure"] = 4500.0
+    copy.edges[edge]["resistance"] = 1.0
+    copy.edges[edge]["voxels"] = [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+    copy.graph["viscosity_law"] = "pries"
+
+    assert "pressure" not in original.nodes[node]
+    assert "resistance" not in original.edges[edge]
+    assert len(original.edges[edge]["voxels"]) == 2
+    assert original.edges[edge]["voxels"][1][2] == EDGE_LENGTH_UM
+    assert original.graph["viscosity_law"] == "constant"
+
+
+def test_the_perturbation_copy_shares_the_values_nothing_writes_to():
+    """The saving: the centrelines are not duplicated, only pointed at.
+
+    Stated as identity on purpose. If this ever has to become equality, the
+    copy got deeper and the run got slower, and someone should have meant it.
+    """
+    original = _network()
+    copy = _perturbation_copy(original)
+    node = next(iter(original.nodes))
+    edge = next(iter(original.edges(keys=True)))
+
+    assert copy.nodes[node]["pos"] is original.nodes[node]["pos"]
+    assert copy.edges[edge]["voxels"] is original.edges[edge]["voxels"]
+
+
+def test_the_perturbation_copy_has_a_structure_of_its_own():
+    """Shallow is about the attribute values, not about the nodes and edges."""
+    original = _network()
+    copy = _perturbation_copy(original)
+
+    copy.add_edge("extra", "another", key=0)
+    copy.remove_node(next(iter(original.nodes)))
+
+    assert "extra" not in original
+    assert original.number_of_edges() == len(BRANCH_ORDERS)
+    assert original.number_of_nodes() == len(BRANCH_ORDERS) + 1
 
 
 def test_a_perturbation_gets_its_own_graph_not_the_baselines(tmp_path):
