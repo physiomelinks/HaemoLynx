@@ -182,6 +182,33 @@ def test_a_failed_run_keeps_its_position_and_names_the_failure():
     assert display.stages.text == "Failed: ValueError"
 
 
+def test_a_run_stopped_on_purpose_puts_both_bars_back_to_nothing():
+    """A part-filled bar says a run broke there; a cancelled one did not."""
+    display = ProgressDisplay()
+    display.start()
+    display.update(_stage_event(STAGE_FINISHED, "skeletonise"))
+    display.update(
+        _stage_event(STEP, "build_network", step="one", step_index=0, step_total=11)
+    )
+
+    display.reset()
+
+    assert display.stages == BarState()
+    assert display.steps == BarState()
+    assert not display.stages.visible
+
+
+def test_the_bars_can_be_started_again_after_being_reset():
+    display = ProgressDisplay()
+    display.start()
+    display.reset()
+
+    display.start()
+
+    assert display.stages.visible
+    assert display.stages.total == TOTAL_STAGES
+
+
 def test_an_event_read_out_of_order_still_gives_the_right_reading():
     """Events cross a thread boundary; a dropped one must not skew the bar."""
     display = ProgressDisplay()

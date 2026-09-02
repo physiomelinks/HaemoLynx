@@ -387,6 +387,20 @@ class ResultLayers:
         """Every layer name produced so far, in order."""
         return tuple(self._emitted)
 
+    def reset(self) -> None:
+        """Forget the run so far, so the next one starts from nothing.
+
+        The graph is remembered as it goes past, which is the whole reason this
+        class has state -- and a run that was stopped part-way leaves one
+        behind. Without this, the stage after a restart would be drawn against
+        the abandoned run's graph: `BoundaryNodes` is node ids, and they would
+        be looked up in the wrong network.
+        """
+        self._graph = None
+        self._voxel_size_zyx = (1.0, 1.0, 1.0)
+        self._geometry_shown = False
+        self._emitted = []
+
     def stage_finished(self, stage: str, output: Any) -> StageLayers:
         """The layers for *stage*, built now, from *output* as it is now."""
         if stage.startswith(TOPOLOGY_STEP):

@@ -32,6 +32,14 @@ from haemolynx.gui.results import (
     colour_cycle_for,
 )
 from haemolynx.gui.progress import ProgressDisplay
+from haemolynx.gui.run_state import (
+    ALREADY_RUNNING,
+    CANCELLED,
+    FINISHED_FIRST,
+    RunCancelled,
+    RunState,
+    clear_message,
+)
 from haemolynx.gui.tabs import tabs_for
 from haemolynx.parsers import dump_config, load_config
 from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
@@ -156,6 +164,11 @@ class ProgressBars:
 
     def fail(self, message: str = "Failed") -> None:
         self.display.fail(message)
+        self._refresh()
+
+    def reset(self) -> None:
+        """Both bars back to nothing: the run was stopped on purpose."""
+        self.display.reset()
         self._refresh()
 
     def _refresh(self) -> None:
@@ -891,26 +904,60 @@ def _progress_bridge():
 
 
 def _run_in_background(
-    settings, schema, report, button, bars=None, viewer=None, results=None):
+    settings, schema, report, button, bars=None, viewer=None, results=None,
+    state=None):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
     finishes and shown in the viewer the run was launched from.
+
+    *state* is the panel's :class:`~haemolynx.gui.run_state.RunState`: how the
+    panel knows it has a run going, and how that run is stopped on purpose.
+    Without one the run is unstoppable but otherwise unchanged, which is all a
+    test driving this function on its own needs.
     """
     from napari.qt.threading import thread_worker
 
+    run_state = state if state is not None else RunState()
     bridge = _progress_bridge()
     show_layers = viewer is not None and results is not None
 
     def progressed(event: ProgressEvent) -> None:
+        # A cancelled run's last few events are already on their way here. The
+        # bars have been put back to nothing; moving them again would show a
+        # run that is no longer going.
+        if run_state.cancelled:
+            return
         if bars is not None:
             bars.show_event(event)
         if event.kind == STAGE_STARTED:
             report.value = f"Running {event.title} ({event.index + 1}/{event.total})..."
 
+    def shown(group) -> None:
+        """One stage's layers, in the viewer -- unless the run was stopped.
+
+        A group emitted just before the cancel is still queued for this thread,
+        and applying it would put back the layers just cleared.
+        """
+        if run_state.cancelled:
+            return
+        _apply_layers(viewer, group, report)
+
     bridge.event.connect(progressed)
     if show_layers:
-        bridge.layers.connect(lambda group: _apply_layers(viewer, group, report))
+        bridge.layers.connect(shown)
+
+    def watched(event: ProgressEvent) -> None:
+        """Pass the run's progress on, having first let it be stopped.
+
+        `run_pipeline_stages` takes no cancel argument, so this and `produced`
+        are where a cancellation acts. Both are called between stages, or
+        between graph building's eleven topology steps, so a run stops with
+        nothing half-written -- and soon after being asked, rather than at the
+        end of whatever stage it is in.
+        """
+        run_state.check()
+        bridge.event.emit(event)
 
     def produced(stage: str, output) -> None:
         """Build this stage's layers here, on the run's thread.
@@ -919,7 +966,11 @@ def _run_in_background(
         graph: convert later and the viewer shows a later stage's numbers under
         this stage's name. And guarded, because a fault in drawing a run must
         never end it -- an eight-hour whole-brain run least of all.
+
+        The cancellation check is outside that guard, deliberately: stopping is
+        the one thing that must get past it.
         """
+        run_state.check()
         try:
             group = results.stage_finished(stage, output)
         except Exception:  # noqa: BLE001 - reported, never raised at the run
@@ -934,12 +985,19 @@ def _run_in_background(
         return run_pipeline_stages(
             settings,
             schema,
-            progress=bridge.event.emit,
+            progress=watched,
             on_stage_output=produced if show_layers else None,
         )
 
     def finished(graph) -> None:
+        run_state.stopped()
         button.enabled = True
+        if run_state.cancelled:
+            # It got to the end between being asked to stop and reaching the
+            # next checkpoint. Saying "finished" beside an empty viewer, or
+            # "cancelled" about a run that completed, would both be wrong.
+            report.value = FINISHED_FIRST
+            return
         if graph is None:
             if bars is not None:
                 bars.finish("Finished, no graph")
@@ -953,20 +1011,45 @@ def _run_in_background(
         )
 
     def failed(error: Exception) -> None:
+        run_state.stopped()
         button.enabled = True
+        if isinstance(error, RunCancelled):
+            # Not a failure: the bars were reset when the cancel was asked
+            # for, and there is no stack trace worth logging.
+            report.value = CANCELLED
+            return
         if bars is not None:
             bars.fail(f"Failed: {type(error).__name__}")
         report.value = f"{type(error).__name__}: {error}"
         logger.exception("pipeline run failed", exc_info=error)
 
+    def stopped() -> None:
+        """The worker has gone without `returned` or `errored` saying so.
+
+        napari suppresses `returned` once `quit()` has been called -- it will
+        not hand back a result it was told to abandon -- so a run that reached
+        its end between the cancel and its next checkpoint announces nothing at
+        all. Without this the guard would stay set and the Run button greyed
+        out, which is the very state being fixed.
+        """
+        if not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if run_state.cancelled:
+            report.value = FINISHED_FIRST
+
     worker = run()
     worker.returned.connect(finished)
     worker.errored.connect(failed)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, results=results)
     button.enabled = False
     if bars is not None:
         bars.start()
     report.value = "Running..."
     worker.start()
+    return worker
 
 
 #: What the About panel says. Written here rather than in the widget so it can
@@ -2243,6 +2326,7 @@ def settings_widget(napari_viewer=None):
     apply_prerequisites()
 
     bars = ProgressBars()
+    run_state = RunState(bars=bars)
 
     layer_row: Any = None
     if viewer is not None:
@@ -2403,6 +2487,12 @@ def settings_widget(napari_viewer=None):
         report.value = "\n".join(lines) if lines else "All checks passed."
 
     def on_run() -> None:
+        if run_state.running:
+            # The button is disabled while a run is going, so this is only
+            # reached from a script or a keyboard -- but it is also the one
+            # place that says how to get out of a run, so it says it.
+            report.value = ALREADY_RUNNING
+            return
         settings = _settings()
         if not preflight(settings, schema).ok:
             report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
@@ -2417,16 +2507,26 @@ def settings_widget(napari_viewer=None):
             settings, schema, report, run_button, bars,
             viewer=viewer if show_results.value else None,
             results=results,
+            state=run_state,
         )
 
     def on_clear() -> None:
+        """Take our layers out of the viewer, and stop the run drawing them.
+
+        Clearing mid-run used to leave the run going against layers that were
+        no longer there, and the panel with a permanently greyed-out Run
+        button. Both halves of that are here: the run is asked to stop, and
+        everything it left behind is put back -- so the next run can start as
+        soon as this one has.
+        """
         if viewer is None:
             return
         removed = _clear_our_layers(viewer)
+        stopping = run_state.cancel()
         view.results = None
         if boundaries is not None:
             boundaries.state.results = None
-        report.value = f"Removed {removed} HaemoLynx layer(s)."
+        report.value = clear_message(removed, stopping)
 
     load_button.changed.connect(on_load)
     save_button.changed.connect(on_save)
@@ -2448,6 +2548,10 @@ def settings_widget(napari_viewer=None):
     # for a test that cannot press buttons and wait.
     panel._haemolynx_values = current_values
     panel._haemolynx_progress = bars
+    panel._haemolynx_run = on_run
+    panel._haemolynx_clear = on_clear
+    panel._haemolynx_run_state = run_state
+    panel._haemolynx_run_button = run_button
     panel._haemolynx_view = view
     panel._haemolynx_show_results = show_results
     panel._haemolynx_load_config = load_config_file

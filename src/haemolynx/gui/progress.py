@@ -117,3 +117,13 @@ class ProgressDisplay:
             visible=True,
         )
         self.steps = BarState()
+
+    def reset(self) -> None:
+        """Both bars back to nothing, for a run that was stopped on purpose.
+
+        Not :meth:`fail`: a bar left part-filled says a run got that far and
+        then broke. A cancelled run got that far and was told to stop, and the
+        next thing worth showing is the next run's :meth:`start`.
+        """
+        self.stages = BarState()
+        self.steps = BarState()

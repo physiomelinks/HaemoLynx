@@ -10,6 +10,7 @@ unnoticed.
 """
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import networkx as nx
@@ -25,6 +26,8 @@ from haemolynx.gui._widget import (  # noqa: E402
     _clear_our_layers,
     _run_in_background,
 )
+from haemolynx.gui.progress import BarState  # noqa: E402
+from haemolynx.gui.run_state import ALREADY_RUNNING, CANCELLED, RunState  # noqa: E402
 from haemolynx.gui.results import (  # noqa: E402
     BOUNDARY_NODES,
     IMAGE,
@@ -317,6 +320,176 @@ def test_a_run_with_the_viewer_switched_off_shows_nothing(viewer, qtbot, monkeyp
 
     qtbot.waitUntil(lambda: button.enabled, timeout=5000)
     assert len(viewer.layers) == 0
+
+
+# --- stopping a run on purpose -----------------------------------------------
+
+
+class Quittable:
+    """Stands in for the run's worker where no run is really going."""
+
+    def __init__(self) -> None:
+        self.quits = 0
+
+    def quit(self) -> None:
+        self.quits += 1
+
+
+@pytest.fixture
+def paused_run(monkeypatch):
+    """A fake pipeline that waits after `build_network` until it is released.
+
+    The bug needs a run that really is in progress when the button is pressed,
+    and `solve` afterwards to show whether it carried on regardless: the run
+    reports its stage output there, which is one of the two points a
+    cancellation acts on.
+    """
+    from haemolynx.gui import _widget
+
+    graph = a_graph()
+    script = SimpleNamespace(
+        graph=graph,
+        drawn=threading.Event(),
+        resume=threading.Event(),
+        stages=[],
+    )
+
+    def fake_run(settings, schema, progress=None, on_stage_output=None):
+        if on_stage_output is not None:
+            on_stage_output("build_network", network(graph))
+        script.stages.append("build_network")
+        script.drawn.set()
+        script.resume.wait(20)
+        if on_stage_output is not None:
+            on_stage_output(
+                "solve",
+                SimpleNamespace(node_list=(), pressure=None, equivalent_resistance=None),
+            )
+        script.stages.append("solve")
+        return graph
+
+    monkeypatch.setattr(_widget, "run_pipeline_stages", fake_run)
+    return script
+
+
+def test_clearing_the_layers_mid_run_stops_it_and_frees_the_panel(
+    viewer, qtbot, paused_run
+):
+    """The bug: this used to leave the run going and the Run button dead."""
+    from haemolynx.gui._widget import ProgressBars
+
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+    bars = ProgressBars()
+    results = ResultLayers()
+    state = RunState(bars=bars)
+
+    _run_in_background({}, None, report, button, bars, viewer=viewer,
+                       results=results, state=state)
+    qtbot.waitUntil(paused_run.drawn.is_set, timeout=5000)
+    qtbot.waitUntil(lambda: VESSELS in viewer.layers, timeout=5000)
+    assert state.running is True
+
+    # What pressing "Clear layers" does, in the order the panel does it.
+    assert _clear_our_layers(viewer) >= 2
+    assert state.cancel() is True
+    paused_run.resume.set()
+
+    qtbot.waitUntil(lambda: not state.running, timeout=5000)
+
+    # It stopped at its next checkpoint rather than running to the end.
+    assert paused_run.stages == ["build_network"]
+    # And nothing already in flight put the cleared layers back.
+    assert VESSELS not in viewer.layers
+    # The panel is free again: guard clear, button back.
+    assert button.enabled is True
+    # Reported as an intention, not as a fault.
+    assert report.value == CANCELLED
+    # Every stateful thing the run left behind is back to nothing.
+    assert bars.display.stages == BarState()
+    assert bars.display.steps == BarState()
+    assert results.colour_options() == []
+
+
+def test_a_new_run_can_be_started_straight_after_a_cancel(viewer, qtbot, paused_run):
+    """The whole point of the fix: no restarting the plugin."""
+    from haemolynx.gui._widget import ProgressBars
+
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+    bars = ProgressBars()
+    state = RunState(bars=bars)
+
+    _run_in_background({}, None, report, button, bars, viewer=viewer,
+                       results=ResultLayers(), state=state)
+    qtbot.waitUntil(paused_run.drawn.is_set, timeout=5000)
+    _clear_our_layers(viewer)
+    state.cancel()
+    paused_run.resume.set()
+    qtbot.waitUntil(lambda: not state.running, timeout=5000)
+
+    _run_in_background({}, None, report, button, bars, viewer=viewer,
+                       results=ResultLayers(), state=state)
+    qtbot.waitUntil(lambda: not state.running, timeout=5000)
+
+    assert paused_run.stages == ["build_network", "build_network", "solve"]
+    assert VESSELS in viewer.layers
+    assert "Finished" in report.value
+
+
+def test_the_clear_button_is_what_stops_the_panels_run(make_napari_viewer):
+    """The wiring: the button the user presses is the one that cancels."""
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+
+    results = ResultLayers()
+    results.stage_finished("build_network", network(a_graph()))
+    worker = Quittable()
+    panel._haemolynx_run_state.start(worker=worker, results=results)
+    panel._haemolynx_run_button.enabled = False
+    panel._haemolynx_progress.start()
+
+    panel._haemolynx_clear()
+
+    assert panel._haemolynx_run_state.cancelled is True
+    assert worker.quits == 1
+    assert "Stopping the run" in panel._haemolynx_report()
+    assert results.colour_options() == []
+    assert panel._haemolynx_progress.display.stages == BarState()
+    assert len(viewer.layers) == 0
+
+
+def test_clearing_the_layers_with_no_run_going_is_unchanged(make_napari_viewer):
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    # Points, not an image: an image dropped in becomes the run's input, which
+    # is a different behaviour and not the one under test.
+    theirs = viewer.add_points(np.zeros((3, 3)), name="their data")
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+
+    panel._haemolynx_clear()
+
+    assert [layer.name for layer in viewer.layers] == [theirs.name]
+    assert panel._haemolynx_report() == "Removed 2 HaemoLynx layer(s)."
+    assert panel._haemolynx_run_button.enabled is True
+    assert panel._haemolynx_run_state.cancelled is False
+
+
+def test_run_says_how_to_stop_the_run_that_is_already_going(make_napari_viewer):
+    """The panel's own answer to "why will Run not do anything?"."""
+    from haemolynx.gui._widget import settings_widget
+
+    panel = settings_widget(napari_viewer=make_napari_viewer())
+    panel._haemolynx_run_state.start(worker=Quittable())
+
+    panel._haemolynx_run()
+
+    assert panel._haemolynx_report() == ALREADY_RUNNING
 
 
 # --- the panel's own controls ------------------------------------------------

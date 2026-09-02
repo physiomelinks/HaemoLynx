@@ -605,6 +605,31 @@ def test_a_perturbations_name_is_all_that_separates_its_layers_from_ours():
     assert nodes != NODES
 
 
+# --- a run that was stopped part-way -----------------------------------------
+
+
+def test_resetting_forgets_the_graph_the_run_had_got_to():
+    """The graph is remembered across stages, so an abandoned run leaves one."""
+    results = built()
+    assert results.colour_options()
+
+    results.reset()
+
+    assert results.colour_options() == []
+    assert results.emitted == ()
+
+
+def test_the_next_run_after_a_reset_starts_from_nothing():
+    """Not just emptied: usable again, and back to showing the geometry whole."""
+    results = built()
+    results.reset()
+
+    group = results.stage_finished("build_network", network(a_graph()))
+
+    assert spec_named(group, VESSELS)
+    assert group.ndisplay == 3
+
+
 # --- it must not need a GUI --------------------------------------------------
 
 
