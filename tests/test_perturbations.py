@@ -43,7 +43,7 @@ TWO_ENTRIES = [
     {
         "name": "art_dilate_20",
         "type": "arteriole_diameter_change",
-        "overrides": {"arteriole_diameter_scale": 1.2},
+        "overrides": {"arteriole_diameter_change_percent": 20},
     },
     {
         "name": "higher_inlet",
@@ -71,7 +71,7 @@ def test_every_setting_a_type_reads_exists():
 def test_a_type_reveals_only_its_own_options():
     """Options are hidden until their type is chosen, not merely greyed out."""
     assert settings_for_perturbation_type("arteriole_diameter_change") == (
-        "arteriole_diameter_scale",
+        "arteriole_diameter_change_percent",
     )
     assert settings_for_perturbation_type("none") == ()
     # A type nothing knows shows nothing rather than the last one's rows.
@@ -83,7 +83,7 @@ def test_the_visible_settings_are_the_union_of_the_configured_types():
 
     visible = visible_perturbation_settings(specs)
 
-    assert "arteriole_diameter_scale" in visible
+    assert "arteriole_diameter_change_percent" in visible
     assert "inlet_pressure_min_pa" in visible
     assert "pericyte_mask_path" not in visible
 
@@ -209,13 +209,13 @@ def test_an_override_the_schema_rejects_is_a_problem():
         {
             "perturbations": [
                 {"name": "a", "type": "arteriole_diameter_change",
-                 "overrides": {"arteriole_diameter_scale": "wider please"}}
+                 "overrides": {"arteriole_diameter_change_percent": "wider please"}}
             ]
         }
     )
 
     (problem,) = spec.schema_problems(SCHEMA)
-    assert "arteriole_diameter_scale" in problem
+    assert "arteriole_diameter_change_percent" in problem
 
 
 def test_a_partial_override_is_not_validated_as_a_whole_config():
@@ -253,7 +253,7 @@ def test_an_override_the_type_does_not_read_is_reported_as_unused():
         {
             "perturbations": [
                 {"name": "a", "type": "arteriole_diameter_change",
-                 "overrides": {"arteriole_diameter_scale": 1.2, "inlet_p_bc": 3000.0}}
+                 "overrides": {"arteriole_diameter_change_percent": 20, "inlet_p_bc": 3000.0}}
             ]
         }
     )
@@ -273,12 +273,12 @@ def test_only_what_the_type_reads_is_applied():
         {
             "perturbations": [
                 {"name": "a", "type": "arteriole_diameter_change",
-                 "overrides": {"arteriole_diameter_scale": 1.2, "inlet_p_bc": 3000.0}}
+                 "overrides": {"arteriole_diameter_change_percent": 20, "inlet_p_bc": 3000.0}}
             ]
         }
     )
 
-    assert spec.applied_overrides(SCHEMA) == {"arteriole_diameter_scale": 1.2}
+    assert spec.applied_overrides(SCHEMA) == {"arteriole_diameter_change_percent": 20}
     assert "inlet_p_bc" in spec.coerced_overrides(SCHEMA), "still read back for the report"
 
 
@@ -290,6 +290,10 @@ def test_a_well_formed_dilation_sweep_entry_is_accepted():
             "pericyte_dilation_min_percent": 1,
             "pericyte_dilation_max_percent": 5,
             "pericyte_dilation_step_percent": 1,
+            "constriction_length_um": 20.0,
+            "constriction_spacing_um": 80.0,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 0.5,
         },
     }
     (spec,) = perturbations_from_settings({"perturbations": [entry]})
@@ -300,6 +304,23 @@ def test_a_well_formed_dilation_sweep_entry_is_accepted():
     assert perturbation_problems({"perturbations": [entry]}, SCHEMA) == ()
     report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
     assert not report.errors
+    applied = spec.applied_overrides(SCHEMA)
+    assert applied["constriction_length_um"] == 20.0
+    assert applied["constriction_spacing_um"] == 80.0
+    assert applied["pericyte_constriction_probability"] == 0.5
+
+
+def test_pericyte_sweep_types_expose_length_spacing_and_probability():
+    from haemolynx.haemodynamics.perturbations import PERICYTE_ENTRY_GEOMETRY_SETTINGS
+
+    for perturbation_type in (
+        "pericyte_diameter_change",
+        "pericyte_dilation_sweep",
+        "pressure_and_pericyte_sweep",
+    ):
+        reads = set(SETTINGS_FOR_TYPE[perturbation_type])
+        missing = sorted(set(PERICYTE_ENTRY_GEOMETRY_SETTINGS) - reads)
+        assert missing == [], f"{perturbation_type} is missing {missing}"
 
 
 def test_a_well_formed_pressure_and_pericyte_sweep_is_accepted():
@@ -309,6 +330,44 @@ def test_a_well_formed_pressure_and_pericyte_sweep_is_accepted():
         "overrides": {
             "pericyte_dilation_min_percent": 1,
             "pericyte_dilation_max_percent": 5,
+            "inlet_pressure_min_pa": 4500,
+            "inlet_pressure_max_pa": 5000,
+            "constriction_length_um": 25.0,
+            "constriction_spacing_um": 90.0,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 0.4,
+        },
+    }
+    report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
+    assert not report.errors
+    (spec,) = perturbations_from_settings({"perturbations": [entry]})
+    assert spec.unused_overrides() == ()
+    assert spec.applied_overrides(SCHEMA)["constriction_spacing_um"] == 90.0
+
+def test_a_well_formed_arteriole_diameter_sweep_is_accepted():
+    entry = {
+        "name": "art_sweep",
+        "type": "arteriole_diameter_sweep",
+        "overrides": {
+            "arteriole_dilation_min_percent": 0,
+            "arteriole_dilation_max_percent": 20,
+            "arteriole_dilation_step_percent": 10,
+        },
+    }
+    (spec,) = perturbations_from_settings({"perturbations": [entry]})
+    assert spec.problems == ()
+    assert spec.schema_problems(SCHEMA) == ()
+    assert spec.unused_overrides() == ()
+    assert perturbation_problems({"perturbations": [entry]}, SCHEMA) == ()
+
+
+def test_a_well_formed_pressure_and_arteriole_sweep_is_accepted():
+    entry = {
+        "name": "art_and_p",
+        "type": "pressure_and_arteriole_sweep",
+        "overrides": {
+            "arteriole_dilation_min_percent": 0,
+            "arteriole_dilation_max_percent": 10,
             "inlet_pressure_min_pa": 4500,
             "inlet_pressure_max_pa": 5000,
         },
@@ -341,7 +400,7 @@ def test_the_blood_model_cannot_be_perturbed(name):
         {
             "perturbations": [
                 {"name": "a", "type": "arteriole_diameter_change",
-                 "overrides": {"arteriole_diameter_scale": 1.2, name: "pries"}}
+                 "overrides": {"arteriole_diameter_change_percent": 20, name: "pries"}}
             ]
         }
     )
@@ -444,7 +503,7 @@ def test_an_unused_override_is_a_warning_and_not_a_failure():
         _settings(
             perturbations=[
                 {"name": "a", "type": "arteriole_diameter_change",
-                 "overrides": {"arteriole_diameter_scale": 1.1, "inlet_p_bc": 3000.0}}
+                 "overrides": {"arteriole_diameter_change_percent": 10, "inlet_p_bc": 3000.0}}
             ]
         ),
         SCHEMA,

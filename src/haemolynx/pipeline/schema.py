@@ -970,15 +970,6 @@ SCHEMA = Schema(
             requires=("run_haemodynamics",),
         ),
         Setting(
-            name="arteriole_diameter_scale",
-            kind="float",
-            default=1.0,
-            help="Scale every arteriole branch order's diameter by this factor",
-            section=_DIAMETERS_AND_PERICYTES,
-            # Dimensionless, like the constriction factors it sits beside.
-            minimum=0.0,
-        ),
-        Setting(
             name="constriction_length_um",
             kind="float",
             default=40.0,
@@ -1089,7 +1080,11 @@ SCHEMA = Schema(
             name="run_pericyte_resistance_comparison",
             kind="bool",
             default=False,
-            help="Run the baseline-versus-constricted pericyte resistance comparison and write its CSV",
+            help=(
+                "Run the baseline-versus-constricted pericyte resistance "
+                "comparison and write its CSV (CLI / config; not shown on the "
+                "Diameters panel -- use Perturbations for pericyte tone)"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
         ),
@@ -1585,6 +1580,50 @@ SCHEMA = Schema(
             kind="int",
             default=1,
             help="Step the dilation sweep by this percentage",
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=1,
+            maximum=100,
+        ),
+        Setting(
+            name="arteriole_diameter_change_percent",
+            kind="float",
+            default=0.0,
+            help=(
+                "Change every arteriole branch's diameter by this percentage "
+                "(e.g. 10 widens by 10%, -20 narrows by 20%); whole-branch "
+                "scaling, not a focal pericyte constriction"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            # Scale = 1 + percent/100 must stay > 0.
+            minimum=-99.999,
+        ),
+        Setting(
+            name="arteriole_dilation_min_percent",
+            kind="int",
+            default=0,
+            help="Start the arteriole diameter sweep at this percentage change",
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="arteriole_dilation_max_percent",
+            kind="int",
+            default=30,
+            help="End the arteriole diameter sweep at this percentage change",
+            section=_PERTURBATION_RUNS,
+            unit="percent",
+            minimum=-99,
+            maximum=100,
+        ),
+        Setting(
+            name="arteriole_dilation_step_percent",
+            kind="int",
+            default=1,
+            help="Step the arteriole diameter sweep by this percentage",
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=1,

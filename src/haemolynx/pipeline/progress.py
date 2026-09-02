@@ -52,6 +52,17 @@ _PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB: tuple[str, ...] = (
     "pericyte_constriction_seed",
 )
 
+#: Baseline-vs-constricted comparison CSV knobs. Still in the Diameters schema
+#: section for apply.py / CLI, but claimed here so they are not always-on
+#: Diameters rows -- the Perturbations tab covers related pericyte workflows.
+#: Not revealed as typed-entry options (no comparison perturbation type yet).
+_COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS: tuple[str, ...] = (
+    "run_pericyte_resistance_comparison",
+    "pericyte_comparison_baseline_value",
+    "pericyte_comparison_constricted_value",
+    "reuse_comparison_pericyte_cohort_for_main_run",
+)
+
 
 @dataclass(frozen=True)
 class Stage:
@@ -158,8 +169,13 @@ STAGES: tuple[Stage, ...] = (
         # Pericyte / constriction knobs stay in the Diameters schema section
         # (apply.py reads that group by name) but their *rows* belong here:
         # they are options of a typed perturbation, revealed only when one is
-        # chosen. Named claims beat the Diameters section claim below.
-        settings=_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB,
+        # chosen. Comparison CSV flags are claimed here too so they leave the
+        # Diameters tab, without becoming always-on Perturbations rows.
+        # Named claims beat the Diameters section claim below.
+        settings=(
+            *_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB,
+            *_COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS,
+        ),
         sections=("Perturbation runs",),
     ),
     Stage(

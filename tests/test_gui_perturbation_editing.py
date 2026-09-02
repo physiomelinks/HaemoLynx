@@ -14,7 +14,7 @@ Two properties are load-bearing rather than tidy:
 * **The values that leave are builtins.** The row this list travels in is a
   magicgui `LiteralEvalLineEdit`, which stores `str(value)` and reads it back
   with `ast.literal_eval` -- so a `np.float64` typed into an editor comes back
-  as `'np.float64(1.2)'` and raises. The same value would stop
+  as `'np.float64(20.0)'` and raises. The same value would stop
   `yaml.safe_dump` writing a config out at all.
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ SCHEMA = default_schema()
 A_DILATION = {
     "name": "art_dilate_20",
     "type": "arteriole_diameter_change",
-    "overrides": {"arteriole_diameter_scale": 1.2},
+    "overrides": {"arteriole_diameter_change_percent": 20},
 }
 A_SWEEP = {
     "name": "higher_inlet",
@@ -112,7 +112,10 @@ def test_no_editor_is_built_twice():
 
 def test_the_tab_keeps_only_the_always_on_run_settings():
     """Sweep ranges and pericyte knobs are type options, not permanent rows."""
-    from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
+    from haemolynx.haemodynamics.perturbations import (
+        PERICYTE_CONSTRICTION_SETTINGS,
+        PERICYTE_ENTRY_GEOMETRY_SETTINGS,
+    )
 
     claimed = (
         *ALWAYS_VISIBLE_TAB_SETTINGS,
@@ -127,7 +130,19 @@ def test_the_tab_keeps_only_the_always_on_run_settings():
     assert "pericyte_dilation_min_percent" in rows_for_type("pericyte_dilation_sweep")
     assert "inlet_pressure_min_pa" in rows_for_type("pressure_sweep")
     assert "inlet_pressure_min_pa" in rows_for_type("pressure_and_pericyte_sweep")
+    assert "arteriole_diameter_change_percent" in rows_for_type(
+        "arteriole_diameter_change"
+    )
+    assert "arteriole_dilation_min_percent" in rows_for_type("arteriole_diameter_sweep")
+    assert "inlet_pressure_min_pa" in rows_for_type("pressure_and_arteriole_sweep")
+    assert "arteriole_dilation_min_percent" in rows_for_type(
+        "pressure_and_arteriole_sweep"
+    )
     assert "pericyte_mask_path" in rows_for_type("pericyte_diameter_change")
+    for name in PERICYTE_ENTRY_GEOMETRY_SETTINGS:
+        assert name in rows_for_type("pericyte_dilation_sweep"), name
+        assert name in rows_for_type("pressure_and_pericyte_sweep"), name
+        assert name in rows_for_type("pericyte_diameter_change"), name
     assert "run_pericyte_dilation_sweep" not in EDITOR_SETTINGS
     assert "sweep_output_dir" not in EDITOR_SETTINGS
     assert "do_pericyte_construction" not in ALWAYS_VISIBLE_TAB_SETTINGS
@@ -180,7 +195,7 @@ def test_removing_an_index_that_is_not_there_removes_nothing(index: int):
 
 def test_choosing_a_type_keeps_the_overrides_that_type_reads():
     entries = set_type(from_settings({"perturbations": [A_DILATION]}), 0, "arteriole_diameter_change")
-    assert entries[0]["overrides"] == {"arteriole_diameter_scale": 1.2}
+    assert entries[0]["overrides"] == {"arteriole_diameter_change_percent": 20}
 
 
 def test_changing_the_type_drops_the_overrides_it_no_longer_reads():
@@ -228,7 +243,7 @@ def test_editing_an_entry_that_is_not_there_changes_nothing(change):
         lambda entries: remove_entry(entries, 0),
         lambda entries: set_name(entries, 0, "renamed"),
         lambda entries: set_type(entries, 0, "pressure_sweep"),
-        lambda entries: set_overrides(entries, 0, {"arteriole_diameter_scale": 2.0}),
+        lambda entries: set_overrides(entries, 0, {"arteriole_diameter_change_percent": 100}),
     ),
 )
 def test_no_edit_touches_the_list_it_was_given(change):
@@ -274,14 +289,14 @@ def test_a_hand_edited_entry_becomes_editable_rather_than_raising():
 
 
 def test_a_numpy_value_typed_into_an_editor_leaves_as_a_builtin():
-    """`repr(np.float64(1.2))` is `'np.float64(1.2)'`, which literal_eval
+    """`repr(np.float64(20.0))` is `'np.float64(20.0)'`, which literal_eval
     refuses -- so the row would fail to read back what the panel put in it."""
     entries = set_overrides(
         from_settings({"perturbations": [A_DILATION]}),
         0,
-        {"arteriole_diameter_scale": np.float64(1.2)},
+        {"arteriole_diameter_change_percent": np.float64(20.0)},
     )
-    value = entries[0]["overrides"]["arteriole_diameter_scale"]
+    value = entries[0]["overrides"]["arteriole_diameter_change_percent"]
     assert type(value) is float
 
 
@@ -299,7 +314,7 @@ def test_the_settings_value_can_be_written_to_a_config():
     entries = set_overrides(
         from_settings({"perturbations": [A_DILATION]}),
         0,
-        {"arteriole_diameter_scale": np.float64(1.2)},
+        {"arteriole_diameter_change_percent": np.float64(20.0)},
     )
     dumped = yaml.safe_dump(to_settings(entries))
     assert yaml.safe_load(dumped) == to_settings(entries)

@@ -10,7 +10,7 @@ the same way a preset is: a name, and the settings it sets.
       - name: art_dilate_20
         type: arteriole_diameter_change
         overrides:
-          arteriole_diameter_scale: 1.2
+          arteriole_diameter_change_percent: 20
 
 The ``type`` is what a run dispatches on and what the panel reveals rows for:
 :data:`SETTINGS_FOR_TYPE` says which settings each type reads, so an override
@@ -41,7 +41,9 @@ __all__ = [
     "INCOMPARABLE_OVERRIDES",
     "PERTURBATION_TYPES",
     "PERICYTE_CONSTRICTION_SETTINGS",
+    "PERICYTE_ENTRY_GEOMETRY_SETTINGS",
     "PERICYTE_DILATION_SWEEP_SETTINGS",
+    "ARTERIOLE_DILATION_SWEEP_SETTINGS",
     "PRESSURE_SWEEP_SETTINGS",
     "SETTINGS_FOR_TYPE",
     "DEFAULT_PERTURBATION_DIRNAME",
@@ -63,12 +65,27 @@ PERTURBATION_TYPES: tuple[str, ...] = (
     "pressure_and_pericyte_sweep",
     "pericyte_dilation_sweep",
     "arteriole_diameter_change",
+    "arteriole_diameter_sweep",
+    "pressure_and_arteriole_sweep",
     "pericyte_diameter_change",
 )
 
+#: Length, spacing and probability every pericyte-based perturbation can set
+#: on its own entry. Sweeps read length/spacing through the merged settings;
+#: ``pericyte_diameter_change`` also needs the probabilistic enable flag so
+#: the existing constriction-strategy path can honour probability.
+PERICYTE_ENTRY_GEOMETRY_SETTINGS: tuple[str, ...] = (
+    "constriction_length_um",
+    "constriction_spacing_um",
+    "use_probabilistic_pericyte_constriction",
+    "pericyte_constriction_probability",
+)
+
 #: Settings that configure pericyte / constriction modelling. Declared under
-#: Perturbation runs (not Diameters): they are options of a pericyte-based
-#: perturbation, not of the baseline diameter model.
+#: Diameters and pericytes in the schema (so apply.py's section_values still
+#: finds them) but claimed on the Perturbations tab: they are options of a
+#: pericyte-based perturbation, not of the baseline diameter model.
+#: Order matches ``_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB`` in progress.py.
 PERICYTE_CONSTRICTION_SETTINGS: tuple[str, ...] = (
     "do_pericyte_construction",
     "constriction_by_branch_order",
@@ -92,6 +109,13 @@ PERICYTE_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
     "pericyte_dilation_step_percent",
 )
 
+#: Whole-branch diameter-percent axes for an arteriole dilation sweep.
+ARTERIOLE_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
+    "arteriole_dilation_min_percent",
+    "arteriole_dilation_max_percent",
+    "arteriole_dilation_step_percent",
+)
+
 #: Inlet-pressure axes for a pressure sweep.
 PRESSURE_SWEEP_SETTINGS: tuple[str, ...] = (
     "inlet_pressure_min_pa",
@@ -107,10 +131,19 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     "pressure_sweep": PRESSURE_SWEEP_SETTINGS,
     "pressure_and_pericyte_sweep": (
         *PERICYTE_DILATION_SWEEP_SETTINGS,
+        *PERICYTE_ENTRY_GEOMETRY_SETTINGS,
         *PRESSURE_SWEEP_SETTINGS,
     ),
-    "pericyte_dilation_sweep": PERICYTE_DILATION_SWEEP_SETTINGS,
-    "arteriole_diameter_change": ("arteriole_diameter_scale",),
+    "pericyte_dilation_sweep": (
+        *PERICYTE_DILATION_SWEEP_SETTINGS,
+        *PERICYTE_ENTRY_GEOMETRY_SETTINGS,
+    ),
+    "arteriole_diameter_change": ("arteriole_diameter_change_percent",),
+    "arteriole_diameter_sweep": ARTERIOLE_DILATION_SWEEP_SETTINGS,
+    "pressure_and_arteriole_sweep": (
+        *ARTERIOLE_DILATION_SWEEP_SETTINGS,
+        *PRESSURE_SWEEP_SETTINGS,
+    ),
     "pericyte_diameter_change": PERICYTE_CONSTRICTION_SETTINGS,
 }
 

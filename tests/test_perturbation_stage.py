@@ -111,6 +111,9 @@ def _settings(tmp_path: Path, perturbations: list[dict], **extra) -> dict:
             "pericyte_dilation_min_percent": 1,
             "pericyte_dilation_max_percent": 2,
             "pericyte_dilation_step_percent": 1,
+            "arteriole_dilation_min_percent": 0,
+            "arteriole_dilation_max_percent": 10,
+            "arteriole_dilation_step_percent": 10,
             "inlet_pressure_min_pa": 4500,
             "inlet_pressure_max_pa": 5000,
             "inlet_pressure_step_pa": 500,
@@ -190,12 +193,12 @@ def _attribute_names(graph: nx.MultiGraph) -> dict[Any, frozenset]:
 ARTERIOLE_DILATION = {
     "name": "art_dilate_20",
     "type": "arteriole_diameter_change",
-    "overrides": {"arteriole_diameter_scale": 1.2},
+    "overrides": {"arteriole_diameter_change_percent": 20},
 }
 ARTERIOLE_CONSTRICTION = {
     "name": "art_narrow_20",
     "type": "arteriole_diameter_change",
-    "overrides": {"arteriole_diameter_scale": 0.8},
+    "overrides": {"arteriole_diameter_change_percent": -20},
 }
 PERICYTE_TONE = {
     "name": "pericytes_tighten",
@@ -220,6 +223,16 @@ PRESSURE_AND_PERICYTE_SWEEP = {
     "type": "pressure_and_pericyte_sweep",
     "overrides": {},
 }
+ARTERIOLE_DIAMETER_SWEEP = {
+    "name": "arteriole_dilation_only",
+    "type": "arteriole_diameter_sweep",
+    "overrides": {},
+}
+PRESSURE_AND_ARTERIOLE_SWEEP = {
+    "name": "arteriole_and_pressure",
+    "type": "pressure_and_arteriole_sweep",
+    "overrides": {},
+}
 NO_OP = {"name": "placeholder", "type": "none", "overrides": {}}
 
 #: One worked entry per type, keyed by the type it exercises. What the guards
@@ -233,6 +246,8 @@ ENTRY_FOR_TYPE: dict[str, dict] = {
     "pressure_and_pericyte_sweep": PRESSURE_AND_PERICYTE_SWEEP,
     "pericyte_dilation_sweep": DILATION_SWEEP,
     "arteriole_diameter_change": ARTERIOLE_DILATION,
+    "arteriole_diameter_sweep": ARTERIOLE_DIAMETER_SWEEP,
+    "pressure_and_arteriole_sweep": PRESSURE_AND_ARTERIOLE_SWEEP,
     "pericyte_diameter_change": PERICYTE_TONE,
 }
 
@@ -348,6 +363,38 @@ def test_a_pressure_only_sweep_writes_its_pressure_csv(tmp_path):
     assert run.results[0].summary["sweep_points"] == 2  # 4500 and 5000
 
 
+def test_an_arteriole_only_sweep_writes_its_dilation_csv(tmp_path):
+    """Whole-branch arteriole percent sweep at fixed inlet pressure."""
+    run = _run(tmp_path, [ARTERIOLE_DIAMETER_SWEEP])
+
+    written = {path.name for path in run.results[0].output_dir.iterdir()}
+    assert "arteriole_dilation_sweep.csv" in written
+    # min=0, max=10, step=10 from _settings -> 0% and 10%
+    assert run.results[0].summary["sweep_points"] == 2
+    csv_text = (run.results[0].output_dir / "arteriole_dilation_sweep.csv").read_text(
+        encoding="utf-8"
+    )
+    assert "dilation_percent" in csv_text
+    # One fixed pressure column across the dilation axis.
+    pressures = {
+        line.split(",")[2]
+        for line in csv_text.splitlines()[1:]
+        if line.strip()
+    }
+    assert len(pressures) == 1
+
+
+def test_a_pressure_and_arteriole_sweep_writes_its_combined_csv(tmp_path):
+    """Arteriole percent and inlet pressure both vary."""
+    run = _run(tmp_path, [PRESSURE_AND_ARTERIOLE_SWEEP])
+
+    written = {path.name for path in run.results[0].output_dir.iterdir()}
+    assert "arteriole_dilation_pressure_sweep.csv" in written
+    # 2 dilations x 2 pressures
+    assert run.results[0].summary["sweep_points"] == 4
+    assert any(name.endswith(".png") for name in written), "no curves were drawn"
+
+
 def test_the_summary_says_what_it_did_and_what_it_did_it_to(tmp_path):
     run = _run(tmp_path, [ARTERIOLE_DILATION])
 
@@ -358,7 +405,7 @@ def test_the_summary_says_what_it_did_and_what_it_did_it_to(tmp_path):
     assert "baseline_equivalent_resistance" in header
     assert "delta_vs_baseline" in header
     assert "art_dilate_20" in row
-    assert "arteriole_diameter_scale" in row, "the overrides are not recorded"
+    assert "arteriole_diameter_change_percent" in row, "the overrides are not recorded"
 
 
 def test_wider_arterioles_lower_the_networks_resistance(tmp_path):
@@ -511,6 +558,92 @@ def test_two_perturbations_do_not_compose(tmp_path):
     )
 
 
+def test_two_pericyte_entries_keep_independent_constriction_knobs(tmp_path):
+    """Length, spacing and probability are per entry, not shared run settings."""
+    factors = {"Art1": 1.0, "B01": 0.5, "Ven1": 1.0}
+    short_sparse = {
+        "name": "short_sparse",
+        "type": "pericyte_diameter_change",
+        "overrides": {
+            "do_pericyte_construction": True,
+            "constriction_by_branch_order": factors,
+            "constriction_length_um": 20.0,
+            "constriction_spacing_um": 200.0,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 0.25,
+            "pericyte_constriction_seed": 11,
+        },
+    }
+    long_dense = {
+        "name": "long_dense",
+        "type": "pericyte_diameter_change",
+        "overrides": {
+            "do_pericyte_construction": True,
+            "constriction_by_branch_order": factors,
+            "constriction_length_um": 80.0,
+            "constriction_spacing_um": 50.0,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 1.0,
+            "pericyte_constriction_seed": 22,
+        },
+    }
+    run = _run(tmp_path, [short_sparse, long_dense])
+
+    by_name = {result.name: result for result in run.results}
+    assert by_name["short_sparse"].ok and by_name["long_dense"].ok
+    for name, entry in (
+        ("short_sparse", short_sparse),
+        ("long_dense", long_dense),
+    ):
+        overrides = by_name[name].summary["overrides"]
+        for key in (
+            "constriction_length_um",
+            "constriction_spacing_um",
+            "pericyte_constriction_probability",
+        ):
+            assert overrides[key] == entry["overrides"][key]
+    assert _resistances(by_name["short_sparse"].graph) != _resistances(
+        by_name["long_dense"].graph
+    )
+
+
+def test_a_pericyte_sweep_honours_entry_length_and_spacing(tmp_path):
+    """Sweep geometry knobs merge into the settings the existing helper reads."""
+    short = {
+        "name": "short_sites",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {
+            "constriction_length_um": 10.0,
+            "constriction_spacing_um": 200.0,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 0.3,
+        },
+    }
+    long = {
+        "name": "long_sites",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {
+            "constriction_length_um": 80.0,
+            "constriction_spacing_um": 50.0,
+            "use_probabilistic_pericyte_constriction": True,
+            "pericyte_constriction_probability": 0.9,
+        },
+    }
+    run = _run(tmp_path, [short, long])
+
+    by_name = {result.name: result for result in run.results}
+    assert by_name["short_sites"].ok and by_name["long_sites"].ok
+    for name, entry in (("short_sites", short), ("long_sites", long)):
+        overrides = by_name[name].summary["overrides"]
+        for key, value in entry["overrides"].items():
+            assert overrides[key] == value
+    # Entries stay independent: one entry's knobs do not leak into the other.
+    assert (
+        by_name["short_sites"].summary["overrides"]["constriction_length_um"]
+        != by_name["long_sites"].summary["overrides"]["constriction_length_um"]
+    )
+
+
 def test_the_order_they_are_listed_in_does_not_matter(tmp_path):
     forwards = _run(tmp_path / "forwards", [ARTERIOLE_DILATION, PERICYTE_TONE])
     backwards = _run(tmp_path / "backwards", [PERICYTE_TONE, ARTERIOLE_DILATION])
@@ -570,7 +703,7 @@ def test_a_perturbation_may_not_change_the_blood_model(tmp_path, name, value):
             {
                 "name": "sneaky",
                 "type": "arteriole_diameter_change",
-                "overrides": {"arteriole_diameter_scale": 1.2, name: value},
+                "overrides": {"arteriole_diameter_change_percent": 20, name: value},
             },
             ARTERIOLE_DILATION,
         ],
