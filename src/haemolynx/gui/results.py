@@ -768,22 +768,28 @@ class ResultLayers:
         return tuple(layers)
 
     def _from_run_perturbations(self, output: Any) -> StageLayers:
-        """One pair of layers per perturbation that produced a network.
+        """One pair of layers per non-sweep perturbation that produced a network.
 
-        A `none` perturbation and one that raised have no graph, so they get no
-        layers -- and the failures are what the note is mostly for.
+        Sweeps write Alice-style curves to disk and deliberately keep no graph,
+        so they never appear here. A `none` entry and a failure also have no
+        graph. Failures are what the note is mostly for.
         """
+        from haemolynx.haemodynamics.perturbations import is_sweep_perturbation
+
         results = list(getattr(output, "solved", ()) or ())
         layers: list[LayerSpec] = []
         for result in results:
+            if is_sweep_perturbation(getattr(result, "type", "")):
+                continue
             layers.extend(self._perturbation_layers(result))
 
         failures = list(getattr(output, "failures", ()) or ())
+        layer_count = len([spec for spec in layers if spec.kind == "vectors"])
         note = (
-            f"{len(results)} perturbation(s) re-solved; their layers are "
+            f"{layer_count} perturbation(s) re-solved; their flow layers are "
             "hidden, so tick one to compare it with the baseline."
-            if results
-            else "No perturbation produced a network."
+            if layer_count
+            else "No non-sweep perturbation produced a network layer."
         )
         if failures:
             note += " Failed: " + ", ".join(

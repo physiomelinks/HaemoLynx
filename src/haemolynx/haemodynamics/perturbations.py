@@ -49,8 +49,10 @@ __all__ = [
     "CAPILLARY_DILATION_SWEEP_SETTINGS",
     "PRESSURE_SWEEP_SETTINGS",
     "SETTINGS_FOR_TYPE",
+    "SWEEP_PERTURBATION_TYPES",
     "DEFAULT_PERTURBATION_DIRNAME",
     "PerturbationSpec",
+    "is_sweep_perturbation",
     "perturbation_output_dir",
     "perturbation_problems",
     "perturbations_from_settings",
@@ -211,6 +213,26 @@ INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
 #: directory beside the rest of the run's output rather than in among it,
 #: because there is one subdirectory per perturbation.
 DEFAULT_PERTURBATION_DIRNAME = "perturbations"
+
+#: Types that run a sweep helper and write a sweep CSV rather than one re-solve.
+#: Derived from :data:`PERTURBATION_TYPES` by name so a new ``*_sweep`` type is
+#: classified without editing a second table.
+SWEEP_PERTURBATION_TYPES: frozenset[str] = frozenset(
+    name for name in PERTURBATION_TYPES if "sweep" in name
+)
+
+
+def is_sweep_perturbation(perturbation_type: Any) -> bool:
+    """Whether *perturbation_type* is a sweep (CSV grid / Alice curves, no layer).
+
+    Uses the type name: every declared sweep includes ``sweep``, and non-sweep
+    types do not. Unknown names with ``sweep`` in them are treated as sweeps so
+    a new type cannot accidentally request a napari layer before its plots land.
+    """
+    text = str(perturbation_type)
+    if text in SWEEP_PERTURBATION_TYPES:
+        return True
+    return "sweep" in text and text != "none"
 
 
 def settings_for_perturbation_type(perturbation_type: Any) -> tuple[str, ...]:

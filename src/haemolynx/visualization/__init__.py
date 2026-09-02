@@ -15,6 +15,13 @@ from .vtk_io import (
     visualize_vtk_network,
 )
 from .pipeline_artifacts import save_graph_snapshot
+from .dilation_curves import plot_dilation_curves
+from .perturbation_plots import (
+    export_non_sweep_perturbation_artifacts,
+    export_sweep_perturbation_plots,
+    plot_sweep_curves,
+    wants_napari_flow_layer,
+)
 
 __all__ = [
     "overlay_z_projection",
@@ -29,4 +36,9 @@ __all__ = [
     "graph_to_vtk",
     "visualize_vtk_network",
     "save_graph_snapshot",
+    "plot_dilation_curves",
+    "plot_sweep_curves",
+    "export_sweep_perturbation_plots",
+    "export_non_sweep_perturbation_artifacts",
+    "wants_napari_flow_layer",
 ]

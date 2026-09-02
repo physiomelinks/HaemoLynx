@@ -45,6 +45,7 @@ from haemolynx.haemodynamics.constriction_strategy import (
 )
 from haemolynx.haemodynamics.perturbations import (
     PerturbationSpec,
+    is_sweep_perturbation,
     perturbation_output_dir,
     perturbation_problems,
     perturbations_from_settings,
@@ -63,7 +64,10 @@ from haemolynx.haemodynamics.pericyte_sweep import (
 from haemolynx.haemodynamics.perturbations import plain as plain_values
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
-from haemolynx.visualization.dilation_curves import plot_dilation_curves
+from haemolynx.visualization.perturbation_plots import (
+    export_non_sweep_perturbation_artifacts,
+    export_sweep_perturbation_plots,
+)
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 
@@ -1136,6 +1140,8 @@ def _perturb_one(
     schema: Schema,
     root: Path,
     baseline: dict[str, Any],
+    *,
+    image: np.ndarray | None = None,
 ) -> PerturbationResult:
     """Run one perturbation from the baseline network, and write its output."""
     result = PerturbationResult(name=spec.name, type=spec.type)
@@ -1168,9 +1174,11 @@ def _perturb_one(
     diameter_table = perturbed["diameter_by_branch_order"]
     prefer_measured = bool(perturbed["use_fwhm_edge_diameters"])
     summary: dict[str, Any] = {"overrides": overrides}
+    #: Sweep helper payload when this type ran a grid; used for Alice plots.
+    sweep_payload: dict[str, Any] | None = None
 
     if spec.type == "pressure_sweep":
-        sweep = run_pericyte_dilation_pressure_sweep(
+        sweep_payload = run_pericyte_dilation_pressure_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1179,12 +1187,8 @@ def _perturb_one(
             sweep_dilation=False,
             sweep_pressure=True,
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
-        curves = plot_dilation_curves(sweep["results"], result.output_dir)
-        result.outputs.extend(Path(path) for path in curves.values())
     elif spec.type == "pressure_and_pericyte_sweep":
-        sweep = run_pericyte_dilation_pressure_sweep(
+        sweep_payload = run_pericyte_dilation_pressure_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1193,12 +1197,8 @@ def _perturb_one(
             sweep_dilation=True,
             sweep_pressure=True,
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
-        curves = plot_dilation_curves(sweep["results"], result.output_dir)
-        result.outputs.extend(Path(path) for path in curves.values())
     elif spec.type == "pericyte_dilation_sweep":
-        sweep = run_pericyte_dilation_pressure_sweep(
+        sweep_payload = run_pericyte_dilation_pressure_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1207,10 +1207,6 @@ def _perturb_one(
             sweep_dilation=True,
             sweep_pressure=False,
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
-        curves = plot_dilation_curves(sweep["results"], result.output_dir)
-        result.outputs.extend(Path(path) for path in curves.values())
     elif spec.type == "arteriole_diameter_change":
         G, _table, scaling = haemodynamics.scale_arteriole_diameters(
             G,
@@ -1226,7 +1222,7 @@ def _perturb_one(
             perturbed["arteriole_diameter_change_percent"]
         )
     elif spec.type == "arteriole_diameter_sweep":
-        sweep = run_arteriole_dilation_pressure_sweep(
+        sweep_payload = run_arteriole_dilation_pressure_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1235,12 +1231,8 @@ def _perturb_one(
             sweep_dilation=True,
             sweep_pressure=False,
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
-        curves = plot_dilation_curves(sweep["results"], result.output_dir)
-        result.outputs.extend(Path(path) for path in curves.values())
     elif spec.type == "pressure_and_arteriole_sweep":
-        sweep = run_arteriole_dilation_pressure_sweep(
+        sweep_payload = run_arteriole_dilation_pressure_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1249,12 +1241,8 @@ def _perturb_one(
             sweep_dilation=True,
             sweep_pressure=True,
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
-        curves = plot_dilation_curves(sweep["results"], result.output_dir)
-        result.outputs.extend(Path(path) for path in curves.values())
     elif spec.type == "capillary_diameter_sweep":
-        sweep = run_capillary_dilation_pressure_sweep(
+        sweep_payload = run_capillary_dilation_pressure_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1263,12 +1251,8 @@ def _perturb_one(
             sweep_dilation=True,
             sweep_pressure=False,
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
-        curves = plot_dilation_curves(sweep["results"], result.output_dir)
-        result.outputs.extend(Path(path) for path in curves.values())
     elif spec.type == "pressure_and_capillary_sweep":
-        sweep = run_capillary_dilation_pressure_sweep(
+        sweep_payload = run_capillary_dilation_pressure_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1277,12 +1261,8 @@ def _perturb_one(
             sweep_dilation=True,
             sweep_pressure=True,
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
-        curves = plot_dilation_curves(sweep["results"], result.output_dir)
-        result.outputs.extend(Path(path) for path in curves.values())
     elif spec.type == "pericyte_spacing_sweep":
-        sweep = run_pericyte_geometry_sweep(
+        sweep_payload = run_pericyte_geometry_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1290,10 +1270,8 @@ def _perturb_one(
             output_dir=result.output_dir,
             sweep_axis="spacing",
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
     elif spec.type == "pericyte_length_sweep":
-        sweep = run_pericyte_geometry_sweep(
+        sweep_payload = run_pericyte_geometry_sweep(
             G,
             perturbed,
             inlet_nodes=list(boundaries.inlet_nodes),
@@ -1301,8 +1279,6 @@ def _perturb_one(
             output_dir=result.output_dir,
             sweep_axis="length",
         )
-        result.outputs.append(Path(sweep["csv_path"]))
-        summary["sweep_points"] = len(sweep["results"])
     elif spec.type == "pericyte_diameter_change":
         G, strategy, strategy_results = set_resistances_for_constriction_strategy(
             G,
@@ -1337,6 +1313,10 @@ def _perturb_one(
             f"perturbation '{spec.name}' has unknown type {spec.type!r}."
         )
 
+    if sweep_payload is not None:
+        result.outputs.append(Path(sweep_payload["csv_path"]))
+        summary["sweep_points"] = len(sweep_payload["results"])
+
     solved = _solve_network(G, perturbed, boundaries)
     result.graph = G
     summary.update(
@@ -1355,6 +1335,29 @@ def _perturb_one(
         settings=perturbed,
         overrides=overrides,
     )
+
+    # One post-step for every type: Alice-style curves for sweeps; pipeline-like
+    # plots/CSVs for a single re-solve. Sweeps drop their graph so napari does
+    # not build a flow layer for a grid of answers.
+    if is_sweep_perturbation(spec.type):
+        if sweep_payload is not None:
+            result.outputs.extend(
+                export_sweep_perturbation_plots(
+                    spec.type, sweep_payload["results"], result.output_dir
+                )
+            )
+        result.graph = None
+    else:
+        result.outputs.extend(
+            export_non_sweep_perturbation_artifacts(
+                G,
+                result.output_dir,
+                perturbed,
+                image=image,
+                name_stem=spec.name,
+            )
+        )
+
     logger.info(
         f"Perturbation '{spec.name}' ({spec.type}): equivalent resistance "
         f"{summary['equivalent_resistance']:.6g} vs baseline "
@@ -1370,6 +1373,7 @@ def run_perturbations(
     boundaries: BoundaryNodes,
     schema: Schema,
     progress: StageProgress | None = None,
+    network: VesselNetwork | None = None,
 ) -> PerturbationRun:
     """Re-solve the finished network once per configured perturbation.
 
@@ -1419,13 +1423,21 @@ def run_perturbations(
         f"resistance of {run.baseline['equivalent_resistance']:.6g}, into {root}"
     )
 
+    image = None if network is None else getattr(network.volume, "image", None)
     for spec in specs:
         if progress is not None:
             progress.step(spec.name, total=len(specs))
         try:
             run.results.append(
                 _perturb_one(
-                    spec, settings, model, boundaries, schema, root, run.baseline
+                    spec,
+                    settings,
+                    model,
+                    boundaries,
+                    schema,
+                    root,
+                    run.baseline,
+                    image=image,
                 )
             )
         except Exception as error:
@@ -1739,7 +1751,12 @@ def run_pipeline_stages(
     # difference against, and before the export, which writes that baseline out.
     with run.stage("run_perturbations") as perturbing:
         perturbations = run_perturbations(
-            settings, model, boundaries, schema, progress=perturbing
+            settings,
+            model,
+            boundaries,
+            schema,
+            progress=perturbing,
+            network=network,
         )
     _produced(on_stage_output, "run_perturbations", perturbations)
     with run.stage("export_results"):
