@@ -35,13 +35,18 @@ FWHM_SETTING_PREFIX = "fwhm_"
 #: to null asks for a fresh cohort each run.
 DEFAULT_PERICYTE_CONSTRICTION_SEED = 20240917
 
-#: Values the constriction model needs that are not config settings today. They
-#: were defaults on this dataclass before the settings arrived as a group, and
-#: are kept here so behaviour is unchanged and the numbers stay findable.
+#: Values the constriction model needs that a caller passing a bare dict may
+#: leave out. They were defaults on this dataclass before the settings arrived
+#: as a group, and are kept here so the numbers stay findable.
+#:
+#: `constriction_length_um` and `constriction_spacing_um` are named as the
+#: schema declares them. They used to be read here without the `_um`, which no
+#: schema had, so the declared setting reached the dilation sweep and not this
+#: -- the same run measured its constrictions two different ways.
 DIAMETER_DEFAULTS: dict[str, Any] = {
     "custom_edge_diameter": 6.0,
-    "constriction_length": 40.0,
-    "constriction_spacing": 100.0,
+    "constriction_length_um": 40.0,
+    "constriction_spacing_um": 100.0,
     "constriction_by_branch_order": {},
     "custom_edges": [],
     "viscosity_law": "pries",
@@ -184,8 +189,8 @@ def _run_pericyte_comparison(
         min_pericyte_diameter_um=config.diameter("pericyte_min_diameter_um"),
         max_pericyte_diameter_um=config.diameter("pericyte_max_diameter_um"),
         prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
-        constriction_length=config.diameter("constriction_length"),
-        constriction_spacing=config.diameter("constriction_spacing"),
+        constriction_length=config.diameter("constriction_length_um"),
+        constriction_spacing=config.diameter("constriction_spacing_um"),
         use_probabilistic_pericyte_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
         pericyte_constriction_probability=float(config.diameter("pericyte_constriction_probability")),
         viscosity_law=config.diameter("viscosity_law"),
@@ -223,8 +228,8 @@ def _assign_poiseuille_resistances(
     rng: np.random.Generator | None = None,
 ) -> dict[str, Any]:
     poiseuille_model = PoiseuilleModel(
-        constriction_length=config.diameter("constriction_length"),
-        constriction_spacing=config.diameter("constriction_spacing"),
+        constriction_length=config.diameter("constriction_length_um"),
+        constriction_spacing=config.diameter("constriction_spacing_um"),
         viscosity_law=config.diameter("viscosity_law"),
         haematocrit=config.diameter("haematocrit"),
         diameter_basis=config.diameter("diameter_basis"),
@@ -246,8 +251,8 @@ def _assign_poiseuille_resistances(
             use_pericyte_mask_constriction=bool(config.diameter("use_pericyte_mask_constriction")),
             use_probabilistic_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
             prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
-            constriction_length=config.diameter("constriction_length"),
-            constriction_spacing=config.diameter("constriction_spacing"),
+            constriction_length=config.diameter("constriction_length_um"),
+            constriction_spacing=config.diameter("constriction_spacing_um"),
             viscosity_law=config.diameter("viscosity_law"),
             haematocrit=config.diameter("haematocrit"),
             diameter_basis=config.diameter("diameter_basis"),

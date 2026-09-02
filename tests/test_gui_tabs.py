@@ -158,6 +158,8 @@ def test_the_haemodynamics_still_gets_its_whole_section():
         "haematocrit",
         "diameter_by_branch_order",
         "constriction_by_branch_order",
+        "constriction_length_um",
+        "constriction_spacing_um",
     ):
         assert name in section, f"{name} has left the {DIAMETERS_AND_PERICYTES} section"
 
