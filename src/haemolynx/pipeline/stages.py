@@ -892,6 +892,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             G,
             node_positions=node_positions,
             image_dimensions=image.shape,
+            # Zipped element-wise with image.shape, which is (z, y, x), so this
+            # is the per-array-axis spacing. Left at its (1, 1, 1) default the
+            # whole-image volume and density were counted in voxels for any
+            # stack whose z spacing is not 1 um.
+            voxel_size=voxel_size_zyx,
             statistics_mode=settings["statistics_mode"],
         )
 
