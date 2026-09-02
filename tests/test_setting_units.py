@@ -21,7 +21,7 @@ SCHEMA = default_schema()
 
 #: The spellings a unit may use. One per quantity -- `um` and `microns` for the
 #: same thing reads as two different units to anyone scanning a config file.
-ALLOWED_UNITS = {"um", "voxels", "percent", "fraction", "Pa"}
+ALLOWED_UNITS = {"um", "um3", "voxels", "percent", "fraction", "Pa"}
 
 #: Settings whose unit is settled by what the consuming code compares them
 #: against. `um` wherever the value meets node `pos` or edge `length`, which
@@ -63,6 +63,12 @@ EXPECTED_UNITS = {
     "constriction_length_min_um": "um",
     "constriction_length_max_um": "um",
     "constriction_length_step_um": "um",
+    # Physical mask-component volumes (voxel count x voxel volume).
+    "large_vessel_min_component_volume_um3": "um3",
+    "small_vessel_min_component_volume_um3": "um3",
+    "large_vessel_opposite_attached_max_component_volume_um3": "um3",
+    # EDT distance to the opposite-type mask surface: microns.
+    "large_vessel_opposite_attached_max_distance_microns": "um",
 }
 
 #: Names that look like a measurement but hold a dimensionless number. Listed

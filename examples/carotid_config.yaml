@@ -37,6 +37,16 @@ vessel_masks:
   use_ilastik_large_vessel_segmentation: false
   # Dilate the large-vessel masks by this distance before selecting terminal nodes  [um; range 0.0..; needs use_large_vessel_masks]
   large_vessel_mask_dilation_microns: 0.0
+  # Remove connected components smaller than this physical volume from large-vessel masks after dilation (set 0 to disable)  [um3; range 0.0..; needs use_large_vessel_masks]
+  large_vessel_min_component_volume_um3: 200.0
+  # Remove tiny large-vessel components that sit attached near the opposite-type mask surface (suppresses small mislabelled attachments)  [needs use_large_vessel_masks]
+  large_vessel_remove_small_opposite_attached_components: true
+  # Maximum physical volume of a large-vessel component eligible for opposite-attached cleanup  [um3; range 0.0..; needs use_large_vessel_masks and large_vessel_remove_small_opposite_attached_components]
+  large_vessel_opposite_attached_max_component_volume_um3: 250.0
+  # Maximum distance from the opposite large-vessel mask for a tiny component to count as opposite-attached and be removed  [um; range 0.0..; needs use_large_vessel_masks and large_vessel_remove_small_opposite_attached_components]
+  large_vessel_opposite_attached_max_distance_microns: 3.0
+  # Before terminal assignment, remove arteriole/venule overlap voxels from the smaller overlapping connected component  [needs use_large_vessel_masks]
+  exclude_smaller_overlapping_volumes: false
   # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
   # Read this pre-segmented large venule mask  [needs use_large_vessel_masks; must exist]
@@ -55,6 +65,8 @@ vessel_masks:
   use_ilastik_small_vessel_segmentation: false
   # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
+  # Remove connected components smaller than this physical volume from small-vessel masks before boundary assignment (set 0 to disable)  [um3; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_min_component_volume_um3: 50.0
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
   # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]

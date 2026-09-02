@@ -179,6 +179,73 @@ SCHEMA = Schema(
             requires=("use_large_vessel_masks",),
         ),
         Setting(
+            name="large_vessel_min_component_volume_um3",
+            kind="float",
+            default=200.0,
+            help=(
+                "Remove connected components smaller than this physical volume from "
+                "large-vessel masks after dilation (set 0 to disable)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um3",
+            requires=("use_large_vessel_masks",),
+        ),
+        Setting(
+            name="large_vessel_remove_small_opposite_attached_components",
+            kind="bool",
+            default=True,
+            help=(
+                "Remove tiny large-vessel components that sit attached near the "
+                "opposite-type mask surface (suppresses small mislabelled attachments)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks",),
+        ),
+        Setting(
+            name="large_vessel_opposite_attached_max_component_volume_um3",
+            kind="float",
+            default=250.0,
+            help=(
+                "Maximum physical volume of a large-vessel component eligible for "
+                "opposite-attached cleanup"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um3",
+            requires=(
+                "use_large_vessel_masks",
+                "large_vessel_remove_small_opposite_attached_components",
+            ),
+        ),
+        Setting(
+            name="large_vessel_opposite_attached_max_distance_microns",
+            kind="float",
+            default=3.0,
+            help=(
+                "Maximum distance from the opposite large-vessel mask for a tiny "
+                "component to count as opposite-attached and be removed"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_large_vessel_masks",
+                "large_vessel_remove_small_opposite_attached_components",
+            ),
+        ),
+        Setting(
+            name="exclude_smaller_overlapping_volumes",
+            kind="bool",
+            default=False,
+            help=(
+                "Before terminal assignment, remove arteriole/venule overlap voxels "
+                "from the smaller overlapping connected component"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks",),
+        ),
+        Setting(
             name="large_arteriole_mask_path",
             kind="path",
             default=f"{_IMAGES}/large_arteriole_mask.tif",
@@ -254,6 +321,19 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_min_component_volume_um3",
+            kind="float",
+            default=50.0,
+            help=(
+                "Remove connected components smaller than this physical volume from "
+                "small-vessel masks before boundary assignment (set 0 to disable)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um3",
             requires=("use_small_vessel_masks_for_boundary_assignment",),
         ),
         Setting(

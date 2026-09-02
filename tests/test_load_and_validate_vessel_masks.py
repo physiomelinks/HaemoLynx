@@ -300,6 +300,39 @@ def test_zero_dilation_leaves_the_mask_exactly_as_loaded(tmp_path: Path) -> None
     assert bool(dilated[4, 4, 4])
 
 
+def test_loader_removes_subthreshold_mask_components(tmp_path: Path) -> None:
+    """Volume filtering runs after load (and would run after dilation when set)."""
+    shape = (16, 16, 16)
+    arteriole = np.zeros(shape, dtype=np.uint8)
+    venule = np.zeros(shape, dtype=np.uint8)
+    arteriole[1, 1, 1] = 1
+    arteriole[8:11, 8:11, 8:11] = 1  # 27 voxels
+    venule[2, 2, 2] = 1
+    venule[10:12, 10:12, 10:12] = 1  # 8 voxels
+
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_with_voxel_size(arteriole_path, arteriole, voxel_size_xyz=(1.0, 1.0, 1.0))
+    _write_mask_with_voxel_size(venule_path, venule, voxel_size_xyz=(1.0, 1.0, 1.0))
+
+    cleaned_a, cleaned_v, _, _ = load_and_validate_vessel_masks(
+        mask_role="large",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=arteriole_path,
+        venule_mask_path=venule_path,
+        image_shape=shape,
+        main_voxel_size_xyz=(1.0, 1.0, 1.0),
+        min_component_volume_um3=5.0,
+        remove_small_opposite_attached_components=False,
+    )
+
+    assert int(np.count_nonzero(cleaned_a)) == 27
+    assert int(np.count_nonzero(cleaned_v)) == 8
+    assert not cleaned_a[1, 1, 1]
+    assert not cleaned_v[2, 2, 2]
+
+
 # --- small-role wiring is not just the large role with a prefix -------------
 
 
@@ -348,9 +381,15 @@ LARGE_SETTINGS = {
     "large_arteriole_mask_path": "large_a.tif",
     "large_venule_mask_path": "large_v.tif",
     "large_vessel_mask_dilation_microns": 2.5,
+    "large_vessel_min_component_volume_um3": 200.0,
+    "large_vessel_remove_small_opposite_attached_components": True,
+    "large_vessel_opposite_attached_max_component_volume_um3": 250.0,
+    "large_vessel_opposite_attached_max_distance_microns": 3.0,
+    "exclude_smaller_overlapping_volumes": False,
     "use_small_vessel_masks_for_boundary_assignment": False,
     "small_arteriole_mask_path": "small_a.tif",
     "small_venule_mask_path": "small_v.tif",
+    "small_vessel_min_component_volume_um3": 50.0,
     "ilastik_output_dir": "out",
     "ilastik_output_suffix": ".tif",
     "ilastik_executable": "/usr/bin/ilastik",
@@ -373,6 +412,11 @@ def test_the_large_role_picks_the_large_paths_and_the_dilation() -> None:
     assert arguments["arteriole_mask_path"] == "large_a.tif"
     assert arguments["venule_mask_path"] == "large_v.tif"
     assert arguments["dilation_microns"] == 2.5
+    assert arguments["min_component_volume_um3"] == 200.0
+    assert arguments["remove_small_opposite_attached_components"] is True
+    assert arguments["opposite_attached_max_component_volume_um3"] == 250.0
+    assert arguments["opposite_attached_max_distance_microns"] == 3.0
+    assert arguments["exclude_smaller_overlapping_volumes"] is False
     assert arguments["axis_order"] == "xyz"
 
 
@@ -385,7 +429,10 @@ def test_the_small_role_picks_the_small_paths_and_has_no_dilation() -> None:
     assert arguments["enabled"] is False
     assert arguments["arteriole_mask_path"] == "small_a.tif"
     assert arguments["venule_mask_path"] == "small_v.tif"
+    assert arguments["min_component_volume_um3"] == 50.0
     assert "dilation_microns" not in arguments
+    assert "remove_small_opposite_attached_components" not in arguments
+    assert "exclude_smaller_overlapping_volumes" not in arguments
 
 
 def test_settings_absent_from_the_config_are_left_to_their_defaults() -> None:

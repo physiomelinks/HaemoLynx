@@ -164,6 +164,17 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
         "ilastik_arteriole_classifier_path": "ilastik_arteriole_classifier_path",
         "ilastik_venule_classifier_path": "ilastik_venule_classifier_path",
         "dilation_microns": "large_vessel_mask_dilation_microns",
+        "min_component_volume_um3": "large_vessel_min_component_volume_um3",
+        "remove_small_opposite_attached_components": (
+            "large_vessel_remove_small_opposite_attached_components"
+        ),
+        "opposite_attached_max_component_volume_um3": (
+            "large_vessel_opposite_attached_max_component_volume_um3"
+        ),
+        "opposite_attached_max_distance_microns": (
+            "large_vessel_opposite_attached_max_distance_microns"
+        ),
+        "exclude_smaller_overlapping_volumes": "exclude_smaller_overlapping_volumes",
     },
     "small": {
         "enabled": "use_small_vessel_masks_for_boundary_assignment",
@@ -174,6 +185,7 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
         "ilastik_unsegmented_venule_path": "ilastik_unsegmented_small_venule_image_path",
         "ilastik_arteriole_classifier_path": "ilastik_small_arteriole_classifier_path",
         "ilastik_venule_classifier_path": "ilastik_small_venule_classifier_path",
+        "min_component_volume_um3": "small_vessel_min_component_volume_um3",
     },
 }
 
@@ -227,6 +239,11 @@ def load_and_validate_vessel_masks(
     ilastik_output_suffix: str = ".tif",
     ilastik_executable: str | None = None,
     dilation_microns: float = 0.0,
+    min_component_volume_um3: float = 0.0,
+    remove_small_opposite_attached_components: bool = False,
+    opposite_attached_max_component_volume_um3: float = 250.0,
+    opposite_attached_max_distance_microns: float = 3.0,
+    exclude_smaller_overlapping_volumes: bool = False,
     loaded_message_suffix: str | None = None,
     axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[
@@ -360,6 +377,86 @@ def load_and_validate_vessel_masks(
         logger.info(
             f"Dilated {scale_label}-vessel masks by {float(dilation_microns):.3f} microns."
         )
+
+    if float(min_component_volume_um3) > 0:
+        from haemolynx.graph.mask_component_volume import (
+            remove_small_vessel_components_by_volume,
+        )
+
+        arteriole_mask, venule_mask, volume_stats = (
+            remove_small_vessel_components_by_volume(
+                arteriole_mask,
+                venule_mask,
+                voxel_size_xyz=tuple(float(v) for v in main_voxel_size_xyz),
+                min_component_volume_um3=float(min_component_volume_um3),
+            )
+        )
+        arteriole_stats = volume_stats.get("arteriole") or {}
+        venule_stats = volume_stats.get("venule") or {}
+        logger.info(
+            f"{scale_label.capitalize()}-vessel component-volume filtering: "
+            f"threshold={float(min_component_volume_um3):.3f} um^3, "
+            f"removed_components(arteriole="
+            f"{int(arteriole_stats.get('removed_component_count', 0))}, "
+            f"venule={int(venule_stats.get('removed_component_count', 0))}), "
+            f"removed_volume_um3(arteriole="
+            f"{float(arteriole_stats.get('removed_volume_um3', 0.0)):.3f}, "
+            f"venule={float(venule_stats.get('removed_volume_um3', 0.0)):.3f})."
+        )
+
+    if mask_role == "large" and bool(remove_small_opposite_attached_components):
+        from haemolynx.graph.large_vessels import (
+            remove_small_opposite_attached_large_vessel_components,
+        )
+
+        (
+            arteriole_mask,
+            venule_mask,
+            opposite_attached_cleanup_stats,
+        ) = remove_small_opposite_attached_large_vessel_components(
+            arteriole_mask,
+            venule_mask,
+            voxel_size_xyz=tuple(float(v) for v in main_voxel_size_xyz),
+            max_component_volume_um3=float(
+                opposite_attached_max_component_volume_um3
+            ),
+            max_attach_distance_microns=float(
+                opposite_attached_max_distance_microns
+            ),
+        )
+        oa_art = opposite_attached_cleanup_stats.get("arteriole") or {}
+        oa_ven = opposite_attached_cleanup_stats.get("venule") or {}
+        logger.info(
+            "Large-vessel opposite-attached tiny-component cleanup: "
+            f"max_component_volume_um3="
+            f"{float(opposite_attached_max_component_volume_um3):.3f}, "
+            f"max_attach_distance_microns="
+            f"{float(opposite_attached_max_distance_microns):.3f}, "
+            f"removed_components(arteriole="
+            f"{int(oa_art.get('removed_component_count', 0))}, "
+            f"venule={int(oa_ven.get('removed_component_count', 0))})."
+        )
+
+    if bool(exclude_smaller_overlapping_volumes):
+        from haemolynx.graph.large_vessels import (
+            exclude_smaller_overlapping_large_vessel_components,
+            exclude_smaller_overlapping_small_vessel_components,
+        )
+
+        if mask_role == "large":
+            arteriole_mask, venule_mask = (
+                exclude_smaller_overlapping_large_vessel_components(
+                    arteriole_mask,
+                    venule_mask,
+                )
+            )
+        else:
+            arteriole_mask, venule_mask = (
+                exclude_smaller_overlapping_small_vessel_components(
+                    arteriole_mask,
+                    venule_mask,
+                )
+            )
 
     if mask_role == "small":
         overlap_info = (
