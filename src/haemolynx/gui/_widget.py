@@ -2154,6 +2154,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         TYPE_TOOLTIP,
         add_entry,
         display_label_for_setting,
+        editor_layout_order,
         from_settings,
         name_problems,
         perturbation_type_choices,
@@ -2225,6 +2226,36 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         }
         return {name: value for name, value in read.items() if value is not None}
 
+    def lay_out_editors(editor) -> None:
+        """Name, type, this type's knobs in SETTINGS_FOR_TYPE order, Remove.
+
+        Visibility alone is not enough: editors are built once for every type,
+        so a naive append order buried ``arteriole_diameter_change_percent``
+        under pericyte geometry rows on the combined type.
+        """
+        chosen = editor.type.value
+        shown = set(rows_for_type(chosen))
+        for name, widget in editor.editors.items():
+            widget.visible = name in shown
+        ordered = [
+            editor.editors[name]
+            for name in editor_layout_order(chosen)
+            if name in editor.editors
+        ]
+        editor.container.clear()
+        editor.container.append(editor.name)
+        editor.container.append(editor.type)
+        for widget in ordered:
+            editor.container.append(widget)
+        editor.container.append(editor.remove)
+        editor.shown = frozenset(name for name in editor.editors if name in shown)
+        editor.hidden = frozenset(
+            name for name in editor.editors if name not in shown
+        )
+        editor.layout_order = tuple(
+            name for name in editor_layout_order(chosen) if name in editor.editors
+        )
+
     def show_the_chosen_type(editor) -> None:
         """Reveal the chosen type's options and hide every other type's.
 
@@ -2233,11 +2264,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         cannot ask the widget -- the same reason `_boundary_controls` keeps
         `state.visible`.
         """
-        shown = set(rows_for_type(editor.type.value))
-        for name, widget in editor.editors.items():
-            widget.visible = name in shown
-        editor.shown = frozenset(name for name in editor.editors if name in shown)
-        editor.hidden = frozenset(name for name in editor.editors if name not in shown)
+        lay_out_editors(editor)
 
     def build_editor(index: int, entry: Mapping[str, Any]):
         """One perturbation's controls: name, type, and that type's options."""
@@ -2281,11 +2308,10 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             editors=editors,
             shown=frozenset(),
             hidden=frozenset(),
+            layout_order=(),
             remove=remove_button,
-            container=Container(
-                widgets=[name_box, type_box, *editors.values(), remove_button],
-                labels=True,
-            ),
+            # Empty shell; lay_out_editors fills it in SETTINGS_FOR_TYPE order.
+            container=Container(widgets=[], labels=True),
         )
 
         def on_name(*_args) -> None:
@@ -2320,7 +2346,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         for widget in editors.values():
             widget.changed.connect(on_override)
         remove_button.changed.connect(on_remove)
-        show_the_chosen_type(editor)
+        lay_out_editors(editor)
         return editor
 
     def rebuild() -> None:

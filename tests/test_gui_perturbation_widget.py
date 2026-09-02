@@ -45,6 +45,7 @@ TAB_TITLE = next(
 
 A_TYPE = "arteriole_diameter_change"
 A_PERCENT = "arteriole_diameter_change_percent"
+COMBINED_TYPE = "arteriole_and_pericyte_diameter_change"
 
 
 @pytest.fixture
@@ -220,6 +221,22 @@ def test_choosing_a_type_reveals_its_options(panel):
     editor = perturbations.editors()[0]
     assert editor.shown == set(rows_for_type(A_TYPE))
     assert A_PERCENT in editor.shown
+
+
+def test_combined_type_shows_arteriole_percent_first(panel):
+    """Arteriole % is a first-class knob on the combined type, not buried."""
+    _widget, _viewer, perturbations = panel
+    perturbations.add()
+
+    perturbations.choose_type(0, COMBINED_TYPE)
+
+    editor = perturbations.editors()[0]
+    assert A_PERCENT in editor.shown
+    assert A_PERCENT in editor.editors
+    assert list(rows_for_type(COMBINED_TYPE))[0] == A_PERCENT
+    assert editor.layout_order[0] == A_PERCENT
+    assert "constriction" in editor.editors[A_PERCENT].label.lower()
+    assert "%" in editor.editors[A_PERCENT].label
 
 
 def test_choosing_a_type_hides_the_other_types_options(panel):

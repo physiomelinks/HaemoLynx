@@ -57,6 +57,7 @@ __all__ = [
     "default_name",
     "display_label_for_setting",
     "display_name_for_type",
+    "editor_layout_order",
     "from_settings",
     "hidden_for_type",
     "name_problems",
@@ -108,7 +109,9 @@ PERTURBATION_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
 #: GUI row labels for bidirectional diameter / tone settings. Schema ``name``
 #: keys and plot file stems stay as-is; only what the panel prints changes.
 SETTING_DISPLAY_LABELS: Mapping[str, str] = {
-    "arteriole_diameter_change_percent": "Arteriole constriction/dilation",
+    # Leading "%" so the combined arteriole+pericyte entry's first knob is
+    # obviously the whole-branch percent, not another pericyte tone control.
+    "arteriole_diameter_change_percent": "Arteriole % constriction/dilation",
     "arteriole_dilation_min_percent": "Arteriole constriction/dilation min",
     "arteriole_dilation_max_percent": "Arteriole constriction/dilation max",
     "arteriole_dilation_step_percent": "Arteriole constriction/dilation step",
@@ -200,6 +203,22 @@ def _editor_settings() -> tuple[str, ...]:
 
 #: Every setting an entry could show, over all types.
 EDITOR_SETTINGS: tuple[str, ...] = _editor_settings()
+
+
+def editor_layout_order(perturbation_type: Any) -> tuple[str, ...]:
+    """Widget order for one entry: this type's rows first, then the rest.
+
+    Editors are built once for every type (see :data:`EDITOR_SETTINGS`), but
+    laying them out in that global order buries a type's own knobs -- the
+    combined arteriole+pericyte type declares ``arteriole_diameter_change_percent``
+    first in :data:`SETTINGS_FOR_TYPE`, yet global order put six pericyte
+    geometry rows above it. Hidden editors stay after the visible ones so
+    reveal/hide on type change does not recreate widgets.
+    """
+    shown = rows_for_type(perturbation_type)
+    shown_set = set(shown)
+    rest = tuple(name for name in EDITOR_SETTINGS if name not in shown_set)
+    return shown + rest
 
 
 def visible_tab_settings(names: Sequence[str]) -> tuple[str, ...]:

@@ -78,6 +78,19 @@ def test_a_type_reveals_only_its_own_options():
     assert settings_for_perturbation_type("typo") == ()
 
 
+def test_combined_arteriole_pericyte_type_includes_arteriole_percent():
+    """Single-shot combined type is arteriole % plus the pericyte knobs."""
+    from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
+
+    combined = SETTINGS_FOR_TYPE["arteriole_and_pericyte_diameter_change"]
+    assert combined[0] == "arteriole_diameter_change_percent"
+    assert "arteriole_diameter_change_percent" in combined
+    assert set(PERICYTE_CONSTRICTION_SETTINGS) <= set(combined)
+    assert combined == (
+        "arteriole_diameter_change_percent",
+        *PERICYTE_CONSTRICTION_SETTINGS,
+    )
+
 def test_the_visible_settings_are_the_union_of_the_configured_types():
     specs = perturbations_from_settings({"perturbations": TWO_ENTRIES})
 

@@ -49,6 +49,7 @@ from haemolynx.gui.perturbation_editing import (  # noqa: E402
     default_name,
     display_label_for_setting,
     display_name_for_type,
+    editor_layout_order,
     from_settings,
     hidden_for_type,
     name_problems,
@@ -168,6 +169,15 @@ def test_the_tab_keeps_only_the_always_on_run_settings():
     assert "inlet_pressure_min_pa" in rows_for_type("pressure_and_pericyte_sweep")
     assert "arteriole_diameter_change_percent" in rows_for_type(
         "arteriole_diameter_change"
+    )
+    assert "arteriole_diameter_change_percent" in rows_for_type(
+        "arteriole_and_pericyte_diameter_change"
+    )
+    assert rows_for_type("arteriole_and_pericyte_diameter_change")[0] == (
+        "arteriole_diameter_change_percent"
+    )
+    assert editor_layout_order("arteriole_and_pericyte_diameter_change")[0] == (
+        "arteriole_diameter_change_percent"
     )
     assert "arteriole_dilation_min_percent" in rows_for_type("arteriole_diameter_sweep")
     assert "inlet_pressure_min_pa" in rows_for_type("pressure_and_arteriole_sweep")
@@ -444,7 +454,7 @@ def test_bidirectional_settings_use_constriction_dilation_labels():
         assert "constriction/dilation" in display_label_for_setting(name).lower()
     assert display_label_for_setting(
         "arteriole_diameter_change_percent", "percent"
-    ) == "Arteriole constriction/dilation (percent)"
+    ) == "Arteriole % constriction/dilation (percent)"
     # Unmapped names still capitalise like form.label_for.
     assert display_label_for_setting("inlet_pressure_min_pa") == (
         "Inlet pressure min pa"
