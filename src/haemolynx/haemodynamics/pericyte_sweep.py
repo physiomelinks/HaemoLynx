@@ -18,6 +18,9 @@ from typing import Any, Iterable, Mapping, Sequence
 import networkx as nx
 import numpy as np
 
+from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
+
+from .constriction_strategy import set_resistances_for_constriction_strategy
 from .poiseuille import PoiseuilleModel
 from .resistance import (
     build_conductance_matrix_from_graph,
@@ -165,6 +168,89 @@ def _inlet_pressures(settings: Mapping[str, Any], *, sweep: bool) -> Sequence[in
     )
 
 
+def _apply_sweep_resistances(
+    G: nx.MultiGraph,
+    settings: Mapping[str, Any],
+    *,
+    scaled_diameters: dict[str, float],
+    dilation_factor: float,
+    sweep_dilation: bool,
+    poiseuille_model: PoiseuilleModel,
+) -> nx.MultiGraph:
+    """Resistances for one sweep grid point.
+
+    When *sweep_dilation* is True (``pericyte_dilation_sweep`` /
+    ``pressure_and_pericyte_sweep``), diameters are already dilated on *G* and
+    resistances go through :func:`set_resistances_for_constriction_strategy`
+    so entry length, spacing and probability settings actually change the
+    numbers. Pressure-only sweeps keep uniform Poiseuille and do not place
+    focal constrictions.
+
+    Order for dilation sweeps: dilate baseline diameters first, then place and
+    apply constrictions on those dilated diameters. Length/spacing/probability
+    stay fixed across the grid; only dilation % (and optionally pressure) move.
+    """
+    if sweep_dilation:
+        # Same strategy path as ``pericyte_diameter_change`` / apply.py — always
+        # called here when dilation is swept, so ``do_pericyte_construction``
+        # need not be True on the merged settings (that flag gates the main
+        # haemodynamics stage, not this perturbation).
+        configured_probability = settings.get("pericyte_constriction_probability")
+        G, _strategy, _strategy_results = set_resistances_for_constriction_strategy(
+            G,
+            diameter_by_branch_order=scaled_diameters,
+            constriction_factor_by_branch_order=settings.get(
+                "constriction_by_branch_order"
+            ),
+            use_pericyte_mask_constriction=bool(
+                settings.get("use_pericyte_mask_constriction", False)
+            ),
+            use_probabilistic_constriction=bool(
+                settings.get("use_probabilistic_pericyte_constriction", False)
+            ),
+            prefer_edge_fwhm_baseline=bool(
+                settings.get("use_fwhm_edge_diameters", False)
+            ),
+            constriction_length=float(settings.get("constriction_length_um", 40.0)),
+            constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
+            viscosity_law=settings.get("viscosity_law", "pries"),
+            haematocrit=float(settings.get("haematocrit", 0.45)),
+            diameter_basis=settings.get("diameter_basis", "plasma_column"),
+            constriction_probability=(
+                1.0
+                if configured_probability is None
+                else float(configured_probability)
+            ),
+            pericyte_mask_path=settings.get("pericyte_mask_path"),
+            pericyte_mask_h5_dataset_name=settings.get(
+                "pericyte_mask_h5_dataset_name"
+            ),
+            max_assignment_distance_um=settings.get(
+                "pericyte_max_assignment_distance_um", 3.0
+            ),
+            min_pericyte_diameter_um=settings.get("pericyte_min_diameter_um", 5.0),
+            max_pericyte_diameter_um=settings.get("pericyte_max_diameter_um", 12.0),
+            axis_order=settings.get("image_axis_order", CANONICAL_AXIS_ORDER),
+            seed=settings.get("pericyte_constriction_seed"),
+        )
+    else:
+        G, _ = poiseuille_model.set_poiseuille_resistances(
+            G,
+            scaled_diameters,
+            prefer_edge_fwhm_diameter=True,
+        )
+
+    custom_edges = settings.get("custom_edges") or []
+    if custom_edges:
+        G, _ = poiseuille_model.set_poiseuille_edge_resistances(
+            G,
+            custom_edges,
+            edge_diameter=float(settings.get("custom_edge_diameter", 6.0))
+            * dilation_factor,
+        )
+    return G
+
+
 def run_pericyte_dilation_pressure_sweep(
     G: nx.MultiGraph,
     settings: Mapping[str, Any],
@@ -183,8 +269,11 @@ def run_pericyte_dilation_pressure_sweep(
     * dilation only — pericyte tone at the run's fixed ``inlet_p_bc``
     * pressure only — inlet pressure on the undilated network
 
-    Reads ranges from *settings* when the matching axis is swept, along with
-    the diameter table, outlet pressure and constriction geometry.
+    When dilation is swept, each grid point dilates diameters then applies the
+    existing constriction strategy (periodic / probabilistic / mask) using the
+    merged *settings*, so ``constriction_length_um``, ``constriction_spacing_um``
+    and probability flags change the resistances. Pressure-only sweeps stay on
+    uniform Poiseuille.
     """
     if not sweep_dilation and not sweep_pressure:
         raise ValueError(
@@ -202,7 +291,6 @@ def run_pericyte_dilation_pressure_sweep(
         diameter_basis=settings.get("diameter_basis", "plasma_column"),
     )
     diameter_by_branch_order = settings["diameter_by_branch_order"]
-    custom_edges = settings.get("custom_edges") or []
     outlet_pressure_pa = float(settings["outlet_p_bc"])
 
     dilation_values = _dilation_percents(settings, sweep=sweep_dilation)
@@ -212,22 +300,18 @@ def run_pericyte_dilation_pressure_sweep(
     for dilation_percent in dilation_values:
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
         dilated = dilate_graph_diameters(G, dilation_factor)
-
-        dilated, _ = poiseuille_model.set_poiseuille_resistances(
+        scaled_diameters = {
+            branch_order: float(diameter_um) * dilation_factor
+            for branch_order, diameter_um in diameter_by_branch_order.items()
+        }
+        dilated = _apply_sweep_resistances(
             dilated,
-            {
-                branch_order: float(diameter_um) * dilation_factor
-                for branch_order, diameter_um in diameter_by_branch_order.items()
-            },
-            prefer_edge_fwhm_diameter=True,
+            settings,
+            scaled_diameters=scaled_diameters,
+            dilation_factor=dilation_factor,
+            sweep_dilation=sweep_dilation,
+            poiseuille_model=poiseuille_model,
         )
-        if custom_edges:
-            dilated, _ = poiseuille_model.set_poiseuille_edge_resistances(
-                dilated,
-                custom_edges,
-                edge_diameter=float(settings.get("custom_edge_diameter", 6.0))
-                * dilation_factor,
-            )
 
         conductance, node_list = build_conductance_matrix_from_graph(dilated)
         for inlet_pressure_pa in inlet_pressures:
@@ -397,3 +481,9 @@ def run_arteriole_dilation_pressure_sweep(
         f"-> {csv_path}"
     )
     return {"results": results, "csv_path": str(csv_path)}
+
+
+# stages.py still imports the capillary sweep from this module; the
+# implementation lives in capillary.py. Lazy-safe: capillary only imports
+# back into this module inside the sweep function.
+from .capillary import run_capillary_dilation_pressure_sweep  # noqa: E402,F401
