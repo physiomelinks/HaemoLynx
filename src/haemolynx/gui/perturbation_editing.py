@@ -42,6 +42,7 @@ from haemolynx.haemodynamics.perturbations import (
 )
 
 __all__ = [
+    "ALWAYS_VISIBLE_TAB_SETTINGS",
     "EDITOR_SETTINGS",
     "PERTURBATION_TYPES",
     "UNCHOSEN",
@@ -58,12 +59,23 @@ __all__ = [
     "set_type",
     "summary",
     "to_settings",
+    "visible_tab_settings",
 ]
 
 #: The type an entry has before a user has chosen one, and the one that does
 #: nothing. A new row is this, so pressing "+" adds a perturbation that runs
 #: nothing until it is told what to be.
 UNCHOSEN = "none"
+
+#: Ordinary form rows on the Perturbations tab. Everything else under
+#: "Perturbation runs" is either a type's option (revealed only when that type
+#: is chosen) or a leftover always-on sweep flag the whole-brain example still
+#: reads from its config -- neither belongs as a permanent tab row.
+ALWAYS_VISIBLE_TAB_SETTINGS: tuple[str, ...] = (
+    "run_perturbations",
+    "perturbations",
+    "perturbation_output_dir",
+)
 
 
 def rows_for_type(perturbation_type: Any) -> tuple[str, ...]:
@@ -89,6 +101,19 @@ def _editor_settings() -> tuple[str, ...]:
 
 #: Every setting an entry could show, over all types.
 EDITOR_SETTINGS: tuple[str, ...] = _editor_settings()
+
+
+def visible_tab_settings(names: Sequence[str]) -> tuple[str, ...]:
+    """*names* kept as ordinary Perturbations-tab rows, in the given order.
+
+    The stage still *claims* the whole Perturbation-runs section so Field
+    objects exist for the editor to clone, but the dilation/pressure ranges
+    and the brain-script sweep flag must not sit on the tab as always-on
+    controls -- they appear only when a ``pericyte_dilation_sweep`` entry is
+    chosen (or in the brain example's own config).
+    """
+    keep = set(ALWAYS_VISIBLE_TAB_SETTINGS)
+    return tuple(name for name in names if name in keep)
 
 
 def hidden_for_type(perturbation_type: Any) -> tuple[str, ...]:
@@ -182,9 +207,9 @@ def set_type(
 ) -> list[dict[str, Any]]:
     """Change one entry's type, dropping the overrides it no longer reads.
 
-    Keeping them would leave a `pressure_sweep` entry carrying an arteriole
-    scale that nothing applies -- reported as an unused override, when what
-    actually happened is that the user changed their mind.
+    Keeping them would leave a `pericyte_dilation_sweep` entry carrying an
+    arteriole scale that nothing applies -- reported as an unused override,
+    when what actually happened is that the user changed their mind.
     """
     keep = set(rows_for_type(perturbation_type))
     kept = _normalised(entries)

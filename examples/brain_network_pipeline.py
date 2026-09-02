@@ -5,6 +5,12 @@ Runs ``haemolynx.pipeline`` exactly as ``resistance_network_pipeline.py`` does,
 then sweeps pericyte dilation against inlet pressure over the resulting network
 and plots the flow and resistance curves.
 
+The napari panel offers the same combined sweep as a
+``pressure_and_pericyte_sweep`` perturbation (and separate pressure-only /
+dilation-only types). This script still uses the always-on
+``run_pericyte_dilation_sweep`` flag for the post-step, so a CLI brain run does
+not need a ``perturbations`` list.
+
 Every setting lives in ``brain_pipeline_config.yaml``, described by
 ``brain_pipeline_schema.py`` -- the standard pipeline's settings plus the
 sweep's. Change a value there rather than editing this script::

@@ -1510,12 +1510,15 @@ SCHEMA = Schema(
         # ------------------------------------------------------------------
         # Perturbation runs
         #
-        # What to re-solve the finished network for. These were declared
-        # beside the whole-brain example, which meant the napari panel --
-        # which builds its form from this schema alone -- could not show them
-        # at all. None of them carries `requires`: whether a sweep runs is
-        # about to be decided by a perturbation's type, and a prerequisite can
-        # only be a bool.
+        # What to re-solve the finished network for. The napari panel shows
+        # only `run_perturbations` / `perturbations` / `perturbation_output_dir`
+        # as ordinary rows; sweep ranges and pericyte/constriction knobs are
+        # options of a typed perturbation entry (see SETTINGS_FOR_TYPE), not
+        # always-on tab settings. `run_pericyte_dilation_sweep` and
+        # `sweep_output_dir` remain for the whole-brain example script, which
+        # still runs the combined dilation×pressure sweep as a post-step.
+        # A prerequisite can only be a bool, so whether a sweep runs is
+        # decided by a perturbation's type (or by the brain script's flag).
         # ------------------------------------------------------------------
         Setting(
             name="run_perturbations",
@@ -1549,8 +1552,12 @@ SCHEMA = Schema(
         Setting(
             name="run_pericyte_dilation_sweep",
             kind="bool",
-            default=True,
-            help="Sweep pericyte dilation against inlet pressure after the pipeline run",
+            default=False,
+            help=(
+                "After the pipeline, sweep pericyte dilation against inlet "
+                "pressure (whole-brain example script only; prefer a "
+                "pericyte_dilation_sweep perturbation in the panel)"
+            ),
             section=_PERTURBATION_RUNS,
         ),
         Setting(
@@ -1614,7 +1621,10 @@ SCHEMA = Schema(
             name="sweep_output_dir",
             kind="path",
             default=f"{_OUTPUTS}/pericyte_dilation_sweep",
-            help="Write the sweep CSV and its curves here",
+            help=(
+                "Write the brain-script sweep CSV and curves here "
+                "(a pericyte_dilation_sweep perturbation writes beside itself)"
+            ),
             section=_PERTURBATION_RUNS,
         ),
     ],

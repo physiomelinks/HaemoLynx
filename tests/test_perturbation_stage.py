@@ -205,7 +205,21 @@ PERICYTE_TONE = {
         "constriction_by_branch_order": {"Art1": 1.0, "B01": 0.5, "Ven1": 1.0},
     },
 }
-PRESSURE_SWEEP = {"name": "pressure", "type": "pressure_sweep", "overrides": {}}
+DILATION_SWEEP = {
+    "name": "dilation_only",
+    "type": "pericyte_dilation_sweep",
+    "overrides": {},
+}
+PRESSURE_SWEEP = {
+    "name": "pressure_only",
+    "type": "pressure_sweep",
+    "overrides": {},
+}
+PRESSURE_AND_PERICYTE_SWEEP = {
+    "name": "dilation_and_pressure",
+    "type": "pressure_and_pericyte_sweep",
+    "overrides": {},
+}
 NO_OP = {"name": "placeholder", "type": "none", "overrides": {}}
 
 #: One worked entry per type, keyed by the type it exercises. What the guards
@@ -216,6 +230,8 @@ NO_OP = {"name": "placeholder", "type": "none", "overrides": {}}
 ENTRY_FOR_TYPE: dict[str, dict] = {
     "none": NO_OP,
     "pressure_sweep": PRESSURE_SWEEP,
+    "pressure_and_pericyte_sweep": PRESSURE_AND_PERICYTE_SWEEP,
+    "pericyte_dilation_sweep": DILATION_SWEEP,
     "arteriole_diameter_change": ARTERIOLE_DILATION,
     "pericyte_diameter_change": PERICYTE_TONE,
 }
@@ -306,12 +322,30 @@ def test_each_type_writes_its_own_directory_and_files(tmp_path, perturbation_typ
     assert not list(result.output_dir.glob("*.vtp"))
 
 
-def test_a_pressure_sweep_writes_its_curves_beside_its_csv(tmp_path):
-    run = _run(tmp_path, [PRESSURE_SWEEP])
+def test_a_pressure_and_pericyte_sweep_writes_its_combined_csv(tmp_path):
+    run = _run(tmp_path, [PRESSURE_AND_PERICYTE_SWEEP])
 
     written = {path.name for path in run.results[0].output_dir.iterdir()}
     assert "pericyte_dilation_pressure_sweep.csv" in written
     assert any(name.endswith(".png") for name in written), "no curves were drawn"
+
+
+def test_a_pericyte_only_sweep_writes_its_dilation_csv(tmp_path):
+    run = _run(tmp_path, [DILATION_SWEEP])
+
+    written = {path.name for path in run.results[0].output_dir.iterdir()}
+    assert "pericyte_dilation_sweep.csv" in written
+    summary = run.results[0].summary
+    # Fixed pressure: one pressure column value across the dilation axis.
+    assert summary["sweep_points"] == 2  # min=1, max=2, step=1 from _settings
+
+
+def test_a_pressure_only_sweep_writes_its_pressure_csv(tmp_path):
+    run = _run(tmp_path, [PRESSURE_SWEEP])
+
+    written = {path.name for path in run.results[0].output_dir.iterdir()}
+    assert "inlet_pressure_sweep.csv" in written
+    assert run.results[0].summary["sweep_points"] == 2  # 4500 and 5000
 
 
 def test_the_summary_says_what_it_did_and_what_it_did_it_to(tmp_path):

@@ -40,6 +40,9 @@ import numpy as np
 __all__ = [
     "INCOMPARABLE_OVERRIDES",
     "PERTURBATION_TYPES",
+    "PERICYTE_CONSTRICTION_SETTINGS",
+    "PERICYTE_DILATION_SWEEP_SETTINGS",
+    "PRESSURE_SWEEP_SETTINGS",
     "SETTINGS_FOR_TYPE",
     "DEFAULT_PERTURBATION_DIRNAME",
     "PerturbationSpec",
@@ -57,8 +60,43 @@ __all__ = [
 PERTURBATION_TYPES: tuple[str, ...] = (
     "none",
     "pressure_sweep",
+    "pressure_and_pericyte_sweep",
+    "pericyte_dilation_sweep",
     "arteriole_diameter_change",
     "pericyte_diameter_change",
+)
+
+#: Settings that configure pericyte / constriction modelling. Declared under
+#: Perturbation runs (not Diameters): they are options of a pericyte-based
+#: perturbation, not of the baseline diameter model.
+PERICYTE_CONSTRICTION_SETTINGS: tuple[str, ...] = (
+    "do_pericyte_construction",
+    "constriction_by_branch_order",
+    "constriction_length_um",
+    "constriction_spacing_um",
+    "use_pericyte_mask_constriction",
+    "pericyte_mask_path",
+    "pericyte_mask_h5_dataset_name",
+    "pericyte_max_assignment_distance_um",
+    "pericyte_min_diameter_um",
+    "pericyte_max_diameter_um",
+    "use_probabilistic_pericyte_constriction",
+    "pericyte_constriction_probability",
+    "pericyte_constriction_seed",
+)
+
+#: Dilation-percent axes for a pericyte dilation sweep.
+PERICYTE_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
+    "pericyte_dilation_min_percent",
+    "pericyte_dilation_max_percent",
+    "pericyte_dilation_step_percent",
+)
+
+#: Inlet-pressure axes for a pressure sweep.
+PRESSURE_SWEEP_SETTINGS: tuple[str, ...] = (
+    "inlet_pressure_min_pa",
+    "inlet_pressure_max_pa",
+    "inlet_pressure_step_pa",
 )
 
 #: Which settings each type reads. This is the table the panel shows rows from
@@ -66,26 +104,14 @@ PERTURBATION_TYPES: tuple[str, ...] = (
 #: greyed out -- and what tells a user that an override is doing nothing.
 SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     "none": (),
-    "pressure_sweep": (
-        "pericyte_dilation_min_percent",
-        "pericyte_dilation_max_percent",
-        "pericyte_dilation_step_percent",
-        "inlet_pressure_min_pa",
-        "inlet_pressure_max_pa",
-        "inlet_pressure_step_pa",
+    "pressure_sweep": PRESSURE_SWEEP_SETTINGS,
+    "pressure_and_pericyte_sweep": (
+        *PERICYTE_DILATION_SWEEP_SETTINGS,
+        *PRESSURE_SWEEP_SETTINGS,
     ),
+    "pericyte_dilation_sweep": PERICYTE_DILATION_SWEEP_SETTINGS,
     "arteriole_diameter_change": ("arteriole_diameter_scale",),
-    "pericyte_diameter_change": (
-        "do_pericyte_construction",
-        "constriction_by_branch_order",
-        "constriction_length_um",
-        "constriction_spacing_um",
-        "use_pericyte_mask_constriction",
-        "pericyte_mask_path",
-        "pericyte_mask_h5_dataset_name",
-        "use_probabilistic_pericyte_constriction",
-        "pericyte_constriction_probability",
-    ),
+    "pericyte_diameter_change": PERICYTE_CONSTRICTION_SETTINGS,
 }
 
 #: Settings a perturbation may not override, because changing one of them

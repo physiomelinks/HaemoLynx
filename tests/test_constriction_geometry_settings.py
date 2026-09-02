@@ -1,12 +1,13 @@
 """One declared name for the constriction geometry, read by run and sweep alike.
 
 `constriction_length_um` and `constriction_spacing_um` are declared in the
-`Diameters and pericytes` section. `pericyte_sweep.py` read them under those
-names; `apply.py` -- which is what the main run goes through -- read
-`constriction_length` and `constriction_spacing`, names no schema has, so they
-always fell through to `DIAMETER_DEFAULTS`. A config setting the declared name
-therefore moved the dilation sweep's constrictions and silently not the run's,
-and the two halves of one run disagreed about how long a constriction is.
+`Diameters and pericytes` section (their panel rows live on Perturbations).
+`pericyte_sweep.py` read them under those names; `apply.py` -- which is what
+the main run goes through -- read `constriction_length` and
+`constriction_spacing`, names no schema has, so they always fell through to
+`DIAMETER_DEFAULTS`. A config setting the declared name therefore moved the
+dilation sweep's constrictions and silently not the run's, and the two halves
+of one run disagreed about how long a constriction is.
 
 These tests pin the property that was broken: the declared setting has to reach
 the resistances the main run produces.

@@ -1,6 +1,6 @@
 """Pericyte dilation and inlet-pressure sweeps over a vascular network.
 
-Repeatedly re-solves one network while dilating its vessels and varying the
+Repeatedly re-solves one network while dilating its vessels and/or varying the
 inlet pressure, producing the flow and equivalent-resistance curves used to
 compare pericyte tone between conditions.
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 import csv
 import logging
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -139,6 +139,32 @@ def dilate_graph_diameters(
     return dilated
 
 
+def _dilation_percents(settings: Mapping[str, Any], *, sweep: bool) -> Sequence[int]:
+    """Percents to dilate by, or a single 0% when the sweep is pressure-only."""
+    if not sweep:
+        return (0,)
+    return tuple(
+        range(
+            int(settings["pericyte_dilation_min_percent"]),
+            int(settings["pericyte_dilation_max_percent"]) + 1,
+            int(settings["pericyte_dilation_step_percent"]),
+        )
+    )
+
+
+def _inlet_pressures(settings: Mapping[str, Any], *, sweep: bool) -> Sequence[int]:
+    """Inlet pressures to solve at, or the run's fixed ``inlet_p_bc`` alone."""
+    if not sweep:
+        return (int(round(float(settings["inlet_p_bc"]))),)
+    return tuple(
+        range(
+            int(settings["inlet_pressure_min_pa"]),
+            int(settings["inlet_pressure_max_pa"]) + 1,
+            int(settings["inlet_pressure_step_pa"]),
+        )
+    )
+
+
 def run_pericyte_dilation_pressure_sweep(
     G: nx.MultiGraph,
     settings: Mapping[str, Any],
@@ -146,14 +172,25 @@ def run_pericyte_dilation_pressure_sweep(
     inlet_nodes: list[int],
     outlet_nodes: list[int],
     output_dir: Path | str,
+    sweep_dilation: bool = True,
+    sweep_pressure: bool = True,
 ) -> dict[str, Any]:
-    """Sweep pericyte dilation against inlet pressure, writing a CSV of curves.
+    """Sweep dilation and/or inlet pressure, writing a CSV of curves.
 
-    Reads its sweep ranges from *settings* — ``pericyte_dilation_{min,max,step}_percent``
-    and ``inlet_pressure_{min,max,step}_pa`` — along with the diameter table,
-    outlet pressure and constriction geometry, so the caller states the network
-    and where to write and nothing else.
+    *sweep_dilation* and *sweep_pressure* choose which axes move:
+
+    * both True — the historical combined sweep (dilation × pressure)
+    * dilation only — pericyte tone at the run's fixed ``inlet_p_bc``
+    * pressure only — inlet pressure on the undilated network
+
+    Reads ranges from *settings* when the matching axis is swept, along with
+    the diameter table, outlet pressure and constriction geometry.
     """
+    if not sweep_dilation and not sweep_pressure:
+        raise ValueError(
+            "A sweep must vary dilation, inlet pressure, or both; got neither."
+        )
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -168,16 +205,8 @@ def run_pericyte_dilation_pressure_sweep(
     custom_edges = settings.get("custom_edges") or []
     outlet_pressure_pa = float(settings["outlet_p_bc"])
 
-    dilation_values = range(
-        int(settings["pericyte_dilation_min_percent"]),
-        int(settings["pericyte_dilation_max_percent"]) + 1,
-        int(settings["pericyte_dilation_step_percent"]),
-    )
-    inlet_pressures = range(
-        int(settings["inlet_pressure_min_pa"]),
-        int(settings["inlet_pressure_max_pa"]) + 1,
-        int(settings["inlet_pressure_step_pa"]),
-    )
+    dilation_values = _dilation_percents(settings, sweep=sweep_dilation)
+    inlet_pressures = _inlet_pressures(settings, sweep=sweep_pressure)
 
     results: list[dict[str, Any]] = []
     for dilation_percent in dilation_values:
@@ -225,10 +254,20 @@ def run_pericyte_dilation_pressure_sweep(
                 }
             )
 
-    csv_path = write_sweep_csv(results, output_dir / "pericyte_dilation_pressure_sweep.csv")
+    if sweep_dilation and sweep_pressure:
+        csv_name = "pericyte_dilation_pressure_sweep.csv"
+        label = "Pericyte dilation x pressure sweep"
+    elif sweep_dilation:
+        csv_name = "pericyte_dilation_sweep.csv"
+        label = "Pericyte dilation sweep"
+    else:
+        csv_name = "inlet_pressure_sweep.csv"
+        label = "Inlet pressure sweep"
+
+    csv_path = write_sweep_csv(results, output_dir / csv_name)
     logger.info(
-        f"Pericyte dilation sweep: {len(results)} points "
-        f"({len(list(dilation_values))} dilations x {len(list(inlet_pressures))} pressures) "
+        f"{label}: {len(results)} points "
+        f"({len(dilation_values)} dilations x {len(inlet_pressures)} pressures) "
         f"-> {csv_path}"
     )
     return {"results": results, "csv_path": str(csv_path)}

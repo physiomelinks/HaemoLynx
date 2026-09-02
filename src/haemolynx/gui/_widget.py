@@ -2008,6 +2008,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         set_type,
         summary,
         to_settings,
+        visible_tab_settings,
     )
 
     #: The one row the list actually travels in. Everything below edits this.
@@ -2219,7 +2220,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(stage_summary.native)
-        flat = [name for name in names if name in rows]
+        flat = [name for name in visible_tab_settings(names) if name in rows]
         if flat:
             layout.addWidget(
                 Container(widgets=[rows[name] for name in flat], labels=True).native

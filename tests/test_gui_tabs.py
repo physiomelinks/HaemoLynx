@@ -165,10 +165,24 @@ def test_the_haemodynamics_still_gets_its_whole_section():
 
 
 def test_the_whole_section_is_on_the_stage_that_hands_it_over():
-    """One tab for one group: the settings and the stage reading them agree."""
+    """One tab for one group, except settings retabbed by name for the panel.
+
+    Pericyte / constriction knobs stay in the Diameters schema section so
+    apply.py still finds them, but `STAGES` claims them for Perturbations so
+    they are not always-on Diameters rows.
+    """
+    from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
+
     owner = assign_to_stages(SCHEMA)
-    tabs = {owner[name] for name in SCHEMA.section_names(DIAMETERS_AND_PERICYTES)}
+    retabbed = set(PERICYTE_CONSTRICTION_SETTINGS)
+    tabs = {
+        owner[name]
+        for name in SCHEMA.section_names(DIAMETERS_AND_PERICYTES)
+        if name not in retabbed
+    }
     assert tabs == {"5. Diameters"}
+    for name in retabbed:
+        assert owner[name] == "7. Perturbations", name
 
 
 # --- the stages themselves ---------------------------------------------------
@@ -346,42 +360,68 @@ def test_a_tab_carries_the_rows_for_its_settings():
     }
 
 
-def test_the_blood_and_pericyte_settings_are_on_the_stage_that_reads_them():
-    """`assign_diameters` is what hands them to the haemodynamics, so tab 5."""
+def test_the_blood_settings_stay_on_the_diameters_tab():
+    """Viscosity and measured diameters belong with the baseline model."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     shown = {field.name for field in tabs["5. Diameters"].fields}
     for name in (
         "viscosity_law",
         "diameter_basis",
         "haematocrit",
-        "do_pericyte_construction",
         "run_pericyte_resistance_comparison",
-        "constriction_by_branch_order",
+        "arteriole_diameter_scale",
     ):
         assert name in shown, f"{name} is not on the Diameters tab"
 
 
-def test_the_perturbations_tab_shows_the_sweep_settings():
-    """They were declared beside an example, so the panel could not show them.
+def test_pericyte_constriction_settings_are_not_on_the_diameters_tab():
+    """They configure a typed perturbation, not the baseline diameter model."""
+    from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
+    from haemolynx.pipeline import progress as progress_module
 
-    The panel builds its form from `default_schema()` alone; a setting only
-    `brain_pipeline_schema` knew about had no row anywhere.
+    assert tuple(PERICYTE_CONSTRICTION_SETTINGS) == (
+        progress_module._PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB
+    ), "progress.py's retab list drifted from PERICYTE_CONSTRICTION_SETTINGS"
+
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    diameters = {field.name for field in tabs["5. Diameters"].fields}
+    perturbations = {field.name for field in tabs["7. Perturbations"].fields}
+    for name in PERICYTE_CONSTRICTION_SETTINGS:
+        assert name not in diameters, f"{name} is still on Diameters"
+        assert name in perturbations, f"{name} is not claimed by Perturbations"
+
+
+def test_the_perturbations_tab_shows_only_the_always_on_run_settings():
+    """Sweep ranges are a type's options, not permanent form rows.
+
+    They stay declared under Perturbation runs so Field objects exist for the
+    editor and defaults remain in the schema, but the tab itself only shows
+    whether to run perturbations, the list, and where to write them.
     """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    shown = {field.name for field in tabs["7. Perturbations"].fields}
-    assert shown == {
-        "run_perturbations",
-        "perturbations",
-        "perturbation_output_dir",
+    claimed = {field.name for field in tabs["7. Perturbations"].fields}
+    # Claimed by the stage (so unassigned stays empty and the editor can clone
+    # Field objects), but not shown as ordinary rows -- see
+    # gui.perturbation_editing.visible_tab_settings.
+    from haemolynx.gui.perturbation_editing import (
+        ALWAYS_VISIBLE_TAB_SETTINGS,
+        EDITOR_SETTINGS,
+        visible_tab_settings,
+    )
+
+    assert set(visible_tab_settings(sorted(claimed))) == set(ALWAYS_VISIBLE_TAB_SETTINGS)
+    for name in ALWAYS_VISIBLE_TAB_SETTINGS:
+        assert name in claimed
+    for name in EDITOR_SETTINGS:
+        if name in claimed:
+            assert name not in ALWAYS_VISIBLE_TAB_SETTINGS
+    for name in (
         "run_pericyte_dilation_sweep",
         "pericyte_dilation_min_percent",
-        "pericyte_dilation_max_percent",
-        "pericyte_dilation_step_percent",
-        "inlet_pressure_min_pa",
-        "inlet_pressure_max_pa",
-        "inlet_pressure_step_pa",
         "sweep_output_dir",
-    }
+    ):
+        assert name in claimed
+        assert name not in ALWAYS_VISIBLE_TAB_SETTINGS
 
 
 def test_supplied_values_reach_the_right_tab():

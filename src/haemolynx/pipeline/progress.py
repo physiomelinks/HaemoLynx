@@ -31,6 +31,27 @@ from typing import Callable, Iterator, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
+#: Pericyte / constriction knobs declared under Diameters and pericytes in the
+#: schema (so apply.py's section_values still finds them) but claimed here so
+#: their panel rows sit on Perturbations. Keep in sync with
+#: ``PERICYTE_CONSTRICTION_SETTINGS`` in haemodynamics.perturbations -- the
+#: drift test in test_gui_tabs pins that.
+_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB: tuple[str, ...] = (
+    "do_pericyte_construction",
+    "constriction_by_branch_order",
+    "constriction_length_um",
+    "constriction_spacing_um",
+    "use_pericyte_mask_constriction",
+    "pericyte_mask_path",
+    "pericyte_mask_h5_dataset_name",
+    "pericyte_max_assignment_distance_um",
+    "pericyte_min_diameter_um",
+    "pericyte_max_diameter_um",
+    "use_probabilistic_pericyte_constriction",
+    "pericyte_constriction_probability",
+    "pericyte_constriction_seed",
+)
+
 
 @dataclass(frozen=True)
 class Stage:
@@ -102,8 +123,8 @@ STAGES: tuple[Stage, ...] = (
         call="assign_diameters",
         title="5. Diameters",
         summary=(
-            "Branch orders, the diameter each vessel is modelled with, the "
-            "blood in it, and any pericyte constriction."
+            "Branch orders, the diameter each vessel is modelled with, and "
+            "the blood viscosity law."
         ),
         # Declared under boundary assignment, but it is branch-order
         # assignment that reads it, which happens here.
@@ -111,6 +132,8 @@ STAGES: tuple[Stage, ...] = (
         # This is the stage that reads them: it hands the whole
         # `Diameters and pericytes` section to the haemodynamics as one group
         # (see `pipeline/stages.py`), so the settings and the tab agree.
+        # Pericyte / constriction knobs live under Perturbation runs: they
+        # configure a typed perturbation, not the baseline diameter model.
         sections=("Diameters and pericytes", "FWHM diameter measurement"),
     ),
     Stage(
@@ -132,6 +155,11 @@ STAGES: tuple[Stage, ...] = (
         call="run_perturbations",
         title="7. Perturbations",
         summary="What to re-solve the finished network for.",
+        # Pericyte / constriction knobs stay in the Diameters schema section
+        # (apply.py reads that group by name) but their *rows* belong here:
+        # they are options of a typed perturbation, revealed only when one is
+        # chosen. Named claims beat the Diameters section claim below.
+        settings=_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB,
         sections=("Perturbation runs",),
     ),
     Stage(

@@ -282,6 +282,58 @@ def test_only_what_the_type_reads_is_applied():
     assert "inlet_p_bc" in spec.coerced_overrides(SCHEMA), "still read back for the report"
 
 
+def test_a_well_formed_dilation_sweep_entry_is_accepted():
+    entry = {
+        "name": "dilation_sweep",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {
+            "pericyte_dilation_min_percent": 1,
+            "pericyte_dilation_max_percent": 5,
+            "pericyte_dilation_step_percent": 1,
+        },
+    }
+    (spec,) = perturbations_from_settings({"perturbations": [entry]})
+
+    assert spec.problems == ()
+    assert spec.schema_problems(SCHEMA) == ()
+    assert spec.unused_overrides() == ()
+    assert perturbation_problems({"perturbations": [entry]}, SCHEMA) == ()
+    report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
+    assert not report.errors
+
+
+def test_a_well_formed_pressure_and_pericyte_sweep_is_accepted():
+    entry = {
+        "name": "both",
+        "type": "pressure_and_pericyte_sweep",
+        "overrides": {
+            "pericyte_dilation_min_percent": 1,
+            "pericyte_dilation_max_percent": 5,
+            "inlet_pressure_min_pa": 4500,
+            "inlet_pressure_max_pa": 5000,
+        },
+    }
+    report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
+    assert not report.errors
+
+
+def test_a_dilation_sweep_with_an_unread_override_is_rejected():
+    entry = {
+        "name": "dilation_sweep",
+        "type": "pericyte_dilation_sweep",
+        "overrides": {
+            "pericyte_dilation_min_percent": 1,
+            "inlet_pressure_min_pa": 4500,
+        },
+    }
+    (spec,) = perturbations_from_settings({"perturbations": [entry]})
+
+    assert spec.unused_overrides() == ("inlet_pressure_min_pa",)
+    report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
+    assert report.ok  # unread overrides are warnings, not errors
+    assert any("inlet_pressure_min_pa" in warning for warning in report.warnings)
+
+
 @pytest.mark.parametrize("name", INCOMPARABLE_OVERRIDES)
 def test_the_blood_model_cannot_be_perturbed(name):
     """A law that changes every resistance cannot be one arm's difference."""

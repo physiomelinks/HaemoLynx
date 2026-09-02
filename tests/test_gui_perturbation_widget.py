@@ -213,10 +213,10 @@ def test_changing_a_type_reveals_the_new_ones_options(panel):
     perturbations.add()
     perturbations.choose_type(0, A_TYPE)
 
-    perturbations.choose_type(0, "pressure_sweep")
+    perturbations.choose_type(0, "pressure_and_pericyte_sweep")
 
     editor = perturbations.editors()[0]
-    assert editor.shown == set(rows_for_type("pressure_sweep"))
+    assert editor.shown == set(rows_for_type("pressure_and_pericyte_sweep"))
     assert A_SCALE in editor.hidden
 
 
@@ -226,7 +226,7 @@ def test_each_entry_reveals_its_own_type_independently(panel):
     perturbations.add()
 
     perturbations.choose_type(0, A_TYPE)
-    perturbations.choose_type(1, "pressure_sweep")
+    perturbations.choose_type(1, "pericyte_dilation_sweep")
 
     assert A_SCALE in perturbations.editors()[0].shown
     assert A_SCALE in perturbations.editors()[1].hidden

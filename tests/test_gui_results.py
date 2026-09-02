@@ -580,7 +580,7 @@ def test_a_failure_is_named_in_the_note_and_the_others_still_drawn():
         "run_perturbations",
         a_perturbation_run(
             a_perturbation("art_dilate_20"),
-            PerturbationResult(name="broken", type="pressure_sweep",
+            PerturbationResult(name="broken", type="pericyte_dilation_sweep",
                                error="ValueError: no inlet"),
         ),
     )

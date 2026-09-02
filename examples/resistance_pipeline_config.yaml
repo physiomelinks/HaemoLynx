@@ -378,7 +378,7 @@ perturbation_runs:
   perturbations: []
   # Write each perturbation's CSVs here; leave unset for a 'perturbations' directory beside the other output  [needs run_perturbations]
   perturbation_output_dir: null
-  # Sweep pericyte dilation against inlet pressure after the pipeline run
+  # After the pipeline, sweep pericyte dilation against inlet pressure (whole-brain example script only; prefer a pericyte_dilation_sweep perturbation in the panel)
   run_pericyte_dilation_sweep: true
   # Start the dilation sweep at this percentage  [percent; range 0..100]
   pericyte_dilation_min_percent: 1
@@ -392,5 +392,5 @@ perturbation_runs:
   inlet_pressure_max_pa: 6000
   # Step the inlet-pressure sweep by this much  [Pa; range 1..]
   inlet_pressure_step_pa: 500
-  # Write the sweep CSV and its curves here
+  # Write the brain-script sweep CSV and curves here (a pericyte_dilation_sweep perturbation writes beside itself)
   sweep_output_dir: outputs/pericyte_dilation_sweep

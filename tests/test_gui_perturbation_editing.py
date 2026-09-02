@@ -35,6 +35,7 @@ if str(SRC_DIR) not in sys.path:
 yaml = pytest.importorskip("yaml")
 
 from haemolynx.gui.perturbation_editing import (  # noqa: E402
+    ALWAYS_VISIBLE_TAB_SETTINGS,
     EDITOR_SETTINGS,
     PERTURBATION_TYPES,
     UNCHOSEN,
@@ -51,6 +52,7 @@ from haemolynx.gui.perturbation_editing import (  # noqa: E402
     set_type,
     summary,
     to_settings,
+    visible_tab_settings,
 )
 from haemolynx.haemodynamics.perturbations import SETTINGS_FOR_TYPE  # noqa: E402
 from haemolynx.pipeline import default_schema  # noqa: E402
@@ -106,6 +108,29 @@ def test_every_editor_is_a_declared_setting():
 def test_no_editor_is_built_twice():
     """`pericyte_dilation_*` is read by one type; a repeat would be two rows."""
     assert len(set(EDITOR_SETTINGS)) == len(EDITOR_SETTINGS)
+
+
+def test_the_tab_keeps_only_the_always_on_run_settings():
+    """Sweep ranges and pericyte knobs are type options, not permanent rows."""
+    from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
+
+    claimed = (
+        *ALWAYS_VISIBLE_TAB_SETTINGS,
+        "run_pericyte_dilation_sweep",
+        "pericyte_dilation_min_percent",
+        "inlet_pressure_min_pa",
+        "sweep_output_dir",
+        *EDITOR_SETTINGS,
+        *PERICYTE_CONSTRICTION_SETTINGS,
+    )
+    assert visible_tab_settings(claimed) == ALWAYS_VISIBLE_TAB_SETTINGS
+    assert "pericyte_dilation_min_percent" in rows_for_type("pericyte_dilation_sweep")
+    assert "inlet_pressure_min_pa" in rows_for_type("pressure_sweep")
+    assert "inlet_pressure_min_pa" in rows_for_type("pressure_and_pericyte_sweep")
+    assert "pericyte_mask_path" in rows_for_type("pericyte_diameter_change")
+    assert "run_pericyte_dilation_sweep" not in EDITOR_SETTINGS
+    assert "sweep_output_dir" not in EDITOR_SETTINGS
+    assert "do_pericyte_construction" not in ALWAYS_VISIBLE_TAB_SETTINGS
 
 
 # --- adding and removing -----------------------------------------------------

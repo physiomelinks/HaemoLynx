@@ -1168,6 +1168,36 @@ def _perturb_one(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
             output_dir=result.output_dir,
+            sweep_dilation=False,
+            sweep_pressure=True,
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
+        curves = plot_dilation_curves(sweep["results"], result.output_dir)
+        result.outputs.extend(Path(path) for path in curves.values())
+    elif spec.type == "pressure_and_pericyte_sweep":
+        sweep = run_pericyte_dilation_pressure_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+            sweep_dilation=True,
+            sweep_pressure=True,
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
+        curves = plot_dilation_curves(sweep["results"], result.output_dir)
+        result.outputs.extend(Path(path) for path in curves.values())
+    elif spec.type == "pericyte_dilation_sweep":
+        sweep = run_pericyte_dilation_pressure_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+            sweep_dilation=True,
+            sweep_pressure=False,
         )
         result.outputs.append(Path(sweep["csv_path"]))
         summary["sweep_points"] = len(sweep["results"])
