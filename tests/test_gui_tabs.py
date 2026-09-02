@@ -473,6 +473,48 @@ def test_rows_keep_the_schema_order_within_a_tab():
     assert shown == declared
 
 
+def test_vessel_mask_settings_live_on_boundaries_not_graph():
+    """Volume-assignment masks configure Boundaries, not graph topology."""
+    owner = assign_to_stages(SCHEMA)
+    mask_names = list(SCHEMA.section_names("Vessel masks"))
+    assert mask_names[0] == "automated_vessel_assignment"
+    for name in mask_names:
+        assert owner[name] == "4. Boundaries", name
+
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    graph = {field.name for field in tabs["3. Graph"].fields}
+    boundaries = [field.name for field in tabs["4. Boundaries"].fields]
+    for name in mask_names:
+        assert name not in graph, name
+        assert name in boundaries, name
+
+    assert boundaries.index("automated_vessel_assignment") < boundaries.index(
+        "use_large_vessel_masks"
+    )
+    assert boundaries.index("use_large_vessel_masks") < boundaries.index(
+        "use_small_vessel_masks_for_boundary_assignment"
+    )
+    assert boundaries.index(
+        "use_small_vessel_masks_for_boundary_assignment"
+    ) < boundaries.index("inlet_node_selection_method")
+
+
+def test_automated_assignment_documents_that_it_overrides_manual_methods():
+    from haemolynx.gui.boundary_picking import AUTOMATED_OVERRIDES_MANUAL_NOTE
+
+    help_text = SCHEMA["automated_vessel_assignment"].help.lower()
+    assert "override" in help_text
+    assert "manual" in help_text
+    assert "override" in AUTOMATED_OVERRIDES_MANUAL_NOTE.lower()
+    assert "manual" in AUTOMATED_OVERRIDES_MANUAL_NOTE.lower()
+    assert SCHEMA["inlet_node_selection_method"].requires == (
+        "!automated_vessel_assignment",
+    )
+    assert SCHEMA["outlet_node_selection_method"].requires == (
+        "!automated_vessel_assignment",
+    )
+
+
 @pytest.mark.parametrize("title", tab_titles())
 def test_every_tab_starts_with_a_number_so_the_order_is_visible(title):
     """Tabs are numbered, not stages: a stage that opens none needs no number."""

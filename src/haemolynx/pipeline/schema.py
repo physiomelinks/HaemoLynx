@@ -151,14 +151,29 @@ SCHEMA = Schema(
             choices=AXIS_ORDERS,
         ),
         # ------------------------------------------------------------------
-        # Vessel masks
+        # Vessel masks (Boundaries tab: under automated_vessel_assignment)
         # ------------------------------------------------------------------
+        # Gate first: the Boundaries panel lists this checkbox, then the mask
+        # rows below, then manual methods. Automated assignment overrides the
+        # manual inlet/outlet methods when it is applied.
+        Setting(
+            name="automated_vessel_assignment",
+            kind="bool",
+            default=False,
+            help=(
+                "Select inlet and outlet nodes automatically from the large-vessel "
+                "masks instead of manually. When applied, automated assignment "
+                "overrides the other (manual) inlet/outlet selection methods."
+            ),
+            section=_VESSEL_MASKS,
+        ),
         Setting(
             name="use_large_vessel_masks",
             kind="bool",
             default=False,
             help="Load large arteriole and venule masks for automated inlet/outlet node assignment",
             section=_VESSEL_MASKS,
+            requires=("automated_vessel_assignment",),
         ),
         Setting(
             name="use_ilastik_large_vessel_segmentation",
@@ -418,20 +433,14 @@ SCHEMA = Schema(
             help="Write plot artifacts under this base directory",
             section=_BOUNDARY_ASSIGNMENT,
         ),
-        Setting(
-            name="automated_vessel_assignment",
-            kind="bool",
-            default=False,
-            help="Select inlet and outlet nodes automatically from the large-vessel masks instead of manually",
-            section=_BOUNDARY_ASSIGNMENT,
-            requires=("use_large_vessel_masks",),
-        ),
         # "edge_percent" is the default for the two that every run needs
         # because it is the only method that asks nothing of the dataset: it
         # takes the terminals in the first and last band of the network along
         # one axis, so an image nobody has looked at yet still gets inlets and
         # outlets. "coordinates" and "volume" describe one dataset and no
         # other, which is why they are chosen rather than defaulted to.
+        # Greyed while automated_vessel_assignment is on: that path overrides
+        # these manual inlet/outlet methods.
         Setting(
             name="inlet_node_selection_method",
             kind="choice",
@@ -439,6 +448,7 @@ SCHEMA = Schema(
             help="Choose how manual inlet nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
+            requires=("!automated_vessel_assignment",),
         ),
         Setting(
             name="outlet_node_selection_method",
@@ -447,6 +457,7 @@ SCHEMA = Schema(
             help="Choose how manual outlet nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
+            requires=("!automated_vessel_assignment",),
         ),
         Setting(
             name="arteriole_boundary_selection_method",

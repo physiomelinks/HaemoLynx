@@ -31,7 +31,9 @@ input_and_segmentation:
 # Vessel masks
 # ------------------------------------------------------------------------
 vessel_masks:
-  # Load large arteriole and venule masks for automated inlet/outlet node assignment
+  # Select inlet and outlet nodes automatically from the large-vessel masks instead of manually. When applied, automated assignment overrides the other (manual) inlet/outlet selection methods.
+  automated_vessel_assignment: false
+  # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks]
   use_ilastik_large_vessel_segmentation: false
@@ -88,11 +90,9 @@ vessel_masks:
 boundary_assignment:
   # Write plot artifacts under this base directory
   base_plot_dir: examples/plots
-  # Select inlet and outlet nodes automatically from the large-vessel masks instead of manually  [needs use_large_vessel_masks]
-  automated_vessel_assignment: false
-  # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet; needs automated_vessel_assignment off]
   inlet_node_selection_method: coordinates
-  # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet; needs automated_vessel_assignment off]
   outlet_node_selection_method: coordinates
   # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
   arteriole_boundary_selection_method: coordinates

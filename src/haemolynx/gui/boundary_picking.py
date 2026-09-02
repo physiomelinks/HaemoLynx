@@ -46,6 +46,7 @@ from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS
 from haemolynx.gui.results import PREFIX, LayerSpec, StageLayers, role_colours
 
 __all__ = [
+    "AUTOMATED_OVERRIDES_MANUAL_NOTE",
     "BC_COORDINATES",
     "BC_LAYER_NAMES",
     "BC_REGION_NAMES",
@@ -78,6 +79,14 @@ __all__ = [
     "volume_setting",
     "wanted_rows",
 ]
+
+#: Shown on the Boundaries tab between the automated mask rows and the
+#: manual role controls. Kept here so tests can assert the exact wording
+#: without importing Qt.
+AUTOMATED_OVERRIDES_MANUAL_NOTE = (
+    "When automated vessel assignment is on, it overrides the other "
+    "(manual) inlet/outlet selection methods below."
+)
 
 #: The four boundary roles, in the order a run assigns them. Taken from the
 #: selector's own table rather than restated, so a fifth role would reach the

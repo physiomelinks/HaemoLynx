@@ -168,6 +168,9 @@ def test_vessel_mask_volume_settings_exist_with_historical_defaults():
         "use_large_vessel_masks",
         "large_vessel_remove_small_opposite_attached_components",
     )
+    assert schema["use_large_vessel_masks"].requires == ("automated_vessel_assignment",)
+    assert schema["automated_vessel_assignment"].section == "Vessel masks"
+    assert "override" in schema["automated_vessel_assignment"].help.lower()
 
 
 def test_vessel_mask_volume_settings_are_not_skeleton_min_settings():

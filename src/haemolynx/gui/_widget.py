@@ -1393,6 +1393,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     from magicgui.widgets import ComboBox, Container, FloatSlider, Label, PushButton
 
     from haemolynx.gui.boundary_picking import (
+        AUTOMATED_OVERRIDES_MANUAL_NOTE,
         BC_COORDINATES,
         BC_LAYER_NAMES,
         BC_REGION_NAMES,
@@ -1832,11 +1833,28 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     def refresh_actions() -> None:
         """Show a role's controls only where its method has a use for them."""
         values = current_values()
+        automated = bool(values.get("automated_vessel_assignment"))
+        drawable = viewer.dims.ndisplay == 2
         for name, action in actions.items():
             method = str(values.get(method_setting(name)))
             useful = set(ACTIONS_FOR_METHOD.get(method, ()))
+            # Automated assignment overrides manual inlet/outlet picking.
+            overridden = automated and name in ("inlet", "outlet")
             for control in ("pick", "draw", "depth", "move", "assign", "clear"):
-                getattr(action, control).visible = control in useful
+                widget = getattr(action, control)
+                widget.visible = control in useful
+                if overridden:
+                    widget.enabled = False
+                    widget.tooltip = AUTOMATED_OVERRIDES_MANUAL_NOTE
+                elif control == "draw" and not drawable:
+                    widget.enabled = False
+                    widget.tooltip = (
+                        "napari cannot edit a Shapes layer in the "
+                        "3D view. Switch to 2D to draw a region."
+                    )
+                else:
+                    widget.enabled = True
+                    widget.tooltip = ""
             state.actions[name] = frozenset(useful)
 
     def on_settings_changed(*_args) -> None:
@@ -2030,6 +2048,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         # The band settings draw a box too, so they move the picture as much
         # as a coordinate does.
         *shared_settings(),
+        "automated_vessel_assignment",
     ):
         if _name in rows:
             rows[_name].changed.connect(on_settings_changed)
@@ -2065,12 +2084,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         wire(_name, _action.depth, on_depth_changed)
 
     def on_ndisplay(*_args) -> None:
-        drawable = viewer.dims.ndisplay == 2
-        for action in actions.values():
-            action.draw.enabled = drawable
-            action.draw.tooltip = ("" if drawable else
-                                   "napari cannot edit a Shapes layer in the "
-                                   "3D view. Switch to 2D to draw a region.")
+        # refresh_actions owns enabled for Draw (2D vs 3D and the automated
+        # inlet/outlet override).
+        refresh_actions()
 
     viewer.dims.events.ndisplay.connect(on_ndisplay)
     on_ndisplay()
@@ -2118,6 +2134,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         if rest:
             layout.addWidget(Container(widgets=[rows[n] for n in rest],
                                        labels=True).native)
+        layout.addWidget(Label(value=AUTOMATED_OVERRIDES_MANUAL_NOTE).native)
         layout.addWidget(widget.native)
         layout.addWidget(role_tabs)
         layout.addStretch(1)

@@ -128,13 +128,15 @@ STAGES: tuple[Stage, ...] = (
             "centreline_smoothing_iterations",
             "centreline_max_deviation",
         ),
-        sections=("Vessel masks",),
     ),
     Stage(
         call="assign_boundaries",
         title="4. Boundaries",
         summary="Where flow enters and leaves, and where vessel types change.",
-        sections=("Boundary assignment",),
+        # Vessel masks stay in their own schema section so build_network's
+        # section_values still finds them; the panel shows them here under
+        # automated assignment, above the manual methods.
+        sections=("Vessel masks", "Boundary assignment"),
     ),
     Stage(
         call="assign_diameters",
