@@ -21,6 +21,7 @@ import pytest
 
 from haemolynx.gui.results import (
     BOUNDARY_NODES,
+    DEFAULT_VESSEL_COLOUR,
     EDGE_COLUMNS,
     IMAGE,
     LAYER_NAMES,
@@ -30,6 +31,8 @@ from haemolynx.gui.results import (
     VESSEL_LABELS,
     VESSELS,
     ResultLayers,
+    is_ours_name,
+    perturbation_layer_names,
     available_edge_columns,
     edge_features,
     edge_polylines,
@@ -416,6 +419,190 @@ def test_every_declared_column_names_a_stage_that_exists():
 
     known = {stage.call for stage in STAGES}
     assert set(EDGE_COLUMNS.values()) <= known
+
+
+# --- one layer per perturbation ----------------------------------------------
+
+
+def solved_graph(flow: float = 1e-12) -> nx.MultiGraph:
+    """A graph as a re-solve leaves it: flows on edges, pressures on nodes."""
+    graph = a_graph()
+    for index, node_id in enumerate(graph.nodes):
+        graph.nodes[node_id]["pressure"] = 100.0 - 10.0 * index
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["resistance"] = 1e15
+        data["conductance"] = 1e-15
+        data["flow_abs"] = flow
+        data["flow_signed"] = flow
+    return graph
+
+
+def a_perturbation(name: str, flow: float = 1e-12):
+    """One `PerturbationResult`, using the real dataclass.
+
+    The real one, so a field renamed in `pipeline/stages.py` fails here rather
+    than showing an empty layer list months later.
+    """
+    from haemolynx.pipeline import PerturbationResult
+
+    return PerturbationResult(
+        name=name, type="arteriole_diameter_change", graph=solved_graph(flow)
+    )
+
+
+def a_perturbation_run(*results):
+    from haemolynx.pipeline import PerturbationRun
+
+    return PerturbationRun(output_dir=Path("outputs/perturbations"),
+                           results=list(results))
+
+
+def test_two_perturbations_give_two_distinctly_named_vessel_layers():
+    """The point of the whole stage: two answers, side by side, told apart."""
+    group = built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(a_perturbation("art_dilate_20"),
+                           a_perturbation("art_constrict_20")),
+    )
+
+    vessels = [spec.name for spec in group.layers if spec.kind == "vectors"]
+    assert vessels == [
+        perturbation_layer_names("art_dilate_20")[0],
+        perturbation_layer_names("art_constrict_20")[0],
+    ]
+    assert len(set(vessels)) == 2
+
+
+def test_each_perturbation_gets_a_nodes_layer_of_its_own():
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    assert [spec.name for spec in group.layers] == list(
+        perturbation_layer_names("art_dilate_20")
+    )
+
+
+def test_the_baseline_layers_are_untouched():
+    """A perturbation must not overwrite the run it is compared against."""
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    names = {spec.name for spec in group.layers}
+    assert VESSELS not in names
+    assert NODES not in names
+    assert VESSEL_LABELS not in names
+    assert group.recolour == ()
+
+
+def test_the_panel_goes_on_holding_the_baseline_graph():
+    """`colour_options` reads the graph this class remembers -- the baseline's.
+
+    A perturbation's graph carries the same columns here, so the check that
+    means anything is identity: the remembered graph is still the one the
+    earlier stages produced.
+    """
+    baseline = a_graph()
+    results = built(baseline)
+
+    results.stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+
+    assert results._graph is baseline
+
+
+def test_a_perturbations_layers_are_in_microns_like_every_graph_layer():
+    """Graph-derived, so already physical: scale 1, not the voxel size."""
+    group = built(voxel_size_zyx=(2.0, 1.0, 0.5)).stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    assert [spec.scale for spec in group.layers] == [(1.0, 1.0, 1.0)] * 2
+
+
+def test_a_perturbations_layers_start_hidden():
+    """Identical geometry to the baseline: a visible one just covers it."""
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    assert all(spec.visible is False for spec in group.layers)
+    assert "hidden" in group.note
+
+
+def test_the_vessels_are_coloured_by_the_same_quantity_as_the_baseline():
+    """Comparing like with like is the only thing these layers are for."""
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    vessels = spec_named(group, perturbation_layer_names("art_dilate_20")[0])
+    assert vessels.colour_by == DEFAULT_VESSEL_COLOUR["solve"]
+    assert vessels.colour_kind == "continuous"
+
+
+def test_each_perturbation_carries_its_own_numbers():
+    """Two layers built from two graphs, not two views of one."""
+    group = built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(a_perturbation("faster", flow=4e-12),
+                           a_perturbation("slower", flow=1e-12)),
+    )
+    faster = spec_named(group, perturbation_layer_names("faster")[0])
+    slower = spec_named(group, perturbation_layer_names("slower")[0])
+    assert faster.features["flow_abs"].max() == pytest.approx(4e-12)
+    assert slower.features["flow_abs"].max() == pytest.approx(1e-12)
+
+
+def test_the_nodes_layer_carries_that_perturbations_pressures():
+    """`set_edge_flows` writes them onto the graph; there is no Solution here."""
+    group = built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
+    )
+    nodes = spec_named(group, perturbation_layer_names("art_dilate_20")[1])
+    assert nodes.colour_by == "pressure"
+    assert nodes.features["pressure"].tolist() == [100.0, 90.0, 80.0, 70.0]
+
+
+def test_a_perturbation_with_no_network_gets_no_layer():
+    """`type: none` does nothing, so there is nothing to draw."""
+    from haemolynx.pipeline import PerturbationResult
+
+    group = built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(PerturbationResult(name="off", type="none")),
+    )
+    assert group.layers == ()
+    assert "No perturbation produced a network" in group.note
+
+
+def test_a_failure_is_named_in_the_note_and_the_others_still_drawn():
+    from haemolynx.pipeline import PerturbationResult
+
+    group = built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(
+            a_perturbation("art_dilate_20"),
+            PerturbationResult(name="broken", type="pressure_sweep",
+                               error="ValueError: no inlet"),
+        ),
+    )
+    assert len(group.layers) == 2
+    assert "broken" in group.note
+    assert "no inlet" in group.note
+
+
+def test_a_perturbation_layer_is_ours_without_being_in_the_declared_set():
+    """`LAYER_NAMES` cannot enumerate a name a config invents; the prefix can."""
+    for name in perturbation_layer_names("art_dilate_20"):
+        assert is_ours_name(name)
+        assert name not in LAYER_NAMES
+    assert all(is_ours_name(name) for name in LAYER_NAMES)
+    assert not is_ours_name("art_dilate_20 vessels")
+
+
+def test_a_perturbations_name_is_all_that_separates_its_layers_from_ours():
+    """So a perturbation called "vessels" cannot become the baseline's layer."""
+    vessels, nodes = perturbation_layer_names("vessels")
+    assert vessels != VESSELS
+    assert nodes != NODES
 
 
 # --- it must not need a GUI --------------------------------------------------

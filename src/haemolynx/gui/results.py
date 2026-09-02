@@ -59,11 +59,32 @@ MASK_LAYERS = {
     "small_venule_mask": f"{PREFIX}small venule mask",
 }
 
-#: Every name this module can emit, so "clear ours" knows the set.
+#: The fixed names this module emits -- one set of layers per run, whatever the
+#: settings say. It is *not* the whole set any more: a perturbation's layers are
+#: named after the perturbation, so they cannot be enumerated ahead of a run.
+#: :func:`is_ours_name` is the question worth asking of a name, and "clear ours"
+#: asks the layer itself, through the `OURS` metadata tag it was added with.
 LAYER_NAMES = frozenset(
     {VESSELS, VESSEL_LABELS, NODES, BOUNDARY_NODES, PERICYTES, IMAGE, SKELETON}
     | set(MASK_LAYERS.values())
 )
+
+
+def is_ours_name(name: str) -> bool:
+    """Whether *name* is a name this module would give a layer.
+
+    A predicate rather than a set, because `run_perturbations` names its
+    layers after the perturbations a config asked for. Naming is still all it
+    tells you: a layer is *ours* by the metadata it was added with, which is
+    what stops "clear layers" removing a user's layer that happens to be
+    called the same thing.
+    """
+    return str(name).startswith(PREFIX)
+
+
+def perturbation_layer_names(name: str) -> tuple[str, str]:
+    """The vessels and nodes layers one perturbation gets, in that order."""
+    return (f"{PREFIX}{name} vessels", f"{PREFIX}{name} nodes")
 
 #: Per-edge columns, and the stage that first writes each. A column is offered
 #: for colouring only once the stage that fills it has run, so the dropdown
@@ -97,6 +118,11 @@ DEFAULT_VESSEL_COLOUR = {
     "build_haemodynamic_model": "resistance",
     "solve": "flow_abs",
 }
+
+#: What a perturbation's own vessels are coloured by. The same quantity the
+#: solved baseline is, so switching a perturbation on and off compares like
+#: with like -- which is the only thing these layers are for.
+PERTURBATION_COLOUR = "flow_abs"
 
 
 @dataclass(frozen=True)
@@ -656,6 +682,106 @@ class ResultLayers:
             stage="solve", title=_title_for("solve"), layers=tuple(layers), note=note
         )
 
+    def _perturbation_layers(self, result: Any) -> tuple[LayerSpec, ...]:
+        """One perturbation's own vessels and nodes, named after it.
+
+        Its own copy of the network, so the layers are built from
+        `result.graph` and the baseline this class is holding is left alone --
+        the colour-by dropdown goes on offering the baseline's columns, and the
+        baseline's own layers are not touched.
+
+        Hidden, and deliberately. A perturbation is the same geometry as the
+        baseline with different numbers on it, so a visible one lies exactly on
+        top of the vessels it is meant to be compared with and whichever was
+        added last wins. Ticking one on is the comparison.
+        """
+        graph = result.graph
+        vessels_name, nodes_name = perturbation_layer_names(result.name)
+        paths, identity = edge_polylines(graph)
+        if not paths:
+            return ()
+
+        columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
+        columns.update(edge_features(graph, EDGE_COLUMNS))
+        vectors, owner = polylines_to_vectors(paths)
+        per_segment = {
+            name: np.asarray(values)[owner] for name, values in columns.items()
+        }
+        colour_by = PERTURBATION_COLOUR if PERTURBATION_COLOUR in columns else None
+
+        layers = [
+            LayerSpec(
+                kind="vectors",
+                name=vessels_name,
+                data=vectors,
+                features=per_segment,
+                colour_by=colour_by,
+                **_colouring(per_segment, colour_by),
+                visible=False,
+                options={"vector_style": "line", "edge_width": 0.6,
+                         "out_of_slice_display": True},
+            )
+        ]
+
+        points, ids = node_points(graph)
+        if len(points):
+            # `set_edge_flows` writes `pressure` onto every node it solved, so
+            # a perturbation's pressures travel on its own graph -- there is no
+            # `Solution` to read them out of here.
+            pressures = np.asarray(
+                [
+                    float(graph.nodes[node_id].get("pressure", np.nan))
+                    for node_id in ids
+                ],
+                dtype=float,
+            )
+            layers.append(
+                LayerSpec(
+                    kind="points",
+                    name=nodes_name,
+                    data=points,
+                    features={"node_id": ids, "pressure": pressures,
+                              "degree": np.asarray(
+                                  [graph.degree(node_id) for node_id in ids],
+                                  dtype=float)},
+                    colour_by="pressure",
+                    colour_kind="continuous",
+                    contrast_limits=_limits(pressures),
+                    visible=False,
+                    options={"size": 3.0, "out_of_slice_display": True},
+                )
+            )
+        return tuple(layers)
+
+    def _from_run_perturbations(self, output: Any) -> StageLayers:
+        """One pair of layers per perturbation that produced a network.
+
+        A `none` perturbation and one that raised have no graph, so they get no
+        layers -- and the failures are what the note is mostly for.
+        """
+        results = list(getattr(output, "solved", ()) or ())
+        layers: list[LayerSpec] = []
+        for result in results:
+            layers.extend(self._perturbation_layers(result))
+
+        failures = list(getattr(output, "failures", ()) or ())
+        note = (
+            f"{len(results)} perturbation(s) re-solved; their layers are "
+            "hidden, so tick one to compare it with the baseline."
+            if results
+            else "No perturbation produced a network."
+        )
+        if failures:
+            note += " Failed: " + ", ".join(
+                f"{result.name} ({result.error})" for result in failures
+            )
+        return StageLayers(
+            stage="run_perturbations",
+            title=_title_for("run_perturbations"),
+            layers=tuple(layers),
+            note=note,
+        )
+
     def _from_export_results(self, _output: Any) -> StageLayers:
         return StageLayers(
             stage="export_results",
@@ -706,5 +832,6 @@ _BUILDERS = {
     "assign_diameters": ResultLayers._from_assign_diameters,
     "build_haemodynamic_model": ResultLayers._from_build_haemodynamic_model,
     "solve": ResultLayers._from_solve,
+    "run_perturbations": ResultLayers._from_run_perturbations,
     "export_results": ResultLayers._from_export_results,
 }

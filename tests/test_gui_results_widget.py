@@ -34,6 +34,7 @@ from haemolynx.gui.results import (  # noqa: E402
     LayerSpec,
     ResultLayers,
     StageLayers,
+    perturbation_layer_names,
 )
 from test_gui_results import a_graph, network  # noqa: E402
 
@@ -148,6 +149,81 @@ def test_clearing_removes_only_our_layers(viewer):
 
     assert removed >= 4
     assert [layer.name for layer in viewer.layers] == [theirs.name]
+
+
+def a_perturbation_group(*names):
+    """The layers one perturbations stage would produce, for real."""
+    from test_gui_results import a_perturbation, a_perturbation_run, built
+
+    return built().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(*(a_perturbation(name) for name in names)),
+    )
+
+
+def test_each_perturbation_becomes_its_own_pair_of_layers(viewer):
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20", "art_constrict_20"))
+
+    names = {layer.name for layer in viewer.layers}
+    assert perturbation_layer_names("art_dilate_20")[0] in names
+    assert perturbation_layer_names("art_constrict_20")[0] in names
+    assert isinstance(
+        viewer.layers[perturbation_layer_names("art_dilate_20")[0]],
+        napari.layers.Vectors,
+    )
+
+
+def test_the_baselines_own_layers_survive_a_perturbation(viewer):
+    """The comparison only exists if what it is compared against is still there."""
+    for group in a_run():
+        _apply_layers(viewer, group)
+    baseline = viewer.layers[VESSELS]
+    baseline_data = baseline.data.copy()
+
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+
+    assert viewer.layers[VESSELS] is baseline
+    assert np.array_equal(viewer.layers[VESSELS].data, baseline_data)
+
+
+def test_a_perturbation_layer_lands_in_microns(viewer):
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    for name in perturbation_layer_names("art_dilate_20"):
+        assert tuple(viewer.layers[name].scale) == (1.0, 1.0, 1.0)
+
+
+def test_a_users_layer_of_the_same_name_is_never_overwritten(viewer):
+    """A perturbation's name comes from a config, so a collision is plausible."""
+    vessels_name = perturbation_layer_names("art_dilate_20")[0]
+    mine = viewer.add_points(np.zeros((3, 3)), name=vessels_name)
+    mine_data = mine.data.copy()
+
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+
+    assert viewer.layers[vessels_name] is mine
+    assert np.array_equal(viewer.layers[vessels_name].data, mine_data)
+    assert f"{vessels_name} (HaemoLynx)" in {layer.name for layer in viewer.layers}
+
+
+def test_clearing_takes_the_perturbation_layers_with_it(viewer):
+    """They are ours by metadata, which is what "clear ours" reads -- and they
+    are not in `LAYER_NAMES`, which cannot list a name a config invents."""
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    assert perturbation_layer_names("art_dilate_20")[0] in viewer.layers
+
+    removed = _clear_our_layers(viewer)
+
+    assert removed == 2
+    assert len(viewer.layers) == 0
+
+
+def test_a_perturbation_layer_is_added_hidden(viewer):
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    for name in perturbation_layer_names("art_dilate_20"):
+        assert viewer.layers[name].visible is False
 
 
 def test_a_layer_that_changed_type_is_replaced(viewer):
