@@ -193,8 +193,25 @@ Steps 1–2 and 3–7 are independent of each other, which is the point of the n
 
 **How — two different rules for z and for y/x.** They are not one 3D centroid.
 
-*Axial (z)* comes from the QC record's `peak_slice`, which `preprocess_cb.py` derived from tissue
-extent per slice. Nothing is recomputed here; the value is read.
+*Axial (z)* comes from the QC record's `peak_slice`. Nothing is recomputed here — the value is
+read out of the specimen's preprocessing JSON, and `place_roi` never opens the volume to check it.
+
+It was derived once, in `diagnose_z`, as **stage 2 of 6 of preprocessing** — on the raw extracted
+lectin channel, before background subtraction and before any filtering, so the peak reflects the
+acquisition rather than anything the pipeline has since done to it. The rule is a **per-slice
+brightness profile**, not a measure of tissue area:
+
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | For each slice $z$, take the 99th percentile of its intensities, giving $s_z$ | p99 | A slice's mean is dominated by background; the p99 tracks the brightest labelled structure in that slice, which is what "where is the organ" has to mean before anything is segmented | **On** | `preprocess_cb.py:163` |
+| 2 | Also record the per-slice median as a background trace | p50 | Stored in the QC record as `background_p50_range` so a rising noise floor is visible; it does **not** enter the peak | **On**, diagnostic only | `preprocess_cb.py:164` |
+| 3 | Smooth $s_z$ along $z$ with a moving average | $k=\max(3,\lfloor n/20\rfloor)$, edges held | Un-smoothed, the argmax lands on whichever single slice happened to catch the brightest vessel. At $n=435$ this is $k=21$ slices $\approx$ 39 µm, so the peak is a regional maximum rather than one lucky plane | **On** | `preprocess_cb.py:167` |
+| 4 | Take $\text{peak\_slice}=\arg\max_z \hat{s}_z$ | — | This is the returned value, and the only part of `diagnose_z` that ROI placement uses | **On** | `preprocess_cb.py:168` |
+| 5 | Classify the peak's depth fraction into a verdict | $<0.15$, $>0.85$, else | Separates real axial attenuation from a tissue block sitting mid-stack. The second must **not** be bleach-corrected: scaling up the sparse end slices promotes their background noise to vessel intensity | **On**, but **advice to the operator only** — nothing downstream branches on it | `preprocess_cb.py:172` |
+
+So the peak slice is the brightest *region* of the stack, and the verdict string
+`"hump / tissue-extent dominated"` names one of three profile shapes — it is not the method by
+which the peak was found.
 
 *Lateral (y, x)* comes from `tissue_centroid_yx` on channel 0, subsampled (4, 2, 2): take the
 **maximum-intensity projection along z**, threshold at the **99th percentile**, then take the
