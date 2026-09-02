@@ -45,6 +45,10 @@ class Stage:
     settings: tuple[str, ...] = ()
     #: Whole schema sections it steers, claimed after every named claim.
     sections: tuple[str, ...] = ()
+    #: The tab this stage's settings appear on. None means a tab of its own,
+    #: named `title`. A stage naming another stage's tab contributes its rows
+    #: to that tab and opens no tab of its own.
+    tab: Optional[str] = None
 
 
 #: Every stage of a run, in the order :func:`run_pipeline_stages` runs them.

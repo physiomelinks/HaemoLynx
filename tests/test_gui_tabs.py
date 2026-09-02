@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from haemolynx.gui.tabs import STAGES, Stage, assign_to_stages, tabs_for, unassigned
+from haemolynx.gui.tabs import (
+    STAGES,
+    Stage,
+    assign_to_stages,
+    tab_titles,
+    tabs_for,
+    unassigned,
+)
 from haemolynx.parsers import Schema, Setting
 from haemolynx.pipeline import default_schema
 
@@ -81,6 +88,20 @@ def test_tab_titles_are_unique():
     assert len(set(titles)) == len(titles)
 
 
+def test_the_tabs_read_in_pipeline_order():
+    """What the panel actually shows, pinned: the numbering is the running order."""
+    assert list(tab_titles()) == [
+        "1. Input",
+        "2. Skeletonise",
+        "3. Graph",
+        "4. Boundaries",
+        "5. Diameters",
+        "6. Haemodynamics",
+        "7. Solve",
+        "8. Export",
+    ]
+
+
 # --- how claims are resolved -------------------------------------------------
 
 
@@ -115,6 +136,64 @@ def test_the_first_stage_to_name_a_setting_owns_it(monkeypatch):
     monkeypatch.setattr("haemolynx.gui.tabs.STAGES", stages)
 
     assert assign_to_stages(_two_stage_schema())["solver_pressure"] == "First"
+
+
+def test_the_panel_opens_one_tab_per_stage_that_names_no_other():
+    """Tabs and stages are close but not one for one; `tab_titles` is the list."""
+    assert [tab.stage.title for tab in tabs_for(SCHEMA)] == list(tab_titles())
+
+
+def test_a_stage_can_put_its_rows_on_another_stages_tab(monkeypatch):
+    """`Stage.tab` is how one tab shows two stages' settings.
+
+    The stage still runs and still reports its own progress -- only its form
+    rows move, which is what lets the boundary pressures sit next to the
+    haemodynamics they belong with.
+    """
+    stages = (
+        Stage(call="a", title="1. Boundaries", summary="First.", sections=("Boundaries",)),
+        Stage(
+            call="b",
+            title="Solve",
+            summary="Second.",
+            settings=("solver_pressure",),
+            tab="1. Boundaries",
+        ),
+    )
+    monkeypatch.setattr("haemolynx.gui.tabs.STAGES", stages)
+
+    tabs = tabs_for(_two_stage_schema())
+    assert [tab.stage.title for tab in tabs] == ["1. Boundaries"]
+    assert {field.name for field in tabs[0].fields} == {
+        "shared_output_dir",
+        "boundary_method",
+        "solver_pressure",
+    }
+    assert unassigned(_two_stage_schema()) == []
+
+
+def test_a_tab_naming_no_stage_raises_rather_than_dropping_its_rows(monkeypatch):
+    """A mistyped title would take that stage's settings off the panel silently.
+
+    `unassigned` would still read empty -- the settings *are* claimed, by a
+    stage whose tab nothing draws -- so nothing else can catch this.
+    """
+    stages = (
+        Stage(call="a", title="1. Boundaries", summary="First.", sections=("Boundaries",)),
+        Stage(
+            call="b",
+            title="Solve",
+            summary="Second.",
+            settings=("solver_pressure",),
+            tab="1. Boundries",  # the typo
+        ),
+    )
+    monkeypatch.setattr("haemolynx.gui.tabs.STAGES", stages)
+
+    with pytest.raises(ValueError, match="name no tab"):
+        tabs_for(_two_stage_schema())
+    with pytest.raises(ValueError, match="name no tab"):
+        assign_to_stages(_two_stage_schema())
 
 
 def test_a_claim_for_a_setting_that_does_not_exist_is_ignored(monkeypatch):
