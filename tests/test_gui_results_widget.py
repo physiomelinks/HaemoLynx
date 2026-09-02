@@ -102,6 +102,60 @@ def test_the_features_reach_the_layer(viewer):
     assert len(vessels.features) > 0
 
 
+def test_vessel_mask_volumes_land_as_coloured_image_layers(viewer):
+    """Masks used by the run become translucent 3D Image volumes, not Labels."""
+    from haemolynx.gui.results import MASK_COLOURS, MASK_LAYERS
+
+    results = ResultLayers()
+    voxel_size_zyx = (2.0, 1.0, 0.5)
+    art = np.zeros((4, 4, 4), dtype=bool)
+    art[2, 2, 2] = True
+    ven = np.zeros((4, 4, 4), dtype=bool)
+    ven[1, 1, 1] = True
+    group = results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=tuple(reversed(voxel_size_zyx)),
+            voxel_size_zyx=voxel_size_zyx,
+        ),
+    )
+    _apply_layers(viewer, group)
+    group = results.stage_finished(
+        "build_network",
+        network(
+            a_graph(),
+            voxel_size_zyx=voxel_size_zyx,
+            large_arteriole_mask=art,
+            small_venule_mask=ven,
+        ),
+    )
+    _apply_layers(viewer, group)
+
+    art_name = MASK_LAYERS["large_arteriole_mask"]
+    ven_name = MASK_LAYERS["small_venule_mask"]
+    assert art_name in viewer.layers
+    assert ven_name in viewer.layers
+    assert MASK_LAYERS["large_venule_mask"] not in {
+        layer.name for layer in viewer.layers
+    }
+
+    art_layer = viewer.layers[art_name]
+    ven_layer = viewer.layers[ven_name]
+    assert isinstance(art_layer, napari.layers.Image)
+    assert isinstance(ven_layer, napari.layers.Image)
+    assert tuple(art_layer.scale) == voxel_size_zyx
+    assert art_layer.visible is True
+    assert art_layer.rendering == "mip"
+    assert art_layer.blending == "translucent"
+    # Colormap stops: transparent at 0, role colour at 1.
+    art_high = tuple(float(c) for c in art_layer.colormap.colors[-1])
+    ven_high = tuple(float(c) for c in ven_layer.colormap.colors[-1])
+    assert art_high == pytest.approx(MASK_COLOURS["large_arteriole_mask"], abs=1e-5)
+    assert ven_high == pytest.approx(MASK_COLOURS["small_venule_mask"], abs=1e-5)
+
+
 # --- a second run ------------------------------------------------------------
 
 

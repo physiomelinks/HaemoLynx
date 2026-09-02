@@ -59,6 +59,26 @@ MASK_LAYERS = {
     "small_venule_mask": f"{PREFIX}small venule mask",
 }
 
+#: Translucent RGBA for each mask role in 3D volume rendering (widget builds
+#: a two-stop colormap: transparent at 0, this colour at 1). Hex equivalents:
+#: large arteriole dark red ``#8C0D0D``, small arteriole light red ``#FF7373``,
+#: large venule dark green ``#0D661A``, small venule light green ``#73E673``.
+MASK_COLOURS: dict[str, tuple[float, float, float, float]] = {
+    "large_arteriole_mask": (0.55, 0.05, 0.05, 0.70),
+    "small_arteriole_mask": (1.00, 0.45, 0.45, 0.55),
+    "large_venule_mask": (0.05, 0.40, 0.10, 0.70),
+    "small_venule_mask": (0.45, 0.90, 0.45, 0.55),
+}
+
+#: Shared napari Image options for vessel-mask volumes (plus per-role colour).
+MASK_VOLUME_OPTIONS: dict[str, Any] = {
+    "blending": "translucent",
+    "opacity": 0.55,
+    "rendering": "mip",
+    "interpolation2d": "nearest",
+    "interpolation3d": "nearest",
+}
+
 #: The fixed names this module emits -- one set of layers per run, whatever the
 #: settings say. It is *not* the whole set any more: a perturbation's layers are
 #: named after the perturbation, so they cannot be enumerated ahead of a run.
@@ -163,6 +183,47 @@ class StageLayers:
     #: 3 when the first geometry arrives, so a paths layer is not hidden by the
     #: 2D slice; None leaves the viewer's own setting alone.
     ndisplay: int | None = None
+
+
+def vessel_mask_volume_layers(
+    masks: Any,
+    *,
+    voxel_size_zyx: Sequence[float],
+    visible: bool = True,
+) -> tuple[LayerSpec, ...]:
+    """3D image-volume specs for vessel masks that are actually present.
+
+    *masks* is anything with the four VesselNetwork attributes (a real
+    network, a ``SimpleNamespace``, or a mapping). A missing or ``None``
+    attribute produces no layer -- disabled / unused masks stay out of the
+    viewer. Arrays are voxel-indexed, so ``scale`` is ``voxel_size_zyx``.
+    """
+    scale = tuple(float(v) for v in voxel_size_zyx)
+    if len(scale) != 3:
+        raise ValueError(
+            f"voxel_size_zyx must be three floats (z, y, x); got {voxel_size_zyx!r}."
+        )
+    layers: list[LayerSpec] = []
+    for attribute, name in MASK_LAYERS.items():
+        if isinstance(masks, Mapping):
+            mask = masks.get(attribute)
+        else:
+            mask = getattr(masks, attribute, None)
+        if mask is None:
+            continue
+        colour = MASK_COLOURS[attribute]
+        layers.append(
+            LayerSpec(
+                kind="image",
+                name=name,
+                data=np.asarray(mask, dtype=np.float32),
+                scale=scale,  # type: ignore[arg-type]
+                contrast_limits=(0.0, 1.0),
+                visible=visible,
+                options={**MASK_VOLUME_OPTIONS, "mask_colour": colour},
+            )
+        )
+    return tuple(layers)
 
 
 # --- reading a graph ---------------------------------------------------------
@@ -561,13 +622,9 @@ class ResultLayers:
                 )
             )
 
-        for attribute, name in MASK_LAYERS.items():
-            mask = getattr(output, attribute, None)
-            if mask is not None:
-                layers.append(
-                    LayerSpec(kind="labels", name=name, data=mask,
-                              scale=self._voxel_size_zyx, visible=False)
-                )
+        layers.extend(
+            vessel_mask_volume_layers(output, voxel_size_zyx=self._voxel_size_zyx)
+        )
 
         edges = graph.number_of_edges() if graph is not None else 0
         nodes = graph.number_of_nodes() if graph is not None else 0

@@ -365,6 +365,27 @@ def _active_column(layer) -> str | None:
     return tag.get("colour_by") if isinstance(tag, dict) else None
 
 
+def _image_options_for_napari(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Napari kwargs for an Image layer, expanding our ``mask_colour`` marker.
+
+    Vessel-mask specs stay napari-free: they carry an RGBA tuple under
+    ``mask_colour``. Here that becomes a two-stop colormap (transparent at 0,
+    the role colour at 1) so binary volumes render as translucent overlays.
+    """
+    prepared = dict(options)
+    colour = prepared.pop("mask_colour", None)
+    if colour is None:
+        return prepared
+    from napari.utils.colormaps import Colormap
+
+    rgba = tuple(float(c) for c in colour)
+    prepared["colormap"] = Colormap(
+        [[0.0, 0.0, 0.0, 0.0], list(rgba)],
+        name="haemolynx_vessel_mask",
+    )
+    return prepared
+
+
 def _add_or_update(viewer, spec) -> None:
     """Add *spec*, or update the layer of ours already carrying its name."""
     import pandas as pd  # noqa: F401  (napari builds features through pandas)
@@ -389,6 +410,15 @@ def _add_or_update(viewer, spec) -> None:
             existing.data = spec.data
         if spec.features:
             existing.features = dict(spec.features)
+        if spec.kind == "image" and "mask_colour" in spec.options:
+            image_opts = _image_options_for_napari(spec.options)
+            if "colormap" in image_opts:
+                existing.colormap = image_opts["colormap"]
+            if spec.contrast_limits is not None:
+                existing.contrast_limits = spec.contrast_limits
+            for key in ("blending", "opacity", "rendering"):
+                if key in image_opts:
+                    setattr(existing, key, image_opts[key])
         _colour_layer(existing, spec.colour_by, spec.colour_kind,
                       spec.colour_cycle, spec.contrast_limits)
         _store_sweep_metadata(existing, spec)
@@ -399,10 +429,20 @@ def _add_or_update(viewer, spec) -> None:
 
     adder = getattr(viewer, f"add_{spec.kind}")
     options = dict(spec.options)
+    if spec.kind == "image":
+        options = _image_options_for_napari(options)
     if spec.features:
         options["features"] = dict(spec.features)
-    layer = adder(spec.data, name=spec.name, scale=spec.scale,
-                  visible=spec.visible, metadata={OURS: {"kind": spec.kind}}, **options)
+    add_kwargs = {
+        "name": spec.name,
+        "scale": spec.scale,
+        "visible": spec.visible,
+        "metadata": {OURS: {"kind": spec.kind}},
+        **options,
+    }
+    if spec.kind == "image" and spec.contrast_limits is not None:
+        add_kwargs.setdefault("contrast_limits", spec.contrast_limits)
+    layer = adder(spec.data, **add_kwargs)
     _colour_layer(layer, spec.colour_by, spec.colour_kind,
                   spec.colour_cycle, spec.contrast_limits)
     _store_sweep_metadata(layer, spec)

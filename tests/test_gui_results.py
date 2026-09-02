@@ -374,14 +374,89 @@ def test_the_view_is_turned_to_3d_once_when_the_first_geometry_arrives():
     assert again.ndisplay is None
 
 
-def test_masks_are_shown_but_not_switched_on():
-    group = built().stage_finished(
+def test_masks_are_shown_as_translucent_volume_layers():
+    """Enabled masks arrive as Image volumes with the role colours, switched on."""
+    from haemolynx.gui.results import MASK_COLOURS, MASK_LAYERS
+
+    art = np.zeros((4, 4, 4), dtype=bool)
+    art[1, 1, 1] = True
+    group = built(voxel_size_zyx=(2.0, 1.0, 0.5)).stage_finished(
         "build_network",
-        network(a_graph(), large_arteriole_mask=np.zeros((4, 4, 4), dtype=bool)),
+        network(
+            a_graph(),
+            voxel_size_zyx=(2.0, 1.0, 0.5),
+            large_arteriole_mask=art,
+            large_venule_mask=np.zeros((4, 4, 4), dtype=bool),
+        ),
     )
-    mask = next(spec for spec in group.layers if "arteriole mask" in spec.name)
-    assert mask.kind == "labels"
-    assert mask.visible is False
+    names = {spec.name for spec in group.layers}
+    assert MASK_LAYERS["large_arteriole_mask"] in names
+    assert MASK_LAYERS["large_venule_mask"] in names
+    assert MASK_LAYERS["small_arteriole_mask"] not in names
+    assert MASK_LAYERS["small_venule_mask"] not in names
+
+    mask = next(
+        spec for spec in group.layers
+        if spec.name == MASK_LAYERS["large_arteriole_mask"]
+    )
+    assert mask.kind == "image"
+    assert mask.visible is True
+    assert mask.scale == (2.0, 1.0, 0.5)
+    assert mask.contrast_limits == (0.0, 1.0)
+    assert mask.options["rendering"] == "mip"
+    assert mask.options["blending"] == "translucent"
+    assert mask.options["mask_colour"] == MASK_COLOURS["large_arteriole_mask"]
+    assert mask.data.dtype == np.float32
+
+
+def test_vessel_mask_volume_layers_skip_missing_and_keep_role_colours():
+    from haemolynx.gui.results import (
+        MASK_COLOURS,
+        MASK_LAYERS,
+        vessel_mask_volume_layers,
+    )
+
+    layers = vessel_mask_volume_layers(
+        {
+            "large_arteriole_mask": np.ones((2, 2, 2), dtype=bool),
+            "small_venule_mask": np.zeros((2, 2, 2), dtype=bool),
+        },
+        voxel_size_zyx=(1.5, 1.0, 0.5),
+    )
+    assert [spec.name for spec in layers] == [
+        MASK_LAYERS["large_arteriole_mask"],
+        MASK_LAYERS["small_venule_mask"],
+    ]
+    by_name = {spec.name: spec for spec in layers}
+    assert (
+        by_name[MASK_LAYERS["large_arteriole_mask"]].options["mask_colour"]
+        == MASK_COLOURS["large_arteriole_mask"]
+    )
+    assert (
+        by_name[MASK_LAYERS["small_venule_mask"]].options["mask_colour"]
+        == MASK_COLOURS["small_venule_mask"]
+    )
+    assert by_name[MASK_LAYERS["large_arteriole_mask"]].scale == (1.5, 1.0, 0.5)
+
+
+def test_mask_role_colours_are_dark_and_light_red_and_green():
+    """Large = dark, small = light; arterioles red, venules green."""
+    from haemolynx.gui.results import MASK_COLOURS
+
+    large_a = MASK_COLOURS["large_arteriole_mask"]
+    small_a = MASK_COLOURS["small_arteriole_mask"]
+    large_v = MASK_COLOURS["large_venule_mask"]
+    small_v = MASK_COLOURS["small_venule_mask"]
+    # Red channel dominates for arterioles; green for venules.
+    assert large_a[0] > large_a[1] and large_a[0] > large_a[2]
+    assert small_a[0] > small_a[1] and small_a[0] > small_a[2]
+    assert large_v[1] > large_v[0] and large_v[1] > large_v[2]
+    assert small_v[1] > small_v[0] and small_v[1] > small_v[2]
+    # Light roles are brighter (higher RGB sum) than their dark counterparts.
+    assert sum(small_a[:3]) > sum(large_a[:3])
+    assert sum(small_v[:3]) > sum(large_v[:3])
+    # Translucent enough to overlay the main image.
+    assert all(0.0 < colour[3] < 1.0 for colour in MASK_COLOURS.values())
 
 
 def test_the_hover_layer_carries_the_whole_table_and_starts_hidden():
