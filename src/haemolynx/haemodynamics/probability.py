@@ -21,6 +21,7 @@ from .constriction import (
     select_active_pericyte_indices,
     validate_active_pericyte_indices,
 )
+from .viscosity import DEFAULT_HAEMATOCRIT
 
 __all__ = [
     "is_capillary_branch_order",
@@ -131,6 +132,9 @@ def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
     constriction_probability: float = 1.0,
     active_center_indices_by_edge: dict[str, list[int]] | None = None,
     num_integration_points: int = 1000,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
     rng: np.random.Generator | None = None,
     seed: int | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
@@ -138,6 +142,10 @@ def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
 
     If ``active_center_indices_by_edge`` is provided, those fixed center indices
     are used per edge (no re-sampling). Edge keys use format ``"u|v|key"``.
+
+    ``viscosity_law``, ``haematocrit`` and ``diameter_basis`` select the
+    apparent-viscosity law the resistances are computed with; see
+    :mod:`haemolynx.haemodynamics.viscosity`.
     """
     require_enough_integration_points(num_integration_points)
     if constriction_spacing <= 0:
@@ -167,4 +175,7 @@ def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
         prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
         constriction_length=constriction_length,
         num_integration_points=num_integration_points,
+        viscosity_law=viscosity_law,
+        haematocrit=haematocrit,
+        diameter_basis=diameter_basis,
     )

@@ -239,8 +239,9 @@ reports the others).
   the resistance integral, and `apply_constriction_sites`, the only place a constricted edge's
   resistance is computed. A strategy supplies *where* the sites are (`ConstrictionSites`);
   `pericyte_mask.py` takes them from a segmented mask, `probability.py` places them periodically
-  and activates each with a probability. Note its viscosity is the uncalibrated `1/d^1.647`,
-  not the SI-pinned law in `poiseuille.py` — see the module docstring.
+  and activates each with a probability. Its viscosity is the configured law from
+  `viscosity.py`, and its resistances are in Pa·s/m³, so a constricted edge is directly
+  comparable with `poiseuille.py`'s uniform one.
 - **`haemodynamics/constriction_strategy.py`** — `set_resistances_for_constriction_strategy`, the
   single place the settings pick a strategy, used by both `apply.py` and `pericyte_comparison.py`.
 - **`haemodynamics/apply.py`** — high-level Poiseuille application used by examples and tutorial.

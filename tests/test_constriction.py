@@ -13,7 +13,6 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.haemodynamics import constriction
 from haemolynx.haemodynamics.constriction import (
     apply_constriction_sites,
     diameter_at_position,
@@ -25,9 +24,11 @@ from haemolynx.haemodynamics.constriction_strategy import (
     uniform_constriction_factors,
 )
 from haemolynx.haemodynamics.pericyte_mask import MaskConstrictionSites
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 from haemolynx.haemodynamics.probability import (
     set_poiseuille_resistances_with_probabilistic_periodic_constrictions,
 )
+from haemolynx.haemodynamics.viscosity import viscosity_for
 
 
 class _FixedSites:
@@ -188,10 +189,17 @@ def test_overlapping_sites_take_the_narrowest_diameter():
 # --- the resistance integral ------------------------------------------------
 
 
-def test_unconstricted_resistance_matches_the_closed_form():
+def test_unconstricted_resistance_matches_the_uniform_poiseuille_segment():
+    """The integral is the same physics as `resistance_of_uniform_segment`.
+
+    It used to integrate a dimensionless ``1 / d^1.647``, so a constricted edge
+    and a uniform one were in different units and orders of magnitude apart.
+    An edge with no sites on it must now be exactly the uniform segment.
+    """
     length, diameter = 100.0, 5.0
-    viscosity = 1.0 / diameter ** constriction.VISCOSITY_DIAMETER_EXPONENT
-    expected = (128.0 * viscosity * length) / (np.pi * diameter ** 4)
+    expected = PoiseuilleModel(
+        constriction_length=40.0, constriction_spacing=100.0
+    ).resistance_of_uniform_segment(length, diameter)
     computed = integrated_resistance(
         length=length,
         d1=diameter,
@@ -201,6 +209,77 @@ def test_unconstricted_resistance_matches_the_closed_form():
         num_points=1001,
     )
     assert computed == pytest.approx(expected, rel=1e-9)
+
+
+def test_unconstricted_resistance_matches_the_closed_form():
+    length, diameter = 100.0, 5.0
+    viscosity = viscosity_for(diameter, law="pries", diameter_basis="plasma_column")
+    length_m = length / 1e6
+    diameter_m = diameter / 1e6
+    expected = (128.0 * viscosity * length_m) / (np.pi * diameter_m ** 4)
+    computed = integrated_resistance(
+        length=length,
+        d1=diameter,
+        d2=diameter,
+        constriction_centers=[],
+        constriction_length=40.0,
+        num_points=1001,
+    )
+    assert computed == pytest.approx(expected, rel=1e-9)
+
+
+def test_a_capillary_resistance_is_in_the_physiological_si_band():
+    """Pa.s/m^3, not model units.
+
+    `tests/test_poiseuille_physical_units.py` pins a 5 x 500 um capillary to
+    the literature 1e16-1e17 band under the capillary power law; Pries, the
+    default here, is about twice that, so this is the order-of-magnitude check
+    and `test_unconstricted_resistance_matches_the_uniform_poiseuille_segment`
+    is the exact one. Before this module read the viscosity settings the same
+    integral returned ~1e-3, which is not a resistance in any unit system.
+    """
+    resistance = integrated_resistance(
+        length=500.0,
+        d1=5.0,
+        d2=5.0,
+        constriction_centers=[],
+        constriction_length=40.0,
+        num_points=1001,
+    )
+    assert 1e16 <= resistance <= 1e18, f"{resistance:.3e} Pa.s/m^3 is not physiological"
+
+
+def test_the_configured_viscosity_law_changes_the_integrated_resistance():
+    kwargs = dict(
+        length=200.0,
+        d1=5.0,
+        d2=4.0,
+        constriction_centers=[100.0],
+        constriction_length=40.0,
+        num_points=501,
+    )
+    pries = integrated_resistance(viscosity_law="pries", **kwargs)
+    plasma = integrated_resistance(viscosity_law="constant", **kwargs)
+    # Plasma is thinner than blood at capillary diameters, so it must be the
+    # lower resistance -- and the two must not be the same number, which is
+    # what a hard-coded viscosity here would have produced.
+    assert plasma < pries
+    assert pries / plasma > 1.5
+
+
+def test_the_diameter_basis_changes_the_integrated_resistance():
+    kwargs = dict(
+        length=200.0,
+        d1=5.0,
+        d2=4.0,
+        constriction_centers=[100.0],
+        constriction_length=40.0,
+        num_points=501,
+        viscosity_law="pries",
+    )
+    plasma_column = integrated_resistance(diameter_basis="plasma_column", **kwargs)
+    anatomical = integrated_resistance(diameter_basis="anatomical", **kwargs)
+    assert anatomical > plasma_column
 
 
 def test_constricting_an_edge_raises_its_resistance():
@@ -382,6 +461,134 @@ def test_the_settings_select_the_strategy(flags, expected_strategy):
     )
     assert strategy == expected_strategy
     assert results["edges_set"] == 1
+
+
+# --- every strategy reads the configured viscosity law ----------------------
+#
+# `viscosity_law` used to reach only the periodic `PoiseuilleModel` path, so a
+# run that selected `pries` and constricted from a mask silently got an
+# uncalibrated `1 / d^1.647` while `G.graph["viscosity_law"]` claimed otherwise.
+
+
+def _strategy_resistance(viscosity_law: str, **flags) -> float:
+    settings = {
+        "use_pericyte_mask_constriction": False,
+        "use_probabilistic_constriction": False,
+        "prefer_edge_fwhm_baseline": False,
+        **flags,
+    }
+    graph, _strategy, _results = set_resistances_for_constriction_strategy(
+        _one_edge_graph(length=200.0),
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.6},
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        viscosity_law=viscosity_law,
+        **settings,
+    )
+    return float(graph[0][1][0]["resistance"])
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {},
+        {"use_probabilistic_constriction": True},
+    ],
+    ids=["periodic", "probabilistic"],
+)
+def test_every_constriction_strategy_responds_to_the_viscosity_law(flags):
+    pries = _strategy_resistance("pries", **flags)
+    plasma = _strategy_resistance("constant", **flags)
+    assert plasma < pries
+    assert pries / plasma > 1.5
+
+
+def test_the_mask_strategy_responds_to_the_viscosity_law(tmp_path):
+    import tifffile
+
+    mask = np.zeros((5, 5, 5), dtype=np.uint8)
+    # One blob a couple of microns off the straight z-axis edge below.
+    mask[2, 1, 1] = 1
+    mask_path = tmp_path / "pericytes.tif"
+    tifffile.imwrite(mask_path, mask)
+
+    def resistance(viscosity_law: str) -> float:
+        graph = nx.MultiGraph()
+        graph.add_node(0, pos=np.asarray([0.0, 0.0, 0.0]))
+        graph.add_node(1, pos=np.asarray([4.0, 0.0, 0.0]))
+        graph.add_edge(0, 1, key=0, length=4.0, branch_order="B01")
+        graph, strategy, results = set_resistances_for_constriction_strategy(
+            graph,
+            diameter_by_branch_order={"B01": 5.0},
+            constriction_factor_by_branch_order={"B01": 0.6},
+            use_pericyte_mask_constriction=True,
+            use_probabilistic_constriction=False,
+            prefer_edge_fwhm_baseline=False,
+            constriction_length=4.0,
+            constriction_spacing=100.0,
+            viscosity_law=viscosity_law,
+            pericyte_mask_path=mask_path,
+            max_assignment_distance_um=None,
+            min_pericyte_diameter_um=None,
+            max_pericyte_diameter_um=None,
+        )
+        assert strategy == "pericyte_mask"
+        assert results["edges_set"] == 1
+        assert graph[0][1][0]["pericyte_count_assigned"] == 1
+        return float(graph[0][1][0]["resistance"])
+
+    pries = resistance("pries")
+    plasma = resistance("constant")
+    assert plasma < pries
+    assert pries / plasma > 1.5
+
+
+def test_the_baseline_versus_constricted_comparison_reads_the_viscosity_law(tmp_path):
+    from haemolynx.haemodynamics.pericyte_comparison import (
+        compare_baseline_vs_pericyte_constriction,
+    )
+
+    def effective_resistance(viscosity_law: str) -> float:
+        graph = nx.MultiGraph()
+        for node in range(3):
+            graph.add_node(node, pos=np.asarray([0.0, 0.0, node * 200.0]))
+        for node in range(2):
+            graph.add_edge(node, node + 1, key=0, length=200.0, branch_order="B01")
+        summary = compare_baseline_vs_pericyte_constriction(
+            graph,
+            diameter_by_branch_order={"B01": 5.0},
+            constriction_factor_by_branch_order={"B01": 0.6},
+            resistance_node_pair=(0, 2),
+            output_csv_path=tmp_path / f"{viscosity_law}.csv",
+            viscosity_law=viscosity_law,
+        )
+        return float(summary["constricted_resistance"])
+
+    pries = effective_resistance("pries")
+    plasma = effective_resistance("constant")
+    assert plasma < pries
+    assert pries / plasma > 1.5
+
+
+def test_a_constricted_edge_is_comparable_with_a_uniform_poiseuille_edge():
+    """Same units, same order of magnitude -- and higher, because it narrows."""
+    length, diameter = 200.0, 5.0
+    graph, _results = set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
+        _one_edge_graph(length=length),
+        diameter_by_branch_order={"B01": diameter},
+        constriction_factor_by_branch_order={"B01": 0.6},
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        constriction_probability=1.0,
+    )
+    constricted = float(graph[0][1][0]["resistance"])
+    uniform = PoiseuilleModel(
+        constriction_length=40.0, constriction_spacing=100.0
+    ).resistance_of_uniform_segment(length, diameter)
+
+    assert constricted > uniform
+    assert constricted / uniform < 10.0
 
 
 def test_the_mask_strategy_needs_a_mask():

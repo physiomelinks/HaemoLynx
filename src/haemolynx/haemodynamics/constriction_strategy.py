@@ -82,6 +82,10 @@ def set_resistances_for_constriction_strategy(
 
     Both randomised strategies draw their cohort from ``rng`` when given, else
     from a generator built on ``seed``, so a run repeats for a given seed.
+
+    All three strategies read ``viscosity_law``, ``haematocrit`` and
+    ``diameter_basis``: the choice of law changes every resistance, and it must
+    not depend on which strategy placed the constrictions.
     """
     if use_pericyte_mask_constriction:
         if pericyte_mask_path is None:
@@ -102,6 +106,9 @@ def set_resistances_for_constriction_strategy(
             max_assignment_distance_um=max_assignment_distance_um,
             min_pericyte_diameter_um=min_pericyte_diameter_um,
             max_pericyte_diameter_um=max_pericyte_diameter_um,
+            viscosity_law=viscosity_law,
+            haematocrit=float(haematocrit),
+            diameter_basis=diameter_basis,
             axis_order=axis_order,
             rng=rng,
             seed=seed,
@@ -120,6 +127,9 @@ def set_resistances_for_constriction_strategy(
                 constriction_spacing=float(constriction_spacing),
                 constriction_probability=float(constriction_probability),
                 active_center_indices_by_edge=active_center_indices_by_edge,
+                viscosity_law=viscosity_law,
+                haematocrit=float(haematocrit),
+                diameter_basis=diameter_basis,
                 rng=rng,
                 seed=seed,
             )

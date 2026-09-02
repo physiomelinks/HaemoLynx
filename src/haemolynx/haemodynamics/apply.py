@@ -188,6 +188,9 @@ def _run_pericyte_comparison(
         constriction_spacing=config.diameter("constriction_spacing"),
         use_probabilistic_pericyte_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
         pericyte_constriction_probability=float(config.diameter("pericyte_constriction_probability")),
+        viscosity_law=config.diameter("viscosity_law"),
+        haematocrit=float(config.diameter("haematocrit")),
+        diameter_basis=config.diameter("diameter_basis"),
         axis_order=config.axis_order,
         rng=rng,
     )

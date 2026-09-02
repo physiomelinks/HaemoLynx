@@ -16,12 +16,19 @@ only place edge resistance is computed from a constriction.
 
 Units
 -----
-Lengths and diameters are in micrometres. Note that the resistance integrated
-here uses the *uncalibrated* viscosity ``1 / d^1.647``, not the SI-pinned law in
-:class:`~haemolynx.haemodynamics.poiseuille.PoiseuilleModel`, so these
-resistances are in model units and are not comparable in magnitude with that
-class's Pa.s/m^3. That predates this module and is preserved deliberately;
-reconciling the two laws is a separate change.
+Lengths and diameters are in micrometres, as everywhere else in the package.
+Resistance comes back in Pa.s/m^3 and conductance in m^3/(Pa.s), the same units
+:class:`~haemolynx.haemodynamics.poiseuille.PoiseuilleModel` produces, so a
+constricted edge and a uniform one are directly comparable: an edge with no
+sites on it gets exactly
+:meth:`~haemolynx.haemodynamics.poiseuille.PoiseuilleModel.resistance_of_uniform_segment`.
+
+Viscosity comes from :mod:`haemolynx.haemodynamics.viscosity` and is therefore
+whichever law the run selected — ``viscosity_law``, ``haematocrit`` and
+``diameter_basis`` are threaded down to here, because a constricted vessel is
+the narrowest one in the tree and so the one the law matters most for. This
+module used to integrate a dimensionless ``1 / d^1.647`` instead, which ignored
+those settings and left the result in arbitrary units.
 """
 from __future__ import annotations
 
@@ -31,11 +38,11 @@ import networkx as nx
 import numpy as np
 
 from .poiseuille import set_edge_resistance
+from .viscosity import DEFAULT_HAEMATOCRIT, viscosity_for
 
-#: Exponent of the capillary viscosity power law, as used by the constriction
-#: integral. Kept separate from the calibrated constants in ``poiseuille`` to
-#: make the divergence between the two visible rather than accidental.
-VISCOSITY_DIAMETER_EXPONENT = 1.647
+#: Micrometres per metre. Diameters and lengths arrive in um and the resistance
+#: is wanted in SI, so the integral converts once, here.
+UM_PER_M = 1.0e6
 
 
 # --- Which edges and which sites -------------------------------------------
@@ -234,6 +241,35 @@ def diameter_at_position(
     return diameter
 
 
+def _viscosity_profile(
+    diameters: np.ndarray,
+    *,
+    viscosity_law: str,
+    haematocrit: float,
+    diameter_basis: str,
+) -> np.ndarray:
+    """Apparent viscosity (Pa.s) at each diameter, by the configured law.
+
+    The laws are scalar functions, so they are evaluated once per *distinct*
+    diameter rather than once per integration point: an edge with no
+    constriction on it is one call, not a thousand.
+    """
+    unique_diameters, inverse = np.unique(diameters, return_inverse=True)
+    viscosities = np.asarray(
+        [
+            viscosity_for(
+                float(diameter),
+                law=viscosity_law,
+                haematocrit=float(haematocrit),
+                diameter_basis=diameter_basis,
+            )
+            for diameter in unique_diameters
+        ],
+        dtype=float,
+    )
+    return viscosities[inverse]
+
+
 def integrated_resistance(
     *,
     length: float,
@@ -242,8 +278,21 @@ def integrated_resistance(
     constriction_centers: list[float],
     constriction_length: float,
     num_points: int,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
 ) -> float:
-    """Trapezoidal integral of resistance per unit length along one edge."""
+    """Resistance (Pa.s/m^3) of one edge, integrated along its constrictions.
+
+    Trapezoidal integral of the Poiseuille resistance per unit length,
+    ``128 * mu(d) / (pi * d^4)``, with *mu* from the configured viscosity law
+    and the integration done in metres so the result is SI. ``length``, ``d1``,
+    ``d2`` and ``constriction_length`` are in micrometres.
+
+    With no sites this reduces exactly to the uniform Poiseuille resistance, so
+    it is comparable with
+    :meth:`~haemolynx.haemodynamics.poiseuille.PoiseuilleModel.resistance_of_uniform_segment`.
+    """
     if length <= 0:
         return float("inf")
     positions = np.linspace(0.0, float(length), int(num_points))
@@ -261,10 +310,16 @@ def integrated_resistance(
         dtype=float,
     )
     diameters = np.clip(diameters, a_min=1e-9, a_max=None)
-    viscosity = 1.0 / (diameters ** VISCOSITY_DIAMETER_EXPONENT)
-    resistance_per_length = (128.0 * viscosity) / (np.pi * (diameters ** 4))
+    viscosity = _viscosity_profile(
+        diameters,
+        viscosity_law=viscosity_law,
+        haematocrit=haematocrit,
+        diameter_basis=diameter_basis,
+    )
+    diameters_m = diameters / UM_PER_M
+    resistance_per_length = (128.0 * viscosity) / (np.pi * (diameters_m ** 4))
     integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
-    return float(integ(resistance_per_length, x=positions))
+    return float(integ(resistance_per_length, x=positions / UM_PER_M))
 
 
 # --- Applying a set of sites to a graph -------------------------------------
@@ -302,8 +357,15 @@ def apply_constriction_sites(
     prefer_edge_fwhm_baseline: bool,
     constriction_length: float,
     num_integration_points: int,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Set ``resistance``/``conductance`` on every edge from its constrictions.
+
+    Resistances are in Pa.s/m^3, from the viscosity law named by
+    ``viscosity_law``/``haematocrit``/``diameter_basis``. They are not
+    comparable across laws, so the caller records which one ran.
 
     Each edge also records the sites it was given, as
     ``pericyte_count_assigned`` and ``pericyte_centers_um``, so a later
@@ -344,6 +406,9 @@ def apply_constriction_sites(
             constriction_centers=centers,
             constriction_length=float(constriction_length),
             num_points=int(num_integration_points),
+            viscosity_law=viscosity_law,
+            haematocrit=float(haematocrit),
+            diameter_basis=diameter_basis,
         )
         set_edge_resistance(graph[u][v][key], float(total_resistance))
         graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))

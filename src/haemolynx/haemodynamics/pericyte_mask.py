@@ -30,6 +30,7 @@ from .constriction import (
     select_active_pericyte_indices,
     validate_active_pericyte_indices,
 )
+from .viscosity import DEFAULT_HAEMATOCRIT
 
 #: Names the pericyte mask in loader errors, so a bad path or format says which
 #: of the pipeline's several masks was at fault.
@@ -243,6 +244,9 @@ def set_poiseuille_resistances_with_pericyte_mask(
     max_assignment_distance_um: float | None = 3.0,
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
     axis_order: str = CANONICAL_AXIS_ORDER,
     rng: np.random.Generator | None = None,
     seed: int | None = None,
@@ -257,6 +261,10 @@ def set_poiseuille_resistances_with_pericyte_mask(
     With ``use_probabilistic_constriction=True`` the active cohort is drawn from
     ``rng`` if given, else from a generator built on ``seed``; ``seed=None``
     means a different cohort on every call.
+
+    ``viscosity_law``, ``haematocrit`` and ``diameter_basis`` select the
+    apparent-viscosity law the resistances are computed with; see
+    :mod:`haemolynx.haemodynamics.viscosity`.
     """
     require_positive_constriction_length(constriction_length)
     require_enough_integration_points(num_integration_points)
@@ -378,4 +386,7 @@ def set_poiseuille_resistances_with_pericyte_mask(
         prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
         constriction_length=constriction_length,
         num_integration_points=num_integration_points,
+        viscosity_law=viscosity_law,
+        haematocrit=haematocrit,
+        diameter_basis=diameter_basis,
     )

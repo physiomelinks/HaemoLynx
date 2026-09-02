@@ -27,6 +27,7 @@ from .resistance import (
     calc_laplacian_from_conductance_matrix,
     calc_two_point_from_laplacian_matrix_nodeID,
 )
+from .viscosity import DEFAULT_HAEMATOCRIT
 
 
 def _compute_two_point_resistance(
@@ -63,6 +64,9 @@ def compare_baseline_vs_pericyte_constriction(
     constriction_spacing: float = 100.0,
     use_probabilistic_pericyte_constriction: bool = False,
     pericyte_constriction_probability: float = 1.0,
+    viscosity_law: str = "pries",
+    haematocrit: float = DEFAULT_HAEMATOCRIT,
+    diameter_basis: str = "plasma_column",
     max_assignment_distance_um: float | None = 3.0,
     min_pericyte_diameter_um: float | None = 5.0,
     max_pericyte_diameter_um: float | None = 12.0,
@@ -110,6 +114,11 @@ def compare_baseline_vs_pericyte_constriction(
         "constriction_length": float(constriction_length),
         "constriction_spacing": float(constriction_spacing),
         "constriction_probability": float(pericyte_constriction_probability),
+        # The comparison's two arms must differ only in their constriction
+        # factor, so the viscosity law travels with the rest of the settings.
+        "viscosity_law": viscosity_law,
+        "haematocrit": float(haematocrit),
+        "diameter_basis": diameter_basis,
         "pericyte_mask_path": pericyte_mask_path,
         "pericyte_mask_h5_dataset_name": pericyte_mask_h5_dataset_name,
         "max_assignment_distance_um": max_assignment_distance_um,

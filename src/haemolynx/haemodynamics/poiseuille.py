@@ -228,7 +228,10 @@ class PoiseuilleModel:
         """
         Set edge resistance and conductance from Poiseuille's law.
         resistance = (128 * viscosity * length) / (π * diameter^4)
-        Where viscosity = 1 / diameter^1.647
+        Where viscosity is the apparent blood viscosity at that diameter under
+        this model's ``viscosity_law`` (see
+        :mod:`haemolynx.haemodynamics.viscosity`), so resistances are not
+        comparable between runs that chose different laws.
 
         Parameters:
         -----------
@@ -261,12 +264,9 @@ class PoiseuilleModel:
 
         logger.info("=== Poiseuille Resistance Calculation (Branch Order Based) ===")
         logger.info("Formula: resistance = (128 * viscosity * length) / (π * diameter^4)")
-        logger.info(
-            f"Viscosity: μ(d) = {REFERENCE_VISCOSITY_PA_S * 1e3} mPa.s * "
-            f"({REFERENCE_DIAMETER_UM} μm / d)^{VISCOSITY_DIAMETER_EXPONENT} "
-            f"for d <= {CAPILLARY_REGIME_MAX_DIAMETER_UM} μm, "
-            f"else {LARGE_VESSEL_VISCOSITY_PA_S * 1e3} mPa.s (large-vessel constant)"
-        )
+        # The law is a setting, so the log has to name the one that actually
+        # ran: reading a fixed formula here made every run look identical.
+        logger.info(f"Viscosity: {self.describe_viscosity_law()}")
         logger.info("Units: diameter and length in μm; resistance in Pa.s/m^3")
 
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
