@@ -26,6 +26,7 @@ from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
 )
+from .sweep_flows import build_sweep_flow_grid, record_flows_after_solve
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +301,8 @@ def run_pericyte_dilation_pressure_sweep(
     inlet_pressures = _inlet_pressures(settings, sweep=sweep_pressure)
 
     results: list[dict[str, Any]] = []
+    recorded_flows: list[dict[str, np.ndarray]] = []
+    last_node_list: list[int] = []
     for dilation_percent in dilation_values:
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
         dilated = dilate_graph_diameters(G, dilation_factor)
@@ -317,6 +320,7 @@ def run_pericyte_dilation_pressure_sweep(
         )
 
         conductance, node_list = build_conductance_matrix_from_graph(dilated)
+        last_node_list = list(node_list)
         for inlet_pressure_pa in inlet_pressures:
             solved = solve_pressure_and_boundary_flow(
                 conductance,
@@ -325,6 +329,9 @@ def run_pericyte_dilation_pressure_sweep(
                 outlet_p_bc=outlet_pressure_pa,
                 inlet_nodes=inlet_nodes,
                 outlet_nodes=outlet_nodes,
+            )
+            recorded_flows.append(
+                record_flows_after_solve(dilated, node_list, solved["pressure"])
             )
             results.append(
                 {
@@ -344,20 +351,39 @@ def run_pericyte_dilation_pressure_sweep(
     if sweep_dilation and sweep_pressure:
         csv_name = "pericyte_dilation_pressure_sweep.csv"
         label = "Pericyte dilation x pressure sweep"
+        axis_names = ("dilation_percent", "inlet_pressure_pa")
+        axis_values = {
+            "dilation_percent": dilation_values,
+            "inlet_pressure_pa": inlet_pressures,
+        }
     elif sweep_dilation:
         csv_name = "pericyte_dilation_sweep.csv"
         label = "Pericyte dilation sweep"
+        axis_names = ("dilation_percent",)
+        axis_values = {"dilation_percent": dilation_values}
     else:
         csv_name = "inlet_pressure_sweep.csv"
         label = "Inlet pressure sweep"
+        axis_names = ("inlet_pressure_pa",)
+        axis_values = {"inlet_pressure_pa": inlet_pressures}
 
     csv_path = write_sweep_csv(results, output_dir / csv_name)
+    sweep_flows = build_sweep_flow_grid(
+        axis_names=axis_names,
+        axis_values=axis_values,
+        recorded=recorded_flows,
+        node_list=last_node_list,
+    )
     logger.info(
         f"{label}: {len(results)} points "
         f"({len(dilation_values)} dilations x {len(inlet_pressures)} pressures) "
         f"-> {csv_path}"
     )
-    return {"results": results, "csv_path": str(csv_path)}
+    return {
+        "results": results,
+        "csv_path": str(csv_path),
+        "sweep_flows": sweep_flows,
+    }
 
 
 def write_sweep_csv(results: list[Mapping[str, Any]], csv_path: Path | str) -> Path:
@@ -433,6 +459,8 @@ def run_arteriole_dilation_pressure_sweep(
     inlet_pressures = _inlet_pressures(settings, sweep=sweep_pressure)
 
     results: list[dict[str, Any]] = []
+    recorded_flows: list[dict[str, np.ndarray]] = []
+    last_node_list: list[int] = []
     for dilation_percent in dilation_values:
         scale = percent_change_to_scale(float(dilation_percent))
         scaled, _table, _summary = scale_arteriole_diameters(
@@ -443,6 +471,7 @@ def run_arteriole_dilation_pressure_sweep(
             prefer_edge_fwhm_diameter=prefer_measured,
         )
         conductance, node_list = build_conductance_matrix_from_graph(scaled)
+        last_node_list = list(node_list)
         for inlet_pressure_pa in inlet_pressures:
             solved = solve_pressure_and_boundary_flow(
                 conductance,
@@ -451,6 +480,9 @@ def run_arteriole_dilation_pressure_sweep(
                 outlet_p_bc=outlet_pressure_pa,
                 inlet_nodes=inlet_nodes,
                 outlet_nodes=outlet_nodes,
+            )
+            recorded_flows.append(
+                record_flows_after_solve(scaled, node_list, solved["pressure"])
             )
             results.append(
                 {
@@ -470,20 +502,39 @@ def run_arteriole_dilation_pressure_sweep(
     if sweep_dilation and sweep_pressure:
         csv_name = "arteriole_dilation_pressure_sweep.csv"
         label = "Arteriole dilation x pressure sweep"
+        axis_names = ("dilation_percent", "inlet_pressure_pa")
+        axis_values = {
+            "dilation_percent": dilation_values,
+            "inlet_pressure_pa": inlet_pressures,
+        }
     elif sweep_dilation:
         csv_name = "arteriole_dilation_sweep.csv"
         label = "Arteriole dilation sweep"
+        axis_names = ("dilation_percent",)
+        axis_values = {"dilation_percent": dilation_values}
     else:
         csv_name = "inlet_pressure_sweep.csv"
         label = "Inlet pressure sweep"
+        axis_names = ("inlet_pressure_pa",)
+        axis_values = {"inlet_pressure_pa": inlet_pressures}
 
     csv_path = write_sweep_csv(results, output_dir / csv_name)
+    sweep_flows = build_sweep_flow_grid(
+        axis_names=axis_names,
+        axis_values=axis_values,
+        recorded=recorded_flows,
+        node_list=last_node_list,
+    )
     logger.info(
         f"{label}: {len(results)} points "
         f"({len(dilation_values)} dilations x {len(inlet_pressures)} pressures) "
         f"-> {csv_path}"
     )
-    return {"results": results, "csv_path": str(csv_path)}
+    return {
+        "results": results,
+        "csv_path": str(csv_path),
+        "sweep_flows": sweep_flows,
+    }
 
 
 # stages.py still imports the capillary sweep from this module; the

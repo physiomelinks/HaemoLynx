@@ -154,6 +154,10 @@ class PerturbationResult:
     resistances, pressures and flows -- so the panel can draw it beside the
     baseline rather than instead of it. A `none` perturbation, and one that
     raised, have no graph and no output.
+
+    Sweep types keep *graph* for centreline geometry only, and put every grid
+    point's ``flow_abs`` (etc.) on *sweep_flows* so napari can slider-swap
+    features without retaining N full MultiGraph copies.
     """
 
     name: str
@@ -163,6 +167,8 @@ class PerturbationResult:
     #: Files this perturbation wrote, in the order it wrote them.
     outputs: list[Path] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
+    #: Compact per-grid flow arrays for sweep types; None for a single re-solve.
+    sweep_flows: Any | None = None
     #: What went wrong, if it did. One bad perturbation does not stop the rest.
     error: str | None = None
 
@@ -183,8 +189,12 @@ class PerturbationRun:
 
     @property
     def solved(self) -> list[PerturbationResult]:
-        """Those that produced a network: not `none`, and not a failure."""
-        return [result for result in self.results if result.graph is not None]
+        """Those that produced a network (or sweep geometry) to draw."""
+        return [
+            result
+            for result in self.results
+            if result.graph is not None or result.sweep_flows is not None
+        ]
 
     @property
     def failures(self) -> list[PerturbationResult]:
@@ -1373,6 +1383,7 @@ def _perturb_one(
     if sweep_payload is not None:
         result.outputs.append(Path(sweep_payload["csv_path"]))
         summary["sweep_points"] = len(sweep_payload["results"])
+        result.sweep_flows = sweep_payload.get("sweep_flows")
 
     solved = _solve_network(G, perturbed, boundaries)
     result.graph = G
@@ -1393,9 +1404,9 @@ def _perturb_one(
         overrides=overrides,
     )
 
-    # One post-step for every type: Alice-style curves for sweeps; pipeline-like
-    # plots/CSVs for a single re-solve. Sweeps drop their graph so napari does
-    # not build a flow layer for a grid of answers.
+    # Alice-style curves for sweeps; pipeline-like plots/CSVs for a single
+    # re-solve. Sweeps keep *graph* for centreline geometry and *sweep_flows*
+    # for slider-backed napari layers — not N MultiGraph deepcopies.
     if is_sweep_perturbation(spec.type):
         if sweep_payload is not None:
             result.outputs.extend(
@@ -1403,7 +1414,6 @@ def _perturb_one(
                     spec.type, sweep_payload["results"], result.output_dir
                 )
             )
-        result.graph = None
     else:
         result.outputs.extend(
             export_non_sweep_perturbation_artifacts(

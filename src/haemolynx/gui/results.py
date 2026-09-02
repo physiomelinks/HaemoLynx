@@ -141,6 +141,12 @@ class LayerSpec:
     contrast_limits: tuple[float, float] | None = None
     visible: bool = True
     options: Mapping[str, Any] = field(default_factory=dict)
+    #: Compact sweep grid for slider-backed flow layers; not passed to napari.
+    sweep: Any | None = None
+    #: Per-segment owner index into drawable-edge columns (Vectors only).
+    segment_owner: Any | None = None
+    #: Drawable-edge indices into the full ``edges(keys=True)`` flow arrays.
+    sweep_edge_index: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -767,12 +773,77 @@ class ResultLayers:
             )
         return tuple(layers)
 
-    def _from_run_perturbations(self, output: Any) -> StageLayers:
-        """One pair of layers per non-sweep perturbation that produced a network.
+    def _sweep_perturbation_layers(self, result: Any) -> tuple[LayerSpec, ...]:
+        """One Vectors layer for a sweep: geometry once, flows from the grid.
 
-        Sweeps write Alice-style curves to disk and deliberately keep no graph,
-        so they never appear here. A `none` entry and a failure also have no
-        graph. Failures are what the note is mostly for.
+        Initial colouring is grid point 0; the widget attaches slider(s) that
+        swap ``flow_abs`` (and signed / drop columns) via *segment_owner*
+        without rebuilding polylines.
+        """
+        graph = result.graph
+        sweep = getattr(result, "sweep_flows", None)
+        if graph is None or sweep is None:
+            return ()
+
+        vessels_name, _nodes_name = perturbation_layer_names(result.name)
+        paths, identity = edge_polylines(graph)
+        if not paths:
+            return ()
+
+        edge_index = np.asarray(identity["edge_index"], dtype=int)
+        columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
+        # Geometry / diameter columns from the retained graph; flow columns
+        # come from the sweep grid so slider 0 matches the retained arrays.
+        non_flow = [
+            name
+            for name in EDGE_COLUMNS
+            if name not in ("flow_abs", "flow_signed", "pressure_drop",
+                            "pressure_u", "pressure_v")
+        ]
+        columns.update(edge_features(graph, non_flow))
+
+        flow0 = np.asarray(sweep.flow_abs_at(*([0] * len(sweep.axis_names))), dtype=float)
+        columns["flow_abs"] = flow0[edge_index]
+        signed0 = sweep.flow_signed_at(*([0] * len(sweep.axis_names)))
+        if signed0 is not None:
+            columns["flow_signed"] = np.asarray(signed0, dtype=float)[edge_index]
+        drop0 = sweep.pressure_drop_at(*([0] * len(sweep.axis_names)))
+        if drop0 is not None:
+            columns["pressure_drop"] = np.asarray(drop0, dtype=float)[edge_index]
+
+        vectors, owner = polylines_to_vectors(paths)
+        per_segment = {
+            name: np.asarray(values)[owner] for name, values in columns.items()
+        }
+        colour_by = PERTURBATION_COLOUR if PERTURBATION_COLOUR in columns else None
+        colouring = _colouring(per_segment, colour_by)
+        # Stable contrast across the whole grid so sliding does not re-stretch.
+        global_limits = sweep.global_flow_abs_limits()
+        if colour_by == "flow_abs" and global_limits is not None:
+            colouring = {**colouring, "contrast_limits": global_limits}
+
+        return (
+            LayerSpec(
+                kind="vectors",
+                name=vessels_name,
+                data=vectors,
+                features=per_segment,
+                colour_by=colour_by,
+                **colouring,
+                visible=False,
+                options={"vector_style": "line", "edge_width": 0.6,
+                         "out_of_slice_display": True},
+                sweep=sweep,
+                segment_owner=owner,
+                sweep_edge_index=edge_index,
+            ),
+        )
+
+    def _from_run_perturbations(self, output: Any) -> StageLayers:
+        """One layer set per perturbation that produced a network or sweep grid.
+
+        Non-sweeps get vessels+nodes from their graph. Sweeps get one Vectors
+        layer backed by retained per-grid flow arrays (slider UI in the widget).
         """
         from haemolynx.haemodynamics.perturbations import is_sweep_perturbation
 
@@ -780,8 +851,9 @@ class ResultLayers:
         layers: list[LayerSpec] = []
         for result in results:
             if is_sweep_perturbation(getattr(result, "type", "")):
-                continue
-            layers.extend(self._perturbation_layers(result))
+                layers.extend(self._sweep_perturbation_layers(result))
+            else:
+                layers.extend(self._perturbation_layers(result))
 
         failures = list(getattr(output, "failures", ()) or ())
         layer_count = len([spec for spec in layers if spec.kind == "vectors"])
@@ -789,7 +861,7 @@ class ResultLayers:
             f"{layer_count} perturbation(s) re-solved; their flow layers are "
             "hidden, so tick one to compare it with the baseline."
             if layer_count
-            else "No non-sweep perturbation produced a network layer."
+            else "No perturbation produced a network layer."
         )
         if failures:
             note += " Failed: " + ", ".join(

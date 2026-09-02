@@ -570,7 +570,7 @@ def test_a_perturbation_with_no_network_gets_no_layer():
         a_perturbation_run(PerturbationResult(name="off", type="none")),
     )
     assert group.layers == ()
-    assert "No non-sweep perturbation produced a network layer" in group.note
+    assert "No perturbation produced a network layer" in group.note
 
 
 def test_a_failure_is_named_in_the_note_and_the_others_still_drawn():

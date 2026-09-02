@@ -39,12 +39,14 @@ def test_every_declared_sweep_type_is_classified_as_a_sweep():
     assert declared_sweeps == set(SWEEP_PERTURBATION_TYPES)
     for name in declared_sweeps:
         assert is_sweep_perturbation(name)
-        assert not wants_napari_flow_layer(name)
+        assert wants_napari_flow_layer(name)
     for name in PERTURBATION_TYPES:
         if name not in declared_sweeps:
             assert not is_sweep_perturbation(name)
             if name != "none":
                 assert wants_napari_flow_layer(name)
+            else:
+                assert not wants_napari_flow_layer(name)
 
 
 def test_every_sweep_type_has_axis_labelling():
@@ -52,11 +54,12 @@ def test_every_sweep_type_has_axis_labelling():
         assert name in SWEEP_AXIS_BY_TYPE, name
 
 
-def test_a_dilation_sweep_writes_alice_style_plots_and_keeps_no_graph(tmp_path):
+def test_a_dilation_sweep_writes_alice_style_plots_and_keeps_geometry(tmp_path):
     run = _run(tmp_path, [DILATION_SWEEP])
     result = run.results[0]
     assert result.error is None, result.error
-    assert result.graph is None
+    assert result.graph is not None
+    assert result.sweep_flows is not None
     written = {path.name for path in result.output_dir.iterdir()}
     assert "pericyte_dilation_sweep.csv" in written
     assert "resistance_vs_pericyte_dilation.png" in written
@@ -68,7 +71,8 @@ def test_a_spacing_sweep_writes_axis_corrected_plots(tmp_path):
     run = _run(tmp_path, [SPACING_SWEEP])
     result = run.results[0]
     assert result.error is None, result.error
-    assert result.graph is None
+    assert result.graph is not None
+    assert result.sweep_flows is not None
     written = {path.name for path in result.output_dir.iterdir()}
     assert "pericyte_spacing_sweep.csv" in written
     assert "resistance_vs_pericyte_spacing.png" in written
@@ -80,6 +84,7 @@ def test_a_non_sweep_writes_pipeline_like_artifacts_and_keeps_its_graph(tmp_path
     result = run.results[0]
     assert result.error is None, result.error
     assert result.graph is not None
+    assert result.sweep_flows is None
     written = {path.name for path in result.output_dir.iterdir()}
     assert f"{ARTERIOLE_DILATION['name']}_summary.csv" in written
     assert f"{ARTERIOLE_DILATION['name']}_edges.csv" in written
@@ -93,14 +98,22 @@ def test_a_non_sweep_writes_pipeline_like_artifacts_and_keeps_its_graph(tmp_path
     assert not list(result.output_dir.glob("*.vtp"))
 
 
-def test_results_builder_skips_sweep_graphs_even_if_one_were_present():
-    """Defence in depth: type, not only a cleared graph, gates the layer."""
+def test_results_builder_gives_sweep_a_vectors_layer_not_a_static_pair():
+    """Sweeps: one Vectors layer; non-sweeps: vessels + nodes."""
     from test_gui_results import a_perturbation_run, solved_graph
+    from haemolynx.haemodynamics.sweep_flows import SweepFlowGrid
+    import numpy as np
 
+    sweep_flows = SweepFlowGrid(
+        axis_names=("dilation_percent",),
+        axis_values={"dilation_percent": np.asarray([0, 10])},
+        flow_abs=np.ones((2, solved_graph().number_of_edges()), dtype=float),
+    )
     sweep = PerturbationResult(
         name="dilate_grid",
         type="pericyte_dilation_sweep",
         graph=solved_graph(),
+        sweep_flows=sweep_flows,
     )
     single = PerturbationResult(
         name="art_dilate_20",
@@ -113,7 +126,9 @@ def test_results_builder_skips_sweep_graphs_even_if_one_were_present():
     names = [spec.name for spec in group.layers]
     vessels, nodes = perturbation_layer_names("art_dilate_20")
     assert vessels in names and nodes in names
-    assert perturbation_layer_names("dilate_grid")[0] not in names
+    sweep_vessels, sweep_nodes = perturbation_layer_names("dilate_grid")
+    assert sweep_vessels in names
+    assert sweep_nodes not in names
 
 
 def test_export_sweep_plots_accept_raw_rows(tmp_path):
