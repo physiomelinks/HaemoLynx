@@ -238,6 +238,50 @@ def test_arteriole_perturbation_ignores_global_pericyte_flag(tmp_path):
     assert not _has_focal_site_attrs(with_flag.results[0].graph)
 
 
+def test_capillary_sweep_ignores_global_pericyte_flag(tmp_path):
+    """Capillary whole-branch sweeps must not place focal constrictions."""
+    entry = {
+        "name": "cap_sweep",
+        "type": "capillary_diameter_sweep",
+        "overrides": {
+            "capillary_dilation_min_percent": 0,
+            "capillary_dilation_max_percent": 10,
+            "capillary_dilation_step_percent": 10,
+        },
+    }
+    with_flag = run_perturbations(
+        _settings(
+            tmp_path / "on",
+            do_pericyte_construction=True,
+            run_perturbations=True,
+            perturbations=[entry],
+        ),
+        _uniform_baseline_model(),
+        _boundaries(),
+        SCHEMA,
+    )
+    without_flag = run_perturbations(
+        _settings(
+            tmp_path / "off",
+            do_pericyte_construction=False,
+            run_perturbations=True,
+            perturbations=[entry],
+        ),
+        _uniform_baseline_model(),
+        _boundaries(),
+        SCHEMA,
+    )
+
+    assert with_flag.results[0].ok and without_flag.results[0].ok
+    assert with_flag.results[0].summary.get("strategy") in (None, {})
+    assert not _has_focal_site_attrs(with_flag.results[0].graph)
+    # Sweep CSVs / Alice payloads may differ by path; resistances of the
+    # last solved graph must still match with the flag on or off.
+    assert _resistances(with_flag.results[0].graph) == _resistances(
+        without_flag.results[0].graph
+    )
+
+
 def test_pericyte_perturbation_still_applies_constrictions(tmp_path):
     """Typed pericyte entries place constrictions via their strategy path."""
     baseline = _uniform_baseline_model()

@@ -246,7 +246,7 @@ diameters_and_pericytes:
   haematocrit: 0.45
   # Give every branch order the same vessel diameter instead of a per-order table
   all_diams_const: true
-  # Legacy flag kept for configs and pericyte-entry overrides; ignored by baseline Haemodynamics and every perturbation merge. Focal constrictions come only from pericyte-typed perturbations (pericyte_diameter_change / sweeps) via their strategy path  [needs run_haemodynamics]
+  # Legacy flag kept for older configs and CLI; ignored by baseline Haemodynamics and every perturbation merge (not shown as a typed-entry control). Focal constrictions come only from pericyte-typed perturbations via their strategy path  [needs run_haemodynamics]
   do_pericyte_construction: false
   # Axial length of each focal pericyte constriction/dilation site along the vessel centreline  [um; range 0.0..]
   constriction_length_um: 40.0

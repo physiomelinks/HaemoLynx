@@ -21,10 +21,15 @@ SCHEMA = default_schema()
 
 PRESETS: dict[str, dict] = {
     "all_automated": {
-        "description": 'Fully automated profile: large/small vessel masks, pericyte-mask constriction, and FWHM diameters.',
+        "description": (
+            "Fully automated profile: large/small vessel masks and FWHM "
+            "diameters. Baseline never places focal pericytes "
+            "(do_pericyte_construction is inert); add a pericyte-typed "
+            "perturbation for mask/periodic constrictions."
+        ),
         "overrides": {
             'automated_vessel_assignment': True,
-            'do_pericyte_construction': True,
+            'do_pericyte_construction': False,
             'final_render_mode': '3d',
             'fwhm_raw_tiff_path': '/home/farg967/Documents/git_projects/haemolynx/examples/images/Nerve_capillaries.tif',
             'hold_ide_plots_open': False,

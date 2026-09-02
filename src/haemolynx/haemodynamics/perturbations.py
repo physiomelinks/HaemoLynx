@@ -99,12 +99,12 @@ PERICYTE_ENTRY_GEOMETRY_SETTINGS: tuple[str, ...] = (
 #: Diameters and pericytes in the schema (so apply.py's section_values still
 #: finds them) but claimed on the Perturbations tab: they are options of a
 #: pericyte-based perturbation, not of the baseline diameter model.
-#: ``do_pericyte_construction`` stays as a harmless override key for older
-#: entries; the pipeline forces it False on baseline and every merge -- typed
-#: pericyte paths call ``set_resistances_for_constriction_strategy`` by type.
+#: ``do_pericyte_construction`` is *not* listed: the pipeline forces it False
+#: on baseline and every merge, and typed pericyte paths call
+#: ``set_resistances_for_constriction_strategy`` by type — so a checkbox would
+#: lie. It is retabbed with the other legacy flags in progress.py.
 #: Order matches ``_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB`` in progress.py.
 PERICYTE_CONSTRICTION_SETTINGS: tuple[str, ...] = (
-    "do_pericyte_construction",
     "pericyte_constriction_factor",
     "constriction_by_branch_order",
     "constriction_length_um",

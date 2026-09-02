@@ -172,15 +172,15 @@ def test_the_whole_section_is_on_the_stage_that_hands_it_over():
 
     Pericyte / constriction knobs stay in the Diameters schema section so
     apply.py still finds them, but `STAGES` claims them for Perturbations so
-    they are not always-on Diameters rows. Comparison CSV flags are retabbed
-    the same way without becoming typed-entry options.
+    they are not always-on Diameters rows. Legacy baseline / comparison flags
+    are retabbed the same way without becoming typed-entry options.
     """
     from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
     from haemolynx.pipeline import progress as progress_module
 
     owner = assign_to_stages(SCHEMA)
     retabbed = set(PERICYTE_CONSTRICTION_SETTINGS) | set(
-        progress_module._COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS
+        progress_module._LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
     )
     tabs = {
         owner[name]
@@ -379,24 +379,29 @@ def test_the_blood_settings_stay_on_the_diameters_tab():
         assert name in shown, f"{name} is not on the Diameters tab"
 
 
-def test_pericyte_comparison_settings_are_not_on_the_diameters_tab():
-    """Comparison is a CLI CSV workflow; Perturbations covers pericyte tone.
+def test_legacy_and_comparison_settings_are_not_on_the_diameters_tab():
+    """Legacy flags and comparison CSV knobs leave Diameters without UI rows.
 
-    Settings stay in the Diameters schema section for apply.py, but their
-    panel rows are claimed by Perturbations and filtered from always-on
-    tab chrome the same way as typed-entry options.
+    Settings stay in the Diameters schema section for apply.py / CLI, but
+    their panel rows are claimed by Perturbations and filtered from always-on
+    tab chrome and typed-entry editors (``do_pericyte_construction`` is inert
+    outside typed strategy paths).
     """
-    from haemolynx.gui.perturbation_editing import ALWAYS_VISIBLE_TAB_SETTINGS
+    from haemolynx.gui.perturbation_editing import (
+        ALWAYS_VISIBLE_TAB_SETTINGS,
+        EDITOR_SETTINGS,
+    )
     from haemolynx.pipeline import progress as progress_module
 
-    comparison = progress_module._COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS
+    legacy = progress_module._LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     diameters = {field.name for field in tabs["5. Diameters"].fields}
     perturbations = {field.name for field in tabs["7. Perturbations"].fields}
-    for name in comparison:
+    for name in legacy:
         assert name not in diameters, f"{name} is still on Diameters"
         assert name in perturbations, f"{name} is not claimed by Perturbations"
         assert name not in ALWAYS_VISIBLE_TAB_SETTINGS, name
+        assert name not in EDITOR_SETTINGS, f"{name} is still a typed-entry editor"
 
 
 def test_pericyte_constriction_settings_are_not_on_the_diameters_tab():

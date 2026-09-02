@@ -214,7 +214,6 @@ PERICYTE_TONE = {
     "name": "pericytes_tighten",
     "type": "pericyte_diameter_change",
     "overrides": {
-        "do_pericyte_construction": True,
         "constriction_by_branch_order": {"Art1": 1.0, "B01": 0.5, "Ven1": 1.0},
     },
 }
@@ -223,7 +222,6 @@ ARTERIOLE_AND_PERICYTE = {
     "type": "arteriole_and_pericyte_diameter_change",
     "overrides": {
         "arteriole_diameter_change_percent": 20,
-        "do_pericyte_construction": True,
         "constriction_by_branch_order": {"Art1": 1.0, "B01": 0.5, "Ven1": 1.0},
     },
 }
@@ -675,7 +673,6 @@ def test_two_pericyte_entries_keep_independent_constriction_knobs(tmp_path):
         "name": "short_sparse",
         "type": "pericyte_diameter_change",
         "overrides": {
-            "do_pericyte_construction": True,
             "constriction_by_branch_order": factors,
             "constriction_length_um": 20.0,
             "constriction_spacing_um": 200.0,
@@ -688,7 +685,6 @@ def test_two_pericyte_entries_keep_independent_constriction_knobs(tmp_path):
         "name": "long_dense",
         "type": "pericyte_diameter_change",
         "overrides": {
-            "do_pericyte_construction": True,
             "constriction_by_branch_order": factors,
             "constriction_length_um": 80.0,
             "constriction_spacing_um": 50.0,
@@ -720,7 +716,6 @@ def test_two_pericyte_entries_keep_independent_constriction_knobs(tmp_path):
 def test_two_pericyte_entries_with_different_branch_order_factors_differ(tmp_path):
     """constriction_by_branch_order is per entry: different tables, different R."""
     shared = {
-        "do_pericyte_construction": True,
         "constriction_length_um": 40.0,
         "constriction_spacing_um": 100.0,
         "use_probabilistic_pericyte_constriction": False,
@@ -776,7 +771,6 @@ def test_two_pericyte_entries_with_different_branch_order_factors_differ(tmp_pat
 def test_base_constriction_factor_with_branch_order_override(tmp_path):
     """Global 0.8 + {B01: 1.0} → only B01 differs from empty-map global."""
     shared = {
-        "do_pericyte_construction": True,
         "pericyte_constriction_factor": 0.8,
         "constriction_length_um": 40.0,
         "constriction_spacing_um": 100.0,
@@ -816,7 +810,6 @@ def test_empty_constriction_map_matches_omitted_map(tmp_path):
     inherits a non-empty baseline table, which is a different question.
     """
     shared = {
-        "do_pericyte_construction": True,
         "pericyte_constriction_factor": 0.8,
         "constriction_length_um": 40.0,
         "constriction_spacing_um": 100.0,
@@ -902,7 +895,6 @@ def test_a_failing_perturbation_is_reported_and_the_others_still_run(tmp_path):
         "type": "pericyte_diameter_change",
         # Asking for the mask strategy without a mask: it raises when it runs.
         "overrides": {
-            "do_pericyte_construction": True,
             "use_pericyte_mask_constriction": True,
         },
     }

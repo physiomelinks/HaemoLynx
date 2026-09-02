@@ -192,10 +192,9 @@ def _apply_sweep_resistances(
     stay fixed across the grid; only dilation % (and optionally pressure) move.
     """
     if sweep_dilation:
-        # Same strategy path as ``pericyte_diameter_change`` / apply.py — always
-        # called here when dilation is swept, so ``do_pericyte_construction``
-        # need not be True on the merged settings (that flag gates the main
-        # haemodynamics stage, not this perturbation).
+        # Same strategy path as ``pericyte_diameter_change`` — always called
+        # here when dilation is swept. ``do_pericyte_construction`` is forced
+        # False on every merge and does not gate this typed pericyte path.
         configured_probability = settings.get("pericyte_constriction_probability")
         G, _strategy, _strategy_results = set_resistances_for_constriction_strategy(
             G,

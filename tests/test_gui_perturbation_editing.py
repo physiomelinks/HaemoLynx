@@ -192,6 +192,8 @@ def test_the_tab_keeps_only_the_always_on_run_settings():
     assert "run_pericyte_dilation_sweep" not in EDITOR_SETTINGS
     assert "sweep_output_dir" not in EDITOR_SETTINGS
     assert "do_pericyte_construction" not in ALWAYS_VISIBLE_TAB_SETTINGS
+    assert "do_pericyte_construction" not in EDITOR_SETTINGS
+    assert "do_pericyte_construction" not in rows_for_type("pericyte_diameter_change")
     assert "constriction_by_branch_order" not in ALWAYS_VISIBLE_TAB_SETTINGS
     assert "pericyte_constriction_factor" not in ALWAYS_VISIBLE_TAB_SETTINGS
 

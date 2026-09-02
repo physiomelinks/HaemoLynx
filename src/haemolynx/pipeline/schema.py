@@ -966,10 +966,10 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "Legacy flag kept for configs and pericyte-entry overrides; "
-                "ignored by baseline Haemodynamics and every perturbation merge. "
-                "Focal constrictions come only from pericyte-typed perturbations "
-                "(pericyte_diameter_change / sweeps) via their strategy path"
+                "Legacy flag kept for older configs and CLI; ignored by baseline "
+                "Haemodynamics and every perturbation merge (not shown as a "
+                "typed-entry control). Focal constrictions come only from "
+                "pericyte-typed perturbations via their strategy path"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),

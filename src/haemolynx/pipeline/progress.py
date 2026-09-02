@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 #: ``PERICYTE_CONSTRICTION_SETTINGS`` in haemodynamics.perturbations -- the
 #: drift test in test_gui_tabs pins that.
 _PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB: tuple[str, ...] = (
-    "do_pericyte_construction",
     "pericyte_constriction_factor",
     "constriction_by_branch_order",
     "constriction_length_um",
@@ -53,16 +52,22 @@ _PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB: tuple[str, ...] = (
     "pericyte_constriction_seed",
 )
 
-#: Baseline-vs-constricted comparison CSV knobs. Still in the Diameters schema
-#: section for apply.py / CLI, but claimed here so they are not always-on
-#: Diameters rows -- the Perturbations tab covers related pericyte workflows.
-#: Not revealed as typed-entry options (no comparison perturbation type yet).
-_COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS: tuple[str, ...] = (
+#: Legacy baseline flags and comparison-CSV knobs. Still in the Diameters
+#: schema section for apply.py / CLI, but claimed here so they leave the
+#: Diameters tab without becoming always-on or typed-entry rows. The pipeline
+#: forces ``do_pericyte_construction`` and ``run_pericyte_resistance_comparison``
+#: False on baseline and every perturbation merge.
+_LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS: tuple[str, ...] = (
+    "do_pericyte_construction",
     "run_pericyte_resistance_comparison",
     "pericyte_comparison_baseline_value",
     "pericyte_comparison_constricted_value",
     "reuse_comparison_pericyte_cohort_for_main_run",
 )
+
+#: Alias kept for older test imports; prefer
+#: :data:`_LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS`.
+_COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS = _LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
 
 
 @dataclass(frozen=True)
@@ -170,12 +175,13 @@ STAGES: tuple[Stage, ...] = (
         # Pericyte / constriction knobs stay in the Diameters schema section
         # (apply.py reads that group by name) but their *rows* belong here:
         # they are options of a typed perturbation, revealed only when one is
-        # chosen. Comparison CSV flags are claimed here too so they leave the
-        # Diameters tab, without becoming always-on Perturbations rows.
+        # chosen. Legacy baseline / comparison flags are claimed here too so
+        # they leave the Diameters tab without becoming always-on or typed
+        # rows (the pipeline forces those flags False on baseline and merges).
         # Named claims beat the Diameters section claim below.
         settings=(
             *_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB,
-            *_COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS,
+            *_LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS,
         ),
         sections=("Perturbation runs",),
     ),
