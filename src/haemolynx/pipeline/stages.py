@@ -828,26 +828,26 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
         elif settings["run_haemodynamics"]:
             # Two config sections go in whole rather than as forty-odd
             # keyword arguments; everything else here is computed by this run.
+            # Baseline never places focal pericyte constrictions or runs the
+            # comparison CSV -- even when those flags are True in YAML/CLI/GUI.
+            # Pericyte tone belongs to typed perturbation entries that call
+            # set_resistances_for_constriction_strategy themselves.
+            diameters = dict(
+                schema.section_values(settings, "Diameters and pericytes")
+            )
+            diameters["do_pericyte_construction"] = False
+            diameters["run_pericyte_resistance_comparison"] = False
             haemo_config = HaemodynamicsApplyConfig(
-                diameters=schema.section_values(settings, "Diameters and pericytes"),
+                diameters=diameters,
                 fwhm=schema.section_values(settings, "FWHM diameter measurement"),
                 resistance_node_pair=resistance_node_pair,
                 voxel_size_zyx=voxel_size_zyx,
                 axis_order=settings["image_axis_order"],
-                comparison_output_csv_path=(
-                    output_dir / f"{settings['input_path'].stem}_pericyte_resistance_comparison.csv"
-                    if settings["run_pericyte_resistance_comparison"]
-                    else None
-                ),
+                comparison_output_csv_path=None,
             )
             G, haemo_results = apply_poiseuille_haemodynamics(G, config=haemo_config)
             if "fwhm" in haemo_results:
                 logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
-                if settings["do_pericyte_construction"]:
-                    logger.info(
-                        "Pericyte mode: passive diameter d1 from per-edge FWHM where available, "
-                        "else DIAMETER_BY_BRANCH_ORDER; d2 = d1 * CONSTRICTION_BY_BRANCH_ORDER."
-                    )
             elif settings["use_fwhm_edge_diameters"] is False:
                 logger.info(
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
@@ -1162,6 +1162,12 @@ def _perturb_one(
 
     overrides = spec.applied_overrides(schema)
     perturbed = {**settings, **overrides}
+    # Top-level do_pericyte_construction / comparison flags must not bleed
+    # into any perturbation. Non-pericyte types stay on uniform Poiseuille;
+    # pericyte types place constrictions via their own strategy call, not
+    # because the global flag survived the merge.
+    perturbed["do_pericyte_construction"] = False
+    perturbed["run_pericyte_resistance_comparison"] = False
     result.output_dir = root / spec.name
     result.output_dir.mkdir(parents=True, exist_ok=True)
 
