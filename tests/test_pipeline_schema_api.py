@@ -8,6 +8,7 @@ only the package importable, prove it does not reach back into the repository.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -117,6 +118,33 @@ def test_write_default_config_accepts_an_extended_schema(tmp_path):
 # --- the installed-package case --------------------------------------------
 
 
+def isolated_import_env(pythonpath: Path) -> dict:
+    """This process's environment with `pythonpath` as the only import root.
+
+    Isolation here means one thing -- a known `PYTHONPATH` -- and it is spelled
+    as a replacement rather than a hand-built environment on purpose. An
+    interpreter cannot be started in an empty environment: on Windows one
+    without `SYSTEMROOT` cannot initialise its socket layer and dies importing
+    `_overlapped`, so an environment listing only the paths the test cares
+    about tests nothing but the platform. What the environment must not do is
+    smuggle a repository checkout in through an inherited `PYTHONPATH`; that
+    the checkout really is out of reach is then asserted by the subprocess
+    itself, which is the only place it can be observed.
+    """
+    return {**os.environ, "PYTHONPATH": str(pythonpath)}
+
+
+def test_the_isolated_environment_replaces_only_the_import_path(monkeypatch):
+    """Everything the platform needs to start an interpreter must survive."""
+    monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT))
+    env = isolated_import_env(SRC)
+
+    assert env["PYTHONPATH"] == str(SRC), "an inherited PYTHONPATH leaked through"
+    assert {name: value for name, value in env.items() if name != "PYTHONPATH"} == {
+        name: value for name, value in os.environ.items() if name != "PYTHONPATH"
+    }
+
+
 def test_a_bare_package_import_can_configure_a_run(tmp_path):
     """No repository, no examples/ on the path: still able to write a config.
 
@@ -124,9 +152,28 @@ def test_a_bare_package_import_can_configure_a_run(tmp_path):
     that is honest -- in a fresh interpreter that cannot see this checkout.
     """
     script = textwrap.dedent(
-        """
+        f"""
+        import importlib.util
+        import pathlib
+        import sys
+
+        repo_root = pathlib.Path({str(REPO_ROOT)!r})
+        reachable = [
+            entry
+            for entry in sys.path
+            if entry
+            and pathlib.Path(entry).resolve() in (repo_root, repo_root / "examples")
+        ]
+        assert not reachable, "the repository is importable from: " + repr(reachable)
+        for name in ("examples", "resistance_network_pipeline", "pipeline_presets"):
+            assert importlib.util.find_spec(name) is None, name + " is importable"
+
+        import haemolynx
         from haemolynx.parsers import load_config
         from haemolynx.pipeline import default_schema, write_default_config
+
+        package_dir = pathlib.Path(haemolynx.__file__).resolve().parent
+        assert package_dir == pathlib.Path({str(SRC)!r}).resolve() / "haemolynx", package_dir
 
         write_default_config("cfg.yaml")
         settings = load_config("cfg.yaml", default_schema())
@@ -139,7 +186,7 @@ def test_a_bare_package_import_can_configure_a_run(tmp_path):
     result = subprocess.run(
         [sys.executable, "run.py"],
         cwd=tmp_path,
-        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(SRC), "HOME": str(tmp_path)},
+        env=isolated_import_env(SRC),
         capture_output=True,
         text=True,
     )

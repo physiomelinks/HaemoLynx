@@ -336,11 +336,13 @@ pytest tests/integration/test_pipeline_tutorial.py -s
 > phase is done. Until then, treat the descriptions above as the *current* state and the items below
 > as the *target* state.
 >
-> **Baseline (Windows):** `pytest -m "not slow"` → **1175 passed, 1 failed, 6 skipped, 35 deselected**.
-> The one failure is `test_pipeline_schema_api.py::test_a_bare_package_import_can_configure_a_run`,
-> and it is a fault in the test rather than the code: it launches a subprocess with a hardcoded
-> `PATH="/usr/bin:/bin"` and no `SYSTEMROOT`, which no Windows interpreter can import in. CI only
-> runs `ubuntu-latest`, so nothing catches it there.
+> **Baseline (Windows):** `pytest -m "not slow"` → **1188 passed, 6 skipped, 35 deselected**.
+> It used to be one short:
+> `test_pipeline_schema_api.py::test_a_bare_package_import_can_configure_a_run` built its
+> subprocess environment from nothing, and a Windows interpreter started without `SYSTEMROOT`
+> cannot initialise its socket layer. That environment is now the parent's with `PYTHONPATH`
+> replaced, and the subprocess asserts for itself that the checkout is unreachable. CI only runs
+> `ubuntu-latest`, so nothing would have caught it there.
 > Re-run this (and the full `pytest`, including `slow`/`integration`) after **every** phase; no phase
 > may reduce the green count. Every behaviour change needs a test (see Testing policy above).
 
