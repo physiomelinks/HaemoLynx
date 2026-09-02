@@ -547,6 +547,23 @@ def load_binary_mask_and_voxel_size(
     return np.asarray(image) > 0, voxel_size_xyz
 
 
+def _skeletonize_loaded_volume(image: np.ndarray) -> np.ndarray:
+    """Binarize, skeletonize and fill holes: what every loader must do.
+
+    One function because the TIFF and H5 loaders drifted apart -- the TIFF one
+    filled holes and the H5 one did not, so the same volume produced a
+    different skeleton depending on the file it was saved in. The hole fill was
+    added deliberately to the TIFF path (issue #4) and the graph builder has
+    been tuned against skeletons that have it, so the H5 path was the one that
+    was wrong. It is a no-op on the normal case anyway: a thin 3D curve
+    encloses no background, which is what
+    ``test_fill_binary_holes_on_a_sparse_skeleton_changes_nothing`` pins.
+    """
+    binary = _to_binary_volume_for_skeletonization(image)
+    skeleton = skeletonize(binary.astype(bool), method="lee")
+    return fill_binary_holes(skeleton).astype(bool)
+
+
 def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AXIS_ORDER):
     """Load a TIFF in canonical ``(z, y, x)`` order and skeletonize it."""
     logger.info("Loading and skeletonizing TIFF...")
@@ -559,10 +576,8 @@ def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AX
     ) = load_3d_tif_with_voxel_size(filepath, axis_order=axis_order)
 
     logger.info("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
-    binary = _to_binary_volume_for_skeletonization(image)
-    skeleton = skeletonize(binary.astype(bool), method="lee")
-    skeleton = fill_binary_holes(skeleton)
-    return image, skeleton.astype(bool), voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+    skeleton = _skeletonize_loaded_volume(image)
+    return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
 def load_and_skeletonize_3d_h5(
@@ -591,7 +606,6 @@ def load_and_skeletonize_3d_h5(
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 
-    binary = _to_binary_volume_for_skeletonization(image)
-    skeleton = skeletonize(binary.astype(bool), method="lee")
+    skeleton = _skeletonize_loaded_volume(image)
     return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
