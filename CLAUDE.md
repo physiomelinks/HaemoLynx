@@ -11,12 +11,14 @@ HaemoLynx turns 3D microvascular microscopy into **NetworkX graphs** with haemod
 ```
 haemolynx/
 ├── src/haemolynx/          # Installable package (setuptools, pythonpath = src in pytest)
+│   ├── geometry.py         # Polyline arc length, shared by haemodynamics and visualization
 │   ├── io/                 # load.py, ilastik.py, voxel_validation.py, axis_order.py,
 │   │                       #   automated_vessel_assignment.py (mask loading/validation)
 │   ├── preprocessing/      # skeleton.py — skeletonize, bridge, clean, bundle refinement
 │   ├── graph/              # assemble.py (orchestrator) + build, reconnect, optimise, degree2,
 │   │                       #   prune, collapse, branch_order, boundaries, large_vessels,
 │   │                       #   diagnostics, validate, _helpers,
+│   │                       #   smoothing.py (centreline smoothing — rewrites `length`),
 │   │                       #   automated_vessel_assignment.py (terminal-node assignment)
 │   ├── haemodynamics/      # poiseuille, resistance, apply, automated.py (FWHM diameters),
 │   │                       #   constriction (the one constriction model) + its site-choosing
@@ -27,25 +29,27 @@ haemolynx/
 │   │                       #   tabs.py (one tab per stage), progress.py (what the
 │   │                       #   progress bars read, pure), results.py (what each
 │   │                       #   stage puts in the viewer, pure), layers.py (an open
-│   │                       #   layer -> run settings, pure), _widget.py (the panel),
-│   │                       #   napari.yaml (npe2 manifest)
-│   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py, _helpers.py
+│   │                       #   layer -> run settings, pure), boundary_picking.py
+│   │                       #   (boundary settings <-> napari Points/Shapes, pure),
+│   │                       #   _widget.py (the panel), napari.yaml (npe2 manifest)
+│   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py,
+│   │                       #   geometry.py (an edge -> a drawable polyline),
+│   │                       #   dilation_curves.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # schema.py (the pipeline's 140 settings), settings.py, checks.py,
-│                           #   stages.py, progress.py (the ordered STAGES + the
-│                           #   progress callback); public: default_schema,
-│                           #   write_default_config
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 148 settings),
+│                           #   settings.py, checks.py (preflight), stages.py (one
+│                           #   function per stage + run_pipeline_stages), progress.py
+│                           #   (the ordered STAGES + the progress callback); public:
+│                           #   default_schema, write_default_config, preflight
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
 │   ├── brain_network_pipeline.py             # Whole-brain run: pipeline + pericyte dilation sweep
+│   ├── carotid_image_to_model.py             # Carotid dataset: the same pipeline, its own config
+│   ├── simple_network_haemodynamics.py       # Hand-built graph: the haemodynamics API on its own
 │   ├── *_schema.py / *_config.yaml           # Settings an example adds on top of
 │   │                                         #   haemolynx.pipeline.schema; configs are generated
-│   ├── resistance_pipeline_settings.py       # Legacy constants (presets/wizard still read these)
-│   ├── presets.py          # Preset definitions + CLI/YAML override engine
-│   ├── local_presets.py    # User-local preset overrides (stub)
-│   ├── preflight.py        # Pre-run validation checklist
-│   ├── wizard.py           # Interactive setup
-│   └── carotid_image_to_model.py  # Carotid dataset: the same pipeline, its own config
+│   ├── pipeline_presets.py                   # Named partial configs, validated against the schema
+│   └── regenerate_configs.py                 # Rewrite every *_config.yaml from its schema
 ├── tutorials/
 │   ├── pipeline_tutorial.ipynb   # **Source of truth** for the step-by-step tutorial
 │   ├── pipeline_tutorial.py       # Auto-generated from the notebook (do not edit by hand)
@@ -79,7 +83,7 @@ haemolynx/
 2. **Large arteriole/venule masks** — `use_ilastik_large_vessel_segmentation` (requires `use_large_vessel_masks=True`).
 3. **Small arteriole/venule masks** — `use_ilastik_small_vessel_segmentation` (requires `use_small_vessel_masks_for_boundary_assignment=True`).
 
-Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. See `examples/resistance_pipeline_settings.py` and `examples/preflight.py` for required paths when flags are enabled.
+Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. Every one of them is declared in `pipeline/schema.py`, with its prerequisites; `pipeline/checks.py` (`haemolynx.pipeline.preflight`) is what tells a user which required paths are missing before any work starts.
 
 Users may also supply **pre-segmented** masks only (no ilastik call) — typical for tutorial data and many tests.
 
@@ -90,7 +94,7 @@ Users may also supply **pre-segmented** masks only (no ilastik call) — typical
 0. **Segmentation (optional)** — ilastik headless on raw TIFF/H5 → binary mask; or skip if input is already segmented  
 1. **Load & skeletonize** — `io.load_and_skeletonize_3d_tif` / `_h5`; `preprocessing.preprocess_skeleton_for_graph`  
 2. **Vessel masks (optional)** — `io.load_and_validate_vessel_masks` (large/small arteriole/venule; from disk or ilastik)  
-3. **Graph build** — `graph.build_graph_from_skeleton` (multi-step topology pipeline in `graph/assemble.py`)  
+3. **Graph build** — `graph.build_graph_from_skeleton` (eleven topology steps in `graph/assemble.py`), then `graph.smooth_graph_centrelines`  
 4. **Boundary & branch order** — manual volume/coordinates or mask-based assignment; `graph.assign_vessel_branch_orders` / hierarchical orders  
 5. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve  
 6. **Export & stats** — `visualization.graph_to_vtk`, `statistics.compute_comprehensive_vessel_statistics`
@@ -139,7 +143,10 @@ pip install -e ".[dev]"
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `tests/test_branch_order_hierarchy.py`, boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, FWHM/pericyte integration tests |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py` |
-| `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py` |
+| `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py` |
+| `src/haemolynx/gui/` | `tests/test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking*.py`, `test_gui_widget.py` |
+| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py` |
+| Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
 | Full pipeline / examples | `tests/integration/test_image_to_model_pipeline.py`, `test_nerve_pipeline.py` |
 | Tutorial notebook | `tests/integration/test_pipeline_tutorial.py` (exports notebook → `.py`, then runs) |
 
@@ -162,11 +169,20 @@ reports the others).
 
 - **Library code** lives under `src/haemolynx/`. Keep `examples/` thin — orchestration, CLI, presets.
 - **Minimal diffs** — match existing naming, types, and import style in the touched module.
-- **Input contract** — pipeline expects **binary vessel masks** at skeletonization time. Masks may come from pre-existing files or from **ilastik inference** in this repo; classifier training is always manual. Document new ilastik-related paths/flags in `resistance_pipeline_settings.py` and `preflight.py`.
+- **Settings** — every setting is declared exactly once, in `pipeline/schema.py`, and the examples
+  add their own on top of it (`examples/*_schema.py`). A new ilastik path or flag goes there, with
+  its `requires`, so `pipeline/checks.py` can check it and the config file and the CLI both grow a
+  line for free.
+- **Generated configs** — `examples/*_config.yaml` are written by `examples/regenerate_configs.py`
+  from the schemas, never hand-edited: they carry each setting's help text, units and prerequisites
+  as comments. Path values are serialised with `PurePath(...).as_posix()`, so regenerating on
+  Windows reproduces the committed files byte for byte instead of rewriting every path with
+  backslashes.
+- **Input contract** — pipeline expects **binary vessel masks** at skeletonization time. Masks may come from pre-existing files or from **ilastik inference** in this repo; classifier training is always manual.
 - **Axis order** — arrays are canonical `(z, y, x)`: axis 0 is the stack axis that overlays and
   projections look through. Loaders take `axis_order` (`"zyx"` default, any permutation of `xyz`)
   and transpose the input to canonical order, so **that setting is how a user picks which axis is z**
-  (`IMAGE_AXIS_ORDER` in `examples/resistance_pipeline_settings.py`). See `io/axis_order.py`.
+  (the `image_axis_order` setting). See `io/axis_order.py`.
 - **Voxel sizes** — two orders, never mix them. Image metadata is physical **`(x, y, z)`**
   (`voxel_size_xyz`, `io.voxel_validation.resolve_voxel_size_xyz`); anything that scales array
   indices takes per-array-axis spacing in **`(z, y, x)`** (`voxel_size_zyx`). Convert once at the
@@ -185,6 +201,8 @@ reports the others).
 - **Graph** — `nx.MultiGraph` with `pos` on nodes and `voxels` on edges, both in physical
   `(z, y, x)` microns; haemodynamics uses `branch_order` on edges.
 - **Edge attributes & units** — `length` (µm), `resistance` (Pa·s/m³), `conductance` (m³/(Pa·s)).
+  `length` is measured from `voxels`, and **centreline smoothing rewrites both** (see
+  `graph/smoothing.py`), so it is the smoothed curve the haemodynamics and the exports agree on.
   `resistance` and `conductance` are always written together via
   `haemodynamics.poiseuille.set_edge_resistance`. **There is no `weight` attribute** — it used to
   mean physical length at build time and conductance after haemodynamics ran, so statistics read
@@ -215,7 +233,11 @@ reports the others).
     viscosity ones.
   - Switching the default from the power law to Pries **roughly doubles capillary resistance**
     (2.03× at 5 µm). `tests/test_viscosity_laws.py` pins the ratios at each diameter.
-- **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`.
+- **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via
+  `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`. Both loaders skeletonize
+  through the one `io.load._skeletonize_loaded_volume` helper, which binarizes, skeletonizes **and
+  fills holes**: the TIFF and H5 paths had drifted apart on that last step, so one volume saved in
+  two formats produced two different graphs. Anything that adds a third loader calls the same helper.
 - **Comments** — only for non-obvious domain logic; prefer self-explanatory code.
 
 ---
@@ -227,13 +249,30 @@ reports the others).
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
 - **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.*
 - **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).*
-- **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step, one per label in `STEP_LABELS`.
+- **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step, one per label in `STEP_LABELS` (eleven of them).
+- **`graph/smoothing.py`** — `smooth_graph_centrelines`: takes the voxel staircase out of each
+  centreline and **re-measures `length`**, which moves every resistance (a path stepping voxel to
+  voxel comes back ~7% longer than the vessel it traces). It is *not* one of the `STEP_LABELS` —
+  it runs in `pipeline/stages.py`'s `build_network`, after the topology steps and before the graph
+  is pickled — so a caller assembling a graph by hand gets no smoothing unless it asks. A smoothed
+  path is only accepted if it stays within `max_deviation` of a skeleton voxel and is no longer than
+  the path it came from; each edge records which of `smoothed` / `relaxed` / `kept_raw` /
+  `too_short` happened to it.
+- **`pipeline/stages.py`** — one function per stage (`segment`, `skeletonise`, `build_network`,
+  `assign_boundaries`, `assign_diameters`, `build_haemodynamic_model`, `solve`, `export_results`),
+  each taking settings plus the previous stage's dataclass, so a caller can run them one at a time
+  and intervene. `run_pipeline_stages` is the thin orchestrator that runs all eight in order and
+  returns the graph.
 - **`pipeline/progress.py`** — `STAGES`, the run's eight stages in order (the panel draws one tab
   per entry and a progress bar counts them — one list, not two), plus what a run reports through:
   `run_pipeline_stages(settings, schema, progress=callback)` hands the callback a `ProgressEvent`
   as each stage starts, finishes or fails, and one per topology step inside graph building.
   `log_progress` is the ready-made console consumer; the napari panel's bars are the other one.
   Nothing here imports a GUI or a progress-bar library — the callback is the whole mechanism.
+- **`pipeline/checks.py`** — `preflight(settings, schema)`, the pre-run checklist: the schema's own
+  checks (`parsers/checks.py`) plus what only this pipeline knows — the artefact a skipped stage
+  must have left behind, and whether the ilastik executable can be found. The examples call it
+  before doing any work and exit if it fails.
 - **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from raw TIFF (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`). *“automated” is a misnomer; this is diameter estimation.*
 - **`haemodynamics/constriction.py`** — the constriction model: diameter profile around a site,
   the resistance integral, and `apply_constriction_sites`, the only place a constricted edge's
@@ -241,12 +280,24 @@ reports the others).
   `pericyte_mask.py` takes them from a segmented mask, `probability.py` places them periodically
   and activates each with a probability. Its viscosity is the configured law from
   `viscosity.py`, and its resistances are in Pa·s/m³, so a constricted edge is directly
-  comparable with `poiseuille.py`'s uniform one.
+  comparable with `poiseuille.py`'s uniform one — an edge with no sites on it is *exactly*
+  `PoiseuilleModel.resistance_of_uniform_segment`, which `tests/test_constriction.py` pins as an
+  equality.
 - **`haemodynamics/constriction_strategy.py`** — `set_resistances_for_constriction_strategy`, the
   single place the settings pick a strategy, used by both `apply.py` and `pericyte_comparison.py`.
 - **`haemodynamics/apply.py`** — high-level Poiseuille application used by examples and tutorial.
 - **`statistics/three_dim_distances.py`** — cell-to-vessel distances.
-- **`examples/resistance_pipeline_settings.py`** — default constants and ilastik toggles; the preset/override engine lives in `examples/presets.py`.
+- **`visualization/geometry.py`** — `edge_polyline`: an edge's `voxels` (or its two node positions)
+  turned into a polyline that runs `u`→`v` and touches both nodes. The VTK export, the pericyte
+  point derivation and two plotly writers each answered that separately, and drew vessels in
+  slightly different places; this is the one answer.
+- **`gui/boundary_picking.py`** — the four boundary roles' coordinate and volume settings as napari
+  Points and Shapes layers, and back. Pure, like the rest of `gui/` bar `_widget.py`: settings in,
+  layer specs out, layer data in, settings out, nothing importing napari. `rectangle_from_box` and
+  `box_from_rectangle` are exact inverses, which is what lets an edited layer *be* the setting.
+- **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
+  checked against the schema at import, so a preset cannot quietly set something that no longer
+  exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.
 
 ---
 
@@ -280,11 +331,16 @@ pytest tests/integration/test_pipeline_tutorial.py -s
 
 # Cleanup plan (TEMPORARY — delete this whole section once implemented)
 
-> **Status:** approved, not yet implemented. This is a living checklist. Tick items as PRs land,
-> and **remove this entire section** when every phase is done. Until then, treat the descriptions
-> above as the *current* state and the items below as the *target* state.
+> **Status:** partly implemented — Phases 0, 1 and 3 are done, Phase 4 nearly, Phase 2 not started.
+> This is a living checklist. Tick items as PRs land, and **remove this entire section** when every
+> phase is done. Until then, treat the descriptions above as the *current* state and the items below
+> as the *target* state.
 >
-> **Baseline at time of writing:** `pytest -m "not slow"` → **99 passed, 1 skipped, 8 deselected**.
+> **Baseline (Windows):** `pytest -m "not slow"` → **1175 passed, 1 failed, 6 skipped, 35 deselected**.
+> The one failure is `test_pipeline_schema_api.py::test_a_bare_package_import_can_configure_a_run`,
+> and it is a fault in the test rather than the code: it launches a subprocess with a hardcoded
+> `PATH="/usr/bin:/bin"` and no `SYSTEMROOT`, which no Windows interpreter can import in. CI only
+> runs `ubuntu-latest`, so nothing catches it there.
 > Re-run this (and the full `pytest`, including `slow`/`integration`) after **every** phase; no phase
 > may reduce the green count. Every behaviour change needs a test (see Testing policy above).
 
@@ -297,36 +353,44 @@ running tests between each.
 - **Two files named `automated_vessel_assignment.py`** (`io/` = mask loading, `graph/` = terminal-node
   assignment). No shared code — just a confusing name collision.
 - **`haemodynamics/automated.py`** is FWHM diameter measurement, not “automation”.
-- **`graph/__init__.py` bug:** imports `create_merged_edge_attributes` twice and lists
+- ~~**`graph/__init__.py` bug:** imports `create_merged_edge_attributes` twice and lists
   `create_merged_edge_attributes_simple` / `_full` in `__all__` — neither is imported, so
-  `from haemolynx.graph import *` raises `AttributeError`. (Confirmed reproducible.)
+  `from haemolynx.graph import *` raises `AttributeError`.~~ **DONE** — see Phase 1.
 - ~~**Dependency drift:** `requirements.txt` and `pyproject.toml` disagree.~~ **DONE** —
   `requirements.txt` is deleted; `pyproject.toml` is the only source.
 - ~~**Dead code:** `examples/OLD/` (two pre-refactor scripts, imported by nothing).~~ **DONE** — deleted.
-- The settings/preset system (`resistance_pipeline_settings.py` + `presets.py` + `preflight.py` +
-  `wizard.py`) is **not** duplicated — it’s a clean layered design. Leave its logic alone; just document.
+- ~~The settings/preset system (`resistance_pipeline_settings.py` + `presets.py` + `preflight.py` +
+  `wizard.py`) is **not** duplicated — it’s a clean layered design.~~ **SUPERSEDED** — those four
+  files are gone. The constants became schema declarations in `pipeline/schema.py`, `preflight`
+  became `pipeline/checks.py`, the override engine became `parsers/cli.py` + `parsers/config.py`,
+  and all that is left beside the examples is `pipeline_presets.py`. The wizard was dropped: the
+  generated config file, which documents every setting inline, does its job.
 - **`examples/carotid_image_to_model.py`** was orphaned and could not even be imported
   (`PLOT_DIR` undefined; `__main__` passed an argument the entry point did not take) — **fixed**:
-  it is now `carotid_schema.py` + `carotid_config.yaml` over `haemolynx.pipeline`, like the other
-  examples. Dale’s segmentation work slots into its `use_ilastik_segmentation` path.
+  it survives as a 91-line runner over `carotid_schema.py` + `carotid_config.yaml`, calling
+  `haemolynx.pipeline.run_pipeline_stages` like the other examples. Dale’s segmentation work slots
+  into its `use_ilastik_segmentation` path.
 
 ### Phase 0 — Housekeeping & safety net (lowest risk)
 - [x] Delete `examples/OLD/`.
-- [ ] Confirm `.gitignore` covers both `.venv/` **and** `venv/`, plus `__pycache__/`, `examples/outputs/`,
+- [x] Confirm `.gitignore` covers both `.venv/` **and** `venv/`, plus `__pycache__/`, `examples/outputs/`,
       `examples/plots/`, `tutorials/outputs/`, `tutorials/plots/`, `tests/outputs/`, `tests/plots/`,
-      `examples/images/`. (None are tracked today — keep it that way.)
+      `examples/images/`. (None are tracked today — keep it that way.) All ten are listed, plus
+      `/outputs/` and `/plots/` for a run started from the repository root.
 - [x] Make dependencies single-source: `requirements.txt` deleted, `pyproject.toml` authoritative.
       `pytest` lives in the `dev` extra only and `ipykernel` moved to a new `notebook` extra.
-- [ ] Run full `pytest`. Commit.
+- [x] Run full `pytest`. Commit.
 
-### Phase 1 — Fix the `graph/__init__.py` star-import bug (small, high value)
-- [ ] Remove the duplicate `create_merged_edge_attributes` import; reconcile `__all__` with what is
-      actually imported (drop the phantom `_simple`/`_full` names, or import the real symbols if they
-      exist in `_helpers.py`).
-- [ ] Add a regression test (e.g. `tests/test_graph_public_api.py`) that does `from haemolynx.graph import *`
-      and asserts every name in `__all__` is importable. Do the same guard for the other subpackages’
-      `__all__` while we’re here.
-- [ ] Run full `pytest`. Commit.
+### Phase 1 — Fix the `graph/__init__.py` star-import bug — **DONE**
+- [x] Remove the duplicate `create_merged_edge_attributes` import; reconcile `__all__` with what is
+      actually imported. The phantom `_simple`/`_full` names are gone, the duplicate import is gone,
+      and `from haemolynx.graph import *` succeeds.
+- [x] Add a regression test that does `from haemolynx.graph import *` and asserts every name in
+      `__all__` is importable, and the same guard for the other subpackages. It landed as
+      `tests/test_public_api.py` (not the `test_graph_public_api.py` this plan proposed, because it
+      guards every subpackage and not just `graph`), and it also catches duplicates in `__all__` and
+      modules whose name is not a valid identifier.
+- [x] Run full `pytest`. Commit.
 
 ### Phase 2 — Rename modules for clarity (mechanical, test-guarded)
 Rename + update all imports in `src/`, `examples/`, `tests/`, and the `__init__.py` re-exports.
@@ -334,7 +398,9 @@ Keep the **public function names** the same so the API surface doesn’t move; o
 - [ ] `io/automated_vessel_assignment.py` → `io/vessel_masks.py`.
 - [ ] `graph/automated_vessel_assignment.py` → `graph/terminal_node_assignment.py`.
 - [ ] `haemodynamics/automated.py` → `haemodynamics/fwhm_diameter.py` (update `haemodynamics/__init__.py`,
-      `haemodynamics/pipeline.py`, and `statistics/three_dim_distances.py` which calls `build_graph_branch_label_volume`).
+      `pipeline/stages.py`, and `statistics/three_dim_distances.py` which calls
+      `build_graph_branch_label_volume`; the `haemodynamics/pipeline.py` this item used to name no
+      longer exists).
 - [x] `statistics/3D_distances.py` → `statistics/three_dim_distances.py`; the `importlib` hack in
       `statistics/__init__.py` is gone, replaced by a normal
       `from .three_dim_distances import ...`. `tests/test_3d_distances.py` →
@@ -342,24 +408,31 @@ Keep the **public function names** the same so the API surface doesn’t move; o
 - [ ] Use `git mv` so history is preserved. Run full `pytest` after each rename. Commit per rename.
 
 ### Phase 3 — De-duplicate the whole-brain workflow — **DONE**
-- [x] The stage runner moved to `src/haemolynx/pipeline.py`, so examples share it instead of forking it.
+- [x] The stage runner moved to `src/haemolynx/pipeline/` (a package: `schema`, `settings`, `checks`,
+      `stages`, `progress`), so examples share it instead of forking it.
 - [x] The pressure/boundary-flow solve and the pericyte dilation sweep moved to
       `src/haemolynx/haemodynamics/pericyte_sweep.py`; the curve plots to
       `src/haemolynx/visualization/dilation_curves.py`.
 - [x] `resistance_network_pipeline_for_Alice.py` (1,795 lines) and root-level `AlicePaper.py` are
-      replaced by `examples/brain_network_pipeline.py` (73 lines) plus `brain_pipeline_config.yaml`.
+      replaced by `examples/brain_network_pipeline.py` (84 lines) plus `brain_pipeline_config.yaml`.
       "Alice" is gone from the names; the sweep is described by what it does.
 - [x] `tests/test_alice.py` → `tests/test_pericyte_sweep.py`, driving the extracted module.
 
 ### Phase 4 — Thin out the examples / consolidate config (larger, do last)
-- [x] Stage orchestration lifted into `src/haemolynx/pipeline.py`; the example is now config + CLI
-      glue (1,282 → ~250 lines) and `brain_network_pipeline.py` runs the same stages.
-- [ ] Split `haemolynx.pipeline.run_pipeline_stages` further into one function per stage
-      (segmentation → skeletonize → graph → boundary/branch-order → haemodynamics → export/stats)
-      with unit tests per stage. It is one ~800-line function today.
-- [ ] Add a short “preset system” note to the README (settings constants → preset dicts → CLI/YAML overrides),
-      since the layering isn’t obvious from filenames.
-- [ ] Populate `examples/local_presets.py` with one realistic example preset (it’s currently an empty stub).
+- [x] Stage orchestration lifted into `src/haemolynx/pipeline/`; the example is now config + CLI
+      glue (1,282 → 107 lines) and `brain_network_pipeline.py` (84 lines) runs the same stages.
+- [x] Split `run_pipeline_stages` into one function per stage. `pipeline/stages.py` has eight —
+      `segment`, `skeletonise`, `build_network`, `assign_boundaries`, `assign_diameters`,
+      `build_haemodynamic_model`, `solve`, `export_results` — each taking `settings` first and the
+      previous stage's dataclass after it, and `run_pipeline_stages` is a ~65-line orchestrator over
+      them. Per-stage *unit* tests are still thin: only `segment` has a file of its own
+      (`tests/test_segment_stage.py`), and the rest are reached through
+      `tests/test_pipeline_invariants.py` and the integration runs.
+- [ ] Add a short “preset system” note to the README (schema declarations → preset dicts → CLI/YAML
+      overrides), since the layering isn’t obvious from filenames. The README does not mention
+      presets at all today.
+- [x] ~~Populate `examples/local_presets.py` with one realistic example preset.~~ Dropped: the stub is
+      gone, and `examples/pipeline_presets.py` ships nine worked presets validated against the schema.
 
 ### When done
 - [ ] Full `pytest` (incl. `slow`/`integration`) green; tutorial notebook still exports & runs.
