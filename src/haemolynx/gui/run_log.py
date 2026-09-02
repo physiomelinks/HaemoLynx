@@ -7,12 +7,24 @@ logging, so every record is dropped by the root logger's level check before it
 reaches anywhere at all.
 
 This module is the half of a live log window that is not Qt: what a record
-looks like as text, and a bounded buffer to hold the text in between the run's
-thread writing it and the GUI thread drawing it. The widget's job is then only
-to copy :meth:`RunLog.drain`'s lines into a text box on a timer, the same
-division as :mod:`haemolynx.gui.progress` and :mod:`haemolynx.gui.run_state`.
+looks like as text, a bounded buffer to hold the text in between the run's
+thread writing it and the GUI thread drawing it, and the handler that fills the
+buffer for the length of a run. The widget's job is then only to copy
+:meth:`RunLog.drain`'s lines into a text box on a timer, the same division as
+:mod:`haemolynx.gui.progress` and :mod:`haemolynx.gui.run_state`.
 
-Three decisions worth knowing before reading:
+**Capturing means lowering a level, not just adding a handler.** This is the
+fact that makes the window possible at all: :func:`attach` sets the
+``haemolynx`` logger's own level as well as the handler's, because a record
+below the logger's effective level never reaches a handler to begin with. It
+attaches to ``haemolynx`` rather than to the root logger on purpose -- lowering
+root's level pulls in matplotlib's font manager, PIL and napari itself, which
+between them out-talk the pipeline several times over -- and it leaves
+propagation alone, so a console handler from
+:func:`haemolynx.parsers.configure_console_logging` still receives everything.
+It is an additional handler, never a replacement.
+
+Three more decisions worth knowing before reading:
 
 **Formatting happens on the way in.** :meth:`RunLog.add_record` turns the
 record into strings immediately, on the emitting thread, so the buffer holds
@@ -256,3 +268,140 @@ class RunLog:
             self._lines.clear()
             self._dropped = 0
             self._reported = 0
+
+
+class RunLogHandler(logging.Handler):
+    """A handler that puts each record into a :class:`RunLog` and stops there.
+
+    Deliberately the cheapest thing that could work. Records arrive on the
+    run's worker thread and, inside graph building, on a
+    :class:`~concurrent.futures.ThreadPoolExecutor`'s threads; a handler that
+    emitted a Qt signal per record would cross threads tens of thousands of
+    times in a run and queue the GUI thread solid. All this does is append,
+    and the GUI thread reads the buffer on its own timer.
+
+    :meth:`emit` never raises into the run. A log line is the least important
+    thing happening on that thread, so a bad ``%`` argument in a message goes
+    to :meth:`logging.Handler.handleError` -- the same place the standard
+    library sends a broken stream -- and the run carries on.
+    """
+
+    def __init__(self, log: RunLog, level: int = logging.NOTSET) -> None:
+        super().__init__(level=level)
+        self._log = log
+
+    @property
+    def log(self) -> RunLog:
+        """The buffer this handler fills."""
+        return self._log
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._log.add_record(record)
+        except Exception:  # noqa: BLE001 - a log line must not break a run
+            self.handleError(record)
+
+
+def installed_handlers(
+    logger: Optional[logging.Logger] = None,
+) -> "tuple[RunLogHandler, ...]":
+    """Every :class:`RunLogHandler` on *logger*, which should be one or none.
+
+    Exists so that "attaching twice leaves one handler behind" is something a
+    test can look at directly rather than infer from a line appearing once.
+    """
+    target = logger if logger is not None else logging.getLogger(LOGGER_NAME)
+    return tuple(h for h in target.handlers if isinstance(h, RunLogHandler))
+
+
+class Attachment:
+    """What :func:`attach` did to the logger, and how to undo exactly that.
+
+    Both the level and the handler list are put back from the snapshot taken
+    when the handler went on, so a run cannot leave the library's logging any
+    different from how it found it. Restoring the list rather than removing
+    one handler from it does mean a handler some *other* code added to
+    ``haemolynx`` during the run goes too; for the length of one run, on one
+    library's own logger, that is worth a guarantee that nothing accumulates.
+    """
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        handler: RunLogHandler,
+        previous_level: int,
+        previous_handlers: "tuple[logging.Handler, ...]",
+    ) -> None:
+        self.logger = logger
+        self.handler = handler
+        self.previous_level = previous_level
+        self.previous_handlers = tuple(previous_handlers)
+        self._lock = threading.Lock()
+        self._detached = False
+
+    @property
+    def detached(self) -> bool:
+        """Whether the logger has already been put back."""
+        return self._detached
+
+    def detach(self) -> None:
+        """Put the logger back. Safe to call twice, and from either thread.
+
+        A run can end in more ways than it has handlers for -- finished,
+        failed, cancelled, or the panel closed under it -- so more than one of
+        them calls this, and the second call has to be a no-op rather than a
+        second restore of a stale snapshot.
+        """
+        with self._lock:
+            if self._detached:
+                return
+            self._detached = True
+        self.logger.handlers[:] = list(self.previous_handlers)
+        self.logger.setLevel(self.previous_level)
+        self.handler.close()
+
+    def __enter__(self) -> "Attachment":
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self.detach()
+        return False
+
+
+def attach(
+    log: RunLog,
+    level: Optional[int] = None,
+    logger_name: str = LOGGER_NAME,
+) -> Attachment:
+    """Send everything the library logs into *log*, until the run is over.
+
+    *level* is what to capture, defaulting to whatever *log* is already set
+    to, and *log* is set to it either way, so the two cannot silently disagree
+    -- a handler at DEBUG feeding a buffer filtering at INFO would do the
+    expensive half of the work and throw the result away.
+
+    Any :class:`RunLogHandler` already on the logger comes off first, so a
+    detach that never happened -- a run that ended in a way nobody handled,
+    a panel closed mid-run -- costs one leaked handler and not a growing pile
+    of them, each writing into a buffer nothing reads.
+    """
+    logger = logging.getLogger(logger_name)
+    for stale in installed_handlers(logger):
+        logger.removeHandler(stale)
+        stale.close()
+
+    # After the sweep, so a detach cannot put a leaked handler back.
+    previous_level = logger.level
+    previous_handlers = tuple(logger.handlers)
+
+    wanted = log.level if level is None else level
+    log.level = wanted
+    handler = RunLogHandler(log, level=wanted)
+    logger.addHandler(handler)
+    # The whole point. In a napari session nothing has configured logging, so
+    # this logger's effective level is root's WARNING and every INFO record is
+    # dropped before any handler is consulted: adding a handler alone captures
+    # nothing at all. `propagate` is left as it is, so a console handler
+    # installed by the command line still receives the same records.
+    logger.setLevel(wanted)
+    return Attachment(logger, handler, previous_level, previous_handlers)
