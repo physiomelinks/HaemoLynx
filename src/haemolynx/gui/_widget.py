@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -1806,6 +1806,291 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     )
 
 
+def _perturbation_controls(viewer, rows, fields, schema, report):
+    """The Perturbations tab's list of "and what if", built a row at a time.
+
+    One dropdown per perturbation, and choosing a type *reveals* that type's
+    options rather than greying out the other three types' -- the same reason
+    the Boundaries tab hides what a selection method does not read. A "+"
+    below the last one adds another, so a run can ask five questions of one
+    network.
+
+    What each editor writes is the important part. `arteriole_diameter_scale`
+    is an ordinary row on the Diameters tab, and the panel sends every row to
+    the run, so an editor that wrote into `rows` would move the baseline every
+    perturbation is measured against. These write into
+    ``perturbations[i]["overrides"]``, which reaches the run through the one
+    `perturbations` row and nowhere else.
+
+    :mod:`haemolynx.gui.perturbation_editing` is the whole decision -- which
+    editors a type reveals, what adding and removing do to the list -- and it
+    needs no GUI. This is the Qt layer over it.
+
+    Returns None without a viewer: the panel is buildable outside napari.
+    """
+    if viewer is None:
+        return None
+
+    from magicgui.widgets import ComboBox, Container, Label, LineEdit, PushButton
+
+    from haemolynx.gui.perturbation_editing import (
+        EDITOR_SETTINGS,
+        PERTURBATION_TYPES,
+        add_entry,
+        from_settings,
+        name_problems,
+        remove_entry,
+        rows_for_type,
+        set_name,
+        set_overrides,
+        set_type,
+        summary,
+        to_settings,
+    )
+
+    #: The one row the list actually travels in. Everything below edits this.
+    LIST_SETTING = "perturbations"
+
+    state = SimpleNamespace(applying=False, entries=[], editors=[])
+
+    #: Where the per-entry editors are stacked, and the button that adds one.
+    holder = Container(widgets=[], labels=False)
+    add_button = PushButton(text="+  Add a perturbation")
+
+    def read_row() -> list[dict[str, Any]]:
+        widget = rows.get(LIST_SETTING)
+        if widget is None:
+            return []
+        return from_settings(
+            {LIST_SETTING: fields[LIST_SETTING].to_setting_value(widget.value)}
+        )
+
+    def write_row() -> None:
+        """The entries -> the settings row. The only way they leave here."""
+        widget = rows.get(LIST_SETTING)
+        if widget is None:
+            return
+        state.applying = True
+        try:
+            widget.value = display_value_for(
+                schema[LIST_SETTING], to_settings(state.entries)[LIST_SETTING]
+            )
+        finally:
+            state.applying = False
+        say()
+
+    def say() -> None:
+        problems = name_problems(state.entries)
+        report.value = "Perturbations: " + summary(state.entries) + (
+            "  Fix: " + "; ".join(problems) + "." if problems else ""
+        )
+
+    def overrides_from(editor) -> dict[str, Any]:
+        """What this entry's *visible* editors say, and nothing else.
+
+        The visible editors are the entry's overrides: an option belonging to
+        a type the user has moved away from has stopped being set, rather than
+        lingering as a value nothing applies.
+
+        An empty one is left out rather than sent as None. An override replaces
+        what the run configured, so a blank `pericyte_mask_path` editor would
+        take away the mask the Diameters tab named -- and "unset" is not
+        something a perturbation can meaningfully say.
+        """
+        shown = rows_for_type(editor.type.value)
+        read = {
+            name: fields[name].to_setting_value(editor.editors[name].value)
+            for name in shown
+            if name in editor.editors
+        }
+        return {name: value for name, value in read.items() if value is not None}
+
+    def show_the_chosen_type(editor) -> None:
+        """Reveal the chosen type's options and hide every other type's.
+
+        What was shown is recorded as well as applied: `.visible` on a row of
+        a tab that is not on screen reads False whatever was set, so a test
+        cannot ask the widget -- the same reason `_boundary_controls` keeps
+        `state.visible`.
+        """
+        shown = set(rows_for_type(editor.type.value))
+        for name, widget in editor.editors.items():
+            widget.visible = name in shown
+        editor.shown = frozenset(name for name in editor.editors if name in shown)
+        editor.hidden = frozenset(name for name in editor.editors if name not in shown)
+
+    def build_editor(index: int, entry: Mapping[str, Any]):
+        """One perturbation's controls: name, type, and that type's options."""
+        name_box = LineEdit(value=str(entry.get("name") or ""), label="Name")
+        name_box.tooltip = (
+            "Also the directory this perturbation's output goes in, so it has "
+            "to be unique and usable as a directory name."
+        )
+        chosen = str(entry.get("type") or PERTURBATION_TYPES[0])
+        type_box = ComboBox(
+            choices=list(PERTURBATION_TYPES),
+            value=chosen if chosen in PERTURBATION_TYPES else PERTURBATION_TYPES[0],
+            label="Type",
+        )
+        type_box.tooltip = (
+            "What to change before re-solving. Choosing one shows its options."
+        )
+
+        # Built once for every type, and hidden but for the chosen type's:
+        # destroying and rebuilding widgets as the dropdown changes is how a
+        # container ends up holding a row nothing can reach.
+        configured = entry.get("overrides") or {}
+        editors: dict[str, Any] = {}
+        for name in EDITOR_SETTINGS:
+            field = fields.get(name)
+            if field is None:
+                continue
+            widget = _build_row(field)
+            if name in configured:
+                widget.value = display_value_for(schema[name], configured[name])
+            editors[name] = widget
+
+        remove_button = PushButton(text="Remove")
+        editor = SimpleNamespace(
+            index=index,
+            name=name_box,
+            type=type_box,
+            editors=editors,
+            shown=frozenset(),
+            hidden=frozenset(),
+            remove=remove_button,
+            container=Container(
+                widgets=[name_box, type_box, *editors.values(), remove_button],
+                labels=True,
+            ),
+        )
+
+        def on_name(*_args) -> None:
+            if state.applying:
+                return
+            state.entries = set_name(state.entries, index, str(name_box.value))
+            write_row()
+
+        def on_type(*_args) -> None:
+            if state.applying:
+                return
+            state.entries = set_type(state.entries, index, str(type_box.value))
+            show_the_chosen_type(editor)
+            # After the reveal: the newly shown editors are now this entry's
+            # overrides, and the ones just hidden are not.
+            state.entries = set_overrides(state.entries, index, overrides_from(editor))
+            write_row()
+
+        def on_override(*_args) -> None:
+            if state.applying:
+                return
+            state.entries = set_overrides(state.entries, index, overrides_from(editor))
+            write_row()
+
+        def on_remove(*_args) -> None:
+            if state.applying:
+                return
+            remove_at(index)
+
+        name_box.changed.connect(on_name)
+        type_box.changed.connect(on_type)
+        for widget in editors.values():
+            widget.changed.connect(on_override)
+        remove_button.changed.connect(on_remove)
+        show_the_chosen_type(editor)
+        return editor
+
+    def rebuild() -> None:
+        """Lay the editors out again, in the order the entries are in.
+
+        All of them, because removing one moves every later entry's index and
+        an editor knows which entry it edits.
+        """
+        state.applying = True
+        try:
+            holder.clear()
+            state.editors = []
+            for index, entry in enumerate(state.entries):
+                editor = build_editor(index, entry)
+                state.editors.append(editor)
+                holder.append(editor.container)
+        finally:
+            state.applying = False
+
+    def on_add(*_args) -> None:
+        if state.applying:
+            return
+        state.entries = add_entry(state.entries)
+        rebuild()
+        write_row()
+
+    def remove_at(index: int) -> None:
+        """What pressing entry *index*'s "Remove" button does."""
+        state.entries = remove_entry(state.entries, index)
+        rebuild()
+        write_row()
+
+    def choose_type(index: int, perturbation_type: str) -> None:
+        """What choosing a type in entry *index*'s dropdown does."""
+        if 0 <= index < len(state.editors):
+            state.editors[index].type.value = str(perturbation_type)
+
+    def on_list_changed(*_args) -> None:
+        """The row was edited by hand, or a config was loaded into it."""
+        if state.applying:
+            return
+        state.entries = read_row()
+        rebuild()
+        say()
+
+    add_button.changed.connect(on_add)
+    if LIST_SETTING in rows:
+        rows[LIST_SETTING].changed.connect(on_list_changed)
+    state.entries = read_row()
+    rebuild()
+
+    def page(stage_summary, names: Sequence[str]):
+        """The tab: the run's own settings, then the list of perturbations."""
+        from qtpy.QtWidgets import QVBoxLayout, QWidget
+
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(stage_summary.native)
+        flat = [name for name in names if name in rows]
+        if flat:
+            layout.addWidget(
+                Container(widgets=[rows[name] for name in flat], labels=True).native
+            )
+        layout.addWidget(
+            Label(
+                value=(
+                    "Each perturbation re-solves the network from the same "
+                    "baseline. The values above are what one starts from; the "
+                    "options below are what it changes."
+                )
+            ).native
+        )
+        layout.addWidget(holder.native)
+        layout.addWidget(add_button.native)
+        layout.addStretch(1)
+        return body
+
+    return SimpleNamespace(
+        page=page,
+        state=state,
+        entries=lambda: list(state.entries),
+        editors=lambda: list(state.editors),
+        add=on_add,
+        remove=remove_at,
+        choose_type=choose_type,
+        rebuild=rebuild,
+        holder=holder,
+        add_button=add_button,
+        list_setting=LIST_SETTING,
+    )
+
+
 def settings_widget(napari_viewer=None):
     """The HaemoLynx panel: the pipeline's stages, in the order it runs them.
 
@@ -1847,6 +2132,9 @@ def settings_widget(napari_viewer=None):
     boundaries = _boundary_controls(viewer, rows, fields, schema, report)
     if boundaries is not None:
         pages["assign_boundaries"] = boundaries.page
+    perturbations = _perturbation_controls(viewer, rows, fields, schema, report)
+    if perturbations is not None:
+        pages["run_perturbations"] = perturbations.page
 
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
@@ -2166,6 +2454,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_report = lambda: report.value
     panel._haemolynx_rows = lambda: rows
     panel._haemolynx_boundaries = boundaries
+    panel._haemolynx_perturbations = perturbations
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
