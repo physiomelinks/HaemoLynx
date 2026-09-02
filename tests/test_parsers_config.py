@@ -148,6 +148,60 @@ def test_a_generated_config_is_valid_yaml(tmp_path):
     assert loaded["output"]["diameters"] == {"B01": 5.0}
 
 
+# --- paths are written the same way on every platform ----------------------
+#
+# A `path` setting was serialised with `str(Path(...))`, which is the platform's
+# own separator, so the committed configs -- generated on Linux, with forward
+# slashes -- were rewritten wholesale the first time anyone ran
+# `examples/regenerate_configs.py` on Windows, and that rewrite then broke the
+# generator's own test back on Linux. Regenerating has to be platform-neutral.
+
+
+def test_a_path_setting_is_written_with_forward_slashes(tmp_path):
+    text = dump_config(
+        tmp_path / "generated.yaml",
+        _schema(),
+        values={"input_path": Path("examples") / "images" / "brain.tiff"},
+    ).read_text(encoding="utf-8")
+
+    assert "examples/images/brain.tiff" in text
+    assert "\\" not in text
+
+
+def test_a_path_written_with_forward_slashes_reads_back_as_the_same_path(tmp_path):
+    """Windows accepts forward slashes, so nothing is lost by writing them."""
+    original = Path("examples") / "images" / "brain.tiff"
+    path = dump_config(
+        tmp_path / "generated.yaml", _schema(), values={"input_path": original}
+    )
+    assert load_config(path, _schema())["input_path"] == original
+
+
+def test_regenerating_a_config_reproduces_it_byte_for_byte(tmp_path):
+    """The property the committed configs need: generating twice is a no-op."""
+    schema = _schema()
+    values = {"input_path": Path("examples") / "images" / "brain.tiff"}
+    first = dump_config(tmp_path / "first.yaml", schema, values=values)
+    second = dump_config(
+        tmp_path / "second.yaml", schema, values=load_config(first, schema)
+    )
+    assert second.read_text(encoding="utf-8") == first.read_text(encoding="utf-8")
+
+
+def test_an_absolute_path_keeps_its_drive_and_root(tmp_path):
+    """`C:/Users/...` is a valid Windows path; `C:Users/...` would not be."""
+    absolute = Path(tmp_path) / "images" / "brain.tiff"
+    path = dump_config(
+        tmp_path / "generated.yaml", _schema(), values={"input_path": absolute}
+    )
+    written = yaml.safe_load(path.read_text(encoding="utf-8"))["input"]["input_path"]
+
+    assert "\\" not in written
+    assert written == absolute.as_posix()
+    assert Path(written) == absolute
+    assert Path(written).is_absolute()
+
+
 # --- command line ----------------------------------------------------------
 
 

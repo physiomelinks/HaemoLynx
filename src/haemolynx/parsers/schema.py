@@ -17,7 +17,7 @@ from __future__ import annotations
 import difflib
 import warnings
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 #: Widget/coercion kinds. Kept as strings rather than Python types so that
@@ -272,7 +272,14 @@ def _copy_container(value: Any) -> Any:
 
 def _jsonify(value: Any) -> Any:
     if isinstance(value, Path):
-        return str(value)
+        # Forward slashes on every platform, so a config generated on Windows
+        # is byte-for-byte the one generated on Linux. `str()` here emitted
+        # `examples\images\...` on Windows, which meant `regenerate_configs.py`
+        # could not be run there without rewriting every committed config and
+        # breaking CI. Windows accepts forward slashes, and `pathlib` reads
+        # them back on either platform, so nothing is lost -- including the
+        # drive letter of an absolute path, which becomes `C:/Users/...`.
+        return PurePath(value).as_posix()
     if isinstance(value, tuple):
         return [_jsonify(v) for v in value]
     if isinstance(value, dict):
