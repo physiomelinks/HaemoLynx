@@ -42,6 +42,12 @@ from haemolynx.gui.run_state import (
     RunState,
     clear_message,
 )
+from haemolynx.gui.stage_checkpoints import (
+    StageCheckpoints,
+    can_revert_from,
+    previous_tab,
+    restore_message,
+)
 from haemolynx.gui.tabs import tabs_for
 from haemolynx.parsers import dump_config, load_config
 from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
@@ -910,7 +916,7 @@ def _progress_bridge():
 
 def _run_in_background(
     settings, schema, report, button, bars=None, viewer=None, results=None,
-    state=None, log=None):
+    state=None, log=None, checkpoints=None):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
@@ -926,6 +932,10 @@ def _run_in_background(
     typed, so a test hands over its own. With one, the library's logger is
     captured for exactly the length of the run and drained onto the widget on
     a timer.
+
+    *checkpoints* is a :class:`~haemolynx.gui.stage_checkpoints.StageCheckpoints`
+    the panel keeps across a run so a tab can revert to an earlier stage
+    without rebuilding topology. Optional: without one, the run is unchanged.
     """
     from napari.qt.threading import thread_worker
 
@@ -999,6 +1009,11 @@ def _run_in_background(
         except Exception:  # noqa: BLE001 - reported, never raised at the run
             logger.exception("could not build layers for stage %s", stage)
             return
+        if checkpoints is not None:
+            try:
+                checkpoints.record(stage, group, results, settings=settings)
+            except Exception:  # noqa: BLE001 - a bad snapshot must not end the run
+                logger.exception("could not record checkpoint for stage %s", stage)
         bridge.layers.emit(group)
 
     @thread_worker
@@ -2283,6 +2298,12 @@ def settings_widget(napari_viewer=None):
     if perturbations is not None:
         pages["run_perturbations"] = perturbations.page
 
+    #: Snapshots from the last run that showed layers: what "Revert to previous
+    #: stage" on a tab reloads. Cleared when the layers are, and replaced when
+    #: a new run that shows layers starts.
+    checkpoints = StageCheckpoints()
+    revert_buttons: dict[str, Any] = {}
+
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
         build = pages.get(tab.stage.call or "")
@@ -2300,9 +2321,22 @@ def settings_widget(napari_viewer=None):
         # QScrollArea's own size hint ignores the widget inside it, which is
         # exactly what keeps the panel a sensible size. Its scrollbars default
         # to appearing only when needed, vertically and horizontally.
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(native)
+        # Revert sits at the bottom of every tab that has a predecessor: after
+        # a full run it reloads that previous tab's end-of-stage checkpoint so
+        # later settings can be tweaked without rebuilding the network.
+        if previous_tab(tab.stage.title) is not None:
+            revert = PushButton(text="Revert to previous stage")
+            revert.enabled = False
+            revert_buttons[tab.stage.title] = revert
+            page_layout.addWidget(revert.native)
+        page_layout.addStretch(1)
         scroller = QScrollArea()
         scroller.setWidgetResizable(True)
-        scroller.setWidget(native)
+        scroller.setWidget(page)
         tab_widget.addTab(scroller, tab.stage.title)
         if tab.stage.call:
             index = tab_widget.count() - 1
@@ -2572,6 +2606,13 @@ def settings_widget(napari_viewer=None):
         lines += [f"warning: {message}" for message in result.warnings]
         report.value = "\n".join(lines) if lines else "All checks passed."
 
+    def refresh_revert_buttons() -> None:
+        """Enable each tab's revert button only when its previous stage is saved."""
+        for title, button in revert_buttons.items():
+            button.enabled = (
+                not run_state.running and can_revert_from(title, checkpoints)
+            )
+
     def on_run() -> None:
         if run_state.running:
             # The button is disabled while a run is going, so this is only
@@ -2589,6 +2630,10 @@ def settings_widget(napari_viewer=None):
             view.results = results
             if boundaries is not None:
                 boundaries.state.results = results
+            # A new run that will show layers replaces the previous run's
+            # checkpoints; a run with layers off leaves them alone so a revert
+            # from an earlier shown run is still possible.
+            checkpoints.clear()
         # How much of the run to show follows the setting that already means
         # "tell me everything"; the window itself is a panel control, like
         # `show_results`, because a config file is read by CLI runs too.
@@ -2596,13 +2641,22 @@ def settings_widget(napari_viewer=None):
             VERBOSE_LEVEL if settings.get("verbose_logging") else DEFAULT_LEVEL
         )
         show_log()
-        _run_in_background(
+        refresh_revert_buttons()
+        worker = _run_in_background(
             settings, schema, report, run_button, bars,
             viewer=viewer if show_results.value else None,
             results=results,
             state=run_state,
             log=log_view,
+            checkpoints=checkpoints if results is not None else None,
         )
+        # Enable revert once the run has actually stopped (success, failure, or
+        # the quiet finished-after-quit path). Connecting here rather than
+        # inside `_run_in_background` keeps that helper free of panel widgets.
+        if worker is not None:
+            worker.returned.connect(lambda *_: refresh_revert_buttons())
+            worker.errored.connect(lambda *_: refresh_revert_buttons())
+            worker.finished.connect(lambda *_: refresh_revert_buttons())
 
     def on_clear() -> None:
         """Take our layers out of the viewer, and stop the run drawing them.
@@ -2627,7 +2681,52 @@ def settings_widget(napari_viewer=None):
         view.results = None
         if boundaries is not None:
             boundaries.state.results = None
+        checkpoints.clear()
+        refresh_revert_buttons()
         report.value = clear_message(removed, stopping)
+
+    def on_revert(tab_title: str) -> None:
+        """Reload the previous tab's end-of-stage state for *tab_title*."""
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        if viewer is None:
+            report.value = "No viewer to restore layers into."
+            return
+        plan = checkpoints.plan_restore(tab_title, settings=_settings())
+        if plan is None:
+            report.value = (
+                "Nothing to restore: run the pipeline with 'Show each stage "
+                "in the viewer' first."
+            )
+            refresh_revert_buttons()
+            return
+        results = view.results
+        if results is None:
+            results = ResultLayers()
+            view.results = results
+            if boundaries is not None:
+                boundaries.state.results = results
+        checkpoints.apply_to_results(results, plan.checkpoint)
+        _clear_our_layers(viewer)
+        for group in plan.groups:
+            _apply_layers(viewer, group)
+        for name in plan.skip_settings:
+            if name in rows:
+                rows[name].value = False
+        apply_prerequisites()
+        # Select the previous tab so the settings the restored state belongs
+        # with are the ones on screen.
+        titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+        if plan.tab_title in titles:
+            tab_widget.setCurrentIndex(titles.index(plan.tab_title))
+        refresh_revert_buttons()
+        report.value = restore_message(plan)
+
+    for title, button in revert_buttons.items():
+        button.changed.connect(
+            lambda *_args, tab=title: on_revert(tab)
+        )
 
     load_button.changed.connect(on_load)
     save_button.changed.connect(on_save)
@@ -2653,6 +2752,10 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_log_dock = log_dock
     panel._haemolynx_run = on_run
     panel._haemolynx_clear = on_clear
+    panel._haemolynx_revert = on_revert
+    panel._haemolynx_checkpoints = checkpoints
+    panel._haemolynx_revert_buttons = revert_buttons
+    panel._haemolynx_refresh_revert = refresh_revert_buttons
     panel._haemolynx_run_state = run_state
     panel._haemolynx_run_button = run_button
     panel._haemolynx_view = view
@@ -2662,6 +2765,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_rows = lambda: rows
     panel._haemolynx_boundaries = boundaries
     panel._haemolynx_perturbations = perturbations
+    panel._haemolynx_tabs = tab_widget
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
@@ -2670,4 +2774,5 @@ def settings_widget(napari_viewer=None):
     layout.addWidget(buttons.native)
     layout.addWidget(bars.native)
     layout.addWidget(report.native)
+    refresh_revert_buttons()
     return panel
