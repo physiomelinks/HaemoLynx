@@ -166,20 +166,36 @@ than a centred box.
 
 **Why.** A matched ROI *size* makes the samples the same size; it does not make them the same
 anatomy. The carotid body does not sit in the middle of its imaged block, and it does not sit in
-the same place in every block — the axial tissue peak ranges from slice 106 of 435 to slice 230 of
-435. A centred box therefore lands mid-organ in one specimen and in its sparse margin in another,
-and the resulting density difference is a difference in where the box was put.
+the same place in every block. The stacks are not even the same depth — 435 slices for the three
+WKY, 495 for the three SHR — so a peak has to be read as a *fraction* of depth, not as a slice
+index. Measured from the six QC records:
 
-**Worse, the misplacement is not random with respect to the comparison.** WKY peaks at a mean depth
-fraction of 0.40 and SHR at 0.34, so a centred box systematically samples a different part of the
-organ in each cohort.
+| Specimen | Stack depth | Peak slice | Depth fraction |
+|---|---|---|---|
+| WKY-A | 435 | 230 | 0.529 |
+| WKY-B | 435 | 106 | 0.244 |
+| WKY-C | 435 | 189 | 0.435 |
+| SHR-A | 495 | 157 | 0.317 |
+| SHR-B | 495 | 230 | 0.465 |
+| SHR-C | 495 | 164 | 0.331 |
+
+The peak runs from a quarter of the way in (WKY-B, 0.244) to just past halfway (WKY-A, 0.529). A
+centred box therefore lands mid-organ in one specimen and in its sparse margin in another, and the
+resulting density difference is a difference in where the box was put. **That scatter is the
+argument for per-specimen placement, and it is large.**
+
+**The group-correlated part is real but small.** WKY peaks at a mean depth fraction of 0.402 and
+SHR at 0.371 — a gap of 0.031. Set against a within-WKY spread of 0.285 (0.244 to 0.529), the
+cohort gap is roughly a tenth of the scatter it sits inside, and with three specimens per group it
+is not separable from that scatter. Read it as a reason not to assume centring is neutral, not as
+a measured cohort effect. `tests/test_roi_placement.py` asserts only that the gap exceeds 0.02.
 
 **The order of operations.**
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
 | 1 | Read the specimen's QC record | — | The axial tissue peak was measured once, in preprocessing; recomputing it here could disagree with the recorded value | **On** | `roi_placement.py:113` |
-| 2 | z ← `z_profile.peak_slice` | — | The organ sits at slice 106 of 435 in one specimen and 230 in another, so a fixed z samples different anatomy in each | **On**; falls back to `shape[0] // 2` and records `z=volume_centre` | `roi_placement.py:118` |
+| 2 | z ← `z_profile.peak_slice` | — | The organ sits a quarter of the way into one block (WKY-B, 0.244) and just past halfway into another (WKY-A, 0.529), so a fixed z samples different anatomy in each | **On**; falls back to `shape[0] // 2` and records `z=volume_centre` | `roi_placement.py:118` |
 | 3 | Open the Ilastik input HDF5, **channel 0 only** | subsample (4, 2, 2) | The vesselness channels are derived from channel 0 and would pull the centroid towards whichever Sato scale happened to dominate | **On** | `roi_placement.py:133` |
 | 4 | Maximum-intensity projection along z | — | Collapses the stack to one plane so the lateral centre is not weighted by how many slices happen to contain tissue | **On** | `roi_placement.py:85` |
 | 5 | Threshold the projection | 99th percentile | The mean of a background-subtracted volume is dominated by near-zero voxels, which drags the centroid back to the geometric middle | **On** | `roi_placement.py:86` |
@@ -205,7 +221,7 @@ brightness profile**, not a measure of tissue area:
 |---|---|---|---|---|---|
 | 1 | For each slice $z$, take the 99th percentile of its intensities, giving $s_z$ | p99 | A slice's mean is dominated by background; the p99 tracks the brightest labelled structure in that slice, which is what "where is the organ" has to mean before anything is segmented | **On** | `preprocess_cb.py:163` |
 | 2 | Also record the per-slice median as a background trace | p50 | Stored in the QC record as `background_p50_range` so a rising noise floor is visible; it does **not** enter the peak | **On**, diagnostic only | `preprocess_cb.py:164` |
-| 3 | Smooth $s_z$ along $z$ with a moving average | $k=\max(3,\lfloor n/20\rfloor)$, edges held | Un-smoothed, the argmax lands on whichever single slice happened to catch the brightest vessel. At $n=435$ this is $k=21$ slices $\approx$ 39 µm, so the peak is a regional maximum rather than one lucky plane | **On** | `preprocess_cb.py:167` |
+| 3 | Smooth $s_z$ along $z$ with a moving average | $k=\max(3,\lfloor n/20\rfloor)$, edges held | Un-smoothed, the argmax lands on whichever single slice happened to catch the brightest vessel. $k=21$ slices ($\approx$ 39 µm) for the 435-slice WKY stacks and $k=24$ ($\approx$ 45 µm) for the 495-slice SHR ones, so the peak is a regional maximum rather than one lucky plane | **On** | `preprocess_cb.py:167` |
 | 4 | Take $\text{peak\_slice}=\arg\max_z \hat{s}_z$ | — | This is the returned value, and the only part of `diagnose_z` that ROI placement uses | **On** | `preprocess_cb.py:168` |
 | 5 | Classify the peak's depth fraction into a verdict | $<0.15$, $>0.85$, else | Separates real axial attenuation from a tissue block sitting mid-stack. The second must **not** be bleach-corrected: scaling up the sparse end slices promotes their background noise to vessel intensity | **On**, but **advice to the operator only** — nothing downstream branches on it | `preprocess_cb.py:172` |
 
@@ -246,7 +262,7 @@ size: raw counts would otherwise track block extent rather than biology.
 | Subsample for the centroid | 4 | 2 | 2 |
 
 > **At a glance** — tissue centroid, not centre · 160³ voxels = 0.0266 mm³, 4–12% of the block ·
-> peak slice ranges 106–230 of 435; cohort depth fractions 0.40 vs 0.34 · `roi_placement.py:96`,
+> peak depth fraction ranges 0.244–0.529; cohort means 0.402 vs 0.371 · `roi_placement.py:96`,
 > `roi_placement.py:77`, `roi_placement.py:54` · `tests/test_roi_placement.py`
 
 ---

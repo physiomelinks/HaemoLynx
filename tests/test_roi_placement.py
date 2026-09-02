@@ -1,11 +1,15 @@
 """Placing the sub-volume so the six samples are comparable anatomy, not comparable indices.
 
 A matched ROI size makes the samples the same size; it does not make them the same anatomy.
-The axial tissue peak ranges from slice 106 of 435 in WKY-B to 230 of 435 in WKY-A, so a
-centred box lands mid-organ in one specimen and in the sparse margin of another. The
-misplacement is also group-correlated - WKY peaks at a mean depth fraction of 0.40 against
-SHR's 0.34 - so a centred box samples a systematically different part of the organ in each
-cohort, and the resulting density difference is partly a difference in where the box was put.
+The stacks differ in depth - 435 slices for WKY, 495 for SHR - so the peak is compared as a
+fraction of depth. It ranges from 0.244 (WKY-B) to 0.529 (WKY-A), so a centred box lands
+mid-organ in one specimen and in the sparse margin of another, and the resulting density
+difference is partly a difference in where the box was put. That scatter is the argument for
+per-specimen placement.
+
+The misplacement is also group-correlated, but weakly: WKY means 0.402 against SHR's 0.371,
+a gap of 0.031 sitting inside a within-WKY spread of 0.285. The test below asserts only that
+the gap exceeds 0.02, which is all three specimens per group can support.
 """
 import numpy as np
 import pytest
