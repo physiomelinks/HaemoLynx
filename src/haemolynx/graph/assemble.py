@@ -39,11 +39,30 @@ STEP_LABELS: tuple[str, ...] = (
 )
 
 
+#: Where each label comes in the run, for the line every step logs. A step
+#: names itself in that line, and `collapse_node_clusters` names itself in its
+#: own summary too, so the `Step n/11` prefix is what tells the two apart.
+_STEP_POSITIONS: dict[str, int] = {
+    label: position for position, label in enumerate(STEP_LABELS, start=1)
+}
+
+
 def _notify_step(
     G: nx.MultiGraph,
     label: str,
     step_callback: StepCallback | None,
 ) -> None:
+    # Eleven lines a run, ungated: what a step left behind is the answer to
+    # "how many branches does the pipeline think there are", and asking for it
+    # should not mean asking for the per-node detail as well.
+    logger.info(
+        "Step %d/%d %s: %d nodes / %d edges",
+        _STEP_POSITIONS.get(label, 0),
+        len(STEP_LABELS),
+        label,
+        G.number_of_nodes(),
+        G.number_of_edges(),
+    )
     if step_callback is not None:
         step_callback(G, label)
 

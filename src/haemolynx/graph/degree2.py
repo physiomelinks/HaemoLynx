@@ -151,14 +151,12 @@ def safer_simple_remove_all_degree2_nodes(
         if removed_this_iter == 0:
             break
 
-    if debug:
-        final_degree2 = len([n for n in G.nodes() if G.degree[n] == 2])
-        logger.info(
-            "Safer cleanup: removed %d, skipped %d long edges, final degree-2: %d",
-            total_removed,
-            skipped_long_edges,
-            final_degree2,
-        )
+    logger.info(
+        "Safer cleanup: removed %d, skipped %d long edges, final degree-2: %d",
+        total_removed,
+        skipped_long_edges,
+        len([n for n in G.nodes() if G.degree[n] == 2]),
+    )
     return G
 
 
@@ -223,8 +221,7 @@ def trivial_remove_all_degree2_nodes(
                 logger.debug("Removed degree-2 node %s, connected %s-%s", node, n1, n2)
         if removed_this_iter == 0:
             break
-    if debug:
-        logger.info("Trivial removal: total removed %d", total_removed)
+    logger.info("Trivial removal: total removed %d", total_removed)
     return G
 
 
@@ -371,6 +368,10 @@ def smart_multigraph_degree2_removal(
         if removed_this_iter == 0:
             break
 
-    if debug:
-        logger.info("Smart removal: %d removed", total_removed)
+    logger.info(
+        "Smart removal: %d removed, graph now has %d nodes / %d edges",
+        total_removed,
+        G.number_of_nodes(),
+        G.number_of_edges(),
+    )
     return G

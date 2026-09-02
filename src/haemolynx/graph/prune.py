@@ -88,8 +88,12 @@ def prune_vascular_stubs(
                 logger.debug(f"Convergence reached after {iteration} iterations")
             break
 
-    if debug:
-        logger.debug(f"Pruning complete: Total nodes removed: {total_removed}")
+    logger.info(
+        "Pruning complete: removed %d terminal stubs, graph now has %d nodes / %d edges",
+        total_removed,
+        G_pruned.number_of_nodes(),
+        G_pruned.number_of_edges(),
+    )
     return G_pruned
 
 def remove_edges_for_self_connected_nodes(G: Union[nx.Graph, nx.MultiGraph]) -> Union[nx.Graph, nx.MultiGraph]:
