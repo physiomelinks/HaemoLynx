@@ -33,7 +33,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from haemolynx.haemodynamics import PoiseuilleModel  # noqa: E402
+from haemolynx.haemodynamics import PERTURBATION_TYPES, PoiseuilleModel  # noqa: E402
 from haemolynx.pipeline import (  # noqa: E402
     BoundaryNodes,
     HaemodynamicModel,
@@ -206,6 +206,51 @@ PERICYTE_TONE = {
     },
 }
 PRESSURE_SWEEP = {"name": "pressure", "type": "pressure_sweep", "overrides": {}}
+NO_OP = {"name": "placeholder", "type": "none", "overrides": {}}
+
+#: One worked entry per type, keyed by the type it exercises. What the guards
+#: below are parametrised over is `PERTURBATION_TYPES` itself, and this is how
+#: each of those names becomes something runnable -- so a fifth type added to
+#: the module is guarded the day it appears, instead of being quietly exempt
+#: because the parametrise list still spells out today's four.
+ENTRY_FOR_TYPE: dict[str, dict] = {
+    "none": NO_OP,
+    "pressure_sweep": PRESSURE_SWEEP,
+    "arteriole_diameter_change": ARTERIOLE_DILATION,
+    "pericyte_diameter_change": PERICYTE_TONE,
+}
+
+#: Every type but `none`, which by definition re-solves nothing and writes
+#: nothing; `test_a_none_perturbation_produces_nothing` is what covers it.
+TYPES_THAT_RUN = tuple(name for name in PERTURBATION_TYPES if name != "none")
+
+#: One entry of every type, for the tests that run the whole list at once.
+EVERY_TYPE_ONCE = [
+    ENTRY_FOR_TYPE[name] for name in PERTURBATION_TYPES if name in ENTRY_FOR_TYPE
+]
+
+
+def _entry_for(perturbation_type: str) -> dict:
+    entry = ENTRY_FOR_TYPE.get(perturbation_type)
+    if entry is None:
+        pytest.fail(
+            f"perturbation type {perturbation_type!r} has no entry in "
+            "ENTRY_FOR_TYPE, so nothing in this file runs it and the guards "
+            "below are not guarding it. Add one."
+        )
+    return entry
+
+
+def test_every_type_has_something_that_exercises_it():
+    """The guards are only as complete as this table is.
+
+    Parametrising over `PERTURBATION_TYPES` is what makes a new type covered
+    automatically, and this is what makes that cover real rather than an empty
+    parametrise case.
+    """
+    assert set(ENTRY_FOR_TYPE) == set(PERTURBATION_TYPES)
+    for perturbation_type, entry in ENTRY_FOR_TYPE.items():
+        assert entry["type"] == perturbation_type
 
 
 # --- nothing configured, nothing done ----------------------------------------
@@ -229,7 +274,7 @@ def test_the_stage_does_nothing_without_haemodynamics(tmp_path):
 
 def test_a_none_perturbation_produces_nothing(tmp_path):
     """It is the type an entry has before a user has chosen one."""
-    run = _run(tmp_path, [{"name": "placeholder", "type": "none", "overrides": {}}])
+    run = _run(tmp_path, [NO_OP])
 
     assert [result.name for result in run.results] == ["placeholder"]
     result = run.results[0]
@@ -243,12 +288,9 @@ def test_a_none_perturbation_produces_nothing(tmp_path):
 # --- each type writes its own output -----------------------------------------
 
 
-@pytest.mark.parametrize(
-    "entry",
-    (ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP),
-    ids=lambda entry: entry["type"],
-)
-def test_each_type_writes_its_own_directory_and_files(tmp_path, entry):
+@pytest.mark.parametrize("perturbation_type", TYPES_THAT_RUN)
+def test_each_type_writes_its_own_directory_and_files(tmp_path, perturbation_type):
+    entry = _entry_for(perturbation_type)
     run = _run(tmp_path, [entry])
 
     result = run.results[0]
@@ -312,10 +354,7 @@ def test_the_baseline_graph_is_unchanged_by_the_stage(tmp_path):
     attributes_before = _attribute_names(model.graph)
 
     run_perturbations(
-        _settings(tmp_path, [ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP]),
-        model,
-        _boundaries(),
-        SCHEMA,
+        _settings(tmp_path, EVERY_TYPE_ONCE), model, _boundaries(), SCHEMA
     )
 
     assert _resistances(model.graph) == before
@@ -326,12 +365,10 @@ def test_the_baseline_graph_is_unchanged_by_the_stage(tmp_path):
     assert _attribute_names(model.graph) == attributes_before
 
 
-@pytest.mark.parametrize(
-    "entry",
-    (ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP),
-    ids=lambda entry: entry["type"],
-)
-def test_no_perturbation_type_edits_the_baselines_geometry(tmp_path, entry):
+@pytest.mark.parametrize("perturbation_type", PERTURBATION_TYPES)
+def test_no_perturbation_type_edits_the_baselines_geometry(
+    tmp_path, perturbation_type
+):
     """The invariant `_perturbation_copy` rests on, per type.
 
     A perturbation holds the baseline's own `voxels` lists and `pos` arrays --
@@ -340,7 +377,12 @@ def test_no_perturbation_type_edits_the_baselines_geometry(tmp_path, entry):
     them. Anything that started mutating one in place instead of rebinding it
     would silently rewrite the network the run exports, and this is what would
     notice.
+
+    Over every type the module declares, not over the ones that existed when
+    this was written: a type added later shares the same lists and arrays, and
+    would otherwise be the one type nothing here watches.
     """
+    entry = _entry_for(perturbation_type)
     model = _model()
     before = _geometry(model.graph)
 
@@ -539,7 +581,7 @@ def test_one_step_is_reported_per_entry(tmp_path):
 
     with run.stage("run_perturbations") as reporter:
         run_perturbations(
-            _settings(tmp_path, [ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP]),
+            _settings(tmp_path, EVERY_TYPE_ONCE),
             _model(),
             _boundaries(),
             SCHEMA,
@@ -547,11 +589,11 @@ def test_one_step_is_reported_per_entry(tmp_path):
         )
 
     steps = [event for event in events if event.kind == STEP]
+    # One per entry, whatever its type: a `none` entry is still a line the
+    # panel counts through.
     assert [event.step for event in steps] == [
-        "art_dilate_20",
-        "pericytes_tighten",
-        "pressure",
+        entry["name"] for entry in EVERY_TYPE_ONCE
     ]
-    assert [event.step_index for event in steps] == [0, 1, 2]
-    assert {event.step_total for event in steps} == {3}
+    assert [event.step_index for event in steps] == list(range(len(EVERY_TYPE_ONCE)))
+    assert {event.step_total for event in steps} == {len(EVERY_TYPE_ONCE)}
     assert {event.stage for event in steps} == {"run_perturbations"}
