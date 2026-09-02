@@ -4,8 +4,17 @@
 (`create_merged_edge_attributes_simple` / `_full`, leftovers from a reverted
 split), so `from haemolynx.graph import *` raised AttributeError. Nothing
 caught it because no test performed a star-import or checked `__all__`.
+
+The same class of bug runs the other way too: `statistics/__init__.py` did not
+re-export `compute_weighted_betweenness_summary` or
+`compute_weighted_communities_summary`, which `pipeline/stages.py` calls as
+`statistics.compute_weighted_betweenness_summary(...)`, so the export stage
+raised AttributeError on the one configuration that reaches them. Both
+directions are checked here.
 """
+import ast
 import importlib
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +29,9 @@ SUBPACKAGES = [
     "haemolynx.statistics",
     "haemolynx.visualization",
 ]
+
+#: The subpackage names a module can import as a whole, `from haemolynx import io`.
+SUBPACKAGE_NAMES = {name.partition(".")[2] for name in SUBPACKAGES if "." in name}
 
 
 @pytest.mark.parametrize("module_name", SUBPACKAGES)
@@ -46,6 +58,76 @@ def test_all_has_no_duplicates(module_name):
     names = list(getattr(module, "__all__", []))
     duplicates = {name for name in names if names.count(name) > 1}
     assert not duplicates, f"{module_name}.__all__ lists duplicates: {sorted(duplicates)}"
+
+
+def _subpackage_attributes_used_by(source_path: Path) -> dict[str, set[str]]:
+    """Which subpackage attributes *source_path* reaches through the namespace.
+
+    Maps `haemolynx.statistics` -> {"export_statistics_to_csv", ...} for every
+    `statistics.name` in a module that imported the subpackage as a whole. A
+    local name that is assigned anywhere in the module is dropped, because
+    `name.attr` no longer necessarily means the subpackage.
+    """
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    local_to_subpackage: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "haemolynx" and node.level == 0:
+            for alias in node.names:
+                if alias.name in SUBPACKAGE_NAMES:
+                    local_to_subpackage[alias.asname or alias.name] = f"haemolynx.{alias.name}"
+    # A class attribute called `statistics` -- `Solution` has one -- is not a
+    # rebinding of the imported name, so it must not disqualify the module.
+    class_attributes = {
+        target.id
+        for class_def in ast.walk(tree)
+        if isinstance(class_def, ast.ClassDef)
+        for node in class_def.body
+        for target in (
+            [node.target] if isinstance(node, ast.AnnAssign)
+            else node.targets if isinstance(node, ast.Assign)
+            else []
+        )
+        if isinstance(target, ast.Name)
+    }
+    shadowed = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+    } - class_attributes
+    used: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
+            continue
+        local = node.value.id
+        if local in shadowed or local not in local_to_subpackage:
+            continue
+        used.setdefault(local_to_subpackage[local], set()).add(node.attr)
+    return used
+
+
+def test_every_attribute_a_module_reaches_through_a_subpackage_exists():
+    """The other direction: a name a caller uses must actually be re-exported.
+
+    `pipeline/stages.py` calls `statistics.compute_weighted_betweenness_summary`
+    and `statistics.compute_weighted_communities_summary`; neither was in
+    `statistics/__init__.py`, so the export stage raised AttributeError
+    whenever it took that branch. `__all__` checks cannot see this — the names
+    were absent from the package altogether.
+    """
+    package_root = Path(importlib.import_module("haemolynx").__file__).parent
+    offenders = []
+    for source_path in sorted(package_root.rglob("*.py")):
+        for subpackage, names in _subpackage_attributes_used_by(source_path).items():
+            module = importlib.import_module(subpackage)
+            offenders += [
+                f"{source_path.relative_to(package_root).as_posix()} -> {subpackage}.{name}"
+                for name in sorted(names)
+                if not hasattr(module, name)
+            ]
+    assert offenders == [], (
+        "these modules reach a subpackage attribute that does not exist; "
+        f"re-export it from the subpackage's __init__: {offenders}"
+    )
 
 
 def test_path_length_has_exactly_one_public_name():

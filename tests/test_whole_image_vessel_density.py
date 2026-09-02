@@ -61,10 +61,9 @@ def _export_and_read_statistics(tmp_path: Path, voxel_size_xyz) -> dict[str, str
             "input_path": tmp_path / "anisotropic.tif",
             "statistics": True,
             "statistics_mode": "fast",
-            # A solved run, so the graph carries resistances: with
-            # run_haemodynamics false this stage reaches
-            # `statistics.compute_weighted_betweenness_summary`, which the
-            # statistics package does not re-export (a separate bug).
+            # A solved run, so the graph carries resistances and the stage takes
+            # its resistance-weighted branch. The haemodynamics-off branch is
+            # covered by `test_statistics_without_haemodynamics.py`.
             "run_haemodynamics": True,
             "measurement_3d_to_cell_mask": False,
             "vtk_export": False,
