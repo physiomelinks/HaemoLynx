@@ -20,6 +20,8 @@ import pytest
 napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 
+from pytestqt.exceptions import capture_exceptions  # noqa: E402
+
 from haemolynx.gui._widget import (  # noqa: E402
     _add_or_update,
     _apply_layers,
@@ -461,6 +463,59 @@ def test_a_new_run_can_be_started_straight_after_a_cancel(viewer, qtbot, paused_
     assert paused_run.stages == ["build_network", "build_network", "solve"]
     assert VESSELS in viewer.layers
     assert "Finished" in report.value
+
+
+def test_a_cancelled_run_puts_no_exception_in_front_of_the_user(
+    viewer, qtbot, paused_run
+):
+    """A cancellation is a sentence in the report box, not an error dialog.
+
+    `RunCancelled` leaves the run through the worker's `errored` signal, like
+    any other exception -- and superqt gives a worker whose `errored` nobody
+    claimed a handler that re-raises. Re-raised, it reaches napari's excepthook
+    and the user gets `RunCancelled` and a stack trace for having pressed a
+    button, which is the report this replaces.
+    """
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+    state = RunState()
+
+    with capture_exceptions() as raised:
+        _run_in_background({}, None, report, button, None, viewer=viewer,
+                           results=ResultLayers(), state=state)
+        qtbot.waitUntil(paused_run.drawn.is_set, timeout=5000)
+        state.cancel()
+        paused_run.resume.set()
+        qtbot.waitUntil(lambda: not state.running, timeout=5000)
+
+    assert [kind for kind, _value, _tb in raised] == []
+    assert report.value == CANCELLED
+
+
+def test_a_run_that_really_fails_still_raises_where_napari_can_show_it(
+    qtbot, monkeypatch
+):
+    """The other half: silencing the cancellation must not silence a failure.
+
+    Claiming `errored` takes superqt's re-raise with it, so the handler does it
+    instead. A broken run still reaches the excepthook that reports it.
+    """
+    from haemolynx.gui import _widget
+
+    def fake_run(settings, schema, progress=None, on_stage_output=None):
+        raise ValueError("the pipeline broke")
+
+    monkeypatch.setattr(_widget, "run_pipeline_stages", fake_run)
+
+    report = SimpleNamespace(value="")
+    button = SimpleNamespace(enabled=True)
+
+    with capture_exceptions() as raised:
+        _run_in_background({}, None, report, button, None, viewer=None, results=None)
+        qtbot.waitUntil(lambda: button.enabled, timeout=5000)
+
+    assert [kind for kind, _value, _tb in raised] == [ValueError]
+    assert report.value == "ValueError: the pipeline broke"
 
 
 def test_the_clear_button_is_what_stops_the_panels_run(make_napari_viewer):

@@ -1022,6 +1022,10 @@ def _run_in_background(
             bars.fail(f"Failed: {type(error).__name__}")
         report.value = f"{type(error).__name__}: {error}"
         logger.exception("pipeline run failed", exc_info=error)
+        # What superqt would have done for us, and the only reason it is spelled
+        # out here: connecting `errored` below is what stops it doing it to a
+        # cancellation as well.
+        raise error
 
     def stopped() -> None:
         """The worker has gone without `returned` or `errored` saying so.
@@ -1039,9 +1043,16 @@ def _run_in_background(
         if run_state.cancelled:
             report.value = FINISHED_FIRST
 
-    worker = run()
+    # `errored` is connected here rather than on the worker, because superqt
+    # only leaves it alone once something else has claimed it: a worker created
+    # without one gets a handler that re-raises whatever the run raised. A
+    # cancellation goes out through `errored` like any other exception, so that
+    # handler put `RunCancelled` and a stack trace in front of the user through
+    # napari's error popup -- the report this replaces with a plain "Cancelled".
+    # `_start_thread=False` because `_connect` otherwise starts the run here,
+    # before the state below says there is one.
+    worker = run(_connect={"errored": failed}, _start_thread=False)
     worker.returned.connect(finished)
-    worker.errored.connect(failed)
     worker.finished.connect(stopped)
     run_state.start(worker=worker, results=results)
     button.enabled = False
