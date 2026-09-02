@@ -177,6 +177,11 @@ reports the others).
   edge `voxels` are physical microns already, so a layer built from the graph takes `scale=(1,1,1)`,
   while `image`, `skeleton` and the masks are voxel-indexed and take `scale=voxel_size_zyx`
   (see `gui/results.py` and its registration test).
+- **Boundary coordinates** — every `*_node_coordinates` and `*_node_volumes` setting is physical
+  `(z, y, x)` microns, the same units as node `pos`. The `coordinates` method snaps to the
+  *nearest* terminal, so a point in voxel indices never fails, it just selects the wrong node;
+  `graph.BoundaryCoordinateWarning` reports a snap that went too far and names the voxel-index
+  reading when that is what it looks like (`graph/boundaries.py`).
 - **Graph** — `nx.MultiGraph` with `pos` on nodes and `voxels` on edges, both in physical
   `(z, y, x)` microns; haemodynamics uses `branch_order` on edges.
 - **Edge attributes & units** — `length` (µm), `resistance` (Pa·s/m³), `conductance` (m³/(Pa·s)).
