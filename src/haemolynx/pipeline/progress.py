@@ -101,33 +101,32 @@ STAGES: tuple[Stage, ...] = (
     Stage(
         call="assign_diameters",
         title="5. Diameters",
-        summary="Branch orders, then the diameter each vessel is modelled with.",
-        settings=(
-            "use_fwhm_edge_diameters",
-            "strict_branch_order_assignment",
-            "max_branch_order",
-            "all_diams_const",
-            "default_diameter",
-            "manual_capillary_diameter_by_branch_order",
-            "manual_arteriole_diameter_by_branch_order",
-            "manual_venule_diameter_by_branch_order",
-            "diameter_by_branch_order",
-            "custom_edges",
+        summary=(
+            "Branch orders, the diameter each vessel is modelled with, the "
+            "blood in it, and any pericyte constriction."
         ),
-        sections=("FWHM diameter measurement",),
+        # Declared under boundary assignment, but it is branch-order
+        # assignment that reads it, which happens here.
+        settings=("strict_branch_order_assignment",),
+        # This is the stage that reads them: it hands the whole
+        # `Diameters and pericytes` section to the haemodynamics as one group
+        # (see `pipeline/stages.py`), so the settings and the tab agree.
+        sections=("Diameters and pericytes", "FWHM diameter measurement"),
     ),
     Stage(
         call="build_haemodynamic_model",
         title="6. Haemodynamics",
-        summary="Poiseuille resistance per vessel, and any pericyte constriction.",
-        settings=("run_haemodynamics", "constriction_by_branch_order"),
-        sections=("Diameters and pericytes",),
+        summary="Whether to solve the flow, and the pressures to solve it at.",
+        settings=("run_haemodynamics",),
     ),
     Stage(
+        # Its rows belong beside the haemodynamics they configure, so this
+        # stage opens no tab of its own; it is still a stage a run reports.
         call="solve",
-        title="7. Solve",
+        title="Solve",
         summary="Pressures and flows, from the boundary pressures.",
         settings=("inlet_p_bc", "outlet_p_bc", "do_equiv_resistance_calculation"),
+        tab="6. Haemodynamics",
     ),
     Stage(
         call="export_results",

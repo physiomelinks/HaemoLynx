@@ -309,9 +309,9 @@ def test_a_step_total_given_once_holds_for_the_steps_after_it():
 
 
 def test_completed_counts_the_stage_that_just_finished():
-    event = ProgressEvent(STAGE_FINISHED, "solve", "7. Solve", index=6, total=8)
+    event = ProgressEvent(STAGE_FINISHED, "solve", "Solve", index=6, total=8)
     assert event.completed == 7
-    assert ProgressEvent(STAGE_STARTED, "solve", "7. Solve", index=6, total=8).completed == 6
+    assert ProgressEvent(STAGE_STARTED, "solve", "Solve", index=6, total=8).completed == 6
 
 
 # --- the ready-made console consumer ----------------------------------------
@@ -350,7 +350,7 @@ def test_log_progress_reports_a_failure_as_an_error(caplog):
 
     failure = [record for record in caplog.records if record.levelno == logging.ERROR]
     assert len(failure) == 1
-    assert "7. Solve" in failure[0].message
+    assert "Solve" in failure[0].message
     assert "singular matrix" in failure[0].message
 
 
@@ -514,8 +514,22 @@ def test_the_sixth_stage_is_named_haemodynamics():
         "4. Boundaries",
         "5. Diameters",
         "6. Haemodynamics",
-        "7. Solve",
+        "Solve",
         "8. Export",
     ]
     haemodynamics = next(s for s in STAGES if s.title == "6. Haemodynamics")
     assert haemodynamics.call == "build_haemodynamic_model"
+
+
+def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
+    """It is still a stage a run reports; only its form rows have moved.
+
+    The boundary pressures configure the solve, but a user reads them as part
+    of the haemodynamics, so the two stages share one tab. `Stage.call` and
+    the progress events are untouched by that -- which is what this pins.
+    """
+    solve = next(stage for stage in STAGES if stage.call == "solve")
+
+    assert solve.tab == "6. Haemodynamics"
+    assert solve.settings == ("inlet_p_bc", "outlet_p_bc", "do_equiv_resistance_calculation")
+    assert [stage.tab for stage in STAGES if stage.call != "solve"] == [None] * 7

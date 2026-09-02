@@ -4,8 +4,17 @@ The tab split is declared rather than derived, so the thing to guard is that it
 stays complete and unambiguous as settings are added. A setting on no tab is
 unreachable from the GUI; a setting on two is a value the user can set twice
 and disagree with themselves about.
+
+There is one trap in here worth reading before moving a row, and it has its own
+test below: which tab a setting appears on is declared by `Stage.settings` and
+`Stage.sections`, never by the schema *section* the setting is declared in.
+Moving it between schema sections looks like the same thing and is not -- the
+pipeline hands whole schema sections to the code that consumes them.
 """
 from __future__ import annotations
+
+import ast
+from pathlib import Path
 
 import pytest
 
@@ -17,10 +26,19 @@ from haemolynx.gui.tabs import (
     tabs_for,
     unassigned,
 )
+from haemolynx.haemodynamics.apply import DIAMETER_DEFAULTS
 from haemolynx.parsers import Schema, Setting
 from haemolynx.pipeline import default_schema
 
 SCHEMA = default_schema()
+
+#: The one schema section a stage hands over whole, and the module that reads
+#: it back by name. See `test_the_haemodynamics_still_gets_its_whole_section`.
+DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
+APPLY_SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "src" / "haemolynx" / "haemodynamics" / "apply.py"
+)
 
 
 # --- coverage ----------------------------------------------------------------
@@ -53,6 +71,102 @@ def test_no_tab_is_empty():
     """An empty tab is a stage the panel implies has nothing to configure."""
     empty = [tab.stage.title for tab in tabs_for(SCHEMA) if not tab.fields]
     assert empty == [], f"tabs with no settings: {empty}"
+
+
+# --- the schema section a stage hands over whole -----------------------------
+
+
+def _diameter_group_names_read_by(source_path: Path) -> set[str]:
+    """Every setting `apply.py` looks up in the diameters group, by name.
+
+    Read out of the source rather than listed here, so a name added to the
+    consumer is covered without anyone remembering to add it.
+    """
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    def _literal(nodes) -> str | None:
+        if not nodes:
+            return None
+        first = nodes[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+        return None
+
+    def _is_group(node) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr == "diameters"
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        # config.diameter("name")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "diameter":
+                name = _literal(node.args)
+                if name is not None:
+                    names.add(name)
+            # self.diameters.get("name", default)
+            elif node.func.attr == "get" and _is_group(node.func.value):
+                name = _literal(node.args)
+                if name is not None:
+                    names.add(name)
+        # self.diameters["name"]
+        elif isinstance(node, ast.Subscript) and _is_group(node.value):
+            name = _literal([node.slice])
+            if name is not None:
+                names.add(name)
+        # "name" in self.diameters
+        elif isinstance(node, ast.Compare) and any(
+            isinstance(op, (ast.In, ast.NotIn)) for op in node.ops
+        ):
+            if any(_is_group(target) for target in node.comparators):
+                name = _literal([node.left])
+                if name is not None:
+                    names.add(name)
+    return names
+
+
+def test_the_haemodynamics_still_gets_its_whole_section():
+    """The guard on retabbing: move `Stage.settings`, never a schema section.
+
+    `assign_diameters` hands `schema.section_values(settings, "Diameters and
+    pericytes")` to the haemodynamics as one group, and `apply.py` reads each
+    value back out of it *by name*, falling back to `DIAMETER_DEFAULTS` for
+    what is not there. So a setting moved to a different schema *section* --
+    which looks like the natural way to move its row to another tab -- does not
+    fail. It silently reverts: `do_pericyte_construction` would read False and
+    every run would quietly lose its pericyte constrictions, with no error and
+    no other failing test. Which tab a row appears on is declared in
+    `pipeline/progress.py`, by name or by claiming a section there.
+    """
+    section = set(SCHEMA.section_names(DIAMETERS_AND_PERICYTES))
+    read = _diameter_group_names_read_by(APPLY_SOURCE)
+    assert read, "found no diameters-group lookups in apply.py; the test is broken"
+
+    lost = sorted(read - section - set(DIAMETER_DEFAULTS))
+    assert lost == [], (
+        f"{lost} are read out of the '{DIAMETERS_AND_PERICYTES}' group by "
+        "apply.py but are not declared in that schema section, so they will "
+        "read as unset at run time. Put them back in the section and move "
+        "their tab in pipeline/progress.py instead."
+    )
+    # Named outright as well as derived: these are the ones whose reverting to
+    # a default changes the numbers rather than raising.
+    for name in (
+        "do_pericyte_construction",
+        "use_pericyte_mask_constriction",
+        "viscosity_law",
+        "diameter_basis",
+        "haematocrit",
+        "diameter_by_branch_order",
+        "constriction_by_branch_order",
+    ):
+        assert name in section, f"{name} has left the {DIAMETERS_AND_PERICYTES} section"
+
+
+def test_the_whole_section_is_on_the_stage_that_hands_it_over():
+    """One tab for one group: the settings and the stage reading them agree."""
+    owner = assign_to_stages(SCHEMA)
+    tabs = {owner[name] for name in SCHEMA.section_names(DIAMETERS_AND_PERICYTES)}
+    assert tabs == {"5. Diameters"}
 
 
 # --- the stages themselves ---------------------------------------------------
@@ -97,7 +211,8 @@ def test_the_tabs_read_in_pipeline_order():
         "4. Boundaries",
         "5. Diameters",
         "6. Haemodynamics",
-        "7. Solve",
+        # `solve` renders its rows onto the haemodynamics tab, so there is no
+        # tab of its own between these two.
         "8. Export",
     ]
 
@@ -212,18 +327,39 @@ def test_a_claim_for_a_setting_that_does_not_exist_is_ignored(monkeypatch):
 
 
 def test_a_tab_carries_the_rows_for_its_settings():
+    """The haemodynamics tab is whether to solve, and what to solve at.
+
+    Two stages' rows: `build_haemodynamic_model` brings the toggle,
+    `solve` brings the boundary pressures it reads.
+    """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    solve = tabs["7. Solve"]
-    assert {field.name for field in solve.fields} == {
+    haemodynamics = tabs["6. Haemodynamics"]
+    assert {field.name for field in haemodynamics.fields} == {
+        "run_haemodynamics",
         "inlet_p_bc",
         "outlet_p_bc",
         "do_equiv_resistance_calculation",
     }
 
 
+def test_the_blood_and_pericyte_settings_are_on_the_stage_that_reads_them():
+    """`assign_diameters` is what hands them to the haemodynamics, so tab 5."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    shown = {field.name for field in tabs["5. Diameters"].fields}
+    for name in (
+        "viscosity_law",
+        "diameter_basis",
+        "haematocrit",
+        "do_pericyte_construction",
+        "run_pericyte_resistance_comparison",
+        "constriction_by_branch_order",
+    ):
+        assert name in shown, f"{name} is not on the Diameters tab"
+
+
 def test_supplied_values_reach_the_right_tab():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA, {"inlet_p_bc": 1234.0})}
-    row = next(f for f in tabs["7. Solve"].fields if f.name == "inlet_p_bc")
+    row = next(f for f in tabs["6. Haemodynamics"].fields if f.name == "inlet_p_bc")
     assert row.value == 1234.0
 
 
@@ -235,6 +371,7 @@ def test_rows_keep_the_schema_order_within_a_tab():
     assert shown == declared
 
 
-@pytest.mark.parametrize("tab_title", [stage.title for stage in STAGES])
-def test_every_tab_starts_with_a_number_so_the_order_is_visible(tab_title):
-    assert tab_title[0].isdigit()
+@pytest.mark.parametrize("title", tab_titles())
+def test_every_tab_starts_with_a_number_so_the_order_is_visible(title):
+    """Tabs are numbered, not stages: a stage that opens none needs no number."""
+    assert title[0].isdigit()
