@@ -97,8 +97,9 @@ def test_placement_uses_the_qc_peak_for_z_and_says_where_it_came_from():
 
     assert placement.peak_slice == 106
     assert "z=qc_peak_slice" in placement.source
-    # 106 is closer to the top of the stack than a 160-deep box allows, so it is clamped in -
-    # but it must still sit well above the volume centre of 217.
+    # 106 clears the 80-slice half-width, so the box is NOT clamped and the centre is the
+    # peak itself. It must sit well above the volume centre of 217.
+    assert placement.centre_zyx[0] == 106
     assert placement.centre_zyx[0] < specimen.shape_zyx[0] // 2
 
 

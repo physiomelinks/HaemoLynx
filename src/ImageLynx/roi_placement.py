@@ -3,19 +3,24 @@
 A matched ROI size makes the samples the same *size*; it does not make them the same
 *anatomy*. The carotid body does not sit in the middle of its imaged block, and it does not
 sit in the same place in every block: preprocess_cb.py recorded each volume's axial tissue
-peak, and they range from slice 106 of 435 in WKY-B to 230 of 435 in WKY-A. A centred ROI
+peak. The stacks differ in depth - 435 slices for WKY, 495 for SHR - so the peak is compared
+as a fraction of depth, and it ranges from 0.244 (WKY-B) to 0.529 (WKY-A). A centred ROI
 therefore lands mid-organ in one specimen and in its sparse margin in another, and the
 resulting difference in vessel density is a difference in where the box was put.
 
-Worse, the misplacement is not random with respect to the comparison: WKY peaks at a mean
-depth fraction of 0.40 and SHR at 0.34, so a centred box systematically samples a different
-part of the organ in each cohort.
+The misplacement is also group-correlated, but weakly: WKY means 0.402 against SHR's 0.371,
+a gap of 0.031 sitting inside a within-WKY spread of 0.285. Read that as a reason not to
+assume centring is neutral, not as a measured cohort effect.
 
 Placement here is computed from the data rather than chosen by hand:
 
-- **z** from the axial tissue peak in the volume's own QC record, which preprocess_cb.py
-  derived from tissue extent per slice.
-- **y and x** from the intensity-weighted centroid of the grayscale channel.
+- **z** from the axial tissue peak in the volume's own QC record. preprocess_cb.py derived
+  it as the argmax of a per-slice 99th-percentile brightness profile, smoothed along z by a
+  moving average of max(3, n // 20) slices.
+- **y and x** from the centroid of the grayscale channel's z-projection, thresholded at its
+  99th percentile. Note that the intensity weighting is inert as the data is normalised:
+  the cutoff lands on the saturation plateau at 1.0, so every surviving pixel weighs the
+  same. See tissue_centroid_yx.
 
 **The trade this makes.** Centring on signal samples the middle of the organ, which is
 denser than its periphery, so the absolute densities reported are not representative of the
@@ -80,6 +85,16 @@ def tissue_centroid_yx(volume: np.ndarray, percentile: float = 99.0) -> Tuple[in
     Thresholded at a high percentile before weighting: the mean of a background-subtracted
     volume is dominated by the many near-zero voxels, which drags the centroid towards the
     geometric middle and defeats the point of measuring it.
+
+    On the CB volumes the weighting is inert, and deliberately left in rather than removed.
+    preprocess_cb.py clips the top 0.02% of voxels to 1.0, and the projection below takes a
+    max over z, so 1.33-1.52% of the projection is saturated - more than 1%, which puts the
+    99th percentile exactly on 1.0. Every surviving pixel then carries the same weight, and
+    the weighted centroid equals the unweighted one to 0.00 px on all six volumes. The
+    weighting still matters for any input that is not saturated at the cutoff, which is why
+    it stays; but a smaller --saturated upstream would move ROI placement, by up to ~70 um
+    at the 90th percentile. The margin holding the cutoff on the plateau is 0.33-0.52
+    percentage points.
     """
     data = np.asarray(volume, dtype=np.float32)
     projected = data.max(axis=0) if data.ndim == 3 else data

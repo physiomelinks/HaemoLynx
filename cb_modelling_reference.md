@@ -229,11 +229,36 @@ So the peak slice is the brightest *region* of the stack, and the verdict string
 `"hump / tissue-extent dominated"` names one of three profile shapes — it is not the method by
 which the peak was found.
 
-*Lateral (y, x)* comes from `tissue_centroid_yx` on channel 0, subsampled (4, 2, 2): take the
-**maximum-intensity projection along z**, threshold at the **99th percentile**, then take the
-intensity-weighted centre of mass of the surviving voxels. The percentile threshold is the point —
-the mean of a background-subtracted volume is dominated by near-zero voxels, which drags the
-centroid back towards the geometric middle and defeats the measurement.
+*Lateral (y, x)* comes from `tissue_centroid_yx` on channel 0, subsampled (4, 2, 2):
+
+| # | Step | Setting | Why | On the CB path | Where |
+|---|---|---|---|---|---|
+| 1 | Read channel 0, subsampled | (4, 2, 2) | A 4× stride in z is free — the next step collapses z anyway — and 2× laterally is 4× less data for a centroid stable to a voxel | **On** | `roi_placement.py:133` |
+| 2 | **Maximum-intensity projection** along z | — | Collapses the stack to one image, so a slice-rich region cannot outvote a bright one. Summing instead would weight by *how many* slices hold tissue, which is the axial question, already answered | **On** | `roi_placement.py:85` |
+| 3 | Threshold the projection at the **99th percentile** | p99 | A plain centre of mass over a background-subtracted volume is mostly background, and background is spread evenly, so it drags the answer to the geometric middle — the exact failure this function exists to avoid | **On** | `roi_placement.py:86` |
+| 4 | Weighted centre of mass of the survivors | weights = intensity | Intended to let brighter survivors count for more | **On, but inert — see below** | `roi_placement.py:92` |
+| 5 | Rescale by the lateral stride | × 2, × 2 | The centroid was measured on a subsampled grid. z needs no rescale: the projection discarded it | **On** | `roi_placement.py:135` |
+
+**The intensity weighting does nothing on this data, and it is worth knowing why.**
+`preprocess_cb.py` normalises with `--saturated 0.02`, which clips the brightest 0.02% of voxels
+to exactly 1.0. The projection in step 2 takes a maximum over ~109 subsampled slices, so a column
+saturates if *any* voxel in it does — lifting the saturated share from 0.02% of voxels to
+**1.33–1.52% of the projection**. That is more than 1%, so the 99th percentile lands exactly on
+**1.0**, and the surviving set is precisely the saturated pixels, every one of them carrying the
+same weight. Measured across all six volumes, the weighted and unweighted centroids agree to
+**0.00 px**.
+
+The consequence is that the answer is set by *where the saturated specks are*, not by a graded
+centre of mass. In practice that is stable — the plateau spans percentiles ~98.5 to 100, so
+anything from 98.5 upwards returns the identical answer — but the stability comes from
+saturation, not from the weighting. Below the plateau the behaviour changes, and by a
+non-trivial amount: at the 90th percentile the centroid shifts by 8–70 µm (largest in SHR-C),
+against an ROI 298 µm across. The margin holding it on the plateau is only **0.33–0.52
+percentage points**, so a smaller `--saturated` in preprocessing would silently move ROI
+placement. That coupling is not obvious from either module.
+
+**What it buys.** The centroid sits 37–123 µm from the geometric centre depending on specimen, so
+the step is doing real work — a centred box would be measurably elsewhere.
 
 **No vesselness is used, deliberately.** Channel 0 is the background-subtracted grayscale. The
 vesselness channels exist in the same file — multiscale **Sato**, fine at σ 1.0/1.4/2.0 px and
