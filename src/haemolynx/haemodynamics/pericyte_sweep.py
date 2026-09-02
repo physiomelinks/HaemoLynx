@@ -160,6 +160,9 @@ def run_pericyte_dilation_pressure_sweep(
     poiseuille_model = PoiseuilleModel(
         constriction_length=float(settings.get("constriction_length_um", 40.0)),
         constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
+        viscosity_law=settings.get("viscosity_law", "pries"),
+        haematocrit=float(settings.get("haematocrit", 0.45)),
+        diameter_basis=settings.get("diameter_basis", "plasma_column"),
     )
     diameter_by_branch_order = settings["diameter_by_branch_order"]
     custom_edges = settings.get("custom_edges") or []

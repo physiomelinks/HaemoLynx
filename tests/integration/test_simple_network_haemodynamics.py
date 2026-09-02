@@ -79,16 +79,29 @@ def test_every_vessel_gets_resistance_and_matching_conductance(run_result):
         assert data["conductance"] == pytest.approx(1.0 / data["resistance"], rel=1e-12)
 
 
-def test_large_vessels_use_the_constant_large_vessel_viscosity(settings, run_result):
-    """The 20 um arteriole is above the capillary limit, so mu is the constant."""
+def test_large_vessels_are_covered_by_the_law_rather_than_a_constant(
+    settings, run_result
+):
+    """The 20 um arteriole is above the capillary limit, and no longer a stub.
+
+    It used to take a flat 3.5 mPa.s, because the old default law had nothing
+    to say between 7 um and the macroscale. The default is Pries now, which is
+    fitted across 3.3-1978 um, so the arteriole gets a viscosity that depends
+    on its diameter like every other vessel.
+    """
+    from haemolynx.haemodynamics.viscosity import pries_in_vitro_viscosity
+
     G = run_result["graph"]
     diameter = settings["diameter_by_branch_order"]["Art1"]
     assert diameter > CAPILLARY_REGIME_MAX_DIAMETER_UM
 
     length_m = G[0][1][0]["length"] / UM_PER_M
     diameter_m = diameter / UM_PER_M
-    expected = (128.0 * LARGE_VESSEL_VISCOSITY_PA_S * length_m) / (math.pi * diameter_m**4)
+    expected = (
+        128.0 * pries_in_vitro_viscosity(diameter) * length_m
+    ) / (math.pi * diameter_m**4)
     assert G[0][1][0]["resistance"] == pytest.approx(expected, rel=1e-12)
+    assert pries_in_vitro_viscosity(diameter) != LARGE_VESSEL_VISCOSITY_PA_S
 
 
 def test_pressures_stay_within_the_boundary_conditions(settings, run_result):
@@ -140,14 +153,22 @@ def test_boundary_selection_picks_the_terminal_nodes(run_result):
     assert not set(run_result["inlet_nodes"]) & set(run_result["outlet_nodes"])
 
 
-def test_running_the_example_warns_about_the_placeholder_viscosity(
+def test_running_the_example_no_longer_warns_about_a_placeholder(
     example, settings, tmp_path
 ):
-    """A run using 20 um and 30 um vessels must say its viscosity is a placeholder."""
+    """This run has 20 um and 30 um vessels, and used to warn about every one.
+
+    That warning was the old default law admitting it had nothing for the
+    7-100 um band. The default covers it now, so a run of ordinary arterioles
+    is quiet -- which is the whole of issue #90.
+    """
+    import warnings as _warnings
+
     from haemolynx.haemodynamics.poiseuille import PlaceholderViscosityWarning
 
-    with pytest.warns(PlaceholderViscosityWarning, match="order-of-magnitude"):
-        example.main({**settings, "output_dir": tmp_path / "warns"})
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error", PlaceholderViscosityWarning)
+        example.main({**settings, "output_dir": tmp_path / "quiet"})
 
 
 def test_vtk_files_are_written_with_flow_fields(run_result):

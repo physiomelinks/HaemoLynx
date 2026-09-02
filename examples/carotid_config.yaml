@@ -220,6 +220,12 @@ statistics_and_measurements:
 # Diameters and pericytes
 # ------------------------------------------------------------------------
 diameters_and_pericytes:
+  # Which apparent-viscosity law sets the resistances: pries covers 3.3-1978 um in one expression and reads diameter_basis, capillary_power_law is the older law calibrated at 5 um with a placeholder constant above 7 um, constant is plasma everywhere. Resistances are not comparable across laws  [one of: pries, capillary_power_law, constant; needs run_haemodynamics]
+  viscosity_law: capillary_power_law
+  # What a vessel diameter in this dataset measures, which the pries law needs and no other reads: plasma_column for the channel the fluid occupies, as a plasma stain images it, or anatomical for a wall-to-wall diameter that includes the ~1.1 um endothelial surface layer. Choosing anatomical for a plasma-stained image subtracts that layer twice and roughly quintuples capillary resistance  [one of: plasma_column, anatomical; needs run_haemodynamics]
+  diameter_basis: plasma_column
+  # Discharge haematocrit the pries law is evaluated at; read by no other law  [fraction; range 0.0..0.99; needs run_haemodynamics]
+  haematocrit: 0.45
   # Give every branch order the same vessel diameter instead of a per-order table
   all_diams_const: true
   # Model pericyte constrictions when assigning Poiseuille resistances  [needs run_haemodynamics]

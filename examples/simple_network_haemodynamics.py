@@ -37,7 +37,6 @@ for _path in (src_dir, examples_dir):
 
 from haemolynx import graph as graph_tools
 from haemolynx import haemodynamics, visualization
-from haemolynx.haemodynamics.poiseuille import CAPILLARY_REGIME_MAX_DIAMETER_UM
 from haemolynx.parsers import configure_console_logging, settings_from_command_line
 from simple_network_schema import SCHEMA
 
@@ -184,10 +183,18 @@ def main(settings: dict) -> dict:
     inlet_idx = node_list.index(inlet_nodes[0])
     inlet_flow = float(np.sum(conductance[inlet_idx, :] * (pressure[inlet_idx] - pressure)))
 
-    print(f"\nViscosity regime split at {CAPILLARY_REGIME_MAX_DIAMETER_UM} um:")
+    # These defaults have to be the model's own, or the panel below reports a
+    # law the resistances were not computed with.
+    law = settings.get("viscosity_law", "pries")
+    haematocrit = settings.get("haematocrit", 0.45)
+    basis = settings.get("diameter_basis", "plasma_column")
+    print(f"\nViscosity by {haemodynamics.describe_law(law, haematocrit, basis)}:")
     for branch_order, diameter in sorted(settings["diameter_by_branch_order"].items()):
-        viscosity = haemodynamics.PoiseuilleModel.calculate_viscosity(diameter)
-        regime = "capillary law" if diameter <= CAPILLARY_REGIME_MAX_DIAMETER_UM else "large-vessel constant"
+        viscosity = haemodynamics.viscosity_for(
+            diameter, law=law, haematocrit=haematocrit, diameter_basis=basis
+        )
+        low, high = haemodynamics.validity_range_um(law)
+        regime = "fitted" if low <= diameter <= high else "extrapolated"
         print(f"  {branch_order:5s} d={diameter:5.1f} um  mu={viscosity * 1e3:.2f} mPa.s  ({regime})")
 
     pressure_drop = settings["inlet_pressure_pa"] - settings["outlet_pressure_pa"]

@@ -68,54 +68,30 @@ def build_diameter_by_branch_order(
 
 # --- Viscosity model -------------------------------------------------------
 #
-# Apparent blood viscosity rises as vessels narrow (the Fahraeus-Lindqvist
-# reversal below ~7 um). The empirical law used here is a power law in
-# diameter, pinned to a physical reference so that resistance comes out in SI
-# units rather than arbitrary model units:
-#
-#     mu(d) = REFERENCE_VISCOSITY_PA_S * (REFERENCE_DIAMETER_UM / d) ** EXPONENT
-#
-# Only the absolute scale depends on the reference point; every resistance
-# *ratio* is fixed by the exponent alone.
-REFERENCE_VISCOSITY_PA_S = 3.0e-3
-REFERENCE_DIAMETER_UM = 5.0
-VISCOSITY_DIAMETER_EXPONENT = 1.647
-
-# Plasma viscosity. The power law crosses this at ~8.7 um, above which it would
-# predict blood thinner than its own plasma, so the power law is only used below.
-PLASMA_VISCOSITY_PA_S = 1.2e-3
-CAPILLARY_REGIME_MAX_DIAMETER_UM = 7.0
-
-# Above the capillary regime, viscosity is held at the macroscale value: whole
-# blood at physiological haematocrit in vessels wide enough (d >~ 300 um) that
-# the Fahraeus-Lindqvist effect has died out.
-#
-# This is a deliberate placeholder, not a model of the 7 um-to-macroscale
-# transition, where apparent viscosity actually recovers gradually. It jumps
-# discontinuously at 7 um (1.72 -> 3.5 mPa.s), so between 7 and ~8.4 um a wider
-# vessel is predicted *more* resistive per unit length than a 7 um one. Vessels
-# well above that band are the ones this branch is meant to serve. Replacing it
-# with a continuous law (Pries et al. in-vivo) is tracked in issue #90.
-LARGE_VESSEL_VISCOSITY_PA_S = 3.5e-3
-
-# Upper end of the placeholder's error. By ~100 um the constant is close to the
-# true macroscale apparent viscosity, so vessels above this are served well by
-# it; between 7 and 100 um they are not, and every such vessel raises
-# PlaceholderViscosityWarning.
-PLACEHOLDER_REGIME_MAX_DIAMETER_UM = 100.0
+# Which law supplies the viscosity is a setting, because it changes every
+# resistance a run produces and the laws do not agree. They live in
+# `viscosity.py` with their validity ranges; the names are re-exported here
+# because this is where callers have always found them.
+from .viscosity import (  # noqa: E402  (re-export, must follow the docstring)
+    CAPILLARY_REGIME_MAX_DIAMETER_UM,
+    DEFAULT_HAEMATOCRIT,
+    DIAMETER_BASES,
+    LARGE_VESSEL_VISCOSITY_PA_S,
+    PLACEHOLDER_REGIME_MAX_DIAMETER_UM,
+    PLASMA_VISCOSITY_PA_S,
+    PRIES_MAX_DIAMETER_UM,
+    PRIES_MIN_DIAMETER_UM,
+    REFERENCE_DIAMETER_UM,
+    REFERENCE_VISCOSITY_PA_S,
+    VISCOSITY_DIAMETER_EXPONENT,
+    VISCOSITY_LAWS,
+    PlaceholderViscosityWarning,
+    describe_law,
+    validity_range_um,
+    viscosity_for,
+)
 
 UM_PER_M = 1.0e6
-
-
-class PlaceholderViscosityWarning(UserWarning):
-    """A vessel fell in the 7-100 um regime where viscosity is a placeholder.
-
-    Raised so that a run using arteriole- and venule-scale vessels cannot
-    quietly report resistances that carry more precision than the model has.
-    Silence it deliberately, once you have accepted the approximation, with::
-
-        warnings.filterwarnings("ignore", category=PlaceholderViscosityWarning)
-    """
 
 
 def set_edge_resistance(edge_data: dict, resistance: float) -> None:
@@ -145,9 +121,32 @@ class PoiseuilleModel:
     pressure drop in Pa divided by a resistance yields a flow in m^3/s.
     """
 
-    def __init__(self, constriction_length: float, constriction_spacing: float) -> None:
+    def __init__(
+        self,
+        constriction_length: float,
+        constriction_spacing: float,
+        viscosity_law: str = "pries",
+        haematocrit: float = DEFAULT_HAEMATOCRIT,
+        diameter_basis: str = "plasma_column",
+    ) -> None:
+        if viscosity_law not in VISCOSITY_LAWS:
+            raise ValueError(
+                f"Unknown viscosity_law {viscosity_law!r}. Fix: choose one of "
+                f"{', '.join(VISCOSITY_LAWS)}."
+            )
+        if diameter_basis not in DIAMETER_BASES:
+            raise ValueError(
+                f"Unknown diameter_basis {diameter_basis!r}. Fix: choose one "
+                f"of {', '.join(DIAMETER_BASES)}."
+            )
         self.constriction_length = constriction_length
         self.constriction_spacing = constriction_spacing
+        #: Which viscosity law this model applies. Resistances are not
+        #: comparable across laws, so a run records it.
+        self.viscosity_law = viscosity_law
+        self.haematocrit = float(haematocrit)
+        #: What the graph's diameters mean; see `viscosity.DIAMETER_BASES`.
+        self.diameter_basis = diameter_basis
 
     def get_diameter_at_position(
         self, position: float, length: float, d1: float, d2: float
@@ -165,52 +164,33 @@ class PoiseuilleModel:
             return d2 + (d1 - d2) * ((phase - 30) / 10)
         return d1
 
-    @staticmethod
-    def calculate_viscosity(diameter: float) -> float:
+    def calculate_viscosity(self, diameter: float) -> float:
         """Apparent blood viscosity in Pa.s for a vessel of *diameter* um.
 
-        Piecewise: the calibrated capillary power law up to
-        ``CAPILLARY_REGIME_MAX_DIAMETER_UM``, and a constant
-        ``LARGE_VESSEL_VISCOSITY_PA_S`` above it. The constant branch is a
-        placeholder for the real transition regime (issue #90), so diameters
-        from 7 um to ``PLACEHOLDER_REGIME_MAX_DIAMETER_UM`` raise
-        :class:`PlaceholderViscosityWarning` and their resistances should be
-        read as order-of-magnitude only.
+        Which law answers is `self.viscosity_law`; see
+        :mod:`haemolynx.haemodynamics.viscosity` for what each covers.
         """
-        if diameter <= 0:
-            raise ValueError(f"Diameter must be positive, got {diameter} um.")
-        if diameter > CAPILLARY_REGIME_MAX_DIAMETER_UM:
-            if diameter <= PLACEHOLDER_REGIME_MAX_DIAMETER_UM:
-                # Deliberately free of the actual diameter so repeated calls
-                # collapse to one message under the default warning filter.
-                warnings.warn(
-                    "Vessel diameters between "
-                    f"{CAPILLARY_REGIME_MAX_DIAMETER_UM} and "
-                    f"{PLACEHOLDER_REGIME_MAX_DIAMETER_UM} um use a placeholder "
-                    "viscosity: it is held constant at "
-                    f"{LARGE_VESSEL_VISCOSITY_PA_S * 1e3} mPa.s instead of "
-                    "recovering gradually from the capillary law toward the "
-                    "macroscale value. The error is largest just above "
-                    f"{CAPILLARY_REGIME_MAX_DIAMETER_UM} um, where viscosity "
-                    "also steps up discontinuously. Treat resistances for these "
-                    "vessels as order-of-magnitude only — see issue #90.",
-                    PlaceholderViscosityWarning,
-                    stacklevel=2,
-                )
-            return LARGE_VESSEL_VISCOSITY_PA_S
-        return REFERENCE_VISCOSITY_PA_S * (
-            (REFERENCE_DIAMETER_UM / diameter) ** VISCOSITY_DIAMETER_EXPONENT
+        return viscosity_for(
+            diameter,
+            law=self.viscosity_law,
+            haematocrit=self.haematocrit,
+            diameter_basis=self.diameter_basis,
         )
 
-    @staticmethod
-    def resistance_of_uniform_segment(length: float, diameter: float) -> float:
+    def describe_viscosity_law(self) -> str:
+        """The law and its range, for a run's metadata."""
+        return describe_law(
+            self.viscosity_law, self.haematocrit, self.diameter_basis
+        )
+
+    def resistance_of_uniform_segment(self, length: float, diameter: float) -> float:
         """Poiseuille resistance (Pa.s/m^3) of a straight uniform segment.
 
         ``length`` and ``diameter`` are in micrometres.
         """
         if length <= 0:
             return float("inf")
-        viscosity = PoiseuilleModel.calculate_viscosity(diameter)
+        viscosity = self.calculate_viscosity(diameter)
         length_m = length / UM_PER_M
         diameter_m = diameter / UM_PER_M
         return (128.0 * viscosity * length_m) / (np.pi * diameter_m ** 4)

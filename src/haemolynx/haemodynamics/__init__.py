@@ -1,5 +1,11 @@
 """Haemodynamics: viscosity, Poiseuille resistance/conductance, network resistance."""
 from . import automated
+from .viscosity import (
+    VISCOSITY_LAWS,
+    describe_law,
+    validity_range_um,
+    viscosity_for,
+)
 from .poiseuille import (
     PlaceholderViscosityWarning,
     PoiseuilleModel,
@@ -17,6 +23,10 @@ from .apply import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
 
 __all__ = [
     "automated",
+    "VISCOSITY_LAWS",
+    "describe_law",
+    "validity_range_um",
+    "viscosity_for",
     "PlaceholderViscosityWarning",
     "PoiseuilleModel",
     "build_diameter_by_branch_order",
