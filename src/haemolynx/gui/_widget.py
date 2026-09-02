@@ -25,6 +25,8 @@ import numpy as np
 
 from haemolynx.gui.form import Field, display_value_for
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
+from haemolynx.gui.log_view import LogView, VERBOSE_LEVEL
+from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
     NODES,
     VESSELS,
@@ -43,7 +45,7 @@ from haemolynx.gui.run_state import (
 from haemolynx.gui.tabs import tabs_for
 from haemolynx.parsers import dump_config, load_config
 from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
-from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent
+from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,9 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
     "show_plots_in_ide": False,
     "interactive_plots": False,
 }
+
+#: What napari calls the log window's dock.
+LOG_DOCK_NAME = "HaemoLynx run log"
 
 
 def _create_widget(**kwargs):
@@ -905,7 +910,7 @@ def _progress_bridge():
 
 def _run_in_background(
     settings, schema, report, button, bars=None, viewer=None, results=None,
-    state=None):
+    state=None, log=None):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
@@ -915,12 +920,21 @@ def _run_in_background(
     panel knows it has a run going, and how that run is stopped on purpose.
     Without one the run is unstoppable but otherwise unchanged, which is all a
     test driving this function on its own needs.
+
+    *log* is a :class:`~haemolynx.gui.log_view.LogView`, or anything with its
+    handful of methods -- like *report* and *bars*, it is optional and duck
+    typed, so a test hands over its own. With one, the library's logger is
+    captured for exactly the length of the run and drained onto the widget on
+    a timer.
     """
     from napari.qt.threading import thread_worker
 
     run_state = state if state is not None else RunState()
     bridge = _progress_bridge()
     show_layers = viewer is not None and results is not None
+    #: The capture, while there is one. A namespace rather than a name, because
+    #: it is set below `stopped`, which is what releases it.
+    capture = SimpleNamespace(attachment=None)
 
     def progressed(event: ProgressEvent) -> None:
         # A cancelled run's last few events are already on their way here. The
@@ -951,12 +965,21 @@ def _run_in_background(
         """Pass the run's progress on, having first let it be stopped.
 
         `run_pipeline_stages` takes no cancel argument, so this and `produced`
-        are where a cancellation acts. Both are called between stages, or
+        are where a cancellation acts.         Both are called between stages, or
         between graph building's eleven topology steps, so a run stops with
         nothing half-written -- and soon after being asked, rather than at the
         end of whatever stage it is in.
+
+        The event becomes a log record *here*, on the run's own thread, rather
+        than beside the progress bars on the GUI thread. That is what gives the
+        log one producer and one ordered stream: a stage's banner and the
+        counts that stage logs go through the same handler, in the order they
+        happened. Emitted on the other side of the bridge instead, the banner
+        would arrive whenever the GUI thread got round to it, and land above or
+        below its own counts at random.
         """
         run_state.check()
+        log_progress(event)
         bridge.event.emit(event)
 
     def produced(stage: str, output) -> None:
@@ -1027,6 +1050,26 @@ def _run_in_background(
         # cancellation as well.
         raise error
 
+    def release_log() -> None:
+        """Stop capturing the library's log, and show the last of what it said.
+
+        The detach has to happen on the worker's `finished`, which is the only
+        one of the three that fires however a run ends: superqt suppresses
+        `returned` once `quit()` has been called, so a cancelled-but-completed
+        run reaches neither `finished` nor `failed`. Released in either of
+        those, the handler would stay on the logger after a cancel -- and then
+        double every line of the next run.
+
+        The final drain is here for the same reason: a run's last records are
+        written in the milliseconds after the last timer tick, and would
+        otherwise sit in the buffer until the next run started.
+        """
+        if capture.attachment is not None:
+            capture.attachment.detach()
+            capture.attachment = None
+        if log is not None:
+            log.stop()
+
     def stopped() -> None:
         """The worker has gone without `returned` or `errored` saying so.
 
@@ -1036,6 +1079,10 @@ def _run_in_background(
         all. Without this the guard would stay set and the Run button greyed
         out, which is the very state being fixed.
         """
+        # Above the guard, deliberately: this is the one callback that runs on
+        # every way out of a run, and the guard below returns early for two of
+        # the three. See `release_log`.
+        release_log()
         if not run_state.running:
             return
         run_state.stopped()
@@ -1058,6 +1105,12 @@ def _run_in_background(
     button.enabled = False
     if bars is not None:
         bars.start()
+    if log is not None:
+        # Before `worker.start()`, or the first stage's records are gone by the
+        # time anything is listening -- and the capture is what makes the
+        # library's INFO reach a handler at all (`gui.run_log.attach`).
+        log.start()
+        capture.attachment = attach(log.run_log, level=log.level)
     report.value = "Running..."
     worker.start()
     return worker
@@ -2339,6 +2392,28 @@ def settings_widget(napari_viewer=None):
     bars = ProgressBars()
     run_state = RunState(bars=bars)
 
+    # The run's own narration, in a dock of its own rather than in the panel:
+    # its lines are wide and there are thousands of them, and the panel is a
+    # narrow column of settings. One instance, owned here, because it is fed by
+    # the run this panel starts -- which is why it is not a widget contribution
+    # in `napari.yaml`, where a second, menu-launched one would sit empty.
+    log_view = LogView()
+    log_dock = None
+    if viewer is not None:
+        log_dock = viewer.window.add_dock_widget(
+            log_view.native, name=LOG_DOCK_NAME, area="bottom"
+        )
+
+    def show_log() -> None:
+        """Put the log window back in front, in case the user closed it."""
+        if log_dock is None:
+            return
+        try:
+            log_dock.setVisible(True)
+            log_dock.raise_()
+        except Exception:  # noqa: BLE001 - a dock already gone is survivable
+            logger.debug("could not show the log window", exc_info=True)
+
     layer_row: Any = None
     if viewer is not None:
         def image_layers(_widget=None):
@@ -2514,11 +2589,19 @@ def settings_widget(napari_viewer=None):
             view.results = results
             if boundaries is not None:
                 boundaries.state.results = results
+        # How much of the run to show follows the setting that already means
+        # "tell me everything"; the window itself is a panel control, like
+        # `show_results`, because a config file is read by CLI runs too.
+        log_view.set_level(
+            VERBOSE_LEVEL if settings.get("verbose_logging") else DEFAULT_LEVEL
+        )
+        show_log()
         _run_in_background(
             settings, schema, report, run_button, bars,
             viewer=viewer if show_results.value else None,
             results=results,
             state=run_state,
+            log=log_view,
         )
 
     def on_clear() -> None:
@@ -2534,6 +2617,13 @@ def settings_widget(napari_viewer=None):
             return
         removed = _clear_our_layers(viewer)
         stopping = run_state.cancel()
+        if stopping:
+            # The log is deliberately not among the things a cancel puts back.
+            # A half-filled bar and a remembered graph are lies once a run has
+            # been stopped, which is why `RunState` resets them; what the run
+            # said before it was stopped is still true, and is usually why the
+            # user stopped it. So it is marked, not cleared.
+            log_view.cancelled()
         view.results = None
         if boundaries is not None:
             boundaries.state.results = None
@@ -2559,6 +2649,8 @@ def settings_widget(napari_viewer=None):
     # for a test that cannot press buttons and wait.
     panel._haemolynx_values = current_values
     panel._haemolynx_progress = bars
+    panel._haemolynx_log = log_view
+    panel._haemolynx_log_dock = log_dock
     panel._haemolynx_run = on_run
     panel._haemolynx_clear = on_clear
     panel._haemolynx_run_state = run_state

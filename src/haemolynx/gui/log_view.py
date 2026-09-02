@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 #: without the advice, for a caller with no level to blame.
 DROPPED_FORMAT = "... {count} lines dropped (log level {level}) ..."
 
+#: The choice that shows everything, for a run whose settings asked for it
+#: (`verbose_logging`). Named here so a caller setting the level from a setting
+#: does not have to spell a combo entry.
+VERBOSE_LEVEL = "Debug"
+
 #: What "Save..." offers to call the file.
 DEFAULT_FILENAME = "haemolynx-run-log.txt"
 
@@ -170,6 +175,18 @@ class LogView:
     def follow(self, follow: bool) -> None:
         self.follow_box.setChecked(bool(follow))
 
+    def set_level(self, name: str) -> None:
+        """Show *name*'s worth of the run from here on: a key of :data:`LEVELS`.
+
+        An unknown name is ignored rather than raised on: this is a display
+        control, and losing the log window is a worse answer than showing the
+        wrong amount of it.
+        """
+        if name in LEVELS:
+            self.level_combo.setCurrentText(name)
+        else:
+            logger.debug("no such log level to show: %r", name)
+
     @property
     def running(self) -> bool:
         """Whether the drain timer is going."""
@@ -195,8 +212,8 @@ class LogView:
         the few milliseconds before it returns, and would otherwise sit in the
         buffer until the next run started.
         """
-        self._timer.stop()
         self.drain()
+        self._timer.stop()
 
     def cancelled(self) -> None:
         """Mark a run the user stopped, so the gap in the log is explained."""
