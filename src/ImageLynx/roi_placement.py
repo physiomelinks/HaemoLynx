@@ -145,6 +145,12 @@ def place_roi(
                 # Channel 0 is the background-subtracted grayscale; the vesselness channels
                 # are derived from it and would weight the centroid towards whichever scale
                 # the filter happened to favour.
+                #
+                # The stride is a memory decision, not a speed one. Chunks are
+                # (32, 128, 128, 3) and gzip-compressed, so a z-stride of 4 still lands in
+                # every chunk and each is decompressed whole. Measured on WKY-A: strided
+                # 4.88 s for 25 MB, full-resolution 4.58 s for 402 MB. It costs 6.9 um of
+                # centroid accuracy to hold 16x less in RAM.
                 block = np.asarray(handle["data"][::sz, ::sy, ::sx, 0], dtype=np.float32)
             cy, cx = tissue_centroid_yx(block)
             centre_y, centre_x = cy * sy, cx * sx

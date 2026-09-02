@@ -260,6 +260,32 @@ placement. That coupling is not obvious from either module.
 **What it buys.** The centroid sits 37–123 µm from the geometric centre depending on specimen, so
 the step is doing real work — a centred box would be measurably elsewhere.
 
+**Why a projection at all, when the peak slice is already known.** The two rules share no
+intermediate. `diagnose_z` reduced each slice to a single number, so the axial profile carries
+**no lateral information whatever** — it cannot be re-read for a y or x answer. The two also run
+in different programs, at different times, on different data: the axial peak was measured inside
+`preprocess_cb.py` on the *raw* extracted channel at stage 2 of 6, while the centroid is measured
+here on the *finished* normalised output. Nothing is held in memory between them, so the read in
+step 1 is not a re-read — it is the only read.
+
+**The subsample saves memory, not time.** The stated case for `(4, 2, 2)` is that it is cheaper,
+and for RAM it is: 25 MB against 402 MB for WKY-A's channel 0, at a cost of 6.9 µm in the answer.
+But the HDF5 chunks are `(32, 128, 128, 3)` and **gzip-compressed**, so a stride of 4 in z still
+lands in every chunk, and a chunk must be decompressed whole — all three channels — to yield any
+element of it. Measured on WKY-A, both orders, cold and warm: the strided read takes **4.88 s**
+and the full-resolution read **4.58 s**. Striding is very slightly *slower*. Treat the subsample
+as a memory decision, because that is the only thing it is.
+
+**The projection spans the whole stack, not the box.** Step 2 maximises over every slice, but the
+ROI is only 160 deep, so tissue that will never be inside the box still votes on where the box
+goes laterally. Restricting the projection to the 160 slices the ROI actually occupies moves the
+lateral centre by **7.1 µm (SHR-C) to 45.3 µm (SHR-B)** — up to 15% of the ROI's 298 µm width.
+Neither choice is obviously right: the whole-stack projection is the more stable of the two,
+because only over the full stack do enough columns saturate to put the cutoff on the plateau
+described above, whereas the band's cutoff falls to 0.899 in WKY-A. Using the single peak slice
+is clearly worse — the cutoff drops to 0.42–0.59 in every specimen, the surviving set shrinks by
+a third, and the answer moves 17–98 µm. Recorded as open item 13.
+
 **No vesselness is used, deliberately.** Channel 0 is the background-subtracted grayscale. The
 vesselness channels exist in the same file — multiscale **Sato**, fine at σ 1.0/1.4/2.0 px and
 coarse at σ 4.0/8.0 px — and are *deliberately not read here*, because they are derived from
@@ -2946,11 +2972,12 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
 | 12 | The rheology loop rescales resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contains $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
+| 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
 config default drifts further. What is still open is the *decision*: which of the two values is
 right. That is a modelling judgement, not a refactor, and changing either one re-dates every
-number in §7 and §13. Item 12 is the only remaining item that is known to move a result.
+number in §7 and §13. Item 12 is the only remaining item that is known to move a result. Item 13 would move one, but only by re-placing the ROIs and re-running everything, so it is a decision to take deliberately rather than a defect to patch.
 
 ---
