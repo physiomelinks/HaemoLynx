@@ -77,13 +77,17 @@ PERTURBATION_TYPES: tuple[str, ...] = (
     "pericyte_spacing_sweep",
     "pericyte_length_sweep",
     "pericyte_diameter_change",
+    "arteriole_and_pericyte_diameter_change",
 )
 
-#: Length, spacing and probability every pericyte-based perturbation can set
-#: on its own entry. Sweeps read length/spacing through the merged settings;
-#: ``pericyte_diameter_change`` also needs the probabilistic enable flag so
-#: the existing constriction-strategy path can honour probability.
+#: Length, spacing, probability and branch-order tone every pericyte-based
+#: perturbation can set on its own entry. Sweeps read these through the
+#: merged settings; ``pericyte_diameter_change`` also needs the probabilistic
+#: enable flag so the existing constriction-strategy path can honour
+#: probability. ``constriction_by_branch_order`` is the per-entry factor
+#: table (independent between entries), not a Diameters-tab baseline knob.
 PERICYTE_ENTRY_GEOMETRY_SETTINGS: tuple[str, ...] = (
+    "constriction_by_branch_order",
     "constriction_length_um",
     "constriction_spacing_um",
     "use_probabilistic_pericyte_constriction",
@@ -181,6 +185,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     ),
     "pericyte_spacing_sweep": (
         *PERICYTE_SPACING_SWEEP_SETTINGS,
+        "constriction_by_branch_order",
         "constriction_length_um",
         "pericyte_geometry_dilation_percent",
         "use_probabilistic_pericyte_constriction",
@@ -188,12 +193,20 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     ),
     "pericyte_length_sweep": (
         *PERICYTE_LENGTH_SWEEP_SETTINGS,
+        "constriction_by_branch_order",
         "constriction_spacing_um",
         "pericyte_geometry_dilation_percent",
         "use_probabilistic_pericyte_constriction",
         "pericyte_constriction_probability",
     ),
     "pericyte_diameter_change": PERICYTE_CONSTRICTION_SETTINGS,
+    # Union of arteriole_diameter_change and pericyte_diameter_change. Apply
+    # order in stages._perturb_one is arteriole whole-branch % scale first,
+    # then focal pericyte constrictions on the scaled graph.
+    "arteriole_and_pericyte_diameter_change": (
+        "arteriole_diameter_change_percent",
+        *PERICYTE_CONSTRICTION_SETTINGS,
+    ),
 }
 
 #: Settings a perturbation may not override, because changing one of them

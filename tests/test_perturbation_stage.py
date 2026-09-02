@@ -218,6 +218,15 @@ PERICYTE_TONE = {
         "constriction_by_branch_order": {"Art1": 1.0, "B01": 0.5, "Ven1": 1.0},
     },
 }
+ARTERIOLE_AND_PERICYTE = {
+    "name": "art_and_pericytes",
+    "type": "arteriole_and_pericyte_diameter_change",
+    "overrides": {
+        "arteriole_diameter_change_percent": 20,
+        "do_pericyte_construction": True,
+        "constriction_by_branch_order": {"Art1": 1.0, "B01": 0.5, "Ven1": 1.0},
+    },
+}
 DILATION_SWEEP = {
     "name": "dilation_only",
     "type": "pericyte_dilation_sweep",
@@ -295,6 +304,7 @@ ENTRY_FOR_TYPE: dict[str, dict] = {
     "pericyte_spacing_sweep": SPACING_SWEEP,
     "pericyte_length_sweep": LENGTH_SWEEP,
     "pericyte_diameter_change": PERICYTE_TONE,
+    "arteriole_and_pericyte_diameter_change": ARTERIOLE_AND_PERICYTE,
 }
 
 #: Every type but `none`, which by definition re-solves nothing and writes
@@ -486,6 +496,38 @@ def test_wider_arterioles_lower_the_networks_resistance(tmp_path):
     assert narrowed.summary["equivalent_resistance"] > baseline
 
 
+def test_combined_arteriole_and_pericyte_applies_both_mechanisms(tmp_path):
+    """Whole-branch arteriole scale and focal pericyte sites both land.
+
+    Art1 constriction factor is 1.0 so arteriole edges match art-only after
+    scaling; B01 is 0.5 so capillaries match pericyte-only. The combined
+    graph is therefore the composition of the two mechanisms, not either alone.
+    """
+    run = _run(tmp_path, [ARTERIOLE_AND_PERICYTE, ARTERIOLE_DILATION, PERICYTE_TONE])
+    by_name = {result.name: result for result in run.results}
+    combined = by_name[ARTERIOLE_AND_PERICYTE["name"]]
+    art_only = by_name[ARTERIOLE_DILATION["name"]]
+    peri_only = by_name[PERICYTE_TONE["name"]]
+
+    assert combined.ok and art_only.ok and peri_only.ok
+    assert combined.summary.get("strategy")
+    assert combined.summary.get("arteriole_diameter_change_percent") == 20.0
+    assert _resistances(combined.graph) != _resistances(art_only.graph)
+    assert _resistances(combined.graph) != _resistances(peri_only.graph)
+
+    for u, v, key, data in combined.graph.edges(keys=True, data=True):
+        order = data["branch_order"]
+        edge_key = (u, v, key)
+        if order.startswith("Art"):
+            assert data["resistance"] == pytest.approx(
+                art_only.graph.edges[edge_key]["resistance"]
+            )
+        elif order.startswith("B"):
+            assert data["resistance"] == pytest.approx(
+                peri_only.graph.edges[edge_key]["resistance"]
+            )
+
+
 # --- independence ------------------------------------------------------------
 
 
@@ -673,6 +715,62 @@ def test_two_pericyte_entries_keep_independent_constriction_knobs(tmp_path):
     assert _resistances(by_name["short_sparse"].graph) != _resistances(
         by_name["long_dense"].graph
     )
+
+
+def test_two_pericyte_entries_with_different_branch_order_factors_differ(tmp_path):
+    """constriction_by_branch_order is per entry: different tables, different R."""
+    shared = {
+        "do_pericyte_construction": True,
+        "constriction_length_um": 40.0,
+        "constriction_spacing_um": 100.0,
+        "use_probabilistic_pericyte_constriction": False,
+        "pericyte_constriction_probability": 1.0,
+    }
+    mild = {
+        "name": "mild_tone",
+        "type": "pericyte_diameter_change",
+        "overrides": {
+            **shared,
+            "constriction_by_branch_order": {
+                "Art1": 1.0,
+                "B01": 0.8,
+                "Ven1": 1.0,
+            },
+        },
+    }
+    tight = {
+        "name": "tight_tone",
+        "type": "pericyte_diameter_change",
+        "overrides": {
+            **shared,
+            "constriction_by_branch_order": {
+                "Art1": 1.0,
+                "B01": 0.3,
+                "Ven1": 1.0,
+            },
+        },
+    }
+    run = _run(tmp_path, [mild, tight])
+
+    by_name = {result.name: result for result in run.results}
+    assert by_name["mild_tone"].ok and by_name["tight_tone"].ok
+    assert by_name["mild_tone"].summary["overrides"]["constriction_by_branch_order"] == (
+        mild["overrides"]["constriction_by_branch_order"]
+    )
+    assert by_name["tight_tone"].summary["overrides"]["constriction_by_branch_order"] == (
+        tight["overrides"]["constriction_by_branch_order"]
+    )
+    mild_r = _resistances(by_name["mild_tone"].graph)
+    tight_r = _resistances(by_name["tight_tone"].graph)
+    assert mild_r != tight_r
+    # Capillary edges (B01) must be the ones that moved with the factor table.
+    capillary = [
+        edge
+        for edge in mild_r
+        if by_name["mild_tone"].graph.edges[edge]["branch_order"] == "B01"
+    ]
+    assert capillary
+    assert any(mild_r[edge] != tight_r[edge] for edge in capillary)
 
 
 def test_a_pericyte_sweep_honours_entry_length_and_spacing(tmp_path):

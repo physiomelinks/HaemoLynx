@@ -1306,6 +1306,51 @@ def _perturb_one(
         )
         summary["strategy"] = strategy
         summary.update(strategy_results)
+    elif spec.type == "arteriole_and_pericyte_diameter_change":
+        # Arteriole whole-branch % scale first, then focal pericyte
+        # constrictions on the scaled diameters. Reverse would wipe
+        # constrictions: scale_arteriole_diameters re-solves uniform
+        # Poiseuille on the whole graph. Constrictions are applied by
+        # type via the strategy call below — not via do_pericyte_construction.
+        G, scaled_table, scaling = haemodynamics.scale_arteriole_diameters(
+            G,
+            diameter_table,
+            haemodynamics.percent_change_to_scale(
+                float(perturbed["arteriole_diameter_change_percent"])
+            ),
+            model=_poiseuille_model_for(perturbed),
+            prefer_edge_fwhm_diameter=prefer_measured,
+        )
+        summary.update(scaling)
+        summary["arteriole_diameter_change_percent"] = float(
+            perturbed["arteriole_diameter_change_percent"]
+        )
+        G, strategy, strategy_results = set_resistances_for_constriction_strategy(
+            G,
+            diameter_by_branch_order=scaled_table,
+            constriction_factor_by_branch_order=perturbed["constriction_by_branch_order"],
+            use_pericyte_mask_constriction=bool(perturbed["use_pericyte_mask_constriction"]),
+            use_probabilistic_constriction=bool(
+                perturbed["use_probabilistic_pericyte_constriction"]
+            ),
+            prefer_edge_fwhm_baseline=prefer_measured,
+            constriction_length=float(perturbed["constriction_length_um"]),
+            constriction_spacing=float(perturbed["constriction_spacing_um"]),
+            viscosity_law=perturbed["viscosity_law"],
+            haematocrit=float(perturbed["haematocrit"]),
+            diameter_basis=perturbed["diameter_basis"],
+            constriction_probability=(
+                1.0
+                if perturbed["pericyte_constriction_probability"] is None
+                else float(perturbed["pericyte_constriction_probability"])
+            ),
+            pericyte_mask_path=perturbed["pericyte_mask_path"],
+            pericyte_mask_h5_dataset_name=perturbed["pericyte_mask_h5_dataset_name"],
+            axis_order=perturbed["image_axis_order"],
+            seed=perturbed["pericyte_constriction_seed"],
+        )
+        summary["strategy"] = strategy
+        summary.update(strategy_results)
     else:
         # `perturbation_problems` reports an unknown type before a run starts;
         # reaching here means a caller skipped the checks.
