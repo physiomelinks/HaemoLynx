@@ -240,6 +240,25 @@ def test_the_returned_table_scales_only_the_arteriole_entries():
     assert table == {"Art1": 7.0 * 1.5, "B01": 5.0, "Ven1": 8.0}
 
 
+@pytest.mark.parametrize(
+    "percent,expected_scale",
+    [(20, 1.2), (-20, 0.8)],
+)
+def test_arteriole_percent_constricts_or_dilates(percent, expected_scale):
+    """Negative percent narrows; positive widens — same control either way."""
+    scaled, table, _summary = scale_arteriole_diameters(
+        _network(),
+        dict(DIAMETERS),
+        percent_change_to_scale(percent),
+        model=_model(),
+    )
+    assert table["Art1"] == pytest.approx(7.0 * expected_scale)
+    assert table["B01"] == 5.0
+    for _u, _v, data in scaled.edges(data=True):
+        if data["branch_order"] == "Art1":
+            assert data["fwhm_diameter_um"] == pytest.approx(7.0 * expected_scale)
+
+
 def test_the_measured_per_edge_diameter_is_scaled_too():
     """`prefer_edge_fwhm_diameter` makes it win, so the table alone is not enough.
 

@@ -38,13 +38,18 @@ from haemolynx.gui.perturbation_editing import (  # noqa: E402
     ALWAYS_VISIBLE_TAB_SETTINGS,
     EDITOR_SETTINGS,
     PERTURBATION_TYPES,
+    PERTURBATION_TYPE_DISPLAY_NAMES,
+    SETTING_DISPLAY_LABELS,
     UNCHOSEN,
     add_entry,
     default_name,
+    display_label_for_setting,
+    display_name_for_type,
     from_settings,
     hidden_for_type,
     name_problems,
     new_entry,
+    perturbation_type_choices,
     remove_entry,
     rows_for_type,
     set_name,
@@ -369,7 +374,45 @@ def test_the_summary_counts_what_would_actually_re_solve():
     said = summary(entries)
     assert "2" in said and "1 would re-solve" in said
     assert "art_dilate_20" in said
+    assert "arteriole constriction/dilation" in said
 
 
 def test_the_summary_says_so_when_there_are_none():
     assert "baseline only" in summary([])
+
+
+def test_every_perturbation_type_has_a_constriction_dilation_display_name():
+    """Dropdown labels cover every API type; diameter types say both directions."""
+    assert set(PERTURBATION_TYPE_DISPLAY_NAMES) == set(PERTURBATION_TYPES)
+    for name in PERTURBATION_TYPES:
+        label = display_name_for_type(name)
+        assert label
+        if "diameter" in name or name in {
+            "pericyte_dilation_sweep",
+            "pressure_and_pericyte_sweep",
+        }:
+            assert "constriction/dilation" in label, name
+    choices = perturbation_type_choices()
+    assert [value for _label, value in choices] == list(PERTURBATION_TYPES)
+    assert any("constriction/dilation" in label for label, _value in choices)
+
+
+def test_bidirectional_settings_use_constriction_dilation_labels():
+    for name in (
+        "arteriole_diameter_change_percent",
+        "arteriole_dilation_min_percent",
+        "capillary_dilation_min_percent",
+        "pericyte_dilation_min_percent",
+        "pericyte_geometry_dilation_percent",
+        "pericyte_constriction_factor",
+        "constriction_by_branch_order",
+    ):
+        assert name in SETTING_DISPLAY_LABELS
+        assert "constriction/dilation" in display_label_for_setting(name).lower()
+    assert display_label_for_setting(
+        "arteriole_diameter_change_percent", "percent"
+    ) == "Arteriole constriction/dilation (percent)"
+    # Unmapped names still capitalise like form.label_for.
+    assert display_label_for_setting("inlet_pressure_min_pa") == (
+        "Inlet pressure min pa"
+    )

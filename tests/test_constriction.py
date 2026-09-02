@@ -204,6 +204,49 @@ def test_overlapping_sites_take_the_narrowest_diameter():
     assert overlapping == pytest.approx(3.0)
 
 
+def test_a_dilation_factor_widens_locally_at_the_site():
+    """factor > 1 must widen: a plain min(d1, d2) would leave d1 forever."""
+    assert diameter_at_position(50.0, 5.0, 6.0, [50.0], 40.0) == pytest.approx(6.0)
+    assert diameter_at_position(71.0, 5.0, 6.0, [50.0], 40.0) == pytest.approx(5.0)
+
+
+def test_factor_above_one_lowers_integrated_resistance():
+    narrow = integrated_resistance(
+        length=100.0,
+        d1=5.0,
+        d2=4.0,
+        constriction_centers=[50.0],
+        constriction_length=40.0,
+        num_points=501,
+    )
+    baseline = integrated_resistance(
+        length=100.0,
+        d1=5.0,
+        d2=5.0,
+        constriction_centers=[50.0],
+        constriction_length=40.0,
+        num_points=501,
+    )
+    wide = integrated_resistance(
+        length=100.0,
+        d1=5.0,
+        d2=6.0,
+        constriction_centers=[50.0],
+        constriction_length=40.0,
+        num_points=501,
+    )
+    assert narrow > baseline > wide
+
+
+def test_overlapping_dilation_sites_take_the_widest_diameter():
+    # Same geometry as the narrowing overlap test: 63 um is on the ramp of
+    # the site at 50 and on the plateau of the one at 70.
+    single = diameter_at_position(63.0, 5.0, 7.0, [50.0], 40.0)
+    overlapping = diameter_at_position(63.0, 5.0, 7.0, [50.0, 70.0], 40.0)
+    assert single == pytest.approx(6.4)
+    assert overlapping == pytest.approx(7.0)
+
+
 # --- the resistance integral ------------------------------------------------
 
 

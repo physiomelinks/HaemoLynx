@@ -18,12 +18,14 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 import networkx as nx
+import numpy as np
 
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 
 from .constriction_strategy import set_resistances_for_constriction_strategy
 from .pericyte_sweep import dilate_graph_diameters, solve_pressure_and_boundary_flow
 from .resistance import build_conductance_matrix_from_graph
+from .sweep_flows import build_sweep_flow_grid, record_flows_after_solve
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +178,9 @@ def run_pericyte_geometry_sweep(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dilation_percent = int(settings["pericyte_geometry_dilation_percent"])
-    dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
+    from .arteriole import percent_change_to_scale
+
+    dilation_factor = percent_change_to_scale(float(dilation_percent))
     inlet_pressure_pa = int(round(float(settings["inlet_p_bc"])))
     outlet_pressure_pa = float(settings["outlet_p_bc"])
     diameter_by_branch_order = settings["diameter_by_branch_order"]
@@ -218,6 +222,8 @@ def run_pericyte_geometry_sweep(
         label = "Pericyte length sweep"
 
     results: list[dict[str, Any]] = []
+    recorded_flows: list[dict[str, np.ndarray]] = []
+    last_node_list: list[int] = []
     for axis_value in axis_values:
         if sweep_axis == "spacing":
             spacing = float(axis_value)
@@ -235,6 +241,7 @@ def run_pericyte_geometry_sweep(
             constriction_spacing=spacing,
         )
         conductance, node_list = build_conductance_matrix_from_graph(step_graph)
+        last_node_list = list(node_list)
         solved = solve_pressure_and_boundary_flow(
             conductance,
             node_list,
@@ -242,6 +249,9 @@ def run_pericyte_geometry_sweep(
             outlet_p_bc=outlet_pressure_pa,
             inlet_nodes=inlet_nodes,
             outlet_nodes=outlet_nodes,
+        )
+        recorded_flows.append(
+            record_flows_after_solve(step_graph, node_list, solved["pressure"])
         )
         results.append(
             {
@@ -260,9 +270,24 @@ def run_pericyte_geometry_sweep(
             }
         )
 
+    if sweep_axis == "spacing":
+        flow_axis_name = "constriction_spacing_um"
+    else:
+        flow_axis_name = "constriction_length_um"
+    sweep_flows = build_sweep_flow_grid(
+        axis_names=(flow_axis_name,),
+        axis_values={flow_axis_name: axis_values},
+        recorded=recorded_flows,
+        node_list=last_node_list,
+    )
+
     csv_path = write_geometry_sweep_csv(results, output_dir / csv_name)
     logger.info(
         f"{label}: {len(results)} points at dilation={dilation_percent}% "
         f"and inlet_p_bc={inlet_pressure_pa} Pa -> {csv_path}"
     )
-    return {"results": results, "csv_path": str(csv_path)}
+    return {
+        "results": results,
+        "csv_path": str(csv_path),
+        "sweep_flows": sweep_flows,
+    }

@@ -110,6 +110,25 @@ def test_every_capillary_edge_of_a_branch_order_moves_together():
             assert data["fwhm_diameter_um"] == DIAMETERS[data["branch_order"]]
 
 
+@pytest.mark.parametrize(
+    "percent,expected_scale",
+    [(20, 1.2), (-20, 0.8)],
+)
+def test_capillary_percent_constricts_or_dilates(percent, expected_scale):
+    """Negative percent narrows; positive widens — same control either way."""
+    scaled, table, _summary = scale_capillary_diameters(
+        _network(),
+        dict(DIAMETERS),
+        percent_change_to_scale(percent),
+        model=_model(),
+    )
+    assert table["B01"] == pytest.approx(5.0 * expected_scale)
+    assert table["Art1"] == 7.0
+    for _u, _v, data in scaled.edges(data=True):
+        if data["branch_order"] == "B01":
+            assert data["fwhm_diameter_um"] == pytest.approx(5.0 * expected_scale)
+
+
 def test_scaling_does_not_place_focal_constriction_attributes():
     scaled, _table, _summary = scale_capillary_diameters(
         _network(), dict(DIAMETERS), percent_change_to_scale(20), model=_model()

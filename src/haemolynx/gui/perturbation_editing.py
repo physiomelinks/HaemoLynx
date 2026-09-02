@@ -46,13 +46,18 @@ __all__ = [
     "ALWAYS_VISIBLE_TAB_SETTINGS",
     "EDITOR_SETTINGS",
     "PERTURBATION_TYPES",
+    "PERTURBATION_TYPE_DISPLAY_NAMES",
+    "SETTING_DISPLAY_LABELS",
     "UNCHOSEN",
     "add_entry",
     "default_name",
+    "display_label_for_setting",
+    "display_name_for_type",
     "from_settings",
     "hidden_for_type",
     "name_problems",
     "new_entry",
+    "perturbation_type_choices",
     "remove_entry",
     "rows_for_type",
     "set_name",
@@ -67,6 +72,76 @@ __all__ = [
 #: nothing. A new row is this, so pressing "+" adds a perturbation that runs
 #: nothing until it is told what to be.
 UNCHOSEN = "none"
+
+#: GUI / report wording for each API type key. Identifiers in
+#: :data:`PERTURBATION_TYPES` stay stable for configs; the dropdown and
+#: summaries show these labels. Diameter-percent types say
+#: "constriction/dilation" because the same control narrows or widens.
+PERTURBATION_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
+    "none": "none",
+    "pressure_sweep": "pressure sweep",
+    "pressure_and_pericyte_sweep": (
+        "pressure and pericyte constriction/dilation sweep"
+    ),
+    "pericyte_dilation_sweep": "pericyte constriction/dilation sweep",
+    "arteriole_diameter_change": "arteriole constriction/dilation",
+    "arteriole_diameter_sweep": "arteriole constriction/dilation sweep",
+    "pressure_and_arteriole_sweep": (
+        "pressure and arteriole constriction/dilation sweep"
+    ),
+    "capillary_diameter_sweep": "capillary constriction/dilation sweep",
+    "pressure_and_capillary_sweep": (
+        "pressure and capillary constriction/dilation sweep"
+    ),
+    "pericyte_spacing_sweep": "pericyte spacing sweep",
+    "pericyte_length_sweep": "pericyte length sweep",
+    "pericyte_diameter_change": "pericyte constriction/dilation",
+    "arteriole_and_pericyte_diameter_change": (
+        "arteriole and pericyte constriction/dilation"
+    ),
+}
+
+#: GUI row labels for bidirectional diameter / tone settings. Schema ``name``
+#: keys and plot file stems stay as-is; only what the panel prints changes.
+SETTING_DISPLAY_LABELS: Mapping[str, str] = {
+    "arteriole_diameter_change_percent": "Arteriole constriction/dilation",
+    "arteriole_dilation_min_percent": "Arteriole constriction/dilation min",
+    "arteriole_dilation_max_percent": "Arteriole constriction/dilation max",
+    "arteriole_dilation_step_percent": "Arteriole constriction/dilation step",
+    "capillary_dilation_min_percent": "Capillary constriction/dilation min",
+    "capillary_dilation_max_percent": "Capillary constriction/dilation max",
+    "capillary_dilation_step_percent": "Capillary constriction/dilation step",
+    "pericyte_dilation_min_percent": "Pericyte constriction/dilation min",
+    "pericyte_dilation_max_percent": "Pericyte constriction/dilation max",
+    "pericyte_dilation_step_percent": "Pericyte constriction/dilation step",
+    "pericyte_geometry_dilation_percent": (
+        "Pericyte geometry constriction/dilation"
+    ),
+    "pericyte_constriction_factor": "Pericyte constriction/dilation factor",
+    "constriction_by_branch_order": "Constriction/dilation by branch order",
+}
+
+
+def display_name_for_type(perturbation_type: Any) -> str:
+    """Human label for a perturbation type key (API string unchanged)."""
+    text = str(perturbation_type)
+    return PERTURBATION_TYPE_DISPLAY_NAMES.get(text, text.replace("_", " "))
+
+
+def display_label_for_setting(name: str, unit: str | None = None) -> str:
+    """Form-row label for a setting, with constriction/dilation wording.
+
+    Falls back to capitalising the snake_case name when *name* has no entry in
+    :data:`SETTING_DISPLAY_LABELS`, matching :func:`haemolynx.gui.form.label_for`.
+    """
+    label = SETTING_DISPLAY_LABELS.get(name) or name.replace("_", " ").capitalize()
+    return f"{label} ({unit})" if unit else label
+
+
+def perturbation_type_choices() -> list[tuple[str, str]]:
+    """``(display label, API value)`` pairs for the type ComboBox."""
+    return [(display_name_for_type(name), name) for name in PERTURBATION_TYPES]
+
 
 #: Ordinary form rows on the Perturbations tab. Everything else under
 #: "Perturbation runs" is either a type's option (revealed only when that type
@@ -270,7 +345,8 @@ def summary(entries: Sequence[Mapping[str, Any]]) -> str:
     if not entries:
         return "none; the run solves the baseline only"
     described = ", ".join(
-        f"{entry.get('name')} ({entry.get('type')})" for entry in entries
+        f"{entry.get('name')} ({display_name_for_type(entry.get('type'))})"
+        for entry in entries
     )
     doing = sum(1 for entry in entries if str(entry.get("type")) != UNCHOSEN)
     return f"{len(entries)}, of which {doing} would re-solve: {described}"

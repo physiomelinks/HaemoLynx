@@ -30,6 +30,7 @@ from haemolynx.gui._widget import settings_widget  # noqa: E402
 from haemolynx.gui.perturbation_editing import (  # noqa: E402
     PERTURBATION_TYPES,
     UNCHOSEN,
+    perturbation_type_choices,
     rows_for_type,
 )
 from haemolynx.pipeline.progress import STAGES  # noqa: E402
@@ -117,8 +118,14 @@ def test_adding_one_gives_one_dropdown(panel):
     perturbations.add()
 
     assert len(perturbations.editors()) == 1
-    assert list(perturbations.editors()[0].type.choices) == list(PERTURBATION_TYPES)
+    choices = list(perturbations.editors()[0].type.choices)
+    values = [c[1] if isinstance(c, (tuple, list)) else c for c in choices]
+    assert values == list(PERTURBATION_TYPES)
     assert perturbations.editors()[0].type.value == UNCHOSEN
+    assert any(
+        "constriction/dilation" in label
+        for label, _value in perturbation_type_choices()
+    )
 
 
 def test_adding_twice_gives_a_second_identical_dropdown(panel):

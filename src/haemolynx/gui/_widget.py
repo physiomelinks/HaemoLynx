@@ -220,6 +220,11 @@ def _apply_layers(viewer, group, report=None) -> None:
             except Exception:  # noqa: BLE001 - a missing colour bar is survivable
                 logger.debug("could not attach a colour bar to %s",
                              spec.name, exc_info=True)
+            try:
+                _attach_sweep_sliders(viewer, viewer.layers[spec.name], spec)
+            except Exception:  # noqa: BLE001 - missing sliders are survivable
+                logger.debug("could not attach sweep sliders to %s",
+                             spec.name, exc_info=True)
     for name, column in group.recolour:
         layer = viewer.layers[name] if name in viewer.layers else None
         if layer is not None and _is_ours(layer):
@@ -386,6 +391,7 @@ def _add_or_update(viewer, spec) -> None:
             existing.features = dict(spec.features)
         _colour_layer(existing, spec.colour_by, spec.colour_kind,
                       spec.colour_cycle, spec.contrast_limits)
+        _store_sweep_metadata(existing, spec)
         return
 
     if existing is not None:
@@ -399,6 +405,151 @@ def _add_or_update(viewer, spec) -> None:
                   visible=spec.visible, metadata={OURS: {"kind": spec.kind}}, **options)
     _colour_layer(layer, spec.colour_by, spec.colour_kind,
                   spec.colour_cycle, spec.contrast_limits)
+    _store_sweep_metadata(layer, spec)
+
+
+def _store_sweep_metadata(layer, spec) -> None:
+    """Keep sweep grid + indexing on the layer so sliders can refresh features."""
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    tag["kind"] = getattr(spec, "kind", tag.get("kind"))
+    if getattr(spec, "sweep", None) is not None:
+        tag["sweep"] = spec.sweep
+        tag["segment_owner"] = spec.segment_owner
+        tag["sweep_edge_index"] = spec.sweep_edge_index
+        tag["colour_by"] = spec.colour_by
+        tag["contrast_limits"] = spec.contrast_limits
+    else:
+        tag.pop("sweep", None)
+        tag.pop("segment_owner", None)
+        tag.pop("sweep_edge_index", None)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+#: Axis name -> short slider label.
+_SWEEP_AXIS_LABELS = {
+    "dilation_percent": "Constriction/dilation %",
+    "inlet_pressure_pa": "Inlet pressure (Pa)",
+    "constriction_spacing_um": "Spacing (µm)",
+    "constriction_length_um": "Length (µm)",
+}
+
+
+def _sweep_axis_label(name: str) -> str:
+    return _SWEEP_AXIS_LABELS.get(str(name), str(name).replace("_", " "))
+
+
+def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
+    """Swap flow feature columns for *indices* without rebuilding geometry."""
+    import numpy as np
+
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    sweep = tag.get("sweep")
+    owner = tag.get("segment_owner")
+    edge_index = tag.get("sweep_edge_index")
+    if sweep is None or owner is None or edge_index is None:
+        return
+
+    owner = np.asarray(owner, dtype=int)
+    edge_index = np.asarray(edge_index, dtype=int)
+    features = dict(layer.features)
+
+    def _segment_column(edge_values) -> np.ndarray:
+        return np.asarray(edge_values, dtype=float)[edge_index][owner]
+
+    features["flow_abs"] = _segment_column(sweep.flow_abs_at(*indices))
+    signed = sweep.flow_signed_at(*indices)
+    if signed is not None and "flow_signed" in features:
+        features["flow_signed"] = _segment_column(signed)
+    drop = sweep.pressure_drop_at(*indices)
+    if drop is not None and "pressure_drop" in features:
+        features["pressure_drop"] = _segment_column(drop)
+    layer.features = features
+
+    colour_by = tag.get("colour_by") or "flow_abs"
+    limits = tag.get("contrast_limits")
+    if limits is None and colour_by == "flow_abs":
+        limits = sweep.global_flow_abs_limits()
+    _colour_layer(layer, colour_by, "continuous", (), limits)
+
+
+def _attach_sweep_sliders(viewer, layer, spec) -> None:
+    """One or two integer sliders for a sweep Vectors layer."""
+    sweep = getattr(spec, "sweep", None)
+    if sweep is None:
+        return
+
+    from magicgui.widgets import Container, Label, Slider
+
+    dock_name = f"{spec.name} sweep"
+    # Drop a previous dock for this layer on re-run.
+    try:
+        window = viewer.window
+        for dock in list(getattr(window, "_dock_widgets", {}).values()):
+            if getattr(dock, "objectName", lambda: "")() == dock_name or (
+                hasattr(dock, "windowTitle") and dock.windowTitle() == dock_name
+            ):
+                window.remove_dock_widget(dock)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not remove prior sweep dock %s", dock_name, exc_info=True)
+
+    sliders: list = []
+    value_labels: list = []
+    for axis_name in sweep.axis_names:
+        values = list(sweep.axis_values[axis_name])
+        slider = Slider(
+            value=0,
+            min=0,
+            max=max(len(values) - 1, 0),
+            step=1,
+            label=_sweep_axis_label(axis_name),
+        )
+        readout = Label(value=_format_sweep_value(axis_name, values[0] if values else 0))
+        sliders.append((axis_name, slider, values, readout))
+        value_labels.append(readout)
+
+    def on_change(_event=None) -> None:
+        indices = tuple(int(slider.value) for _name, slider, _vals, _lab in sliders)
+        for (_name, slider, values, readout), index in zip(sliders, indices):
+            if 0 <= index < len(values):
+                readout.value = _format_sweep_value(_name, values[index])
+        _apply_sweep_index(layer, indices)
+        try:
+            _refresh_layer_controls(viewer, layer)
+            _attach_colour_scale(viewer, layer)
+        except Exception:  # noqa: BLE001
+            logger.debug("sweep slider refresh failed for %s", layer.name, exc_info=True)
+
+    for _name, slider, _values, _readout in sliders:
+        slider.changed.connect(on_change)
+
+    rows = []
+    for _name, slider, _values, readout in sliders:
+        rows.append(slider)
+        rows.append(readout)
+    container = Container(widgets=rows, layout="vertical", labels=True)
+    try:
+        dock = viewer.window.add_dock_widget(
+            container, name=dock_name, area="right", allowed_areas=["right", "left"]
+        )
+        try:
+            dock.setObjectName(dock_name)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        logger.debug("could not dock sweep sliders for %s", spec.name, exc_info=True)
+
+
+def _format_sweep_value(axis_name: str, value) -> str:
+    name = str(axis_name)
+    if "percent" in name:
+        return f"{value:g} %"
+    if "pressure" in name:
+        return f"{value:g} Pa"
+    if name.endswith("_um"):
+        return f"{value:g} µm"
+    return f"{value:g}"
 
 
 #: Spec kind -> the napari class name it becomes, for "is this the same sort of
@@ -1998,8 +2149,10 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         EDITOR_SETTINGS,
         PERTURBATION_TYPES,
         add_entry,
+        display_label_for_setting,
         from_settings,
         name_problems,
+        perturbation_type_choices,
         remove_entry,
         rows_for_type,
         set_name,
@@ -2090,7 +2243,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         )
         chosen = str(entry.get("type") or PERTURBATION_TYPES[0])
         type_box = ComboBox(
-            choices=list(PERTURBATION_TYPES),
+            choices=perturbation_type_choices(),
             value=chosen if chosen in PERTURBATION_TYPES else PERTURBATION_TYPES[0],
             label="Type",
         )
@@ -2108,6 +2261,13 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             if field is None:
                 continue
             widget = _build_row(field)
+            # Display labels (constriction/dilation wording) without renaming
+            # schema keys: the cloned Field still carries the auto snake_case
+            # label from form.label_for.
+            setting = schema[name] if name in schema else None
+            widget.label = display_label_for_setting(
+                name, None if setting is None else setting.unit
+            )
             if name in configured:
                 widget.value = display_value_for(schema[name], configured[name])
             editors[name] = widget

@@ -189,6 +189,34 @@ def test_geometry_sweep_keeps_fixed_dilation_percent_on_every_row(
         assert int(row["inlet_pressure_pa"]) == 4500
 
 
+@pytest.mark.parametrize(
+    "percent,expected_factor",
+    [(10, 1.1), (-20, 0.8)],
+)
+def test_geometry_percent_constricts_or_dilates(
+    tmp_path: Path, percent: int, expected_factor: float
+):
+    """Fixed geometry tone: negative percent constricts, positive dilates."""
+    settings = _base_settings(
+        pericyte_geometry_dilation_percent=percent,
+        constriction_spacing_min_um=100.0,
+        constriction_spacing_max_um=100.0,
+        constriction_spacing_step_um=50.0,
+    )
+    sweep = run_pericyte_geometry_sweep(
+        _network(),
+        settings,
+        inlet_nodes=[0],
+        outlet_nodes=[4],
+        output_dir=tmp_path / f"pct_{percent}",
+        sweep_axis="spacing",
+    )
+    assert sweep["results"]
+    for row in sweep["results"]:
+        assert int(row["dilation_percent"]) == percent
+        assert float(row["dilation_factor"]) == pytest.approx(expected_factor)
+
+
 def test_invalid_axis_raises():
     with pytest.raises(ValueError, match="sweep_axis"):
         run_pericyte_geometry_sweep(

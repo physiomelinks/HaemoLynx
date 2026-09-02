@@ -220,7 +220,9 @@ def diameter_at_position(
 
     Each site holds ``d2`` over a plateau a quarter of ``constriction_length``
     either side of its center and ramps linearly back to ``d1`` over the next
-    quarter. Overlapping sites take the narrowest diameter.
+    quarter. ``d2 < d1`` narrows (constriction); ``d2 > d1`` widens (dilation).
+    Overlapping sites take the narrowest diameter when constricting, or the
+    widest when dilating — a ``min`` alone would silently ignore factor > 1.
     """
     if not constriction_centers or constriction_length <= 0:
         return float(d1)
@@ -228,6 +230,7 @@ def diameter_at_position(
     half_window = float(constriction_length) / 2.0
     ramp_width = float(constriction_length) / 4.0
     plateau_half = float(constriction_length) / 4.0
+    narrowing = float(d2) <= float(d1)
 
     diameter = float(d1)
     for center in constriction_centers:
@@ -242,7 +245,11 @@ def diameter_at_position(
             else:
                 alpha = (distance_from_center - plateau_half) / ramp_width
                 local_diameter = float(d2 + (d1 - d2) * alpha)
-        diameter = min(diameter, local_diameter)
+        diameter = (
+            min(diameter, local_diameter)
+            if narrowing
+            else max(diameter, local_diameter)
+        )
     return diameter
 
 

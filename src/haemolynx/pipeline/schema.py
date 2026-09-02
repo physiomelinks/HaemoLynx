@@ -1177,10 +1177,11 @@ SCHEMA = Schema(
             kind="float",
             default=1.0,
             help=(
-                "Global focal-constriction factor for every branch order "
-                "(1.0 = no narrowing; 0.8 = 20% narrower at pericyte sites). "
-                "constriction_by_branch_order replaces this for listed orders "
-                "only — empty map means this global factor alone"
+                "Global focal constriction/dilation factor for every branch "
+                "order (1.0 = no local change; <1 narrows, >1 widens at "
+                "pericyte sites). constriction_by_branch_order replaces this "
+                "for listed orders only — empty map means this global factor "
+                "alone"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
@@ -1191,10 +1192,11 @@ SCHEMA = Schema(
             kind="mapping",
             default=None,
             help=(
-                "Sparse per-order overrides of pericyte_constriction_factor. "
-                "Empty or unset makes no change (global factor only). A listed "
-                "order replaces the global factor for that order alone "
-                "(e.g. {B01: 1.0} with global 0.8 leaves B01 unconstricted)"
+                "Sparse per-order overrides of pericyte_constriction_factor "
+                "(<1 constricts, >1 dilates locally). Empty or unset makes no "
+                "change (global factor only). A listed order replaces the "
+                "global factor for that order alone (e.g. {B01: 1.0} with "
+                "global 0.8 leaves B01 unchanged)"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             advanced=True,
@@ -1573,9 +1575,9 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "After the pipeline, sweep pericyte dilation against inlet "
-                "pressure (whole-brain example script only; prefer a "
-                "pericyte_dilation_sweep perturbation in the panel)"
+                "After the pipeline, sweep pericyte constriction/dilation "
+                "against inlet pressure (whole-brain example script only; "
+                "prefer a pericyte_dilation_sweep perturbation in the panel)"
             ),
             section=_PERTURBATION_RUNS,
         ),
@@ -1583,27 +1585,34 @@ SCHEMA = Schema(
             name="pericyte_dilation_min_percent",
             kind="int",
             default=1,
-            help="Start the dilation sweep at this percentage",
+            help=(
+                "Start the pericyte constriction/dilation sweep at this "
+                "percentage (negative = constriction, positive = dilation; "
+                "scale = 1 + percent/100)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="percent",
-            minimum=0,
+            minimum=-99,
             maximum=100,
         ),
         Setting(
             name="pericyte_dilation_max_percent",
             kind="int",
             default=30,
-            help="End the dilation sweep at this percentage",
+            help=(
+                "End the pericyte constriction/dilation sweep at this "
+                "percentage (negative = constriction, positive = dilation)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="percent",
-            minimum=0,
+            minimum=-99,
             maximum=100,
         ),
         Setting(
             name="pericyte_dilation_step_percent",
             kind="int",
             default=1,
-            help="Step the dilation sweep by this percentage",
+            help="Step the pericyte constriction/dilation sweep by this percentage",
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=1,
@@ -1614,9 +1623,10 @@ SCHEMA = Schema(
             kind="float",
             default=0.0,
             help=(
-                "Change every arteriole branch's diameter by this percentage "
-                "(e.g. 10 widens by 10%, -20 narrows by 20%); whole-branch "
-                "scaling, not a focal pericyte constriction"
+                "Arteriole constriction/dilation: change every arteriole "
+                "branch's diameter by this percentage (positive = dilation, "
+                "negative = constriction; e.g. 10 widens by 10%, -20 narrows "
+                "by 20%); whole-branch scaling, not a focal pericyte site"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -1627,7 +1637,10 @@ SCHEMA = Schema(
             name="arteriole_dilation_min_percent",
             kind="int",
             default=0,
-            help="Start the arteriole diameter sweep at this percentage change",
+            help=(
+                "Start the arteriole constriction/dilation sweep at this "
+                "percentage change (negative = constriction)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=-99,
@@ -1637,7 +1650,10 @@ SCHEMA = Schema(
             name="arteriole_dilation_max_percent",
             kind="int",
             default=30,
-            help="End the arteriole diameter sweep at this percentage change",
+            help=(
+                "End the arteriole constriction/dilation sweep at this "
+                "percentage change (positive = dilation)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=-99,
@@ -1647,7 +1663,7 @@ SCHEMA = Schema(
             name="arteriole_dilation_step_percent",
             kind="int",
             default=1,
-            help="Step the arteriole diameter sweep by this percentage",
+            help="Step the arteriole constriction/dilation sweep by this percentage",
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=1,
@@ -1658,8 +1674,9 @@ SCHEMA = Schema(
             kind="int",
             default=0,
             help=(
-                "Start the passive capillary diameter sweep at this "
-                "percentage change (whole capillary, not focal)"
+                "Start the passive capillary constriction/dilation sweep at "
+                "this percentage change (whole capillary, not focal; "
+                "negative = constriction)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -1670,7 +1687,10 @@ SCHEMA = Schema(
             name="capillary_dilation_max_percent",
             kind="int",
             default=30,
-            help="End the passive capillary diameter sweep at this percentage change",
+            help=(
+                "End the passive capillary constriction/dilation sweep at "
+                "this percentage change (positive = dilation)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=-99,
@@ -1680,7 +1700,10 @@ SCHEMA = Schema(
             name="capillary_dilation_step_percent",
             kind="int",
             default=1,
-            help="Step the passive capillary diameter sweep by this percentage",
+            help=(
+                "Step the passive capillary constriction/dilation sweep by "
+                "this percentage"
+            ),
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=1,
@@ -1691,9 +1714,10 @@ SCHEMA = Schema(
             kind="int",
             default=0,
             help=(
-                "Fixed whole-network diameter scale for a pericyte spacing or "
-                "length sweep (same factor as pericyte_dilation_*_percent: "
-                "dilation_factor = 1 + percent/100); pressure stays at inlet_p_bc"
+                "Fixed whole-network constriction/dilation for a pericyte "
+                "spacing or length sweep (scale = 1 + percent/100; negative "
+                "= constriction, positive = dilation); pressure stays at "
+                "inlet_p_bc"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",

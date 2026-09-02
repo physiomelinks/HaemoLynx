@@ -19,7 +19,6 @@ import networkx as nx
 import numpy as np
 
 from haemolynx import statistics
-from haemolynx.haemodynamics.perturbations import is_sweep_perturbation
 from haemolynx.visualization.plot import (
     plot_node_degree_distribution,
     visualize_3d_plotly,
@@ -71,51 +70,51 @@ SWEEP_AXIS_BY_TYPE: Mapping[str, SweepAxisSpec] = {
     ),
     "pericyte_dilation_sweep": SweepAxisSpec(
         x_key="dilation_percent",
-        x_label="Pericyte dilation (%)",
+        x_label="Pericyte constriction/dilation (%)",
         series_key="inlet_pressure_pa",
         series_label="{value} Pa inlet",
         stem_suffix="vs_pericyte_dilation",
-        title_subject="pericyte dilation",
+        title_subject="pericyte constriction/dilation",
     ),
     "pressure_and_pericyte_sweep": SweepAxisSpec(
         x_key="dilation_percent",
-        x_label="Pericyte dilation (%)",
+        x_label="Pericyte constriction/dilation (%)",
         series_key="inlet_pressure_pa",
         series_label="{value} Pa inlet",
         stem_suffix="vs_pericyte_dilation",
-        title_subject="pericyte dilation",
+        title_subject="pericyte constriction/dilation",
     ),
     "arteriole_diameter_sweep": SweepAxisSpec(
         x_key="dilation_percent",
-        x_label="Arteriole diameter change (%)",
+        x_label="Arteriole constriction/dilation (%)",
         series_key="inlet_pressure_pa",
         series_label="{value} Pa inlet",
         stem_suffix="vs_arteriole_dilation",
-        title_subject="arteriole dilation",
+        title_subject="arteriole constriction/dilation",
     ),
     "pressure_and_arteriole_sweep": SweepAxisSpec(
         x_key="dilation_percent",
-        x_label="Arteriole diameter change (%)",
+        x_label="Arteriole constriction/dilation (%)",
         series_key="inlet_pressure_pa",
         series_label="{value} Pa inlet",
         stem_suffix="vs_arteriole_dilation",
-        title_subject="arteriole dilation",
+        title_subject="arteriole constriction/dilation",
     ),
     "capillary_diameter_sweep": SweepAxisSpec(
         x_key="dilation_percent",
-        x_label="Capillary diameter change (%)",
+        x_label="Capillary constriction/dilation (%)",
         series_key="inlet_pressure_pa",
         series_label="{value} Pa inlet",
         stem_suffix="vs_capillary_dilation",
-        title_subject="capillary dilation",
+        title_subject="capillary constriction/dilation",
     ),
     "pressure_and_capillary_sweep": SweepAxisSpec(
         x_key="dilation_percent",
-        x_label="Capillary diameter change (%)",
+        x_label="Capillary constriction/dilation (%)",
         series_key="inlet_pressure_pa",
         series_label="{value} Pa inlet",
         stem_suffix="vs_capillary_dilation",
-        title_subject="capillary dilation",
+        title_subject="capillary constriction/dilation",
     ),
     "pericyte_spacing_sweep": SweepAxisSpec(
         x_key="constriction_spacing_um",
@@ -144,11 +143,11 @@ def sweep_axis_for(perturbation_type: str) -> SweepAxisSpec:
     # Future ``*_sweep`` types: prefer dilation_percent when present in rows.
     return SweepAxisSpec(
         x_key="dilation_percent",
-        x_label="Dilation (%)",
+        x_label="Constriction/dilation (%)",
         series_key="inlet_pressure_pa",
         series_label="{value} Pa inlet",
         stem_suffix="vs_dilation",
-        title_subject="dilation",
+        title_subject="constriction/dilation",
     )
 
 
@@ -356,5 +355,9 @@ def export_non_sweep_perturbation_artifacts(
 
 
 def wants_napari_flow_layer(perturbation_type: str) -> bool:
-    """Non-sweep perturbations get a named flow layer; sweeps do not."""
-    return not is_sweep_perturbation(perturbation_type)
+    """Every concrete perturbation type gets a named napari flow layer.
+
+    Non-sweeps: static vessels (+ nodes). Sweeps: one Vectors layer with
+    slider(s) over the retained grid.
+    """
+    return str(perturbation_type) not in ("", "none")

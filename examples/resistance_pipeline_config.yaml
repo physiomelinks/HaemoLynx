@@ -296,9 +296,9 @@ diameters_and_pericytes:
   manual_venule_diameter_by_branch_order: {}
   # Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings  [um]
   diameter_by_branch_order: null
-  # Global focal-constriction factor for every branch order (1.0 = no narrowing; 0.8 = 20% narrower at pericyte sites). constriction_by_branch_order replaces this for listed orders only — empty map means this global factor alone  [range 0.0..; needs run_haemodynamics]
+  # Global focal constriction/dilation factor for every branch order (1.0 = no local change; <1 narrows, >1 widens at pericyte sites). constriction_by_branch_order replaces this for listed orders only — empty map means this global factor alone  [range 0.0..; needs run_haemodynamics]
   pericyte_constriction_factor: 1.0
-  # Sparse per-order overrides of pericyte_constriction_factor. Empty or unset makes no change (global factor only). A listed order replaces the global factor for that order alone (e.g. {B01: 1.0} with global 0.8 leaves B01 unconstricted)
+  # Sparse per-order overrides of pericyte_constriction_factor (<1 constricts, >1 dilates locally). Empty or unset makes no change (global factor only). A listed order replaces the global factor for that order alone (e.g. {B01: 1.0} with global 0.8 leaves B01 unchanged)
   constriction_by_branch_order: null
   # Apply the custom edge-diameter assignment behaviour to these edge IDs
   custom_edges: []
@@ -378,29 +378,29 @@ perturbation_runs:
   perturbations: []
   # Write each perturbation's CSVs here; leave unset for a 'perturbations' directory beside the other output  [needs run_perturbations]
   perturbation_output_dir: null
-  # After the pipeline, sweep pericyte dilation against inlet pressure (whole-brain example script only; prefer a pericyte_dilation_sweep perturbation in the panel)
+  # After the pipeline, sweep pericyte constriction/dilation against inlet pressure (whole-brain example script only; prefer a pericyte_dilation_sweep perturbation in the panel)
   run_pericyte_dilation_sweep: true
-  # Start the dilation sweep at this percentage  [percent; range 0..100]
+  # Start the pericyte constriction/dilation sweep at this percentage (negative = constriction, positive = dilation; scale = 1 + percent/100)  [percent; range -99..100]
   pericyte_dilation_min_percent: 1
-  # End the dilation sweep at this percentage  [percent; range 0..100]
+  # End the pericyte constriction/dilation sweep at this percentage (negative = constriction, positive = dilation)  [percent; range -99..100]
   pericyte_dilation_max_percent: 30
-  # Step the dilation sweep by this percentage  [percent; range 1..100]
+  # Step the pericyte constriction/dilation sweep by this percentage  [percent; range 1..100]
   pericyte_dilation_step_percent: 1
-  # Change every arteriole branch's diameter by this percentage (e.g. 10 widens by 10%, -20 narrows by 20%); whole-branch scaling, not a focal pericyte constriction  [percent; range -99.999..]
+  # Arteriole constriction/dilation: change every arteriole branch's diameter by this percentage (positive = dilation, negative = constriction; e.g. 10 widens by 10%, -20 narrows by 20%); whole-branch scaling, not a focal pericyte site  [percent; range -99.999..]
   arteriole_diameter_change_percent: 0.0
-  # Start the arteriole diameter sweep at this percentage change  [percent; range -99..100]
+  # Start the arteriole constriction/dilation sweep at this percentage change (negative = constriction)  [percent; range -99..100]
   arteriole_dilation_min_percent: 0
-  # End the arteriole diameter sweep at this percentage change  [percent; range -99..100]
+  # End the arteriole constriction/dilation sweep at this percentage change (positive = dilation)  [percent; range -99..100]
   arteriole_dilation_max_percent: 30
-  # Step the arteriole diameter sweep by this percentage  [percent; range 1..100]
+  # Step the arteriole constriction/dilation sweep by this percentage  [percent; range 1..100]
   arteriole_dilation_step_percent: 1
-  # Start the passive capillary diameter sweep at this percentage change (whole capillary, not focal)  [percent; range -99..100]
+  # Start the passive capillary constriction/dilation sweep at this percentage change (whole capillary, not focal; negative = constriction)  [percent; range -99..100]
   capillary_dilation_min_percent: 0
-  # End the passive capillary diameter sweep at this percentage change  [percent; range -99..100]
+  # End the passive capillary constriction/dilation sweep at this percentage change (positive = dilation)  [percent; range -99..100]
   capillary_dilation_max_percent: 30
-  # Step the passive capillary diameter sweep by this percentage  [percent; range 1..100]
+  # Step the passive capillary constriction/dilation sweep by this percentage  [percent; range 1..100]
   capillary_dilation_step_percent: 1
-  # Fixed whole-network diameter scale for a pericyte spacing or length sweep (same factor as pericyte_dilation_*_percent: dilation_factor = 1 + percent/100); pressure stays at inlet_p_bc  [percent; range -99..100]
+  # Fixed whole-network constriction/dilation for a pericyte spacing or length sweep (scale = 1 + percent/100; negative = constriction, positive = dilation); pressure stays at inlet_p_bc  [percent; range -99..100]
   pericyte_geometry_dilation_percent: 0
   # Start the pericyte spacing sweep at this inter-site distance  [um; range 0.0..]
   constriction_spacing_min_um: 50.0
