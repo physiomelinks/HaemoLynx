@@ -250,8 +250,6 @@ diameters_and_pericytes:
   all_diams_const: true
   # Model pericyte constrictions when assigning Poiseuille resistances  [needs run_haemodynamics]
   do_pericyte_construction: false
-  # Scale every arteriole branch order's diameter by this factor  [range 0.0..]
-  arteriole_diameter_scale: 1.0
   # Hold each pericyte constriction over this much of the vessel  [um; range 0.0..]
   constriction_length_um: 40.0
   # Place regularly spaced constrictions this far apart along a vessel  [um; range 0.0..]
@@ -386,6 +384,14 @@ perturbation_runs:
   pericyte_dilation_max_percent: 30
   # Step the dilation sweep by this percentage  [percent; range 1..100]
   pericyte_dilation_step_percent: 1
+  # Change every arteriole branch's diameter by this percentage (e.g. 10 widens by 10%, -20 narrows by 20%); whole-branch scaling, not a focal pericyte constriction  [percent; range -99.999..]
+  arteriole_diameter_change_percent: 0.0
+  # Start the arteriole diameter sweep at this percentage change  [percent; range -99..100]
+  arteriole_dilation_min_percent: 0
+  # End the arteriole diameter sweep at this percentage change  [percent; range -99..100]
+  arteriole_dilation_max_percent: 30
+  # Step the arteriole diameter sweep by this percentage  [percent; range 1..100]
+  arteriole_dilation_step_percent: 1
   # Start the inlet-pressure sweep at this pressure  [Pa; range 0..]
   inlet_pressure_min_pa: 4500
   # End the inlet-pressure sweep at this pressure  [Pa; range 0..]

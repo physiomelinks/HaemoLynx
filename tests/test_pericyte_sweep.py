@@ -182,6 +182,94 @@ def test_dilation_sweep_on_synthetic_network(tmp_path: Path):
     )
 
 
+def test_arteriole_dilation_sweep_scales_only_arterioles(tmp_path: Path):
+    """Whole-branch arteriole percent sweep leaves capillaries untouched."""
+    from haemolynx.haemodynamics.pericyte_sweep import (
+        run_arteriole_dilation_pressure_sweep,
+    )
+
+    G, inlet_nodes, outlet_nodes, _a, _v, diameters = _build_synthetic_network()
+    baseline_caps = [
+        float(data["fwhm_diameter_um"])
+        for _u, _v, data in G.edges(data=True)
+        if data["branch_order"] == "B01"
+    ]
+    settings = {
+        "diameter_by_branch_order": diameters,
+        "outlet_p_bc": 1000.0,
+        "inlet_p_bc": 4500.0,
+        "use_fwhm_edge_diameters": True,
+        "viscosity_law": "constant",
+        "haematocrit": 0.45,
+        "diameter_basis": "plasma_column",
+        "arteriole_dilation_min_percent": 0,
+        "arteriole_dilation_max_percent": 20,
+        "arteriole_dilation_step_percent": 20,
+        "constriction_length_um": 40.0,
+        "constriction_spacing_um": 100.0,
+    }
+    sweep = run_arteriole_dilation_pressure_sweep(
+        G,
+        settings,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
+        output_dir=tmp_path,
+        sweep_dilation=True,
+        sweep_pressure=False,
+    )
+    assert Path(sweep["csv_path"]).name == "arteriole_dilation_sweep.csv"
+    assert len(sweep["results"]) == 2  # 0% and 20%
+    # Baseline graph unchanged; capillaries still match.
+    after_caps = [
+        float(data["fwhm_diameter_um"])
+        for _u, _v, data in G.edges(data=True)
+        if data["branch_order"] == "B01"
+    ]
+    assert after_caps == baseline_caps
+    # Wider arterioles lower network resistance.
+    by_percent = {int(r["dilation_percent"]): r for r in sweep["results"]}
+    assert by_percent[20]["equivalent_resistance"] < by_percent[0]["equivalent_resistance"]
+
+
+def test_pressure_and_arteriole_sweep_varies_both_axes(tmp_path: Path):
+    from haemolynx.haemodynamics.pericyte_sweep import (
+        run_arteriole_dilation_pressure_sweep,
+    )
+
+    G, inlet_nodes, outlet_nodes, _a, _v, diameters = _build_synthetic_network()
+    settings = {
+        "diameter_by_branch_order": diameters,
+        "outlet_p_bc": 1000.0,
+        "use_fwhm_edge_diameters": True,
+        "viscosity_law": "constant",
+        "haematocrit": 0.45,
+        "diameter_basis": "plasma_column",
+        "arteriole_dilation_min_percent": 0,
+        "arteriole_dilation_max_percent": 10,
+        "arteriole_dilation_step_percent": 10,
+        "inlet_pressure_min_pa": 4500,
+        "inlet_pressure_max_pa": 5000,
+        "inlet_pressure_step_pa": 500,
+        "constriction_length_um": 40.0,
+        "constriction_spacing_um": 100.0,
+    }
+    sweep = run_arteriole_dilation_pressure_sweep(
+        G,
+        settings,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
+        output_dir=tmp_path,
+        sweep_dilation=True,
+        sweep_pressure=True,
+    )
+    assert Path(sweep["csv_path"]).name == "arteriole_dilation_pressure_sweep.csv"
+    assert len(sweep["results"]) == 4  # 2 dilations x 2 pressures
+    percents = {int(r["dilation_percent"]) for r in sweep["results"]}
+    pressures = {int(r["inlet_pressure_pa"]) for r in sweep["results"]}
+    assert percents == {0, 10}
+    assert pressures == {4500, 5000}
+
+
 if __name__ == "__main__":
     demo_output_dir = REPO_ROOT / "examples" / "outputs" / "synthetic_dilation_sweep"
     demo_output_dir.mkdir(parents=True, exist_ok=True)

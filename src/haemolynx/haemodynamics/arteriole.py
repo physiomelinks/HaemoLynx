@@ -1,9 +1,13 @@
-"""Widen or narrow every arteriole by one factor, and re-solve for it.
+"""Widen or narrow every arteriole by one percentage, and re-solve for it.
 
 The simplest question to ask of a finished network: what happens to it if the
-arterioles dilate? One factor for the whole arteriole tree, nothing else
+arterioles dilate? One percentage for the whole arteriole tree, nothing else
 touched -- so whatever changes in the answer is that dilation and not a second
 edit riding along with it.
+
+Unlike a pericyte constriction, this is **whole-branch** scaling: every edge
+whose ``branch_order`` names an arteriole (``Art…``) has its diameter moved by
+the same factor. No focal constriction sites are placed.
 
 Two things carry a diameter and both have to move together. The branch-order
 table is what :meth:`PoiseuilleModel.set_poiseuille_resistances` reads, but a
@@ -11,6 +15,10 @@ run that measured its diameters from the image has a ``fwhm_diameter_um`` on
 each edge, and ``prefer_edge_fwhm_diameter`` makes that per-edge value win --
 so scaling the table alone would leave every measured arteriole exactly as it
 was, silently, on precisely the runs whose diameters are real.
+
+The user-facing setting is a **percentage change** (``+10`` → 1.10×,
+``−20`` → 0.80×). Internally the scale factor is what the resistance model
+multiplies by; :func:`percent_change_to_scale` is the conversion.
 
 The baseline is left alone: the graph comes back as a copy, because a
 perturbation is a question about the network and not an edit to it.
@@ -29,6 +37,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ARTERIOLE_PREFIX",
     "is_arteriole_branch_order",
+    "percent_change_to_scale",
     "scale_arteriole_diameters",
 ]
 
@@ -43,6 +52,23 @@ def is_arteriole_branch_order(branch_order: Any) -> bool:
     return str(branch_order).startswith(ARTERIOLE_PREFIX)
 
 
+def percent_change_to_scale(percent: float) -> float:
+    """Convert a percentage diameter change to a multiplicative scale factor.
+
+    ``+10`` means 10% wider (1.10×); ``−20`` means 20% narrower (0.80×);
+    ``0`` leaves diameters unchanged (1.0×). A change of ``−100`` or below
+    would make a non-positive diameter, which is refused.
+    """
+    percent = float(percent)
+    scale = 1.0 + (percent / 100.0)
+    if not scale > 0:
+        raise ValueError(
+            f"arteriole diameter change of {percent}% gives scale {scale}, "
+            "which is not > 0. A change must be greater than -100%."
+        )
+    return scale
+
+
 def scale_arteriole_diameters(
     graph: nx.MultiGraph,
     diameter_by_branch_order: Mapping[str, float],
@@ -53,8 +79,10 @@ def scale_arteriole_diameters(
 ) -> tuple[nx.MultiGraph, dict[str, float], dict[str, Any]]:
     """A copy of *graph* with every arteriole scaled by *scale*, re-solved.
 
-    *model* is required rather than defaulted because a resistance is only
-    comparable with the baseline's when the same viscosity law produced it.
+    *scale* is a multiplicative factor (use :func:`percent_change_to_scale` when
+    the caller has a percentage). *model* is required rather than defaulted
+    because a resistance is only comparable with the baseline's when the same
+    viscosity law produced it.
 
     Returns the new graph, the diameter table it was solved with, and a summary
     of what moved.

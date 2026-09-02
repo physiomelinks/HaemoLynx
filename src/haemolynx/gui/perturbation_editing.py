@@ -22,10 +22,11 @@ Two hazards, both silent, both handled at the one boundary:
   ``yaml.safe_dump`` on the same value. Every entry leaving here has been
   through :func:`~haemolynx.haemodynamics.perturbations.plain`, which is what
   ``PerturbationSpec.to_entry`` does.
-* **An override must not reach the flat settings.** `arteriole_diameter_scale`
-  is an ordinary row on the Diameters tab, and the panel sends every row to a
-  run. An editor here writes into ``entries[i]["overrides"]`` and nowhere else,
-  so a perturbation cannot move the baseline it is measured against.
+* **An override must not reach the flat settings.** `arteriole_diameter_change_percent`
+  is also declared for the Diameters / Perturbation schema, and the panel sends
+  every ordinary row to a run. An editor here writes into
+  ``entries[i]["overrides"]`` and nowhere else, so a perturbation cannot move
+  the baseline it is measured against.
 """
 from __future__ import annotations
 

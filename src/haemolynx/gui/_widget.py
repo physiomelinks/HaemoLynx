@@ -1977,12 +1977,11 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
     below the last one adds another, so a run can ask five questions of one
     network.
 
-    What each editor writes is the important part. `arteriole_diameter_scale`
-    is an ordinary row on the Diameters tab, and the panel sends every row to
-    the run, so an editor that wrote into `rows` would move the baseline every
-    perturbation is measured against. These write into
-    ``perturbations[i]["overrides"]``, which reaches the run through the one
-    `perturbations` row and nowhere else.
+    What each editor writes is the important part. `arteriole_diameter_change_percent`
+    reaches the run only through a perturbation entry's overrides: an editor
+    that wrote into `rows` would move the baseline every perturbation is
+    measured against. These write into ``perturbations[i]["overrides"]``, which
+    reaches the run through the one `perturbations` row and nowhere else.
 
     :mod:`haemolynx.gui.perturbation_editing` is the whole decision -- which
     editors a type reveals, what adding and removing do to the list -- and it

@@ -80,7 +80,6 @@ DIMENSIONLESS = {
     "pericyte_comparison_baseline_value",
     "pericyte_comparison_constricted_value",
     "constriction_by_branch_order",
-    "arteriole_diameter_scale",
     "fwhm_min_total_extent_multiplier",
     "fwhm_same_edge_arc_window_multiplier",
     # Label sentinels written into the int32 branch-label volume.

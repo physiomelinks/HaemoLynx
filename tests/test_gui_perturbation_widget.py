@@ -8,10 +8,10 @@ most, that an editor writes into the perturbation and **not** into the flat
 settings the baseline run reads.
 
 That last one is the whole reason a perturbation is a nested entry rather than
-a set of extra rows. `arteriole_diameter_scale` is an ordinary row on the
-Diameters tab, and the panel sends every row to the run, so an editor that
-wrote into `rows` would move the baseline that every perturbation is
-differenced against.
+a set of extra rows. `arteriole_diameter_change_percent` is a typed override,
+and the panel sends every ordinary row to the run, so an editor that wrote
+into `rows` would move the baseline that every perturbation is differenced
+against.
 
 They need napari, a Qt binding and a display, so they are marked `gui` and
 skipped everywhere those are missing. CI runs them on 3.11 under xvfb.
@@ -43,7 +43,7 @@ TAB_TITLE = next(
 )
 
 A_TYPE = "arteriole_diameter_change"
-A_SCALE = "arteriole_diameter_scale"
+A_PERCENT = "arteriole_diameter_change_percent"
 
 
 @pytest.fixture
@@ -163,10 +163,10 @@ def test_removing_the_first_leaves_the_second_editable(panel):
     kept = perturbations.entries()[1]["name"]
 
     perturbations.remove(0)
-    perturbations.editors()[0].editors[A_SCALE].value = 1.5
+    perturbations.editors()[0].editors[A_PERCENT].value = 50
 
     assert perturbations.entries() == [
-        {"name": kept, "type": A_TYPE, "overrides": {A_SCALE: 1.5}}
+        {"name": kept, "type": A_TYPE, "overrides": {A_PERCENT: 50}}
     ]
 
 
@@ -181,7 +181,7 @@ def test_choosing_a_type_reveals_its_options(panel):
 
     editor = perturbations.editors()[0]
     assert editor.shown == set(rows_for_type(A_TYPE))
-    assert A_SCALE in editor.shown
+    assert A_PERCENT in editor.shown
 
 
 def test_choosing_a_type_hides_the_other_types_options(panel):
@@ -217,7 +217,7 @@ def test_changing_a_type_reveals_the_new_ones_options(panel):
 
     editor = perturbations.editors()[0]
     assert editor.shown == set(rows_for_type("pressure_and_pericyte_sweep"))
-    assert A_SCALE in editor.hidden
+    assert A_PERCENT in editor.hidden
 
 
 def test_each_entry_reveals_its_own_type_independently(panel):
@@ -228,8 +228,8 @@ def test_each_entry_reveals_its_own_type_independently(panel):
     perturbations.choose_type(0, A_TYPE)
     perturbations.choose_type(1, "pericyte_dilation_sweep")
 
-    assert A_SCALE in perturbations.editors()[0].shown
-    assert A_SCALE in perturbations.editors()[1].hidden
+    assert A_PERCENT in perturbations.editors()[0].shown
+    assert A_PERCENT in perturbations.editors()[1].hidden
 
 
 # --- an editor writes into the perturbation, not into the settings ----------
@@ -240,26 +240,28 @@ def test_an_editor_writes_into_that_perturbations_overrides(panel):
     perturbations.add()
     perturbations.choose_type(0, A_TYPE)
 
-    perturbations.editors()[0].editors[A_SCALE].value = 1.4
+    perturbations.editors()[0].editors[A_PERCENT].value = 40
 
-    assert perturbations.entries()[0]["overrides"][A_SCALE] == pytest.approx(1.4)
+    assert perturbations.entries()[0]["overrides"][A_PERCENT] == pytest.approx(40)
 
 
 def test_an_editor_does_not_touch_the_flat_settings(panel):
     """The guarantee the whole design rests on: the baseline does not move.
 
-    `arteriole_diameter_scale` is a row on the Diameters tab as well, and
-    `current_values()` reads rows. If the editor wrote there, every
-    perturbation would be measured against a baseline it had already changed.
+    `arteriole_diameter_change_percent` is claimed by the Perturbations tab so
+    a Field exists to clone, and `current_values()` reads every claimed row.
+    If the editor wrote there, every perturbation would be measured against a
+    baseline it had already changed.
     """
     widget, _viewer, perturbations = panel
-    before = widget._haemolynx_values()[A_SCALE]
+    before = widget._haemolynx_values()[A_PERCENT]
     perturbations.add()
     perturbations.choose_type(0, A_TYPE)
 
-    perturbations.editors()[0].editors[A_SCALE].value = 1.4
+    perturbations.editors()[0].editors[A_PERCENT].value = 40
 
-    assert widget._haemolynx_values()[A_SCALE] == before
+    assert widget._haemolynx_values()[A_PERCENT] == before
+    assert perturbations.entries()[0]["overrides"][A_PERCENT] == pytest.approx(40)
 
 
 def test_no_editor_appears_in_what_the_panel_would_run(panel):
@@ -276,12 +278,12 @@ def test_what_the_editors_say_reaches_the_run_through_the_one_row(panel):
     widget, _viewer, perturbations = panel
     perturbations.add()
     perturbations.choose_type(0, A_TYPE)
-    perturbations.editors()[0].editors[A_SCALE].value = 1.4
+    perturbations.editors()[0].editors[A_PERCENT].value = 40
 
     configured = widget._haemolynx_values()["perturbations"]
 
     assert [entry["type"] for entry in configured] == [A_TYPE]
-    assert configured[0]["overrides"][A_SCALE] == pytest.approx(1.4)
+    assert configured[0]["overrides"][A_PERCENT] == pytest.approx(40)
 
 
 def test_the_row_can_read_back_what_the_editors_put_in_it(panel):
@@ -290,7 +292,7 @@ def test_the_row_can_read_back_what_the_editors_put_in_it(panel):
     widget, _viewer, perturbations = panel
     perturbations.add()
     perturbations.choose_type(0, A_TYPE)
-    perturbations.editors()[0].editors[A_SCALE].value = 1.4
+    perturbations.editors()[0].editors[A_PERCENT].value = 40
 
     text = rows_of(widget)["perturbations"].native.text()
 
@@ -305,14 +307,14 @@ def test_editing_the_row_by_hand_rebuilds_the_editors(panel):
     widget, _viewer, perturbations = panel
 
     rows_of(widget)["perturbations"].value = [
-        {"name": "art_dilate_20", "type": A_TYPE, "overrides": {A_SCALE: 1.2}}
+        {"name": "art_dilate_20", "type": A_TYPE, "overrides": {A_PERCENT: 20}}
     ]
 
     assert len(perturbations.editors()) == 1
     editor = perturbations.editors()[0]
     assert editor.type.value == A_TYPE
     assert editor.name.value == "art_dilate_20"
-    assert editor.editors[A_SCALE].value == pytest.approx(1.2)
+    assert editor.editors[A_PERCENT].value == pytest.approx(20)
 
 
 def test_a_config_with_a_bad_entry_still_opens(panel):

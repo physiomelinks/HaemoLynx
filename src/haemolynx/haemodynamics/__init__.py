@@ -23,6 +23,7 @@ from .apply import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
 from .arteriole import (
     ARTERIOLE_PREFIX,
     is_arteriole_branch_order,
+    percent_change_to_scale,
     scale_arteriole_diameters,
 )
 from .perturbations import (
@@ -58,6 +59,7 @@ __all__ = [
     "apply_poiseuille_haemodynamics",
     "ARTERIOLE_PREFIX",
     "is_arteriole_branch_order",
+    "percent_change_to_scale",
     "scale_arteriole_diameters",
     "INCOMPARABLE_OVERRIDES",
     "PERTURBATION_TYPES",

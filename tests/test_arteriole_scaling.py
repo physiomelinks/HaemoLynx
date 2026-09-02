@@ -22,6 +22,7 @@ if str(SRC_DIR) not in sys.path:
 
 from haemolynx.haemodynamics.arteriole import (  # noqa: E402
     is_arteriole_branch_order,
+    percent_change_to_scale,
     scale_arteriole_diameters,
 )
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel  # noqa: E402
@@ -84,6 +85,38 @@ def _baseline(viscosity_law: str = "pries") -> dict[str, float]:
 )
 def test_only_the_arteriole_labels_are_arterioles(branch_order, expected):
     assert is_arteriole_branch_order(branch_order) is expected
+
+
+# --- percent -> scale -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "percent,scale",
+    [(0, 1.0), (10, 1.1), (-20, 0.8), (100, 2.0), (-50, 0.5)],
+)
+def test_percent_change_converts_to_a_scale_factor(percent, scale):
+    assert percent_change_to_scale(percent) == pytest.approx(scale)
+
+
+@pytest.mark.parametrize("percent", [-100, -150, -100.0])
+def test_a_percent_that_would_zero_or_invert_diameter_is_refused(percent):
+    with pytest.raises(ValueError, match="not > 0"):
+        percent_change_to_scale(percent)
+
+
+def test_a_twenty_percent_dilation_matches_a_scale_of_one_point_two():
+    """The user-facing percent and the internal factor agree on the graph."""
+    by_percent, table_p, _ = scale_arteriole_diameters(
+        _network(),
+        dict(DIAMETERS),
+        percent_change_to_scale(20),
+        model=_model("constant"),
+    )
+    by_scale, table_s, _ = scale_arteriole_diameters(
+        _network(), dict(DIAMETERS), 1.2, model=_model("constant")
+    )
+    assert _resistances(by_percent) == _resistances(by_scale)
+    assert table_p == table_s
 
 
 # --- what scaling does ------------------------------------------------------
@@ -153,6 +186,50 @@ def test_nothing_but_the_arterioles_moves():
     after = _resistances(scaled)
     assert after["B01"] == baseline["B01"]
     assert after["Ven1"] == baseline["Ven1"]
+
+
+def test_every_edge_of_an_arteriole_branch_order_moves_together():
+    """Whole-branch scaling: two Art1 edges dilate by the same percent."""
+    graph = _network()
+    # A second arteriole segment on the same branch order.
+    graph.add_node(5, pos=np.asarray((0.0, 0.0, -10.0), dtype=float))
+    graph.add_edge(
+        5,
+        0,
+        key=0,
+        length=10.0,
+        branch_order="Art1",
+        fwhm_diameter_um=DIAMETERS["Art1"],
+    )
+
+    scaled, _table, summary = scale_arteriole_diameters(
+        graph, dict(DIAMETERS), percent_change_to_scale(20), model=_model()
+    )
+
+    art_diameters = [
+        data["fwhm_diameter_um"]
+        for _u, _v, data in scaled.edges(data=True)
+        if data["branch_order"] == "Art1"
+    ]
+    assert len(art_diameters) == 2
+    assert art_diameters[0] == pytest.approx(7.0 * 1.2)
+    assert art_diameters[1] == pytest.approx(7.0 * 1.2)
+    assert summary["arteriole_edges"] == 2
+    # Capillaries and venules keep their measured diameters.
+    for _u, _v, data in scaled.edges(data=True):
+        if data["branch_order"] != "Art1":
+            assert data["fwhm_diameter_um"] == DIAMETERS[data["branch_order"]]
+
+
+def test_scaling_does_not_place_focal_constriction_attributes():
+    """Arteriole dilation is whole-branch; it is not a pericyte constriction."""
+    scaled, _table, _summary = scale_arteriole_diameters(
+        _network(), dict(DIAMETERS), percent_change_to_scale(20), model=_model()
+    )
+    for _u, _v, _key, data in scaled.edges(keys=True, data=True):
+        assert "pericyte_centers_um" not in data
+        assert "pericyte_count_assigned" not in data
+        assert "constriction_sites" not in data
 
 
 def test_the_returned_table_scales_only_the_arteriole_entries():
@@ -238,4 +315,6 @@ def test_it_is_reachable_from_the_subpackage():
     import haemolynx.haemodynamics as haemodynamics
 
     assert haemodynamics.scale_arteriole_diameters is scale_arteriole_diameters
+    assert haemodynamics.percent_change_to_scale is percent_change_to_scale
     assert "scale_arteriole_diameters" in haemodynamics.__all__
+    assert "percent_change_to_scale" in haemodynamics.__all__

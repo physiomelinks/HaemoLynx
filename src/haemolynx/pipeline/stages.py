@@ -50,6 +50,7 @@ from haemolynx.haemodynamics.perturbations import (
     perturbations_from_settings,
 )
 from haemolynx.haemodynamics.pericyte_sweep import (
+    run_arteriole_dilation_pressure_sweep,
     run_pericyte_dilation_pressure_sweep,
     solve_pressure_and_boundary_flow,
 )
@@ -1207,11 +1208,44 @@ def _perturb_one(
         G, _table, scaling = haemodynamics.scale_arteriole_diameters(
             G,
             diameter_table,
-            float(perturbed["arteriole_diameter_scale"]),
+            haemodynamics.percent_change_to_scale(
+                float(perturbed["arteriole_diameter_change_percent"])
+            ),
             model=_poiseuille_model_for(perturbed),
             prefer_edge_fwhm_diameter=prefer_measured,
         )
         summary.update(scaling)
+        summary["arteriole_diameter_change_percent"] = float(
+            perturbed["arteriole_diameter_change_percent"]
+        )
+    elif spec.type == "arteriole_diameter_sweep":
+        sweep = run_arteriole_dilation_pressure_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+            sweep_dilation=True,
+            sweep_pressure=False,
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
+        curves = plot_dilation_curves(sweep["results"], result.output_dir)
+        result.outputs.extend(Path(path) for path in curves.values())
+    elif spec.type == "pressure_and_arteriole_sweep":
+        sweep = run_arteriole_dilation_pressure_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+            sweep_dilation=True,
+            sweep_pressure=True,
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
+        curves = plot_dilation_curves(sweep["results"], result.output_dir)
+        result.outputs.extend(Path(path) for path in curves.values())
     elif spec.type == "pericyte_diameter_change":
         G, strategy, strategy_results = set_resistances_for_constriction_strategy(
             G,
