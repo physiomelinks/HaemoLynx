@@ -138,6 +138,11 @@ def test_the_tab_keeps_only_the_always_on_run_settings():
     assert "arteriole_dilation_min_percent" in rows_for_type(
         "pressure_and_arteriole_sweep"
     )
+    assert "capillary_dilation_min_percent" in rows_for_type("capillary_diameter_sweep")
+    assert "inlet_pressure_min_pa" in rows_for_type("pressure_and_capillary_sweep")
+    assert "capillary_dilation_min_percent" in rows_for_type(
+        "pressure_and_capillary_sweep"
+    )
     assert "pericyte_mask_path" in rows_for_type("pericyte_diameter_change")
     for name in PERICYTE_ENTRY_GEOMETRY_SETTINGS:
         assert name in rows_for_type("pericyte_dilation_sweep"), name

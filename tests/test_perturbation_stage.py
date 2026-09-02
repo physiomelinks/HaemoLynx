@@ -114,6 +114,16 @@ def _settings(tmp_path: Path, perturbations: list[dict], **extra) -> dict:
             "arteriole_dilation_min_percent": 0,
             "arteriole_dilation_max_percent": 10,
             "arteriole_dilation_step_percent": 10,
+            "capillary_dilation_min_percent": 0,
+            "capillary_dilation_max_percent": 10,
+            "capillary_dilation_step_percent": 10,
+            "constriction_spacing_min_um": 50.0,
+            "constriction_spacing_max_um": 100.0,
+            "constriction_spacing_step_um": 50.0,
+            "constriction_length_min_um": 20.0,
+            "constriction_length_max_um": 40.0,
+            "constriction_length_step_um": 20.0,
+            "pericyte_geometry_dilation_percent": 0,
             "inlet_pressure_min_pa": 4500,
             "inlet_pressure_max_pa": 5000,
             "inlet_pressure_step_pa": 500,
@@ -233,6 +243,38 @@ PRESSURE_AND_ARTERIOLE_SWEEP = {
     "type": "pressure_and_arteriole_sweep",
     "overrides": {},
 }
+CAPILLARY_DIAMETER_SWEEP = {
+    "name": "capillary_dilation_only",
+    "type": "capillary_diameter_sweep",
+    "overrides": {},
+}
+PRESSURE_AND_CAPILLARY_SWEEP = {
+    "name": "capillary_and_pressure",
+    "type": "pressure_and_capillary_sweep",
+    "overrides": {},
+}
+SPACING_SWEEP = {
+    "name": "spacing_only",
+    "type": "pericyte_spacing_sweep",
+    "overrides": {
+        "constriction_spacing_min_um": 50.0,
+        "constriction_spacing_max_um": 100.0,
+        "constriction_spacing_step_um": 50.0,
+        "constriction_length_um": 40.0,
+        "pericyte_geometry_dilation_percent": 0,
+    },
+}
+LENGTH_SWEEP = {
+    "name": "length_only",
+    "type": "pericyte_length_sweep",
+    "overrides": {
+        "constriction_length_min_um": 20.0,
+        "constriction_length_max_um": 40.0,
+        "constriction_length_step_um": 20.0,
+        "constriction_spacing_um": 100.0,
+        "pericyte_geometry_dilation_percent": 0,
+    },
+}
 NO_OP = {"name": "placeholder", "type": "none", "overrides": {}}
 
 #: One worked entry per type, keyed by the type it exercises. What the guards
@@ -248,6 +290,10 @@ ENTRY_FOR_TYPE: dict[str, dict] = {
     "arteriole_diameter_change": ARTERIOLE_DILATION,
     "arteriole_diameter_sweep": ARTERIOLE_DIAMETER_SWEEP,
     "pressure_and_arteriole_sweep": PRESSURE_AND_ARTERIOLE_SWEEP,
+    "capillary_diameter_sweep": CAPILLARY_DIAMETER_SWEEP,
+    "pressure_and_capillary_sweep": PRESSURE_AND_CAPILLARY_SWEEP,
+    "pericyte_spacing_sweep": SPACING_SWEEP,
+    "pericyte_length_sweep": LENGTH_SWEEP,
     "pericyte_diameter_change": PERICYTE_TONE,
 }
 
@@ -393,6 +439,28 @@ def test_a_pressure_and_arteriole_sweep_writes_its_combined_csv(tmp_path):
     # 2 dilations x 2 pressures
     assert run.results[0].summary["sweep_points"] == 4
     assert any(name.endswith(".png") for name in written), "no curves were drawn"
+
+
+def test_a_capillary_only_sweep_writes_its_dilation_csv(tmp_path):
+    """Passive whole-capillary percent sweep at fixed inlet pressure."""
+    run = _run(tmp_path, [CAPILLARY_DIAMETER_SWEEP])
+
+    written = {path.name for path in run.results[0].output_dir.iterdir()}
+    assert "capillary_dilation_sweep.csv" in written
+    assert run.results[0].summary["sweep_points"] == 2
+    csv_text = (run.results[0].output_dir / "capillary_dilation_sweep.csv").read_text(
+        encoding="utf-8"
+    )
+    assert "dilation_percent" in csv_text
+
+
+def test_a_pressure_and_capillary_sweep_writes_its_combined_csv(tmp_path):
+    """Capillary percent and inlet pressure both vary."""
+    run = _run(tmp_path, [PRESSURE_AND_CAPILLARY_SWEEP])
+
+    written = {path.name for path in run.results[0].output_dir.iterdir()}
+    assert "capillary_dilation_pressure_sweep.csv" in written
+    assert run.results[0].summary["sweep_points"] == 4
 
 
 def test_the_summary_says_what_it_did_and_what_it_did_it_to(tmp_path):

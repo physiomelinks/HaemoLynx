@@ -272,7 +272,7 @@ diameters_and_pericytes:
   pericyte_constriction_probability: 0.8
   # Draw the random pericyte cohort from this seed, so a run repeats; another seed constricts a different set of pericytes, and null draws a fresh cohort every run  [needs use_probabilistic_pericyte_constriction]
   pericyte_constriction_seed: 20240917
-  # Run the baseline-versus-constricted pericyte resistance comparison and write its CSV  [needs run_haemodynamics]
+  # Run the baseline-versus-constricted pericyte resistance comparison and write its CSV (CLI / config; not shown on the Diameters panel -- use Perturbations for pericyte tone)  [needs run_haemodynamics]
   run_pericyte_resistance_comparison: false
   # Use this constriction factor as the baseline arm of the pericyte comparison  [range 0.0..; needs run_pericyte_resistance_comparison]
   pericyte_comparison_baseline_value: 1.0
@@ -392,6 +392,26 @@ perturbation_runs:
   arteriole_dilation_max_percent: 30
   # Step the arteriole diameter sweep by this percentage  [percent; range 1..100]
   arteriole_dilation_step_percent: 1
+  # Start the passive capillary diameter sweep at this percentage change (whole capillary, not focal)  [percent; range -99..100]
+  capillary_dilation_min_percent: 0
+  # End the passive capillary diameter sweep at this percentage change  [percent; range -99..100]
+  capillary_dilation_max_percent: 30
+  # Step the passive capillary diameter sweep by this percentage  [percent; range 1..100]
+  capillary_dilation_step_percent: 1
+  # Fixed whole-network diameter scale for a pericyte spacing or length sweep (same factor as pericyte_dilation_*_percent: dilation_factor = 1 + percent/100); pressure stays at inlet_p_bc  [percent; range -99..100]
+  pericyte_geometry_dilation_percent: 0
+  # Start the pericyte spacing sweep at this inter-site distance  [um; range 0.0..]
+  constriction_spacing_min_um: 50.0
+  # End the pericyte spacing sweep at this inter-site distance  [um; range 0.0..]
+  constriction_spacing_max_um: 150.0
+  # Step the pericyte spacing sweep by this distance  [um; range 0.0..]
+  constriction_spacing_step_um: 50.0
+  # Start the pericyte length sweep at this constriction length  [um; range 0.0..]
+  constriction_length_min_um: 20.0
+  # End the pericyte length sweep at this constriction length  [um; range 0.0..]
+  constriction_length_max_um: 60.0
+  # Step the pericyte length sweep by this length  [um; range 0.0..]
+  constriction_length_step_um: 20.0
   # Start the inlet-pressure sweep at this pressure  [Pa; range 0..]
   inlet_pressure_min_pa: 4500
   # End the inlet-pressure sweep at this pressure  [Pa; range 0..]

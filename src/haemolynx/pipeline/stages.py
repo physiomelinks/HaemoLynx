@@ -49,6 +49,12 @@ from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
 )
+from haemolynx.haemodynamics.pericyte_geometry_sweep import (
+    run_pericyte_geometry_sweep,
+)
+from haemolynx.haemodynamics.capillary import (
+    run_capillary_dilation_pressure_sweep,
+)
 from haemolynx.haemodynamics.pericyte_sweep import (
     run_arteriole_dilation_pressure_sweep,
     run_pericyte_dilation_pressure_sweep,
@@ -998,7 +1004,8 @@ def _perturbation_copy(G: nx.MultiGraph) -> nx.MultiGraph:
     * `poiseuille.set_edge_resistance` -- `resistance`, `conductance`
     * `resistance.set_edge_flows` -- `pressure` on nodes; `pressure_u`,
       `pressure_v`, `pressure_drop`, `flow_signed`, `flow_abs` on edges
-    * `arteriole.scale_arteriole_diameters` and
+    * `arteriole.scale_arteriole_diameters`,
+      `capillary.scale_capillary_diameters` and
       `pericyte_sweep.dilate_graph_diameters` -- `fwhm_diameter_um`
     * `constriction.apply_constriction_sites` -- `pericyte_count_assigned`,
       and `pericyte_centers_um` rebound to a freshly built list
@@ -1246,6 +1253,56 @@ def _perturb_one(
         summary["sweep_points"] = len(sweep["results"])
         curves = plot_dilation_curves(sweep["results"], result.output_dir)
         result.outputs.extend(Path(path) for path in curves.values())
+    elif spec.type == "capillary_diameter_sweep":
+        sweep = run_capillary_dilation_pressure_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+            sweep_dilation=True,
+            sweep_pressure=False,
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
+        curves = plot_dilation_curves(sweep["results"], result.output_dir)
+        result.outputs.extend(Path(path) for path in curves.values())
+    elif spec.type == "pressure_and_capillary_sweep":
+        sweep = run_capillary_dilation_pressure_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+            sweep_dilation=True,
+            sweep_pressure=True,
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
+        curves = plot_dilation_curves(sweep["results"], result.output_dir)
+        result.outputs.extend(Path(path) for path in curves.values())
+    elif spec.type == "pericyte_spacing_sweep":
+        sweep = run_pericyte_geometry_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+            sweep_axis="spacing",
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
+    elif spec.type == "pericyte_length_sweep":
+        sweep = run_pericyte_geometry_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+            sweep_axis="length",
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
     elif spec.type == "pericyte_diameter_change":
         G, strategy, strategy_results = set_resistances_for_constriction_strategy(
             G,

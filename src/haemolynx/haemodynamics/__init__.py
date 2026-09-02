@@ -26,6 +26,11 @@ from .arteriole import (
     percent_change_to_scale,
     scale_arteriole_diameters,
 )
+from .capillary import (
+    is_capillary_branch_order,
+    run_capillary_dilation_pressure_sweep,
+    scale_capillary_diameters,
+)
 from .perturbations import (
     INCOMPARABLE_OVERRIDES,
     PERTURBATION_TYPES,
@@ -59,8 +64,11 @@ __all__ = [
     "apply_poiseuille_haemodynamics",
     "ARTERIOLE_PREFIX",
     "is_arteriole_branch_order",
+    "is_capillary_branch_order",
     "percent_change_to_scale",
     "scale_arteriole_diameters",
+    "scale_capillary_diameters",
+    "run_capillary_dilation_pressure_sweep",
     "INCOMPARABLE_OVERRIDES",
     "PERTURBATION_TYPES",
     "SETTINGS_FOR_TYPE",

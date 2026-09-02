@@ -376,6 +376,38 @@ def test_a_well_formed_pressure_and_arteriole_sweep_is_accepted():
     assert not report.errors
 
 
+def test_a_well_formed_capillary_diameter_sweep_is_accepted():
+    entry = {
+        "name": "cap_sweep",
+        "type": "capillary_diameter_sweep",
+        "overrides": {
+            "capillary_dilation_min_percent": 0,
+            "capillary_dilation_max_percent": 20,
+            "capillary_dilation_step_percent": 10,
+        },
+    }
+    (spec,) = perturbations_from_settings({"perturbations": [entry]})
+    assert spec.problems == ()
+    assert spec.schema_problems(SCHEMA) == ()
+    assert spec.unused_overrides() == ()
+    assert perturbation_problems({"perturbations": [entry]}, SCHEMA) == ()
+
+
+def test_a_well_formed_pressure_and_capillary_sweep_is_accepted():
+    entry = {
+        "name": "cap_and_p",
+        "type": "pressure_and_capillary_sweep",
+        "overrides": {
+            "capillary_dilation_min_percent": 0,
+            "capillary_dilation_max_percent": 10,
+            "inlet_pressure_min_pa": 4500,
+            "inlet_pressure_max_pa": 5000,
+        },
+    }
+    report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
+    assert not report.errors
+
+
 def test_a_dilation_sweep_with_an_unread_override_is_rejected():
     entry = {
         "name": "dilation_sweep",

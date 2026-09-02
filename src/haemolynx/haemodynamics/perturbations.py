@@ -43,7 +43,10 @@ __all__ = [
     "PERICYTE_CONSTRICTION_SETTINGS",
     "PERICYTE_ENTRY_GEOMETRY_SETTINGS",
     "PERICYTE_DILATION_SWEEP_SETTINGS",
+    "PERICYTE_SPACING_SWEEP_SETTINGS",
+    "PERICYTE_LENGTH_SWEEP_SETTINGS",
     "ARTERIOLE_DILATION_SWEEP_SETTINGS",
+    "CAPILLARY_DILATION_SWEEP_SETTINGS",
     "PRESSURE_SWEEP_SETTINGS",
     "SETTINGS_FOR_TYPE",
     "DEFAULT_PERTURBATION_DIRNAME",
@@ -67,6 +70,10 @@ PERTURBATION_TYPES: tuple[str, ...] = (
     "arteriole_diameter_change",
     "arteriole_diameter_sweep",
     "pressure_and_arteriole_sweep",
+    "capillary_diameter_sweep",
+    "pressure_and_capillary_sweep",
+    "pericyte_spacing_sweep",
+    "pericyte_length_sweep",
     "pericyte_diameter_change",
 )
 
@@ -109,11 +116,32 @@ PERICYTE_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
     "pericyte_dilation_step_percent",
 )
 
+#: Inter-pericyte spacing axis for a geometry sweep at fixed length and tone.
+PERICYTE_SPACING_SWEEP_SETTINGS: tuple[str, ...] = (
+    "constriction_spacing_min_um",
+    "constriction_spacing_max_um",
+    "constriction_spacing_step_um",
+)
+
+#: Constriction-length axis for a geometry sweep at fixed spacing and tone.
+PERICYTE_LENGTH_SWEEP_SETTINGS: tuple[str, ...] = (
+    "constriction_length_min_um",
+    "constriction_length_max_um",
+    "constriction_length_step_um",
+)
+
 #: Whole-branch diameter-percent axes for an arteriole dilation sweep.
 ARTERIOLE_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
     "arteriole_dilation_min_percent",
     "arteriole_dilation_max_percent",
     "arteriole_dilation_step_percent",
+)
+
+#: Whole-branch diameter-percent axes for a passive capillary dilation sweep.
+CAPILLARY_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
+    "capillary_dilation_min_percent",
+    "capillary_dilation_max_percent",
+    "capillary_dilation_step_percent",
 )
 
 #: Inlet-pressure axes for a pressure sweep.
@@ -143,6 +171,25 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     "pressure_and_arteriole_sweep": (
         *ARTERIOLE_DILATION_SWEEP_SETTINGS,
         *PRESSURE_SWEEP_SETTINGS,
+    ),
+    "capillary_diameter_sweep": CAPILLARY_DILATION_SWEEP_SETTINGS,
+    "pressure_and_capillary_sweep": (
+        *CAPILLARY_DILATION_SWEEP_SETTINGS,
+        *PRESSURE_SWEEP_SETTINGS,
+    ),
+    "pericyte_spacing_sweep": (
+        *PERICYTE_SPACING_SWEEP_SETTINGS,
+        "constriction_length_um",
+        "pericyte_geometry_dilation_percent",
+        "use_probabilistic_pericyte_constriction",
+        "pericyte_constriction_probability",
+    ),
+    "pericyte_length_sweep": (
+        *PERICYTE_LENGTH_SWEEP_SETTINGS,
+        "constriction_spacing_um",
+        "pericyte_geometry_dilation_percent",
+        "use_probabilistic_pericyte_constriction",
+        "pericyte_constriction_probability",
     ),
     "pericyte_diameter_change": PERICYTE_CONSTRICTION_SETTINGS,
 }

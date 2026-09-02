@@ -442,6 +442,7 @@ def test_the_perturbations_tab_shows_only_the_always_on_run_settings():
         "pericyte_dilation_min_percent",
         "arteriole_diameter_change_percent",
         "arteriole_dilation_min_percent",
+        "capillary_dilation_min_percent",
         "sweep_output_dir",
         "run_pericyte_resistance_comparison",
         "pericyte_comparison_baseline_value",

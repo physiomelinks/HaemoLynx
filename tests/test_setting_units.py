@@ -57,6 +57,12 @@ EXPECTED_UNITS = {
     # position runs over edge `length`: microns.
     "constriction_length_um": "um",
     "constriction_spacing_um": "um",
+    "constriction_spacing_min_um": "um",
+    "constriction_spacing_max_um": "um",
+    "constriction_spacing_step_um": "um",
+    "constriction_length_min_um": "um",
+    "constriction_length_max_um": "um",
+    "constriction_length_step_um": "um",
 }
 
 #: Names that look like a measurement but hold a dimensionless number. Listed
