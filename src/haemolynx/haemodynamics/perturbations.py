@@ -38,6 +38,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 __all__ = [
+    "INCOMPARABLE_OVERRIDES",
     "PERTURBATION_TYPES",
     "SETTINGS_FOR_TYPE",
     "DEFAULT_PERTURBATION_DIRNAME",
@@ -46,12 +47,13 @@ __all__ = [
     "perturbation_problems",
     "perturbations_from_settings",
     "perturbations_to_settings",
+    "is_usable_as_a_directory_name",
     "settings_for_perturbation_type",
     "visible_perturbation_settings",
 ]
 
-#: What a perturbation can be. ``none`` re-solves the baseline unchanged, which
-#: is how a run gets a comparison arm that shares every other setting.
+#: What a perturbation can be. ``none`` does nothing and produces nothing: it
+#: is the type an entry has before a user has chosen one.
 PERTURBATION_TYPES: tuple[str, ...] = (
     "none",
     "pressure_sweep",
@@ -86,6 +88,19 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     ),
 }
 
+#: Settings a perturbation may not override, because changing one of them
+#: makes its resistances incomparable with the baseline it is differenced
+#: against. The viscosity law, the diameter basis and the haematocrit each
+#: change *every* resistance in the network -- roughly doubling a capillary's
+#: between the two laws -- so a perturbation that moved one of them would
+#: report that change as its effect. A run picks one blood model for all of its
+#: arms; comparing two models means two runs.
+INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
+    "viscosity_law",
+    "diameter_basis",
+    "haematocrit",
+)
+
 #: Where perturbation output goes when `perturbation_output_dir` is unset: a
 #: directory beside the rest of the run's output rather than in among it,
 #: because there is one subdirectory per perturbation.
@@ -99,6 +114,19 @@ def settings_for_perturbation_type(perturbation_type: Any) -> tuple[str, ...]:
     shows no options rather than the previous type's.
     """
     return tuple(SETTINGS_FOR_TYPE.get(str(perturbation_type), ()))
+
+
+def is_usable_as_a_directory_name(name: str) -> bool:
+    """Whether *name* names one directory, and not a path to somewhere else.
+
+    A perturbation's output goes in a directory called after it, so a name
+    carrying a separator would write outside the run's output -- and ``..``
+    would write over the run's own files.
+    """
+    stripped = name.strip()
+    if not stripped or stripped in {".", ".."}:
+        return False
+    return not any(character in stripped for character in ("/", "\\", ":"))
 
 
 def visible_perturbation_settings(specs: Sequence["PerturbationSpec"]) -> set[str]:
@@ -170,6 +198,11 @@ class PerturbationSpec:
         if name is None or not str(name).strip():
             problems.append(f"{where} has no name")
             name = f"perturbation_{index + 1}"
+        elif not is_usable_as_a_directory_name(str(name)):
+            problems.append(
+                f"{where} name {str(name)!r} cannot be a directory name, and a "
+                "perturbation's name is the directory its output goes in"
+            )
 
         perturbation_type = entry.get("type")
         if perturbation_type is None:
@@ -208,9 +241,29 @@ class PerturbationSpec:
         }
 
     def unused_overrides(self) -> tuple[str, ...]:
-        """Override keys this type does not read, so nothing would apply them."""
+        """Override keys this type does not read, so nothing would apply them.
+
+        The refused keys are left out: they get an error of their own from
+        :meth:`incomparable_overrides` rather than a second, milder line saying
+        the same thing.
+        """
         reads = set(settings_for_perturbation_type(self.type))
-        return tuple(sorted(key for key in self.overrides if key not in reads))
+        return tuple(
+            sorted(
+                key
+                for key in self.overrides
+                if key not in reads and key not in INCOMPARABLE_OVERRIDES
+            )
+        )
+
+    def incomparable_overrides(self) -> tuple[str, ...]:
+        """Override keys that would make this perturbation's numbers a lie.
+
+        See :data:`INCOMPARABLE_OVERRIDES`. Refused rather than warned about:
+        the difference this perturbation reports is what a reader takes from
+        its CSV months later, and a log line does not travel with the file.
+        """
+        return tuple(sorted(key for key in self.overrides if key in INCOMPARABLE_OVERRIDES))
 
     def schema_problems(self, schema) -> tuple[str, ...]:
         """What only the schema can see: an unknown key, or a value it rejects.
@@ -252,6 +305,23 @@ class PerturbationSpec:
             except Exception:
                 continue
         return coerced
+
+    def applied_overrides(self, schema) -> dict[str, Any]:
+        """The overrides a run actually puts on top of its settings.
+
+        Only what this type reads: every perturbation re-solves the network, so
+        a settings dict carrying an unread override -- `inlet_p_bc` on an
+        arteriole dilation, say -- would change the answer while
+        :meth:`unused_overrides` reported it as having no effect. Filtering here
+        makes that report true, and keeps a perturbation to the one thing it
+        says it is.
+        """
+        reads = set(settings_for_perturbation_type(self.type))
+        return {
+            key: value
+            for key, value in self.coerced_overrides(schema).items()
+            if key in reads
+        }
 
 
 def perturbations_from_settings(values: Mapping[str, Any]) -> tuple[PerturbationSpec, ...]:
@@ -307,6 +377,15 @@ def perturbation_problems(values: Mapping[str, Any], schema) -> tuple[str, ...]:
     for index, spec in enumerate(specs):
         problems.extend(spec.problems)
         problems.extend(spec.schema_problems(schema))
+        refused = spec.incomparable_overrides()
+        if refused:
+            problems.append(
+                f"perturbation '{spec.name}' sets {list(refused)}, which a "
+                "perturbation may not change: it would move every resistance in "
+                "the network, so the difference against the baseline would not "
+                "be this perturbation's effect. Fix: set it for the whole run, "
+                "or make it a second run"
+            )
         first = seen.get(spec.name)
         if first is not None:
             problems.append(

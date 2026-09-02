@@ -129,9 +129,7 @@ STAGES: tuple[Stage, ...] = (
         tab="6. Haemodynamics",
     ),
     Stage(
-        # Nothing runs this yet: the settings are configurable and the panel
-        # shows them, but re-solving the network is not a stage of a run.
-        call=None,
+        call="run_perturbations",
         title="7. Perturbations",
         summary="What to re-solve the finished network for.",
         sections=("Perturbation runs",),

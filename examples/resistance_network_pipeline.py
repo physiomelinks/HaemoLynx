@@ -26,6 +26,7 @@ from haemolynx.pipeline import (
     build_network,
     default_schema,
     export_results,
+    run_perturbations,
     segment,
     skeletonise,
     solve,
@@ -85,6 +86,9 @@ def image_to_model_pipeline(settings: dict | None = None, **overrides):
     diameters = assign_diameters(settings, network, boundaries, SCHEMA)
     model = build_haemodynamic_model(settings, diameters)
     solution = solve(settings, model, boundaries)
+    # Nothing to bind: each perturbation writes its own output, and the run
+    # goes on to export the baseline it started every one of them from.
+    run_perturbations(settings, model, boundaries, SCHEMA)
     export_results(settings, network, model, solution)
 
     return model.graph

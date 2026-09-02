@@ -12,6 +12,7 @@ you intervene in the middle of a run.
     assign_diameters     graph -> branch orders and a diameter per edge
     build_haemodynamic_model  diameters -> resistance and conductance per edge
     solve                conductance -> pressures, flows, equivalent resistance
+    run_perturbations    the same baseline, re-solved once per perturbation
     export_results       VTK, statistics, distances and plots
 
 A run says where it has got to through :mod:`haemolynx.pipeline.progress`: pass
@@ -20,10 +21,12 @@ per topology step inside graph building.
 """
 from __future__ import annotations
 
+import csv
 import inspect
 import json
 import logging
 import pickle
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -38,7 +41,23 @@ from haemolynx.haemodynamics.apply import (
     HaemodynamicsApplyConfig,
     apply_poiseuille_haemodynamics,
 )
+from haemolynx.haemodynamics.constriction_strategy import (
+    set_resistances_for_constriction_strategy,
+)
+from haemolynx.haemodynamics.perturbations import (
+    PerturbationSpec,
+    perturbation_output_dir,
+    perturbation_problems,
+    perturbations_from_settings,
+)
+from haemolynx.haemodynamics.pericyte_sweep import (
+    run_pericyte_dilation_pressure_sweep,
+    solve_pressure_and_boundary_flow,
+)
+from haemolynx.haemodynamics.perturbations import plain as plain_values
+from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
+from haemolynx.visualization.dilation_curves import plot_dilation_curves
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 
@@ -115,6 +134,51 @@ class Solution:
     node_list: list[int] = field(default_factory=list)
     equivalent_resistance: float | None = None
     statistics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PerturbationResult:
+    """One perturbation: the network it produced, and where it wrote it.
+
+    *graph* is that perturbation's own copy of the baseline, carrying its
+    resistances, pressures and flows -- so the panel can draw it beside the
+    baseline rather than instead of it. A `none` perturbation, and one that
+    raised, have no graph and no output.
+    """
+
+    name: str
+    type: str
+    graph: nx.MultiGraph | None = None
+    output_dir: Path | None = None
+    #: Files this perturbation wrote, in the order it wrote them.
+    outputs: list[Path] = field(default_factory=list)
+    summary: dict[str, Any] = field(default_factory=dict)
+    #: What went wrong, if it did. One bad perturbation does not stop the rest.
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+@dataclass
+class PerturbationRun:
+    """What the perturbations stage did: one result per configured entry."""
+
+    #: The directory the per-perturbation directories are in, if any ran.
+    output_dir: Path | None = None
+    results: list[PerturbationResult] = field(default_factory=list)
+    #: The baseline every perturbation was differenced against.
+    baseline: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def solved(self) -> list[PerturbationResult]:
+        """Those that produced a network: not `none`, and not a failure."""
+        return [result for result in self.results if result.graph is not None]
+
+    @property
+    def failures(self) -> list[PerturbationResult]:
+        return [result for result in self.results if result.error is not None]
 
 
 def segment(settings: dict):
@@ -871,6 +935,352 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
     return solution
 
 
+#: Per-edge columns of a perturbation's `<name>_edges.csv`, in order.
+PERTURBATION_EDGE_COLUMNS = (
+    "u",
+    "v",
+    "key",
+    "branch_order",
+    "length_um",
+    "diameter_um",
+    "resistance",
+    "conductance",
+    "pressure_drop",
+    "flow_signed",
+    "baseline_resistance",
+    "resistance_ratio",
+)
+
+#: Columns of a perturbation's `<name>_summary.csv`, in order.
+PERTURBATION_SUMMARY_COLUMNS = (
+    "name",
+    "type",
+    "overrides",
+    "inlet_pressure_pa",
+    "outlet_pressure_pa",
+    "total_inlet_flow",
+    "total_outlet_flow",
+    "flow_balance_error",
+    "equivalent_resistance",
+    "baseline_equivalent_resistance",
+    "delta_vs_baseline",
+    "percent_change_vs_baseline",
+)
+
+
+def _poiseuille_model_for(settings: dict) -> PoiseuilleModel:
+    """The blood model a perturbation solves with: the run's, unchanged.
+
+    Read from *settings* rather than defaulted so that a perturbation and the
+    baseline it is compared with agree on the viscosity law -- which is also
+    why a perturbation may not override one (see `INCOMPARABLE_OVERRIDES`).
+    """
+    return PoiseuilleModel(
+        constriction_length=float(settings["constriction_length_um"]),
+        constriction_spacing=float(settings["constriction_spacing_um"]),
+        viscosity_law=settings["viscosity_law"],
+        haematocrit=float(settings["haematocrit"]),
+        diameter_basis=settings["diameter_basis"],
+    )
+
+
+def _solve_network(
+    G: nx.MultiGraph, settings: dict, boundaries: BoundaryNodes
+) -> dict[str, Any]:
+    """Pressures, boundary flows and equivalent resistance, on *G* as it is.
+
+    The full re-solve every perturbation gets: the pressures land on the nodes
+    and the flows on the edges, so the perturbed network can be drawn and
+    exported the same way the baseline is.
+    """
+    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+    solved = solve_pressure_and_boundary_flow(
+        conductance,
+        list(node_list),
+        inlet_p_bc=float(settings["inlet_p_bc"]),
+        outlet_p_bc=float(settings["outlet_p_bc"]),
+        inlet_nodes=list(boundaries.inlet_nodes),
+        outlet_nodes=list(boundaries.outlet_nodes),
+    )
+    haemodynamics.set_edge_flows(G, list(node_list), solved["pressure"])
+    return solved
+
+
+def _write_perturbation_csvs(
+    result: PerturbationResult,
+    *,
+    baseline_graph: nx.MultiGraph,
+    solved: dict[str, Any],
+    baseline: dict[str, Any],
+    settings: dict,
+    overrides: dict[str, Any],
+) -> None:
+    """One row of summary and one row per edge, for this perturbation alone.
+
+    Deliberately not `export_results`: a perturbation is a number to compare,
+    not a second published model, so it gets the two CSVs a comparison needs
+    and no VTK, statistics or plots.
+    """
+    output_dir = result.output_dir
+    assert output_dir is not None  # only called once a directory exists
+    equivalent = float(solved["equivalent_resistance"])
+    baseline_equivalent = float(baseline.get("equivalent_resistance", float("nan")))
+    delta = equivalent - baseline_equivalent
+    summary_path = output_dir / f"{result.name}_summary.csv"
+    with summary_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(PERTURBATION_SUMMARY_COLUMNS))
+        writer.writeheader()
+        writer.writerow(
+            {
+                "name": result.name,
+                "type": result.type,
+                "overrides": json.dumps(plain_values(overrides), sort_keys=True),
+                "inlet_pressure_pa": float(settings["inlet_p_bc"]),
+                "outlet_pressure_pa": float(settings["outlet_p_bc"]),
+                "total_inlet_flow": solved["total_inlet_flow"],
+                "total_outlet_flow": solved["total_outlet_flow"],
+                "flow_balance_error": (
+                    solved["total_inlet_flow"] + solved["total_outlet_flow"]
+                ),
+                "equivalent_resistance": equivalent,
+                "baseline_equivalent_resistance": baseline_equivalent,
+                "delta_vs_baseline": delta,
+                "percent_change_vs_baseline": (
+                    delta / baseline_equivalent * 100.0
+                    if baseline_equivalent
+                    else float("inf")
+                ),
+            }
+        )
+    result.outputs.append(summary_path)
+
+    edges_path = output_dir / f"{result.name}_edges.csv"
+    G = result.graph
+    assert G is not None
+    with edges_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(PERTURBATION_EDGE_COLUMNS))
+        writer.writeheader()
+        for u, v, key, data in G.edges(keys=True, data=True):
+            baseline_data = baseline_graph.get_edge_data(u, v, key) or {}
+            was = baseline_data.get("resistance")
+            now = data.get("resistance")
+            writer.writerow(
+                {
+                    "u": u,
+                    "v": v,
+                    "key": key,
+                    "branch_order": data.get("branch_order"),
+                    "length_um": data.get("length"),
+                    "diameter_um": data.get("fwhm_diameter_um"),
+                    "resistance": now,
+                    "conductance": data.get("conductance"),
+                    "pressure_drop": data.get("pressure_drop"),
+                    "flow_signed": data.get("flow_signed"),
+                    "baseline_resistance": was,
+                    "resistance_ratio": (
+                        float(now) / float(was) if was and now is not None else None
+                    ),
+                }
+            )
+    result.outputs.append(edges_path)
+
+
+def _perturb_one(
+    spec: PerturbationSpec,
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    schema: Schema,
+    root: Path,
+    baseline: dict[str, Any],
+) -> PerturbationResult:
+    """Run one perturbation from the baseline network, and write its output."""
+    result = PerturbationResult(name=spec.name, type=spec.type)
+    refused = spec.incomparable_overrides()
+    if refused:
+        raise ValueError(
+            f"perturbation '{spec.name}' overrides {list(refused)}. A "
+            "perturbation may not change the blood model: its resistances "
+            "would not be comparable with the baseline it is differenced "
+            "against. Set it for the whole run instead."
+        )
+    if spec.type == "none":
+        logger.info(
+            f"Perturbation '{spec.name}': type 'none', so nothing is re-solved "
+            "and nothing is written."
+        )
+        return result
+
+    overrides = spec.applied_overrides(schema)
+    perturbed = {**settings, **overrides}
+    result.output_dir = root / spec.name
+    result.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # A copy per perturbation, deep enough that nothing it does reaches the
+    # baseline or another perturbation: they answer independent questions of
+    # the same network, and the run's own graph is still exported afterwards.
+    # `G`, not `graph`, because `graph` is this module's imported subpackage.
+    G = deepcopy(model.graph)
+    diameter_table = perturbed["diameter_by_branch_order"]
+    prefer_measured = bool(perturbed["use_fwhm_edge_diameters"])
+    summary: dict[str, Any] = {"overrides": overrides}
+
+    if spec.type == "pressure_sweep":
+        sweep = run_pericyte_dilation_pressure_sweep(
+            G,
+            perturbed,
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            output_dir=result.output_dir,
+        )
+        result.outputs.append(Path(sweep["csv_path"]))
+        summary["sweep_points"] = len(sweep["results"])
+        curves = plot_dilation_curves(sweep["results"], result.output_dir)
+        result.outputs.extend(Path(path) for path in curves.values())
+    elif spec.type == "arteriole_diameter_change":
+        G, _table, scaling = haemodynamics.scale_arteriole_diameters(
+            G,
+            diameter_table,
+            float(perturbed["arteriole_diameter_scale"]),
+            model=_poiseuille_model_for(perturbed),
+            prefer_edge_fwhm_diameter=prefer_measured,
+        )
+        summary.update(scaling)
+    elif spec.type == "pericyte_diameter_change":
+        G, strategy, strategy_results = set_resistances_for_constriction_strategy(
+            G,
+            diameter_by_branch_order=diameter_table,
+            constriction_factor_by_branch_order=perturbed["constriction_by_branch_order"],
+            use_pericyte_mask_constriction=bool(perturbed["use_pericyte_mask_constriction"]),
+            use_probabilistic_constriction=bool(
+                perturbed["use_probabilistic_pericyte_constriction"]
+            ),
+            prefer_edge_fwhm_baseline=prefer_measured,
+            constriction_length=float(perturbed["constriction_length_um"]),
+            constriction_spacing=float(perturbed["constriction_spacing_um"]),
+            viscosity_law=perturbed["viscosity_law"],
+            haematocrit=float(perturbed["haematocrit"]),
+            diameter_basis=perturbed["diameter_basis"],
+            constriction_probability=(
+                1.0
+                if perturbed["pericyte_constriction_probability"] is None
+                else float(perturbed["pericyte_constriction_probability"])
+            ),
+            pericyte_mask_path=perturbed["pericyte_mask_path"],
+            pericyte_mask_h5_dataset_name=perturbed["pericyte_mask_h5_dataset_name"],
+            axis_order=perturbed["image_axis_order"],
+            seed=perturbed["pericyte_constriction_seed"],
+        )
+        summary["strategy"] = strategy
+        summary.update(strategy_results)
+    else:
+        # `perturbation_problems` reports an unknown type before a run starts;
+        # reaching here means a caller skipped the checks.
+        raise ValueError(
+            f"perturbation '{spec.name}' has unknown type {spec.type!r}."
+        )
+
+    solved = _solve_network(G, perturbed, boundaries)
+    result.graph = G
+    summary.update(
+        {
+            "equivalent_resistance": float(solved["equivalent_resistance"]),
+            "total_inlet_flow": float(solved["total_inlet_flow"]),
+            "total_outlet_flow": float(solved["total_outlet_flow"]),
+        }
+    )
+    result.summary = summary
+    _write_perturbation_csvs(
+        result,
+        baseline_graph=model.graph,
+        solved=solved,
+        baseline=baseline,
+        settings=perturbed,
+        overrides=overrides,
+    )
+    logger.info(
+        f"Perturbation '{spec.name}' ({spec.type}): equivalent resistance "
+        f"{summary['equivalent_resistance']:.6g} vs baseline "
+        f"{baseline.get('equivalent_resistance', float('nan')):.6g}; wrote "
+        f"{len(result.outputs)} file(s) to {result.output_dir}"
+    )
+    return result
+
+
+def run_perturbations(
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    schema: Schema,
+    progress: StageProgress | None = None,
+) -> PerturbationRun:
+    """Re-solve the finished network once per configured perturbation.
+
+    Every one starts from the same baseline and none of them touches it, so
+    they do not compose and the order they are listed in does not matter. The
+    run's own graph is untouched too: `export_results` still exports the
+    baseline afterwards.
+
+    A perturbation that raises is reported and the rest still run -- an hour of
+    graph building should not be lost to one bad entry in a list of five.
+    """
+    specs = perturbations_from_settings(settings)
+    if not settings["run_perturbations"]:
+        if specs:
+            logger.info(
+                f"{len(specs)} perturbation(s) configured but run_perturbations "
+                "is off; none will run."
+            )
+        return PerturbationRun()
+    if not specs:
+        logger.info("run_perturbations is on but no perturbations are configured.")
+        return PerturbationRun()
+    if not settings["run_haemodynamics"]:
+        logger.warning(
+            "run_perturbations is on but run_haemodynamics is off, so there are "
+            "no resistances to re-solve. Skipping every perturbation."
+        )
+        return PerturbationRun()
+
+    # Reported, not raised: `preflight` is where a bad entry stops a run, and
+    # it has already had its chance. Here, the entries that do work should.
+    for message in perturbation_problems(settings, schema):
+        logger.error(f"Perturbation configuration: {message}")
+
+    root = perturbation_output_dir(settings)
+    run = PerturbationRun(output_dir=root)
+    # On a copy, like every perturbation: `_solve_network` writes pressures and
+    # flows onto what it solves, and the number differenced against has to come
+    # from the same solver as the perturbations' -- but the run's own graph,
+    # which `export_results` is about to write out, must leave this stage
+    # exactly as it arrived.
+    run.baseline = _solve_network(deepcopy(model.graph), settings, boundaries)
+    logger.info(
+        f"Perturbations: {len(specs)} to run from a baseline equivalent "
+        f"resistance of {run.baseline['equivalent_resistance']:.6g}, into {root}"
+    )
+
+    for spec in specs:
+        if progress is not None:
+            progress.step(spec.name, total=len(specs))
+        try:
+            run.results.append(
+                _perturb_one(
+                    spec, settings, model, boundaries, schema, root, run.baseline
+                )
+            )
+        except Exception as error:
+            logger.exception(f"Perturbation '{spec.name}' failed: {error}")
+            run.results.append(
+                PerturbationResult(
+                    name=spec.name,
+                    type=spec.type,
+                    error=f"{type(error).__name__}: {error}",
+                )
+            )
+    return run
+
+
 def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicModel, solution: Solution):
     """Write VTK, statistics and distance measurements, and draw the plots."""
     G = model.graph
@@ -1166,6 +1576,13 @@ def run_pipeline_stages(
     with run.stage("solve"):
         solution = solve(settings, model, boundaries)
     _produced(on_stage_output, "solve", solution)
+    # After the baseline is solved, so each perturbation has a solved network to
+    # difference against, and before the export, which writes that baseline out.
+    with run.stage("run_perturbations") as perturbing:
+        perturbations = run_perturbations(
+            settings, model, boundaries, schema, progress=perturbing
+        )
+    _produced(on_stage_output, "run_perturbations", perturbations)
     with run.stage("export_results"):
         export_results(settings, network, model, solution)
     _produced(on_stage_output, "export_results", solution)

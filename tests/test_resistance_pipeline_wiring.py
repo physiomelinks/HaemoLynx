@@ -112,8 +112,15 @@ STAGES = [
     ("assign_diameters", "HaemodynamicModel"),
     ("build_haemodynamic_model", "HaemodynamicModel"),
     ("solve", "Solution"),
+    ("run_perturbations", "PerturbationRun"),
     ("export_results", "Solution"),
 ]
+
+#: How each stage's call reads in the example. The last two are called for what
+#: they write rather than for a value the script goes on to use.
+CALL_MARKERS = {name: f"= {name}(" for name, _ in STAGES}
+CALL_MARKERS["run_perturbations"] = "run_perturbations("
+CALL_MARKERS["export_results"] = "export_results("
 
 
 @pytest.mark.parametrize("stage_name,_returns", STAGES)
@@ -126,11 +133,25 @@ def test_every_stage_takes_the_settings_dict_first(stage_name, _returns):
 
 
 def test_the_example_calls_the_stages_in_order():
-    """The example is the eight stages, so a reader sees the shape of a run."""
+    """The example is the stages, in order, so a reader sees the shape of a run."""
     example = (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
-    positions = [example.index(f"= {name}(") for name, _ in STAGES[:-1]]
+    positions = [example.index(CALL_MARKERS[name]) for name, _ in STAGES]
     assert positions == sorted(positions), "stages are called out of order"
-    assert "export_results(" in example
+
+
+def test_the_example_perturbs_the_baseline_before_exporting_it():
+    """Order matters here: the export must write the baseline, not a perturbed copy.
+
+    `run_perturbations` comes after `solve`, so each perturbation has solved
+    pressures to difference against, and before `export_results`, which writes
+    out the one graph every perturbation was started from.
+    """
+    example = (REPO_ROOT / "examples" / "resistance_network_pipeline.py").read_text()
+    assert (
+        example.index("= solve(")
+        < example.index("run_perturbations(settings")
+        < example.index("export_results(settings")
+    )
 
 
 def test_the_constants_module_is_gone():

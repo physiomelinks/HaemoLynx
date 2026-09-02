@@ -35,7 +35,8 @@ def _stage_event(kind, name, **extra):
 
 
 def test_the_run_has_as_many_stages_as_the_pipeline_does():
-    assert TOTAL_STAGES == 8
+    """Nine since the perturbations became a stage rather than only a tab."""
+    assert TOTAL_STAGES == 9
 
 
 def test_nothing_is_shown_before_a_run_starts():
@@ -60,9 +61,9 @@ def test_a_stage_starting_leaves_the_bar_on_the_stages_already_done():
     display.update(_stage_event(STAGE_STARTED, "assign_diameters"))
 
     assert display.stages.value == 4
-    assert display.stages.total == 8
+    assert display.stages.total == TOTAL_STAGES
     assert "5. Diameters" in display.stages.text
-    assert "5/8" in display.stages.text
+    assert f"5/{TOTAL_STAGES}" in display.stages.text
 
 
 def test_a_stage_finishing_counts_it():
@@ -70,14 +71,14 @@ def test_a_stage_finishing_counts_it():
     display.update(_stage_event(STAGE_FINISHED, "assign_diameters"))
 
     assert display.stages.value == 5
-    assert "5/8" in display.stages.text
+    assert f"5/{TOTAL_STAGES}" in display.stages.text
 
 
 def test_the_last_stage_finishing_fills_the_bar():
     display = ProgressDisplay()
     display.update(_stage_event(STAGE_FINISHED, "export_results"))
 
-    assert display.stages.value == display.stages.total == 8
+    assert display.stages.value == display.stages.total == TOTAL_STAGES
 
 
 def test_the_whole_run_moves_the_bar_one_stage_at_a_time():
@@ -85,14 +86,14 @@ def test_the_whole_run_moves_the_bar_one_stage_at_a_time():
     display.start()
     seen = []
     # Only the stages a run performs: a panel-only tab reports nothing, so it
-    # is not one of the eight the bar counts through.
+    # would not be one of the stages the bar counts through.
     for stage in [stage for stage in STAGES if stage.call]:
         display.update(_stage_event(STAGE_STARTED, stage.call))
         seen.append(display.stages.value)
         display.update(_stage_event(STAGE_FINISHED, stage.call))
         seen.append(display.stages.value)
 
-    assert seen == [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8]
+    assert seen == [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9]
 
 
 # --- the bar within a stage --------------------------------------------------
@@ -187,4 +188,4 @@ def test_an_event_read_out_of_order_still_gives_the_right_reading():
     display.start()
     display.update(_stage_event(STAGE_FINISHED, "export_results"))
 
-    assert display.stages.value == 8
+    assert display.stages.value == TOTAL_STAGES

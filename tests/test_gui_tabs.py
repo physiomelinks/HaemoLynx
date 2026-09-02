@@ -187,6 +187,7 @@ def test_the_tabs_are_the_pipeline_stages_in_order():
         "assign_diameters",
         "build_haemodynamic_model",
         "solve",
+        "run_perturbations",
         "export_results",
     ]
     for name in calls:

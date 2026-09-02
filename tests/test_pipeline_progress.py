@@ -99,6 +99,7 @@ def test_the_stages_are_the_pipeline_functions_in_order():
         "assign_diameters",
         "build_haemodynamic_model",
         "solve",
+        "run_perturbations",
         "export_results",
     ]
     for name in STAGE_NAMES:
@@ -329,9 +330,10 @@ def test_log_progress_writes_one_line_per_stage_boundary(caplog):
         for event in events:
             log_progress(event)
 
+    total = len(STAGE_NAMES)
     assert [record.message for record in caplog.records] == [
-        "Stage 1/8: 1. Input",
-        "Stage 1/8 done: 1. Input",
+        f"Stage 1/{total}: 1. Input",
+        f"Stage 1/{total} done: 1. Input",
     ]
 
 
@@ -522,18 +524,37 @@ def test_the_sixth_stage_is_named_haemodynamics():
     assert haemodynamics.call == "build_haemodynamic_model"
 
 
-def test_the_perturbations_tab_is_not_a_stage_a_run_counts():
-    """It configures a re-solve nothing performs yet, so it has no `call`.
+def test_the_perturbations_tab_is_the_stage_that_runs_them():
+    """One entry owns the tab and does the work.
 
-    A panel-only entry must not enter the count a progress bar reads, or every
-    run would stop one stage short of full.
+    It was panel-only while the re-solve was not written, which meant the tab
+    a user configured and the stage a run performed could have disagreed. They
+    cannot now: the same entry is both.
     """
     perturbations = next(s for s in STAGES if s.title == "7. Perturbations")
 
-    assert perturbations.call is None
+    assert perturbations.call == "run_perturbations"
     assert perturbations.sections == ("Perturbation runs",)
-    assert RunProgress(None).total == 8
-    assert "7. Perturbations" not in [stage.title for stage in RunProgress(None).stages]
+    assert perturbations.tab is None, "it opens its own tab"
+    assert callable(getattr(stages, "run_perturbations"))
+    assert RunProgress(None).total == 9
+    assert "7. Perturbations" in [stage.title for stage in RunProgress(None).stages]
+
+
+def test_a_panel_only_stage_would_not_enter_the_count():
+    """The mechanism survives its first user: a `call`-less stage is not a stage.
+
+    Nothing in `STAGES` needs this today, but the panel can still show a tab
+    for something the pipeline does not run, and such an entry must stay out
+    of the count a progress bar reads or every run would stop short of full.
+    """
+    from haemolynx.pipeline.progress import Stage
+
+    shown_only = Stage(call=None, title="Notes", summary="Not a stage.")
+    progress = RunProgress(None, stages=(*STAGES, shown_only))
+
+    assert progress.total == 9
+    assert "Notes" not in [stage.title for stage in progress.stages]
 
 
 def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():

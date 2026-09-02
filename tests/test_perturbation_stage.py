@@ -1,0 +1,416 @@
+"""Running the perturbations: one baseline, N independent re-solves.
+
+The stage's whole promise is independence. Each perturbation answers a
+question about the finished network -- what if the arterioles dilate, what if
+the pericytes tighten -- and the answer is only meaningful if it was asked of
+the same network as every other, and if asking it did not edit the network the
+run goes on to export. Two perturbations that composed would report the second
+one's effect as the pair's, and nobody would see it happen.
+
+So what is pinned here is mostly what does *not* change: the baseline's
+resistances after the stage, and one perturbation's result with and without
+another beside it.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import networkx as nx
+import numpy as np
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from haemolynx.haemodynamics import PoiseuilleModel  # noqa: E402
+from haemolynx.pipeline import (  # noqa: E402
+    BoundaryNodes,
+    HaemodynamicModel,
+    PerturbationRun,
+    default_schema,
+    resolve_settings,
+    run_perturbations,
+)
+from haemolynx.pipeline.progress import STEP, ProgressEvent, RunProgress  # noqa: E402
+
+SCHEMA = default_schema()
+
+#: A capillary bed between an arteriole and a venule, long enough that the
+#: periodic constriction model has somewhere to put a pericyte.
+EDGE_LENGTH_UM = 400.0
+DIAMETERS = {"Art1": 20.0, "B01": 6.0, "Ven1": 20.0}
+BRANCH_ORDERS = ("Art1", "B01", "B01", "Ven1")
+
+
+def _network() -> nx.MultiGraph:
+    graph = nx.MultiGraph()
+    for node in range(len(BRANCH_ORDERS) + 1):
+        graph.add_node(node, pos=np.asarray([0.0, 0.0, node * EDGE_LENGTH_UM]))
+    for node, branch_order in enumerate(BRANCH_ORDERS):
+        graph.add_edge(
+            node,
+            node + 1,
+            key=0,
+            length=EDGE_LENGTH_UM,
+            branch_order=branch_order,
+            voxels=[
+                [0.0, 0.0, node * EDGE_LENGTH_UM],
+                [0.0, 0.0, (node + 1) * EDGE_LENGTH_UM],
+            ],
+        )
+    return graph
+
+
+def _model() -> HaemodynamicModel:
+    """The baseline: a solved network, as `build_haemodynamic_model` leaves it."""
+    graph, _results = PoiseuilleModel(
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        viscosity_law="constant",
+    ).set_poiseuille_resistances(_network(), DIAMETERS)
+    return HaemodynamicModel(graph=graph)
+
+
+def _boundaries() -> BoundaryNodes:
+    last = len(BRANCH_ORDERS)
+    return BoundaryNodes(
+        inlet_nodes=[0],
+        outlet_nodes=[last],
+        resistance_node_pair=(0, last),
+    )
+
+
+def _settings(tmp_path: Path, perturbations: list[dict], **extra) -> dict:
+    values = {setting.name: setting.default for setting in SCHEMA}
+    values.update(
+        {
+            "input_path": tmp_path / "input.tif",
+            "vtk_output_prefix": tmp_path / "out" / "run",
+            "plot_dir": tmp_path / "plots",
+            "run_haemodynamics": True,
+            "run_perturbations": True,
+            "perturbations": perturbations,
+            "diameter_by_branch_order": dict(DIAMETERS),
+            "constriction_by_branch_order": {order: 0.6 for order in DIAMETERS},
+            "use_fwhm_edge_diameters": False,
+            "viscosity_law": "constant",
+            # A four-point sweep: enough to draw a curve, quick enough to run
+            # in a unit test.
+            "pericyte_dilation_min_percent": 1,
+            "pericyte_dilation_max_percent": 2,
+            "pericyte_dilation_step_percent": 1,
+            "inlet_pressure_min_pa": 4500,
+            "inlet_pressure_max_pa": 5000,
+            "inlet_pressure_step_pa": 500,
+        }
+    )
+    values.update(extra)
+    return resolve_settings(values, schema=SCHEMA, config_path=None)
+
+
+def _run(tmp_path: Path, perturbations: list[dict], **extra) -> PerturbationRun:
+    return run_perturbations(
+        _settings(tmp_path, perturbations, **extra),
+        _model(),
+        _boundaries(),
+        SCHEMA,
+    )
+
+
+def _resistances(graph: nx.MultiGraph) -> dict[tuple, float]:
+    return {
+        (u, v, key): float(data["resistance"])
+        for u, v, key, data in graph.edges(keys=True, data=True)
+    }
+
+
+ARTERIOLE_DILATION = {
+    "name": "art_dilate_20",
+    "type": "arteriole_diameter_change",
+    "overrides": {"arteriole_diameter_scale": 1.2},
+}
+ARTERIOLE_CONSTRICTION = {
+    "name": "art_narrow_20",
+    "type": "arteriole_diameter_change",
+    "overrides": {"arteriole_diameter_scale": 0.8},
+}
+PERICYTE_TONE = {
+    "name": "pericytes_tighten",
+    "type": "pericyte_diameter_change",
+    "overrides": {
+        "do_pericyte_construction": True,
+        "constriction_by_branch_order": {"Art1": 1.0, "B01": 0.5, "Ven1": 1.0},
+    },
+}
+PRESSURE_SWEEP = {"name": "pressure", "type": "pressure_sweep", "overrides": {}}
+
+
+# --- nothing configured, nothing done ----------------------------------------
+
+
+def test_the_stage_does_nothing_when_it_is_switched_off(tmp_path):
+    run = _run(tmp_path, [ARTERIOLE_DILATION], run_perturbations=False)
+
+    assert run.results == []
+    assert run.output_dir is None
+    assert not (tmp_path / "out" / "perturbations").exists()
+
+
+def test_the_stage_does_nothing_without_haemodynamics(tmp_path):
+    """There are no resistances to re-solve, so there is nothing to perturb."""
+    run = _run(tmp_path, [ARTERIOLE_DILATION], run_haemodynamics=False)
+
+    assert run.results == []
+    assert not (tmp_path / "out" / "perturbations").exists()
+
+
+def test_a_none_perturbation_produces_nothing(tmp_path):
+    """It is the type an entry has before a user has chosen one."""
+    run = _run(tmp_path, [{"name": "placeholder", "type": "none", "overrides": {}}])
+
+    assert [result.name for result in run.results] == ["placeholder"]
+    result = run.results[0]
+    assert result.ok
+    assert result.graph is None
+    assert result.output_dir is None
+    assert result.outputs == []
+    assert not (tmp_path / "out" / "perturbations" / "placeholder").exists()
+
+
+# --- each type writes its own output -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP),
+    ids=lambda entry: entry["type"],
+)
+def test_each_type_writes_its_own_directory_and_files(tmp_path, entry):
+    run = _run(tmp_path, [entry])
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    assert result.output_dir == tmp_path / "out" / "perturbations" / entry["name"]
+    assert result.output_dir.is_dir()
+    written = sorted(path.name for path in result.output_dir.iterdir())
+    assert f"{entry['name']}_summary.csv" in written
+    assert f"{entry['name']}_edges.csv" in written
+    for path in result.outputs:
+        assert path.exists(), f"{path} was reported but not written"
+    # A perturbation is a number to compare, not a second published model.
+    assert not list(result.output_dir.glob("*.vtp"))
+
+
+def test_a_pressure_sweep_writes_its_curves_beside_its_csv(tmp_path):
+    run = _run(tmp_path, [PRESSURE_SWEEP])
+
+    written = {path.name for path in run.results[0].output_dir.iterdir()}
+    assert "pericyte_dilation_pressure_sweep.csv" in written
+    assert any(name.endswith(".png") for name in written), "no curves were drawn"
+
+
+def test_the_summary_says_what_it_did_and_what_it_did_it_to(tmp_path):
+    run = _run(tmp_path, [ARTERIOLE_DILATION])
+
+    summary = (
+        run.results[0].output_dir / "art_dilate_20_summary.csv"
+    ).read_text(encoding="utf-8")
+    header, row = summary.splitlines()[:2]
+    assert "baseline_equivalent_resistance" in header
+    assert "delta_vs_baseline" in header
+    assert "art_dilate_20" in row
+    assert "arteriole_diameter_scale" in row, "the overrides are not recorded"
+
+
+def test_wider_arterioles_lower_the_networks_resistance(tmp_path):
+    """The stage has to move the number it reports, not just write a file."""
+    run = _run(tmp_path, [ARTERIOLE_DILATION, ARTERIOLE_CONSTRICTION])
+
+    dilated, narrowed = run.results
+    baseline = run.baseline["equivalent_resistance"]
+    assert dilated.summary["equivalent_resistance"] < baseline
+    assert narrowed.summary["equivalent_resistance"] > baseline
+
+
+# --- independence ------------------------------------------------------------
+
+
+def test_the_baseline_graph_is_unchanged_by_the_stage(tmp_path):
+    """The guarantee everything else rests on.
+
+    `export_results` runs after this stage and writes out the run's own graph;
+    a perturbation that edited it in place would publish a perturbed network
+    under the baseline's name.
+    """
+    model = _model()
+    before = _resistances(model.graph)
+    edges_before = frozenset(model.graph.edges(keys=True))
+
+    run_perturbations(
+        _settings(tmp_path, [ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP]),
+        model,
+        _boundaries(),
+        SCHEMA,
+    )
+
+    assert _resistances(model.graph) == before
+    assert frozenset(model.graph.edges(keys=True)) == edges_before
+
+
+def test_a_perturbation_gets_its_own_graph_not_the_baselines(tmp_path):
+    model = _model()
+    run = run_perturbations(
+        _settings(tmp_path, [ARTERIOLE_DILATION]), model, _boundaries(), SCHEMA
+    )
+
+    perturbed = run.results[0].graph
+    assert perturbed is not model.graph
+    changed = {
+        edge
+        for edge, resistance in _resistances(perturbed).items()
+        if resistance != _resistances(model.graph)[edge]
+    }
+    assert changed, "the perturbation changed nothing"
+    assert all(
+        perturbed.edges[edge]["branch_order"].startswith("Art") for edge in changed
+    ), "an arteriole dilation moved a capillary"
+
+
+def test_two_perturbations_do_not_compose(tmp_path):
+    """Each runs from the baseline, so the list order cannot change an answer."""
+    alone = _run(tmp_path / "alone", [PERICYTE_TONE])
+    together = _run(tmp_path / "together", [ARTERIOLE_DILATION, PERICYTE_TONE])
+
+    solo = alone.results[0]
+    beside_another = next(
+        result for result in together.results if result.name == PERICYTE_TONE["name"]
+    )
+    assert _resistances(beside_another.graph) == _resistances(solo.graph)
+    assert beside_another.summary["equivalent_resistance"] == pytest.approx(
+        solo.summary["equivalent_resistance"]
+    )
+
+
+def test_the_order_they_are_listed_in_does_not_matter(tmp_path):
+    forwards = _run(tmp_path / "forwards", [ARTERIOLE_DILATION, PERICYTE_TONE])
+    backwards = _run(tmp_path / "backwards", [PERICYTE_TONE, ARTERIOLE_DILATION])
+
+    by_name = {result.name: result for result in backwards.results}
+    for result in forwards.results:
+        assert _resistances(result.graph) == _resistances(by_name[result.name].graph)
+
+
+# --- one bad entry does not lose the run -------------------------------------
+
+
+def test_a_failing_perturbation_is_reported_and_the_others_still_run(tmp_path):
+    """An hour of graph building must not be lost to one bad entry."""
+    broken = {
+        "name": "broken",
+        "type": "pericyte_diameter_change",
+        # Asking for the mask strategy without a mask: it raises when it runs.
+        "overrides": {
+            "do_pericyte_construction": True,
+            "use_pericyte_mask_constriction": True,
+        },
+    }
+    run = _run(tmp_path, [broken, ARTERIOLE_DILATION])
+
+    failed, succeeded = run.results
+    assert failed.name == "broken"
+    assert not failed.ok
+    assert "pericyte_mask_path" in failed.error
+    assert failed.graph is None
+    assert succeeded.ok and succeeded.graph is not None
+    assert [result.name for result in run.failures] == ["broken"]
+    assert [result.name for result in run.solved] == ["art_dilate_20"]
+
+
+# --- the blood model a perturbation may not change ---------------------------
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    (
+        ("viscosity_law", "pries"),
+        ("diameter_basis", "anatomical"),
+        ("haematocrit", 0.3),
+    ),
+)
+def test_a_perturbation_may_not_change_the_blood_model(tmp_path, name, value):
+    """Its resistances would not be comparable with the baseline's.
+
+    Switching the viscosity law roughly doubles a capillary's resistance, so a
+    perturbation that changed one would report that as its own effect. Refused
+    rather than warned about: the CSV outlives the log.
+    """
+    run = _run(
+        tmp_path,
+        [
+            {
+                "name": "sneaky",
+                "type": "arteriole_diameter_change",
+                "overrides": {"arteriole_diameter_scale": 1.2, name: value},
+            },
+            ARTERIOLE_DILATION,
+        ],
+    )
+
+    refused, allowed = run.results
+    assert not refused.ok
+    assert name in refused.error
+    assert refused.output_dir is None or not list(refused.output_dir.iterdir())
+    assert allowed.ok, "the refusal stopped the entries that were fine"
+
+
+def test_an_override_a_type_does_not_read_is_not_applied(tmp_path):
+    """`unused_overrides` calls it unread; the run has to agree.
+
+    Every perturbation re-solves, so an `inlet_p_bc` riding along in the
+    settings would change the answer while the checks reported it as having no
+    effect.
+    """
+    plain = _run(tmp_path / "plain", [ARTERIOLE_DILATION])
+    with_extra = _run(
+        tmp_path / "extra",
+        [
+            {
+                **ARTERIOLE_DILATION,
+                "overrides": {**ARTERIOLE_DILATION["overrides"], "inlet_p_bc": 9000.0},
+            }
+        ],
+    )
+
+    assert with_extra.results[0].summary["equivalent_resistance"] == pytest.approx(
+        plain.results[0].summary["equivalent_resistance"]
+    )
+
+
+# --- progress ----------------------------------------------------------------
+
+
+def test_one_step_is_reported_per_entry(tmp_path):
+    events: list[ProgressEvent] = []
+    run = RunProgress(events.append)
+
+    with run.stage("run_perturbations") as reporter:
+        run_perturbations(
+            _settings(tmp_path, [ARTERIOLE_DILATION, PERICYTE_TONE, PRESSURE_SWEEP]),
+            _model(),
+            _boundaries(),
+            SCHEMA,
+            progress=reporter,
+        )
+
+    steps = [event for event in events if event.kind == STEP]
+    assert [event.step for event in steps] == [
+        "art_dilate_20",
+        "pericytes_tighten",
+        "pressure",
+    ]
+    assert [event.step_index for event in steps] == [0, 1, 2]
+    assert {event.step_total for event in steps} == {3}
+    assert {event.stage for event in steps} == {"run_perturbations"}

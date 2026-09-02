@@ -24,7 +24,8 @@ from haemolynx.gui._widget import (  # noqa: E402
     DISPLAY_SETTINGS_OFF_IN_NAPARI,
     settings_widget,
 )
-from haemolynx.gui.tabs import STAGES  # noqa: E402
+from haemolynx.gui.progress import TOTAL_STAGES  # noqa: E402
+from haemolynx.gui.tabs import tab_titles  # noqa: E402
 from haemolynx.pipeline import default_schema  # noqa: E402
 from haemolynx.pipeline.progress import (  # noqa: E402
     STAGE_FINISHED,
@@ -73,16 +74,16 @@ def test_the_panel_builds_with_no_viewer():
     assert settings_widget(napari_viewer=None) is not None
 
 
-def test_there_is_one_tab_per_stage(panel):
+def test_there_is_one_tab_per_stage_that_opens_one(panel):
+    """Not one per stage: `solve` shows its rows on the haemodynamics tab."""
     from qtpy.QtWidgets import QTabWidget
 
     widget, _viewer = panel
     tab_widget = widget.findChild(QTabWidget)
     assert tab_widget is not None
-    assert tab_widget.count() == len(STAGES)
-    assert [tab_widget.tabText(i) for i in range(tab_widget.count())] == [
-        stage.title for stage in STAGES
-    ]
+    assert [tab_widget.tabText(i) for i in range(tab_widget.count())] == list(
+        tab_titles()
+    )
 
 
 def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
@@ -237,7 +238,7 @@ def test_starting_a_run_shows_an_empty_stage_bar(panel):
 
     assert not bars.stage_bar.isHidden()
     assert bars.stage_bar.value() == 0
-    assert bars.stage_bar.maximum() == len(STAGES)
+    assert bars.stage_bar.maximum() == TOTAL_STAGES
 
 
 def test_a_finished_stage_moves_the_stage_bar(panel):
@@ -251,12 +252,12 @@ def test_a_finished_stage_moves_the_stage_bar(panel):
             stage="build_network",
             title="3. Graph",
             index=2,
-            total=len(STAGES),
+            total=TOTAL_STAGES,
         )
     )
 
     assert bars.stage_bar.value() == 3
-    assert bars.stage_bar.maximum() == len(STAGES)
+    assert bars.stage_bar.maximum() == TOTAL_STAGES
 
 
 def test_a_graph_build_step_moves_the_second_bar(panel):
@@ -271,7 +272,7 @@ def test_a_graph_build_step_moves_the_second_bar(panel):
             stage="build_network",
             title="3. Graph",
             index=2,
-            total=len(STAGES),
+            total=TOTAL_STAGES,
             step="collapse_node_clusters",
             step_index=4,
             step_total=11,
@@ -293,13 +294,13 @@ def test_a_finished_run_fills_the_stage_bar_and_drops_the_step_bar(panel):
             stage="build_network",
             title="3. Graph",
             index=2,
-            total=len(STAGES),
+            total=TOTAL_STAGES,
         )
     )
 
     bars.finish()
 
-    assert bars.stage_bar.value() == bars.stage_bar.maximum() == len(STAGES)
+    assert bars.stage_bar.value() == bars.stage_bar.maximum() == TOTAL_STAGES
     assert bars.step_bar.isHidden()
 
 
@@ -314,7 +315,7 @@ def test_a_failed_run_leaves_the_bar_where_it_stopped(panel):
             stage="skeletonise",
             title="2. Skeletonise",
             index=1,
-            total=len(STAGES),
+            total=TOTAL_STAGES,
         )
     )
 
@@ -329,7 +330,7 @@ def test_a_failed_run_leaves_the_bar_where_it_stopped(panel):
 
 @pytest.mark.slow
 def test_the_panel_runs_the_pipeline_on_the_open_layer(make_napari_viewer, tmp_path):
-    """The whole path: layer -> settings -> eight stages -> a graph."""
+    """The whole path: layer -> settings -> every stage -> a graph."""
     from haemolynx.pipeline import resolve_settings, run_pipeline_stages
 
     viewer = make_napari_viewer()

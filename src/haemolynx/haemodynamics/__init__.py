@@ -26,9 +26,11 @@ from .arteriole import (
     scale_arteriole_diameters,
 )
 from .perturbations import (
+    INCOMPARABLE_OVERRIDES,
     PERTURBATION_TYPES,
     SETTINGS_FOR_TYPE,
     PerturbationSpec,
+    is_usable_as_a_directory_name,
     perturbation_output_dir,
     perturbation_problems,
     perturbations_from_settings,
@@ -57,9 +59,11 @@ __all__ = [
     "ARTERIOLE_PREFIX",
     "is_arteriole_branch_order",
     "scale_arteriole_diameters",
+    "INCOMPARABLE_OVERRIDES",
     "PERTURBATION_TYPES",
     "SETTINGS_FOR_TYPE",
     "PerturbationSpec",
+    "is_usable_as_a_directory_name",
     "perturbation_output_dir",
     "perturbation_problems",
     "perturbations_from_settings",

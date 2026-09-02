@@ -22,9 +22,11 @@ if str(SRC_DIR) not in sys.path:
 yaml = pytest.importorskip("yaml")
 
 from haemolynx.haemodynamics.perturbations import (  # noqa: E402
+    INCOMPARABLE_OVERRIDES,
     PERTURBATION_TYPES,
     SETTINGS_FOR_TYPE,
     PerturbationSpec,
+    is_usable_as_a_directory_name,
     perturbation_output_dir,
     perturbation_problems,
     perturbations_from_settings,
@@ -260,6 +262,69 @@ def test_an_override_the_type_does_not_read_is_reported_as_unused():
     assert spec.schema_problems(SCHEMA) == (), "it is a real setting, just unread"
 
 
+def test_only_what_the_type_reads_is_applied():
+    """What makes `unused_overrides` true rather than merely well-meant.
+
+    Every perturbation re-solves the network, so an unread override left in the
+    settings dict -- a boundary pressure, say -- would change the answer while
+    being reported as having no effect.
+    """
+    (spec,) = perturbations_from_settings(
+        {
+            "perturbations": [
+                {"name": "a", "type": "arteriole_diameter_change",
+                 "overrides": {"arteriole_diameter_scale": 1.2, "inlet_p_bc": 3000.0}}
+            ]
+        }
+    )
+
+    assert spec.applied_overrides(SCHEMA) == {"arteriole_diameter_scale": 1.2}
+    assert "inlet_p_bc" in spec.coerced_overrides(SCHEMA), "still read back for the report"
+
+
+@pytest.mark.parametrize("name", INCOMPARABLE_OVERRIDES)
+def test_the_blood_model_cannot_be_perturbed(name):
+    """A law that changes every resistance cannot be one arm's difference."""
+    (spec,) = perturbations_from_settings(
+        {
+            "perturbations": [
+                {"name": "a", "type": "arteriole_diameter_change",
+                 "overrides": {"arteriole_diameter_scale": 1.2, name: "pries"}}
+            ]
+        }
+    )
+
+    assert spec.incomparable_overrides() == (name,)
+    # Reported once, as the refusal: not a second, milder line calling it unread.
+    assert spec.unused_overrides() == ()
+    assert any("may not change" in problem for problem in perturbation_problems(
+        {"perturbations": [
+            {"name": "a", "type": "arteriole_diameter_change",
+             "overrides": {name: "pries"}}
+        ]},
+        SCHEMA,
+    ))
+
+
+@pytest.mark.parametrize("name", ("../elsewhere", "sub/dir", r"back\slash", ".."))
+def test_a_name_that_is_a_path_is_a_problem(name):
+    """A perturbation's name is the directory its output goes in."""
+    (spec,) = perturbations_from_settings(
+        {"perturbations": [{"name": name, "type": "none"}]}
+    )
+
+    assert any("directory name" in problem for problem in spec.problems), spec.problems
+
+
+def test_an_ordinary_name_is_left_alone():
+    (spec,) = perturbations_from_settings(
+        {"perturbations": [{"name": "art_dilate_20", "type": "none"}]}
+    )
+
+    assert spec.problems == ()
+    assert is_usable_as_a_directory_name("art_dilate_20")
+
+
 # --- the pre-run checks ------------------------------------------------------
 
 
@@ -414,8 +479,10 @@ def test_the_perturbation_names_are_reachable_from_the_subpackage():
     import haemolynx.haemodynamics as haemodynamics
 
     for name in (
+        "INCOMPARABLE_OVERRIDES",
         "PERTURBATION_TYPES",
         "PerturbationSpec",
+        "is_usable_as_a_directory_name",
         "perturbations_from_settings",
         "perturbations_to_settings",
         "perturbation_problems",
