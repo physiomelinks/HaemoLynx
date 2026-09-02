@@ -978,7 +978,10 @@ SCHEMA = Schema(
             name="constriction_length_um",
             kind="float",
             default=40.0,
-            help="Hold each pericyte constriction over this much of the vessel",
+            help=(
+                "Axial length of each focal pericyte constriction/dilation "
+                "site along the vessel centreline"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
@@ -987,7 +990,10 @@ SCHEMA = Schema(
             name="constriction_spacing_um",
             kind="float",
             default=100.0,
-            help="Place regularly spaced constrictions this far apart along a vessel",
+            help=(
+                "Centre-to-centre distance between regularly spaced pericyte "
+                "sites when not placing from a mask"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
@@ -996,7 +1002,10 @@ SCHEMA = Schema(
             name="use_pericyte_mask_constriction",
             kind="bool",
             default=False,
-            help="Place constrictions at pericyte centroids taken from a mask rather than at regular spacing",
+            help=(
+                "Place focal constrictions/dilations at pericyte centroids "
+                "from a mask instead of at regular spacing along vessels"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
         ),
@@ -1004,7 +1013,11 @@ SCHEMA = Schema(
             name="pericyte_mask_path",
             kind="path",
             default=None,
-            help="Read pericyte locations from this mask",
+            help=(
+                "Read pericyte centroids from this binary or labelled mask "
+                "when mask-based placement is on; leave unset to keep the "
+                "path from the Diameters tab"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("use_pericyte_mask_constriction",),
             must_exist=True,
@@ -1013,7 +1026,10 @@ SCHEMA = Schema(
             name="pericyte_mask_h5_dataset_name",
             kind="str",
             default=None,
-            help="Read this dataset from the pericyte mask when it is an H5 file",
+            help=(
+                "H5 dataset name inside the pericyte mask file; ignored for "
+                "TIFF masks"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("use_pericyte_mask_constriction",),
         ),
@@ -1021,7 +1037,10 @@ SCHEMA = Schema(
             name="pericyte_max_assignment_distance_um",
             kind="float",
             default=3.0,
-            help="Assign a pericyte centroid to a vessel edge only within this distance",
+            help=(
+                "Assign a pericyte centroid to the nearest vessel edge only "
+                "when they lie within this distance"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
@@ -1031,7 +1050,10 @@ SCHEMA = Schema(
             name="pericyte_min_diameter_um",
             kind="float",
             default=5.0,
-            help="Treat mask components below this diameter as too small to be a pericyte",
+            help=(
+                "Ignore mask components smaller than this equivalent diameter "
+                "as too small to be a pericyte"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
@@ -1041,7 +1063,10 @@ SCHEMA = Schema(
             name="pericyte_max_diameter_um",
             kind="float",
             default=12.0,
-            help="Treat mask components above this diameter as too large to be a pericyte",
+            help=(
+                "Ignore mask components larger than this equivalent diameter "
+                "as too large to be a pericyte"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=0.0,
             unit="um",
@@ -1051,7 +1076,10 @@ SCHEMA = Schema(
             name="use_probabilistic_pericyte_constriction",
             kind="bool",
             default=False,
-            help="Activate each candidate pericyte constriction at random rather than activating all of them",
+            help=(
+                "Activate each candidate pericyte site at random rather than "
+                "constricting/dilating every candidate"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
         ),
@@ -1059,7 +1087,10 @@ SCHEMA = Schema(
             name="pericyte_constriction_probability",
             kind="float",
             default=0.8,
-            help="Activate each candidate pericyte constriction with this probability",
+            help=(
+                "Fraction of candidate pericyte sites that activate when "
+                "probabilistic selection is on (0 = none, 1 = all)"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             unit="fraction",
             minimum=0.0,
@@ -1612,7 +1643,10 @@ SCHEMA = Schema(
             name="pericyte_dilation_step_percent",
             kind="int",
             default=1,
-            help="Step the pericyte constriction/dilation sweep by this percentage",
+            help=(
+                "Step size along the pericyte constriction/dilation percent "
+                "axis (positive step; percent itself may be negative)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=1,
@@ -1639,7 +1673,8 @@ SCHEMA = Schema(
             default=0,
             help=(
                 "Start the arteriole constriction/dilation sweep at this "
-                "percentage change (negative = constriction)"
+                "percentage change (negative = constriction, positive = "
+                "dilation; whole-branch scale = 1 + percent/100)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -1652,7 +1687,8 @@ SCHEMA = Schema(
             default=30,
             help=(
                 "End the arteriole constriction/dilation sweep at this "
-                "percentage change (positive = dilation)"
+                "percentage change (negative = constriction, positive = "
+                "dilation)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -1663,7 +1699,10 @@ SCHEMA = Schema(
             name="arteriole_dilation_step_percent",
             kind="int",
             default=1,
-            help="Step the arteriole constriction/dilation sweep by this percentage",
+            help=(
+                "Step size along the arteriole constriction/dilation percent "
+                "axis (positive step; percent itself may be negative)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="percent",
             minimum=1,
@@ -1676,7 +1715,8 @@ SCHEMA = Schema(
             help=(
                 "Start the passive capillary constriction/dilation sweep at "
                 "this percentage change (whole capillary, not focal; "
-                "negative = constriction)"
+                "negative = constriction, positive = dilation; scale = 1 + "
+                "percent/100)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -1689,7 +1729,8 @@ SCHEMA = Schema(
             default=30,
             help=(
                 "End the passive capillary constriction/dilation sweep at "
-                "this percentage change (positive = dilation)"
+                "this percentage change (whole capillary, not focal; "
+                "negative = constriction, positive = dilation)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -1701,8 +1742,8 @@ SCHEMA = Schema(
             kind="int",
             default=1,
             help=(
-                "Step the passive capillary constriction/dilation sweep by "
-                "this percentage"
+                "Step size along the capillary constriction/dilation percent "
+                "axis (positive step; percent itself may be negative)"
             ),
             section=_PERTURBATION_RUNS,
             unit="percent",
@@ -1728,7 +1769,10 @@ SCHEMA = Schema(
             name="constriction_spacing_min_um",
             kind="float",
             default=50.0,
-            help="Start the pericyte spacing sweep at this inter-site distance",
+            help=(
+                "Start the pericyte spacing sweep at this centre-to-centre "
+                "inter-site distance"
+            ),
             section=_PERTURBATION_RUNS,
             unit="um",
             minimum=0.0,
@@ -1737,7 +1781,10 @@ SCHEMA = Schema(
             name="constriction_spacing_max_um",
             kind="float",
             default=150.0,
-            help="End the pericyte spacing sweep at this inter-site distance",
+            help=(
+                "End the pericyte spacing sweep at this centre-to-centre "
+                "inter-site distance"
+            ),
             section=_PERTURBATION_RUNS,
             unit="um",
             minimum=0.0,
@@ -1746,7 +1793,10 @@ SCHEMA = Schema(
             name="constriction_spacing_step_um",
             kind="float",
             default=50.0,
-            help="Step the pericyte spacing sweep by this distance",
+            help=(
+                "Step size along the pericyte spacing sweep (centre-to-centre "
+                "distance between sites)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="um",
             minimum=0.0,
@@ -1755,7 +1805,10 @@ SCHEMA = Schema(
             name="constriction_length_min_um",
             kind="float",
             default=20.0,
-            help="Start the pericyte length sweep at this constriction length",
+            help=(
+                "Start the pericyte length sweep at this axial constriction/"
+                "dilation site length"
+            ),
             section=_PERTURBATION_RUNS,
             unit="um",
             minimum=0.0,
@@ -1764,7 +1817,10 @@ SCHEMA = Schema(
             name="constriction_length_max_um",
             kind="float",
             default=60.0,
-            help="End the pericyte length sweep at this constriction length",
+            help=(
+                "End the pericyte length sweep at this axial constriction/"
+                "dilation site length"
+            ),
             section=_PERTURBATION_RUNS,
             unit="um",
             minimum=0.0,
@@ -1773,7 +1829,10 @@ SCHEMA = Schema(
             name="constriction_length_step_um",
             kind="float",
             default=20.0,
-            help="Step the pericyte length sweep by this length",
+            help=(
+                "Step size along the pericyte length sweep (axial site length "
+                "along the centreline)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="um",
             minimum=0.0,
@@ -1782,7 +1841,10 @@ SCHEMA = Schema(
             name="inlet_pressure_min_pa",
             kind="int",
             default=4500,
-            help="Start the inlet-pressure sweep at this pressure",
+            help=(
+                "Start the inlet-pressure sweep at this absolute inlet "
+                "boundary pressure"
+            ),
             section=_PERTURBATION_RUNS,
             unit="Pa",
             minimum=0,
@@ -1791,7 +1853,10 @@ SCHEMA = Schema(
             name="inlet_pressure_max_pa",
             kind="int",
             default=6000,
-            help="End the inlet-pressure sweep at this pressure",
+            help=(
+                "End the inlet-pressure sweep at this absolute inlet "
+                "boundary pressure"
+            ),
             section=_PERTURBATION_RUNS,
             unit="Pa",
             minimum=0,
@@ -1800,7 +1865,10 @@ SCHEMA = Schema(
             name="inlet_pressure_step_pa",
             kind="int",
             default=500,
-            help="Step the inlet-pressure sweep by this much",
+            help=(
+                "Step size along the inlet-pressure sweep (absolute inlet "
+                "boundary pressure)"
+            ),
             section=_PERTURBATION_RUNS,
             unit="Pa",
             minimum=1,

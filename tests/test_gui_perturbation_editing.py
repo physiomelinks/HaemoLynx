@@ -35,11 +35,15 @@ if str(SRC_DIR) not in sys.path:
 yaml = pytest.importorskip("yaml")
 
 from haemolynx.gui.perturbation_editing import (  # noqa: E402
+    ADD_TOOLTIP,
     ALWAYS_VISIBLE_TAB_SETTINGS,
     EDITOR_SETTINGS,
+    NAME_TOOLTIP,
     PERTURBATION_TYPES,
     PERTURBATION_TYPE_DISPLAY_NAMES,
+    REMOVE_TOOLTIP,
     SETTING_DISPLAY_LABELS,
+    TYPE_TOOLTIP,
     UNCHOSEN,
     add_entry,
     default_name,
@@ -59,6 +63,7 @@ from haemolynx.gui.perturbation_editing import (  # noqa: E402
     to_settings,
     visible_tab_settings,
 )
+from haemolynx.gui.form import field_for  # noqa: E402
 from haemolynx.haemodynamics.perturbations import SETTINGS_FOR_TYPE  # noqa: E402
 from haemolynx.pipeline import default_schema  # noqa: E402
 
@@ -108,6 +113,32 @@ def test_every_editor_is_a_declared_setting():
     """An editor for a setting no schema declares could not be built at all."""
     for name in EDITOR_SETTINGS:
         assert name in SCHEMA, f"{name} is revealed by a type but not declared"
+
+
+def test_every_perturbation_setting_has_descriptive_help():
+    """Schema help is the GUI tooltip (plus unit) for every SETTINGS_FOR_TYPE row."""
+    for name in EDITOR_SETTINGS:
+        setting = SCHEMA[name]
+        help_text = setting.help.strip()
+        assert help_text, f"{name} has empty help"
+        assert not help_text.endswith("."), (
+            f"{name} help should read as a label, without a full stop"
+        )
+        field = field_for(setting)
+        assert field.help.strip(), f"{name} form field has empty tooltip"
+        if setting.unit:
+            assert field.help.endswith(f"({setting.unit})")
+
+
+def test_non_schema_perturbation_controls_expose_tooltip_strings():
+    """Name, type, Add and Remove are not settings; their tooltips live here."""
+    for text in (NAME_TOOLTIP, TYPE_TOOLTIP, ADD_TOOLTIP, REMOVE_TOOLTIP):
+        assert text.strip()
+        assert " " in text  # a real sentence, not a token
+    assert "directory" in NAME_TOOLTIP
+    assert "constriction" in TYPE_TOOLTIP and "dilation" in TYPE_TOOLTIP
+    assert "baseline" in ADD_TOOLTIP
+    assert "Remove this perturbation" in REMOVE_TOOLTIP
 
 
 def test_no_editor_is_built_twice():

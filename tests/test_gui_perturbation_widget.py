@@ -128,6 +128,37 @@ def test_adding_one_gives_one_dropdown(panel):
     )
 
 
+def test_perturbation_controls_carry_descriptive_tooltips(panel):
+    """Hover text on name, type, Add/Remove, and each setting row."""
+    from haemolynx.gui.form import field_for
+    from haemolynx.gui.perturbation_editing import (
+        ADD_TOOLTIP,
+        EDITOR_SETTINGS,
+        NAME_TOOLTIP,
+        REMOVE_TOOLTIP,
+        TYPE_TOOLTIP,
+    )
+    from haemolynx.pipeline import default_schema
+
+    widget, _viewer, perturbations = panel
+    schema = default_schema()
+    perturbations.add()
+    perturbations.choose_type(0, A_TYPE)
+
+    assert perturbations.add_button.tooltip == ADD_TOOLTIP
+    editor = perturbations.editors()[0]
+    assert editor.name.tooltip == NAME_TOOLTIP
+    assert editor.type.tooltip == TYPE_TOOLTIP
+    assert editor.remove.tooltip == REMOVE_TOOLTIP
+    for name in EDITOR_SETTINGS:
+        expected = field_for(schema[name]).help
+        assert editor.editors[name].tooltip == expected, name
+    assert A_PERCENT in editor.shown
+    assert "constriction" in editor.editors[A_PERCENT].tooltip.lower()
+    # Keep the flat settings row wired too (always-visible tab).
+    assert rows_of(widget)["run_perturbations"].tooltip
+
+
 def test_adding_twice_gives_a_second_identical_dropdown(panel):
     """Repeatable: the user asked for N perturbations, not two."""
     _widget, _viewer, perturbations = panel

@@ -43,11 +43,15 @@ from haemolynx.haemodynamics.perturbations import (
 )
 
 __all__ = [
+    "ADD_TOOLTIP",
     "ALWAYS_VISIBLE_TAB_SETTINGS",
     "EDITOR_SETTINGS",
+    "NAME_TOOLTIP",
     "PERTURBATION_TYPES",
     "PERTURBATION_TYPE_DISPLAY_NAMES",
+    "REMOVE_TOOLTIP",
     "SETTING_DISPLAY_LABELS",
+    "TYPE_TOOLTIP",
     "UNCHOSEN",
     "add_entry",
     "default_name",
@@ -120,6 +124,25 @@ SETTING_DISPLAY_LABELS: Mapping[str, str] = {
     "pericyte_constriction_factor": "Pericyte constriction/dilation factor",
     "constriction_by_branch_order": "Constriction/dilation by branch order",
 }
+
+#: Hover / focus text for controls that are not schema settings. Setting-row
+#: tooltips come from ``Setting.help`` (plus unit) via :func:`haemolynx.gui.form.field_for`.
+NAME_TOOLTIP = (
+    "Also the directory this perturbation's output goes in, so it has "
+    "to be unique and usable as a directory name"
+)
+TYPE_TOOLTIP = (
+    "What to change before re-solving (diameter types use constriction/"
+    "dilation wording). Choosing one shows its options"
+)
+ADD_TOOLTIP = (
+    "Add another perturbation that re-solves from the same baseline; "
+    "pick its type to reveal the settings it overrides"
+)
+REMOVE_TOOLTIP = (
+    "Remove this perturbation from the list; later entries keep their "
+    "settings and shift up"
+)
 
 
 def display_name_for_type(perturbation_type: Any) -> str:

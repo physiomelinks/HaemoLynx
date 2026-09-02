@@ -250,25 +250,25 @@ diameters_and_pericytes:
   all_diams_const: true
   # Legacy flag kept for configs and pericyte-entry overrides; ignored by baseline Haemodynamics and every perturbation merge. Focal constrictions come only from pericyte-typed perturbations (pericyte_diameter_change / sweeps) via their strategy path  [needs run_haemodynamics]
   do_pericyte_construction: false
-  # Hold each pericyte constriction over this much of the vessel  [um; range 0.0..]
+  # Axial length of each focal pericyte constriction/dilation site along the vessel centreline  [um; range 0.0..]
   constriction_length_um: 40.0
-  # Place regularly spaced constrictions this far apart along a vessel  [um; range 0.0..]
+  # Centre-to-centre distance between regularly spaced pericyte sites when not placing from a mask  [um; range 0.0..]
   constriction_spacing_um: 100.0
-  # Place constrictions at pericyte centroids taken from a mask rather than at regular spacing  [needs run_haemodynamics]
+  # Place focal constrictions/dilations at pericyte centroids from a mask instead of at regular spacing along vessels  [needs run_haemodynamics]
   use_pericyte_mask_constriction: false
-  # Read pericyte locations from this mask  [needs use_pericyte_mask_constriction; must exist]
+  # Read pericyte centroids from this binary or labelled mask when mask-based placement is on; leave unset to keep the path from the Diameters tab  [needs use_pericyte_mask_constriction; must exist]
   pericyte_mask_path: null
-  # Read this dataset from the pericyte mask when it is an H5 file  [needs use_pericyte_mask_constriction]
+  # H5 dataset name inside the pericyte mask file; ignored for TIFF masks  [needs use_pericyte_mask_constriction]
   pericyte_mask_h5_dataset_name: null
-  # Assign a pericyte centroid to a vessel edge only within this distance  [um; range 0.0..; needs use_pericyte_mask_constriction]
+  # Assign a pericyte centroid to the nearest vessel edge only when they lie within this distance  [um; range 0.0..; needs use_pericyte_mask_constriction]
   pericyte_max_assignment_distance_um: 3.0
-  # Treat mask components below this diameter as too small to be a pericyte  [um; range 0.0..; needs use_pericyte_mask_constriction]
+  # Ignore mask components smaller than this equivalent diameter as too small to be a pericyte  [um; range 0.0..; needs use_pericyte_mask_constriction]
   pericyte_min_diameter_um: 5.0
-  # Treat mask components above this diameter as too large to be a pericyte  [um; range 0.0..; needs use_pericyte_mask_constriction]
+  # Ignore mask components larger than this equivalent diameter as too large to be a pericyte  [um; range 0.0..; needs use_pericyte_mask_constriction]
   pericyte_max_diameter_um: 12.0
-  # Activate each candidate pericyte constriction at random rather than activating all of them  [needs run_haemodynamics]
+  # Activate each candidate pericyte site at random rather than constricting/dilating every candidate  [needs run_haemodynamics]
   use_probabilistic_pericyte_constriction: false
-  # Activate each candidate pericyte constriction with this probability  [fraction; range 0.0..1.0; needs use_probabilistic_pericyte_constriction]
+  # Fraction of candidate pericyte sites that activate when probabilistic selection is on (0 = none, 1 = all)  [fraction; range 0.0..1.0; needs use_probabilistic_pericyte_constriction]
   pericyte_constriction_probability: 0.8
   # Draw the random pericyte cohort from this seed, so a run repeats; another seed constricts a different set of pericytes, and null draws a fresh cohort every run  [needs use_probabilistic_pericyte_constriction]
   pericyte_constriction_seed: 20240917
@@ -384,41 +384,41 @@ perturbation_runs:
   pericyte_dilation_min_percent: 1
   # End the pericyte constriction/dilation sweep at this percentage (negative = constriction, positive = dilation)  [percent; range -99..100]
   pericyte_dilation_max_percent: 30
-  # Step the pericyte constriction/dilation sweep by this percentage  [percent; range 1..100]
+  # Step size along the pericyte constriction/dilation percent axis (positive step; percent itself may be negative)  [percent; range 1..100]
   pericyte_dilation_step_percent: 1
   # Arteriole constriction/dilation: change every arteriole branch's diameter by this percentage (positive = dilation, negative = constriction; e.g. 10 widens by 10%, -20 narrows by 20%); whole-branch scaling, not a focal pericyte site  [percent; range -99.999..]
   arteriole_diameter_change_percent: 0.0
-  # Start the arteriole constriction/dilation sweep at this percentage change (negative = constriction)  [percent; range -99..100]
+  # Start the arteriole constriction/dilation sweep at this percentage change (negative = constriction, positive = dilation; whole-branch scale = 1 + percent/100)  [percent; range -99..100]
   arteriole_dilation_min_percent: 0
-  # End the arteriole constriction/dilation sweep at this percentage change (positive = dilation)  [percent; range -99..100]
+  # End the arteriole constriction/dilation sweep at this percentage change (negative = constriction, positive = dilation)  [percent; range -99..100]
   arteriole_dilation_max_percent: 30
-  # Step the arteriole constriction/dilation sweep by this percentage  [percent; range 1..100]
+  # Step size along the arteriole constriction/dilation percent axis (positive step; percent itself may be negative)  [percent; range 1..100]
   arteriole_dilation_step_percent: 1
-  # Start the passive capillary constriction/dilation sweep at this percentage change (whole capillary, not focal; negative = constriction)  [percent; range -99..100]
+  # Start the passive capillary constriction/dilation sweep at this percentage change (whole capillary, not focal; negative = constriction, positive = dilation; scale = 1 + percent/100)  [percent; range -99..100]
   capillary_dilation_min_percent: 0
-  # End the passive capillary constriction/dilation sweep at this percentage change (positive = dilation)  [percent; range -99..100]
+  # End the passive capillary constriction/dilation sweep at this percentage change (whole capillary, not focal; negative = constriction, positive = dilation)  [percent; range -99..100]
   capillary_dilation_max_percent: 30
-  # Step the passive capillary constriction/dilation sweep by this percentage  [percent; range 1..100]
+  # Step size along the capillary constriction/dilation percent axis (positive step; percent itself may be negative)  [percent; range 1..100]
   capillary_dilation_step_percent: 1
   # Fixed whole-network constriction/dilation for a pericyte spacing or length sweep (scale = 1 + percent/100; negative = constriction, positive = dilation); pressure stays at inlet_p_bc  [percent; range -99..100]
   pericyte_geometry_dilation_percent: 0
-  # Start the pericyte spacing sweep at this inter-site distance  [um; range 0.0..]
+  # Start the pericyte spacing sweep at this centre-to-centre inter-site distance  [um; range 0.0..]
   constriction_spacing_min_um: 50.0
-  # End the pericyte spacing sweep at this inter-site distance  [um; range 0.0..]
+  # End the pericyte spacing sweep at this centre-to-centre inter-site distance  [um; range 0.0..]
   constriction_spacing_max_um: 150.0
-  # Step the pericyte spacing sweep by this distance  [um; range 0.0..]
+  # Step size along the pericyte spacing sweep (centre-to-centre distance between sites)  [um; range 0.0..]
   constriction_spacing_step_um: 50.0
-  # Start the pericyte length sweep at this constriction length  [um; range 0.0..]
+  # Start the pericyte length sweep at this axial constriction/dilation site length  [um; range 0.0..]
   constriction_length_min_um: 20.0
-  # End the pericyte length sweep at this constriction length  [um; range 0.0..]
+  # End the pericyte length sweep at this axial constriction/dilation site length  [um; range 0.0..]
   constriction_length_max_um: 60.0
-  # Step the pericyte length sweep by this length  [um; range 0.0..]
+  # Step size along the pericyte length sweep (axial site length along the centreline)  [um; range 0.0..]
   constriction_length_step_um: 20.0
-  # Start the inlet-pressure sweep at this pressure  [Pa; range 0..]
+  # Start the inlet-pressure sweep at this absolute inlet boundary pressure  [Pa; range 0..]
   inlet_pressure_min_pa: 4500
-  # End the inlet-pressure sweep at this pressure  [Pa; range 0..]
+  # End the inlet-pressure sweep at this absolute inlet boundary pressure  [Pa; range 0..]
   inlet_pressure_max_pa: 6000
-  # Step the inlet-pressure sweep by this much  [Pa; range 1..]
+  # Step size along the inlet-pressure sweep (absolute inlet boundary pressure)  [Pa; range 1..]
   inlet_pressure_step_pa: 500
   # Write the brain-script sweep CSV and curves here (a pericyte_dilation_sweep perturbation writes beside itself)
   sweep_output_dir: outputs/pericyte_dilation_sweep

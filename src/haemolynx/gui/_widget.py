@@ -2146,8 +2146,12 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
     from magicgui.widgets import ComboBox, Container, Label, LineEdit, PushButton
 
     from haemolynx.gui.perturbation_editing import (
+        ADD_TOOLTIP,
         EDITOR_SETTINGS,
+        NAME_TOOLTIP,
         PERTURBATION_TYPES,
+        REMOVE_TOOLTIP,
+        TYPE_TOOLTIP,
         add_entry,
         display_label_for_setting,
         from_settings,
@@ -2171,6 +2175,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
     #: Where the per-entry editors are stacked, and the button that adds one.
     holder = Container(widgets=[], labels=False)
     add_button = PushButton(text="+  Add a perturbation")
+    add_button.tooltip = ADD_TOOLTIP
 
     def read_row() -> list[dict[str, Any]]:
         widget = rows.get(LIST_SETTING)
@@ -2237,19 +2242,14 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
     def build_editor(index: int, entry: Mapping[str, Any]):
         """One perturbation's controls: name, type, and that type's options."""
         name_box = LineEdit(value=str(entry.get("name") or ""), label="Name")
-        name_box.tooltip = (
-            "Also the directory this perturbation's output goes in, so it has "
-            "to be unique and usable as a directory name."
-        )
+        name_box.tooltip = NAME_TOOLTIP
         chosen = str(entry.get("type") or PERTURBATION_TYPES[0])
         type_box = ComboBox(
             choices=perturbation_type_choices(),
             value=chosen if chosen in PERTURBATION_TYPES else PERTURBATION_TYPES[0],
             label="Type",
         )
-        type_box.tooltip = (
-            "What to change before re-solving. Choosing one shows its options."
-        )
+        type_box.tooltip = TYPE_TOOLTIP
 
         # Built once for every type, and hidden but for the chosen type's:
         # destroying and rebuilding widgets as the dropdown changes is how a
@@ -2273,6 +2273,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             editors[name] = widget
 
         remove_button = PushButton(text="Remove")
+        remove_button.tooltip = REMOVE_TOOLTIP
         editor = SimpleNamespace(
             index=index,
             name=name_box,
