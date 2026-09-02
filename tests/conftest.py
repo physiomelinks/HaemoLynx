@@ -1,5 +1,6 @@
 """Pytest fixtures and configuration."""
 import os
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -10,7 +11,15 @@ os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 # plain `pytest` run opens one window per test across the desktop. `setdefault`
 # so `QT_QPA_PLATFORM=xcb pytest -m gui` still shows them when that is what you
 # want.
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+#
+# Not on Windows, where the offscreen plugin comes with no OpenGL at all:
+# napari's canvas asks it for GL_MAX_TEXTURE_SIZE before it draws anything and
+# every gui test dies there, in glGetIntegerv rather than in anything of ours.
+# CI borrows a software GL stack from xvfb; Windows has nothing to borrow, so
+# the real platform -- windows across the desktop and all -- is what runs them.
+os.environ.setdefault(
+    "QT_QPA_PLATFORM", "windows" if sys.platform == "win32" else "offscreen"
+)
 
 import pytest
 import numpy as np
