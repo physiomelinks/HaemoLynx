@@ -201,9 +201,9 @@ a measured cohort effect. `tests/test_roi_placement.py` asserts only that the ga
 | 5 | Threshold the projection | 99th percentile | The mean of a background-subtracted volume is dominated by near-zero voxels, which drags the centroid back to the geometric middle | **On** | `roi_placement.py:86` |
 | 6 | Intensity-weighted centroid of the survivors → y, x | — | Centres the box on signal rather than on the array — the entire reason placement is computed per specimen | **On**; falls back to the volume centre and records why | `roi_placement.py:92` |
 | 7 | Rescale the centroid back to full resolution | × 2 in y and x | The centroid was measured on a subsampled block; the crop needs full-resolution indices | **On** | `roi_placement.py:135` |
-| 8 | Clamp the centre so the box fits whole | 160³ | A box hanging over an edge would be silently cropped, making that specimen's sample smaller than the rest | **On** | `roi_placement.py:142` |
-| 9 | Centre → fractional offsets for `crop_roi` | — | `crop_roi` takes offsets from the volume centre as a fraction of each dimension, not absolute indices | **On** | `roi_placement.py:147` |
-| 10 | Crop the probability field to the ROI | 160³ voxels | Everything downstream counts things inside this box; a matched size is what makes those counts comparable across specimens | **On** | `carotid_image_to_model.py:754` |
+| 8 | Clamp the centre so the box fits whole | 160³ | A box hanging over an edge would be silently cropped, making that specimen's sample smaller than the rest | **On, but never fires** — all six centres sit inside the legal window, smallest margin 12 voxels (WKY-C, x) | `roi_placement.py:142` |
+| 9 | Centre → fractional offsets for `crop_roi` | — | `crop_roi` takes offsets from the volume centre as a fraction of each dimension, not absolute indices | **Computed and printed, but not consumed** — no CB driver passes `offsets_zyx` to anything | `roi_placement.py:147` |
+| 10 | Crop the probability field to the ROI | 160³ voxels | Everything downstream counts things inside this box; a matched size is what makes those counts comparable across specimens | **On**, via `RoiPlacement.bounds` — plain integer slices, *not* `crop_roi` | `cb_h1_batch.py:84` |
 
 Steps 1–2 and 3–7 are independent of each other, which is the point of the next paragraph.
 
@@ -294,6 +294,92 @@ channel 0 and would weight the centroid towards whichever filter scale happened 
 **No silent fallback.** If neither the QC record nor the preprocessed volume is reachable it falls
 back to the volume centre *and records that in `source`*. A silent fallback would reintroduce
 precisely the bias the function exists to remove.
+
+**Steps 8 to 10: turning a centre into voxels.** Steps 1–7 produced a centre. These three turn
+it into the slices that are actually read, and two of the three do less than the table used to
+claim.
+
+*Step 8 — clamping.* `clamp_centre` refuses to let the box hang over an edge:
+
+```python
+half = size // 2
+if size >= extent:
+    clamped.append(extent // 2)
+else:
+    clamped.append(int(np.clip(centre, half, extent - (size - half))))
+```
+
+For a 160-deep box that legal window is `[80, extent - 80]`. **It has never fired on this
+dataset.** All six centres sit inside the window on all three axes, and the tightest case is
+WKY-C's x centre at 92 against a lower bound of 80 — a margin of 12 voxels, about 22 µm. It is a
+guard, not a step that shapes the result. It matters that it is a guard and not a truncation: a
+truncated box would be *smaller* than its neighbours, and a matched ROI size is the one thing this
+whole section exists to guarantee.
+
+*Step 9 — fractional offsets.* `centre_to_offsets` re-expresses the centre as a signed fraction of
+each dimension:
+
+```python
+return tuple(
+    float((centre - extent / 2.0) / extent)
+    for centre, extent in zip(centre_zyx, shape_zyx)
+)
+```
+
+**Nothing on the CB path consumes this.** `offsets_zyx` is computed, stored on the dataclass,
+printed in the placement table, and exercised by one test. No driver passes it to `crop_roi` or to
+anything else. It exists because `carotid_image_to_model.py` takes offsets rather than indices,
+and that program is not what runs the CB analysis.
+
+*Step 10 — the crop that actually runs.* Every CB driver slices the array directly with
+`RoiPlacement.bounds`:
+
+```python
+@property
+def bounds(self):
+    return tuple(
+        slice(c - s // 2, c - s // 2 + s)
+        for c, s in zip(self.centre_zyx, self.size_zyx)
+    )
+```
+
+`sub = volume[placement.bounds]` — `cb_h1_batch.py:84`, and the same in `cb_h1_th_metrics.py:75`,
+`cb_h2_vtk.py:117`, `cb_h2_glomus_perfusion.py:84` and `cb_h2_hypoxic_fraction.py:92`. Integer
+arithmetic throughout, so the box is exactly 160 wide and exactly centred on the requested voxel.
+
+**The two paths do not agree, and the unused one is the worse of the two.** `crop_roi` rebuilds
+the centre from the fraction, and it truncates twice — `int()` on the offset, then `int()` again
+on the start:
+
+```python
+offset_voxels = int(orig_shape[ax] * offsets[i])      # truncates toward zero
+sub_center = center + offset_voxels
+start = max(0, int(sub_center - target_dims[ax] / 2.0))   # truncates again
+```
+
+When an axis has **odd** extent, `extent / 2.0` ends in `.5`, and the first truncation loses it.
+If the centre sits *above* the volume midpoint the residue rounds the wrong way and the box lands
+**one voxel low**; below the midpoint the two truncations cancel and it is exact. Measured on the
+six, one axis per specimen is affected:
+
+| Specimen | Axis | `bounds` | `crop_roi` | Error |
+|---|---|---|---|---|
+| WKY-A | z | [150, 310) | [149, 309) | −1 |
+| WKY-B | y | [118, 278) | [117, 277) | −1 |
+| WKY-C | y | [86, 246) | [85, 245) | −1 |
+| SHR-A | y | [180, 340) | [179, 339) | −1 |
+| SHR-B | y | [206, 366) | [205, 365) | −1 |
+| SHR-C | y | [218, 378) | [217, 377) | −1 |
+
+One voxel is 1.87 µm against a 298 µm box, so the size of the error is negligible. Its
+*direction* is not: it is always −1, never +1, so it would not average out across specimens — it
+would shift every affected axis the same way. Over a sweep of extents 200–520 and every legal
+centre, the two paths disagree on **27% of cases**, and **96% of the disagreements** have the
+centre above the midpoint.
+
+**None of this touches a published number**, because the CB drivers never take that path. It is
+recorded so that anyone who reaches for `crop_roi` — as `carotid_image_to_model.py` does — knows
+the box is not where the offsets say it is. Open item 14.
 
 **The box is clamped, never truncated.** `clamp_centre` pulls the centre inwards until the box fits
 wholly inside the volume. A box hanging over an edge would be silently cropped, making that
@@ -2973,6 +3059,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
 | 12 | The rheology loop rescales resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contains $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
 | 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
+| 14 | `crop_roi` rebuilds the centre from a fraction with two truncations, landing one voxel low when an axis has odd extent and the centre is above the midpoint. The CB drivers avoid it by slicing `RoiPlacement.bounds` directly, so no CB result is affected | §2.1; `carotid_image_to_model.py` and any caller using fractional offsets |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
