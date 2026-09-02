@@ -66,10 +66,7 @@ def fill_derived_settings(settings: dict) -> None:
             ],
         )
     if settings.get("constriction_by_branch_order") is None:
-        max_order = int(settings["max_branch_order"])
-        constriction = {"B01": 1.0, "Art1": 1.0, "Ven1": 1.0}
-        for order in range(2, max_order + 1):
-            constriction[f"B{order:02d}"] = 0.8
-            constriction[f"Art{order}"] = 0.8
-            constriction[f"Ven{order}"] = 0.8
-        settings["constriction_by_branch_order"] = constriction
+        # Empty override map: every order keeps pericyte_constriction_factor.
+        # Listed keys replace that global factor for those orders only
+        # (see constriction_strategy.resolve_constriction_factor_table).
+        settings["constriction_by_branch_order"] = {}

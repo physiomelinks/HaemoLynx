@@ -16,7 +16,7 @@ still intercepts every call site.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import networkx as nx
 import numpy as np
@@ -50,6 +50,45 @@ def uniform_constriction_factors(
     }
 
 
+def constriction_factor_for_order(
+    branch_order: str,
+    constriction_factor_by_branch_order: Mapping[str, float] | None,
+    *,
+    default_factor: float = 1.0,
+) -> float:
+    """Effective constriction factor for one branch order.
+
+    A key present in *constriction_factor_by_branch_order* **replaces**
+    *default_factor* for that order only (not multiplied). Orders absent from
+    the map keep *default_factor* (``1.0`` = no narrowing; ``0.8`` = 20%
+    narrower at focal sites).
+    """
+    order = str(branch_order)
+    if (
+        constriction_factor_by_branch_order is not None
+        and order in constriction_factor_by_branch_order
+    ):
+        return float(constriction_factor_by_branch_order[order])
+    return float(default_factor)
+
+
+def resolve_constriction_factor_table(
+    diameter_by_branch_order: Mapping[Any, Any],
+    constriction_factor_by_branch_order: Mapping[str, float] | None,
+    *,
+    default_factor: float = 1.0,
+) -> dict[str, float]:
+    """Complete per-order factor table: map entries replace *default_factor*."""
+    return {
+        str(branch_order): constriction_factor_for_order(
+            str(branch_order),
+            constriction_factor_by_branch_order,
+            default_factor=default_factor,
+        )
+        for branch_order in diameter_by_branch_order
+    }
+
+
 def set_resistances_for_constriction_strategy(
     graph: nx.MultiGraph,
     *,
@@ -64,6 +103,7 @@ def set_resistances_for_constriction_strategy(
     haematocrit: float = 0.45,
     diameter_basis: str = "plasma_column",
     constriction_probability: float = 1.0,
+    default_constriction_factor: float = 1.0,
     pericyte_mask_path: str | Path | None = None,
     pericyte_mask_h5_dataset_name: str | None = None,
     active_pericyte_indices: list[int] | None = None,
@@ -86,7 +126,16 @@ def set_resistances_for_constriction_strategy(
     All three strategies read ``viscosity_law``, ``haematocrit`` and
     ``diameter_basis``: the choice of law changes every resistance, and it must
     not depend on which strategy placed the constrictions.
+
+    *default_constriction_factor* (settings: ``pericyte_constriction_factor``)
+    applies to every branch order; keys in *constriction_factor_by_branch_order*
+    replace that base for the listed orders only.
     """
+    factors = resolve_constriction_factor_table(
+        diameter_by_branch_order,
+        constriction_factor_by_branch_order,
+        default_factor=float(default_constriction_factor),
+    )
     if use_pericyte_mask_constriction:
         if pericyte_mask_path is None:
             raise ValueError(
@@ -95,7 +144,7 @@ def set_resistances_for_constriction_strategy(
         graph, results = pericyte_mask_strategy.set_poiseuille_resistances_with_pericyte_mask(
             graph,
             diameter_by_branch_order=diameter_by_branch_order,
-            constriction_factor_by_branch_order=constriction_factor_by_branch_order,
+            constriction_factor_by_branch_order=factors,
             pericyte_mask_path=pericyte_mask_path,
             pericyte_mask_h5_dataset_name=pericyte_mask_h5_dataset_name,
             prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
@@ -121,7 +170,7 @@ def set_resistances_for_constriction_strategy(
             .set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
                 graph,
                 diameter_by_branch_order=diameter_by_branch_order,
-                constriction_factor_by_branch_order=constriction_factor_by_branch_order,
+                constriction_factor_by_branch_order=factors,
                 prefer_edge_fwhm_baseline=prefer_edge_fwhm_baseline,
                 constriction_length=float(constriction_length),
                 constriction_spacing=float(constriction_spacing),
@@ -148,15 +197,14 @@ def set_resistances_for_constriction_strategy(
             graph,
             diameter_by_branch_order,
             prefer_edge_fwhm_baseline=True,
-            constriction_factor_by_branch_order=constriction_factor_by_branch_order,
+            constriction_factor_by_branch_order=factors,
         )
         return graph, PERIODIC_CONSTRICTION_STRATEGY, results
 
-    factors = constriction_factor_by_branch_order or {}
     constricted_diameters = {
         branch_order: {
             "d1": float(diameter),
-            "d2": float(diameter) * float(factors.get(branch_order, 1.0)),
+            "d2": float(diameter) * float(factors[str(branch_order)]),
         }
         for branch_order, diameter in diameter_by_branch_order.items()
     }

@@ -154,15 +154,20 @@ def resolve_edge_diameters(
     diameter_by_branch_order: dict,
     constriction_factor_by_branch_order: dict[str, float] | None,
     prefer_edge_fwhm_baseline: bool,
+    default_constriction_factor: float = 1.0,
 ) -> tuple[float, float, bool]:
     """Return ``(d1, d2, used_fwhm_baseline)`` for one edge.
 
     ``diameter_by_branch_order`` maps a branch order either to a passive
-    diameter, in which case ``d2`` comes from
-    ``constriction_factor_by_branch_order``, or to an explicit
-    ``{"d1": ..., "d2": ...}`` pair. With ``prefer_edge_fwhm_baseline`` the
-    edge's own measured ``fwhm_diameter_um`` supersedes the table as ``d1``, and
-    the table supplies only the fallback for edges that were never measured.
+    diameter, in which case ``d2`` comes from the effective constriction
+    factor, or to an explicit ``{"d1": ..., "d2": ...}`` pair. With
+    ``prefer_edge_fwhm_baseline`` the edge's own measured ``fwhm_diameter_um``
+    supersedes the table as ``d1``, and the table supplies only the fallback
+    for edges that were never measured.
+
+    The effective factor for an order is the map entry when present; otherwise
+    ``default_constriction_factor``. Map values **replace** the default for that
+    order only (they are not multiplied by it).
     """
     used_fwhm_baseline = False
     if prefer_edge_fwhm_baseline:
@@ -194,14 +199,14 @@ def resolve_edge_diameters(
             return float(spec["d1"]), float(spec["d2"]), used_fwhm_baseline
         d1 = float(spec)
 
-    factor = None
-    if constriction_factor_by_branch_order is not None:
-        factor = constriction_factor_by_branch_order.get(branch_order)
-    if factor is None:
-        raise ValueError(
-            f"No constriction factor for branch_order '{branch_order}'."
-        )
-    return d1, d1 * float(factor), used_fwhm_baseline
+    if (
+        constriction_factor_by_branch_order is not None
+        and branch_order in constriction_factor_by_branch_order
+    ):
+        factor = float(constriction_factor_by_branch_order[branch_order])
+    else:
+        factor = float(default_constriction_factor)
+    return d1, d1 * factor, used_fwhm_baseline
 
 
 def diameter_at_position(

@@ -47,6 +47,7 @@ DIAMETER_DEFAULTS: dict[str, Any] = {
     "custom_edge_diameter": 6.0,
     "constriction_length_um": 40.0,
     "constriction_spacing_um": 100.0,
+    "pericyte_constriction_factor": 1.0,
     "constriction_by_branch_order": {},
     "custom_edges": [],
     "viscosity_law": "pries",
@@ -258,6 +259,11 @@ def _assign_poiseuille_resistances(
             diameter_basis=config.diameter("diameter_basis"),
             constriction_probability=(
                 1.0 if configured_probability is None else float(configured_probability)
+            ),
+            default_constriction_factor=float(
+                config.diameter("pericyte_constriction_factor")
+                if config.diameter("pericyte_constriction_factor") is not None
+                else 1.0
             ),
             pericyte_mask_path=config.diameter("pericyte_mask_path"),
             pericyte_mask_h5_dataset_name=config.diameter("pericyte_mask_h5_dataset_name"),

@@ -773,6 +773,79 @@ def test_two_pericyte_entries_with_different_branch_order_factors_differ(tmp_pat
     assert any(mild_r[edge] != tight_r[edge] for edge in capillary)
 
 
+def test_base_constriction_factor_with_branch_order_override(tmp_path):
+    """Global 0.8 + {B01: 1.0} → only B01 differs from empty-map global."""
+    shared = {
+        "do_pericyte_construction": True,
+        "pericyte_constriction_factor": 0.8,
+        "constriction_length_um": 40.0,
+        "constriction_spacing_um": 100.0,
+        "use_probabilistic_pericyte_constriction": False,
+        "pericyte_constriction_probability": 1.0,
+    }
+    with_override = {
+        "name": "base_with_b01_open",
+        "type": "pericyte_diameter_change",
+        "overrides": {**shared, "constriction_by_branch_order": {"B01": 1.0}},
+    }
+    empty_map = {
+        "name": "global_only",
+        "type": "pericyte_diameter_change",
+        "overrides": {**shared, "constriction_by_branch_order": {}},
+    }
+    run = _run(tmp_path, [with_override, empty_map])
+    by_name = {result.name: result for result in run.results}
+    assert by_name["base_with_b01_open"].ok and by_name["global_only"].ok
+
+    open_g = by_name["base_with_b01_open"].graph
+    open_r = _resistances(open_g)
+    global_r = _resistances(by_name["global_only"].graph)
+
+    for u, v, k, data in open_g.edges(keys=True, data=True):
+        edge = (u, v, k)
+        if data["branch_order"] == "B01":
+            assert open_r[edge] < global_r[edge]
+        else:
+            assert open_r[edge] == pytest.approx(global_r[edge])
+
+
+def test_empty_constriction_map_matches_omitted_map(tmp_path):
+    """Empty override map is pure global behaviour — same as leaving it unset.
+
+    The run's baseline map must itself be empty; otherwise omitting the key
+    inherits a non-empty baseline table, which is a different question.
+    """
+    shared = {
+        "do_pericyte_construction": True,
+        "pericyte_constriction_factor": 0.8,
+        "constriction_length_um": 40.0,
+        "constriction_spacing_um": 100.0,
+        "use_probabilistic_pericyte_constriction": False,
+        "pericyte_constriction_probability": 1.0,
+    }
+    empty = {
+        "name": "empty_map",
+        "type": "pericyte_diameter_change",
+        "overrides": {**shared, "constriction_by_branch_order": {}},
+    }
+    omitted = {
+        "name": "omitted_map",
+        "type": "pericyte_diameter_change",
+        "overrides": dict(shared),
+    }
+    run = _run(
+        tmp_path,
+        [empty, omitted],
+        constriction_by_branch_order={},
+        pericyte_constriction_factor=0.8,
+    )
+    by_name = {result.name: result for result in run.results}
+    assert by_name["empty_map"].ok and by_name["omitted_map"].ok
+    assert _resistances(by_name["empty_map"].graph) == _resistances(
+        by_name["omitted_map"].graph
+    )
+
+
 def test_a_pericyte_sweep_honours_entry_length_and_spacing(tmp_path):
     """Sweep geometry knobs merge into the settings the existing helper reads."""
     short = {

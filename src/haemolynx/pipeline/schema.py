@@ -965,7 +965,12 @@ SCHEMA = Schema(
             name="do_pericyte_construction",
             kind="bool",
             default=False,
-            help="Model pericyte constrictions when assigning Poiseuille resistances",
+            help=(
+                "Legacy flag kept for configs and pericyte-entry overrides; "
+                "ignored by baseline Haemodynamics and every perturbation merge. "
+                "Focal constrictions come only from pericyte-typed perturbations "
+                "(pericyte_diameter_change / sweeps) via their strategy path"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
         ),
@@ -1081,9 +1086,9 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "Run the baseline-versus-constricted pericyte resistance "
-                "comparison and write its CSV (CLI / config; not shown on the "
-                "Diameters panel -- use Perturbations for pericyte tone)"
+                "Legacy comparison-CSV flag; ignored by baseline assign_diameters "
+                "and perturbation merges (CLI / library apply() only). Use "
+                "Perturbations for pericyte tone"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
@@ -1168,10 +1173,29 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="pericyte_constriction_factor",
+            kind="float",
+            default=1.0,
+            help=(
+                "Global focal-constriction factor for every branch order "
+                "(1.0 = no narrowing; 0.8 = 20% narrower at pericyte sites). "
+                "constriction_by_branch_order replaces this for listed orders "
+                "only — empty map means this global factor alone"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            minimum=0.0,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
             name="constriction_by_branch_order",
             kind="mapping",
             default=None,
-            help="Supply the full branch-order constriction-factor lookup; leave unset to derive it from the manual diameter settings",
+            help=(
+                "Sparse per-order overrides of pericyte_constriction_factor. "
+                "Empty or unset makes no change (global factor only). A listed "
+                "order replaces the global factor for that order alone "
+                "(e.g. {B01: 1.0} with global 0.8 leaves B01 unconstricted)"
+            ),
             section=_DIAMETERS_AND_PERICYTES,
             advanced=True,
         ),

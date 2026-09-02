@@ -78,9 +78,23 @@ def test_the_branch_order_tables_are_derived_when_the_config_leaves_them_unset(p
     constrictions = settings["constriction_by_branch_order"]
 
     assert diameters["B01"] > 0
-    assert constrictions["B01"] == 1.0
-    assert constrictions["B02"] == 0.8
+    # Empty override map: global pericyte_constriction_factor alone applies.
+    assert constrictions == {}
+    assert settings["pericyte_constriction_factor"] == 1.0
     assert f"B{settings['max_branch_order']:02d}" in diameters
+
+
+def test_empty_constriction_map_leaves_global_factor_alone(pipeline):
+    """None and {} are the same: no per-order rewrite of the global factor."""
+    from_none = pipeline.resolve_settings()
+    from_empty = pipeline.resolve_settings(
+        overrides={"constriction_by_branch_order": {}}
+    )
+    assert from_none["constriction_by_branch_order"] == {}
+    assert from_empty["constriction_by_branch_order"] == {}
+    assert from_none["pericyte_constriction_factor"] == from_empty[
+        "pericyte_constriction_factor"
+    ]
 
 
 def test_an_explicit_diameter_table_is_left_alone(pipeline):

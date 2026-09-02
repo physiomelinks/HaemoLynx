@@ -119,14 +119,6 @@ def test_unmeasured_edge_falls_back_to_the_table_diameter():
         ),
         (
             {
-                "diameter_by_branch_order": {"B01": 5.0},
-                "constriction_factor_by_branch_order": None,
-                "prefer_edge_fwhm_baseline": False,
-            },
-            "No constriction factor",
-        ),
-        (
-            {
                 "diameter_by_branch_order": {"B01": {"d1": 5.0}},
                 "constriction_factor_by_branch_order": {"B01": 0.8},
                 "prefer_edge_fwhm_baseline": False,
@@ -154,6 +146,32 @@ def test_unmeasured_edge_falls_back_to_the_table_diameter():
 def test_unusable_diameter_settings_are_rejected(kwargs, message):
     with pytest.raises(ValueError, match=message):
         resolve_edge_diameters(edge_data={}, branch_order="B01", **kwargs)
+
+
+def test_missing_map_entry_uses_default_constriction_factor():
+    """Sparse override map: absent orders keep the base factor (not an error)."""
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={},
+        branch_order="B02",
+        diameter_by_branch_order={"B02": 5.0},
+        constriction_factor_by_branch_order={"B01": 1.0},
+        prefer_edge_fwhm_baseline=False,
+        default_constriction_factor=0.8,
+    )
+    assert (d1, d2) == (5.0, 4.0)
+
+
+def test_map_entry_replaces_default_constriction_factor():
+    """Listed orders use the map value; it is not multiplied by the base."""
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={},
+        branch_order="B01",
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 1.0},
+        prefer_edge_fwhm_baseline=False,
+        default_constriction_factor=0.8,
+    )
+    assert (d1, d2) == (5.0, 5.0)
 
 
 # --- the diameter profile ---------------------------------------------------
@@ -432,6 +450,31 @@ def test_uniform_constriction_factors_covers_every_branch_order():
     assert uniform_constriction_factors({"B01": 5.0, "Art1": 9.0}, 0.8) == {
         "B01": 0.8,
         "Art1": 0.8,
+    }
+
+
+def test_resolve_constriction_factor_table_applies_base_then_map_overrides():
+    from haemolynx.haemodynamics.constriction_strategy import (
+        resolve_constriction_factor_table,
+    )
+
+    diameters = {"Art1": 20.0, "B01": 6.0, "B02": 5.0, "Ven1": 20.0}
+    empty = resolve_constriction_factor_table(diameters, {}, default_factor=0.8)
+    none = resolve_constriction_factor_table(diameters, None, default_factor=0.8)
+    assert empty == none == {
+        "Art1": 0.8,
+        "B01": 0.8,
+        "B02": 0.8,
+        "Ven1": 0.8,
+    }
+    overridden = resolve_constriction_factor_table(
+        diameters, {"B01": 1.0}, default_factor=0.8
+    )
+    assert overridden == {
+        "Art1": 0.8,
+        "B01": 1.0,
+        "B02": 0.8,
+        "Ven1": 0.8,
     }
 
 

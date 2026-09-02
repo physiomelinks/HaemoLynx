@@ -80,13 +80,14 @@ PERTURBATION_TYPES: tuple[str, ...] = (
     "arteriole_and_pericyte_diameter_change",
 )
 
-#: Length, spacing, probability and branch-order tone every pericyte-based
-#: perturbation can set on its own entry. Sweeps read these through the
-#: merged settings; ``pericyte_diameter_change`` also needs the probabilistic
-#: enable flag so the existing constriction-strategy path can honour
-#: probability. ``constriction_by_branch_order`` is the per-entry factor
-#: table (independent between entries), not a Diameters-tab baseline knob.
+#: Length, spacing, probability, base tone and per-order overrides every
+#: pericyte-based perturbation can set on its own entry. Sweeps read these
+#: through the merged settings; ``pericyte_diameter_change`` also needs the
+#: probabilistic enable flag so the existing constriction-strategy path can
+#: honour probability. ``constriction_by_branch_order`` replaces
+#: ``pericyte_constriction_factor`` for listed orders only.
 PERICYTE_ENTRY_GEOMETRY_SETTINGS: tuple[str, ...] = (
+    "pericyte_constriction_factor",
     "constriction_by_branch_order",
     "constriction_length_um",
     "constriction_spacing_um",
@@ -98,9 +99,13 @@ PERICYTE_ENTRY_GEOMETRY_SETTINGS: tuple[str, ...] = (
 #: Diameters and pericytes in the schema (so apply.py's section_values still
 #: finds them) but claimed on the Perturbations tab: they are options of a
 #: pericyte-based perturbation, not of the baseline diameter model.
+#: ``do_pericyte_construction`` stays as a harmless override key for older
+#: entries; the pipeline forces it False on baseline and every merge -- typed
+#: pericyte paths call ``set_resistances_for_constriction_strategy`` by type.
 #: Order matches ``_PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB`` in progress.py.
 PERICYTE_CONSTRICTION_SETTINGS: tuple[str, ...] = (
     "do_pericyte_construction",
+    "pericyte_constriction_factor",
     "constriction_by_branch_order",
     "constriction_length_um",
     "constriction_spacing_um",
@@ -185,6 +190,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     ),
     "pericyte_spacing_sweep": (
         *PERICYTE_SPACING_SWEEP_SETTINGS,
+        "pericyte_constriction_factor",
         "constriction_by_branch_order",
         "constriction_length_um",
         "pericyte_geometry_dilation_percent",
@@ -193,6 +199,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     ),
     "pericyte_length_sweep": (
         *PERICYTE_LENGTH_SWEEP_SETTINGS,
+        "pericyte_constriction_factor",
         "constriction_by_branch_order",
         "constriction_spacing_um",
         "pericyte_geometry_dilation_percent",
@@ -236,11 +243,12 @@ SWEEP_PERTURBATION_TYPES: frozenset[str] = frozenset(
 
 
 def is_sweep_perturbation(perturbation_type: Any) -> bool:
-    """Whether *perturbation_type* is a sweep (CSV grid / Alice curves, no layer).
+    """Whether *perturbation_type* is a sweep (CSV grid / Alice curves).
 
     Uses the type name: every declared sweep includes ``sweep``, and non-sweep
     types do not. Unknown names with ``sweep`` in them are treated as sweeps so
-    a new type cannot accidentally request a napari layer before its plots land.
+    a new type gets the sweep export path (and slider-backed napari layer)
+    rather than a single static re-solve layer.
     """
     text = str(perturbation_type)
     if text in SWEEP_PERTURBATION_TYPES:

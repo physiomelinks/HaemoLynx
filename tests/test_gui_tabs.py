@@ -132,10 +132,12 @@ def test_the_haemodynamics_still_gets_its_whole_section():
     value back out of it *by name*, falling back to `DIAMETER_DEFAULTS` for
     what is not there. So a setting moved to a different schema *section* --
     which looks like the natural way to move its row to another tab -- does not
-    fail. It silently reverts: `do_pericyte_construction` would read False and
-    every run would quietly lose its pericyte constrictions, with no error and
-    no other failing test. Which tab a row appears on is declared in
-    `pipeline/progress.py`, by name or by claiming a section there.
+    fail. It silently reverts (e.g. ``viscosity_law`` would fall back), with
+    no error and no other failing test. Which tab a row appears on is declared
+    in `pipeline/progress.py`, by name or by claiming a section there.
+
+    ``do_pericyte_construction`` must still live in this section so the group
+    is complete; the pipeline then forces it False on the baseline path.
     """
     section = set(SCHEMA.section_names(DIAMETERS_AND_PERICYTES))
     read = _diameter_group_names_read_by(APPLY_SOURCE)
@@ -157,6 +159,7 @@ def test_the_haemodynamics_still_gets_its_whole_section():
         "diameter_basis",
         "haematocrit",
         "diameter_by_branch_order",
+        "pericyte_constriction_factor",
         "constriction_by_branch_order",
         "constriction_length_um",
         "constriction_spacing_um",

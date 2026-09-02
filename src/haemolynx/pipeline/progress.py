@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 #: drift test in test_gui_tabs pins that.
 _PERICYTE_SETTINGS_ON_PERTURBATIONS_TAB: tuple[str, ...] = (
     "do_pericyte_construction",
+    "pericyte_constriction_factor",
     "constriction_by_branch_order",
     "constriction_length_um",
     "constriction_spacing_um",

@@ -117,6 +117,9 @@ def _apply_focal_constrictions(
             if configured_probability is None
             else float(configured_probability)
         ),
+        default_constriction_factor=float(
+            settings.get("pericyte_constriction_factor", 1.0)
+        ),
         pericyte_mask_path=settings.get("pericyte_mask_path"),
         pericyte_mask_h5_dataset_name=settings.get(
             "pericyte_mask_h5_dataset_name"

@@ -290,6 +290,7 @@ def test_a_well_formed_dilation_sweep_entry_is_accepted():
             "pericyte_dilation_min_percent": 1,
             "pericyte_dilation_max_percent": 5,
             "pericyte_dilation_step_percent": 1,
+            "constriction_by_branch_order": {"Art1": 1.0, "B01": 0.5, "Ven1": 1.0},
             "constriction_length_um": 20.0,
             "constriction_spacing_um": 80.0,
             "use_probabilistic_pericyte_constriction": True,
@@ -305,6 +306,11 @@ def test_a_well_formed_dilation_sweep_entry_is_accepted():
     report = check_perturbations(_settings(perturbations=[entry]), SCHEMA)
     assert not report.errors
     applied = spec.applied_overrides(SCHEMA)
+    assert applied["constriction_by_branch_order"] == {
+        "Art1": 1.0,
+        "B01": 0.5,
+        "Ven1": 1.0,
+    }
     assert applied["constriction_length_um"] == 20.0
     assert applied["constriction_spacing_um"] == 80.0
     assert applied["pericyte_constriction_probability"] == 0.5
@@ -315,12 +321,28 @@ def test_pericyte_sweep_types_expose_length_spacing_and_probability():
 
     for perturbation_type in (
         "pericyte_diameter_change",
+        "arteriole_and_pericyte_diameter_change",
         "pericyte_dilation_sweep",
         "pressure_and_pericyte_sweep",
     ):
         reads = set(SETTINGS_FOR_TYPE[perturbation_type])
         missing = sorted(set(PERICYTE_ENTRY_GEOMETRY_SETTINGS) - reads)
         assert missing == [], f"{perturbation_type} is missing {missing}"
+
+
+def test_every_focal_pericyte_type_exposes_constriction_by_branch_order():
+    """Branch-order tone is a per-entry override on every focal-constriction type."""
+    for perturbation_type in (
+        "pericyte_diameter_change",
+        "arteriole_and_pericyte_diameter_change",
+        "pericyte_dilation_sweep",
+        "pressure_and_pericyte_sweep",
+        "pericyte_spacing_sweep",
+        "pericyte_length_sweep",
+    ):
+        reads = set(SETTINGS_FOR_TYPE[perturbation_type])
+        assert "constriction_by_branch_order" in reads, perturbation_type
+        assert "pericyte_constriction_factor" in reads, perturbation_type
 
 
 def test_a_well_formed_pressure_and_pericyte_sweep_is_accepted():

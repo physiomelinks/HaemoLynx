@@ -85,6 +85,10 @@ def test_settings_for_type_expose_geometry_axes_and_fixed_knobs():
     assert "constriction_length_um" not in length
     assert "pericyte_geometry_dilation_percent" in spacing
     assert "pericyte_geometry_dilation_percent" in length
+    assert "constriction_by_branch_order" in spacing
+    assert "constriction_by_branch_order" in length
+    assert "pericyte_constriction_factor" in spacing
+    assert "pericyte_constriction_factor" in length
 
 
 def test_spacing_sweep_changes_results_with_length_and_pressure_fixed(

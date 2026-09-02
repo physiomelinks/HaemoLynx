@@ -1299,6 +1299,9 @@ def _perturb_one(
                 if perturbed["pericyte_constriction_probability"] is None
                 else float(perturbed["pericyte_constriction_probability"])
             ),
+            default_constriction_factor=float(
+                perturbed.get("pericyte_constriction_factor", 1.0)
+            ),
             pericyte_mask_path=perturbed["pericyte_mask_path"],
             pericyte_mask_h5_dataset_name=perturbed["pericyte_mask_h5_dataset_name"],
             axis_order=perturbed["image_axis_order"],
@@ -1343,6 +1346,9 @@ def _perturb_one(
                 1.0
                 if perturbed["pericyte_constriction_probability"] is None
                 else float(perturbed["pericyte_constriction_probability"])
+            ),
+            default_constriction_factor=float(
+                perturbed.get("pericyte_constriction_factor", 1.0)
             ),
             pericyte_mask_path=perturbed["pericyte_mask_path"],
             pericyte_mask_h5_dataset_name=perturbed["pericyte_mask_h5_dataset_name"],

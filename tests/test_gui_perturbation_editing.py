@@ -148,9 +148,16 @@ def test_the_tab_keeps_only_the_always_on_run_settings():
         assert name in rows_for_type("pericyte_dilation_sweep"), name
         assert name in rows_for_type("pressure_and_pericyte_sweep"), name
         assert name in rows_for_type("pericyte_diameter_change"), name
+        assert name in rows_for_type("arteriole_and_pericyte_diameter_change"), name
+    assert "constriction_by_branch_order" in rows_for_type("pericyte_spacing_sweep")
+    assert "constriction_by_branch_order" in rows_for_type("pericyte_length_sweep")
+    assert "pericyte_constriction_factor" in rows_for_type("pericyte_dilation_sweep")
+    assert "pericyte_constriction_factor" in rows_for_type("pericyte_spacing_sweep")
     assert "run_pericyte_dilation_sweep" not in EDITOR_SETTINGS
     assert "sweep_output_dir" not in EDITOR_SETTINGS
     assert "do_pericyte_construction" not in ALWAYS_VISIBLE_TAB_SETTINGS
+    assert "constriction_by_branch_order" not in ALWAYS_VISIBLE_TAB_SETTINGS
+    assert "pericyte_constriction_factor" not in ALWAYS_VISIBLE_TAB_SETTINGS
 
 
 # --- adding and removing -----------------------------------------------------

@@ -228,7 +228,7 @@ diameters_and_pericytes:
   haematocrit: 0.45
   # Give every branch order the same vessel diameter instead of a per-order table
   all_diams_const: true
-  # Model pericyte constrictions when assigning Poiseuille resistances  [needs run_haemodynamics]
+  # Legacy flag kept for configs and pericyte-entry overrides; ignored by baseline Haemodynamics and every perturbation merge. Focal constrictions come only from pericyte-typed perturbations (pericyte_diameter_change / sweeps) via their strategy path  [needs run_haemodynamics]
   do_pericyte_construction: false
   # Hold each pericyte constriction over this much of the vessel  [um; range 0.0..]
   constriction_length_um: 40.0
@@ -252,7 +252,7 @@ diameters_and_pericytes:
   pericyte_constriction_probability: 0.8
   # Draw the random pericyte cohort from this seed, so a run repeats; another seed constricts a different set of pericytes, and null draws a fresh cohort every run  [needs use_probabilistic_pericyte_constriction]
   pericyte_constriction_seed: 20240917
-  # Run the baseline-versus-constricted pericyte resistance comparison and write its CSV (CLI / config; not shown on the Diameters panel -- use Perturbations for pericyte tone)  [needs run_haemodynamics]
+  # Legacy comparison-CSV flag; ignored by baseline assign_diameters and perturbation merges (CLI / library apply() only). Use Perturbations for pericyte tone  [needs run_haemodynamics]
   run_pericyte_resistance_comparison: false
   # Use this constriction factor as the baseline arm of the pericyte comparison  [range 0.0..; needs run_pericyte_resistance_comparison]
   pericyte_comparison_baseline_value: 1.0
@@ -276,7 +276,9 @@ diameters_and_pericytes:
   manual_venule_diameter_by_branch_order: {}
   # Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings  [um]
   diameter_by_branch_order: null
-  # Supply the full branch-order constriction-factor lookup; leave unset to derive it from the manual diameter settings
+  # Global focal-constriction factor for every branch order (1.0 = no narrowing; 0.8 = 20% narrower at pericyte sites). constriction_by_branch_order replaces this for listed orders only — empty map means this global factor alone  [range 0.0..; needs run_haemodynamics]
+  pericyte_constriction_factor: 1.0
+  # Sparse per-order overrides of pericyte_constriction_factor. Empty or unset makes no change (global factor only). A listed order replaces the global factor for that order alone (e.g. {B01: 1.0} with global 0.8 leaves B01 unconstricted)
   constriction_by_branch_order: null
   # Apply the custom edge-diameter assignment behaviour to these edge IDs
   custom_edges: []
