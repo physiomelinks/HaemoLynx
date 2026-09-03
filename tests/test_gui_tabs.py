@@ -497,6 +497,27 @@ def test_vessel_mask_settings_live_on_boundaries_not_graph():
     assert boundaries.index(
         "use_small_vessel_masks_for_boundary_assignment"
     ) < boundaries.index("inlet_node_selection_method")
+    # Overlap-cleanup master switch sits above its fast-mode child.
+    assert boundaries.index(
+        "automated_vessel_assignment_enable_overlap_cleanup"
+    ) < boundaries.index("automated_vessel_assignment_fast_mode")
+    assert boundaries.index(
+        "small_vessel_boundary_assignment_enable_overlap_cleanup"
+    ) < boundaries.index("small_vessel_boundary_assignment_fast_mode")
+
+
+def test_vessel_mask_fields_on_boundaries_declare_hide_when_unmet():
+    """Every gated Vessel masks row is marked to hide, not merely grey out."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    for field in tabs["4. Boundaries"].fields:
+        if field.section != "Vessel masks":
+            continue
+        if field.name == "automated_vessel_assignment":
+            assert not field.hide_when_unmet
+            assert field.is_visible({})
+        else:
+            assert field.hide_when_unmet, field.name
+            assert not field.is_visible({"automated_vessel_assignment": False}), field.name
 
 
 def test_automated_assignment_documents_that_it_overrides_manual_methods():

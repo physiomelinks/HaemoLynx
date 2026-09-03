@@ -34,29 +34,29 @@ vessel_masks:
   automated_vessel_assignment: false
   # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
-  # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks]
+  # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks and automated_vessel_assignment]
   use_ilastik_large_vessel_segmentation: false
-  # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment  [um; range 0.0..; needs use_large_vessel_masks]
+  # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_mask_dilation_microns: 0.0
   # Maximum dilation (microns) for progressive large-vessel terminal assignment: assign at 0 µm, then in 5 µm steps up to this value, locking each node at the first step it is claimed. Does not replace large_vessel_mask_dilation_microns (load-time one-shot dilation)  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_assignment_max_dilation_microns: 0.0
-  # Remove connected components smaller than this physical volume from large-vessel masks after dilation (set 0 to disable)  [um3; range 0.0..; needs use_large_vessel_masks]
+  # Remove connected components smaller than this physical volume from large-vessel masks after dilation (set 0 to disable)  [um3; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_min_component_volume_um3: 200.0
-  # Remove tiny large-vessel components that sit attached near the opposite-type mask surface (suppresses small mislabelled attachments)  [needs use_large_vessel_masks]
+  # Remove tiny large-vessel components that sit attached near the opposite-type mask surface (suppresses small mislabelled attachments)  [needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_remove_small_opposite_attached_components: true
-  # Maximum physical volume of a large-vessel component eligible for opposite-attached cleanup  [um3; range 0.0..; needs use_large_vessel_masks and large_vessel_remove_small_opposite_attached_components]
+  # Maximum physical volume of a large-vessel component eligible for opposite-attached cleanup  [um3; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_remove_small_opposite_attached_components]
   large_vessel_opposite_attached_max_component_volume_um3: 250.0
-  # Maximum distance from the opposite large-vessel mask for a tiny component to count as opposite-attached and be removed  [um; range 0.0..; needs use_large_vessel_masks and large_vessel_remove_small_opposite_attached_components]
+  # Maximum distance from the opposite large-vessel mask for a tiny component to count as opposite-attached and be removed  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_remove_small_opposite_attached_components]
   large_vessel_opposite_attached_max_distance_microns: 3.0
-  # At load time, remove arteriole/venule overlap voxels from the smaller overlapping connected component. Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small)  [needs use_large_vessel_masks]
+  # At load time, remove arteriole/venule overlap voxels from the smaller overlapping connected component. Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small)  [needs use_large_vessel_masks and automated_vessel_assignment]
   exclude_smaller_overlapping_volumes: false
-  # Pre-clean large arteriole/venule overlap voxels from the smaller component once before progressive terminal assignment (when overlap cleanup is enabled)  [needs use_large_vessel_masks and automated_vessel_assignment]
-  automated_vessel_assignment_fast_mode: true
   # Master switch for large-vessel overlap cleanup at assignment time. If False, cleanup is skipped even when fast mode is on  [needs use_large_vessel_masks and automated_vessel_assignment]
   automated_vessel_assignment_enable_overlap_cleanup: true
-  # When fast mode is off, still apply overlap cleanup inside each progressive assignment step (requires overlap cleanup enabled)  [needs use_large_vessel_masks and automated_vessel_assignment]
+  # Pre-clean large arteriole/venule overlap voxels from the smaller component once before progressive terminal assignment (when overlap cleanup is enabled)  [needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_enable_overlap_cleanup]
+  automated_vessel_assignment_fast_mode: true
+  # When fast mode is off, still apply overlap cleanup inside each progressive assignment step (requires overlap cleanup enabled)  [needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_enable_overlap_cleanup and automated_vessel_assignment_fast_mode off]
   automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode: false
-  # Worker count for parallel overlap tie-break resolution during large-vessel assignment (0 or 1 = sequential)  [range 0..; needs use_large_vessel_masks and automated_vessel_assignment]
+  # Worker count for parallel overlap tie-break resolution during large-vessel assignment (0 or 1 = sequential)  [range 0..; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_enable_overlap_cleanup]
   automated_vessel_overlap_parallel_workers: 8
   # Use legacy progressive large-vessel terminal assignment. Set False for confidence-based robust assignment with unresolved-node QC  [needs use_large_vessel_masks and automated_vessel_assignment]
   automated_vessel_assignment_use_legacy_mode: true
@@ -74,7 +74,7 @@ vessel_masks:
   automated_vessel_quality_max_component_count: 12
   # Conservative-mode cap for progressive dilation in robust assignment  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
   automated_vessel_conservative_max_dilation_microns: 15.0
-  # Write before/after Plotly HTML diagnostics of large-vessel masks around fast-mode overlap cleanup  [needs use_large_vessel_masks and automated_vessel_assignment]
+  # Write before/after Plotly HTML diagnostics of large-vessel masks around fast-mode overlap cleanup  [needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_fast_mode]
   write_fast_mode_preassignment_large_vessel_debug_3d_html: false
   # Block-max downsample stride for large/small vessel volume traces in the automated-assignment Plotly HTML view  [range 1..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_3d_volume_downsample_stride: 1
@@ -86,89 +86,89 @@ vessel_masks:
   orphaned_branch_max_edge_count: 3
   # After final I/O assignment, drop graph components that lack both an inlet and an outlet node  [needs automated_vessel_assignment]
   remove_disconnected_io_components_after_final_assignment: false
-  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks; must exist]
+  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
-  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks; must exist]
+  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
   large_venule_mask_path: images/large_venule_mask.tif
-  # Read this raw image as the ilastik input for the large arteriole mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
+  # Read this raw image as the ilastik input for the large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation]
   ilastik_unsegmented_arteriole_image_path: images/large_arteriole_mask.tif
-  # Read this raw image as the ilastik input for the large venule mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
+  # Read this raw image as the ilastik input for the large venule mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation]
   ilastik_unsegmented_venule_image_path: images/large_venule_mask.tif
-  # Use this trained ilastik project to segment arterioles  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation; must exist]
+  # Use this trained ilastik project to segment arterioles  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
   ilastik_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
-  # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation; must exist]
+  # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
   ilastik_venule_classifier_path: classifiers/venule_classifier.ilp
-  # Assign arteriole and venule boundary nodes from small-vessel masks
+  # Assign arteriole and venule boundary nodes from small-vessel masks  [needs automated_vessel_assignment]
   use_small_vessel_masks_for_boundary_assignment: false
-  # Produce the small-vessel masks with ilastik instead of reading pre-segmented files  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Produce the small-vessel masks with ilastik instead of reading pre-segmented files  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   use_ilastik_small_vessel_segmentation: false
-  # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment]
+  # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
-  # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then in 5 µm steps up to this value, locking each edge at the first step it is classified. There is no separate load-time small-vessel dilation setting  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
+  # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then in 5 µm steps up to this value, locking each edge at the first step it is classified. There is no separate load-time small-vessel dilation setting  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_mask_dilation_microns: 0.0
-  # Pre-clean small arteriole/venule overlap voxels from the smaller component once before progressive boundary labelling (when overlap cleanup is enabled)  [needs use_small_vessel_masks_for_boundary_assignment]
-  small_vessel_boundary_assignment_fast_mode: true
-  # Master switch for small-vessel overlap cleanup at assignment time. If False, cleanup is skipped even when fast mode is on  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Master switch for small-vessel overlap cleanup at assignment time. If False, cleanup is skipped even when fast mode is on  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_boundary_assignment_enable_overlap_cleanup: true
-  # When small-vessel fast mode is off, still apply overlap cleanup inside each progressive labelling step (requires cleanup enabled)  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Pre-clean small arteriole/venule overlap voxels from the smaller component once before progressive boundary labelling (when overlap cleanup is enabled)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_boundary_assignment_enable_overlap_cleanup]
+  small_vessel_boundary_assignment_fast_mode: true
+  # When small-vessel fast mode is off, still apply overlap cleanup inside each progressive labelling step (requires cleanup enabled)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_boundary_assignment_enable_overlap_cleanup and small_vessel_boundary_assignment_fast_mode off]
   small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode: false
-  # Worker count for parallel edge classification during small-vessel boundary assignment (0 or 1 = sequential)  [range 0..; needs use_small_vessel_masks_for_boundary_assignment]
+  # Worker count for parallel edge classification during small-vessel boundary assignment (0 or 1 = sequential)  [range 0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_boundary_assignment_enable_overlap_cleanup]
   small_vessel_overlap_parallel_workers: 8
-  # Bridge gaps in small-vessel masks with type-locked cylinder links (same-type small↔small / small↔large) before boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Bridge gaps in small-vessel masks with type-locked cylinder links (same-type small↔small / small↔large) before boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_mask_continuity_enable: false
-  # Allow continuity bridges from small components to large same-type masks  [needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Allow continuity bridges from small components to large same-type masks  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_allow_small_to_large: true
-  # Allow continuity bridges between small components of the same type  [needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Allow continuity bridges between small components of the same type  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_allow_small_to_small: true
-  # Restrict continuity bridges to cylinder-to-cylinder links only  [needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Restrict continuity bridges to cylinder-to-cylinder links only  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_enforce_cylinder_only: true
-  # Minimum cylindricality score required for a continuity bridge endpoint  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Minimum cylindricality score required for a continuity bridge endpoint  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_min_cylindricality: 0.45
-  # Maximum axis-angle (degrees) between bridged cylinder axes  [range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Maximum axis-angle (degrees) between bridged cylinder axes  [range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_max_axis_angle_degrees: 45.0
-  # Minimum facing-cosine between cylinder endpoints for a bridge  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Minimum facing-cosine between cylinder endpoints for a bridge  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_min_facing_cosine: 0.82
-  # Maximum allowed radius ratio between bridged cylinder endpoints  [range 1.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Maximum allowed radius ratio between bridged cylinder endpoints  [range 1.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_max_radius_ratio: 3.0
-  # Maximum bridge length (microns) for continuity linking  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Maximum bridge length (microns) for continuity linking  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_max_bridge_distance_microns: 35.0
-  # Maximum corridor half-width (microns) around an accepted bridge  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Maximum corridor half-width (microns) around an accepted bridge  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_corridor_max_distance_microns: 12.0
-  # Reject bridges that come within this distance of the opposite-type mask  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Reject bridges that come within this distance of the opposite-type mask  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_opposite_exclusion_distance_microns: 3.0
-  # Reassign small-vessel components that make tangential near-contact with a large-vessel mask of the opposite/same type  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Reassign small-vessel components that make tangential near-contact with a large-vessel mask of the opposite/same type  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_tangential_redefinition_enable: false
-  # Maximum contact distance (microns) for tangential redefinition  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  # Maximum contact distance (microns) for tangential redefinition  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_max_contact_distance_microns: 12.0
-  # Touch-distance threshold (microns) for tangential redefinition scoring  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  # Touch-distance threshold (microns) for tangential redefinition scoring  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_touch_distance_microns: 3.0
-  # Maximum tangency cosine for a contact to count as tangential  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  # Maximum tangency cosine for a contact to count as tangential  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_tangency_cosine_max: 0.35
-  # Minimum score margin required to switch arteriole/venule class  [range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  # Minimum score margin required to switch arteriole/venule class  [range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_margin: 0.1
-  # Worker count for parallel tangential reassignment scoring  [range 0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  # Worker count for parallel tangential reassignment scoring  [range 0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_parallel_workers: 8
-  # Optional CuPy GPU acceleration for EDT-heavy continuity / tangential-redefinition steps (falls back to CPU if unavailable)  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Optional CuPy GPU acceleration for EDT-heavy continuity / tangential-redefinition steps (falls back to CPU if unavailable)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   use_gpu_mask_continuity_acceleration: false
-  # If small-vessel mask labelling misses seed-edge coverage from inlets/outlets, fall back to nodes at a fixed hop distance  [needs use_small_vessel_masks_for_boundary_assignment]
+  # If small-vessel mask labelling misses seed-edge coverage from inlets/outlets, fall back to nodes at a fixed hop distance  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_boundary_fallback_to_hop_distance: true
-  # Hop distance used when small-vessel boundary hop-distance fallback is enabled  [range 1..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_boundary_fallback_to_hop_distance]
+  # Hop distance used when small-vessel boundary hop-distance fallback is enabled  [range 1..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_boundary_fallback_to_hop_distance]
   small_vessel_boundary_fallback_hop_distance: 1
-  # Remove connected components smaller than this physical volume from small-vessel masks before boundary assignment (set 0 to disable)  [um3; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
+  # Remove connected components smaller than this physical volume from small-vessel masks before boundary assignment (set 0 to disable)  [um3; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_min_component_volume_um3: 50.0
-  # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]
+  # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
-  # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]
+  # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
   small_arteriole_mask_path: images/small_arteriole_mask.tif
-  # Read this pre-segmented small venule mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]
+  # Read this pre-segmented small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
   small_venule_mask_path: images/small_venule_mask.tif
-  # Read this raw image as the ilastik input for the small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
+  # Read this raw image as the ilastik input for the small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation]
   ilastik_unsegmented_small_arteriole_image_path: images/small_arteriole_mask.tif
-  # Read this raw image as the ilastik input for the small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
+  # Read this raw image as the ilastik input for the small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation]
   ilastik_unsegmented_small_venule_image_path: images/small_venule_mask.tif
-  # Use this trained ilastik project to segment small arterioles  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation; must exist]
+  # Use this trained ilastik project to segment small arterioles  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist]
   ilastik_small_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
-  # Use this trained ilastik project to segment small venules  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation; must exist]
+  # Use this trained ilastik project to segment small venules  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist]
   ilastik_small_venule_classifier_path: classifiers/venule_classifier.ilp
 
 # ------------------------------------------------------------------------

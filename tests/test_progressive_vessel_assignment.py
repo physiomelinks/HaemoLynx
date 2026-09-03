@@ -115,6 +115,9 @@ def test_progressive_dilation_schema_settings_and_requires():
     assert "progressive" in small.help.lower()
     assert "load-time one-shot" in assign.help.lower()
     assert assign.requires == ("use_large_vessel_masks", "automated_vessel_assignment")
-    assert small.requires == ("use_small_vessel_masks_for_boundary_assignment",)
+    assert small.requires == (
+        "use_small_vessel_masks_for_boundary_assignment",
+        "automated_vessel_assignment",
+    )
     assert assign.default == 0.0
     assert small.default == 0.0

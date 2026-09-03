@@ -160,15 +160,21 @@ def test_vessel_mask_volume_settings_exist_with_historical_defaults():
 
     assert schema["large_vessel_min_component_volume_um3"].requires == (
         "use_large_vessel_masks",
+        "automated_vessel_assignment",
     )
     assert schema["small_vessel_min_component_volume_um3"].requires == (
         "use_small_vessel_masks_for_boundary_assignment",
+        "automated_vessel_assignment",
     )
     assert schema["large_vessel_opposite_attached_max_component_volume_um3"].requires == (
         "use_large_vessel_masks",
+        "automated_vessel_assignment",
         "large_vessel_remove_small_opposite_attached_components",
     )
     assert schema["use_large_vessel_masks"].requires == ("automated_vessel_assignment",)
+    assert schema["use_small_vessel_masks_for_boundary_assignment"].requires == (
+        "automated_vessel_assignment",
+    )
     assert schema["automated_vessel_assignment"].section == "Vessel masks"
     assert "override" in schema["automated_vessel_assignment"].help.lower()
 

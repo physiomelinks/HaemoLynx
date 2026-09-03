@@ -2651,13 +2651,19 @@ def settings_widget(napari_viewer=None):
         report.value = note
 
     def apply_prerequisites(*_args) -> None:
-        """Grey out settings whose prerequisite is unmet, and say why."""
+        """Apply schema prerequisites: hide vessel-mask rows, grey others."""
         values = current_values()
         for name, widget in rows.items():
             field = fields[name]
             enabled = field.is_enabled(values)
-            widget.enabled = enabled
-            widget.tooltip = field.help if enabled else field.why_disabled(values)
+            if field.hide_when_unmet:
+                # Boundaries vessel options: only relevant nested knobs appear.
+                widget.visible = enabled
+                widget.enabled = True
+                widget.tooltip = field.help
+            else:
+                widget.enabled = enabled
+                widget.tooltip = field.help if enabled else field.why_disabled(values)
 
     for name, value in DISPLAY_SETTINGS_OFF_IN_NAPARI.items():
         if name in rows:

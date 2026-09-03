@@ -15,6 +15,7 @@ from pathlib import Path
 from haemolynx.gui.form import (
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
+    HIDE_WHEN_UNMET_SECTIONS,
     OPTIONS_BY_WIDGET,
     WIDGET_TYPES,
     Field,
@@ -23,6 +24,7 @@ from haemolynx.gui.form import (
     label_for,
     sections_for,
     values_from,
+    visible_vessel_mask_settings,
 )
 from haemolynx.parsers import Schema, Setting
 from haemolynx.pipeline import default_schema
@@ -219,6 +221,103 @@ def test_a_row_with_no_prerequisite_is_always_enabled():
     field = field_for(Setting("always", "bool", True, "On", "S"))
     assert field.enabled_by == ()
     assert field.is_enabled({})
+
+
+def test_vessel_mask_rows_hide_when_requires_unmet_rather_than_only_greying():
+    """Boundaries vessel options disappear until their parent toggles hold."""
+    assert "Vessel masks" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    automated = fields["automated_vessel_assignment"]
+    assert not automated.hide_when_unmet
+    assert automated.is_visible({})
+
+    large = fields["use_large_vessel_masks"]
+    assert large.hide_when_unmet
+    assert large.section == "Vessel masks"
+    assert not large.is_visible({"automated_vessel_assignment": False})
+    assert large.is_visible({"automated_vessel_assignment": True})
+
+    # Non-vessel sections still show when unmet (greyed by the panel, not hidden).
+    inlet = fields["inlet_node_selection_method"]
+    assert not inlet.hide_when_unmet
+    assert inlet.is_visible({"automated_vessel_assignment": True})
+    assert not inlet.is_enabled({"automated_vessel_assignment": True})
+
+
+def test_visible_vessel_mask_settings_nests_under_automated_and_parents():
+    off = {"automated_vessel_assignment": False}
+    assert visible_vessel_mask_settings(SCHEMA, off) == {"automated_vessel_assignment"}
+
+    auto_only = {
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, auto_only)
+    assert shown == {
+        "automated_vessel_assignment",
+        "use_large_vessel_masks",
+        "use_small_vessel_masks_for_boundary_assignment",
+        "remove_disconnected_io_components_after_final_assignment",
+    }
+
+    large_on = {
+        **auto_only,
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": False,
+        "large_vessel_remove_small_opposite_attached_components": False,
+        "automated_vessel_assignment_enable_overlap_cleanup": True,
+        "automated_vessel_assignment_fast_mode": True,
+        "automated_vessel_assignment_use_legacy_mode": True,
+        "cut_network_at_large_vessel_volumes": False,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "large_arteriole_mask_path" in shown
+    assert "large_vessel_mask_dilation_microns" in shown
+    assert "automated_vessel_assignment_fast_mode" in shown
+    assert "write_fast_mode_preassignment_large_vessel_debug_3d_html" in shown
+    assert "ilastik_arteriole_classifier_path" not in shown
+    assert "automated_vessel_confidence_margin" not in shown
+    assert "orphaned_branch_max_edge_count" not in shown
+    assert "use_small_vessel_masks_for_boundary_assignment" in shown
+    assert "small_arteriole_mask_path" not in shown
+
+    large_on["automated_vessel_assignment_fast_mode"] = False
+    shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "write_fast_mode_preassignment_large_vessel_debug_3d_html" not in shown
+    assert "automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode" in shown
+
+    large_on["cut_network_at_large_vessel_volumes"] = True
+    large_on["remove_orphaned_branches_outside_large_vessel_volumes"] = False
+    shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "remove_orphaned_branches_outside_large_vessel_volumes" in shown
+    assert "orphaned_branch_max_edge_count" not in shown
+
+    large_on["remove_orphaned_branches_outside_large_vessel_volumes"] = True
+    shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "orphaned_branch_max_edge_count" in shown
+
+    small_on = {
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "use_ilastik_small_vessel_segmentation": False,
+        "small_vessel_mask_continuity_enable": False,
+        "small_vessel_tangential_redefinition_enable": False,
+        "small_vessel_boundary_assignment_enable_overlap_cleanup": True,
+        "small_vessel_boundary_assignment_fast_mode": True,
+        "small_vessel_boundary_fallback_to_hop_distance": False,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, small_on)
+    assert "small_arteriole_mask_path" in shown
+    assert "small_vessel_mask_continuity_enable" in shown
+    assert "small_vessel_mask_continuity_allow_small_to_large" not in shown
+    assert "ilastik_small_arteriole_classifier_path" not in shown
+
+    small_on["small_vessel_mask_continuity_enable"] = True
+    shown = visible_vessel_mask_settings(SCHEMA, small_on)
+    assert "small_vessel_mask_continuity_allow_small_to_large" in shown
 
 
 def test_fields_are_immutable():

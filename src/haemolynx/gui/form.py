@@ -41,6 +41,11 @@ WIDGET_TYPES = {
 DEFAULT_INT_RANGE = (-(2**31), 2**31 - 1)
 DEFAULT_FLOAT_RANGE = (-1e12, 1e12)
 
+#: Sections whose gated rows *disappear* until their ``requires`` hold, rather
+#: than staying visible and greyed. Scoped to vessel masks so Boundaries only
+#: shows the nested toggles that currently apply.
+HIDE_WHEN_UNMET_SECTIONS = frozenset({"Vessel masks"})
+
 
 @dataclass(frozen=True)
 class Field:
@@ -55,8 +60,9 @@ class Field:
     section: str
     advanced: bool
     #: Prerequisites from the schema, e.g. ``("use_ilastik_segmentation",)`` or
-    #: ``("!use_ilastik_segmentation",)``. The form greys the row out until
-    #: they hold, rather than hiding it, so a user can see why it is off.
+    #: ``("!use_ilastik_segmentation",)``. Most sections grey the row out until
+    #: they hold so a user can see why it is off. Vessel-mask rows on Boundaries
+    #: instead *hide* when unmet — see :meth:`is_visible`.
     enabled_by: tuple[str, ...]
 
     #: The kind this row came from, needed to read its value back.
@@ -93,6 +99,22 @@ class Field:
         """Whether this setting can take effect, given the other values."""
         return all(is_prerequisite_met(rule, values) for rule in self.enabled_by)
 
+    @property
+    def hide_when_unmet(self) -> bool:
+        """True when unmet prerequisites should hide this row, not grey it.
+
+        Vessel-mask options nest under ``automated_vessel_assignment`` and
+        further parent toggles; showing every greyed child makes the Boundaries
+        tab unreadable. Other sections still grey so the reason stays visible.
+        """
+        return self.section in HIDE_WHEN_UNMET_SECTIONS and bool(self.enabled_by)
+
+    def is_visible(self, values: Mapping[str, Any]) -> bool:
+        """Whether this row should appear given the other values."""
+        if self.hide_when_unmet:
+            return self.is_enabled(values)
+        return True
+
     def why_disabled(self, values: Mapping[str, Any]) -> str:
         """A sentence saying which prerequisite is unmet, for the tooltip."""
         unmet = [rule for rule in self.enabled_by if not is_prerequisite_met(rule, values)]
@@ -103,6 +125,24 @@ class Field:
             for rule in unmet
         ]
         return f"Not used while {' and '.join(parts)}."
+
+
+def visible_vessel_mask_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Vessel-mask setting names that should appear for *values*.
+
+    The root ``automated_vessel_assignment`` toggle is always included; every
+    other Vessel masks row follows its ``requires`` chain.
+    """
+    shown: set[str] = set()
+    for setting in schema:
+        if setting.section not in HIDE_WHEN_UNMET_SECTIONS:
+            continue
+        field = field_for(setting, values.get(setting.name))
+        if field.is_visible(values):
+            shown.add(field.name)
+    return shown
 
 
 def label_for(name: str, unit: str | None = None) -> str:

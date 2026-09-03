@@ -159,8 +159,10 @@ def test_continuity_schema_flags_require_small_masks():
     assert schema["use_gpu_mask_continuity_acceleration"].default is False
     assert schema["small_vessel_mask_continuity_enable"].requires == (
         "use_small_vessel_masks_for_boundary_assignment",
+        "automated_vessel_assignment",
     )
     assert schema["small_vessel_mask_continuity_allow_small_to_large"].requires == (
         "use_small_vessel_masks_for_boundary_assignment",
+        "automated_vessel_assignment",
         "small_vessel_mask_continuity_enable",
     )

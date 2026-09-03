@@ -181,7 +181,7 @@ SCHEMA = Schema(
             default=False,
             help="Produce the large-vessel masks with ilastik instead of reading pre-segmented files",
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks",),
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
             name="large_vessel_mask_dilation_microns",
@@ -196,7 +196,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             minimum=0.0,
             unit="um",
-            requires=("use_large_vessel_masks",),
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
             name="large_vessel_assignment_max_dilation_microns",
@@ -224,7 +224,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             minimum=0.0,
             unit="um3",
-            requires=("use_large_vessel_masks",),
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
             name="large_vessel_remove_small_opposite_attached_components",
@@ -235,7 +235,7 @@ SCHEMA = Schema(
                 "opposite-type mask surface (suppresses small mislabelled attachments)"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks",),
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
             name="large_vessel_opposite_attached_max_component_volume_um3",
@@ -250,6 +250,7 @@ SCHEMA = Schema(
             unit="um3",
             requires=(
                 "use_large_vessel_masks",
+                "automated_vessel_assignment",
                 "large_vessel_remove_small_opposite_attached_components",
             ),
         ),
@@ -266,6 +267,7 @@ SCHEMA = Schema(
             unit="um",
             requires=(
                 "use_large_vessel_masks",
+                "automated_vessel_assignment",
                 "large_vessel_remove_small_opposite_attached_components",
             ),
         ),
@@ -279,18 +281,6 @@ SCHEMA = Schema(
                 "is controlled separately by "
                 "automated_vessel_assignment_enable_overlap_cleanup / fast_mode "
                 "(large) and small_vessel_boundary_assignment_* (small)"
-            ),
-            section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks",),
-        ),
-        Setting(
-            name="automated_vessel_assignment_fast_mode",
-            kind="bool",
-            default=True,
-            help=(
-                "Pre-clean large arteriole/venule overlap voxels from the smaller "
-                "component once before progressive terminal assignment (when "
-                "overlap cleanup is enabled)"
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
@@ -307,6 +297,22 @@ SCHEMA = Schema(
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
+            name="automated_vessel_assignment_fast_mode",
+            kind="bool",
+            default=True,
+            help=(
+                "Pre-clean large arteriole/venule overlap voxels from the smaller "
+                "component once before progressive terminal assignment (when "
+                "overlap cleanup is enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "automated_vessel_assignment_enable_overlap_cleanup",
+            ),
+        ),
+        Setting(
             name="automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode",
             kind="bool",
             default=False,
@@ -315,7 +321,12 @@ SCHEMA = Schema(
                 "progressive assignment step (requires overlap cleanup enabled)"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "automated_vessel_assignment_enable_overlap_cleanup",
+                "!automated_vessel_assignment_fast_mode",
+            ),
         ),
         Setting(
             name="automated_vessel_overlap_parallel_workers",
@@ -327,7 +338,11 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             minimum=0,
-            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "automated_vessel_assignment_enable_overlap_cleanup",
+            ),
         ),
         Setting(
             name="automated_vessel_assignment_use_legacy_mode",
@@ -451,7 +466,11 @@ SCHEMA = Schema(
                 "around fast-mode overlap cleanup"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "automated_vessel_assignment_fast_mode",
+            ),
         ),
         Setting(
             name="large_vessel_3d_volume_downsample_stride",
@@ -529,7 +548,11 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/large_arteriole_mask.tif",
             help="Read this pre-segmented large arteriole mask",
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks",),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_ilastik_large_vessel_segmentation",
+            ),
             must_exist=True,
         ),
         Setting(
@@ -538,7 +561,11 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/large_venule_mask.tif",
             help="Read this pre-segmented large venule mask",
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks",),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_ilastik_large_vessel_segmentation",
+            ),
             must_exist=True,
         ),
         Setting(
@@ -547,7 +574,11 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/large_arteriole_mask.tif",
             help="Read this raw image as the ilastik input for the large arteriole mask",
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
         ),
         Setting(
             name="ilastik_unsegmented_venule_image_path",
@@ -555,7 +586,11 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/large_venule_mask.tif",
             help="Read this raw image as the ilastik input for the large venule mask",
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
         ),
         Setting(
             name="ilastik_arteriole_classifier_path",
@@ -563,7 +598,11 @@ SCHEMA = Schema(
             default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
             help="Use this trained ilastik project to segment arterioles",
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
             must_exist=True,
         ),
         Setting(
@@ -572,7 +611,11 @@ SCHEMA = Schema(
             default=f"{_CLASSIFIERS}/venule_classifier.ilp",
             help="Use this trained ilastik project to segment venules",
             section=_VESSEL_MASKS,
-            requires=("use_large_vessel_masks", "use_ilastik_large_vessel_segmentation"),
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
             must_exist=True,
         ),
         Setting(
@@ -580,6 +623,7 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help="Assign arteriole and venule boundary nodes from small-vessel masks",
+            requires=("automated_vessel_assignment",),
             section=_VESSEL_MASKS,
         ),
         Setting(
@@ -588,7 +632,7 @@ SCHEMA = Schema(
             default=False,
             help="Produce the small-vessel masks with ilastik instead of reading pre-segmented files",
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="small_vessel_mask_min_overlap_fraction",
@@ -599,7 +643,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="small_vessel_mask_dilation_microns",
@@ -614,7 +658,18 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             minimum=0.0,
             unit="um",
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="small_vessel_boundary_assignment_enable_overlap_cleanup",
+            kind="bool",
+            default=True,
+            help=(
+                "Master switch for small-vessel overlap cleanup at assignment time. "
+                "If False, cleanup is skipped even when fast mode is on"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="small_vessel_boundary_assignment_fast_mode",
@@ -626,18 +681,11 @@ SCHEMA = Schema(
                 "overlap cleanup is enabled)"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
-        ),
-        Setting(
-            name="small_vessel_boundary_assignment_enable_overlap_cleanup",
-            kind="bool",
-            default=True,
-            help=(
-                "Master switch for small-vessel overlap cleanup at assignment time. "
-                "If False, cleanup is skipped even when fast mode is on"
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_boundary_assignment_enable_overlap_cleanup",
             ),
-            section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
         ),
         Setting(
             name="small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode",
@@ -648,7 +696,12 @@ SCHEMA = Schema(
                 "inside each progressive labelling step (requires cleanup enabled)"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_boundary_assignment_enable_overlap_cleanup",
+                "!small_vessel_boundary_assignment_fast_mode",
+            ),
         ),
         Setting(
             name="small_vessel_overlap_parallel_workers",
@@ -660,7 +713,11 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             minimum=0,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_boundary_assignment_enable_overlap_cleanup",
+            ),
         ),
         Setting(
             name="small_vessel_mask_continuity_enable",
@@ -671,7 +728,7 @@ SCHEMA = Schema(
                 "(same-type small↔small / small↔large) before boundary labelling"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="small_vessel_mask_continuity_allow_small_to_large",
@@ -681,6 +738,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -692,6 +750,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -703,6 +762,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -716,6 +776,7 @@ SCHEMA = Schema(
             maximum=1.0,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -728,6 +789,7 @@ SCHEMA = Schema(
             minimum=0.0,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -741,6 +803,7 @@ SCHEMA = Schema(
             maximum=1.0,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -753,6 +816,7 @@ SCHEMA = Schema(
             minimum=1.0,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -766,6 +830,7 @@ SCHEMA = Schema(
             unit="um",
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -779,6 +844,7 @@ SCHEMA = Schema(
             unit="um",
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -794,6 +860,7 @@ SCHEMA = Schema(
             unit="um",
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
         ),
@@ -806,7 +873,7 @@ SCHEMA = Schema(
                 "with a large-vessel mask of the opposite/same type"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="small_vessel_tangential_redefinition_max_contact_distance_microns",
@@ -818,6 +885,7 @@ SCHEMA = Schema(
             unit="um",
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
         ),
@@ -831,6 +899,7 @@ SCHEMA = Schema(
             unit="um",
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
         ),
@@ -844,6 +913,7 @@ SCHEMA = Schema(
             maximum=1.0,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
         ),
@@ -856,6 +926,7 @@ SCHEMA = Schema(
             minimum=0.0,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
         ),
@@ -868,6 +939,7 @@ SCHEMA = Schema(
             minimum=0,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
         ),
@@ -880,7 +952,7 @@ SCHEMA = Schema(
                 "tangential-redefinition steps (falls back to CPU if unavailable)"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="small_vessel_boundary_fallback_to_hop_distance",
@@ -891,7 +963,7 @@ SCHEMA = Schema(
                 "inlets/outlets, fall back to nodes at a fixed hop distance"
             ),
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="small_vessel_boundary_fallback_hop_distance",
@@ -902,6 +974,7 @@ SCHEMA = Schema(
             minimum=1,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "small_vessel_boundary_fallback_to_hop_distance",
             ),
         ),
@@ -916,7 +989,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             minimum=0.0,
             unit="um3",
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="write_small_vessel_boundary_labelling_3d_html",
@@ -924,7 +997,7 @@ SCHEMA = Schema(
             default=True,
             help="Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling",
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
         Setting(
             name="small_arteriole_mask_path",
@@ -932,7 +1005,11 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/small_arteriole_mask.tif",
             help="Read this pre-segmented small arteriole mask",
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "!use_ilastik_small_vessel_segmentation",
+            ),
             must_exist=True,
         ),
         Setting(
@@ -941,7 +1018,11 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/small_venule_mask.tif",
             help="Read this pre-segmented small venule mask",
             section=_VESSEL_MASKS,
-            requires=("use_small_vessel_masks_for_boundary_assignment",),
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "!use_ilastik_small_vessel_segmentation",
+            ),
             must_exist=True,
         ),
         Setting(
@@ -952,6 +1033,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "use_ilastik_small_vessel_segmentation",
             ),
         ),
@@ -963,6 +1045,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "use_ilastik_small_vessel_segmentation",
             ),
         ),
@@ -974,6 +1057,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "use_ilastik_small_vessel_segmentation",
             ),
             must_exist=True,
@@ -986,6 +1070,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
                 "use_ilastik_small_vessel_segmentation",
             ),
             must_exist=True,
