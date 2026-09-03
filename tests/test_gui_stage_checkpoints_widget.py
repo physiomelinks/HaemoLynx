@@ -186,3 +186,80 @@ def test_clear_layers_forgets_checkpoints_and_disables_revert(panel):
 
     assert widget._haemolynx_checkpoints.stages == ()
     assert widget._haemolynx_revert_buttons["5. Diameters"].enabled is False
+
+
+def test_revert_from_every_later_tab_selects_the_restored_tab(panel):
+    """For every tab K with a predecessor M, revert on K lands on M — not back on K."""
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.gui.stage_checkpoints import revert_target_stage
+
+    widget, viewer, _tmp = panel
+    titles = pipeline_tab_titles()
+    tabs = widget._haemolynx_tabs
+
+    for index in range(1, len(titles)):
+        current = titles[index]
+        restored = titles[index - 1]
+        if current not in widget._haemolynx_revert_buttons:
+            continue
+        # Fresh run through solve so every recorded predecessor exists.
+        _seed_run(widget, viewer, through="solve")
+        target = revert_target_stage(current)
+        if target is None or not widget._haemolynx_checkpoints.has(target):
+            # Seed stops at solve; Export wants run_perturbations, etc.
+            continue
+
+        tabs.setCurrentIndex(index)
+        widget._haemolynx_revert(current)
+        QApplication.processEvents()
+
+        assert tabs.tabText(tabs.currentIndex()) == restored, (
+            f"revert on {current!r} should select {restored!r}, "
+            f"got {tabs.tabText(tabs.currentIndex())!r}"
+        )
+
+
+def test_clicking_revert_on_boundaries_stays_on_graph_not_boundaries(panel):
+    """Native button click must not bounce the UI back to the tab that owned Revert."""
+    from qtpy.QtWidgets import QApplication
+
+    widget, viewer, _tmp = panel
+    _seed_run(widget, viewer, through="assign_diameters")
+    tabs = widget._haemolynx_tabs
+    titles = [tabs.tabText(i) for i in range(tabs.count())]
+    tabs.setCurrentIndex(titles.index("4. Boundaries"))
+
+    widget._haemolynx_revert_buttons["4. Boundaries"].native.click()
+    QApplication.processEvents()
+
+    assert tabs.tabText(tabs.currentIndex()) == "3. Graph"
+    rows = widget._haemolynx_rows()
+    assert rows["do_skeletonize"].value is False
+    assert rows["do_graph_building"].value is False
+
+
+def test_after_revert_to_graph_cached_artefacts_pass_preflight(panel):
+    """Revert to end of Graph must leave Run able to continue from Boundaries."""
+    from haemolynx.pipeline import default_schema, preflight, resolve_settings
+    from haemolynx.pipeline.checks import check_cached_artefacts
+
+    widget, viewer, tmp_path = panel
+    _seed_run(widget, viewer, through="assign_diameters")
+    rows = widget._haemolynx_rows()
+    rows["do_skeletonize"].value = True
+    rows["do_graph_building"].value = True
+
+    widget._haemolynx_revert("4. Boundaries")
+
+    assert rows["do_skeletonize"].value is False
+    assert rows["do_graph_building"].value is False
+    settings = resolve_settings(
+        widget._haemolynx_values(), schema=default_schema(), config_path=None
+    )
+    cached = check_cached_artefacts(settings)
+    assert cached.ok, cached.errors
+    # Full preflight may still fail on missing input_path files in the temp
+    # form; the resume-specific failure mode was the cached-artefact check.
+    assert list(tmp_path.rglob("*_skeleton.npy")), "skeleton.npy missing after revert"
+    assert list(tmp_path.rglob("*_graph.pkl")), "graph.pkl missing after revert"

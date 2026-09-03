@@ -565,6 +565,51 @@ def test_loading_a_config_with_a_long_spaced_path_round_trips(
     assert Path(panel._haemolynx_values()["input_path"]) == absolute
 
 
+def test_panel_save_config_round_trips_long_paths_with_spaces(
+    make_napari_viewer, tmp_path
+):
+    """The panel's Save path must write YAML the same Load can read back.
+
+    Exercises ``_haemolynx_save_config`` (what "Save config..." calls after the
+    file dialogue) with FileEdit-absolutised Windows paths containing spaces.
+    """
+    make_napari_viewer()
+    panel = settings_widget()
+    rows = panel._haemolynx_rows()
+
+    absolute = (
+        tmp_path
+        / "Dropbox"
+        / (
+            "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_"
+            "zstack_spot1_1p5z_MCAregion_Simple Segmentation_.tiff"
+        )
+    )
+    absolute.parent.mkdir(parents=True, exist_ok=True)
+    absolute.write_bytes(b"")
+    arteriole = absolute.with_name(
+        absolute.name.replace("_.tiff", "_arteriole.tiff")
+    )
+    arteriole.write_bytes(b"")
+
+    rows["input_path"].value = absolute
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["large_arteriole_mask_path"].value = arteriole
+
+    saved = tmp_path / "from_panel.yaml"
+    assert panel._haemolynx_save_config(saved) is True
+    assert "Could not save" not in panel._haemolynx_report()
+    text = saved.read_text(encoding="utf-8")
+    assert "\n  Segmentation_.tiff" not in text
+    assert "\n  Segmentation_arteriole.tiff" not in text
+
+    panel._haemolynx_load_config(saved)
+    assert "Could not load" not in panel._haemolynx_report()
+    assert Path(panel._haemolynx_values()["input_path"]) == absolute
+    assert Path(panel._haemolynx_values()["large_arteriole_mask_path"]) == arteriole
+
+
 def test_loading_a_config_for_a_different_schema_reports_instead_of_raising(
     make_napari_viewer,
 ):

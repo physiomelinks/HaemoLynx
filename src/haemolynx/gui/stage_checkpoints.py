@@ -5,11 +5,13 @@ what that stage put in the viewer and a pickle of the graph (when there is
 one), using the same ``pickle.dump`` path the pipeline already uses for
 ``{stem}_graph.pkl`` and for ``save_graph_snapshot``.
 
-**What "previous tab" means.** Standing on tab *N* and pressing "Revert to
-previous stage" restores the checkpoint taken at the **end** of tab *N−1*.
-Tabs follow :func:`~haemolynx.gui.tabs.tab_titles`; a stage that shares
-another's tab (``solve`` on Haemodynamics) does not open one of its own, so
-the Haemodynamics tab's end-of-tab checkpoint is ``solve``, not
+**What "previous tab" means.** Standing on tab *K* and pressing "Revert to
+previous stage" restores the checkpoint taken at the **end** of tab *M*
+(the predecessor). The panel then selects tab *M* — the restored stage —
+and must not bounce back to tab *K*. Tabs follow
+:func:`~haemolynx.gui.tabs.tab_titles`; a stage that shares another's tab
+(``solve`` on Haemodynamics) does not open one of its own, so the
+Haemodynamics tab's end-of-tab checkpoint is ``solve``, not
 ``build_haemodynamic_model``.
 
 **What is restored.** The viewer layers for that earlier stage (by replaying
@@ -18,7 +20,10 @@ checkpoints from the start through the target), the
 checkpoint carries a graph at or after ``build_network`` -- the on-disk
 ``{stem}_graph.pkl`` plus the ``do_skeletonize`` / ``do_graph_building``
 toggles so the next Run loads that graph and continues from later stages
-rather than rebuilding topology.
+rather than rebuilding topology. Preflight requires ``{stem}_skeleton.npy``
+whenever ``do_skeletonize`` is off, so resume also ensures that artefact
+exists (re-writing it from the skeletonise checkpoint layers when needed)
+before naming ``do_skeletonize`` among the skip toggles.
 """
 from __future__ import annotations
 
@@ -28,6 +33,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+
+from haemolynx.gui.results import SKELETON
 from haemolynx.gui.tabs import tab_title, tab_titles
 from haemolynx.pipeline.progress import STAGES
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
@@ -50,6 +58,64 @@ GRAPH_RESUME_STAGES = frozenset(
 
 SKIP_FOR_RESUME = ("do_skeletonize", "do_graph_building")
 
+
+def skeleton_resume_path(output_dir: Path, stem: str) -> Path:
+    """The ``.npy`` ``do_skeletonize=False`` already loads (and preflight checks)."""
+    return Path(output_dir) / f"{stem}_skeleton.npy"
+
+
+def _skeleton_array_from_groups(groups: Sequence[Any]) -> Any | None:
+    """Skeleton volume stored in a replayed checkpoint group, if any."""
+    for group in groups:
+        for spec in getattr(group, "layers", ()) or ():
+            if getattr(spec, "name", None) == SKELETON and getattr(spec, "data", None) is not None:
+                return spec.data
+    return None
+
+
+def ensure_skeleton_artefact(
+    groups: Sequence[Any],
+    output_dir: Path,
+    stem: str,
+) -> Path | None:
+    """Make sure ``{stem}_skeleton.npy`` exists for a resumed Run.
+
+    Returns the path when the file is (or was made) present, else None.
+    Without it, turning ``do_skeletonize`` off fails preflight and the user
+    cannot continue from the next tab after a revert.
+    """
+    path = skeleton_resume_path(output_dir, stem)
+    if path.is_file():
+        return path
+    skeleton = _skeleton_array_from_groups(groups)
+    if skeleton is None:
+        return None
+    try:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        np.save(path, np.asarray(skeleton))
+        logger.info("Wrote resumed skeleton for next Run to %s", path)
+        return path
+    except Exception:  # noqa: BLE001 - leave do_skeletonize on if we cannot write
+        logger.exception("could not write resumed skeleton %s", path)
+        return None
+
+
+def skip_settings_for_resume(
+    *,
+    graph_written: bool,
+    skeleton_ready: bool,
+) -> tuple[str, ...]:
+    """Which stage toggles to turn off after a successful graph resume write.
+
+    ``do_graph_building`` is safe whenever the graph pickle was written.
+    ``do_skeletonize`` is only safe when the matching ``.npy`` is on disk —
+    otherwise preflight blocks the next Run.
+    """
+    if not graph_written:
+        return ()
+    if skeleton_ready:
+        return SKIP_FOR_RESUME
+    return ("do_graph_building",)
 
 @dataclass(frozen=True)
 class StageCheckpoint:
@@ -262,7 +328,14 @@ class StageCheckpoints:
                     graph_path,
                     target,
                 )
-                skip = SKIP_FOR_RESUME
+                # Preflight refuses do_skeletonize=False without the .npy; write
+                # it from the skeletonise checkpoint layers when the file is gone
+                # (or was never beside this vtk_output_prefix).
+                skeleton_path = ensure_skeleton_artefact(groups, output_dir, stem)
+                skip = skip_settings_for_resume(
+                    graph_written=True,
+                    skeleton_ready=skeleton_path is not None,
+                )
 
         # Drop checkpoints after the target: they describe a future that no
         # longer matches the viewer or the graph on disk.
@@ -278,6 +351,8 @@ class StageCheckpoints:
             checkpoint=checkpoint,
             skip_settings=skip,
             graph_path=graph_path,
+            # Select the restored stage's tab (M), not the tab whose Revert
+            # button was pressed (K).
             tab_title=previous,
         )
 

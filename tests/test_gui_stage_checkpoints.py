@@ -13,7 +13,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.gui.results import ResultLayers, StageLayers
+from haemolynx.gui.results import ResultLayers, StageLayers, LayerSpec, SKELETON
 from haemolynx.gui.stage_checkpoints import (
     GRAPH_RESUME_STAGES,
     SKIP_FOR_RESUME,
@@ -24,6 +24,8 @@ from haemolynx.gui.stage_checkpoints import (
     previous_tab,
     restore_message,
     revert_target_stage,
+    skeleton_resume_path,
+    skip_settings_for_resume,
     tab_end_stage,
 )
 from haemolynx.gui.tabs import tab_titles
@@ -167,7 +169,12 @@ def test_plan_restore_replays_groups_through_the_previous_tab(tmp_path):
     assert checkpoints.has("assign_boundaries")
 
 
-def test_plan_restore_writes_graph_pkl_and_names_skip_settings(tmp_path):
+def test_plan_restore_writes_graph_pkl_and_skips_graph_building(tmp_path):
+    """Without a skeleton artefact, only graph building is skipped — not skeletonise.
+
+    Preflight errors if do_skeletonize is off and the .npy is missing; resume
+    must not put the panel in that state.
+    """
     checkpoints = StageCheckpoints()
     graph = a_graph(resistance=1.0)
     results = built(graph)
@@ -184,12 +191,69 @@ def test_plan_restore_writes_graph_pkl_and_names_skip_settings(tmp_path):
 
     assert plan is not None
     assert plan.stage == "assign_diameters"
-    assert plan.skip_settings == SKIP_FOR_RESUME
+    assert plan.skip_settings == ("do_graph_building",)
     assert plan.graph_path == graph_resume_path(tmp_path / "out", "stack")
     assert plan.graph_path.is_file()
     with plan.graph_path.open("rb") as handle:
         restored = pickle.load(handle)
     assert restored.edges[0, 1, 0]["resistance"] == 1.0
+
+
+def test_plan_restore_writes_skeleton_npy_so_both_skip_toggles_are_safe(tmp_path):
+    """Resume from a graph stage must leave preflight happy for both skip toggles."""
+    checkpoints = StageCheckpoints()
+    graph = a_graph(resistance=1.0)
+    results = built(graph)
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton = np.zeros((2, 3, 4), dtype=bool)
+    skeleton_group = StageLayers(
+        stage="skeletonise",
+        title="2. Skeletonise",
+        layers=(
+            LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),
+        ),
+    )
+    checkpoints.record("skeletonise", skeleton_group, results, settings=settings)
+    checkpoints.record(
+        "build_network",
+        _group("build_network", "3. Graph"),
+        results,
+        settings=settings,
+    )
+    checkpoints.record(
+        "assign_boundaries",
+        _group("assign_boundaries", "4. Boundaries"),
+        results,
+        settings=settings,
+    )
+
+    plan = checkpoints.plan_restore("4. Boundaries", settings=settings)
+
+    assert plan is not None
+    assert plan.tab_title == "3. Graph"
+    assert plan.skip_settings == SKIP_FOR_RESUME
+    skel_path = skeleton_resume_path(tmp_path / "out", "stack")
+    assert skel_path.is_file()
+    assert np.array_equal(np.load(skel_path), skeleton)
+
+
+def test_revert_from_every_tab_selects_the_restored_predecessor_tab():
+    """Revert on tab K restores end of M and names M as the tab to show — for every pair."""
+    titles = tab_titles()
+    for index in range(1, len(titles)):
+        current = titles[index]
+        restored = titles[index - 1]
+        assert previous_tab(current) == restored
+        assert revert_target_stage(current) == tab_end_stage(restored)
+
+
+def test_skip_settings_for_resume_requires_skeleton_before_disabling_skeletonize():
+    assert skip_settings_for_resume(graph_written=False, skeleton_ready=True) == ()
+    assert skip_settings_for_resume(graph_written=True, skeleton_ready=False) == (
+        "do_graph_building",
+    )
+    assert skip_settings_for_resume(graph_written=True, skeleton_ready=True) == SKIP_FOR_RESUME
 
 
 def test_plan_restore_from_input_tab_is_impossible():

@@ -2846,6 +2846,21 @@ def settings_widget(napari_viewer=None):
             return
         load_config_file(path)
 
+    def save_config_file(path: Path | str) -> bool:
+        """Write the panel's current settings to *path*.
+
+        Returns True when the file was written. Failures (schema validation,
+        I/O, still-broken YAML edge cases) are reported in the panel rather
+        than raised through the Qt/psygnal signal — same contract as load.
+        """
+        try:
+            dump_config(Path(path), schema, values=current_values())
+        except Exception as error:
+            report.value = f"Could not save {path}:\n{error}"
+            return False
+        report.value = f"Wrote {path}"
+        return True
+
     def on_save() -> None:
         from qtpy.QtWidgets import QFileDialog
 
@@ -2854,12 +2869,7 @@ def settings_widget(napari_viewer=None):
         )
         if not path:
             return
-        try:
-            dump_config(Path(path), schema, values=current_values())
-        except Exception as error:
-            report.value = f"Could not save {path}:\n{error}"
-            return
-        report.value = f"Wrote {path}"
+        save_config_file(path)
 
     def on_check() -> None:
         result = preflight(_settings(), schema)
@@ -2976,11 +2986,23 @@ def settings_widget(napari_viewer=None):
             if name in rows:
                 rows[name].value = False
         apply_prerequisites()
-        # Select the previous tab so the settings the restored state belongs
-        # with are the ones on screen.
-        titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
-        if plan.tab_title in titles:
-            tab_widget.setCurrentIndex(titles.index(plan.tab_title))
+
+        def select_restored_tab() -> None:
+            """Show the restored stage's tab (M), not the tab that owned Revert (K).
+
+            Selecting immediately covers programmatic / test calls. Scheduling
+            again on the next event-loop tick covers a Qt click quirk: finishing
+            a button press on tab K can restore that tab's page after we have
+            already moved to M, which looked like "revert bounced back".
+            """
+            titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+            if plan.tab_title in titles:
+                tab_widget.setCurrentIndex(titles.index(plan.tab_title))
+
+        select_restored_tab()
+        from qtpy.QtCore import QTimer
+
+        QTimer.singleShot(0, select_restored_tab)
         refresh_revert_buttons()
         report.value = restore_message(plan)
 
@@ -3022,6 +3044,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_view = view
     panel._haemolynx_show_results = show_results
     panel._haemolynx_load_config = load_config_file
+    panel._haemolynx_save_config = save_config_file
     panel._haemolynx_report = lambda: report.value
     panel._haemolynx_rows = lambda: rows
     panel._haemolynx_boundaries = boundaries
