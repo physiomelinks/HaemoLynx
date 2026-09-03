@@ -67,6 +67,10 @@ SCHEMA = Schema(
         # ------------------------------------------------------------------
         # Input and segmentation
         # ------------------------------------------------------------------
+        # The napari Input tab hides gated rows (``input_path`` vs main-ilastik
+        # children) until ``use_ilastik_segmentation`` applies. Shared
+        # executable / output knobs stay visible: vessel-mask ilastik on
+        # Boundaries also reads them, and schema ``requires`` cannot OR.
         Setting(
             name="input_path",
             # No default: there is no image every run should read, and a
@@ -1920,6 +1924,7 @@ SCHEMA = Schema(
             help="Override capillary diameters per branch-order label, e.g. B01",
             section=_DIAMETERS_AND_PERICYTES,
             unit="um",
+            requires=("!all_diams_const",),
         ),
         Setting(
             name="manual_arteriole_diameter_by_branch_order",
@@ -1928,6 +1933,7 @@ SCHEMA = Schema(
             help="Override arteriole diameters per branch-order label, e.g. Art1",
             section=_DIAMETERS_AND_PERICYTES,
             unit="um",
+            requires=("!all_diams_const",),
         ),
         Setting(
             name="manual_venule_diameter_by_branch_order",
@@ -1936,6 +1942,7 @@ SCHEMA = Schema(
             help="Override venule diameters per branch-order label, e.g. Ven1",
             section=_DIAMETERS_AND_PERICYTES,
             unit="um",
+            requires=("!all_diams_const",),
         ),
         Setting(
             name="diameter_by_branch_order",
@@ -1945,6 +1952,7 @@ SCHEMA = Schema(
             section=_DIAMETERS_AND_PERICYTES,
             unit="um",
             advanced=True,
+            requires=("!all_diams_const",),
         ),
         Setting(
             name="pericyte_constriction_factor",

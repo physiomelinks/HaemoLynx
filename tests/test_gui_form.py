@@ -24,6 +24,7 @@ from haemolynx.gui.form import (
     label_for,
     sections_for,
     values_from,
+    visible_input_segmentation_settings,
     visible_vessel_mask_settings,
 )
 from haemolynx.parsers import Schema, Setting
@@ -238,11 +239,60 @@ def test_vessel_mask_rows_hide_when_requires_unmet_rather_than_only_greying():
     assert not large.is_visible({"automated_vessel_assignment": False})
     assert large.is_visible({"automated_vessel_assignment": True})
 
-    # Non-vessel sections still show when unmet (greyed by the panel, not hidden).
+    # Non-vessel sections still show when unmet (greyed by the panel, not hidden)
+    # unless they are themselves a hide-when-unmet section (Input).
     inlet = fields["inlet_node_selection_method"]
     assert not inlet.hide_when_unmet
     assert inlet.is_visible({"automated_vessel_assignment": True})
     assert not inlet.is_enabled({"automated_vessel_assignment": True})
+
+
+def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
+    """Input swaps segmented-file vs main-ilastik children; shared knobs stay."""
+    assert "Input and segmentation" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    toggle = fields["use_ilastik_segmentation"]
+    assert not toggle.hide_when_unmet
+    assert toggle.is_visible({})
+
+    input_path = fields["input_path"]
+    assert input_path.hide_when_unmet
+    assert input_path.is_visible({"use_ilastik_segmentation": False})
+    assert not input_path.is_visible({"use_ilastik_segmentation": True})
+
+    for name in ("ilastik_unsegmented_image_path", "ilastik_classifier_path"):
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert not child.is_visible({"use_ilastik_segmentation": False}), name
+        assert child.is_visible({"use_ilastik_segmentation": True}), name
+
+    # Shared across main / large / small ilastik — no requires, so always shown.
+    for name in ("ilastik_executable", "ilastik_output_dir", "ilastik_output_suffix"):
+        shared = fields[name]
+        assert not shared.hide_when_unmet, name
+        assert shared.is_visible({"use_ilastik_segmentation": False}), name
+        assert shared.is_visible({"use_ilastik_segmentation": True}), name
+
+
+def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
+    off = {"use_ilastik_segmentation": False}
+    shown_off = visible_input_segmentation_settings(SCHEMA, off)
+    assert "use_ilastik_segmentation" in shown_off
+    assert "input_path" in shown_off
+    assert "ilastik_unsegmented_image_path" not in shown_off
+    assert "ilastik_classifier_path" not in shown_off
+    assert "ilastik_executable" in shown_off
+    assert "ilastik_output_dir" in shown_off
+    assert "voxel_size_override_xyz" in shown_off
+
+    on = {"use_ilastik_segmentation": True}
+    shown_on = visible_input_segmentation_settings(SCHEMA, on)
+    assert "input_path" not in shown_on
+    assert "ilastik_unsegmented_image_path" in shown_on
+    assert "ilastik_classifier_path" in shown_on
+    assert "ilastik_executable" in shown_on
+    assert "use_ilastik_segmentation" in shown_on
 
 
 def test_visible_vessel_mask_settings_nests_under_automated_and_parents():

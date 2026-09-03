@@ -42,9 +42,15 @@ DEFAULT_INT_RANGE = (-(2**31), 2**31 - 1)
 DEFAULT_FLOAT_RANGE = (-1e12, 1e12)
 
 #: Sections whose gated rows *disappear* until their ``requires`` hold, rather
-#: than staying visible and greyed. Scoped to vessel masks so Boundaries only
-#: shows the nested toggles that currently apply.
-HIDE_WHEN_UNMET_SECTIONS = frozenset({"Vessel masks"})
+#: than staying visible and greyed. Input swaps segmented-file vs ilastik
+#: children; Vessel masks nests under ``automated_vessel_assignment``;
+#: Diameters nests constant vs per-order tables and FWHM under its parents.
+HIDE_WHEN_UNMET_SECTIONS = frozenset({
+    "Input and segmentation",
+    "Vessel masks",
+    "Diameters and pericytes",
+    "FWHM diameter measurement",
+})
 
 
 @dataclass(frozen=True)
@@ -61,7 +67,7 @@ class Field:
     advanced: bool
     #: Prerequisites from the schema, e.g. ``("use_ilastik_segmentation",)`` or
     #: ``("!use_ilastik_segmentation",)``. Most sections grey the row out until
-    #: they hold so a user can see why it is off. Vessel-mask rows on Boundaries
+    #: they hold so a user can see why it is off. Input and Vessel masks rows
     #: instead *hide* when unmet — see :meth:`is_visible`.
     enabled_by: tuple[str, ...]
 
@@ -103,9 +109,9 @@ class Field:
     def hide_when_unmet(self) -> bool:
         """True when unmet prerequisites should hide this row, not grey it.
 
-        Vessel-mask options nest under ``automated_vessel_assignment`` and
-        further parent toggles; showing every greyed child makes the Boundaries
-        tab unreadable. Other sections still grey so the reason stays visible.
+        Input ilastik children and Vessel-mask options nest under parent
+        toggles; showing every greyed child makes those tabs unreadable.
+        Other sections still grey so the reason stays visible.
         """
         return self.section in HIDE_WHEN_UNMET_SECTIONS and bool(self.enabled_by)
 
@@ -127,6 +133,20 @@ class Field:
         return f"Not used while {' and '.join(parts)}."
 
 
+def _visible_settings_in_section(
+    schema: Schema, values: Mapping[str, Any], section: str
+) -> set[str]:
+    """Setting names in *section* that should appear for *values*."""
+    shown: set[str] = set()
+    for setting in schema:
+        if setting.section != section:
+            continue
+        field = field_for(setting, values.get(setting.name))
+        if field.is_visible(values):
+            shown.add(field.name)
+    return shown
+
+
 def visible_vessel_mask_settings(
     schema: Schema, values: Mapping[str, Any]
 ) -> set[str]:
@@ -135,14 +155,18 @@ def visible_vessel_mask_settings(
     The root ``automated_vessel_assignment`` toggle is always included; every
     other Vessel masks row follows its ``requires`` chain.
     """
-    shown: set[str] = set()
-    for setting in schema:
-        if setting.section not in HIDE_WHEN_UNMET_SECTIONS:
-            continue
-        field = field_for(setting, values.get(setting.name))
-        if field.is_visible(values):
-            shown.add(field.name)
-    return shown
+    return _visible_settings_in_section(schema, values, "Vessel masks")
+
+
+def visible_input_segmentation_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Input-tab setting names that should appear for *values*.
+
+    Ungated rows (toggle, shared ilastik executable/output, voxel metadata)
+    stay; ``input_path`` vs main-ilastik children follow ``use_ilastik_segmentation``.
+    """
+    return _visible_settings_in_section(schema, values, "Input and segmentation")
 
 
 def label_for(name: str, unit: str | None = None) -> str:

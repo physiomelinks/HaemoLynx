@@ -520,6 +520,27 @@ def test_vessel_mask_fields_on_boundaries_declare_hide_when_unmet():
             assert not field.is_visible({"automated_vessel_assignment": False}), field.name
 
 
+def test_input_ilastik_fields_declare_hide_when_unmet():
+    """Main-ilastik children on Input hide until use_ilastik_segmentation."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["1. Input"].fields}
+
+    assert not fields["use_ilastik_segmentation"].hide_when_unmet
+    assert fields["input_path"].hide_when_unmet
+    assert fields["ilastik_unsegmented_image_path"].hide_when_unmet
+    assert fields["ilastik_classifier_path"].hide_when_unmet
+
+    off = {"use_ilastik_segmentation": False}
+    assert fields["input_path"].is_visible(off)
+    assert not fields["ilastik_unsegmented_image_path"].is_visible(off)
+    assert not fields["ilastik_classifier_path"].is_visible(off)
+
+    on = {"use_ilastik_segmentation": True}
+    assert not fields["input_path"].is_visible(on)
+    assert fields["ilastik_unsegmented_image_path"].is_visible(on)
+    assert fields["ilastik_classifier_path"].is_visible(on)
+
+
 def test_automated_assignment_documents_that_it_overrides_manual_methods():
     from haemolynx.gui.boundary_picking import AUTOMATED_OVERRIDES_MANUAL_NOTE
 
