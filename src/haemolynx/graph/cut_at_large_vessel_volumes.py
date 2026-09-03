@@ -210,6 +210,7 @@ def cut_graph_at_large_vessel_volumes(
     *,
     voxel_size_zyx: tuple[float, float, float],
     enabled: bool = True,
+    sample_densely: bool = True,
     remove_orphaned_branches: bool = False,
     orphaned_branch_max_edge_count: int = 3,
 ) -> nx.MultiGraph:
@@ -219,6 +220,10 @@ def cut_graph_at_large_vessel_volumes(
     ----------
     enabled
         When False, return a copy of ``G`` unchanged (pipeline toggle off).
+    sample_densely
+        When True (default), densify each edge polyline to about one sample
+        per voxel before the inside/outside test. When False, classify only
+        stored polyline vertices (the previous, coarser behaviour).
     remove_orphaned_branches
         After cutting, remove connected components whose edge count is strictly
         less than ``orphaned_branch_max_edge_count``.
@@ -266,8 +271,9 @@ def cut_graph_at_large_vessel_volumes(
             continue
 
         points = _edge_sample_points(u, v, edge_data, node_pos)
-        sample_step = min(float(v) for v in voxel_size_zyx)
-        points = _densify_polyline(points, max_step_um=sample_step)
+        if sample_densely:
+            sample_step = min(float(v) for v in voxel_size_zyx)
+            points = _densify_polyline(points, max_step_um=sample_step)
         inside_flags = [
             _point_inside_mask(point, mask, voxel_size_zyx=voxel_size_zyx)
             for point in points

@@ -761,6 +761,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 assignment_large_venule_mask,
                 voxel_size_zyx=voxel_size_zyx,
                 enabled=True,
+                sample_densely=bool(settings["cut_large_vessel_sample_densely"]),
                 remove_orphaned_branches=bool(
                     settings["remove_orphaned_branches_outside_large_vessel_volumes"]
                 ),

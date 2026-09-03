@@ -130,6 +130,13 @@ def test_schema_defaults_and_requires_for_volume_cut():
         "remove_orphaned_branches_outside_large_vessel_volumes",
     )
     assert schema["cut_network_at_large_vessel_volumes"].section == "Vessel masks"
+    assert schema["cut_large_vessel_sample_densely"].default is True
+    assert schema["cut_large_vessel_sample_densely"].requires == (
+        "use_large_vessel_masks",
+        "automated_vessel_assignment",
+        "cut_network_at_large_vessel_volumes",
+    )
+    assert schema["cut_large_vessel_sample_densely"].section == "Vessel masks"
 
 
 def test_toggle_off_leaves_graph_unchanged():
@@ -790,8 +797,8 @@ def test_preflight_warns_when_large_masks_on_and_cut_off():
     assert not clear.warnings
 
 
-def test_sparse_chord_through_mask_is_not_kept_whole():
-    """Two-endpoint edges must not skip a mask volume they pass through."""
+def _sparse_chord_through_mask_graph():
+    """Two-endpoint edge whose straight segment passes through a mask volume."""
     G = nx.MultiGraph()
     G.add_node(0, pos=(5.0, 5.0, 0.0))
     G.add_node(1, pos=(5.0, 5.0, 12.0))
@@ -803,6 +810,12 @@ def test_sparse_chord_through_mask_is_not_kept_whole():
     )
     mask = np.zeros((16, 16, 16), dtype=bool)
     mask[4:7, 4:7, 5:12] = True
+    return G, mask
+
+
+def test_sparse_chord_through_mask_is_not_kept_whole():
+    """Dense sampling must trim a two-endpoint chord that crosses a mask."""
+    G, mask = _sparse_chord_through_mask_graph()
     combined = mask
 
     result = cut_graph_at_large_vessel_volumes(
@@ -811,10 +824,36 @@ def test_sparse_chord_through_mask_is_not_kept_whole():
         np.zeros_like(mask),
         voxel_size_zyx=VOXEL_SIZE,
         enabled=True,
+        sample_densely=True,
     )
 
-    for _u, _v, data in result.edges(data=True):
-        assert not _edge_has_interior_voxel(data, combined)
+    assert result.number_of_edges() == 1
+    assert 1 not in result.nodes
+    u, v, data = next(iter(result.edges(data=True)))
+    assert list(map(tuple, data["voxels"])) == [
+        (5.0, 5.0, float(x)) for x in range(0, 5)
+    ]
+    assert not _edge_has_interior_voxel(data, combined)
+
+
+def test_sparse_chord_through_mask_kept_whole_when_dense_sampling_off():
+    """Vertex-only sampling misses interior mask voxels on a sparse chord."""
+    G, mask = _sparse_chord_through_mask_graph()
+
+    result = cut_graph_at_large_vessel_volumes(
+        G,
+        mask,
+        np.zeros_like(mask),
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+        sample_densely=False,
+    )
+
+    assert result.number_of_edges() == 1
+    assert result.number_of_nodes() == 2
+    u, v, data = next(iter(result.edges(data=True)))
+    assert {u, v} == {0, 1}
+    assert list(map(tuple, data["voxels"])) == [(5.0, 5.0, 0.0), (5.0, 5.0, 12.0)]
 
 
 def test_napari_solve_layers_use_solved_post_cut_graph():
@@ -959,6 +998,10 @@ def test_post_cut_graph_identity_through_diameters_and_solve(tmp_path, monkeypat
 
     settings["run_haemodynamics"] = True
     settings["do_equiv_resistance_calculation"] = False
+    from haemolynx.haemodynamics.poiseuille import set_edge_resistance
+
+    for _u, _v, data in network.graph.edges(data=True):
+        set_edge_resistance(data, 1.0)
     model.graph = network.graph
     solution = solve(settings, model, boundaries)
     assert solution.graph is network.graph

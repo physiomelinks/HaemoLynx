@@ -584,6 +584,22 @@ SCHEMA = Schema(
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
+            name="cut_large_vessel_sample_densely",
+            kind="bool",
+            default=True,
+            help=(
+                "Sample each centreline at about one point per voxel when "
+                "deciding what lies inside a large-vessel mask. Turn off to "
+                "use only stored polyline vertices (the previous, coarser cut)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "cut_network_at_large_vessel_volumes",
+            ),
+        ),
+        Setting(
             name="remove_orphaned_branches_outside_large_vessel_volumes",
             kind="bool",
             default=False,
