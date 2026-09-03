@@ -2858,6 +2858,28 @@ def settings_widget(napari_viewer=None):
         if name in rows:
             rows[name].visible = False
 
+    # Perturbations claims legacy flags and typed-entry options so Field
+    # objects exist, but only ALWAYS_VISIBLE_TAB_SETTINGS are parented as flat
+    # rows. Editors clone their own widgets. Hide the rest and tuck them under
+    # a hidden holder: Diameters-section hide_when_unmet would otherwise set
+    # them visible under run_haemodynamics=True, and a visible widget with no
+    # parent is a floating top-level window (``147a545`` + ``30c605e``).
+    from haemolynx.gui.perturbation_editing import orphaned_tab_settings
+
+    orphaned_perturbation_rows: frozenset[str] = frozenset()
+    for tab in tabs:
+        if tab.stage.call == "run_perturbations":
+            orphaned_perturbation_rows = frozenset(
+                orphaned_tab_settings(field.name for field in tab.fields)
+            )
+            break
+    orphan_holder = Container(widgets=[], labels=False)
+    orphan_holder.visible = False
+    for name in orphaned_perturbation_rows:
+        if name in rows:
+            rows[name].visible = False
+            orphan_holder.append(rows[name])
+
     #: Stages that lay their own page out, keyed by the stage function they
     #: belong to rather than by the tab's title, so renaming a tab cannot
     #: silently drop them. Any future stage-specific page has a home here.
@@ -3090,6 +3112,13 @@ def settings_widget(napari_viewer=None):
         for name, widget in rows.items():
             if name in SHARED_ILASTIK_SETTING_SET:
                 # Visibility and parent belong to place_shared_ilastik.
+                widget.enabled = True
+                widget.tooltip = fields[name].help
+                continue
+            if name in orphaned_perturbation_rows:
+                # Never parented as flat tab rows; typed editors clone their
+                # own widgets. Do not reveal — visible + no parent is a window.
+                widget.visible = False
                 widget.enabled = True
                 widget.tooltip = fields[name].help
                 continue
@@ -3524,6 +3553,12 @@ def settings_widget(napari_viewer=None):
     if layer_row is not None:
         layout.addWidget(layer_row.native)
     layout.addWidget(tab_widget)
+    # Hidden host for Perturbations-claimed rows that are not flat tab chrome
+    # (legacy flags + typed-entry Field shells). Keeps them off the screen and
+    # out of the top-level window list while config round-trip still reads them.
+    if orphaned_perturbation_rows:
+        orphan_holder.visible = False
+        layout.addWidget(orphan_holder.native)
     # Show-results / show-topology-steps, then Revert centered under them, then
     # the run chrome. Revert is intentionally outside the tab pages so it sits
     # in one place for every stage that can restore a predecessor.

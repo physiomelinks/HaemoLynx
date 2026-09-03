@@ -54,6 +54,7 @@ from haemolynx.gui.perturbation_editing import (  # noqa: E402
     hidden_for_type,
     name_problems,
     new_entry,
+    orphaned_tab_settings,
     perturbation_type_choices,
     remove_entry,
     rows_for_type,
@@ -162,8 +163,19 @@ def test_the_tab_keeps_only_the_always_on_run_settings():
         "sweep_output_dir",
         *EDITOR_SETTINGS,
         *PERICYTE_CONSTRICTION_SETTINGS,
+        "do_pericyte_construction",
+        "run_pericyte_resistance_comparison",
     )
     assert visible_tab_settings(claimed) == ALWAYS_VISIBLE_TAB_SETTINGS
+    orphans = orphaned_tab_settings(claimed)
+    assert set(orphans) == set(claimed) - set(ALWAYS_VISIBLE_TAB_SETTINGS)
+    for name in (
+        "do_pericyte_construction",
+        "use_pericyte_mask_constriction",
+        "use_probabilistic_pericyte_constriction",
+        "run_pericyte_resistance_comparison",
+    ):
+        assert name in orphans, name
     assert "pericyte_dilation_min_percent" in rows_for_type("pericyte_dilation_sweep")
     assert "inlet_pressure_min_pa" in rows_for_type("pressure_sweep")
     assert "inlet_pressure_min_pa" in rows_for_type("pressure_and_pericyte_sweep")

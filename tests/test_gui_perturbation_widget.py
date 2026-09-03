@@ -399,3 +399,69 @@ def test_a_name_that_could_not_be_a_directory_is_reported(panel):
     perturbations.editors()[0].name.value = "../elsewhere"
 
     assert "directory" in widget._haemolynx_report()
+
+
+# --- orphaned Perturbations rows must not float at startup -------------------
+
+
+#: Flat ``rows[]`` widgets claimed by Perturbations but never parented there.
+#: Editors clone their own copies; Diameters hide-when-unmet must not ``show()``
+#: these unparented shells (``147a545`` + ``30c605e`` floating-window class).
+_FLOATER_REGRESSION_SETTINGS = (
+    "do_pericyte_construction",
+    "use_pericyte_mask_constriction",
+    "use_probabilistic_pericyte_constriction",
+    "run_pericyte_resistance_comparison",
+)
+
+
+def test_orphaned_pericyte_rows_are_not_top_level_windows_at_startup(
+    make_napari_viewer,
+):
+    """Snapshot top-levels *before* construction; these four must not float.
+
+    ``30c605e`` / ``32645b9`` retabbed them onto Perturbations without parenting
+    the ``rows[]`` shells. ``147a545`` put Diameters in
+    ``HIDE_WHEN_UNMET_SECTIONS``, so ``apply_prerequisites`` set ``visible=True``
+    under default ``run_haemodynamics`` and each became a top-level window.
+    """
+    from qtpy.QtWidgets import QApplication
+
+    viewer = make_napari_viewer()
+    before = {id(w) for w in QApplication.topLevelWidgets() if w.isVisible()}
+
+    widget = settings_widget(napari_viewer=viewer)
+    widget.show()
+    QApplication.processEvents()
+
+    rows = widget._haemolynx_rows()
+    for name in _FLOATER_REGRESSION_SETTINGS:
+        native = rows[name].native
+        assert rows[name].visible is False, name
+        assert native.parent() is not None, name
+        assert not native.isWindow(), name
+
+    appeared = [
+        w
+        for w in QApplication.topLevelWidgets()
+        if w.isVisible() and id(w) not in before
+    ]
+    for name in _FLOATER_REGRESSION_SETTINGS:
+        native = rows[name].native
+        assert native not in appeared, name
+        label = name.replace("_", " ")
+        titles = [
+            (w.windowTitle() or w.objectName() or type(w).__name__) for w in appeared
+        ]
+        assert not any(label.lower() in str(title).lower() for title in titles), (
+            f"{name} floated as {titles}"
+        )
+
+    if "run_haemodynamics" in rows:
+        rows["run_haemodynamics"].value = False
+        QApplication.processEvents()
+        rows["run_haemodynamics"].value = True
+        QApplication.processEvents()
+        for name in _FLOATER_REGRESSION_SETTINGS:
+            assert rows[name].visible is False, name
+            assert not rows[name].native.isWindow(), name

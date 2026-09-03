@@ -70,6 +70,7 @@ __all__ = [
     "set_type",
     "summary",
     "to_settings",
+    "orphaned_tab_settings",
     "visible_tab_settings",
 ]
 
@@ -232,6 +233,18 @@ def visible_tab_settings(names: Sequence[str]) -> tuple[str, ...]:
     """
     keep = set(ALWAYS_VISIBLE_TAB_SETTINGS)
     return tuple(name for name in names if name in keep)
+
+
+def orphaned_tab_settings(names: Sequence[str]) -> tuple[str, ...]:
+    """Claimed Perturbations settings that must not be flat tab rows.
+
+    Legacy baseline/comparison flags and every typed-entry option still need
+    Field objects (and a ``rows`` entry for config round-trip), but the panel
+    never parents those widgets: editors clone their own. Leaving them visible
+    with no Qt parent opens floating top-level windows at napari startup.
+    """
+    keep = set(ALWAYS_VISIBLE_TAB_SETTINGS)
+    return tuple(name for name in names if name not in keep)
 
 
 def hidden_for_type(perturbation_type: Any) -> tuple[str, ...]:
