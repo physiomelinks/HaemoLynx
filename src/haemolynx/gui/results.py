@@ -45,6 +45,8 @@ PREFIX = "HaemoLynx "
 
 VESSELS = f"{PREFIX}vessels"
 VESSEL_LABELS = f"{PREFIX}vessel labels"
+#: Mid-edge arrows coloured by |flow|; emitted from Export when toggled on.
+FLOW_DIRECTION = f"{PREFIX}flow direction"
 NODES = f"{PREFIX}nodes"
 BOUNDARY_NODES = f"{PREFIX}boundary nodes"
 PERICYTES = f"{PREFIX}pericytes"
@@ -85,7 +87,16 @@ MASK_VOLUME_OPTIONS: dict[str, Any] = {
 #: :func:`is_ours_name` is the question worth asking of a name, and "clear ours"
 #: asks the layer itself, through the `OURS` metadata tag it was added with.
 LAYER_NAMES = frozenset(
-    {VESSELS, VESSEL_LABELS, NODES, BOUNDARY_NODES, PERICYTES, IMAGE, SKELETON}
+    {
+        VESSELS,
+        VESSEL_LABELS,
+        FLOW_DIRECTION,
+        NODES,
+        BOUNDARY_NODES,
+        PERICYTES,
+        IMAGE,
+        SKELETON,
+    }
     | set(MASK_LAYERS.values())
 )
 
@@ -438,12 +449,20 @@ class ResultLayers:
     earlier stage produced. So the graph is remembered as it goes past.
     """
 
-    def __init__(self, *, prefix: str = PREFIX, show_steps: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        prefix: str = PREFIX,
+        show_steps: bool = False,
+        settings: Mapping[str, Any] | None = None,
+    ) -> None:
         self.prefix = prefix
         #: Redraw the vessels after each of graph building's eleven topology
         #: steps. Off by default: it is eleven extra rebuilds of the geometry
         #: in the middle of the slowest stage.
         self.show_steps = show_steps
+        #: Run settings (Export-tab toggles such as ``show_flow_direction_layer``).
+        self.settings: dict[str, Any] = dict(settings or {})
         self._graph: Any | None = None
         self._voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
         self._geometry_shown = False
@@ -961,11 +980,52 @@ class ResultLayers:
             note=note,
         )
 
+    def _wants_flow_direction_layer(self) -> bool:
+        """Export-tab toggle; absent settings mean off (tests / revert)."""
+        return bool(self.settings.get("show_flow_direction_layer", False))
+
+    def _flow_direction_layers(self) -> tuple[LayerSpec, ...]:
+        """Mid-edge flow arrows coloured by |flow|, or empty when none exist."""
+        from haemolynx.visualization.flow_direction import flow_direction_vectors
+
+        graph = self._graph
+        if graph is None:
+            return ()
+        vectors, features = flow_direction_vectors(graph)
+        if len(vectors) == 0:
+            return ()
+        colour_by = "flow_abs" if "flow_abs" in features else None
+        return (
+            LayerSpec(
+                kind="vectors",
+                name=FLOW_DIRECTION,
+                data=vectors,
+                features=features,
+                colour_by=colour_by,
+                **_colouring(features, colour_by),
+                options={
+                    "vector_style": "triangle",
+                    "edge_width": 1.2,
+                    "length": 1.0,
+                    "out_of_slice_display": True,
+                },
+            ),
+        )
+
     def _from_export_results(self, _output: Any) -> StageLayers:
+        layers: tuple[LayerSpec, ...] = ()
+        note = "Wrote the VTK, statistics and plots."
+        if self._wants_flow_direction_layer():
+            layers = self._flow_direction_layers()
+            if layers:
+                note += f" Flow direction: {len(layers[0].data)} arrows."
+            else:
+                note += " Flow direction layer skipped (no signed flows)."
         return StageLayers(
             stage="export_results",
             title=_title_for("export_results"),
-            note="Wrote the VTK, statistics and plots.",
+            layers=layers,
+            note=note,
         )
 
 

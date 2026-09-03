@@ -21,6 +21,7 @@ import pytest
 
 from haemolynx.gui.results import (
     BOUNDARY_NODES,
+    BRANCH_HOVER,
     DEFAULT_VESSEL_COLOUR,
     EDGE_COLUMNS,
     IMAGE,
@@ -753,7 +754,7 @@ def test_a_topology_step_redraws_the_vessels_when_switched_on():
 
     group = results.stage_finished("topology_step:prune_vascular_stubs", a_graph())
 
-    assert [spec.name for spec in group.layers] == [VESSELS, VESSEL_LABELS]
+    assert [spec.name for spec in group.layers] == [VESSELS, VESSEL_LABELS, BRANCH_HOVER]
     assert "prune_vascular_stubs" in group.title
     assert "3 vessels" in group.note
 

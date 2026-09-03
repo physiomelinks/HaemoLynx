@@ -2972,7 +2972,10 @@ def settings_widget(napari_viewer=None):
             return
         results = None
         if show_results.value and viewer is not None:
-            results = ResultLayers(show_steps=bool(show_steps.value))
+            results = ResultLayers(
+                show_steps=bool(show_steps.value),
+                settings=settings,
+            )
             view.results = results
             if boundaries is not None:
                 boundaries.state.results = results
