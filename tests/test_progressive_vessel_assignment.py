@@ -60,20 +60,25 @@ def test_progressive_dilation_assignment_locks_earlier_nodes():
 
 
 def test_progressive_small_vessel_zero_max_matches_single_shot_shape():
+    """A 0 µm schedule labels art/ven edges and finds capillary transitions."""
     G = nx.MultiGraph()
-    for node, z in enumerate((0.0, 2.0, 4.0, 6.0)):
+    # art -- art/cap -- capillary -- ven/cap -- ven -- capillary past venule
+    for node, z in enumerate((0.0, 2.0, 4.0, 6.0, 8.0, 10.0)):
         G.add_node(node, pos=np.array([z, 3.0, 3.0]))
-    for node in range(3):
+    for node in range(5):
+        z0, z1 = float(node * 2), float(node * 2 + 2)
         G.add_edge(
             node,
             node + 1,
-            voxels=[[float(z), 3.0, 3.0] for z in (node * 2.0, node * 2.0 + 2.0)],
+            voxels=[[z, 3.0, 3.0] for z in (z0, z1)],
         )
 
-    art = np.zeros((8, 8, 8), dtype=bool)
-    ven = np.zeros((8, 8, 8), dtype=bool)
+    art = np.zeros((12, 8, 8), dtype=bool)
+    ven = np.zeros((12, 8, 8), dtype=bool)
     art[0:3, 3, 3] = True
-    ven[5:7, 3, 3] = True
+    # Cover the venule segment (z=6..7) but leave the distal edge (z=8..10) unlabeled
+    # so a capillary transition exists at the venule/capillary boundary.
+    ven[6:8, 3, 3] = True
 
     result = infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
         G,
