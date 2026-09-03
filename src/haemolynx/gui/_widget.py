@@ -308,6 +308,52 @@ def _apply_z_filter(
         )
 
 
+def _uniform_points_property(value: Any, n: int) -> Any:
+    """Return a scalar or length-*n* value napari Points accepts for size/shown/symbol.
+
+    Napari 0.9 broadcasts per-point properties only when ``len(value) == len(data)``.
+    After a Z-filter or graph shrink the stale array must become a scalar (when uniform)
+    or be dropped to the first entry, not passed through at the old length.
+    """
+    if value is None:
+        return None
+    arr = np.asarray(value)
+    if arr.ndim == 0 or arr.size == 1:
+        return arr.item() if arr.ndim == 0 else arr.flat[0].item()
+    flat = arr.ravel()
+    if len(flat) == n:
+        return value
+    if len(flat) > 0:
+        try:
+            if np.all(flat == flat[0]):
+                first = flat[0]
+                return first.item() if isinstance(first, np.generic) else first
+        except (TypeError, ValueError):
+            pass
+        first = flat[0]
+        return first.item() if isinstance(first, np.generic) else first
+    return value
+
+
+def _sync_points_per_point_properties(
+    layer,
+    n: int,
+    options: Mapping[str, Any] | None = None,
+) -> None:
+    """Keep ``size`` / ``shown`` / ``symbol`` aligned with ``len(layer.data)``."""
+    opts = options or {}
+    for key in ("size", "shown", "symbol"):
+        if key in opts:
+            value = opts[key]
+        elif hasattr(layer, key):
+            value = getattr(layer, key)
+        else:
+            continue
+        fixed = _uniform_points_property(value, n)
+        if fixed is not None:
+            setattr(layer, key, fixed)
+
+
 def _set_z_filtered_layer_data(
     viewer,
     layer,
@@ -344,9 +390,13 @@ def _set_z_filtered_layer_data(
                     add_kwargs[key] = getattr(layer, key)
             colour_attr, colour = "edge_color", getattr(layer, "edge_color", None)
         else:
-            for key in ("size", "out_of_slice_display"):
+            for key in ("size", "shown", "symbol"):
                 if hasattr(layer, key):
-                    add_kwargs[key] = getattr(layer, key)
+                    add_kwargs[key] = _uniform_points_property(
+                        getattr(layer, key), new_count
+                    )
+            if hasattr(layer, "out_of_slice_display"):
+                add_kwargs["out_of_slice_display"] = layer.out_of_slice_display
             colour_attr, colour = "face_color", getattr(layer, "face_color", None)
         viewer.layers.remove(layer)
         new_layer = adder(data, **add_kwargs)
@@ -356,6 +406,8 @@ def _set_z_filtered_layer_data(
     layer.data = data
     if features:
         layer.features = features
+    if kind == "points":
+        _sync_points_per_point_properties(layer, new_count)
     if segment_owner is not None:
         metadata = dict(getattr(layer, "metadata", {}) or {})
         ours = dict(metadata.get(OURS) or {})
@@ -825,6 +877,10 @@ def _add_or_update(viewer, spec) -> None:
                 existing.data = spec.data
             if spec.features:
                 existing.features = dict(spec.features)
+            if spec.kind == "points":
+                _sync_points_per_point_properties(
+                    existing, new_count, spec.options
+                )
             existing.visible = spec.visible
             if spec.kind == "image" and "mask_colour" in spec.options:
                 image_opts = _image_options_for_napari(spec.options)

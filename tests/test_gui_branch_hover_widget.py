@@ -123,3 +123,62 @@ def test_branch_hover_option_keys_are_not_passed_to_napari(make_napari_viewer):
     tag = layer.metadata["haemolynx"]
     assert tag["branch_hover_available"] == ("tortuosity", "length")
     assert not hasattr(layer, "branch_hover_available")
+
+
+def test_branch_hover_update_with_stale_size_array_does_not_raise(make_napari_viewer):
+    """Napari 0.9 rejects per-point size when len(size) != len(data)."""
+    from haemolynx.gui._widget import _add_or_update, _apply_z_filter
+    from haemolynx.gui.results import BRANCH_HOVER_POINT_SIZE, LayerSpec
+
+    viewer = make_napari_viewer()
+    layer = _draw_hover(viewer)
+    full_count = len(layer.data)
+    stale = np.full(full_count, BRANCH_HOVER_POINT_SIZE)
+    layer.size = stale
+    assert len(layer.size) == full_count
+
+    # Fewer points, stale length-3909-style size array — must not raise.
+    fewer = np.asarray(layer.data)[:2]
+    features = {k: np.asarray(v)[:2] for k, v in layer.features.items()}
+    _add_or_update(
+        viewer,
+        LayerSpec(
+            kind="points",
+            name=BRANCH_HOVER,
+            data=fewer,
+            features=features,
+            options={"size": BRANCH_HOVER_POINT_SIZE},
+        ),
+    )
+    updated = viewer.layers[BRANCH_HOVER]
+    assert len(updated.data) == 2
+    assert np.isscalar(updated.size) or len(np.asarray(updated.size)) == 2
+
+    # Grow back in place with a size array left at the smaller count.
+    layer = viewer.layers[BRANCH_HOVER]
+    layer.size = np.full(len(layer.data), BRANCH_HOVER_POINT_SIZE)
+    _draw_hover(viewer)
+    assert len(viewer.layers[BRANCH_HOVER].data) == full_count
+
+
+def test_branch_hover_z_filter_with_stale_size_array_does_not_raise(make_napari_viewer):
+    """Z-filter shrink/recreate must not pass the full-range size array through."""
+    from haemolynx.gui._widget import _apply_z_filter
+
+    viewer = make_napari_viewer()
+    layer = _draw_hover(viewer)
+    full_count = len(layer.data)
+    layer.size = np.full(full_count, 2.0)
+    full_z = 30.0
+
+    _apply_z_filter(viewer, 0.0, 15.0, z_extent=full_z)
+    filtered = viewer.layers[BRANCH_HOVER]
+    assert len(filtered.data) < full_count
+    assert np.isscalar(filtered.size) or len(np.asarray(filtered.size)) == len(
+        filtered.data
+    )
+
+    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    restored = viewer.layers[BRANCH_HOVER]
+    assert len(restored.data) == full_count
+    assert np.isscalar(restored.size) or len(np.asarray(restored.size)) == full_count
