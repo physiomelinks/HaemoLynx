@@ -202,6 +202,58 @@ def test_an_absolute_path_keeps_its_drive_and_root(tmp_path):
     assert Path(written).is_absolute()
 
 
+def test_a_long_path_with_spaces_round_trips_through_dump_and_load(tmp_path):
+    """Napari save/load on Windows used to corrupt paths that contain spaces.
+
+    magicgui's FileEdit absolutises every path. A typical Dropbox / user-data
+    path is far longer than PyYAML's default dump width, and when that path
+    also contains a space the dumper folded it onto a second indented line.
+    The hand-built config then contained invalid YAML, so "Save config..."
+    appeared to succeed and "Load config..." failed on the file just written.
+    """
+    absolute = (
+        tmp_path
+        / "Dropbox"
+        / (
+            "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_"
+            "zstack_spot1_1p5z_MCAregion_Simple Segmentation_arteriole.tiff"
+        )
+    )
+    absolute.parent.mkdir(parents=True, exist_ok=True)
+    absolute.write_bytes(b"")
+
+    path = dump_config(
+        tmp_path / "generated.yaml", _schema(), values={"input_path": absolute}
+    )
+    text = path.read_text(encoding="utf-8")
+
+    assert "\n  Segmentation_arteriole.tiff" not in text
+    assert "\\" not in text
+    # One line, full path — wrapping at the space was the Windows bug.
+    assert f"input_path: {absolute.as_posix()}" in text
+
+    loaded = load_config(path, _schema())["input_path"]
+    assert loaded == absolute
+    assert Path(loaded).is_absolute()
+
+
+def test_a_long_path_with_spaces_survives_a_gui_style_save_reload(tmp_path):
+    """The full dump -> load cycle the panel uses must not rewrite the path."""
+    absolute = (
+        tmp_path
+        / "My Dataset"
+        / ("x" * 80)
+        / "large arteriole mask.tiff"
+    )
+    schema = _schema()
+    saved = dump_config(
+        tmp_path / "panel_save.yaml", schema, values={"input_path": absolute}
+    )
+    # Re-parse the file bytes the way a later "Load config..." does.
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) is not None
+    assert load_config(saved, schema)["input_path"] == absolute
+
+
 # --- command line ----------------------------------------------------------
 
 

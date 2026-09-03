@@ -525,6 +525,60 @@ def test_loading_a_config_naming_a_missing_image_still_fails_the_run_checks(
     assert any("input_path" in message for message in result.errors)
 
 
+def test_loading_a_config_with_a_long_spaced_path_round_trips(
+    make_napari_viewer, tmp_path
+):
+    """Save then Load must keep an absolutised Windows-style path intact.
+
+    This is the failure mode behind the napari "config won't load" report on
+    Windows: FileEdit stores `C:/Users/.../My Dataset/mask.tif`, dump folded
+    it at the space, and the next Load hit a YAML scanner error.
+    """
+    from haemolynx.parsers import dump_config
+
+    make_napari_viewer()
+    panel = settings_widget()
+    schema = default_schema()
+
+    absolute = (
+        tmp_path
+        / "Dropbox"
+        / (
+            "Composite_06082026_E14p5_clnd5_25x_940nm_1040_texasred3kkda_"
+            "zstack_spot1_1p5z_MCAregion_Simple Segmentation_arteriole.tiff"
+        )
+    )
+    absolute.parent.mkdir(parents=True, exist_ok=True)
+    absolute.write_bytes(b"")
+
+    saved = tmp_path / "panel_roundtrip.yaml"
+    dump_config(
+        saved,
+        schema,
+        values={**{s.name: s.default for s in schema}, "input_path": absolute},
+    )
+    assert "\n  Segmentation_arteriole.tiff" not in saved.read_text(encoding="utf-8")
+
+    panel._haemolynx_load_config(saved)
+
+    assert "Could not load" not in panel._haemolynx_report()
+    assert Path(panel._haemolynx_values()["input_path"]) == absolute
+
+
+def test_loading_a_config_for_a_different_schema_reports_instead_of_raising(
+    make_napari_viewer,
+):
+    """simple_network_config.yaml is not a pipeline config; say so in the panel."""
+    make_napari_viewer()
+    panel = settings_widget()
+
+    panel._haemolynx_load_config(REPO_ROOT / "examples" / "simple_network_config.yaml")
+
+    report = panel._haemolynx_report()
+    assert report.startswith("Could not load"), report
+    assert "output_dir" in report
+
+
 # --- the About widget --------------------------------------------------------
 
 

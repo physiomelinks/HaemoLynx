@@ -2794,7 +2794,14 @@ def settings_widget(napari_viewer=None):
         here, and `current_values` hands it back for any row still naming the
         same file.
         """
-        loaded = load_config(Path(path), schema)
+        try:
+            loaded = load_config(Path(path), schema)
+        except Exception as error:
+            # Surface the failure in the panel rather than through Qt's
+            # uncaught-signal traceback -- a bad file (wrong schema, corrupt
+            # YAML from an older save) is a user-facing message, not a crash.
+            report.value = f"Could not load {path}:\n{error}"
+            return
         loaded_paths.clear()
         for name, value in loaded.items():
             if name in rows:
@@ -2841,7 +2848,11 @@ def settings_widget(napari_viewer=None):
         )
         if not path:
             return
-        dump_config(Path(path), schema, values=current_values())
+        try:
+            dump_config(Path(path), schema, values=current_values())
+        except Exception as error:
+            report.value = f"Could not save {path}:\n{error}"
+            return
         report.value = f"Wrote {path}"
 
     def on_check() -> None:

@@ -171,10 +171,22 @@ def _is_block(value: Any) -> bool:
     return False
 
 
+#: PyYAML's default dump width (~80) folds a long plain scalar across lines.
+#: Paths on Windows routinely exceed that once FileEdit has absolutised them
+#: (`C:/Users/.../My Dataset/mask.tif`), and a fold at a space produces a
+#: second indented line that is no longer valid YAML when pasted after
+#: `name: ` by :func:`dump_config`. Loading that file then fails in napari.
+#: Disable wrapping for every dump we embed as a single token or block.
+_YAML_WIDTH = 10**9
+
+
 def _block(name: str, value: Any) -> str:
     yaml = _require_yaml()
     dumped = yaml.safe_dump(
-        {name: _jsonify(value)}, default_flow_style=False, sort_keys=False
+        {name: _jsonify(value)},
+        default_flow_style=False,
+        sort_keys=False,
+        width=_YAML_WIDTH,
     ).rstrip()
     return "\n".join(f"  {line}" for line in dumped.splitlines())
 
@@ -182,7 +194,10 @@ def _block(name: str, value: Any) -> str:
 def _scalar(value: Any) -> str:
     yaml = _require_yaml()
     return yaml.safe_dump(
-        _jsonify(value), default_flow_style=True, sort_keys=False
+        _jsonify(value),
+        default_flow_style=True,
+        sort_keys=False,
+        width=_YAML_WIDTH,
     ).strip().rstrip("...").strip()
 
 
