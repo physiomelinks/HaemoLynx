@@ -673,7 +673,40 @@ def test_the_panel_offers_the_view_controls(make_napari_viewer):
     assert not hasattr(panel, "_haemolynx_colour")
     assert not hasattr(panel, "_haemolynx_scales")
     assert hasattr(panel, "_haemolynx_z_depth_slider")
-    assert panel._haemolynx_z_depth_slider.isVisible() is False
+    view_controls = panel._haemolynx_view_controls.native
+    for widget in (panel._haemolynx_z_depth_slider, panel._haemolynx_z_depth_host):
+        ancestor = widget.parentWidget()
+        while ancestor is not None:
+            assert ancestor is not view_controls
+            ancestor = ancestor.parentWidget()
+
+
+def test_z_depth_slider_mounts_at_top_of_active_layer_controls(make_napari_viewer):
+    """One shared slider follows the active HaemoLynx layer's controls."""
+    from qtpy.QtWidgets import QFormLayout
+
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    results = ResultLayers()
+    panel._haemolynx_view.results = results
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    host = panel._haemolynx_z_depth_host
+    viewer.layers.selection.active = viewer.layers[VESSELS]
+    panel._haemolynx_reparent_z_depth()
+    vessels_controls = _layer_controls(viewer, viewer.layers[VESSELS])
+    assert host.parentWidget() is vessels_controls
+    spanning = vessels_controls.layout().itemAt(0, QFormLayout.SpanningRole)
+    assert spanning is not None and spanning.widget() is host
+
+    viewer.layers.selection.active = viewer.layers[NODES]
+    panel._haemolynx_reparent_z_depth()
+    nodes_controls = _layer_controls(viewer, viewer.layers[NODES])
+    assert host.parentWidget() is nodes_controls
+    assert host.parentWidget() is not vessels_controls
 
 
 def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
@@ -1281,12 +1314,16 @@ def test_the_node_dropdown_gains_columns_as_stages_land(make_napari_viewer):
     assert "something_new" in offered
 
 
-def test_the_vessels_keep_napari_s_own_dropdown(make_napari_viewer):
-    """Vectors already has "edge feature:"; do not add a second one."""
+def test_the_vessels_get_a_refreshed_colour_by_dropdown(make_napari_viewer):
+    """Napari's own edge-feature box is filled once and hides in direct mode."""
     from haemolynx.gui._widget import _layer_controls
 
     viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
-    assert getattr(_layer_controls(viewer, vessels), "_haemolynx_feature", None) is None
+    chooser = getattr(_layer_controls(viewer, vessels), "_haemolynx_feature", None)
+    assert chooser is not None
+    offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
+    assert "length" in offered
+    assert "segment_id" in offered
 
 
 def test_a_text_column_is_recognised_by_its_data_not_its_name(make_napari_viewer):
@@ -1348,3 +1385,112 @@ def test_flow_direction_layer_gets_length_from_schema_at_draw_time(make_napari_v
 
     layer.length = 0.8
     assert layer.length == pytest.approx(0.8)
+
+
+def test_solved_vessel_features_include_flow_abs_and_log10(make_napari_viewer):
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    viewer = make_napari_viewer()
+    for group in _solved_run():
+        _apply_layers(viewer, group)
+    vessels = viewer.layers[VESSELS]
+    assert "flow_abs" in vessels.features
+    assert "flow_abs_log10" in vessels.features
+    flow = np.asarray(vessels.features["flow_abs"], dtype=float)
+    log10 = np.asarray(vessels.features["flow_abs_log10"], dtype=float)
+    finite = np.isfinite(flow)
+    assert np.any(finite)
+    expected = np.array([flow_abs_log10_value(v) for v in flow[finite]], dtype=float)
+    np.testing.assert_allclose(log10[finite], expected)
+
+
+def test_flow_direction_layer_features_include_direction_components(make_napari_viewer):
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    _apply_layers(viewer, group)
+
+    layer = viewer.layers[FLOW_DIRECTION]
+    assert "flow_dir_z" in layer.features
+    assert float(np.asarray(layer.features["flow_dir_z"])[0]) == pytest.approx(1.0)
+
+
+def test_vessel_colour_by_combo_switches_to_flow_abs_log10(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column, _layer_controls
+
+    viewer = make_napari_viewer()
+    for group in _solved_run():
+        _apply_layers(viewer, group)
+    vessels = viewer.layers[VESSELS]
+    chooser = _layer_controls(viewer, vessels)._haemolynx_feature
+    offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
+    assert "flow_abs_log10" in offered
+
+    chooser.native.setCurrentText("flow_abs_log10")
+    assert _active_column(vessels) == "flow_abs_log10"
+    assert vessels.edge_color_mode == "colormap"
+
+
+def test_arrow_size_slider_mounts_on_flow_direction_layer(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph, show_flow_direction_layer=True, flow_arrow_scale=2.0)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    panel._haemolynx_view.results = results
+    _apply_layers(viewer, group)
+
+    host = panel._haemolynx_arrow_length_host
+    slider = panel._haemolynx_arrow_length_slider
+    viewer.layers.selection.active = viewer.layers[FLOW_DIRECTION]
+    panel._haemolynx_reparent_arrow_length()
+    controls = _layer_controls(viewer, viewer.layers[FLOW_DIRECTION])
+    assert controls is not None
+    assert host.parentWidget() is controls
+    assert slider.isEnabled()
+    assert slider.value() == pytest.approx(2.0)
+
+
+def test_arrow_size_slider_updates_layer_length_live(make_napari_viewer):
+    from haemolynx.gui._widget import settings_widget
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    viewer.layers.selection.active = layer
+    panel._haemolynx_reparent_arrow_length()
+
+    panel._haemolynx_arrow_length_slider.setValue(3.5)
+    assert layer.length == pytest.approx(3.5)
+
+
+def test_user_arrow_length_survives_layer_refresh(make_napari_viewer):
+    from haemolynx.gui._widget import settings_widget
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(
+        graph, show_flow_direction_layer=True, flow_arrow_scale=1.0,
+    )
+    group = results.stage_finished("export_results", SimpleNamespace())
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    viewer.layers.selection.active = layer
+    panel._haemolynx_reparent_arrow_length()
+    panel._haemolynx_arrow_length_slider.setValue(4.2)
+
+    _apply_layers(viewer, group)
+    assert viewer.layers[FLOW_DIRECTION].length == pytest.approx(4.2)

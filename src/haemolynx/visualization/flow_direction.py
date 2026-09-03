@@ -22,6 +22,7 @@ from haemolynx.visualization.geometry import edge_polyline
 __all__ = [
     "edge_flow_direction_sign",
     "edge_flow_arrow_zyx",
+    "edge_flow_direction_columns",
     "flow_direction_vectors",
     "flow_direction_components",
 ]
@@ -136,6 +137,56 @@ def _iter_edges(graph: Any):
     if getattr(graph, "is_multigraph", lambda: False)():
         return graph.edges(keys=True, data=True)
     return ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+
+
+def edge_flow_direction_columns(graph: Any) -> dict[str, np.ndarray]:
+    """Per drawable edge: signed unit ``(z, y, x)`` flow direction components.
+
+    Uses the same edge order and skip rules as
+    :func:`haemolynx.gui.results.edge_polylines` so the columns align with
+    vessel segment features after ``segment_owner`` indexing.
+    """
+    dir_z: list[float] = []
+    dir_y: list[float] = []
+    dir_x: list[float] = []
+    if getattr(graph, "is_multigraph", lambda: False)():
+        edge_iter = graph.edges(keys=True, data=True)
+    else:
+        edge_iter = ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+
+    for u, v, _key, data in edge_iter:
+        try:
+            points = edge_polyline(graph, u, v, data)
+        except ValueError:
+            continue
+        direction_sign = edge_flow_direction_sign(data)
+        if direction_sign is None:
+            dir_z.append(float("nan"))
+            dir_y.append(float("nan"))
+            dir_x.append(float("nan"))
+            continue
+        points = np.asarray(points, dtype=float)
+        if direction_sign < 0:
+            points = points[::-1, :]
+        if points.shape[0] < 2:
+            dir_z.append(float("nan"))
+            dir_y.append(float("nan"))
+            dir_x.append(float("nan"))
+            continue
+        mid_idx = int(points.shape[0] // 2)
+        lo = max(0, mid_idx - 1)
+        hi = min(points.shape[0] - 1, mid_idx + 1)
+        tangent = points[hi] - points[lo]
+        dz, dy, dx = flow_direction_components(tangent)
+        dir_z.append(dz)
+        dir_y.append(dy)
+        dir_x.append(dx)
+
+    return {
+        "flow_dir_z": np.asarray(dir_z, dtype=float),
+        "flow_dir_y": np.asarray(dir_y, dtype=float),
+        "flow_dir_x": np.asarray(dir_x, dtype=float),
+    }
 
 
 def flow_direction_vectors(

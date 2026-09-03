@@ -27,6 +27,7 @@ from haemolynx.gui.results import (
     BRANCH_HOVER_POINT_SIZE,
     DEFAULT_VESSEL_COLOUR,
     EDGE_COLUMNS,
+    FLOW_DIRECTION,
     IMAGE,
     LAYER_NAMES,
     NODE_POINT_SIZE,
@@ -52,6 +53,7 @@ from haemolynx.gui.results import (
     pericyte_points,
     polylines_to_vectors,
 )
+from haemolynx.visualization.flow_direction import flow_direction_vectors
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -996,7 +998,10 @@ def test_vessel_layers_include_flow_abs_log10_when_setting_enabled():
     assert spec_named(group, VESSELS).colour_by == "flow_abs"
 
 
-def test_vessel_layers_omit_flow_abs_log10_when_setting_disabled():
+def test_vessel_layers_include_flow_abs_log10_even_when_setting_disabled():
+    """Log10 flow is always a layer-panel option once flows exist."""
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
     graph = a_graph(conductance=1e-18)
     results = ResultLayers(settings={"flow_log_scale": False})
     results.stage_finished("skeletonise", SimpleNamespace(
@@ -1006,7 +1011,6 @@ def test_vessel_layers_omit_flow_abs_log10_when_setting_disabled():
     results.stage_finished("build_network", network(graph))
     for _u, _v, _k, data in graph.edges(keys=True, data=True):
         data["flow_abs"] = 1e-12
-        data["flow_abs_log10"] = -12.0
 
     group = results.stage_finished(
         "solve",
@@ -1014,7 +1018,11 @@ def test_vessel_layers_omit_flow_abs_log10_when_setting_disabled():
                         pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
     )
     vessels = next(s for s in group.layers if s.name == VESSELS)
-    assert "flow_abs_log10" not in vessels.features
+    assert "flow_abs_log10" in vessels.features
+    assert np.allclose(
+        np.asarray(vessels.features["flow_abs_log10"], dtype=float),
+        flow_abs_log10_value(1e-12),
+    )
 
 
 # --- the range a colour bar should span --------------------------------------
@@ -1065,10 +1073,42 @@ def test_image_z_extent_um_is_voxel_z_times_stack_depth():
 
 def test_z_depth_filter_targets_graph_vectors_and_points_only():
     assert is_z_depth_filtered_layer(VESSELS, "vectors") is True
+    assert is_z_depth_filtered_layer(FLOW_DIRECTION, "vectors") is True
     assert is_z_depth_filtered_layer(NODES, "points") is True
     assert is_z_depth_filtered_layer(IMAGE, "image") is False
     assert is_z_depth_filtered_layer(SKELETON, "labels") is False
     assert is_z_depth_filtered_layer("HaemoLynx BC coordinates", "points") is False
+
+
+def _flow_graph_at_z(*z_values: float) -> nx.MultiGraph:
+    """One edge per Z slab; mid-edge arrow anchors sit near z + 5."""
+    graph = nx.MultiGraph()
+    for z in z_values:
+        u, v = int(z), int(z) + 100
+        graph.add_node(u, pos=np.array([float(z), 0.0, 0.0]))
+        graph.add_node(v, pos=np.array([float(z + 5), 0.0, 0.0]))
+        graph.add_edge(
+            u,
+            v,
+            key=0,
+            voxels=[[z, 0.0, 0.0], [z + 5, 0.0, 0.0]],
+            length=5.0,
+            flow_signed=1.0,
+            flow_abs=1.0,
+            conductance=1.0,
+        )
+    return graph
+
+
+def test_filter_flow_direction_vectors_by_z_uses_arrow_origin_z():
+    vectors, features = flow_direction_vectors(_flow_graph_at_z(0, 10, 20))
+    assert len(vectors) == 3
+    assert np.allclose(vectors[:, 0, 0], [5.0, 15.0, 25.0])
+    z_mid = 16.0
+    filtered, feats, _owner = filter_vectors_by_z(vectors, features, 0.0, z_mid)
+    assert len(filtered) == 2
+    assert np.all(filtered[:, 0, 0] <= z_mid)
+    assert len(feats["flow_abs"]) == len(filtered)
 
 
 def test_filter_vectors_by_z_keeps_segments_whose_origin_is_in_range():
@@ -1136,6 +1176,36 @@ def test_apply_z_filter_on_viewer_restores_full_range():
     assert len(layer.data) == 2
     _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
     assert len(layer.data) == len(vessels.data)
+
+
+def test_apply_z_filter_on_viewer_filters_flow_direction_layer():
+    from haemolynx.gui._widget import _apply_z_filter
+
+    vectors, features = flow_direction_vectors(_flow_graph_at_z(0, 10, 20))
+    full_z = 25.0
+
+    class Vectors:
+        pass
+
+    layer = Vectors()
+    layer.name = FLOW_DIRECTION
+    layer.data = np.asarray(vectors)
+    layer.features = dict(features)
+    layer.metadata = {
+        "haemolynx": {
+            "z_filter_full": {
+                "data": np.asarray(vectors),
+                "features": {k: np.asarray(v) for k, v in features.items()},
+            }
+        }
+    }
+    viewer = SimpleNamespace(layers=[layer])
+
+    _apply_z_filter(viewer, 0.0, 16.0, z_extent=full_z)
+    assert len(layer.data) == 2
+    assert np.all(layer.data[:, 0, 0] <= 16.0)
+    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    assert len(layer.data) == len(vectors)
 
 
 def test_result_layers_image_z_extent_after_skeletonise():

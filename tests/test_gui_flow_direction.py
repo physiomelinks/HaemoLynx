@@ -302,7 +302,8 @@ def test_flow_direction_colouring_includes_axis_components_when_enabled():
     np.testing.assert_allclose(spec.features["flow_dir_z"], [1.0], rtol=1e-5)
 
 
-def test_flow_direction_colouring_omits_axis_components_when_disabled():
+def test_flow_direction_colouring_keeps_axis_components_when_disabled():
+    """Direction columns stay on the layer for the colour-by dropdown."""
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
         graph,
@@ -311,9 +312,9 @@ def test_flow_direction_colouring_omits_axis_components_when_disabled():
     )
     group = results.stage_finished("export_results", SimpleNamespace())
     spec = group.layers[0]
-    assert "flow_dir_z" not in spec.features
-    assert "flow_dir_y" not in spec.features
-    assert "flow_dir_x" not in spec.features
+    assert "flow_dir_z" in spec.features
+    assert "flow_dir_y" in spec.features
+    assert "flow_dir_x" in spec.features
     assert "flow_abs" in spec.features
 
 

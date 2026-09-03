@@ -221,17 +221,47 @@ EDGE_COLUMNS: dict[str, str] = {
 #: Optional edge columns gated by run settings (see :func:`edge_columns_for_settings`).
 OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "flow_abs_log10": "solve",
+    "flow_dir_z": "solve",
+    "flow_dir_y": "solve",
+    "flow_dir_x": "solve",
 }
+
+#: Derived flow columns always offered on vessel layers once flows exist.
+FLOW_DERIVED_EDGE_COLUMNS: frozenset[str] = frozenset(
+    {"flow_abs_log10", "flow_dir_z", "flow_dir_y", "flow_dir_x"}
+)
 
 
 def edge_columns_for_settings(
     settings: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Declared edge columns, including optional ones enabled in *settings*."""
+    """Declared edge columns, including derived flow columns for colouring."""
     columns = dict(EDGE_COLUMNS)
-    if settings and settings.get("flow_log_scale", False):
-        columns.update(OPTIONAL_EDGE_COLUMNS)
+    columns.update(OPTIONAL_EDGE_COLUMNS)
     return columns
+
+
+def _enrich_flow_colour_columns(
+    columns: dict[str, np.ndarray], graph: Any
+) -> None:
+    """Add log10 and direction columns whenever the graph carries finite flows."""
+    flow_abs = columns.get("flow_abs")
+    if flow_abs is None:
+        return
+    values = np.asarray(flow_abs, dtype=float)
+    if values.size == 0 or not np.any(np.isfinite(values)):
+        return
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+    from haemolynx.visualization.flow_direction import edge_flow_direction_columns
+
+    columns["flow_abs_log10"] = np.asarray(
+        [flow_abs_log10_value(v) if np.isfinite(v) else np.nan for v in values],
+        dtype=float,
+    )
+    direction = edge_flow_direction_columns(graph)
+    for name, array in direction.items():
+        if len(array) == len(values):
+            columns[name] = array
 
 
 #: Columns holding text rather than numbers; a missing one is "" not NaN.
@@ -704,6 +734,7 @@ class ResultLayers:
         # happened to flow and pressure, written by the last stage, long after
         # the vessels layer was made.
         columns.update(edge_features(graph, edge_columns_for_settings(self.settings)))
+        _enrich_flow_colour_columns(columns, graph)
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
@@ -1187,12 +1218,11 @@ class ResultLayers:
 
         flow0 = np.asarray(sweep.flow_abs_at(*([0] * len(sweep.axis_names))), dtype=float)
         columns["flow_abs"] = flow0[edge_index]
-        if self.settings.get("flow_log_scale", False):
-            from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+        from haemolynx.haemodynamics.resistance import flow_abs_log10_value
 
-            columns["flow_abs_log10"] = np.asarray(
-                [flow_abs_log10_value(v) for v in flow0[edge_index]], dtype=float
-            )
+        columns["flow_abs_log10"] = np.asarray(
+            [flow_abs_log10_value(v) for v in flow0[edge_index]], dtype=float
+        )
         signed0 = sweep.flow_signed_at(*([0] * len(sweep.axis_names)))
         if signed0 is not None:
             columns["flow_signed"] = np.asarray(signed0, dtype=float)[edge_index]
@@ -1277,12 +1307,6 @@ class ResultLayers:
         vectors, features = flow_direction_vectors(graph)
         if len(vectors) == 0:
             return ()
-        if not self.settings.get("flow_log_scale", False):
-            features.pop("flow_abs_log10", None)
-        if not self.settings.get("flow_direction_colouring", True):
-            features.pop("flow_dir_z", None)
-            features.pop("flow_dir_y", None)
-            features.pop("flow_dir_x", None)
         colour_by = "flow_abs" if "flow_abs" in features else None
         scale = float(self.settings.get("flow_arrow_scale", 1.0))
         return (
