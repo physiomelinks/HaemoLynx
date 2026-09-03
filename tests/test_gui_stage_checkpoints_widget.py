@@ -112,6 +112,71 @@ def test_every_tab_but_the_first_has_a_revert_button(panel):
         assert buttons[title].enabled is False
 
 
+def test_revert_sits_below_show_each_topology_step(panel):
+    """Revert chrome is directly under the show-steps checkbox, centered.
+
+    Layout index in the panel column is the contract: view controls (which own
+    "Show each topology step") come before the per-tab Revert stack. Geometry
+    then confirms the active tab's button is below that checkbox and centered
+    on the panel once Qt has laid out.
+    """
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer, _tmp = panel
+    layout = widget.layout()
+    view_controls = widget._haemolynx_view_controls.native
+    show_steps = widget._haemolynx_show_steps.native
+    revert_stack = widget._haemolynx_revert_stack
+
+    assert view_controls.objectName() == "haemolynx_view_controls"
+    assert show_steps.objectName() == "haemolynx_show_steps"
+    assert revert_stack.objectName() == "haemolynx_revert_stack"
+
+    view_index = layout.indexOf(view_controls)
+    revert_index = layout.indexOf(revert_stack)
+    assert view_index >= 0
+    assert revert_index >= 0
+    assert view_index < revert_index, (
+        "Revert stack must sit below the show-results / show-topology-steps row"
+    )
+    # Nothing else between them: Revert is immediately under that chrome.
+    assert revert_index == view_index + 1
+
+    ancestor = show_steps.parentWidget()
+    while ancestor is not None and ancestor is not view_controls:
+        ancestor = ancestor.parentWidget()
+    assert ancestor is view_controls, (
+        "'Show each topology step' must live inside the view-controls chrome"
+    )
+
+    titles = pipeline_tab_titles()
+    assert titles[1] in widget._haemolynx_revert_buttons
+    tabs = widget._haemolynx_tabs
+    tabs.setCurrentIndex(1)
+    QApplication.processEvents()
+    assert revert_stack.currentIndex() == 1
+
+    widget.resize(420, 900)
+    widget.show()
+    QApplication.processEvents()
+
+    revert = widget._haemolynx_revert_buttons[titles[1]].native
+    assert revert.objectName() == "haemolynx_revert"
+    assert revert.isVisible()
+    steps_bottom = show_steps.mapTo(widget, show_steps.rect().bottomLeft()).y()
+    revert_top = revert.mapTo(widget, revert.rect().topLeft()).y()
+    assert steps_bottom <= revert_top, (
+        f"Revert top ({revert_top}) must be at or below show-steps bottom "
+        f"({steps_bottom})"
+    )
+    panel_mid = widget.rect().center().x()
+    revert_mid = revert.mapTo(widget, revert.rect().center()).x()
+    assert abs(panel_mid - revert_mid) <= 8, (
+        f"Revert should be centered on the panel (mid={panel_mid}, "
+        f"button mid={revert_mid})"
+    )
+
+
 def test_revert_stays_disabled_with_no_run(panel):
     widget, _viewer, _tmp = panel
     for button in widget._haemolynx_revert_buttons.values():

@@ -2810,7 +2810,15 @@ def settings_widget(napari_viewer=None):
     """
     import napari
     from magicgui.widgets import CheckBox, ComboBox, Container, Label, PushButton, TextEdit
-    from qtpy.QtWidgets import QScrollArea, QTabWidget, QVBoxLayout, QWidget
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import (
+        QHBoxLayout,
+        QScrollArea,
+        QStackedWidget,
+        QTabWidget,
+        QVBoxLayout,
+        QWidget,
+    )
 
     viewer = napari_viewer if napari_viewer is not None else napari.current_viewer()
 
@@ -2847,6 +2855,7 @@ def settings_widget(napari_viewer=None):
     #: a new run that shows layers starts.
     checkpoints = StageCheckpoints()
     revert_buttons: dict[str, Any] = {}
+    from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP
 
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
@@ -2869,17 +2878,17 @@ def settings_widget(napari_viewer=None):
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.addWidget(native)
-        # Revert sits at the bottom of every tab that has a predecessor: after
-        # a full run it reloads that previous tab's end-of-stage checkpoint so
-        # later settings can be tweaked without rebuilding the network.
+        # Revert lives in shared chrome below "Show each topology step", not
+        # inside the tab page: one button per tab that has a predecessor, shown
+        # for the active tab and centered on the panel. After a full run it
+        # reloads that previous tab's end-of-stage checkpoint so later settings
+        # can be tweaked without rebuilding the network.
         if previous_tab(tab.stage.title) is not None:
-            from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP
-
             revert = PushButton(text="Revert to previous stage")
             revert.enabled = False
             revert.tooltip = REVERT_STAGE_TOOLTIP
+            revert.native.setObjectName("haemolynx_revert")
             revert_buttons[tab.stage.title] = revert
-            page_layout.addWidget(revert.native)
         page_layout.addStretch(1)
         scroller = QScrollArea()
         scroller.setWidgetResizable(True)
@@ -2889,6 +2898,29 @@ def settings_widget(napari_viewer=None):
             index = tab_widget.count() - 1
             tab_widget.setTabToolTip(index, f"{tab.stage.call}(settings, ...)")
 
+    # Per-tab Revert pages, stacked in tab order: empty for the first tab,
+    # centered button for every later one. The stack tracks the tab widget so
+    # the chrome below show-steps always shows the active tab's Revert.
+    revert_stack = QStackedWidget()
+    revert_stack.setObjectName("haemolynx_revert_stack")
+    for tab in tabs:
+        slot = QWidget()
+        slot.setObjectName("haemolynx_revert_slot")
+        row = QHBoxLayout(slot)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addStretch(1)
+        button = revert_buttons.get(tab.stage.title)
+        if button is not None:
+            row.addWidget(button.native, 0, Qt.AlignHCenter)
+        row.addStretch(1)
+        revert_stack.addWidget(slot)
+
+    def sync_revert_stack(index: int) -> None:
+        if 0 <= index < revert_stack.count():
+            revert_stack.setCurrentIndex(index)
+
+    tab_widget.currentChanged.connect(sync_revert_stack)
+    sync_revert_stack(tab_widget.currentIndex())
     #: What a loaded config said each path setting was, before its FileEdit
     #: made it absolute. Empty until a config is opened.
     loaded_paths: dict[str, Any] = {}
@@ -3100,6 +3132,8 @@ def settings_widget(napari_viewer=None):
     show_steps = CheckBox(value=False, text="Show each topology step")
     show_results.tooltip = SHOW_RESULTS_TOOLTIP
     show_steps.tooltip = SHOW_STEPS_TOOLTIP
+    show_results.native.setObjectName("haemolynx_show_results")
+    show_steps.native.setObjectName("haemolynx_show_steps")
     view = SimpleNamespace(results=None)
 
     def _settings() -> dict[str, Any]:
@@ -3353,6 +3387,7 @@ def settings_widget(napari_viewer=None):
         widgets=[show_results, show_steps],
         labels=True,
     )
+    view_controls.native.setObjectName("haemolynx_view_controls")
 
     panel = QWidget()
     # What the panel would send to a run, and what a run would report back,
@@ -3366,11 +3401,14 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_revert = on_revert
     panel._haemolynx_checkpoints = checkpoints
     panel._haemolynx_revert_buttons = revert_buttons
+    panel._haemolynx_revert_stack = revert_stack
     panel._haemolynx_refresh_revert = refresh_revert_buttons
     panel._haemolynx_run_state = run_state
     panel._haemolynx_run_button = run_button
     panel._haemolynx_view = view
     panel._haemolynx_show_results = show_results
+    panel._haemolynx_show_steps = show_steps
+    panel._haemolynx_view_controls = view_controls
     panel._haemolynx_load_config = load_config_file
     panel._haemolynx_save_config = save_config_file
     panel._haemolynx_report = lambda: report.value
@@ -3382,7 +3420,11 @@ def settings_widget(napari_viewer=None):
     if layer_row is not None:
         layout.addWidget(layer_row.native)
     layout.addWidget(tab_widget)
+    # Show-results / show-topology-steps, then Revert centered under them, then
+    # the run chrome. Revert is intentionally outside the tab pages so it sits
+    # in one place for every stage that can restore a predecessor.
     layout.addWidget(view_controls.native)
+    layout.addWidget(revert_stack)
     layout.addWidget(buttons.native)
     layout.addWidget(bars.native)
     layout.addWidget(report.native)
