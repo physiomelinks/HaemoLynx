@@ -343,6 +343,16 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         for attribute in attributes:
             setattr(layer, attribute, colours)
     else:
+        try:
+            values = np.asarray(layer.features[column], dtype=float)
+        except (TypeError, ValueError):
+            values = np.asarray([], dtype=float)
+        if values.size == 0 or not np.any(np.isfinite(values)):
+            # All-NaN or empty: stay flat grey. Naming the column in colormap
+            # mode still makes napari map it; on some builds that aborts Qt
+            # rather than raising, which `_apply_layers` cannot catch.
+            _record_colour(layer, column)
+            return
         for attribute in attributes:
             setattr(layer, f"{attribute}_colormap", "viridis")
             setattr(layer, attribute, column)
@@ -378,16 +388,20 @@ def _active_column(layer) -> str | None:
     napari's own layer controls: anything we noted when we last set a colouring
     goes stale the moment the user picks something on the left.
 
-    `color_properties` is private, so fall back to what we recorded if a napari
-    version moves it -- a stale answer beats no colour bar.
+    Points layers only get a feature dropdown from us; when a column is all-NaN
+    we record the choice in metadata without entering napari's colormap mode,
+    so the recorded name is the authoritative answer there.
     """
+    tag = getattr(layer, "metadata", {}).get(OURS)
+    recorded = tag.get("colour_by") if isinstance(tag, dict) else None
+    if recorded and _colour_attribute(layer) == "face_color":
+        return str(recorded)
     manager = getattr(layer, "_edge", None) or getattr(layer, "_face", None)
     properties = getattr(manager, "color_properties", None)
     name = getattr(properties, "name", None)
     if name:
         return str(name)
-    tag = getattr(layer, "metadata", {}).get(OURS)
-    return tag.get("colour_by") if isinstance(tag, dict) else None
+    return str(recorded) if recorded else None
 
 
 def _image_options_for_napari(options: Mapping[str, Any]) -> dict[str, Any]:
@@ -908,23 +922,34 @@ class _ColourScale:
         and idempotent-ish: the layer is replaced on a re-run, so the previous
         connection dies with it.
         """
-        layer = self._layer()
-        if layer is not None and layer is not self._connected:
-            events = getattr(layer, "events", None)
-            attribute = _colour_attribute(layer)
-            signal = getattr(events, attribute, None) if events else None
-            if signal is not None:
-                signal.connect(lambda *_a: self.follow_the_layer())
-            self._connected = layer
-        column = _active_column(layer) if layer is not None else None
-        changed = column != self._column
-        self.refresh(column)
-        if changed and self.shown:
-            # A colouring chosen in napari's own dropdown is applied with
-            # whatever range the last one used, so a column of flows lands on
-            # a scale of branch orders and every vessel comes out one colour.
-            # Fit it, exactly as the button does.
-            self.autoscale(0.0, 100.0)
+        if getattr(self, "_following", False):
+            # Re-entered from an edge/face_color event we triggered in
+            # autoscale or _apply_contrast_limits: refresh only, no autoscale.
+            layer = self._layer()
+            column = _active_column(layer) if layer is not None else None
+            self.refresh(column)
+            return
+        self._following = True
+        try:
+            layer = self._layer()
+            if layer is not None and layer is not self._connected:
+                events = getattr(layer, "events", None)
+                attribute = _colour_attribute(layer)
+                signal = getattr(events, attribute, None) if events else None
+                if signal is not None:
+                    signal.connect(lambda *_a: self.follow_the_layer())
+                self._connected = layer
+            column = _active_column(layer) if layer is not None else None
+            changed = column != self._column
+            self.refresh(column)
+            if changed and self.shown:
+                # A colouring chosen in napari's own dropdown is applied with
+                # whatever range the last one used, so a column of flows lands on
+                # a scale of branch orders and every vessel comes out one colour.
+                # Fit it, exactly as the button does.
+                self.autoscale(0.0, 100.0)
+        finally:
+            self._following = False
 
     def refresh(self, column: str | None) -> None:
         """Show the range of *column*, or hide if there is nothing to show."""

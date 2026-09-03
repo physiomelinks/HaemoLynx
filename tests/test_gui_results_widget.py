@@ -767,6 +767,69 @@ def test_branch_order_then_flow_does_not_raise_keyerror_nan(make_napari_viewer):
     assert len(layer.edge_color) == len(layer.data)
 
 
+def test_all_nan_flow_stays_flat_grey_not_colormap(make_napari_viewer):
+    """Solve colours by flow_abs; sparse/no conductance can leave every value NaN.
+
+    Entering colormap mode on an all-NaN column is what used to raise
+    `KeyError: nan`; on some Qt builds it aborts the process instead, which
+    `_apply_layers` cannot catch.
+    """
+    from haemolynx.gui._widget import UNCOLOURED, _apply_layers, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    graph = a_graph(conductance=1e-18, branch_order="BO1")
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("assign_diameters", SimpleNamespace(graph=graph)))
+    layer = viewer.layers[VESSELS]
+    features = dict(layer.features)
+    features["flow_abs"] = np.full(len(layer.data), np.nan)
+    layer.features = features
+
+    _apply_layers(
+        viewer,
+        results.stage_finished(
+            "solve",
+            SimpleNamespace(
+                graph=graph,
+                node_list=list(graph.nodes),
+                pressure=np.array([1000.0, 900.0, 700.0, 500.0]),
+                equivalent_resistance=1e18,
+            ),
+        ),
+    )
+
+    assert len(np.unique(np.asarray(layer.edge_color), axis=0)) == 1
+    assert UNCOLOURED == "#cccccc"
+
+
+def test_solve_stage_apply_after_diameters_with_panel(make_napari_viewer):
+    """The path that runs right after ``Stage 7/9 done: Solve`` in the infolog."""
+    from haemolynx.gui._widget import _apply_layers, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    graph = a_graph(conductance=1e-18, resistance=1e18, branch_order="BO1")
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+        data["flow_signed"] = 5e-16
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("assign_diameters", SimpleNamespace(graph=graph)))
+    _apply_layers(
+        viewer,
+        results.stage_finished(
+            "solve",
+            SimpleNamespace(
+                graph=graph,
+                node_list=list(graph.nodes),
+                pressure=np.array([1000.0, 900.0, 700.0, 500.0]),
+                equivalent_resistance=1e18,
+            ),
+        ),
+    )
+    assert viewer.layers[VESSELS].edge_color_mode == "colormap"
+
+
 def test_flow_then_branch_order_does_not_raise_either(make_napari_viewer):
     """The mirror image: colormap mode meeting a text column."""
     from haemolynx.gui._widget import _colour_layer
