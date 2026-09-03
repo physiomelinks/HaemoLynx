@@ -1,6 +1,7 @@
 """Automatic terminal-node assignment from arteriole/venule masks."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ from .large_vessels import (
     exclude_smaller_overlapping_large_vessel_components,
     exclude_smaller_overlapping_small_vessel_components,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _terminal_nodes_with_position_pairs(G: nx.Graph) -> list[tuple[Any, np.ndarray]]:
@@ -711,14 +714,14 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
         voxel_size_zyx=voxel_size_zyx,
     )
 
-    print(
+    logger.info(
         "Automated large-vessel progressive assignment: "
         f"{len(schedule)} step(s), max_dilation={float(max_dilation_microns):.3f} microns, "
         f"step={float(dilation_step_microns):.3f} microns."
     )
     for step_idx, dilation_microns in enumerate(schedule, start=1):
         if not remaining_terminal_ids:
-            print(
+            logger.info(
                 "Automated large-vessel progressive assignment: "
                 "all terminal nodes assigned before final dilation step."
             )
@@ -767,7 +770,7 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
             assigned_outputs.add(node_id)
             remaining_terminal_ids.discard(node_id)
 
-        print(
+        logger.info(
             "Automated large-vessel progressive assignment step "
             f"{step_idx}/{len(schedule)} "
             f"(dilation={float(dilation_microns):.3f} microns): "
@@ -1010,7 +1013,7 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
         "minimum_overlap_fraction": float(minimum_overlap_fraction),
     }
 
-    print(
+    logger.info(
         "Small-vessel progressive boundary assignment: "
         f"{len(schedule)} step(s), max_dilation={float(max_dilation_microns):.3f} microns, "
         f"step={float(dilation_step_microns):.3f} microns."
@@ -1028,7 +1031,7 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
 
     for step_idx, dilation_microns in enumerate(schedule, start=1):
         if not remaining_boundary_nodes and not remaining_label_nodes:
-            print(
+            logger.info(
                 "Small-vessel progressive boundary assignment: "
                 "all graph nodes assigned before final dilation step."
             )
@@ -1140,7 +1143,7 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
             assigned_venule_boundary.add(node_id)
             remaining_boundary_nodes.discard(node_id)
 
-        print(
+        logger.info(
             "Small-vessel progressive boundary assignment step "
             f"{step_idx}/{len(schedule)} "
             f"(dilation={float(dilation_microns):.3f} microns): "

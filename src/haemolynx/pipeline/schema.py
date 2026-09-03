@@ -163,7 +163,7 @@ SCHEMA = Schema(
             help=(
                 "Select inlet and outlet nodes automatically from the large-vessel "
                 "masks instead of manually. When applied, automated assignment "
-                "overrides the other (manual) inlet/outlet selection methods."
+                "overrides the other (manual) inlet/outlet selection methods"
             ),
             section=_VESSEL_MASKS,
         ),
@@ -191,7 +191,7 @@ SCHEMA = Schema(
                 "One-shot load-time dilation of large-vessel masks (microns) applied "
                 "when the masks are loaded. Distinct from "
                 "large_vessel_assignment_max_dilation_microns, which runs a progressive "
-                "0, +5, … µm schedule only during terminal-node assignment."
+                "0, +5, … µm schedule only during terminal-node assignment"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,
@@ -206,7 +206,7 @@ SCHEMA = Schema(
                 "Maximum dilation (microns) for progressive large-vessel terminal "
                 "assignment: assign at 0 µm, then in 5 µm steps up to this value, "
                 "locking each node at the first step it is claimed. Does not replace "
-                "large_vessel_mask_dilation_microns (load-time one-shot dilation)."
+                "large_vessel_mask_dilation_microns (load-time one-shot dilation)"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,
@@ -278,7 +278,7 @@ SCHEMA = Schema(
                 "smaller overlapping connected component. Assignment-time cleanup "
                 "is controlled separately by "
                 "automated_vessel_assignment_enable_overlap_cleanup / fast_mode "
-                "(large) and small_vessel_boundary_assignment_* (small)."
+                "(large) and small_vessel_boundary_assignment_* (small)"
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks",),
@@ -550,7 +550,7 @@ SCHEMA = Schema(
                 "Maximum dilation (microns) for progressive small-vessel boundary "
                 "assignment: label at 0 µm, then in 5 µm steps up to this value, "
                 "locking each edge at the first step it is classified. There is no "
-                "separate load-time small-vessel dilation setting."
+                "separate load-time small-vessel dilation setting"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,
@@ -667,7 +667,6 @@ SCHEMA = Schema(
             help="Maximum axis-angle (degrees) between bridged cylinder axes",
             section=_VESSEL_MASKS,
             minimum=0.0,
-            unit="deg",
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
                 "small_vessel_mask_continuity_enable",

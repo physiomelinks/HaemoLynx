@@ -31,15 +31,15 @@ input_and_segmentation:
 # Vessel masks
 # ------------------------------------------------------------------------
 vessel_masks:
-  # Select inlet and outlet nodes automatically from the large-vessel masks instead of manually. When applied, automated assignment overrides the other (manual) inlet/outlet selection methods.
+  # Select inlet and outlet nodes automatically from the large-vessel masks instead of manually. When applied, automated assignment overrides the other (manual) inlet/outlet selection methods
   automated_vessel_assignment: false
   # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks]
   use_ilastik_large_vessel_segmentation: false
-  # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment.  [um; range 0.0..; needs use_large_vessel_masks]
+  # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment  [um; range 0.0..; needs use_large_vessel_masks]
   large_vessel_mask_dilation_microns: 0.0
-  # Maximum dilation (microns) for progressive large-vessel terminal assignment: assign at 0 µm, then in 5 µm steps up to this value, locking each node at the first step it is claimed. Does not replace large_vessel_mask_dilation_microns (load-time one-shot dilation).  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
+  # Maximum dilation (microns) for progressive large-vessel terminal assignment: assign at 0 µm, then in 5 µm steps up to this value, locking each node at the first step it is claimed. Does not replace large_vessel_mask_dilation_microns (load-time one-shot dilation)  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_assignment_max_dilation_microns: 0.0
   # Remove connected components smaller than this physical volume from large-vessel masks after dilation (set 0 to disable)  [um3; range 0.0..; needs use_large_vessel_masks]
   large_vessel_min_component_volume_um3: 200.0
@@ -49,7 +49,7 @@ vessel_masks:
   large_vessel_opposite_attached_max_component_volume_um3: 250.0
   # Maximum distance from the opposite large-vessel mask for a tiny component to count as opposite-attached and be removed  [um; range 0.0..; needs use_large_vessel_masks and large_vessel_remove_small_opposite_attached_components]
   large_vessel_opposite_attached_max_distance_microns: 3.0
-  # At load time, remove arteriole/venule overlap voxels from the smaller overlapping connected component. Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small).  [needs use_large_vessel_masks]
+  # At load time, remove arteriole/venule overlap voxels from the smaller overlapping connected component. Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small)  [needs use_large_vessel_masks]
   exclude_smaller_overlapping_volumes: false
   # Pre-clean large arteriole/venule overlap voxels from the smaller component once before progressive terminal assignment (when overlap cleanup is enabled)  [needs use_large_vessel_masks and automated_vessel_assignment]
   automated_vessel_assignment_fast_mode: true
@@ -97,7 +97,7 @@ vessel_masks:
   use_ilastik_small_vessel_segmentation: false
   # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
-  # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then in 5 µm steps up to this value, locking each edge at the first step it is classified. There is no separate load-time small-vessel dilation setting.  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
+  # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then in 5 µm steps up to this value, locking each edge at the first step it is classified. There is no separate load-time small-vessel dilation setting  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_mask_dilation_microns: 0.0
   # Pre-clean small arteriole/venule overlap voxels from the smaller component once before progressive boundary labelling (when overlap cleanup is enabled)  [needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_boundary_assignment_fast_mode: true
@@ -117,7 +117,7 @@ vessel_masks:
   small_vessel_mask_continuity_enforce_cylinder_only: true
   # Minimum cylindricality score required for a continuity bridge endpoint  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_min_cylindricality: 0.45
-  # Maximum axis-angle (degrees) between bridged cylinder axes  [deg; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  # Maximum axis-angle (degrees) between bridged cylinder axes  [range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_max_axis_angle_degrees: 45.0
   # Minimum facing-cosine between cylinder endpoints for a bridge  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_min_facing_cosine: 0.82

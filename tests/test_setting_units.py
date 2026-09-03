@@ -102,6 +102,12 @@ DIMENSIONLESS = {
     # Names a file, an axis order, a mode -- not a quantity.
     "image_axis_order",
     "voxel_size_policy",
+    # Graph hop count (edge steps), not a physical distance.
+    "small_vessel_boundary_fallback_hop_distance",
+    # Ratio of cylinder radii (dimensionless).
+    "small_vessel_mask_continuity_max_radius_ratio",
+    # Angle in degrees; no degrees unit is registered in the schema vocabulary.
+    "small_vessel_mask_continuity_max_axis_angle_degrees",
 }
 
 #: Substrings that mark a name as describing a measurement.
