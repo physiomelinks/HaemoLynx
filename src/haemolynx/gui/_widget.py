@@ -39,6 +39,9 @@ from haemolynx.gui.results import (
     VESSELS,
     ResultLayers,
     colour_cycle_for,
+    filter_points_by_z,
+    filter_vectors_by_z,
+    is_z_depth_filtered_layer,
 )
 from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.run_state import (
@@ -223,6 +226,128 @@ _BRANCH_HOVER_OPTION_KEYS = frozenset(
 
 def _is_ours(layer) -> bool:
     return bool(getattr(layer, "metadata", {}).get(OURS))
+
+
+def _store_z_filter_cache(
+    layer,
+    data: Any = None,
+    features: Mapping[str, np.ndarray] | None = None,
+    *,
+    segment_owner: Any = None,
+) -> None:
+    """Remember unfiltered graph geometry for the view-only Z depth filter."""
+    kind = layer.__class__.__name__.lower()
+    if not is_z_depth_filtered_layer(layer.name, kind):
+        return
+    if data is None:
+        data = layer.data
+    if features is None:
+        features = dict(getattr(layer, "features", {}))
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    cache: dict[str, Any] = {
+        "data": np.asarray(data),
+        "features": {name: np.asarray(values) for name, values in features.items()},
+    }
+    owner = segment_owner
+    if owner is None:
+        owner = tag.get("segment_owner")
+    if owner is not None:
+        cache["segment_owner"] = np.asarray(owner)
+    tag["z_filter_full"] = cache
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _apply_z_filter(
+    viewer,
+    z_min: float,
+    z_max: float,
+    *,
+    z_extent: float | None = None,
+) -> None:
+    """Redraw graph Vectors/Points layers filtered to a physical Z band."""
+    full_range = (
+        z_extent is not None
+        and z_min <= 0.0
+        and z_max >= z_extent - max(1e-6, abs(z_extent) * 1e-9)
+    )
+    for layer in viewer.layers:
+        if not _is_ours(layer):
+            continue
+        kind = layer.__class__.__name__.lower()
+        if not is_z_depth_filtered_layer(layer.name, kind):
+            continue
+        tag = getattr(layer, "metadata", {}).get(OURS) or {}
+        cache = tag.get("z_filter_full")
+        if cache is None:
+            _store_z_filter_cache(layer)
+            tag = getattr(layer, "metadata", {}).get(OURS) or {}
+            cache = tag.get("z_filter_full")
+        if cache is None:
+            continue
+        if full_range:
+            data = cache["data"]
+            features = cache["features"]
+            segment_owner = cache.get("segment_owner")
+        elif kind == "vectors":
+            data, features, segment_owner = filter_vectors_by_z(
+                cache["data"],
+                cache["features"],
+                z_min,
+                z_max,
+                segment_owner=cache.get("segment_owner"),
+            )
+        else:
+            data, features = filter_points_by_z(
+                cache["data"], cache["features"], z_min, z_max
+            )
+            segment_owner = cache.get("segment_owner")
+        layer.data = data
+        if features:
+            layer.features = features
+        if segment_owner is not None:
+            metadata = dict(getattr(layer, "metadata", {}) or {})
+            ours = dict(metadata.get(OURS) or {})
+            ours["segment_owner"] = segment_owner
+            metadata[OURS] = ours
+            layer.metadata = metadata
+
+
+def _sync_z_depth_slider(slider, results: ResultLayers | None) -> None:
+    """Set slider range from the image stack; hide until skeletonise has run."""
+    extent = results.image_z_extent_um() if results is not None else None
+    if extent is None or extent <= 0.0:
+        slider.setEnabled(False)
+        slider.setVisible(False)
+        return
+    step = float(results._voxel_size_zyx[0]) if results is not None else 1.0  # noqa: SLF001
+    slider.setVisible(True)
+    slider.setEnabled(True)
+    slider.blockSignals(True)
+    try:
+        slider.setRange(0.0, extent)
+        if hasattr(slider, "setSingleStep"):
+            slider.setSingleStep(max(step, 1e-6))
+        lo, hi = slider.value()
+        if hi <= lo or hi > extent or lo < 0.0:
+            lo, hi = 0.0, extent
+        else:
+            lo = max(0.0, min(lo, extent))
+            hi = max(lo, min(hi, extent))
+        slider.setValue((lo, hi))
+    finally:
+        slider.blockSignals(False)
+
+
+def _maybe_store_z_filter_cache(layer, spec) -> None:
+    if is_z_depth_filtered_layer(spec.name, spec.kind):
+        _store_z_filter_cache(
+            layer,
+            spec.data,
+            spec.features,
+            segment_owner=getattr(spec, "segment_owner", None),
+        )
 
 
 def _apply_layers(viewer, group, report=None) -> None:
@@ -475,6 +600,7 @@ def _add_or_update(viewer, spec) -> None:
                           spec.colour_cycle, spec.contrast_limits)
             _store_sweep_metadata(existing, spec)
             _store_branch_hover_metadata(existing, spec)
+            _maybe_store_z_filter_cache(existing, spec)
             return
 
     if existing is not None:
@@ -502,6 +628,7 @@ def _add_or_update(viewer, spec) -> None:
                   spec.colour_cycle, spec.contrast_limits)
     _store_sweep_metadata(layer, spec)
     _store_branch_hover_metadata(layer, spec)
+    _maybe_store_z_filter_cache(layer, spec)
 
 
 def _store_sweep_metadata(layer, spec) -> None:
@@ -1403,7 +1530,7 @@ def _progress_bridge():
 
 def _run_in_background(
     settings, schema, report, button, bars=None, viewer=None, results=None,
-    state=None, log=None, checkpoints=None):
+    state=None, log=None, checkpoints=None, after_layers=None):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
@@ -1453,6 +1580,8 @@ def _run_in_background(
         if run_state.cancelled:
             return
         _apply_layers(viewer, group, report)
+        if after_layers is not None:
+            after_layers()
 
     bridge.event.connect(progressed)
     if show_layers:
@@ -3324,7 +3453,44 @@ def settings_widget(napari_viewer=None):
     show_steps.tooltip = SHOW_STEPS_TOOLTIP
     show_results.native.setObjectName("haemolynx_show_results")
     show_steps.native.setObjectName("haemolynx_show_steps")
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QFormLayout, QLabel, QWidget
+    from superqt import QDoubleRangeSlider
+
+    z_depth_label = QLabel("Z depth filter (µm)")
+    z_depth_slider = QDoubleRangeSlider(Qt.Orientation.Horizontal)
+    z_depth_slider.setObjectName("haemolynx_z_depth_slider")
+    z_depth_slider.setEnabled(False)
+    z_depth_slider.setVisible(False)
     view = SimpleNamespace(results=None)
+
+    def _after_layers_applied() -> None:
+        """Refresh Z depth slider range and apply the current filter."""
+        if viewer is None:
+            return
+        _sync_z_depth_slider(z_depth_slider, view.results)
+        if view.results is None or not z_depth_slider.isEnabled():
+            return
+        z_lo, z_hi = z_depth_slider.value()
+        _apply_z_filter(
+            viewer,
+            z_lo,
+            z_hi,
+            z_extent=view.results.image_z_extent_um(),
+        )
+
+    def on_z_depth_changed(*_args) -> None:
+        if viewer is None or view.results is None:
+            return
+        z_lo, z_hi = z_depth_slider.value()
+        _apply_z_filter(
+            viewer,
+            z_lo,
+            z_hi,
+            z_extent=view.results.image_z_extent_um(),
+        )
+
+    z_depth_slider.valueChanged.connect(on_z_depth_changed)
 
     def _settings() -> dict[str, Any]:
         return resolve_settings(current_values(), schema=schema, config_path=None)
@@ -3473,6 +3639,7 @@ def settings_widget(napari_viewer=None):
             state=run_state,
             log=log_view,
             checkpoints=checkpoints if results is not None else None,
+            after_layers=_after_layers_applied if show_results.value else None,
         )
         # Enable revert once the run has actually stopped (success, failure, or
         # the quiet finished-after-quit path). Connecting here rather than
@@ -3505,6 +3672,8 @@ def settings_widget(napari_viewer=None):
             # user stopped it. So it is marked, not cleared.
             log_view.cancelled()
         view.results = None
+        z_depth_slider.setEnabled(False)
+        z_depth_slider.setVisible(False)
         if boundaries is not None:
             boundaries.state.results = None
         discarded_artefacts = False
@@ -3566,6 +3735,7 @@ def settings_widget(napari_viewer=None):
         _clear_our_layers(viewer)
         for group in plan.groups:
             _apply_layers(viewer, group)
+        _after_layers_applied()
         saved_skip_snapshot = dict(skip_toggle_snapshot)
         disconnected: list[str] = []
         for name in SKIP_FOR_RESUME:
@@ -3627,6 +3797,9 @@ def settings_widget(napari_viewer=None):
         labels=True,
     )
     view_controls.native.setObjectName("haemolynx_view_controls")
+    z_depth_row = QWidget()
+    z_depth_form = QFormLayout(z_depth_row)
+    z_depth_form.addRow(z_depth_label, z_depth_slider)
 
     panel = QWidget()
     # What the panel would send to a run, and what a run would report back,
@@ -3648,6 +3821,9 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_show_results = show_results
     panel._haemolynx_show_steps = show_steps
     panel._haemolynx_view_controls = view_controls
+    panel._haemolynx_z_depth_slider = z_depth_slider
+    panel._haemolynx_apply_z_filter = _apply_z_filter
+    panel._haemolynx_after_layers_applied = _after_layers_applied
     panel._haemolynx_load_config = load_config_file
     panel._haemolynx_save_config = save_config_file
     panel._haemolynx_report = lambda: report.value
@@ -3669,6 +3845,7 @@ def settings_widget(napari_viewer=None):
     # the run chrome. Revert is intentionally outside the tab pages so it sits
     # in one place for every stage that can restore a predecessor.
     layout.addWidget(view_controls.native)
+    layout.addWidget(z_depth_row)
     layout.addWidget(revert_stack)
     layout.addWidget(buttons.native)
     layout.addWidget(bars.native)

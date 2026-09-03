@@ -23,11 +23,8 @@ __all__ = [
     "edge_flow_direction_sign",
     "edge_flow_arrow_zyx",
     "flow_direction_vectors",
-    "flow_toward_face_from_direction",
+    "flow_direction_components",
 ]
-
-# Face codes for dominant-axis encoding in physical (z, y, x): ±3 = ±z, ±2 = ±y, ±1 = ±x.
-_FACE_CODE_ZYX = (3, 2, 1)
 
 
 def edge_flow_direction_sign(
@@ -65,22 +62,20 @@ def edge_flow_direction_sign(
     return None
 
 
-def flow_toward_face_from_direction(direction: np.ndarray) -> int:
-    """Which bounding-box face the flow arrow points toward (physical z, y, x).
+def flow_direction_components(direction: np.ndarray) -> tuple[float, float, float]:
+    """Signed normalised ``(z, y, x)`` components of a flow direction vector.
 
-    Uses the dominant component of *direction* (mid-edge arrow displacement).
-    Returns ``-3`` (−z), ``-2`` (−y), ``-1`` (−x), ``+1`` (+x), ``+2`` (+y),
-    or ``+3`` (+z). A zero or non-finite vector returns ``0``.
+    Each component is in ``[-1, +1]``. A zero or non-finite vector returns
+    ``(0, 0, 0)``.
     """
     d = np.asarray(direction, dtype=float).reshape(-1)[:3]
     if d.shape[0] < 3 or not np.all(np.isfinite(d)):
-        return 0
+        return 0.0, 0.0, 0.0
     norm = float(np.linalg.norm(d))
     if norm <= 1e-12:
-        return 0
-    axis = int(np.argmax(np.abs(d)))
-    sign = 1 if d[axis] >= 0.0 else -1
-    return sign * _FACE_CODE_ZYX[axis]
+        return 0.0, 0.0, 0.0
+    unit = d / norm
+    return float(unit[0]), float(unit[1]), float(unit[2])
 
 
 def _polyline_length(points: np.ndarray) -> float:
@@ -161,8 +156,9 @@ def flow_direction_vectors(
         Shape ``(N, 2, 3)``: origin and displacement in physical ``(z, y, x)``.
     features
         Parallel columns including ``flow_abs`` (magnitude used for the heatmap),
-        ``flow_signed``, and ``flow_toward_face`` (dominant-axis bounding-box
-        face code). Empty dict when there are no arrows.
+        ``flow_signed``, and ``flow_dir_z`` / ``flow_dir_y`` / ``flow_dir_x``
+        (signed normalised direction components). Empty dict when there are no
+        arrows.
     """
     directed: list[tuple[np.ndarray, int, float, float]] = []
     for u, v, _key, data in _iter_edges(graph):
@@ -210,7 +206,9 @@ def flow_direction_vectors(
     signed_col: list[float] = []
     abs_col: list[float] = []
     log10_col: list[float] = []
-    face_col: list[int] = []
+    dir_z_col: list[float] = []
+    dir_y_col: list[float] = []
+    dir_x_col: list[float] = []
     for points, direction_sign, signed_f, flow_abs in directed:
         result = edge_flow_arrow_zyx(
             points,
@@ -229,7 +227,10 @@ def flow_direction_vectors(
             log10_col.append(flow_abs_log10_value(flow_abs))
         else:
             log10_col.append(float("nan"))
-        face_col.append(flow_toward_face_from_direction(vector))
+        dz, dy, dx = flow_direction_components(vector)
+        dir_z_col.append(dz)
+        dir_y_col.append(dy)
+        dir_x_col.append(dx)
 
     if not origins:
         return np.empty((0, 2, 3), dtype=float), {}
@@ -241,6 +242,8 @@ def flow_direction_vectors(
         "flow_abs": np.asarray(abs_col, dtype=float),
         "flow_abs_log10": np.asarray(log10_col, dtype=float),
         "flow_signed": np.asarray(signed_col, dtype=float),
-        "flow_toward_face": np.asarray(face_col, dtype=int),
+        "flow_dir_z": np.asarray(dir_z_col, dtype=float),
+        "flow_dir_y": np.asarray(dir_y_col, dtype=float),
+        "flow_dir_x": np.asarray(dir_x_col, dtype=float),
     }
     return vectors, features

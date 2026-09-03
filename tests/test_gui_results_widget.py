@@ -672,6 +672,25 @@ def test_the_panel_offers_the_view_controls(make_napari_viewer):
     # the left. The panel configures and runs the pipeline.
     assert not hasattr(panel, "_haemolynx_colour")
     assert not hasattr(panel, "_haemolynx_scales")
+    assert hasattr(panel, "_haemolynx_z_depth_slider")
+    assert panel._haemolynx_z_depth_slider.isVisible() is False
+
+
+def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
+    from haemolynx.gui._widget import _apply_z_filter, _apply_layers
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    full_z = 8.0  # 4 Z slices x 2.0 µm (``a_run`` voxel size)
+    image_data = np.asarray(viewer.layers[IMAGE].data).copy()
+    vessel_count = len(viewer.layers[VESSELS].data)
+
+    _apply_z_filter(viewer, 0.0, 5.0, z_extent=full_z)
+    assert len(viewer.layers[VESSELS].data) < vessel_count
+    assert np.array_equal(viewer.layers[IMAGE].data, image_data)
+
+    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    assert len(viewer.layers[VESSELS].data) == vessel_count
 
 
 # --- the colour-by dropdowns learn what a stage made available ---------------

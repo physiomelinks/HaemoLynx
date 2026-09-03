@@ -1406,9 +1406,9 @@ SCHEMA = Schema(
             kind="bool",
             default=True,
             help=(
-                "Include flow_toward_face in the flow-direction Vectors layer "
-                "properties for napari colour-by (which bounding-box face flow "
-                "heads toward; select it from the layer colour-by dropdown)"
+                "Include flow direction axis components (flow_dir_z/y/x) as "
+                "colour options in the flow-direction Vectors layer (select "
+                "from the layer colour-by dropdown)"
             ),
             section=_SOLVER_AND_OUTPUT,
             requires=("show_flow_direction_layer", "run_haemodynamics"),

@@ -13,8 +13,8 @@ from haemolynx.pipeline.progress import STAGES
 from haemolynx.visualization.flow_direction import (
     edge_flow_arrow_zyx,
     edge_flow_direction_sign,
+    flow_direction_components,
     flow_direction_vectors,
-    flow_toward_face_from_direction,
 )
 
 
@@ -138,29 +138,42 @@ def test_arrow_helper_rejects_degenerate_polyline():
     ) is None
 
 
-def test_flow_toward_face_dominant_axis_encoding():
-    assert flow_toward_face_from_direction(np.array([1.0, 0.0, 0.0])) == 3
-    assert flow_toward_face_from_direction(np.array([-1.0, 0.0, 0.0])) == -3
-    assert flow_toward_face_from_direction(np.array([0.0, 2.0, 0.0])) == 2
-    assert flow_toward_face_from_direction(np.array([0.0, -2.0, 0.0])) == -2
-    assert flow_toward_face_from_direction(np.array([0.0, 0.0, 5.0])) == 1
-    assert flow_toward_face_from_direction(np.array([0.0, 0.0, -5.0])) == -1
+def test_flow_direction_components_pure_axes():
+    z, y, x = flow_direction_components(np.array([1.0, 0.0, 0.0]))
+    assert z == 1.0 and y == 0.0 and x == 0.0
+    z, y, x = flow_direction_components(np.array([-1.0, 0.0, 0.0]))
+    assert z == -1.0 and y == 0.0 and x == 0.0
+    z, y, x = flow_direction_components(np.array([0.0, 2.0, 0.0]))
+    assert z == 0.0 and y == 1.0 and x == 0.0
+    z, y, x = flow_direction_components(np.array([0.0, -2.0, 0.0]))
+    assert z == 0.0 and y == -1.0 and x == 0.0
+    z, y, x = flow_direction_components(np.array([0.0, 0.0, 5.0]))
+    assert z == 0.0 and y == 0.0 and x == 1.0
+    z, y, x = flow_direction_components(np.array([0.0, 0.0, -5.0]))
+    assert z == 0.0 and y == 0.0 and x == -1.0
 
 
-def test_flow_toward_face_zero_vector_is_finite():
-    assert flow_toward_face_from_direction(np.zeros(3)) == 0
-    assert np.isfinite(flow_toward_face_from_direction(np.zeros(3)))
+def test_flow_direction_components_diagonal_blends():
+    z, y, x = flow_direction_components(np.array([1.0, 1.0, 0.0]))
+    np.testing.assert_allclose([z, y, x], [0.70710678, 0.70710678, 0.0], rtol=1e-5)
 
 
-def test_antiparallel_edges_have_opposite_flow_toward_face():
+def test_flow_direction_components_zero_vector_is_finite():
+    z, y, x = flow_direction_components(np.zeros(3))
+    assert (z, y, x) == (0.0, 0.0, 0.0)
+    assert all(np.isfinite(v) for v in (z, y, x))
+
+
+def test_antiparallel_edges_have_opposite_direction_components():
     positive = flow_direction_vectors(_two_node_edge(flow_signed=2.0))[1]
     negative = flow_direction_vectors(_two_node_edge(flow_signed=-2.0))[1]
-    assert positive["flow_toward_face"][0] == 3
-    assert negative["flow_toward_face"][0] == -3
-    assert positive["flow_toward_face"][0] == -negative["flow_toward_face"][0]
+    np.testing.assert_allclose(positive["flow_dir_z"], [1.0])
+    np.testing.assert_allclose(negative["flow_dir_z"], [-1.0])
+    np.testing.assert_allclose(positive["flow_dir_y"], [0.0])
+    np.testing.assert_allclose(positive["flow_dir_x"], [0.0])
 
 
-def test_flow_toward_face_values_are_finite_in_features():
+def test_flow_direction_components_finite_in_features():
     graph = nx.MultiGraph()
     graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     graph.add_node(1, pos=np.array([5.0, 0.0, 0.0]))
@@ -176,9 +189,12 @@ def test_flow_toward_face_values_are_finite_in_features():
         flow_signed=-3.0, flow_abs=3.0,
     )
     _vectors, features = flow_direction_vectors(graph)
-    faces = np.asarray(features["flow_toward_face"], dtype=float)
-    assert np.all(np.isfinite(faces))
-    assert faces.tolist() == [3.0, -2.0]
+    for key in ("flow_dir_z", "flow_dir_y", "flow_dir_x"):
+        col = np.asarray(features[key], dtype=float)
+        assert np.all(np.isfinite(col))
+    np.testing.assert_allclose(features["flow_dir_z"], [1.0, 0.0], rtol=1e-5)
+    np.testing.assert_allclose(features["flow_dir_y"], [0.0, -1.0], rtol=1e-5)
+    np.testing.assert_allclose(features["flow_dir_x"], [0.0, 0.0], rtol=1e-5)
 
 
 # --- ResultLayers / Export-tab toggle ----------------------------------------
@@ -205,7 +221,9 @@ def test_toggle_on_with_flows_emits_one_arrow_per_directed_edge():
     assert len(spec.data) == 1
     assert spec.colour_by == "flow_abs"
     assert spec.features["flow_abs"].tolist() == [1.25]
-    assert spec.features["flow_toward_face"].tolist() == [3]
+    np.testing.assert_allclose(spec.features["flow_dir_z"], [1.0], rtol=1e-5)
+    np.testing.assert_allclose(spec.features["flow_dir_y"], [0.0], atol=1e-12)
+    np.testing.assert_allclose(spec.features["flow_dir_x"], [0.0], atol=1e-12)
     assert spec.options.get("vector_style") == "triangle"
     assert spec.options.get("length") == 1.0
 
@@ -269,7 +287,7 @@ def test_show_flow_direction_layer_lives_on_export_tab():
     assert owner["show_flow_direction_layer"] == "8. Export"
 
 
-def test_flow_direction_colouring_includes_flow_toward_face_when_enabled():
+def test_flow_direction_colouring_includes_axis_components_when_enabled():
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
         graph,
@@ -278,11 +296,13 @@ def test_flow_direction_colouring_includes_flow_toward_face_when_enabled():
     )
     group = results.stage_finished("export_results", SimpleNamespace())
     spec = group.layers[0]
-    assert "flow_toward_face" in spec.features
-    assert spec.features["flow_toward_face"].tolist() == [3]
+    assert "flow_dir_z" in spec.features
+    assert "flow_dir_y" in spec.features
+    assert "flow_dir_x" in spec.features
+    np.testing.assert_allclose(spec.features["flow_dir_z"], [1.0], rtol=1e-5)
 
 
-def test_flow_direction_colouring_omits_flow_toward_face_when_disabled():
+def test_flow_direction_colouring_omits_axis_components_when_disabled():
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
         graph,
@@ -291,7 +311,9 @@ def test_flow_direction_colouring_omits_flow_toward_face_when_disabled():
     )
     group = results.stage_finished("export_results", SimpleNamespace())
     spec = group.layers[0]
-    assert "flow_toward_face" not in spec.features
+    assert "flow_dir_z" not in spec.features
+    assert "flow_dir_y" not in spec.features
+    assert "flow_dir_x" not in spec.features
     assert "flow_abs" in spec.features
 
 

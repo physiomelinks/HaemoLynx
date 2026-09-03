@@ -38,7 +38,11 @@ from haemolynx.gui.results import (
     VESSEL_LABELS,
     VESSELS,
     ResultLayers,
+    filter_points_by_z,
+    filter_vectors_by_z,
+    image_z_extent_um,
     is_ours_name,
+    is_z_depth_filtered_layer,
     perturbation_layer_names,
     available_edge_columns,
     edge_features,
@@ -1050,6 +1054,103 @@ def test_a_column_with_nothing_in_it_has_no_range():
     assert _data_range(layer, "flow_abs") is None
     assert _data_range(layer, "missing") is None
     assert _data_range(layer, "none") is None
+
+
+# --- Z depth filter (view-only) ----------------------------------------------
+
+
+def test_image_z_extent_um_is_voxel_z_times_stack_depth():
+    assert image_z_extent_um((2.0, 1.0, 0.5), 8) == pytest.approx(16.0)
+
+
+def test_z_depth_filter_targets_graph_vectors_and_points_only():
+    assert is_z_depth_filtered_layer(VESSELS, "vectors") is True
+    assert is_z_depth_filtered_layer(NODES, "points") is True
+    assert is_z_depth_filtered_layer(IMAGE, "image") is False
+    assert is_z_depth_filtered_layer(SKELETON, "labels") is False
+    assert is_z_depth_filtered_layer("HaemoLynx BC coordinates", "points") is False
+
+
+def test_filter_vectors_by_z_keeps_segments_whose_origin_is_in_range():
+    paths, identity = edge_polylines(a_graph())
+    vectors, owner = polylines_to_vectors(paths)
+    features = {"edge_index": identity["edge_index"][owner]}
+    z_mid = 15.0
+    filtered, feats, _owner = filter_vectors_by_z(vectors, features, 0.0, z_mid)
+    # Edge start Z values are 0, 10, 20 along the line graph.
+    assert len(filtered) == 2
+    assert np.all(filtered[:, 0, 0] <= z_mid)
+    assert len(feats["edge_index"]) == len(filtered)
+
+
+def test_filter_vectors_by_z_at_full_range_restores_all_segments():
+    paths, _identity = edge_polylines(a_graph())
+    vectors, owner = polylines_to_vectors(paths)
+    features = {"edge_index": owner}
+    full_z = 30.0
+    filtered, feats, _owner = filter_vectors_by_z(vectors, features, 0.0, full_z)
+    assert len(filtered) == len(vectors)
+    assert len(feats["edge_index"]) == len(filtered)
+
+
+def test_filter_points_by_z_keeps_midpoints_up_to_z_mid():
+    paths, identity = edge_polylines(a_graph())
+    midpoints = midpoints_of(paths)
+    features = {"edge_index": identity["edge_index"]}
+    z_mid = 15.0
+    filtered, feats = filter_points_by_z(midpoints, features, 0.0, z_mid)
+    assert len(filtered) == 2
+    assert np.all(filtered[:, 0] <= z_mid)
+    assert len(feats["edge_index"]) == len(filtered)
+
+
+def test_apply_z_filter_on_viewer_restores_full_range():
+    from haemolynx.gui._widget import _apply_z_filter
+
+    graph = a_graph()
+    results = built(graph)
+    group = results.stage_finished("build_network", network(graph))
+    vessels = spec_named(group, VESSELS)
+    full_z = 30.0
+
+    class Vectors:
+        pass
+
+    layer = Vectors()
+    layer.name = VESSELS
+    layer.data = np.asarray(vessels.data)
+    layer.features = dict(vessels.features)
+    layer.metadata = {
+        "haemolynx": {
+            "z_filter_full": {
+                "data": np.asarray(vessels.data),
+                "features": {
+                    k: np.asarray(v) for k, v in vessels.features.items()
+                },
+            }
+        }
+    }
+    viewer = SimpleNamespace(layers=[layer])
+
+    _apply_z_filter(viewer, 0.0, 15.0, z_extent=full_z)
+    assert len(layer.data) == 2
+    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    assert len(layer.data) == len(vessels.data)
+
+
+def test_result_layers_image_z_extent_after_skeletonise():
+    results = ResultLayers()
+    assert results.image_z_extent_um() is None
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((6, 4, 4)),
+            skeleton=np.zeros((6, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 2.0),
+            voxel_size_zyx=(2.0, 1.0, 1.0),
+        ),
+    )
+    assert results.image_z_extent_um() == pytest.approx(12.0)
 
 
 def test_an_identical_column_still_gives_a_usable_range():

@@ -116,6 +116,9 @@ LAYER_NAMES = frozenset(
     | set(MASK_LAYERS.values())
 )
 
+#: Voxel-indexed arrays and boundary-picking layers are not graph geometry.
+_Z_FILTER_EXCLUDE = frozenset({IMAGE, SKELETON, *MASK_LAYERS.values()})
+
 
 def is_ours_name(name: str) -> bool:
     """Whether *name* is a name this module would give a layer.
@@ -132,6 +135,69 @@ def is_ours_name(name: str) -> bool:
 def perturbation_layer_names(name: str) -> tuple[str, str]:
     """The vessels and nodes layers one perturbation gets, in that order."""
     return (f"{PREFIX}{name} vessels", f"{PREFIX}{name} nodes")
+
+
+def image_z_extent_um(
+    voxel_size_zyx: Sequence[float], image_shape_z: int
+) -> float:
+    """Physical Z span of the loaded image stack, in microns."""
+    return float(voxel_size_zyx[0]) * int(image_shape_z)
+
+
+def is_z_depth_filtered_layer(name: str, kind: str) -> bool:
+    """Whether the view-only Z depth filter applies to a HaemoLynx layer."""
+    if kind not in ("vectors", "points"):
+        return False
+    if not is_ours_name(name):
+        return False
+    if name in _Z_FILTER_EXCLUDE:
+        return False
+    # Boundary-picking layers (``boundary_picking.py``) share the prefix.
+    if " BC " in name:
+        return False
+    return True
+
+
+def _z_in_range(z: np.ndarray, z_min: float, z_max: float) -> np.ndarray:
+    return (z >= z_min) & (z <= z_max)
+
+
+def filter_vectors_by_z(
+    data: np.ndarray,
+    features: Mapping[str, np.ndarray],
+    z_min: float,
+    z_max: float,
+    *,
+    segment_owner: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray | None]:
+    """Keep vector segments whose origin Z lies in ``[z_min, z_max]``."""
+    data = np.asarray(data)
+    if len(data) == 0:
+        return data, dict(features), segment_owner
+    keep = _z_in_range(data[:, 0, 0], z_min, z_max)
+    filtered = {
+        name: np.asarray(values)[keep] for name, values in features.items()
+    }
+    owner = np.asarray(segment_owner)[keep] if segment_owner is not None else None
+    return data[keep], filtered, owner
+
+
+def filter_points_by_z(
+    data: np.ndarray,
+    features: Mapping[str, np.ndarray],
+    z_min: float,
+    z_max: float,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Keep points whose position Z lies in ``[z_min, z_max]``."""
+    data = np.asarray(data)
+    if len(data) == 0:
+        return data, dict(features)
+    keep = _z_in_range(data[:, 0], z_min, z_max)
+    filtered = {
+        name: np.asarray(values)[keep] for name, values in features.items()
+    }
+    return data[keep], filtered
+
 
 #: Per-edge columns, and the stage that first writes each. A column is offered
 #: for colouring only once the stage that fills it has run, so the dropdown
@@ -543,6 +609,7 @@ class ResultLayers:
         #: the same or larger edge count must not replace it in napari.
         self._canonical_graph: Any | None = None
         self._voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        self._image_shape_z: int | None = None
         self._geometry_shown = False
         self._emitted: list[str] = []
 
@@ -563,8 +630,15 @@ class ResultLayers:
         self._graph = None
         self._canonical_graph = None
         self._voxel_size_zyx = (1.0, 1.0, 1.0)
+        self._image_shape_z = None
         self._geometry_shown = False
         self._emitted = []
+
+    def image_z_extent_um(self) -> float | None:
+        """Physical Z span of the image stack once ``skeletonise`` has run."""
+        if self._image_shape_z is None:
+            return None
+        return image_z_extent_um(self._voxel_size_zyx, self._image_shape_z)
 
     def stage_finished(self, stage: str, output: Any) -> StageLayers:
         """The layers for *stage*, built now, from *output* as it is now."""
@@ -723,6 +797,7 @@ class ResultLayers:
         self._voxel_size_zyx = scale  # type: ignore[assignment]
         image = getattr(output, "image", None)
         skeleton = getattr(output, "skeleton", None)
+        self._image_shape_z = int(np.asarray(image).shape[0]) if image is not None else None
         layers: list[LayerSpec] = []
         if image is not None:
             layers.append(
@@ -1205,7 +1280,9 @@ class ResultLayers:
         if not self.settings.get("flow_log_scale", False):
             features.pop("flow_abs_log10", None)
         if not self.settings.get("flow_direction_colouring", True):
-            features.pop("flow_toward_face", None)
+            features.pop("flow_dir_z", None)
+            features.pop("flow_dir_y", None)
+            features.pop("flow_dir_x", None)
         colour_by = "flow_abs" if "flow_abs" in features else None
         scale = float(self.settings.get("flow_arrow_scale", 1.0))
         return (
