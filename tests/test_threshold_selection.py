@@ -2,31 +2,34 @@
 
 The segmentation handover picks the threshold from connected-component statistics: take the
 value just above where component count climbs steeply and the largest component's share
-starts falling. Measured on the real WKY-C probability field, that criterion does not work.
+starts falling. Measured on the 160^3 ROI the pipeline actually selects on - WKY-C - that
+criterion cannot name a value.
 
-    low   fg     comps  largest share  n>=50vox  d_med um
-    0.20  0.507  10621         0.9945       114     13.96
-    0.30  0.456   7787         0.9945       105     12.92
-    0.70  0.310   2844         0.9369       115      9.14
-    0.90  0.224   2003         0.9492       135      7.46
-    0.95  0.184   2347         0.9507       139      5.28
-    0.99  0.105   7151         0.9580       138      3.73
+    thr   fg     comps  largest share  n>=50vox  d_med um  ep/mm
+    0.30  0.652    753         0.9980         6      9.14   3.10
+    0.50  0.530    572         0.9972        21      8.34   5.13
+    0.70  0.417    405         0.9899        11      6.46   5.13
+    0.90  0.261    400         0.9917        10      5.27   5.17
+    0.95  0.187    640         0.9925        11      3.73   7.83
+    0.99  0.063   2700         0.9239        32      3.73  32.57
 
-The largest component's share never falls - it is *higher* at 0.99, where the network has
-visibly shattered, than at 0.70 - because share is measured in voxels and this network is one
-dominant mass at every threshold, with fragments too small to move a voxel fraction. The
-count of components above a size floor is equally flat, wandering between 94 and 139 with no
-structure. No mask-component statistic discriminates here.
+Both mask statistics move - the share falls from 0.9980 to 0.9239, in this and every other
+specimen, and component count is U-shaped. Neither has a knee. Component count accelerates
+smoothly, so "just above where it climbs steeply" names no threshold; and the share only
+moves once the network has already shattered, so reading a value off it lands at 0.95-0.97,
+by which point endpoint density has already doubled. They move too late, not too little.
 
-Two things do. Median inscribed diameter moves monotonically from 13.96 um to 3.73 um and has
-an external target - the handover's own validation table expects a capillary mode of 4-7 um.
-And skeleton endpoint density is flat until the network actually beads, then doubles: on a
-mid-stack subvolume it runs 2.3, 2.8, 3.2, 2.9, 2.4, 2.1 per mm from 0.30 to 0.97 and then
-jumps to 4.8 at 0.99, where skeleton components go 172 -> 467 and mean component length
-halves.
+(An earlier version of this docstring quoted a whole-volume sweep - 10621 components at 0.20,
+7151 at 0.99, above-floor counts of 94-139 - and concluded the share never falls. That was
+measured before ROI placement existed, on a different sub-volume, and does not hold here.)
+
+Two things do better. Median inscribed diameter falls monotonically and has an external
+target - the handover's own validation table expects a capillary mode of 4-7 um. And skeleton
+endpoint density is flat while the network is intact, then climbs sharply once it beads.
 
 So calibre is the objective and fragmentation is the constraint, which is the reverse of the
-handover's ordering.
+handover's ordering. On these six specimens the constraint never actually binds: the
+fragmentation onset always sits above the top of the calibre window.
 """
 import numpy as np
 import pytest
@@ -161,3 +164,104 @@ def test_selection_can_be_rendered_as_a_table():
     text = select_threshold(samples).format_table()
     assert "d_med" in text and "ep/mm" in text
     assert str(samples[0].threshold) in text or f"{samples[0].threshold:.2f}" in text
+
+
+def _sample(threshold, d_med, ep_per_mm):
+    """A minimal sample carrying only the two fields selection reads."""
+    return ThresholdSample(
+        threshold=threshold,
+        foreground_fraction=0.3,
+        median_diameter_um=d_med,
+        p90_diameter_um=d_med * 2,
+        mask_components=100,
+        mask_components_above_floor=10,
+        largest_mask_component_share=0.99,
+        skeleton_length_mm=1.0,
+        endpoints=int(ep_per_mm),
+        endpoint_density_per_mm=ep_per_mm,
+        skeleton_components=10,
+    )
+
+
+def test_only_the_lower_calibre_bound_can_select():
+    """The window's upper bound is structurally inert, and that is not obvious.
+
+    Median calibre falls monotonically with threshold and select_threshold takes the *highest*
+    threshold in the window, so the upper bound only ever prunes from the low-threshold end -
+    which the maximum never reads. The one thing it can do is empty the window and force a
+    refusal. This is why a sensitivity analysis that sweeps the window's width symmetrically
+    is testing one live parameter and one dead one.
+    """
+    # calibre falling monotonically, as it does on every real specimen
+    samples = [
+        _sample(0.30, 9.14, 3.0),
+        _sample(0.50, 8.34, 3.5),
+        _sample(0.70, 6.46, 4.0),
+        _sample(0.85, 5.27, 4.5),
+        _sample(0.90, 5.27, 5.0),
+        _sample(0.95, 3.73, 12.0),
+    ]
+    # The fragmentation veto is switched off throughout, so that what is being measured is
+    # the calibre window alone. With it live it would mask the effect at the low end.
+    def choose(lo, hi):
+        return select_threshold(
+            samples, diameter_range=(lo, hi), fragmentation_tolerance=1e9
+        ).threshold
+
+    baseline = choose(4.0, 7.0)
+    assert baseline == 0.90
+
+    # raising the ceiling to anything that still admits 5.27 changes nothing
+    for hi in (5.5, 6.0, 7.0, 8.0, 12.0, 25.0):
+        assert choose(4.0, hi) == baseline
+
+    # the floor is what selects
+    assert choose(3.70, 7.0) == 0.95
+    assert choose(5.30, 7.0) == 0.70
+
+    # and a ceiling below every observed calibre is a refusal, not a different pick
+    assert choose(4.0, 3.9) is None
+
+
+def test_the_fragmentation_veto_is_a_guard_that_the_real_data_never_trips():
+    """On all six specimens the onset sits above the calibre window, so nothing is vetoed.
+
+    Pinned because it is the reason skeletonisation - the expensive half of the sweep - is
+    currently buying a guard rather than a decision. If a future classifier makes this bind,
+    this test should fail and the section's claim be revisited.
+    """
+    # the real shape: calibre window tops out at 0.90, endpoint density does not spike until 0.95
+    samples = [
+        _sample(0.70, 6.46, 5.13),
+        _sample(0.80, 5.28, 4.73),
+        _sample(0.85, 5.27, 5.01),
+        _sample(0.90, 5.27, 5.17),
+        _sample(0.93, 3.73, 6.09),
+        _sample(0.95, 3.73, 7.83),
+        _sample(0.97, 3.73, 10.89),
+    ]
+    selection = select_threshold(samples)
+    assert selection.threshold == 0.90
+    assert selection.fragmentation_onset == 0.95
+    # the onset is above the top of the calibre window, so it removed no candidate
+    assert max(selection.calibre_window) < selection.fragmentation_onset
+    # and disabling the constraint gives the identical answer
+    unconstrained = select_threshold(samples, fragmentation_tolerance=1e9)
+    assert unconstrained.fragmentation_onset is None
+    assert unconstrained.threshold == selection.threshold
+
+
+def test_the_above_floor_component_count_is_computed_but_never_shown():
+    """MIN_COMPONENT_VOXELS feeds a field format_table does not print and nothing reads.
+
+    The 'maskcmp' column is the unfiltered total. Guarding it so the discrepancy is noticed
+    rather than rediscovered: if the column is ever switched to the filtered count, the
+    section 2.2 note about it saying so must change too.
+    """
+    sample = evaluate_threshold(_tube(), 0.5, VOXEL)
+    assert sample.mask_components_above_floor <= sample.mask_components
+
+    table = select_threshold([sample]).format_table()
+    assert str(sample.mask_components) in table
+    if sample.mask_components_above_floor != sample.mask_components:
+        assert f"{sample.mask_components_above_floor:>9d}" not in table

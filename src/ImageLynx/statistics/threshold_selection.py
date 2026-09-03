@@ -2,36 +2,58 @@
 
 The segmentation handover selects the threshold from connected-component statistics: the
 value just above where component count climbs steeply and the largest component's share
-starts falling. Measured on the real WKY-C probability field, no mask-component statistic
-discriminates. The largest component's share never falls - it is *higher* at 0.99, where the
-network has visibly shattered into 7151 pieces, than at 0.70 - because share is counted in
-voxels and this network is one dominant mass at every threshold, with fragments too small to
-move a voxel fraction. Counting components above a 50-voxel floor is equally flat, wandering
-between 94 and 139 across the whole range with no structure.
+starts falling. Measured over all six 160^3 ROIs, neither half of that rule can name a value.
+
+Both statistics do move. On WKY-C the largest component's share falls from 0.9980 at 0.30 to
+0.9239 at 0.99, and it falls in every specimen; mask components are U-shaped, bottoming at 572
+near 0.50 and climbing to 2700 at 0.99. What neither has is a *knee*. Component count
+accelerates smoothly - successive ratios 1.28, 1.14, 1.14, 1.26, 1.42, 1.67, 2.81 - so "just
+above where it climbs steeply" names no particular threshold. And the share only moves once
+the network has already shattered: reading a value off where it starts falling lands at
+0.95-0.97, by which point endpoint density has already doubled. Component statistics do not
+fail to move, they move too late.
 
 That is a property of the data's topology rather than of any one classifier, so it survives
 retraining: a vascular bed percolates, and a percolating mask stays connected long after its
 centreline has started beading.
 
-Two measurements do discriminate.
+Two measurements do better.
 
-**Median inscribed diameter** moves monotonically - 13.96 um at 0.20 down to 3.73 um at 0.99
-on that volume - and it has an external target rather than an internal optimum: the
-handover's own validation table expects a capillary mode of 4-7 um, and its half-voxel
-arithmetic gives the same window independently. So it can be an objective without anything
-being fitted.
+**Median inscribed diameter** falls monotonically with threshold and has an external target
+rather than an internal optimum: the handover's own validation table expects a capillary mode
+of 4-7 um, and its half-voxel arithmetic gives the same window independently. So it can be an
+objective without anything being fitted.
+
+Two caveats on it, both measured. It is a median over *every foreground voxel*, not over the
+centreline as the pipeline's own calibre assignment is, and it runs 0.63-1.00x the centreline
+median on the same masks. And it is atomic: the EDT on this grid can only take values
+pitch*sqrt(k), so across the whole 6 x 10 sweep the median visits nine levels and only
+sqrt(2) (5.27 um) and sqrt(3) (6.46 um) fall inside the window. The selection therefore turns
+on a single quantisation step. Any lower bound between 3.74 and 5.27 um gives the identical
+six choices; 3.70 changes all six.
+
+Note also that only the lower bound can ever select. Calibre falls monotonically and
+`select_threshold` takes the highest threshold in the window, so the upper bound prunes only
+from the low-threshold end, which the maximum never reads. Sweeping it from 5.5 to 25 um
+leaves every choice unchanged.
 
 **Skeleton endpoint density** is flat while the network is intact and climbs sharply once it
-beads. On a mid-stack subvolume it ran 2.3, 2.8, 3.2, 2.9, 2.4, 2.1 per mm from 0.30 to 0.97
-and then jumped to 4.8 at 0.99, where skeleton components went 172 -> 467 and mean component
-length halved. Each new fragment contributes two endpoints, which is why this sees what the
-mask cannot.
+beads - on WKY-C, 3.10, 5.13, 5.13, 4.73, 5.01, 5.17, 6.09, 7.83, 10.89, 32.57 per mm across
+the grid. Each new fragment contributes two endpoints, which is why this sees what the mask
+cannot.
 
 Calibre is therefore the objective and fragmentation the constraint - the reverse of the
 handover's ordering, where topology chose the value and calibre was checked afterwards, if at
 all. When the two do not agree anywhere, that is reported rather than resolved: a segmentation
 with no threshold that is simultaneously the right calibre and intact is a segmentation
 problem, and picking the least-bad value would turn it into a plausible set of numbers.
+
+**The constraint has not yet had to act.** On all six specimens the fragmentation onset (0.95
+or 0.97) sits above the top of the calibre window (0.90 or 0.85), so no candidate is ever
+vetoed, and disabling the constraint returns the identical six choices. Skeletonisation
+dominates the cost of the sweep and currently buys a guard rather than a decision. It is kept
+because it is the only thing standing between the calibre rule and a threshold that reaches
+capillary calibre by shredding the network.
 """
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence, Tuple
@@ -63,6 +85,10 @@ FRAGMENTATION_TOLERANCE = 1.5
 
 #: Components below this are debris rather than vessel - the size filter prob_to_mask.py
 #: applies, at roughly 325 um^3. Recorded for continuity with that tool; not decisive here.
+#:
+#: It feeds ThresholdSample.mask_components_above_floor, which format_table does not print
+#: (the "maskcmp" column is the unfiltered total) and no selection logic reads. If it is worth
+#: computing it is worth showing; if not, both it and this constant can go.
 MIN_COMPONENT_VOXELS = 50
 
 

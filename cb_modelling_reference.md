@@ -416,20 +416,20 @@ median mask diameter falls in the capillary window, provided it lies below the f
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Place the ROI and crop the probability volume | 160³ | The threshold has to be chosen on the same sub-volume it will be applied to | **On** | `cb_h1_batch.py:79` |
+| 1 | Place the ROI and crop the probability volume | 160³ | The threshold has to be chosen on the same sub-volume it will be applied to | **On** | `cb_h1_batch.py:84` |
 | 2 | Cut a mask at each threshold in the grid | `p > t`, a **plain cut** | A cheap monotone family of masks to rank against each other; the sweep is a ranking, not an absolute measurement | **On** | `threshold_selection.py:157` |
-| 3 | EDT → median and p90 diameter | `sampling` = voxel size | Calibre is the criterion that selects, and EDT is bounded by the mask so it cannot read a neighbouring vessel | **On**, decisive | `threshold_selection.py:161` |
-| 4 | Label mask components, largest share, count above floor | 50 voxels | Kept for continuity with `prob_to_mask.py`; component statistics are flat across the whole range here and cannot discriminate | **On**, reported but not decisive | `threshold_selection.py:166` |
+| 3 | EDT → median and p90 diameter | `sampling` = voxel size | Calibre is the criterion that selects, and EDT is bounded by the mask so it cannot read a neighbouring vessel | **On** — the median decides; the p90 is printed and never read | `threshold_selection.py:161` |
+| 4 | Label mask components, largest share, count above floor | 50 voxels | Kept for continuity with `prob_to_mask.py`; component statistics move, but with no knee to read a threshold off | **On** — the total and the share are printed; the above-floor count is neither printed nor read | `threshold_selection.py:166` |
 | 5 | Skeletonise the cut mask | raw, **no cleanup** | Endpoint density needs a centreline; there is no other way to count where the network has broken | **On** | `threshold_selection.py:176` |
 | 6 | Skeleton length from voxel count | × in-plane pitch | An endpoint count alone scales with network size, so it needs a per-length denominator to compare across thresholds | **On** | `threshold_selection.py:181` |
-| 7 | Count degree-1 voxels → endpoint density | per mm of skeleton | A network breaking into beads gains endpoints far faster than it gains components, so this detects fragmentation earlier | **On**, decisive | `threshold_selection.py:185` |
-| 8 | Drop thresholds whose mask is empty | — | At the top of a sweep an empty mask is the expected outcome, not a failure worth reporting as one | **On** — a legitimate outcome, not an error | `threshold_selection.py:217` |
+| 7 | Count degree-1 voxels → endpoint density | per mm of skeleton | A network breaking into beads gains endpoints far faster than it gains components, so this detects fragmentation earlier | **On, but never decisive** — the veto it feeds does not bind on any of the six | `threshold_selection.py:185` |
+| 8 | Drop thresholds whose mask is empty | — | At the top of a sweep an empty mask is the expected outcome, not a failure worth reporting as one | **On, but never fires** — foreground is still 6.2–9.0% at 0.99 | `threshold_selection.py:217` |
 | 9 | Baseline = **median** endpoint density across the sweep | — | The minimum is a single noisy sample; using it would flag ordinary variation as fragmentation | **On** | `threshold_selection.py:241` |
-| 10 | Onset = lowest threshold above 1.5 × baseline | `FRAGMENTATION_TOLERANCE` | Marks where the centreline is demonstrably breaking, so every threshold at or above it can be vetoed | **On** | `threshold_selection.py:246` |
-| 11 | Calibre window = thresholds with median d in range | 4.0–7.0 µm | An external target rather than an internal optimum — a threshold tuned to a property of the data has no independent standard to be wrong against | **On** | `threshold_selection.py:249` |
+| 10 | Onset = lowest threshold above 1.5 × baseline | `FRAGMENTATION_TOLERANCE` | Marks where the centreline is demonstrably breaking, so every threshold at or above it can be vetoed | **On, but never binding** — onset is 0.95 or 0.97, always above the window's top | `threshold_selection.py:246` |
+| 11 | Calibre window = thresholds with median d in range | 4.0–7.0 µm | An external target rather than an internal optimum — a threshold tuned to a property of the data has no independent standard to be wrong against | **On** — but only the 4.0 µm bound can select; see below | `threshold_selection.py:249` |
 | 12 | Chosen = **highest** window threshold below onset | — | Calibre falls monotonically with threshold and the risk being traded is over-inclusion, which resistance carries as $r^{-4}$ | **On**, or a refusal | `threshold_selection.py:271` |
-| 13 | Repeat 1–12 per specimen; median of six, snapped to grid | 6 specimens | Per-specimen thresholds would absorb exactly the classifier-quality differences H1 is trying to measure | **On** | `cb_h1_batch.py:104` |
-| 14 | Cohort-split check on the per-specimen choices | — | A threshold that splits by group is a confound; reporting it makes that visible rather than hidden | **On**, reported | `cb_h1_batch.py:99` |
+| 13 | Repeat 1–12 per specimen; median of six, snapped to grid | 6 specimens | Per-specimen thresholds would absorb exactly the classifier-quality differences H1 is trying to measure | **On** — four specimens choose 0.90, two choose 0.85 | `cb_h1_batch.py:106` |
+| 14 | Cohort-split check on the per-specimen choices | — | A threshold that splits by group is a confound; reporting it makes that visible rather than hidden | **On**, reported — verdict is *no separation*, because SHR-A chose 0.90 with the WKYs | `cb_h1_batch.py:101` |
 
 **The selector does not measure the mask the pipeline builds.** Step 2 is a plain cut (`p > t`) and
 step 5 skeletonises it raw. The pipeline instead builds a *hysteresis* mask, closes it, prunes to
@@ -446,13 +446,99 @@ underestimated and endpoint density per mm overestimated in absolute terms. It c
 1.5 × ratio, which is why the criterion survives it, but the `ep/mm` column in the printed table is
 not a physical density.
 
-**Why calibre and not component statistics.** The conventional criterion — the value just above
-where component count climbs and the largest component's share falls — does not discriminate on
-this data. The largest component's share never falls; it is *higher* at 0.99, where the network has
-visibly shattered into 7,151 pieces, than at 0.70. Share is counted in voxels, and this network is
-one dominant mass at every threshold with fragments too small to move a voxel fraction. Counting
-components above a 50-voxel floor is equally flat, wandering between 94 and 139 across the whole
-range with no structure. That is a property of the data's topology, not of any one classifier.
+**Why calibre and not component statistics.** The conventional criterion is *the value just above
+where component count climbs steeply and the largest component's share starts falling*. Measured on
+the six ROIs, both halves of it fail — but not in the way the module docstring claimed, and the
+docstring's figures are from a differently-placed sub-volume that predates §2.1. The real numbers,
+for WKY-C:
+
+| Threshold | Mask components | Largest share | Components > 50 vox | ep/mm |
+|---|---|---|---|---|
+| 0.30 | 753 | 0.9980 | 6 | 3.10 |
+| 0.50 | 572 | 0.9972 | 21 | 5.13 |
+| 0.70 | 405 | 0.9899 | 11 | 5.13 |
+| 0.90 | 400 | 0.9917 | 10 | 5.17 |
+| 0.95 | 640 | 0.9925 | 11 | 7.83 |
+| 0.99 | 2,700 | 0.9239 | 32 | 32.57 |
+
+The share **does** fall — from 0.9980 to 0.9239, and in all six specimens, contradicting the
+docstring's claim that it never does and is *higher* at 0.99 than at 0.70. Component count is not
+flat either: it is U-shaped, bottoming near 0.50–0.70 and then climbing 6.7-fold. What is true is
+that neither has a **knee**. Component count accelerates smoothly — successive ratios 1.28, 1.14,
+1.14, 1.26, 1.42, 1.67, 2.81 — so "just above where it climbs steeply" names no particular
+threshold. And the share only moves once the network has already shattered: reading a threshold off
+where the share starts falling lands at 0.95–0.97, by which point endpoint density has already
+doubled. Component statistics do not fail to move; they move **too late**, and without a feature
+sharp enough to read a value from. That is a property of the data's topology — a vascular bed
+percolates, and a percolating mask stays connected long after its centreline has begun beading —
+not of any one classifier.
+
+**What actually selects, measured on all six.** Running `cb_h1_batch.py --stage threshold` over the
+real ROIs reproduces the frozen 0.90, but the route to it is narrower than the twelve-step table
+suggests:
+
+| Specimen | Calibre window | Onset | Own choice | d at 0.90 |
+|---|---|---|---|---|
+| WKY-A | 0.80–0.90 | 0.95 | **0.90** | 5.27 µm |
+| WKY-B | 0.70–0.90 | 0.97 | **0.90** | 5.27 µm |
+| WKY-C | 0.70–0.90 | 0.95 | **0.90** | 5.27 µm |
+| SHR-A | 0.70–0.90 | 0.95 | **0.90** | 5.27 µm |
+| SHR-B | 0.70–0.85 | 0.97 | **0.85** | 3.73 µm |
+| SHR-C | 0.70–0.85 | 0.95 | **0.85** | 3.73 µm |
+
+**The fragmentation veto never binds.** In every specimen the onset (0.95 or 0.97) sits above the
+top of the calibre window (0.90 or 0.85), so no candidate is ever removed by it. Re-running the
+selection with the constraint switched off entirely returns the identical six choices. Steps 5–7
+and 9–10 — skeletonisation, length, endpoint density, baseline, onset — are the expensive half of
+the sweep, and on this data they change nothing. They are a guard that has not yet been needed, in
+the same sense as the ROI clamp in §2.1. Keeping them is still right: they are the only thing
+standing between the calibre rule and a threshold that meets calibre by shredding the network.
+
+**The median diameter is atomic, and the window admits three values.** The EDT of a binary volume on
+this near-cubic grid can only take values $\text{pitch}\times\sqrt{k}$, so a *median* over foreground
+voxels lands on one of a few levels. Across the whole 6 × 10 sweep it visits nine:
+
+| $d$ (µm) | radius / voxel | $\sqrt{k}$ | inside 4.0–7.0? |
+|---|---|---|---|
+| 3.73 | 1.000 | $\sqrt{1}$ | no — below the floor |
+| 5.27 | 1.412 | $\sqrt{2}$ | **yes** |
+| 6.46 | 1.731 | $\sqrt{3}$ | **yes** |
+| 7.46 | 1.999 | $\sqrt{4}$ | no — above the ceiling |
+| 8.34, 9.14, 10.56 | 2.24–2.83 | $\sqrt{5}, \sqrt{6}, \sqrt{8}$ | no |
+
+So "median diameter in the 4–7 µm capillary window" is, on this grid, exactly the statement *the
+median foreground voxel's inscribed radius is $\sqrt2$ or $\sqrt3$ voxels*. The selection turns on a
+single quantisation step — where the median falls from $\sqrt2$ to $\sqrt1$ — not on a smooth
+approach to a physiological target. That does not make it wrong, but it does mean the window's
+apparent precision is not real: any lower bound between 3.74 and 5.27 µm gives the identical six
+choices, and 3.70 gives a different answer for every specimen.
+
+**Only the lower bound can select.** Median calibre falls monotonically with threshold, and step 12
+takes the **highest** threshold in the window. The upper bound therefore only ever prunes from the
+*low*-threshold end, which the maximum never reads. Sweeping it from 5.5 µm to 25 µm leaves all six
+choices unchanged; the only value that changes anything is one low enough to empty the window and
+force a refusal. Of the two numbers in `CAPILLARY_DIAMETER_RANGE_UM`, **4.0 selects and 7.0 is
+inert** — which matters for the sensitivity analysis the constant's own comment calls for, because
+sweeping the width of the window symmetrically tests one live parameter and one dead one.
+
+**The selector's diameter is not the calibre §2.6 reports.** Step 3 takes the median of `edt[binary]`
+— every foreground voxel. §2.6 samples the EDT **on the centreline** and takes a per-edge median.
+These are different statistics on the same transform: a volume-weighted median is dragged down by
+the surface shell, which is most of a thin mask. Measured side by side on the same masks, the
+voxel-weighted median runs 0.63–1.00 × the centreline median:
+
+| Threshold | WKY-C voxel-weighted | WKY-C centreline | SHR-A voxel-weighted | SHR-A centreline |
+|---|---|---|---|---|
+| 0.70 | 6.46 µm | 8.35 | 6.46 | 8.34 |
+| 0.80 | 5.28 | 8.34 | 5.28 | 7.46 |
+| 0.90 | 5.27 | 6.46 | 5.27 | 5.28 |
+| 0.95 | 3.73 | 3.73 | 3.73 | 3.73 |
+
+At the chosen 0.90 the selector reads 5.27 µm while §2.6 reports a 6.37 µm median EDT diameter on
+the delivered mask. Part of that gap is the mask (plain cut here, hysteresis there — already noted
+above) and part is the estimator. Neither is an error, but the 4–7 µm window is an external
+*capillary diameter* target, and the quantity it is compared against is not a vessel diameter in the
+sense §2.6 means. Open item 15.
 
 **Why the highest, not the middle.** Calibre falls monotonically with threshold, and the risk being
 traded is over-inclusion: the lower the threshold, the fatter the vessel, and resistance carries
@@ -470,11 +556,23 @@ calibre is at or beyond the fragmentation onset.
 **One threshold for all six, and where 0.90 came from.** The selector runs *per specimen*, but no
 specimen runs at its own choice. `cb_h1_batch.py --stage threshold` sweeps the grid
 `[0.30, 0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99]`, selects per specimen, then takes
-the **median of the six selections and snaps it to the nearest grid value**. That is the frozen
-0.90. The rationale is in the driver: per-specimen thresholds would absorb exactly the
-classifier-quality differences that H1 is trying to measure, turning a confound into an apparently
-clean result. The per-specimen choices are still reported and passed to `assess_cohort_split`, so a
-threshold that splits by group is visible rather than hidden.
+the **median of the six selections and snaps it to the nearest grid value**. Measured: four
+specimens choose 0.90 and two choose 0.85, median 0.875, snapped to the frozen **0.90**. The
+rationale is in the driver: per-specimen thresholds would absorb exactly the classifier-quality
+differences that H1 is trying to measure, turning a confound into an apparently clean result. The
+per-specimen choices are still reported and passed to `assess_cohort_split`, so a threshold that
+splits by group is visible rather than hidden.
+
+**And the split test passes — but the freezing is still group-asymmetric.** `assess_cohort_split`
+returns *no separation*, correctly: SHR-A chose 0.90 alongside all three WKYs, so the cohorts
+overlap. What the test cannot see is what freezing then *does*. The two specimens run above their
+own choice are both SHR, and at 0.90 their median calibre is 3.73 µm — below the 4.0 µm floor the
+selector itself enforces. So **0 of 3 WKY and 2 of 3 SHR** are analysed at a threshold their own
+calibre criterion would have rejected. The cohort-split check is applied to the *inputs* of the
+freeze, not to its consequences. Foreground fraction at 0.90 does still overlap (WKY mean 0.291,
+SHR 0.278), which is the reassuring part, and the direction is conservative — a higher threshold
+gives a thinner mask and thinner vessels, so it works against finding SHR vessels wider. Open
+item 16.
 
 **The hysteresis pair follows the frozen value.** `--stage run` passes the frozen threshold as
 `--hysteresis-low` only. The pipeline raises the high bound automatically when the low one would
@@ -483,9 +581,9 @@ config's 0.65 / 0.75 with an inverted ordering.
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `CAPILLARY_DIAMETER_RANGE_UM` | (4.0, 7.0) µm | The calibre window that selects |
-| `FRAGMENTATION_TOLERANCE` | 1.5× | Endpoint-density multiple defining onset |
-| `MIN_COMPONENT_VOXELS` | 50 | Floor for the component count that is reported but not used to select |
+| `CAPILLARY_DIAMETER_RANGE_UM` | (4.0, 7.0) µm | The calibre window that selects — in practice only the 4.0 bound can change an answer |
+| `FRAGMENTATION_TOLERANCE` | 1.5× | Endpoint-density multiple defining onset; the veto it produces never binds on these six |
+| `MIN_COMPONENT_VOXELS` | 50 | Floor for `mask_components_above_floor`, which is computed and then neither printed nor read |
 
 > **At a glance** — highest intact threshold in a 4–7 µm calibre window · fragmentation onset at
 > 1.5× baseline endpoint density · `threshold_selection.py:222`, `threshold_selection.py:137` ·
@@ -3060,11 +3158,16 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 12 | The rheology loop rescales resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contains $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
 | 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
 | 14 | `crop_roi` rebuilds the centre from a fraction with two truncations, landing one voxel low when an axis has odd extent and the centre is above the midpoint. The CB drivers avoid it by slicing `RoiPlacement.bounds` directly, so no CB result is affected | §2.1; `carotid_image_to_model.py` and any caller using fractional offsets |
+| 15 | The threshold selector's “median diameter” is a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels. The 4–7 µm capillary window is an external target for the latter and is being applied to the former, which reads 0.63–1.00× as large | §2.2 step 3; the selected threshold, hence everything downstream |
+| 16 | Freezing the threshold at 0.90 runs SHR-B and SHR-C above their own calibre choice, at a median diameter of 3.73 µm — below the selector's own 4.0 µm floor. 0 of 3 WKY and 2 of 3 SHR are affected, so the freeze is group-asymmetric even though `assess_cohort_split` on the choices reports no separation | §2.2 step 13; every per-specimen geometric quantity |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
 config default drifts further. What is still open is the *decision*: which of the two values is
 right. That is a modelling judgement, not a refactor, and changing either one re-dates every
-number in §7 and §13. Item 12 is the only remaining item that is known to move a result. Item 13 would move one, but only by re-placing the ROIs and re-running everything, so it is a decision to take deliberately rather than a defect to patch.
+number in §7 and §13. Item 12 is the only remaining item that is known to move a result.
+Item 16 moves one for two specimens, in a conservative direction. Item 13 would move one, but
+only by re-placing the ROIs and re-running everything, so it is a decision to take deliberately
+rather than a defect to patch.
 
 ---
