@@ -84,10 +84,15 @@ def test_progressive_small_vessel_zero_max_matches_single_shot_shape():
         minimum_overlap_fraction=0.5,
         allow_overlap=False,
     )
-    assert "arteriole_boundary_nodes" in result
-    assert "venule_boundary_nodes" in result
+    assert result["arteriole_boundary_nodes"]
+    assert result["venule_boundary_nodes"]
     assert result["arteriole_edge_count"] >= 1
     assert result["venule_edge_count"] >= 1
+    assert set(result["arteriole_nodes"]).isdisjoint(result["venule_nodes"])
+    for node_id in result["arteriole_boundary_nodes"]:
+        assert G.nodes[node_id].get("mask_vessel_type") == "arteriole"
+    for node_id in result["venule_boundary_nodes"]:
+        assert G.nodes[node_id].get("mask_vessel_type") == "venule"
 
 
 def test_progressive_dilation_schema_settings_and_requires():

@@ -121,13 +121,34 @@ def test_tangential_redefinition_moves_small_component_to_arteriole():
         voxel_size_zyx=(1.0, 1.0, 1.0),
         enable_redefinition=True,
         max_contact_distance_microns=12.0,
-        touch_distance_microns=3.0,
-        tangency_cosine_max=0.5,
+        touch_distance_microns=4.0,
+        tangency_cosine_max=0.40,
         reassignment_margin=0.05,
     )
-    assert int(np.count_nonzero(result["small_arteriole_mask"])) >= 1 or int(
-        result["stats"].get("reassigned_to_arteriole", 0)
-    ) >= 0
+    assert int(result["stats"]["reassigned_to_arteriole"]) >= 1
+
+
+def test_sandwiched_component_reassignment_flips_middle_label():
+    shape = (32, 24, 24)
+    left_ven = _cylinder_along_x(shape, z=12.0, y=12.0, radius=1.4, x0=3, x1=9)
+    right_ven = _cylinder_along_x(shape, z=12.0, y=12.0, radius=1.4, x0=17, x1=24)
+    middle_wrong_art = _cylinder_along_x(shape, z=12.0, y=12.0, radius=1.3, x0=10, x1=16)
+    small_ven = left_ven | right_ven
+    small_art = middle_wrong_art
+
+    result = redefine_small_masks_from_large_tangential_contact(
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        large_arteriole_mask=None,
+        large_venule_mask=None,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        enable_redefinition=True,
+        enable_sandwiched_component_reassignment=True,
+        sandwiched_max_endpoint_distance_microns=5.0,
+        sandwiched_min_facing_cosine=0.80,
+        sandwiched_max_axis_angle_degrees=35.0,
+    )
+    assert int(result["stats"]["sandwiched_flips_to_venule"]) >= 1
 
 
 def test_continuity_schema_flags_require_small_masks():
