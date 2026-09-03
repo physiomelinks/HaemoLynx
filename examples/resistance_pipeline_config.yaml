@@ -86,6 +86,42 @@ vessel_masks:
   small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode: false
   # Worker count for parallel edge classification during small-vessel boundary assignment (0 or 1 = sequential)  [range 0..; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_overlap_parallel_workers: 8
+  # Bridge gaps in small-vessel masks with type-locked cylinder links (same-type small↔small / small↔large) before boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_mask_continuity_enable: false
+  # Allow continuity bridges from small components to large same-type masks  [needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_allow_small_to_large: true
+  # Allow continuity bridges between small components of the same type  [needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_allow_small_to_small: true
+  # Restrict continuity bridges to cylinder-to-cylinder links only  [needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_enforce_cylinder_only: true
+  # Minimum cylindricality score required for a continuity bridge endpoint  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_min_cylindricality: 0.45
+  # Maximum axis-angle (degrees) between bridged cylinder axes  [deg; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_max_axis_angle_degrees: 45.0
+  # Minimum facing-cosine between cylinder endpoints for a bridge  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_min_facing_cosine: 0.82
+  # Maximum allowed radius ratio between bridged cylinder endpoints  [range 1.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_max_radius_ratio: 3.0
+  # Maximum bridge length (microns) for continuity linking  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_max_bridge_distance_microns: 35.0
+  # Maximum corridor half-width (microns) around an accepted bridge  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_corridor_max_distance_microns: 12.0
+  # Reject bridges that come within this distance of the opposite-type mask  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_mask_continuity_enable]
+  small_vessel_mask_continuity_opposite_exclusion_distance_microns: 3.0
+  # Reassign small-vessel components that make tangential near-contact with a large-vessel mask of the opposite/same type  [needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_tangential_redefinition_enable: false
+  # Maximum contact distance (microns) for tangential redefinition  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  small_vessel_tangential_redefinition_max_contact_distance_microns: 12.0
+  # Touch-distance threshold (microns) for tangential redefinition scoring  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  small_vessel_tangential_redefinition_touch_distance_microns: 3.0
+  # Maximum tangency cosine for a contact to count as tangential  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  small_vessel_tangential_redefinition_tangency_cosine_max: 0.35
+  # Minimum score margin required to switch arteriole/venule class  [range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  small_vessel_tangential_redefinition_margin: 0.1
+  # Worker count for parallel tangential reassignment scoring  [range 0..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_tangential_redefinition_enable]
+  small_vessel_tangential_redefinition_parallel_workers: 8
+  # Optional CuPy GPU acceleration for EDT-heavy continuity / tangential-redefinition steps (falls back to CPU if unavailable)  [needs use_small_vessel_masks_for_boundary_assignment]
+  use_gpu_mask_continuity_acceleration: false
   # Remove connected components smaller than this physical volume from small-vessel masks before boundary assignment (set 0 to disable)  [um3; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_min_component_volume_um3: 50.0
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]

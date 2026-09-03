@@ -768,6 +768,105 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "before progressive labelling "
                 f"(fast_mode={small_fast_mode})."
             )
+        if bool(settings["small_vessel_tangential_redefinition_enable"]):
+            redefinition_result = graph.redefine_small_masks_from_large_tangential_contact(
+                small_arteriole_mask=assignment_small_arteriole_mask,
+                small_venule_mask=assignment_small_venule_mask,
+                large_arteriole_mask=large_arteriole_mask,
+                large_venule_mask=large_venule_mask,
+                voxel_size_zyx=voxel_size_zyx,
+                enable_redefinition=True,
+                max_contact_distance_microns=float(
+                    settings[
+                        "small_vessel_tangential_redefinition_max_contact_distance_microns"
+                    ]
+                ),
+                touch_distance_microns=float(
+                    settings["small_vessel_tangential_redefinition_touch_distance_microns"]
+                ),
+                tangency_cosine_max=float(
+                    settings["small_vessel_tangential_redefinition_tangency_cosine_max"]
+                ),
+                reassignment_margin=float(
+                    settings["small_vessel_tangential_redefinition_margin"]
+                ),
+                reassignment_parallel_workers=int(
+                    settings["small_vessel_tangential_redefinition_parallel_workers"]
+                ),
+                use_gpu_acceleration=bool(
+                    settings["use_gpu_mask_continuity_acceleration"]
+                ),
+            )
+            assignment_small_arteriole_mask = np.asarray(
+                redefinition_result["small_arteriole_mask"], dtype=bool
+            )
+            assignment_small_venule_mask = np.asarray(
+                redefinition_result["small_venule_mask"], dtype=bool
+            )
+            logger.info(
+                "Small-vessel tangential redefinition applied "
+                f"(stats={redefinition_result.get('stats')})."
+            )
+        if bool(settings["small_vessel_mask_continuity_enable"]):
+            continuity_result = graph.enforce_small_vessel_mask_continuity(
+                small_arteriole_mask=assignment_small_arteriole_mask,
+                small_venule_mask=assignment_small_venule_mask,
+                large_arteriole_mask=large_arteriole_mask,
+                large_venule_mask=large_venule_mask,
+                voxel_size_zyx=voxel_size_zyx,
+                enable_continuity=True,
+                allow_small_to_large=bool(
+                    settings["small_vessel_mask_continuity_allow_small_to_large"]
+                ),
+                allow_small_to_small=bool(
+                    settings["small_vessel_mask_continuity_allow_small_to_small"]
+                ),
+                enforce_cylinder_only=bool(
+                    settings["small_vessel_mask_continuity_enforce_cylinder_only"]
+                ),
+                min_cylindricality=float(
+                    settings["small_vessel_mask_continuity_min_cylindricality"]
+                ),
+                max_axis_angle_degrees=float(
+                    settings["small_vessel_mask_continuity_max_axis_angle_degrees"]
+                ),
+                min_facing_cosine=float(
+                    settings["small_vessel_mask_continuity_min_facing_cosine"]
+                ),
+                max_radius_ratio=float(
+                    settings["small_vessel_mask_continuity_max_radius_ratio"]
+                ),
+                max_bridge_distance_microns=float(
+                    settings["small_vessel_mask_continuity_max_bridge_distance_microns"]
+                ),
+                corridor_max_distance_microns=float(
+                    settings["small_vessel_mask_continuity_corridor_max_distance_microns"]
+                ),
+                opposite_exclusion_distance_microns=float(
+                    settings[
+                        "small_vessel_mask_continuity_opposite_exclusion_distance_microns"
+                    ]
+                ),
+                use_gpu_acceleration=bool(
+                    settings["use_gpu_mask_continuity_acceleration"]
+                ),
+            )
+            assignment_small_arteriole_mask = np.asarray(
+                continuity_result["small_arteriole_mask"], dtype=bool
+            )
+            assignment_small_venule_mask = np.asarray(
+                continuity_result["small_venule_mask"], dtype=bool
+            )
+            continuity_stats = continuity_result["stats"]
+            logger.info(
+                "Small-vessel continuity bridging applied: "
+                f"arteriole accepted="
+                f"{int(continuity_stats['arteriole']['accepted_bridges'])}/"
+                f"{int(continuity_stats['arteriole']['attempted_bridges'])}, "
+                f"venule accepted="
+                f"{int(continuity_stats['venule']['accepted_bridges'])}/"
+                f"{int(continuity_stats['venule']['attempted_bridges'])}."
+            )
         inferred_boundary_results = (
             graph.infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
                 G,

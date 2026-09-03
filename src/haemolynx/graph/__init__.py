@@ -47,6 +47,10 @@ from .automated_vessel_assignment import (
     write_automated_vessel_assignment_3d_html,
     write_small_vessel_mask_boundary_labelling_3d_html,
 )
+from .mask_continuity import (
+    enforce_small_vessel_mask_continuity,
+    redefine_small_masks_from_large_tangential_contact,
+)
 from .large_vessels import (
     dilate_binary_mask_by_microns,
     dilate_large_vessel_masks_by_microns,
@@ -124,6 +128,8 @@ __all__ = [
     "select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
     "write_automated_vessel_assignment_3d_html",
     "write_small_vessel_mask_boundary_labelling_3d_html",
+    "enforce_small_vessel_mask_continuity",
+    "redefine_small_masks_from_large_tangential_contact",
     "dilate_binary_mask_by_microns",
     "dilate_large_vessel_masks_by_microns",
     "exclude_smaller_overlapping_large_vessel_components",

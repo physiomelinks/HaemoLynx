@@ -469,6 +469,227 @@ SCHEMA = Schema(
             requires=("use_small_vessel_masks_for_boundary_assignment",),
         ),
         Setting(
+            name="small_vessel_mask_continuity_enable",
+            kind="bool",
+            default=False,
+            help=(
+                "Bridge gaps in small-vessel masks with type-locked cylinder links "
+                "(same-type small↔small / small↔large) before boundary labelling"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_allow_small_to_large",
+            kind="bool",
+            default=True,
+            help="Allow continuity bridges from small components to large same-type masks",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_allow_small_to_small",
+            kind="bool",
+            default=True,
+            help="Allow continuity bridges between small components of the same type",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_enforce_cylinder_only",
+            kind="bool",
+            default=True,
+            help="Restrict continuity bridges to cylinder-to-cylinder links only",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_min_cylindricality",
+            kind="float",
+            default=0.45,
+            help="Minimum cylindricality score required for a continuity bridge endpoint",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_max_axis_angle_degrees",
+            kind="float",
+            default=45.0,
+            help="Maximum axis-angle (degrees) between bridged cylinder axes",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="deg",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_min_facing_cosine",
+            kind="float",
+            default=0.82,
+            help="Minimum facing-cosine between cylinder endpoints for a bridge",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_max_radius_ratio",
+            kind="float",
+            default=3.0,
+            help="Maximum allowed radius ratio between bridged cylinder endpoints",
+            section=_VESSEL_MASKS,
+            minimum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_max_bridge_distance_microns",
+            kind="float",
+            default=35.0,
+            help="Maximum bridge length (microns) for continuity linking",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_corridor_max_distance_microns",
+            kind="float",
+            default=12.0,
+            help="Maximum corridor half-width (microns) around an accepted bridge",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_mask_continuity_opposite_exclusion_distance_microns",
+            kind="float",
+            default=3.0,
+            help=(
+                "Reject bridges that come within this distance of the opposite-type mask"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_mask_continuity_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_enable",
+            kind="bool",
+            default=False,
+            help=(
+                "Reassign small-vessel components that make tangential near-contact "
+                "with a large-vessel mask of the opposite/same type"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_max_contact_distance_microns",
+            kind="float",
+            default=12.0,
+            help="Maximum contact distance (microns) for tangential redefinition",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_touch_distance_microns",
+            kind="float",
+            default=3.0,
+            help="Touch-distance threshold (microns) for tangential redefinition scoring",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_tangency_cosine_max",
+            kind="float",
+            default=0.35,
+            help="Maximum tangency cosine for a contact to count as tangential",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_margin",
+            kind="float",
+            default=0.10,
+            help="Minimum score margin required to switch arteriole/venule class",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_parallel_workers",
+            kind="int",
+            default=8,
+            help="Worker count for parallel tangential reassignment scoring",
+            section=_VESSEL_MASKS,
+            minimum=0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+        ),
+        Setting(
+            name="use_gpu_mask_continuity_acceleration",
+            kind="bool",
+            default=False,
+            help=(
+                "Optional CuPy GPU acceleration for EDT-heavy continuity / "
+                "tangential-redefinition steps (falls back to CPU if unavailable)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
             name="small_vessel_min_component_volume_um3",
             kind="float",
             default=50.0,
