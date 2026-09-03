@@ -313,4 +313,16 @@ def cut_graph_at_large_vessel_volumes(
         f"remaining_nodes={result.number_of_nodes()}, "
         f"remaining_edges={result.number_of_edges()}."
     )
+    considered = edges_kept + edges_dropped_interior + edges_split
+    if considered > 0 and edges_dropped_interior / considered >= 0.9:
+        logger.warning(
+            "Large-vessel cut removed %.0f%% of edges as fully interior "
+            "(%d/%d). That usually means the main input network was already "
+            "confined to a large arteriole/venule mask (e.g. input_path set to "
+            "the large-venule TIFF). Cut polarity still keeps exterior / removes "
+            "interior; point input_path at the full vessel segmentation instead.",
+            100.0 * edges_dropped_interior / considered,
+            edges_dropped_interior,
+            considered,
+        )
     return result

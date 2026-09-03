@@ -605,9 +605,19 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             )
         # Start from load-time filtered masks (dilation, min-component volume,
         # opposite-attached cleanup, load-time overlap exclusion in
-        # io.load_and_validate_vessel_masks during build_network).
-        assignment_large_arteriole_mask = np.asarray(large_arteriole_mask, dtype=bool)
-        assignment_large_venule_mask = np.asarray(large_venule_mask, dtype=bool)
+        # io.load_and_validate_vessel_masks during build_network). Re-binarise
+        # with the cut helper — never raw dtype=bool, which turns 1/2 labels
+        # into an all-True volume and would wipe the network at cut time.
+        from haemolynx.graph.cut_at_large_vessel_volumes import (
+            _as_large_vessel_foreground,
+        )
+
+        assignment_large_arteriole_mask = _as_large_vessel_foreground(
+            large_arteriole_mask, role="arteriole"
+        )
+        assignment_large_venule_mask = _as_large_vessel_foreground(
+            large_venule_mask, role="venule"
+        )
         cleanup_enabled_for_large = bool(
             settings["automated_vessel_assignment_enable_overlap_cleanup"]
         )

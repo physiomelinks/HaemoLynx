@@ -506,6 +506,130 @@ def test_napari_assign_boundaries_layers_use_post_cut_graph():
     assert set(nodes.features["node_id"].tolist()) == set(post_cut.nodes)
 
 
+def test_venule_shaped_input_network_cut_keeps_only_exterior_samples():
+    """Hand-traced case matching the user symptom configuration.
+
+    When the main network was skeletonised from a venule-like volume (every
+    centreline starts inside the venule mask and exits briefly), exterior-keep
+    must still discard interior samples. Inverted polarity would retain the
+    interior band and drop the exterior tip — the reported failure mode.
+    """
+    G = nx.MultiGraph()
+    # One edge fully inside venule, one that exits to exterior.
+    G.add_node(0, pos=(5.0, 5.0, 6.0))
+    G.add_node(1, pos=(5.0, 5.0, 9.0))
+    G.add_edge(
+        0,
+        1,
+        voxels=[(5.0, 5.0, float(x)) for x in range(6, 10)],
+        length=3.0,
+    )
+    G.add_node(2, pos=(5.0, 5.0, 0.0))
+    G.add_node(3, pos=(5.0, 5.0, 7.0))
+    G.add_edge(
+        2,
+        3,
+        voxels=[(5.0, 5.0, float(x)) for x in range(0, 8)],
+        length=7.0,
+    )
+
+    arteriole = np.zeros((12, 12, 12), dtype=bool)
+    # Off-axis arteriole so it does not intersect the test polyline; still
+    # participates in the cut volume union.
+    arteriole[0:2, 0:2, 0:2] = True
+    venule = np.zeros((12, 12, 12), dtype=bool)
+    venule[4:7, 4:7, 5:12] = True
+    combined = arteriole | venule
+
+    result = cut_graph_at_large_vessel_volumes(
+        G,
+        arteriole,
+        venule,
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+
+    # Fully interior edge gone; crossing edge keeps only x < 5 (exterior).
+    assert result.number_of_edges() == 1
+    _u, _v, data = next(iter(result.edges(data=True)))
+    kept = list(map(tuple, data["voxels"]))
+    assert kept == [(5.0, 5.0, float(x)) for x in range(0, 5)]
+    assert all(not _point_inside(p, combined) for p in kept)
+    assert all(not _point_inside(p, venule) for p in kept)
+    assert all(not _point_inside(p, arteriole) for p in kept)
+    # Inverted polarity would have kept the venule interior band instead.
+    assert not any(p[2] >= 5.0 for p in kept)
+    assert 0 not in result.nodes and 1 not in result.nodes
+
+
+def test_assign_boundaries_passes_both_arteriole_and_venule_masks_to_cut(
+    tmp_path, monkeypatch
+):
+    """Cut must receive both masks (union), not venule alone."""
+    G, arteriole, venule = _crossing_chain_graph()
+    # Distinct arteriole pocket so we can assert both arrays were forwarded.
+    arteriole = np.zeros_like(arteriole)
+    arteriole[1:3, 1:3, 1:3] = True
+    venule = np.zeros_like(venule)
+    venule[4:7, 4:7, 5:12] = True
+    network = _network_for_cut(G, arteriole, venule, tmp_path)
+    settings = _assign_boundaries_settings(plot_dir=tmp_path)
+    captured: dict = {}
+
+    def _capture_cut(graph_obj, art_mask, ven_mask, **kwargs):
+        captured["arteriole"] = np.asarray(art_mask)
+        captured["venule"] = np.asarray(ven_mask)
+        return cut_graph_at_large_vessel_volumes(
+            graph_obj, art_mask, ven_mask, **kwargs
+        )
+
+    monkeypatch.setattr(
+        "haemolynx.graph.cut_graph_at_large_vessel_volumes",
+        _capture_cut,
+    )
+    monkeypatch.setattr(
+        "haemolynx.graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
+        lambda graph_obj, **_kwargs: (
+            [n for n, d in graph_obj.degree() if d == 1][:1],
+            [n for n, d in graph_obj.degree() if d == 1][1:2],
+        ),
+    )
+    monkeypatch.setattr(
+        "haemolynx.visualization.visualize_3d_plotly_large_vessel_assignment",
+        lambda *args, **kwargs: None,
+    )
+
+    assign_boundaries(settings, network)
+
+    assert "arteriole" in captured and "venule" in captured
+    assert np.array_equal(captured["arteriole"], arteriole)
+    assert np.array_equal(captured["venule"], venule)
+    assert np.any(captured["arteriole"])
+    assert np.any(captured["venule"])
+
+
+def test_preflight_warns_when_input_path_is_the_large_venule_mask(tmp_path):
+    from haemolynx.pipeline.checks import check_input_is_not_a_large_vessel_mask
+
+    venule = tmp_path / "HaemoLynx_large_venule_mask.tif"
+    arteriole = tmp_path / "large_arteriole_mask.tif"
+    venule.write_bytes(b"x")
+    arteriole.write_bytes(b"y")
+    report = check_input_is_not_a_large_vessel_mask(
+        {
+            "use_ilastik_segmentation": False,
+            "use_large_vessel_masks": True,
+            "cut_network_at_large_vessel_volumes": True,
+            "input_path": str(venule),
+            "large_arteriole_mask_path": str(arteriole),
+            "large_venule_mask_path": str(venule),
+        }
+    )
+    assert report.warnings
+    assert any("venule" in w.lower() for w in report.warnings)
+    assert any("input_path" in w for w in report.warnings)
+
+
 def test_napari_empty_post_cut_graph_emits_empty_vessel_and_node_layers():
     """An empty post-cut graph must clear pre-cut geometry, not omit layer specs."""
     pre_cut, arteriole, venule = _crossing_chain_graph()

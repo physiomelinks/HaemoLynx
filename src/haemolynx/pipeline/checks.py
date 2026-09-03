@@ -92,6 +92,93 @@ def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+#: Stem tokens that strongly suggest a large-vessel mask was pointed at
+#: ``input_path``. Skeletonising that file yields a network that only exists
+#: inside that mask — cut-at-large-vessel then has almost nothing exterior to keep.
+_LARGE_VESSEL_INPUT_STEM_MARKERS = (
+    "large_venule_mask",
+    "large_arteriole_mask",
+    "large_vein_mask",
+    "large_artery_mask",
+)
+
+
+def _paths_refer_to_same_file(left: Path, right: Path) -> bool:
+    """True when both paths exist and are the same file, else name equality."""
+    try:
+        if left.exists() and right.exists():
+            return left.resolve(strict=False).samefile(right.resolve(strict=False))
+    except OSError:
+        pass
+    return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def check_input_is_not_a_large_vessel_mask(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """Warn when the main input is (or looks like) a large arteriole/venule mask.
+
+    Cut-at-large-vessel removes geometry *inside* those masks. If ``input_path``
+    is itself the venule (or arteriole) mask TIFF, the skeleton and graph are
+    venule-shaped from the start: there is no capillary exterior to keep, so the
+    viewer looks like "network only within the venule" even when cut polarity
+    is correct and both masks are loaded.
+    """
+    report = CheckReport()
+    if settings.get("use_ilastik_segmentation"):
+        return report
+    input_path = settings.get("input_path")
+    if not input_path:
+        return report
+
+    input_p = Path(str(input_path))
+    stem_lower = input_p.stem.lower()
+    looks_like_mask_name = any(
+        marker in stem_lower for marker in _LARGE_VESSEL_INPUT_STEM_MARKERS
+    )
+
+    matched_roles: list[str] = []
+    if settings.get("use_large_vessel_masks"):
+        for role, key in (
+            ("arteriole", "large_arteriole_mask_path"),
+            ("venule", "large_venule_mask_path"),
+        ):
+            mask_path = settings.get(key)
+            if not mask_path:
+                continue
+            if _paths_refer_to_same_file(input_p, Path(str(mask_path))):
+                matched_roles.append(role)
+
+    if not matched_roles and not looks_like_mask_name:
+        return report
+
+    cut_on = bool(settings.get("cut_network_at_large_vessel_volumes"))
+    if matched_roles:
+        roles = " and ".join(matched_roles)
+        detail = (
+            f"input_path resolves to the same file as the large {roles} mask. "
+            "The pipeline skeletonises that volume as the *main* network, so "
+            "the skeleton/graph only exist inside that mask before any cut runs."
+        )
+    else:
+        detail = (
+            f"input_path stem '{input_p.stem}' looks like a large-vessel mask "
+            "filename. If that file is only the large arteriole/venule volume, "
+            "the skeleton will be confined to that volume from the start."
+        )
+    detail += (
+        " Use the full vessel (or capillary) segmentation as input_path; keep "
+        "large arteriole/venule masks only on large_*_mask_path."
+    )
+    if cut_on:
+        detail += (
+            " With cut_network_at_large_vessel_volumes on, almost every edge is "
+            "interior and is removed — remaining stubs still sit at that mask."
+        )
+    report.add_warning(detail)
+    return report
+
+
 def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every configured perturbation must name a type and settings that exist.
 
@@ -156,6 +243,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report = check_settings(schema, settings)
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
+    report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_perturbations(settings, schema))
     report.print("Preflight")
     return report
