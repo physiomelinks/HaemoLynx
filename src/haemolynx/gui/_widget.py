@@ -2851,6 +2851,13 @@ def settings_widget(napari_viewer=None):
             rows[field.name] = _build_row(field)
             fields[field.name] = field
 
+    # Shared ilastik knobs stay out of the initial tab containers until
+    # place_shared_ilastik hosts them. Keep them hidden while unparented: a
+    # visible widget with no parent is a floating top-level window.
+    for name in SHARED_ILASTIK_SETTINGS:
+        if name in rows:
+            rows[name].visible = False
+
     #: Stages that lay their own page out, keyed by the stage function they
     #: belong to rather than by the tab's title, so renaming a tab cannot
     #: silently drop them. Any future stage-specific page has a home here.
@@ -3015,7 +3022,15 @@ def settings_widget(napari_viewer=None):
         report.value = note
 
     def place_shared_ilastik() -> None:
-        """Host shared ilastik rows on Input or Boundaries (same widgets)."""
+        """Host shared ilastik rows on Input or Boundaries (same widgets).
+
+        These rows are deliberately left out of the initial tab containers and
+        moved later. A magicgui row with no Qt parent that is set visible
+        becomes a top-level window beside napari — the same failure
+        ``place_shared`` already guards against for boundary-method rows.
+        Hide before detach, show only after a successful append, and never
+        record a host that did not actually receive the widgets.
+        """
         values = current_values()
         host = shared_ilastik_host(values)
         boundaries_holder = None
@@ -3024,9 +3039,8 @@ def settings_widget(napari_viewer=None):
             boundaries_holder = getter() if callable(getter) else getter
 
         if host == shared_ilastik_placement["host"]:
-            for name in SHARED_ILASTIK_SETTINGS:
-                if name in rows:
-                    rows[name].visible = host is not None
+            # Already placed (or correctly unhosted). Do not poke ``visible``
+            # here: setting True on an unparented row opens a floating window.
             return
 
         def _detach(container) -> None:
@@ -3036,25 +3050,38 @@ def settings_widget(napari_viewer=None):
                 row = rows.get(name)
                 if row is None:
                     continue
+                # Hide before remove: a visible widget with no parent is a
+                # window of its own (see Boundaries ``place_shared``).
+                row.visible = False
                 try:
                     container.remove(row)
                 except Exception:
                     pass
-                row.visible = False
 
         _detach(input_settings)
         _detach(boundaries_holder)
 
+        attached: str | None = None
         if host == "input" and input_settings is not None:
             for name in SHARED_ILASTIK_SETTINGS:
+                if name not in rows:
+                    continue
                 input_settings.append(rows[name])
                 rows[name].visible = True
+            attached = "input"
         elif host == "boundaries" and boundaries_holder is not None:
             for name in SHARED_ILASTIK_SETTINGS:
+                if name not in rows:
+                    continue
                 boundaries_holder.append(rows[name])
                 rows[name].visible = True
+            attached = "boundaries"
+        else:
+            for name in SHARED_ILASTIK_SETTINGS:
+                if name in rows:
+                    rows[name].visible = False
 
-        shared_ilastik_placement["host"] = host
+        shared_ilastik_placement["host"] = attached
 
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""

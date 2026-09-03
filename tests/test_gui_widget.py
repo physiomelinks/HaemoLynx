@@ -881,3 +881,89 @@ def test_scaling_the_layer_does_not_change_what_the_run_is_told(
     values = panel._haemolynx_values()
     assert values["voxel_size_override_xyz"] is None
     assert values["voxel_size_policy"] != "override"
+
+
+def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
+    """Shared ilastik rows move between Input and Boundaries.
+
+    Showing a magicgui row with no Qt parent opens a top-level window next to
+    napari. Toggling the host must never leave those rows visible while
+    unparented — the same class of bug as Boundaries ``place_shared``.
+
+    While the host tab is not current, magicgui may keep ``visible`` False
+    even though the row is correctly parented; switch to that tab before
+    asserting the rows appear.
+    """
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.gui.form import SHARED_ILASTIK_SETTINGS
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget._haemolynx_tabs
+    before = {id(w) for w in QApplication.topLevelWidgets() if w.isVisible()}
+
+    def assert_no_new_windows() -> None:
+        QApplication.processEvents()
+        appeared = [
+            w
+            for w in QApplication.topLevelWidgets()
+            if w.isVisible() and id(w) not in before
+        ]
+        assert appeared == []
+
+    def assert_hosted_and_embedded() -> None:
+        for name in SHARED_ILASTIK_SETTINGS:
+            native = rows[name].native
+            assert native.parent() is not None, name
+            assert not native.isWindow(), name
+
+    def select_tab(title_substring: str) -> None:
+        for index in range(tabs.count()):
+            if title_substring in tabs.tabText(index):
+                tabs.setCurrentIndex(index)
+                QApplication.processEvents()
+                return
+        raise AssertionError(f"no tab containing {title_substring!r}")
+
+    rows["use_ilastik_segmentation"].value = True
+    QApplication.processEvents()
+    select_tab("Input")
+    assert_hosted_and_embedded()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is True, name
+    assert_no_new_windows()
+
+    rows["use_ilastik_segmentation"].value = False
+    QApplication.processEvents()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is False, name
+    assert_no_new_windows()
+
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["use_ilastik_large_vessel_segmentation"].value = True
+    QApplication.processEvents()
+    assert_hosted_and_embedded()
+    assert_no_new_windows()
+    select_tab("Boundaries")
+    assert_hosted_and_embedded()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is True, name
+    assert_no_new_windows()
+
+    rows["use_ilastik_segmentation"].value = True
+    QApplication.processEvents()
+    select_tab("Input")
+    assert_hosted_and_embedded()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is True, name
+    assert_no_new_windows()
+
+    rows["use_ilastik_segmentation"].value = False
+    rows["use_ilastik_large_vessel_segmentation"].value = False
+    QApplication.processEvents()
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert rows[name].visible is False, name
+    assert_no_new_windows()
