@@ -597,19 +597,63 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "automated_vessel_assignment=True requires arteriole and venule masks. "
                 "Set use_large_vessel_masks=True and provide mask paths."
             )
+        assignment_large_arteriole_mask = np.asarray(large_arteriole_mask, dtype=bool)
+        assignment_large_venule_mask = np.asarray(large_venule_mask, dtype=bool)
+        cleanup_enabled_for_large = bool(
+            settings["automated_vessel_assignment_enable_overlap_cleanup"]
+        )
+        effective_assignment_fast_mode = bool(
+            settings["automated_vessel_assignment_fast_mode"]
+        )
+        apply_overlap_cleanup_prepass = bool(
+            cleanup_enabled_for_large
+            and (
+                effective_assignment_fast_mode
+                or settings[
+                    "automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode"
+                ]
+            )
+        )
+        if effective_assignment_fast_mode and cleanup_enabled_for_large:
+            cleaned_arteriole_mask, cleaned_venule_mask = (
+                graph.exclude_smaller_overlapping_large_vessel_components(
+                    assignment_large_arteriole_mask,
+                    assignment_large_venule_mask,
+                )
+            )
+            if cleaned_arteriole_mask is not None and cleaned_venule_mask is not None:
+                assignment_large_arteriole_mask = cleaned_arteriole_mask
+                assignment_large_venule_mask = cleaned_venule_mask
+            logger.info(
+                "Automated large-vessel assignment fast mode: applied overlap "
+                "cleanup before progressive terminal assignment."
+            )
+        elif apply_overlap_cleanup_prepass:
+            logger.info(
+                "Automated large-vessel assignment: overlap cleanup will run "
+                "inside each progressive step (normal mode)."
+            )
         auto_inlet_nodes, auto_outlet_nodes = (
             graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
                 G,
-                large_arteriole_mask=large_arteriole_mask,
-                large_venule_mask=large_venule_mask,
+                large_arteriole_mask=assignment_large_arteriole_mask,
+                large_venule_mask=assignment_large_venule_mask,
                 voxel_size_zyx=voxel_size_zyx,
                 max_dilation_microns=float(
                     settings["large_vessel_assignment_max_dilation_microns"]
                 ),
                 dilation_step_microns=5.0,
                 allow_overlap=False,
+                exclude_smaller_overlapping_volumes=(
+                    apply_overlap_cleanup_prepass and not effective_assignment_fast_mode
+                ),
+                overlap_parallel_workers=int(
+                    settings["automated_vessel_overlap_parallel_workers"]
+                ),
             )
         )
+        large_arteriole_mask = assignment_large_arteriole_mask
+        large_venule_mask = assignment_large_venule_mask
         if not auto_inlet_nodes:
             raise ValueError(
                 "automated_vessel_assignment=True found no terminal nodes in the "
@@ -691,11 +735,44 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "use_small_vessel_masks_for_boundary_assignment=True requires "
                 "small_arteriole_mask_path and small_venule_mask_path."
             )
+        assignment_small_arteriole_mask = np.asarray(small_arteriole_mask, dtype=bool)
+        assignment_small_venule_mask = np.asarray(small_venule_mask, dtype=bool)
+        cleanup_enabled_for_small = bool(
+            settings["small_vessel_boundary_assignment_enable_overlap_cleanup"]
+        )
+        small_fast_mode = bool(settings["small_vessel_boundary_assignment_fast_mode"])
+        apply_small_overlap_cleanup_prepass = bool(
+            cleanup_enabled_for_small
+            and (
+                small_fast_mode
+                or settings[
+                    "small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode"
+                ]
+            )
+        )
+        if apply_small_overlap_cleanup_prepass:
+            cleaned_small_arteriole_mask, cleaned_small_venule_mask = (
+                graph.exclude_smaller_overlapping_small_vessel_components(
+                    assignment_small_arteriole_mask,
+                    assignment_small_venule_mask,
+                )
+            )
+            if (
+                cleaned_small_arteriole_mask is not None
+                and cleaned_small_venule_mask is not None
+            ):
+                assignment_small_arteriole_mask = cleaned_small_arteriole_mask
+                assignment_small_venule_mask = cleaned_small_venule_mask
+            logger.info(
+                "Small-vessel boundary assignment: applied overlap cleanup "
+                "before progressive labelling "
+                f"(fast_mode={small_fast_mode})."
+            )
         inferred_boundary_results = (
             graph.infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
                 G,
-                small_arteriole_mask=small_arteriole_mask,
-                small_venule_mask=small_venule_mask,
+                small_arteriole_mask=assignment_small_arteriole_mask,
+                small_venule_mask=assignment_small_venule_mask,
                 voxel_size_zyx=voxel_size_zyx,
                 max_dilation_microns=float(settings["small_vessel_mask_dilation_microns"]),
                 dilation_step_microns=5.0,
@@ -703,8 +780,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     settings["small_vessel_mask_min_overlap_fraction"]
                 ),
                 allow_overlap=False,
+                exclude_smaller_overlapping_volumes=False,
+                overlap_parallel_workers=int(
+                    settings["small_vessel_overlap_parallel_workers"]
+                ),
             )
         )
+        small_arteriole_mask = assignment_small_arteriole_mask
+        small_venule_mask = assignment_small_venule_mask
         settings["arteriole_boundary_nodes"][:] = list(
             inferred_boundary_results["arteriole_boundary_nodes"]
         )

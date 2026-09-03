@@ -49,8 +49,16 @@ vessel_masks:
   large_vessel_opposite_attached_max_component_volume_um3: 250.0
   # Maximum distance from the opposite large-vessel mask for a tiny component to count as opposite-attached and be removed  [um; range 0.0..; needs use_large_vessel_masks and large_vessel_remove_small_opposite_attached_components]
   large_vessel_opposite_attached_max_distance_microns: 3.0
-  # Before terminal assignment, remove arteriole/venule overlap voxels from the smaller overlapping connected component  [needs use_large_vessel_masks]
+  # At load time, remove arteriole/venule overlap voxels from the smaller overlapping connected component. Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small).  [needs use_large_vessel_masks]
   exclude_smaller_overlapping_volumes: false
+  # Pre-clean large arteriole/venule overlap voxels from the smaller component once before progressive terminal assignment (when overlap cleanup is enabled)  [needs use_large_vessel_masks and automated_vessel_assignment]
+  automated_vessel_assignment_fast_mode: true
+  # Master switch for large-vessel overlap cleanup at assignment time. If False, cleanup is skipped even when fast mode is on  [needs use_large_vessel_masks and automated_vessel_assignment]
+  automated_vessel_assignment_enable_overlap_cleanup: true
+  # When fast mode is off, still apply overlap cleanup inside each progressive assignment step (requires overlap cleanup enabled)  [needs use_large_vessel_masks and automated_vessel_assignment]
+  automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode: false
+  # Worker count for parallel overlap tie-break resolution during large-vessel assignment (0 or 1 = sequential)  [range 0..; needs use_large_vessel_masks and automated_vessel_assignment]
+  automated_vessel_overlap_parallel_workers: 8
   # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
   # Read this pre-segmented large venule mask  [needs use_large_vessel_masks; must exist]
@@ -71,6 +79,14 @@ vessel_masks:
   small_vessel_mask_min_overlap_fraction: 0.5
   # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then in 5 µm steps up to this value, locking each edge at the first step it is classified. There is no separate load-time small-vessel dilation setting.  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_mask_dilation_microns: 0.0
+  # Pre-clean small arteriole/venule overlap voxels from the smaller component once before progressive boundary labelling (when overlap cleanup is enabled)  [needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_boundary_assignment_fast_mode: true
+  # Master switch for small-vessel overlap cleanup at assignment time. If False, cleanup is skipped even when fast mode is on  [needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_boundary_assignment_enable_overlap_cleanup: true
+  # When small-vessel fast mode is off, still apply overlap cleanup inside each progressive labelling step (requires cleanup enabled)  [needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode: false
+  # Worker count for parallel edge classification during small-vessel boundary assignment (0 or 1 = sequential)  [range 0..; needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_overlap_parallel_workers: 8
   # Remove connected components smaller than this physical volume from small-vessel masks before boundary assignment (set 0 to disable)  [um3; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_min_component_volume_um3: 50.0
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]

@@ -274,11 +274,60 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "Before terminal assignment, remove arteriole/venule overlap voxels "
-                "from the smaller overlapping connected component"
+                "At load time, remove arteriole/venule overlap voxels from the "
+                "smaller overlapping connected component. Assignment-time cleanup "
+                "is controlled separately by "
+                "automated_vessel_assignment_enable_overlap_cleanup / fast_mode "
+                "(large) and small_vessel_boundary_assignment_* (small)."
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks",),
+        ),
+        Setting(
+            name="automated_vessel_assignment_fast_mode",
+            kind="bool",
+            default=True,
+            help=(
+                "Pre-clean large arteriole/venule overlap voxels from the smaller "
+                "component once before progressive terminal assignment (when "
+                "overlap cleanup is enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="automated_vessel_assignment_enable_overlap_cleanup",
+            kind="bool",
+            default=True,
+            help=(
+                "Master switch for large-vessel overlap cleanup at assignment time. "
+                "If False, cleanup is skipped even when fast mode is on"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode",
+            kind="bool",
+            default=False,
+            help=(
+                "When fast mode is off, still apply overlap cleanup inside each "
+                "progressive assignment step (requires overlap cleanup enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="automated_vessel_overlap_parallel_workers",
+            kind="int",
+            default=8,
+            help=(
+                "Worker count for parallel overlap tie-break resolution during "
+                "large-vessel assignment (0 or 1 = sequential)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
             name="large_arteriole_mask_path",
@@ -371,6 +420,52 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             minimum=0.0,
             unit="um",
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_boundary_assignment_fast_mode",
+            kind="bool",
+            default=True,
+            help=(
+                "Pre-clean small arteriole/venule overlap voxels from the smaller "
+                "component once before progressive boundary labelling (when "
+                "overlap cleanup is enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_boundary_assignment_enable_overlap_cleanup",
+            kind="bool",
+            default=True,
+            help=(
+                "Master switch for small-vessel overlap cleanup at assignment time. "
+                "If False, cleanup is skipped even when fast mode is on"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode",
+            kind="bool",
+            default=False,
+            help=(
+                "When small-vessel fast mode is off, still apply overlap cleanup "
+                "inside each progressive labelling step (requires cleanup enabled)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_overlap_parallel_workers",
+            kind="int",
+            default=8,
+            help=(
+                "Worker count for parallel edge classification during small-vessel "
+                "boundary assignment (0 or 1 = sequential)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0,
             requires=("use_small_vessel_masks_for_boundary_assignment",),
         ),
         Setting(
