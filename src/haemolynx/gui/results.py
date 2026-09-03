@@ -45,6 +45,8 @@ PREFIX = "HaemoLynx "
 
 VESSELS = f"{PREFIX}vessels"
 VESSEL_LABELS = f"{PREFIX}vessel labels"
+#: Midpoint Points layer for branch hover tooltips (visible; panel selects metrics).
+BRANCH_HOVER = f"{PREFIX}branch hover"
 #: Mid-edge arrows coloured by |flow|; emitted from Export when toggled on.
 FLOW_DIRECTION = f"{PREFIX}flow direction"
 NODES = f"{PREFIX}nodes"
@@ -90,6 +92,7 @@ LAYER_NAMES = frozenset(
     {
         VESSELS,
         VESSEL_LABELS,
+        BRANCH_HOVER,
         FLOW_DIRECTION,
         NODES,
         BOUNDARY_NODES,
@@ -427,6 +430,46 @@ def midpoints_of(paths: Sequence[np.ndarray]) -> np.ndarray:
     return np.stack([np.asarray(path, dtype=float).mean(axis=0) for path in paths])
 
 
+def _branch_hover_layer(
+    graph: Any, midpoints: np.ndarray
+) -> tuple[LayerSpec, ...]:
+    """Visible midpoint Points layer whose ``tooltip`` feature drives hover text.
+
+    Optional metrics and the initial checkbox selection ride in ``options``
+    under keys the widget strips before napari sees them
+    (``branch_hover_available`` / ``branch_hover_selected``).
+    """
+    from haemolynx.gui.branch_hover import (
+        available_branch_hover_metrics,
+        branch_hover_rows,
+        default_selected_metrics,
+    )
+
+    if len(midpoints) == 0:
+        return ()
+    available = available_branch_hover_metrics(graph)
+    selected = default_selected_metrics(available)
+    _ids, features = branch_hover_rows(graph, selected)
+    return (
+        LayerSpec(
+            kind="points",
+            name=BRANCH_HOVER,
+            data=midpoints,
+            features=features,
+            visible=True,
+            options={
+                "size": 8.0,
+                "out_of_slice_display": True,
+                "opacity": 0.4,
+                "face_color": "yellow",
+                "border_width": 0,
+                "branch_hover_available": available,
+                "branch_hover_selected": selected,
+            },
+        ),
+    )
+
+
 def _limits(values: np.ndarray) -> tuple[float, float] | None:
     """nan-aware colour limits, or None when there is nothing finite to scale."""
     finite = np.asarray(values, dtype=float)
@@ -537,6 +580,7 @@ class ResultLayers:
         if colour_by is not None and colour_by not in columns:
             colour_by = None
 
+        midpoints = midpoints_of(paths)
         return (
             LayerSpec(
                 kind="vectors",
@@ -554,11 +598,12 @@ class ResultLayers:
             LayerSpec(
                 kind="points",
                 name=VESSEL_LABELS,
-                data=midpoints_of(paths),
+                data=midpoints,
                 features=columns,
                 visible=False,
                 options={"size": 2.0, "out_of_slice_display": True},
             ),
+            *_branch_hover_layer(graph, midpoints),
         )
 
     def _from_topology_step(self, label: str, graph: Any) -> StageLayers:

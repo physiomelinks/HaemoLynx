@@ -28,6 +28,7 @@ from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
 from haemolynx.gui.log_view import LogView, VERBOSE_LEVEL
 from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
+    BRANCH_HOVER,
     NODES,
     VESSELS,
     ResultLayers,
@@ -200,6 +201,17 @@ class ProgressBars:
 #: layer the user made that happens to share a name.
 OURS = "haemolynx"
 
+#: Session-wide checkbox selection for the branch-hover metrics panel.
+#: ``None`` means "not yet chosen" -- the panel then defaults to every
+#: metric the current graph can offer. Survives layer rebuilds within a
+#: napari session so toggling mid-run does not reset after the next stage.
+_branch_hover_session_selected: tuple[str, ...] | None = None
+
+#: Keys stashed on a branch-hover LayerSpec that must not reach napari.
+_BRANCH_HOVER_OPTION_KEYS = frozenset(
+    {"branch_hover_available", "branch_hover_selected"}
+)
+
 
 def _is_ours(layer) -> bool:
     return bool(getattr(layer, "metadata", {}).get(OURS))
@@ -224,6 +236,11 @@ def _apply_layers(viewer, group, report=None) -> None:
                 _attach_sweep_sliders(viewer, viewer.layers[spec.name], spec)
             except Exception:  # noqa: BLE001 - missing sliders are survivable
                 logger.debug("could not attach sweep sliders to %s",
+                             spec.name, exc_info=True)
+            try:
+                _attach_branch_hover_controls(viewer, viewer.layers[spec.name])
+            except Exception:  # noqa: BLE001 - missing hover panel is survivable
+                logger.debug("could not attach branch-hover controls to %s",
                              spec.name, exc_info=True)
     for name, column in group.recolour:
         layer = viewer.layers[name] if name in viewer.layers else None
@@ -422,6 +439,7 @@ def _add_or_update(viewer, spec) -> None:
         _colour_layer(existing, spec.colour_by, spec.colour_kind,
                       spec.colour_cycle, spec.contrast_limits)
         _store_sweep_metadata(existing, spec)
+        _store_branch_hover_metadata(existing, spec)
         return
 
     if existing is not None:
@@ -431,6 +449,8 @@ def _add_or_update(viewer, spec) -> None:
     options = dict(spec.options)
     if spec.kind == "image":
         options = _image_options_for_napari(options)
+    for key in _BRANCH_HOVER_OPTION_KEYS:
+        options.pop(key, None)
     if spec.features:
         options["features"] = dict(spec.features)
     add_kwargs = {
@@ -446,6 +466,7 @@ def _add_or_update(viewer, spec) -> None:
     _colour_layer(layer, spec.colour_by, spec.colour_kind,
                   spec.colour_cycle, spec.contrast_limits)
     _store_sweep_metadata(layer, spec)
+    _store_branch_hover_metadata(layer, spec)
 
 
 def _store_sweep_metadata(layer, spec) -> None:
@@ -462,6 +483,23 @@ def _store_sweep_metadata(layer, spec) -> None:
         tag.pop("sweep", None)
         tag.pop("segment_owner", None)
         tag.pop("sweep_edge_index", None)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _store_branch_hover_metadata(layer, spec) -> None:
+    """Remember which hover metrics a stage offered, for the controls panel."""
+    available = spec.options.get("branch_hover_available")
+    selected = spec.options.get("branch_hover_selected")
+    if available is None and selected is None:
+        return
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    tag["kind"] = getattr(spec, "kind", tag.get("kind"))
+    if available is not None:
+        tag["branch_hover_available"] = tuple(available)
+    if selected is not None:
+        tag["branch_hover_selected"] = tuple(selected)
     metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
@@ -601,7 +639,9 @@ _CLASS_FOR = {
 
 
 #: Identifiers rather than quantities: colouring by one shows nothing.
-NOT_WORTH_COLOURING_BY = frozenset({"u", "v", "key", "edge_index", "node_id"})
+NOT_WORTH_COLOURING_BY = frozenset(
+    {"u", "v", "key", "edge_index", "node_id", "tooltip", "branch_id"}
+)
 
 #: How wide and tall the colour bar is drawn, in pixels.
 COLORBAR_SIZE = (150, 12)
@@ -1056,7 +1096,11 @@ def _attach_colour_scale(viewer, layer) -> bool:
 def _refresh_layer_controls(viewer, layer) -> None:
     """Let our additions catch up with whatever the stage just changed."""
     controls = _layer_controls(viewer, layer)
-    for attribute in ("_haemolynx_feature", "_haemolynx_scale"):
+    for attribute in (
+        "_haemolynx_feature",
+        "_haemolynx_scale",
+        "_haemolynx_branch_hover",
+    ):
         widget = getattr(controls, attribute, None)
         if widget is None:
             continue
@@ -1064,6 +1108,212 @@ def _refresh_layer_controls(viewer, layer) -> None:
             widget.follow_the_layer()
         else:
             widget.refresh()
+
+
+def _is_branch_hover_layer(layer) -> bool:
+    """Whether *layer* is our branch-hover Points layer."""
+    if not _is_ours(layer):
+        return False
+    if layer.name == BRANCH_HOVER or layer.name.startswith(f"{BRANCH_HOVER} "):
+        return True
+    features = getattr(layer, "features", {}) or {}
+    return "tooltip" in features and "branch_id" in features
+
+
+def _branch_hover_available(layer) -> tuple[str, ...]:
+    """Optional metrics this hover layer can offer right now."""
+    from haemolynx.gui.branch_hover import available_metrics_from_features
+
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    stored = tag.get("branch_hover_available")
+    if stored is not None:
+        return tuple(stored)
+    return available_metrics_from_features(getattr(layer, "features", {}) or {})
+
+
+def _branch_hover_selected_for(layer) -> tuple[str, ...]:
+    """Checkbox selection: session choice filtered by what is available."""
+    from haemolynx.gui.branch_hover import (
+        default_selected_metrics,
+        filter_selected_metrics,
+    )
+
+    available = _branch_hover_available(layer)
+    global _branch_hover_session_selected
+    if _branch_hover_session_selected is None:
+        return default_selected_metrics(available)
+    return filter_selected_metrics(_branch_hover_session_selected, available)
+
+
+def _apply_branch_hover_selection(layer, selected: Sequence[str]) -> None:
+    """Rewrite the ``tooltip`` feature column for the current checkbox set."""
+    from haemolynx.gui.branch_hover import (
+        filter_selected_metrics,
+        tooltips_from_feature_table,
+    )
+
+    available = _branch_hover_available(layer)
+    chosen = filter_selected_metrics(selected, available)
+    features = dict(layer.features)
+    features["tooltip"] = tooltips_from_feature_table(features, chosen)
+    layer.features = features
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    tag["branch_hover_selected"] = chosen
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _branch_hover_mouse_move(layer, event) -> None:
+    """Show the composed tooltip string when the cursor is over a midpoint."""
+    from qtpy.QtGui import QCursor
+    from qtpy.QtWidgets import QToolTip
+
+    try:
+        index = layer.get_value(
+            event.position,
+            view_direction=getattr(event, "view_direction", None),
+            dims_displayed=list(getattr(event, "dims_displayed", ())),
+            world=True,
+        )
+    except TypeError:
+        index = layer.get_value(event.position, world=True)
+    if index is None:
+        QToolTip.hideText()
+        return
+    tips = getattr(layer, "features", {}).get("tooltip")
+    if tips is None:
+        return
+    try:
+        text = str(tips[int(index)])
+    except (IndexError, TypeError, ValueError):
+        return
+    if text:
+        QToolTip.showText(QCursor.pos(), text)
+
+
+def _ensure_branch_hover_callback(layer) -> None:
+    """Install the mouse-move tooltip callback once per layer instance."""
+    callbacks = getattr(layer, "mouse_move_callbacks", None)
+    if callbacks is None:
+        return
+    if _branch_hover_mouse_move in callbacks:
+        return
+    callbacks.append(_branch_hover_mouse_move)
+
+
+class _BranchHoverPanel:
+    """Checkboxes for optional branch-hover metrics, in the layer controls.
+
+    Only metrics the current graph actually carries are offered. Selection is
+    remembered for the napari session so a later stage that adds flow does not
+    wipe a choice the user already made.
+    """
+
+    def __init__(self, viewer, layer_name: str) -> None:
+        from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+        self._viewer = viewer
+        self._layer_name = layer_name
+        self._boxes: dict[str, Any] = {}
+        self.native = QWidget()
+        self._layout = QVBoxLayout(self.native)
+        self._layout.setContentsMargins(0, 2, 0, 2)
+        self._layout.setSpacing(2)
+        self._heading = QLabel("branch tooltip metrics")
+        self._heading.setToolTip(
+            "What to show when hovering a branch midpoint. "
+            "branchID is always included."
+        )
+        self._layout.addWidget(self._heading)
+        self._box_host = QWidget()
+        self._box_layout = QVBoxLayout(self._box_host)
+        self._box_layout.setContentsMargins(0, 0, 0, 0)
+        self._box_layout.setSpacing(1)
+        self._layout.addWidget(self._box_host)
+        self.offered: tuple[str, ...] = ()
+        self.selected: tuple[str, ...] = ()
+
+    def _layer(self):
+        layers = getattr(self._viewer, "layers", {}) if self._viewer else {}
+        if self._layer_name not in layers:
+            return None
+        layer = layers[self._layer_name]
+        return layer if _is_branch_hover_layer(layer) else None
+
+    def refresh(self) -> None:
+        """Rebuild checkboxes for the metrics this layer can currently offer."""
+        from haemolynx.gui.branch_hover import panel_metric_options
+        from qtpy.QtWidgets import QCheckBox
+
+        layer = self._layer()
+        if layer is None:
+            self.native.setVisible(False)
+            return
+        available = _branch_hover_available(layer)
+        selected = _branch_hover_selected_for(layer)
+        options = panel_metric_options(available)
+        current_keys = tuple(key for key, _label in options)
+        if tuple(self._boxes) != current_keys:
+            while self._box_layout.count():
+                item = self._box_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._boxes = {}
+            for key, label in options:
+                box = QCheckBox(label)
+                box.setObjectName(f"branch_hover_{key}")
+                box.toggled.connect(self._toggled)
+                self._box_layout.addWidget(box)
+                self._boxes[key] = box
+        for key, box in self._boxes.items():
+            with _blocked(box):
+                box.setChecked(key in selected)
+        _apply_branch_hover_selection(layer, selected)
+        _ensure_branch_hover_callback(layer)
+        self.native.setVisible(True)
+        # Recorded for tests: Qt reports children of an unshown window as
+        # invisible, so callers check this rather than isVisible().
+        self.offered = current_keys
+        self.selected = selected
+
+    def _toggled(self, *_args) -> None:
+        global _branch_hover_session_selected
+        layer = self._layer()
+        if layer is None:
+            return
+        selected = tuple(
+            key for key, box in self._boxes.items() if box.isChecked()
+        )
+        _branch_hover_session_selected = selected
+        _apply_branch_hover_selection(layer, selected)
+        self.selected = _branch_hover_selected_for(layer)
+
+
+def _attach_branch_hover_controls(viewer, layer) -> bool:
+    """Put the metrics checkboxes on the branch-hover layer's controls, once."""
+    from qtpy.QtWidgets import QLabel
+
+    if not _is_branch_hover_layer(layer):
+        return False
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        _ensure_branch_hover_callback(layer)
+        _apply_branch_hover_selection(layer, _branch_hover_selected_for(layer))
+        return False
+    if getattr(controls, "_haemolynx_branch_hover", None) is not None:
+        controls._haemolynx_branch_hover.refresh()
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        _ensure_branch_hover_callback(layer)
+        return False
+    panel = _BranchHoverPanel(viewer, layer.name)
+    layout.addRow(QLabel("hover info:"), panel.native)
+    controls._haemolynx_branch_hover = panel
+    panel.refresh()
+    return True
 
 
 def _clear_our_layers(viewer) -> int:
