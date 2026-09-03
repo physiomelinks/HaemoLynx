@@ -32,6 +32,7 @@ from haemolynx.gui.progress import BarState  # noqa: E402
 from haemolynx.gui.run_state import ALREADY_RUNNING, CANCELLED, RunState  # noqa: E402
 from haemolynx.gui.results import (  # noqa: E402
     BOUNDARY_NODES,
+    FLOW_DIRECTION,
     IMAGE,
     NODES,
     SKELETON,
@@ -1307,3 +1308,24 @@ def test_a_text_column_has_no_range(make_napari_viewer):
     _viewer, layer, _scale = a_drawn_run(make_napari_viewer, branch_order="BO1")
     assert _data_range(layer, "branch_order") is None
     assert _data_range(layer, "length") is not None
+
+
+def test_flow_direction_layer_gets_length_from_schema_at_draw_time(make_napari_viewer):
+    """Initial arrow scale comes from settings; napari's length control adjusts it."""
+    from test_gui_flow_direction import _built_with_flows, _two_node_edge
+
+    viewer = make_napari_viewer()
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(
+        graph,
+        show_flow_direction_layer=True,
+        flow_arrow_scale=2.5,
+    )
+    group = results.stage_finished("export_results", SimpleNamespace())
+    _apply_layers(viewer, group)
+
+    layer = viewer.layers[FLOW_DIRECTION]
+    assert layer.length == pytest.approx(2.5)
+
+    layer.length = 0.8
+    assert layer.length == pytest.approx(0.8)

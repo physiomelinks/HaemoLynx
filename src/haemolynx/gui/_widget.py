@@ -467,6 +467,10 @@ def _add_or_update(viewer, spec) -> None:
                 for key in ("blending", "opacity", "rendering"):
                     if key in image_opts:
                         setattr(existing, key, image_opts[key])
+            if spec.kind == "vectors":
+                for key in ("length", "edge_width", "vector_style", "out_of_slice_display"):
+                    if key in spec.options:
+                        setattr(existing, key, spec.options[key])
             _colour_layer(existing, spec.colour_by, spec.colour_kind,
                           spec.colour_cycle, spec.contrast_limits)
             _store_sweep_metadata(existing, spec)

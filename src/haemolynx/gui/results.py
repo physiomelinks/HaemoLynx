@@ -152,6 +152,22 @@ EDGE_COLUMNS: dict[str, str] = {
     "flow_abs": "solve",
 }
 
+#: Optional edge columns gated by run settings (see :func:`edge_columns_for_settings`).
+OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
+    "flow_abs_log10": "solve",
+}
+
+
+def edge_columns_for_settings(
+    settings: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """Declared edge columns, including optional ones enabled in *settings*."""
+    columns = dict(EDGE_COLUMNS)
+    if settings and settings.get("flow_log_scale", False):
+        columns.update(OPTIONAL_EDGE_COLUMNS)
+    return columns
+
+
 #: Columns holding text rather than numbers; a missing one is "" not NaN.
 TEXT_COLUMNS = frozenset({"branch_order", "mask_vessel_type"})
 
@@ -353,10 +369,12 @@ def edge_features(graph: Any, names: Iterable[str]) -> dict[str, np.ndarray]:
     }
 
 
-def available_edge_columns(graph: Any) -> list[str]:
+def available_edge_columns(
+    graph: Any, settings: Mapping[str, Any] | None = None
+) -> list[str]:
     """The columns this graph actually carries a value for, in declared order."""
     present: list[str] = []
-    for name in EDGE_COLUMNS:
+    for name in edge_columns_for_settings(settings):
         for _u, _v, _key, data in _iter_edges(graph):
             if data.get(name) is not None:
                 present.append(name)
@@ -568,7 +586,7 @@ class ResultLayers:
         """Edge columns the remembered graph actually carries a value for."""
         if self._graph is None:
             return []
-        return available_edge_columns(self._graph)
+        return available_edge_columns(self._graph, self.settings)
 
     # -- builders ---------------------------------------------------------
 
@@ -611,7 +629,7 @@ class ResultLayers:
         # that appears later is invisible there forever -- which is exactly what
         # happened to flow and pressure, written by the last stage, long after
         # the vessels layer was made.
-        columns.update(edge_features(graph, EDGE_COLUMNS))
+        columns.update(edge_features(graph, edge_columns_for_settings(self.settings)))
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
@@ -1009,7 +1027,7 @@ class ResultLayers:
             return ()
 
         columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
-        columns.update(edge_features(graph, EDGE_COLUMNS))
+        columns.update(edge_features(graph, edge_columns_for_settings(self.settings)))
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
@@ -1086,14 +1104,20 @@ class ResultLayers:
         # come from the sweep grid so slider 0 matches the retained arrays.
         non_flow = [
             name
-            for name in EDGE_COLUMNS
-            if name not in ("flow_abs", "flow_signed", "pressure_drop",
+            for name in edge_columns_for_settings(self.settings)
+            if name not in ("flow_abs", "flow_abs_log10", "flow_signed", "pressure_drop",
                             "pressure_u", "pressure_v")
         ]
         columns.update(edge_features(graph, non_flow))
 
         flow0 = np.asarray(sweep.flow_abs_at(*([0] * len(sweep.axis_names))), dtype=float)
         columns["flow_abs"] = flow0[edge_index]
+        if self.settings.get("flow_log_scale", False):
+            from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+            columns["flow_abs_log10"] = np.asarray(
+                [flow_abs_log10_value(v) for v in flow0[edge_index]], dtype=float
+            )
         signed0 = sweep.flow_signed_at(*([0] * len(sweep.axis_names)))
         if signed0 is not None:
             columns["flow_signed"] = np.asarray(signed0, dtype=float)[edge_index]
@@ -1178,7 +1202,12 @@ class ResultLayers:
         vectors, features = flow_direction_vectors(graph)
         if len(vectors) == 0:
             return ()
+        if not self.settings.get("flow_log_scale", False):
+            features.pop("flow_abs_log10", None)
+        if not self.settings.get("flow_direction_colouring", True):
+            features.pop("flow_toward_face", None)
         colour_by = "flow_abs" if "flow_abs" in features else None
+        scale = float(self.settings.get("flow_arrow_scale", 1.0))
         return (
             LayerSpec(
                 kind="vectors",
@@ -1190,7 +1219,7 @@ class ResultLayers:
                 options={
                     "vector_style": "triangle",
                     "edge_width": 1.2,
-                    "length": 1.0,
+                    "length": scale,
                     "out_of_slice_display": True,
                 },
             ),

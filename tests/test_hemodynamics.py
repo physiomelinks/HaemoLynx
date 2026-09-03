@@ -349,6 +349,36 @@ def test_set_edge_flows_writes_node_pressures():
         assert G.nodes[node]["pressure"] == flow["pressure"][idx[node]]
 
 
+def test_set_edge_flows_writes_flow_abs_log10():
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    G = _disconnected_network()
+    _solve_and_set_flows(G)
+    for _u, _v, data in G.edges(data=True):
+        if "flow_abs" not in data:
+            continue
+        assert data["flow_abs_log10"] == pytest.approx(
+            flow_abs_log10_value(data["flow_abs"])
+        )
+        assert np.isfinite(data["flow_abs_log10"])
+
+
+def test_flow_abs_log10_zero_flow_is_finite():
+    from haemolynx.haemodynamics.resistance import (
+        FLOW_ABS_LOG10_FLOOR,
+        flow_abs_log10_value,
+    )
+
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=1.0)
+    set_edge_flows(G, [0, 1], np.array([100.0, 100.0]))
+    assert G.edges[(0, 1, 0)]["flow_abs"] == pytest.approx(0.0)
+    assert G.edges[(0, 1, 0)]["flow_abs_log10"] == pytest.approx(
+        flow_abs_log10_value(FLOW_ABS_LOG10_FLOOR)
+    )
+    assert np.isfinite(G.edges[(0, 1, 0)]["flow_abs_log10"])
+
+
 def test_flow_conservation_residuals_reports_an_imbalance():
     """The auditor itself must flag pressures that violate Kirchhoff."""
     G = nx.MultiGraph()

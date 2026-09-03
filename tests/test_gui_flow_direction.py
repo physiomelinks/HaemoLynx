@@ -14,6 +14,7 @@ from haemolynx.visualization.flow_direction import (
     edge_flow_arrow_zyx,
     edge_flow_direction_sign,
     flow_direction_vectors,
+    flow_toward_face_from_direction,
 )
 
 
@@ -38,9 +39,12 @@ def _two_node_edge(*, flow_signed: float, voxels=None) -> nx.MultiGraph:
     return graph
 
 
-def _built_with_flows(graph, *, show_flow_direction_layer: bool) -> ResultLayers:
+def _built_with_flows(graph, *, show_flow_direction_layer: bool, **settings) -> ResultLayers:
     results = ResultLayers(
-        settings={"show_flow_direction_layer": show_flow_direction_layer}
+        settings={
+            "show_flow_direction_layer": show_flow_direction_layer,
+            **settings,
+        }
     )
     results.stage_finished(
         "skeletonise",
@@ -134,6 +138,49 @@ def test_arrow_helper_rejects_degenerate_polyline():
     ) is None
 
 
+def test_flow_toward_face_dominant_axis_encoding():
+    assert flow_toward_face_from_direction(np.array([1.0, 0.0, 0.0])) == 3
+    assert flow_toward_face_from_direction(np.array([-1.0, 0.0, 0.0])) == -3
+    assert flow_toward_face_from_direction(np.array([0.0, 2.0, 0.0])) == 2
+    assert flow_toward_face_from_direction(np.array([0.0, -2.0, 0.0])) == -2
+    assert flow_toward_face_from_direction(np.array([0.0, 0.0, 5.0])) == 1
+    assert flow_toward_face_from_direction(np.array([0.0, 0.0, -5.0])) == -1
+
+
+def test_flow_toward_face_zero_vector_is_finite():
+    assert flow_toward_face_from_direction(np.zeros(3)) == 0
+    assert np.isfinite(flow_toward_face_from_direction(np.zeros(3)))
+
+
+def test_antiparallel_edges_have_opposite_flow_toward_face():
+    positive = flow_direction_vectors(_two_node_edge(flow_signed=2.0))[1]
+    negative = flow_direction_vectors(_two_node_edge(flow_signed=-2.0))[1]
+    assert positive["flow_toward_face"][0] == 3
+    assert negative["flow_toward_face"][0] == -3
+    assert positive["flow_toward_face"][0] == -negative["flow_toward_face"][0]
+
+
+def test_flow_toward_face_values_are_finite_in_features():
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    graph.add_node(1, pos=np.array([5.0, 0.0, 0.0]))
+    graph.add_node(2, pos=np.array([5.0, 5.0, 0.0]))
+    graph.add_edge(
+        0, 1, key=0,
+        voxels=[[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]],
+        flow_signed=1e-16, flow_abs=1e-16,
+    )
+    graph.add_edge(
+        1, 2, key=0,
+        voxels=[[5.0, 0.0, 0.0], [5.0, 5.0, 0.0]],
+        flow_signed=-3.0, flow_abs=3.0,
+    )
+    _vectors, features = flow_direction_vectors(graph)
+    faces = np.asarray(features["flow_toward_face"], dtype=float)
+    assert np.all(np.isfinite(faces))
+    assert faces.tolist() == [3.0, -2.0]
+
+
 # --- ResultLayers / Export-tab toggle ----------------------------------------
 
 
@@ -158,7 +205,22 @@ def test_toggle_on_with_flows_emits_one_arrow_per_directed_edge():
     assert len(spec.data) == 1
     assert spec.colour_by == "flow_abs"
     assert spec.features["flow_abs"].tolist() == [1.25]
+    assert spec.features["flow_toward_face"].tolist() == [3]
     assert spec.options.get("vector_style") == "triangle"
+    assert spec.options.get("length") == 1.0
+
+
+def test_flow_direction_layer_uses_flow_arrow_scale_setting():
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(
+        graph,
+        show_flow_direction_layer=True,
+        flow_arrow_scale=2.5,
+    )
+    group = results.stage_finished("export_results", SimpleNamespace())
+
+    assert len(group.layers) == 1
+    assert group.layers[0].options["length"] == 2.5
 
 
 def test_toggle_on_without_flows_emits_no_layer():
@@ -183,9 +245,65 @@ def test_show_flow_direction_layer_schema_default_and_requires():
     assert setting.section == "Solver and output"
 
 
+def test_flow_arrow_scale_schema_default_and_requires():
+    schema = default_schema()
+    setting = schema["flow_arrow_scale"]
+    assert setting.kind == "float"
+    assert setting.default == 1.0
+    assert setting.minimum == 0.1
+    assert setting.maximum == 5.0
+    assert setting.requires == ("show_flow_direction_layer", "run_haemodynamics")
+    assert setting.section == "Solver and output"
+
+
+def test_flow_arrow_scale_lives_on_export_tab():
+    owner = assign_to_stages(default_schema())
+    assert owner["flow_arrow_scale"] == "8. Export"
+
+
 def test_show_flow_direction_layer_lives_on_export_tab():
     """Last tab is 8. Export (STAGES); Solver and output section lands there."""
     assert STAGES[-1].call == "export_results"
     assert STAGES[-1].title == "8. Export"
     owner = assign_to_stages(default_schema())
     assert owner["show_flow_direction_layer"] == "8. Export"
+
+
+def test_flow_direction_colouring_includes_flow_toward_face_when_enabled():
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(
+        graph,
+        show_flow_direction_layer=True,
+        flow_direction_colouring=True,
+    )
+    group = results.stage_finished("export_results", SimpleNamespace())
+    spec = group.layers[0]
+    assert "flow_toward_face" in spec.features
+    assert spec.features["flow_toward_face"].tolist() == [3]
+
+
+def test_flow_direction_colouring_omits_flow_toward_face_when_disabled():
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(
+        graph,
+        show_flow_direction_layer=True,
+        flow_direction_colouring=False,
+    )
+    group = results.stage_finished("export_results", SimpleNamespace())
+    spec = group.layers[0]
+    assert "flow_toward_face" not in spec.features
+    assert "flow_abs" in spec.features
+
+
+def test_flow_direction_colouring_schema_default_and_requires():
+    schema = default_schema()
+    setting = schema["flow_direction_colouring"]
+    assert setting.kind == "bool"
+    assert setting.default is True
+    assert setting.requires == ("show_flow_direction_layer", "run_haemodynamics")
+    assert setting.section == "Solver and output"
+
+
+def test_flow_direction_colouring_lives_on_export_tab():
+    owner = assign_to_stages(default_schema())
+    assert owner["flow_direction_colouring"] == "8. Export"

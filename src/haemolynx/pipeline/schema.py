@@ -1391,6 +1391,43 @@ SCHEMA = Schema(
             requires=("run_haemodynamics",),
         ),
         Setting(
+            name="flow_log_scale",
+            kind="bool",
+            default=False,
+            help=(
+                "Include log10(flow_abs) as a vessel colour option in napari "
+                "(select flow_abs_log10 from the Vectors layer colour-by dropdown)"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="flow_direction_colouring",
+            kind="bool",
+            default=True,
+            help=(
+                "Include flow_toward_face in the flow-direction Vectors layer "
+                "properties for napari colour-by (which bounding-box face flow "
+                "heads toward; select it from the layer colour-by dropdown)"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+            requires=("show_flow_direction_layer", "run_haemodynamics"),
+        ),
+        Setting(
+            name="flow_arrow_scale",
+            kind="float",
+            default=1.0,
+            minimum=0.1,
+            maximum=5.0,
+            help=(
+                "Initial uniform scale for flow-direction arrow heads in the "
+                "napari Vectors layer (adjust live via the layer's length "
+                "control after export)"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+            requires=("show_flow_direction_layer", "run_haemodynamics"),
+        ),
+        Setting(
             name="verbose_logging",
             kind="bool",
             default=False,

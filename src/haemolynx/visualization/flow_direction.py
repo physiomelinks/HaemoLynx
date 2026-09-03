@@ -16,13 +16,18 @@ from typing import Any, Mapping, Optional
 
 import numpy as np
 
+from haemolynx.haemodynamics.resistance import flow_abs_log10_value
 from haemolynx.visualization.geometry import edge_polyline
 
 __all__ = [
     "edge_flow_direction_sign",
     "edge_flow_arrow_zyx",
     "flow_direction_vectors",
+    "flow_toward_face_from_direction",
 ]
+
+# Face codes for dominant-axis encoding in physical (z, y, x): ±3 = ±z, ±2 = ±y, ±1 = ±x.
+_FACE_CODE_ZYX = (3, 2, 1)
 
 
 def edge_flow_direction_sign(
@@ -58,6 +63,24 @@ def edge_flow_direction_sign(
     if text in {"v_to_u", "vu", "reverse", "rev", "-"}:
         return -1
     return None
+
+
+def flow_toward_face_from_direction(direction: np.ndarray) -> int:
+    """Which bounding-box face the flow arrow points toward (physical z, y, x).
+
+    Uses the dominant component of *direction* (mid-edge arrow displacement).
+    Returns ``-3`` (−z), ``-2`` (−y), ``-1`` (−x), ``+1`` (+x), ``+2`` (+y),
+    or ``+3`` (+z). A zero or non-finite vector returns ``0``.
+    """
+    d = np.asarray(direction, dtype=float).reshape(-1)[:3]
+    if d.shape[0] < 3 or not np.all(np.isfinite(d)):
+        return 0
+    norm = float(np.linalg.norm(d))
+    if norm <= 1e-12:
+        return 0
+    axis = int(np.argmax(np.abs(d)))
+    sign = 1 if d[axis] >= 0.0 else -1
+    return sign * _FACE_CODE_ZYX[axis]
 
 
 def _polyline_length(points: np.ndarray) -> float:
@@ -137,8 +160,9 @@ def flow_direction_vectors(
     vectors
         Shape ``(N, 2, 3)``: origin and displacement in physical ``(z, y, x)``.
     features
-        Parallel columns including ``flow_abs`` (magnitude used for the heatmap)
-        and ``flow_signed``. Empty dict when there are no arrows.
+        Parallel columns including ``flow_abs`` (magnitude used for the heatmap),
+        ``flow_signed``, and ``flow_toward_face`` (dominant-axis bounding-box
+        face code). Empty dict when there are no arrows.
     """
     directed: list[tuple[np.ndarray, int, float, float]] = []
     for u, v, _key, data in _iter_edges(graph):
@@ -185,6 +209,8 @@ def flow_direction_vectors(
     directions: list[np.ndarray] = []
     signed_col: list[float] = []
     abs_col: list[float] = []
+    log10_col: list[float] = []
+    face_col: list[int] = []
     for points, direction_sign, signed_f, flow_abs in directed:
         result = edge_flow_arrow_zyx(
             points,
@@ -199,6 +225,11 @@ def flow_direction_vectors(
         directions.append(vector)
         signed_col.append(signed_f)
         abs_col.append(flow_abs)
+        if np.isfinite(flow_abs):
+            log10_col.append(flow_abs_log10_value(flow_abs))
+        else:
+            log10_col.append(float("nan"))
+        face_col.append(flow_toward_face_from_direction(vector))
 
     if not origins:
         return np.empty((0, 2, 3), dtype=float), {}
@@ -208,6 +239,8 @@ def flow_direction_vectors(
     )
     features = {
         "flow_abs": np.asarray(abs_col, dtype=float),
+        "flow_abs_log10": np.asarray(log10_col, dtype=float),
         "flow_signed": np.asarray(signed_col, dtype=float),
+        "flow_toward_face": np.asarray(face_col, dtype=int),
     }
     return vectors, features

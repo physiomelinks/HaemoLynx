@@ -1,11 +1,20 @@
 """Network resistance from Laplacian."""
 import logging
+import math
 from pathlib import Path
 import numpy as np
 import networkx as nx
 import pyvista as pv
 
 logger = logging.getLogger(__name__)
+
+#: Smallest |flow| passed to log10 so zero-flow edges stay finite, not -inf.
+FLOW_ABS_LOG10_FLOOR = 1e-20
+
+
+def flow_abs_log10_value(flow_abs: float) -> float:
+    """``log10(max(|flow|, FLOW_ABS_LOG10_FLOOR))`` for vessel colouring."""
+    return math.log10(max(abs(float(flow_abs)), FLOW_ABS_LOG10_FLOOR))
 
 
 def build_conductance_matrix_from_graph(
@@ -242,7 +251,9 @@ def set_edge_flows(G: nx.Graph, node_list: list, pressure: np.ndarray) -> dict:
         data["pressure_v"] = float(pressure[v_idx])
         data["pressure_drop"] = drop
         data["flow_signed"] = signed
-        data["flow_abs"] = abs(signed)
+        flow_abs = abs(signed)
+        data["flow_abs"] = flow_abs
+        data["flow_abs_log10"] = flow_abs_log10_value(flow_abs)
         edges_set += 1
         total_abs_flow += abs(signed)
     return {"edges_set": edges_set, "total_abs_flow": total_abs_flow}
