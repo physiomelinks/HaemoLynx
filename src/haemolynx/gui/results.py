@@ -55,6 +55,18 @@ PERICYTES = f"{PREFIX}pericytes"
 IMAGE = f"{PREFIX}image"
 SKELETON = f"{PREFIX}skeleton"
 
+#: Napari Points ``size`` (data pixels). Values match the original viewer style
+#: on ``origin/main`` / the first GUI results commit. Branch-hover midpoints
+#: briefly used 8.0 and read as oversized nodes; they share the vessel-label
+#: midpoint size instead.
+VESSEL_LABEL_POINT_SIZE = 2.0
+BRANCH_HOVER_POINT_SIZE = 2.0
+NODE_POINT_SIZE = 3.0
+BOUNDARY_NODE_POINT_SIZE = 6.0
+PERICYTE_POINT_SIZE = 4.0
+#: Picking rings on the Boundaries tab (distinct from snapped boundary nodes).
+BOUNDARY_COORDINATE_POINT_SIZE = 8.0
+
 #: Mask field on VesselNetwork -> the layer it becomes.
 MASK_LAYERS = {
     "large_arteriole_mask": f"{PREFIX}large arteriole mask",
@@ -458,7 +470,7 @@ def _branch_hover_layer(
             features=features,
             visible=True,
             options={
-                "size": 8.0,
+                "size": BRANCH_HOVER_POINT_SIZE,
                 "out_of_slice_display": True,
                 "opacity": 0.4,
                 "face_color": "yellow",
@@ -601,7 +613,10 @@ class ResultLayers:
                 data=midpoints,
                 features=columns,
                 visible=False,
-                options={"size": 2.0, "out_of_slice_display": True},
+                options={
+                    "size": VESSEL_LABEL_POINT_SIZE,
+                    "out_of_slice_display": True,
+                },
             ),
             *_branch_hover_layer(graph, midpoints),
         )
@@ -682,7 +697,10 @@ class ResultLayers:
                               "pressure": np.full(len(ids), np.nan)},
                     colour_by="degree", colour_kind="continuous",
                     contrast_limits=_limits(degrees),
-                    options={"size": 3.0, "out_of_slice_display": True},
+                    options={
+                        "size": NODE_POINT_SIZE,
+                        "out_of_slice_display": True,
+                    },
                 )
             )
 
@@ -740,7 +758,10 @@ class ResultLayers:
                         colour_by="degree",
                         colour_kind="continuous",
                         contrast_limits=_limits(degrees),
-                        options={"size": 3.0, "out_of_slice_display": True},
+                        options={
+                            "size": NODE_POINT_SIZE,
+                            "out_of_slice_display": True,
+                        },
                     )
                 )
             positions: list[np.ndarray] = []
@@ -762,7 +783,10 @@ class ResultLayers:
                                   "node_id": np.asarray(boundary_ids, dtype=object)},
                         colour_by="role", colour_kind="categorical",
                         colour_cycle=role_colours(),
-                        options={"size": 6.0, "out_of_slice_display": True},
+                        options={
+                            "size": BOUNDARY_NODE_POINT_SIZE,
+                            "out_of_slice_display": True,
+                        },
                     )
                 )
 
@@ -786,7 +810,10 @@ class ResultLayers:
                     kind="points", name=PERICYTES, data=points, features=features,
                     colour_by="branch_order", colour_kind="categorical",
                     colour_cycle=colour_cycle_for(features.get("branch_order", ())),
-                    options={"size": 4.0, "out_of_slice_display": True},
+                    options={
+                        "size": PERICYTE_POINT_SIZE,
+                        "out_of_slice_display": True,
+                    },
                 )
             )
         orders = sorted(
@@ -842,7 +869,10 @@ class ResultLayers:
                                       [self._graph.degree(n) for n in ids], dtype=float)},
                         colour_by="pressure", colour_kind="continuous",
                         contrast_limits=_limits(values),
-                        options={"size": 3.0, "out_of_slice_display": True},
+                        options={
+                            "size": NODE_POINT_SIZE,
+                            "out_of_slice_display": True,
+                        },
                     )
                 )
         equivalent = getattr(output, "equivalent_resistance", None)
@@ -919,7 +949,10 @@ class ResultLayers:
                     colour_kind="continuous",
                     contrast_limits=_limits(pressures),
                     visible=False,
-                    options={"size": 3.0, "out_of_slice_display": True},
+                    options={
+                        "size": NODE_POINT_SIZE,
+                        "out_of_slice_display": True,
+                    },
                 )
             )
         return tuple(layers)

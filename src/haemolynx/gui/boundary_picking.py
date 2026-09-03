@@ -43,7 +43,13 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS
-from haemolynx.gui.results import PREFIX, LayerSpec, StageLayers, role_colours
+from haemolynx.gui.results import (
+    BOUNDARY_COORDINATE_POINT_SIZE,
+    PREFIX,
+    LayerSpec,
+    StageLayers,
+    role_colours,
+)
 
 __all__ = [
     "AUTOMATED_OVERRIDES_MANUAL_NOTE",
@@ -668,7 +674,7 @@ def specs_for(values: Mapping[str, Any], bands=None) -> tuple[LayerSpec, ...]:
                 # A ring, so what you asked for cannot be mistaken for
                 # `HaemoLynx boundary nodes`, which is what the run snapped to.
                 "symbol": "ring",
-                "size": 8.0,
+                "size": BOUNDARY_COORDINATE_POINT_SIZE,
                 "border_width": 0.25,
                 "out_of_slice_display": True,
             },

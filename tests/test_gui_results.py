@@ -20,15 +20,21 @@ import numpy as np
 import pytest
 
 from haemolynx.gui.results import (
+    BOUNDARY_COORDINATE_POINT_SIZE,
+    BOUNDARY_NODE_POINT_SIZE,
     BOUNDARY_NODES,
     BRANCH_HOVER,
+    BRANCH_HOVER_POINT_SIZE,
     DEFAULT_VESSEL_COLOUR,
     EDGE_COLUMNS,
     IMAGE,
     LAYER_NAMES,
+    NODE_POINT_SIZE,
     NODES,
+    PERICYTE_POINT_SIZE,
     PERICYTES,
     SKELETON,
+    VESSEL_LABEL_POINT_SIZE,
     VESSEL_LABELS,
     VESSELS,
     ResultLayers,
@@ -288,6 +294,76 @@ def test_a_run_with_no_boundary_nodes_says_so_rather_than_drawing_nothing():
                         resistance_node_pair=None),
     )
     assert "No boundary nodes" in group.note
+
+
+def test_point_layer_sizes_match_the_earlier_viewer_style():
+    """Pin napari Points sizes against the branch-hover enlargement regression.
+
+    Graph nodes / boundary nodes / pericytes / vessel-label midpoints have been
+    3 / 6 / 4 / 2 since the first viewer commit (and on ``origin/main``).
+    Branch-hover midpoints briefly shipped at 8.0 and looked like oversized
+    nodes; they must stay at the vessel-label midpoint size. Boundary-tab
+    picking rings stay at 8.0 (they are rings, not snapped nodes).
+    """
+    assert VESSEL_LABEL_POINT_SIZE == 2.0
+    assert BRANCH_HOVER_POINT_SIZE == 2.0
+    assert NODE_POINT_SIZE == 3.0
+    assert BOUNDARY_NODE_POINT_SIZE == 6.0
+    assert PERICYTE_POINT_SIZE == 4.0
+    assert BOUNDARY_COORDINATE_POINT_SIZE == 8.0
+
+    graph = a_graph()
+    first = list(graph.edges(keys=True, data=True))[0]
+    first[3]["pericyte_centers_um"] = [5.0]
+    first[3]["branch_order"] = "B01"
+
+    results = built(graph)
+    network_group = results.stage_finished("build_network", network(graph))
+    assert spec_named(network_group, VESSEL_LABELS).options["size"] == (
+        VESSEL_LABEL_POINT_SIZE
+    )
+    assert spec_named(network_group, BRANCH_HOVER).options["size"] == (
+        BRANCH_HOVER_POINT_SIZE
+    )
+    assert spec_named(network_group, NODES).options["size"] == NODE_POINT_SIZE
+
+    boundary_group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            resistance_node_pair=(0, 3),
+        ),
+    )
+    assert spec_named(boundary_group, NODES).options["size"] == NODE_POINT_SIZE
+    assert spec_named(boundary_group, BOUNDARY_NODES).options["size"] == (
+        BOUNDARY_NODE_POINT_SIZE
+    )
+
+    diameter_group = results.stage_finished(
+        "assign_diameters", SimpleNamespace(graph=graph)
+    )
+    assert spec_named(diameter_group, PERICYTES).options["size"] == (
+        PERICYTE_POINT_SIZE
+    )
+
+    solve_group = results.stage_finished(
+        "solve",
+        SimpleNamespace(
+            pressure=np.zeros(4),
+            node_list=[0, 1, 2, 3],
+            equivalent_resistance=1.0,
+        ),
+    )
+    assert spec_named(solve_group, NODES).options["size"] == NODE_POINT_SIZE
+
+    from haemolynx.gui.boundary_picking import BC_COORDINATES, specs_for
+
+    picks = specs_for({"inlet_node_coordinates": [[1.0, 2.0, 3.0]]})
+    assert picks[0].name == BC_COORDINATES
+    assert picks[0].options["size"] == BOUNDARY_COORDINATE_POINT_SIZE
 
 
 # --- pressure ----------------------------------------------------------------

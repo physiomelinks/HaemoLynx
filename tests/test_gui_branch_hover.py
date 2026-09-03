@@ -233,6 +233,10 @@ def test_result_layers_emit_branch_hover_with_tooltip_features():
     assert hover.features["tooltip"][0].startswith("branchID: ")
     assert hover.options["branch_hover_available"] == ("tortuosity", "length")
     assert hover.options["branch_hover_selected"] == ("tortuosity", "length")
+    # Must stay at the vessel-label midpoint size (not the brief 8.0 enlargement).
+    from haemolynx.gui.results import BRANCH_HOVER_POINT_SIZE, VESSEL_LABEL_POINT_SIZE
+
+    assert hover.options["size"] == BRANCH_HOVER_POINT_SIZE == VESSEL_LABEL_POINT_SIZE
 
 
 def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
