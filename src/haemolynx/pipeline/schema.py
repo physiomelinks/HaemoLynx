@@ -186,9 +186,13 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/large_arteriole_mask.tif",
             help="Read this pre-segmented large arteriole mask",
             section=_VESSEL_MASKS,
+            # Gate on use_large_vessel_masks only (not automated_vessel_assignment):
+            # turning the mask toggle on must demand the files at preflight even
+            # when the parent assignment gate is still off. GUI nesting still
+            # hides these rows while automated_vessel_assignment is off because
+            # use_large_vessel_masks itself requires that parent.
             requires=(
                 "use_large_vessel_masks",
-                "automated_vessel_assignment",
                 "!use_ilastik_large_vessel_segmentation",
             ),
             must_exist=True,
@@ -201,7 +205,6 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_large_vessel_masks",
-                "automated_vessel_assignment",
                 "!use_ilastik_large_vessel_segmentation",
             ),
             must_exist=True,

@@ -35,9 +35,9 @@ vessel_masks:
   automated_vessel_assignment: false
   # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
-  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
+  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation off; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
-  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
+  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation off; must exist]
   large_venule_mask_path: images/large_venule_mask.tif
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks and automated_vessel_assignment]
   use_ilastik_large_vessel_segmentation: false
