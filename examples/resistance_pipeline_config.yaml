@@ -34,8 +34,20 @@ vessel_masks:
   automated_vessel_assignment: false
   # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
+  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
+  large_arteriole_mask_path: images/large_arteriole_mask.tif
+  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
+  large_venule_mask_path: images/large_venule_mask.tif
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks and automated_vessel_assignment]
   use_ilastik_large_vessel_segmentation: false
+  # Read this raw image as the ilastik input for the large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation]
+  ilastik_unsegmented_arteriole_image_path: images/large_arteriole_mask.tif
+  # Read this raw image as the ilastik input for the large venule mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation]
+  ilastik_unsegmented_venule_image_path: images/large_venule_mask.tif
+  # Use this trained ilastik project to segment arterioles  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
+  ilastik_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
+  # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
+  ilastik_venule_classifier_path: classifiers/venule_classifier.ilp
   # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_mask_dilation_microns: 0.0
   # Maximum dilation (microns) for progressive large-vessel terminal assignment: assign at 0 µm, then in 5 µm steps up to this value, locking each node at the first step it is claimed. Does not replace large_vessel_mask_dilation_microns (load-time one-shot dilation)  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
@@ -86,22 +98,22 @@ vessel_masks:
   orphaned_branch_max_edge_count: 3
   # After final I/O assignment, drop graph components that lack both an inlet and an outlet node  [needs automated_vessel_assignment]
   remove_disconnected_io_components_after_final_assignment: false
-  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
-  large_arteriole_mask_path: images/large_arteriole_mask.tif
-  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
-  large_venule_mask_path: images/large_venule_mask.tif
-  # Read this raw image as the ilastik input for the large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation]
-  ilastik_unsegmented_arteriole_image_path: images/large_arteriole_mask.tif
-  # Read this raw image as the ilastik input for the large venule mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation]
-  ilastik_unsegmented_venule_image_path: images/large_venule_mask.tif
-  # Use this trained ilastik project to segment arterioles  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
-  ilastik_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
-  # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
-  ilastik_venule_classifier_path: classifiers/venule_classifier.ilp
   # Assign arteriole and venule boundary nodes from small-vessel masks  [needs automated_vessel_assignment]
   use_small_vessel_masks_for_boundary_assignment: false
+  # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
+  small_arteriole_mask_path: images/small_arteriole_mask.tif
+  # Read this pre-segmented small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
+  small_venule_mask_path: images/small_venule_mask.tif
   # Produce the small-vessel masks with ilastik instead of reading pre-segmented files  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   use_ilastik_small_vessel_segmentation: false
+  # Read this raw image as the ilastik input for the small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation]
+  ilastik_unsegmented_small_arteriole_image_path: images/small_arteriole_mask.tif
+  # Read this raw image as the ilastik input for the small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation]
+  ilastik_unsegmented_small_venule_image_path: images/small_venule_mask.tif
+  # Use this trained ilastik project to segment small arterioles  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist]
+  ilastik_small_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
+  # Use this trained ilastik project to segment small venules  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist]
+  ilastik_small_venule_classifier_path: classifiers/venule_classifier.ilp
   # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
   # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then in 5 µm steps up to this value, locking each edge at the first step it is classified. There is no separate load-time small-vessel dilation setting  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
@@ -158,18 +170,6 @@ vessel_masks:
   small_vessel_min_component_volume_um3: 50.0
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
-  # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
-  small_arteriole_mask_path: images/small_arteriole_mask.tif
-  # Read this pre-segmented small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
-  small_venule_mask_path: images/small_venule_mask.tif
-  # Read this raw image as the ilastik input for the small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation]
-  ilastik_unsegmented_small_arteriole_image_path: images/small_arteriole_mask.tif
-  # Read this raw image as the ilastik input for the small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation]
-  ilastik_unsegmented_small_venule_image_path: images/small_venule_mask.tif
-  # Use this trained ilastik project to segment small arterioles  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist]
-  ilastik_small_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
-  # Use this trained ilastik project to segment small venules  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist]
-  ilastik_small_venule_classifier_path: classifiers/venule_classifier.ilp
 
 # ------------------------------------------------------------------------
 # Boundary assignment
@@ -265,6 +265,8 @@ solver_and_output:
   vtk_export: true
   # Open the exported VTK network in the interactive viewer  [needs run_haemodynamics and vtk_export]
   visualize_vtk: false
+  # Add a napari Vectors layer of mid-edge arrows coloured by flow magnitude after the solve (Export tab results)  [needs run_haemodynamics]
+  show_flow_direction_layer: true
   # Print verbose per-stage logging while the pipeline runs
   verbose_logging: false
 
