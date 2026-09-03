@@ -466,6 +466,53 @@ SCHEMA = Schema(
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
+            name="cut_network_at_large_vessel_volumes",
+            kind="bool",
+            default=False,
+            help=(
+                "Before automated terminal assignment, cut the graph at large "
+                "arteriole/venule mask boundaries: remove edges inside the "
+                "volume and split crossing edges so new degree-1 terminals sit "
+                "on the exterior side of the cut"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="remove_orphaned_branches_outside_large_vessel_volumes",
+            kind="bool",
+            default=False,
+            help=(
+                "After cutting at large-vessel volumes, remove connected "
+                "components that remain outside the volume when their total "
+                "edge count is below orphaned_branch_max_edge_count"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "cut_network_at_large_vessel_volumes",
+            ),
+        ),
+        Setting(
+            name="orphaned_branch_max_edge_count",
+            kind="int",
+            default=3,
+            help=(
+                "Edge-count threshold for orphan cleanup after large-vessel "
+                "volume cuts: drop a remaining exterior component when "
+                "edge_count < this value"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=1,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "cut_network_at_large_vessel_volumes",
+                "remove_orphaned_branches_outside_large_vessel_volumes",
+            ),
+        ),
+        Setting(
             name="remove_disconnected_io_components_after_final_assignment",
             kind="bool",
             default=False,

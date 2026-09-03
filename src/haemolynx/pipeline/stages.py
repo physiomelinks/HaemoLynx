@@ -119,13 +119,19 @@ class VesselNetwork:
 
 @dataclass
 class BoundaryNodes:
-    """Where flow enters and leaves, and where vessel types change."""
+    """Where flow enters and leaves, and where vessel types change.
+
+    ``graph`` is the live network after this stage (post large-vessel volume
+    cut when that option ran). Napari results and later stages must use this
+    graph rather than a pre-cut copy remembered from ``build_network``.
+    """
 
     inlet_nodes: list[int] = field(default_factory=list)
     outlet_nodes: list[int] = field(default_factory=list)
     arteriole_boundary_nodes: list[int] = field(default_factory=list)
     venule_boundary_nodes: list[int] = field(default_factory=list)
     resistance_node_pair: tuple[int, int] | None = None
+    graph: nx.MultiGraph | None = None
 
 
 @dataclass
@@ -597,6 +603,9 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "automated_vessel_assignment=True requires arteriole and venule masks. "
                 "Set use_large_vessel_masks=True and provide mask paths."
             )
+        # Start from load-time filtered masks (dilation, min-component volume,
+        # opposite-attached cleanup, load-time overlap exclusion in
+        # io.load_and_validate_vessel_masks during build_network).
         assignment_large_arteriole_mask = np.asarray(large_arteriole_mask, dtype=bool)
         assignment_large_venule_mask = np.asarray(large_venule_mask, dtype=bool)
         cleanup_enabled_for_large = bool(
@@ -722,6 +731,31 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             logger.info(
                 "Automated large-vessel assignment: overlap cleanup will run "
                 "inside each progressive step (normal mode)."
+            )
+        # Cut uses post-filter masks (load-time filters + assignment-time overlap
+        # cleanup above). Progressive dilation is assignment-only and does not
+        # redefine the cut volume. Cut runs before terminal selection so new
+        # degree-1 boundary nodes are available, and network.graph / napari use
+        # the post-cut graph.
+        if bool(settings["cut_network_at_large_vessel_volumes"]):
+            G = graph.cut_graph_at_large_vessel_volumes(
+                G,
+                assignment_large_arteriole_mask,
+                assignment_large_venule_mask,
+                voxel_size_zyx=voxel_size_zyx,
+                enabled=True,
+                remove_orphaned_branches=bool(
+                    settings["remove_orphaned_branches_outside_large_vessel_volumes"]
+                ),
+                orphaned_branch_max_edge_count=int(
+                    settings["orphaned_branch_max_edge_count"]
+                ),
+            )
+            network.graph = G
+            logger.info(
+                "Applied large-vessel volume network cut on filtered masks before "
+                "automated terminal assignment "
+                f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
             )
         if use_legacy_large_vessel_assignment:
             auto_inlet_nodes, auto_outlet_nodes = (
@@ -1220,6 +1254,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
         venule_boundary_nodes=settings["venule_boundary_nodes"],
         resistance_node_pair=resistance_node_pair,
+        graph=G,
     )
 
 

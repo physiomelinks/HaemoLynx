@@ -104,6 +104,8 @@ DIMENSIONLESS = {
     "voxel_size_policy",
     # Graph hop count (edge steps), not a physical distance.
     "small_vessel_boundary_fallback_hop_distance",
+    # Edge-count threshold for orphan cleanup after large-vessel volume cuts.
+    "orphaned_branch_max_edge_count",
     # Voxel index stride for Plotly volume downsampling (not a physical length).
     "large_vessel_3d_volume_downsample_stride",
     # Ratio of cylinder radii (dimensionless).

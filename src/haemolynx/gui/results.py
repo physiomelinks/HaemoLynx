@@ -640,6 +640,13 @@ class ResultLayers:
         )
 
     def _from_assign_boundaries(self, output: Any) -> StageLayers:
+        # Prefer the live graph returned by assign_boundaries (post cut when
+        # enabled). Falling back to the remembered build_network graph keeps
+        # older SimpleNamespace test fixtures working.
+        graph = getattr(output, "graph", None)
+        if graph is not None:
+            self._graph = graph
+
         roles = {
             "inlet": getattr(output, "inlet_nodes", ()) or (),
             "outlet": getattr(output, "outlet_nodes", ()) or (),
@@ -648,15 +655,39 @@ class ResultLayers:
         }
         layers: list[LayerSpec] = []
         if self._graph is not None:
+            # Refresh vessels and nodes so a large-vessel volume cut does not
+            # leave pre-cut interior geometry on screen.
+            layers.extend(self._vessel_layers("assign_boundaries"))
+            points, ids = node_points(self._graph)
+            if len(points):
+                degrees = np.asarray(
+                    [self._graph.degree(node_id) for node_id in ids], dtype=float
+                )
+                layers.append(
+                    LayerSpec(
+                        kind="points",
+                        name=NODES,
+                        data=points,
+                        features={
+                            "node_id": ids,
+                            "degree": degrees,
+                            "pressure": np.full(len(ids), np.nan),
+                        },
+                        colour_by="degree",
+                        colour_kind="continuous",
+                        contrast_limits=_limits(degrees),
+                        options={"size": 3.0, "out_of_slice_display": True},
+                    )
+                )
             positions: list[np.ndarray] = []
             labels: list[str] = []
-            ids: list[Any] = []
+            boundary_ids: list[Any] = []
             for role, node_ids in roles.items():
-                points, kept = node_points(self._graph, list(node_ids))
-                if len(points):
-                    positions.append(points)
+                role_points, kept = node_points(self._graph, list(node_ids))
+                if len(role_points):
+                    positions.append(role_points)
                     labels.extend([role] * len(kept))
-                    ids.extend(kept.tolist())
+                    boundary_ids.extend(kept.tolist())
             if positions:
                 role_column = np.asarray(labels, dtype=object)
                 layers.append(
@@ -664,13 +695,12 @@ class ResultLayers:
                         kind="points", name=BOUNDARY_NODES,
                         data=np.concatenate(positions, axis=0),
                         features={"role": role_column,
-                                  "node_id": np.asarray(ids, dtype=object)},
+                                  "node_id": np.asarray(boundary_ids, dtype=object)},
                         colour_by="role", colour_kind="categorical",
                         colour_cycle=role_colours(),
                         options={"size": 6.0, "out_of_slice_display": True},
                     )
                 )
-            layers.extend(self._vessel_layers("assign_boundaries"))
 
         counts = ", ".join(f"{len(ids)} {role}" for role, ids in roles.items() if ids)
         return StageLayers(
