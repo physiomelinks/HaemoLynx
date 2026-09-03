@@ -44,7 +44,9 @@ CANCELLED = "Cancelled: the run was stopped when the layers were cleared. Ready.
 FINISHED_FIRST = "The run finished before it could be stopped. Its layers were cleared."
 
 #: What the Run button says for itself when a run is already going.
-ALREADY_RUNNING = "A run is already going. Press 'Clear layers' to stop it."
+ALREADY_RUNNING = (
+    "A run is already going. Press 'Clear layers and state' to stop it."
+)
 
 
 class RunCancelled(Exception):
@@ -161,11 +163,21 @@ class RunState:
             raise RunCancelled(CANCELLED)
 
 
-def clear_message(removed: int, stopping: bool) -> str:
-    """What the report box says when "Clear layers" has been pressed."""
+def clear_message(
+    removed: int,
+    stopping: bool,
+    *,
+    discarded_artefacts: bool = False,
+    restored_skips: bool = False,
+) -> str:
+    """What the report box says when "Clear layers and state" has been pressed."""
     note = f"Removed {removed} HaemoLynx layer(s)."
     if stopping:
         note += " Stopping the run; the panel is ready for another as soon as it has."
+    if discarded_artefacts:
+        note += " Discarded cached checkpoint and resume pickles."
+    if restored_skips:
+        note += " Restored skeletonize and graph-building toggles."
     return note
 
 

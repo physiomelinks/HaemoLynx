@@ -20,6 +20,7 @@ from haemolynx.gui.stage_checkpoints import (
     StageCheckpoints,
     can_revert_from,
     checkpoint_pickle_path,
+    discard_cached_artefacts,
     graph_resume_path,
     previous_tab,
     restore_message,
@@ -293,3 +294,67 @@ def test_graph_resume_stages_cover_every_post_topology_stage():
     assert "build_network" in GRAPH_RESUME_STAGES
     assert "solve" in GRAPH_RESUME_STAGES
     assert "export_results" in GRAPH_RESUME_STAGES
+
+
+def test_discard_cached_artefacts_removes_graph_and_checkpoints_not_skeleton(
+    tmp_path,
+):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    stem = "stack"
+    graph_path = graph_resume_path(output_dir, stem)
+    graph_path.write_bytes(b"graph")
+    cp1 = checkpoint_pickle_path(output_dir, stem, "build_network")
+    cp1.write_bytes(b"cp")
+    cp2 = checkpoint_pickle_path(output_dir, stem, "assign_boundaries")
+    cp2.write_bytes(b"cp2")
+    skel_path = skeleton_resume_path(output_dir, stem)
+    skel_path.write_bytes(b"skeleton")
+    unrelated = output_dir / "other.pkl"
+    unrelated.write_bytes(b"other")
+
+    removed = discard_cached_artefacts(output_dir, stem)
+
+    assert set(removed) == {graph_path, cp1, cp2}
+    assert not graph_path.is_file()
+    assert not cp1.is_file()
+    assert not cp2.is_file()
+    assert skel_path.is_file()
+    assert unrelated.is_file()
+
+
+def test_discard_cached_artefacts_ignores_missing_files(tmp_path):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    assert discard_cached_artefacts(output_dir, "stack") == ()
+
+
+def test_discard_cached_artefacts_for_settings_covers_vtk_and_input_stems(
+    tmp_path,
+):
+    from haemolynx.gui.stage_checkpoints import (
+        discard_cached_artefacts_for_settings,
+        stems_for_cached_artefacts,
+    )
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    settings = {
+        "input_path": tmp_path / "HaemoLynx_image.tif",
+        "vtk_output_prefix": tmp_path / "out" / "stack",
+    }
+    graph_resume_path(output_dir, "stack").write_bytes(b"g")
+    graph_resume_path(output_dir, "HaemoLynx_image").write_bytes(b"g2")
+    checkpoint_pickle_path(output_dir, "stack", "build_network").write_bytes(b"c")
+
+    assert set(stems_for_cached_artefacts(settings)) == {
+        "stack",
+        "HaemoLynx_image",
+    }
+    removed = discard_cached_artefacts_for_settings(settings)
+    assert graph_resume_path(output_dir, "stack") in removed
+    assert graph_resume_path(output_dir, "HaemoLynx_image") in removed
+    assert checkpoint_pickle_path(output_dir, "stack", "build_network") in removed
+    assert not graph_resume_path(output_dir, "stack").is_file()
+    assert not graph_resume_path(output_dir, "HaemoLynx_image").is_file()
+    assert not checkpoint_pickle_path(output_dir, "stack", "build_network").is_file()

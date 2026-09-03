@@ -57,7 +57,9 @@ RUN_PIPELINE_TOOLTIP = (
     "Run the pipeline stages with the current settings"
 )
 CLEAR_LAYERS_TOOLTIP = (
-    "Remove HaemoLynx-drawn result and boundary layers from the viewer"
+    "Remove HaemoLynx-drawn result and boundary layers from the viewer, "
+    "forget in-memory checkpoints, and discard cached resume/checkpoint "
+    "pickles on disk"
 )
 SHOW_RESULTS_TOOLTIP = (
     "After each stage finishes, add its graph or mask layers to the viewer"

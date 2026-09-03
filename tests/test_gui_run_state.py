@@ -229,6 +229,18 @@ def test_clearing_with_a_run_going_says_the_run_is_stopping():
     assert "Stopping the run" in message
 
 
+def test_clearing_can_note_discarded_artefacts_and_restored_skips():
+    message = clear_message(
+        2,
+        stopping=False,
+        discarded_artefacts=True,
+        restored_skips=True,
+    )
+    assert "Removed 2 HaemoLynx layer(s)." in message
+    assert "Discarded cached checkpoint and resume pickles." in message
+    assert "Restored skeletonize and graph-building toggles." in message
+
+
 # --- a cancellation is not a failure -----------------------------------------
 
 

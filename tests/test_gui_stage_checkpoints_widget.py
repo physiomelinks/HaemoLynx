@@ -243,14 +243,30 @@ def test_revert_with_nothing_saved_says_so_and_does_not_crash(panel):
 
 
 def test_clear_layers_forgets_checkpoints_and_disables_revert(panel):
-    widget, viewer, _tmp = panel
+    widget, viewer, tmp_path = panel
     _seed_run(widget, viewer, through="assign_boundaries")
     assert widget._haemolynx_revert_buttons["5. Diameters"].enabled is True
+    rows = widget._haemolynx_rows()
+    rows["do_skeletonize"].value = True
+    rows["do_graph_building"].value = True
+
+    widget._haemolynx_revert("5. Diameters")
+
+    assert rows["do_skeletonize"].value is False
+    assert rows["do_graph_building"].value is False
+    assert list(tmp_path.rglob("*_graph.pkl"))
 
     widget._haemolynx_clear()
 
     assert widget._haemolynx_checkpoints.stages == ()
     assert widget._haemolynx_revert_buttons["5. Diameters"].enabled is False
+    assert rows["do_skeletonize"].value is True
+    assert rows["do_graph_building"].value is True
+    assert not list(tmp_path.rglob("*_graph.pkl"))
+    assert not list(tmp_path.rglob("*_checkpoint_*.pkl"))
+    report = widget._haemolynx_report()
+    assert "Discarded cached" in report
+    assert "Restored skeletonize" in report
 
 
 def test_revert_from_every_later_tab_selects_the_restored_tab(panel):

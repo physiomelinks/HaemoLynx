@@ -196,6 +196,59 @@ def graph_resume_path(output_dir: Path, stem: str) -> Path:
     return Path(output_dir) / f"{stem}_graph.pkl"
 
 
+def discard_cached_artefacts(output_dir: Path, stem: str) -> tuple[Path, ...]:
+    """Remove on-disk resume/checkpoint pickles for a GUI run.
+
+    Deletes ``{stem}_graph.pkl`` and ``{stem}_checkpoint_*.pkl``. Missing
+    files are ignored. Does **not** delete ``{stem}_skeleton.npy``. Returns
+    paths that were actually removed.
+    """
+    output_dir = Path(output_dir)
+    removed: list[Path] = []
+    candidates = [graph_resume_path(output_dir, stem)]
+    candidates.extend(output_dir.glob(f"{stem}_checkpoint_*.pkl"))
+    for path in candidates:
+        if path.is_file():
+            path.unlink()
+            removed.append(path)
+            logger.info("Discarded cached artefact: %s", path)
+    return tuple(removed)
+
+
+def stems_for_cached_artefacts(settings: Mapping[str, Any] | None) -> tuple[str, ...]:
+    """Stem names resume/checkpoint pickles may use for *settings*.
+
+    ``vtk_output_prefix``'s final component names the run output; ``input_path``
+    may change when the panel adopts a layer, so both are considered.
+    """
+    if not settings:
+        return ()
+    vtk_prefix = settings.get("vtk_output_prefix")
+    if vtk_prefix is None:
+        return ()
+    stems: set[str] = {Path(vtk_prefix).name}
+    input_path = settings.get("input_path")
+    if input_path is not None:
+        stems.add(Path(input_path).stem)
+    return tuple(stems)
+
+
+def discard_cached_artefacts_for_settings(
+    settings: Mapping[str, Any] | None,
+) -> tuple[Path, ...]:
+    """Like :func:`discard_cached_artefacts` for every stem *settings* implies."""
+    if not settings:
+        return ()
+    vtk_prefix = settings.get("vtk_output_prefix")
+    if vtk_prefix is None:
+        return ()
+    output_dir = Path(vtk_prefix).parent
+    removed: list[Path] = []
+    for stem in stems_for_cached_artefacts(settings):
+        removed.extend(discard_cached_artefacts(output_dir, stem))
+    return tuple(removed)
+
+
 def _copy_graph(graph: Any) -> Any | None:
     """A pickle round-trip copy, matching the pipeline's own save path."""
     if graph is None:

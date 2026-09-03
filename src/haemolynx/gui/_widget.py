@@ -50,8 +50,10 @@ from haemolynx.gui.run_state import (
     clear_message,
 )
 from haemolynx.gui.stage_checkpoints import (
+    SKIP_FOR_RESUME,
     StageCheckpoints,
     can_revert_from,
+    discard_cached_artefacts_for_settings,
     previous_tab,
     restore_message,
 )
@@ -420,33 +422,42 @@ def _add_or_update(viewer, spec) -> None:
         existing = viewer.layers[spec.name] if spec.name in viewer.layers else None
 
     if existing is not None and existing.__class__.__name__.lower() == _CLASS_FOR[spec.kind]:
-        # A Shapes layer applies the types it already holds to whatever data
-        # it is next given, so handing a box outline to a layer holding one
-        # rectangle raises "Rectangle expects four corner vertices, 2
-        # provided" -- after it has emptied itself, which loses the region.
-        # The spec knows what each shape is, so the two go in together.
-        shape_type = spec.options.get("shape_type") if spec.kind == "shapes" else None
-        if shape_type is not None:
-            existing.data = []
-            existing.add(list(spec.data), shape_type=list(shape_type))
-        else:
-            existing.data = spec.data
-        if spec.features:
-            existing.features = dict(spec.features)
-        if spec.kind == "image" and "mask_colour" in spec.options:
-            image_opts = _image_options_for_napari(spec.options)
-            if "colormap" in image_opts:
-                existing.colormap = image_opts["colormap"]
-            if spec.contrast_limits is not None:
-                existing.contrast_limits = spec.contrast_limits
-            for key in ("blending", "opacity", "rendering"):
-                if key in image_opts:
-                    setattr(existing, key, image_opts[key])
-        _colour_layer(existing, spec.colour_by, spec.colour_kind,
-                      spec.colour_cycle, spec.contrast_limits)
-        _store_sweep_metadata(existing, spec)
-        _store_branch_hover_metadata(existing, spec)
-        return
+        # Shrinking Vectors/Points in place leaves stale segments on screen.
+        if spec.kind in {"vectors", "points"}:
+            new_count = len(np.asarray(spec.data))
+            old_count = len(np.asarray(existing.data))
+            if new_count < old_count:
+                viewer.layers.remove(existing)
+                existing = None
+        if existing is not None:
+            # A Shapes layer applies the types it already holds to whatever data
+            # it is next given, so handing a box outline to a layer holding one
+            # rectangle raises "Rectangle expects four corner vertices, 2
+            # provided" -- after it has emptied itself, which loses the region.
+            # The spec knows what each shape is, so the two go in together.
+            shape_type = spec.options.get("shape_type") if spec.kind == "shapes" else None
+            if shape_type is not None:
+                existing.data = []
+                existing.add(list(spec.data), shape_type=list(shape_type))
+            else:
+                existing.data = spec.data
+            if spec.features:
+                existing.features = dict(spec.features)
+            existing.visible = spec.visible
+            if spec.kind == "image" and "mask_colour" in spec.options:
+                image_opts = _image_options_for_napari(spec.options)
+                if "colormap" in image_opts:
+                    existing.colormap = image_opts["colormap"]
+                if spec.contrast_limits is not None:
+                    existing.contrast_limits = spec.contrast_limits
+                for key in ("blending", "opacity", "rendering"):
+                    if key in image_opts:
+                        setattr(existing, key, image_opts[key])
+            _colour_layer(existing, spec.colour_by, spec.colour_kind,
+                          spec.colour_cycle, spec.contrast_limits)
+            _store_sweep_metadata(existing, spec)
+            _store_branch_hover_metadata(existing, spec)
+            return
 
     if existing is not None:
         viewer.layers.remove(existing)
@@ -3140,7 +3151,24 @@ def settings_widget(napari_viewer=None):
 
     for widget in rows.values():
         widget.changed.connect(apply_prerequisites)
+
+    #: User-facing values of ``do_skeletonize`` / ``do_graph_building`` before
+    #: Revert turns them off for resume. Restored by "Clear layers and state".
+    skip_toggle_snapshot: dict[str, bool] = {}
+    revert_setting_skips = False
+
+    def snapshot_skip_toggles(*_args) -> None:
+        if revert_setting_skips:
+            return
+        for name in SKIP_FOR_RESUME:
+            if name in rows:
+                skip_toggle_snapshot[name] = bool(rows[name].value)
+
     apply_prerequisites()
+    snapshot_skip_toggles()
+    for name in SKIP_FOR_RESUME:
+        if name in rows:
+            rows[name].changed.connect(snapshot_skip_toggles)
 
     bars = ProgressBars()
     run_state = RunState(bars=bars)
@@ -3240,7 +3268,7 @@ def settings_widget(napari_viewer=None):
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
     run_button = PushButton(text="Run pipeline")
-    clear_button = PushButton(text="Clear layers")
+    clear_button = PushButton(text="Clear layers and state")
 
     from haemolynx.gui.chrome_tooltips import (
         CLEAR_LAYERS_TOOLTIP,
@@ -3320,6 +3348,7 @@ def settings_widget(napari_viewer=None):
             kept = f", keeping {adopted.name or 'the open layer'} as the input"
 
         apply_prerequisites()
+        snapshot_skip_toggles()
         report.value = f"Loaded {path}{kept}"
         if boundaries is not None and any(
             name in viewer.layers for name in boundaries.layer_names
@@ -3425,13 +3454,15 @@ def settings_widget(napari_viewer=None):
             worker.finished.connect(lambda *_: refresh_revert_buttons())
 
     def on_clear() -> None:
-        """Take our layers out of the viewer, and stop the run drawing them.
+        """Take our layers out of the viewer, stop the run, and forget state.
 
         Clearing mid-run used to leave the run going against layers that were
         no longer there, and the panel with a permanently greyed-out Run
         button. Both halves of that are here: the run is asked to stop, and
         everything it left behind is put back -- so the next run can start as
-        soon as this one has.
+        soon as this one has. Cached resume/checkpoint pickles and Revert's
+        skip toggles are also reset so Revert → Clear → Run does not reload
+        an old graph.
         """
         if viewer is None:
             return
@@ -3447,9 +3478,38 @@ def settings_widget(napari_viewer=None):
         view.results = None
         if boundaries is not None:
             boundaries.state.results = None
+        discarded_artefacts = False
+        settings = _settings()
+        removed_paths = discard_cached_artefacts_for_settings(settings)
+        discarded_artefacts = bool(removed_paths)
+        restored_skips = False
+        disconnected: list[str] = []
+        for name in SKIP_FOR_RESUME:
+            if name in rows:
+                try:
+                    rows[name].changed.disconnect(snapshot_skip_toggles)
+                    disconnected.append(name)
+                except (TypeError, RuntimeError):
+                    pass
+        try:
+            for name in SKIP_FOR_RESUME:
+                if name in rows and name in skip_toggle_snapshot:
+                    if rows[name].value != skip_toggle_snapshot[name]:
+                        rows[name].value = skip_toggle_snapshot[name]
+                        restored_skips = True
+        finally:
+            for name in disconnected:
+                rows[name].changed.connect(snapshot_skip_toggles)
+        if restored_skips:
+            apply_prerequisites()
         checkpoints.clear()
         refresh_revert_buttons()
-        report.value = clear_message(removed, stopping)
+        report.value = clear_message(
+            removed,
+            stopping,
+            discarded_artefacts=discarded_artefacts,
+            restored_skips=restored_skips,
+        )
 
     def on_revert(tab_title: str) -> None:
         """Reload the previous tab's end-of-stage state for *tab_title*."""
@@ -3477,9 +3537,26 @@ def settings_widget(napari_viewer=None):
         _clear_our_layers(viewer)
         for group in plan.groups:
             _apply_layers(viewer, group)
-        for name in plan.skip_settings:
+        saved_skip_snapshot = dict(skip_toggle_snapshot)
+        disconnected: list[str] = []
+        for name in SKIP_FOR_RESUME:
             if name in rows:
-                rows[name].value = False
+                try:
+                    rows[name].changed.disconnect(snapshot_skip_toggles)
+                    disconnected.append(name)
+                except (TypeError, RuntimeError):
+                    pass
+        nonlocal revert_setting_skips
+        revert_setting_skips = True
+        try:
+            for name in plan.skip_settings:
+                if name in rows:
+                    rows[name].value = False
+        finally:
+            revert_setting_skips = False
+            skip_toggle_snapshot.update(saved_skip_snapshot)
+            for name in disconnected:
+                rows[name].changed.connect(snapshot_skip_toggles)
         apply_prerequisites()
 
         def select_restored_tab() -> None:
