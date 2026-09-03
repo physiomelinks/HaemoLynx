@@ -1,10 +1,8 @@
 """Network resistance from Laplacian."""
 import logging
 import math
-from pathlib import Path
 import numpy as np
 import networkx as nx
-import pyvista as pv
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +90,14 @@ def _reachable_through_conductances(
     return reached
 
 
+def _conductively_connected(
+    adjacency: np.ndarray, source_idx: np.ndarray, target_idx: np.ndarray
+) -> bool:
+    """Return True if any *target* is reachable from any *source* through conductive edges."""
+    reached = _reachable_through_conductances(adjacency, source_idx)
+    return bool(np.any(reached[np.asarray(target_idx, dtype=int)]))
+
+
 def _warn_components_pinned_to_one_pressure(
     adjacency: np.ndarray, bc_idx_to_p: dict
 ) -> None:
@@ -159,6 +165,11 @@ def solve_flow_from_conductance_matrix(
             f"{sorted(overlap)}"
         )
 
+    if not np.all(np.isfinite(conductance)):
+        raise ValueError(
+            "Conductance matrix contains non-finite values; cannot solve for flow."
+        )
+
     laplacian = calc_laplacian_from_conductance_matrix(conductance)
     pressure = np.zeros(n_nodes, dtype=float)
 
@@ -185,6 +196,17 @@ def solve_flow_from_conductance_matrix(
     # the rest has no driving pressure, so it keeps pressure 0 and its
     # edges carry zero flow.
     adjacency = conductance > 0
+    inlet_idx = np.array([node_to_idx[n] for n in inlet_nodes], dtype=int)
+    outlet_idx = np.array([node_to_idx[n] for n in outlet_nodes], dtype=int)
+    if float(inlet_p_bc) != float(outlet_p_bc) and not _conductively_connected(
+        adjacency, inlet_idx, outlet_idx
+    ):
+        raise ValueError(
+            "Inlet and outlet boundary nodes are not connected by "
+            "conductance-carrying edges; cannot solve for flow. After a "
+            "large-vessel cut or boundary reassignment, check that the inlet "
+            "and outlet land on the same conductive part of the network."
+        )
     reached = _reachable_through_conductances(adjacency, known_idx)
     unknown_mask = np.ones(n_nodes, dtype=bool)
     unknown_mask[known_idx] = False
@@ -215,11 +237,25 @@ def solve_flow_from_conductance_matrix(
         l_uk = laplacian[np.ix_(unknown_idx, known_idx)]
         p_k = pressure[known_idx]
         rhs = -l_uk @ p_k
+        if np.any(np.sum(np.abs(l_uu), axis=1) == 0):
+            raise ValueError(
+                "Reduced Laplacian has a zero row; the boundary nodes do not "
+                "constrain every conductive node that the solver would solve for."
+            )
         try:
             p_u = np.linalg.solve(l_uu, rhs)
-        except np.linalg.LinAlgError:
-            # Fallback for singular/ill-conditioned systems.
-            p_u = np.linalg.lstsq(l_uu, rhs, rcond=None)[0]
+        except np.linalg.LinAlgError as exc:
+            raise ValueError(
+                "Conductance network Laplacian is singular and cannot be solved. "
+                "Check that inlet and outlet boundary nodes lie on the same "
+                "connected, conductance-carrying part of the network and that "
+                "boundary pressures differ."
+            ) from exc
+        if not np.all(np.isfinite(p_u)):
+            raise ValueError(
+                "Flow solve produced non-finite nodal pressures; the conductance "
+                "network is likely ill-conditioned or disconnected."
+            )
         pressure[unknown_idx] = p_u
 
     return {"node_list": node_list, "pressure": pressure}

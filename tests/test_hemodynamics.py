@@ -323,8 +323,8 @@ def test_solve_warns_when_boundaries_pin_only_one_pressure(caplog):
     G.add_edge(3, 4)  # the outlet (3) hangs off a non-conductive edge
 
     conductance, node_list = build_conductance_matrix_from_graph(G)
-    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
-        flow = solve_flow_from_conductance_matrix(
+    with pytest.raises(ValueError, match="not connected by conductance-carrying edges"):
+        solve_flow_from_conductance_matrix(
             conductance,
             node_list,
             inlet_p_bc=1000.0,
@@ -332,12 +332,59 @@ def test_solve_warns_when_boundaries_pin_only_one_pressure(caplog):
             inlet_nodes=[0],
             outlet_nodes=[3],
         )
-    assert any("only" in rec.message and "zero" in rec.message for rec in caplog.records)
 
-    set_edge_flows(G, node_list, flow["pressure"])
-    for u, v, data in G.edges(data=True):
-        if "conductance" in data:
-            assert data["flow_signed"] == pytest.approx(0.0, abs=1e-30)
+
+def test_disconnected_inlet_outlet_raises():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=SI_CONDUCTANCE)
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    with pytest.raises(ValueError, match="not connected by conductance-carrying edges"):
+        solve_flow_from_conductance_matrix(
+            conductance,
+            node_list,
+            inlet_p_bc=1000.0,
+            outlet_p_bc=500.0,
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+        )
+
+
+def test_nonfinite_conductance_raises():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=float("nan"))
+    G.add_edge(1, 2, conductance=SI_CONDUCTANCE)
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    with pytest.raises(ValueError, match="non-finite values"):
+        solve_flow_from_conductance_matrix(
+            conductance,
+            node_list,
+            inlet_p_bc=1000.0,
+            outlet_p_bc=500.0,
+            inlet_nodes=[0],
+            outlet_nodes=[2],
+        )
+
+
+def test_huge_equivalent_resistance_still_solves():
+    """A long weakly conductive path is ill-conditioned but must not abort."""
+    n = 200
+    G = nx.MultiGraph()
+    for i in range(n - 1):
+        G.add_edge(i, i + 1, conductance=SI_CONDUCTANCE)
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    L = calc_laplacian_from_conductance_matrix(conductance)
+    resistance = calc_two_point_from_laplacian_matrix_nodeID(L, G, 10, n - 11)
+    assert resistance > 1e16
+    flow = solve_flow_from_conductance_matrix(
+        conductance,
+        node_list,
+        inlet_p_bc=1000.0,
+        outlet_p_bc=500.0,
+        inlet_nodes=[10],
+        outlet_nodes=[n - 11],
+    )
+    assert np.all(np.isfinite(flow["pressure"]))
 
 
 def test_set_edge_flows_writes_node_pressures():
