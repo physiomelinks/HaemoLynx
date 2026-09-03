@@ -42,7 +42,6 @@ from haemolynx.gui.results import (
     filter_points_by_z,
     filter_vectors_by_z,
     is_z_depth_filtered_layer,
-    z_filter_is_active,
 )
 from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.run_state import (
@@ -265,10 +264,14 @@ def _apply_z_filter(
     z_min: float,
     z_max: float,
     *,
-    slider_range: tuple[float, float] | None = None,
+    z_extent: float | None = None,
 ) -> None:
     """Redraw graph Vectors/Points layers filtered to a physical Z band."""
-    active = z_filter_is_active(z_min, z_max, slider_range=slider_range)
+    full_range = (
+        z_extent is not None
+        and z_min <= 0.0
+        and z_max >= z_extent - max(1e-6, abs(z_extent) * 1e-9)
+    )
     for layer in viewer.layers:
         if not _is_ours(layer):
             continue
@@ -283,7 +286,7 @@ def _apply_z_filter(
             cache = tag.get("z_filter_full")
         if cache is None:
             continue
-        if not active:
+        if full_range:
             data = cache["data"]
             features = cache["features"]
             segment_owner = cache.get("segment_owner")
@@ -300,9 +303,17 @@ def _apply_z_filter(
                 cache["data"], cache["features"], z_min, z_max
             )
             segment_owner = cache.get("segment_owner")
-        _set_z_filtered_layer_data(
-            viewer, layer, kind, data, features, segment_owner
-        )
+        layer.data = data
+        if features:
+            layer.features = features
+        if kind == "points":
+            _sync_points_per_point_properties(layer, len(np.asarray(data)))
+        if segment_owner is not None:
+            metadata = dict(getattr(layer, "metadata", {}) or {})
+            ours = dict(metadata.get(OURS) or {})
+            ours["segment_owner"] = np.asarray(segment_owner)
+            metadata[OURS] = ours
+            layer.metadata = metadata
 
 
 def _uniform_points_property(value: Any, n: int) -> Any:
@@ -352,142 +363,38 @@ def _sync_points_per_point_properties(
             setattr(layer, key, fixed)
 
 
-def _set_z_filtered_layer_data(
-    viewer,
-    layer,
-    kind: str,
-    data: Any,
-    features: Mapping[str, np.ndarray],
-    segment_owner: Any,
-) -> None:
-    """Write filtered geometry; recreate when shrinking avoids stale Vectors draw."""
-    old_count = len(np.asarray(getattr(layer, "data", ())))
-    new_count = len(np.asarray(data))
-    adder = getattr(viewer, f"add_{kind}", None)
-    if kind in {"vectors", "points"} and new_count < old_count and adder is not None:
-        name = layer.name
-        visible = layer.visible
-        scale = getattr(layer, "scale", None)
-        metadata = dict(getattr(layer, "metadata", {}) or {})
-        if segment_owner is not None:
-            ours = dict(metadata.get(OURS) or {})
-            ours["segment_owner"] = np.asarray(segment_owner)
-            metadata[OURS] = ours
-        add_kwargs: dict[str, Any] = {
-            "name": name,
-            "visible": visible,
-            "metadata": metadata,
-        }
-        if scale is not None:
-            add_kwargs["scale"] = scale
-        if features:
-            add_kwargs["features"] = dict(features)
-        if kind == "vectors":
-            for key in ("vector_style", "edge_width", "length", "out_of_slice_display"):
-                if hasattr(layer, key):
-                    add_kwargs[key] = getattr(layer, key)
-            colour_attr, colour = "edge_color", getattr(layer, "edge_color", None)
-        else:
-            for key in ("size", "shown", "symbol"):
-                if hasattr(layer, key):
-                    add_kwargs[key] = _uniform_points_property(
-                        getattr(layer, key), new_count
-                    )
-            if hasattr(layer, "out_of_slice_display"):
-                add_kwargs["out_of_slice_display"] = layer.out_of_slice_display
-            colour_attr, colour = "face_color", getattr(layer, "face_color", None)
-        viewer.layers.remove(layer)
-        new_layer = adder(data, **add_kwargs)
-        if colour is not None:
-            setattr(new_layer, colour_attr, colour)
-        return
-    layer.data = data
-    if features:
-        layer.features = features
-    if kind == "points":
-        _sync_points_per_point_properties(layer, new_count)
-    if segment_owner is not None:
-        metadata = dict(getattr(layer, "metadata", {}) or {})
-        ours = dict(metadata.get(OURS) or {})
-        ours["segment_owner"] = np.asarray(segment_owner)
-        metadata[OURS] = ours
-        layer.metadata = metadata
-
-
 def _sync_z_depth_slider(slider, results: ResultLayers | None) -> None:
-    """Set slider range from image stack and graph Z; hide until known."""
-    slider_range = (
-        results.z_depth_slider_range_um() if results is not None else None
-    )
-    if slider_range is None:
+    """Set slider range from the image stack; hide until skeletonise has run."""
+    extent = results.image_z_extent_um() if results is not None else None
+    if extent is None or extent <= 0.0:
         slider.setEnabled(False)
         slider.setVisible(False)
         return
-    lo, hi = slider_range
     step = float(results._voxel_size_zyx[0]) if results is not None else 1.0  # noqa: SLF001
     slider.setVisible(True)
     slider.setEnabled(True)
     slider.blockSignals(True)
     try:
-        slider.setRange(lo, hi)
+        slider.setRange(0.0, extent)
         if hasattr(slider, "setSingleStep"):
             slider.setSingleStep(max(step, 1e-6))
-        cur_lo, cur_hi = slider.value()
-        if cur_hi <= cur_lo or cur_hi > hi or cur_lo < lo:
-            cur_lo, cur_hi = lo, hi
+        lo, hi = slider.value()
+        if hi <= lo or hi > extent or lo < 0.0:
+            lo, hi = 0.0, extent
         else:
-            cur_lo = max(lo, min(cur_lo, hi))
-            cur_hi = max(cur_lo, min(cur_hi, hi))
-        slider.setValue((cur_lo, cur_hi))
+            lo = max(0.0, min(lo, extent))
+            hi = max(lo, min(hi, extent))
+        slider.setValue((lo, hi))
     finally:
         slider.blockSignals(False)
 
 
-def _park_z_depth_host(host, parking) -> None:
+def _park_layer_control_host(host, parking) -> None:
     """Take *host* out of napari's layer controls without destroying it."""
     try:
         host.setParent(parking)
     except RuntimeError:
         return
-
-
-def _reparent_z_depth_slider(
-    viewer,
-    *,
-    slider,
-    host,
-    parking,
-    controls_holder: dict[str, Any],
-    results: ResultLayers | None,
-) -> None:
-    """Mount the shared Z depth row at the top of the active layer's controls."""
-    _park_z_depth_host(host, parking)
-    controls_holder["controls"] = None
-
-    if viewer is None:
-        host.setVisible(False)
-        return
-
-    active = viewer.layers.selection.active
-    if active is None or not _is_ours(active):
-        host.setVisible(False)
-        return
-
-    controls = _layer_controls(viewer, active)
-    if controls is None:
-        host.setVisible(False)
-        return
-
-    layout = controls.layout()
-    if layout is None or not hasattr(layout, "insertRow"):
-        host.setVisible(False)
-        return
-
-    layout.insertRow(0, host)
-    controls_holder["controls"] = controls
-
-    _sync_z_depth_slider(slider, results)
-    host.setVisible(slider.isVisible())
 
 
 #: Flow-direction arrow scale matches ``flow_arrow_scale`` schema bounds.
@@ -545,21 +452,6 @@ def _sync_arrow_length_slider(slider, layer, host=None) -> None:
         slider.blockSignals(False)
 
 
-def _form_layout_row_for_widget(layout, widget) -> int:
-    from qtpy.QtWidgets import QFormLayout
-
-    for row in range(layout.rowCount()):
-        for role in (
-            QFormLayout.SpanningRole,
-            QFormLayout.LabelRole,
-            QFormLayout.FieldRole,
-        ):
-            item = layout.itemAt(row, role)
-            if item is not None and item.widget() is widget:
-                return row
-    return -1
-
-
 def _reparent_arrow_length_slider(
     viewer,
     *,
@@ -567,10 +459,9 @@ def _reparent_arrow_length_slider(
     host,
     parking,
     controls_holder: dict[str, Any],
-    z_depth_host=None,
 ) -> None:
-    """Mount the shared arrow-size row under the Z depth row when both apply."""
-    _park_z_depth_host(host, parking)
+    """Mount the shared arrow-size row at the top of flow-direction controls."""
+    _park_layer_control_host(host, parking)
     controls_holder["controls"] = None
 
     if viewer is None:
@@ -592,16 +483,7 @@ def _reparent_arrow_length_slider(
         host.setVisible(False)
         return
 
-    insert_at = 0
-    if (
-        z_depth_host is not None
-        and z_depth_host.isVisible()
-        and z_depth_host.parentWidget() is controls
-    ):
-        z_row = _form_layout_row_for_widget(layout, z_depth_host)
-        if z_row >= 0:
-            insert_at = z_row + 1
-    layout.insertRow(insert_at, host)
+    layout.insertRow(0, host)
     controls_holder["controls"] = controls
 
     _sync_arrow_length_slider(slider, active, host)
@@ -656,12 +538,6 @@ def _apply_layers(viewer, group, report=None) -> None:
             _colour_layer(layer, column)
     if group.ndisplay is not None:
         viewer.dims.ndisplay = group.ndisplay
-    reparent = getattr(viewer, "_haemolynx_reparent_z_depth_slider", None)
-    if reparent is not None:
-        try:
-            reparent()
-        except Exception:  # noqa: BLE001 - missing controls are survivable
-            logger.debug("could not reparent Z depth slider", exc_info=True)
     reparent_arrow = getattr(viewer, "_haemolynx_reparent_arrow_length_slider", None)
     if reparent_arrow is not None:
         try:
@@ -3784,14 +3660,6 @@ def settings_widget(napari_viewer=None):
     z_depth_slider.setObjectName("haemolynx_z_depth_slider")
     z_depth_slider.setEnabled(False)
     z_depth_slider.setVisible(False)
-    z_depth_host = QWidget()
-    z_depth_host.setObjectName("haemolynx_z_depth_host")
-    z_depth_form = QFormLayout(z_depth_host)
-    z_depth_form.addRow(z_depth_label, z_depth_slider)
-    z_depth_parking = QWidget()
-    z_depth_parking.setVisible(False)
-    z_depth_host.setParent(z_depth_parking)
-    z_depth_mount: dict[str, Any] = {"controls": None}
 
     arrow_length_label = QLabel("Arrow size")
     arrow_length_slider = QDoubleSlider(Qt.Orientation.Horizontal)
@@ -3811,18 +3679,6 @@ def settings_widget(napari_viewer=None):
 
     view = SimpleNamespace(results=None)
 
-    def reparent_z_depth_slider() -> None:
-        if viewer is None:
-            return
-        _reparent_z_depth_slider(
-            viewer,
-            slider=z_depth_slider,
-            host=z_depth_host,
-            parking=z_depth_parking,
-            controls_holder=z_depth_mount,
-            results=view.results,
-        )
-
     def reparent_arrow_length_slider() -> None:
         if viewer is None:
             return
@@ -3832,25 +3688,20 @@ def settings_widget(napari_viewer=None):
             host=arrow_length_host,
             parking=arrow_length_parking,
             controls_holder=arrow_length_mount,
-            z_depth_host=z_depth_host,
         )
 
-    def reparent_layer_control_sliders() -> None:
-        reparent_z_depth_slider()
-        reparent_arrow_length_slider()
-
     if viewer is not None:
-        viewer._haemolynx_reparent_z_depth_slider = reparent_layer_control_sliders
         viewer._haemolynx_reparent_arrow_length_slider = reparent_arrow_length_slider
         viewer.layers.selection.events.active.connect(
-            lambda *_args: reparent_layer_control_sliders()
+            lambda *_args: reparent_arrow_length_slider()
         )
 
     def _after_layers_applied() -> None:
         """Refresh Z depth slider range and apply the current filter."""
         if viewer is None:
             return
-        reparent_layer_control_sliders()
+        _sync_z_depth_slider(z_depth_slider, view.results)
+        reparent_arrow_length_slider()
         if view.results is None or not z_depth_slider.isEnabled():
             return
         z_lo, z_hi = z_depth_slider.value()
@@ -3858,7 +3709,7 @@ def settings_widget(napari_viewer=None):
             viewer,
             z_lo,
             z_hi,
-            slider_range=view.results.z_depth_slider_range_um(),
+            z_extent=view.results.image_z_extent_um(),
         )
 
     if viewer is not None:
@@ -3872,7 +3723,7 @@ def settings_widget(napari_viewer=None):
             viewer,
             z_lo,
             z_hi,
-            slider_range=view.results.z_depth_slider_range_um(),
+            z_extent=view.results.image_z_extent_um(),
         )
 
     def on_arrow_length_changed(value: float) -> None:
@@ -4068,7 +3919,7 @@ def settings_widget(napari_viewer=None):
             # user stopped it. So it is marked, not cleared.
             log_view.cancelled()
         view.results = None
-        reparent_layer_control_sliders()
+        reparent_arrow_length_slider()
         z_depth_slider.setEnabled(False)
         z_depth_slider.setVisible(False)
         arrow_length_slider.setEnabled(False)
@@ -4196,9 +4047,12 @@ def settings_widget(napari_viewer=None):
         labels=True,
     )
     view_controls.native.setObjectName("haemolynx_view_controls")
+    z_depth_row = QWidget()
+    z_depth_row.setObjectName("haemolynx_z_depth_row")
+    z_depth_form = QFormLayout(z_depth_row)
+    z_depth_form.addRow(z_depth_label, z_depth_slider)
 
     panel = QWidget()
-    z_depth_parking.setParent(panel)
     # What the panel would send to a run, and what a run would report back,
     # for a test that cannot press buttons and wait.
     panel._haemolynx_values = current_values
@@ -4219,9 +4073,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_show_steps = show_steps
     panel._haemolynx_view_controls = view_controls
     panel._haemolynx_z_depth_slider = z_depth_slider
-    panel._haemolynx_z_depth_host = z_depth_host
-    panel._haemolynx_z_depth_parking = z_depth_parking
-    panel._haemolynx_reparent_z_depth = reparent_layer_control_sliders
+    panel._haemolynx_z_depth_row = z_depth_row
     panel._haemolynx_arrow_length_slider = arrow_length_slider
     panel._haemolynx_arrow_length_host = arrow_length_host
     panel._haemolynx_reparent_arrow_length = reparent_arrow_length_slider
@@ -4248,6 +4100,7 @@ def settings_widget(napari_viewer=None):
     # the run chrome. Revert is intentionally outside the tab pages so it sits
     # in one place for every stage that can restore a predecessor.
     layout.addWidget(view_controls.native)
+    layout.addWidget(z_depth_row)
     layout.addWidget(revert_stack)
     layout.addWidget(buttons.native)
     layout.addWidget(bars.native)

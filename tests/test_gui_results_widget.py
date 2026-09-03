@@ -673,40 +673,32 @@ def test_the_panel_offers_the_view_controls(make_napari_viewer):
     assert not hasattr(panel, "_haemolynx_colour")
     assert not hasattr(panel, "_haemolynx_scales")
     assert hasattr(panel, "_haemolynx_z_depth_slider")
+    assert panel._haemolynx_z_depth_slider.isVisible() is False
+    z_depth_row = panel._haemolynx_z_depth_row
     view_controls = panel._haemolynx_view_controls.native
-    for widget in (panel._haemolynx_z_depth_slider, panel._haemolynx_z_depth_host):
-        ancestor = widget.parentWidget()
-        while ancestor is not None:
-            assert ancestor is not view_controls
-            ancestor = ancestor.parentWidget()
+    assert z_depth_row.parentWidget() is panel
+    layout = panel.layout()
+    assert layout.indexOf(view_controls) >= 0
+    assert layout.indexOf(z_depth_row) == layout.indexOf(view_controls) + 1
 
 
-def test_z_depth_slider_mounts_at_top_of_active_layer_controls(make_napari_viewer):
-    """One shared slider follows the active HaemoLynx layer's controls."""
-    from qtpy.QtWidgets import QFormLayout
-
+def test_z_depth_slider_is_not_mounted_in_layer_controls(make_napari_viewer):
     from haemolynx.gui._widget import _layer_controls, settings_widget
 
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
-    results = ResultLayers()
-    panel._haemolynx_view.results = results
     for group in a_run():
         _apply_layers(viewer, group)
 
-    host = panel._haemolynx_z_depth_host
-    viewer.layers.selection.active = viewer.layers[VESSELS]
-    panel._haemolynx_reparent_z_depth()
-    vessels_controls = _layer_controls(viewer, viewer.layers[VESSELS])
-    assert host.parentWidget() is vessels_controls
-    spanning = vessels_controls.layout().itemAt(0, QFormLayout.SpanningRole)
-    assert spanning is not None and spanning.widget() is host
-
-    viewer.layers.selection.active = viewer.layers[NODES]
-    panel._haemolynx_reparent_z_depth()
-    nodes_controls = _layer_controls(viewer, viewer.layers[NODES])
-    assert host.parentWidget() is nodes_controls
-    assert host.parentWidget() is not vessels_controls
+    slider = panel._haemolynx_z_depth_slider
+    for layer in viewer.layers:
+        controls = _layer_controls(viewer, layer)
+        if controls is None:
+            continue
+        ancestor = slider.parentWidget()
+        while ancestor is not None:
+            assert ancestor is not controls
+            ancestor = ancestor.parentWidget()
 
 
 def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
@@ -718,11 +710,11 @@ def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
     image_data = np.asarray(viewer.layers[IMAGE].data).copy()
     vessel_count = len(viewer.layers[VESSELS].data)
 
-    _apply_z_filter(viewer, 0.0, 5.0, slider_range=(0.0, full_z))
+    _apply_z_filter(viewer, 0.0, 5.0, z_extent=full_z)
     assert len(viewer.layers[VESSELS].data) < vessel_count
     assert np.array_equal(viewer.layers[IMAGE].data, image_data)
 
-    _apply_z_filter(viewer, 0.0, full_z, slider_range=(0.0, full_z))
+    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
     assert len(viewer.layers[VESSELS].data) == vessel_count
 
 
@@ -747,7 +739,7 @@ def test_z_depth_filter_keeps_all_edges_at_default_full_slider(viewer):
     for group in (skel, build):
         _apply_layers(viewer, group)
 
-    assert results.z_depth_slider_range_um() == pytest.approx((0.0, 30.0))
+    assert results.image_z_extent_um() == pytest.approx(8.0)
     assert len(viewer.layers[VESSELS].data) == expected
 
 
