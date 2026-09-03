@@ -24,6 +24,7 @@ from haemolynx.gui.form import (
     label_for,
     sections_for,
     values_from,
+    visible_diameter_settings,
     visible_input_segmentation_settings,
     visible_vessel_mask_settings,
 )
@@ -293,6 +294,116 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     assert "ilastik_classifier_path" in shown_on
     assert "ilastik_executable" in shown_on
     assert "use_ilastik_segmentation" in shown_on
+
+
+def test_diameter_rows_hide_when_parent_toggles_are_unmet():
+    """Diameters nests per-order tables and FWHM knobs under parent bools."""
+    assert "Diameters and pericytes" in HIDE_WHEN_UNMET_SECTIONS
+    assert "FWHM diameter measurement" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    all_const = fields["all_diams_const"]
+    assert not all_const.hide_when_unmet
+    assert all_const.is_visible({})
+
+    for name in (
+        "manual_capillary_diameter_by_branch_order",
+        "manual_arteriole_diameter_by_branch_order",
+        "manual_venule_diameter_by_branch_order",
+        "diameter_by_branch_order",
+    ):
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert SCHEMA[name].requires == ("!all_diams_const",), name
+        assert not child.is_visible({"all_diams_const": True}), name
+        assert child.is_visible({"all_diams_const": False}), name
+
+    for name in ("default_diameter", "max_branch_order"):
+        assert not fields[name].hide_when_unmet, name
+        assert fields[name].is_visible({"all_diams_const": True}), name
+        assert fields[name].is_visible({"all_diams_const": False}), name
+
+    fwhm = fields["use_fwhm_edge_diameters"]
+    assert fwhm.hide_when_unmet
+    assert not fwhm.is_visible({"run_haemodynamics": False})
+    assert fwhm.is_visible({"run_haemodynamics": True})
+
+    raw = fields["fwhm_raw_tiff_path"]
+    assert raw.hide_when_unmet
+    assert SCHEMA["fwhm_raw_tiff_path"].requires == ("use_fwhm_edge_diameters",)
+    assert not raw.is_visible(
+        {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+    )
+    assert raw.is_visible(
+        {"run_haemodynamics": True, "use_fwhm_edge_diameters": True}
+    )
+
+    nested = fields["fwhm_baseline_constraint_half_width_ptp"]
+    assert nested.hide_when_unmet
+    assert not nested.is_visible(
+        {
+            "run_haemodynamics": True,
+            "use_fwhm_edge_diameters": True,
+            "fwhm_constrain_fitted_baseline": False,
+        }
+    )
+    assert nested.is_visible(
+        {
+            "run_haemodynamics": True,
+            "use_fwhm_edge_diameters": True,
+            "fwhm_constrain_fitted_baseline": True,
+        }
+    )
+
+
+def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
+    const_on = {
+        "all_diams_const": True,
+        "run_haemodynamics": True,
+        "use_fwhm_edge_diameters": False,
+    }
+    shown = visible_diameter_settings(SCHEMA, const_on)
+    assert "all_diams_const" in shown
+    assert "default_diameter" in shown
+    assert "max_branch_order" in shown
+    assert "manual_capillary_diameter_by_branch_order" not in shown
+    assert "manual_arteriole_diameter_by_branch_order" not in shown
+    assert "manual_venule_diameter_by_branch_order" not in shown
+    assert "diameter_by_branch_order" not in shown
+    assert "use_fwhm_edge_diameters" in shown
+    assert "fwhm_raw_tiff_path" not in shown
+    assert "fwhm_sample_spacing_along_edge_um" not in shown
+
+    const_off = {**const_on, "all_diams_const": False}
+    shown = visible_diameter_settings(SCHEMA, const_off)
+    assert "manual_capillary_diameter_by_branch_order" in shown
+    assert "manual_arteriole_diameter_by_branch_order" in shown
+    assert "manual_venule_diameter_by_branch_order" in shown
+    assert "diameter_by_branch_order" in shown
+    assert "fwhm_raw_tiff_path" not in shown
+
+    fwhm_on = {
+        **const_on,
+        "use_fwhm_edge_diameters": True,
+        "fwhm_constrain_fitted_baseline": False,
+        "fwhm_clip_profile_to_single_vessel": False,
+        "fwhm_enforce_same_edge_locality": False,
+        "fwhm_cap_half_extent_by_nonlocal_same_edge_distance": False,
+        "fwhm_reject_samples_with_center_offset": False,
+        "fwhm_reject_samples_with_low_fit_r2": False,
+    }
+    shown = visible_diameter_settings(SCHEMA, fwhm_on)
+    assert "fwhm_raw_tiff_path" in shown
+    assert "fwhm_sample_spacing_along_edge_um" in shown
+    assert "fwhm_constrain_fitted_baseline" in shown
+    assert "fwhm_baseline_constraint_half_width_ptp" not in shown
+    assert "fwhm_clip_min_drop_fraction_of_center" not in shown
+    assert "fwhm_same_edge_arc_window_um" not in shown
+    assert "fwhm_min_fit_r2" not in shown
+
+    fwhm_on["fwhm_constrain_fitted_baseline"] = True
+    shown = visible_diameter_settings(SCHEMA, fwhm_on)
+    assert "fwhm_baseline_constraint_half_width_ptp" in shown
 
 
 def test_visible_vessel_mask_settings_nests_under_automated_and_parents():

@@ -238,7 +238,7 @@ boundary_assignment:
   arteriole_boundary_nodes: []
   # Hold the venule boundary node IDs chosen during the run; leave empty to let the pipeline fill it
   venule_boundary_nodes: []
-  # Fail rather than fall back when the hierarchical branch-order prerequisites are not met
+  # When small-arteriole/venule terminals were expected but are missing, raise; when they were never assigned, still label capillary B* orders from inlets and warn
   strict_branch_order_assignment: false
 
 # ------------------------------------------------------------------------
@@ -384,17 +384,17 @@ diameters_and_pericytes:
   max_branch_order: 51
   # Use this vessel diameter where no branch-order override applies  [um; range 0.0..]
   default_diameter: 4.0
-  # Override capillary diameters per branch-order label, e.g. B01  [um]
+  # Override capillary diameters per branch-order label, e.g. B01  [um; needs all_diams_const off]
   manual_capillary_diameter_by_branch_order:
     B01: 6.2
     B02: 4.0
     B03: 5.0
     B04: 5.0
-  # Override arteriole diameters per branch-order label, e.g. Art1  [um]
+  # Override arteriole diameters per branch-order label, e.g. Art1  [um; needs all_diams_const off]
   manual_arteriole_diameter_by_branch_order: {}
-  # Override venule diameters per branch-order label, e.g. Ven1  [um]
+  # Override venule diameters per branch-order label, e.g. Ven1  [um; needs all_diams_const off]
   manual_venule_diameter_by_branch_order: {}
-  # Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings  [um]
+  # Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings  [um; needs all_diams_const off]
   diameter_by_branch_order: null
   # Global focal constriction/dilation factor for every branch order (1.0 = no local change; <1 narrows, >1 widens at pericyte sites). constriction_by_branch_order replaces this for listed orders only — empty map means this global factor alone  [range 0.0..; needs run_haemodynamics]
   pericyte_constriction_factor: 1.0

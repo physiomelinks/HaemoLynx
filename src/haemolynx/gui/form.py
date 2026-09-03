@@ -67,8 +67,9 @@ class Field:
     advanced: bool
     #: Prerequisites from the schema, e.g. ``("use_ilastik_segmentation",)`` or
     #: ``("!use_ilastik_segmentation",)``. Most sections grey the row out until
-    #: they hold so a user can see why it is off. Input and Vessel masks rows
-    #: instead *hide* when unmet — see :meth:`is_visible`.
+    #: they hold so a user can see why it is off. Rows in
+    #: :data:`HIDE_WHEN_UNMET_SECTIONS` instead *hide* when unmet — see
+    #: :meth:`is_visible`.
     enabled_by: tuple[str, ...]
 
     #: The kind this row came from, needed to read its value back.
@@ -109,7 +110,7 @@ class Field:
     def hide_when_unmet(self) -> bool:
         """True when unmet prerequisites should hide this row, not grey it.
 
-        Input ilastik children and Vessel-mask options nest under parent
+        Input, Diameters/FWHM, and Vessel-mask options nest under parent
         toggles; showing every greyed child makes those tabs unreadable.
         Other sections still grey so the reason stays visible.
         """
@@ -167,6 +168,19 @@ def visible_input_segmentation_settings(
     stay; ``input_path`` vs main-ilastik children follow ``use_ilastik_segmentation``.
     """
     return _visible_settings_in_section(schema, values, "Input and segmentation")
+
+
+def visible_diameter_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Diameters-tab diameter + FWHM setting names that should appear for *values*.
+
+    Parent toggles (``all_diams_const``, ``use_fwhm_edge_diameters``, …) stay;
+    gated children follow their ``requires`` chains.
+    """
+    return _visible_settings_in_section(
+        schema, values, "Diameters and pericytes"
+    ) | _visible_settings_in_section(schema, values, "FWHM diameter measurement")
 
 
 def label_for(name: str, unit: str | None = None) -> str:

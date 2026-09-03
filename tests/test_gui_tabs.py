@@ -541,6 +541,41 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
     assert fields["ilastik_classifier_path"].is_visible(on)
 
 
+def test_diameter_fields_on_diameters_declare_hide_when_unmet():
+    """Gated Diameters / FWHM rows hide until their parent toggles hold."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    for field in tabs["5. Diameters"].fields:
+        if field.section not in {
+            "Diameters and pericytes",
+            "FWHM diameter measurement",
+        }:
+            continue
+        if not field.enabled_by:
+            assert not field.hide_when_unmet, field.name
+            assert field.is_visible({})
+            continue
+        assert field.hide_when_unmet, field.name
+        if field.name in {
+            "manual_capillary_diameter_by_branch_order",
+            "manual_arteriole_diameter_by_branch_order",
+            "manual_venule_diameter_by_branch_order",
+            "diameter_by_branch_order",
+        }:
+            assert SCHEMA[field.name].requires == ("!all_diams_const",), field.name
+            assert not field.is_visible({"all_diams_const": True}), field.name
+            assert field.is_visible({"all_diams_const": False}), field.name
+        elif field.name == "use_fwhm_edge_diameters":
+            assert not field.is_visible({"run_haemodynamics": False}), field.name
+            assert field.is_visible({"run_haemodynamics": True}), field.name
+        elif field.name.startswith("fwhm_"):
+            assert not field.is_visible(
+                {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+            ), field.name
+        elif "run_haemodynamics" in field.enabled_by:
+            assert not field.is_visible({"run_haemodynamics": False}), field.name
+            assert field.is_visible({"run_haemodynamics": True}), field.name
+
+
 def test_automated_assignment_documents_that_it_overrides_manual_methods():
     from haemolynx.gui.boundary_picking import AUTOMATED_OVERRIDES_MANUAL_NOTE
 
