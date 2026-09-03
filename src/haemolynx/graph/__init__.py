@@ -30,6 +30,7 @@ from .prune import (
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
 from .collapse import collapse_node_clusters
 from .branch_order import (
+    MissingSmallVesselAssignmentWarning,
     assign_branch_orders,
     assign_hierarchical_branch_orders,
     assign_vessel_branch_orders,
@@ -129,6 +130,7 @@ __all__ = [
     "assign_branch_orders",
     "assign_hierarchical_branch_orders",
     "assign_vessel_branch_orders",
+    "MissingSmallVesselAssignmentWarning",
     "BoundaryCoordinateWarning",
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",

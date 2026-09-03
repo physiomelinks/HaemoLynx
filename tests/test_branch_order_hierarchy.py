@@ -1,10 +1,12 @@
 """Integration-style test and demo visualization for hierarchical branch orders."""
 import re
 import sys
+import warnings
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
+import pytest
 
 # Ensure package import works when running this file directly.
 repo_root = Path(__file__).resolve().parents[1]
@@ -12,7 +14,11 @@ src_dir = repo_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from haemolynx.graph import assign_hierarchical_branch_orders
+from haemolynx.graph import (
+    MissingSmallVesselAssignmentWarning,
+    assign_hierarchical_branch_orders,
+    assign_vessel_branch_orders,
+)
 
 
 def _edge_id(u: int, v: int, key: int) -> tuple[int, int, int]:
@@ -300,6 +306,78 @@ def test_hierarchical_branch_order_pipeline_flow():
     assert G[8][11][0]["branch_order"].startswith("Ven")
     assert G[2][3][0]["branch_order"].startswith("B")
     assert G[2][4][0]["branch_order"].startswith("B")
+
+
+def _build_linear_capillary_chain() -> nx.MultiGraph:
+    """Four nodes in a line: inlet 0 → 1 → 2 → 3, for deterministic B01..B03."""
+    G = nx.MultiGraph()
+    for node, x in enumerate((0.0, 1.0, 2.0, 3.0)):
+        G.add_node(node, pos=np.asarray((x, 0.0, 0.0), dtype=float))
+    for u, v in ((0, 1), (1, 2), (2, 3)):
+        G.add_edge(u, v, length=1.0)
+    return G
+
+
+def test_strict_without_small_vessels_assigns_capillary_orders_and_warns():
+    G = _build_linear_capillary_chain()
+
+    with pytest.warns(
+        MissingSmallVesselAssignmentWarning,
+        match="small arterioles and venules were not assigned",
+    ):
+        summary = assign_vessel_branch_orders(
+            G,
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            strict_hierarchical=True,
+            expects_hierarchical=False,
+        )
+
+    assert summary["mode"] == "capillary"
+    assert G[0][1][0]["branch_order"] == "B01"
+    assert G[1][2][0]["branch_order"] == "B02"
+    assert G[2][3][0]["branch_order"] == "B03"
+
+
+def test_strict_with_small_vessel_terminals_keeps_hierarchical_path_without_warning():
+    G, input_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
+        _build_demo_graph()
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MissingSmallVesselAssignmentWarning)
+        summary = assign_vessel_branch_orders(
+            G,
+            inlet_nodes=input_nodes,
+            outlet_nodes=outlet_nodes,
+            arteriole_boundary_nodes=arteriole_boundary_nodes,
+            venule_boundary_nodes=venule_boundary_nodes,
+            strict_hierarchical=True,
+            expects_hierarchical=True,
+        )
+
+    assert summary["mode"] == "hierarchical"
+    assert G[0][1][0]["branch_order"] == "Art1"
+    assert G[1][2][0]["branch_order"] == "Art2"
+    assert G[2][3][0]["branch_order"] == "B01"
+    assert G[8][9][0]["branch_order"] == "Ven1"
+
+
+def test_strict_when_small_vessel_assignment_expected_but_missing_still_raises():
+    G = _build_linear_capillary_chain()
+
+    with pytest.raises(ValueError, match="hierarchical assignment prerequisites"):
+        assign_vessel_branch_orders(
+            G,
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            strict_hierarchical=True,
+            expects_hierarchical=True,
+        )
 
 
 if __name__ == "__main__":

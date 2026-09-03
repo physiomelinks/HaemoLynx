@@ -1288,9 +1288,15 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
             venule_boundary_nodes=settings["venule_boundary_nodes"],
             strict_hierarchical=settings["strict_branch_order_assignment"],
+            # Hierarchical Art*/Ven* labelling needs small-vessel terminals
+            # (auto masks or manual A/V coords/volumes). Large-vessel
+            # automation alone only fills inlets/outlets.
             expects_hierarchical=bool(
-                settings["automated_vessel_assignment"]
-                or settings["use_small_vessel_masks_for_boundary_assignment"]
+                settings["use_small_vessel_masks_for_boundary_assignment"]
+                or settings["arteriole_boundary_node_coordinates"]
+                or settings["arteriole_boundary_node_volumes"]
+                or settings["venule_boundary_node_coordinates"]
+                or settings["venule_boundary_node_volumes"]
             ),
             post_assign_callback=_vessel_types_after_branch_assign,
         )

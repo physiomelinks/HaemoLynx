@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable
 from typing import Any
@@ -13,6 +14,15 @@ from ._helpers import edge_id
 logger = logging.getLogger(__name__)
 
 PostAssignCallback = Callable[[nx.MultiGraph], None]
+
+
+class MissingSmallVesselAssignmentWarning(UserWarning):
+    """Strict branch-order mode ran without small arteriole/venule terminals.
+
+    Capillary ``B*`` orders are still assigned from the inlet nodes; Art*/Ven*
+    labelling is skipped because no small-vessel (or manual A/V) terminals
+    were provided.
+    """
 
 
 def _compute_node_distances(
@@ -207,9 +217,12 @@ def assign_vessel_branch_orders(
     outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes
         Optional node sets for hierarchical assignment.
     strict_hierarchical
-        Raise if hierarchical assignment was expected but prerequisites are missing.
+        When hierarchical prerequisites are missing: raise if small-vessel
+        (or manual A/V) assignment was expected, otherwise warn and fall back
+        to capillary ``B*`` orders.
     expects_hierarchical
-        Set when mask-based automation requires hierarchical assignment.
+        Set when small-vessel masks or manual arteriole/venule methods were
+        supposed to supply hierarchical terminals.
     post_assign_callback
         Optional ``callback(G)`` after orders are written (e.g. for plotting).
 
@@ -228,16 +241,25 @@ def assign_vessel_branch_orders(
     use_hierarchical = bool(
         arteriole_boundary_nodes and venule_boundary_nodes and outlet_nodes
     )
-    if strict_hierarchical and expects_hierarchical and not use_hierarchical:
-        raise ValueError(
-            "Strict branch-order assignment is enabled, but hierarchical "
-            "assignment prerequisites are missing. "
-            f"Need non-empty outlet_nodes, arteriole_boundary_nodes, and "
-            f"venule_boundary_nodes. Got counts: "
-            f"outlet_nodes={len(outlet_nodes)}, "
-            f"arteriole_boundary_nodes={len(arteriole_boundary_nodes)}, "
-            f"venule_boundary_nodes={len(venule_boundary_nodes)}. "
-            "Fix mask inputs/thresholds or disable strict_hierarchical."
+    if strict_hierarchical and not use_hierarchical:
+        if expects_hierarchical:
+            raise ValueError(
+                "Strict branch-order assignment is enabled, but hierarchical "
+                "assignment prerequisites are missing. "
+                f"Need non-empty outlet_nodes, arteriole_boundary_nodes, and "
+                f"venule_boundary_nodes. Got counts: "
+                f"outlet_nodes={len(outlet_nodes)}, "
+                f"arteriole_boundary_nodes={len(arteriole_boundary_nodes)}, "
+                f"venule_boundary_nodes={len(venule_boundary_nodes)}. "
+                "Fix mask inputs/thresholds or disable strict_hierarchical."
+            )
+        warnings.warn(
+            "Strict branch-order assignment is enabled, but small arterioles "
+            "and venules were not assigned (no arteriole/venule boundary "
+            "nodes). Assigning capillary branch orders (B01, B02, …) from "
+            "inlet nodes only.",
+            MissingSmallVesselAssignmentWarning,
+            stacklevel=2,
         )
 
     if use_hierarchical:

@@ -1280,7 +1280,11 @@ SCHEMA = Schema(
             name="strict_branch_order_assignment",
             kind="bool",
             default=False,
-            help="Fail rather than fall back when the hierarchical branch-order prerequisites are not met",
+            help=(
+                "When small-arteriole/venule terminals were expected but are "
+                "missing, raise; when they were never assigned, still label "
+                "capillary B* orders from inlets and warn"
+            ),
             section=_BOUNDARY_ASSIGNMENT,
         ),
         # ------------------------------------------------------------------
