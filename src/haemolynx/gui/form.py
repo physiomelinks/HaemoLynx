@@ -267,7 +267,13 @@ def visible_statistics_settings(
     """Export-tab Statistics setting names that should appear for *values*.
 
     Parent toggles (``statistics``, ``measurement_3d_to_cell_mask``) stay;
-    gated children follow their ``requires`` chains.
+    gated children follow their ``requires`` chains. Under
+    ``measurement_3d_to_cell_mask`` that means ``cell_mask_path``,
+    ``cell_mask_h5_dataset_name``, ``measurement_3d_vessel_mask_path``,
+    ``measurement_3d_vessel_mask_h5_dataset_name``,
+    ``measurement_3d_reference_image_path``, and
+    ``measurement_3d_reference_h5_dataset_name``; under ``statistics``,
+    ``statistics_mode``.
     """
     return _visible_settings_in_section(
         schema, values, "Statistics and measurements"
