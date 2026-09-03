@@ -181,12 +181,88 @@ SCHEMA = Schema(
             requires=("automated_vessel_assignment",),
         ),
         Setting(
+            name="large_arteriole_mask_path",
+            kind="path",
+            default=f"{_IMAGES}/large_arteriole_mask.tif",
+            help="Read this pre-segmented large arteriole mask",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_ilastik_large_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            name="large_venule_mask_path",
+            kind="path",
+            default=f"{_IMAGES}/large_venule_mask.tif",
+            help="Read this pre-segmented large venule mask",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!use_ilastik_large_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
             name="use_ilastik_large_vessel_segmentation",
             kind="bool",
             default=False,
             help="Produce the large-vessel masks with ilastik instead of reading pre-segmented files",
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="ilastik_unsegmented_arteriole_image_path",
+            kind="path",
+            default=f"{_IMAGES}/large_arteriole_mask.tif",
+            help="Read this raw image as the ilastik input for the large arteriole mask",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_unsegmented_venule_image_path",
+            kind="path",
+            default=f"{_IMAGES}/large_venule_mask.tif",
+            help="Read this raw image as the ilastik input for the large venule mask",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_arteriole_classifier_path",
+            kind="path",
+            default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
+            help="Use this trained ilastik project to segment arterioles",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            name="ilastik_venule_classifier_path",
+            kind="path",
+            default=f"{_CLASSIFIERS}/venule_classifier.ilp",
+            help="Use this trained ilastik project to segment venules",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_ilastik_large_vessel_segmentation",
+            ),
+            must_exist=True,
         ),
         Setting(
             name="large_vessel_mask_dilation_microns",
@@ -196,7 +272,7 @@ SCHEMA = Schema(
                 "One-shot load-time dilation of large-vessel masks (microns) applied "
                 "when the masks are loaded. Distinct from "
                 "large_vessel_assignment_max_dilation_microns, which runs a progressive "
-                "0, +5, â€¦ Âµm schedule only during terminal-node assignment"
+                "0, +5, … µm schedule only during terminal-node assignment"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,
@@ -209,7 +285,7 @@ SCHEMA = Schema(
             default=0.0,
             help=(
                 "Maximum dilation (microns) for progressive large-vessel terminal "
-                "assignment: assign at 0 Âµm, then in 5 Âµm steps up to this value, "
+                "assignment: assign at 0 µm, then in 5 µm steps up to this value, "
                 "locking each node at the first step it is claimed. Does not replace "
                 "large_vessel_mask_dilation_microns (load-time one-shot dilation)"
             ),
@@ -547,83 +623,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=("automated_vessel_assignment",),
         ),
-        Setting(
-            name="large_arteriole_mask_path",
-            kind="path",
-            default=f"{_IMAGES}/large_arteriole_mask.tif",
-            help="Read this pre-segmented large arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "!use_ilastik_large_vessel_segmentation",
-            ),
-            must_exist=True,
-        ),
-        Setting(
-            name="large_venule_mask_path",
-            kind="path",
-            default=f"{_IMAGES}/large_venule_mask.tif",
-            help="Read this pre-segmented large venule mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "!use_ilastik_large_vessel_segmentation",
-            ),
-            must_exist=True,
-        ),
-        Setting(
-            name="ilastik_unsegmented_arteriole_image_path",
-            kind="path",
-            default=f"{_IMAGES}/large_arteriole_mask.tif",
-            help="Read this raw image as the ilastik input for the large arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "use_ilastik_large_vessel_segmentation",
-            ),
-        ),
-        Setting(
-            name="ilastik_unsegmented_venule_image_path",
-            kind="path",
-            default=f"{_IMAGES}/large_venule_mask.tif",
-            help="Read this raw image as the ilastik input for the large venule mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "use_ilastik_large_vessel_segmentation",
-            ),
-        ),
-        Setting(
-            name="ilastik_arteriole_classifier_path",
-            kind="path",
-            default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
-            help="Use this trained ilastik project to segment arterioles",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "use_ilastik_large_vessel_segmentation",
-            ),
-            must_exist=True,
-        ),
-        Setting(
-            name="ilastik_venule_classifier_path",
-            kind="path",
-            default=f"{_CLASSIFIERS}/venule_classifier.ilp",
-            help="Use this trained ilastik project to segment venules",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "use_ilastik_large_vessel_segmentation",
-            ),
-            must_exist=True,
-        ),
-        Setting(
+                                                        Setting(
             name="use_small_vessel_masks_for_boundary_assignment",
             kind="bool",
             default=False,
@@ -632,12 +632,88 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
         ),
         Setting(
+            name="small_arteriole_mask_path",
+            kind="path",
+            default=f"{_IMAGES}/small_arteriole_mask.tif",
+            help="Read this pre-segmented small arteriole mask",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "!use_ilastik_small_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            name="small_venule_mask_path",
+            kind="path",
+            default=f"{_IMAGES}/small_venule_mask.tif",
+            help="Read this pre-segmented small venule mask",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "!use_ilastik_small_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
             name="use_ilastik_small_vessel_segmentation",
             kind="bool",
             default=False,
             help="Produce the small-vessel masks with ilastik instead of reading pre-segmented files",
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="ilastik_unsegmented_small_arteriole_image_path",
+            kind="path",
+            default=f"{_IMAGES}/small_arteriole_mask.tif",
+            help="Read this raw image as the ilastik input for the small arteriole mask",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_unsegmented_small_venule_image_path",
+            kind="path",
+            default=f"{_IMAGES}/small_venule_mask.tif",
+            help="Read this raw image as the ilastik input for the small venule mask",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+        ),
+        Setting(
+            name="ilastik_small_arteriole_classifier_path",
+            kind="path",
+            default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
+            help="Use this trained ilastik project to segment small arterioles",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+            must_exist=True,
+        ),
+        Setting(
+            name="ilastik_small_venule_classifier_path",
+            kind="path",
+            default=f"{_CLASSIFIERS}/venule_classifier.ilp",
+            help="Use this trained ilastik project to segment small venules",
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "use_ilastik_small_vessel_segmentation",
+            ),
+            must_exist=True,
         ),
         Setting(
             name="small_vessel_mask_min_overlap_fraction",
@@ -656,7 +732,7 @@ SCHEMA = Schema(
             default=0.0,
             help=(
                 "Maximum dilation (microns) for progressive small-vessel boundary "
-                "assignment: label at 0 Âµm, then in 5 Âµm steps up to this value, "
+                "assignment: label at 0 µm, then in 5 µm steps up to this value, "
                 "locking each edge at the first step it is classified. There is no "
                 "separate load-time small-vessel dilation setting"
             ),
@@ -730,7 +806,7 @@ SCHEMA = Schema(
             default=False,
             help=(
                 "Bridge gaps in small-vessel masks with type-locked cylinder links "
-                "(same-type smallâ†”small / smallâ†”large) before boundary labelling"
+                "(same-type small↔small / small↔large) before boundary labelling"
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
@@ -1004,83 +1080,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
         ),
-        Setting(
-            name="small_arteriole_mask_path",
-            kind="path",
-            default=f"{_IMAGES}/small_arteriole_mask.tif",
-            help="Read this pre-segmented small arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "!use_ilastik_small_vessel_segmentation",
-            ),
-            must_exist=True,
-        ),
-        Setting(
-            name="small_venule_mask_path",
-            kind="path",
-            default=f"{_IMAGES}/small_venule_mask.tif",
-            help="Read this pre-segmented small venule mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "!use_ilastik_small_vessel_segmentation",
-            ),
-            must_exist=True,
-        ),
-        Setting(
-            name="ilastik_unsegmented_small_arteriole_image_path",
-            kind="path",
-            default=f"{_IMAGES}/small_arteriole_mask.tif",
-            help="Read this raw image as the ilastik input for the small arteriole mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "use_ilastik_small_vessel_segmentation",
-            ),
-        ),
-        Setting(
-            name="ilastik_unsegmented_small_venule_image_path",
-            kind="path",
-            default=f"{_IMAGES}/small_venule_mask.tif",
-            help="Read this raw image as the ilastik input for the small venule mask",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "use_ilastik_small_vessel_segmentation",
-            ),
-        ),
-        Setting(
-            name="ilastik_small_arteriole_classifier_path",
-            kind="path",
-            default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
-            help="Use this trained ilastik project to segment small arterioles",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "use_ilastik_small_vessel_segmentation",
-            ),
-            must_exist=True,
-        ),
-        Setting(
-            name="ilastik_small_venule_classifier_path",
-            kind="path",
-            default=f"{_CLASSIFIERS}/venule_classifier.ilp",
-            help="Use this trained ilastik project to segment small venules",
-            section=_VESSEL_MASKS,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "use_ilastik_small_vessel_segmentation",
-            ),
-            must_exist=True,
-        ),
-        # ------------------------------------------------------------------
+                                                        # ------------------------------------------------------------------
         # Boundary assignment
         # ------------------------------------------------------------------
         Setting(
@@ -1981,7 +1981,7 @@ SCHEMA = Schema(
                 "Global focal constriction/dilation factor for every branch "
                 "order (1.0 = no local change; <1 narrows, >1 widens at "
                 "pericyte sites). constriction_by_branch_order replaces this "
-                "for listed orders only â€” empty map means this global factor "
+                "for listed orders only — empty map means this global factor "
                 "alone"
             ),
             section=_DIAMETERS_AND_PERICYTES,
@@ -2338,7 +2338,7 @@ SCHEMA = Schema(
         # options of a typed perturbation entry (see SETTINGS_FOR_TYPE), not
         # always-on tab settings. `run_pericyte_dilation_sweep` and
         # `sweep_output_dir` remain for the whole-brain example script, which
-        # still runs the combined dilationÃ—pressure sweep as a post-step.
+        # still runs the combined dilation×pressure sweep as a post-step.
         # A prerequisite can only be a bool, so whether a sweep runs is
         # decided by a perturbation's type (or by the brain script's flag).
         # ------------------------------------------------------------------
