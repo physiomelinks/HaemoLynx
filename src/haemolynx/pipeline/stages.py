@@ -153,6 +153,8 @@ class Solution:
     node_list: list[int] = field(default_factory=list)
     equivalent_resistance: float | None = None
     statistics: dict[str, Any] = field(default_factory=dict)
+    #: The network that was solved (same object ``solve`` wrote flows onto).
+    graph: nx.MultiGraph | None = None
 
 
 @dataclass
@@ -1292,6 +1294,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
 
 def assign_diameters(settings: dict, network: VesselNetwork, boundaries: BoundaryNodes, schema: Schema):
     """Assign branch orders, then the diameter each edge is modelled with.\n\n    Branch orders come first because they are the key into the diameter\n    table; per-edge FWHM measurements override that table when enabled."""
+    if boundaries.graph is not None:
+        network.graph = boundaries.graph
     G = network.graph
     image = network.volume.image
     output_dir = network.volume.output_dir
@@ -1466,6 +1470,7 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
     if settings["run_haemodynamics"]:
         solution.pressure = flow["pressure"]
         solution.node_list = list(node_list)
+    solution.graph = G
     return solution
 
 

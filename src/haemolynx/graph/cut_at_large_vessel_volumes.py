@@ -105,6 +105,38 @@ def _edge_sample_points(
     return np.vstack([pos_u.reshape(1, 3), pos_v.reshape(1, 3)])
 
 
+def _densify_polyline(
+    points: np.ndarray,
+    *,
+    max_step_um: float,
+) -> np.ndarray:
+    """Sample a polyline so consecutive points are at most ``max_step_um`` apart.
+
+    Sparse centreline voxels (or a two-endpoint fallback) can leave a straight
+    segment with both ends outside a mask while every interior mask voxel along
+    the chord is missed. Densifying before the inside/outside test catches those
+    crossings.
+    """
+    if max_step_um <= 0:
+        raise ValueError(f"max_step_um must be > 0, got {max_step_um}.")
+    arr = np.asarray(points, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] == 0:
+        return arr
+    if arr.shape[0] == 1:
+        return arr
+    dense: list[np.ndarray] = [arr[0]]
+    for start, end in zip(arr[:-1], arr[1:]):
+        segment = end - start
+        length = float(np.linalg.norm(segment))
+        if length <= max_step_um:
+            dense.append(end)
+            continue
+        steps = int(np.ceil(length / max_step_um))
+        for step in range(1, steps + 1):
+            dense.append(start + (step / steps) * segment)
+    return np.asarray(dense, dtype=float)
+
+
 def _exterior_runs(inside_flags: list[bool]) -> list[tuple[int, int]]:
     """Inclusive index ranges of contiguous exterior (not-inside) samples.
 
@@ -234,6 +266,8 @@ def cut_graph_at_large_vessel_volumes(
             continue
 
         points = _edge_sample_points(u, v, edge_data, node_pos)
+        sample_step = min(float(v) for v in voxel_size_zyx)
+        points = _densify_polyline(points, max_step_um=sample_step)
         inside_flags = [
             _point_inside_mask(point, mask, voxel_size_zyx=voxel_size_zyx)
             for point in points

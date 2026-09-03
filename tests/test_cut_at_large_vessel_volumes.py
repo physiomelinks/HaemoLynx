@@ -788,3 +788,248 @@ def test_preflight_warns_when_large_masks_on_and_cut_off():
         }
     )
     assert not clear.warnings
+
+
+def test_sparse_chord_through_mask_is_not_kept_whole():
+    """Two-endpoint edges must not skip a mask volume they pass through."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(5.0, 5.0, 0.0))
+    G.add_node(1, pos=(5.0, 5.0, 12.0))
+    G.add_edge(
+        0,
+        1,
+        voxels=[(5.0, 5.0, 0.0), (5.0, 5.0, 12.0)],
+        length=12.0,
+    )
+    mask = np.zeros((16, 16, 16), dtype=bool)
+    mask[4:7, 4:7, 5:12] = True
+    combined = mask
+
+    result = cut_graph_at_large_vessel_volumes(
+        G,
+        mask,
+        np.zeros_like(mask),
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+
+    for _u, _v, data in result.edges(data=True):
+        assert not _edge_has_interior_voxel(data, combined)
+
+
+def test_napari_solve_layers_use_solved_post_cut_graph():
+    """Solve must rebuild vessels from the solved graph, not a stale pre-cut copy."""
+    from haemolynx.pipeline.stages import HaemodynamicModel, Solution
+
+    pre_cut, arteriole, venule = _crossing_chain_graph()
+    post_cut = cut_graph_at_large_vessel_volumes(
+        pre_cut,
+        arteriole,
+        venule,
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+    cut_terminal = next(n for n in post_cut.nodes if n != 0)
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 2, 2), dtype=np.uint8),
+        skeleton=np.zeros((2, 2, 2), dtype=np.uint8),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=VOXEL_SIZE,
+        output_dir=Path("."),
+    )
+
+    results = ResultLayers()
+    results.stage_finished(
+        "build_network",
+        VesselNetwork(graph=pre_cut, volume=volume),
+    )
+    results.stage_finished(
+        "assign_boundaries",
+        BoundaryNodes(
+            inlet_nodes=[0],
+            outlet_nodes=[cut_terminal],
+            graph=post_cut,
+        ),
+    )
+    # Simulate a stale remembered graph (pre-cut) from an intermediate stage.
+    results._graph = pre_cut
+    results.stage_finished(
+        "assign_diameters",
+        HaemodynamicModel(graph=pre_cut),
+    )
+    solve_group = results.stage_finished(
+        "solve",
+        Solution(
+            graph=post_cut,
+            pressure=np.zeros(post_cut.number_of_nodes()),
+            node_list=list(post_cut.nodes),
+            equivalent_resistance=1.0,
+        ),
+    )
+
+    vessels = next(spec for spec in solve_group.layers if spec.name == VESSELS)
+    assert results._graph is post_cut
+    assert int(np.unique(vessels.features["edge_index"]).size) == post_cut.number_of_edges()
+    paths, _identity = edge_polylines(post_cut)
+    assert len(paths) == post_cut.number_of_edges()
+    combined = arteriole | venule
+    for path in paths:
+        assert not any(_point_inside(tuple(point), combined) for point in path)
+
+
+def test_from_solve_keeps_skeleton_hidden():
+    from haemolynx.pipeline.stages import Solution
+
+    results = ResultLayers()
+    skeleton = np.zeros((4, 4, 4), dtype=np.uint8)
+    results._skeleton = skeleton
+    graph = _crossing_chain_graph()[0]
+    results.stage_finished(
+        "build_network",
+        VesselNetwork(
+            graph=graph,
+            volume=SkeletonisedVolume(
+                image=np.zeros((4, 4, 4), dtype=np.uint8),
+                skeleton=skeleton,
+                voxel_size_xyz=(1.0, 1.0, 1.0),
+                voxel_size_zyx=VOXEL_SIZE,
+                output_dir=Path("."),
+            ),
+        ),
+    )
+    solve_group = results.stage_finished(
+        "solve",
+        Solution(
+            graph=graph,
+            pressure=np.zeros(graph.number_of_nodes()),
+            node_list=list(graph.nodes),
+            equivalent_resistance=1.0,
+        ),
+    )
+    from haemolynx.gui.results import SKELETON
+
+    skeleton_spec = next(spec for spec in solve_group.layers if spec.name == SKELETON)
+    assert skeleton_spec.visible is False
+
+
+def _post_cut_pipeline_graphs():
+    """Pre-cut chain, masks, and the cut graph assign_boundaries should keep."""
+    pre_cut, arteriole, venule = _crossing_chain_graph()
+    post_cut = cut_graph_at_large_vessel_volumes(
+        pre_cut,
+        arteriole,
+        venule,
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+    return pre_cut, post_cut, arteriole, venule
+
+
+def test_post_cut_graph_identity_through_diameters_and_solve(tmp_path, monkeypatch):
+    """One MultiGraph object from cut through diameters and solve."""
+    from haemolynx.pipeline.stages import HaemodynamicModel, assign_diameters, solve
+
+    pre_cut, post_cut, arteriole, venule = _post_cut_pipeline_graphs()
+    network = _network_for_cut(pre_cut, arteriole, venule, tmp_path)
+    settings = _assign_boundaries_settings(plot_dir=tmp_path)
+    settings["inlet_nodes"] = [0]
+    settings["outlet_nodes"] = [next(n for n in post_cut.nodes if n != 0)]
+    settings["run_haemodynamics"] = False
+
+    monkeypatch.setattr(
+        "haemolynx.graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
+        lambda graph_obj, **_kwargs: (
+            [n for n, d in graph_obj.degree() if d == 1][:1],
+            [n for n, d in graph_obj.degree() if d == 1][1:2],
+        ),
+    )
+    monkeypatch.setattr(
+        "haemolynx.visualization.visualize_3d_plotly_large_vessel_assignment",
+        lambda *args, **kwargs: None,
+    )
+
+    boundaries = assign_boundaries(settings, network)
+    assert boundaries.graph is network.graph
+    assert network.graph is not pre_cut
+    assert network.graph.number_of_edges() == post_cut.number_of_edges()
+
+    model = assign_diameters(settings, network, boundaries, default_schema())
+    assert model.graph is network.graph
+    assert model.graph is boundaries.graph
+
+    settings["run_haemodynamics"] = True
+    settings["do_equiv_resistance_calculation"] = False
+    model.graph = network.graph
+    solution = solve(settings, model, boundaries)
+    assert solution.graph is network.graph
+    assert set(solution.graph.edges()) == set(post_cut.edges())
+
+
+def test_napari_assign_diameters_does_not_restore_pre_cut_vessels():
+    """A stale pre-cut graph on the diameters output must not regrow interior edges."""
+    from haemolynx.pipeline.stages import HaemodynamicModel
+
+    pre_cut, post_cut, _arteriole, _venule = _post_cut_pipeline_graphs()
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 2, 2), dtype=np.uint8),
+        skeleton=np.zeros((2, 2, 2), dtype=np.uint8),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=VOXEL_SIZE,
+        output_dir=Path("."),
+    )
+    results = ResultLayers()
+    results.stage_finished("build_network", VesselNetwork(graph=pre_cut, volume=volume))
+    cut_terminal = next(n for n in post_cut.nodes if n != 0)
+    results.stage_finished(
+        "assign_boundaries",
+        BoundaryNodes(
+            inlet_nodes=[0],
+            outlet_nodes=[cut_terminal],
+            graph=post_cut,
+        ),
+    )
+    results._graph = pre_cut  # simulate a stale remembered graph
+
+    group = results.stage_finished(
+        "assign_diameters",
+        HaemodynamicModel(graph=pre_cut),
+    )
+    vessels = next(spec for spec in group.layers if spec.name == VESSELS)
+    assert results._graph is post_cut
+    assert int(np.unique(vessels.features["edge_index"]).size) == post_cut.number_of_edges()
+
+
+def test_napari_build_haemodynamic_model_does_not_restore_pre_cut_vessels():
+    """Recolour-only stage must not revert vessel geometry to a pre-cut copy."""
+    from haemolynx.pipeline.stages import HaemodynamicModel
+
+    pre_cut, post_cut, _arteriole, _venule = _post_cut_pipeline_graphs()
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 2, 2), dtype=np.uint8),
+        skeleton=np.zeros((2, 2, 2), dtype=np.uint8),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=VOXEL_SIZE,
+        output_dir=Path("."),
+    )
+    results = ResultLayers()
+    results.stage_finished("build_network", VesselNetwork(graph=pre_cut, volume=volume))
+    cut_terminal = next(n for n in post_cut.nodes if n != 0)
+    results.stage_finished(
+        "assign_boundaries",
+        BoundaryNodes(
+            inlet_nodes=[0],
+            outlet_nodes=[cut_terminal],
+            graph=post_cut,
+        ),
+    )
+    results.stage_finished(
+        "assign_diameters",
+        HaemodynamicModel(graph=post_cut),
+    )
+    results._graph = pre_cut
+
+    results.stage_finished(
+        "build_haemodynamic_model",
+        HaemodynamicModel(graph=pre_cut),
+    )
+    assert results._graph is post_cut

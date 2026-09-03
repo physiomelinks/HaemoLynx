@@ -520,6 +520,10 @@ class ResultLayers:
         #: Run settings (Export-tab toggles such as ``show_flow_direction_layer``).
         self.settings: dict[str, Any] = dict(settings or {})
         self._graph: Any | None = None
+        #: Live network after ``assign_boundaries`` (post large-vessel cut when
+        #: that ran). Later stages must alias this object; a pre-cut copy with
+        #: the same or larger edge count must not replace it in napari.
+        self._canonical_graph: Any | None = None
         self._voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
         self._geometry_shown = False
         self._emitted: list[str] = []
@@ -539,6 +543,7 @@ class ResultLayers:
         be looked up in the wrong network.
         """
         self._graph = None
+        self._canonical_graph = None
         self._voxel_size_zyx = (1.0, 1.0, 1.0)
         self._geometry_shown = False
         self._emitted = []
@@ -566,6 +571,24 @@ class ResultLayers:
         return available_edge_columns(self._graph)
 
     # -- builders ---------------------------------------------------------
+
+    def _sync_graph_from_output(self, output: Any) -> Any | None:
+        """Align ``_graph`` with a finished stage's live network when it carries one.
+
+        After ``assign_boundaries`` the canonical graph is the post-cut network.
+        A stale pre-cut copy handed back by a later stage must not regrow interior
+        vessels in napari — even when it happens to carry the same edge count.
+        """
+        graph = getattr(output, "graph", None)
+        if graph is None:
+            return self._graph
+        canonical = self._canonical_graph
+        if canonical is not None and graph is not canonical:
+            if graph.number_of_edges() >= canonical.number_of_edges():
+                self._graph = canonical
+                return self._graph
+        self._graph = graph
+        return self._graph
 
     def _vessel_layers(self, stage: str) -> tuple[LayerSpec, ...]:
         """The vessels and their hover-identity twin, from the graph we hold.
@@ -763,6 +786,7 @@ class ResultLayers:
         graph = getattr(output, "graph", None)
         if graph is not None:
             self._graph = graph
+            self._canonical_graph = graph
 
         roles = {
             "inlet": getattr(output, "inlet_nodes", ()) or (),
@@ -870,7 +894,7 @@ class ResultLayers:
         )
 
     def _from_assign_diameters(self, output: Any) -> StageLayers:
-        self._graph = getattr(output, "graph", self._graph)
+        self._sync_graph_from_output(output)
         layers = list(self._vessel_layers("assign_diameters"))
         points, features = pericyte_points(self._graph) if self._graph is not None else (
             np.empty((0, 3)), {}
@@ -905,8 +929,7 @@ class ResultLayers:
         the honest thing to show is the network repainted by it -- the one stage
         whose visible effect is a change of view rather than new data.
         """
-        graph = getattr(output, "graph", self._graph)
-        self._graph = graph
+        graph = self._sync_graph_from_output(output)
         with_resistance = 0
         total = 0
         if graph is not None:
@@ -922,7 +945,19 @@ class ResultLayers:
         )
 
     def _from_solve(self, output: Any) -> StageLayers:
+        self._sync_graph_from_output(output)
         layers = list(self._vessel_layers("solve"))
+        skeleton = getattr(self, "_skeleton", None)
+        if skeleton is not None:
+            layers.append(
+                LayerSpec(
+                    kind="labels",
+                    name=SKELETON,
+                    data=skeleton,
+                    scale=tuple(float(v) for v in self._voxel_size_zyx),
+                    visible=False,
+                )
+            )
         pressure = getattr(output, "pressure", None)
         node_list = list(getattr(output, "node_list", ()) or ())
         if self._graph is not None and pressure is not None and node_list:
@@ -1161,7 +1196,8 @@ class ResultLayers:
             ),
         )
 
-    def _from_export_results(self, _output: Any) -> StageLayers:
+    def _from_export_results(self, output: Any) -> StageLayers:
+        self._sync_graph_from_output(output)
         layers: tuple[LayerSpec, ...] = ()
         note = "Wrote the VTK, statistics and plots."
         if self._wants_flow_direction_layer():
