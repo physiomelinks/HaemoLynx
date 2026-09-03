@@ -23,7 +23,13 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from haemolynx.gui.form import Field, display_value_for
+from haemolynx.gui.form import (
+    Field,
+    SHARED_ILASTIK_SETTINGS,
+    SHARED_ILASTIK_SETTING_SET,
+    display_value_for,
+    shared_ilastik_host,
+)
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
 from haemolynx.gui.log_view import LogView, VERBOSE_LEVEL
 from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
@@ -2425,6 +2431,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
         shared = [n for n in shared_settings() if n in rows]
         rest = [n for n in names if n not in placed and n not in shared]
+        # Shared main/large/small ilastik knobs are reparented here when only
+        # vessel-mask ilastik is on (declared under Input; same widgets).
+        shared_ilastik_holder = Container(widgets=[], labels=True)
 
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -2433,6 +2442,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         if rest:
             layout.addWidget(Container(widgets=[rows[n] for n in rest],
                                        labels=True).native)
+        layout.addWidget(shared_ilastik_holder.native)
         layout.addWidget(Label(value=AUTOMATED_OVERRIDES_MANUAL_NOTE).native)
         layout.addWidget(widget.native)
         layout.addWidget(role_tabs)
@@ -2448,6 +2458,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         role_tabs.currentChanged.connect(on_tab_changed)
         state.tabs = role_tabs
         refresh_role_tabs()
+        state.shared_ilastik_holder = shared_ilastik_holder
         return body
 
     def on_role_changed(*_args) -> None:
@@ -2473,6 +2484,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         show=on_show, pick=on_pick, draw=on_draw, snap=on_snap, move=on_move,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
         layer_names=(BC_COORDINATES, *BC_REGION_NAMES),
+        shared_ilastik_holder=lambda: getattr(state, "shared_ilastik_holder", None),
     )
 
 
@@ -2857,12 +2869,29 @@ def settings_widget(napari_viewer=None):
     revert_buttons: dict[str, Any] = {}
     from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP
 
+    #: Input-tab container that can receive the shared ilastik rows when main
+    #: segmentation uses ilastik. Boundaries gets a holder of its own.
+    input_settings: Any = None
+    #: Which tab currently parents the shared ilastik rows.
+    shared_ilastik_placement: dict[str, str | None] = {"host": None}
+
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
         build = pages.get(tab.stage.call or "")
-        names = [field.name for field in tab.fields]
+        # Shared ilastik knobs start unparented; place_shared_ilastik hosts them.
+        names = [
+            field.name
+            for field in tab.fields
+            if field.name not in SHARED_ILASTIK_SETTING_SET
+        ]
         if build is not None:
             native = build(summary, names)
+        elif tab.stage.call == "segment":
+            input_settings = Container(
+                widgets=[summary, *(rows[name] for name in names)],
+                labels=True,
+            )
+            native = input_settings.native
         else:
             native = Container(
                 widgets=[summary, *(rows[name] for name in names)],
@@ -2985,16 +3014,64 @@ def settings_widget(napari_viewer=None):
             )
         report.value = note
 
+    def place_shared_ilastik() -> None:
+        """Host shared ilastik rows on Input or Boundaries (same widgets)."""
+        values = current_values()
+        host = shared_ilastik_host(values)
+        boundaries_holder = None
+        if boundaries is not None:
+            getter = getattr(boundaries, "shared_ilastik_holder", None)
+            boundaries_holder = getter() if callable(getter) else getter
+
+        if host == shared_ilastik_placement["host"]:
+            for name in SHARED_ILASTIK_SETTINGS:
+                if name in rows:
+                    rows[name].visible = host is not None
+            return
+
+        def _detach(container) -> None:
+            if container is None:
+                return
+            for name in SHARED_ILASTIK_SETTINGS:
+                row = rows.get(name)
+                if row is None:
+                    continue
+                try:
+                    container.remove(row)
+                except Exception:
+                    pass
+                row.visible = False
+
+        _detach(input_settings)
+        _detach(boundaries_holder)
+
+        if host == "input" and input_settings is not None:
+            for name in SHARED_ILASTIK_SETTINGS:
+                input_settings.append(rows[name])
+                rows[name].visible = True
+        elif host == "boundaries" and boundaries_holder is not None:
+            for name in SHARED_ILASTIK_SETTINGS:
+                boundaries_holder.append(rows[name])
+                rows[name].visible = True
+
+        shared_ilastik_placement["host"] = host
+
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""
         values = current_values()
+        place_shared_ilastik()
         for name, widget in rows.items():
+            if name in SHARED_ILASTIK_SETTING_SET:
+                # Visibility and parent belong to place_shared_ilastik.
+                widget.enabled = True
+                widget.tooltip = fields[name].help
+                continue
             field = fields[name]
             enabled = field.is_enabled(values)
             if field.hide_when_unmet:
-                # Input / Diameters / FWHM / Boundaries vessel options: only
-                # relevant nested knobs appear until their parent toggles hold.
-                widget.visible = enabled
+                # Input / Diameters / FWHM / Boundaries vessel / Graph
+                # centreline options: only relevant nested knobs appear.
+                widget.visible = field.is_visible(values)
                 widget.enabled = True
                 widget.tooltip = field.help
             else:

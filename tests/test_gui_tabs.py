@@ -529,16 +529,46 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
     assert fields["input_path"].hide_when_unmet
     assert fields["ilastik_unsegmented_image_path"].hide_when_unmet
     assert fields["ilastik_classifier_path"].hide_when_unmet
+    assert fields["ilastik_executable"].hide_when_unmet
+    assert fields["ilastik_output_dir"].hide_when_unmet
+    assert fields["ilastik_output_suffix"].hide_when_unmet
 
     off = {"use_ilastik_segmentation": False}
     assert fields["input_path"].is_visible(off)
     assert not fields["ilastik_unsegmented_image_path"].is_visible(off)
     assert not fields["ilastik_classifier_path"].is_visible(off)
+    assert not fields["ilastik_executable"].is_visible(off)
+    assert not fields["ilastik_output_dir"].is_visible(off)
+    assert not fields["ilastik_output_suffix"].is_visible(off)
 
     on = {"use_ilastik_segmentation": True}
     assert not fields["input_path"].is_visible(on)
     assert fields["ilastik_unsegmented_image_path"].is_visible(on)
     assert fields["ilastik_classifier_path"].is_visible(on)
+    assert fields["ilastik_executable"].is_visible(on)
+    assert fields["ilastik_output_dir"].is_visible(on)
+    assert fields["ilastik_output_suffix"].is_visible(on)
+
+
+def test_centreline_fields_on_graph_declare_hide_when_unmet():
+    """Centreline children on Graph hide until smooth_centrelines applies."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["3. Graph"].fields}
+
+    assert "smooth_centrelines" in fields
+    assert not fields["smooth_centrelines"].hide_when_unmet
+
+    off = {"do_graph_building": True, "smooth_centrelines": False}
+    on = {"do_graph_building": True, "smooth_centrelines": True}
+    for name in (
+        "centreline_smoothing_method",
+        "centreline_smoothing_iterations",
+        "centreline_max_deviation",
+    ):
+        assert fields[name].hide_when_unmet, name
+        assert SCHEMA[name].requires == ("smooth_centrelines",), name
+        assert not fields[name].is_visible(off), name
+        assert fields[name].is_visible(on), name
 
 
 def test_diameter_fields_on_diameters_declare_hide_when_unmet():

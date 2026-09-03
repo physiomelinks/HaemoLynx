@@ -1594,8 +1594,8 @@ SCHEMA = Schema(
         # Statistics
         # ------------------------------------------------------------------
         # The napari Export tab hides gated Statistics rows until their parent
-        # toggles apply: cell-mask paths under `measurement_3d_to_cell_mask`,
-        # and `statistics_mode` under `statistics`.
+        # toggles apply: cell-mask paths under ``measurement_3d_to_cell_mask``,
+        # and ``statistics_mode`` under ``statistics``.
         Setting(
             name="statistics",
             kind="bool",

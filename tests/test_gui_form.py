@@ -255,7 +255,7 @@ def test_vessel_mask_rows_hide_when_requires_unmet_rather_than_only_greying():
 
 
 def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
-    """Input swaps segmented-file vs main-ilastik children; shared knobs stay."""
+    """Input swaps segmented-file vs main-ilastik children; shared knobs host."""
     assert "Input and segmentation" in HIDE_WHEN_UNMET_SECTIONS
     fields = {f.name: f for f in fields_for(SCHEMA)}
 
@@ -274,11 +274,12 @@ def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
         assert not child.is_visible({"use_ilastik_segmentation": False}), name
         assert child.is_visible({"use_ilastik_segmentation": True}), name
 
-    # Shared across main / large / small ilastik — no requires, so always shown.
-    for name in ("ilastik_executable", "ilastik_output_dir", "ilastik_output_suffix"):
+    # Shared across main / large / small ilastik — Input only while main is on.
+    for name in SHARED_ILASTIK_SETTINGS:
         shared = fields[name]
-        assert not shared.hide_when_unmet, name
-        assert shared.is_visible({"use_ilastik_segmentation": False}), name
+        assert shared.hide_when_unmet, name
+        assert name in SHARED_ILASTIK_SETTING_SET
+        assert not shared.is_visible({"use_ilastik_segmentation": False}), name
         assert shared.is_visible({"use_ilastik_segmentation": True}), name
 
 
@@ -289,8 +290,9 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     assert "input_path" in shown_off
     assert "ilastik_unsegmented_image_path" not in shown_off
     assert "ilastik_classifier_path" not in shown_off
-    assert "ilastik_executable" in shown_off
-    assert "ilastik_output_dir" in shown_off
+    assert "ilastik_executable" not in shown_off
+    assert "ilastik_output_dir" not in shown_off
+    assert "ilastik_output_suffix" not in shown_off
     assert "voxel_size_override_xyz" in shown_off
 
     on = {"use_ilastik_segmentation": True}
@@ -299,7 +301,132 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     assert "ilastik_unsegmented_image_path" in shown_on
     assert "ilastik_classifier_path" in shown_on
     assert "ilastik_executable" in shown_on
+    assert "ilastik_output_dir" in shown_on
+    assert "ilastik_output_suffix" in shown_on
     assert "use_ilastik_segmentation" in shown_on
+
+
+def test_shared_ilastik_host_prefers_input_then_boundaries():
+    assert shared_ilastik_host({}) is None
+    assert shared_ilastik_host({"use_ilastik_segmentation": False}) is None
+    assert shared_ilastik_host({"use_ilastik_segmentation": True}) == "input"
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": False,
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        == "boundaries"
+    )
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": False,
+                "use_ilastik_small_vessel_segmentation": True,
+            }
+        )
+        == "boundaries"
+    )
+    # Main wins: still Input even when vessel ilastik is also on.
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": True,
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        == "input"
+    )
+
+
+def test_shared_ilastik_shows_on_boundaries_when_hidden_on_input():
+    """Vessel-mask ilastik hosts the same three settings on Boundaries."""
+    vessel_only = {
+        "use_ilastik_segmentation": False,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": True,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    assert shared_ilastik_host(vessel_only) == "boundaries"
+    assert "ilastik_executable" not in visible_input_segmentation_settings(
+        SCHEMA, vessel_only
+    )
+    shown = visible_vessel_mask_settings(SCHEMA, vessel_only)
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert name in shown, name
+
+    small_only = {
+        "use_ilastik_segmentation": False,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "use_ilastik_small_vessel_segmentation": True,
+    }
+    shown = visible_vessel_mask_settings(SCHEMA, small_only)
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert name in shown, name
+
+    # File-based large masks (no vessel ilastik): shared stay off Boundaries.
+    file_masks = {
+        **vessel_only,
+        "use_ilastik_large_vessel_segmentation": False,
+    }
+    assert shared_ilastik_host(file_masks) is None
+    shown = visible_vessel_mask_settings(SCHEMA, file_masks)
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert name not in shown, name
+
+    # Both main and vessel: Input hosts; Boundaries does not duplicate.
+    both = {
+        "use_ilastik_segmentation": True,
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": True,
+    }
+    assert shared_ilastik_host(both) == "input"
+    for name in SHARED_ILASTIK_SETTINGS:
+        assert name in visible_input_segmentation_settings(SCHEMA, both), name
+        assert name not in visible_vessel_mask_settings(SCHEMA, both), name
+
+
+def test_centreline_smoothing_children_hide_when_smooth_centrelines_is_off():
+    """Graph nests method / iterations / max deviation under smooth_centrelines."""
+    assert "smooth_centrelines" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["smooth_centrelines"]
+    # Parent still greys under do_graph_building; it does not nest-hide itself.
+    assert not parent.hide_when_unmet
+    assert SCHEMA["smooth_centrelines"].requires == ("do_graph_building",)
+    assert parent.is_visible({"do_graph_building": False, "smooth_centrelines": False})
+    assert parent.is_visible({"do_graph_building": True, "smooth_centrelines": False})
+
+    children = (
+        "centreline_smoothing_method",
+        "centreline_smoothing_iterations",
+        "centreline_max_deviation",
+    )
+    for name in children:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert SCHEMA[name].requires == ("smooth_centrelines",), name
+        assert not child.is_visible(
+            {"do_graph_building": True, "smooth_centrelines": False}
+        ), name
+        assert child.is_visible(
+            {"do_graph_building": True, "smooth_centrelines": True}
+        ), name
+
+    off = {"do_graph_building": True, "smooth_centrelines": False}
+    assert visible_graph_centreline_settings(SCHEMA, off) == {"smooth_centrelines"}
+
+    on = {"do_graph_building": True, "smooth_centrelines": True}
+    assert visible_graph_centreline_settings(SCHEMA, on) == {
+        "smooth_centrelines",
+        *children,
+    }
 
 
 def test_diameter_rows_hide_when_parent_toggles_are_unmet():
