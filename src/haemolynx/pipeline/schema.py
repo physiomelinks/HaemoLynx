@@ -69,8 +69,9 @@ SCHEMA = Schema(
         # ------------------------------------------------------------------
         # The napari Input tab hides gated rows (``input_path`` vs main-ilastik
         # children) until ``use_ilastik_segmentation`` applies. Shared
-        # executable / output knobs stay visible: vessel-mask ilastik on
-        # Boundaries also reads them, and schema ``requires`` cannot OR.
+        # executable / output knobs are declared once here; the form hosts them
+        # on Input when main ilastik is on, or on Boundaries when only
+        # large/small vessel ilastik is on (schema ``requires`` cannot OR).
         Setting(
             name="input_path",
             # No default: there is no image every run should read, and a
@@ -195,7 +196,7 @@ SCHEMA = Schema(
                 "One-shot load-time dilation of large-vessel masks (microns) applied "
                 "when the masks are loaded. Distinct from "
                 "large_vessel_assignment_max_dilation_microns, which runs a progressive "
-                "0, +5, … µm schedule only during terminal-node assignment"
+                "0, +5, â€¦ Âµm schedule only during terminal-node assignment"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,
@@ -208,7 +209,7 @@ SCHEMA = Schema(
             default=0.0,
             help=(
                 "Maximum dilation (microns) for progressive large-vessel terminal "
-                "assignment: assign at 0 µm, then in 5 µm steps up to this value, "
+                "assignment: assign at 0 Âµm, then in 5 Âµm steps up to this value, "
                 "locking each node at the first step it is claimed. Does not replace "
                 "large_vessel_mask_dilation_microns (load-time one-shot dilation)"
             ),
@@ -655,7 +656,7 @@ SCHEMA = Schema(
             default=0.0,
             help=(
                 "Maximum dilation (microns) for progressive small-vessel boundary "
-                "assignment: label at 0 µm, then in 5 µm steps up to this value, "
+                "assignment: label at 0 Âµm, then in 5 Âµm steps up to this value, "
                 "locking each edge at the first step it is classified. There is no "
                 "separate load-time small-vessel dilation setting"
             ),
@@ -729,7 +730,7 @@ SCHEMA = Schema(
             default=False,
             help=(
                 "Bridge gaps in small-vessel masks with type-locked cylinder links "
-                "(same-type small↔small / small↔large) before boundary labelling"
+                "(same-type smallâ†”small / smallâ†”large) before boundary labelling"
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
@@ -1592,6 +1593,9 @@ SCHEMA = Schema(
         # ------------------------------------------------------------------
         # Statistics
         # ------------------------------------------------------------------
+        # The napari Export tab hides gated Statistics rows until their parent
+        # toggles apply: cell-mask paths under `measurement_3d_to_cell_mask`,
+        # and `statistics_mode` under `statistics`.
         Setting(
             name="statistics",
             kind="bool",
@@ -1977,7 +1981,7 @@ SCHEMA = Schema(
                 "Global focal constriction/dilation factor for every branch "
                 "order (1.0 = no local change; <1 narrows, >1 widens at "
                 "pericyte sites). constriction_by_branch_order replaces this "
-                "for listed orders only — empty map means this global factor "
+                "for listed orders only â€” empty map means this global factor "
                 "alone"
             ),
             section=_DIAMETERS_AND_PERICYTES,
@@ -2334,7 +2338,7 @@ SCHEMA = Schema(
         # options of a typed perturbation entry (see SETTINGS_FOR_TYPE), not
         # always-on tab settings. `run_pericyte_dilation_sweep` and
         # `sweep_output_dir` remain for the whole-brain example script, which
-        # still runs the combined dilation×pressure sweep as a post-step.
+        # still runs the combined dilationÃ—pressure sweep as a post-step.
         # A prerequisite can only be a bool, so whether a sweep runs is
         # decided by a perturbation's type (or by the brain script's flag).
         # ------------------------------------------------------------------

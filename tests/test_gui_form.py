@@ -15,17 +15,23 @@ from pathlib import Path
 from haemolynx.gui.form import (
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
+    HIDE_WHEN_UNMET_PARENTS,
     HIDE_WHEN_UNMET_SECTIONS,
     OPTIONS_BY_WIDGET,
+    SHARED_ILASTIK_SETTINGS,
+    SHARED_ILASTIK_SETTING_SET,
     WIDGET_TYPES,
     Field,
     field_for,
     fields_for,
     label_for,
     sections_for,
+    shared_ilastik_host,
     values_from,
     visible_diameter_settings,
+    visible_graph_centreline_settings,
     visible_input_segmentation_settings,
+    visible_statistics_settings,
     visible_vessel_mask_settings,
 )
 from haemolynx.parsers import Schema, Setting
@@ -404,6 +410,73 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     fwhm_on["fwhm_constrain_fitted_baseline"] = True
     shown = visible_diameter_settings(SCHEMA, fwhm_on)
     assert "fwhm_baseline_constraint_half_width_ptp" in shown
+
+
+_MEASUREMENT_3D_CHILDREN = (
+    "cell_mask_path",
+    "cell_mask_h5_dataset_name",
+    "measurement_3d_vessel_mask_path",
+    "measurement_3d_vessel_mask_h5_dataset_name",
+    "measurement_3d_reference_image_path",
+    "measurement_3d_reference_h5_dataset_name",
+)
+
+
+def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
+    """Export nests cell-mask paths under measurement_3d_to_cell_mask."""
+    assert "Statistics and measurements" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["measurement_3d_to_cell_mask"]
+    assert not parent.hide_when_unmet
+    assert parent.is_visible({})
+    assert parent.section == "Statistics and measurements"
+
+    for name in _MEASUREMENT_3D_CHILDREN:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert child.section == "Statistics and measurements", name
+        assert SCHEMA[name].requires == ("measurement_3d_to_cell_mask",), name
+        assert not child.is_visible({"measurement_3d_to_cell_mask": False}), name
+        assert child.is_visible({"measurement_3d_to_cell_mask": True}), name
+
+    # statistics_mode nests under statistics the same way (same section).
+    mode = fields["statistics_mode"]
+    assert mode.hide_when_unmet
+    assert SCHEMA["statistics_mode"].requires == ("statistics",)
+    assert not mode.is_visible({"statistics": False})
+    assert mode.is_visible({"statistics": True})
+
+    # Ungated parents stay visible either way.
+    assert not fields["statistics"].hide_when_unmet
+    assert fields["statistics"].is_visible({"statistics": False})
+    assert fields["statistics"].is_visible({"statistics": True})
+
+
+def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
+    off = {
+        "statistics": False,
+        "measurement_3d_to_cell_mask": False,
+    }
+    shown = visible_statistics_settings(SCHEMA, off)
+    assert shown == {"statistics", "measurement_3d_to_cell_mask"}
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert name not in shown, name
+    assert "statistics_mode" not in shown
+
+    on = {**off, "measurement_3d_to_cell_mask": True}
+    shown = visible_statistics_settings(SCHEMA, on)
+    assert "measurement_3d_to_cell_mask" in shown
+    assert "statistics" in shown
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert name in shown, name
+    assert "statistics_mode" not in shown
+
+    stats_on = {**off, "statistics": True}
+    shown = visible_statistics_settings(SCHEMA, stats_on)
+    assert shown == {"statistics", "measurement_3d_to_cell_mask", "statistics_mode"}
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert name not in shown, name
 
 
 def test_visible_vessel_mask_settings_nests_under_automated_and_parents():

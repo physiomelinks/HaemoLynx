@@ -44,13 +44,46 @@ DEFAULT_FLOAT_RANGE = (-1e12, 1e12)
 #: Sections whose gated rows *disappear* until their ``requires`` hold, rather
 #: than staying visible and greyed. Input swaps segmented-file vs ilastik
 #: children; Vessel masks nests under ``automated_vessel_assignment``;
-#: Diameters nests constant vs per-order tables and FWHM under its parents.
+#: Diameters nests constant vs per-order tables and FWHM under its parents;
+#: Statistics nests cell-mask / ``statistics_mode`` under their parent bools.
 HIDE_WHEN_UNMET_SECTIONS = frozenset({
     "Input and segmentation",
     "Vessel masks",
     "Diameters and pericytes",
     "FWHM diameter measurement",
+    "Statistics and measurements",
 })
+
+#: Shared across main / large / small ilastik. Declared once under Input;
+#: schema ``requires`` cannot OR, so the form hosts them on Input or
+#: Boundaries (same setting names / widgets) via :func:`shared_ilastik_host`.
+SHARED_ILASTIK_SETTINGS: tuple[str, ...] = (
+    "ilastik_executable",
+    "ilastik_output_dir",
+    "ilastik_output_suffix",
+)
+SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
+
+#: Parents whose children hide when unmet even outside
+#: :data:`HIDE_WHEN_UNMET_SECTIONS` (Graph centreline knobs live under
+#: ``Pipeline stages``, which still greys other gated rows).
+HIDE_WHEN_UNMET_PARENTS = frozenset({"smooth_centrelines"})
+
+
+def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
+    """Where the shared ilastik knobs should appear, or ``None`` if nowhere.
+
+    Prefer Input when main-image ilastik is on. When only vessel-mask ilastik
+    is on, host them on Boundaries so they are not stranded while Input hides
+    them. One schema value each — the panel reparents the same rows.
+    """
+    if values.get("use_ilastik_segmentation"):
+        return "input"
+    if values.get("use_ilastik_large_vessel_segmentation") or values.get(
+        "use_ilastik_small_vessel_segmentation"
+    ):
+        return "boundaries"
+    return None
 
 
 @dataclass(frozen=True)
@@ -110,14 +143,30 @@ class Field:
     def hide_when_unmet(self) -> bool:
         """True when unmet prerequisites should hide this row, not grey it.
 
-        Input, Diameters/FWHM, and Vessel-mask options nest under parent
-        toggles; showing every greyed child makes those tabs unreadable.
-        Other sections still grey so the reason stays visible.
+        Input, Diameters/FWHM, Vessel-mask, and Statistics options nest under
+        parent toggles; showing every greyed child makes those tabs unreadable.
+        Shared ilastik knobs and centreline children also hide (hosted or
+        parent-gated). Other sections still grey so the reason stays visible.
         """
-        return self.section in HIDE_WHEN_UNMET_SECTIONS and bool(self.enabled_by)
+        if self.name in SHARED_ILASTIK_SETTING_SET:
+            return True
+        if not self.enabled_by:
+            return False
+        if self.section in HIDE_WHEN_UNMET_SECTIONS:
+            return True
+        return any(
+            (rule[1:] if rule.startswith("!") else rule) in HIDE_WHEN_UNMET_PARENTS
+            for rule in self.enabled_by
+        )
 
     def is_visible(self, values: Mapping[str, Any]) -> bool:
-        """Whether this row should appear given the other values."""
+        """Whether this row should appear given the other values.
+
+        Shared ilastik rows use Input-tab visibility here (hosted on Input).
+        Boundaries hosting is layered on by :func:`visible_vessel_mask_settings`.
+        """
+        if self.name in SHARED_ILASTIK_SETTING_SET:
+            return shared_ilastik_host(values) == "input"
         if self.hide_when_unmet:
             return self.is_enabled(values)
         return True
@@ -154,9 +203,14 @@ def visible_vessel_mask_settings(
     """Vessel-mask setting names that should appear for *values*.
 
     The root ``automated_vessel_assignment`` toggle is always included; every
-    other Vessel masks row follows its ``requires`` chain.
+    other Vessel masks row follows its ``requires`` chain. Shared ilastik
+    executable/output knobs join in when :func:`shared_ilastik_host` is
+    ``"boundaries"`` (same setting names as on Input).
     """
-    return _visible_settings_in_section(schema, values, "Vessel masks")
+    shown = _visible_settings_in_section(schema, values, "Vessel masks")
+    if shared_ilastik_host(values) == "boundaries":
+        shown.update(SHARED_ILASTIK_SETTING_SET)
+    return shown
 
 
 def visible_input_segmentation_settings(
@@ -164,10 +218,34 @@ def visible_input_segmentation_settings(
 ) -> set[str]:
     """Input-tab setting names that should appear for *values*.
 
-    Ungated rows (toggle, shared ilastik executable/output, voxel metadata)
-    stay; ``input_path`` vs main-ilastik children follow ``use_ilastik_segmentation``.
+    Ungated rows (toggle, voxel metadata) stay; ``input_path`` vs main-ilastik
+    children follow ``use_ilastik_segmentation``. Shared executable/output knobs
+    appear only while hosted on Input (see :func:`shared_ilastik_host`).
     """
     return _visible_settings_in_section(schema, values, "Input and segmentation")
+
+
+def visible_graph_centreline_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Graph-tab centreline setting names that should appear for *values*.
+
+    ``smooth_centrelines`` stays whenever it is shown; its method / iterations /
+    max-deviation children hide until smoothing is on.
+    """
+    names = (
+        "smooth_centrelines",
+        "centreline_smoothing_method",
+        "centreline_smoothing_iterations",
+        "centreline_max_deviation",
+    )
+    shown: set[str] = set()
+    for name in names:
+        setting = schema[name]
+        field = field_for(setting, values.get(name))
+        if field.is_visible(values):
+            shown.add(name)
+    return shown
 
 
 def visible_diameter_settings(
@@ -181,6 +259,19 @@ def visible_diameter_settings(
     return _visible_settings_in_section(
         schema, values, "Diameters and pericytes"
     ) | _visible_settings_in_section(schema, values, "FWHM diameter measurement")
+
+
+def visible_statistics_settings(
+    schema: Schema, values: Mapping[str, Any]
+) -> set[str]:
+    """Export-tab Statistics setting names that should appear for *values*.
+
+    Parent toggles (``statistics``, ``measurement_3d_to_cell_mask``) stay;
+    gated children follow their ``requires`` chains.
+    """
+    return _visible_settings_in_section(
+        schema, values, "Statistics and measurements"
+    )
 
 
 def label_for(name: str, unit: str | None = None) -> str:

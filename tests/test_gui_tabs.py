@@ -576,6 +576,44 @@ def test_diameter_fields_on_diameters_declare_hide_when_unmet():
             assert field.is_visible({"run_haemodynamics": True}), field.name
 
 
+_MEASUREMENT_3D_CHILDREN = (
+    "cell_mask_path",
+    "cell_mask_h5_dataset_name",
+    "measurement_3d_vessel_mask_path",
+    "measurement_3d_vessel_mask_h5_dataset_name",
+    "measurement_3d_reference_image_path",
+    "measurement_3d_reference_h5_dataset_name",
+)
+
+
+def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
+    """Gated Statistics rows on Export hide until their parent toggles hold."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {
+        field.name: field
+        for field in tabs["8. Export"].fields
+        if field.section == "Statistics and measurements"
+    }
+
+    assert not fields["measurement_3d_to_cell_mask"].hide_when_unmet
+    assert fields["measurement_3d_to_cell_mask"].is_visible({})
+    assert not fields["statistics"].hide_when_unmet
+
+    off = {"measurement_3d_to_cell_mask": False, "statistics": False}
+    on = {"measurement_3d_to_cell_mask": True, "statistics": False}
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert fields[name].hide_when_unmet, name
+        assert SCHEMA[name].requires == ("measurement_3d_to_cell_mask",), name
+        assert not fields[name].is_visible(off), name
+        assert fields[name].is_visible(on), name
+
+    assert fields["statistics_mode"].hide_when_unmet
+    assert not fields["statistics_mode"].is_visible(off)
+    assert fields["statistics_mode"].is_visible(
+        {"measurement_3d_to_cell_mask": False, "statistics": True}
+    )
+
+
 def test_automated_assignment_documents_that_it_overrides_manual_methods():
     from haemolynx.gui.boundary_picking import AUTOMATED_OVERRIDES_MANUAL_NOTE
 
