@@ -6,25 +6,25 @@
 # ------------------------------------------------------------------------
 input_and_segmentation:
   # Read this already-segmented image as the pipeline input  [needs use_ilastik_segmentation off; must exist]
-  input_path: "examples/images/Nerve_capillaries.tif"
+  input_path: examples/images/Nerve_capillaries.tif
   # Segment the main input image with ilastik instead of reading a segmented file
   use_ilastik_segmentation: false
   # Read this raw image as the ilastik input for main-image segmentation  [needs use_ilastik_segmentation; must exist]
-  ilastik_unsegmented_image_path: "images/Nerve_capillaries.tif"
+  ilastik_unsegmented_image_path: images/Nerve_capillaries.tif
   # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation; must exist]
-  ilastik_classifier_path: "classifiers/nerve_classifier.ilp"
+  ilastik_classifier_path: classifiers/nerve_classifier.ilp
   # Run this ilastik executable name or path in headless mode
-  ilastik_executable: "ilastik.exe"
+  ilastik_executable: ilastik.exe
   # Write ilastik-generated segmentations into this directory
-  ilastik_output_dir: "examples/outputs/segmentations"
+  ilastik_output_dir: examples/outputs/segmentations
   # Give ilastik segmentation outputs this file suffix
-  ilastik_output_suffix: ".tif"
+  ilastik_output_suffix: .tif
   # Override the voxel size with these (x, y, z) values instead of reading image metadata  [um]
   voxel_size_override_xyz: null
   # Choose how the voxel size is resolved from metadata and the manual override  [one of: auto, override, metadata_only]
-  voxel_size_policy: "auto"
+  voxel_size_policy: auto
   # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
-  image_axis_order: "zyx"
+  image_axis_order: zyx
 
 # ------------------------------------------------------------------------
 # Vessel masks
@@ -78,20 +78,26 @@ vessel_masks:
   write_fast_mode_preassignment_large_vessel_debug_3d_html: false
   # Block-max downsample stride for large/small vessel volume traces in the automated-assignment Plotly HTML view  [range 1..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_3d_volume_downsample_stride: 1
+  # Before automated terminal assignment, cut the graph at large arteriole/venule mask boundaries: remove edges inside the volume and split crossing edges so new degree-1 terminals sit on the exterior side of the cut  [needs use_large_vessel_masks and automated_vessel_assignment]
+  cut_network_at_large_vessel_volumes: false
+  # After cutting at large-vessel volumes, remove connected components that remain outside the volume when their total edge count is below orphaned_branch_max_edge_count  [needs use_large_vessel_masks and automated_vessel_assignment and cut_network_at_large_vessel_volumes]
+  remove_orphaned_branches_outside_large_vessel_volumes: false
+  # Edge-count threshold for orphan cleanup after large-vessel volume cuts: drop a remaining exterior component when edge_count < this value  [range 1..; needs use_large_vessel_masks and automated_vessel_assignment and cut_network_at_large_vessel_volumes and remove_orphaned_branches_outside_large_vessel_volumes]
+  orphaned_branch_max_edge_count: 3
   # After final I/O assignment, drop graph components that lack both an inlet and an outlet node  [needs automated_vessel_assignment]
   remove_disconnected_io_components_after_final_assignment: false
   # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks; must exist]
-  large_arteriole_mask_path: "images/large_arteriole_mask.tif"
+  large_arteriole_mask_path: images/large_arteriole_mask.tif
   # Read this pre-segmented large venule mask  [needs use_large_vessel_masks; must exist]
-  large_venule_mask_path: "images/large_venule_mask.tif"
+  large_venule_mask_path: images/large_venule_mask.tif
   # Read this raw image as the ilastik input for the large arteriole mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
-  ilastik_unsegmented_arteriole_image_path: "images/large_arteriole_mask.tif"
+  ilastik_unsegmented_arteriole_image_path: images/large_arteriole_mask.tif
   # Read this raw image as the ilastik input for the large venule mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation]
-  ilastik_unsegmented_venule_image_path: "images/large_venule_mask.tif"
+  ilastik_unsegmented_venule_image_path: images/large_venule_mask.tif
   # Use this trained ilastik project to segment arterioles  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation; must exist]
-  ilastik_arteriole_classifier_path: "classifiers/arteriole_classifier.ilp"
+  ilastik_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
   # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation; must exist]
-  ilastik_venule_classifier_path: "classifiers/venule_classifier.ilp"
+  ilastik_venule_classifier_path: classifiers/venule_classifier.ilp
   # Assign arteriole and venule boundary nodes from small-vessel masks
   use_small_vessel_masks_for_boundary_assignment: false
   # Produce the small-vessel masks with ilastik instead of reading pre-segmented files  [needs use_small_vessel_masks_for_boundary_assignment]
@@ -153,32 +159,32 @@ vessel_masks:
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
   # Read this pre-segmented small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]
-  small_arteriole_mask_path: "images/small_arteriole_mask.tif"
+  small_arteriole_mask_path: images/small_arteriole_mask.tif
   # Read this pre-segmented small venule mask  [needs use_small_vessel_masks_for_boundary_assignment; must exist]
-  small_venule_mask_path: "images/small_venule_mask.tif"
+  small_venule_mask_path: images/small_venule_mask.tif
   # Read this raw image as the ilastik input for the small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
-  ilastik_unsegmented_small_arteriole_image_path: "images/small_arteriole_mask.tif"
+  ilastik_unsegmented_small_arteriole_image_path: images/small_arteriole_mask.tif
   # Read this raw image as the ilastik input for the small venule mask  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation]
-  ilastik_unsegmented_small_venule_image_path: "images/small_venule_mask.tif"
+  ilastik_unsegmented_small_venule_image_path: images/small_venule_mask.tif
   # Use this trained ilastik project to segment small arterioles  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation; must exist]
-  ilastik_small_arteriole_classifier_path: "classifiers/arteriole_classifier.ilp"
+  ilastik_small_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
   # Use this trained ilastik project to segment small venules  [needs use_small_vessel_masks_for_boundary_assignment and use_ilastik_small_vessel_segmentation; must exist]
-  ilastik_small_venule_classifier_path: "classifiers/venule_classifier.ilp"
+  ilastik_small_venule_classifier_path: classifiers/venule_classifier.ilp
 
 # ------------------------------------------------------------------------
 # Boundary assignment
 # ------------------------------------------------------------------------
 boundary_assignment:
   # Write plot artifacts under this base directory
-  base_plot_dir: "examples/plots"
+  base_plot_dir: examples/plots
   # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet; needs automated_vessel_assignment off]
-  inlet_node_selection_method: "coordinates"
+  inlet_node_selection_method: coordinates
   # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet; needs automated_vessel_assignment off]
-  outlet_node_selection_method: "volume"
+  outlet_node_selection_method: volume
   # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
-  arteriole_boundary_selection_method: "coordinates"
+  arteriole_boundary_selection_method: coordinates
   # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
-  venule_boundary_selection_method: "coordinates"
+  venule_boundary_selection_method: coordinates
   # Split inlets from outlets along this array axis when the edge_percent method is used (0=z, 1=y, 2=x)  [range 0..2]
   boundary_axis: 1
   # Take inlets from the terminals in this much of the network, measured from its start along the boundary axis  [percent; range 0.0..100.0]
@@ -250,11 +256,11 @@ solver_and_output:
   # Open saved plots in IDE windows while the run proceeds  [needs visualize_results]
   show_plots_in_ide: true
   # Choose which plots are shown in IDE windows  [one of: all, final_only, none; needs visualize_results and show_plots_in_ide]
-  ide_plot_mode: "final_only"
+  ide_plot_mode: final_only
   # Block at the end of the script so the IDE plot windows stay open  [needs visualize_results and show_plots_in_ide]
   hold_ide_plots_open: true
   # Render the final graph views as a 2D overlay or an interactive 3D plot  [one of: 2d, 3d; needs visualize_results]
-  final_render_mode: "3d"
+  final_render_mode: 3d
   # Export vessels, pericytes and nodes as VTK files  [needs run_haemodynamics]
   vtk_export: true
   # Open the exported VTK network in the interactive viewer  [needs run_haemodynamics and vtk_export]
@@ -275,7 +281,7 @@ pipeline_stages:
   # Compute the two-point equivalent resistance between the chosen node pair  [needs run_haemodynamics]
   do_equiv_resistance_calculation: true
   # Prefix every VTK artifact and cached stage file with this output path
-  vtk_output_prefix: "examples/outputs/resistance_network"
+  vtk_output_prefix: examples/outputs/resistance_network
   # Close gaps in the mask with a structuring element of this radius before skeletonizing  [voxels; range 0..; needs do_skeletonize]
   skeleton_closing_radius: 2
   # Bridge skeleton gaps no larger than this many voxels  [voxels; range 0..; needs do_skeletonize]
@@ -301,7 +307,7 @@ pipeline_stages:
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true
   # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]
-  centreline_smoothing_method: "taubin"
+  centreline_smoothing_method: taubin
   # How many smoothing passes; accuracy plateaus around 15, and past that the filter slowly starts inflating a centreline instead  [range 0..50; needs smooth_centrelines]
   centreline_smoothing_iterations: 10
   # How far a smoothed centreline may sit from the skeleton before it is blended back towards the original  [um; range 0.0..; needs smooth_centrelines]
@@ -328,16 +334,16 @@ statistics_and_measurements:
   # Read this dataset from the 3D-distance reference image when it is an H5 file  [needs measurement_3d_to_cell_mask]
   measurement_3d_reference_h5_dataset_name: null
   # Compute either the fast subset of vessel statistics or the full set  [one of: fast, full; needs statistics]
-  statistics_mode: "fast"
+  statistics_mode: fast
 
 # ------------------------------------------------------------------------
 # Diameters and pericytes
 # ------------------------------------------------------------------------
 diameters_and_pericytes:
   # Which apparent-viscosity law sets the resistances: pries covers 3.3-1978 um in one expression and reads diameter_basis, capillary_power_law is the older law calibrated at 5 um with a placeholder constant above 7 um, constant is plasma everywhere. Resistances are not comparable across laws  [one of: pries, capillary_power_law, constant; needs run_haemodynamics]
-  viscosity_law: "capillary_power_law"
+  viscosity_law: capillary_power_law
   # What a vessel diameter in this dataset measures, which the pries law needs and no other reads: plasma_column for the channel the fluid occupies, as a plasma stain images it, or anatomical for a wall-to-wall diameter that includes the ~1.1 um endothelial surface layer. Choosing anatomical for a plasma-stained image subtracts that layer twice and roughly quintuples capillary resistance  [one of: plasma_column, anatomical; needs run_haemodynamics]
-  diameter_basis: "plasma_column"
+  diameter_basis: plasma_column
   # Discharge haematocrit the pries law is evaluated at; read by no other law  [fraction; range 0.0..0.99; needs run_haemodynamics]
   haematocrit: 0.45
   # Give every branch order the same vessel diameter instead of a per-order table
@@ -422,7 +428,7 @@ fwhm_diameter_measurement:
   # Let a transverse profile pass through junction voxels while sampling  [needs use_fwhm_edge_diameters]
   fwhm_allow_junction_crossing: false
   # Estimate the profile baseline from the profile wings or from a percentile  [one of: wings, percentile; needs use_fwhm_edge_diameters]
-  fwhm_profile_baseline_mode: "wings"
+  fwhm_profile_baseline_mode: wings
   # Take this fraction of each profile end as the wing used for baseline estimation  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters]
   fwhm_profile_baseline_wing_fraction: 0.2
   # Hold the fitted baseline near the anchor estimate rather than letting it float  [needs use_fwhm_edge_diameters]
@@ -515,4 +521,4 @@ perturbation_runs:
   # Step size along the inlet-pressure sweep (absolute inlet boundary pressure)  [Pa; range 1..]
   inlet_pressure_step_pa: 500
   # Write the brain-script sweep CSV and curves here (a pericyte_dilation_sweep perturbation writes beside itself)
-  sweep_output_dir: "outputs/pericyte_dilation_sweep"
+  sweep_output_dir: outputs/pericyte_dilation_sweep
