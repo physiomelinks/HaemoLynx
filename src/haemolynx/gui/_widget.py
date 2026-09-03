@@ -36,10 +36,13 @@ from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
     BRANCH_HOVER,
     FLOW_DIR_COLUMNS,
+    FLOW_DIR_RGB_COLUMN,
+    FLOW_HEADING_COLUMN,
     NODES,
     VESSELS,
     ResultLayers,
     _flow_dir_contrast_limits,
+    _flow_heading_contrast_limits,
     colour_cycle_for,
     filter_points_by_z,
     filter_vectors_by_z,
@@ -316,6 +319,9 @@ def _apply_z_filter(
             ours["segment_owner"] = np.asarray(segment_owner)
             metadata[OURS] = ours
             layer.metadata = metadata
+        column = _active_column(layer)
+        if column == FLOW_DIR_RGB_COLUMN:
+            _colour_layer(layer, column, "direct")
 
 
 def _uniform_points_property(value: Any, n: int) -> Any:
@@ -575,13 +581,16 @@ def _colour_attributes(layer) -> tuple[str, ...]:
 
 
 def _ensure_flow_dir_features(layer) -> None:
-    """Fill missing or NaN ``flow_dir_*`` from arrow displacement vectors."""
+    """Fill missing or NaN ``flow_dir_*`` / ``flow_heading_deg`` from arrows."""
     if layer.__class__.__name__ != "Vectors":
         return
     data = np.asarray(layer.data, dtype=float)
     if data.ndim != 3 or data.shape[1] != 2 or data.shape[0] == 0:
         return
-    from haemolynx.visualization.flow_direction import flow_direction_components
+    from haemolynx.visualization.flow_direction import (
+        flow_direction_components,
+        flow_heading_deg,
+    )
 
     features = dict(getattr(layer, "features", {}))
     displacements = data[:, 1, :]
@@ -599,7 +608,53 @@ def _ensure_flow_dir_features(layer) -> None:
             filled = column.copy()
             filled[missing] = components[missing, index]
             features[name] = filled
+    heading = np.asarray(features.get(FLOW_HEADING_COLUMN, []), dtype=float)
+    if heading.shape[0] != len(data) or not np.any(np.isfinite(heading)):
+        features[FLOW_HEADING_COLUMN] = np.asarray(
+            [flow_heading_deg(vector) for vector in displacements],
+            dtype=float,
+        )
+    else:
+        missing = ~np.isfinite(heading)
+        if np.any(missing):
+            filled = heading.copy()
+            filled[missing] = [
+                flow_heading_deg(vector) for vector in displacements[missing]
+            ]
+            features[FLOW_HEADING_COLUMN] = filled
+    rgb_dummy = np.asarray(features.get(FLOW_DIR_RGB_COLUMN, []), dtype=float)
+    if rgb_dummy.shape[0] != len(data):
+        features[FLOW_DIR_RGB_COLUMN] = np.zeros(len(data), dtype=float)
     layer.features = features
+
+
+def _flow_dir_rgba(layer) -> np.ndarray:
+    """Per-vector RGBA for the 3D direction map, from current ``flow_dir_*``."""
+    from haemolynx.visualization.flow_direction import flow_direction_rgba
+
+    _ensure_flow_dir_features(layer)
+    n = len(np.asarray(getattr(layer, "data", ()), dtype=float))
+    features = getattr(layer, "features", {})
+    if n == 0 or "flow_dir_z" not in features:
+        return np.zeros((n, 4), dtype=float)
+    return flow_direction_rgba(
+        features["flow_dir_z"],
+        features["flow_dir_y"],
+        features["flow_dir_x"],
+    )
+
+
+def _flow_heading_colormap() -> str:
+    """Cyclic map for azimuth; fall back when ``hsv`` is unavailable."""
+    from napari.utils.colormaps import ensure_colormap
+
+    for name in ("hsv", "twilight_shifted"):
+        try:
+            ensure_colormap(name)
+            return name
+        except (KeyError, ValueError, TypeError):
+            continue
+    return "viridis"
 
 
 def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
@@ -633,10 +688,10 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
             setattr(layer, attribute, UNCOLOURED)
         _record_colour(layer, None)
         return
+    if column in FLOW_DIR_COLUMNS or column in {FLOW_HEADING_COLUMN, FLOW_DIR_RGB_COLUMN}:
+        _ensure_flow_dir_features(layer)
     if column not in getattr(layer, "features", {}):
         return
-    if column in FLOW_DIR_COLUMNS:
-        _ensure_flow_dir_features(layer)
     # Drop to a flat colour before naming the new column. A layer keeps
     # whichever colour mode the last colouring left it in, and neither mode
     # survives meeting the other kind of column:
@@ -657,6 +712,14 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
     # re-maps the column that is still active, which is the same crash.
     for attribute in attributes:
         setattr(layer, attribute, UNCOLOURED)
+    if column == FLOW_DIR_RGB_COLUMN or kind == "direct":
+        # Napari Vectors colour from a 1D feature + LUT cannot represent a
+        # sphere; assign per-arrow RGB with R=x, G=y, B=z.
+        colours = _flow_dir_rgba(layer)
+        for attribute in attributes:
+            setattr(layer, attribute, colours)
+        _record_colour(layer, column)
+        return
     if kind == "categorical" and cycle:
         # One colour per item, looked up by label, rather than handing napari
         # the cycle and the column and letting it pair them up. It pairs them
@@ -679,7 +742,12 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
             # rather than raising, which `_apply_layers` cannot catch.
             _record_colour(layer, column)
             return
-        colormap = "coolwarm" if column in FLOW_DIR_COLUMNS else "viridis"
+        if column == FLOW_HEADING_COLUMN:
+            colormap = _flow_heading_colormap()
+        elif column in FLOW_DIR_COLUMNS:
+            colormap = "coolwarm"
+        else:
+            colormap = "viridis"
         for attribute in attributes:
             setattr(layer, f"{attribute}_colormap", colormap)
             setattr(layer, attribute, column)
@@ -689,11 +757,12 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         # plain setattr, and nothing re-maps at all -- which is how `flow_abs`
         # came to be the selected colouring and not the one on screen.
         if limits is None:
-            limits = (
-                _flow_dir_contrast_limits(values)
-                if column in FLOW_DIR_COLUMNS
-                else _data_range(layer, column)
-            )
+            if column == FLOW_HEADING_COLUMN:
+                limits = _flow_heading_contrast_limits(values)
+            elif column in FLOW_DIR_COLUMNS:
+                limits = _flow_dir_contrast_limits(values)
+            else:
+                limits = _data_range(layer, column)
         if limits is not None:
             _apply_contrast_limits(layer, *limits)
     _record_colour(layer, column)
@@ -1024,6 +1093,8 @@ _FLOW_COLOUR_COLUMN_ORDER = (
     "flow_abs",
     "flow_abs_log10",
     "flow_signed",
+    "flow_dir_rgb",
+    "flow_heading_deg",
     "flow_dir_z",
     "flow_dir_y",
     "flow_dir_x",
@@ -1108,8 +1179,10 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
         return None
     if _is_text_column(layer, column):
         return None
-    if column in FLOW_DIR_COLUMNS:
+    if column in FLOW_DIR_COLUMNS or column == FLOW_HEADING_COLUMN:
         _ensure_flow_dir_features(layer)
+    if column == FLOW_DIR_RGB_COLUMN:
+        return None
     try:
         values = np.asarray(layer.features[column], dtype=float)
     except (TypeError, ValueError):
@@ -1117,6 +1190,8 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return None
+    if column == FLOW_HEADING_COLUMN:
+        return _flow_heading_contrast_limits(values)
     if column in FLOW_DIR_COLUMNS:
         return _flow_dir_contrast_limits(values)
     low = float(np.percentile(finite, low_percentile))
@@ -1330,6 +1405,7 @@ class _ColourScale:
         usable = (
             layer is not None
             and self._column is not None
+            and self._column != FLOW_DIR_RGB_COLUMN
             and not _is_text_column(layer, self._column)
         )
         # Recorded as well as applied: Qt reports a child of an unshown window

@@ -1432,6 +1432,7 @@ def test_flow_direction_layer_features_include_direction_components(make_napari_
 
     layer = viewer.layers[FLOW_DIRECTION]
     assert "flow_dir_z" in layer.features
+    assert "flow_dir_rgb" in layer.features
     assert float(np.asarray(layer.features["flow_dir_z"])[0]) == pytest.approx(1.0)
 
 

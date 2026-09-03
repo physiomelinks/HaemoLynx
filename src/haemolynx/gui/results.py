@@ -224,11 +224,20 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "flow_dir_z": "solve",
     "flow_dir_y": "solve",
     "flow_dir_x": "solve",
+    "flow_heading_deg": "solve",
+    "flow_dir_rgb": "solve",
 }
 
 #: Derived flow columns always offered on vessel layers once flows exist.
 FLOW_DERIVED_EDGE_COLUMNS: frozenset[str] = frozenset(
-    {"flow_abs_log10", "flow_dir_z", "flow_dir_y", "flow_dir_x"}
+    {
+        "flow_abs_log10",
+        "flow_dir_z",
+        "flow_dir_y",
+        "flow_dir_x",
+        "flow_heading_deg",
+        "flow_dir_rgb",
+    }
 )
 
 
@@ -294,7 +303,8 @@ class LayerSpec:
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
     features: Mapping[str, np.ndarray] = field(default_factory=dict)
     colour_by: str | None = None
-    #: "continuous" drives a colormap, "categorical" a colour cycle.
+    #: "continuous" drives a colormap, "categorical" a colour cycle,
+    #: "direct" an RGB array (the 3D flow-direction map).
     colour_kind: str = "none"
     colour_cycle: tuple[tuple[str, tuple[float, float, float, float]], ...] = ()
     contrast_limits: tuple[float, float] | None = None
@@ -610,6 +620,12 @@ def _limits(values: np.ndarray) -> tuple[float, float] | None:
 #: Signed normalised axis components of flow direction; always span [-1, 1].
 FLOW_DIR_COLUMNS = frozenset({"flow_dir_z", "flow_dir_y", "flow_dir_x"})
 
+#: Cyclic azimuth heading in the y-x plane; always spans [0, 360).
+FLOW_HEADING_COLUMN = "flow_heading_deg"
+
+#: Sentinel feature for the 3D RGB direction map (R=x, G=y, B=z).
+FLOW_DIR_RGB_COLUMN = "flow_dir_rgb"
+
 
 def _flow_dir_contrast_limits(values: np.ndarray) -> tuple[float, float]:
     """Colour limits for a ``flow_dir_*`` column.
@@ -627,6 +643,12 @@ def _flow_dir_contrast_limits(values: np.ndarray) -> tuple[float, float]:
     if high <= low:
         return (-1.0, 1.0)
     return (low, high)
+
+
+def _flow_heading_contrast_limits(values: np.ndarray) -> tuple[float, float]:
+    """Fixed cyclic range for ``flow_heading_deg``; do not autoscale."""
+    _ = values
+    return (0.0, 360.0)
 
 
 # --- one stage at a time -----------------------------------------------------
@@ -1320,7 +1342,7 @@ class ResultLayers:
         return bool(self.settings.get("show_flow_direction_layer", False))
 
     def _flow_direction_layers(self) -> tuple[LayerSpec, ...]:
-        """Mid-edge flow arrows coloured by |flow|, or empty when none exist."""
+        """Mid-edge flow arrows coloured by 3D direction RGB, or empty when none exist."""
         from haemolynx.visualization.flow_direction import flow_direction_vectors
 
         graph = self._graph
@@ -1329,7 +1351,15 @@ class ResultLayers:
         vectors, features = flow_direction_vectors(graph)
         if len(vectors) == 0:
             return ()
-        colour_by = "flow_abs" if "flow_abs" in features else None
+        colour_by = (
+            FLOW_DIR_RGB_COLUMN
+            if FLOW_DIR_RGB_COLUMN in features
+            else (
+                FLOW_HEADING_COLUMN
+                if FLOW_HEADING_COLUMN in features
+                else ("flow_abs" if "flow_abs" in features else None)
+            )
+        )
         scale = float(self.settings.get("flow_arrow_scale", 1.0))
         return (
             LayerSpec(
@@ -1373,10 +1403,18 @@ def _colouring(columns: Mapping[str, np.ndarray], colour_by: str | None) -> dict
     values = columns[colour_by]
     if colour_by in TEXT_COLUMNS:
         return {"colour_kind": "categorical", "colour_cycle": colour_cycle_for(values)}
+    if colour_by == FLOW_DIR_RGB_COLUMN:
+        # Direct per-vector RGB; no 1D LUT or clim.
+        return {"colour_kind": "direct"}
     if colour_by in FLOW_DIR_COLUMNS:
         return {
             "colour_kind": "continuous",
             "contrast_limits": _flow_dir_contrast_limits(values),
+        }
+    if colour_by == FLOW_HEADING_COLUMN:
+        return {
+            "colour_kind": "continuous",
+            "contrast_limits": _flow_heading_contrast_limits(values),
         }
     return {"colour_kind": "continuous", "contrast_limits": _limits(values)}
 

@@ -15,7 +15,10 @@ from haemolynx.visualization.flow_direction import (
     edge_flow_arrow_zyx,
     edge_flow_direction_sign,
     flow_direction_components,
+    flow_direction_rgb,
+    flow_direction_rgba,
     flow_direction_vectors,
+    flow_heading_deg,
 )
 
 
@@ -165,6 +168,41 @@ def test_flow_direction_components_zero_vector_is_finite():
     assert all(np.isfinite(v) for v in (z, y, x))
 
 
+def test_flow_direction_rgb_canonical_axes():
+    """R=x, G=y, B=z via (component + 1) / 2; +axis is the named channel."""
+    np.testing.assert_allclose(flow_direction_rgb([0.0, 0.0, 1.0]), (1.0, 0.5, 0.5))
+    np.testing.assert_allclose(flow_direction_rgb([0.0, 1.0, 0.0]), (0.5, 1.0, 0.5))
+    np.testing.assert_allclose(flow_direction_rgb([1.0, 0.0, 0.0]), (0.5, 0.5, 1.0))
+    np.testing.assert_allclose(flow_direction_rgb([0.0, 0.0, -1.0]), (0.0, 0.5, 0.5))
+    np.testing.assert_allclose(flow_direction_rgb([0.0, -1.0, 0.0]), (0.5, 0.0, 0.5))
+    np.testing.assert_allclose(flow_direction_rgb([-1.0, 0.0, 0.0]), (0.5, 0.5, 0.0))
+
+
+def test_flow_direction_rgb_opposites_are_complementary():
+    plus = np.asarray(flow_direction_rgb([1.0, 0.0, 0.0]))
+    minus = np.asarray(flow_direction_rgb([-1.0, 0.0, 0.0]))
+    np.testing.assert_allclose(plus + minus, 1.0)
+    plus = np.asarray(flow_direction_rgb([0.0, 2.0, 0.0]))
+    minus = np.asarray(flow_direction_rgb([0.0, -2.0, 0.0]))
+    np.testing.assert_allclose(plus + minus, 1.0)
+    plus = np.asarray(flow_direction_rgb([0.0, 0.0, 5.0]))
+    minus = np.asarray(flow_direction_rgb([0.0, 0.0, -5.0]))
+    np.testing.assert_allclose(plus + minus, 1.0)
+
+
+def test_flow_direction_rgba_matches_rgb_and_alpha():
+    rgba = flow_direction_rgba([1.0], [0.0], [0.0])
+    assert rgba.shape == (1, 4)
+    np.testing.assert_allclose(rgba[0, :3], flow_direction_rgb([1.0, 0.0, 0.0]))
+    assert rgba[0, 3] == pytest.approx(1.0)
+
+
+def test_flow_dir_rgb_sentinel_in_features():
+    _vectors, features = flow_direction_vectors(_two_node_edge(flow_signed=1.0))
+    assert "flow_dir_rgb" in features
+    assert features["flow_dir_rgb"].shape == (1,)
+
+
 def test_antiparallel_edges_have_opposite_direction_components():
     positive = flow_direction_vectors(_two_node_edge(flow_signed=2.0))[1]
     negative = flow_direction_vectors(_two_node_edge(flow_signed=-2.0))[1]
@@ -220,8 +258,12 @@ def test_toggle_on_with_flows_emits_one_arrow_per_directed_edge():
     assert spec.name == FLOW_DIRECTION
     assert spec.kind == "vectors"
     assert len(spec.data) == 1
-    assert spec.colour_by == "flow_abs"
+    assert spec.colour_by == "flow_dir_rgb"
+    assert spec.colour_kind == "direct"
+    assert spec.contrast_limits is None
     assert spec.features["flow_abs"].tolist() == [1.25]
+    assert "flow_dir_rgb" in spec.features
+    assert "flow_heading_deg" in spec.features
     np.testing.assert_allclose(spec.features["flow_dir_z"], [1.0], rtol=1e-5)
     np.testing.assert_allclose(spec.features["flow_dir_y"], [0.0], atol=1e-12)
     np.testing.assert_allclose(spec.features["flow_dir_x"], [0.0], atol=1e-12)
@@ -288,6 +330,22 @@ def test_show_flow_direction_layer_lives_on_export_tab():
     assert owner["show_flow_direction_layer"] == "8. Export"
 
 
+def test_flow_heading_deg_pure_axes():
+    assert flow_heading_deg(np.array([1.0, 0.0, 0.0])) == pytest.approx(0.0)
+    assert flow_heading_deg(np.array([-1.0, 0.0, 0.0])) == pytest.approx(180.0)
+    assert flow_heading_deg(np.array([0.0, 1.0, 0.0])) == pytest.approx(0.0)
+    assert flow_heading_deg(np.array([0.0, -1.0, 0.0])) == pytest.approx(180.0)
+    assert flow_heading_deg(np.array([0.0, 0.0, 1.0])) == pytest.approx(90.0)
+    assert flow_heading_deg(np.array([0.0, 0.0, -1.0])) == pytest.approx(270.0)
+
+
+def test_flow_heading_deg_in_features():
+    graph = _two_node_edge(flow_signed=1.0)
+    _vectors, features = flow_direction_vectors(graph)
+    assert "flow_heading_deg" in features
+    assert float(features["flow_heading_deg"][0]) == pytest.approx(0.0)
+
+
 def test_flow_direction_colouring_includes_axis_components_when_enabled():
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
@@ -300,6 +358,8 @@ def test_flow_direction_colouring_includes_axis_components_when_enabled():
     assert "flow_dir_z" in spec.features
     assert "flow_dir_y" in spec.features
     assert "flow_dir_x" in spec.features
+    assert "flow_heading_deg" in spec.features
+    assert "flow_dir_rgb" in spec.features
     np.testing.assert_allclose(spec.features["flow_dir_z"], [1.0], rtol=1e-5)
 
 
@@ -316,6 +376,8 @@ def test_flow_direction_colouring_keeps_axis_components_when_disabled():
     assert "flow_dir_z" in spec.features
     assert "flow_dir_y" in spec.features
     assert "flow_dir_x" in spec.features
+    assert "flow_heading_deg" in spec.features
+    assert "flow_dir_rgb" in spec.features
     assert "flow_abs" in spec.features
 
 
@@ -358,6 +420,85 @@ def _perpendicular_arrow_graph() -> nx.MultiGraph:
     return graph
 
 
+def _axis_arrow_graph(*, along: str, flow_sign: int = 1) -> nx.MultiGraph:
+    """One edge along +axis; ``flow_sign`` sets arrow direction along that axis."""
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    if along == "z":
+        end = np.array([10.0, 0.0, 0.0])
+    elif along == "y":
+        end = np.array([0.0, 10.0, 0.0])
+    elif along == "x":
+        end = np.array([0.0, 0.0, 10.0])
+    else:
+        raise ValueError(along)
+    graph.add_node(1, pos=end)
+    graph.add_edge(
+        0,
+        1,
+        key=0,
+        voxels=[[0.0, 0.0, 0.0], end.tolist()],
+        flow_signed=float(flow_sign),
+        flow_abs=1.0,
+    )
+    return graph
+
+
+def _heading_colours_for_graphs(make_napari_viewer, *graphs) -> list[np.ndarray]:
+    from haemolynx.gui._widget import _apply_layers, _colour_layer
+
+    colours = []
+    for graph in graphs:
+        results = _built_with_flows(graph, show_flow_direction_layer=True)
+        group = results.stage_finished("export_results", SimpleNamespace())
+        viewer = make_napari_viewer()
+        _apply_layers(viewer, group)
+        layer = viewer.layers[FLOW_DIRECTION]
+        _colour_layer(layer, "flow_heading_deg", "continuous")
+        colours.append(np.asarray(layer.edge_color, dtype=float)[0, :3])
+    return colours
+
+
+def test_flow_heading_y_opposite_colours_differ(make_napari_viewer):
+    pos, neg = _heading_colours_for_graphs(
+        make_napari_viewer,
+        _axis_arrow_graph(along="y", flow_sign=1),
+        _axis_arrow_graph(along="y", flow_sign=-1),
+    )
+    assert not np.allclose(pos, neg, atol=0.02)
+
+
+def test_flow_heading_x_opposite_colours_differ(make_napari_viewer):
+    pos, neg = _heading_colours_for_graphs(
+        make_napari_viewer,
+        _axis_arrow_graph(along="x", flow_sign=1),
+        _axis_arrow_graph(along="x", flow_sign=-1),
+    )
+    assert not np.allclose(pos, neg, atol=0.02)
+
+
+def test_flow_heading_z_vertical_colours_differ(make_napari_viewer):
+    pos, neg = _heading_colours_for_graphs(
+        make_napari_viewer,
+        _axis_arrow_graph(along="z", flow_sign=1),
+        _axis_arrow_graph(along="z", flow_sign=-1),
+    )
+    assert not np.allclose(pos, neg, atol=0.02)
+
+
+def test_flow_heading_deg_uses_fixed_clim(make_napari_viewer):
+    from haemolynx.gui._widget import _apply_layers, _colour_layer
+
+    graph = _axis_arrow_graph(along="y", flow_sign=1)
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    _colour_layer(layer, "flow_heading_deg", "continuous")
+    assert layer.edge_contrast_limits == pytest.approx((0.0, 360.0))
+
+
 def test_flow_dir_z_colour_distinguishes_perpendicular_arrows(make_napari_viewer):
     """Axis-aligned +z and +y arrows must differ when coloured by flow_dir_z."""
     from haemolynx.gui._widget import _apply_layers, _colour_layer
@@ -397,3 +538,92 @@ def test_flow_direction_combo_colours_by_flow_dir_z(make_napari_viewer):
     colours = np.asarray(layer.edge_color, dtype=float)
     assert not np.allclose(colours[0, :3], colours[1, :3], atol=0.02)
     assert layer.edge_contrast_limits == pytest.approx((-1.0, 1.0))
+
+
+def _rgb_for_axis_graph(make_napari_viewer, along: str, flow_sign: int) -> np.ndarray:
+    from haemolynx.gui._widget import _apply_layers
+
+    graph = _axis_arrow_graph(along=along, flow_sign=flow_sign)
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    assert layer.edge_color_mode == "direct"
+    return np.asarray(layer.edge_color, dtype=float)[0]
+
+
+def test_flow_direction_layer_defaults_to_3d_rgb(make_napari_viewer):
+    """Default colour-by is the 3D RGB map, not 2D heading or a 1D LUT."""
+    from haemolynx.gui._widget import _active_column, _apply_layers
+
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    spec = group.layers[0]
+    assert spec.colour_by == "flow_dir_rgb"
+    assert spec.colour_kind == "direct"
+
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    assert _active_column(layer) == "flow_dir_rgb"
+    assert layer.edge_color_mode == "direct"
+    colour = np.asarray(layer.edge_color, dtype=float)[0, :3]
+    # +z → blue-ish (R=x, G=y, B=z).
+    np.testing.assert_allclose(colour, (0.5, 0.5, 1.0), atol=0.05)
+
+
+def test_flow_dir_rgb_axis_colours_and_complements(make_napari_viewer):
+    expected = {
+        ("x", 1): (1.0, 0.5, 0.5),
+        ("x", -1): (0.0, 0.5, 0.5),
+        ("y", 1): (0.5, 1.0, 0.5),
+        ("y", -1): (0.5, 0.0, 0.5),
+        ("z", 1): (0.5, 0.5, 1.0),
+        ("z", -1): (0.5, 0.5, 0.0),
+    }
+    colours = {
+        key: _rgb_for_axis_graph(make_napari_viewer, *key)
+        for key in expected
+    }
+    for key, rgb in expected.items():
+        np.testing.assert_allclose(colours[key][:3], rgb, atol=0.05)
+        assert colours[key][3] == pytest.approx(1.0)
+    for axis in ("x", "y", "z"):
+        np.testing.assert_allclose(
+            colours[(axis, 1)][:3] + colours[(axis, -1)][:3],
+            1.0,
+            atol=0.05,
+        )
+
+
+def test_flow_dir_rgb_combo_switch_to_flow_abs_uses_colormap(make_napari_viewer):
+    from haemolynx.gui._widget import (
+        _active_column,
+        _apply_layers,
+        _attach_colour_scale,
+        _layer_controls,
+    )
+
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    _attach_colour_scale(viewer, layer)
+
+    assert layer.edge_color_mode == "direct"
+    controls = _layer_controls(viewer, layer)
+    offered = [
+        controls._haemolynx_feature.native.itemText(i)
+        for i in range(controls._haemolynx_feature.native.count())
+    ]
+    assert "flow_dir_rgb" in offered
+    assert "flow_heading_deg" in offered
+    assert "flow_abs" in offered
+
+    controls._haemolynx_feature.native.setCurrentText("flow_abs")
+    assert _active_column(layer) == "flow_abs"
+    assert layer.edge_color_mode == "colormap"

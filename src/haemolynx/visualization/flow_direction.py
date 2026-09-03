@@ -12,6 +12,7 @@ then reversed when the signed flow is negative.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Optional
 
 import numpy as np
@@ -25,6 +26,9 @@ __all__ = [
     "edge_flow_direction_columns",
     "flow_direction_vectors",
     "flow_direction_components",
+    "flow_direction_rgb",
+    "flow_direction_rgba",
+    "flow_heading_deg",
 ]
 
 
@@ -77,6 +81,64 @@ def flow_direction_components(direction: np.ndarray) -> tuple[float, float, floa
         return 0.0, 0.0, 0.0
     unit = d / norm
     return float(unit[0]), float(unit[1]), float(unit[2])
+
+
+def flow_direction_rgb(direction: np.ndarray) -> tuple[float, float, float]:
+    """Map a ``(z, y, x)`` direction to RGB with ``R=x``, ``G=y``, ``B=z``.
+
+    Standard signed-direction encoding: each unit component in ``[-1, 1]``
+    maps to ``[0, 1]`` via ``(c + 1) / 2``. Opposite directions are
+    complementary (the two RGBs sum channel-wise to 1). Channels follow the
+    usual vis convention (R=x, G=y, B=z), not the storage order ``(z, y, x)``.
+    A zero or non-finite vector is mid-grey ``(0.5, 0.5, 0.5)``.
+    """
+    dz, dy, dx = flow_direction_components(direction)
+    return (dx + 1.0) / 2.0, (dy + 1.0) / 2.0, (dz + 1.0) / 2.0
+
+
+def flow_direction_rgba(
+    dir_z: np.ndarray,
+    dir_y: np.ndarray,
+    dir_x: np.ndarray,
+) -> np.ndarray:
+    """``(N, 4)`` RGBA from unit ``(z, y, x)`` components. ``R=x``, ``G=y``, ``B=z``.
+
+    Same mapping as :func:`flow_direction_rgb`. Non-finite rows become
+    mid-grey with alpha 1.
+    """
+    z = np.asarray(dir_z, dtype=float).reshape(-1)
+    y = np.asarray(dir_y, dtype=float).reshape(-1)
+    x = np.asarray(dir_x, dtype=float).reshape(-1)
+    rgb = np.column_stack(((x + 1.0) / 2.0, (y + 1.0) / 2.0, (z + 1.0) / 2.0))
+    bad = ~np.isfinite(rgb).all(axis=1)
+    rgb[bad] = 0.5
+    np.clip(rgb, 0.0, 1.0, out=rgb)
+    rgba = np.ones((rgb.shape[0], 4), dtype=float)
+    rgba[:, :3] = rgb
+    return rgba
+
+
+def flow_heading_deg(direction: np.ndarray) -> float:
+    """Azimuth in degrees ``[0, 360)`` for a flow direction in physical ``(z, y, x)``.
+
+    Horizontal heading uses ``atan2(dir_x, dir_y)`` — the in-plane angle seen when
+    looking along ``+z``. Near-pure ``±z`` vectors (``hypot(dir_y, dir_x)`` tiny)
+    map to ``0°`` (``+z``) or ``180°`` (``−z``).
+    """
+    d = np.asarray(direction, dtype=float).reshape(-1)[:3]
+    if d.shape[0] < 3 or not np.all(np.isfinite(d)):
+        return float("nan")
+    norm = float(np.linalg.norm(d))
+    if norm <= 1e-12:
+        return float("nan")
+    dz, dy, dx = (d / norm).tolist()
+    in_plane = math.hypot(dy, dx)
+    if in_plane <= 1e-12:
+        return 0.0 if dz >= 0.0 else 180.0
+    heading = math.degrees(math.atan2(dx, dy))
+    if heading < 0.0:
+        heading += 360.0
+    return heading
 
 
 def _polyline_length(points: np.ndarray) -> float:
@@ -149,6 +211,7 @@ def edge_flow_direction_columns(graph: Any) -> dict[str, np.ndarray]:
     dir_z: list[float] = []
     dir_y: list[float] = []
     dir_x: list[float] = []
+    headings: list[float] = []
     if getattr(graph, "is_multigraph", lambda: False)():
         edge_iter = graph.edges(keys=True, data=True)
     else:
@@ -164,6 +227,7 @@ def edge_flow_direction_columns(graph: Any) -> dict[str, np.ndarray]:
             dir_z.append(float("nan"))
             dir_y.append(float("nan"))
             dir_x.append(float("nan"))
+            headings.append(float("nan"))
             continue
         points = np.asarray(points, dtype=float)
         if direction_sign < 0:
@@ -172,6 +236,7 @@ def edge_flow_direction_columns(graph: Any) -> dict[str, np.ndarray]:
             dir_z.append(float("nan"))
             dir_y.append(float("nan"))
             dir_x.append(float("nan"))
+            headings.append(float("nan"))
             continue
         mid_idx = int(points.shape[0] // 2)
         lo = max(0, mid_idx - 1)
@@ -181,11 +246,17 @@ def edge_flow_direction_columns(graph: Any) -> dict[str, np.ndarray]:
         dir_z.append(dz)
         dir_y.append(dy)
         dir_x.append(dx)
+        headings.append(flow_heading_deg(tangent))
 
+    n = len(dir_z)
     return {
         "flow_dir_z": np.asarray(dir_z, dtype=float),
         "flow_dir_y": np.asarray(dir_y, dtype=float),
         "flow_dir_x": np.asarray(dir_x, dtype=float),
+        "flow_heading_deg": np.asarray(headings, dtype=float),
+        # Sentinel 1-D column so colour-by can name the 3D RGB map. Napari
+        # Vectors features are a pandas table and cannot store Nx3 RGB.
+        "flow_dir_rgb": np.zeros(n, dtype=float),
     }
 
 
@@ -207,9 +278,10 @@ def flow_direction_vectors(
         Shape ``(N, 2, 3)``: origin and displacement in physical ``(z, y, x)``.
     features
         Parallel columns including ``flow_abs`` (magnitude used for the heatmap),
-        ``flow_signed``, and ``flow_dir_z`` / ``flow_dir_y`` / ``flow_dir_x``
-        (signed normalised direction components). Empty dict when there are no
-        arrows.
+        ``flow_signed``, ``flow_dir_z`` / ``flow_dir_y`` / ``flow_dir_x``
+        (signed normalised direction components), ``flow_heading_deg``
+        (2D azimuth in ``[0, 360)``), and ``flow_dir_rgb`` (sentinel for the
+        3D RGB direction map). Empty dict when there are no arrows.
     """
     directed: list[tuple[np.ndarray, int, float, float]] = []
     for u, v, _key, data in _iter_edges(graph):
@@ -260,6 +332,7 @@ def flow_direction_vectors(
     dir_z_col: list[float] = []
     dir_y_col: list[float] = []
     dir_x_col: list[float] = []
+    heading_col: list[float] = []
     for points, direction_sign, signed_f, flow_abs in directed:
         result = edge_flow_arrow_zyx(
             points,
@@ -282,6 +355,7 @@ def flow_direction_vectors(
         dir_z_col.append(dz)
         dir_y_col.append(dy)
         dir_x_col.append(dx)
+        heading_col.append(flow_heading_deg(vector))
 
     if not origins:
         return np.empty((0, 2, 3), dtype=float), {}
@@ -296,5 +370,7 @@ def flow_direction_vectors(
         "flow_dir_z": np.asarray(dir_z_col, dtype=float),
         "flow_dir_y": np.asarray(dir_y_col, dtype=float),
         "flow_dir_x": np.asarray(dir_x_col, dtype=float),
+        "flow_heading_deg": np.asarray(heading_col, dtype=float),
+        "flow_dir_rgb": np.zeros(len(dir_z_col), dtype=float),
     }
     return vectors, features
