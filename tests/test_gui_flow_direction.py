@@ -627,3 +627,151 @@ def test_flow_dir_rgb_combo_switch_to_flow_abs_uses_colormap(make_napari_viewer)
     controls._haemolynx_feature.native.setCurrentText("flow_abs")
     assert _active_column(layer) == "flow_abs"
     assert layer.edge_color_mode == "colormap"
+    assert layer.edge_colormap.name == "viridis"
+
+
+# --- colour-map dropdown on layer controls ----------------------------------
+
+
+_REQUIRED_COLORMAPS = frozenset({
+    "viridis", "plasma", "inferno", "magma", "cividis", "turbo", "gray",
+    "coolwarm", "RdBu", "seismic", "PiYG",
+    "hsv", "twilight", "twilight_shifted",
+    "jet", "rainbow", "hot", "cool", "spring", "summer", "autumn", "winter",
+    "bone", "copper", "pink",
+})
+
+
+def test_colormap_catalog_lists_a_wide_grouped_set():
+    from haemolynx.gui._widget import COLORMAP_GROUPS, colormap_choices
+
+    names = colormap_choices()
+    assert _REQUIRED_COLORMAPS <= set(names)
+    assert len(names) == len(set(names))
+    titles = [title for title, _group in COLORMAP_GROUPS]
+    assert titles == ["Sequential", "Diverging", "Cyclic", "Other"]
+    sequential = COLORMAP_GROUPS[0][1]
+    diverging = COLORMAP_GROUPS[1][1]
+    cyclic = COLORMAP_GROUPS[2][1]
+    assert sequential.index("viridis") < sequential.index("gray")
+    assert "coolwarm" in diverging
+    assert "hsv" in cyclic
+
+
+def test_column_defaults_use_the_real_colormap_property(make_napari_viewer):
+    """``edge_color_colormap`` is a stray attr; Vectors store the LUT on edge_colormap."""
+    from haemolynx.gui._widget import _apply_layers, _colour_layer
+
+    graph = _perpendicular_arrow_graph()
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+
+    assert hasattr(layer, "edge_colormap")
+    assert not hasattr(type(layer), "edge_color_colormap")
+
+    _colour_layer(layer, "flow_dir_z", "continuous")
+    assert layer.edge_colormap.name == "coolwarm"
+    _colour_layer(layer, "flow_heading_deg", "continuous")
+    assert layer.edge_colormap.name == "hsv"
+    _colour_layer(layer, "flow_abs", "continuous")
+    assert layer.edge_colormap.name == "viridis"
+
+
+def _colormap_combo(viewer, layer):
+    from haemolynx.gui._widget import _layer_controls
+
+    controls = _layer_controls(viewer, layer)
+    return getattr(controls, "_haemolynx_colormap", None)
+
+
+def _combo_maps(chooser) -> list[str]:
+    from haemolynx.gui._widget import _COLORMAP_GROUP_HEADERS
+
+    return [
+        chooser.native.itemText(i)
+        for i in range(chooser.native.count())
+        if chooser.native.itemText(i)
+        and chooser.native.itemText(i) not in _COLORMAP_GROUP_HEADERS
+    ]
+
+
+def test_flow_direction_colormap_combo_hidden_for_direct_rgb(make_napari_viewer):
+    from haemolynx.gui._widget import _apply_layers, _attach_colour_scale
+
+    graph = _two_node_edge(flow_signed=1.0)
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    _attach_colour_scale(viewer, layer)
+
+    chooser = _colormap_combo(viewer, layer)
+    assert chooser is not None
+    assert _REQUIRED_COLORMAPS <= set(_combo_maps(chooser))
+    assert chooser.shown is False
+    assert chooser.native.isEnabled() is False
+
+
+def test_flow_direction_colormap_combo_applies_a_selected_map(make_napari_viewer):
+    from haemolynx.gui._widget import (
+        _apply_layers,
+        _attach_colour_scale,
+        _layer_controls,
+    )
+
+    graph = _perpendicular_arrow_graph()
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    _attach_colour_scale(viewer, layer)
+
+    controls = _layer_controls(viewer, layer)
+    controls._haemolynx_feature.native.setCurrentText("flow_dir_z")
+    chooser = controls._haemolynx_colormap
+    assert chooser.shown is True
+    assert chooser.native.isEnabled()
+    assert chooser.native.currentText() == "coolwarm"
+    assert layer.edge_colormap.name == "coolwarm"
+
+    before = np.array(layer.edge_color, copy=True)
+    chooser.native.setCurrentText("plasma")
+    assert layer.edge_colormap.name == "plasma"
+    after = np.asarray(layer.edge_color)
+    assert not np.allclose(before, after)
+    assert layer.edge_contrast_limits == pytest.approx((-1.0, 1.0))
+
+
+def test_colour_by_change_resets_colormap_to_the_column_default(make_napari_viewer):
+    from haemolynx.gui._widget import (
+        _apply_layers,
+        _attach_colour_scale,
+        _layer_controls,
+    )
+
+    graph = _perpendicular_arrow_graph()
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    _attach_colour_scale(viewer, layer)
+
+    controls = _layer_controls(viewer, layer)
+    controls._haemolynx_feature.native.setCurrentText("flow_abs")
+    controls._haemolynx_colormap.native.setCurrentText("plasma")
+    assert layer.edge_colormap.name == "plasma"
+
+    controls._haemolynx_feature.native.setCurrentText("flow_heading_deg")
+    assert layer.edge_colormap.name == "hsv"
+    assert controls._haemolynx_colormap.native.currentText() == "hsv"
+    assert layer.edge_contrast_limits == pytest.approx((0.0, 360.0))
+
+    controls._haemolynx_feature.native.setCurrentText("flow_dir_rgb")
+    assert layer.edge_color_mode == "direct"
+    assert controls._haemolynx_colormap.shown is False

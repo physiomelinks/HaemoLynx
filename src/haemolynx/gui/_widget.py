@@ -657,6 +657,15 @@ def _flow_heading_colormap() -> str:
     return "viridis"
 
 
+def _default_colormap_for(column: str | None) -> str:
+    """The map a colour-by column starts with, before the user overrides it."""
+    if column == FLOW_HEADING_COLUMN:
+        return _flow_heading_colormap()
+    if column in FLOW_DIR_COLUMNS:
+        return "coolwarm"
+    return "viridis"
+
+
 def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
     """One RGBA row per item, looked up from *cycle* by the item's label.
 
@@ -742,14 +751,11 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
             # rather than raising, which `_apply_layers` cannot catch.
             _record_colour(layer, column)
             return
-        if column == FLOW_HEADING_COLUMN:
-            colormap = _flow_heading_colormap()
-        elif column in FLOW_DIR_COLUMNS:
-            colormap = "coolwarm"
-        else:
-            colormap = "viridis"
+        colormap = _default_colormap_for(column)
         for attribute in attributes:
-            setattr(layer, f"{attribute}_colormap", colormap)
+            cmap_attr = f"{attribute.replace('_color', '')}_colormap"
+            if hasattr(layer, cmap_attr):
+                setattr(layer, cmap_attr, colormap)
             setattr(layer, attribute, column)
         # After the column, and through the same path the Fit buttons use: the
         # range has to be applied *and* the colours re-mapped against it. Set
@@ -1103,6 +1109,41 @@ _FLOW_COLOUR_COLUMN_ORDER = (
     "pressure_v",
 )
 
+#: Colormaps offered on Vectors/Points layer controls, grouped for scanning.
+#: Names are matplotlib/vispy maps ``ensure_colormap`` accepts; unknown ones
+#: are dropped when the combo is filled so an older napari still starts.
+COLORMAP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Sequential",
+        ("viridis", "plasma", "inferno", "magma", "cividis", "turbo", "gray"),
+    ),
+    (
+        "Diverging",
+        ("coolwarm", "RdBu", "seismic", "PiYG", "bwr"),
+    ),
+    (
+        "Cyclic",
+        ("hsv", "twilight", "twilight_shifted"),
+    ),
+    (
+        "Other",
+        (
+            "jet",
+            "rainbow",
+            "hot",
+            "cool",
+            "spring",
+            "summer",
+            "autumn",
+            "winter",
+            "bone",
+            "copper",
+            "pink",
+        ),
+    ),
+)
+_COLORMAP_GROUP_HEADERS = frozenset(title for title, _names in COLORMAP_GROUPS)
+
 
 def _colour_by_columns(layer) -> list[str]:
     """Feature columns worth offering for colouring, in a sensible order."""
@@ -1203,6 +1244,64 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
 
 def _contrast_limits_attribute(layer) -> str:
     return f"{_colour_attribute(layer).replace('_color', '')}_contrast_limits"
+
+
+def _colormap_attribute(layer) -> str:
+    """``edge_colormap`` / ``face_colormap`` -- not ``edge_color_colormap``.
+
+    Napari accepts setattr of a name it does not have: the value lands on a
+    stray attribute and the real colormap stays viridis. Same trap as
+    ``edge_color_contrast_limits`` (see ``_contrast_limits_attribute``).
+    """
+    return f"{_colour_attribute(layer).replace('_color', '')}_colormap"
+
+
+def _colormap_name(layer) -> str | None:
+    """The LUT currently on *layer*, or None if it has none."""
+    cmap = getattr(layer, _colormap_attribute(layer), None)
+    name = getattr(cmap, "name", None)
+    return str(name) if name else None
+
+
+def _colormap_usable(layer) -> bool:
+    """Whether a 1D LUT applies: colormap mode, not direct RGB or a cycle."""
+    if layer is None:
+        return False
+    if not hasattr(layer, _colormap_attribute(layer)):
+        return False
+    column = _active_column(layer)
+    if column in {None, "", "none", FLOW_DIR_RGB_COLUMN}:
+        return False
+    if _is_text_column(layer, column):
+        return False
+    mode = getattr(layer, f"{_colour_attribute(layer)}_mode", None)
+    return mode == "colormap"
+
+
+def _apply_colormap(layer, name: str) -> bool:
+    """Set the layer's LUT and re-map the active column so the canvas updates."""
+    applied = False
+    for attribute in _colour_attributes(layer):
+        cmap_attr = f"{attribute.replace('_color', '')}_colormap"
+        if not hasattr(layer, cmap_attr):
+            continue
+        try:
+            setattr(layer, cmap_attr, name)
+        except (ValueError, TypeError, KeyError):
+            logger.debug("could not set %s = %s", cmap_attr, name, exc_info=True)
+            return False
+        applied = True
+    if not applied:
+        return False
+    column = _active_column(layer)
+    if not column:
+        return True
+    try:
+        for attribute in _colour_attributes(layer):
+            setattr(layer, attribute, column)
+    except (KeyError, TypeError, ValueError):
+        logger.debug("could not remap colours after colormap change", exc_info=True)
+    return True
 
 
 def _apply_contrast_limits(layer, low: float, high: float) -> bool:
@@ -1417,6 +1516,12 @@ class _ColourScale:
             return
 
         self.heading.setText(str(self._column))
+        try:
+            self.bar.setPixmap(
+                _colorbar_pixmap(_colormap_name(layer) or "viridis")
+            )
+        except Exception:  # noqa: BLE001 - a missing bar is survivable
+            logger.debug("could not draw colour bar pixmap", exc_info=True)
         overlay = None
         try:
             overlay = _viewer_colorbar(layer, create=False)
@@ -1522,6 +1627,122 @@ class _FeatureChooser:
         text = _is_text_column(layer, column)
         cycle = colour_cycle_for(layer.features[column]) if text else ()
         _colour_layer(layer, column, "categorical" if text else "continuous", cycle)
+        controls = _layer_controls(self._viewer, layer)
+        chooser = getattr(controls, "_haemolynx_colormap", None) if controls else None
+        if chooser is not None:
+            chooser.refresh()
+
+
+def _known_colormap(name: str) -> bool:
+    """Whether napari will accept *name* as a LUT."""
+    try:
+        from napari.utils.colormaps import ensure_colormap
+
+        ensure_colormap(name)
+        return True
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+def colormap_choices() -> tuple[str, ...]:
+    """Flat, de-duplicated list of maps the dropdown offers, in group order."""
+    seen: set[str] = set()
+    names: list[str] = []
+    for _title, group in COLORMAP_GROUPS:
+        for name in group:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+    return tuple(names)
+
+
+def _fill_colormap_combo(combo) -> None:
+    """Group headers (disabled) then the maps napari actually knows."""
+    seen: set[str] = set()
+    for title, group in COLORMAP_GROUPS:
+        available = [
+            name for name in group
+            if name not in seen and _known_colormap(name)
+        ]
+        if not available:
+            continue
+        seen.update(available)
+        combo.addItem(title)
+        header = combo.model().item(combo.count() - 1)
+        if header is not None:
+            header.setEnabled(False)
+        for name in available:
+            combo.addItem(name)
+
+
+class _ColormapChooser:
+    """LUT picker on the same layer-controls panel as Colour by.
+
+    Direct RGB (``flow_dir_rgb``) and categorical colourings do not use a
+    colormap, so the combo is hidden then. Changing Colour by reapplies that
+    column's default map; the user can override afterwards from here.
+    """
+
+    def __init__(self, viewer, layer_name: str) -> None:
+        from qtpy.QtWidgets import QComboBox
+
+        self._viewer = viewer
+        self._layer_name = layer_name
+        self._connected = None
+        self.label = None
+        self.shown = False
+        self.native = QComboBox()
+        _fill_colormap_combo(self.native)
+        self.native.currentTextChanged.connect(self._chosen)
+
+    def _layer(self):
+        layers = getattr(self._viewer, "layers", {}) if self._viewer else {}
+        layer = layers[self._layer_name] if self._layer_name in layers else None
+        return layer if layer is not None and _is_ours(layer) else None
+
+    def follow_the_layer(self) -> None:
+        """Keep the combo in step with colourings chosen anywhere."""
+        layer = self._layer()
+        if layer is not None and layer is not self._connected:
+            events = getattr(layer, "events", None)
+            attribute = _colour_attribute(layer)
+            signal = getattr(events, attribute, None) if events else None
+            if signal is not None:
+                signal.connect(lambda *_a: self.refresh())
+            self._connected = layer
+        self.refresh()
+
+    def _offered_maps(self) -> list[str]:
+        return [
+            self.native.itemText(i)
+            for i in range(self.native.count())
+            if self.native.itemText(i)
+            and self.native.itemText(i) not in _COLORMAP_GROUP_HEADERS
+        ]
+
+    def refresh(self) -> None:
+        """Select the layer's current map, or hide when a LUT does not apply."""
+        layer = self._layer()
+        usable = _colormap_usable(layer)
+        self.shown = bool(usable)
+        self.native.setEnabled(usable)
+        self.native.setVisible(usable)
+        if self.label is not None:
+            self.label.setVisible(usable)
+        if not usable or layer is None:
+            return
+        name = _colormap_name(layer)
+        if name and name in self._offered_maps():
+            with _blocked(self.native):
+                self.native.setCurrentText(name)
+
+    def _chosen(self, name: str) -> None:
+        if not name or name in _COLORMAP_GROUP_HEADERS:
+            return
+        layer = self._layer()
+        if layer is None or not _colormap_usable(layer):
+            return
+        _apply_colormap(layer, name)
 
 
 def _layer_controls(viewer, layer):
@@ -1574,6 +1795,12 @@ def _attach_colour_scale(viewer, layer) -> bool:
         layout.addRow(QLabel(label), chooser.native)
         controls._haemolynx_feature = chooser
         chooser.refresh()
+        map_label = QLabel("Colour map:")
+        maps = _ColormapChooser(viewer, layer.name)
+        maps.label = map_label
+        layout.addRow(map_label, maps.native)
+        controls._haemolynx_colormap = maps
+        maps.follow_the_layer()
     scale = _ColourScale(viewer, layer.name)
     layout.addRow(QLabel("colour range:"), scale.native)
     controls._haemolynx_scale = scale
@@ -1586,6 +1813,7 @@ def _refresh_layer_controls(viewer, layer) -> None:
     controls = _layer_controls(viewer, layer)
     for attribute in (
         "_haemolynx_feature",
+        "_haemolynx_colormap",
         "_haemolynx_scale",
         "_haemolynx_branch_hover",
     ):

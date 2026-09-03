@@ -1343,6 +1343,69 @@ def test_the_vessels_get_a_refreshed_colour_by_dropdown(make_napari_viewer):
     assert "segment_id" in offered
 
 
+def test_the_colormap_attribute_is_one_napari_actually_has(make_napari_viewer):
+    """Same trap as contrast limits: ``edge_color_colormap`` is a no-op setattr."""
+    viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
+    nodes = viewer.layers[NODES]
+    assert hasattr(vessels, "edge_colormap")
+    assert hasattr(nodes, "face_colormap")
+    assert not hasattr(type(vessels), "edge_color_colormap")
+    assert not hasattr(type(nodes), "face_color_colormap")
+
+
+def test_the_vessels_and_nodes_get_a_colormap_dropdown(make_napari_viewer):
+    from haemolynx.gui._widget import (
+        _COLORMAP_GROUP_HEADERS,
+        _layer_controls,
+        colormap_choices,
+    )
+
+    viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
+    vessel_maps = _layer_controls(viewer, vessels)._haemolynx_colormap
+    node_maps = _layer_controls(viewer, viewer.layers[NODES])._haemolynx_colormap
+    assert vessel_maps is not None and node_maps is not None
+    offered = [
+        vessel_maps.native.itemText(i)
+        for i in range(vessel_maps.native.count())
+        if vessel_maps.native.itemText(i)
+        and vessel_maps.native.itemText(i) not in _COLORMAP_GROUP_HEADERS
+    ]
+    required = {
+        "viridis", "plasma", "inferno", "magma", "cividis", "turbo", "gray",
+        "coolwarm", "RdBu", "seismic", "PiYG",
+        "hsv", "twilight", "twilight_shifted",
+        "jet", "rainbow", "hot", "cool", "spring", "summer", "autumn", "winter",
+        "bone", "copper", "pink",
+    }
+    assert required <= set(offered)
+    assert set(offered) <= set(colormap_choices())
+    assert vessel_maps.shown is True
+    assert node_maps.shown is True
+    assert vessels.edge_colormap.name == "viridis"
+    assert vessel_maps.native.currentText() == "viridis"
+
+
+def test_vessel_colormap_combo_changes_the_layer_lut(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, vessels, _scale = a_drawn_run(make_napari_viewer)
+    chooser = _layer_controls(viewer, vessels)._haemolynx_colormap
+    before = np.array(vessels.edge_color, copy=True)
+    chooser.native.setCurrentText("plasma")
+    assert vessels.edge_colormap.name == "plasma"
+    assert not np.allclose(before, np.asarray(vessels.edge_color))
+
+
+def test_a_text_column_hides_the_colormap_dropdown(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, _vessels, _scale = a_drawn_run(make_napari_viewer, branch_order="BO1")
+    layer = viewer.layers[VESSELS]
+    controls = _layer_controls(viewer, layer)
+    controls._haemolynx_feature.native.setCurrentText("branch_order")
+    assert controls._haemolynx_colormap.shown is False
+    assert layer.edge_color_mode == "direct"
+
 def test_a_text_column_is_recognised_by_its_data_not_its_name(make_napari_viewer):
     """Choosing "role" raised `could not convert string to float: 'inlet'`.
 
