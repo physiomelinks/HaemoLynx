@@ -96,6 +96,20 @@ def test_load_binary_mask_treats_any_positive_voxel_as_foreground(tmp_path):
     assert len(voxel_size_xyz) == 3
 
 
+def test_load_binary_mask_keeps_one_two_label_masks_sparse(tmp_path):
+    """``1/2`` encodings must not become all-True (``> 0`` would)."""
+    mask = np.ones((4, 4, 4), dtype=np.uint8)
+    mask[1:3, 1:3, 1:3] = 2
+    path = tmp_path / "one_two.tif"
+    tifffile.imwrite(str(path), mask)
+
+    loaded, _voxel_size_xyz = load_binary_mask_and_voxel_size(path)
+
+    assert loaded.dtype == bool
+    assert int(loaded.sum()) == 8
+    assert bool(loaded[1, 1, 1]) and not bool(loaded[0, 0, 0])
+
+
 def test_load_binary_mask_rejects_unsupported_format(tmp_path):
     path = tmp_path / "mask.npy"
     path.write_bytes(b"not an image")

@@ -333,6 +333,94 @@ def test_loader_removes_subthreshold_mask_components(tmp_path: Path) -> None:
     assert not cleaned_v[2, 2, 2]
 
 
+def test_one_two_label_masks_stay_sparse_under_default_volume_filters(
+    tmp_path: Path,
+) -> None:
+    """Regression: ``1/2`` masks must not become all-True then wipe the venule.
+
+    Harvey-style vessel masks often use background=1 / foreground=2 with no
+    zero. A raw ``astype(bool)`` / ``> 0`` cast fills the arteriole; with the
+    default opposite-attached cleanup every venule component then sits at
+    distance 0 from that solid opposite mask and is removed. Automated
+    inlet/outlet assignment and the napari mask layers both read these arrays,
+    so the failure shows up as a solid arteriole, a blank venule, and missing
+    outlets -- not as a colormap issue.
+    """
+    from haemolynx.graph import select_terminal_nodes_from_large_vessel_masks
+    from haemolynx.gui.results import MASK_LAYERS, vessel_mask_volume_layers
+    import networkx as nx
+
+    shape = (20, 20, 20)
+    # Arteriole: 1/2 encoding (no zero). Correct binarisation keeps the 8^3 blob;
+    # a raw bool cast fills the volume.
+    arteriole = np.ones(shape, dtype=np.uint8)
+    arteriole[2:10, 2:10, 2:10] = 2  # 512 voxels
+    # Venule: ordinary 0/1, sized to survive the 200 um^3 min-volume filter but
+    # still be eligible for opposite-attached cleanup (<= 250 um^3) if the
+    # arteriole were wrongly solid.
+    venule = np.zeros(shape, dtype=np.uint8)
+    venule[12:18, 12:18, 12:18] = 1  # 216 voxels
+
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_with_voxel_size(arteriole_path, arteriole, voxel_size_xyz=(1.0, 1.0, 1.0))
+    _write_mask_with_voxel_size(venule_path, venule, voxel_size_xyz=(1.0, 1.0, 1.0))
+
+    cleaned_a, cleaned_v, _, _ = load_and_validate_vessel_masks(
+        mask_role="large",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=arteriole_path,
+        venule_mask_path=venule_path,
+        image_shape=shape,
+        main_voxel_size_xyz=(1.0, 1.0, 1.0),
+        # Schema defaults after e344137: volume filter + opposite-attached ON.
+        min_component_volume_um3=200.0,
+        remove_small_opposite_attached_components=True,
+        opposite_attached_max_component_volume_um3=250.0,
+        opposite_attached_max_distance_microns=3.0,
+    )
+
+    assert cleaned_a is not None and cleaned_v is not None
+    assert cleaned_a.dtype == bool and cleaned_v.dtype == bool
+    assert not bool(np.all(cleaned_a)), "arteriole must not fill the volume"
+    assert int(np.count_nonzero(cleaned_a)) == 512
+    assert int(np.count_nonzero(cleaned_v)) == 216
+    assert bool(cleaned_a[5, 5, 5]) and not bool(cleaned_a[0, 0, 0])
+    assert bool(cleaned_v[15, 15, 15]) and not bool(cleaned_v[0, 0, 0])
+
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=(5.0, 5.0, 5.0))  # inside arteriole
+    graph.add_node(1, pos=(15.0, 15.0, 15.0))  # inside venule
+    graph.add_node(2, pos=(10.0, 10.0, 10.0))  # junction
+    graph.add_edge(0, 2)
+    graph.add_edge(1, 2)
+    inlets, outlets = select_terminal_nodes_from_large_vessel_masks(
+        graph,
+        cleaned_a,
+        cleaned_v,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    assert inlets == [0]
+    assert outlets == [1]
+
+    layers = vessel_mask_volume_layers(
+        {
+            "large_arteriole_mask": cleaned_a,
+            "large_venule_mask": cleaned_v,
+        },
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    by_name = {spec.name: spec for spec in layers}
+    art_layer = by_name[MASK_LAYERS["large_arteriole_mask"]]
+    ven_layer = by_name[MASK_LAYERS["large_venule_mask"]]
+    assert not bool(np.all(art_layer.data > 0.5))
+    assert int(np.count_nonzero(art_layer.data > 0.5)) == 512
+    assert int(np.count_nonzero(ven_layer.data > 0.5)) == 216
+    assert np.array_equal(art_layer.data > 0.5, cleaned_a)
+    assert np.array_equal(ven_layer.data > 0.5, cleaned_v)
+
+
 # --- small-role wiring is not just the large role with a prefix -------------
 
 

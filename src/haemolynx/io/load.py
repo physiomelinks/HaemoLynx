@@ -532,8 +532,14 @@ def load_binary_mask_and_voxel_size(
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """Load a 3D binary mask and return ``(mask_bool, voxel_size_xyz)``.
 
-    Any strictly positive voxel is foreground. The path may point at a file
-    inside a sibling zip archive; see :func:`resolve_image_path_with_optional_zip`.
+    Uses the same binarisation as skeletonisation inputs: ``0/1``, ``0/255``,
+    and two-label encodings without a zero background (e.g. ``1/2``) all become
+    a sparse boolean foreground. A raw ``> 0`` cast is *not* used -- on a
+    ``1/2`` mask it would mark every voxel True and poison every downstream
+    consumer (dilation, volume filters, terminal assignment, napari display).
+
+    The path may point at a file inside a sibling zip archive; see
+    :func:`resolve_image_path_with_optional_zip`.
     """
     path = resolve_image_path_with_optional_zip(Path(mask_path))
     image, voxel_size_xyz = load_volume_and_voxel_size(
@@ -544,7 +550,7 @@ def load_binary_mask_and_voxel_size(
     )
     if image.ndim != 3:
         raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
-    return np.asarray(image) > 0, voxel_size_xyz
+    return _to_binary_volume_for_skeletonization(image), voxel_size_xyz
 
 
 def _skeletonize_loaded_volume(image: np.ndarray) -> np.ndarray:
