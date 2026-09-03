@@ -297,6 +297,36 @@ def test_a_layer_that_changed_type_is_replaced(viewer):
     assert isinstance(viewer.layers[NODES], napari.layers.Image)
 
 
+def test_add_or_update_replaces_vectors_when_graph_shrinks(viewer):
+    from haemolynx.gui.results import edge_polylines, polylines_to_vectors
+
+    large_graph = a_graph()
+    large_vectors, _ = polylines_to_vectors(edge_polylines(large_graph)[0])
+    _add_or_update(
+        viewer,
+        LayerSpec(kind="vectors", name=VESSELS, data=large_vectors),
+    )
+    assert len(viewer.layers[VESSELS].data) == len(large_vectors)
+
+    small_graph = nx.MultiGraph()
+    small_graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    small_graph.add_node(1, pos=np.array([10.0, 0.0, 0.0]))
+    small_graph.add_edge(
+        0,
+        1,
+        key=0,
+        voxels=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+        length=10.0,
+    )
+    small_vectors, _ = polylines_to_vectors(edge_polylines(small_graph)[0])
+    _add_or_update(
+        viewer,
+        LayerSpec(kind="vectors", name=VESSELS, data=small_vectors),
+    )
+    assert len(viewer.layers[VESSELS].data) == len(small_vectors)
+    assert len(viewer.layers[VESSELS].data) < len(large_vectors)
+
+
 # --- the delivery path -------------------------------------------------------
 
 

@@ -179,6 +179,26 @@ def check_input_is_not_a_large_vessel_mask(
     return report
 
 
+def check_large_vessel_cut_when_masks_enabled(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """Warn when large-mask assignment is on but the volume cut is off."""
+    report = CheckReport()
+    if not bool(settings.get("use_large_vessel_masks")):
+        return report
+    if not bool(settings.get("automated_vessel_assignment")):
+        return report
+    if bool(settings.get("cut_network_at_large_vessel_volumes")):
+        return report
+    report.add_warning(
+        "use_large_vessel_masks and automated_vessel_assignment are on, but "
+        "cut_network_at_large_vessel_volumes is off. Interior branches inside "
+        "large arteriole/venule volumes will stay in the network and napari "
+        "viewer unless you enable the cut."
+    )
+    return report
+
+
 def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every configured perturbation must name a type and settings that exist.
 
@@ -244,6 +264,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
+    report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_perturbations(settings, schema))
     report.print("Preflight")
     return report

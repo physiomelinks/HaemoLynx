@@ -132,6 +132,9 @@ class BoundaryNodes:
     venule_boundary_nodes: list[int] = field(default_factory=list)
     resistance_node_pair: tuple[int, int] | None = None
     graph: nx.MultiGraph | None = None
+    #: Post-assignment-prepass large masks (overlap cleanup applied), when set.
+    large_arteriole_mask: np.ndarray | None = None
+    large_venule_mask: np.ndarray | None = None
 
 
 @dataclass
@@ -747,6 +750,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         # redefine the cut volume. Cut runs before terminal selection so new
         # degree-1 boundary nodes are available, and network.graph / napari use
         # the post-cut graph.
+        network.large_arteriole_mask = assignment_large_arteriole_mask
+        network.large_venule_mask = assignment_large_venule_mask
         if bool(settings["cut_network_at_large_vessel_volumes"]):
             G = graph.cut_graph_at_large_vessel_volumes(
                 G,
@@ -762,11 +767,26 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 ),
             )
             network.graph = G
-            logger.info(
-                "Applied large-vessel volume network cut on filtered masks before "
-                "automated terminal assignment "
-                f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
-            )
+            input_path = settings.get("input_path")
+            if input_path is not None:
+                graph_path = (
+                    network.volume.output_dir
+                    / f"{Path(input_path).stem}_graph.pkl"
+                )
+                with graph_path.open("wb") as handle:
+                    pickle.dump(G, handle)
+                logger.info(
+                    "Applied large-vessel volume network cut on filtered masks before "
+                    "automated terminal assignment "
+                    f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain); "
+                    f"rewrote {graph_path}."
+                )
+            else:
+                logger.info(
+                    "Applied large-vessel volume network cut on filtered masks before "
+                    "automated terminal assignment "
+                    f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
+                )
         if use_legacy_large_vessel_assignment:
             auto_inlet_nodes, auto_outlet_nodes = (
                 graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
@@ -1265,6 +1285,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         venule_boundary_nodes=settings["venule_boundary_nodes"],
         resistance_node_pair=resistance_node_pair,
         graph=G,
+        large_arteriole_mask=network.large_arteriole_mask,
+        large_venule_mask=network.large_venule_mask,
     )
 
 

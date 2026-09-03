@@ -142,6 +142,48 @@ def test_array_layers_and_graph_layers_land_on_the_same_physical_point():
     assert np.allclose(nodes.data[1], voxel_index * np.asarray(spec_named(skeleton_group, SKELETON).scale))
 
 
+def test_skeleton_is_hidden_once_vessels_exist():
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4)),
+            skeleton=np.ones((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    group = results.stage_finished("build_network", network(a_graph()))
+    skeleton = spec_named(group, SKELETON)
+    assert skeleton.visible is False
+
+
+def test_assign_boundaries_keeps_skeleton_hidden_after_cut():
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4)),
+            skeleton=np.ones((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    results.stage_finished("build_network", network(a_graph()))
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            graph=a_graph(),
+        ),
+    )
+    skeleton = spec_named(group, SKELETON)
+    assert skeleton.visible is False
+
+
 # --- geometry ----------------------------------------------------------------
 
 

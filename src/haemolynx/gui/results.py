@@ -692,6 +692,7 @@ class ResultLayers:
             layers.append(
                 LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=scale)
             )
+            self._skeleton = skeleton
         return StageLayers(
             stage="skeletonise",
             title=_title_for("skeletonise"),
@@ -706,6 +707,18 @@ class ResultLayers:
 
         if graph is not None:
             layers.extend(self._vessel_layers("build_network"))
+            skeleton = getattr(getattr(output, "volume", None), "skeleton", None)
+            if skeleton is not None and graph.number_of_edges() > 0:
+                scale = tuple(float(v) for v in self._voxel_size_zyx)
+                layers.append(
+                    LayerSpec(
+                        kind="labels",
+                        name=SKELETON,
+                        data=skeleton,
+                        scale=scale,
+                        visible=False,
+                    )
+                )
             points, ids = node_points(graph)
             degrees = np.asarray([graph.degree(node_id) for node_id in ids], dtype=float)
             layers.append(
@@ -763,6 +776,17 @@ class ResultLayers:
             # leave pre-cut interior geometry on screen — including when the
             # post-cut graph is empty (emit empty layers to clear the viewer).
             layers.extend(self._vessel_layers("assign_boundaries"))
+            skeleton = getattr(self, "_skeleton", None)
+            if skeleton is not None:
+                layers.append(
+                    LayerSpec(
+                        kind="labels",
+                        name=SKELETON,
+                        data=skeleton,
+                        scale=tuple(float(v) for v in self._voxel_size_zyx),
+                        visible=False,
+                    )
+                )
             points, ids = node_points(self._graph)
             if len(points):
                 degrees = np.asarray(
@@ -829,6 +853,13 @@ class ResultLayers:
                         },
                     )
                 )
+
+        if getattr(output, "large_arteriole_mask", None) is not None or getattr(
+            output, "large_venule_mask", None
+        ) is not None:
+            layers.extend(
+                vessel_mask_volume_layers(output, voxel_size_zyx=self._voxel_size_zyx)
+            )
 
         counts = ", ".join(f"{len(ids)} {role}" for role, ids in roles.items() if ids)
         return StageLayers(

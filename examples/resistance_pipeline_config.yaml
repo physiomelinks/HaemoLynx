@@ -90,7 +90,7 @@ vessel_masks:
   write_fast_mode_preassignment_large_vessel_debug_3d_html: false
   # Block-max downsample stride for large/small vessel volume traces in the automated-assignment Plotly HTML view  [range 1..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_3d_volume_downsample_stride: 1
-  # Before automated terminal assignment, cut the graph at large arteriole/venule mask boundaries: remove edges inside the volume and split crossing edges so new degree-1 terminals sit on the exterior side of the cut  [needs use_large_vessel_masks and automated_vessel_assignment]
+  # Before automated terminal assignment, cut the graph at large arteriole/venule mask boundaries: remove edges inside the volume and split crossing edges so new degree-1 terminals sit on the exterior side of the cut. Runs by default whenever large-vessel masks drive automated assignment; turn off only when you deliberately want interior branches kept  [needs use_large_vessel_masks and automated_vessel_assignment]
   cut_network_at_large_vessel_volumes: false
   # After cutting at large-vessel volumes, remove connected components that remain outside the volume when their total edge count is below orphaned_branch_max_edge_count  [needs use_large_vessel_masks and automated_vessel_assignment and cut_network_at_large_vessel_volumes]
   remove_orphaned_branches_outside_large_vessel_volumes: false

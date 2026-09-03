@@ -1,6 +1,8 @@
 """Empirical tests for cutting graphs at large-vessel mask volumes."""
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
 from types import SimpleNamespace
 
 import networkx as nx
@@ -9,6 +11,7 @@ import numpy as np
 from haemolynx.graph import cut_graph_at_large_vessel_volumes
 from haemolynx.gui.results import NODES, VESSELS, ResultLayers, edge_polylines
 from haemolynx.pipeline import default_schema
+from haemolynx.pipeline.checks import check_large_vessel_cut_when_masks_enabled
 from haemolynx.pipeline.stages import (
     BoundaryNodes,
     SkeletonisedVolume,
@@ -108,7 +111,7 @@ def _through_volume_orphan_graph() -> tuple[nx.MultiGraph, np.ndarray, np.ndarra
 
 def test_schema_defaults_and_requires_for_volume_cut():
     schema = default_schema()
-    assert schema["cut_network_at_large_vessel_volumes"].default is False
+    assert schema["cut_network_at_large_vessel_volumes"].default is True
     assert schema["remove_orphaned_branches_outside_large_vessel_volumes"].default is False
     assert schema["orphaned_branch_max_edge_count"].default == 3
     assert schema["cut_network_at_large_vessel_volumes"].requires == (
@@ -672,3 +675,116 @@ def test_napari_empty_post_cut_graph_emits_empty_vessel_and_node_layers():
     assert len(np.asarray(vessels.data)) == 0
     assert len(np.asarray(nodes.data)) == 0
     assert results._graph is post_cut
+
+
+def test_default_schema_cuts_interior_edges_with_large_mask_assignment(
+    tmp_path, monkeypatch
+):
+    """Large-mask assignment with schema defaults must cut without a second opt-in."""
+    G, arteriole, venule = _crossing_chain_graph()
+    network = _network_for_cut(G, arteriole, venule, tmp_path)
+    schema = default_schema()
+    settings = schema.defaults()
+    settings.update(
+        {
+            "input_path": tmp_path / "stack.tif",
+            "plot_dir": tmp_path,
+            "automated_vessel_assignment": True,
+            "use_large_vessel_masks": True,
+            "automated_vessel_assignment_fast_mode": False,
+            "automated_vessel_assignment_enable_overlap_cleanup": False,
+            "automated_vessel_assignment_use_legacy_mode": True,
+            "large_vessel_assignment_max_dilation_microns": 0.0,
+            "write_fast_mode_preassignment_large_vessel_debug_3d_html": False,
+            "use_small_vessel_masks_for_boundary_assignment": False,
+            "inlet_nodes": [],
+            "outlet_nodes": [],
+            "arteriole_boundary_nodes": [],
+            "venule_boundary_nodes": [],
+            "arteriole_boundary_node_coordinates": [],
+            "venule_boundary_node_coordinates": [],
+            "arteriole_boundary_node_volumes": [],
+            "venule_boundary_node_volumes": [],
+            "inlet_node_coordinates": [],
+            "outlet_node_coordinates": [],
+            "remove_disconnected_io_components_after_final_assignment": False,
+        }
+    )
+    assert settings["cut_network_at_large_vessel_volumes"] is True
+
+    monkeypatch.setattr(
+        "haemolynx.graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
+        lambda graph_obj, **_kwargs: (
+            [n for n, d in graph_obj.degree() if d == 1][:1],
+            [n for n, d in graph_obj.degree() if d == 1][1:2],
+        ),
+    )
+    monkeypatch.setattr(
+        "haemolynx.visualization.visualize_3d_plotly_large_vessel_assignment",
+        lambda *args, **kwargs: None,
+    )
+
+    assign_boundaries(settings, network)
+
+    cut_volume = arteriole | venule
+    assert network.graph.number_of_edges() == 1
+    assert 1 not in network.graph.nodes
+    for _u, _v, data in network.graph.edges(data=True):
+        assert not _edge_has_interior_voxel(data, cut_volume)
+
+
+def test_assign_boundaries_rewrites_graph_pickle_after_cut(tmp_path, monkeypatch):
+    G, arteriole, venule = _crossing_chain_graph()
+    stem = "stack"
+    input_path = tmp_path / f"{stem}.tif"
+    input_path.write_bytes(b"x")
+    network = _network_for_cut(G, arteriole, venule, tmp_path)
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path,
+        input_path=str(input_path),
+    )
+    graph_path = tmp_path / f"{stem}_graph.pkl"
+    with graph_path.open("wb") as handle:
+        pickle.dump(G, handle)
+    assert G.number_of_edges() == 1
+
+    monkeypatch.setattr(
+        "haemolynx.graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
+        lambda graph_obj, **_kwargs: (
+            [n for n, d in graph_obj.degree() if d == 1][:1],
+            [n for n, d in graph_obj.degree() if d == 1][1:2],
+        ),
+    )
+    monkeypatch.setattr(
+        "haemolynx.visualization.visualize_3d_plotly_large_vessel_assignment",
+        lambda *args, **kwargs: None,
+    )
+
+    assign_boundaries(settings, network)
+
+    with graph_path.open("rb") as handle:
+        restored = pickle.load(handle)
+    assert restored.number_of_edges() == network.graph.number_of_edges()
+    assert restored.number_of_edges() == 1
+    assert set(restored.nodes) == set(network.graph.nodes)
+
+
+def test_preflight_warns_when_large_masks_on_and_cut_off():
+    report = check_large_vessel_cut_when_masks_enabled(
+        {
+            "use_large_vessel_masks": True,
+            "automated_vessel_assignment": True,
+            "cut_network_at_large_vessel_volumes": False,
+        }
+    )
+    assert report.warnings
+    assert any("cut_network_at_large_vessel_volumes" in warning for warning in report.warnings)
+
+    clear = check_large_vessel_cut_when_masks_enabled(
+        {
+            "use_large_vessel_masks": True,
+            "automated_vessel_assignment": True,
+            "cut_network_at_large_vessel_volumes": True,
+        }
+    )
+    assert not clear.warnings
