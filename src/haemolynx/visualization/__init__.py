@@ -9,6 +9,10 @@ from .plot import (
     visualize_geometry_with_edge_resistance,
     visualize_skeleton,
 )
+from .large_vessel_assignment import (
+    visualize_3d_plotly_large_vessel_assignment,
+    visualize_3d_plotly_large_vessel_assignment_flow_direction,
+)
 from .vtk_io import (
     derive_pericyte_points_from_graph,
     graph_to_vtk,
@@ -28,6 +32,8 @@ __all__ = [
     "plot_node_degree_distribution",
     "visualize_3d_plotly",
     "visualize_3d_plotly_vessel_types",
+    "visualize_3d_plotly_large_vessel_assignment",
+    "visualize_3d_plotly_large_vessel_assignment_flow_direction",
     "visualize_edges_and_nodes",
     "visualize_geometry_with_branch_orders",
     "visualize_geometry_with_edge_resistance",

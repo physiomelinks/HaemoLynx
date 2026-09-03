@@ -57,6 +57,7 @@ def test_extras_schema_defaults():
     assert schema["small_vessel_boundary_fallback_hop_distance"].default == 1
     assert schema["remove_disconnected_io_components_after_final_assignment"].default is False
     assert schema["write_fast_mode_preassignment_large_vessel_debug_3d_html"].default is False
+    assert schema["large_vessel_3d_volume_downsample_stride"].default == 1
     assert schema["remove_disconnected_io_components_after_final_assignment"].requires == (
         "automated_vessel_assignment",
     )

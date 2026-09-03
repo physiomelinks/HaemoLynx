@@ -454,6 +454,18 @@ SCHEMA = Schema(
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
+            name="large_vessel_3d_volume_downsample_stride",
+            kind="int",
+            default=1,
+            help=(
+                "Block-max downsample stride for large/small vessel volume traces "
+                "in the automated-assignment Plotly HTML view"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=1,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
             name="remove_disconnected_io_components_after_final_assignment",
             kind="bool",
             default=False,

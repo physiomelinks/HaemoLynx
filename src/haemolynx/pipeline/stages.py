@@ -655,20 +655,27 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     f"to {float(effective_max_large_vessel_dilation_microns):.3f} microns."
                 )
         if effective_assignment_fast_mode and cleanup_enabled_for_large:
+            volume_stride = int(settings["large_vessel_3d_volume_downsample_stride"])
             if bool(settings["write_fast_mode_preassignment_large_vessel_debug_3d_html"]):
                 before_html = (
                     Path(settings["plot_dir"])
                     / "pre_assignment_large_vessel_masks_before_overlap_cleanup_3d.html"
                 )
                 Path(settings["plot_dir"]).mkdir(parents=True, exist_ok=True)
-                graph.write_automated_vessel_assignment_3d_html(
+                visualization.visualize_3d_plotly_large_vessel_assignment(
                     G,
                     large_arteriole_mask=assignment_large_arteriole_mask,
                     large_venule_mask=assignment_large_venule_mask,
                     input_nodes=[],
-                    outlet_nodes=[],
+                    output_nodes=[],
                     voxel_size_zyx=voxel_size_zyx,
-                    output_html_path=before_html,
+                    volume_downsample_stride=volume_stride,
+                    title=(
+                        "Pre-Assignment Debug View (Fast Mode, Before Overlap Cleanup): "
+                        "Large-Vessel Masks + Graph"
+                    ),
+                    save_html_path=str(before_html),
+                    show=False,
                 )
                 logger.info(
                     "Saved fast-mode pre-assignment (before cleanup) large-vessel "
@@ -692,14 +699,20 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     Path(settings["plot_dir"])
                     / "pre_assignment_large_vessel_masks_after_overlap_cleanup_3d.html"
                 )
-                graph.write_automated_vessel_assignment_3d_html(
+                visualization.visualize_3d_plotly_large_vessel_assignment(
                     G,
                     large_arteriole_mask=assignment_large_arteriole_mask,
                     large_venule_mask=assignment_large_venule_mask,
                     input_nodes=[],
-                    outlet_nodes=[],
+                    output_nodes=[],
                     voxel_size_zyx=voxel_size_zyx,
-                    output_html_path=after_html,
+                    volume_downsample_stride=volume_stride,
+                    title=(
+                        "Pre-Assignment Debug View (Fast Mode, After Overlap Cleanup): "
+                        "Large-Vessel Masks + Graph"
+                    ),
+                    save_html_path=str(after_html),
+                    show=False,
                 )
                 logger.info(
                     "Saved fast-mode pre-assignment (after cleanup) large-vessel "
@@ -792,26 +805,6 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
             for node_id in auto_outlet_nodes
         ]
-        automated_assignment_html_path = settings["plot_dir"] / "automated_vessel_assignment_3d.html"
-        wrote_assignment_html = graph.write_automated_vessel_assignment_3d_html(
-            G,
-            large_arteriole_mask=large_arteriole_mask,
-            large_venule_mask=large_venule_mask,
-            input_nodes=auto_inlet_nodes,
-            outlet_nodes=auto_outlet_nodes,
-            voxel_size_zyx=voxel_size_zyx,
-            output_html_path=automated_assignment_html_path,
-        )
-        if wrote_assignment_html:
-            logger.info(
-                "Saved automated vessel-assignment 3D visualization to: "
-                f"{automated_assignment_html_path}"
-            )
-        else:
-            logger.warning(
-                "Skipped automated vessel-assignment 3D visualization "
-                "(plotly is not installed)."
-            )
         logger.info(
             "Automated vessel assignment selected "
             f"{len(settings['inlet_node_coordinates'])} input coordinates from arteriole-mask overlap "
@@ -1152,6 +1145,47 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     "After removing disconnected components without both inlet and "
                     "outlet nodes, no valid boundary nodes remained."
                 )
+
+    if settings["automated_vessel_assignment"]:
+        if large_arteriole_mask is None or large_venule_mask is None:
+            raise ValueError(
+                "automated_vessel_assignment=True requires large arteriole/venule masks "
+                "for visualization."
+            )
+        has_small_viz_masks = (
+            small_arteriole_mask is not None and small_venule_mask is not None
+        )
+        if not has_small_viz_masks:
+            logger.info(
+                "Small-vessel volume overlay unavailable for final large-vessel "
+                "assignment view; skipping small-vessel volume rendering."
+            )
+        final_assignment_html_path = (
+            Path(settings["plot_dir"]) / "final_graph_large_vessel_assignment_3d.html"
+        )
+        Path(settings["plot_dir"]).mkdir(parents=True, exist_ok=True)
+        visualization.visualize_3d_plotly_large_vessel_assignment(
+            G,
+            large_arteriole_mask=large_arteriole_mask,
+            large_venule_mask=large_venule_mask,
+            small_arteriole_mask=small_arteriole_mask if has_small_viz_masks else None,
+            small_venule_mask=small_venule_mask if has_small_viz_masks else None,
+            input_nodes=list(settings["inlet_nodes"]),
+            output_nodes=list(settings["outlet_nodes"]),
+            arteriole_boundary_nodes=list(settings["arteriole_boundary_nodes"]),
+            venule_boundary_nodes=list(settings["venule_boundary_nodes"]),
+            voxel_size_zyx=voxel_size_zyx,
+            volume_downsample_stride=int(
+                settings["large_vessel_3d_volume_downsample_stride"]
+            ),
+            title="Final Graph with Automated Large+Small Vessel Assignment (3D)",
+            save_html_path=str(final_assignment_html_path),
+            show=False,
+        )
+        logger.info(
+            "Saved final automated large-vessel assignment 3D visualization to: "
+            f"{final_assignment_html_path}"
+        )
 
     if settings["inlet_nodes"] and settings["outlet_nodes"]:
         resistance_node_pair = (settings["inlet_nodes"][0], settings["outlet_nodes"][0])

@@ -104,6 +104,8 @@ DIMENSIONLESS = {
     "voxel_size_policy",
     # Graph hop count (edge steps), not a physical distance.
     "small_vessel_boundary_fallback_hop_distance",
+    # Voxel index stride for Plotly volume downsampling (not a physical length).
+    "large_vessel_3d_volume_downsample_stride",
     # Ratio of cylinder radii (dimensionless).
     "small_vessel_mask_continuity_max_radius_ratio",
     # Angle in degrees; no degrees unit is registered in the schema vocabulary.
