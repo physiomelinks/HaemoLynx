@@ -144,6 +144,63 @@ def image_z_extent_um(
     return float(voxel_size_zyx[0]) * int(image_shape_z)
 
 
+def graph_z_bounds_um(graph: Any) -> tuple[float, float] | None:
+    """Physical Z span of node positions in *graph*, in microns."""
+    if graph is None:
+        return None
+    zs: list[float] = []
+    for _node, data in graph.nodes(data=True):
+        pos = data.get("pos")
+        if pos is None:
+            continue
+        zs.append(float(np.asarray(pos, dtype=float)[0]))
+    if not zs:
+        return None
+    return min(zs), max(zs)
+
+
+def z_depth_slider_range_um(
+    voxel_size_zyx: Sequence[float],
+    image_shape_z: int | None,
+    graph: Any | None,
+) -> tuple[float, float] | None:
+    """Slider endpoints: image stack span union graph node Z."""
+    image_hi: float | None = None
+    if image_shape_z is not None:
+        image_hi = image_z_extent_um(voxel_size_zyx, image_shape_z)
+    graph_bounds = graph_z_bounds_um(graph)
+    if image_hi is not None and image_hi > 0.0:
+        lo, hi = 0.0, image_hi
+    elif graph_bounds is not None:
+        lo, hi = graph_bounds
+    else:
+        return None
+    if graph_bounds is not None:
+        lo = min(lo, graph_bounds[0])
+        hi = max(hi, graph_bounds[1])
+    if hi <= lo:
+        return None
+    return lo, hi
+
+
+def z_filter_is_active(
+    z_min: float,
+    z_max: float,
+    *,
+    slider_range: tuple[float, float] | None = None,
+) -> bool:
+    """True when the Z band is a strict subset of the slider span."""
+    if z_max <= z_min + 1e-6:
+        return False
+    if slider_range is None:
+        return False
+    s_lo, s_hi = slider_range
+    if s_hi <= s_lo + 1e-6:
+        return False
+    eps = max(1e-6, abs(s_hi - s_lo) * 1e-9)
+    return not (z_min <= s_lo + eps and z_max >= s_hi - eps)
+
+
 def is_z_depth_filtered_layer(name: str, kind: str) -> bool:
     """Whether the view-only Z depth filter applies to a HaemoLynx layer."""
     if kind not in ("vectors", "points"):
@@ -669,6 +726,12 @@ class ResultLayers:
         if self._image_shape_z is None:
             return None
         return image_z_extent_um(self._voxel_size_zyx, self._image_shape_z)
+
+    def z_depth_slider_range_um(self) -> tuple[float, float] | None:
+        """Physical Z span for the view-only depth slider."""
+        return z_depth_slider_range_um(
+            self._voxel_size_zyx, self._image_shape_z, self._graph
+        )
 
     def stage_finished(self, stage: str, output: Any) -> StageLayers:
         """The layers for *stage*, built now, from *output* as it is now."""

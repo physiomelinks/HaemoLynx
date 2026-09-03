@@ -42,6 +42,7 @@ from haemolynx.gui.results import (
     filter_points_by_z,
     filter_vectors_by_z,
     is_z_depth_filtered_layer,
+    z_filter_is_active,
 )
 from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.run_state import (
@@ -264,14 +265,10 @@ def _apply_z_filter(
     z_min: float,
     z_max: float,
     *,
-    z_extent: float | None = None,
+    slider_range: tuple[float, float] | None = None,
 ) -> None:
     """Redraw graph Vectors/Points layers filtered to a physical Z band."""
-    full_range = (
-        z_extent is not None
-        and z_min <= 0.0
-        and z_max >= z_extent - max(1e-6, abs(z_extent) * 1e-9)
-    )
+    active = z_filter_is_active(z_min, z_max, slider_range=slider_range)
     for layer in viewer.layers:
         if not _is_ours(layer):
             continue
@@ -286,7 +283,7 @@ def _apply_z_filter(
             cache = tag.get("z_filter_full")
         if cache is None:
             continue
-        if full_range:
+        if not active:
             data = cache["data"]
             features = cache["features"]
             segment_owner = cache.get("segment_owner")
@@ -319,7 +316,8 @@ def _uniform_points_property(value: Any, n: int) -> Any:
         return None
     arr = np.asarray(value)
     if arr.ndim == 0 or arr.size == 1:
-        return arr.item() if arr.ndim == 0 else arr.flat[0].item()
+        val = arr if arr.ndim == 0 else arr.flat[0]
+        return val.item() if isinstance(val, np.generic) else val
     flat = arr.ravel()
     if len(flat) == n:
         return value
@@ -417,27 +415,30 @@ def _set_z_filtered_layer_data(
 
 
 def _sync_z_depth_slider(slider, results: ResultLayers | None) -> None:
-    """Set slider range from the image stack; hide until skeletonise has run."""
-    extent = results.image_z_extent_um() if results is not None else None
-    if extent is None or extent <= 0.0:
+    """Set slider range from image stack and graph Z; hide until known."""
+    slider_range = (
+        results.z_depth_slider_range_um() if results is not None else None
+    )
+    if slider_range is None:
         slider.setEnabled(False)
         slider.setVisible(False)
         return
+    lo, hi = slider_range
     step = float(results._voxel_size_zyx[0]) if results is not None else 1.0  # noqa: SLF001
     slider.setVisible(True)
     slider.setEnabled(True)
     slider.blockSignals(True)
     try:
-        slider.setRange(0.0, extent)
+        slider.setRange(lo, hi)
         if hasattr(slider, "setSingleStep"):
             slider.setSingleStep(max(step, 1e-6))
-        lo, hi = slider.value()
-        if hi <= lo or hi > extent or lo < 0.0:
-            lo, hi = 0.0, extent
+        cur_lo, cur_hi = slider.value()
+        if cur_hi <= cur_lo or cur_hi > hi or cur_lo < lo:
+            cur_lo, cur_hi = lo, hi
         else:
-            lo = max(0.0, min(lo, extent))
-            hi = max(lo, min(hi, extent))
-        slider.setValue((lo, hi))
+            cur_lo = max(lo, min(cur_lo, hi))
+            cur_hi = max(cur_lo, min(cur_hi, hi))
+        slider.setValue((cur_lo, cur_hi))
     finally:
         slider.blockSignals(False)
 
@@ -3857,7 +3858,7 @@ def settings_widget(napari_viewer=None):
             viewer,
             z_lo,
             z_hi,
-            z_extent=view.results.image_z_extent_um(),
+            slider_range=view.results.z_depth_slider_range_um(),
         )
 
     if viewer is not None:
@@ -3871,7 +3872,7 @@ def settings_widget(napari_viewer=None):
             viewer,
             z_lo,
             z_hi,
-            z_extent=view.results.image_z_extent_um(),
+            slider_range=view.results.z_depth_slider_range_um(),
         )
 
     def on_arrow_length_changed(value: float) -> None:

@@ -171,14 +171,14 @@ def test_branch_hover_z_filter_with_stale_size_array_does_not_raise(make_napari_
     layer.size = np.full(full_count, 2.0)
     full_z = 30.0
 
-    _apply_z_filter(viewer, 0.0, 15.0, z_extent=full_z)
+    _apply_z_filter(viewer, 0.0, 15.0, slider_range=(0.0, full_z))
     filtered = viewer.layers[BRANCH_HOVER]
     assert len(filtered.data) < full_count
     assert np.isscalar(filtered.size) or len(np.asarray(filtered.size)) == len(
         filtered.data
     )
 
-    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    _apply_z_filter(viewer, 0.0, full_z, slider_range=(0.0, full_z))
     restored = viewer.layers[BRANCH_HOVER]
     assert len(restored.data) == full_count
     assert np.isscalar(restored.size) or len(np.asarray(restored.size)) == full_count

@@ -42,6 +42,9 @@ from haemolynx.gui.results import (
     filter_points_by_z,
     filter_vectors_by_z,
     image_z_extent_um,
+    graph_z_bounds_um,
+    z_depth_slider_range_um,
+    z_filter_is_active,
     is_ours_name,
     is_z_depth_filtered_layer,
     perturbation_layer_names,
@@ -1071,6 +1074,21 @@ def test_image_z_extent_um_is_voxel_z_times_stack_depth():
     assert image_z_extent_um((2.0, 1.0, 0.5), 8) == pytest.approx(16.0)
 
 
+def test_z_depth_slider_range_covers_graph_outside_image():
+    graph = a_graph()
+    assert graph_z_bounds_um(graph) == pytest.approx((0.0, 30.0))
+    assert z_depth_slider_range_um((2.0, 1.0, 0.5), 4, graph) == pytest.approx(
+        (0.0, 30.0)
+    )
+
+
+def test_z_filter_inactive_for_degenerate_or_full_slider_range():
+    assert z_filter_is_active(0.0, 0.0, slider_range=(0.0, 30.0)) is False
+    assert z_filter_is_active(0.0, 30.0, slider_range=(0.0, 30.0)) is False
+    assert z_filter_is_active(0.0, 15.0, slider_range=(0.0, 30.0)) is True
+    assert z_filter_is_active(0.0, 15.0, slider_range=None) is False
+
+
 def test_z_depth_filter_targets_graph_vectors_and_points_only():
     assert is_z_depth_filtered_layer(VESSELS, "vectors") is True
     assert is_z_depth_filtered_layer(FLOW_DIRECTION, "vectors") is True
@@ -1172,9 +1190,43 @@ def test_apply_z_filter_on_viewer_restores_full_range():
     }
     viewer = SimpleNamespace(layers=[layer])
 
-    _apply_z_filter(viewer, 0.0, 15.0, z_extent=full_z)
+    _apply_z_filter(viewer, 0.0, 15.0, slider_range=(0.0, full_z))
     assert len(layer.data) == 2
-    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    _apply_z_filter(viewer, 0.0, full_z, slider_range=(0.0, full_z))
+    assert len(layer.data) == len(vessels.data)
+
+
+def test_apply_z_filter_zero_range_keeps_all_edges():
+    from haemolynx.gui._widget import _apply_z_filter
+
+    graph = a_graph()
+    results = built(graph)
+    group = results.stage_finished("build_network", network(graph))
+    vessels = spec_named(group, VESSELS)
+    slider_range = results.z_depth_slider_range_um()
+
+    class Vectors:
+        pass
+
+    layer = Vectors()
+    layer.name = VESSELS
+    layer.data = np.asarray(vessels.data)
+    layer.features = dict(vessels.features)
+    layer.metadata = {
+        "haemolynx": {
+            "z_filter_full": {
+                "data": np.asarray(vessels.data),
+                "features": {
+                    k: np.asarray(v) for k, v in vessels.features.items()
+                },
+            }
+        }
+    }
+    viewer = SimpleNamespace(layers=[layer])
+
+    _apply_z_filter(viewer, 0.0, 0.0, slider_range=slider_range)
+    assert len(layer.data) == len(vessels.data)
+    _apply_z_filter(viewer, 0.0, 0.0, slider_range=None)
     assert len(layer.data) == len(vessels.data)
 
 
@@ -1201,10 +1253,10 @@ def test_apply_z_filter_on_viewer_filters_flow_direction_layer():
     }
     viewer = SimpleNamespace(layers=[layer])
 
-    _apply_z_filter(viewer, 0.0, 16.0, z_extent=full_z)
+    _apply_z_filter(viewer, 0.0, 16.0, slider_range=(0.0, full_z))
     assert len(layer.data) == 2
     assert np.all(layer.data[:, 0, 0] <= 16.0)
-    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    _apply_z_filter(viewer, 0.0, full_z, slider_range=(0.0, full_z))
     assert len(layer.data) == len(vectors)
 
 

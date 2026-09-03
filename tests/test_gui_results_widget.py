@@ -42,7 +42,7 @@ from haemolynx.gui.results import (  # noqa: E402
     StageLayers,
     perturbation_layer_names,
 )
-from test_gui_results import a_graph, network  # noqa: E402
+from test_gui_results import a_graph, network, spec_named  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -718,12 +718,37 @@ def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
     image_data = np.asarray(viewer.layers[IMAGE].data).copy()
     vessel_count = len(viewer.layers[VESSELS].data)
 
-    _apply_z_filter(viewer, 0.0, 5.0, z_extent=full_z)
+    _apply_z_filter(viewer, 0.0, 5.0, slider_range=(0.0, full_z))
     assert len(viewer.layers[VESSELS].data) < vessel_count
     assert np.array_equal(viewer.layers[IMAGE].data, image_data)
 
-    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    _apply_z_filter(viewer, 0.0, full_z, slider_range=(0.0, full_z))
     assert len(viewer.layers[VESSELS].data) == vessel_count
+
+
+def test_z_depth_filter_keeps_all_edges_at_default_full_slider(viewer):
+    from haemolynx.gui._widget import _apply_layers
+
+    results = ResultLayers()
+    graph = a_graph()
+    skel = results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(0.5, 1.0, 2.0),
+            voxel_size_zyx=(2.0, 1.0, 0.5),
+        ),
+    )
+    build = results.stage_finished(
+        "build_network", network(graph, (2.0, 1.0, 0.5))
+    )
+    expected = len(spec_named(build, VESSELS).data)
+    for group in (skel, build):
+        _apply_layers(viewer, group)
+
+    assert results.z_depth_slider_range_um() == pytest.approx((0.0, 30.0))
+    assert len(viewer.layers[VESSELS].data) == expected
 
 
 # --- the colour-by dropdowns learn what a stage made available ---------------
