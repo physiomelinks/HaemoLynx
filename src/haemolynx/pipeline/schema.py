@@ -443,6 +443,28 @@ SCHEMA = Schema(
             ),
         ),
         Setting(
+            name="write_fast_mode_preassignment_large_vessel_debug_3d_html",
+            kind="bool",
+            default=False,
+            help=(
+                "Write before/after Plotly HTML diagnostics of large-vessel masks "
+                "around fast-mode overlap cleanup"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="remove_disconnected_io_components_after_final_assignment",
+            kind="bool",
+            default=False,
+            help=(
+                "After final I/O assignment, drop graph components that lack both "
+                "an inlet and an outlet node"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("automated_vessel_assignment",),
+        ),
+        Setting(
             name="large_arteriole_mask_path",
             kind="path",
             default=f"{_IMAGES}/large_arteriole_mask.tif",
@@ -801,6 +823,29 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_boundary_fallback_to_hop_distance",
+            kind="bool",
+            default=True,
+            help=(
+                "If small-vessel mask labelling misses seed-edge coverage from "
+                "inlets/outlets, fall back to nodes at a fixed hop distance"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_boundary_fallback_hop_distance",
+            kind="int",
+            default=1,
+            help="Hop distance used when small-vessel boundary hop-distance fallback is enabled",
+            section=_VESSEL_MASKS,
+            minimum=1,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "small_vessel_boundary_fallback_to_hop_distance",
+            ),
         ),
         Setting(
             name="small_vessel_min_component_volume_um3",

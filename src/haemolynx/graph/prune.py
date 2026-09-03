@@ -96,6 +96,53 @@ def prune_vascular_stubs(
     )
     return G_pruned
 
+
+def remove_components_without_connected_io(
+    G: Union[nx.Graph, nx.MultiGraph],
+    starting_nodes: list[int],
+    output_nodes: list[int],
+) -> tuple[Union[nx.Graph, nx.MultiGraph], dict[str, int]]:
+    """Keep only connected components containing both start and output nodes.
+
+    Components that do not include at least one node from each boundary set
+    are removed. Node IDs not present in ``G`` are ignored.
+    """
+    start_node_set = {
+        int(node_id) for node_id in starting_nodes if int(node_id) in G.nodes
+    }
+    output_node_set = {
+        int(node_id) for node_id in output_nodes if int(node_id) in G.nodes
+    }
+
+    keep_nodes: set[int] = set()
+    removed_component_count = 0
+    removed_node_count = 0
+
+    for component_nodes in nx.connected_components(G):
+        component_node_set = {int(node_id) for node_id in component_nodes}
+        has_start_node = bool(component_node_set.intersection(start_node_set))
+        has_output_node = bool(component_node_set.intersection(output_node_set))
+        if has_start_node and has_output_node:
+            keep_nodes.update(component_node_set)
+        else:
+            removed_component_count += 1
+            removed_node_count += len(component_node_set)
+
+    if removed_component_count <= 0:
+        return G.copy(), {
+            "removed_components": 0,
+            "removed_nodes": 0,
+            "remaining_nodes": int(G.number_of_nodes()),
+        }
+
+    G_pruned = G.subgraph(keep_nodes).copy()
+    return G_pruned, {
+        "removed_components": int(removed_component_count),
+        "removed_nodes": int(removed_node_count),
+        "remaining_nodes": int(G_pruned.number_of_nodes()),
+    }
+
+
 def remove_edges_for_self_connected_nodes(G: Union[nx.Graph, nx.MultiGraph]) -> Union[nx.Graph, nx.MultiGraph]:
     """Remove edges for nodes that are connected to themselves with no nodes in between."""
     G_pruned = G.copy()

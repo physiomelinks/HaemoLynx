@@ -22,7 +22,11 @@ from .degree2 import (
     smart_multigraph_degree2_removal,
     merge_edges_with_topology_improvement,
 )
-from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
+from .prune import (
+    prune_vascular_stubs,
+    remove_components_without_connected_io,
+    remove_edges_for_self_connected_nodes,
+)
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
 from .collapse import collapse_node_clusters
 from .branch_order import (
@@ -35,6 +39,10 @@ from .boundaries import (
     select_boundary_nodes_by_method,
     select_boundary_nodes_for_role,
     select_boundary_terminal_nodes,
+)
+from .boundary_node_fallback import (
+    seed_edges_have_full_mask_coverage,
+    select_nodes_at_hop_distance,
 )
 from .automated_vessel_assignment import (
     compute_overlapping_terminal_assignment_metrics,
@@ -113,6 +121,7 @@ __all__ = [
     "smart_multigraph_degree2_removal",
     "merge_edges_with_topology_improvement",
     "prune_vascular_stubs",
+    "remove_components_without_connected_io",
     "diagnose_degree2_nodes",
     "format_degree2_diagnostics_report",
     "collapse_node_clusters",
@@ -144,6 +153,8 @@ __all__ = [
     "remove_small_mask_components_by_volume",
     "remove_small_vessel_components_by_volume",
     "remove_edges_for_self_connected_nodes",
+    "seed_edges_have_full_mask_coverage",
+    "select_nodes_at_hop_distance",
     "add_edge_safe",
     "has_edge_safe",
     "remove_edge_safe",

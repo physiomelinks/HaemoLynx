@@ -74,6 +74,10 @@ vessel_masks:
   automated_vessel_quality_max_component_count: 12
   # Conservative-mode cap for progressive dilation in robust assignment  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
   automated_vessel_conservative_max_dilation_microns: 15.0
+  # Write before/after Plotly HTML diagnostics of large-vessel masks around fast-mode overlap cleanup  [needs use_large_vessel_masks and automated_vessel_assignment]
+  write_fast_mode_preassignment_large_vessel_debug_3d_html: false
+  # After final I/O assignment, drop graph components that lack both an inlet and an outlet node  [needs automated_vessel_assignment]
+  remove_disconnected_io_components_after_final_assignment: false
   # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
   # Read this pre-segmented large venule mask  [needs use_large_vessel_masks; must exist]
@@ -138,6 +142,10 @@ vessel_masks:
   small_vessel_tangential_redefinition_parallel_workers: 8
   # Optional CuPy GPU acceleration for EDT-heavy continuity / tangential-redefinition steps (falls back to CPU if unavailable)  [needs use_small_vessel_masks_for_boundary_assignment]
   use_gpu_mask_continuity_acceleration: false
+  # If small-vessel mask labelling misses seed-edge coverage from inlets/outlets, fall back to nodes at a fixed hop distance  [needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_boundary_fallback_to_hop_distance: true
+  # Hop distance used when small-vessel boundary hop-distance fallback is enabled  [range 1..; needs use_small_vessel_masks_for_boundary_assignment and small_vessel_boundary_fallback_to_hop_distance]
+  small_vessel_boundary_fallback_hop_distance: 1
   # Remove connected components smaller than this physical volume from small-vessel masks before boundary assignment (set 0 to disable)  [um3; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_min_component_volume_um3: 50.0
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]

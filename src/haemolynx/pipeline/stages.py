@@ -655,6 +655,25 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     f"to {float(effective_max_large_vessel_dilation_microns):.3f} microns."
                 )
         if effective_assignment_fast_mode and cleanup_enabled_for_large:
+            if bool(settings["write_fast_mode_preassignment_large_vessel_debug_3d_html"]):
+                before_html = (
+                    Path(settings["plot_dir"])
+                    / "pre_assignment_large_vessel_masks_before_overlap_cleanup_3d.html"
+                )
+                Path(settings["plot_dir"]).mkdir(parents=True, exist_ok=True)
+                graph.write_automated_vessel_assignment_3d_html(
+                    G,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
+                    input_nodes=[],
+                    outlet_nodes=[],
+                    voxel_size_zyx=voxel_size_zyx,
+                    output_html_path=before_html,
+                )
+                logger.info(
+                    "Saved fast-mode pre-assignment (before cleanup) large-vessel "
+                    f"debug 3D visualization to: {before_html}"
+                )
             cleaned_arteriole_mask, cleaned_venule_mask = (
                 graph.exclude_smaller_overlapping_large_vessel_components(
                     assignment_large_arteriole_mask,
@@ -668,6 +687,24 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "Automated large-vessel assignment fast mode: applied overlap "
                 "cleanup before progressive terminal assignment."
             )
+            if bool(settings["write_fast_mode_preassignment_large_vessel_debug_3d_html"]):
+                after_html = (
+                    Path(settings["plot_dir"])
+                    / "pre_assignment_large_vessel_masks_after_overlap_cleanup_3d.html"
+                )
+                graph.write_automated_vessel_assignment_3d_html(
+                    G,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
+                    input_nodes=[],
+                    outlet_nodes=[],
+                    voxel_size_zyx=voxel_size_zyx,
+                    output_html_path=after_html,
+                )
+                logger.info(
+                    "Saved fast-mode pre-assignment (after cleanup) large-vessel "
+                    f"debug 3D visualization to: {after_html}"
+                )
         elif apply_overlap_cleanup_prepass:
             logger.info(
                 "Automated large-vessel assignment: overlap cleanup will run "
@@ -986,6 +1023,63 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             f"venule_edges={inferred_boundary_results['venule_edge_count']}, "
             f"overlap_edges={inferred_boundary_results['overlap_edge_count']}."
         )
+        fallback_enabled = bool(settings["small_vessel_boundary_fallback_to_hop_distance"])
+        fallback_hops = int(settings["small_vessel_boundary_fallback_hop_distance"])
+        if fallback_enabled and fallback_hops < 1:
+            raise ValueError(
+                "small_vessel_boundary_fallback_hop_distance must be >= 1 when "
+                "small_vessel_boundary_fallback_to_hop_distance=True."
+            )
+        exclude_io_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
+        (
+            arteriole_seed_edges_covered,
+            arteriole_uncovered_edge_count,
+            arteriole_seed_edge_count,
+        ) = graph.seed_edges_have_full_mask_coverage(
+            G,
+            list(settings["inlet_nodes"]),
+            assignment_small_arteriole_mask,
+        )
+        (
+            venule_seed_edges_covered,
+            venule_uncovered_edge_count,
+            venule_seed_edge_count,
+        ) = graph.seed_edges_have_full_mask_coverage(
+            G,
+            list(settings["outlet_nodes"]),
+            assignment_small_venule_mask,
+        )
+        if fallback_enabled and (
+            (not arteriole_seed_edges_covered) or (not venule_seed_edges_covered)
+        ):
+            logger.info(
+                "Small-vessel mask boundary assignment missed immediate seed-edge "
+                f"mask coverage; applying hop-distance fallback ({fallback_hops} edges)."
+            )
+            if not arteriole_seed_edges_covered:
+                logger.info(
+                    "Arteriole immediate-edge mask coverage miss: "
+                    f"{arteriole_uncovered_edge_count}/{arteriole_seed_edge_count} "
+                    "seed edges without small-arteriole mask overlap."
+                )
+                settings["arteriole_boundary_nodes"][:] = graph.select_nodes_at_hop_distance(
+                    G,
+                    list(settings["inlet_nodes"]),
+                    fallback_hops,
+                    exclude_nodes=exclude_io_nodes,
+                )
+            if not venule_seed_edges_covered:
+                logger.info(
+                    "Venule immediate-edge mask coverage miss: "
+                    f"{venule_uncovered_edge_count}/{venule_seed_edge_count} "
+                    "seed edges without small-venule mask overlap."
+                )
+                settings["venule_boundary_nodes"][:] = graph.select_nodes_at_hop_distance(
+                    G,
+                    list(settings["outlet_nodes"]),
+                    fallback_hops,
+                    exclude_nodes=exclude_io_nodes,
+                )
         if settings["write_small_vessel_boundary_labelling_3d_html"]:
             boundary_html = Path(settings["plot_dir"]) / "small_vessel_mask_boundary_labelling_3d.html"
             Path(settings["plot_dir"]).mkdir(parents=True, exist_ok=True)
@@ -1020,6 +1114,44 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     logger.info(f"Outlet nodes are: {settings['outlet_nodes']}")
     logger.info(f"Arteriole boundary nodes are: {settings['arteriole_boundary_nodes']}")
     logger.info(f"Venule boundary nodes are: {settings['venule_boundary_nodes']}")
+
+    if bool(settings.get("remove_disconnected_io_components_after_final_assignment", False)):
+        G_pruned, io_prune_stats = graph.remove_components_without_connected_io(
+            G,
+            settings["inlet_nodes"],
+            settings["outlet_nodes"],
+        )
+        if int(io_prune_stats["removed_components"]) > 0:
+            network.graph = G_pruned
+            G = G_pruned
+            settings["inlet_nodes"][:] = [
+                node_id for node_id in settings["inlet_nodes"] if node_id in G.nodes
+            ]
+            settings["outlet_nodes"][:] = [
+                node_id for node_id in settings["outlet_nodes"] if node_id in G.nodes
+            ]
+            settings["arteriole_boundary_nodes"][:] = [
+                node_id
+                for node_id in settings["arteriole_boundary_nodes"]
+                if node_id in G.nodes
+            ]
+            settings["venule_boundary_nodes"][:] = [
+                node_id
+                for node_id in settings["venule_boundary_nodes"]
+                if node_id in G.nodes
+            ]
+            logger.info(
+                "Removed disconnected graph component(s) lacking inlet or outlet "
+                "nodes after final assignment: "
+                f"removed_components={int(io_prune_stats['removed_components'])}, "
+                f"removed_nodes={int(io_prune_stats['removed_nodes'])}, "
+                f"remaining_nodes={int(io_prune_stats['remaining_nodes'])}."
+            )
+            if not settings["inlet_nodes"] or not settings["outlet_nodes"]:
+                raise ValueError(
+                    "After removing disconnected components without both inlet and "
+                    "outlet nodes, no valid boundary nodes remained."
+                )
 
     if settings["inlet_nodes"] and settings["outlet_nodes"]:
         resistance_node_pair = (settings["inlet_nodes"][0], settings["outlet_nodes"][0])
