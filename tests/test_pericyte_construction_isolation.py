@@ -11,7 +11,6 @@ from pathlib import Path
 
 import networkx as nx
 import numpy as np
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -155,9 +154,7 @@ def test_assign_diameters_ignores_do_pericyte_construction(tmp_path):
         SCHEMA,
     )
 
-    assert _resistances(with_flag.graph) == pytest.approx(
-        _resistances(without_flag.graph)
-    )
+    assert _resistances(with_flag.graph) == _resistances(without_flag.graph)
     assert not _has_focal_site_attrs(with_flag.graph)
     assert "pericyte_comparison" not in with_flag.results
     assert "poiseuille" in with_flag.results.get("resistances", {})

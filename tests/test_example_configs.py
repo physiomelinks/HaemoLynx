@@ -132,6 +132,38 @@ BRAIN_SWEEP_VALUES = {
     "sweep_output_dir": "examples/outputs/brain_dilation_sweep",
 }
 
+#: Exact membership of the ``Perturbation runs`` schema section: typed
+#: perturbation entries, sweep ranges, and the brain-script dilation flag.
+PERTURBATION_RUNS_NAMES = frozenset(
+    {
+        "run_perturbations",
+        "perturbations",
+        "perturbation_output_dir",
+        "run_pericyte_dilation_sweep",
+        "pericyte_dilation_min_percent",
+        "pericyte_dilation_max_percent",
+        "pericyte_dilation_step_percent",
+        "arteriole_diameter_change_percent",
+        "arteriole_dilation_min_percent",
+        "arteriole_dilation_max_percent",
+        "arteriole_dilation_step_percent",
+        "capillary_dilation_min_percent",
+        "capillary_dilation_max_percent",
+        "capillary_dilation_step_percent",
+        "pericyte_geometry_dilation_percent",
+        "constriction_spacing_min_um",
+        "constriction_spacing_max_um",
+        "constriction_spacing_step_um",
+        "constriction_length_min_um",
+        "constriction_length_max_um",
+        "constriction_length_step_um",
+        "inlet_pressure_min_pa",
+        "inlet_pressure_max_pa",
+        "inlet_pressure_step_pa",
+        "sweep_output_dir",
+    }
+)
+
 
 def test_the_sweep_settings_are_declared_in_the_package_schema():
     """The napari panel builds its form from `default_schema()` and nothing else.
@@ -143,7 +175,7 @@ def test_the_sweep_settings_are_declared_in_the_package_schema():
 
     schema = default_schema()
     section = set(schema.section_names("Perturbation runs"))
-    assert {"run_pericyte_dilation_sweep", *BRAIN_SWEEP_VALUES} <= section
+    assert section == PERTURBATION_RUNS_NAMES
 
 
 def test_the_brain_schema_adds_nothing_the_pipeline_schema_does_not_have():
