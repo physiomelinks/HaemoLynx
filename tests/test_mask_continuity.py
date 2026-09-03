@@ -46,8 +46,9 @@ def test_continuity_bridges_small_to_large_same_type_only():
         opposite_exclusion_distance_microns=1.0,
     )
     out_ven = result["small_venule_mask"]
-    assert int(np.count_nonzero(out_ven)) > int(np.count_nonzero(small_ven))
-    assert int(result["stats"]["venule"]["accepted_bridges"]) >= 1
+    assert int(np.count_nonzero(small_ven)) == 54
+    assert int(np.count_nonzero(out_ven)) == 124
+    assert int(result["stats"]["venule"]["accepted_bridges"]) == 1
     assert int(np.count_nonzero(result["small_arteriole_mask"])) == 0
 
 
@@ -101,9 +102,9 @@ def test_continuity_endpoint_facing_gate_blocks_sideways_cylinders():
         min_facing_cosine=0.90,
     )
     assert int(result["stats"]["venule"]["accepted_bridges"]) == 0
-    assert int(
+    assert (
         result["stats"]["venule"]["rejected_reasons"].get("endpoint_facing_mismatch", 0)
-    ) >= 1
+    ) == 1
 
 
 def test_tangential_redefinition_moves_small_component_to_arteriole():
@@ -125,7 +126,7 @@ def test_tangential_redefinition_moves_small_component_to_arteriole():
         tangency_cosine_max=0.40,
         reassignment_margin=0.05,
     )
-    assert int(result["stats"]["reassigned_to_arteriole"]) >= 1
+    assert int(result["stats"]["reassigned_to_arteriole"]) == 1
 
 
 def test_sandwiched_component_reassignment_flips_middle_label():
@@ -148,7 +149,7 @@ def test_sandwiched_component_reassignment_flips_middle_label():
         sandwiched_min_facing_cosine=0.80,
         sandwiched_max_axis_angle_degrees=35.0,
     )
-    assert int(result["stats"]["sandwiched_flips_to_venule"]) >= 1
+    assert int(result["stats"]["sandwiched_flips_to_venule"]) == 1
 
 
 def test_continuity_schema_flags_require_small_masks():

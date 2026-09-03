@@ -89,10 +89,12 @@ def test_progressive_small_vessel_zero_max_matches_single_shot_shape():
         minimum_overlap_fraction=0.5,
         allow_overlap=False,
     )
-    assert result["arteriole_boundary_nodes"]
-    assert result["venule_boundary_nodes"]
-    assert result["arteriole_edge_count"] >= 1
-    assert result["venule_edge_count"] >= 1
+    assert result["arteriole_boundary_nodes"] == [2]
+    assert result["venule_boundary_nodes"] == [4]
+    assert result["arteriole_nodes"] == [0, 1, 2]
+    assert result["venule_nodes"] == [3, 4]
+    assert result["arteriole_edge_count"] == 2
+    assert result["venule_edge_count"] == 2
     assert set(result["arteriole_nodes"]).isdisjoint(result["venule_nodes"])
     for node_id in result["arteriole_boundary_nodes"]:
         assert G.nodes[node_id].get("mask_vessel_type") == "arteriole"
@@ -106,9 +108,12 @@ def test_progressive_dilation_schema_settings_and_requires():
     assign = schema["large_vessel_assignment_max_dilation_microns"]
     small = schema["small_vessel_mask_dilation_microns"]
 
-    assert "load-time" in load.help.lower() or "one-shot" in load.help.lower()
+    load_help = load.help.lower()
+    assert "one-shot" in load_help
+    assert "load-time" in load_help
     assert "progressive" in assign.help.lower()
     assert "progressive" in small.help.lower()
+    assert "load-time one-shot" in assign.help.lower()
     assert assign.requires == ("use_large_vessel_masks", "automated_vessel_assignment")
     assert small.requires == ("use_small_vessel_masks_for_boundary_assignment",)
     assert assign.default == 0.0
