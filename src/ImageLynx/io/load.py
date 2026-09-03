@@ -406,11 +406,18 @@ def read_ilastik_probabilities(
             f"probability. Export with --export_dtype=float32 rather than 8-bit."
         )
 
+    # Deliberately the whole-volume mean, not the mean of any sub-volume. A swapped class
+    # is a property of the file, and the empty margin is what gives the test its headroom:
+    # measured across the six CB specimens the whole-volume mean runs 0.179-0.353, while
+    # inside the 160^3 ROI those same channels run 0.538-0.611 - above this limit in every
+    # one of them, because roi_placement centres the box on the densest tissue in the stack.
+    # Applying this check to a placed sub-volume would reject every correct channel.
     mean = float(probabilities.mean())
     if check_calibration and mean > 0.5:
         raise ValueError(
-            f"{path.name} class {index} has mean probability {mean:.3f}. A vessel channel is "
-            f"a few percent of the volume; a mean above 0.5 means this is the background "
+            f"{path.name} class {index} has mean probability {mean:.3f}. Over a whole stack, "
+            f"most of which is empty margin, a vessel channel averages well below 0.5 "
+            f"(0.18-0.35 on the CB specimens); a mean above 0.5 means this is the background "
             f"class, and using it would compute every downstream result from the inverse "
             f"segmentation without erroring anywhere. Check the trained project's label "
             f"order, or pass check_calibration=False if this really is intended."

@@ -180,6 +180,14 @@ def evaluate_threshold(
     from skimage.morphology import skeletonize
 
     spacing = tuple(float(v) for v in voxel_size_zyx)
+    # Strict `>` is load-bearing, not stylistic. The Ilastik export is quantised to
+    # hundredths - 101 distinct values, zero deviation from k/100 - and every threshold in
+    # the sweep grid is a whole number of hundredths, so each one lands exactly on an
+    # occupied level and this discards that whole level. Exactly: (p > t) == (p >= t + 0.01),
+    # and (p > 0.99) == (p == 1.0), so the top of the grid measures the saturated set rather
+    # than "probability above 0.99". The discarded mass is 0.5% of the ROI at 0.30 rising to
+    # 4.2-5.9% at 0.99, where it is two thirds of the mask that survives. Swapping this for
+    # `>=` moves 3 of the 6 per-specimen choices. See section 2.2, open item 17.
     binary = np.asarray(probabilities) > float(threshold)
     if not binary.any():
         return None
