@@ -1420,6 +1420,11 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         volume_setting,
         wanted_rows,
     )
+    from haemolynx.gui.chrome_tooltips import (
+        ACTION_TOOLTIPS,
+        SHOW_BOUNDARIES_TOOLTIP,
+        SNAP_BOUNDARIES_TOOLTIP,
+    )
 
     #: Which role a new point or region belongs to. Not shown: the sub-tab bar
     #: built in `page` is what the user sees, and this follows it. Keeping the
@@ -1429,7 +1434,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     #: The two controls that are about the picture rather than about one role.
     show = PushButton(text="Show these boundary conditions")
+    show.tooltip = SHOW_BOUNDARIES_TOOLTIP
     snap_button = PushButton(text="Snap selected to nearest terminal")
+    snap_button.tooltip = SNAP_BOUNDARIES_TOOLTIP
 
     #: Everything else, once per role, so it sits on that role's own page next
     #: to the settings it fills in. A control that acts on "the chosen role"
@@ -1447,6 +1454,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         )
         for name in ROLES
     }
+    for _action in actions.values():
+        for _control, _tip in ACTION_TOOLTIPS.items():
+            getattr(_action, _control).tooltip = _tip
 
     #: Which of a role's controls its chosen method has any use for.
     ACTIONS_FOR_METHOD = {
@@ -1892,7 +1902,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                     )
                 else:
                     widget.enabled = True
-                    widget.tooltip = ""
+                    widget.tooltip = ACTION_TOOLTIPS[control]
             state.actions[name] = frozenset(useful)
 
     def on_settings_changed(*_args) -> None:
@@ -2613,8 +2623,11 @@ def settings_widget(napari_viewer=None):
         # a full run it reloads that previous tab's end-of-stage checkpoint so
         # later settings can be tweaked without rebuilding the network.
         if previous_tab(tab.stage.title) is not None:
+            from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP
+
             revert = PushButton(text="Revert to previous stage")
             revert.enabled = False
+            revert.tooltip = REVERT_STAGE_TOOLTIP
             revert_buttons[tab.stage.title] = revert
             page_layout.addWidget(revert.native)
         page_layout.addStretch(1)
@@ -2761,6 +2774,9 @@ def settings_widget(napari_viewer=None):
             choices=image_layers, label="Use open layer", nullable=True
         )
         use_button = PushButton(text="Use this layer as the input")
+        from haemolynx.gui.chrome_tooltips import USE_LAYER_TOOLTIP
+
+        use_button.tooltip = USE_LAYER_TOOLTIP
         layer_row = Container(
             widgets=[layer_picker, use_button], layout="horizontal", labels=True
         )
@@ -2811,11 +2827,29 @@ def settings_widget(napari_viewer=None):
     run_button = PushButton(text="Run pipeline")
     clear_button = PushButton(text="Clear layers")
 
+    from haemolynx.gui.chrome_tooltips import (
+        CLEAR_LAYERS_TOOLTIP,
+        LOAD_CONFIG_TOOLTIP,
+        RUN_CHECKS_TOOLTIP,
+        RUN_PIPELINE_TOOLTIP,
+        SAVE_CONFIG_TOOLTIP,
+        SHOW_RESULTS_TOOLTIP,
+        SHOW_STEPS_TOOLTIP,
+    )
+
+    load_button.tooltip = LOAD_CONFIG_TOOLTIP
+    save_button.tooltip = SAVE_CONFIG_TOOLTIP
+    check_button.tooltip = RUN_CHECKS_TOOLTIP
+    run_button.tooltip = RUN_PIPELINE_TOOLTIP
+    clear_button.tooltip = CLEAR_LAYERS_TOOLTIP
+
     # What a run puts in the viewer, and how it is coloured. These are panel
     # controls rather than settings: a config file is read by CLI runs too,
     # where "show it in napari" means nothing.
     show_results = CheckBox(value=True, text="Show each stage in the viewer")
     show_steps = CheckBox(value=False, text="Show each topology step")
+    show_results.tooltip = SHOW_RESULTS_TOOLTIP
+    show_steps.tooltip = SHOW_STEPS_TOOLTIP
     view = SimpleNamespace(results=None)
 
     def _settings() -> dict[str, Any]:
