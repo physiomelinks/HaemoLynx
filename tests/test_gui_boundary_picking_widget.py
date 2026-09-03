@@ -576,6 +576,67 @@ def test_there_is_one_sub_tab_per_role(panel):
     ]
 
 
+def _role_tab_enabled(bc):
+    tabs = bc.state.tabs
+    return {ROLES[i]: tabs.isTabEnabled(i) for i in range(tabs.count())}
+
+
+def test_large_auto_greys_inlet_and_outlet_role_tabs(panel):
+    """Large-vessel automated assignment disables Inlet/Outlet; keeps A/V."""
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+    tabs = bc.state.tabs
+
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["use_small_vessel_masks_for_boundary_assignment"].value = False
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["inlet"] is False
+    assert enabled["outlet"] is False
+    assert enabled["arteriole_boundary"] is True
+    assert enabled["venule_boundary"] is True
+    # Grey out, do not hide: tab bar entries remain present.
+    assert tabs.isTabVisible(0) is True
+    assert tabs.isTabVisible(1) is True
+    assert tabs.count() == 4
+
+
+def test_small_auto_greys_arteriole_and_venule_role_tabs(panel):
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+    tabs = bc.state.tabs
+
+    rows["automated_vessel_assignment"].value = True
+    rows["use_small_vessel_masks_for_boundary_assignment"].value = True
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["arteriole_boundary"] is False
+    assert enabled["venule_boundary"] is False
+    # Automated (large) also greys inlet/outlet when the root toggle is on.
+    assert enabled["inlet"] is False
+    assert enabled["outlet"] is False
+    assert tabs.isTabVisible(2) is True
+    assert tabs.isTabVisible(3) is True
+    assert tabs.count() == 4
+
+
+def test_both_autos_off_enables_every_role_tab(panel):
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+
+    rows["automated_vessel_assignment"].value = False
+    rows["use_small_vessel_masks_for_boundary_assignment"].value = False
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled == {
+        "inlet": True,
+        "outlet": True,
+        "arteriole_boundary": True,
+        "venule_boundary": True,
+    }
+
+
 def test_choosing_a_sub_tab_chooses_the_role(panel):
     """The tab is the role: two ways to say it could disagree."""
     widget, viewer, bc = panel

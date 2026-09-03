@@ -52,12 +52,15 @@ __all__ = [
     "BC_REGION_NAMES",
     "regions_name",
     "ROLES",
+    "LARGE_AUTO_ROLES",
+    "SMALL_AUTO_ROLES",
     "BoundaryPicks",
     "box_from_rectangle",
     "box_outline",
     "region_shapes",
     "coordinate_setting",
     "orderable_settings",
+    "role_manual_controls_enabled",
     "settings_for_method",
     "visible_settings",
     "group_for",
@@ -92,6 +95,34 @@ AUTOMATED_OVERRIDES_MANUAL_NOTE = (
 #: selector's own table rather than restated, so a fifth role would reach the
 #: panel without anything here changing.
 ROLES: tuple[str, ...] = tuple(BOUNDARY_ROLE_SETTINGS)
+
+#: Inlet/outlet: greyed when ``automated_vessel_assignment`` is on (large-
+#: vessel automatic assignment; ``use_large_vessel_masks`` loads the masks).
+LARGE_AUTO_ROLES: frozenset[str] = frozenset({"inlet", "outlet"})
+
+#: Arteriole/venule: greyed when small-vessel mask boundary assignment is on.
+SMALL_AUTO_ROLES: frozenset[str] = frozenset(
+    {"arteriole_boundary", "venule_boundary"}
+)
+
+
+def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
+    """Whether *role*'s manual sub-tab should stay interactive.
+
+    Large-vessel automated assignment (``automated_vessel_assignment``)
+    replaces manual inlet/outlet picking; small-vessel mask assignment
+    (``use_small_vessel_masks_for_boundary_assignment``) replaces manual
+    arteriole/venule boundary picking. The sub-tab stays visible but is
+    greyed out -- unlike vessel-mask option rows, which hide.
+    """
+    if role in LARGE_AUTO_ROLES and values.get("automated_vessel_assignment"):
+        return False
+    if role in SMALL_AUTO_ROLES and values.get(
+        "use_small_vessel_masks_for_boundary_assignment"
+    ):
+        return False
+    return True
+
 
 BC_COORDINATES = f"{PREFIX}BC coordinates"
 

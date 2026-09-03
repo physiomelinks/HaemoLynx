@@ -1402,6 +1402,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         ROLES,
         orderable_settings,
         outside_extent,
+        role_manual_controls_enabled,
         role_settings,
         role_title,
         shared_settings,
@@ -1791,6 +1792,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 if name not in wanted:
                     hidden.add(name)
         refresh_actions()
+        refresh_role_tabs()
         place_shared()
         state.visible = wanted
         state.hidden = frozenset(hidden | {name for name in shared_settings()
@@ -1830,22 +1832,58 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 rows[name].visible = True
                 shared_home[name] = current
 
+    def refresh_role_tabs() -> None:
+        """Grey out role sub-tabs when automated assignment owns that role.
+
+        Large-vessel auto (``automated_vessel_assignment``) disables Inlet and
+        Outlet; small-vessel auto disables Arteriole and Venule. Tabs stay
+        visible -- greyed, not hidden -- unlike vessel-mask option rows.
+        """
+        tabs = getattr(state, "tabs", None)
+        if tabs is None:
+            return
+        values = current_values()
+        for index, name in enumerate(ROLES):
+            enabled = role_manual_controls_enabled(name, values)
+            tabs.setTabEnabled(index, enabled)
+            if not enabled:
+                if name in ("inlet", "outlet"):
+                    tabs.setTabToolTip(index, AUTOMATED_OVERRIDES_MANUAL_NOTE)
+                else:
+                    tabs.setTabToolTip(
+                        index,
+                        "Small-vessel mask assignment overrides manual "
+                        "arteriole/venule boundary selection.",
+                    )
+            else:
+                tabs.setTabToolTip(index, fields[method_setting(name)].help)
+        if not tabs.isTabEnabled(tabs.currentIndex()):
+            for index in range(tabs.count()):
+                if tabs.isTabEnabled(index):
+                    tabs.setCurrentIndex(index)
+                    break
+
     def refresh_actions() -> None:
         """Show a role's controls only where its method has a use for them."""
         values = current_values()
-        automated = bool(values.get("automated_vessel_assignment"))
         drawable = viewer.dims.ndisplay == 2
         for name, action in actions.items():
             method = str(values.get(method_setting(name)))
             useful = set(ACTIONS_FOR_METHOD.get(method, ()))
-            # Automated assignment overrides manual inlet/outlet picking.
-            overridden = automated and name in ("inlet", "outlet")
+            # Automated assignment overrides the matching manual role tabs.
+            overridden = not role_manual_controls_enabled(name, values)
             for control in ("pick", "draw", "depth", "move", "assign", "clear"):
                 widget = getattr(action, control)
                 widget.visible = control in useful
                 if overridden:
                     widget.enabled = False
-                    widget.tooltip = AUTOMATED_OVERRIDES_MANUAL_NOTE
+                    if name in ("inlet", "outlet"):
+                        widget.tooltip = AUTOMATED_OVERRIDES_MANUAL_NOTE
+                    else:
+                        widget.tooltip = (
+                            "Small-vessel mask assignment overrides manual "
+                            "arteriole/venule boundary selection."
+                        )
                 elif control == "draw" and not drawable:
                     widget.enabled = False
                     widget.tooltip = (
@@ -2049,6 +2087,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         # as a coordinate does.
         *shared_settings(),
         "automated_vessel_assignment",
+        "use_small_vessel_masks_for_boundary_assignment",
     ):
         if _name in rows:
             rows[_name].changed.connect(on_settings_changed)
@@ -2148,6 +2187,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
         role_tabs.currentChanged.connect(on_tab_changed)
         state.tabs = role_tabs
+        refresh_role_tabs()
         return body
 
     def on_role_changed(*_args) -> None:
@@ -2651,13 +2691,14 @@ def settings_widget(napari_viewer=None):
         report.value = note
 
     def apply_prerequisites(*_args) -> None:
-        """Apply schema prerequisites: hide vessel-mask rows, grey others."""
+        """Apply schema prerequisites: hide nested rows, grey others."""
         values = current_values()
         for name, widget in rows.items():
             field = fields[name]
             enabled = field.is_enabled(values)
             if field.hide_when_unmet:
-                # Boundaries vessel options: only relevant nested knobs appear.
+                # Input / Diameters / FWHM / Boundaries vessel options: only
+                # relevant nested knobs appear until their parent toggles hold.
                 widget.visible = enabled
                 widget.enabled = True
                 widget.tooltip = field.help
