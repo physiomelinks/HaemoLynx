@@ -37,8 +37,10 @@ vessel_masks:
   use_large_vessel_masks: false
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks]
   use_ilastik_large_vessel_segmentation: false
-  # Dilate the large-vessel masks by this distance before selecting terminal nodes  [um; range 0.0..; needs use_large_vessel_masks]
+  # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment.  [um; range 0.0..; needs use_large_vessel_masks]
   large_vessel_mask_dilation_microns: 0.0
+  # Maximum dilation (microns) for progressive large-vessel terminal assignment: assign at 0 µm, then in 5 µm steps up to this value, locking each node at the first step it is claimed. Does not replace large_vessel_mask_dilation_microns (load-time one-shot dilation).  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
+  large_vessel_assignment_max_dilation_microns: 0.0
   # Remove connected components smaller than this physical volume from large-vessel masks after dilation (set 0 to disable)  [um3; range 0.0..; needs use_large_vessel_masks]
   large_vessel_min_component_volume_um3: 200.0
   # Remove tiny large-vessel components that sit attached near the opposite-type mask surface (suppresses small mislabelled attachments)  [needs use_large_vessel_masks]
@@ -67,6 +69,8 @@ vessel_masks:
   use_ilastik_small_vessel_segmentation: false
   # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
+  # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then in 5 µm steps up to this value, locking each edge at the first step it is classified. There is no separate load-time small-vessel dilation setting.  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
+  small_vessel_mask_dilation_microns: 0.0
   # Remove connected components smaller than this physical volume from small-vessel masks before boundary assignment (set 0 to disable)  [um3; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment]
   small_vessel_min_component_volume_um3: 50.0
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment]

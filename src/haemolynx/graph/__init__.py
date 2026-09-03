@@ -38,9 +38,12 @@ from .boundaries import (
 )
 from .automated_vessel_assignment import (
     compute_overlapping_terminal_assignment_metrics,
+    filter_io_nodes_to_terminal_degree1,
     infer_boundary_nodes_from_small_vessel_masks,
+    infer_boundary_nodes_from_small_vessel_masks_progressive_dilation,
     resolve_overlapping_terminal_node_assignment,
     select_terminal_nodes_from_large_vessel_masks,
+    select_terminal_nodes_from_large_vessel_masks_progressive_dilation,
     write_automated_vessel_assignment_3d_html,
     write_small_vessel_mask_boundary_labelling_3d_html,
 )
@@ -113,9 +116,12 @@ __all__ = [
     "select_boundary_nodes_by_method",
     "select_boundary_nodes_for_role",
     "compute_overlapping_terminal_assignment_metrics",
+    "filter_io_nodes_to_terminal_degree1",
     "infer_boundary_nodes_from_small_vessel_masks",
+    "infer_boundary_nodes_from_small_vessel_masks_progressive_dilation",
     "resolve_overlapping_terminal_node_assignment",
     "select_terminal_nodes_from_large_vessel_masks",
+    "select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
     "write_automated_vessel_assignment_3d_html",
     "write_small_vessel_mask_boundary_labelling_3d_html",
     "dilate_binary_mask_by_microns",

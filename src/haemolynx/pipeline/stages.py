@@ -598,11 +598,15 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "Set use_large_vessel_masks=True and provide mask paths."
             )
         auto_inlet_nodes, auto_outlet_nodes = (
-            graph.select_terminal_nodes_from_large_vessel_masks(
+            graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
                 G,
                 large_arteriole_mask=large_arteriole_mask,
                 large_venule_mask=large_venule_mask,
                 voxel_size_zyx=voxel_size_zyx,
+                max_dilation_microns=float(
+                    settings["large_vessel_assignment_max_dilation_microns"]
+                ),
+                dilation_step_microns=5.0,
                 allow_overlap=False,
             )
         )
@@ -687,13 +691,19 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "use_small_vessel_masks_for_boundary_assignment=True requires "
                 "small_arteriole_mask_path and small_venule_mask_path."
             )
-        inferred_boundary_results = graph.infer_boundary_nodes_from_small_vessel_masks(
-            G,
-            small_arteriole_mask=small_arteriole_mask,
-            small_venule_mask=small_venule_mask,
-            voxel_size_zyx=voxel_size_zyx,
-            minimum_overlap_fraction=float(settings["small_vessel_mask_min_overlap_fraction"]),
-            allow_overlap=False,
+        inferred_boundary_results = (
+            graph.infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
+                G,
+                small_arteriole_mask=small_arteriole_mask,
+                small_venule_mask=small_venule_mask,
+                voxel_size_zyx=voxel_size_zyx,
+                max_dilation_microns=float(settings["small_vessel_mask_dilation_microns"]),
+                dilation_step_microns=5.0,
+                minimum_overlap_fraction=float(
+                    settings["small_vessel_mask_min_overlap_fraction"]
+                ),
+                allow_overlap=False,
+            )
         )
         settings["arteriole_boundary_nodes"][:] = list(
             inferred_boundary_results["arteriole_boundary_nodes"]

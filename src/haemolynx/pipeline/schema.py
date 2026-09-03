@@ -187,11 +187,31 @@ SCHEMA = Schema(
             name="large_vessel_mask_dilation_microns",
             kind="float",
             default=0.0,
-            help="Dilate the large-vessel masks by this distance before selecting terminal nodes",
+            help=(
+                "One-shot load-time dilation of large-vessel masks (microns) applied "
+                "when the masks are loaded. Distinct from "
+                "large_vessel_assignment_max_dilation_microns, which runs a progressive "
+                "0, +5, … µm schedule only during terminal-node assignment."
+            ),
             section=_VESSEL_MASKS,
             minimum=0.0,
             unit="um",
             requires=("use_large_vessel_masks",),
+        ),
+        Setting(
+            name="large_vessel_assignment_max_dilation_microns",
+            kind="float",
+            default=0.0,
+            help=(
+                "Maximum dilation (microns) for progressive large-vessel terminal "
+                "assignment: assign at 0 µm, then in 5 µm steps up to this value, "
+                "locking each node at the first step it is claimed. Does not replace "
+                "large_vessel_mask_dilation_microns (load-time one-shot dilation)."
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
             name="large_vessel_min_component_volume_um3",
@@ -336,6 +356,21 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
+            requires=("use_small_vessel_masks_for_boundary_assignment",),
+        ),
+        Setting(
+            name="small_vessel_mask_dilation_microns",
+            kind="float",
+            default=0.0,
+            help=(
+                "Maximum dilation (microns) for progressive small-vessel boundary "
+                "assignment: label at 0 µm, then in 5 µm steps up to this value, "
+                "locking each edge at the first step it is classified. There is no "
+                "separate load-time small-vessel dilation setting."
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
             requires=("use_small_vessel_masks_for_boundary_assignment",),
         ),
         Setting(
