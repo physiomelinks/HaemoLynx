@@ -1374,6 +1374,17 @@ SCHEMA = Schema(
             requires=("run_haemodynamics", "vtk_export"),
         ),
         Setting(
+            name="show_flow_direction_layer",
+            kind="bool",
+            default=True,
+            help=(
+                "Add a napari Vectors layer of mid-edge arrows coloured by "
+                "flow magnitude after the solve (Export tab results)"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
             name="verbose_logging",
             kind="bool",
             default=False,
