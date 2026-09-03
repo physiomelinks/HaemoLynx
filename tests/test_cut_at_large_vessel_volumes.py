@@ -181,6 +181,123 @@ def test_interior_edges_removed_and_cut_creates_degree1_boundary_terminal():
     assert tuple(result.nodes[cut_node]["pos"]) == (5.0, 5.0, 4.0)
 
 
+def _assert_exterior_kept_interior_removed(result, mask: np.ndarray) -> None:
+    """Strict polarity: every remaining edge voxel is outside ``mask``."""
+    assert result.number_of_edges() >= 1
+    for _u, _v, data in result.edges(data=True):
+        assert not _edge_has_interior_voxel(data, mask)
+        voxels = list(map(tuple, data["voxels"]))
+        assert voxels, "kept edge must retain exterior samples"
+        # At least one sample must have been exterior in the original sense.
+        assert any(not _point_inside(p, mask) for p in voxels)
+
+
+def test_arteriole_mask_alone_removes_its_interior_keeps_exterior():
+    G, arteriole, empty_venule = _crossing_chain_graph()
+    assert not np.any(empty_venule)
+
+    result = cut_graph_at_large_vessel_volumes(
+        G,
+        arteriole,
+        empty_venule,
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+
+    _assert_exterior_kept_interior_removed(result, arteriole)
+    _u, _v, data = next(iter(result.edges(data=True)))
+    assert list(map(tuple, data["voxels"])) == [
+        (5.0, 5.0, float(x)) for x in range(0, 5)
+    ]
+    assert 0 in result.nodes
+    assert 1 not in result.nodes
+
+
+def test_venule_mask_alone_removes_its_interior_keeps_exterior():
+    """Venule-only cut must not keep the interior (the reported failure mode)."""
+    G, empty_arteriole, _ = _crossing_chain_graph()
+    empty_arteriole = np.zeros_like(empty_arteriole)
+    venule = np.zeros((12, 12, 12), dtype=bool)
+    venule[4:7, 4:7, 5:12] = True
+    G.nodes[0]["pos"] = (5.0, 5.0, 0.0)
+    G.nodes[1]["pos"] = (5.0, 5.0, 9.0)
+
+    result = cut_graph_at_large_vessel_volumes(
+        G,
+        empty_arteriole,
+        venule,
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+
+    _assert_exterior_kept_interior_removed(result, venule)
+    _u, _v, data = next(iter(result.edges(data=True)))
+    kept = list(map(tuple, data["voxels"]))
+    assert kept == [(5.0, 5.0, float(x)) for x in range(0, 5)]
+    # Inverted polarity would keep x>=5 (interior) instead.
+    assert all(p[2] < 5.0 for p in kept)
+    assert 1 not in result.nodes
+
+
+def test_union_of_arteriole_and_venule_masks_removes_both_interiors():
+    """Chain crosses arteriole then venule; only exterior gaps remain."""
+    G = nx.MultiGraph()
+    voxels = [(5.0, 5.0, float(x)) for x in range(0, 20)]
+    G.add_node(0, pos=voxels[0])
+    G.add_node(1, pos=voxels[-1])
+    G.add_edge(0, 1, voxels=voxels, length=19.0)
+
+    arteriole = np.zeros((12, 12, 24), dtype=bool)
+    arteriole[4:7, 4:7, 3:7] = True
+    venule = np.zeros_like(arteriole)
+    venule[4:7, 4:7, 12:16] = True
+    combined = arteriole | venule
+
+    result = cut_graph_at_large_vessel_volumes(
+        G,
+        arteriole,
+        venule,
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+
+    assert result.number_of_edges() == 3
+    for _u, _v, data in result.edges(data=True):
+        assert not _edge_has_interior_voxel(data, combined)
+        assert not _edge_has_interior_voxel(data, arteriole)
+        assert not _edge_has_interior_voxel(data, venule)
+
+    kept_x = sorted(
+        p[2]
+        for _u, _v, data in result.edges(data=True)
+        for p in data["voxels"]
+    )
+    assert kept_x == [0.0, 1.0, 2.0, 7.0, 8.0, 9.0, 10.0, 11.0, 16.0, 17.0, 18.0, 19.0]
+    # Interior bands must be gone (inverted polarity would keep these).
+    assert not any(3.0 <= x <= 6.0 for x in kept_x)
+    assert not any(12.0 <= x <= 15.0 for x in kept_x)
+
+
+def test_one_two_label_masks_use_minority_foreground_not_all_true_cast():
+    """Raw 1/2-encoded masks must not become all-True via dtype=bool."""
+    G, arteriole_bool, empty = _crossing_chain_graph()
+    # Encode True voxels as label 1, background as label 2 (ilastik-style).
+    arteriole_12 = np.full(arteriole_bool.shape, 2, dtype=np.uint8)
+    arteriole_12[arteriole_bool] = 1
+    assert np.asarray(arteriole_12, dtype=bool).all()  # naive cast is wrong
+
+    result = cut_graph_at_large_vessel_volumes(
+        G,
+        arteriole_12,
+        np.full(arteriole_bool.shape, 2, dtype=np.uint8),
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+    _assert_exterior_kept_interior_removed(result, arteriole_bool)
+    assert result.number_of_edges() == 1
+    assert 1 not in result.nodes
+
+
 def test_no_remaining_edge_has_interior_voxels():
     G, arteriole, venule = _through_volume_orphan_graph()
     combined = arteriole | venule
@@ -387,3 +504,47 @@ def test_napari_assign_boundaries_layers_use_post_cut_graph():
     assert len(nodes.data) == 2
     assert results._graph is post_cut
     assert set(nodes.features["node_id"].tolist()) == set(post_cut.nodes)
+
+
+def test_napari_empty_post_cut_graph_emits_empty_vessel_and_node_layers():
+    """An empty post-cut graph must clear pre-cut geometry, not omit layer specs."""
+    pre_cut, arteriole, venule = _crossing_chain_graph()
+    # Fully interior chain: cut removes everything.
+    for node in pre_cut.nodes:
+        z, y, x = pre_cut.nodes[node]["pos"]
+        pre_cut.nodes[node]["pos"] = (z, y, x + 6.0)
+    for _u, _v, data in pre_cut.edges(data=True):
+        data["voxels"] = [(5.0, 5.0, float(x)) for x in range(6, 10)]
+
+    post_cut = cut_graph_at_large_vessel_volumes(
+        pre_cut,
+        arteriole,
+        venule,
+        voxel_size_zyx=VOXEL_SIZE,
+        enabled=True,
+    )
+    assert post_cut.number_of_edges() == 0
+    assert post_cut.number_of_nodes() == 0
+
+    results = ResultLayers()
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 2, 2), dtype=np.uint8),
+        skeleton=np.zeros((2, 2, 2), dtype=np.uint8),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=VOXEL_SIZE,
+        output_dir=__import__("pathlib").Path("."),
+    )
+    results.stage_finished(
+        "build_network",
+        VesselNetwork(graph=pre_cut, volume=volume),
+    )
+    group = results.stage_finished(
+        "assign_boundaries",
+        BoundaryNodes(inlet_nodes=[], outlet_nodes=[], graph=post_cut),
+    )
+
+    vessels = next(spec for spec in group.layers if spec.name == VESSELS)
+    nodes = next(spec for spec in group.layers if spec.name == NODES)
+    assert len(np.asarray(vessels.data)) == 0
+    assert len(np.asarray(nodes.data)) == 0
+    assert results._graph is post_cut

@@ -13,11 +13,12 @@ after the run has moved on -- would show a later stage's numbers under an
 earlier stage's name: wrong, and silently so. So each stage's spec is built the
 moment that stage hands its output over, on whatever thread the run is on.
 
-**Geometry is built once.** Nothing after ``build_network`` adds or removes a
-node or an edge; the later stages only write attributes. So the vessels and
-nodes layers are created once and later stages replace their ``features``
-table, which is also what makes "colour by flow" a column switch rather than a
-rebuild of 33,000 points.
+**Geometry is usually built once.** Later stages normally only write attributes,
+so vessels/nodes can keep their geometry and swap ``features`` (which is what
+makes "colour by flow" a column switch). The exception is
+``assign_boundaries`` when ``cut_network_at_large_vessel_volumes`` runs: that
+stage rewrites the graph, so vessels/nodes must be rebuilt — including the
+empty-graph case, otherwise a pre-cut Vectors layer stays on screen.
 
 Coordinates: node ``pos`` and edge ``voxels`` are physical microns already --
 voxel indices multiplied by ``voxel_size_zyx`` when the graph was built -- while
@@ -567,12 +568,16 @@ class ResultLayers:
     # -- builders ---------------------------------------------------------
 
     def _vessel_layers(self, stage: str) -> tuple[LayerSpec, ...]:
-        """The vessels and their hover-identity twin, from the graph we hold."""
+        """The vessels and their hover-identity twin, from the graph we hold.
+
+        Always emits vessels / vessel-label layers (possibly empty). After a
+        large-vessel volume cut the graph can lose every edge; omitting the
+        specs would leave the pre-cut Vectors layer on screen and look like the
+        cut kept interior geometry.
+        """
         graph = self._graph
         assert graph is not None
         paths, identity = edge_polylines(graph)
-        if not paths:
-            return ()
 
         columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
         # Every column every time, including the ones no stage has filled yet:
@@ -586,14 +591,16 @@ class ResultLayers:
         columns.update(edge_features(graph, EDGE_COLUMNS))
 
         vectors, owner = polylines_to_vectors(paths)
-        per_segment = {name: np.asarray(values)[owner] for name, values in columns.items()}
+        per_segment = {
+            name: np.asarray(values)[owner] for name, values in columns.items()
+        }
 
         colour_by = DEFAULT_VESSEL_COLOUR.get(stage)
         if colour_by is not None and colour_by not in columns:
             colour_by = None
 
         midpoints = midpoints_of(paths)
-        return (
+        layers: list[LayerSpec] = [
             LayerSpec(
                 kind="vectors",
                 name=VESSELS,
@@ -618,8 +625,23 @@ class ResultLayers:
                     "out_of_slice_display": True,
                 },
             ),
-            *_branch_hover_layer(graph, midpoints),
-        )
+        ]
+        hover = _branch_hover_layer(graph, midpoints)
+        if hover:
+            layers.extend(hover)
+        elif stage == "assign_boundaries":
+            # Clear a previous branch-hover layer when the post-cut graph is empty.
+            layers.append(
+                LayerSpec(
+                    kind="points",
+                    name=BRANCH_HOVER,
+                    data=np.empty((0, 3), dtype=float),
+                    features={},
+                    visible=False,
+                    options={"size": BRANCH_HOVER_POINT_SIZE},
+                )
+            )
+        return tuple(layers)
 
     def _from_topology_step(self, label: str, graph: Any) -> StageLayers:
         """The graph part-way through its repair, when asked for.
@@ -738,7 +760,8 @@ class ResultLayers:
         layers: list[LayerSpec] = []
         if self._graph is not None:
             # Refresh vessels and nodes so a large-vessel volume cut does not
-            # leave pre-cut interior geometry on screen.
+            # leave pre-cut interior geometry on screen — including when the
+            # post-cut graph is empty (emit empty layers to clear the viewer).
             layers.extend(self._vessel_layers("assign_boundaries"))
             points, ids = node_points(self._graph)
             if len(points):
@@ -758,6 +781,23 @@ class ResultLayers:
                         colour_by="degree",
                         colour_kind="continuous",
                         contrast_limits=_limits(degrees),
+                        options={
+                            "size": NODE_POINT_SIZE,
+                            "out_of_slice_display": True,
+                        },
+                    )
+                )
+            else:
+                layers.append(
+                    LayerSpec(
+                        kind="points",
+                        name=NODES,
+                        data=np.empty((0, 3), dtype=float),
+                        features={
+                            "node_id": np.asarray([], dtype=object),
+                            "degree": np.asarray([], dtype=float),
+                            "pressure": np.asarray([], dtype=float),
+                        },
                         options={
                             "size": NODE_POINT_SIZE,
                             "out_of_slice_display": True,

@@ -4,6 +4,10 @@ When a centreline intersects a large-vessel mask, the portion inside the volume
 is removed and crossing edges are split so new degree-1 terminals sit on the
 exterior side of the boundary. Optional cleanup then drops small connected
 components that remain entirely outside the volume.
+
+Polarity (do not invert): mask True = interior = remove; mask False = exterior
+= keep. The cut volume is the union (OR) of the large arteriole and venule
+masks.
 """
 from __future__ import annotations
 
@@ -13,23 +17,56 @@ from typing import Any
 import networkx as nx
 import numpy as np
 
+from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
 from ._helpers import calculate_path_length, orient_path_from_startpoint
 from .automated_vessel_assignment import _position_to_mask_index
 
 logger = logging.getLogger(__name__)
 
 
+def _as_large_vessel_foreground(mask: np.ndarray, *, role: str) -> np.ndarray:
+    """Boolean foreground mask; rejects raw ``dtype=bool`` casts of 1/2 labels."""
+    arr = np.asarray(mask)
+    if arr.dtype == bool:
+        binary = arr
+    else:
+        binary = np.asarray(
+            _to_binary_volume_for_skeletonization(arr), dtype=bool
+        )
+        # A constant non-zero volume is an empty large-vessel mask (background
+        # label only). Shared skeleton binarisation maps that to all-True via
+        # ``arr > 0``, which would delete the whole network at cut time.
+        values = np.unique(arr)
+        if values.size == 1 and values[0] != 0 and bool(binary.all()):
+            binary = np.zeros(arr.shape, dtype=bool)
+    fill = float(np.mean(binary)) if binary.size else 0.0
+    if fill > 0.5:
+        logger.warning(
+            "large_%s_mask fills %.1f%% of voxels before the network cut; "
+            "large-vessel cut volumes should be sparse foreground. A raw "
+            "``astype(bool)`` / nonzero cast on a 1/2-encoded mask marks every "
+            "voxel True and removes the whole network.",
+            role,
+            100.0 * fill,
+        )
+    return binary
+
+
 def _combined_large_vessel_mask(
     large_arteriole_mask: np.ndarray,
     large_venule_mask: np.ndarray,
 ) -> np.ndarray:
-    arteriole = np.asarray(large_arteriole_mask, dtype=bool)
-    venule = np.asarray(large_venule_mask, dtype=bool)
+    arteriole = _as_large_vessel_foreground(
+        large_arteriole_mask, role="arteriole"
+    )
+    venule = _as_large_vessel_foreground(large_venule_mask, role="venule")
     if arteriole.shape != venule.shape:
         raise ValueError(
             "large_arteriole_mask and large_venule_mask must share a shape. "
             f"Got {arteriole.shape} and {venule.shape}."
         )
+    # Union of interiors to remove — both masks participate.
     return arteriole | venule
 
 
@@ -39,6 +76,7 @@ def _point_inside_mask(
     *,
     voxel_size_zyx: tuple[float, float, float],
 ) -> bool:
+    """True when the physical point falls in a True (interior) mask voxel."""
     idx = _position_to_mask_index(
         np.asarray(point_zyx, dtype=float),
         voxel_size_zyx=voxel_size_zyx,
@@ -68,7 +106,10 @@ def _edge_sample_points(
 
 
 def _exterior_runs(inside_flags: list[bool]) -> list[tuple[int, int]]:
-    """Inclusive index ranges of contiguous exterior (not-inside) samples."""
+    """Inclusive index ranges of contiguous exterior (not-inside) samples.
+
+    These are the runs that remain after the cut. Interior runs are discarded.
+    """
     runs: list[tuple[int, int]] = []
     start: int | None = None
     for i, is_inside in enumerate(inside_flags):
