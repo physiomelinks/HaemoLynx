@@ -35,9 +35,11 @@ from haemolynx.gui.log_view import LogView, VERBOSE_LEVEL
 from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
     BRANCH_HOVER,
+    FLOW_DIR_COLUMNS,
     NODES,
     VESSELS,
     ResultLayers,
+    _flow_dir_contrast_limits,
     colour_cycle_for,
     filter_points_by_z,
     filter_vectors_by_z,
@@ -572,6 +574,34 @@ def _colour_attributes(layer) -> tuple[str, ...]:
     return (_colour_attribute(layer),)
 
 
+def _ensure_flow_dir_features(layer) -> None:
+    """Fill missing or NaN ``flow_dir_*`` from arrow displacement vectors."""
+    if layer.__class__.__name__ != "Vectors":
+        return
+    data = np.asarray(layer.data, dtype=float)
+    if data.ndim != 3 or data.shape[1] != 2 or data.shape[0] == 0:
+        return
+    from haemolynx.visualization.flow_direction import flow_direction_components
+
+    features = dict(getattr(layer, "features", {}))
+    displacements = data[:, 1, :]
+    components = np.asarray(
+        [flow_direction_components(vector) for vector in displacements],
+        dtype=float,
+    )
+    for index, name in enumerate(("flow_dir_z", "flow_dir_y", "flow_dir_x")):
+        column = np.asarray(features.get(name, []), dtype=float)
+        if column.shape[0] != len(data) or not np.any(np.isfinite(column)):
+            features[name] = components[:, index]
+            continue
+        missing = ~np.isfinite(column)
+        if np.any(missing):
+            filled = column.copy()
+            filled[missing] = components[missing, index]
+            features[name] = filled
+    layer.features = features
+
+
 def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
     """One RGBA row per item, looked up from *cycle* by the item's label.
 
@@ -605,6 +635,8 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         return
     if column not in getattr(layer, "features", {}):
         return
+    if column in FLOW_DIR_COLUMNS:
+        _ensure_flow_dir_features(layer)
     # Drop to a flat colour before naming the new column. A layer keeps
     # whichever colour mode the last colouring left it in, and neither mode
     # survives meeting the other kind of column:
@@ -647,8 +679,9 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
             # rather than raising, which `_apply_layers` cannot catch.
             _record_colour(layer, column)
             return
+        colormap = "coolwarm" if column in FLOW_DIR_COLUMNS else "viridis"
         for attribute in attributes:
-            setattr(layer, f"{attribute}_colormap", "viridis")
+            setattr(layer, f"{attribute}_colormap", colormap)
             setattr(layer, attribute, column)
         # After the column, and through the same path the Fit buttons use: the
         # range has to be applied *and* the colours re-mapped against it. Set
@@ -656,7 +689,11 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         # plain setattr, and nothing re-maps at all -- which is how `flow_abs`
         # came to be the selected colouring and not the one on screen.
         if limits is None:
-            limits = _data_range(layer, column)
+            limits = (
+                _flow_dir_contrast_limits(values)
+                if column in FLOW_DIR_COLUMNS
+                else _data_range(layer, column)
+            )
         if limits is not None:
             _apply_contrast_limits(layer, *limits)
     _record_colour(layer, column)
@@ -1071,6 +1108,8 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
         return None
     if _is_text_column(layer, column):
         return None
+    if column in FLOW_DIR_COLUMNS:
+        _ensure_flow_dir_features(layer)
     try:
         values = np.asarray(layer.features[column], dtype=float)
     except (TypeError, ValueError):
@@ -1078,6 +1117,8 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return None
+    if column in FLOW_DIR_COLUMNS:
+        return _flow_dir_contrast_limits(values)
     low = float(np.percentile(finite, low_percentile))
     high = float(np.percentile(finite, high_percentile))
     if high <= low:

@@ -607,6 +607,28 @@ def _limits(values: np.ndarray) -> tuple[float, float] | None:
     return (low, high) if high > low else (low, low + 1.0)
 
 
+#: Signed normalised axis components of flow direction; always span [-1, 1].
+FLOW_DIR_COLUMNS = frozenset({"flow_dir_z", "flow_dir_y", "flow_dir_x"})
+
+
+def _flow_dir_contrast_limits(values: np.ndarray) -> tuple[float, float]:
+    """Colour limits for a ``flow_dir_*`` column.
+
+    Components are unit vectors, so the meaningful range is [-1, 1]. Using the
+    data min/max alone collapses axis-aligned flows to one colour when every
+    arrow shares the same component (e.g. all ``flow_dir_z == 1``).
+    """
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return (-1.0, 1.0)
+    low = min(-1.0, float(finite.min()))
+    high = max(1.0, float(finite.max()))
+    if high <= low:
+        return (-1.0, 1.0)
+    return (low, high)
+
+
 # --- one stage at a time -----------------------------------------------------
 
 
@@ -1351,6 +1373,11 @@ def _colouring(columns: Mapping[str, np.ndarray], colour_by: str | None) -> dict
     values = columns[colour_by]
     if colour_by in TEXT_COLUMNS:
         return {"colour_kind": "categorical", "colour_cycle": colour_cycle_for(values)}
+    if colour_by in FLOW_DIR_COLUMNS:
+        return {
+            "colour_kind": "continuous",
+            "contrast_limits": _flow_dir_contrast_limits(values),
+        }
     return {"colour_kind": "continuous", "contrast_limits": _limits(values)}
 
 

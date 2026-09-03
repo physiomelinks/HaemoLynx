@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from haemolynx.gui.results import FLOW_DIRECTION, ResultLayers
 from haemolynx.gui.tabs import assign_to_stages
@@ -330,3 +331,69 @@ def test_flow_direction_colouring_schema_default_and_requires():
 def test_flow_direction_colouring_lives_on_export_tab():
     owner = assign_to_stages(default_schema())
     assert owner["flow_direction_colouring"] == "8. Export"
+
+
+def _perpendicular_arrow_graph() -> nx.MultiGraph:
+    """Two edges from the origin: one along +z, one along +y (physical z,y,x)."""
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    graph.add_node(1, pos=np.array([10.0, 0.0, 0.0]))
+    graph.add_node(2, pos=np.array([0.0, 10.0, 0.0]))
+    graph.add_edge(
+        0,
+        1,
+        key=0,
+        voxels=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+        flow_signed=1.0,
+        flow_abs=1.0,
+    )
+    graph.add_edge(
+        0,
+        2,
+        key=0,
+        voxels=[[0.0, 0.0, 0.0], [0.0, 10.0, 0.0]],
+        flow_signed=1.0,
+        flow_abs=1.0,
+    )
+    return graph
+
+
+def test_flow_dir_z_colour_distinguishes_perpendicular_arrows(make_napari_viewer):
+    """Axis-aligned +z and +y arrows must differ when coloured by flow_dir_z."""
+    from haemolynx.gui._widget import _apply_layers, _colour_layer
+
+    graph = _perpendicular_arrow_graph()
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+
+    np.testing.assert_allclose(layer.features["flow_dir_z"], [1.0, 0.0], rtol=1e-5)
+
+    _colour_layer(layer, "flow_dir_z", "continuous")
+    colours = np.asarray(layer.edge_color, dtype=float)
+    assert colours.shape == (2, 4)
+    assert not np.allclose(colours[0, :3], colours[1, :3], atol=0.02)
+    assert layer.edge_color_mode == "colormap"
+    assert layer.edge_contrast_limits == pytest.approx((-1.0, 1.0))
+
+
+def test_flow_direction_combo_colours_by_flow_dir_z(make_napari_viewer):
+    """Colour-by combo re-applies diverging limits without re-running export."""
+    from haemolynx.gui._widget import _apply_layers, _attach_colour_scale, _layer_controls
+
+    graph = _perpendicular_arrow_graph()
+    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    group = results.stage_finished("export_results", SimpleNamespace())
+    viewer = make_napari_viewer()
+    _apply_layers(viewer, group)
+    layer = viewer.layers[FLOW_DIRECTION]
+    _attach_colour_scale(viewer, layer)
+
+    controls = _layer_controls(viewer, layer)
+    controls._haemolynx_feature.native.setCurrentText("flow_dir_z")
+
+    colours = np.asarray(layer.edge_color, dtype=float)
+    assert not np.allclose(colours[0, :3], colours[1, :3], atol=0.02)
+    assert layer.edge_contrast_limits == pytest.approx((-1.0, 1.0))
