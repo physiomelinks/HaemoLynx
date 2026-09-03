@@ -330,6 +330,119 @@ SCHEMA = Schema(
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
+            name="automated_vessel_assignment_use_legacy_mode",
+            kind="bool",
+            default=True,
+            help=(
+                "Use legacy progressive large-vessel terminal assignment. Set "
+                "False for confidence-based robust assignment with unresolved-node QC"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="automated_vessel_confidence_margin",
+            kind="float",
+            default=0.08,
+            help="Minimum score-gap margin required to keep an automated I/O assignment",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+        ),
+        Setting(
+            name="automated_vessel_min_confidence",
+            kind="float",
+            default=0.12,
+            help="Minimum confidence required to keep an automated I/O assignment",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+        ),
+        Setting(
+            name="automated_vessel_topology_penalty",
+            kind="float",
+            default=0.12,
+            help="Topology-consistency penalty weight for implausible local assignments",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+        ),
+        Setting(
+            name="automated_vessel_quality_max_overlap_fraction",
+            kind="float",
+            default=0.20,
+            help=(
+                "Quality gate: max arteriole/venule mask overlap fraction before "
+                "conservative mode is auto-enabled"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            unit="fraction",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+        ),
+        Setting(
+            name="automated_vessel_quality_min_terminal_coverage",
+            kind="float",
+            default=0.20,
+            help="Quality gate: minimum terminal coverage by either large-vessel mask",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            unit="fraction",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+        ),
+        Setting(
+            name="automated_vessel_quality_max_component_count",
+            kind="int",
+            default=12,
+            help=(
+                "Quality gate: maximum connected-component count allowed per "
+                "large-vessel mask before conservative mode"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=1,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+        ),
+        Setting(
+            name="automated_vessel_conservative_max_dilation_microns",
+            kind="float",
+            default=15.0,
+            help="Conservative-mode cap for progressive dilation in robust assignment",
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!automated_vessel_assignment_use_legacy_mode",
+            ),
+        ),
+        Setting(
             name="large_arteriole_mask_path",
             kind="path",
             default=f"{_IMAGES}/large_arteriole_mask.tif",

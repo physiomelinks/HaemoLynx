@@ -614,6 +614,46 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 ]
             )
         )
+        use_legacy_large_vessel_assignment = bool(
+            settings["automated_vessel_assignment_use_legacy_mode"]
+        )
+        effective_max_large_vessel_dilation_microns = float(
+            settings["large_vessel_assignment_max_dilation_microns"]
+        )
+        if not use_legacy_large_vessel_assignment:
+            quality_metrics = graph.assess_large_vessel_assignment_quality(
+                G,
+                large_arteriole_mask=assignment_large_arteriole_mask,
+                large_venule_mask=assignment_large_venule_mask,
+                voxel_size_zyx=voxel_size_zyx,
+                quality_max_overlap_fraction=float(
+                    settings["automated_vessel_quality_max_overlap_fraction"]
+                ),
+                quality_min_terminal_coverage=float(
+                    settings["automated_vessel_quality_min_terminal_coverage"]
+                ),
+                quality_max_component_count=int(
+                    settings["automated_vessel_quality_max_component_count"]
+                ),
+            )
+            logger.info(
+                "Robust large-vessel quality gate: "
+                f"overlap_fraction={float(quality_metrics['overlap_fraction']):.4f}, "
+                f"terminal_coverage={float(quality_metrics['terminal_coverage']):.4f}, "
+                f"poor_quality={bool(quality_metrics['poor_quality'])}."
+            )
+            if bool(quality_metrics["poor_quality"]):
+                effective_assignment_fast_mode = False
+                apply_overlap_cleanup_prepass = False
+                effective_max_large_vessel_dilation_microns = min(
+                    float(effective_max_large_vessel_dilation_microns),
+                    float(settings["automated_vessel_conservative_max_dilation_microns"]),
+                )
+                logger.info(
+                    "Robust large-vessel assignment switched to conservative mode: "
+                    "disabling overlap-cleanup pre-pass and reducing max dilation "
+                    f"to {float(effective_max_large_vessel_dilation_microns):.3f} microns."
+                )
         if effective_assignment_fast_mode and cleanup_enabled_for_large:
             cleaned_arteriole_mask, cleaned_venule_mask = (
                 graph.exclude_smaller_overlapping_large_vessel_components(
@@ -633,25 +673,68 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "Automated large-vessel assignment: overlap cleanup will run "
                 "inside each progressive step (normal mode)."
             )
-        auto_inlet_nodes, auto_outlet_nodes = (
-            graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
-                G,
-                large_arteriole_mask=assignment_large_arteriole_mask,
-                large_venule_mask=assignment_large_venule_mask,
-                voxel_size_zyx=voxel_size_zyx,
-                max_dilation_microns=float(
-                    settings["large_vessel_assignment_max_dilation_microns"]
-                ),
-                dilation_step_microns=5.0,
-                allow_overlap=False,
-                exclude_smaller_overlapping_volumes=(
-                    apply_overlap_cleanup_prepass and not effective_assignment_fast_mode
-                ),
-                overlap_parallel_workers=int(
-                    settings["automated_vessel_overlap_parallel_workers"]
-                ),
+        if use_legacy_large_vessel_assignment:
+            auto_inlet_nodes, auto_outlet_nodes = (
+                graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+                    G,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
+                    voxel_size_zyx=voxel_size_zyx,
+                    max_dilation_microns=float(
+                        effective_max_large_vessel_dilation_microns
+                    ),
+                    dilation_step_microns=5.0,
+                    allow_overlap=False,
+                    exclude_smaller_overlapping_volumes=(
+                        apply_overlap_cleanup_prepass and not effective_assignment_fast_mode
+                    ),
+                    overlap_parallel_workers=int(
+                        settings["automated_vessel_overlap_parallel_workers"]
+                    ),
+                )
             )
-        )
+        else:
+            robust_assignment = (
+                graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence(
+                    G,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
+                    voxel_size_zyx=voxel_size_zyx,
+                    max_dilation_microns=float(
+                        effective_max_large_vessel_dilation_microns
+                    ),
+                    dilation_step_microns=5.0,
+                    confidence_margin=float(
+                        settings["automated_vessel_confidence_margin"]
+                    ),
+                    minimum_confidence=float(settings["automated_vessel_min_confidence"]),
+                    topology_penalty=float(
+                        settings["automated_vessel_topology_penalty"]
+                    ),
+                    quality_max_overlap_fraction=float(
+                        settings["automated_vessel_quality_max_overlap_fraction"]
+                    ),
+                    quality_min_terminal_coverage=float(
+                        settings["automated_vessel_quality_min_terminal_coverage"]
+                    ),
+                    quality_max_component_count=int(
+                        settings["automated_vessel_quality_max_component_count"]
+                    ),
+                    conservative_max_dilation_microns=float(
+                        settings["automated_vessel_conservative_max_dilation_microns"]
+                    ),
+                )
+            )
+            auto_inlet_nodes = list(robust_assignment["input_nodes"])
+            auto_outlet_nodes = list(robust_assignment["output_nodes"])
+            logger.info(
+                "Robust large-vessel assignment confidence mode: "
+                f"inputs={len(auto_inlet_nodes)}, outputs={len(auto_outlet_nodes)}, "
+                f"unresolved={len(robust_assignment['unresolved_nodes'])}, "
+                f"conservative={bool(robust_assignment['conservative_mode'])}, "
+                f"effective_max_dilation="
+                f"{float(robust_assignment['effective_max_dilation_microns']):.3f} microns."
+            )
         large_arteriole_mask = assignment_large_arteriole_mask
         large_venule_mask = assignment_large_venule_mask
         if not auto_inlet_nodes:

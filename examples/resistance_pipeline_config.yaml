@@ -58,6 +58,22 @@ vessel_masks:
   automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode: false
   # Worker count for parallel overlap tie-break resolution during large-vessel assignment (0 or 1 = sequential)  [range 0..; needs use_large_vessel_masks and automated_vessel_assignment]
   automated_vessel_overlap_parallel_workers: 8
+  # Use legacy progressive large-vessel terminal assignment. Set False for confidence-based robust assignment with unresolved-node QC  [needs use_large_vessel_masks and automated_vessel_assignment]
+  automated_vessel_assignment_use_legacy_mode: true
+  # Minimum score-gap margin required to keep an automated I/O assignment  [range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
+  automated_vessel_confidence_margin: 0.08
+  # Minimum confidence required to keep an automated I/O assignment  [range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
+  automated_vessel_min_confidence: 0.12
+  # Topology-consistency penalty weight for implausible local assignments  [range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
+  automated_vessel_topology_penalty: 0.12
+  # Quality gate: max arteriole/venule mask overlap fraction before conservative mode is auto-enabled  [fraction; range 0.0..1.0; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
+  automated_vessel_quality_max_overlap_fraction: 0.2
+  # Quality gate: minimum terminal coverage by either large-vessel mask  [fraction; range 0.0..1.0; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
+  automated_vessel_quality_min_terminal_coverage: 0.2
+  # Quality gate: maximum connected-component count allowed per large-vessel mask before conservative mode  [range 1..; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
+  automated_vessel_quality_max_component_count: 12
+  # Conservative-mode cap for progressive dilation in robust assignment  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_use_legacy_mode off]
+  automated_vessel_conservative_max_dilation_microns: 15.0
   # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
   # Read this pre-segmented large venule mask  [needs use_large_vessel_masks; must exist]
