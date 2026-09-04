@@ -16,7 +16,6 @@ from haemolynx.gui.branch_hover import (
     available_branch_hover_metrics,
     available_metrics_from_features,
     branch_hover_rows,
-    branch_id_for_edge,
     default_selected_metrics,
     edge_tortuosity,
     filter_selected_metrics,
@@ -43,10 +42,43 @@ def graph_with(**attrs) -> nx.MultiGraph:
     return a_graph(**attrs)
 
 
-def test_branch_id_prefers_segment_id_over_edge_key():
-    data = {"segment_id": 7}
-    assert branch_id_for_edge(0, 1, key=99, data=data) == "7"
-    assert branch_id_for_edge(0, 1, key=99, data={}) == "99"
+def test_branch_id_is_edge_index_even_when_segment_ids_collide():
+    """Tooltip identity is the graph-edge enumeration, not ``segment_id``.
+
+    Every simple MultiGraph edge has key 0, and later topology steps often
+    leave several edges sharing ``segment_id=0``. Those used to make every
+    tooltip read ``branchID: 0``.
+    """
+    graph = a_graph()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["segment_id"] = 0
+    ids, features = branch_hover_rows(graph, selected=())
+    assert ids == ["0", "1", "2"]
+    assert list(features["branch_id"]) == ["0", "1", "2"]
+    assert list(features["tooltip"]) == ["branchID: 0", "branchID: 1", "branchID: 2"]
+
+
+def test_branch_id_matches_identity_edge_index_when_an_edge_cannot_be_drawn():
+    """Skipped polylines keep the same numbering as the layer ``edge_index``."""
+    graph = nx.MultiGraph()
+    graph.add_node(0)
+    graph.add_node(1)
+    graph.add_edge(0, 1, length=1.0, segment_id=99)
+    for node_id, z in enumerate((0.0, 10.0, 20.0), start=2):
+        graph.add_node(node_id, pos=np.array([z, 0.0, 0.0]))
+    for u, v in ((2, 3), (3, 4)):
+        graph.add_edge(
+            u, v, key=0,
+            voxels=[graph.nodes[u]["pos"].tolist(), graph.nodes[v]["pos"].tolist()],
+            length=10.0, segment_id=0,
+        )
+    paths, identity = edge_polylines(graph)
+    ids, features = branch_hover_rows(graph, selected=())
+    assert len(paths) == 2
+    assert list(identity["edge_index"]) == [1, 2]
+    assert ids == ["1", "2"]
+    assert list(features["branch_id"]) == ["1", "2"]
+    assert list(features["tooltip"]) == ["branchID: 1", "branchID: 2"]
 
 
 def test_available_metrics_on_geometry_only_graph():
@@ -295,13 +327,29 @@ def test_vessel_labels_layer_still_emitted_without_a_hover_circle():
 
 def test_hover_features_repeat_across_polyline_segments():
     graph = a_graph()
-    paths, _identity = edge_polylines(graph)
+    paths, identity = edge_polylines(graph)
     _vectors, owner = polylines_to_vectors(paths)
     features, available, selected = hover_features_for_segments(graph, owner)
     assert available == ("tortuosity", "length")
     assert selected == ("tortuosity", "length")
     assert len(features["tooltip"]) == len(owner)
-    assert list(features["branch_id"]) == [str(i) for i in owner]
+    expected = [str(int(i)) for i in np.asarray(identity["edge_index"])[owner]]
+    assert list(features["branch_id"]) == expected
+
+
+def test_vessel_tooltip_branch_id_matches_edge_index_column():
+    """Hover ``branchID`` is the same number colour-by ``edge_index`` uses."""
+    graph = a_graph()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["segment_id"] = 0
+    vessels = spec_named(
+        built(graph).stage_finished("build_network", network(graph)),
+        VESSELS,
+    )
+    branch_ids = [str(v) for v in vessels.features["branch_id"]]
+    edge_ids = [str(int(v)) for v in vessels.features["edge_index"]]
+    assert branch_ids == edge_ids
+    assert set(branch_ids) == {"0", "1", "2"}
 
 
 def test_nearest_vector_index_hits_along_the_polyline_not_only_the_midpoint():

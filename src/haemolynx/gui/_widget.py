@@ -2571,7 +2571,7 @@ class _BranchHoverPanel:
         self._heading = QLabel("branch tooltip metrics")
         self._heading.setToolTip(
             "What to show when hovering a branch. "
-            "branchID is always included."
+            "The graph edge index (branchID) is always included."
         )
         self._layout.addWidget(self._heading)
         self._box_host = QWidget()

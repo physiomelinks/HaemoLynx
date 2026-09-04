@@ -56,20 +56,6 @@ _BRANCH_ID_LINE = "branchID: {branch_id}"
 BRANCH_HOVER_MAX_DISTANCE = 2.0
 
 
-def branch_id_for_edge(
-    _u: Any, _v: Any, key: Any, data: Mapping[str, Any]
-) -> str:
-    """Stable branch identity for a tooltip line.
-
-    Prefer ``segment_id`` (assigned at graph build and used for colouring);
-    fall back to the MultiGraph edge key.
-    """
-    segment_id = data.get("segment_id")
-    if segment_id is not None:
-        return str(segment_id)
-    return str(key)
-
-
 def edge_tortuosity(
     graph: Any, u: Any, v: Any, data: Mapping[str, Any]
 ) -> float | None:
@@ -149,9 +135,10 @@ def format_branch_tooltip(
 ) -> str:
     """Deterministic multi-line tooltip text.
 
-    Always starts with ``branchID``. Then one line per *selected* metric that
-    both is offered by :data:`BRANCH_HOVER_METRICS` and has a non-``None``
-    value in *values*. Unselected and unavailable metrics are omitted.
+    Always starts with ``branchID`` (the graph-edge enumeration index). Then
+    one line per *selected* metric that both is offered by
+    :data:`BRANCH_HOVER_METRICS` and has a non-``None`` value in *values*.
+    Unselected and unavailable metrics are omitted.
     """
     lines = [_BRANCH_ID_LINE.format(branch_id=branch_id)]
     for metric in BRANCH_HOVER_METRICS:
@@ -194,7 +181,9 @@ def branch_hover_rows(
     """Per-drawable-edge branch ids, tooltips, and raw metric columns.
 
     Edges that cannot be placed (no polyline) are skipped, matching
-    :func:`haemolynx.gui.results.edge_polylines`.
+    :func:`haemolynx.gui.results.edge_polylines`. ``branch_id`` is that same
+    graph-edge enumeration index (the layer ``edge_index`` column), not
+    ``segment_id`` or the MultiGraph key.
     """
     from haemolynx.visualization.geometry import edge_polyline
 
@@ -205,12 +194,12 @@ def branch_hover_rows(
     tooltips: list[str] = []
     columns: dict[str, list[Any]] = {metric: [] for metric in BRANCH_HOVER_METRICS}
 
-    for u, v, key, data in _iter_edges(graph):
+    for index, (u, v, _key, data) in enumerate(_iter_edges(graph)):
         try:
             edge_polyline(graph, u, v, data)
         except ValueError:
             continue
-        branch_id = branch_id_for_edge(u, v, key, data)
+        branch_id = str(index)
         values = {
             metric: _metric_value(graph, u, v, data, metric)
             for metric in BRANCH_HOVER_METRICS
