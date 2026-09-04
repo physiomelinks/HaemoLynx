@@ -33,6 +33,7 @@ from haemolynx.pipeline.stages import (  # noqa: E402
     SkeletonisedVolume,
     VesselNetwork,
     assign_diameters,
+    build_haemodynamic_model,
 )
 
 SCHEMA = default_schema()
@@ -139,8 +140,12 @@ def _uniform_baseline_model() -> HaemodynamicModel:
     return HaemodynamicModel(graph=graph, results={})
 
 
+def _has_resistance(graph: nx.MultiGraph) -> bool:
+    return any("resistance" in data for _, _, data in graph.edges(data=True))
+
+
 def test_assign_diameters_ignores_do_pericyte_construction(tmp_path):
-    """Baseline with the flag True matches uniform Poiseuille (flag False)."""
+    """Diameters-only; baseline resistances wait for Haemodynamics and stay uniform."""
     with_flag = assign_diameters(
         _settings(tmp_path / "on", do_pericyte_construction=True),
         _vessel_network(tmp_path / "on"),
@@ -154,10 +159,24 @@ def test_assign_diameters_ignores_do_pericyte_construction(tmp_path):
         SCHEMA,
     )
 
-    assert _resistances(with_flag.graph) == _resistances(without_flag.graph)
+    assert not _has_resistance(with_flag.graph)
+    assert not _has_resistance(without_flag.graph)
     assert not _has_focal_site_attrs(with_flag.graph)
     assert "pericyte_comparison" not in with_flag.results
-    assert "poiseuille" in with_flag.results.get("resistances", {})
+    assert "resistances" not in with_flag.results
+
+    with_model = build_haemodynamic_model(
+        _settings(tmp_path / "on_model", do_pericyte_construction=True),
+        with_flag,
+        SCHEMA,
+    )
+    without_model = build_haemodynamic_model(
+        _settings(tmp_path / "off_model", do_pericyte_construction=False),
+        without_flag,
+        SCHEMA,
+    )
+    assert _resistances(with_model.graph) == _resistances(without_model.graph)
+    assert "poiseuille" in with_model.results.get("resistances", {})
 
 
 def test_library_apply_still_honours_the_flag_when_asked():

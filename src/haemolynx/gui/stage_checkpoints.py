@@ -20,7 +20,9 @@ checkpoints from the start through the target), the
 checkpoint carries a graph at or after ``build_network`` -- the on-disk
 ``{stem}_graph.pkl`` plus the ``do_skeletonize`` / ``do_graph_building``
 toggles so the next Run loads that graph and continues from later stages
-rather than rebuilding topology. Preflight requires ``{stem}_skeleton.npy``
+rather than rebuilding topology. A revert that already has stamped diameters
+also turns off ``do_fwhm_measurement``, so continuing from Haemodynamics does
+not wipe FWHM approvals. Preflight requires ``{stem}_skeleton.npy``
 whenever ``do_skeletonize`` is off, so resume also ensures that artefact
 exists (re-writing it from the skeletonise checkpoint layers when needed)
 before naming ``do_skeletonize`` among the skip toggles.
@@ -56,7 +58,20 @@ GRAPH_RESUME_STAGES = frozenset(
     }
 )
 
-SKIP_FOR_RESUME = ("do_skeletonize", "do_graph_building")
+SKIP_FOR_RESUME = ("do_skeletonize", "do_graph_building", "do_fwhm_measurement")
+GRAPH_SKIP_FOR_RESUME = ("do_skeletonize", "do_graph_building")
+
+#: Stages whose checkpoint already carries stamped diameters, so the next Run
+#: must not remeasure FWHM (that would wipe approvals).
+DIAMETER_RESUME_STAGES = frozenset(
+    {
+        "assign_diameters",
+        "build_haemodynamic_model",
+        "solve",
+        "run_perturbations",
+        "export_results",
+    }
+)
 
 
 def skeleton_resume_path(output_dir: Path, stem: str) -> Path:
@@ -104,18 +119,26 @@ def skip_settings_for_resume(
     *,
     graph_written: bool,
     skeleton_ready: bool,
+    target: str | None = None,
+    use_fwhm_edge_diameters: bool = False,
 ) -> tuple[str, ...]:
     """Which stage toggles to turn off after a successful graph resume write.
 
     ``do_graph_building`` is safe whenever the graph pickle was written.
     ``do_skeletonize`` is only safe when the matching ``.npy`` is on disk —
-    otherwise preflight blocks the next Run.
+    otherwise preflight blocks the next Run. ``do_fwhm_measurement`` is off
+    when the restored stage already carries diameters *and* FWHM is in use,
+    so a continue from Haemodynamics does not wipe FWHM approvals.
     """
     if not graph_written:
         return ()
+    skips: list[str] = ["do_graph_building"]
     if skeleton_ready:
-        return SKIP_FOR_RESUME
-    return ("do_graph_building",)
+        skips.insert(0, "do_skeletonize")
+    if target in DIAMETER_RESUME_STAGES and use_fwhm_edge_diameters:
+        skips.append("do_fwhm_measurement")
+    return tuple(skips)
+
 
 @dataclass(frozen=True)
 class StageCheckpoint:
@@ -388,6 +411,10 @@ class StageCheckpoints:
                 skip = skip_settings_for_resume(
                     graph_written=True,
                     skeleton_ready=skeleton_path is not None,
+                    target=target,
+                    use_fwhm_edge_diameters=bool(
+                        settings and settings.get("use_fwhm_edge_diameters")
+                    ),
                 )
 
         # Drop checkpoints after the target: they describe a future that no

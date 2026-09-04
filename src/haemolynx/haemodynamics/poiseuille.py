@@ -66,6 +66,120 @@ def build_diameter_by_branch_order(
     return diameter_by_branch_order
 
 
+#: How an edge's modelled ``diameter_um`` was chosen. ``measured`` is a FWHM
+#: fit; ``table`` is the branch-order lookup; ``override`` is a human value.
+DIAMETER_SOURCE_MEASURED = "measured"
+DIAMETER_SOURCE_TABLE = "table"
+DIAMETER_SOURCE_OVERRIDE = "override"
+DIAMETER_SOURCES = frozenset(
+    {
+        DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_TABLE,
+        DIAMETER_SOURCE_OVERRIDE,
+    }
+)
+
+_KEPT_DIAMETER_SOURCES = frozenset(
+    {DIAMETER_SOURCE_MEASURED, DIAMETER_SOURCE_OVERRIDE}
+)
+
+
+def positive_diameter_um(value: object) -> float | None:
+    """A finite positive diameter in micrometres, or ``None``."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number) or number <= 0:
+        return None
+    return number
+
+
+def clear_edge_resistances(G: nx.MultiGraph) -> None:
+    """Drop ``resistance`` and ``conductance`` so diameters can exist alone."""
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        data.pop("resistance", None)
+        data.pop("conductance", None)
+
+
+def set_edge_diameter_override(data: dict, diameter_um: float) -> None:
+    """Record a human diameter on one edge; it wins over FWHM and the table."""
+    diameter = positive_diameter_um(diameter_um)
+    if diameter is None:
+        raise ValueError(
+            f"Override diameter must be finite and positive, got {diameter_um}."
+        )
+    data["diameter_um"] = diameter
+    data["diameter_source"] = DIAMETER_SOURCE_OVERRIDE
+
+
+def scale_stored_edge_diameters(data: dict, scale: float) -> bool:
+    """Multiply ``fwhm_diameter_um`` and ``diameter_um`` when they are set.
+
+    Returns whether either attribute moved, so a caller can count scaled edges.
+    """
+    factor = float(scale)
+    moved = False
+    for attr in ("fwhm_diameter_um", "diameter_um"):
+        diameter = positive_diameter_um(data.get(attr))
+        if diameter is None:
+            continue
+        data[attr] = diameter * factor
+        moved = True
+    return moved
+
+
+def stamp_edge_diameters(
+    G: nx.MultiGraph,
+    diameter_by_branch_order: dict | None,
+    *,
+    keep_existing: bool = False,
+) -> dict[str, int]:
+    """Write ``diameter_um`` and ``diameter_source`` on every edge that can.
+
+    When *keep_existing* is True, measured and override edges stay as they are
+    (so a resume does not wipe approvals). Otherwise FWHM, when present, wins,
+    then the branch-order table.
+    """
+    table = diameter_by_branch_order or {}
+    counts = {"measured": 0, "table": 0, "override": 0, "unset": 0}
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        source = data.get("diameter_source")
+        if keep_existing and source in _KEPT_DIAMETER_SOURCES:
+            kept = positive_diameter_um(data.get("diameter_um"))
+            if kept is None and source == DIAMETER_SOURCE_MEASURED:
+                kept = positive_diameter_um(data.get("fwhm_diameter_um"))
+                if kept is not None:
+                    data["diameter_um"] = kept
+            if kept is not None:
+                counts[str(source)] += 1
+                continue
+        if keep_existing:
+            measured = positive_diameter_um(data.get("fwhm_diameter_um"))
+            if measured is not None:
+                data["diameter_um"] = measured
+                data["diameter_source"] = DIAMETER_SOURCE_MEASURED
+                counts["measured"] += 1
+                continue
+
+        measured = positive_diameter_um(data.get("fwhm_diameter_um"))
+        if measured is not None:
+            data["diameter_um"] = measured
+            data["diameter_source"] = DIAMETER_SOURCE_MEASURED
+            counts["measured"] += 1
+            continue
+        table_diameter = positive_diameter_um(table.get(data.get("branch_order")))
+        if table_diameter is not None:
+            data["diameter_um"] = table_diameter
+            data["diameter_source"] = DIAMETER_SOURCE_TABLE
+            counts["table"] += 1
+            continue
+        counts["unset"] += 1
+    return counts
+
+
 # --- Viscosity model -------------------------------------------------------
 #
 # Which law supplies the viscosity is a setting, because it changes every
@@ -302,15 +416,17 @@ class PoiseuilleModel:
                 results['invalid_length'].append((u, v, key, length))
                 continue
 
-            # Get diameter for this branch order (or per-edge FWHM measurement)
-            diameter = None
-            if prefer_edge_fwhm_diameter:
-                fwhm_d = data.get("fwhm_diameter_um")
-                if fwhm_d is not None and float(fwhm_d) > 0:
-                    diameter = float(fwhm_d)
-                    results['used_fwhm_edge_diameter'] += 1
+            # Modelled diameter stamped at assign_diameters, else FWHM, else table.
+            diameter = positive_diameter_um(data.get("diameter_um"))
+            used_fwhm = data.get("diameter_source") == DIAMETER_SOURCE_MEASURED
+            if diameter is None and prefer_edge_fwhm_diameter:
+                diameter = positive_diameter_um(data.get("fwhm_diameter_um"))
+                used_fwhm = diameter is not None
             if diameter is None:
                 diameter = diameter_by_branch_order.get(branch_order, None)
+                used_fwhm = False
+            if used_fwhm:
+                results['used_fwhm_edge_diameter'] += 1
             if diameter is None:
                 results['unknown_branch_order'].append((u, v, key, branch_order))
                 continue

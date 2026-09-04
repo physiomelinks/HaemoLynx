@@ -27,6 +27,8 @@ from haemolynx.gui.results import (
     DEFAULT_VESSEL_COLOUR,
     EDGE_COLUMNS,
     FLOW_DIRECTION,
+    FWHM_PROFILES,
+    FWHM_RAW,
     IMAGE,
     LAYER_NAMES,
     NODE_POINT_SIZE,
@@ -46,6 +48,8 @@ from haemolynx.gui.results import (
     is_z_project_volume_layer,
     perturbation_layer_names,
     available_edge_columns,
+    clip_volume_to_z,
+    compose_z_display_window,
     edge_features,
     edge_polylines,
     midpoints_of,
@@ -462,6 +466,43 @@ def test_pericytes_come_from_the_edges_own_centres():
 def test_no_pericytes_gives_no_layer():
     group = built().stage_finished("assign_diameters", SimpleNamespace(graph=a_graph()))
     assert all(spec.name != PERICYTES for spec in group.layers)
+
+
+def test_assign_diameters_colours_vessels_by_modelled_diameter():
+    graph = a_graph(diameter_um=5.0, diameter_source="measured", branch_order="B01")
+    group = built(graph).stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    assert spec_named(group, VESSELS).colour_by == "diameter_um"
+
+
+def test_assign_diameters_falls_back_to_branch_order_when_diameters_are_missing():
+    graph = a_graph(branch_order="B01")
+    group = built(graph).stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    assert spec_named(group, VESSELS).colour_by == "branch_order"
+
+
+def test_assign_diameters_shows_fwhm_raw_volume_and_transverse_rays():
+    graph = a_graph(diameter_um=5.0, diameter_source="measured")
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_profile_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
+    raw = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    group = built(graph, voxel_size_zyx=(2.0, 1.0, 0.5)).stage_finished(
+        "assign_diameters",
+        SimpleNamespace(graph=graph, fwhm_raw=raw),
+    )
+    image = spec_named(group, FWHM_RAW)
+    assert image.kind == "image"
+    assert image.data is raw
+    assert image.scale == (2.0, 1.0, 0.5)
+    profiles = spec_named(group, FWHM_PROFILES)
+    assert profiles.kind == "vectors"
+    assert len(profiles.data) == graph.number_of_edges()
+    assert "measured" in group.note
+
+
+def test_assign_diameters_note_counts_diameter_sources():
+    graph = a_graph(diameter_um=6.0, diameter_source="table", branch_order="B01")
+    group = built(graph).stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    assert "3 table" in group.note
 
 
 # --- the stages --------------------------------------------------------------
@@ -1073,12 +1114,17 @@ def test_image_z_extent_um_is_voxel_z_times_stack_depth():
 
 
 def test_z_depth_filter_targets_graph_vectors_and_points_only():
+    """Graph geometry uses this predicate; volumes are clipped separately."""
     assert is_z_depth_filtered_layer(VESSELS, "vectors") is True
     assert is_z_depth_filtered_layer(FLOW_DIRECTION, "vectors") is True
     assert is_z_depth_filtered_layer(NODES, "points") is True
     assert is_z_depth_filtered_layer(IMAGE, "image") is False
     assert is_z_depth_filtered_layer(SKELETON, "labels") is False
+    assert is_z_depth_filtered_layer(FWHM_RAW, "image") is False
+    assert is_z_depth_filtered_layer(FWHM_PROFILES, "vectors") is True
     assert is_z_depth_filtered_layer("HaemoLynx BC coordinates", "points") is False
+    assert is_z_project_volume_layer("image") is True
+    assert is_z_project_volume_layer("labels") is True
 
 
 def test_z_project_targets_image_and_labels_not_graph_kinds():
@@ -1122,6 +1168,48 @@ def test_project_volume_max_z_mips_the_window_and_zeros_the_rest():
     np.testing.assert_array_equal(out[2], 3)
     np.testing.assert_array_equal(out[3], 0)
     np.testing.assert_array_equal(volume[3], 9)
+
+
+def test_clip_volume_to_z_is_identity_at_full_range():
+    volume = np.arange(4 * 2 * 2, dtype=np.uint8).reshape(4, 2, 2)
+    out = clip_volume_to_z(volume, 2.0, 0.0, 8.0, z_extent=8.0)
+    assert out is volume
+    np.testing.assert_array_equal(out, volume)
+
+
+def test_clip_volume_to_z_zeros_outside_the_window_without_mip():
+    volume = np.zeros((4, 2, 2), dtype=np.uint8)
+    volume[0] = 1
+    volume[1] = 3
+    volume[2] = 2
+    volume[3] = 9
+    out = clip_volume_to_z(volume, 2.0, 0.0, 5.0, z_extent=8.0)
+    assert out.shape == volume.shape
+    np.testing.assert_array_equal(out[0], 1)
+    np.testing.assert_array_equal(out[1], 3)
+    np.testing.assert_array_equal(out[2], 2)
+    np.testing.assert_array_equal(out[3], 0)
+    np.testing.assert_array_equal(volume[3], 9)
+
+
+def test_clip_volume_to_z_empty_window_is_zeros():
+    volume = np.ones((4, 2, 2), dtype=np.uint8)
+    out = clip_volume_to_z(volume, 2.0, 6.0, 5.0, z_extent=8.0)
+    np.testing.assert_array_equal(out, np.zeros_like(volume))
+
+
+def test_compose_z_display_window_applies_depth_then_optional_project():
+    assert compose_z_display_window(
+        0.0, 8.0, project=False, project_min=0.0, project_max=5.0
+    ) == (0.0, 8.0, False)
+    assert compose_z_display_window(
+        0.0, 5.0, project=True, project_min=2.0, project_max=8.0
+    ) == (2.0, 5.0, True)
+    lo, hi, project = compose_z_display_window(
+        0.0, 5.0, project=True, project_min=6.0, project_max=8.0
+    )
+    assert project is True
+    assert hi < lo
 
 
 def _flow_graph_at_z(*z_values: float) -> nx.MultiGraph:

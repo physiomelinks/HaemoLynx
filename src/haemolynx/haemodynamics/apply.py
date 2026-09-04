@@ -14,7 +14,11 @@ from haemolynx import io
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 from haemolynx.parsers import prefixed_arguments
 from haemolynx.haemodynamics import automated
-from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+from haemolynx.haemodynamics.poiseuille import (
+    PoiseuilleModel,
+    clear_edge_resistances,
+    stamp_edge_diameters,
+)
 from haemolynx.haemodynamics.viscosity import describe_law
 from haemolynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from haemolynx.haemodynamics.constriction import resolve_generator
@@ -133,6 +137,11 @@ class HaemodynamicsApplyConfig:
         return bool(self.fwhm.get("use_fwhm_edge_diameters", False))
 
     @property
+    def do_fwhm_measurement(self) -> bool:
+        """Whether to (re)measure FWHM; False keeps diameters already on the graph."""
+        return bool(self.fwhm.get("do_fwhm_measurement", True))
+
+    @property
     def do_pericyte_constriction(self) -> bool:
         return bool(self.diameters.get("do_pericyte_construction", False))
 
@@ -141,9 +150,29 @@ class HaemodynamicsApplyConfig:
         return prefixed_arguments(self.fwhm, FWHM_SETTING_PREFIX, valid_parameters)
 
 
-def _measure_fwhm_diameters(G: nx.MultiGraph, config: HaemodynamicsApplyConfig) -> dict[str, Any]:
+def _fwhm_raw_path(config: HaemodynamicsApplyConfig) -> Path | None:
     raw_tiff_path = config.fwhm_setting("fwhm_raw_tiff_path")
     if raw_tiff_path is None:
+        return None
+    return io.resolve_image_path_with_optional_zip(Path(raw_tiff_path))
+
+
+def load_fwhm_raw_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
+    """The intensity volume FWHM fits, or ``None`` when no path is configured."""
+    path = _fwhm_raw_path(config)
+    if path is None:
+        return None
+    return automated.load_single_channel_tiff_volume(path, axis_order=config.axis_order)
+
+
+def _measure_fwhm_diameters(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    *,
+    raw_volume: np.ndarray | None = None,
+) -> dict[str, Any]:
+    path = _fwhm_raw_path(config)
+    if path is None:
         raise ValueError("use_fwhm_edge_diameters=True requires fwhm_raw_tiff_path.")
     voxel_sz = tuple(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
@@ -155,11 +184,45 @@ def _measure_fwhm_diameters(G: nx.MultiGraph, config: HaemodynamicsApplyConfig) 
         G,
         voxel_size_zyx=voxel_sz,
         axis_order=config.axis_order,
+        raw_volume=raw_volume,
         **{
             **config.fwhm_measurement_arguments(measurement_parameters),
-            "raw_tiff_path": io.resolve_image_path_with_optional_zip(Path(raw_tiff_path)),
+            "raw_tiff_path": path,
+            "store_profile_debug": True,
         },
     )
+
+
+def assign_edge_diameters(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
+    """Stamp modelled diameters on *G* without writing resistance.
+
+    Measures FWHM when that is enabled and ``do_fwhm_measurement`` is on.
+    Otherwise keeps measured / override values already on the graph. Returns
+    the graph, a summary, and the raw intensity volume when a FWHM path is set.
+    """
+    clear_edge_resistances(G)
+    summary: dict[str, Any] = {}
+    raw_volume: np.ndarray | None = None
+    remeasure = bool(config.use_fwhm_edge_diameters and config.do_fwhm_measurement)
+    keep_existing = bool(config.use_fwhm_edge_diameters and not config.do_fwhm_measurement)
+    if config.use_fwhm_edge_diameters:
+        raw_volume = load_fwhm_raw_volume(config)
+        if remeasure:
+            summary["fwhm"] = _measure_fwhm_diameters(G, config, raw_volume=raw_volume)
+        else:
+            summary["fwhm"] = {
+                "skipped": True,
+                "reason": "do_fwhm_measurement is off; keeping existing diameters",
+            }
+    summary["diameters"] = stamp_edge_diameters(
+        G,
+        config.diameter("diameter_by_branch_order"),
+        keep_existing=keep_existing,
+    )
+    return G, summary, raw_volume
 
 
 def _run_pericyte_comparison(
@@ -299,6 +362,34 @@ def _assign_poiseuille_resistances(
     return results
 
 
+def apply_poiseuille_resistances(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+) -> tuple[nx.MultiGraph, dict[str, Any]]:
+    """Write resistance and conductance from diameters already on *G*."""
+    summary: dict[str, Any] = {}
+    pericyte_rng = config.pericyte_rng()
+    active_pericyte_indices, active_center_indices_by_edge, comparison_results = (
+        _run_pericyte_comparison(G, config, rng=pericyte_rng)
+    )
+    if comparison_results:
+        summary["pericyte_comparison"] = comparison_results
+
+    summary["resistances"] = _assign_poiseuille_resistances(
+        G,
+        config,
+        active_pericyte_indices=active_pericyte_indices,
+        active_center_indices_by_edge=active_center_indices_by_edge,
+        rng=pericyte_rng,
+    )
+    summary["viscosity"] = describe_law(
+        G.graph["viscosity_law"],
+        G.graph["haematocrit"],
+        G.graph["diameter_basis"],
+    )
+    return G, summary
+
+
 def apply_poiseuille_haemodynamics(
     G: nx.MultiGraph,
     *,
@@ -308,11 +399,16 @@ def apply_poiseuille_haemodynamics(
     config: HaemodynamicsApplyConfig | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """
-    Assign Poiseuille edge conductances on ``G``.
+    Assign diameters, then Poiseuille edge conductances on ``G``.
 
     For the simple tutorial path, pass ``diameter_by_branch_order`` and optional
     ``custom_edges``. For the full example-pipeline path, pass a
     :class:`HaemodynamicsApplyConfig` via ``config`` (other kwargs are ignored).
+
+    The pipeline stages call :func:`assign_edge_diameters` and
+    :func:`apply_poiseuille_resistances` separately so diameters can be reviewed
+    before resistances are written. This combined entry point keeps the library
+    and tutorial path in one call.
 
     Returns
     -------
@@ -331,31 +427,7 @@ def apply_poiseuille_haemodynamics(
                 "custom_edges": custom_edges or [],
             }
         )
-    summary: dict[str, Any] = {}
-
-    if config.use_fwhm_edge_diameters:
-        summary["fwhm"] = _measure_fwhm_diameters(G, config)
-
-    pericyte_rng = config.pericyte_rng()
-    active_pericyte_indices, active_center_indices_by_edge, comparison_results = (
-        _run_pericyte_comparison(G, config, rng=pericyte_rng)
-    )
-    if comparison_results:
-        summary["pericyte_comparison"] = comparison_results
-
-    summary["resistances"] = _assign_poiseuille_resistances(
-        G,
-        config,
-        active_pericyte_indices=active_pericyte_indices,
-        active_center_indices_by_edge=active_center_indices_by_edge,
-        rng=pericyte_rng,
-    )
-    # Top level rather than beside a step's counters: it describes every
-    # resistance in the graph, and they are not comparable across laws.
-    summary["viscosity"] = describe_law(
-        G.graph["viscosity_law"],
-        G.graph["haematocrit"],
-        G.graph["diameter_basis"],
-    )
-
+    G, summary, _raw = assign_edge_diameters(G, config)
+    G, resistance_summary = apply_poiseuille_resistances(G, config)
+    summary.update(resistance_summary)
     return G, summary

@@ -87,6 +87,8 @@ def test_available_metrics_full_solved_graph():
         branch_order="C0",
         resistance=2e14,
         flow_abs=3e-13,
+        diameter_um=5.0,
+        diameter_source="measured",
     )
     assert available_branch_hover_metrics(graph) == BRANCH_HOVER_METRICS
 
@@ -163,7 +165,10 @@ def test_format_branch_tooltip_excludes_unselected_and_missing():
 
 
 def test_format_branch_tooltip_metric_order_is_declared_order():
-    values = {m: 1.0 if m != "order" else "X" for m in BRANCH_HOVER_METRICS}
+    values = {
+        m: ("X" if m in {"order", "diameter_source"} else 1.0)
+        for m in BRANCH_HOVER_METRICS
+    }
     text = format_branch_tooltip("1", values, selected=BRANCH_HOVER_METRICS)
     lines = text.split("\n")
     assert lines[0] == "branchID: 1"
@@ -265,6 +270,8 @@ def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
         data["flow_abs"] = 1e-12
         data["resistance"] = 1e15
         data["branch_order"] = "C0"
+        data["diameter_um"] = 5.0
+        data["diameter_source"] = "measured"
 
     group = results.stage_finished(
         "solve",

@@ -2091,6 +2091,17 @@ SCHEMA = Schema(
             requires=("run_haemodynamics",),
         ),
         Setting(
+            name="do_fwhm_measurement",
+            kind="bool",
+            default=True,
+            help=(
+                "Measure FWHM diameters from the raw image; turn off to keep "
+                "diameters already on the graph"
+            ),
+            section=_FWHM,
+            requires=("use_fwhm_edge_diameters",),
+        ),
+        Setting(
             name="fwhm_raw_tiff_path",
             kind="path",
             default=None,

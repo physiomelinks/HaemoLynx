@@ -26,7 +26,7 @@ import numpy as np
 
 from .arteriole import percent_change_to_scale
 from .constriction import is_capillary_branch_order
-from .poiseuille import PoiseuilleModel
+from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 from .resistance import build_conductance_matrix_from_graph
 from .sweep_flows import build_sweep_flow_grid, record_flows_after_solve
 
@@ -77,9 +77,7 @@ def scale_capillary_diameters(
         if not is_capillary_branch_order(data.get("branch_order")):
             continue
         capillary_edges += 1
-        measured = data.get("fwhm_diameter_um")
-        if measured is not None and float(measured) > 0:
-            data["fwhm_diameter_um"] = float(measured) * scale
+        if scale_stored_edge_diameters(data, scale):
             edges_measured += 1
 
     scaled, results = model.set_poiseuille_resistances(

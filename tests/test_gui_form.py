@@ -491,6 +491,16 @@ def test_diameter_rows_hide_when_parent_toggles_are_unmet():
     assert not fwhm.is_visible({"run_haemodynamics": False})
     assert fwhm.is_visible({"run_haemodynamics": True})
 
+    measure = fields["do_fwhm_measurement"]
+    assert measure.hide_when_unmet
+    assert SCHEMA["do_fwhm_measurement"].requires == ("use_fwhm_edge_diameters",)
+    assert not measure.is_visible(
+        {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+    )
+    assert measure.is_visible(
+        {"run_haemodynamics": True, "use_fwhm_edge_diameters": True}
+    )
+
     raw = fields["fwhm_raw_tiff_path"]
     assert raw.hide_when_unmet
     assert SCHEMA["fwhm_raw_tiff_path"].requires == ("use_fwhm_edge_diameters",)
@@ -534,6 +544,7 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     assert "manual_venule_diameter_by_branch_order" not in shown
     assert "diameter_by_branch_order" not in shown
     assert "use_fwhm_edge_diameters" in shown
+    assert "do_fwhm_measurement" not in shown
     assert "fwhm_raw_tiff_path" not in shown
     assert "fwhm_sample_spacing_along_edge_um" not in shown
 
@@ -556,6 +567,7 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
         "fwhm_reject_samples_with_low_fit_r2": False,
     }
     shown = visible_diameter_settings(SCHEMA, fwhm_on)
+    assert "do_fwhm_measurement" in shown
     assert "fwhm_raw_tiff_path" in shown
     assert "fwhm_sample_spacing_along_edge_um" in shown
     assert "fwhm_constrain_fitted_baseline" in shown

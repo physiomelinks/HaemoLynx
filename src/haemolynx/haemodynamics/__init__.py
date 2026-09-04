@@ -7,9 +7,14 @@ from .viscosity import (
     viscosity_for,
 )
 from .poiseuille import (
+    DIAMETER_SOURCE_MEASURED,
+    DIAMETER_SOURCE_OVERRIDE,
+    DIAMETER_SOURCE_TABLE,
     PlaceholderViscosityWarning,
     PoiseuilleModel,
     build_diameter_by_branch_order,
+    set_edge_diameter_override,
+    stamp_edge_diameters,
 )
 from .resistance import (
     build_conductance_matrix_from_graph,
@@ -19,7 +24,12 @@ from .resistance import (
     set_edge_flows,
     solve_flow_from_conductance_matrix,
 )
-from .apply import HaemodynamicsApplyConfig, apply_poiseuille_haemodynamics
+from .apply import (
+    HaemodynamicsApplyConfig,
+    apply_poiseuille_haemodynamics,
+    apply_poiseuille_resistances,
+    assign_edge_diameters,
+)
 from .arteriole import (
     ARTERIOLE_PREFIX,
     is_arteriole_branch_order,
@@ -66,6 +76,13 @@ __all__ = [
     "solve_flow_from_conductance_matrix",
     "HaemodynamicsApplyConfig",
     "apply_poiseuille_haemodynamics",
+    "apply_poiseuille_resistances",
+    "assign_edge_diameters",
+    "DIAMETER_SOURCE_MEASURED",
+    "DIAMETER_SOURCE_OVERRIDE",
+    "DIAMETER_SOURCE_TABLE",
+    "set_edge_diameter_override",
+    "stamp_edge_diameters",
     "ARTERIOLE_PREFIX",
     "is_arteriole_branch_order",
     "is_capillary_branch_order",

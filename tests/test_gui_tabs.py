@@ -621,6 +621,13 @@ def test_diameter_fields_on_diameters_declare_hide_when_unmet():
         elif field.name == "use_fwhm_edge_diameters":
             assert not field.is_visible({"run_haemodynamics": False}), field.name
             assert field.is_visible({"run_haemodynamics": True}), field.name
+        elif field.name == "do_fwhm_measurement":
+            assert not field.is_visible(
+                {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+            ), field.name
+            assert field.is_visible(
+                {"run_haemodynamics": True, "use_fwhm_edge_diameters": True}
+            ), field.name
         elif field.name.startswith("fwhm_"):
             assert not field.is_visible(
                 {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}

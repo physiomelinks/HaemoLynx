@@ -30,7 +30,7 @@ from typing import Any, Mapping
 
 import networkx as nx
 
-from .poiseuille import PoiseuilleModel
+from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +110,7 @@ def scale_arteriole_diameters(
         if not is_arteriole_branch_order(data.get("branch_order")):
             continue
         arteriole_edges += 1
-        measured = data.get("fwhm_diameter_um")
-        if measured is not None and float(measured) > 0:
-            data["fwhm_diameter_um"] = float(measured) * scale
+        if scale_stored_edge_diameters(data, scale):
             edges_measured += 1
 
     scaled, results = model.set_poiseuille_resistances(

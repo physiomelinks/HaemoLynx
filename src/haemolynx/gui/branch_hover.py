@@ -17,6 +17,8 @@ import numpy as np
 BRANCH_HOVER_METRICS: tuple[str, ...] = (
     "flow",
     "order",
+    "diameter",
+    "diameter_source",
     "resistance",
     "tortuosity",
     "length",
@@ -26,6 +28,8 @@ BRANCH_HOVER_METRICS: tuple[str, ...] = (
 BRANCH_HOVER_LABELS: dict[str, str] = {
     "flow": "branch flow",
     "order": "branch order",
+    "diameter": "branch diameter",
+    "diameter_source": "diameter source",
     "resistance": "branch resistance",
     "tortuosity": "branch tortuosity",
     "length": "branch length",
@@ -35,10 +39,14 @@ BRANCH_HOVER_LABELS: dict[str, str] = {
 _METRIC_ATTR: dict[str, str | None] = {
     "flow": "flow_abs",
     "order": "branch_order",
+    "diameter": "diameter_um",
+    "diameter_source": "diameter_source",
     "resistance": "resistance",
     "tortuosity": None,
     "length": "length",
 }
+
+_TEXT_HOVER_METRICS = frozenset({"order", "diameter_source"})
 
 _BRANCH_ID_LINE = "branchID: {branch_id}"
 
@@ -98,7 +106,7 @@ def _metric_value(
     value = data.get(attr)
     if value is None:
         return None
-    if metric == "order":
+    if metric in _TEXT_HOVER_METRICS:
         text = str(value).strip()
         return text if text else None
     try:
@@ -128,7 +136,7 @@ def available_branch_hover_metrics(graph: Any) -> tuple[str, ...]:
 
 def format_metric_value(metric: str, value: Any) -> str:
     """Canonical string for one metric value in a tooltip line."""
-    if metric == "order":
+    if metric in _TEXT_HOVER_METRICS:
         return str(value)
     number = float(value)
     return f"{number:.6g}"
@@ -217,7 +225,7 @@ def branch_hover_rows(
         "tooltip": np.asarray(tooltips, dtype=object),
     }
     for metric in BRANCH_HOVER_METRICS:
-        if metric == "order":
+        if metric in _TEXT_HOVER_METRICS:
             features[metric] = np.asarray(
                 ["" if v is None else str(v) for v in columns[metric]],
                 dtype=object,
@@ -257,7 +265,7 @@ def tooltips_from_feature_table(
                 values[metric] = None
                 continue
             raw = np.asarray(features[metric])[index]
-            if metric == "order":
+            if metric in _TEXT_HOVER_METRICS:
                 text = "" if raw is None else str(raw).strip()
                 values[metric] = text or None
             else:
@@ -278,7 +286,7 @@ def available_metrics_from_features(features: Mapping[str, Any]) -> tuple[str, .
         if metric not in features:
             continue
         column = np.asarray(features[metric])
-        if metric == "order":
+        if metric in _TEXT_HOVER_METRICS:
             if any(str(v).strip() for v in column.tolist()):
                 present.append(metric)
         else:

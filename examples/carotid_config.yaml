@@ -403,6 +403,8 @@ diameters_and_pericytes:
 fwhm_diameter_measurement:
   # Measure per-edge diameters from the raw image by full-width-half-maximum fitting  [needs run_haemodynamics]
   use_fwhm_edge_diameters: false
+  # Measure FWHM diameters from the raw image; turn off to keep diameters already on the graph  [needs use_fwhm_edge_diameters]
+  do_fwhm_measurement: true
   # Measure FWHM diameters from this raw single-channel image  [needs use_fwhm_edge_diameters; must exist]
   fwhm_raw_tiff_path: null
   # Sample a transverse profile every this far along the centerline  [um; range 0.0..; needs use_fwhm_edge_diameters]

@@ -21,7 +21,7 @@ import numpy as np
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 
 from .constriction_strategy import set_resistances_for_constriction_strategy
-from .poiseuille import PoiseuilleModel
+from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
@@ -137,9 +137,7 @@ def dilate_graph_diameters(
     """A copy of *G* with every measured FWHM diameter scaled."""
     dilated = G.copy()
     for _, _, _, edge_data in dilated.edges(keys=True, data=True):
-        measured = edge_data.get("fwhm_diameter_um")
-        if measured is not None and float(measured) > 0:
-            edge_data["fwhm_diameter_um"] = float(measured) * dilation_factor
+        scale_stored_edge_diameters(edge_data, dilation_factor)
     return dilated
 
 

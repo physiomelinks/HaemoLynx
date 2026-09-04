@@ -38,7 +38,8 @@ import tifffile
 from haemolynx import graph, haemodynamics, io, preprocessing, statistics, visualization
 from haemolynx.haemodynamics.apply import (
     HaemodynamicsApplyConfig,
-    apply_poiseuille_haemodynamics,
+    apply_poiseuille_resistances,
+    assign_edge_diameters,
 )
 from haemolynx.haemodynamics.constriction_strategy import (
     set_resistances_for_constriction_strategy,
@@ -144,10 +145,12 @@ class BoundaryNodes:
 
 @dataclass
 class HaemodynamicModel:
-    """A graph carrying branch orders, diameters, resistances and conductances."""
+    """A graph carrying branch orders and diameters; resistances after Haemodynamics."""
 
     graph: nx.MultiGraph
     results: dict[str, Any] = field(default_factory=dict)
+    #: Intensity volume FWHM was fit against, for the napari review overlay.
+    fwhm_raw: np.ndarray | None = None
 
 
 @dataclass
@@ -1315,15 +1318,33 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     )
 
 
+def _haemodynamics_apply_config(
+    settings: dict,
+    schema: Schema,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    resistance_node_pair: tuple[int, int] | None = None,
+) -> HaemodynamicsApplyConfig:
+    """Baseline haemodynamics config: no focal pericyte tone, no comparison CSV."""
+    diameters = dict(schema.section_values(settings, "Diameters and pericytes"))
+    diameters["do_pericyte_construction"] = False
+    diameters["run_pericyte_resistance_comparison"] = False
+    return HaemodynamicsApplyConfig(
+        diameters=diameters,
+        fwhm=schema.section_values(settings, "FWHM diameter measurement"),
+        resistance_node_pair=resistance_node_pair,
+        voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
+        axis_order=settings["image_axis_order"],
+        comparison_output_csv_path=None,
+    )
+
+
 def assign_diameters(settings: dict, network: VesselNetwork, boundaries: BoundaryNodes, schema: Schema):
     """Assign branch orders, then the diameter each edge is modelled with.\n\n    Branch orders come first because they are the key into the diameter\n    table; per-edge FWHM measurements override that table when enabled."""
     if boundaries.graph is not None:
         network.graph = boundaries.graph
     G = network.graph
-    image = network.volume.image
-    output_dir = network.volume.output_dir
     voxel_size_zyx = network.volume.voxel_size_zyx
-    resistance_node_pair = boundaries.resistance_node_pair
     # 4) Add branch orders and hemodynamic edge weights.
     if settings["inlet_nodes"]:
 
@@ -1377,68 +1398,67 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 "Poiseuille conductance assignment."
             )
         elif settings["run_haemodynamics"]:
-            # Two config sections go in whole rather than as forty-odd
-            # keyword arguments; everything else here is computed by this run.
-            # Baseline never places focal pericyte constrictions or runs the
-            # comparison CSV -- even when those flags are True in YAML/CLI/GUI.
-            # Pericyte tone belongs to typed perturbation entries that call
-            # set_resistances_for_constriction_strategy themselves.
-            diameters = dict(
-                schema.section_values(settings, "Diameters and pericytes")
-            )
-            diameters["do_pericyte_construction"] = False
-            diameters["run_pericyte_resistance_comparison"] = False
-            haemo_config = HaemodynamicsApplyConfig(
-                diameters=diameters,
-                fwhm=schema.section_values(settings, "FWHM diameter measurement"),
-                resistance_node_pair=resistance_node_pair,
+            # Diameters only: resistances wait for build_haemodynamic_model so
+            # a GUI pause can review FWHM fits first. Baseline never places
+            # focal pericyte constrictions -- that belongs to typed
+            # perturbation entries.
+            haemo_config = _haemodynamics_apply_config(
+                settings,
+                schema,
                 voxel_size_zyx=voxel_size_zyx,
-                axis_order=settings["image_axis_order"],
-                comparison_output_csv_path=None,
             )
-            G, haemo_results = apply_poiseuille_haemodynamics(G, config=haemo_config)
+            G, haemo_results, fwhm_raw = assign_edge_diameters(G, haemo_config)
             if "fwhm" in haemo_results:
                 logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
             elif settings["use_fwhm_edge_diameters"] is False:
                 logger.info(
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
-                    "set_poiseuille_resistances without per-edge FWHM)."
+                    "table diameters without per-edge FWHM)."
                 )
-            if "pericyte_comparison" in haemo_results:
-                comparison_results = haemo_results["pericyte_comparison"]
-                logger.info(
-                    "Pericyte resistance comparison complete: "
-                    f"baseline={comparison_results['baseline_resistance']:.6f}, "
-                    f"constricted={comparison_results['constricted_resistance']:.6f}, "
-                    f"delta={comparison_results['delta']:.6f}, "
-                    f"change={comparison_results['percent_change']:.3f}%."
-                )
-                logger.info(
-                    "Saved pericyte resistance comparison CSV to: "
-                    f"{comparison_results['output_csv_path']}"
-                )
-            # `weights` has not been a key since resistance and conductance
-            # replaced the overloaded `weight` attribute; the summary calls it
-            # `resistances`, and this loop had been logging nothing.
-            for step_name, step_result in haemo_results.get("resistances", {}).items():
-                logger.info(f"Haemodynamics resistances [{step_name}]: {step_result}")
-            if "viscosity" in haemo_results:
-                logger.info(f"Viscosity law: {haemo_results['viscosity']}")
+            if "diameters" in haemo_results:
+                logger.info(f"Diameter sources: {haemo_results['diameters']}")
+
+    return HaemodynamicModel(
+        graph=G,
+        results=locals().get("haemo_results", {}) or {},
+        fwhm_raw=locals().get("fwhm_raw"),
+    )
 
 
-    return HaemodynamicModel(graph=G, results=locals().get("haemo_results", {}) or {})
+def build_haemodynamic_model(
+    settings: dict,
+    model: HaemodynamicModel,
+    schema: Schema | None = None,
+):
+    """Write Poiseuille resistance from diameters already on the graph."""
+    if not settings["run_haemodynamics"]:
+        return model
+    if schema is None:
+        from haemolynx.pipeline.schema import default_schema
 
-
-def build_haemodynamic_model(settings: dict, model: HaemodynamicModel):
-    """Return the model ready to solve.\n\n    `assign_diameters` already applied Poiseuille's law to every edge, so\n    this reports what it produced rather than recomputing it."""
-    if settings["run_haemodynamics"]:
-        edges_with_resistance = sum(
-            1 for _, _, data in model.graph.edges(data=True) if "resistance" in data
-        )
-        logger.info(
-            f"Haemodynamic model: {edges_with_resistance} of "
-            f"{model.graph.number_of_edges()} edges carry a resistance"
-        )
+        schema = default_schema()
+    voxel_size_zyx = tuple(
+        float(v)
+        for v in model.graph.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0))
+    )
+    haemo_config = _haemodynamics_apply_config(
+        settings,
+        schema,
+        voxel_size_zyx=voxel_size_zyx,
+    )
+    _graph, resistance_results = apply_poiseuille_resistances(model.graph, haemo_config)
+    model.results.update(resistance_results)
+    for step_name, step_result in resistance_results.get("resistances", {}).items():
+        logger.info(f"Haemodynamics resistances [{step_name}]: {step_result}")
+    if "viscosity" in resistance_results:
+        logger.info(f"Viscosity law: {resistance_results['viscosity']}")
+    edges_with_resistance = sum(
+        1 for _, _, data in model.graph.edges(data=True) if "resistance" in data
+    )
+    logger.info(
+        f"Haemodynamic model: {edges_with_resistance} of "
+        f"{model.graph.number_of_edges()} edges carry a resistance"
+    )
     return model
 
 
@@ -2351,7 +2371,7 @@ def run_pipeline_stages(
         diameters = assign_diameters(settings, network, boundaries, schema)
     _produced(on_stage_output, "assign_diameters", diameters)
     with run.stage("build_haemodynamic_model"):
-        model = build_haemodynamic_model(settings, diameters)
+        model = build_haemodynamic_model(settings, diameters, schema)
     _produced(on_stage_output, "build_haemodynamic_model", model)
     with run.stage("solve"):
         solution = solve(settings, model, boundaries)

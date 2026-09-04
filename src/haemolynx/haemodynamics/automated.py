@@ -753,6 +753,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     reject_samples_with_low_fit_r2: bool = True,
     min_fit_r2: float = 0.85,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    raw_volume: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -846,7 +847,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             f"profile_baseline_mode must be 'wings' or 'percentile', got {profile_baseline_mode!r}."
         )
 
-    raw = load_single_channel_tiff_volume(raw_tiff_path, axis_order=axis_order)
+    raw = (
+        np.asarray(raw_volume, dtype=np.float32)
+        if raw_volume is not None
+        else load_single_channel_tiff_volume(raw_tiff_path, axis_order=axis_order)
+    )
     labels, _ = build_graph_branch_label_volume(
         G,
         raw.shape,

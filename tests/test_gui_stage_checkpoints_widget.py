@@ -222,6 +222,7 @@ def test_revert_writes_graph_pkl_and_turns_off_rebuild_toggles(panel):
 
     assert rows["do_skeletonize"].value is False
     assert rows["do_graph_building"].value is False
+    assert rows["do_fwhm_measurement"].value is True
     report = widget._haemolynx_report()
     assert "do_skeletonize" in report
     # resolve_settings may absolutise vtk_output_prefix; find the resume pickle
@@ -234,6 +235,22 @@ def test_revert_writes_graph_pkl_and_turns_off_rebuild_toggles(panel):
         restored = pickle.load(handle)
     assert isinstance(restored, nx.MultiGraph)
     assert restored.number_of_nodes() == 4
+
+
+def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
+    """Continuing from Haemodynamics must keep diameters already on the graph."""
+    widget, viewer, _tmp = panel
+    _seed_run(widget, viewer, through="assign_diameters")
+    rows = widget._haemolynx_rows()
+    rows["use_fwhm_edge_diameters"].value = True
+    rows["do_fwhm_measurement"].value = True
+
+    widget._haemolynx_revert("6. Haemodynamics")
+
+    assert rows["do_fwhm_measurement"].value is False
+    assert rows["do_graph_building"].value is False
+    tabs = widget._haemolynx_tabs
+    assert tabs.tabText(tabs.currentIndex()) == "5. Diameters"
 
 
 def test_revert_with_nothing_saved_says_so_and_does_not_crash(panel):

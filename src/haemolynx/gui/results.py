@@ -56,6 +56,8 @@ BOUNDARY_NODES = f"{PREFIX}boundary nodes"
 PERICYTES = f"{PREFIX}pericytes"
 IMAGE = f"{PREFIX}image"
 SKELETON = f"{PREFIX}skeleton"
+FWHM_RAW = f"{PREFIX}FWHM image"
+FWHM_PROFILES = f"{PREFIX}FWHM profiles"
 
 #: Napari Points ``size`` (data pixels). Values match the original viewer style
 #: on ``origin/main`` / the first GUI results commit. Branch hover used to be a
@@ -111,12 +113,14 @@ LAYER_NAMES = frozenset(
         PERICYTES,
         IMAGE,
         SKELETON,
+        FWHM_RAW,
+        FWHM_PROFILES,
     }
     | set(MASK_LAYERS.values())
 )
 
 #: Voxel-indexed arrays and boundary-picking layers are not graph geometry.
-_Z_FILTER_EXCLUDE = frozenset({IMAGE, SKELETON, *MASK_LAYERS.values()})
+_Z_FILTER_EXCLUDE = frozenset({IMAGE, SKELETON, FWHM_RAW, *MASK_LAYERS.values()})
 
 
 def is_ours_name(name: str) -> bool:
@@ -144,7 +148,13 @@ def image_z_extent_um(
 
 
 def is_z_depth_filtered_layer(name: str, kind: str) -> bool:
-    """Whether the view-only Z depth filter applies to a HaemoLynx layer."""
+    """Whether the view-only Z depth filter clips graph geometry on *layer*.
+
+    Image and labels volumes are clipped too, but they use the
+    ``z_project_full`` cache and :func:`clip_volume_to_z` rather than this
+    graph-geometry predicate. Boundary-picking layers stay unfiltered so a
+    picker cannot hide the points it is meant to edit.
+    """
     if kind not in ("vectors", "points"):
         return False
     if not is_ours_name(name):
@@ -193,6 +203,60 @@ def z_slice_window(
     return int(indices[0]), int(indices[-1])
 
 
+def compose_z_display_window(
+    depth_min: float,
+    depth_max: float,
+    *,
+    project: bool,
+    project_min: float,
+    project_max: float,
+) -> tuple[float, float, bool]:
+    """Combine Z-depth clip and optional Z-project into one display window.
+
+    Z-depth is applied first (restrict the visible slab). If *project* is on,
+    the Z-project window is then intersected with that slab and MIP'd. An
+    empty intersection (``z_max < z_min``) is a blank display, not a fallback
+    slice. Full-range Z-depth with project off is the identity.
+    """
+    if not project:
+        return float(depth_min), float(depth_max), False
+    return (
+        max(float(depth_min), float(project_min)),
+        min(float(depth_max), float(project_max)),
+        True,
+    )
+
+
+def clip_volume_to_z(
+    volume: np.ndarray,
+    voxel_size_z: float,
+    z_min: float,
+    z_max: float,
+    *,
+    z_extent: float | None = None,
+) -> np.ndarray:
+    """Zero slices outside ``[z_min, z_max]`` µm, keeping the 3D shape.
+
+    Slices inside the window keep their original values (no MIP). A window
+    covering the full extent returns *volume* unchanged. ``z_max < z_min``
+    returns zeros. Display-only — the pipeline must keep the original stack.
+    """
+    volume = np.asarray(volume)
+    if volume.ndim < 3:
+        return volume
+    if z_max < z_min:
+        return np.zeros_like(volume)
+    n_z = int(volume.shape[0])
+    dz = float(voxel_size_z) if voxel_size_z else 1.0
+    extent = float(z_extent) if z_extent is not None else dz * n_z
+    if z_window_is_full(z_min, z_max, extent):
+        return volume
+    start, stop = z_slice_window(n_z, dz, z_min, z_max)
+    out = np.zeros_like(volume)
+    out[start : stop + 1] = volume[start : stop + 1]
+    return out
+
+
 def project_volume_max_z(
     volume: np.ndarray,
     voxel_size_z: float,
@@ -207,10 +271,13 @@ def project_volume_max_z(
     falls in ``[z_min, z_max]`` are replaced by the MIP of that slab; slices
     outside the window are zero. A window covering the full extent returns
     *volume* unchanged (identity — the pipeline must keep the original stack).
+    ``z_max < z_min`` returns zeros.
     """
     volume = np.asarray(volume)
     if volume.ndim < 3:
         return volume
+    if z_max < z_min:
+        return np.zeros_like(volume)
     n_z = int(volume.shape[0])
     dz = float(voxel_size_z) if voxel_size_z else 1.0
     extent = float(z_extent) if z_extent is not None else dz * n_z
@@ -275,10 +342,12 @@ EDGE_COLUMNS: dict[str, str] = {
     "segment_id": "build_network",
     "mask_vessel_type": "assign_boundaries",
     "branch_order": "assign_diameters",
-    "resistance": "assign_diameters",
-    "conductance": "assign_diameters",
+    "diameter_um": "assign_diameters",
+    "diameter_source": "assign_diameters",
     "fwhm_diameter_um": "assign_diameters",
     "pericyte_count_assigned": "assign_diameters",
+    "resistance": "build_haemodynamic_model",
+    "conductance": "build_haemodynamic_model",
     "pressure_u": "solve",
     "pressure_v": "solve",
     "pressure_drop": "solve",
@@ -342,7 +411,7 @@ def _enrich_flow_colour_columns(
 
 
 #: Columns holding text rather than numbers; a missing one is "" not NaN.
-TEXT_COLUMNS = frozenset({"branch_order", "mask_vessel_type"})
+TEXT_COLUMNS = frozenset({"branch_order", "mask_vessel_type", "diameter_source"})
 
 #: What each stage colours the vessels by once it has run, unless the user has
 #: chosen otherwise. `flow_abs`, not `flow_signed`: the sign follows the order
@@ -350,7 +419,7 @@ TEXT_COLUMNS = frozenset({"branch_order", "mask_vessel_type"})
 #: arbitrary pattern that reads as a physics bug.
 DEFAULT_VESSEL_COLOUR = {
     "build_network": "segment_id",
-    "assign_diameters": "branch_order",
+    "assign_diameters": "diameter_um",
     "build_haemodynamic_model": "resistance",
     "solve": "flow_abs",
 }
@@ -513,6 +582,18 @@ def polylines_to_vectors(
         [np.concatenate(origins, axis=0), np.concatenate(directions, axis=0)], axis=1
     )
     return vectors, np.asarray(owner, dtype=int)
+
+
+def fwhm_profile_polylines(graph: Any) -> list[np.ndarray]:
+    """Accepted FWHM transverse rays stored on edges, as physical polylines."""
+    lines: list[np.ndarray] = []
+    for _u, _v, _key, data in _iter_edges(graph):
+        for line in data.get("fwhm_profile_lines_phys") or ():
+            points = np.asarray(line, dtype=float)
+            if points.ndim != 2 or len(points) < 2:
+                continue
+            lines.append(points[:, :3])
+    return lines
 
 
 def edge_features(graph: Any, names: Iterable[str]) -> dict[str, np.ndarray]:
@@ -858,6 +939,14 @@ class ResultLayers:
         colour_by = DEFAULT_VESSEL_COLOUR.get(stage)
         if colour_by is not None and colour_by not in columns:
             colour_by = None
+        elif (
+            colour_by is not None
+            and colour_by not in TEXT_COLUMNS
+            and colour_by in columns
+        ):
+            numeric = np.asarray(columns[colour_by], dtype=float)
+            if numeric.size == 0 or not np.any(np.isfinite(numeric)):
+                colour_by = "branch_order" if "branch_order" in columns else None
 
         hover_columns, hover_options = _branch_hover_columns(graph, owner)
         if hover_columns:
@@ -1141,15 +1230,54 @@ class ResultLayers:
                     },
                 )
             )
+        fwhm_raw = getattr(output, "fwhm_raw", None)
+        if fwhm_raw is not None:
+            layers.append(
+                LayerSpec(
+                    kind="image",
+                    name=FWHM_RAW,
+                    data=fwhm_raw,
+                    scale=tuple(float(v) for v in self._voxel_size_zyx),
+                    options={"blending": "additive", "colormap": "gray", "opacity": 0.8},
+                )
+            )
+        if self._graph is not None:
+            profile_paths = fwhm_profile_polylines(self._graph)
+            if profile_paths:
+                vectors, _owner = polylines_to_vectors(profile_paths)
+                layers.append(
+                    LayerSpec(
+                        kind="vectors",
+                        name=FWHM_PROFILES,
+                        data=vectors,
+                        options={
+                            "vector_style": "line",
+                            "edge_width": 0.35,
+                            "edge_color": "cyan",
+                            "out_of_slice_display": True,
+                        },
+                    )
+                )
         orders = sorted(
             {str(o) for o in edge_features(self._graph, ["branch_order"])["branch_order"] if o}
         ) if self._graph is not None else []
+        sources = {}
+        if self._graph is not None:
+            for _u, _v, _key, data in _iter_edges(self._graph):
+                source = data.get("diameter_source")
+                if source:
+                    sources[str(source)] = sources.get(str(source), 0) + 1
+        source_note = ", ".join(f"{count} {name}" for name, count in sorted(sources.items()))
+        note = f"{len(orders)} branch orders"
+        if source_note:
+            note += f", {source_note}"
+        if len(points):
+            note += f", {len(points)} pericytes"
         return StageLayers(
             stage="assign_diameters",
             title=_title_for("assign_diameters"),
             layers=tuple(layers),
-            note=f"{len(orders)} branch orders"
-            + (f", {len(points)} pericytes" if len(points) else ""),
+            note=note,
         )
 
     def _from_build_haemodynamic_model(self, output: Any) -> StageLayers:

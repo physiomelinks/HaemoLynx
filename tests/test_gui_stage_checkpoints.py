@@ -16,6 +16,7 @@ import pytest
 from haemolynx.gui.results import ResultLayers, StageLayers, LayerSpec, SKELETON
 from haemolynx.gui.stage_checkpoints import (
     GRAPH_RESUME_STAGES,
+    GRAPH_SKIP_FOR_RESUME,
     SKIP_FOR_RESUME,
     StageCheckpoints,
     can_revert_from,
@@ -180,6 +181,7 @@ def test_plan_restore_writes_graph_pkl_and_skips_graph_building(tmp_path):
     graph = a_graph(resistance=1.0)
     results = built(graph)
     settings = _settings(tmp_path)
+    settings["use_fwhm_edge_diameters"] = True
     (tmp_path / "out").mkdir()
     checkpoints.record(
         "assign_diameters",
@@ -192,7 +194,7 @@ def test_plan_restore_writes_graph_pkl_and_skips_graph_building(tmp_path):
 
     assert plan is not None
     assert plan.stage == "assign_diameters"
-    assert plan.skip_settings == ("do_graph_building",)
+    assert plan.skip_settings == ("do_graph_building", "do_fwhm_measurement")
     assert plan.graph_path == graph_resume_path(tmp_path / "out", "stack")
     assert plan.graph_path.is_file()
     with plan.graph_path.open("rb") as handle:
@@ -233,7 +235,7 @@ def test_plan_restore_writes_skeleton_npy_so_both_skip_toggles_are_safe(tmp_path
 
     assert plan is not None
     assert plan.tab_title == "3. Graph"
-    assert plan.skip_settings == SKIP_FOR_RESUME
+    assert plan.skip_settings == GRAPH_SKIP_FOR_RESUME
     skel_path = skeleton_resume_path(tmp_path / "out", "stack")
     assert skel_path.is_file()
     assert np.array_equal(np.load(skel_path), skeleton)
@@ -254,7 +256,36 @@ def test_skip_settings_for_resume_requires_skeleton_before_disabling_skeletonize
     assert skip_settings_for_resume(graph_written=True, skeleton_ready=False) == (
         "do_graph_building",
     )
-    assert skip_settings_for_resume(graph_written=True, skeleton_ready=True) == SKIP_FOR_RESUME
+    assert skip_settings_for_resume(graph_written=True, skeleton_ready=True) == (
+        GRAPH_SKIP_FOR_RESUME
+    )
+
+
+def test_skip_settings_for_resume_keeps_fwhm_when_diameters_are_already_on_the_graph():
+    assert skip_settings_for_resume(
+        graph_written=True,
+        skeleton_ready=True,
+        target="assign_boundaries",
+        use_fwhm_edge_diameters=True,
+    ) == GRAPH_SKIP_FOR_RESUME
+    assert skip_settings_for_resume(
+        graph_written=True,
+        skeleton_ready=False,
+        target="assign_diameters",
+        use_fwhm_edge_diameters=False,
+    ) == ("do_graph_building",)
+    assert skip_settings_for_resume(
+        graph_written=True,
+        skeleton_ready=False,
+        target="assign_diameters",
+        use_fwhm_edge_diameters=True,
+    ) == ("do_graph_building", "do_fwhm_measurement")
+    assert skip_settings_for_resume(
+        graph_written=True,
+        skeleton_ready=True,
+        target="assign_diameters",
+        use_fwhm_edge_diameters=True,
+    ) == SKIP_FOR_RESUME
 
 
 def test_plan_restore_from_input_tab_is_impossible():
