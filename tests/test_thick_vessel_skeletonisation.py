@@ -901,3 +901,60 @@ def test_length_filter_stays_scoped_when_thick_and_thin_span_most_of_the_image()
 
     assert elapsed < 15.0, f"length filter took {elapsed:.2f}s -- looks unscoped"
     assert int((joined & branch).sum()) > 0, "the fused branch must still be kept"
+
+
+def test_joining_many_arms_does_not_rescan_the_whole_image_per_arm():
+    """The per-arm join loop must not re-derive its fat-voxel set from scratch.
+
+    Production data stalled here for 30+ minutes with no further log output.
+    The loop rebuilt `fat_coords` via `result & thick_b` followed by
+    `np.argwhere` -- both full-image scans -- after *every* accepted arm, so
+    a component with many genuinely fused arms paid that cost once per arm
+    instead of once total. Locks the fix (grow the fat-voxel set by
+    appending only the arm's own newly-fat voxels) with enough arms that the
+    old approach would be far slower than the bound below, on an image large
+    enough for a per-arm full scan to actually be expensive.
+    """
+    import time
+
+    r_fat = 15.0
+    trunk_len = 1000
+    n_arms = 300
+    arm_radius = 1.5
+    arm_len = 12
+    pad = 12
+    shape = (
+        int(2 * r_fat + 2 * pad),
+        int(2 * r_fat + 2 * pad + arm_len),
+        int(trunk_len + 2 * pad),
+    )
+    cz, cy, cx = shape[0] // 2, pad + int(r_fat), shape[2] // 2
+
+    thick = _disk_tube_along_axis(
+        shape, (cz, cy, cx - trunk_len // 2), r_fat, trunk_len, axis=2
+    )
+    mask = thick.copy()
+    thin_skel = np.zeros(shape, dtype=bool)
+    for i in range(n_arms):
+        t = cx - trunk_len // 2 + int((i + 0.5) * trunk_len / n_arms)
+        y0 = cy + int(r_fat) - 2  # overlaps the trunk: genuinely fused
+        arm = _disk_tube_along_axis(shape, (cz, y0, t), arm_radius, arm_len, axis=1)
+        mask = mask | arm
+        thin_skel = thin_skel | (arm & ~thick)
+    skeleton = thin_skel | thick
+
+    _, n_cc_mask = label(mask, structure=generate_binary_structure(3, 3))
+    assert n_cc_mask == 1, "fixture must be one fused structure"
+
+    start = time.perf_counter()
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, mask, min_arm_extent_voxels=0.0
+    )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 20.0, (
+        f"joining {n_arms} arms took {elapsed:.2f}s -- looks like a per-arm "
+        "full-image rescan regressed"
+    )
+    _, n_cc_joined = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc_joined == 1, "every arm must actually be bridged into one tree"

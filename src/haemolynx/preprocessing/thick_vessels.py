@@ -945,7 +945,13 @@ def _join_thin_arms_to_fat_ridge(
     fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
     fat_now = result & thick_b
 
-    for component_id in arm_ids:
+    logger.info(
+        "_join_thin_arms_to_fat_ridge: joining up to %d thin-arm components to the "
+        "fat ridge",
+        int(arm_ids.size),
+    )
+    t_join_start = time.perf_counter()
+    for arm_index, component_id in enumerate(arm_ids, start=1):
         slc = objects[int(component_id) - 1]
         if slc is None:
             continue
@@ -995,20 +1001,43 @@ def _join_thin_arms_to_fat_ridge(
             tuple(int(v) for v in (np.array(voxel) + component_origin))
             for voxel in local_path
         ]
+        # fat_now must stay exactly what it was before this arm while the
+        # walk below tests against it (the walk stops on first touching the
+        # *pre-existing* ridge, not on becoming its own touch); voxels this
+        # arm adds are folded in afterwards instead.
+        drawn: list[tuple[int, int, int]] = []
         for voxel in path:
             if not allowed_b[voxel]:
                 continue
             result[voxel] = True
+            drawn.append(voxel)
             if _touches_tree(fat_now, voxel):
                 break
-        fat_now = result & thick_b
         # Requery against what's now connected, including this join's own
         # bridge and any earlier arm: otherwise every later arm keeps
         # targeting the pre-join ridge alone, picking a farther "nearest"
-        # point than the one this loop just made available.
-        fat_coords = np.argwhere(fat_now)
-        fat_component_labels = allowed_components[tuple(fat_coords.T)]
-        fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
+        # point than the one this loop just made available. Every voxel
+        # this arm could have added to the fat set is already known from
+        # `drawn` -- no need to recompute `result & thick_b` or re-argwhere
+        # it (both full-image scans) to find out what changed.
+        newly_fat = [voxel for voxel in drawn if thick_b[voxel]]
+        if newly_fat:
+            new_coords = np.asarray(newly_fat, dtype=np.intp)
+            fat_now[tuple(new_coords.T)] = True
+            fat_coords = np.concatenate([fat_coords, new_coords], axis=0)
+            fat_component_labels = np.concatenate(
+                [fat_component_labels, allowed_components[tuple(new_coords.T)]]
+            )
+            fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
+        if arm_index % 200 == 0 or time.perf_counter() - t_join_start > 30.0:
+            logger.info(
+                "_join_thin_arms_to_fat_ridge: %d/%d arm components processed "
+                "(%.2fs elapsed)",
+                arm_index,
+                int(arm_ids.size),
+                time.perf_counter() - t_join_start,
+            )
+            t_join_start = time.perf_counter()
     return result
 
 
