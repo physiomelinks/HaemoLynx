@@ -75,3 +75,12 @@ REVERT_STAGE_TOOLTIP = (
     "Reload the checkpoint from the previous stage so later settings can "
     "be changed without rebuilding earlier work"
 )
+
+#: Left-hand view dock — display-only; never written into pipeline settings.
+Z_PROJECT_TOOLTIP = (
+    "Restrict every visible layer to this physical Z window in microns; "
+    "full range leaves the display unchanged and does not crop the pipeline"
+)
+SCALE_BAR_TOOLTIP = (
+    "Show napari's scale bar on the canvas, in microns when voxel size is known"
+)

@@ -47,6 +47,9 @@ from haemolynx.gui.results import (
     filter_points_by_z,
     filter_vectors_by_z,
     is_z_depth_filtered_layer,
+    is_z_project_volume_layer,
+    project_volume_max_z,
+    z_window_is_full,
 )
 from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.run_state import (
@@ -95,6 +98,17 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
 
 #: What napari calls the log window's dock.
 LOG_DOCK_NAME = "HaemoLynx run log"
+
+#: Left-hand view chrome (Z project, scale bar).
+VIEW_DOCK_NAME = "HaemoLynx view"
+
+#: Metadata key for the unprojected volume on a layer that is not tagged
+#: as ours (a user-dropped image). Ours layers keep the same array on the
+#: ``OURS`` tag as ``z_project_full``.
+Z_PROJECT_CACHE_KEY = "haemolynx_z_project_full"
+
+#: Napari layer unit for a physically meaningful scale bar.
+SCALE_BAR_UNIT = "micrometer"
 
 
 def _create_widget(**kwargs):
@@ -272,11 +286,7 @@ def _apply_z_filter(
     z_extent: float | None = None,
 ) -> None:
     """Redraw graph Vectors/Points layers filtered to a physical Z band."""
-    full_range = (
-        z_extent is not None
-        and z_min <= 0.0
-        and z_max >= z_extent - max(1e-6, abs(z_extent) * 1e-9)
-    )
+    full_range = z_window_is_full(z_min, z_max, z_extent)
     for layer in viewer.layers:
         if not _is_ours(layer):
             continue
@@ -322,6 +332,140 @@ def _apply_z_filter(
         column = _active_column(layer)
         if column == FLOW_DIR_RGB_COLUMN:
             _colour_layer(layer, column, "direct")
+
+
+def _z_project_cache(layer) -> np.ndarray | None:
+    """The unprojected volume stored for a view-only Z project, if any."""
+    metadata = getattr(layer, "metadata", None) or {}
+    tag = metadata.get(OURS) or {}
+    cached = tag.get("z_project_full")
+    if cached is not None:
+        return np.asarray(cached)
+    extra = metadata.get(Z_PROJECT_CACHE_KEY)
+    if extra is not None:
+        return np.asarray(extra)
+    return None
+
+
+def _store_z_project_cache(layer, data: Any = None) -> None:
+    """Remember the full volume so a Z project can restore it."""
+    kind = layer.__class__.__name__.lower()
+    if not is_z_project_volume_layer(kind):
+        return
+    if data is None:
+        data = layer.data
+    stored = np.array(data, copy=True)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    if _is_ours(layer):
+        tag = dict(metadata.get(OURS) or {})
+        tag["z_project_full"] = stored
+        metadata[OURS] = tag
+    else:
+        metadata[Z_PROJECT_CACHE_KEY] = stored
+    layer.metadata = metadata
+
+
+def data_for_pipeline(layer) -> Any:
+    """The full volume a run should read, ignoring a view-only Z project."""
+    cached = _z_project_cache(layer)
+    return cached if cached is not None else getattr(layer, "data", None)
+
+
+def _layer_voxel_size_z(layer) -> float:
+    scale = getattr(layer, "scale", None)
+    if scale is None:
+        return 1.0
+    try:
+        return float(scale[0]) if len(scale) > 0 else 1.0
+    except TypeError:
+        return 1.0
+
+
+def _viewer_z_extent_um(viewer) -> float | None:
+    """Physical Z span from visible layers, preferring cached full volumes."""
+    max_extent = 0.0
+    for layer in viewer.layers:
+        kind = layer.__class__.__name__.lower()
+        if is_z_project_volume_layer(kind):
+            full = _z_project_cache(layer)
+            data = full if full is not None else getattr(layer, "data", None)
+            if data is None:
+                continue
+            arr = np.asarray(data)
+            if arr.ndim < 3:
+                continue
+            max_extent = max(max_extent, _layer_voxel_size_z(layer) * int(arr.shape[0]))
+            continue
+        data = getattr(layer, "data", None)
+        if data is None:
+            continue
+        arr = np.asarray(data)
+        if kind == "points" and arr.ndim == 2 and arr.shape[-1] >= 1 and len(arr):
+            max_extent = max(max_extent, float(np.max(arr[:, 0])))
+        elif kind == "vectors" and arr.ndim == 3 and arr.shape[1] == 2 and len(arr):
+            max_extent = max(max_extent, float(np.max(arr[:, 0, 0])))
+    return max_extent if max_extent > 0.0 else None
+
+
+def _apply_z_project(
+    viewer,
+    z_min: float,
+    z_max: float,
+    *,
+    z_extent: float | None = None,
+) -> None:
+    """MIP image/labels layers to a physical Z window. Does not crop pipeline inputs."""
+    full_range = z_window_is_full(z_min, z_max, z_extent)
+    for layer in viewer.layers:
+        kind = layer.__class__.__name__.lower()
+        if not is_z_project_volume_layer(kind):
+            continue
+        cached = _z_project_cache(layer)
+        if cached is None:
+            _store_z_project_cache(layer)
+            cached = _z_project_cache(layer)
+        if cached is None:
+            continue
+        if full_range:
+            layer.data = np.array(cached, copy=True)
+            continue
+        layer.data = project_volume_max_z(
+            cached,
+            _layer_voxel_size_z(layer),
+            z_min,
+            z_max,
+            z_extent=z_extent,
+        )
+
+
+def _apply_scale_bar(viewer, visible: bool) -> None:
+    """Toggle napari's scale bar; set µm units when turning it on."""
+    bars = []
+    legacy = getattr(viewer, "scale_bar", None)
+    if legacy is not None:
+        bars.append(legacy)
+    canvas = getattr(viewer, "canvas", None)
+    overlays = getattr(canvas, "overlays", None) if canvas is not None else None
+    overlay = getattr(overlays, "scale_bar", None) if overlays is not None else None
+    if overlay is not None and overlay is not legacy:
+        bars.append(overlay)
+    if not bars:
+        return
+    for scale_bar in bars:
+        scale_bar.visible = bool(visible)
+    if not visible:
+        return
+    for layer in viewer.layers:
+        if not hasattr(layer, "units"):
+            continue
+        try:
+            layer.units = SCALE_BAR_UNIT
+        except Exception:  # noqa: BLE001 - a layer that rejects units is fine
+            logger.debug(
+                "could not set scale-bar units on %s",
+                getattr(layer, "name", layer),
+                exc_info=True,
+            )
 
 
 def _uniform_points_property(value: Any, n: int) -> Any:
@@ -380,6 +524,32 @@ def _sync_z_depth_slider(slider, results: ResultLayers | None) -> None:
         return
     step = float(results._voxel_size_zyx[0]) if results is not None else 1.0  # noqa: SLF001
     slider.setVisible(True)
+    slider.setEnabled(True)
+    slider.blockSignals(True)
+    try:
+        slider.setRange(0.0, extent)
+        if hasattr(slider, "setSingleStep"):
+            slider.setSingleStep(max(step, 1e-6))
+        lo, hi = slider.value()
+        if hi <= lo or hi > extent or lo < 0.0:
+            lo, hi = 0.0, extent
+        else:
+            lo = max(0.0, min(lo, extent))
+            hi = max(lo, min(hi, extent))
+        slider.setValue((lo, hi))
+    finally:
+        slider.blockSignals(False)
+
+
+def _sync_z_project_slider(slider, results: ResultLayers | None, viewer=None) -> None:
+    """Set the left-panel Z project range from the stack; stay visible always."""
+    extent = results.image_z_extent_um() if results is not None else None
+    if (extent is None or extent <= 0.0) and viewer is not None:
+        extent = _viewer_z_extent_um(viewer)
+    if extent is None or extent <= 0.0:
+        slider.setEnabled(False)
+        return
+    step = float(results._voxel_size_zyx[0]) if results is not None else 1.0  # noqa: SLF001
     slider.setEnabled(True)
     slider.blockSignals(True)
     try:
@@ -513,6 +683,8 @@ def _maybe_store_z_filter_cache(layer, spec) -> None:
             spec.features,
             segment_owner=getattr(spec, "segment_owner", None),
         )
+    if is_z_project_volume_layer(spec.kind):
+        _store_z_project_cache(layer, spec.data)
 
 
 def _drop_legacy_branch_hover_layer(viewer, group) -> None:
@@ -3845,7 +4017,7 @@ def settings_widget(napari_viewer=None):
 
             target = Path(chosen.settings["input_path"])
             target.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(target, layer.data)
+            tifffile.imwrite(target, data_for_pipeline(layer))
         for name, value in chosen.settings.items():
             if name in rows:
                 rows[name].value = value
@@ -4085,8 +4257,10 @@ def settings_widget(napari_viewer=None):
         RUN_CHECKS_TOOLTIP,
         RUN_PIPELINE_TOOLTIP,
         SAVE_CONFIG_TOOLTIP,
+        SCALE_BAR_TOOLTIP,
         SHOW_RESULTS_TOOLTIP,
         SHOW_STEPS_TOOLTIP,
+        Z_PROJECT_TOOLTIP,
     )
 
     load_button.tooltip = LOAD_CONFIG_TOOLTIP
@@ -4105,7 +4279,9 @@ def settings_widget(napari_viewer=None):
     show_results.native.setObjectName("haemolynx_show_results")
     show_steps.native.setObjectName("haemolynx_show_steps")
     from qtpy.QtCore import Qt
-    from qtpy.QtWidgets import QFormLayout, QLabel, QWidget
+    from qtpy.QtWidgets import (
+        QCheckBox, QFormLayout, QGroupBox, QLabel, QWidget,
+    )
     from superqt import QDoubleRangeSlider, QDoubleSlider
 
     z_depth_label = QLabel("Z depth filter (µm)")
@@ -4113,6 +4289,20 @@ def settings_widget(napari_viewer=None):
     z_depth_slider.setObjectName("haemolynx_z_depth_slider")
     z_depth_slider.setEnabled(False)
     z_depth_slider.setVisible(False)
+
+    z_project_label = QLabel("Z project (µm)")
+    z_project_slider = QDoubleRangeSlider(Qt.Orientation.Horizontal)
+    z_project_slider.setObjectName("haemolynx_z_project_slider")
+    z_project_slider.setEnabled(False)
+    z_project_slider.setRange(0.0, 1.0)
+    z_project_slider.setValue((0.0, 1.0))
+
+    scale_bar_box = QCheckBox("Scale bar")
+    scale_bar_box.setObjectName("haemolynx_scale_bar")
+    scale_bar_box.setChecked(False)
+    z_project_slider.setToolTip(Z_PROJECT_TOOLTIP)
+    z_project_label.setToolTip(Z_PROJECT_TOOLTIP)
+    scale_bar_box.setToolTip(SCALE_BAR_TOOLTIP)
 
     arrow_length_label = QLabel("Arrow size")
     arrow_length_slider = QDoubleSlider(Qt.Orientation.Horizontal)
@@ -4149,35 +4339,61 @@ def settings_widget(napari_viewer=None):
             lambda *_args: reparent_arrow_length_slider()
         )
 
+    def apply_view_z() -> None:
+        """Re-apply the left-panel Z project and the right-panel Z depth filter.
+
+        The two windows intersect for graph geometry. Image/labels layers only
+        see the Z project. Neither writes into settings or stage inputs.
+        """
+        if viewer is None:
+            return
+        extent = None
+        if view.results is not None:
+            extent = view.results.image_z_extent_um()
+        if extent is None or extent <= 0.0:
+            extent = _viewer_z_extent_um(viewer)
+        if extent is None or extent <= 0.0:
+            return
+        if z_project_slider.isEnabled():
+            p_lo, p_hi = z_project_slider.value()
+        else:
+            p_lo, p_hi = 0.0, extent
+        if z_depth_slider.isEnabled():
+            d_lo, d_hi = z_depth_slider.value()
+        else:
+            d_lo, d_hi = 0.0, extent
+        _apply_z_project(viewer, p_lo, p_hi, z_extent=extent)
+        _apply_z_filter(
+            viewer,
+            max(p_lo, d_lo),
+            min(p_hi, d_hi),
+            z_extent=extent,
+        )
+        if scale_bar_box.isChecked():
+            _apply_scale_bar(viewer, True)
+
     def _after_layers_applied() -> None:
-        """Refresh Z depth slider range and apply the current filter."""
+        """Refresh Z sliders and re-apply the current view-only filters."""
         if viewer is None:
             return
         _sync_z_depth_slider(z_depth_slider, view.results)
+        _sync_z_project_slider(z_project_slider, view.results, viewer)
         reparent_arrow_length_slider()
-        if view.results is None or not z_depth_slider.isEnabled():
-            return
-        z_lo, z_hi = z_depth_slider.value()
-        _apply_z_filter(
-            viewer,
-            z_lo,
-            z_hi,
-            z_extent=view.results.image_z_extent_um(),
-        )
+        apply_view_z()
 
     if viewer is not None:
         viewer._haemolynx_after_layers_applied = _after_layers_applied
 
     def on_z_depth_changed(*_args) -> None:
-        if viewer is None or view.results is None:
+        apply_view_z()
+
+    def on_z_project_changed(*_args) -> None:
+        apply_view_z()
+
+    def on_scale_bar_toggled(checked: bool) -> None:
+        if viewer is None:
             return
-        z_lo, z_hi = z_depth_slider.value()
-        _apply_z_filter(
-            viewer,
-            z_lo,
-            z_hi,
-            z_extent=view.results.image_z_extent_um(),
-        )
+        _apply_scale_bar(viewer, bool(checked))
 
     def on_arrow_length_changed(value: float) -> None:
         if viewer is None:
@@ -4190,6 +4406,8 @@ def settings_widget(napari_viewer=None):
         _remember_arrow_length(active, length)
 
     z_depth_slider.valueChanged.connect(on_z_depth_changed)
+    z_project_slider.valueChanged.connect(on_z_project_changed)
+    scale_bar_box.toggled.connect(on_scale_bar_toggled)
     arrow_length_slider.valueChanged.connect(on_arrow_length_changed)
 
     def _settings() -> dict[str, Any]:
@@ -4375,6 +4593,7 @@ def settings_widget(napari_viewer=None):
         reparent_arrow_length_slider()
         z_depth_slider.setEnabled(False)
         z_depth_slider.setVisible(False)
+        z_project_slider.setEnabled(False)
         arrow_length_slider.setEnabled(False)
         arrow_length_slider.setVisible(False)
         if boundaries is not None:
@@ -4505,6 +4724,33 @@ def settings_widget(napari_viewer=None):
     z_depth_form = QFormLayout(z_depth_row)
     z_depth_form.addRow(z_depth_label, z_depth_slider)
 
+    view_panel = QWidget()
+    view_panel.setObjectName("haemolynx_view_panel")
+    display_group = QGroupBox("Display")
+    display_group.setObjectName("haemolynx_display_group")
+    display_form = QFormLayout(display_group)
+    display_form.addRow(z_project_label, z_project_slider)
+    display_form.addRow(scale_bar_box)
+
+    view_layout = QVBoxLayout(view_panel)
+    view_layout.addWidget(display_group)
+    view_layout.addStretch(1)
+
+    view_dock = None
+    if viewer is not None:
+        view_dock = viewer.window.add_dock_widget(
+            view_panel,
+            name=VIEW_DOCK_NAME,
+            area="left",
+            allowed_areas=["left", "right"],
+        )
+        try:
+            view_dock.setObjectName("haemolynx_view_dock")
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        view_panel.setVisible(False)
+
     panel = QWidget()
     # What the panel would send to a run, and what a run would report back,
     # for a test that cannot press buttons and wait.
@@ -4527,6 +4773,14 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_view_controls = view_controls
     panel._haemolynx_z_depth_slider = z_depth_slider
     panel._haemolynx_z_depth_row = z_depth_row
+    panel._haemolynx_view_panel = view_panel
+    panel._haemolynx_view_dock = view_dock
+    panel._haemolynx_z_project_slider = z_project_slider
+    panel._haemolynx_scale_bar = scale_bar_box
+    panel._haemolynx_display_group = display_group
+    panel._haemolynx_apply_z_project = _apply_z_project
+    panel._haemolynx_apply_view_z = apply_view_z
+    panel._haemolynx_data_for_pipeline = data_for_pipeline
     panel._haemolynx_arrow_length_slider = arrow_length_slider
     panel._haemolynx_arrow_length_host = arrow_length_host
     panel._haemolynx_reparent_arrow_length = reparent_arrow_length_slider
@@ -4558,5 +4812,8 @@ def settings_widget(napari_viewer=None):
     layout.addWidget(buttons.native)
     layout.addWidget(bars.native)
     layout.addWidget(report.native)
+    if viewer is None:
+        view_panel.setParent(panel)
+        view_panel.setVisible(False)
     refresh_revert_buttons()
     return panel

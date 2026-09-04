@@ -43,6 +43,7 @@ from haemolynx.gui.results import (
     image_z_extent_um,
     is_ours_name,
     is_z_depth_filtered_layer,
+    is_z_project_volume_layer,
     perturbation_layer_names,
     available_edge_columns,
     edge_features,
@@ -51,6 +52,9 @@ from haemolynx.gui.results import (
     node_points,
     pericyte_points,
     polylines_to_vectors,
+    project_volume_max_z,
+    z_slice_window,
+    z_window_is_full,
 )
 from haemolynx.visualization.flow_direction import flow_direction_vectors
 
@@ -1076,6 +1080,50 @@ def test_z_depth_filter_targets_graph_vectors_and_points_only():
     assert is_z_depth_filtered_layer(SKELETON, "labels") is False
     assert is_z_depth_filtered_layer("HaemoLynx BC coordinates", "points") is False
 
+
+def test_z_project_targets_image_and_labels_not_graph_kinds():
+    assert is_z_project_volume_layer("image") is True
+    assert is_z_project_volume_layer("labels") is True
+    assert is_z_project_volume_layer("vectors") is False
+    assert is_z_project_volume_layer("points") is False
+
+
+def test_z_window_is_full_covers_the_stack_extent():
+    assert z_window_is_full(0.0, 8.0, 8.0) is True
+    assert z_window_is_full(0.0, 7.9, 8.0) is False
+    assert z_window_is_full(0.1, 8.0, 8.0) is False
+    assert z_window_is_full(0.0, 8.0, None) is False
+
+
+def test_z_slice_window_uses_slice_origin_in_microns():
+    # 4 slices, dz = 2 µm → origins 0, 2, 4, 6; extent 8 µm.
+    assert z_slice_window(4, 2.0, 0.0, 5.0) == (0, 2)
+    assert z_slice_window(4, 2.0, 0.0, 8.0) == (0, 3)
+
+
+def test_project_volume_max_z_is_identity_at_full_range():
+    volume = np.arange(4 * 2 * 2, dtype=np.uint8).reshape(4, 2, 2)
+    out = project_volume_max_z(volume, 2.0, 0.0, 8.0, z_extent=8.0)
+    assert out is volume
+    np.testing.assert_array_equal(out, volume)
+
+
+def test_project_volume_max_z_mips_the_window_and_zeros_the_rest():
+    volume = np.zeros((4, 2, 2), dtype=np.uint8)
+    volume[0] = 1
+    volume[1] = 3
+    volume[2] = 2
+    volume[3] = 9
+    # Window [0, 5] µm keeps slices 0, 1, 2 (origins 0, 2, 4); MIP is 3.
+    out = project_volume_max_z(volume, 2.0, 0.0, 5.0, z_extent=8.0)
+    assert out.shape == volume.shape
+    np.testing.assert_array_equal(out[0], 3)
+    np.testing.assert_array_equal(out[1], 3)
+    np.testing.assert_array_equal(out[2], 3)
+    np.testing.assert_array_equal(out[3], 0)
+    np.testing.assert_array_equal(volume[3], 9)
+
+
 def _flow_graph_at_z(*z_values: float) -> nx.MultiGraph:
     """One edge per Z slab; mid-edge arrow anchors sit near z + 5."""
     graph = nx.MultiGraph()
@@ -1202,6 +1250,38 @@ def test_apply_z_filter_on_viewer_filters_flow_direction_layer():
     assert np.all(layer.data[:, 0, 0] <= 16.0)
     _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
     assert len(layer.data) == len(vectors)
+
+
+def test_apply_z_project_on_viewer_mips_then_restores():
+    from haemolynx.gui._widget import OURS, _apply_z_project, data_for_pipeline
+
+    volume = np.zeros((4, 2, 2), dtype=np.uint8)
+    volume[0] = 1
+    volume[1] = 3
+    volume[2] = 2
+    volume[3] = 9
+
+    class Image:
+        pass
+
+    layer = Image()
+    layer.name = IMAGE
+    layer.data = volume.copy()
+    layer.scale = (2.0, 1.0, 0.5)
+    layer.metadata = {
+        OURS: {"kind": "image", "z_project_full": volume.copy()}
+    }
+    viewer = SimpleNamespace(layers=[layer])
+    full_z = 8.0
+
+    _apply_z_project(viewer, 0.0, 5.0, z_extent=full_z)
+    np.testing.assert_array_equal(layer.data[0], 3)
+    np.testing.assert_array_equal(layer.data[3], 0)
+    np.testing.assert_array_equal(data_for_pipeline(layer), volume)
+
+    _apply_z_project(viewer, 0.0, full_z, z_extent=full_z)
+    np.testing.assert_array_equal(layer.data, volume)
+
 
 def test_result_layers_image_z_extent_after_skeletonise():
     results = ResultLayers()

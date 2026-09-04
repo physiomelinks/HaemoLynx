@@ -157,6 +157,75 @@ def is_z_depth_filtered_layer(name: str, kind: str) -> bool:
     return True
 
 
+def is_z_project_volume_layer(kind: str) -> bool:
+    """Whether the view-only Z project MIP applies to a layer kind."""
+    return kind in ("image", "labels")
+
+
+def z_window_is_full(z_min: float, z_max: float, z_extent: float | None) -> bool:
+    """Whether ``[z_min, z_max]`` covers the stack's physical Z extent."""
+    if z_extent is None:
+        return False
+    return (
+        z_min <= 0.0
+        and z_max >= z_extent - max(1e-6, abs(z_extent) * 1e-9)
+    )
+
+
+def z_slice_window(
+    n_z: int, voxel_size_z: float, z_min: float, z_max: float
+) -> tuple[int, int]:
+    """Inclusive slice indices whose origins lie in ``[z_min, z_max]`` µm.
+
+    Slice ``i`` is anchored at ``i * voxel_size_z``, matching
+    :func:`image_z_extent_um` (extent ``n_z * voxel_size_z``).
+    """
+    n_z = int(n_z)
+    if n_z <= 0:
+        return 0, 0
+    dz = float(voxel_size_z) if voxel_size_z else 1.0
+    starts = np.arange(n_z, dtype=float) * dz
+    keep = (starts >= z_min - 1e-9) & (starts <= z_max + 1e-9)
+    if not np.any(keep):
+        idx = int(np.clip(np.round(0.5 * (z_min + z_max) / dz), 0, n_z - 1))
+        return idx, idx
+    indices = np.flatnonzero(keep)
+    return int(indices[0]), int(indices[-1])
+
+
+def project_volume_max_z(
+    volume: np.ndarray,
+    voxel_size_z: float,
+    z_min: float,
+    z_max: float,
+    *,
+    z_extent: float | None = None,
+) -> np.ndarray:
+    """Max-intensity project *volume* over a physical Z window, view-only.
+
+    The returned array has the same shape as *volume*. Slices whose origin Z
+    falls in ``[z_min, z_max]`` are replaced by the MIP of that slab; slices
+    outside the window are zero. A window covering the full extent returns
+    *volume* unchanged (identity — the pipeline must keep the original stack).
+    """
+    volume = np.asarray(volume)
+    if volume.ndim < 3:
+        return volume
+    n_z = int(volume.shape[0])
+    dz = float(voxel_size_z) if voxel_size_z else 1.0
+    extent = float(z_extent) if z_extent is not None else dz * n_z
+    if z_window_is_full(z_min, z_max, extent):
+        return volume
+    start, stop = z_slice_window(n_z, dz, z_min, z_max)
+    slab = volume[start : stop + 1]
+    if slab.shape[0] == 0:
+        return np.zeros_like(volume)
+    projected = slab.max(axis=0)
+    out = np.zeros_like(volume)
+    out[start : stop + 1] = projected
+    return out
+
+
 def _z_in_range(z: np.ndarray, z_min: float, z_max: float) -> np.ndarray:
     return (z >= z_min) & (z <= z_max)
 
