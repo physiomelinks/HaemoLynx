@@ -315,6 +315,46 @@ def test_gated_skeletonisation_collapses_the_fat_sheet_and_keeps_capillaries():
     assert int((gated & capillaries).sum()) > 0
 
 
+def test_gated_fat_ridge_connects_to_each_fused_thin_vessel():
+    """Lee on a fused capillary must meet the fat centreline, not sit as a gap.
+
+    The fixture is one plasma-labelled object with two capillaries. Surface
+    flakes of Lee on the fat wall are not thin vessels and are not required
+    to join the ridge.
+    """
+    from scipy.ndimage import generate_binary_structure
+
+    mask, fat_roi = plasma_labelled_object(8.0)
+    gated = skeletonize_thickness_gated(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    thick = thick_vessel_object_mask(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    fat_skel = gated & thick
+    capillaries = mask & ~fat_roi
+    assert fat_skel.any()
+    assert int((gated & capillaries).sum()) > 0
+    struct26 = generate_binary_structure(3, 3)
+    gated_lab, _ = label(gated, structure=struct26)
+    fat_labels = set(int(v) for v in gated_lab[fat_skel]) - {0}
+    assert fat_labels
+    cap_lab, n_cap = label(capillaries, structure=struct26)
+    joined = 0
+    for component_id in range(1, int(n_cap) + 1):
+        cap_skel = gated & (cap_lab == component_id)
+        if not cap_skel.any():
+            continue
+        cap_labels = set(int(v) for v in gated_lab[cap_skel]) - {0}
+        assert cap_labels & fat_labels, (
+            f"capillary {component_id} skeleton is not 26-connected to the fat ridge"
+        )
+        joined += 1
+    assert joined == int(n_cap)
+    # Joining arms must not re-sheet the fat catchment.
+    assert int(gated.sum()) < 0.08 * int(mask.sum())
+
+
 def test_min_radius_zero_is_plain_lee():
     mask, _ = plasma_labelled_object(6.0)
     assert np.array_equal(
@@ -397,6 +437,11 @@ def test_cropped_lee_matches_lee_on_the_full_volume():
     volume[18:23, 18:23, 5:35] = True
     assert np.array_equal(_skeletonize_foreground(volume), skeletonize_volume(volume))
 
+    two = np.zeros((40, 40, 40), dtype=bool)
+    two[8:13, 8:13, 5:30] = True
+    two[25:30, 25:30, 8:35] = True
+    assert np.array_equal(_skeletonize_foreground(two), skeletonize_volume(two))
+
 
 def test_cover_around_a_path_matches_a_full_volume_ball():
     from scipy.ndimage import distance_transform_edt
@@ -436,3 +481,66 @@ def test_fat_catchment_on_a_padded_volume_matches_the_unpadded_object():
         thick_small,
     )
     assert not thick_pad[: pad // 2].any()
+
+
+def _cycle_excess_26(skel: np.ndarray) -> int:
+    """Extra 26-neighbour edges vs a voxel tree: n_edges - (n_voxels - n_cc).
+
+    A 26-connected tree of voxels has ``#voxels = #undirected_edges + n_cc``.
+    Local 26-triangles on a one-voxel centreline add a few extras; a Lee mesh
+    wrapped around a fat trunk adds extras on the order of the voxel count.
+    """
+    from scipy.ndimage import generate_binary_structure
+    from scipy.spatial import cKDTree
+
+    coords = np.argwhere(np.asarray(skel, dtype=bool))
+    n = int(coords.shape[0])
+    if n == 0:
+        return 0
+    n_edges = len(cKDTree(coords.astype(float)).query_pairs(r=np.sqrt(3.0) + 1e-6))
+    _, n_cc = label(skel, structure=generate_binary_structure(3, 3))
+    return int(n_edges) - (n - int(n_cc))
+
+
+def test_gated_fat_catchment_skeleton_is_a_tree_not_a_looped_lee_mesh():
+    """Lee of the leftover fat-wall shell must not remain beside the ridge.
+
+    The catchment leaves a thin shell of the fat lumen in ``mask & ~thick``.
+    Lee of that wrap is a flake/loop mesh; those CCs do not extend away from
+    thick, so they are not capillaries and must be dropped.
+    """
+    mask, fat_roi = plasma_labelled_object(8.0)
+    thick = thick_vessel_object_mask(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    thin = mask & ~thick
+    shell = fat_roi & ~thick
+    lee_shell = skeletonize_volume(thin) & shell
+    assert int(lee_shell.sum()) > 0, "fixture must leave a Lee-able fat-wall shell"
+
+    gated = skeletonize_thickness_gated(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    # Wall flakes/loops gone; join paths may clip the shell as a tree edge.
+    assert int((gated & shell).sum()) < 0.35 * int(lee_shell.sum())
+
+    fat_skel = gated & thick
+    assert fat_skel.any()
+    n_fat = int(fat_skel.sum())
+    excess = _cycle_excess_26(fat_skel)
+    # A wrapping Lee mesh has excess ~ voxel count; a 26-tree has a few triangles.
+    assert excess <= max(12, n_fat // 5), (
+        f"fat-catchment skeleton has {excess} extra 26-edges on {n_fat} voxels"
+    )
+    n_voxels = n_fat
+    from scipy.ndimage import generate_binary_structure
+    from scipy.spatial import cKDTree
+
+    coords = np.argwhere(fat_skel)
+    n_edges = len(cKDTree(coords.astype(float)).query_pairs(r=np.sqrt(3.0) + 1e-6))
+    _, n_cc = label(fat_skel, structure=generate_binary_structure(3, 3))
+    assert n_voxels <= n_edges + int(n_cc) + max(12, n_voxels // 5)
+
+    capillaries = mask & ~fat_roi
+    assert int((gated & capillaries).sum()) > 0
+    assert int((gated & shell).sum()) < int(lee_shell.sum())

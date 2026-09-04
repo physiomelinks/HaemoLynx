@@ -22,6 +22,7 @@ fixture. Volume (µm³) of the whole object is not the gate.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Iterable
 
 import numpy as np
@@ -35,8 +36,9 @@ from scipy.ndimage import (
 )
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
+from scipy.spatial import cKDTree
 
-from .skeleton import fill_binary_holes, skeletonize_volume, _draw_line_3d
+from .skeleton import fill_binary_holes, skeletonize_volume
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,104 @@ _OFFSETS_26 = tuple(
     for k in (-1, 0, 1)
     if not (i == 0 and j == 0 and k == 0)
 )
+
+
+class _ForegroundIndex:
+    """Map ``(z, y, x)`` to a compact foreground id without a dense volume.
+
+    Packed keys plus ``searchsorted`` keep Dijkstra's neighbour lookup off a
+    ``prod(shape)`` int32 table, which on a fat bbox the size of a stack is
+    hundreds of megabytes. Tests index ``index_of[start]`` and
+    ``index_of[nz, ny, nx]``.
+    """
+
+    __slots__ = ("_keys", "_n", "_nyx", "_nx")
+
+    def __init__(self, fg_coords: np.ndarray, shape: tuple[int, int, int]):
+        self._nyx = int(shape[1]) * int(shape[2])
+        self._nx = int(shape[2])
+        self._keys = (
+            fg_coords[:, 0].astype(np.int64, copy=False) * self._nyx
+            + fg_coords[:, 1].astype(np.int64, copy=False) * self._nx
+            + fg_coords[:, 2].astype(np.int64, copy=False)
+        )
+        self._n = int(self._keys.size)
+
+    def _pack(self, z, y, x) -> np.ndarray:
+        return (
+            np.asarray(z, dtype=np.int64) * self._nyx
+            + np.asarray(y, dtype=np.int64) * self._nx
+            + np.asarray(x, dtype=np.int64)
+        )
+
+    def __getitem__(self, item):
+        if not isinstance(item, tuple) or len(item) != 3:
+            raise IndexError("ForegroundIndex expects (z, y, x)")
+        keys = self._pack(item[0], item[1], item[2])
+        scalar = np.ndim(keys) == 0
+        keys_a = np.atleast_1d(np.asarray(keys, dtype=np.int64))
+        idx = np.searchsorted(self._keys, keys_a)
+        valid = idx < self._n
+        match = np.zeros(keys_a.shape, dtype=bool)
+        if self._n:
+            match[valid] = self._keys[idx[valid]] == keys_a[valid]
+        out = np.full(keys_a.shape, -1, dtype=np.int32)
+        out[match] = idx[match].astype(np.int32, copy=False)
+        if scalar:
+            return int(out[0])
+        return out
+
+
+def _aabb_slices(
+    p0: tuple[int, int, int],
+    p1: tuple[int, int, int],
+    shape: tuple[int, ...],
+    *,
+    pad: int,
+) -> tuple[tuple[slice, slice, slice], tuple[int, int, int]]:
+    """Tight AABB around two voxels, padded, with no full-volume allocation."""
+    slices: list[slice] = []
+    origin: list[int] = []
+    for a, b, dim in zip(p0, p1, shape):
+        lo = max(0, min(int(a), int(b)) - int(pad))
+        hi = min(int(dim), max(int(a), int(b)) + 1 + int(pad))
+        slices.append(slice(lo, hi))
+        origin.append(lo)
+    return (slices[0], slices[1], slices[2]), (origin[0], origin[1], origin[2])
+
+
+def _line_voxels(
+    start: tuple[int, int, int],
+    end: tuple[int, int, int],
+) -> list[tuple[int, int, int]]:
+    """26-connected straight line from *start* to *end* (Chebyshev stepping)."""
+    sz, sy, sx = (int(v) for v in start)
+    ez, ey, ex = (int(v) for v in end)
+    n = max(abs(ez - sz), abs(ey - sy), abs(ex - sx))
+    if n <= 0:
+        return [(sz, sy, sx)]
+    voxels: list[tuple[int, int, int]] = []
+    prev: tuple[int, int, int] | None = None
+    for i in range(n + 1):
+        t = i / n
+        voxel = (
+            int(round(sz + t * (ez - sz))),
+            int(round(sy + t * (ey - sy))),
+            int(round(sx + t * (ex - sx))),
+        )
+        if voxel != prev:
+            voxels.append(voxel)
+            prev = voxel
+    return voxels
+
+
+def _touches_tree(tree: np.ndarray, voxel: tuple[int, int, int]) -> bool:
+    """True if *voxel* is on *tree* or 26-adjacent to it."""
+    z, y, x = (int(v) for v in voxel)
+    z0, z1 = max(0, z - 1), min(tree.shape[0], z + 2)
+    y0, y1 = max(0, y - 1), min(tree.shape[1], y + 2)
+    x0, x1 = max(0, x - 1), min(tree.shape[2], x + 2)
+    return bool(tree[z0:z1, y0:y1, x0:x1].any())
 
 
 def inscribed_radius_map(
@@ -180,21 +280,60 @@ def lee_sheet_excess(
 
 def _foreground_bbox(mask: np.ndarray, *, pad: int = 1) -> tuple[slice, slice, slice] | None:
     """Tight slices around foreground, padded, or None if *mask* is empty."""
-    coords = np.argwhere(mask)
-    if coords.size == 0:
+    mask_b = np.asarray(mask, dtype=bool)
+    if mask_b.ndim != 3:
+        coords = np.argwhere(mask_b)
+        if coords.size == 0:
+            return None
+        lo = np.maximum(coords.min(axis=0) - int(pad), 0)
+        hi = np.minimum(coords.max(axis=0) + 1 + int(pad), mask_b.shape)
+        return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    z_any = mask_b.any(axis=(1, 2))
+    if not z_any.any():
         return None
-    lo = np.maximum(coords.min(axis=0) - int(pad), 0)
-    hi = np.minimum(coords.max(axis=0) + 1 + int(pad), mask.shape)
-    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    y_any = mask_b.any(axis=(0, 2))
+    x_any = mask_b.any(axis=(0, 1))
+    z0 = int(np.argmax(z_any))
+    z1 = int(z_any.size - np.argmax(z_any[::-1]))
+    y0 = int(np.argmax(y_any))
+    y1 = int(y_any.size - np.argmax(y_any[::-1]))
+    x0 = int(np.argmax(x_any))
+    x1 = int(x_any.size - np.argmax(x_any[::-1]))
+    p = int(pad)
+    return (
+        slice(max(0, z0 - p), min(mask_b.shape[0], z1 + p)),
+        slice(max(0, y0 - p), min(mask_b.shape[1], y1 + p)),
+        slice(max(0, x0 - p), min(mask_b.shape[2], x1 + p)),
+    )
+
+
+def _expand_slices(
+    slc: tuple[slice, ...],
+    shape: tuple[int, ...],
+    *,
+    pad: int = 1,
+) -> tuple[slice, ...]:
+    return tuple(
+        slice(max(0, int(s.start) - int(pad)), min(int(dim), int(s.stop) + int(pad)))
+        for s, dim in zip(slc, shape)
+    )
 
 
 def _skeletonize_foreground(mask: np.ndarray) -> np.ndarray:
-    """Lee thinning of *mask*, cropped so empty space is not walked."""
-    result = np.zeros(np.asarray(mask).shape, dtype=bool)
-    bbox = _foreground_bbox(mask, pad=1)
-    if bbox is None:
+    """Lee thinning of each connected component, cropped so empty space is not walked."""
+    mask_b = np.asarray(mask, dtype=bool)
+    result = np.zeros(mask_b.shape, dtype=bool)
+    if not mask_b.any():
         return result
-    result[bbox] = skeletonize_volume(mask[bbox])
+    structure = generate_binary_structure(mask_b.ndim, mask_b.ndim)
+    labeled, n_labels = label(mask_b, structure=structure)
+    if n_labels == 0:
+        return result
+    for component_id, slc in enumerate(find_objects(labeled), start=1):
+        if slc is None:
+            continue
+        padded = _expand_slices(slc, mask_b.shape, pad=1)
+        result[padded] |= skeletonize_volume(labeled[padded] == component_id)
     return result
 
 
@@ -202,7 +341,7 @@ def _dijkstra_parents(
     binary: np.ndarray,
     cost: np.ndarray,
     root: tuple[int, int, int],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+) -> tuple[np.ndarray, np.ndarray, _ForegroundIndex] | None:
     """Sparse 26-connected Dijkstra on foreground voxels of *binary*.
 
     Returns ``(parent, fg_coords, index_of)`` where *parent* and *fg_coords*
@@ -210,16 +349,17 @@ def _dijkstra_parents(
     array to that compact id, or -1. ``None`` if *root* is not foreground.
 
     Arrays are sized to the foreground, not ``prod(shape)``: a microscopy
-    stack must not allocate a float64 per background voxel. The walk itself
-    is SciPy's C Dijkstra on a 26-neighbour CSR graph of those voxels.
+    stack must not allocate a float64 per background voxel. Neighbour lookup
+    uses packed ``z,y,x`` keys and ``searchsorted`` rather than a dense
+    ``index_of`` volume. The walk itself is SciPy's C Dijkstra on a
+    26-neighbour CSR graph of those voxels.
     """
     binary_f = np.asarray(binary, dtype=bool)
     fg_coords = np.argwhere(binary_f)
     n_fg = int(fg_coords.shape[0])
     if n_fg == 0:
         return None
-    index_of = np.full(binary_f.shape, -1, dtype=np.int32)
-    index_of[tuple(fg_coords.T)] = np.arange(n_fg, dtype=np.int32)
+    index_of = _ForegroundIndex(fg_coords, binary_f.shape)
     root_i = int(index_of[root])
     if root_i < 0:
         return None
@@ -282,7 +422,7 @@ def _dijkstra_parents(
 def _traceback(
     parent: np.ndarray,
     fg_coords: np.ndarray,
-    index_of: np.ndarray,
+    index_of: _ForegroundIndex,
     start: tuple[int, int, int],
     end: tuple[int, int, int],
 ) -> list[tuple[int, int, int]]:
@@ -403,11 +543,15 @@ def _trim_to_tree(
     path: list[tuple[int, int, int]],
     tree: np.ndarray,
 ) -> list[tuple[int, int, int]]:
-    """Keep the segment from the far end until it first meets *tree*."""
+    """Keep the segment from the far end until it first meets *tree*.
+
+    Meeting is 26-adjacency, not only exact overlap: a branch that runs
+    beside the existing tree and later joins it would close a cycle.
+    """
     trimmed: list[tuple[int, int, int]] = []
     for voxel in reversed(path):
         trimmed.append(voxel)
-        if tree[voxel]:
+        if _touches_tree(tree, voxel):
             break
     trimmed.reverse()
     return trimmed
@@ -441,21 +585,20 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
     covered = _cover_around_path(main, cover_r, component.shape)
     min_arm_voxels = max(4, int(2.0 * max_edt))
     high = component & (local_edt >= 0.4 * max_edt)
+    tree_coords = np.argwhere(result)
+    tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
 
     for _ in range(12):
         candidates = high & ~covered
         if not candidates.any():
             break
-        dist_to_tree = distance_transform_edt(~result)
-        far_dist = float(dist_to_tree[candidates].max())
+        cand_coords = np.argwhere(candidates)
+        dists, _ = tree_kdt.query(cand_coords.astype(np.float64, copy=False), k=1)
+        far_dist = float(np.max(dists))
         # Remaining high-EDT voxels sitting beside the trunk are the sheet, not arms.
         if far_dist < 2.0 * max_edt:
             break
-        cand_coords = np.argwhere(candidates)
-        target = tuple(
-            int(v)
-            for v in cand_coords[int(np.argmax(dist_to_tree[tuple(cand_coords.T)]))]
-        )
+        target = tuple(int(v) for v in cand_coords[int(np.argmax(dists))])
         branch = _trim_to_tree(
             _traceback(parent, fg_coords, index_of, root, target),
             result,
@@ -463,11 +606,17 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
         if len(branch) < min_arm_voxels:
             covered[target] = True
             continue
+        if _touches_tree(result, branch[-1]):
+            # Tip already on the tree: this geodesic would close a loop.
+            covered[target] = True
+            continue
         if _path_cuts_across_lumen(branch, component, max_edt):
             covered |= _cover_around_path(branch, cover_r, component.shape)
             continue
         _draw_path(result, branch)
         covered |= _cover_around_path(branch, cover_r, component.shape)
+        tree_coords = np.argwhere(result)
+        tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
     return result
 
 
@@ -496,27 +645,175 @@ def skeletonize_edt_ridge(binary: np.ndarray) -> np.ndarray:
     return result.astype(bool)
 
 
-def _stitch_thin_to_thick(
+def _shift_path(
+    path: list[tuple[int, int, int]],
+    origin: tuple[int, int, int],
+) -> list[tuple[int, int, int]]:
+    oz, oy, ox = origin
+    return [(int(z) + oz, int(y) + oy, int(x) + ox) for z, y, x in path]
+
+
+def _geodesic_on_crop(
+    crop: np.ndarray,
+    local_start: tuple[int, int, int],
+    local_end: tuple[int, int, int],
+) -> list[tuple[int, int, int]]:
+    """Inverted-EDT geodesic in a cropped boolean mask, or empty if unreachable."""
+    if not crop[local_start] or not crop[local_end]:
+        return []
+    edt = distance_transform_edt(crop)
+    cost = np.where(crop, 1.0 / (np.square(edt) + 1e-6), np.inf)
+    walked = _dijkstra_parents(crop, cost, local_start)
+    if walked is None:
+        return []
+    parent, fg_coords, index_of = walked
+    path = _traceback(parent, fg_coords, index_of, local_start, local_end)
+    if len(path) < 2:
+        return []
+    return path
+
+
+def _path_through_mask(
+    start: tuple[int, int, int],
+    end: tuple[int, int, int],
+    allowed: np.ndarray,
+) -> list[tuple[int, int, int]]:
+    """Geodesic in *allowed* from *start* to *end*, falling back to a straight line.
+
+    Prefers a straight line when every voxel is in *allowed*, then a dilated-line
+    corridor, then Dijkstra on the AABB of the two points. Does not allocate a
+    full-stack seeds array just to bbox those points.
+    """
+    start = tuple(int(v) for v in start)
+    end = tuple(int(v) for v in end)
+    allowed_b = np.asarray(allowed, dtype=bool)
+    if start == end:
+        return [start]
+    if not allowed_b[start] or not allowed_b[end]:
+        return [start, end]
+    line = _line_voxels(start, end)
+    if all(allowed_b[p] for p in line):
+        return line
+
+    struct26 = generate_binary_structure(3, 3)
+    for radius in (2, 5):
+        slc, origin = _aabb_slices(start, end, allowed_b.shape, pad=int(radius) + 1)
+        crop_allowed = allowed_b[slc]
+        local_start = tuple(int(s - o) for s, o in zip(start, origin))
+        local_end = tuple(int(e - o) for e, o in zip(end, origin))
+        painted = np.zeros(crop_allowed.shape, dtype=bool)
+        cz, cy, cx = painted.shape
+        for z, y, x in _line_voxels(local_start, local_end):
+            if 0 <= z < cz and 0 <= y < cy and 0 <= x < cx:
+                painted[z, y, x] = True
+        corridor = (
+            binary_dilation(painted, structure=struct26, iterations=int(radius))
+            & crop_allowed
+        )
+        corridor[local_start] = True
+        corridor[local_end] = True
+        local_path = _geodesic_on_crop(corridor, local_start, local_end)
+        if len(local_path) >= 2:
+            return _shift_path(local_path, origin)
+
+    slc, origin = _aabb_slices(start, end, allowed_b.shape, pad=2)
+    local_path = _geodesic_on_crop(
+        allowed_b[slc],
+        tuple(int(s - o) for s, o in zip(start, origin)),
+        tuple(int(e - o) for e, o in zip(end, origin)),
+    )
+    if len(local_path) >= 2:
+        return _shift_path(local_path, origin)
+    return [start, end]
+
+
+def _join_thin_arms_to_fat_ridge(
     skeleton: np.ndarray,
-    thick_object: np.ndarray,
+    thick: np.ndarray,
+    allowed: np.ndarray,
+    *,
+    min_arm_extent_voxels: float = 4.0,
 ) -> np.ndarray:
-    """One link per thin skeleton fragment that meets the fat-region boundary."""
-    result = skeleton.copy()
-    structure = generate_binary_structure(3, 1)
-    interface = binary_dilation(thick_object, structure=structure) & ~thick_object
-    thin_at_cut = result & interface
-    thick_skel = result & thick_object
-    if not thin_at_cut.any() or not thick_skel.any():
+    """Connect each thin-vessel skeleton that leaves the fat wall to the fat ridge.
+
+    Thin skeleton CCs that never extend beyond the wall (Lee flakes / wrapping
+    mesh on the fat surface) are dropped. Joining those would draw a sheet of
+    chords. A fused capillary does extend, and its Lee polyline must meet the
+    ridge.
+    """
+    result = np.asarray(skeleton, dtype=bool).copy()
+    thick_b = np.asarray(thick, dtype=bool)
+    allowed_b = np.asarray(allowed, dtype=bool)
+    thin_skel = result & ~thick_b
+    fat_skel = result & thick_b
+    if not fat_skel.any():
         return result
-    labeled, n_labels = label(thin_at_cut)
-    thick_coords = np.argwhere(thick_skel)
-    for component_id in range(1, int(n_labels) + 1):
-        pts = np.argwhere(labeled == component_id)
-        # Nearest interface voxel of this fragment to the ridge.
-        delta = pts[:, None, :] - thick_coords[None, :, :]
-        dist2 = np.einsum("ijk,ijk->ij", delta, delta)
-        pair = np.unravel_index(int(np.argmin(dist2)), dist2.shape)
-        _draw_line_3d(result, pts[pair[0]], thick_coords[pair[1]])
+    if not thin_skel.any():
+        return fat_skel
+    structure = generate_binary_structure(3, 3)
+    labeled, n_labels = label(thin_skel, structure=structure)
+    if n_labels == 0:
+        return fat_skel
+
+    roi = thin_skel | thick_b
+    bbox = _foreground_bbox(roi, pad=1)
+    thin_coords = np.argwhere(thin_skel)
+    labels_at = labeled[tuple(thin_coords.T)]
+    if bbox is None:
+        dist_to_thick = distance_transform_edt(~thick_b)
+        dists = dist_to_thick[tuple(thin_coords.T)]
+    else:
+        origin = np.array([int(s.start) for s in bbox], dtype=int)
+        dist_crop = distance_transform_edt(~thick_b[bbox])
+        local = thin_coords - origin
+        dists = dist_crop[tuple(local.T)]
+
+    max_dist = np.zeros(int(n_labels) + 1, dtype=np.float64)
+    np.maximum.at(max_dist, labels_at, dists)
+    arm_ids = np.flatnonzero(max_dist >= float(min_arm_extent_voxels))
+    arm_ids = arm_ids[arm_ids > 0]
+    objects = find_objects(labeled)
+
+    keep = fat_skel.copy()
+    for component_id in arm_ids:
+        slc = objects[int(component_id) - 1]
+        if slc is None:
+            continue
+        keep[slc] |= labeled[slc] == int(component_id)
+    result = keep
+    if arm_ids.size == 0:
+        return result
+
+    fat_coords = np.argwhere(result & thick_b)
+    if fat_coords.size == 0:
+        return result
+    fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
+    fat_now = result & thick_b
+
+    for component_id in arm_ids:
+        slc = objects[int(component_id) - 1]
+        if slc is None:
+            continue
+        padded = _expand_slices(slc, labeled.shape, pad=1)
+        component = labeled[padded] == int(component_id)
+        if (binary_dilation(component, structure=structure) & fat_now[padded]).any():
+            continue
+        pts_local = np.argwhere(component)
+        if pts_local.size == 0:
+            continue
+        origin_p = np.array([int(s.start) for s in padded], dtype=int)
+        pts = pts_local + origin_p
+        _d, nn = fat_kdt.query(pts.astype(np.float64, copy=False), k=1)
+        nearest = int(np.argmin(np.atleast_1d(_d)))
+        start = tuple(int(v) for v in pts[nearest])
+        end = tuple(int(v) for v in fat_coords[int(np.atleast_1d(nn)[nearest])])
+        for voxel in _path_through_mask(start, end, allowed_b):
+            if not allowed_b[voxel]:
+                continue
+            result[voxel] = True
+            if _touches_tree(fat_now, voxel):
+                break
+        fat_now = result & thick_b
     return result
 
 
@@ -543,26 +840,54 @@ def skeletonize_thickness_gated(
     if float(min_radius_um) <= 0.0:
         return skeletonize_volume(mask).astype(bool)
 
+    t0 = time.perf_counter()
     thick = thick_vessel_object_mask(
         mask, min_radius_um=float(min_radius_um), voxel_size_zyx=voxel_size_zyx
     )
+    t_catchment = time.perf_counter() - t0
     if not thick.any():
         return skeletonize_volume(mask).astype(bool)
 
     thin = mask & ~thick
+    spacing = min(float(v) for v in voxel_size_zyx)
+    min_arm_extent = max(4.0, 0.75 * float(min_radius_um) / max(spacing, 1e-6))
+    result = np.zeros(mask.shape, dtype=bool)
+    t1 = time.perf_counter()
+    if thin.any():
+        # Do not Lee the leftover fat-wall shell: those CCs never extend away
+        # from thick, and Lee of that wrap is the looped mesh beside the ridge.
+        bbox = _foreground_bbox(thin | thick, pad=1)
+        if bbox is None:
+            result |= _skeletonize_foreground(thin)
+        else:
+            dist_crop = distance_transform_edt(~thick[bbox])
+            lee_crop = thin[bbox] & (dist_crop >= float(min_arm_extent))
+            if lee_crop.any():
+                result[bbox] |= _skeletonize_foreground(lee_crop)
+    t_lee = time.perf_counter() - t1
+    t2 = time.perf_counter()
+    result |= skeletonize_edt_ridge(thick)
+    t_ridge = time.perf_counter() - t2
+    t3 = time.perf_counter()
+    result = _join_thin_arms_to_fat_ridge(
+        result,
+        thick,
+        mask,
+        min_arm_extent_voxels=min_arm_extent,
+    ).astype(bool)
+    t_join = time.perf_counter() - t3
     logger.info(
-        "Thickness-gated skeletonisation: shape=%s fat=%d voxels thin=%d voxels",
+        "Thickness-gated skeletonisation: shape=%s fat=%d voxels thin=%d voxels "
+        "catchment=%.3fs lee=%.3fs ridge=%.3fs join=%.3fs",
         mask.shape,
         int(thick.sum()),
         int(thin.sum()),
+        t_catchment,
+        t_lee,
+        t_ridge,
+        t_join,
     )
-    result = np.zeros(mask.shape, dtype=bool)
-    if thin.any():
-        result |= _skeletonize_foreground(thin)
-    result |= skeletonize_edt_ridge(thick)
-    # Do not draw chords through the fat region: leftover thin fragments at
-    # the cut are nearby endpoints, which graph-building already reconnects.
-    return result.astype(bool)
+    return result
 
 
 def needs_thick_vessel_treatment(
