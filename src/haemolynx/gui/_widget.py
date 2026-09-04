@@ -98,7 +98,8 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
 #: What napari calls the log window's dock.
 LOG_DOCK_NAME = "HaemoLynx run log"
 
-#: Left-hand view chrome (Z-project, Z-depth, scale bar, snapshot).
+#: View chrome (Z-project, Z-depth, scale bar, snapshot). Floated over the
+#: canvas so a left strip cannot steal height from the bottom run log.
 VIEW_DOCK_NAME = "HaemoLynx view"
 
 #: Cosmetic TIFF of the current view; never a pipeline setting or input.
@@ -118,6 +119,62 @@ SCALE_BAR_UNIT = "micrometer"
 
 #: Canvas corner for napari's scale-bar overlay (``CanvasPosition`` value).
 SCALE_BAR_POSITION = "bottom_right"
+
+
+def _give_bottom_docks_the_corners(viewer) -> None:
+    """Let a bottom dock (the run log) keep the bottom strip of the window.
+
+    QMainWindow's default corners give a left/right dock the bottom-left or
+    bottom-right, so a tall side panel shrinks the log to nothing as a run
+    fills the viewer.
+    """
+    from qtpy.QtCore import Qt
+
+    window = getattr(viewer.window, "_qt_window", None)
+    if window is None or not hasattr(window, "setCorner"):
+        return
+    try:
+        window.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
+        window.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not prefer bottom dock corners", exc_info=True)
+
+
+def _float_dock_over_canvas(viewer, dock) -> None:
+    """Undock *dock* and sit it on the canvas instead of in a side strip."""
+    from qtpy.QtCore import QTimer
+
+    setter = getattr(dock, "setFloating", None)
+    if setter is None:
+        setter = getattr(getattr(dock, "native", None), "setFloating", None)
+    if setter is None:
+        return
+    try:
+        setter(True)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not float dock", exc_info=True)
+        return
+
+    inner = dock.widget() if callable(getattr(dock, "widget", None)) else None
+    hint = inner.sizeHint() if inner is not None else dock.sizeHint()
+    try:
+        dock.resize(max(int(hint.width()), 280), max(int(hint.height()), 80))
+    except Exception:  # noqa: BLE001
+        logger.debug("could not size floating dock", exc_info=True)
+
+    def place() -> None:
+        try:
+            qt_viewer = getattr(viewer.window, "_qt_viewer", None)
+            canvas = getattr(qt_viewer, "canvas", None)
+            native = getattr(canvas, "native", canvas)
+            if native is None:
+                return
+            top_left = native.mapToGlobal(native.rect().topLeft())
+            dock.move(int(top_left.x()) + 16, int(top_left.y()) + 16)
+        except Exception:  # noqa: BLE001
+            logger.debug("could not place dock over the canvas", exc_info=True)
+
+    QTimer.singleShot(0, place)
 
 
 def _create_widget(**kwargs):
@@ -4556,6 +4613,7 @@ def settings_widget(napari_viewer=None):
         log_dock = viewer.window.add_dock_widget(
             log_view.native, name=LOG_DOCK_NAME, area="bottom"
         )
+        _give_bottom_docks_the_corners(viewer)
 
     def show_log() -> None:
         """Put the log window back in front, in case the user closed it."""
@@ -5213,25 +5271,30 @@ def settings_widget(napari_viewer=None):
     snapshot_button.setToolTip(SNAPSHOT_TOOLTIP)
     snapshot_button.clicked.connect(on_save_snapshot)
     snapshot_layout.addWidget(snapshot_button)
-    snapshot_layout.addStretch(1)
     snapshot_group.setMinimumHeight(48)
     view_layout = QVBoxLayout(view_panel)
     view_layout.addWidget(display_group)
     view_layout.addWidget(snapshot_group)
-    view_layout.addStretch(1)
 
     view_dock = None
     if viewer is not None:
-        view_dock = viewer.window.add_dock_widget(
-            view_panel,
-            name=VIEW_DOCK_NAME,
-            area="left",
-            allowed_areas=["left", "right"],
-        )
+        dock_kwargs = {
+            "name": VIEW_DOCK_NAME,
+            "area": "left",
+            "allowed_areas": ["left", "right"],
+        }
+        try:
+            view_dock = viewer.window.add_dock_widget(
+                view_panel, add_vertical_stretch=False, **dock_kwargs
+            )
+        except TypeError:
+            view_dock = viewer.window.add_dock_widget(view_panel, **dock_kwargs)
         try:
             view_dock.setObjectName("haemolynx_view_dock")
         except Exception:  # noqa: BLE001
             pass
+        _give_bottom_docks_the_corners(viewer)
+        _float_dock_over_canvas(viewer, view_dock)
     else:
         view_panel.setVisible(False)
 

@@ -1,7 +1,8 @@
-"""Left-hand view dock: Z-project, Z-depth, scale bar, and snapshot, display-only.
+"""Floating view dock: Z-project, Z-depth, scale bar, and snapshot, display-only.
 
 The pipeline still reads the full volume / full graph. These controls only
-change what napari shows. The snapshot is a cosmetic canvas TIFF.
+change what napari shows. The snapshot is a cosmetic canvas TIFF. The dock
+floats over the canvas so it does not steal height from the bottom run log.
 """
 from __future__ import annotations
 
@@ -80,14 +81,14 @@ def _load_patterned_image(viewer):
     return layer, image
 
 
-def test_the_view_panel_docks_on_the_left(make_napari_viewer):
+def test_the_view_panel_floats_over_the_canvas(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
 
     dock = panel._haemolynx_view_dock
     assert dock is not None
     assert VIEW_DOCK_NAME in dock.windowTitle()
-    assert dock.area == "left"
+    assert dock.isFloating()
     assert panel._haemolynx_view_panel.objectName() == "haemolynx_view_panel"
     assert panel._haemolynx_z_project.objectName() == "haemolynx_z_project"
     assert panel._haemolynx_z_project.isChecked() is False

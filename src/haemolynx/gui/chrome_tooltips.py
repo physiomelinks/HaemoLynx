@@ -76,7 +76,7 @@ REVERT_STAGE_TOOLTIP = (
     "be changed without rebuilding earlier work"
 )
 
-#: Left-hand view dock — display-only; never written into pipeline settings.
+#: View dock — display-only; never written into pipeline settings.
 Z_PROJECT_ENABLE_TOOLTIP = (
     "Turn on a max-intensity Z project for image-like layers; off shows the full stack"
 )

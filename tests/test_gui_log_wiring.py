@@ -277,6 +277,17 @@ def test_the_panel_docks_the_log_in_the_viewer(make_napari_viewer) -> None:
     assert panel._haemolynx_log.native.parent() is not None
 
 
+def test_the_log_stays_docked_when_the_view_floats(make_napari_viewer) -> None:
+    """A left view strip used to take the bottom corners and hide the log."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+
+    assert panel._haemolynx_view_dock.isFloating()
+    log_dock = panel._haemolynx_log_dock
+    assert log_dock is not None
+    assert not log_dock.isFloating()
+
+
 def test_the_panel_still_builds_with_no_viewer_to_dock_it_in() -> None:
     """There is no window to dock a log into, and that must not be an error."""
     panel = settings_widget(napari_viewer=None)
