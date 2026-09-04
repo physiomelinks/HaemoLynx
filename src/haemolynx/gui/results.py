@@ -46,7 +46,8 @@ PREFIX = "HaemoLynx "
 
 VESSELS = f"{PREFIX}vessels"
 VESSEL_LABELS = f"{PREFIX}vessel labels"
-#: Midpoint Points layer for branch hover tooltips (visible; panel selects metrics).
+#: Legacy name of the midpoint-circle hover layer. Hover now lives on the
+#: vessels Vectors polyline; the widget drops a leftover layer of this name.
 BRANCH_HOVER = f"{PREFIX}branch hover"
 #: Mid-edge arrows coloured by |flow|; emitted from Export when toggled on.
 FLOW_DIRECTION = f"{PREFIX}flow direction"
@@ -57,11 +58,9 @@ IMAGE = f"{PREFIX}image"
 SKELETON = f"{PREFIX}skeleton"
 
 #: Napari Points ``size`` (data pixels). Values match the original viewer style
-#: on ``origin/main`` / the first GUI results commit. Branch-hover midpoints
-#: briefly used 8.0 and read as oversized nodes; they share the vessel-label
-#: midpoint size instead.
+#: on ``origin/main`` / the first GUI results commit. Branch hover used to be a
+#: midpoint circle at 8.0, then 2.0; it is no longer a Points layer.
 VESSEL_LABEL_POINT_SIZE = 2.0
-BRANCH_HOVER_POINT_SIZE = 2.0
 NODE_POINT_SIZE = 3.0
 BOUNDARY_NODE_POINT_SIZE = 6.0
 PERICYTE_POINT_SIZE = 4.0
@@ -561,50 +560,52 @@ def pericyte_points(graph: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
 
 
 def midpoints_of(paths: Sequence[np.ndarray]) -> np.ndarray:
-    """The middle of each polyline, for the hover-identity layer."""
+    """The middle of each polyline, for the hidden vessel-label layer."""
     if not paths:
         return np.empty((0, 3), dtype=float)
     return np.stack([np.asarray(path, dtype=float).mean(axis=0) for path in paths])
 
 
-def _branch_hover_layer(
-    graph: Any, midpoints: np.ndarray
-) -> tuple[LayerSpec, ...]:
-    """Visible midpoint Points layer whose ``tooltip`` feature drives hover text.
+def _branch_hover_columns(
+    graph: Any, edge_index: np.ndarray
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """Per-vector tooltip columns plus option keys the widget stashes.
 
-    Optional metrics and the initial checkbox selection ride in ``options``
-    under keys the widget strips before napari sees them
-    (``branch_hover_available`` / ``branch_hover_selected``).
+    *edge_index* selects drawable edges (the Vectors ``owner`` array, or the
+    drawable-edge index of each flow-direction arrow). Empty when there is
+    nothing to hover.
     """
-    from haemolynx.gui.branch_hover import (
-        available_branch_hover_metrics,
-        branch_hover_rows,
-        default_selected_metrics,
-    )
+    from haemolynx.gui.branch_hover import hover_features_for_segments
 
-    if len(midpoints) == 0:
-        return ()
-    available = available_branch_hover_metrics(graph)
-    selected = default_selected_metrics(available)
-    _ids, features = branch_hover_rows(graph, selected)
-    return (
-        LayerSpec(
-            kind="points",
-            name=BRANCH_HOVER,
-            data=midpoints,
-            features=features,
-            visible=True,
-            options={
-                "size": BRANCH_HOVER_POINT_SIZE,
-                "out_of_slice_display": True,
-                "opacity": 0.4,
-                "face_color": "yellow",
-                "border_width": 0,
-                "branch_hover_available": available,
-                "branch_hover_selected": selected,
-            },
-        ),
-    )
+    features, available, selected = hover_features_for_segments(graph, edge_index)
+    if not features:
+        return {}, {}
+    return features, {
+        "branch_hover_available": available,
+        "branch_hover_selected": selected,
+    }
+
+
+def _flow_direction_drawable_edge_index(graph: Any) -> np.ndarray:
+    """Drawable-edge indices of edges that receive a flow-direction arrow.
+
+    Same skip rules as :func:`flow_direction_vectors` up to direction sign.
+    If a later arrow-geometry step drops an edge, the caller must compare
+    lengths before attaching hover columns.
+    """
+    from haemolynx.visualization.flow_direction import edge_flow_direction_sign
+
+    kept: list[int] = []
+    drawable = 0
+    for _u, _v, _key, data in _iter_edges(graph):
+        try:
+            edge_polyline(graph, _u, _v, data)
+        except ValueError:
+            continue
+        if edge_flow_direction_sign(data) is not None:
+            kept.append(drawable)
+        drawable += 1
+    return np.asarray(kept, dtype=int)
 
 
 def _limits(values: np.ndarray) -> tuple[float, float] | None:
@@ -757,7 +758,7 @@ class ResultLayers:
         return self._graph
 
     def _vessel_layers(self, stage: str) -> tuple[LayerSpec, ...]:
-        """The vessels and their hover-identity twin, from the graph we hold.
+        """The vessels Vectors (with polyline hover) and hidden label points.
 
         Always emits vessels / vessel-label layers (possibly empty). After a
         large-vessel volume cut the graph can lose every edge; omitting the
@@ -789,6 +790,10 @@ class ResultLayers:
         if colour_by is not None and colour_by not in columns:
             colour_by = None
 
+        hover_columns, hover_options = _branch_hover_columns(graph, owner)
+        if hover_columns:
+            per_segment.update(hover_columns)
+
         midpoints = midpoints_of(paths)
         layers: list[LayerSpec] = [
             LayerSpec(
@@ -798,12 +803,15 @@ class ResultLayers:
                 features=per_segment,
                 colour_by=colour_by,
                 **_colouring(per_segment, colour_by),
-                options={"vector_style": "line", "edge_width": 0.6,
-                         "out_of_slice_display": True},
+                options={
+                    "vector_style": "line",
+                    "edge_width": 0.6,
+                    "out_of_slice_display": True,
+                    **hover_options,
+                },
             ),
-            # A Vectors layer answers no hover query -- `_get_value` returns
-            # None -- so the same table rides on a hidden Points layer at the
-            # middle of each vessel, which does.
+            # Identity table for colour-by columns that are per-edge rather
+            # than per-segment. Hidden; hover hit-testing is on the Vectors.
             LayerSpec(
                 kind="points",
                 name=VESSEL_LABELS,
@@ -816,21 +824,6 @@ class ResultLayers:
                 },
             ),
         ]
-        hover = _branch_hover_layer(graph, midpoints)
-        if hover:
-            layers.extend(hover)
-        elif stage == "assign_boundaries":
-            # Clear a previous branch-hover layer when the post-cut graph is empty.
-            layers.append(
-                LayerSpec(
-                    kind="points",
-                    name=BRANCH_HOVER,
-                    data=np.empty((0, 3), dtype=float),
-                    features={},
-                    visible=False,
-                    options={"size": BRANCH_HOVER_POINT_SIZE},
-                )
-            )
         return tuple(layers)
 
     def _from_topology_step(self, label: str, graph: Any) -> StageLayers:
@@ -1361,6 +1354,14 @@ class ResultLayers:
             )
         )
         scale = float(self.settings.get("flow_arrow_scale", 1.0))
+        hover_index = _flow_direction_drawable_edge_index(graph)
+        hover_columns, hover_options = (
+            _branch_hover_columns(graph, hover_index)
+            if len(hover_index) == len(vectors)
+            else ({}, {})
+        )
+        if hover_columns:
+            features = {**features, **hover_columns}
         return (
             LayerSpec(
                 kind="vectors",
@@ -1374,6 +1375,7 @@ class ResultLayers:
                     "edge_width": 1.2,
                     "length": scale,
                     "out_of_slice_display": True,
+                    **hover_options,
                 },
             ),
         )

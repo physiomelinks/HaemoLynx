@@ -515,8 +515,22 @@ def _maybe_store_z_filter_cache(layer, spec) -> None:
         )
 
 
+def _drop_legacy_branch_hover_layer(viewer, group) -> None:
+    """Remove leftover midpoint-circle hover Points from earlier GUI builds."""
+    emitted = {spec.name for spec in getattr(group, "layers", ())}
+    if BRANCH_HOVER in emitted:
+        return
+    layers = getattr(viewer, "layers", None)
+    if layers is None or BRANCH_HOVER not in layers:
+        return
+    layer = layers[BRANCH_HOVER]
+    if _is_ours(layer):
+        layers.remove(layer)
+
+
 def _apply_layers(viewer, group, report=None) -> None:
     """Put one stage's layers in the viewer. Runs on the GUI thread."""
+    _drop_legacy_branch_hover_layer(viewer, group)
     for spec in group.layers:
         try:
             _add_or_update(viewer, spec)
@@ -1090,8 +1104,13 @@ _CLASS_FOR = {
 
 
 #: Identifiers rather than quantities: colouring by one shows nothing.
+#: Hover metric copies (`flow`, `order`, `tortuosity`) ride on the vessels
+#: Vectors layer for the tooltip table and must not appear in Colour by.
 NOT_WORTH_COLOURING_BY = frozenset(
-    {"u", "v", "key", "edge_index", "node_id", "tooltip", "branch_id"}
+    {
+        "u", "v", "key", "edge_index", "node_id", "tooltip", "branch_id",
+        "flow", "order", "tortuosity",
+    }
 )
 
 #: Preferred order for flow-related columns in the colour-by dropdown.
@@ -1826,13 +1845,21 @@ def _refresh_layer_controls(viewer, layer) -> None:
             widget.refresh()
 
 
+def _layer_features(layer):
+    """Feature table on *layer*, never a DataFrame used as a boolean."""
+    features = getattr(layer, "features", None)
+    if features is None:
+        return {}
+    return features
+
+
 def _is_branch_hover_layer(layer) -> bool:
-    """Whether *layer* is our branch-hover Points layer."""
+    """Whether *layer* carries branch-tooltip features (vessels / flow / leftover)."""
     if not _is_ours(layer):
         return False
     if layer.name == BRANCH_HOVER or layer.name.startswith(f"{BRANCH_HOVER} "):
         return True
-    features = getattr(layer, "features", {}) or {}
+    features = _layer_features(layer)
     return "tooltip" in features and "branch_id" in features
 
 
@@ -1844,7 +1871,7 @@ def _branch_hover_available(layer) -> tuple[str, ...]:
     stored = tag.get("branch_hover_available")
     if stored is not None:
         return tuple(stored)
-    return available_metrics_from_features(getattr(layer, "features", {}) or {})
+    return available_metrics_from_features(_layer_features(layer))
 
 
 def _branch_hover_selected_for(layer) -> tuple[str, ...]:
@@ -1880,11 +1907,37 @@ def _apply_branch_hover_selection(layer, selected: Sequence[str]) -> None:
     layer.metadata = metadata
 
 
-def _branch_hover_mouse_move(layer, event) -> None:
-    """Show the composed tooltip string when the cursor is over a midpoint."""
-    from qtpy.QtGui import QCursor
-    from qtpy.QtWidgets import QToolTip
+def _hover_max_distance(layer) -> float:
+    """Pickup radius in data coordinates; at least the old circle diameter."""
+    from haemolynx.gui.branch_hover import BRANCH_HOVER_MAX_DISTANCE
 
+    width = getattr(layer, "edge_width", None)
+    try:
+        edge_width = float(np.asarray(width).reshape(-1)[0])
+    except (TypeError, ValueError, IndexError):
+        edge_width = 0.0
+    if not np.isfinite(edge_width) or edge_width < 0.0:
+        edge_width = 0.0
+    return max(BRANCH_HOVER_MAX_DISTANCE, edge_width * 2.0)
+
+
+def _hover_feature_index(layer, event) -> int | None:
+    """Index into *layer.features['tooltip']* for the cursor, or ``None``."""
+    from haemolynx.gui.branch_hover import nearest_vector_index
+
+    kind = layer.__class__.__name__.lower()
+    if kind == "vectors":
+        position = getattr(event, "position", None)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view_direction = getattr(event, "view_direction", None)
+        if len(dims) != 3:
+            view_direction = None
+        return nearest_vector_index(
+            position,
+            getattr(layer, "data", ()),
+            max_distance=_hover_max_distance(layer),
+            view_direction=view_direction,
+        )
     try:
         index = layer.get_value(
             event.position,
@@ -1894,10 +1947,21 @@ def _branch_hover_mouse_move(layer, event) -> None:
         )
     except TypeError:
         index = layer.get_value(event.position, world=True)
+    if isinstance(index, tuple):
+        index = index[0]
     if index is None:
-        QToolTip.hideText()
-        return
-    tips = getattr(layer, "features", {}).get("tooltip")
+        return None
+    try:
+        return int(index)
+    except (TypeError, ValueError):
+        return None
+
+
+def _show_branch_tooltip(layer, index: int) -> None:
+    from qtpy.QtGui import QCursor
+    from qtpy.QtWidgets import QToolTip
+
+    tips = _layer_features(layer).get("tooltip")
     if tips is None:
         return
     try:
@@ -1908,14 +1972,51 @@ def _branch_hover_mouse_move(layer, event) -> None:
         QToolTip.showText(QCursor.pos(), text)
 
 
-def _ensure_branch_hover_callback(layer) -> None:
-    """Install the mouse-move tooltip callback once per layer instance."""
+def _branch_hover_mouse_move(layer, event) -> None:
+    """Show the composed tooltip when the cursor is over this layer's polyline.
+
+    A miss does not hide the tooltip: the viewer-level callback owns
+    hide-on-empty so a selected nodes layer cannot swallow a hit on the
+    vessels underneath.
+    """
+    index = _hover_feature_index(layer, event)
+    if index is None:
+        return
+    _show_branch_tooltip(layer, index)
+
+
+def _branch_hover_viewer_mouse_move(viewer, event) -> None:
+    """Hover the drawn branch even when another HaemoLynx layer is selected."""
+    from qtpy.QtWidgets import QToolTip
+
+    layers = getattr(viewer, "layers", ())
+    for layer in reversed(list(layers)):
+        if not getattr(layer, "visible", False):
+            continue
+        if not _is_branch_hover_layer(layer):
+            continue
+        index = _hover_feature_index(layer, event)
+        if index is None:
+            continue
+        _show_branch_tooltip(layer, index)
+        return
+    QToolTip.hideText()
+
+
+def _ensure_branch_hover_callback(layer, viewer=None) -> None:
+    """Install polyline tooltip callbacks once per layer and once per viewer."""
     callbacks = getattr(layer, "mouse_move_callbacks", None)
-    if callbacks is None:
+    if callbacks is not None and _branch_hover_mouse_move not in callbacks:
+        callbacks.append(_branch_hover_mouse_move)
+    if viewer is None:
+        viewer = getattr(layer, "viewer", None)
+    if viewer is None:
         return
-    if _branch_hover_mouse_move in callbacks:
+    viewer_callbacks = getattr(viewer, "mouse_move_callbacks", None)
+    if viewer_callbacks is None:
         return
-    callbacks.append(_branch_hover_mouse_move)
+    if _branch_hover_viewer_mouse_move not in viewer_callbacks:
+        viewer_callbacks.append(_branch_hover_viewer_mouse_move)
 
 
 class _BranchHoverPanel:
@@ -1938,7 +2039,7 @@ class _BranchHoverPanel:
         self._layout.setSpacing(2)
         self._heading = QLabel("branch tooltip metrics")
         self._heading.setToolTip(
-            "What to show when hovering a branch midpoint. "
+            "What to show when hovering a branch. "
             "branchID is always included."
         )
         self._layout.addWidget(self._heading)
@@ -1987,7 +2088,7 @@ class _BranchHoverPanel:
             with _blocked(box):
                 box.setChecked(key in selected)
         _apply_branch_hover_selection(layer, selected)
-        _ensure_branch_hover_callback(layer)
+        _ensure_branch_hover_callback(layer, self._viewer)
         self.native.setVisible(True)
         # Recorded for tests: Qt reports children of an unshown window as
         # invisible, so callers check this rather than isVisible().
@@ -1996,15 +2097,22 @@ class _BranchHoverPanel:
 
     def _toggled(self, *_args) -> None:
         global _branch_hover_session_selected
-        layer = self._layer()
-        if layer is None:
-            return
         selected = tuple(
             key for key, box in self._boxes.items() if box.isChecked()
         )
         _branch_hover_session_selected = selected
-        _apply_branch_hover_selection(layer, selected)
-        self.selected = _branch_hover_selected_for(layer)
+        viewer = self._viewer
+        if viewer is not None:
+            for layer in getattr(viewer, "layers", ()):
+                if _is_branch_hover_layer(layer):
+                    _apply_branch_hover_selection(layer, selected)
+        else:
+            layer = self._layer()
+            if layer is not None:
+                _apply_branch_hover_selection(layer, selected)
+        layer = self._layer()
+        if layer is not None:
+            self.selected = _branch_hover_selected_for(layer)
 
 
 def _attach_branch_hover_controls(viewer, layer) -> bool:
@@ -2015,7 +2123,7 @@ def _attach_branch_hover_controls(viewer, layer) -> bool:
         return False
     controls = _layer_controls(viewer, layer)
     if controls is None:
-        _ensure_branch_hover_callback(layer)
+        _ensure_branch_hover_callback(layer, viewer)
         _apply_branch_hover_selection(layer, _branch_hover_selected_for(layer))
         return False
     if getattr(controls, "_haemolynx_branch_hover", None) is not None:
@@ -2023,7 +2131,7 @@ def _attach_branch_hover_controls(viewer, layer) -> bool:
         return True
     layout = controls.layout()
     if not hasattr(layout, "addRow"):
-        _ensure_branch_hover_callback(layer)
+        _ensure_branch_hover_callback(layer, viewer)
         return False
     panel = _BranchHoverPanel(viewer, layer.name)
     layout.addRow(QLabel("hover info:"), panel.native)

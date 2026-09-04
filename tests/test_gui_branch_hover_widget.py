@@ -1,6 +1,8 @@
 """Branch-hover layer registration and metrics panel in a real napari viewer."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -9,12 +11,21 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui import _widget as widget_mod  # noqa: E402
 from haemolynx.gui._widget import (  # noqa: E402
+    OURS,
     _apply_layers,
     _branch_hover_mouse_move,
+    _branch_hover_viewer_mouse_move,
     _layer_controls,
 )
 from haemolynx.gui.branch_hover import format_metric_value  # noqa: E402
-from haemolynx.gui.results import BRANCH_HOVER, ResultLayers  # noqa: E402
+from haemolynx.gui.results import (  # noqa: E402
+    BRANCH_HOVER,
+    VESSEL_LABELS,
+    VESSEL_LABEL_POINT_SIZE,
+    VESSELS,
+    LayerSpec,
+    ResultLayers,
+)
 from test_gui_results import a_graph, network  # noqa: E402
 
 pytestmark = pytest.mark.gui
@@ -32,17 +43,69 @@ def _draw_hover(viewer, graph=None):
         "build_network", network(graph or a_graph())
     )
     _apply_layers(viewer, group)
-    return viewer.layers[BRANCH_HOVER]
+    return viewer.layers[VESSELS]
+
+
+def _fake_event(position, dims_displayed=(0, 1, 2)):
+    return SimpleNamespace(
+        position=position,
+        view_direction=None,
+        dims_displayed=dims_displayed,
+    )
 
 
 def test_branch_hover_layer_registers_with_tooltip_features(make_napari_viewer):
     viewer = make_napari_viewer()
     layer = _draw_hover(viewer)
-    assert isinstance(layer, napari.layers.Points)
+    assert isinstance(layer, napari.layers.Vectors)
     assert "tooltip" in layer.features
     assert "branch_id" in layer.features
     assert str(layer.features["tooltip"][0]).startswith("branchID: ")
     assert _branch_hover_mouse_move in layer.mouse_move_callbacks
+    assert _branch_hover_viewer_mouse_move in viewer.mouse_move_callbacks
+    assert BRANCH_HOVER not in viewer.layers
+
+
+def test_hovering_along_the_polyline_shows_tooltip(make_napari_viewer, monkeypatch):
+    """A point on the centreline, not the old midpoint circle, shows the tip."""
+    shown: list[str | None] = []
+    monkeypatch.setattr(
+        "qtpy.QtWidgets.QToolTip.showText",
+        lambda _pos, text, *a, **k: shown.append(str(text)),
+    )
+    monkeypatch.setattr(
+        "qtpy.QtWidgets.QToolTip.hideText",
+        lambda *a, **k: shown.append(None),
+    )
+
+    viewer = make_napari_viewer()
+    layer = _draw_hover(viewer)
+    # First vessel (0,0,0)->(10,0,0); midpoint was (5,0,0) with size 2.
+    _branch_hover_mouse_move(layer, _fake_event((1.0, 0.0, 0.0)))
+    assert shown
+    assert shown[-1].startswith("branchID: 0")
+    assert "branch length" in shown[-1]
+
+    _branch_hover_mouse_move(layer, _fake_event((8.0, 0.0, 0.0)))
+    assert shown[-1].startswith("branchID: 0")
+
+    _branch_hover_viewer_mouse_move(viewer, _fake_event((15.0, 0.0, 0.0)))
+    assert shown[-1].startswith("branchID: 1")
+
+    _branch_hover_viewer_mouse_move(viewer, _fake_event((5.0, 50.0, 0.0)))
+    assert shown[-1] is None
+
+
+def test_legacy_midpoint_hover_circle_is_removed(make_napari_viewer):
+    viewer = make_napari_viewer()
+    viewer.add_points(
+        np.array([[5.0, 0.0, 0.0]]),
+        name=BRANCH_HOVER,
+        metadata={OURS: {"kind": "points"}},
+    )
+    _draw_hover(viewer)
+    assert BRANCH_HOVER not in viewer.layers
+    assert isinstance(viewer.layers[VESSELS], napari.layers.Vectors)
 
 
 def test_branch_hover_panel_offers_only_available_metrics(make_napari_viewer):
@@ -116,69 +179,67 @@ def test_session_selection_persists_across_layer_rebuild(make_napari_viewer):
 
 
 def test_branch_hover_option_keys_are_not_passed_to_napari(make_napari_viewer):
-    """Stashed availability keys must be stripped before add_points."""
+    """Stashed availability keys must be stripped before add_vectors."""
     viewer = make_napari_viewer()
     layer = _draw_hover(viewer)
-    # Survives on our metadata tag, not as a napari Points kwarg/attr.
     tag = layer.metadata["haemolynx"]
     assert tag["branch_hover_available"] == ("tortuosity", "length")
     assert not hasattr(layer, "branch_hover_available")
 
 
-def test_branch_hover_update_with_stale_size_array_does_not_raise(make_napari_viewer):
+def test_vessel_label_update_with_stale_size_array_does_not_raise(make_napari_viewer):
     """Napari 0.9 rejects per-point size when len(size) != len(data)."""
-    from haemolynx.gui._widget import _add_or_update, _apply_z_filter
-    from haemolynx.gui.results import BRANCH_HOVER_POINT_SIZE, LayerSpec
+    from haemolynx.gui._widget import _add_or_update
 
     viewer = make_napari_viewer()
-    layer = _draw_hover(viewer)
+    _draw_hover(viewer)
+    layer = viewer.layers[VESSEL_LABELS]
     full_count = len(layer.data)
-    stale = np.full(full_count, BRANCH_HOVER_POINT_SIZE)
+    stale = np.full(full_count, VESSEL_LABEL_POINT_SIZE)
     layer.size = stale
     assert len(layer.size) == full_count
 
-    # Fewer points, stale length-3909-style size array — must not raise.
     fewer = np.asarray(layer.data)[:2]
     features = {k: np.asarray(v)[:2] for k, v in layer.features.items()}
     _add_or_update(
         viewer,
         LayerSpec(
             kind="points",
-            name=BRANCH_HOVER,
+            name=VESSEL_LABELS,
             data=fewer,
             features=features,
-            options={"size": BRANCH_HOVER_POINT_SIZE},
+            options={"size": VESSEL_LABEL_POINT_SIZE},
         ),
     )
-    updated = viewer.layers[BRANCH_HOVER]
+    updated = viewer.layers[VESSEL_LABELS]
     assert len(updated.data) == 2
     assert np.isscalar(updated.size) or len(np.asarray(updated.size)) == 2
 
-    # Grow back in place with a size array left at the smaller count.
-    layer = viewer.layers[BRANCH_HOVER]
-    layer.size = np.full(len(layer.data), BRANCH_HOVER_POINT_SIZE)
+    layer = viewer.layers[VESSEL_LABELS]
+    layer.size = np.full(len(layer.data), VESSEL_LABEL_POINT_SIZE)
     _draw_hover(viewer)
-    assert len(viewer.layers[BRANCH_HOVER].data) == full_count
+    assert len(viewer.layers[VESSEL_LABELS].data) == full_count
 
 
-def test_branch_hover_z_filter_with_stale_size_array_does_not_raise(make_napari_viewer):
+def test_vessel_label_z_filter_with_stale_size_array_does_not_raise(make_napari_viewer):
     """Z-filter shrink must sync Points size with the filtered row count."""
     from haemolynx.gui._widget import _apply_z_filter
 
     viewer = make_napari_viewer()
-    layer = _draw_hover(viewer)
+    _draw_hover(viewer)
+    layer = viewer.layers[VESSEL_LABELS]
     full_count = len(layer.data)
     layer.size = np.full(full_count, 2.0)
     full_z = 30.0
 
     _apply_z_filter(viewer, 0.0, 15.0, z_extent=full_z)
-    filtered = viewer.layers[BRANCH_HOVER]
+    filtered = viewer.layers[VESSEL_LABELS]
     assert len(filtered.data) < full_count
     assert np.isscalar(filtered.size) or len(np.asarray(filtered.size)) == len(
         filtered.data
     )
 
     _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
-    restored = viewer.layers[BRANCH_HOVER]
+    restored = viewer.layers[VESSEL_LABELS]
     assert len(restored.data) == full_count
     assert np.isscalar(restored.size) or len(np.asarray(restored.size)) == full_count

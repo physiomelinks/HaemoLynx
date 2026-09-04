@@ -1,6 +1,6 @@
-"""Branch-hover tooltip helpers: availability, formatting, panel options.
+"""Branch-hover tooltip helpers: availability, formatting, polyline hit-testing.
 
-Pure logic for the napari midpoint layer that shows branchID (always) plus
+Pure logic for the napari Vectors hover path that shows branchID (always) plus
 user-selected metrics. No napari / Qt imports -- those live in the widget tests.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import pytest
 
 from haemolynx.gui.branch_hover import (
     BRANCH_HOVER_LABELS,
+    BRANCH_HOVER_MAX_DISTANCE,
     BRANCH_HOVER_METRICS,
     available_branch_hover_metrics,
     available_metrics_from_features,
@@ -21,11 +22,20 @@ from haemolynx.gui.branch_hover import (
     filter_selected_metrics,
     format_branch_tooltip,
     format_metric_value,
+    hover_features_for_segments,
+    nearest_vector_index,
     panel_metric_options,
     tooltips_from_feature_table,
 )
 from test_gui_results import a_graph, built, network, spec_named
-from haemolynx.gui.results import BRANCH_HOVER, VESSEL_LABELS, VESSELS
+from haemolynx.gui.results import (
+    BRANCH_HOVER,
+    FLOW_DIRECTION,
+    VESSEL_LABELS,
+    VESSELS,
+    edge_polylines,
+    polylines_to_vectors,
+)
 
 
 def graph_with(**attrs) -> nx.MultiGraph:
@@ -224,19 +234,19 @@ def test_available_metrics_from_features_matches_graph_detection():
     )
 
 
-def test_result_layers_emit_branch_hover_with_tooltip_features():
+def test_result_layers_put_tooltip_features_on_the_vessel_vectors():
+    """Hover lives on the drawn branch, not a midpoint circle beside it."""
     group = built().stage_finished("build_network", network(a_graph()))
-    hover = spec_named(group, BRANCH_HOVER)
-    assert hover.kind == "points"
-    assert hover.visible is True
-    assert set(hover.features) >= {"branch_id", "tooltip", "length", "tortuosity"}
-    assert hover.features["tooltip"][0].startswith("branchID: ")
-    assert hover.options["branch_hover_available"] == ("tortuosity", "length")
-    assert hover.options["branch_hover_selected"] == ("tortuosity", "length")
-    # Must stay at the vessel-label midpoint size (not the brief 8.0 enlargement).
-    from haemolynx.gui.results import BRANCH_HOVER_POINT_SIZE, VESSEL_LABEL_POINT_SIZE
-
-    assert hover.options["size"] == BRANCH_HOVER_POINT_SIZE == VESSEL_LABEL_POINT_SIZE
+    names = [spec.name for spec in group.layers]
+    assert BRANCH_HOVER not in names
+    vessels = spec_named(group, VESSELS)
+    assert vessels.kind == "vectors"
+    assert set(vessels.features) >= {"branch_id", "tooltip", "length", "tortuosity"}
+    assert vessels.features["tooltip"][0].startswith("branchID: ")
+    assert vessels.options["branch_hover_available"] == ("tortuosity", "length")
+    assert vessels.options["branch_hover_selected"] == ("tortuosity", "length")
+    assert "size" not in vessels.options
+    assert "face_color" not in vessels.options
 
 
 def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
@@ -247,7 +257,7 @@ def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
     results = built(graph)
     before = spec_named(
         results.stage_finished("build_network", network(graph)),
-        BRANCH_HOVER,
+        VESSELS,
     )
     assert before.options["branch_hover_available"] == ("tortuosity", "length")
 
@@ -264,13 +274,100 @@ def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
             equivalent_resistance=1.0,
         ),
     )
-    hover = spec_named(group, BRANCH_HOVER)
-    assert hover.options["branch_hover_available"] == BRANCH_HOVER_METRICS
+    vessels = spec_named(group, VESSELS)
+    assert vessels.options["branch_hover_available"] == BRANCH_HOVER_METRICS
 
 
-def test_vessel_labels_layer_still_emitted_alongside_branch_hover():
+def test_vessel_labels_layer_still_emitted_without_a_hover_circle():
     group = built().stage_finished("build_network", network(a_graph()))
     names = [spec.name for spec in group.layers]
     assert names.count(VESSELS) == 1
     assert names.count(VESSEL_LABELS) == 1
-    assert names.count(BRANCH_HOVER) == 1
+    assert BRANCH_HOVER not in names
+
+
+def test_hover_features_repeat_across_polyline_segments():
+    graph = a_graph()
+    paths, _identity = edge_polylines(graph)
+    _vectors, owner = polylines_to_vectors(paths)
+    features, available, selected = hover_features_for_segments(graph, owner)
+    assert available == ("tortuosity", "length")
+    assert selected == ("tortuosity", "length")
+    assert len(features["tooltip"]) == len(owner)
+    assert list(features["branch_id"]) == [str(i) for i in owner]
+
+
+def test_nearest_vector_index_hits_along_the_polyline_not_only_the_midpoint():
+    """A point on the centreline far from the old midpoint circle still hits."""
+    paths, _ = edge_polylines(a_graph())
+    vectors, owner = polylines_to_vectors(paths)
+    # First vessel runs (0,0,0) -> (10,0,0); midpoint was (5,0,0).
+    near_end = nearest_vector_index(
+        (1.0, 0.0, 0.0), vectors, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    )
+    assert near_end is not None
+    assert int(owner[near_end]) == 0
+    midpoint = nearest_vector_index(
+        (5.0, 0.0, 0.0), vectors, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    )
+    assert midpoint is not None
+    assert int(owner[midpoint]) == 0
+    second = nearest_vector_index(
+        (15.0, 0.0, 0.0), vectors, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    )
+    assert second is not None
+    assert int(owner[second]) == 1
+
+
+def test_nearest_vector_index_misses_off_the_branch():
+    paths, _ = edge_polylines(a_graph())
+    vectors, _owner = polylines_to_vectors(paths)
+    assert nearest_vector_index(
+        (5.0, 50.0, 0.0), vectors, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    ) is None
+    assert nearest_vector_index(
+        (5.0, 0.0, 0.0), vectors, max_distance=0.1
+    ) is not None
+    assert nearest_vector_index(
+        (0.0, 0.0, 0.0), np.empty((0, 2, 3))
+    ) is None
+
+
+def test_nearest_vector_index_projects_to_the_view_plane():
+    """A 3D camera offset along the view ray still hits the centreline."""
+    vectors = np.array([[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]], dtype=float)
+    # Cursor is 8 µm "in front" of the vessel along +y; same on-screen location.
+    index = nearest_vector_index(
+        (5.0, 8.0, 0.0),
+        vectors,
+        max_distance=BRANCH_HOVER_MAX_DISTANCE,
+        view_direction=(0.0, 1.0, 0.0),
+    )
+    assert index == 0
+    miss = nearest_vector_index(
+        (5.0, 8.0, 20.0),
+        vectors,
+        max_distance=BRANCH_HOVER_MAX_DISTANCE,
+        view_direction=(0.0, 1.0, 0.0),
+    )
+    assert miss is None
+
+
+def test_flow_direction_layer_carries_the_same_tooltip_table():
+    """Flow-direction arrows get the same hover strings as the vessel polylines."""
+    from types import SimpleNamespace
+
+    graph = a_graph(flow_signed=1.0, flow_abs=1.5e-12)
+    results = built(graph)
+    results.settings["show_flow_direction_layer"] = True
+    group = results.stage_finished("export_results", SimpleNamespace())
+    flow = spec_named(group, FLOW_DIRECTION)
+    assert "tooltip" in flow.features
+    assert "branch_id" in flow.features
+    assert str(flow.features["tooltip"][0]).startswith("branchID: ")
+    assert len(flow.features["tooltip"]) == len(flow.data)
+    origin = np.asarray(flow.data[0, 0], dtype=float)
+    hit = nearest_vector_index(
+        origin, flow.data, max_distance=BRANCH_HOVER_MAX_DISTANCE
+    )
+    assert hit == 0

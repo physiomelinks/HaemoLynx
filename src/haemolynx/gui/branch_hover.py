@@ -1,10 +1,11 @@
-"""Branch-hover tooltip text and metric availability, without napari.
+"""Branch-hover tooltip text, metric availability, and polyline hit-testing.
 
-The vessels Vectors layer cannot answer a hover query, so the panel puts a
-Points layer on vessel midpoints and fills a ``tooltip`` feature column from
-these helpers. Which optional metrics appear in the layer-controls checkboxes
-is decided here from what the graph actually carries -- the same rule
-``available_edge_columns`` uses for colouring.
+Napari Vectors ``_get_value`` always returns ``None``, so hover cannot use the
+native query. The vessels (and flow-direction) Vectors layers carry a
+``tooltip`` feature column from these helpers, and :func:`nearest_vector_index`
+picks the segment under the cursor. Which optional metrics appear in the
+layer-controls checkboxes is decided here from what the graph actually carries
+-- the same rule ``available_edge_columns`` uses for colouring.
 """
 from __future__ import annotations
 
@@ -40,6 +41,11 @@ _METRIC_ATTR: dict[str, str | None] = {
 }
 
 _BRANCH_ID_LINE = "branchID: {branch_id}"
+
+#: Pickup radius in data coordinates (µm). Matches the old midpoint-circle
+#: diameter of 2 so a branch is still easy to hit, but the target is the
+#: polyline rather than a marker beside it.
+BRANCH_HOVER_MAX_DISTANCE = 2.0
 
 
 def branch_id_for_edge(
@@ -286,3 +292,127 @@ def _iter_edges(graph: Any):
     if getattr(graph, "is_multigraph", lambda: False)():
         return graph.edges(keys=True, data=True)
     return ((u, v, 0, data) for u, v, data in graph.edges(data=True))
+
+
+def hover_features_for_segments(
+    graph: Any,
+    owner: np.ndarray,
+    selected: Sequence[str] | None = None,
+) -> tuple[dict[str, np.ndarray], tuple[str, ...], tuple[str, ...]]:
+    """Repeat per-edge hover columns across Vectors segments via *owner*.
+
+    *owner* is the drawable-edge index of each vector segment, the same array
+    :func:`haemolynx.gui.results.polylines_to_vectors` returns. Empty when
+    there are no segments or no drawable edges.
+    """
+    available = available_branch_hover_metrics(graph)
+    chosen = (
+        default_selected_metrics(available)
+        if selected is None
+        else filter_selected_metrics(selected, available)
+    )
+    index = np.asarray(owner, dtype=int)
+    if index.size == 0:
+        return {}, available, chosen
+    _ids, features = branch_hover_rows(graph, chosen)
+    n_edges = len(features.get("tooltip", ()))
+    if n_edges == 0 or int(index.min()) < 0 or int(index.max()) >= n_edges:
+        return {}, available, chosen
+    return (
+        {name: np.asarray(values)[index] for name, values in features.items()},
+        available,
+        chosen,
+    )
+
+
+def nearest_vector_index(
+    position: Any,
+    vectors: Any,
+    *,
+    max_distance: float = BRANCH_HOVER_MAX_DISTANCE,
+    view_direction: Any | None = None,
+    dims: Sequence[int] | None = None,
+) -> int | None:
+    """Index of the nearest Vectors segment within *max_distance*, else ``None``.
+
+    *vectors* is napari Vectors data ``(M, 2, D)``: origin and displacement,
+    in the same frame as *position*. When *dims* is given, distance uses only
+    those axes. When *view_direction* is a non-zero vector (3D camera ray),
+    segments are projected onto the view plane through *position* so the
+    pickup matches what is under the cursor on screen.
+    """
+    data = np.asarray(vectors, dtype=float)
+    point = _as_float_vec(position)
+    if (
+        point is None
+        or data.ndim != 3
+        or data.shape[0] == 0
+        or data.shape[1] != 2
+    ):
+        return None
+    origins = np.asarray(data[:, 0, :], dtype=float)
+    directions = np.asarray(data[:, 1, :], dtype=float)
+    ndim = int(origins.shape[1])
+    if dims is not None:
+        axes = np.asarray(list(dims), dtype=int)
+        axes = axes[(axes >= 0) & (axes < ndim) & (axes < point.size)]
+        if axes.size == 0:
+            return None
+        point = point[axes]
+        origins = origins[:, axes]
+        directions = directions[:, axes]
+    else:
+        n = min(int(point.size), ndim)
+        point = point[:n]
+        origins = origins[:, :n]
+        directions = directions[:, :n]
+
+    view = _as_float_vec(view_direction)
+    width = int(origins.shape[1])
+    if view is not None and view.size >= width:
+        view = view[:width]
+        norm = float(np.linalg.norm(view))
+        if np.isfinite(norm) and norm > 1e-12:
+            view = view / norm
+            ends = origins + directions
+            origins = _project_onto_plane(origins, point, view)
+            ends = _project_onto_plane(ends, point, view)
+            directions = ends - origins
+
+    length_sq = np.einsum("ij,ij->i", directions, directions)
+    delta = point - origins
+    t = np.zeros(len(origins), dtype=float)
+    nonzero = length_sq > 0.0
+    t[nonzero] = (
+        np.einsum("ij,ij->i", delta[nonzero], directions[nonzero])
+        / length_sq[nonzero]
+    )
+    t = np.clip(t, 0.0, 1.0)
+    closest = origins + t[:, None] * directions
+    offset = closest - point
+    dist_sq = np.einsum("ij,ij->i", offset, offset)
+    dist_sq = np.where(np.isfinite(dist_sq), dist_sq, np.inf)
+    if not np.isfinite(dist_sq).any():
+        return None
+    index = int(np.argmin(dist_sq))
+    max_sq = float(max_distance) * float(max_distance)
+    if not np.isfinite(max_sq) or dist_sq[index] > max_sq:
+        return None
+    return index
+
+
+def _as_float_vec(value: Any) -> np.ndarray | None:
+    if value is None:
+        return None
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    if arr.size == 0 or not np.all(np.isfinite(arr)):
+        return None
+    return arr
+
+
+def _project_onto_plane(
+    points: np.ndarray, plane_point: np.ndarray, normal: np.ndarray
+) -> np.ndarray:
+    """Project *points* onto the plane through *plane_point* with *normal*."""
+    rel = points - plane_point
+    return points - np.outer(rel @ normal, normal)

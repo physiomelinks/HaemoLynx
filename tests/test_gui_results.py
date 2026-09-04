@@ -24,7 +24,6 @@ from haemolynx.gui.results import (
     BOUNDARY_NODE_POINT_SIZE,
     BOUNDARY_NODES,
     BRANCH_HOVER,
-    BRANCH_HOVER_POINT_SIZE,
     DEFAULT_VESSEL_COLOUR,
     EDGE_COLUMNS,
     FLOW_DIRECTION,
@@ -349,12 +348,11 @@ def test_point_layer_sizes_match_the_earlier_viewer_style():
 
     Graph nodes / boundary nodes / pericytes / vessel-label midpoints have been
     3 / 6 / 4 / 2 since the first viewer commit (and on ``origin/main``).
-    Branch-hover midpoints briefly shipped at 8.0 and looked like oversized
-    nodes; they must stay at the vessel-label midpoint size. Boundary-tab
-    picking rings stay at 8.0 (they are rings, not snapped nodes).
+    Branch hover is no longer a Points overlay; its pickup radius lives in
+    ``branch_hover.BRANCH_HOVER_MAX_DISTANCE``. Boundary-tab picking rings stay
+    at 8.0 (they are rings, not snapped nodes).
     """
     assert VESSEL_LABEL_POINT_SIZE == 2.0
-    assert BRANCH_HOVER_POINT_SIZE == 2.0
     assert NODE_POINT_SIZE == 3.0
     assert BOUNDARY_NODE_POINT_SIZE == 6.0
     assert PERICYTE_POINT_SIZE == 4.0
@@ -370,9 +368,8 @@ def test_point_layer_sizes_match_the_earlier_viewer_style():
     assert spec_named(network_group, VESSEL_LABELS).options["size"] == (
         VESSEL_LABEL_POINT_SIZE
     )
-    assert spec_named(network_group, BRANCH_HOVER).options["size"] == (
-        BRANCH_HOVER_POINT_SIZE
-    )
+    names = [spec.name for spec in network_group.layers]
+    assert BRANCH_HOVER not in names
     assert spec_named(network_group, NODES).options["size"] == NODE_POINT_SIZE
 
     boundary_group = results.stage_finished(
@@ -880,7 +877,7 @@ def test_a_topology_step_redraws_the_vessels_when_switched_on():
 
     group = results.stage_finished("topology_step:prune_vascular_stubs", a_graph())
 
-    assert [spec.name for spec in group.layers] == [VESSELS, VESSEL_LABELS, BRANCH_HOVER]
+    assert [spec.name for spec in group.layers] == [VESSELS, VESSEL_LABELS]
     assert "prune_vascular_stubs" in group.title
     assert "3 vessels" in group.note
 
@@ -1079,7 +1076,6 @@ def test_z_depth_filter_targets_graph_vectors_and_points_only():
     assert is_z_depth_filtered_layer(SKELETON, "labels") is False
     assert is_z_depth_filtered_layer("HaemoLynx BC coordinates", "points") is False
 
-
 def _flow_graph_at_z(*z_values: float) -> nx.MultiGraph:
     """One edge per Z slab; mid-edge arrow anchors sit near z + 5."""
     graph = nx.MultiGraph()
@@ -1206,7 +1202,6 @@ def test_apply_z_filter_on_viewer_filters_flow_direction_layer():
     assert np.all(layer.data[:, 0, 0] <= 16.0)
     _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
     assert len(layer.data) == len(vectors)
-
 
 def test_result_layers_image_z_extent_after_skeletonise():
     results = ResultLayers()
