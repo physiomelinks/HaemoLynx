@@ -647,6 +647,28 @@ _MEASUREMENT_3D_CHILDREN = (
 )
 
 
+def test_ide_plot_fields_on_export_declare_hide_when_unmet():
+    """Produce IDE plots nests Show / mode / hold on the Export tab."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["8. Export"].fields}
+
+    assert not fields["visualize_results"].hide_when_unmet
+    assert fields["visualize_results"].label == "Produce IDE plots"
+    assert fields["show_plots_in_ide"].hide_when_unmet
+    assert fields["ide_plot_mode"].hide_when_unmet
+    assert fields["hold_ide_plots_open"].hide_when_unmet
+
+    off = {"visualize_results": False, "show_plots_in_ide": False}
+    assert not fields["show_plots_in_ide"].is_visible(off)
+    assert not fields["ide_plot_mode"].is_visible(off)
+    assert not fields["hold_ide_plots_open"].is_visible(off)
+
+    produce_on = {"visualize_results": True, "show_plots_in_ide": False}
+    assert fields["show_plots_in_ide"].is_visible(produce_on)
+    assert not fields["ide_plot_mode"].is_visible(produce_on)
+    assert not fields["hold_ide_plots_open"].is_visible(produce_on)
+
+
 def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
     """Gated Statistics rows on Export hide until their parent toggles hold."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}

@@ -158,11 +158,15 @@ def display_name_for_type(perturbation_type: Any) -> str:
 def display_label_for_setting(name: str, unit: str | None = None) -> str:
     """Form-row label for a setting, with constriction/dilation wording.
 
-    Falls back to capitalising the snake_case name when *name* has no entry in
-    :data:`SETTING_DISPLAY_LABELS`, matching :func:`haemolynx.gui.form.label_for`.
+    Falls back to :func:`haemolynx.gui.form.label_for` (including IDE-plot
+    labels) when *name* has no entry in :data:`SETTING_DISPLAY_LABELS`.
     """
-    label = SETTING_DISPLAY_LABELS.get(name) or name.replace("_", " ").capitalize()
-    return f"{label} ({unit})" if unit else label
+    from haemolynx.gui.form import label_for as form_label_for
+
+    if name in SETTING_DISPLAY_LABELS:
+        label = SETTING_DISPLAY_LABELS[name]
+        return f"{label} ({unit})" if unit else label
+    return form_label_for(name, unit)
 
 
 def perturbation_type_choices() -> list[tuple[str, str]]:

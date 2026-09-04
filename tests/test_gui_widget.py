@@ -182,8 +182,9 @@ def test_an_untouched_panel_reads_back_the_schema_defaults(panel):
 def test_the_panel_does_not_set_a_setting_nothing_will_read(panel):
     """Switching a display setting off must not earn an ineffective warning.
 
-    `hold_ide_plots_open` only does anything while `show_plots_in_ide` is on,
-    so turning it off as well made the schema warn on an untouched panel.
+    `hold_ide_plots_open` only does anything while Produce IDE plots and
+    `show_plots_in_ide` are on, so turning those nested rows off as well
+    made the schema warn on an untouched panel.
     """
     widget, _viewer = panel
     schema = default_schema()
@@ -196,11 +197,13 @@ def test_the_panel_does_not_set_a_setting_nothing_will_read(panel):
 
 
 def test_the_settings_that_open_a_browser_start_off(panel):
-    """`show_plots_in_ide` makes plotly open a web browser mid-run."""
+    """Produce IDE plots starts off so napari does not write Plotly HTML."""
     widget, _viewer = panel
     values = widget._haemolynx_values()
     for name, expected in DISPLAY_SETTINGS_OFF_IN_NAPARI.items():
         assert values[name] == expected, f"{name} should start {expected}"
+    assert values["show_plots_in_ide"] is False
+    assert values["interactive_plots"] is False
 
 
 def test_the_input_path_starts_empty(panel):

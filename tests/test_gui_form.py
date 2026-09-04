@@ -156,6 +156,13 @@ def test_a_label_with_no_unit_gains_no_brackets():
     assert label_for("do_skeletonize", "") == "Do skeletonize"
 
 
+def test_ide_plot_rows_use_explicit_labels():
+    assert label_for("visualize_results") == "Produce IDE plots"
+    assert label_for("show_plots_in_ide") == "Show plots in IDE"
+    assert label_for("ide_plot_mode") == "IDE plot mode"
+    assert label_for("hold_ide_plots_open") == "Hold IDE plots open"
+
+
 def test_the_row_for_a_setting_with_a_unit_is_labelled_with_it():
     field = field_for(Setting("length", "float", 1.0, "How long", "S", unit="um"))
     assert field.label == "Length (um)"
@@ -427,6 +434,41 @@ def test_centreline_smoothing_children_hide_when_smooth_centrelines_is_off():
         "smooth_centrelines",
         *children,
     }
+
+
+def test_ide_plot_children_hide_until_produce_and_show_are_ticked():
+    """Export nests Show / mode / hold under Produce IDE plots."""
+    assert "visualize_results" in HIDE_WHEN_UNMET_PARENTS
+    assert "show_plots_in_ide" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    produce = fields["visualize_results"]
+    assert produce.label == "Produce IDE plots"
+    assert not produce.hide_when_unmet
+    assert produce.is_visible({})
+
+    off = {"visualize_results": False, "show_plots_in_ide": False}
+    produce_on = {"visualize_results": True, "show_plots_in_ide": False}
+    both = {"visualize_results": True, "show_plots_in_ide": True}
+
+    under_produce = ("interactive_plots", "show_plots_in_ide", "final_render_mode")
+    for name in under_produce:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert not child.is_visible(off), name
+        assert child.is_visible(produce_on), name
+
+    assert fields["show_plots_in_ide"].label == "Show plots in IDE"
+    for name, label in (
+        ("ide_plot_mode", "IDE plot mode"),
+        ("hold_ide_plots_open", "Hold IDE plots open"),
+    ):
+        child = fields[name]
+        assert child.label == label
+        assert child.hide_when_unmet, name
+        assert not child.is_visible(off), name
+        assert not child.is_visible(produce_on), name
+        assert child.is_visible(both), name
 
 
 def test_thick_vessel_children_hide_when_the_toggle_is_off():

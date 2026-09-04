@@ -452,13 +452,58 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
 def _want_midrun_plotly_html(settings: dict) -> bool:
     """Whether a stage should write Plotly HTML as it runs, not only at export.
 
-    Napari turns `show_plots_in_ide` and `interactive_plots` off so a run
-    does not open a browser. Those flags also skip mid-run HTML dumps:
-    `visualize_3d_plotly_vessel_types` copies every centreline voxel into
-    Scatter3d and can stall Diameters for tens of minutes even when FWHM is
-    off. The viewer already shows the network.
+    Follows ``visualize_results`` (Produce IDE plots). Napari starts that off
+    so a run does not dump ``final_graph_3d.html`` or copy every centreline
+    voxel into Scatter3d. The viewer already shows the network.
     """
-    return bool(settings["show_plots_in_ide"] or settings["interactive_plots"])
+    return bool(settings["visualize_results"])
+
+
+def _write_run_final_graph_3d_html(
+    settings: dict,
+    graph: nx.Graph,
+    *,
+    large_arteriole_mask: np.ndarray | None,
+    large_venule_mask: np.ndarray | None,
+    small_arteriole_mask: np.ndarray | None,
+    small_venule_mask: np.ndarray | None,
+    voxel_size_zyx: tuple[float, float, float],
+    title: str = "Final Graph (Interactive 3D)",
+    show: bool | None = None,
+) -> None:
+    """Write ``final_graph_3d.html`` from already-loaded run masks.
+
+    Uses the full mask arrays on the network, not a Z-projected viewer copy.
+    """
+    plot_dir = Path(settings["plot_dir"])
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    show_plots = (
+        bool(settings["show_plots_in_ide"] or settings["interactive_plots"])
+        if show is None
+        else bool(show)
+    )
+    visualization.write_final_graph_3d_html(
+        graph,
+        save_html_path=plot_dir / "final_graph_3d.html",
+        title=title,
+        use_large_vessel_masks=bool(settings.get("use_large_vessel_masks")),
+        use_small_vessel_masks=bool(
+            settings.get("use_small_vessel_masks_for_boundary_assignment")
+        ),
+        large_arteriole_mask=large_arteriole_mask,
+        large_venule_mask=large_venule_mask,
+        small_arteriole_mask=small_arteriole_mask,
+        small_venule_mask=small_venule_mask,
+        input_nodes=list(settings.get("inlet_nodes") or []),
+        output_nodes=list(settings.get("outlet_nodes") or []),
+        arteriole_boundary_nodes=list(settings.get("arteriole_boundary_nodes") or []),
+        venule_boundary_nodes=list(settings.get("venule_boundary_nodes") or []),
+        voxel_size_zyx=voxel_size_zyx,
+        volume_downsample_stride=int(
+            settings.get("large_vessel_3d_volume_downsample_stride", 1)
+        ),
+        show=show_plots,
+    )
 
 
 def build_network(
@@ -600,23 +645,27 @@ def build_network(
         )
     
     # Visualize final graph used for boundary-node verification.
-    if settings["final_render_mode"] == "3d":
-        final_graph_3d_path = settings["plot_dir"] / "final_graph_3d.html"
-        visualization.visualize_3d_plotly(
-            G,
-            title="Final Graph (Interactive 3D)",
-            save_html_path=str(final_graph_3d_path),
-            show=settings["show_plots_in_ide"] or settings["interactive_plots"],
-        )
-        logger.info(f"Saved interactive 3D final graph to: {final_graph_3d_path}")
-    else:
-        visualization.visualize_edges_and_nodes(
-            image,
-            G,
-            label_nodes=False,
-            save_path=settings["plot_dir"] / "final_graph.png",
-            show_coordinates_degree_1=True,
-        )
+    if settings["visualize_results"]:
+        if settings["final_render_mode"] == "3d":
+            final_graph_3d_path = settings["plot_dir"] / "final_graph_3d.html"
+            _write_run_final_graph_3d_html(
+                settings,
+                G,
+                large_arteriole_mask=large_arteriole_mask,
+                large_venule_mask=large_venule_mask,
+                small_arteriole_mask=small_arteriole_mask,
+                small_venule_mask=small_venule_mask,
+                voxel_size_zyx=voxel_size_zyx,
+            )
+            logger.info(f"Saved interactive 3D final graph to: {final_graph_3d_path}")
+        else:
+            visualization.visualize_edges_and_nodes(
+                image,
+                G,
+                label_nodes=False,
+                save_path=settings["plot_dir"] / "final_graph.png",
+                show_coordinates_degree_1=True,
+            )
 
 
     return VesselNetwork(
@@ -1250,7 +1299,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     "outlet nodes, no valid boundary nodes remained."
                 )
 
-    if settings["automated_vessel_assignment"]:
+    if settings["automated_vessel_assignment"] and settings["visualize_results"]:
         if large_arteriole_mask is None or large_venule_mask is None:
             raise ValueError(
                 "automated_vessel_assignment=True requires large arteriole/venule masks "
@@ -1268,7 +1317,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             Path(settings["plot_dir"]) / "final_graph_large_vessel_assignment_3d.html"
         )
         Path(settings["plot_dir"]).mkdir(parents=True, exist_ok=True)
-        visualization.visualize_3d_plotly_large_vessel_assignment(
+        assignment_fig = visualization.visualize_3d_plotly_large_vessel_assignment(
             G,
             large_arteriole_mask=large_arteriole_mask,
             large_venule_mask=large_venule_mask,
@@ -1290,6 +1339,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             "Saved final automated large-vessel assignment 3D visualization to: "
             f"{final_assignment_html_path}"
         )
+        if (
+            assignment_fig is not None
+            and settings["final_render_mode"] == "3d"
+            and hasattr(assignment_fig, "write_html")
+        ):
+            final_graph_3d_path = Path(settings["plot_dir"]) / "final_graph_3d.html"
+            assignment_fig.write_html(str(final_graph_3d_path), include_plotlyjs="cdn")
+            logger.info(f"Saved interactive 3D final graph to: {final_graph_3d_path}")
 
     if settings["inlet_nodes"] and settings["outlet_nodes"]:
         resistance_node_pair = (settings["inlet_nodes"][0], settings["outlet_nodes"][0])
@@ -2284,6 +2341,18 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             )
             if overlay_3d_path is not None:
                 logger.info(f"Saved interactive 3D overlay to: {overlay_3d_path}")
+            final_graph_3d_path = Path(settings["plot_dir"]) / "final_graph_3d.html"
+            _write_run_final_graph_3d_html(
+                settings,
+                G,
+                large_arteriole_mask=network.large_arteriole_mask,
+                large_venule_mask=network.large_venule_mask,
+                small_arteriole_mask=network.small_arteriole_mask,
+                small_venule_mask=network.small_venule_mask,
+                voxel_size_zyx=voxel_size_zyx,
+                show=False,
+            )
+            logger.info(f"Saved interactive 3D final graph to: {final_graph_3d_path}")
         else:
             visualization.visualize_edges_and_nodes(
                 image,

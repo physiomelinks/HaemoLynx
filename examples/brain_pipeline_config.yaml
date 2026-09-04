@@ -247,7 +247,7 @@ solver_and_output:
   inlet_p_bc: 4500.0
   # Apply this pressure boundary condition at the outlet nodes  [Pa; range 0.0..]
   outlet_p_bc: 1000.0
-  # Generate the matplotlib visualizations at the end of the run
+  # Write IDE plot files (matplotlib PNG and Plotly HTML, including final_graph_3d.html). Off skips all of that production
   visualize_results: true
   # Show plots interactively instead of saving them to the plot directory  [needs visualize_results]
   interactive_plots: false

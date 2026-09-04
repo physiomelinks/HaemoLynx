@@ -1318,7 +1318,10 @@ SCHEMA = Schema(
             name="visualize_results",
             kind="bool",
             default=True,
-            help="Generate the matplotlib visualizations at the end of the run",
+            help=(
+                "Write IDE plot files (matplotlib PNG and Plotly HTML, including "
+                "final_graph_3d.html). Off skips all of that production"
+            ),
             section=_SOLVER_AND_OUTPUT,
         ),
         Setting(
@@ -1332,7 +1335,7 @@ SCHEMA = Schema(
         Setting(
             name="show_plots_in_ide",
             kind="bool",
-            default=True,
+            default=False,
             help="Open saved plots in IDE windows while the run proceeds",
             section=_SOLVER_AND_OUTPUT,
             requires=("visualize_results",),

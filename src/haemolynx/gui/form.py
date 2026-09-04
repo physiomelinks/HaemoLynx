@@ -66,9 +66,14 @@ SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
 
 #: Parents whose children hide when unmet even outside
 #: :data:`HIDE_WHEN_UNMET_SECTIONS` (Graph centreline knobs live under
-#: ``Pipeline stages``, which still greys other gated rows).
+#: ``Pipeline stages``; Export IDE-plot knobs live under ``Solver and output``).
 HIDE_WHEN_UNMET_PARENTS = frozenset(
-    {"smooth_centrelines", "use_thick_vessel_skeletonisation"}
+    {
+        "smooth_centrelines",
+        "use_thick_vessel_skeletonisation",
+        "visualize_results",
+        "show_plots_in_ide",
+    }
 )
 
 
@@ -147,9 +152,9 @@ class Field:
 
         Input, Diameters/FWHM, Vessel-mask, and Statistics options nest under
         parent toggles; showing every greyed child makes those tabs unreadable.
-        Shared ilastik knobs, centreline children, and thick-vessel children
-        also hide (hosted or parent-gated). Other sections still grey so the
-        reason stays visible.
+        Shared ilastik knobs, centreline children, thick-vessel children, and
+        Export IDE-plot children also hide (hosted or parent-gated). Other
+        sections still grey so the reason stays visible.
         """
         if self.name in SHARED_ILASTIK_SETTING_SET:
             return True
@@ -283,6 +288,15 @@ def visible_statistics_settings(
     )
 
 
+#: Export-tab IDE plot rows: schema keys stay snake_case for YAML.
+SETTING_ROW_LABELS: dict[str, str] = {
+    "visualize_results": "Produce IDE plots",
+    "show_plots_in_ide": "Show plots in IDE",
+    "ide_plot_mode": "IDE plot mode",
+    "hold_ide_plots_open": "Hold IDE plots open",
+}
+
+
 def label_for(name: str, unit: str | None = None) -> str:
     """`skeleton_closing_radius` -> `Skeleton closing radius (voxels)`.
 
@@ -293,8 +307,9 @@ def label_for(name: str, unit: str | None = None) -> str:
 
     Spelled exactly as the schema spells it, so the row and the config file
     agree -- a GUI that says "µm" where the file says "um" reads as two units.
+    IDE plot rows use :data:`SETTING_ROW_LABELS` so "IDE" stays capitalized.
     """
-    label = name.replace("_", " ").capitalize()
+    label = SETTING_ROW_LABELS.get(name) or name.replace("_", " ").capitalize()
     return f"{label} ({unit})" if unit else label
 
 

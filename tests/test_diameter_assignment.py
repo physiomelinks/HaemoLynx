@@ -139,7 +139,7 @@ def _has_resistance(graph: nx.MultiGraph) -> bool:
 def test_assign_diameters_skips_vessel_type_plotly_when_ide_plots_are_off(
     tmp_path, monkeypatch
 ):
-    """Napari turns IDE plots off; Diameters must not dump every voxel to HTML."""
+    """Produce IDE plots off; Diameters must not dump every voxel to HTML."""
 
     def boom(*_args, **_kwargs):
         raise AssertionError("vessel-type Plotly HTML must not run with IDE plots off")
@@ -149,7 +149,7 @@ def test_assign_diameters_skips_vessel_type_plotly_when_ide_plots_are_off(
         boom,
     )
     assign_diameters(
-        _settings(tmp_path, show_plots_in_ide=False, interactive_plots=False),
+        _settings(tmp_path, visualize_results=False),
         _vessel_network(tmp_path),
         _boundaries(),
         SCHEMA,
@@ -169,7 +169,7 @@ def test_assign_diameters_writes_vessel_type_plotly_when_ide_plots_are_on(
         fake_plotly,
     )
     assign_diameters(
-        _settings(tmp_path, show_plots_in_ide=True, interactive_plots=False),
+        _settings(tmp_path, visualize_results=True),
         _vessel_network(tmp_path),
         _boundaries(),
         SCHEMA,

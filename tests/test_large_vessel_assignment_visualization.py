@@ -469,6 +469,51 @@ def test_export_results_rewrites_final_graph_html_with_network_masks(
     assert captured["save_html_path"] == tmp_path / "final_graph_3d.html"
 
 
+def test_export_skips_final_graph_html_when_produce_ide_plots_is_off(
+    monkeypatch, tmp_path
+):
+    def boom(*_args, **_kwargs):
+        raise AssertionError(
+            "final_graph_3d.html must not be written when Produce IDE plots is off"
+        )
+
+    monkeypatch.setattr(
+        "haemolynx.pipeline.stages.visualization.write_final_graph_3d_html",
+        boom,
+    )
+    G = _tiny_graph()
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+    volume = SimpleNamespace(
+        image=np.zeros((8, 6, 6), dtype=np.uint8),
+        output_dir=tmp_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+    network = VesselNetwork(
+        graph=G,
+        volume=volume,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+    )
+    export_results(
+        {
+            "statistics": False,
+            "measurement_3d_to_cell_mask": False,
+            "run_haemodynamics": False,
+            "vtk_export": False,
+            "visualize_vtk": False,
+            "visualize_results": False,
+            "plot_dir": tmp_path,
+            "input_path": Path("stack.tif"),
+        },
+        network,
+        HaemodynamicModel(graph=G),
+        Solution(graph=G),
+    )
+
+
 def test_build_network_and_export_write_final_graph_html_via_shared_helper():
     import inspect
 
