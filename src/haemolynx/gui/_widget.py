@@ -626,6 +626,72 @@ def _store_z_filter_cache(
     layer.metadata = metadata
 
 
+def _set_z_filtered_layer_data(
+    viewer,
+    layer,
+    kind: str,
+    data: Any,
+    features: Mapping[str, np.ndarray],
+    segment_owner: Any,
+):
+    """Write filtered geometry; recreate when shrinking avoids stale Vectors draw.
+
+    Returns the layer the data ended up on (a new one when recreated).
+    """
+    old_count = len(np.asarray(getattr(layer, "data", ())))
+    new_count = len(np.asarray(data))
+    adder = getattr(viewer, f"add_{kind}", None)
+    if kind in {"vectors", "points"} and new_count < old_count and adder is not None:
+        name = layer.name
+        visible = layer.visible
+        scale = getattr(layer, "scale", None)
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        if segment_owner is not None:
+            ours = dict(metadata.get(OURS) or {})
+            ours["segment_owner"] = np.asarray(segment_owner)
+            metadata[OURS] = ours
+        add_kwargs: dict[str, Any] = {
+            "name": name,
+            "visible": visible,
+            "metadata": metadata,
+        }
+        if scale is not None:
+            add_kwargs["scale"] = scale
+        if features:
+            add_kwargs["features"] = dict(features)
+        if kind == "vectors":
+            for key in ("vector_style", "edge_width", "length", "out_of_slice_display"):
+                if hasattr(layer, key):
+                    add_kwargs[key] = getattr(layer, key)
+            colour_attr, colour = "edge_color", getattr(layer, "edge_color", None)
+        else:
+            for key in ("size", "shown", "symbol"):
+                if hasattr(layer, key):
+                    add_kwargs[key] = _uniform_points_property(
+                        getattr(layer, key), new_count
+                    )
+            if hasattr(layer, "out_of_slice_display"):
+                add_kwargs["out_of_slice_display"] = layer.out_of_slice_display
+            colour_attr, colour = "face_color", getattr(layer, "face_color", None)
+        viewer.layers.remove(layer)
+        new_layer = adder(data, **add_kwargs)
+        if colour is not None:
+            setattr(new_layer, colour_attr, colour)
+        return new_layer
+    layer.data = data
+    if features:
+        layer.features = features
+    if kind == "points":
+        _sync_points_per_point_properties(layer, new_count)
+    if segment_owner is not None:
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        ours = dict(metadata.get(OURS) or {})
+        ours["segment_owner"] = np.asarray(segment_owner)
+        metadata[OURS] = ours
+        layer.metadata = metadata
+    return layer
+
+
 def _apply_z_filter(
     viewer,
     z_min: float,
@@ -635,7 +701,10 @@ def _apply_z_filter(
 ) -> None:
     """Redraw graph Vectors/Points layers filtered to a physical Z band."""
     full_range = z_window_is_full(z_min, z_max, z_extent)
-    for layer in viewer.layers:
+    # A snapshot, not the live list: recreating a layer on shrink removes it
+    # and appends the replacement, which reindexes viewer.layers mid-loop and
+    # silently skips whichever layer landed on the vacated index.
+    for layer in list(viewer.layers):
         if not _is_ours(layer):
             continue
         kind = layer.__class__.__name__.lower()
@@ -666,17 +735,9 @@ def _apply_z_filter(
                 cache["data"], cache["features"], z_min, z_max
             )
             segment_owner = cache.get("segment_owner")
-        layer.data = data
-        if features:
-            layer.features = features
-        if kind == "points":
-            _sync_points_per_point_properties(layer, len(np.asarray(data)))
-        if segment_owner is not None:
-            metadata = dict(getattr(layer, "metadata", {}) or {})
-            ours = dict(metadata.get(OURS) or {})
-            ours["segment_owner"] = np.asarray(segment_owner)
-            metadata[OURS] = ours
-            layer.metadata = metadata
+        layer = _set_z_filtered_layer_data(
+            viewer, layer, kind, data, features, segment_owner
+        )
         column = _active_column(layer)
         if column == FLOW_DIR_RGB_COLUMN:
             _colour_layer(layer, column, "direct")
@@ -1776,7 +1837,6 @@ def _add_or_update(viewer, spec) -> None:
     }
     if spec.kind == "image" and spec.contrast_limits is not None:
         add_kwargs.setdefault("contrast_limits", spec.contrast_limits)
-    add_kwargs["visible"] = saved_visible if spec.visible else False
     layer = adder(spec.data, **add_kwargs)
     _keep_layer_interaction(layer, spec, visible=saved_visible, mode=saved_mode)
     _colour_layer(layer, spec.colour_by, spec.colour_kind,

@@ -181,7 +181,16 @@ def is_z_project_volume_layer(kind: str) -> bool:
 
 
 def z_window_is_full(z_min: float, z_max: float, z_extent: float | None) -> bool:
-    """Whether ``[z_min, z_max]`` covers the stack's physical Z extent."""
+    """Whether ``[z_min, z_max]`` covers the full Z extent, or is degenerate.
+
+    A window narrower than 1e-6 (both handles on the same value, e.g. before
+    the user has moved the slider, or a collapsed programmatic ``setValue``)
+    is treated the same as "full": there is nothing meaningful to filter to,
+    so callers fall back to showing everything rather than clipping to an
+    effectively empty band.
+    """
+    if z_max <= z_min + 1e-6:
+        return True
     if z_extent is None:
         return False
     return (
@@ -810,14 +819,20 @@ def _flow_heading_contrast_limits(values: np.ndarray) -> tuple[float, float]:
     return (0.0, 360.0)
 
 
-def _copy_remembered_graph(graph: Any) -> Any | None:
-    """A pickle round-trip copy, or None when the graph will not pickle."""
+def copy_graph(graph: Any) -> Any | None:
+    """A pickle round-trip copy, or None when the graph will not pickle.
+
+    The one place this happens -- checkpoints (stage_checkpoints.py) and run
+    snapshots (run_snapshot.py) both import this rather than keeping their
+    own copy, so a future change to how a graph is safely duplicated only
+    has to land once.
+    """
     if graph is None:
         return None
     try:
         return pickle.loads(pickle.dumps(graph))
     except Exception:  # noqa: BLE001 - a loaded run can still show stored layers
-        logger.exception("could not pickle graph for a run snapshot")
+        logger.exception("could not pickle graph copy")
         return None
 
 
@@ -880,11 +895,11 @@ class ResultLayers:
 
     def export_state(self) -> dict[str, Any]:
         """Pickle-safe copy of the memory a loaded run needs to look finished."""
-        graph = _copy_remembered_graph(self._graph)
+        graph = copy_graph(self._graph)
         if self._canonical_graph is self._graph:
             canonical = graph
         else:
-            canonical = _copy_remembered_graph(self._canonical_graph)
+            canonical = copy_graph(self._canonical_graph)
         return {
             "graph": graph,
             "canonical_graph": canonical,
@@ -901,12 +916,12 @@ class ResultLayers:
         if not state:
             self.reset()
             return
-        graph = _copy_remembered_graph(state.get("graph"))
+        graph = copy_graph(state.get("graph"))
         canonical = state.get("canonical_graph")
         if canonical is state.get("graph"):
             canonical = graph
         else:
-            canonical = _copy_remembered_graph(canonical)
+            canonical = copy_graph(canonical)
         self._graph = graph
         self._canonical_graph = canonical
         voxel = state.get("voxel_size_zyx") or (1.0, 1.0, 1.0)

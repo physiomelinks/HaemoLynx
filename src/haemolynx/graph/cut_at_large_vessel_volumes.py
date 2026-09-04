@@ -20,7 +20,6 @@ import numpy as np
 from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
 from ._helpers import calculate_path_length, orient_path_from_startpoint
-from .automated_vessel_assignment import _position_to_mask_index
 
 logger = logging.getLogger(__name__)
 
@@ -70,21 +69,38 @@ def _combined_large_vessel_mask(
     return arteriole | venule
 
 
-def _point_inside_mask(
-    point_zyx: np.ndarray,
+def _points_inside_mask(
+    points_zyx: np.ndarray,
     mask: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float],
-) -> bool:
-    """True when the physical point falls in a True (interior) mask voxel."""
-    idx = _position_to_mask_index(
-        np.asarray(point_zyx, dtype=float),
-        voxel_size_zyx=voxel_size_zyx,
-        mask_shape=mask.shape,
-    )
-    if idx is None:
-        return False
-    return bool(mask[idx])
+) -> np.ndarray:
+    """True per point where the physical point falls in a True (interior) mask voxel.
+
+    Vectorized over all of an edge's (densified) sample points at once --
+    the densified polyline can have hundreds of points per edge, and this
+    runs for every edge in the graph on every pipeline run that reaches
+    this stage.
+    """
+    points = np.asarray(points_zyx, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"points_zyx must be (N, 3), got shape {points.shape}.")
+    n = points.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    voxel_size = np.asarray(voxel_size_zyx, dtype=float)
+    if voxel_size.shape != (3,) or np.any(voxel_size <= 0):
+        raise ValueError(
+            f"voxel_size_zyx must be three positive values, got {voxel_size_zyx}."
+        )
+    idx = np.rint(points / voxel_size).astype(int)
+    mask_shape = np.asarray(mask.shape, dtype=int)
+    in_bounds = np.all((idx >= 0) & (idx < mask_shape), axis=1)
+    inside = np.zeros(n, dtype=bool)
+    valid = idx[in_bounds]
+    if valid.size:
+        inside[in_bounds] = mask[valid[:, 0], valid[:, 1], valid[:, 2]]
+    return inside
 
 
 def _edge_sample_points(
@@ -270,10 +286,9 @@ def cut_graph_at_large_vessel_volumes(
         points = _edge_sample_points(u, v, edge_data, node_pos)
         sample_step = min(float(spacing) for spacing in voxel_size_zyx)
         points = _densify_polyline(points, max_step_um=sample_step)
-        inside_flags = [
-            _point_inside_mask(point, mask, voxel_size_zyx=voxel_size_zyx)
-            for point in points
-        ]
+        inside_flags = _points_inside_mask(
+            points, mask, voxel_size_zyx=voxel_size_zyx
+        ).tolist()
 
         if all(inside_flags):
             edges_dropped_interior += 1

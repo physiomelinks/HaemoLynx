@@ -36,7 +36,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from haemolynx.gui.results import BOUNDARY_NODES, SKELETON
+from haemolynx.gui.results import BOUNDARY_NODES, MASK_LAYERS, SKELETON, copy_graph
 from haemolynx.gui.tabs import tab_title, tab_titles
 from haemolynx.pipeline.progress import STAGES
 from haemolynx.pipeline.stages import TOPOLOGY_STEP, PipelineResume
@@ -180,6 +180,8 @@ class StageCheckpoint:
     outlet_nodes: tuple[Any, ...] = ()
     arteriole_boundary_nodes: tuple[Any, ...] = ()
     venule_boundary_nodes: tuple[Any, ...] = ()
+    large_arteriole_mask: Any | None = None
+    large_venule_mask: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -362,17 +364,6 @@ def discard_cached_artefacts_for_settings(
     return tuple(removed)
 
 
-def _copy_graph(graph: Any) -> Any | None:
-    """A pickle round-trip copy, matching the pipeline's own save path."""
-    if graph is None:
-        return None
-    try:
-        return pickle.loads(pickle.dumps(graph))
-    except Exception:  # noqa: BLE001 - a graph that will not pickle is still drawable
-        logger.exception("could not pickle graph for a stage checkpoint")
-        return None
-
-
 def _stem_and_output_dir(settings: Mapping[str, Any] | None) -> tuple[str, Path] | None:
     if not settings:
         return None
@@ -406,6 +397,30 @@ def _boundary_ids_from_group(group: Any) -> dict[str, tuple[Any, ...]]:
     return {key: tuple(values) for key, values in roles.items()}
 
 
+def _boundary_masks_from_group(group: Any) -> tuple[Any | None, Any | None]:
+    """The cleaned (overlap-resolved) large-vessel masks, read from a checkpoint's layer specs.
+
+    ``assign_boundaries`` is the only stage that resolves overlap between the
+    arteriole and venule masks before cutting the graph and assigning
+    terminal nodes; the masks land on ``BoundaryNodes`` as
+    ``large_arteriole_mask`` / ``large_venule_mask`` and get turned into
+    image-volume layer specs (see ``vessel_mask_volume_layers``). Reading
+    them back from here -- instead of from a freshly rebuilt
+    ``VesselNetwork``, which only has the raw, never-cleaned masks -- is what
+    lets a resumed run's exported overlay match what the resumed graph
+    actually used.
+    """
+    arteriole = None
+    venule = None
+    for spec in getattr(group, "layers", ()) or ():
+        name = getattr(spec, "name", None)
+        if name == MASK_LAYERS["large_arteriole_mask"]:
+            arteriole = getattr(spec, "data", None)
+        elif name == MASK_LAYERS["large_venule_mask"]:
+            venule = getattr(spec, "data", None)
+    return arteriole, venule
+
+
 def resume_from_checkpoint(checkpoint: StageCheckpoint, start_from: str) -> PipelineResume:
     """Build the pipeline resume payload from a previous-tab checkpoint."""
     pair = None
@@ -419,6 +434,8 @@ def resume_from_checkpoint(checkpoint: StageCheckpoint, start_from: str) -> Pipe
         arteriole_boundary_nodes=checkpoint.arteriole_boundary_nodes,
         venule_boundary_nodes=checkpoint.venule_boundary_nodes,
         resistance_node_pair=pair,
+        large_arteriole_mask=checkpoint.large_arteriole_mask,
+        large_venule_mask=checkpoint.large_venule_mask,
     )
 
 
@@ -471,6 +488,35 @@ class StageCheckpoints:
         self._by_stage = {item.stage: replace(item, pickle_path=None) for item in checkpoints}
         self._recording = True
 
+    def _carried_boundary_roles(self) -> dict[str, tuple[Any, ...]] | None:
+        """Boundary node ids from the most recent checkpoint that recorded them.
+
+        Only ``assign_boundaries`` emits a ``BOUNDARY_NODES`` layer, so every
+        later stage's own group has none. Without this, ``record`` would
+        overwrite the real ids with empty tuples on every subsequent stage.
+        """
+        for checkpoint in reversed(list(self._by_stage.values())):
+            if checkpoint.inlet_nodes or checkpoint.outlet_nodes:
+                return {
+                    "inlet": checkpoint.inlet_nodes,
+                    "outlet": checkpoint.outlet_nodes,
+                    "arteriole_boundary": checkpoint.arteriole_boundary_nodes,
+                    "venule_boundary": checkpoint.venule_boundary_nodes,
+                }
+        return None
+
+    def _carried_boundary_masks(self) -> tuple[Any | None, Any | None] | None:
+        """The cleaned large-vessel masks from the most recent checkpoint that recorded them.
+
+        Only ``assign_boundaries`` emits the mask image layers, so every
+        later stage's own group has none -- same reasoning as
+        :meth:`_carried_boundary_roles`.
+        """
+        for checkpoint in reversed(list(self._by_stage.values())):
+            if checkpoint.large_arteriole_mask is not None or checkpoint.large_venule_mask is not None:
+                return checkpoint.large_arteriole_mask, checkpoint.large_venule_mask
+        return None
+
     def record(
         self,
         stage: str,
@@ -490,7 +536,7 @@ class StageCheckpoints:
         if not stage or stage.startswith(TOPOLOGY_STEP):
             return None
 
-        graph = _copy_graph(getattr(results, "_graph", None))
+        graph = copy_graph(getattr(results, "_graph", None))
         pickle_path: Path | None = None
         located = _stem_and_output_dir(settings)
         if graph is not None and located is not None:
@@ -507,6 +553,15 @@ class StageCheckpoints:
                 pickle_path = None
 
         roles = _boundary_ids_from_group(group)
+        if not any(roles.values()):
+            carried = self._carried_boundary_roles()
+            if carried is not None:
+                roles = carried
+        large_arteriole_mask, large_venule_mask = _boundary_masks_from_group(group)
+        if large_arteriole_mask is None and large_venule_mask is None:
+            carried_masks = self._carried_boundary_masks()
+            if carried_masks is not None:
+                large_arteriole_mask, large_venule_mask = carried_masks
         checkpoint = StageCheckpoint(
             stage=stage,
             title=getattr(group, "title", stage),
@@ -522,13 +577,15 @@ class StageCheckpoints:
             outlet_nodes=roles.get("outlet", ()),
             arteriole_boundary_nodes=roles.get("arteriole_boundary", ()),
             venule_boundary_nodes=roles.get("venule_boundary", ()),
+            large_arteriole_mask=large_arteriole_mask,
+            large_venule_mask=large_venule_mask,
         )
         self._by_stage[stage] = checkpoint
         return checkpoint
 
     def apply_to_results(self, results: Any, checkpoint: StageCheckpoint) -> None:
         """Put *results* back to how it was at *checkpoint*."""
-        results._graph = _copy_graph(checkpoint.graph)
+        results._graph = copy_graph(checkpoint.graph)
         results._voxel_size_zyx = checkpoint.voxel_size_zyx
         results._geometry_shown = checkpoint.geometry_shown
         results._emitted = list(checkpoint.emitted)

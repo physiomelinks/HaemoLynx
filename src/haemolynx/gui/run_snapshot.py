@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from haemolynx.gui.results import ResultLayers
+from haemolynx.gui.results import ResultLayers, copy_graph
 from haemolynx.gui.stage_checkpoints import (
     GRAPH_RESUME_STAGES,
     StageCheckpoint,
@@ -117,7 +117,7 @@ def capture_run(
     if not can_capture(checkpoints):
         raise RunSnapshotError(NOTHING_TO_SAVE)
     records = tuple(
-        replace(item, pickle_path=None, graph=_copy(item.graph))
+        replace(item, pickle_path=None, graph=copy_graph(item.graph))
         for item in checkpoints.records()
     )
     results_state = results.export_state() if results is not None else None
@@ -267,11 +267,3 @@ def write_resume_artefacts(
         logger.exception("could not write resumed graph %s", graph_path)
 
 
-def _copy(graph: Any) -> Any | None:
-    if graph is None:
-        return None
-    try:
-        return pickle.loads(pickle.dumps(graph))
-    except Exception:  # noqa: BLE001
-        logger.exception("could not copy a checkpoint graph into a run snapshot")
-        return None

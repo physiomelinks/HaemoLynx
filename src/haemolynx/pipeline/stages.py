@@ -251,6 +251,11 @@ class PipelineResume:
     arteriole_boundary_nodes: tuple[Any, ...] = ()
     venule_boundary_nodes: tuple[Any, ...] = ()
     resistance_node_pair: tuple[Any, Any] | None = None
+    #: The cleaned (overlap-resolved) large-vessel masks assign_boundaries
+    #: produced, when resuming past it. None falls back to whatever raw masks
+    #: this run's own build_network loaded -- see _boundaries_from_resume.
+    large_arteriole_mask: Any | None = None
+    large_venule_mask: Any | None = None
 
 
 def segment(settings: dict):
@@ -2482,6 +2487,22 @@ def _boundaries_from_resume(
     pair = resume.resistance_node_pair
     if pair is None and resume.inlet_nodes and resume.outlet_nodes:
         pair = (resume.inlet_nodes[0], resume.outlet_nodes[0])
+    # network.large_arteriole_mask/large_venule_mask are the raw masks this
+    # run's own build_network just loaded -- never overlap-cleaned, since
+    # assign_boundaries's body (the only stage that cleans them) is skipped
+    # on this path. Prefer the cleaned masks the resume payload carried from
+    # the original run so the exported overlay matches what actually
+    # determined the resumed graph's cut and terminal-node assignment.
+    large_arteriole_mask = (
+        resume.large_arteriole_mask
+        if resume.large_arteriole_mask is not None
+        else network.large_arteriole_mask
+    )
+    large_venule_mask = (
+        resume.large_venule_mask
+        if resume.large_venule_mask is not None
+        else network.large_venule_mask
+    )
     return BoundaryNodes(
         inlet_nodes=list(resume.inlet_nodes),
         outlet_nodes=list(resume.outlet_nodes),
@@ -2489,8 +2510,8 @@ def _boundaries_from_resume(
         venule_boundary_nodes=list(resume.venule_boundary_nodes),
         resistance_node_pair=pair,
         graph=graph,
-        large_arteriole_mask=network.large_arteriole_mask,
-        large_venule_mask=network.large_venule_mask,
+        large_arteriole_mask=large_arteriole_mask,
+        large_venule_mask=large_venule_mask,
     )
 
 

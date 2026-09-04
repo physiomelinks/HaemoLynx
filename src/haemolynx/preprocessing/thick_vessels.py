@@ -588,7 +588,8 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
     tree_coords = np.argwhere(result)
     tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
 
-    for _ in range(12):
+    max_arms = 12
+    for _ in range(max_arms):
         candidates = high & ~covered
         if not candidates.any():
             break
@@ -617,6 +618,19 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
         covered |= _cover_around_path(branch, cover_r, component.shape)
         tree_coords = np.argwhere(result)
         tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
+    else:
+        # Loop ran out of iterations without a break, i.e. without ever
+        # deciding "no arms left" or "what's left is the sheet, not an arm" --
+        # real candidate arms may still remain, silently dropped from the tree.
+        remaining = high & ~covered
+        if remaining.any():
+            logger.warning(
+                "Fat-vessel centreline hit the %d-arm cap with %d high-EDT "
+                "voxels still uncovered; some arms may be missing from the "
+                "reconstructed centreline.",
+                max_arms,
+                int(remaining.sum()),
+            )
     return result
 
 
