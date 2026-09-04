@@ -147,3 +147,42 @@ def test_mesh_size_is_linear_in_segments_and_sides():
     # Far cheaper than triangulating Shapes paths: a few hundred faces per
     # segment, not a vispy path mesh per vessel.
     assert len(faces) < n_seg * 20
+
+
+@pytest.mark.slow
+def test_large_network_mesh_is_vectorized_and_fast():
+    """A whole-network-scale rebuild must stay fast enough not to freeze the GUI.
+
+    Toggling the Tubes/Lines radio, or moving the Z-depth slider while tubes
+    are on, rebuilds the whole mesh synchronously on the Qt main thread (see
+    ``_sync_vessel_tubes`` / ``apply_view_z`` in ``gui/_widget.py``). A
+    per-segment Python loop here used to take ~11s at 100k segments -- long
+    enough to read as a freeze or an unresponsive-app crash. Bound generously
+    below the old loop's cost so a regression to scalar Python is caught
+    without making CI flaky on a slow runner.
+    """
+    import time
+
+    rng = np.random.default_rng(1)
+    n_seg = 50_000
+    sides = 6
+    origins = rng.random((n_seg, 3)) * 1000.0
+    directions = rng.normal(size=(n_seg, 3))
+    vectors = np.stack([origins, directions], axis=1)
+
+    start = time.perf_counter()
+    vertices, faces, index = tubes_from_vectors(vectors, sides=sides)
+    elapsed = time.perf_counter() - start
+
+    assert len(vertices) == n_seg * sides * 2
+    assert len(faces) == n_seg * sides * 2
+    assert np.all(np.isfinite(vertices))
+    assert np.all(faces >= 0) and np.all(faces < len(vertices))
+    assert elapsed < 5.0, f"tubes_from_vectors took {elapsed:.2f}s for {n_seg} segments"
+
+    # Every vertex sits exactly `radius` from its segment's centreline --
+    # the invariant the scalar version also had to satisfy.
+    for src in rng.choice(n_seg, size=20, replace=False):
+        owned = vertices[index == src]
+        distances = _radial_distances(vectors[src, 0], vectors[src, 1], owned)
+        np.testing.assert_allclose(distances, TUBE_RADIUS_UM, atol=1e-8)

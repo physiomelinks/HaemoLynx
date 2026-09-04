@@ -486,6 +486,17 @@ def _set_tube_mesh(layer, vertices, faces, colours) -> None:
             layer.data = (vertices, faces)
             layer.vertex_colors = colours
     else:
+        # No refresh-block guard on this napari build: the two assignments
+        # below can each trigger a vispy redraw before the other lands, and a
+        # mismatched vertex/vertex_colors length raises "incorrect number of
+        # colors" from that redraw -- outside this function's call stack, so
+        # nothing here can catch it. Surface the gap instead of risking a
+        # silent, hard-to-reproduce crash from an unguarded build.
+        logger.warning(
+            "Surface layer %r has no _block_refresh; tube mesh updates are "
+            "not atomic on this napari build and may crash on resize.",
+            getattr(layer, "name", layer),
+        )
         layer.data = (vertices, faces)
         layer.vertex_colors = colours
     if getattr(layer, "visible", False):

@@ -50,24 +50,25 @@ def vessel_tubes_layer_name(vessels_name: str) -> str:
     return f"{name} tubes"
 
 
-def _normal_plane_frame(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Orthonormal (normal, binormal) in the plane perpendicular to *direction*.
+def _normal_plane_frames(tangents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Orthonormal (normal, binormal) per row, perpendicular to each tangent.
 
-    Axis-aligned X/Y/Z would make a single cross product vanish, so the
-    reference axis is swapped when it is nearly parallel to the tangent.
+    Vectorized form of the single-segment case: axis-aligned X/Y/Z would make
+    a single cross product vanish, so the reference axis is swapped (per row)
+    when it is nearly parallel to that row's tangent. The two checks are
+    sequential -- the second re-tests against the reference the first check
+    may have just swapped to -- so it is two vectorized passes, not one.
     """
-    tangent = np.asarray(direction, dtype=float)
-    length = float(np.linalg.norm(tangent))
-    tangent = tangent / length
-    ref = np.array([0.0, 0.0, 1.0])
-    if abs(float(np.dot(tangent, ref))) > 0.9:
-        ref = np.array([1.0, 0.0, 0.0])
-        if abs(float(np.dot(tangent, ref))) > 0.9:
-            ref = np.array([0.0, 1.0, 0.0])
-    normal = np.cross(tangent, ref)
-    normal = normal / np.linalg.norm(normal)
-    binormal = np.cross(tangent, normal)
-    binormal = binormal / np.linalg.norm(binormal)
+    n = tangents.shape[0]
+    ref = np.tile(np.array([0.0, 0.0, 1.0]), (n, 1))
+    swap_to_x = np.abs(np.einsum("ij,ij->i", tangents, ref)) > 0.9
+    ref[swap_to_x] = np.array([1.0, 0.0, 0.0])
+    swap_to_y = swap_to_x & (np.abs(np.einsum("ij,ij->i", tangents, ref)) > 0.9)
+    ref[swap_to_y] = np.array([0.0, 1.0, 0.0])
+    normal = np.cross(tangents, ref)
+    normal /= np.linalg.norm(normal, axis=1, keepdims=True)
+    binormal = np.cross(tangents, normal)
+    binormal /= np.linalg.norm(binormal, axis=1, keepdims=True)
     return normal, binormal
 
 
@@ -109,34 +110,41 @@ def tubes_from_vectors(
         return empty
 
     verts_per = sides * 2
-    faces_per = sides * 2
-    vertices = np.empty((n_keep * verts_per, 3), dtype=float)
-    faces = np.empty((n_keep * faces_per, 3), dtype=np.intp)
-    segment_index = np.empty(n_keep * verts_per, dtype=np.intp)
+
+    origin = origins[keep]  # (n_keep, 3)
+    direction = directions[keep]  # (n_keep, 3)
+    tangent = direction / lengths[keep, None]
+    normal, binormal = _normal_plane_frames(tangent)
 
     angles = np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False)
     cos_a = np.cos(angles)
     sin_a = np.sin(angles)
+    # (n_keep, sides, 3): per-segment ring, one cross-section shared by both
+    # the origin-end and direction-end rings of that segment's prism.
+    ring = (
+        cos_a[None, :, None] * normal[:, None, :]
+        + sin_a[None, :, None] * binormal[:, None, :]
+    ) * radius
 
-    face_i = 0
-    for out_seg, src in enumerate(keep):
-        origin = origins[int(src)]
-        direction = directions[int(src)]
-        normal, binormal = _normal_plane_frame(direction)
-        ring = (cos_a[:, None] * normal + sin_a[:, None] * binormal) * radius
-        base = out_seg * verts_per
-        vertices[base : base + sides] = origin + ring
-        vertices[base + sides : base + verts_per] = origin + direction + ring
-        segment_index[base : base + verts_per] = int(src)
-        for k in range(sides):
-            nxt = (k + 1) % sides
-            a = base + k
-            b = base + nxt
-            c = base + sides + k
-            d = base + sides + nxt
-            faces[face_i] = (a, b, d)
-            faces[face_i + 1] = (a, d, c)
-            face_i += 2
+    # verts_per = 2 * sides per segment: ring at the origin, then the ring at
+    # origin + direction -- matches the base/base+sides layout faces indexes
+    # into below, and what segment_index/vertices consumers expect.
+    rings = np.stack([origin[:, None, :] + ring, (origin + direction)[:, None, :] + ring], axis=1)
+    vertices = rings.reshape(n_keep * verts_per, 3)
+    segment_index = np.repeat(keep.astype(np.intp), verts_per)
+
+    base = np.arange(n_keep, dtype=np.intp)[:, None] * verts_per  # (n_keep, 1)
+    k = np.arange(sides, dtype=np.intp)[None, :]  # (1, sides)
+    nxt = (k + 1) % sides
+    a = base + k
+    b = base + nxt
+    c = base + sides + k
+    d = base + sides + nxt
+    # Two triangles per side, in the same (a,b,d) then (a,d,c) order the
+    # original per-segment loop emitted for each k, so faces line up with a
+    # test fixture built against the scalar version.
+    triangles = np.stack([np.stack([a, b, d], axis=-1), np.stack([a, d, c], axis=-1)], axis=2)
+    faces = triangles.reshape(n_keep * sides * 2, 3)
     return vertices, faces, segment_index
 
 
