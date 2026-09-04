@@ -668,11 +668,16 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
             result,
         )
         if len(branch) < min_arm_voxels:
-            # Cover the whole rejected branch's neighbourhood, not just the
-            # one voxel that triggered it: a real network can have many
-            # nearby too-short candidates, and clearing them one voxel per
-            # iteration made a generous arm cap too slow to raise.
-            covered |= _cover_around_path(branch, cover_r, component.shape)
+            # Cover the rejected branch's own neighbourhood so the same
+            # short stub is not re-traced next iteration -- but only a
+            # small fixed margin, not the full cover_r (the TRUNK's own
+            # radius, which can be 10-20+ voxels for a wide vessel). A
+            # too-short stub and a separate, genuinely long-enough arm can
+            # sit within cover_r of each other; covering that whole
+            # neighbourhood pre-emptively removed the real arm's
+            # candidate voxels before they were ever tried, silently
+            # dropping it from the centreline tree.
+            covered |= _cover_around_path(branch, min(2, cover_r), component.shape)
             continue
         if _touches_tree(result, branch[-1]):
             # Tip already on the tree: this geodesic would close a loop.
@@ -768,7 +773,7 @@ def _geodesic_on_crop(
 
     *precomputed_cost* skips the EDT (the expensive part for a large crop)
     when the caller already has one for this exact *crop* -- see
-    :func:`_path_through_mask`'s *fallback_cost*, cached per physically
+    :func:`_path_through_mask`'s *fallback_cost_fn*, cached per physically
     connected structure across every arm in it rather than recomputed once
     per arm.
     """
@@ -996,7 +1001,8 @@ def _join_thin_arms_to_fat_ridge(
         "fat ridge",
         int(arm_ids.size),
     )
-    t_join_start = time.perf_counter()
+    join_step_start = time.perf_counter()
+    last_log_time = join_step_start
     for arm_index, component_id in enumerate(arm_ids, start=1):
         slc = objects[int(component_id) - 1]
         if slc is None:
@@ -1082,15 +1088,17 @@ def _join_thin_arms_to_fat_ridge(
                 [fat_component_labels, allowed_components[tuple(new_coords.T)]]
             )
             fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
-        if arm_index % 200 == 0 or time.perf_counter() - t_join_start > 30.0:
+        if arm_index % 200 == 0 or time.perf_counter() - last_log_time > 30.0:
+            now = time.perf_counter()
             logger.info(
                 "_join_thin_arms_to_fat_ridge: %d/%d arm components processed "
-                "(%.2fs elapsed)",
+                "(%.2fs since last checkpoint, %.2fs total)",
                 arm_index,
                 int(arm_ids.size),
-                time.perf_counter() - t_join_start,
+                now - last_log_time,
+                now - join_step_start,
             )
-            t_join_start = time.perf_counter()
+            last_log_time = now
     return result
 
 
