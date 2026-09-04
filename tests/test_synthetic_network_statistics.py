@@ -117,6 +117,7 @@ def _write_ground_truth_branch_csv(
                 "Expected Edge Count",
                 "Expected Mean Length (microns)",
                 "Expected Mean Tortuosity Index",
+                "Expected Mean Emergence Angle (degrees)",
                 "Notes",
             ]
         )
@@ -128,6 +129,7 @@ def _write_ground_truth_branch_csv(
                     vals["Edge Count"],
                     vals["Mean Length (microns)"],
                     vals["Mean Tortuosity Index"],
+                    vals["Mean Emergence Angle (degrees)"],
                     "Precomputed synthetic ground truth",
                 ]
             )
@@ -350,31 +352,53 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
         "Number of Branching Points": 2,
         "Statistics Mode": "fast",
     }
+    # Parent Art2 arrives at node 2 along +x; both BO1 daughters leave at
+    # (z, y, x) = (±5, 0, 10) relative to that incoming tangent.
+    parent_in = np.array([0.0, 0.0, 10.0])
+    daughter = np.array([5.0, 0.0, 10.0])
+    expected_bo1_angle = float(
+        np.degrees(
+            np.arccos(
+                np.clip(
+                    np.dot(parent_in, daughter)
+                    / (np.linalg.norm(parent_in) * np.linalg.norm(daughter)),
+                    -1.0,
+                    1.0,
+                )
+            )
+        )
+    )
+    na_emergence = "N/A (no unique parent junction)"
     expected_branch_stats = {
         "Art1": {
             "Edge Count": 1,
             "Mean Length (microns)": 12.0,
             "Mean Tortuosity Index": 1.2,
+            "Mean Emergence Angle (degrees)": na_emergence,
         },
         "Art2": {
             "Edge Count": 1,
             "Mean Length (microns)": 15.0,
             "Mean Tortuosity Index": 1.5,
+            "Mean Emergence Angle (degrees)": na_emergence,
         },
         "BO1": {
             "Edge Count": 2,
             "Mean Length (microns)": 15.0,
             "Mean Tortuosity Index": 15.0 / straight_diag,
+            "Mean Emergence Angle (degrees)": expected_bo1_angle,
         },
         "BO2": {
             "Edge Count": 2,
             "Mean Length (microns)": 12.5,
             "Mean Tortuosity Index": 12.5 / straight_diag,
+            "Mean Emergence Angle (degrees)": na_emergence,
         },
         "Ven1": {
             "Edge Count": 1,
             "Mean Length (microns)": 11.0,
             "Mean Tortuosity Index": 1.1,
+            "Mean Emergence Angle (degrees)": na_emergence,
         },
     }
 
@@ -408,6 +432,12 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
         assert float(actual["Mean Tortuosity Index"]) == pytest.approx(
             float(expected["Mean Tortuosity Index"]), rel=1e-12
         )
+        expected_angle = expected["Mean Emergence Angle (degrees)"]
+        actual_angle = actual["Mean Emergence Angle (degrees)"]
+        if isinstance(expected_angle, str):
+            assert actual_angle == expected_angle
+        else:
+            assert float(actual_angle) == pytest.approx(float(expected_angle), rel=1e-12)
 
     html_path = out_dir / f"{image_stem}_branch_labelled_3d.html"
     assert _write_branch_labelled_3d_html(G, html_path)

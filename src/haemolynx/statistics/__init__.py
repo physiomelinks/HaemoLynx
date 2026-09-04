@@ -13,6 +13,7 @@ from .stats import (
     compute_betweenness_and_community_measurements,
     export_statistics_to_csv,
     compute_branch_order_statistics,
+    compute_emergence_angles_by_branch_order,
     export_branch_order_statistics_to_csv,
 )
 
@@ -32,6 +33,7 @@ __all__ = [
     "compute_betweenness_and_community_measurements",
     "export_statistics_to_csv",
     "compute_branch_order_statistics",
+    "compute_emergence_angles_by_branch_order",
     "export_branch_order_statistics_to_csv",
     "run_3d_measurement_to_cell_mask",
 ]

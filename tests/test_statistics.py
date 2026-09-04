@@ -1,4 +1,6 @@
 """Tests for statistics module."""
+import re
+
 import pytest
 import numpy as np
 import networkx as nx
@@ -14,8 +16,22 @@ from haemolynx.statistics import (
     compute_comprehensive_vessel_statistics,
     export_statistics_to_csv,
     compute_branch_order_statistics,
+    compute_emergence_angles_by_branch_order,
     export_branch_order_statistics_to_csv,
 )
+
+
+def _straight_edge(G, u, v, branch_order):
+    pos_u = np.asarray(G.nodes[u]["pos"], dtype=float)
+    pos_v = np.asarray(G.nodes[v]["pos"], dtype=float)
+    G.add_edge(
+        u,
+        v,
+        key=0,
+        branch_order=branch_order,
+        length=float(np.linalg.norm(pos_v - pos_u)),
+        voxels=[tuple(pos_u), tuple(pos_v)],
+    )
 
 
 def test_compute_basic_statistics(simple_graph):
@@ -107,6 +123,10 @@ def test_compute_branch_order_statistics_sorted_and_aggregated():
     assert s["BO1"]["Edge Count"] == 1
     assert s["BO1"]["Mean Length (microns)"] == 2.0
     assert s["Art2"]["Mean Tortuosity Index"] == 2.0
+    assert s["BO1"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert s["BO3"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert s["Art2"]["Mean Emergence Angle (degrees)"] == "N/A (no unique parent junction)"
+    assert s["Ven1"]["Mean Emergence Angle (degrees)"] == "N/A (no unique parent junction)"
 
 
 def test_export_branch_order_statistics_to_csv(tmp_path):
@@ -132,6 +152,126 @@ def test_export_branch_order_statistics_to_csv(tmp_path):
     assert out == out_csv
     assert out_csv.exists()
     text = out_csv.read_text(encoding="utf-8")
-    assert "Branch Order,Edge Count,Mean Length (microns),Mean Tortuosity Index,Notes" in text
-    assert "Art1,3,12.5,1.1,Mean tortuosity is path length / straight distance." in text
-    assert "BO2,2,8,N/A (insufficient position data),Tortuosity unavailable (missing/insufficient node positions)." in text
+    assert (
+        "Branch Order,Edge Count,Mean Length (microns),Mean Tortuosity Index,"
+        "Mean Emergence Angle (degrees),Notes"
+    ) in text
+    assert "Art1,3,12.5,1.1,N/A (no unique parent junction)," in text
+    assert "Mean tortuosity is path length / straight distance." in text
+    assert "Emergence angle unavailable (no unique lower-order parent junction)." in text
+    assert "BO2,2,8,N/A (insufficient position data),N/A (no unique parent junction)," in text
+    assert "Tortuosity unavailable (missing/insufficient node positions)." in text
+
+
+def test_emergence_angle_is_deflection_from_the_parent_branch(tmp_path):
+    """A collinear daughter is 0°; a perpendicular side branch is 90°."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 20.0))
+    G.add_node(2, pos=(0.0, 0.0, 40.0))
+    G.add_node(3, pos=(0.0, 20.0, 20.0))
+    _straight_edge(G, 0, 1, "B01")
+    _straight_edge(G, 1, 2, "B02")
+    _straight_edge(G, 1, 3, "B03")
+
+    angles = compute_emergence_angles_by_branch_order(G)
+    assert angles["BO2"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert angles["BO3"]["Mean Emergence Angle (degrees)"] == pytest.approx(90.0, abs=1e-9)
+    assert "BO1" not in angles
+
+    stats = compute_branch_order_statistics(G, node_positions=nx.get_node_attributes(G, "pos"))
+    assert stats["BO2"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
+    assert stats["BO3"]["Mean Emergence Angle (degrees)"] == pytest.approx(90.0, abs=1e-9)
+    assert stats["BO1"]["Mean Emergence Angle (degrees)"] == "N/A (no unique parent junction)"
+
+    out_csv = tmp_path / "emergence_branch_statistics.csv"
+    export_branch_order_statistics_to_csv(stats, out_csv)
+    text = out_csv.read_text(encoding="utf-8")
+    assert "Mean Emergence Angle (degrees)" in text.splitlines()[0]
+    assert re.search(r"^BO2,1,20,1,0,", text, flags=re.MULTILINE)
+    assert re.search(r"^BO3,1,20,1,90,", text, flags=re.MULTILINE)
+
+
+def test_emergence_angle_uses_local_centreline_not_node_span():
+    """The parent tangent is taken from the centreline near the junction.
+
+    Node-to-node the parent runs along +x, which would make the daughter 0°.
+    The last centreline segment at the junction is not along +x, so the
+    measured angle must follow that local tangent instead.
+    """
+    G = nx.MultiGraph()
+    parent_other = (0.0, 20.0, -30.0)
+    junction = (0.0, 0.0, 0.0)
+    daughter = (0.0, 0.0, 20.0)
+    G.add_node(0, pos=parent_other)
+    G.add_node(1, pos=junction)
+    G.add_node(2, pos=(0.0, 20.0, 0.0))
+    G.add_node(3, pos=daughter)
+    parent_voxels = [parent_other, (0.0, 20.0, -10.0), junction]
+    G.add_edge(
+        0,
+        1,
+        key=0,
+        branch_order="B01",
+        length=float(
+            np.linalg.norm(np.subtract(parent_voxels[1], parent_voxels[0]))
+            + np.linalg.norm(np.subtract(parent_voxels[2], parent_voxels[1]))
+        ),
+        voxels=parent_voxels,
+    )
+    _straight_edge(G, 1, 2, "B02")
+    _straight_edge(G, 1, 3, "B03")
+
+    incoming_parent = np.subtract(junction, (0.0, 20.0, -10.0))
+    outgoing_daughter = np.subtract(daughter, junction)
+    expected = np.degrees(
+        np.arccos(
+            np.clip(
+                np.dot(incoming_parent, outgoing_daughter)
+                / (
+                    np.linalg.norm(incoming_parent)
+                    * np.linalg.norm(outgoing_daughter)
+                ),
+                -1.0,
+                1.0,
+            )
+        )
+    )
+    node_span_parent = np.subtract(junction, parent_other)
+    node_span_angle = np.degrees(
+        np.arccos(
+            np.clip(
+                np.dot(node_span_parent, outgoing_daughter)
+                / (
+                    np.linalg.norm(node_span_parent)
+                    * np.linalg.norm(outgoing_daughter)
+                ),
+                -1.0,
+                1.0,
+            )
+        )
+    )
+    assert expected != pytest.approx(node_span_angle, abs=1.0)
+
+    angles = compute_emergence_angles_by_branch_order(G)
+    assert angles["BO3"]["Mean Emergence Angle (degrees)"] == pytest.approx(
+        expected, abs=1e-9
+    )
+    assert angles["BO3"]["Mean Emergence Angle (degrees)"] != pytest.approx(
+        node_span_angle, abs=1.0
+    )
+
+
+def test_emergence_angle_skipped_when_parent_order_is_tied():
+    """Two equal-order stems at a confluence are not a unique parent."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 10.0, 0.0))
+    G.add_node(1, pos=(0.0, -10.0, 0.0))
+    G.add_node(2, pos=(0.0, 0.0, 0.0))
+    G.add_node(3, pos=(0.0, 0.0, 10.0))
+    _straight_edge(G, 0, 2, "B02")
+    _straight_edge(G, 1, 2, "B02")
+    _straight_edge(G, 2, 3, "Ven1")
+
+    angles = compute_emergence_angles_by_branch_order(G)
+    assert angles == {}

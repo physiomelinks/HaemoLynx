@@ -13,7 +13,9 @@ import networkx as nx
 from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
 
+from haemolynx.geometry import cumulative_lengths
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
+from haemolynx.visualization.geometry import edge_polyline
 
 #Need to add in bifurcation ratios
 
@@ -747,11 +749,164 @@ def _branch_order_sort_key(tag: str) -> tuple[int, int, str]:
     return (group, n, str(tag))
 
 
+def _incident_edge_items(
+    G: Union[nx.Graph, nx.MultiGraph], node: Any
+) -> list[tuple[Any, Any, Any, dict]]:
+    """Incident edges as ``(u, v, key, data)`` with ``u`` equal to ``node``."""
+    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
+        return list(G.edges(node, keys=True, data=True))
+    return [(u, v, None, d) for u, v, d in G.edges(node, data=True)]
+
+
+def _point_along_polyline(
+    points: np.ndarray, distance_um: float
+) -> Optional[np.ndarray]:
+    """Interpolate a point this far along a polyline, clamped to its length."""
+    lengths = cumulative_lengths(points)
+    total = float(lengths[-1])
+    if total <= 0.0:
+        return None
+    target = min(max(float(distance_um), 0.0), total)
+    if target <= 0.0:
+        for i in range(1, len(points)):
+            if float(lengths[i]) > 0.0:
+                return np.asarray(points[i], dtype=float)
+        return None
+    idx = int(np.searchsorted(lengths, target, side="left"))
+    idx = min(max(idx, 1), len(points) - 1)
+    t0 = float(lengths[idx - 1])
+    t1 = float(lengths[idx])
+    if t1 <= t0:
+        return np.asarray(points[idx], dtype=float)
+    frac = (target - t0) / (t1 - t0)
+    start = np.asarray(points[idx - 1], dtype=float)
+    end = np.asarray(points[idx], dtype=float)
+    return start + frac * (end - start)
+
+
+def _outgoing_unit_tangent(
+    G: Union[nx.Graph, nx.MultiGraph],
+    node: Any,
+    u: Any,
+    v: Any,
+    data: dict,
+    tangent_length_um: float,
+) -> Optional[np.ndarray]:
+    """Unit vector leaving ``node`` along this edge's local centreline."""
+    try:
+        points = edge_polyline(G, u, v, data)
+    except (TypeError, ValueError):
+        return None
+    if node == u:
+        path = points
+    elif node == v:
+        path = points[::-1]
+    else:
+        return None
+    dest = _point_along_polyline(path, tangent_length_um)
+    if dest is None:
+        return None
+    vec = np.asarray(dest, dtype=float) - np.asarray(path[0], dtype=float)
+    norm = float(np.linalg.norm(vec))
+    if norm <= 0.0:
+        return None
+    return vec / norm
+
+
+def _angle_between_unit_vectors(a: np.ndarray, b: np.ndarray) -> float:
+    cos_a = float(np.clip(np.dot(a, b), -1.0, 1.0))
+    return float(np.degrees(np.arccos(cos_a)))
+
+
+def _empty_branch_order_record(tag: str) -> Dict[str, Any]:
+    return {
+        "Branch Order": tag,
+        "Edge Count": 0,
+        "Mean Length (microns)": 0.0,
+        "Mean Tortuosity Index": "N/A (no position data)",
+        "Tortuosity Sample Count": 0,
+        "Mean Emergence Angle (degrees)": "N/A (no unique parent junction)",
+        "Emergence Angle Sample Count": 0,
+    }
+
+
+def compute_emergence_angles_by_branch_order(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    tangent_length_um: float = 10.0,
+) -> Dict[str, Dict[str, Any]]:
+    """Angle each daughter leaves its parent, grouped by the daughter's order.
+
+    At a junction the parent is the unique incident edge with the lowest
+    branch-order rank (Art* before BO* before Ven*, then the numeric index).
+    Each other labelled incident edge is a daughter. The emergence angle is
+    the deflection of the daughter's outgoing centreline tangent from the
+    parent's incoming tangent: 0° continues the parent, 90° leaves at a
+    right angle.
+
+    Junctions with no unique lowest-order parent (tied ranks, unlabelled
+    edges only, or degree < 3) contribute nothing, so root segments have
+    no emergence angle.
+    """
+    sums: Dict[str, float] = {}
+    counts: Dict[str, int] = {}
+
+    for node in G.nodes():
+        if int(G.degree(node)) < 3:
+            continue
+        labelled: list[tuple[Any, Any, dict, str]] = []
+        for u, v, _key, data in _incident_edge_items(G, node):
+            if u == v:
+                continue
+            tag = _normalize_branch_order_tag(data.get("branch_order"))
+            if not tag:
+                continue
+            labelled.append((u, v, data, tag))
+        if len(labelled) < 2:
+            continue
+        ranks = [_branch_order_sort_key(item[3]) for item in labelled]
+        min_rank = min(ranks)
+        parent_indices = [i for i, rank in enumerate(ranks) if rank == min_rank]
+        if len(parent_indices) != 1:
+            continue
+        parent_i = parent_indices[0]
+        p_u, p_v, p_data, _parent_tag = labelled[parent_i]
+        parent_out = _outgoing_unit_tangent(
+            G, node, p_u, p_v, p_data, tangent_length_um
+        )
+        if parent_out is None:
+            continue
+        parent_in = -parent_out
+        for i, (u, v, data, tag) in enumerate(labelled):
+            if i == parent_i:
+                continue
+            daughter_out = _outgoing_unit_tangent(
+                G, node, u, v, data, tangent_length_um
+            )
+            if daughter_out is None:
+                continue
+            angle = _angle_between_unit_vectors(parent_in, daughter_out)
+            sums[tag] = sums.get(tag, 0.0) + angle
+            counts[tag] = counts.get(tag, 0) + 1
+
+    ordered: Dict[str, Dict[str, Any]] = {}
+    for tag in sorted(counts, key=_branch_order_sort_key):
+        n = counts[tag]
+        ordered[tag] = {
+            "Branch Order": tag,
+            "Mean Emergence Angle (degrees)": sums[tag] / n,
+            "Emergence Angle Sample Count": n,
+        }
+    return ordered
+
+
 def compute_branch_order_statistics(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict] = None,
+    *,
+    tangent_length_um: float = 10.0,
 ) -> Dict[str, Dict[str, Any]]:
-    """Compute mean length/tortuosity per branch-order edge tag.
+    """Compute mean length, tortuosity, and emergence angle per branch order.
 
     Returns a dictionary keyed by branch-order label with a compact summary.
     """
@@ -775,13 +930,7 @@ def compute_branch_order_statistics(
             continue
 
         if normalized_tag not in by_tag:
-            by_tag[normalized_tag] = {
-                "Branch Order": normalized_tag,
-                "Edge Count": 0,
-                "Mean Length (microns)": 0.0,
-                "Mean Tortuosity Index": "N/A (no position data)",
-                "Tortuosity Sample Count": 0,
-            }
+            by_tag[normalized_tag] = _empty_branch_order_record(normalized_tag)
         rec = by_tag[normalized_tag]
         rec["Edge Count"] += 1
         rec["Mean Length (microns)"] += length_f
@@ -811,6 +960,20 @@ def compute_branch_order_statistics(
         elif t_samples == 0:
             rec["Mean Tortuosity Index"] = "N/A (insufficient position data)"
 
+    emergence = compute_emergence_angles_by_branch_order(
+        G, tangent_length_um=tangent_length_um
+    )
+    for tag, emergence_rec in emergence.items():
+        if tag not in by_tag:
+            by_tag[tag] = _empty_branch_order_record(tag)
+        rec = by_tag[tag]
+        rec["Mean Emergence Angle (degrees)"] = emergence_rec[
+            "Mean Emergence Angle (degrees)"
+        ]
+        rec["Emergence Angle Sample Count"] = emergence_rec[
+            "Emergence Angle Sample Count"
+        ]
+
     ordered = {
         k: by_tag[k]
         for k in sorted(by_tag.keys(), key=_branch_order_sort_key)
@@ -834,12 +997,14 @@ def export_branch_order_statistics_to_csv(
                 "Edge Count",
                 "Mean Length (microns)",
                 "Mean Tortuosity Index",
+                "Mean Emergence Angle (degrees)",
                 "Notes",
             ]
         )
         writer.writerow(
             [
                 "# Ordered by vessel class",
+                "",
                 "",
                 "",
                 "",
@@ -856,17 +1021,36 @@ def export_branch_order_statistics_to_csv(
             mean_tort = rec.get("Mean Tortuosity Index", "N/A")
             if isinstance(mean_tort, (int, float, np.integer, np.floating)):
                 mean_tort_s = f"{float(mean_tort):.6g}"
-                note = "Mean tortuosity is path length / straight distance."
+                notes = ["Mean tortuosity is path length / straight distance."]
             else:
                 mean_tort_s = str(mean_tort)
-                note = "Tortuosity unavailable (missing/insufficient node positions)."
+                notes = [
+                    "Tortuosity unavailable (missing/insufficient node positions)."
+                ]
+            mean_angle = rec.get(
+                "Mean Emergence Angle (degrees)",
+                "N/A (no unique parent junction)",
+            )
+            if isinstance(mean_angle, (int, float, np.integer, np.floating)):
+                mean_angle_s = f"{float(mean_angle):.6g}"
+                notes.append(
+                    "Mean emergence angle is the deflection from the unique "
+                    "lower-order parent (0 degrees = collinear)."
+                )
+            else:
+                mean_angle_s = str(mean_angle)
+                notes.append(
+                    "Emergence angle unavailable (no unique lower-order "
+                    "parent junction)."
+                )
             writer.writerow(
                 [
                     branch_tag,
                     int(rec.get("Edge Count", 0)),
                     mean_len_s,
                     mean_tort_s,
-                    note,
+                    mean_angle_s,
+                    " ".join(notes),
                 ]
             )
 
