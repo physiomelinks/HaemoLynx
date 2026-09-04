@@ -9,6 +9,8 @@ from scipy.ndimage import distance_transform_edt, gaussian_filter
 from scipy.spatial.distance import directed_hausdorff
 from skimage.graph import route_through_array
 
+from ._platform import nested_native_thread_limit
+
 logger = logging.getLogger(__name__)
 
 #: Voxels of context included around a routing window when its cost field is
@@ -369,55 +371,56 @@ def reconnect_secondary_loop_edges(
     edge_lock = threading.Lock()
     max_workers = max_workers or min(4, len(pairs))
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            pair_data_list = [(u, v, pos) for u, v in pairs]
-            future_to_pair = {
-                executor.submit(attempt_reconnect, pd): (pd[0], pd[1])
-                for pd in pair_data_list
-            }
-            for future in as_completed(future_to_pair):
-                u, v = future_to_pair[future]
-                try:
-                    result = future.result()
-                    if not result:
-                        continue
-                    u, v, candidates_list = result
-                    if debug:
-                        logger.info("%s-%s -> %d candidates", u, v, len(candidates_list))
-                    with edge_lock:
-                        has_secondary = False
-                        if G.has_edge(u, v):
-                            for key, edge_data in G[u][v].items():
-                                if edge_data.get("secondary", False):
-                                    has_secondary = True
-                                    break
-                        if has_secondary:
-                            if debug:
-                                logger.info("%s-%s already has secondary edge", u, v)
+        with nested_native_thread_limit():
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                pair_data_list = [(u, v, pos) for u, v in pairs]
+                future_to_pair = {
+                    executor.submit(attempt_reconnect, pd): (pd[0], pd[1])
+                    for pd in pair_data_list
+                }
+                for future in as_completed(future_to_pair):
+                    u, v = future_to_pair[future]
+                    try:
+                        result = future.result()
+                        if not result:
                             continue
-                        best = candidates_list[0]
-                        G.add_edge(
-                            u,
-                            v,
-                            voxels=best["voxels"],
-                            length=best["length"],
-                            overlap=best["overlap"],
-                            deviation=best["deviation"],
-                            novelty=best["novelty"],
-                            secondary=True,
-                        )
-                        added += 1
+                        u, v, candidates_list = result
                         if debug:
-                            logger.info(
-                                "Added secondary edge %s-%s: novelty=%.2f",
+                            logger.info("%s-%s -> %d candidates", u, v, len(candidates_list))
+                        with edge_lock:
+                            has_secondary = False
+                            if G.has_edge(u, v):
+                                for key, edge_data in G[u][v].items():
+                                    if edge_data.get("secondary", False):
+                                        has_secondary = True
+                                        break
+                            if has_secondary:
+                                if debug:
+                                    logger.info("%s-%s already has secondary edge", u, v)
+                                continue
+                            best = candidates_list[0]
+                            G.add_edge(
                                 u,
                                 v,
-                                best["novelty"],
+                                voxels=best["voxels"],
+                                length=best["length"],
+                                overlap=best["overlap"],
+                                deviation=best["deviation"],
+                                novelty=best["novelty"],
+                                secondary=True,
                             )
-                except Exception as e:
-                    if debug:
-                        logger.error("Processing failed for %s-%s: %s", u, v, e)
-                    continue
+                            added += 1
+                            if debug:
+                                logger.info(
+                                    "Added secondary edge %s-%s: novelty=%.2f",
+                                    u,
+                                    v,
+                                    best["novelty"],
+                                )
+                    except Exception as e:
+                        if debug:
+                            logger.error("Processing failed for %s-%s: %s", u, v, e)
+                        continue
     except Exception as e:
         logger.error("Threading failed: %s", e)
         return G

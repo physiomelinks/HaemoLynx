@@ -2,13 +2,14 @@
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import networkx as nx
 from scipy.ndimage import generate_binary_structure
 from scipy.spatial import cKDTree
 import heapq
+
+from ._platform import iter_python_work, map_python_work
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,8 @@ def build_graph_segment_skan_stitched_loops(
             for i in range(0, len(foreground), batch_size)
         ]
         max_workers = min(4, os.cpu_count() or 1)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for batch_edges in executor.map(process_pt_batch, batches):
-                voxel_graph.add_edges_from(batch_edges)
+        for batch_edges in iter_python_work(process_pt_batch, batches, max_workers):
+            voxel_graph.add_edges_from(batch_edges)
         logger.info(
             "Voxel graph built: %d nodes, %d edges. Running cycle_basis...",
             voxel_graph.number_of_nodes(), voxel_graph.number_of_edges(),
@@ -108,8 +108,7 @@ def build_graph_segment_skan_stitched_loops(
 
     t0 = time.perf_counter()
     max_workers = min(4, os.cpu_count() or 1)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        segments = [s for s in executor.map(make_segment_safe, paths) if s]
+    segments = [s for s in map_python_work(make_segment_safe, paths, max_workers) if s]
     logger.info("Segments extracted (%d valid) in %.1fs", len(segments), time.perf_counter() - t0)
 
     if not segments:

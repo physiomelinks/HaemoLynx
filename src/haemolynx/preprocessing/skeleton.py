@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 import numpy as np
 from scipy.ndimage import (
@@ -117,9 +118,11 @@ def fill_binary_holes(mask: np.ndarray) -> np.ndarray:
     flood fill holds a bool, so this wants about four times the working set of
     the volume. That is the right way round for the stacks this runs on, but it
     is the reason to reach for the flood fill on a machine short of memory.
+    Windows tries int16 first (half the commit); Linux keeps the int32 path
+    that was timed there. Both return the same mask.
     """
     mask = np.asarray(mask, dtype=bool)
-    background_labels, n_labels = label(~mask)
+    background_labels, n_labels = _label_inverted_background(~mask)
     if n_labels == 0:
         return mask
 
@@ -128,10 +131,29 @@ def fill_binary_holes(mask: np.ndarray) -> np.ndarray:
         for face in (0, -1):
             face_slice = [slice(None)] * mask.ndim
             face_slice[axis] = face
-            reaches_edge[np.unique(background_labels[tuple(face_slice)])] = True
+            reaches_edge[background_labels[tuple(face_slice)]] = True
     # Label 0 is the foreground itself, never a hole to fill.
     reaches_edge[0] = True
     return mask | ~reaches_edge[background_labels]
+
+
+def _label_inverted_background(
+    inverted: np.ndarray,
+    *,
+    platform: str | None = None,
+) -> tuple[np.ndarray, int]:
+    """Label background components; compact dtype on Windows only."""
+    if platform is None:
+        platform = sys.platform
+    if platform == "win32":
+        compact = np.empty(inverted.shape, dtype=np.int16)
+        try:
+            n_labels = int(label(inverted, output=compact))
+            return compact, n_labels
+        except (RuntimeError, TypeError, ValueError):
+            pass
+    labeled, n_labels = label(inverted)
+    return labeled, int(n_labels)
 
 
 def _euclidean_ball(radius: int) -> np.ndarray:

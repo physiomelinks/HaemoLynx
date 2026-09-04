@@ -7,6 +7,7 @@ import networkx as nx
 import numpy as np
 from skan import csr
 
+from ._platform import skan_numba_warmup_skeleton
 from .build import build_graph_segment_skan_stitched_loops
 from .collapse import collapse_node_clusters
 from .degree2 import smart_multigraph_degree2_removal
@@ -121,6 +122,9 @@ def build_graph_from_skeleton(
     degree2_pass2_max_degree = 8
 
     logger.info("Building skan Skeleton object...")
+    warmup = skan_numba_warmup_skeleton()
+    if warmup is not None:
+        csr.Skeleton(warmup)
     sk = csr.Skeleton(skeleton)
     logger.info(f"skan Skeleton built: {sk.n_paths} paths")
 
