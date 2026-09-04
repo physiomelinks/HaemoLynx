@@ -367,6 +367,67 @@ def test_orphan_cleanup_removes_below_threshold_keeps_above():
     assert nx.number_connected_components(kept_at_threshold) == 1
 
 
+def test_orphan_cleanup_never_removes_a_stub_the_cut_itself_created():
+    """A short exterior stub the cut creates at a mask crossing must survive cleanup.
+
+    Production data showed 97.8% of a real network dropped after boundary
+    assignment because most connected components never got an inlet or
+    outlet node. The cut's own orphan-branch cleanup was found to be part of
+    the cause: a component below the edge-count threshold gets removed
+    whether it is genuine disconnected noise or a short-but-real stub the
+    cut just created at a large-vessel-mask crossing -- exactly the kind of
+    node terminal-node assignment is looking for. This fixture: a spur edge
+    dips through the mask and re-emerges to a genuine dead-end node, so the
+    cut splits it into a new crossing node joined to that dead-end by one
+    edge -- a component below the default threshold (3) that must not be
+    treated as noise.
+    """
+    G = nx.MultiGraph()
+    for node, x in enumerate(range(0, 5)):
+        G.add_node(node, pos=(5.0, 5.0, float(x)))
+    for node in range(0, 4):
+        G.add_edge(
+            node,
+            node + 1,
+            voxels=[(5.0, 5.0, float(node)), (5.0, 5.0, float(node + 1))],
+            length=1.0,
+        )
+    # Dead-end node 5, reached only via an edge that dips through the mask
+    # (voxels 6..9) and re-emerges -- the cut creates a new node at the
+    # re-emergence point, joined to node 5 by a single edge.
+    G.add_node(5, pos=(5.0, 5.0, 12.0))
+    voxels = [(5.0, 5.0, float(x)) for x in range(4, 13)]
+    G.add_edge(4, 5, voxels=voxels, length=8.0)
+
+    mask = np.zeros((12, 12, 14), dtype=bool)
+    mask[4:7, 4:7, 6:10] = True
+    empty = np.zeros_like(mask)
+
+    without_cleanup = cut_graph_at_large_vessel_volumes(
+        G, mask, empty, voxel_size_zyx=VOXEL_SIZE, enabled=True,
+        remove_orphaned_branches=False,
+    )
+    component_edges = sorted(
+        without_cleanup.subgraph(c).number_of_edges()
+        for c in nx.connected_components(without_cleanup)
+    )
+    assert component_edges == [1, 5], (
+        "fixture must produce a 1-edge stub component below the default "
+        "threshold of 3"
+    )
+    assert 5 in without_cleanup.nodes
+
+    with_cleanup = cut_graph_at_large_vessel_volumes(
+        G, mask, empty, voxel_size_zyx=VOXEL_SIZE, enabled=True,
+        remove_orphaned_branches=True, orphaned_branch_max_edge_count=3,
+    )
+    assert 5 in with_cleanup.nodes, (
+        "the stub containing a genuine mask-crossing node must survive "
+        "orphan cleanup, not be treated as noise"
+    )
+    assert with_cleanup.number_of_edges() == without_cleanup.number_of_edges()
+
+
 def test_empty_mask_leaves_topology_unchanged():
     G, arteriole, _venule = _crossing_chain_graph()
     empty = np.zeros_like(arteriole)
