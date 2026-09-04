@@ -1678,6 +1678,21 @@ def _image_options_for_napari(options: Mapping[str, Any]) -> dict[str, Any]:
     return prepared
 
 
+def _keep_layer_interaction(layer, spec, *, visible, mode) -> None:
+    """Restore what the user set on *layer* after a redraw.
+
+    A spec may hide a layer (skeleton after the graph exists) but must not
+    un-hide one the user turned off, and assigning ``data`` resets napari's
+    edit mode to pan-zoom, which would drop a Draw that was still in progress.
+    """
+    layer.visible = bool(visible) if spec.visible else False
+    if mode is not None and mode != getattr(layer, "mode", None):
+        try:
+            layer.mode = mode
+        except Exception:  # noqa: BLE001 - not every kind has every mode
+            logger.debug("could not restore layer mode %s on %s", mode, spec.name)
+
+
 def _add_or_update(viewer, spec) -> None:
     """Add *spec*, or update the layer of ours already carrying its name."""
     import pandas as pd  # noqa: F401  (napari builds features through pandas)
@@ -1687,6 +1702,9 @@ def _add_or_update(viewer, spec) -> None:
         # Someone else's layer happens to share the name. Never overwrite it.
         spec = replace(spec, name=f"{spec.name} (HaemoLynx)")
         existing = viewer.layers[spec.name] if spec.name in viewer.layers else None
+
+    saved_visible = bool(existing.visible) if existing is not None else spec.visible
+    saved_mode = getattr(existing, "mode", None) if existing is not None else None
 
     if existing is not None and existing.__class__.__name__.lower() == _CLASS_FOR[spec.kind]:
         # Shrinking Vectors/Points in place leaves stale segments on screen.
@@ -1714,7 +1732,9 @@ def _add_or_update(viewer, spec) -> None:
                 _sync_points_per_point_properties(
                     existing, new_count, spec.options
                 )
-            existing.visible = spec.visible
+            _keep_layer_interaction(
+                existing, spec, visible=saved_visible, mode=saved_mode
+            )
             if spec.kind == "image" and "mask_colour" in spec.options:
                 image_opts = _image_options_for_napari(spec.options)
                 if "colormap" in image_opts:
@@ -1750,13 +1770,15 @@ def _add_or_update(viewer, spec) -> None:
     add_kwargs = {
         "name": spec.name,
         "scale": spec.scale,
-        "visible": spec.visible,
+        "visible": saved_visible if spec.visible else False,
         "metadata": {OURS: {"kind": spec.kind}},
         **options,
     }
     if spec.kind == "image" and spec.contrast_limits is not None:
         add_kwargs.setdefault("contrast_limits", spec.contrast_limits)
+    add_kwargs["visible"] = saved_visible if spec.visible else False
     layer = adder(spec.data, **add_kwargs)
+    _keep_layer_interaction(layer, spec, visible=saved_visible, mode=saved_mode)
     _colour_layer(layer, spec.colour_by, spec.colour_kind,
                   spec.colour_cycle, spec.contrast_limits)
     _store_sweep_metadata(layer, spec)

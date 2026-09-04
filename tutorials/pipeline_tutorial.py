@@ -362,9 +362,9 @@ def build_synthetic_vessel_volume(path: Path) -> Path:
             volume[z0:z1, y0:y1, x0:x1] = 255
 
     # Points are (z, y, x). The tree runs along y because the boxes below take
-    # the inlet from the first 20% of y and the outlet from the last 20%: the
-    # trunk starts inside the inlet band and every free end lands in the outlet
-    # band.
+    # the inlet from the first 40% of y and the outlet from the remaining 60%:
+    # the trunk starts inside the inlet band and every free end lands in the
+    # outlet band.
     draw((32, 5, 32), (32, 30, 32))          # trunk
     draw((32, 30, 32), (32, 50, 14))         # two branches...
     draw((32, 30, 32), (32, 50, 50))
@@ -416,16 +416,18 @@ print(f"Array-axis spacing (z, y, x): {volume.voxel_size_zyx}")
 print(f"Skeleton voxels: {int(volume.skeleton.sum())}")
 
 # The inlet and outlet boxes are in physical (z, y, x) MICRONS, not voxel
-# indices, so they are built from the volume's own extent. Inlet: the first 20%
-# along y. Outlet: the last 20%.
+# indices, so they are built from the volume's own extent. Inlet: the first 40%
+# along y. Outlet: the remaining 60%. The cropped nerve fixture's connected
+# component sits in the low-y part of the image, so a last-20% outlet band
+# misses it and the flow solve has no conductive path between the two roles.
 extent_zyx = [
     (dimension - 1) * spacing
     for dimension, spacing in zip(volume.image.shape[:3], volume.voxel_size_zyx)
 ]
-y_band = 0.2 * extent_zyx[1]
-settings["inlet_node_volumes"] = [((0.0, 0.0, 0.0), (extent_zyx[0], y_band, extent_zyx[2]))]
+y_split = 0.4 * extent_zyx[1]
+settings["inlet_node_volumes"] = [((0.0, 0.0, 0.0), (extent_zyx[0], y_split, extent_zyx[2]))]
 settings["outlet_node_volumes"] = [
-    ((0.0, extent_zyx[1] - y_band, 0.0), (extent_zyx[0], extent_zyx[1], extent_zyx[2]))
+    ((0.0, y_split, 0.0), (extent_zyx[0], extent_zyx[1], extent_zyx[2]))
 ]
 print(f"Inlet box (um):  {settings['inlet_node_volumes'][0]}")
 print(f"Outlet box (um): {settings['outlet_node_volumes'][0]}")

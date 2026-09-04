@@ -377,11 +377,11 @@ class PoiseuilleModel:
         }
 
         logger.info("=== Poiseuille Resistance Calculation (Branch Order Based) ===")
-        logger.info("Formula: resistance = (128 * viscosity * length) / (π * diameter^4)")
+        logger.info("Formula: resistance = (128 * viscosity * length) / (pi * diameter^4)")
         # The law is a setting, so the log has to name the one that actually
         # ran: reading a fixed formula here made every run look identical.
         logger.info(f"Viscosity: {self.describe_viscosity_law()}")
-        logger.info("Units: diameter and length in μm; resistance in Pa.s/m^3")
+        logger.info("Units: diameter and length in um; resistance in Pa.s/m^3")
 
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
         diameter_viscosity_map = {}
@@ -396,7 +396,7 @@ class PoiseuilleModel:
                 'viscosity': viscosity
             }
             logger.info(
-                f"{branch_order}: diameter={diameter}μm, calculated viscosity={viscosity:.6f}"
+                f"{branch_order}: diameter={diameter}um, calculated viscosity={viscosity:.6f}"
             )
 
         for u, v, key, data in G.edges(keys=True, data=True):
@@ -447,7 +447,7 @@ class PoiseuilleModel:
             results['edges_set'] += 1
 
             logger.debug(f"Edge ({u}, {v}, {key}): {branch_order}, "
-                        f"diameter={diameter}μm, length={length:.3f}μm, "
+                        f"diameter={diameter}um, length={length:.3f}um, "
                         f"viscosity={viscosity:.3e} Pa.s, "
                         f"resistance={resistance:.3e} Pa.s/m^3")
 

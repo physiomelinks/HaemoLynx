@@ -161,6 +161,44 @@ def test_configure_console_logging_sends_records_to_stdout() -> None:
         root.setLevel(original_level)
 
 
+class _Cp1252Stream:
+    """A stdout stand-in whose encoding cannot represent Greek letters."""
+
+    encoding = "cp1252"
+
+    def __init__(self) -> None:
+        self.written: list[str] = []
+
+    def write(self, text: str) -> int:
+        text.encode(self.encoding)
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+
+def test_console_logging_replaces_characters_the_console_cannot_encode() -> None:
+    from haemolynx.parsers.cli import _ConsoleHandler
+
+    stream = _Cp1252Stream()
+    handler = _ConsoleHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    record = logging.LogRecord(
+        name="haemolynx",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="resistance / (π * diameter^4) in μm",
+        args=(),
+        exc_info=None,
+    )
+    handler.emit(record)
+    assert stream.written
+    assert "diameter^4" in stream.written[0]
+    stream.written[0].encode("cp1252")
+
+
 def test_list_settings_writes_to_stdout(capsys) -> None:
     """`--list-settings` is an answer to a flag, so it prints regardless of logging."""
     schema = Schema([Setting("voxel_size_um", "float", 1.0, "Voxel edge length", "Input")])

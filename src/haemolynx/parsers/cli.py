@@ -33,6 +33,34 @@ from .schema import ConfigError, Schema
 CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
 
 
+class _ConsoleHandler(logging.StreamHandler):
+    """Write to the console even when its encoding cannot represent a character.
+
+    Windows cp1252 cannot encode π or µm. The default StreamHandler then
+    raises inside ``emit``, which dumps a logging traceback and can abort a
+    script whose logs are otherwise informational.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record) + self.terminator
+            stream = self.stream
+            try:
+                stream.write(msg)
+            except UnicodeEncodeError:
+                encoding = getattr(stream, "encoding", None) or "ascii"
+                stream.write(
+                    msg.encode(encoding, errors="replace").decode(
+                        encoding, errors="replace"
+                    )
+                )
+            self.flush()
+        except RecursionError:
+            raise
+        except Exception:
+            self.handleError(record)
+
+
 def configure_console_logging(*, verbose: bool = False) -> None:
     """Send HaemoLynx's log records to the console.
 
@@ -44,10 +72,11 @@ def configure_console_logging(*, verbose: bool = False) -> None:
     Records go to stdout so that they interleave in order with anything the
     script prints itself.
     """
+    handler = _ConsoleHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(CONSOLE_LOG_FORMAT))
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
-        format=CONSOLE_LOG_FORMAT,
-        stream=sys.stdout,
+        handlers=[handler],
     )
 
 

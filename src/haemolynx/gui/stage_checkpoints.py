@@ -272,14 +272,21 @@ def output_dir_from_prefix(vtk_prefix: Any) -> Path | None:
 
     A FileEdit that was cleared, ``"."``, or a filename with no directory
     would otherwise treat the working directory as the run's output folder
-    and delete pickles there.
+    and delete pickles there. Magicgui resolves a blank picker to
+    ``Path.cwd()`` itself, so that value is the same "unset" as ``"."``.
     """
     if vtk_prefix is None:
         return None
     text = str(vtk_prefix).strip()
     if not text or text == ".":
         return None
-    parent = Path(vtk_prefix).parent
+    path = Path(vtk_prefix)
+    try:
+        if path.resolve() == Path.cwd().resolve():
+            return None
+    except OSError:
+        pass
+    parent = path.parent
     if str(parent) in {"", "."}:
         return None
     return parent
