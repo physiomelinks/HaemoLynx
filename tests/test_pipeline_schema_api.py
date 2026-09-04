@@ -36,8 +36,10 @@ def test_default_schema_is_the_pipelines_settings():
         "voxel_size_override_xyz",
         "inlet_p_bc",
         "vtk_output_prefix",
+        "cut_network_at_large_vessel_volumes",
     ):
         assert name in schema, f"{name} missing from the pipeline schema"
+    assert "cut_large_vessel_sample_densely" not in schema
     assert schema.title
 
 

@@ -484,6 +484,8 @@ def test_vessel_mask_settings_live_on_boundaries_not_graph():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     graph = {field.name for field in tabs["3. Graph"].fields}
     boundaries = [field.name for field in tabs["4. Boundaries"].fields]
+    assert "cut_network_at_large_vessel_volumes" in mask_names
+    assert "cut_large_vessel_sample_densely" not in mask_names
     for name in mask_names:
         assert name not in graph, name
         assert name in boundaries, name

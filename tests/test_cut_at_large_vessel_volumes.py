@@ -1,6 +1,7 @@
 """Empirical tests for cutting graphs at large-vessel mask volumes."""
 from __future__ import annotations
 
+import inspect
 import pickle
 from pathlib import Path
 from types import SimpleNamespace
@@ -130,13 +131,7 @@ def test_schema_defaults_and_requires_for_volume_cut():
         "remove_orphaned_branches_outside_large_vessel_volumes",
     )
     assert schema["cut_network_at_large_vessel_volumes"].section == "Vessel masks"
-    assert schema["cut_large_vessel_sample_densely"].default is True
-    assert schema["cut_large_vessel_sample_densely"].requires == (
-        "use_large_vessel_masks",
-        "automated_vessel_assignment",
-        "cut_network_at_large_vessel_volumes",
-    )
-    assert schema["cut_large_vessel_sample_densely"].section == "Vessel masks"
+    assert "cut_large_vessel_sample_densely" not in schema
 
 
 def test_toggle_off_leaves_graph_unchanged():
@@ -824,7 +819,6 @@ def test_sparse_chord_through_mask_is_not_kept_whole():
         np.zeros_like(mask),
         voxel_size_zyx=VOXEL_SIZE,
         enabled=True,
-        sample_densely=True,
     )
 
     assert result.number_of_edges() == 1
@@ -836,24 +830,30 @@ def test_sparse_chord_through_mask_is_not_kept_whole():
     assert not _edge_has_interior_voxel(data, combined)
 
 
-def test_sparse_chord_through_mask_kept_whole_when_dense_sampling_off():
-    """Vertex-only sampling misses interior mask voxels on a sparse chord."""
-    G, mask = _sparse_chord_through_mask_graph()
+def test_volume_cut_has_no_non_dense_sampling_option():
+    """The dense-sampling setting is gone; cutting always densifies."""
+    schema = default_schema()
+    assert "cut_large_vessel_sample_densely" not in schema
+    assert "sample_densely" not in inspect.signature(
+        cut_graph_at_large_vessel_volumes
+    ).parameters
 
+    G, mask = _sparse_chord_through_mask_graph()
     result = cut_graph_at_large_vessel_volumes(
         G,
         mask,
         np.zeros_like(mask),
         voxel_size_zyx=VOXEL_SIZE,
         enabled=True,
-        sample_densely=False,
     )
 
     assert result.number_of_edges() == 1
-    assert result.number_of_nodes() == 2
-    u, v, data = next(iter(result.edges(data=True)))
-    assert {u, v} == {0, 1}
-    assert list(map(tuple, data["voxels"])) == [(5.0, 5.0, 0.0), (5.0, 5.0, 12.0)]
+    assert 1 not in result.nodes
+    _u, _v, data = next(iter(result.edges(data=True)))
+    assert list(map(tuple, data["voxels"])) == [
+        (5.0, 5.0, float(x)) for x in range(0, 5)
+    ]
+    assert not _edge_has_interior_voxel(data, mask)
 
 
 def test_napari_solve_layers_use_solved_post_cut_graph():

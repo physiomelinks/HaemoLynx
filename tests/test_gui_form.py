@@ -652,6 +652,8 @@ def test_visible_vessel_mask_settings_nests_under_automated_and_parents():
     large_on["cut_network_at_large_vessel_volumes"] = True
     large_on["remove_orphaned_branches_outside_large_vessel_volumes"] = False
     shown = visible_vessel_mask_settings(SCHEMA, large_on)
+    assert "cut_network_at_large_vessel_volumes" in shown
+    assert "cut_large_vessel_sample_densely" not in shown
     assert "remove_orphaned_branches_outside_large_vessel_volumes" in shown
     assert "orphaned_branch_max_edge_count" not in shown
 
