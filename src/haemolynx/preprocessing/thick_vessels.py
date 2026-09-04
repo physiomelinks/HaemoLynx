@@ -645,7 +645,14 @@ def skeletonize_edt_ridge(binary: np.ndarray) -> np.ndarray:
         return result
     crop = mask[bbox]
     edt = distance_transform_edt(crop)
-    labeled, n_labels = label(crop)
+    # 26-connected, matching every other label() call in this module. The
+    # default (6-connected, face-only) can split a solid fat blob that is
+    # only diagonally connected at a jagged mask boundary into two
+    # "components", each building its own independent centreline tree with
+    # no cross-component tree-adjacency check -- the two trees can then end
+    # up 26-adjacent at more than one voxel near the split, producing a
+    # genuine cycle in the unioned result once graph-building reads it back.
+    labeled, n_labels = label(crop, structure=generate_binary_structure(3, 3))
     if n_labels == 0:
         return result
     crop_result = np.zeros(crop.shape, dtype=bool)
@@ -738,6 +745,27 @@ def _path_through_mask(
     )
     if len(local_path) >= 2:
         return _shift_path(local_path, origin)
+
+    # Every attempt above stayed inside a box tight around start/end. A real
+    # geodesic can need to leave that box (wind around the trunk, detour past
+    # a neck) even though start and end are both foreground voxels of one
+    # connected `allowed`. Without this, the caller silently drew no bridge
+    # at all: it marks only start/end (already True) and calls the arm
+    # joined because `end` sits on the ridge, leaving the arm's own voxels
+    # 26-disconnected from everything else -- an isolated fragment that
+    # vanishes from the graph the moment anything downstream drops small
+    # disconnected components. Fall back to Dijkstra on the whole mask: no
+    # crop, so no box to be too tight, at the cost of one full-mask walk.
+    full_path = _geodesic_on_crop(allowed_b, start, end)
+    if len(full_path) >= 2:
+        return full_path
+    logger.warning(
+        "Could not join a thin vessel arm to the fat ridge: no path from %s "
+        "to %s within the connected mask. This arm stays a disconnected "
+        "fragment and may be dropped downstream.",
+        start,
+        end,
+    )
     return [start, end]
 
 
@@ -828,6 +856,12 @@ def _join_thin_arms_to_fat_ridge(
             if _touches_tree(fat_now, voxel):
                 break
         fat_now = result & thick_b
+        # Requery against what's now connected, including this join's own
+        # bridge and any earlier arm: otherwise every later arm keeps
+        # targeting the pre-join ridge alone, picking a farther "nearest"
+        # point than the one this loop just made available.
+        fat_coords = np.argwhere(fat_now)
+        fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
     return result
 
 
