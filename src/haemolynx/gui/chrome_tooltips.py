@@ -84,3 +84,7 @@ Z_PROJECT_TOOLTIP = (
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar on the canvas, in microns when voxel size is known"
 )
+SNAPSHOT_TOOLTIP = (
+    "Write a TIFF of the current napari view into the pipeline "
+    "output folder (cosmetic export only; does not feed the run)"
+)

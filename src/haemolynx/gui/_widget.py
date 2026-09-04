@@ -17,6 +17,7 @@ import logging
 import math
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
@@ -99,8 +100,15 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
 #: What napari calls the log window's dock.
 LOG_DOCK_NAME = "HaemoLynx run log"
 
-#: Left-hand view chrome (Z project, scale bar).
+#: Left-hand view chrome (Z project, scale bar, snapshot).
 VIEW_DOCK_NAME = "HaemoLynx view"
+
+#: Cosmetic TIFF of the current view; never a pipeline setting or input.
+SNAPSHOT_STEM = "haemolynx_snapshot"
+SNAPSHOT_NO_OUTPUT_FOLDER = (
+    "No output folder is set; set the VTK output prefix before saving a snapshot."
+)
+SNAPSHOT_NO_VIEWER = "No viewer to snapshot."
 
 #: Metadata key for the unprojected volume on a layer that is not tagged
 #: as ours (a user-dropped image). Ours layers keep the same array on the
@@ -122,6 +130,46 @@ def _export_dir(values: dict[str, Any]) -> Path:
     """Where a layer with no file behind it gets written: beside the outputs."""
     prefix = values.get("vtk_output_prefix")
     return Path(prefix).parent if prefix else Path.cwd()
+
+
+def output_folder_from_settings(values: Mapping[str, Any]) -> Path | None:
+    """Pipeline output directory (parent of ``vtk_output_prefix``), or None.
+
+    Same folder VTK and other run artifacts use. A snapshot is a cosmetic
+    export into this directory; it is never read back as pipeline input.
+
+    A cleared FileEdit arrives as ``"."`` or the working directory rather
+    than None.
+    """
+    prefix = values.get("vtk_output_prefix")
+    if prefix is None:
+        return None
+    text = str(prefix).strip()
+    if not text or text == ".":
+        return None
+    path = Path(prefix)
+    try:
+        if path.resolve() == Path.cwd().resolve():
+            return None
+    except OSError:
+        return None
+    return path.parent
+
+
+def unique_snapshot_path(
+    output_dir: Path, *, when: datetime | None = None
+) -> Path:
+    """``haemolynx_snapshot_YYYYMMDD_HHMMSS.tif``; ``_2``, ``_3``, … if taken."""
+    stamp = (when or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    candidate = Path(output_dir) / f"{SNAPSHOT_STEM}_{stamp}.tif"
+    if not candidate.exists():
+        return candidate
+    n = 2
+    while True:
+        candidate = Path(output_dir) / f"{SNAPSHOT_STEM}_{stamp}_{n}.tif"
+        if not candidate.exists():
+            return candidate
+        n += 1
 
 
 def _build_row(field: Field):
@@ -369,6 +417,57 @@ def data_for_pipeline(layer) -> Any:
     """The full volume a run should read, ignoring a view-only Z project."""
     cached = _z_project_cache(layer)
     return cached if cached is not None else getattr(layer, "data", None)
+
+
+def _canvas_screenshot(viewer) -> np.ndarray | None:
+    """RGB(A) array of the current napari canvas, or None if it cannot be taken."""
+    window = getattr(viewer, "window", None)
+    take = getattr(window, "screenshot", None) if window is not None else None
+    if take is None:
+        take = getattr(viewer, "screenshot", None)
+    if take is None:
+        return None
+    try:
+        rgb = take(canvas_only=True, flash=False)
+    except TypeError:
+        try:
+            rgb = take(canvas_only=True)
+        except Exception:  # noqa: BLE001
+            logger.debug("canvas screenshot failed", exc_info=True)
+            return None
+    except Exception:  # noqa: BLE001
+        logger.debug("canvas screenshot failed", exc_info=True)
+        return None
+    arr = np.asarray(rgb)
+    return arr if arr.size else None
+
+
+def write_viewer_snapshot(
+    viewer, output_dir: Path, *, when: datetime | None = None
+) -> Path:
+    """Write one 2D TIFF of the current napari canvas into *output_dir*.
+
+    This is a screenshot of what the user sees — visible layers, Z-project,
+    colours, scale bar — not a multi-page dump of layer arrays and not the
+    hidden ``z_project_full`` cache. Cosmetic only; never pipeline input.
+
+    Filename: ``haemolynx_snapshot_YYYYMMDD_HHMMSS.tif``, with ``_2``,
+    ``_3``, … when that timestamp is already taken.
+    """
+    import tifffile
+
+    rgb = _canvas_screenshot(viewer)
+    if rgb is None:
+        raise ValueError("Could not capture the current view.")
+    arr = np.ascontiguousarray(rgb)
+    folder = Path(output_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = unique_snapshot_path(folder, when=when)
+    extras: dict[str, Any] = {}
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        extras["photometric"] = "rgb"
+    tifffile.imwrite(str(path), arr, **extras)
+    return path
 
 
 def _layer_voxel_size_z(layer) -> float:
@@ -4260,6 +4359,7 @@ def settings_widget(napari_viewer=None):
         SCALE_BAR_TOOLTIP,
         SHOW_RESULTS_TOOLTIP,
         SHOW_STEPS_TOOLTIP,
+        SNAPSHOT_TOOLTIP,
         Z_PROJECT_TOOLTIP,
     )
 
@@ -4280,7 +4380,7 @@ def settings_widget(napari_viewer=None):
     show_steps.native.setObjectName("haemolynx_show_steps")
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
-        QCheckBox, QFormLayout, QGroupBox, QLabel, QWidget,
+        QCheckBox, QFormLayout, QGroupBox, QLabel, QPushButton, QWidget,
     )
     from superqt import QDoubleRangeSlider, QDoubleSlider
 
@@ -4732,8 +4832,36 @@ def settings_widget(napari_viewer=None):
     display_form.addRow(z_project_label, z_project_slider)
     display_form.addRow(scale_bar_box)
 
+    def on_save_snapshot() -> None:
+        folder = output_folder_from_settings(current_values())
+        if folder is None:
+            logger.warning(SNAPSHOT_NO_OUTPUT_FOLDER)
+            report.value = SNAPSHOT_NO_OUTPUT_FOLDER
+            return
+        if viewer is None:
+            report.value = SNAPSHOT_NO_VIEWER
+            return
+        try:
+            path = write_viewer_snapshot(viewer, folder)
+        except Exception as error:  # noqa: BLE001 - must not crash Qt
+            logger.exception("could not write snapshot")
+            report.value = f"Could not write snapshot:\n{error}"
+            return
+        report.value = f"Wrote snapshot {path}"
+
+    snapshot_group = QGroupBox("Snapshot")
+    snapshot_group.setObjectName("haemolynx_snapshot_group")
+    snapshot_layout = QVBoxLayout(snapshot_group)
+    snapshot_button = QPushButton("Save snapshot")
+    snapshot_button.setObjectName("haemolynx_snapshot_button")
+    snapshot_button.setToolTip(SNAPSHOT_TOOLTIP)
+    snapshot_button.clicked.connect(on_save_snapshot)
+    snapshot_layout.addWidget(snapshot_button)
+    snapshot_layout.addStretch(1)
+    snapshot_group.setMinimumHeight(48)
     view_layout = QVBoxLayout(view_panel)
     view_layout.addWidget(display_group)
+    view_layout.addWidget(snapshot_group)
     view_layout.addStretch(1)
 
     view_dock = None
@@ -4778,6 +4906,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_z_project_slider = z_project_slider
     panel._haemolynx_scale_bar = scale_bar_box
     panel._haemolynx_display_group = display_group
+    panel._haemolynx_snapshot_group = snapshot_group
+    panel._haemolynx_snapshot_button = snapshot_button
     panel._haemolynx_apply_z_project = _apply_z_project
     panel._haemolynx_apply_view_z = apply_view_z
     panel._haemolynx_data_for_pipeline = data_for_pipeline
