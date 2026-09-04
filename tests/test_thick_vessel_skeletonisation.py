@@ -29,7 +29,13 @@ from haemolynx.preprocessing import (
     skeletonize_volume,
     thick_vessel_object_mask,
 )
-from haemolynx.preprocessing.thick_vessels import characterisation_rows
+from haemolynx.preprocessing.thick_vessels import (
+    _cover_around_path,
+    _dijkstra_parents,
+    _skeletonize_foreground,
+    _traceback,
+    characterisation_rows,
+)
 
 SPACING_ZYX = (1.0, 1.0, 1.0)
 CAPILLARY_RADIUS_UM = 2.5
@@ -369,3 +375,64 @@ def test_edt_ridge_on_a_small_tube_in_a_large_volume_stays_local():
     assert ridge[10:18, 10:18, 8:48].any()
     assert not ridge[40:, :, :].any()
     assert int(ridge.sum()) < int(volume[10:18, 10:18, 8:48].sum())
+
+
+def test_dijkstra_traces_a_straight_tube_end_to_end():
+    tube = np.zeros((5, 5, 20), dtype=bool)
+    tube[2, 2, 2:18] = True
+    cost = np.where(tube, 1.0, np.inf)
+    root = (2, 2, 2)
+    far = (2, 2, 17)
+    walked = _dijkstra_parents(tube, cost, root)
+    assert walked is not None
+    parent, fg_coords, index_of = walked
+    path = _traceback(parent, fg_coords, index_of, root, far)
+    assert path[0] == root
+    assert path[-1] == far
+    assert all(voxel[0] == 2 and voxel[1] == 2 for voxel in path)
+
+
+def test_cropped_lee_matches_lee_on_the_full_volume():
+    volume = np.zeros((40, 40, 40), dtype=bool)
+    volume[18:23, 18:23, 5:35] = True
+    assert np.array_equal(_skeletonize_foreground(volume), skeletonize_volume(volume))
+
+
+def test_cover_around_a_path_matches_a_full_volume_ball():
+    from scipy.ndimage import distance_transform_edt
+
+    shape = (30, 30, 30)
+    path = [(12, 15, z) for z in range(5, 25)]
+    fast = _cover_around_path(path, 4, shape)
+    painted = np.zeros(shape, dtype=bool)
+    for voxel in path:
+        painted[voxel] = True
+    naive = distance_transform_edt(~painted) <= 4
+    assert np.array_equal(fast, naive)
+    assert not fast[0, 0, 0]
+
+
+def test_fat_catchment_on_a_padded_volume_matches_the_unpadded_object():
+    mask, _ = plasma_labelled_object(8.0)
+    thick_small = thick_vessel_object_mask(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    pad = 12
+    padded = np.zeros(tuple(int(s) + 2 * pad for s in mask.shape), dtype=bool)
+    padded[
+        pad : pad + mask.shape[0],
+        pad : pad + mask.shape[1],
+        pad : pad + mask.shape[2],
+    ] = mask
+    thick_pad = thick_vessel_object_mask(
+        padded, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    assert np.array_equal(
+        thick_pad[
+            pad : pad + mask.shape[0],
+            pad : pad + mask.shape[1],
+            pad : pad + mask.shape[2],
+        ],
+        thick_small,
+    )
+    assert not thick_pad[: pad // 2].any()

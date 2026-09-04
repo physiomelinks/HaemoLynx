@@ -21,7 +21,6 @@ fixture. Volume (µm³) of the whole object is not the gate.
 """
 from __future__ import annotations
 
-import heapq
 import logging
 from typing import Iterable
 
@@ -30,9 +29,12 @@ from scipy.ndimage import (
     binary_dilation,
     binary_propagation,
     distance_transform_edt,
+    find_objects,
     generate_binary_structure,
     label,
 )
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import dijkstra
 
 from .skeleton import fill_binary_holes, skeletonize_volume, _draw_line_3d
 
@@ -103,21 +105,27 @@ def thick_vessel_object_mask(
        than that far from the body stay on the Lee path.
     """
     mask = np.asarray(binary, dtype=bool)
+    out = np.zeros(mask.shape, dtype=bool)
     if min_radius_um <= 0.0 or not mask.any():
-        return np.zeros(mask.shape, dtype=bool)
+        return out
 
-    radius_map = inscribed_radius_map(mask, voxel_size_zyx)
-    thick_core = mask & (radius_map >= float(min_radius_um))
+    bbox = _foreground_bbox(mask, pad=1)
+    if bbox is None:
+        return out
+    crop = mask[bbox]
+    radius_map = inscribed_radius_map(crop, voxel_size_zyx)
+    thick_core = crop & (radius_map >= float(min_radius_um))
     if not thick_core.any():
-        return np.zeros(mask.shape, dtype=bool)
+        return out
 
     t_low = 0.5 * float(min_radius_um)
-    allowed = mask & (radius_map >= t_low)
+    allowed = crop & (radius_map >= t_low)
     body = binary_propagation(thick_core, mask=allowed)
     dist_to_body = distance_transform_edt(
         ~body, sampling=tuple(float(v) for v in voxel_size_zyx)
     )
-    return mask & (dist_to_body <= t_low)
+    out[bbox] = crop & (dist_to_body <= t_low)
+    return out
 
 
 def braid_factor(
@@ -180,6 +188,16 @@ def _foreground_bbox(mask: np.ndarray, *, pad: int = 1) -> tuple[slice, slice, s
     return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
 
 
+def _skeletonize_foreground(mask: np.ndarray) -> np.ndarray:
+    """Lee thinning of *mask*, cropped so empty space is not walked."""
+    result = np.zeros(np.asarray(mask).shape, dtype=bool)
+    bbox = _foreground_bbox(mask, pad=1)
+    if bbox is None:
+        return result
+    result[bbox] = skeletonize_volume(mask[bbox])
+    return result
+
+
 def _dijkstra_parents(
     binary: np.ndarray,
     cost: np.ndarray,
@@ -192,7 +210,8 @@ def _dijkstra_parents(
     array to that compact id, or -1. ``None`` if *root* is not foreground.
 
     Arrays are sized to the foreground, not ``prod(shape)``: a microscopy
-    stack must not allocate a float64 per background voxel.
+    stack must not allocate a float64 per background voxel. The walk itself
+    is SciPy's C Dijkstra on a 26-neighbour CSR graph of those voxels.
     """
     binary_f = np.asarray(binary, dtype=bool)
     fg_coords = np.argwhere(binary_f)
@@ -205,33 +224,58 @@ def _dijkstra_parents(
     if root_i < 0:
         return None
 
-    parent = np.full(n_fg, -1, dtype=np.int32)
-    dist = np.full(n_fg, np.inf, dtype=np.float64)
-    dist[root_i] = 0.0
-    parent[root_i] = root_i
-    heap: list[tuple[float, int]] = [(0.0, root_i)]
+    zyx = fg_coords.astype(np.intp, copy=False)
     z_max, y_max, x_max = binary_f.shape
-
-    while heap:
-        d, idx = heapq.heappop(heap)
-        if d > dist[idx]:
+    cost_a = np.asarray(cost, dtype=np.float64)
+    row_chunks: list[np.ndarray] = []
+    col_chunks: list[np.ndarray] = []
+    data_chunks: list[np.ndarray] = []
+    for dz, dy, dx in _OFFSETS_26:
+        nz = zyx[:, 0] + int(dz)
+        ny = zyx[:, 1] + int(dy)
+        nx_ = zyx[:, 2] + int(dx)
+        in_bounds = (
+            (nz >= 0)
+            & (nz < z_max)
+            & (ny >= 0)
+            & (ny < y_max)
+            & (nx_ >= 0)
+            & (nx_ < x_max)
+        )
+        if not np.any(in_bounds):
             continue
-        z, y, x = (int(v) for v in fg_coords[idx])
-        for dz, dy, dx in _OFFSETS_26:
-            nz, ny, nx_ = z + dz, y + dy, x + dx
-            if not (0 <= nz < z_max and 0 <= ny < y_max and 0 <= nx_ < x_max):
-                continue
-            nidx = int(index_of[nz, ny, nx_])
-            if nidx < 0:
-                continue
-            step = float(cost[nz, ny, nx_])
-            if not np.isfinite(step) or step <= 0.0:
-                continue
-            nd = d + step
-            if nd < dist[nidx]:
-                dist[nidx] = nd
-                parent[nidx] = idx
-                heapq.heappush(heap, (nd, nidx))
+        src = np.flatnonzero(in_bounds)
+        nidx = index_of[nz[in_bounds], ny[in_bounds], nx_[in_bounds]]
+        connected = nidx >= 0
+        if not np.any(connected):
+            continue
+        nbr_z = nz[in_bounds][connected]
+        nbr_y = ny[in_bounds][connected]
+        nbr_x = nx_[in_bounds][connected]
+        weights = cost_a[nbr_z, nbr_y, nbr_x]
+        finite = np.isfinite(weights) & (weights > 0.0)
+        if not np.any(finite):
+            continue
+        row_chunks.append(src[connected][finite].astype(np.int32, copy=False))
+        col_chunks.append(nidx[connected][finite].astype(np.int32, copy=False))
+        data_chunks.append(weights[finite])
+
+    if row_chunks:
+        rows = np.concatenate(row_chunks)
+        cols = np.concatenate(col_chunks)
+        weights_all = np.concatenate(data_chunks)
+        graph = csr_matrix((weights_all, (rows, cols)), shape=(n_fg, n_fg))
+    else:
+        graph = csr_matrix((n_fg, n_fg))
+    _dist, predecessors = dijkstra(
+        graph,
+        directed=True,
+        indices=root_i,
+        return_predecessors=True,
+    )
+    parent = np.asarray(predecessors, dtype=np.int32)
+    parent[root_i] = root_i
+    parent[parent < 0] = -1
     return parent, fg_coords, index_of
 
 
@@ -288,9 +332,17 @@ def _cover_around_path(
     shape: tuple[int, int, int],
 ) -> np.ndarray:
     mask = np.zeros(shape, dtype=bool)
-    _draw_path(mask, path)
+    if not path:
+        return mask
     radius = max(1, int(radius_voxels))
-    return distance_transform_edt(~mask) <= radius
+    pts = np.asarray(path, dtype=int)
+    lo = np.maximum(pts.min(axis=0) - radius, 0)
+    hi = np.minimum(pts.max(axis=0) + radius + 1, shape)
+    slc = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    local = np.zeros(tuple(int(b - a) for a, b in zip(lo, hi)), dtype=bool)
+    local[tuple((pts - lo).T)] = True
+    mask[slc] = distance_transform_edt(~local) <= radius
+    return mask
 
 
 def _local_principal_axis(
@@ -361,21 +413,8 @@ def _trim_to_tree(
     return trimmed
 
 
-def _component_edt_ridge(component: np.ndarray, edt: np.ndarray) -> np.ndarray:
-    """Centreline tree: trunk geodesic plus every arm that is not a sheet duplicate."""
-    result = np.zeros(component.shape, dtype=bool)
-    bbox = _foreground_bbox(component, pad=1)
-    if bbox is None:
-        return result
-    crop = component[bbox]
-    crop_edt = edt[bbox]
-    crop_result = _component_edt_ridge_on_crop(crop, crop_edt)
-    result[bbox] = crop_result
-    return result
-
-
 def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.ndarray:
-    """Like :func:`_component_edt_ridge` on an already-cropped component."""
+    """Centreline tree on an already-cropped fat component."""
     result = np.zeros(component.shape, dtype=bool)
     coords = np.argwhere(component)
     if coords.size == 0:
@@ -444,9 +483,15 @@ def skeletonize_edt_ridge(binary: np.ndarray) -> np.ndarray:
     crop = mask[bbox]
     edt = distance_transform_edt(crop)
     labeled, n_labels = label(crop)
+    if n_labels == 0:
+        return result
     crop_result = np.zeros(crop.shape, dtype=bool)
-    for component_id in range(1, int(n_labels) + 1):
-        crop_result |= _component_edt_ridge(labeled == component_id, edt)
+    for component_id, slc in enumerate(find_objects(labeled), start=1):
+        if slc is None:
+            continue
+        crop_result[slc] |= _component_edt_ridge_on_crop(
+            labeled[slc] == component_id, edt[slc]
+        )
     result[bbox] = crop_result
     return result.astype(bool)
 
@@ -513,7 +558,7 @@ def skeletonize_thickness_gated(
     )
     result = np.zeros(mask.shape, dtype=bool)
     if thin.any():
-        result |= skeletonize_volume(thin).astype(bool)
+        result |= _skeletonize_foreground(thin)
     result |= skeletonize_edt_ridge(thick)
     # Do not draw chords through the fat region: leftover thin fragments at
     # the cut are nearby endpoints, which graph-building already reconnects.
