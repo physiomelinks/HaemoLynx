@@ -673,13 +673,15 @@ def test_the_panel_offers_the_view_controls(make_napari_viewer):
     assert not hasattr(panel, "_haemolynx_colour")
     assert not hasattr(panel, "_haemolynx_scales")
     assert hasattr(panel, "_haemolynx_z_depth_slider")
-    assert panel._haemolynx_z_depth_slider.isVisible() is False
     z_depth_row = panel._haemolynx_z_depth_row
+    display = panel._haemolynx_display_group
+    assert z_depth_row.objectName() == "haemolynx_z_depth_row"
+    assert z_depth_row.parentWidget() is display
     view_controls = panel._haemolynx_view_controls.native
-    assert z_depth_row.parentWidget() is panel
     layout = panel.layout()
     assert layout.indexOf(view_controls) >= 0
-    assert layout.indexOf(z_depth_row) == layout.indexOf(view_controls) + 1
+    assert layout.indexOf(z_depth_row) == -1
+    assert layout.indexOf(display) == -1
 
 
 def test_z_depth_slider_is_not_mounted_in_layer_controls(make_napari_viewer):
@@ -702,20 +704,64 @@ def test_z_depth_slider_is_not_mounted_in_layer_controls(make_napari_viewer):
 
 
 def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
-    from haemolynx.gui._widget import _apply_z_filter, _apply_layers
+    """Left-panel Z-depth clips graph layers; volumes are clipped without MIP.
 
-    for group in a_run():
+    ``_apply_z_filter`` is still the graph-geometry half. Image/labels go
+    through the same window via the view-panel apply path, without a MIP
+    unless Z-project is also on.
+    """
+    from haemolynx.gui._widget import settings_widget
+    from haemolynx.gui.results import ResultLayers
+
+    panel = settings_widget(napari_viewer=viewer)
+    results = ResultLayers()
+    groups = []
+    graph = a_graph()
+    groups.append(
+        results.stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=np.zeros((4, 4, 4), dtype=np.uint8),
+                skeleton=np.zeros((4, 4, 4), dtype=bool),
+                voxel_size_xyz=(0.5, 1.0, 2.0),
+                voxel_size_zyx=(2.0, 1.0, 0.5),
+            ),
+        )
+    )
+    groups.append(results.stage_finished("build_network", network(graph, (2.0, 1.0, 0.5))))
+    for group in groups:
         _apply_layers(viewer, group)
-    full_z = 8.0  # 4 Z slices x 2.0 µm (``a_run`` voxel size)
-    image_data = np.asarray(viewer.layers[IMAGE].data).copy()
+
+    image = np.zeros((4, 4, 4), dtype=np.uint8)
+    image[0] = 1
+    image[1] = 3
+    image[2] = 2
+    image[3] = 9
+    layer = viewer.layers[IMAGE]
+    layer.data = image
+    from haemolynx.gui._widget import _store_z_project_cache, data_for_pipeline
+
+    _store_z_project_cache(layer, image)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    full_z = 8.0
     vessel_count = len(viewer.layers[VESSELS].data)
+    original = image.copy()
+    assert panel._haemolynx_z_project.isChecked() is False
 
-    _apply_z_filter(viewer, 0.0, 5.0, z_extent=full_z)
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
     assert len(viewer.layers[VESSELS].data) < vessel_count
-    assert np.array_equal(viewer.layers[IMAGE].data, image_data)
+    displayed = np.asarray(layer.data)
+    np.testing.assert_array_equal(displayed[0], 1)
+    np.testing.assert_array_equal(displayed[1], 3)
+    np.testing.assert_array_equal(displayed[2], 2)
+    np.testing.assert_array_equal(displayed[3], 0)
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
 
-    _apply_z_filter(viewer, 0.0, full_z, z_extent=full_z)
+    panel._haemolynx_z_depth_slider.setValue((0.0, full_z))
     assert len(viewer.layers[VESSELS].data) == vessel_count
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
 
 
 def test_z_depth_filter_keeps_all_edges_at_default_full_slider(viewer):

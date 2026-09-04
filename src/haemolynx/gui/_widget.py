@@ -44,7 +44,9 @@ from haemolynx.gui.results import (
     ResultLayers,
     _flow_dir_contrast_limits,
     _flow_heading_contrast_limits,
+    clip_volume_to_z,
     colour_cycle_for,
+    compose_z_display_window,
     filter_points_by_z,
     filter_vectors_by_z,
     is_z_depth_filtered_layer,
@@ -100,7 +102,7 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
 #: What napari calls the log window's dock.
 LOG_DOCK_NAME = "HaemoLynx run log"
 
-#: Left-hand view chrome (Z project, scale bar, snapshot).
+#: Left-hand view chrome (Z-project, Z-depth, scale bar, snapshot).
 VIEW_DOCK_NAME = "HaemoLynx view"
 
 #: Cosmetic TIFF of the current view; never a pipeline setting or input.
@@ -414,7 +416,7 @@ def _store_z_project_cache(layer, data: Any = None) -> None:
 
 
 def data_for_pipeline(layer) -> Any:
-    """The full volume a run should read, ignoring a view-only Z project."""
+    """The full volume a run should read, ignoring view-only Z project/Z-depth."""
     cached = _z_project_cache(layer)
     return cached if cached is not None else getattr(layer, "data", None)
 
@@ -506,15 +508,21 @@ def _viewer_z_extent_um(viewer) -> float | None:
     return max_extent if max_extent > 0.0 else None
 
 
-def _apply_z_project(
+def _apply_volume_z_display(
     viewer,
     z_min: float,
     z_max: float,
     *,
+    project: bool,
     z_extent: float | None = None,
 ) -> None:
-    """MIP image/labels layers to a physical Z window. Does not crop pipeline inputs."""
-    full_range = z_window_is_full(z_min, z_max, z_extent)
+    """Clip image/labels to a Z window; MIP that window when *project* is True.
+
+    Reads the unprojected ``z_project_full`` cache. Full-range + project off
+    (or a full-range MIP) restores the cached stack. Does not crop pipeline
+    inputs.
+    """
+    identity = z_window_is_full(z_min, z_max, z_extent)
     for layer in viewer.layers:
         kind = layer.__class__.__name__.lower()
         if not is_z_project_volume_layer(kind):
@@ -525,16 +533,31 @@ def _apply_z_project(
             cached = _z_project_cache(layer)
         if cached is None:
             continue
-        if full_range:
+        if identity:
             layer.data = np.array(cached, copy=True)
             continue
-        layer.data = project_volume_max_z(
-            cached,
-            _layer_voxel_size_z(layer),
-            z_min,
-            z_max,
-            z_extent=z_extent,
-        )
+        dz = _layer_voxel_size_z(layer)
+        if project:
+            layer.data = project_volume_max_z(
+                cached, dz, z_min, z_max, z_extent=z_extent
+            )
+        else:
+            layer.data = clip_volume_to_z(
+                cached, dz, z_min, z_max, z_extent=z_extent
+            )
+
+
+def _apply_z_project(
+    viewer,
+    z_min: float,
+    z_max: float,
+    *,
+    z_extent: float | None = None,
+) -> None:
+    """MIP image/labels layers to a physical Z window. Does not crop pipeline inputs."""
+    _apply_volume_z_display(
+        viewer, z_min, z_max, project=True, z_extent=z_extent
+    )
 
 
 def _apply_scale_bar(viewer, visible: bool) -> None:
@@ -614,56 +637,175 @@ def _sync_points_per_point_properties(
             setattr(layer, key, fixed)
 
 
-def _sync_z_depth_slider(slider, results: ResultLayers | None) -> None:
-    """Set slider range from the image stack; hide until skeletonise has run."""
-    extent = results.image_z_extent_um() if results is not None else None
-    if extent is None or extent <= 0.0:
-        slider.setEnabled(False)
-        slider.setVisible(False)
-        return
-    step = float(results._voxel_size_zyx[0]) if results is not None else 1.0  # noqa: SLF001
-    slider.setVisible(True)
-    slider.setEnabled(True)
-    slider.blockSignals(True)
-    try:
-        slider.setRange(0.0, extent)
-        if hasattr(slider, "setSingleStep"):
-            slider.setSingleStep(max(step, 1e-6))
-        lo, hi = slider.value()
-        if hi <= lo or hi > extent or lo < 0.0:
-            lo, hi = 0.0, extent
-        else:
-            lo = max(0.0, min(lo, extent))
-            hi = max(lo, min(hi, extent))
-        slider.setValue((lo, hi))
-    finally:
-        slider.blockSignals(False)
+def _double_range_pair(object_name: str):
+    """Min/max ``QDoubleSlider`` pair with a range-slider value API.
+
+    superqt's ``QDoubleRangeSlider`` is not reliably draggable in napari's
+    left dock: a factory ``(0, 1)`` µm window on a real stack parks both
+    handles on top of each other at the left edge, and handles sitting at
+    the groove ends (full range) often miss hit-testing. Two
+    ``QDoubleSlider`` s match the working Arrow size control.
+    """
+    from qtpy.QtCore import Qt, Signal
+    from qtpy.QtWidgets import QFormLayout, QSizePolicy, QWidget
+    from superqt import QDoubleSlider
+
+    class DoubleRangePair(QWidget):
+        valueChanged = Signal(object)
+
+        def __init__(self):
+            super().__init__()
+            self._lo = QDoubleSlider(Qt.Orientation.Horizontal)
+            self._hi = QDoubleSlider(Qt.Orientation.Horizontal)
+            self._lo.setObjectName(f"{object_name}_min")
+            self._hi.setObjectName(f"{object_name}_max")
+            for slider in (self._lo, self._hi):
+                slider.setMinimumHeight(18)
+                slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                slider.setRange(0.0, 1.0)
+            self._lo.setValue(0.0)
+            self._hi.setValue(0.0)
+            form = QFormLayout(self)
+            form.setContentsMargins(0, 0, 0, 0)
+            form.setSpacing(2)
+            form.addRow("min", self._lo)
+            form.addRow("max", self._hi)
+            self._lo.valueChanged.connect(self._on_lo)
+            self._hi.valueChanged.connect(self._on_hi)
+            self._updating = False
+            self._haemolynx_extent_ready = False
+
+        def _on_lo(self, value: float) -> None:
+            if self._updating:
+                return
+            if value > self._hi.value():
+                self._updating = True
+                try:
+                    self._hi.setValue(value)
+                finally:
+                    self._updating = False
+            self.valueChanged.emit(self.value())
+
+        def _on_hi(self, value: float) -> None:
+            if self._updating:
+                return
+            if value < self._lo.value():
+                self._updating = True
+                try:
+                    self._lo.setValue(value)
+                finally:
+                    self._updating = False
+            self.valueChanged.emit(self.value())
+
+        def value(self) -> tuple[float, float]:
+            lo, hi = float(self._lo.value()), float(self._hi.value())
+            return (min(lo, hi), max(lo, hi))
+
+        def setValue(self, pair) -> None:
+            lo, hi = float(pair[0]), float(pair[1])
+            if lo > hi:
+                lo, hi = hi, lo
+            self._updating = True
+            try:
+                self._lo.setValue(lo)
+                self._hi.setValue(hi)
+            finally:
+                self._updating = False
+            if not self.signalsBlocked():
+                self.valueChanged.emit(self.value())
+
+        def setRange(self, minimum: float, maximum: float) -> None:
+            self._lo.setRange(minimum, maximum)
+            self._hi.setRange(minimum, maximum)
+
+        def setSingleStep(self, step: float) -> None:
+            self._lo.setSingleStep(step)
+            self._hi.setSingleStep(step)
+
+        def minimum(self) -> float:
+            return float(self._lo.minimum())
+
+        def maximum(self) -> float:
+            return float(self._lo.maximum())
+
+        def blockSignals(self, block: bool) -> bool:  # noqa: N802 - Qt API
+            self._lo.blockSignals(block)
+            self._hi.blockSignals(block)
+            return super().blockSignals(block)
+
+    widget = DoubleRangePair()
+    widget.setObjectName(object_name)
+    widget.setMinimumHeight(44)
+    widget.setSizePolicy(
+        QSizePolicy.Expanding, QSizePolicy.Fixed
+    )
+    return widget
 
 
-def _sync_z_project_slider(slider, results: ResultLayers | None, viewer=None) -> None:
-    """Set the left-panel Z project range from the stack; stay visible always."""
+def _z_extent_and_step(results: ResultLayers | None, viewer=None) -> tuple[float | None, float]:
+    """Physical Z span (µm) and slider step from results or open layers."""
     extent = results.image_z_extent_um() if results is not None else None
+    step = None
+    if results is not None:
+        try:
+            step = float(results._voxel_size_zyx[0])  # noqa: SLF001
+        except (TypeError, IndexError):
+            step = None
     if (extent is None or extent <= 0.0) and viewer is not None:
         extent = _viewer_z_extent_um(viewer)
+        if viewer is not None:
+            for layer in viewer.layers:
+                kind = layer.__class__.__name__.lower()
+                if is_z_project_volume_layer(kind):
+                    step = _layer_voxel_size_z(layer)
+                    break
+    if step is None or step <= 0.0:
+        step = 1.0
+    return extent, step
+
+
+def _sync_z_range_slider(
+    slider,
+    results: ResultLayers | None,
+    viewer=None,
+    *,
+    enabled: bool = True,
+) -> None:
+    """Set a left-panel Z range from the stack; full range until the user moves it."""
+    extent, step = _z_extent_and_step(results, viewer)
     if extent is None or extent <= 0.0:
         slider.setEnabled(False)
         return
-    step = float(results._voxel_size_zyx[0]) if results is not None else 1.0  # noqa: SLF001
-    slider.setEnabled(True)
     slider.blockSignals(True)
     try:
         slider.setRange(0.0, extent)
         if hasattr(slider, "setSingleStep"):
-            slider.setSingleStep(max(step, 1e-6))
+            # Finer than a voxel so setValue(µm) sticks and handles can move.
+            slider.setSingleStep(max(min(step, 0.1), 1e-6))
         lo, hi = slider.value()
-        if hi <= lo or hi > extent or lo < 0.0:
+        uninitialized = not getattr(slider, "_haemolynx_extent_ready", False)
+        if uninitialized or hi <= lo or hi > extent or lo < 0.0:
             lo, hi = 0.0, extent
         else:
             lo = max(0.0, min(lo, extent))
             hi = max(lo, min(hi, extent))
         slider.setValue((lo, hi))
+        slider._haemolynx_extent_ready = True
     finally:
         slider.blockSignals(False)
+    slider.setEnabled(bool(enabled))
+
+
+def _sync_z_depth_slider(slider, results: ResultLayers | None, viewer=None) -> None:
+    """Set the Z-depth range from the image/skeleton; stay visible on the left."""
+    _sync_z_range_slider(slider, results, viewer, enabled=True)
+
+
+def _sync_z_project_slider(
+    slider, results: ResultLayers | None, viewer=None, *, enabled: bool = True
+) -> None:
+    """Set the Z-project range from the stack; *enabled* follows the checkbox."""
+    _sync_z_range_slider(slider, results, viewer, enabled=enabled)
 
 
 def _park_layer_control_host(host, parking) -> None:
@@ -2173,6 +2315,12 @@ def _apply_branch_hover_selection(layer, selected: Sequence[str]) -> None:
     layer.features = features
     tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
     tag["branch_hover_selected"] = chosen
+    cache = tag.get("z_filter_full")
+    if isinstance(cache, dict) and cache.get("features") is not None:
+        full_feats = dict(cache["features"])
+        if full_feats:
+            full_feats["tooltip"] = tooltips_from_feature_table(full_feats, chosen)
+            tag["z_filter_full"] = {**cache, "features": full_feats}
     metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
@@ -4264,8 +4412,8 @@ def settings_widget(napari_viewer=None):
     for widget in rows.values():
         widget.changed.connect(apply_prerequisites)
 
-    #: User-facing values of ``do_skeletonize`` / ``do_graph_building`` before
-    #: Revert turns them off for resume. Restored by "Clear layers and state".
+    #: User-facing values of the resume skip toggles before Revert turns them
+    #: off. Restored by "Clear layers and state".
     skip_toggle_snapshot: dict[str, bool] = {}
     revert_setting_skips = False
 
@@ -4392,6 +4540,8 @@ def settings_widget(napari_viewer=None):
         SHOW_RESULTS_TOOLTIP,
         SHOW_STEPS_TOOLTIP,
         SNAPSHOT_TOOLTIP,
+        Z_DEPTH_TOOLTIP,
+        Z_PROJECT_ENABLE_TOOLTIP,
         Z_PROJECT_TOOLTIP,
     )
 
@@ -4414,26 +4564,26 @@ def settings_widget(napari_viewer=None):
     from qtpy.QtWidgets import (
         QCheckBox, QFormLayout, QGroupBox, QLabel, QPushButton, QWidget,
     )
-    from superqt import QDoubleRangeSlider, QDoubleSlider
+    from superqt import QDoubleSlider
 
-    z_depth_label = QLabel("Z depth filter (µm)")
-    z_depth_slider = QDoubleRangeSlider(Qt.Orientation.Horizontal)
-    z_depth_slider.setObjectName("haemolynx_z_depth_slider")
-    z_depth_slider.setEnabled(False)
-    z_depth_slider.setVisible(False)
+    z_project_box = QCheckBox("Z-project")
+    z_project_box.setObjectName("haemolynx_z_project")
+    z_project_box.setChecked(False)
+    z_project_box.setToolTip(Z_PROJECT_ENABLE_TOOLTIP)
 
-    z_project_label = QLabel("Z project (µm)")
-    z_project_slider = QDoubleRangeSlider(Qt.Orientation.Horizontal)
-    z_project_slider.setObjectName("haemolynx_z_project_slider")
+    z_project_slider = _double_range_pair("haemolynx_z_project_slider")
     z_project_slider.setEnabled(False)
-    z_project_slider.setRange(0.0, 1.0)
-    z_project_slider.setValue((0.0, 1.0))
+    z_project_slider.setToolTip(Z_PROJECT_TOOLTIP)
+
+    z_depth_label = QLabel("Z-depth filter (µm)")
+    z_depth_slider = _double_range_pair("haemolynx_z_depth_slider")
+    z_depth_slider.setEnabled(False)
+    z_depth_label.setToolTip(Z_DEPTH_TOOLTIP)
+    z_depth_slider.setToolTip(Z_DEPTH_TOOLTIP)
 
     scale_bar_box = QCheckBox("Scale bar")
     scale_bar_box.setObjectName("haemolynx_scale_bar")
     scale_bar_box.setChecked(False)
-    z_project_slider.setToolTip(Z_PROJECT_TOOLTIP)
-    z_project_label.setToolTip(Z_PROJECT_TOOLTIP)
     scale_bar_box.setToolTip(SCALE_BAR_TOOLTIP)
 
     arrow_length_label = QLabel("Arrow size")
@@ -4472,44 +4622,64 @@ def settings_widget(napari_viewer=None):
         )
 
     def apply_view_z() -> None:
-        """Re-apply the left-panel Z project and the right-panel Z depth filter.
+        """Re-apply the left-panel Z-depth clip and optional Z-project MIP.
 
-        The two windows intersect for graph geometry. Image/labels layers only
-        see the Z project. Neither writes into settings or stage inputs.
+        Composition: restrict every displayed layer to the Z-depth window
+        first, then if Z-project is on, MIP (images/labels) / clip (graph)
+        the remaining slab using the intersection with the Z-project
+        window. Off + full-range Z-depth is the identity. Neither writes
+        into settings or stage inputs; ``data_for_pipeline`` still reads
+        the unprojected ``z_project_full`` cache.
         """
         if viewer is None:
             return
-        extent = None
-        if view.results is not None:
-            extent = view.results.image_z_extent_um()
-        if extent is None or extent <= 0.0:
-            extent = _viewer_z_extent_um(viewer)
+        extent, _step = _z_extent_and_step(view.results, viewer)
         if extent is None or extent <= 0.0:
             return
-        if z_project_slider.isEnabled():
-            p_lo, p_hi = z_project_slider.value()
-        else:
-            p_lo, p_hi = 0.0, extent
-        if z_depth_slider.isEnabled():
+        if z_depth_slider.isEnabled() or getattr(
+            z_depth_slider, "_haemolynx_extent_ready", False
+        ):
             d_lo, d_hi = z_depth_slider.value()
         else:
             d_lo, d_hi = 0.0, extent
-        _apply_z_project(viewer, p_lo, p_hi, z_extent=extent)
-        _apply_z_filter(
-            viewer,
-            max(p_lo, d_lo),
-            min(p_hi, d_hi),
-            z_extent=extent,
+        project_on = bool(z_project_box.isChecked())
+        if project_on:
+            p_lo, p_hi = z_project_slider.value()
+        else:
+            p_lo, p_hi = 0.0, extent
+        vol_lo, vol_hi, project = compose_z_display_window(
+            d_lo,
+            d_hi,
+            project=project_on,
+            project_min=p_lo,
+            project_max=p_hi,
         )
+        _apply_volume_z_display(
+            viewer, vol_lo, vol_hi, project=project, z_extent=extent
+        )
+        _apply_z_filter(viewer, vol_lo, vol_hi, z_extent=extent)
+        for layer in viewer.layers:
+            if _is_branch_hover_layer(layer):
+                _apply_branch_hover_selection(
+                    layer, _branch_hover_selected_for(layer)
+                )
         if scale_bar_box.isChecked():
             _apply_scale_bar(viewer, True)
+
+    def _sync_view_z_sliders() -> None:
+        _sync_z_depth_slider(z_depth_slider, view.results, viewer)
+        _sync_z_project_slider(
+            z_project_slider,
+            view.results,
+            viewer,
+            enabled=bool(z_project_box.isChecked()),
+        )
 
     def _after_layers_applied() -> None:
         """Refresh Z sliders and re-apply the current view-only filters."""
         if viewer is None:
             return
-        _sync_z_depth_slider(z_depth_slider, view.results)
-        _sync_z_project_slider(z_project_slider, view.results, viewer)
+        _sync_view_z_sliders()
         reparent_arrow_length_slider()
         apply_view_z()
 
@@ -4520,6 +4690,10 @@ def settings_widget(napari_viewer=None):
         apply_view_z()
 
     def on_z_project_changed(*_args) -> None:
+        apply_view_z()
+
+    def on_z_project_toggled(_checked: bool) -> None:
+        _sync_view_z_sliders()
         apply_view_z()
 
     def on_scale_bar_toggled(checked: bool) -> None:
@@ -4539,6 +4713,7 @@ def settings_widget(napari_viewer=None):
 
     z_depth_slider.valueChanged.connect(on_z_depth_changed)
     z_project_slider.valueChanged.connect(on_z_project_changed)
+    z_project_box.toggled.connect(on_z_project_toggled)
     scale_bar_box.toggled.connect(on_scale_bar_toggled)
     arrow_length_slider.valueChanged.connect(on_arrow_length_changed)
 
@@ -4723,8 +4898,9 @@ def settings_widget(napari_viewer=None):
             log_view.cancelled()
         view.results = None
         reparent_arrow_length_slider()
+        z_depth_slider._haemolynx_extent_ready = False
+        z_project_slider._haemolynx_extent_ready = False
         z_depth_slider.setEnabled(False)
-        z_depth_slider.setVisible(False)
         z_project_slider.setEnabled(False)
         arrow_length_slider.setEnabled(False)
         arrow_length_slider.setVisible(False)
@@ -4851,17 +5027,20 @@ def settings_widget(napari_viewer=None):
         labels=True,
     )
     view_controls.native.setObjectName("haemolynx_view_controls")
-    z_depth_row = QWidget()
-    z_depth_row.setObjectName("haemolynx_z_depth_row")
-    z_depth_form = QFormLayout(z_depth_row)
-    z_depth_form.addRow(z_depth_label, z_depth_slider)
 
     view_panel = QWidget()
     view_panel.setObjectName("haemolynx_view_panel")
     display_group = QGroupBox("Display")
     display_group.setObjectName("haemolynx_display_group")
     display_form = QFormLayout(display_group)
-    display_form.addRow(z_project_label, z_project_slider)
+    display_form.addRow(z_project_box)
+    display_form.addRow("Z-project (µm)", z_project_slider)
+    z_depth_row = QWidget()
+    z_depth_row.setObjectName("haemolynx_z_depth_row")
+    z_depth_form = QFormLayout(z_depth_row)
+    z_depth_form.setContentsMargins(0, 0, 0, 0)
+    z_depth_form.addRow(z_depth_label, z_depth_slider)
+    display_form.addRow(z_depth_row)
     display_form.addRow(scale_bar_box)
 
     def on_save_snapshot() -> None:
@@ -4935,6 +5114,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_z_depth_row = z_depth_row
     panel._haemolynx_view_panel = view_panel
     panel._haemolynx_view_dock = view_dock
+    panel._haemolynx_z_project = z_project_box
     panel._haemolynx_z_project_slider = z_project_slider
     panel._haemolynx_scale_bar = scale_bar_box
     panel._haemolynx_display_group = display_group
@@ -4969,7 +5149,6 @@ def settings_widget(napari_viewer=None):
     # the run chrome. Revert is intentionally outside the tab pages so it sits
     # in one place for every stage that can restore a predecessor.
     layout.addWidget(view_controls.native)
-    layout.addWidget(z_depth_row)
     layout.addWidget(revert_stack)
     layout.addWidget(buttons.native)
     layout.addWidget(bars.native)
@@ -4977,5 +5156,7 @@ def settings_widget(napari_viewer=None):
     if viewer is None:
         view_panel.setParent(panel)
         view_panel.setVisible(False)
+    else:
+        _after_layers_applied()
     refresh_revert_buttons()
     return panel

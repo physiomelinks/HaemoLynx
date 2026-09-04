@@ -1,4 +1,4 @@
-"""Left-hand view dock: Z project, scale bar, and snapshot, display-only.
+"""Left-hand view dock: Z-project, Z-depth, scale bar, and snapshot, display-only.
 
 The pipeline still reads the full volume / full graph. These controls only
 change what napari shows. The snapshot is a cosmetic canvas TIFF.
@@ -28,6 +28,36 @@ from test_gui_results_widget import a_run  # noqa: E402
 pytestmark = pytest.mark.gui
 
 
+def _stack_results():
+    from types import SimpleNamespace
+
+    from haemolynx.gui.results import ResultLayers
+
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(0.5, 1.0, 2.0),
+            voxel_size_zyx=(2.0, 1.0, 0.5),
+        ),
+    )
+    return results
+
+
+def _load_patterned_image(viewer):
+    image = np.zeros((4, 4, 4), dtype=np.uint8)
+    image[0] = 1
+    image[1] = 3
+    image[2] = 2
+    image[3] = 9
+    layer = viewer.layers[IMAGE]
+    layer.data = image
+    _store_z_project_cache(layer, image)
+    return layer, image
+
+
 def test_the_view_panel_docks_on_the_left(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
@@ -37,7 +67,11 @@ def test_the_view_panel_docks_on_the_left(make_napari_viewer):
     assert VIEW_DOCK_NAME in dock.windowTitle()
     assert dock.area == "left"
     assert panel._haemolynx_view_panel.objectName() == "haemolynx_view_panel"
+    assert panel._haemolynx_z_project.objectName() == "haemolynx_z_project"
+    assert panel._haemolynx_z_project.isChecked() is False
     assert panel._haemolynx_z_project_slider.objectName() == "haemolynx_z_project_slider"
+    assert panel._haemolynx_z_depth_slider.objectName() == "haemolynx_z_depth_slider"
+    assert panel._haemolynx_z_depth_row.parentWidget() is panel._haemolynx_display_group
     assert panel._haemolynx_scale_bar.objectName() == "haemolynx_scale_bar"
     assert panel._haemolynx_display_group.objectName() == "haemolynx_display_group"
     snapshot = panel._haemolynx_snapshot_group
@@ -55,11 +89,16 @@ def test_the_view_panel_docks_on_the_left(make_napari_viewer):
 def test_the_view_panel_is_not_on_the_right_settings_column(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
-    slider = panel._haemolynx_z_project_slider
-    ancestor = slider.parentWidget()
-    while ancestor is not None:
-        assert ancestor is not panel
-        ancestor = ancestor.parentWidget()
+    for widget in (
+        panel._haemolynx_z_project_slider,
+        panel._haemolynx_z_depth_slider,
+        panel._haemolynx_z_depth_row,
+        panel._haemolynx_z_project,
+    ):
+        ancestor = widget.parentWidget()
+        while ancestor is not None:
+            assert ancestor is not panel
+            ancestor = ancestor.parentWidget()
 
 
 def test_the_panel_still_builds_the_view_chrome_with_no_viewer():
@@ -67,48 +106,79 @@ def test_the_panel_still_builds_the_view_chrome_with_no_viewer():
     assert panel._haemolynx_view_dock is None
     assert panel._haemolynx_view_panel is not None
     assert panel._haemolynx_z_project_slider is not None
+    assert panel._haemolynx_z_project.isChecked() is False
+    assert panel._haemolynx_z_project_slider.isEnabled() is False
     assert panel._haemolynx_scale_bar.isChecked() is False
     assert panel._haemolynx_snapshot_button is not None
     panel._haemolynx_snapshot_button.click()
     assert "viewer" in panel._haemolynx_report().lower()
 
 
+def test_z_project_slider_can_change_min_and_max(make_napari_viewer):
+    """Regression: a factory (0, 1) µm window stacked both handles unslidably."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    slider = panel._haemolynx_z_project_slider
+    assert panel._haemolynx_z_project.isChecked() is False
+    assert slider.isEnabled() is False
+
+    panel._haemolynx_z_project.setChecked(True)
+    assert slider.isEnabled()
+    full_z = float(slider.maximum())
+    assert full_z == pytest.approx(8.0)
+    assert slider.minimum() == pytest.approx(0.0)
+    assert slider.maximum() > slider.minimum()
+    lo, hi = slider.value()
+    assert lo == pytest.approx(0.0)
+    assert hi == pytest.approx(full_z)
+
+    slider.setValue((1.0, 4.0))
+    lo, hi = slider.value()
+    assert lo == pytest.approx(1.0)
+    assert hi == pytest.approx(4.0)
+    assert slider._lo.value() == pytest.approx(1.0)
+    assert slider._hi.value() == pytest.approx(4.0)
+    assert slider._lo.isEnabled()
+    assert slider._hi.isEnabled()
+
+    panel._haemolynx_z_project.setChecked(False)
+    assert slider.isEnabled() is False
+
+
+def test_z_project_off_is_identity_even_if_the_slider_moves(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert panel._haemolynx_z_project.isChecked() is False
+    panel._haemolynx_z_project_slider.setValue((0.0, 5.0))
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+
+
 def test_z_project_slider_changes_display_and_full_range_restores(make_napari_viewer):
-    from types import SimpleNamespace
-
-    from haemolynx.gui.results import ResultLayers
-
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     for group in a_run():
         _apply_layers(viewer, group)
 
-    image = np.zeros((4, 4, 4), dtype=np.uint8)
-    image[0] = 1
-    image[1] = 3
-    image[2] = 2
-    image[3] = 9
-    layer = viewer.layers[IMAGE]
-    layer.data = image
-    _store_z_project_cache(layer, image)
-
-    results = ResultLayers()
-    results.stage_finished(
-        "skeletonise",
-        SimpleNamespace(
-            image=np.zeros((4, 4, 4), dtype=np.uint8),
-            skeleton=np.zeros((4, 4, 4), dtype=bool),
-            voxel_size_xyz=(0.5, 1.0, 2.0),
-            voxel_size_zyx=(2.0, 1.0, 0.5),
-        ),
-    )
-    panel._haemolynx_view.results = results
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
     panel._haemolynx_after_layers_applied()
+    panel._haemolynx_z_project.setChecked(True)
 
-    original = image.copy()
     slider = panel._haemolynx_z_project_slider
     assert slider.isEnabled()
-    full_z = float(results.image_z_extent_um())
+    full_z = float(panel._haemolynx_view.results.image_z_extent_um())
     slider.setValue((0.0, full_z))
     vessel_count = len(viewer.layers[VESSELS].data)
     node_count = len(viewer.layers[NODES].data)
@@ -138,6 +208,9 @@ def test_full_range_z_project_does_not_crop_pipeline_inputs(make_napari_viewer):
     image_layer = viewer.layers[IMAGE]
     original = np.asarray(data_for_pipeline(image_layer)).copy()
     settings_before = dict(panel._haemolynx_values())
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    panel._haemolynx_z_project.setChecked(True)
 
     slider = panel._haemolynx_z_project_slider
     slider.setValue((0.0, 5.0))
@@ -148,6 +221,90 @@ def test_full_range_z_project_does_not_crop_pipeline_inputs(make_napari_viewer):
     slider.setValue((0.0, 8.0))
     np.testing.assert_array_equal(data_for_pipeline(image_layer), original)
     np.testing.assert_array_equal(np.asarray(image_layer.data), original)
+
+
+def test_z_depth_filter_is_on_the_left_panel_not_the_right(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    row = panel._haemolynx_z_depth_row
+    assert row.parentWidget() is panel._haemolynx_display_group
+    ancestor = row
+    found_view = False
+    while ancestor is not None:
+        assert ancestor is not panel
+        if ancestor is panel._haemolynx_view_panel:
+            found_view = True
+        ancestor = ancestor.parentWidget()
+    assert found_view
+    assert panel.layout().indexOf(row) == -1
+
+
+def test_z_depth_clips_every_layer_and_full_range_restores(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert panel._haemolynx_z_project.isChecked() is False
+    vessel_count = len(viewer.layers[VESSELS].data)
+    node_count = len(viewer.layers[NODES].data)
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    displayed = np.asarray(layer.data)
+    np.testing.assert_array_equal(displayed[0], 1)
+    np.testing.assert_array_equal(displayed[1], 3)
+    np.testing.assert_array_equal(displayed[2], 2)
+    np.testing.assert_array_equal(displayed[3], 0)
+    assert len(viewer.layers[VESSELS].data) < vessel_count
+    assert len(viewer.layers[NODES].data) <= node_count
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 8.0))
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
+    assert len(viewer.layers[VESSELS].data) == vessel_count
+    assert len(viewer.layers[NODES].data) == node_count
+
+
+def test_z_project_mips_the_z_depth_window_when_both_are_on(make_napari_viewer):
+    """Z-depth first, then MIP the remaining intersection with Z-project."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    panel._haemolynx_z_depth_slider.setValue((2.0, 8.0))
+    panel._haemolynx_z_project.setChecked(True)
+    panel._haemolynx_z_project_slider.setValue((0.0, 5.0))
+    displayed = np.asarray(layer.data)
+    # Intersection [2, 5] µm → slices 1, 2 (origins 2, 4); MIP is 3.
+    np.testing.assert_array_equal(displayed[0], 0)
+    np.testing.assert_array_equal(displayed[1], 3)
+    np.testing.assert_array_equal(displayed[2], 3)
+    np.testing.assert_array_equal(displayed[3], 0)
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+
+
+def test_both_z_controls_leave_the_pipeline_cache_full(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    settings_before = dict(panel._haemolynx_values())
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    panel._haemolynx_z_project.setChecked(True)
+    panel._haemolynx_z_project_slider.setValue((0.0, 5.0))
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+    assert dict(panel._haemolynx_values()) == settings_before
 
 
 def test_scale_bar_checkbox_toggles_viewer_scale_bar(make_napari_viewer):
@@ -280,6 +437,7 @@ def test_snapshot_is_the_displayed_view_not_the_volume_cache(
     panel._haemolynx_after_layers_applied()
 
     original = image.copy()
+    panel._haemolynx_z_project.setChecked(True)
     panel._haemolynx_z_project_slider.setValue((0.0, 5.0))
     displayed = np.asarray(layer.data)
     np.testing.assert_array_equal(displayed[0], 3)

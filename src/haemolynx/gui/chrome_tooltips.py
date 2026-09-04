@@ -77,9 +77,14 @@ REVERT_STAGE_TOOLTIP = (
 )
 
 #: Left-hand view dock — display-only; never written into pipeline settings.
+Z_PROJECT_ENABLE_TOOLTIP = (
+    "Turn on a max-intensity Z project for image-like layers; off shows the full stack"
+)
 Z_PROJECT_TOOLTIP = (
-    "Restrict every visible layer to this physical Z window in microns; "
-    "full range leaves the display unchanged and does not crop the pipeline"
+    "Physical Z window in microns for the max-intensity project; enabled only when Z-project is on"
+)
+Z_DEPTH_TOOLTIP = (
+    "Clip every displayed layer to this physical Z window; full range is the identity and does not crop the pipeline"
 )
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar on the canvas, in microns when voxel size is known"
