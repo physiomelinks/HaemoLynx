@@ -1587,6 +1587,41 @@ SCHEMA = Schema(
             requires=("do_skeletonize",),
         ),
         Setting(
+            name="use_thick_vessel_skeletonisation",
+            kind="bool",
+            default=False,
+            help=(
+                "Give fat plasma-labelled vessels a centreline tree of every arm "
+                "instead of Lee thinning; capillaries stay on Lee"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_thick_vessel_min_radius_um",
+            kind="float",
+            default=6.0,
+            help=(
+                "Inscribed radius above which a region is treated as fat rather "
+                "than Lee-thinned"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+        ),
+        Setting(
+            name="skeleton_fill_mask_holes_before_thickness",
+            kind="bool",
+            default=True,
+            help=(
+                "Fill enclosed cavities in the binary mask before measuring "
+                "inscribed radius; a no-op on solid plasma-labelled lumens"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation",),
+        ),
+        Setting(
             name="smooth_centrelines",
             kind="bool",
             default=True,

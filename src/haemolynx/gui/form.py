@@ -67,7 +67,9 @@ SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
 #: Parents whose children hide when unmet even outside
 #: :data:`HIDE_WHEN_UNMET_SECTIONS` (Graph centreline knobs live under
 #: ``Pipeline stages``, which still greys other gated rows).
-HIDE_WHEN_UNMET_PARENTS = frozenset({"smooth_centrelines"})
+HIDE_WHEN_UNMET_PARENTS = frozenset(
+    {"smooth_centrelines", "use_thick_vessel_skeletonisation"}
+)
 
 
 def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
@@ -145,8 +147,9 @@ class Field:
 
         Input, Diameters/FWHM, Vessel-mask, and Statistics options nest under
         parent toggles; showing every greyed child makes those tabs unreadable.
-        Shared ilastik knobs and centreline children also hide (hosted or
-        parent-gated). Other sections still grey so the reason stays visible.
+        Shared ilastik knobs, centreline children, and thick-vessel children
+        also hide (hosted or parent-gated). Other sections still grey so the
+        reason stays visible.
         """
         if self.name in SHARED_ILASTIK_SETTING_SET:
             return True

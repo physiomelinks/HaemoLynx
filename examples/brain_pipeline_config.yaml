@@ -265,6 +265,10 @@ solver_and_output:
   visualize_vtk: false
   # Add a napari Vectors layer of mid-edge arrows coloured by flow magnitude after the solve (Export tab results)  [needs run_haemodynamics]
   show_flow_direction_layer: true
+  # Include log10(flow_abs) as a vessel colour option in napari (select flow_abs_log10 from the Vectors layer colour-by dropdown)  [needs run_haemodynamics]
+  flow_log_scale: false
+  # Include flow direction axis components (flow_dir_z/y/x) as colour options in the flow-direction Vectors layer (select from the layer colour-by dropdown)  [needs show_flow_direction_layer and run_haemodynamics]
+  flow_direction_colouring: true
   # Initial uniform scale for flow-direction arrow heads in the napari Vectors layer (adjust live via the layer's length control after export)  [range 0.1..5.0; needs show_flow_direction_layer and run_haemodynamics]
   flow_arrow_scale: 1.0
   # Print verbose per-stage logging while the pipeline runs
@@ -306,6 +310,12 @@ pipeline_stages:
   save_step_artifacts: false
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
   skeleton_min_component_percent: 0.0
+  # Give fat plasma-labelled vessels a centreline tree of every arm instead of Lee thinning; capillaries stay on Lee  [needs do_skeletonize]
+  use_thick_vessel_skeletonisation: false
+  # Inscribed radius above which a region is treated as fat rather than Lee-thinned  [um; range 0.0..; needs use_thick_vessel_skeletonisation]
+  skeleton_thick_vessel_min_radius_um: 6.0
+  # Fill enclosed cavities in the binary mask before measuring inscribed radius; a no-op on solid plasma-labelled lumens  [needs use_thick_vessel_skeletonisation]
+  skeleton_fill_mask_holes_before_thickness: true
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true
   # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]

@@ -429,6 +429,36 @@ def test_centreline_smoothing_children_hide_when_smooth_centrelines_is_off():
     }
 
 
+def test_thick_vessel_children_hide_when_the_toggle_is_off():
+    """Skeletonise nests radius and hole-fill under the thickness-gate toggle."""
+    assert "use_thick_vessel_skeletonisation" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["use_thick_vessel_skeletonisation"]
+    assert not parent.hide_when_unmet
+    assert SCHEMA["use_thick_vessel_skeletonisation"].requires == ("do_skeletonize",)
+    assert parent.widget_type == "CheckBox"
+    assert parent.value is False
+
+    children = (
+        "skeleton_thick_vessel_min_radius_um",
+        "skeleton_fill_mask_holes_before_thickness",
+    )
+    off = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": False}
+    on = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": True}
+    for name in children:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert SCHEMA[name].requires == ("use_thick_vessel_skeletonisation",), name
+        assert not child.is_visible(off), name
+        assert child.is_visible(on), name
+
+    radius = fields["skeleton_thick_vessel_min_radius_um"]
+    assert radius.widget_type == "FloatSpinBox"
+    assert radius.label.endswith("(um)")
+    assert SCHEMA["skeleton_thick_vessel_min_radius_um"].default == pytest.approx(6.0)
+
+
 def test_diameter_rows_hide_when_parent_toggles_are_unmet():
     """Diameters nests per-order tables and FWHM knobs under parent bools."""
     assert "Diameters and pericytes" in HIDE_WHEN_UNMET_SECTIONS

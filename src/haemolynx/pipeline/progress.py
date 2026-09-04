@@ -103,6 +103,9 @@ STAGES: tuple[Stage, ...] = (
         summary="Load the volume, resolve its voxel size, reduce vessels to a skeleton.",
         settings=(
             "do_skeletonize",
+            "use_thick_vessel_skeletonisation",
+            "skeleton_thick_vessel_min_radius_um",
+            "skeleton_fill_mask_holes_before_thickness",
             "skeleton_closing_radius",
             "skeleton_bridge_gap_size",
             "skeleton_min_branch_length",

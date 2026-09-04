@@ -10,15 +10,41 @@ from .skeleton import (
     skeletonize_volume,
     skeletonize_3d,
 )
+from .thick_vessels import (
+    BRAID_FACTOR_LIMIT,
+    THICK_VESSEL_MIN_RADIUS_UM,
+    braid_factor,
+    foreground_volume_um3,
+    inscribed_radius_map,
+    lee_braid_factor,
+    max_inscribed_radius_um,
+    needs_thick_vessel_treatment,
+    skeletonize_edt_ridge,
+    skeletonize_thickness_gated,
+    thick_vessel_object_mask,
+    lee_sheet_excess,
+)
 
 __all__ = [
+    "BRAID_FACTOR_LIMIT",
+    "THICK_VESSEL_MIN_RADIUS_UM",
+    "braid_factor",
     "bridge_gaps",
     "close_binary_mask",
     "connect_skeleton_components",
     "fill_binary_holes",
-    "preprocess_skeleton_for_graph",
-    "skeletonize_voxel_bundles_into_paths",
+    "foreground_volume_um3",
+    "inscribed_radius_map",
+    "lee_braid_factor",
+    "lee_sheet_excess",
     "log_skeleton_connectivity_stats",
+    "max_inscribed_radius_um",
+    "needs_thick_vessel_treatment",
+    "preprocess_skeleton_for_graph",
+    "skeletonize_edt_ridge",
+    "skeletonize_thickness_gated",
+    "skeletonize_voxel_bundles_into_paths",
     "skeletonize_volume",
     "skeletonize_3d",  # deprecated alias
+    "thick_vessel_object_mask",
 ]

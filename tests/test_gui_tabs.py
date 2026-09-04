@@ -573,6 +573,28 @@ def test_centreline_fields_on_graph_declare_hide_when_unmet():
         assert fields[name].is_visible(on), name
 
 
+def test_thick_vessel_fields_on_skeletonise_declare_hide_when_unmet():
+    """Radius and hole-fill hide until the thickness-gate toggle is on."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["2. Skeletonise"].fields}
+
+    assert "use_thick_vessel_skeletonisation" in fields
+    assert not fields["use_thick_vessel_skeletonisation"].hide_when_unmet
+    assert SCHEMA["use_thick_vessel_skeletonisation"].default is False
+    assert SCHEMA["use_thick_vessel_skeletonisation"].requires == ("do_skeletonize",)
+
+    off = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": False}
+    on = {"do_skeletonize": True, "use_thick_vessel_skeletonisation": True}
+    for name in (
+        "skeleton_thick_vessel_min_radius_um",
+        "skeleton_fill_mask_holes_before_thickness",
+    ):
+        assert fields[name].hide_when_unmet, name
+        assert SCHEMA[name].requires == ("use_thick_vessel_skeletonisation",), name
+        assert not fields[name].is_visible(off), name
+        assert fields[name].is_visible(on), name
+
+
 def test_diameter_fields_on_diameters_declare_hide_when_unmet():
     """Gated Diameters / FWHM rows hide until their parent toggles hold."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}

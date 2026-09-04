@@ -50,6 +50,8 @@ EXPECTED_UNITS = {
     "skeleton_bridge_gap_size": "voxels",
     "skeleton_min_branch_length": "voxels",
     "skeleton_max_bridge_distance": "voxels",
+    # Compared against the EDT of the mask in physical microns.
+    "skeleton_thick_vessel_min_radius_um": "um",
     # Pressures.
     "inlet_p_bc": "Pa",
     "outlet_p_bc": "Pa",

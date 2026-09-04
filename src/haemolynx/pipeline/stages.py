@@ -64,6 +64,10 @@ from haemolynx.haemodynamics.pericyte_sweep import (
 )
 from haemolynx.haemodynamics.perturbations import plain as plain_values
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+from haemolynx.io.load import (
+    _skeletonize_loaded_volume,
+    _to_binary_volume_for_skeletonization,
+)
 from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
 from haemolynx.visualization.perturbation_plots import (
     export_non_sweep_perturbation_artifacts,
@@ -277,6 +281,56 @@ def segment(settings: dict):
     )
 
 
+
+def _load_volume_for_skeletonise(settings: dict, input_format: str):
+    """Image plus voxel metadata; skeletonisation is chosen after size is resolved."""
+    if input_format in {"tif", "tiff"}:
+        (
+            image,
+            voxel_size_x,
+            voxel_size_y,
+            voxel_size_z,
+            voxel_meta_status,
+        ) = io.load_3d_tif_with_voxel_size(
+            settings["input_path"],
+            axis_order=settings["image_axis_order"],
+        )
+    elif input_format == "h5":
+        (
+            image,
+            voxel_size_x,
+            voxel_size_y,
+            voxel_size_z,
+            voxel_meta_status,
+        ) = io.load_3d_h5_with_voxel_size(
+            settings["input_path"],
+            axis_order=settings["image_axis_order"],
+        )
+    else:
+        raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
+    metadata_voxel_size = (
+        float(voxel_size_x),
+        float(voxel_size_y),
+        float(voxel_size_z),
+    )
+    return image, metadata_voxel_size, voxel_meta_status
+
+
+def _skeletonize_loaded_mask(image, settings: dict, voxel_size_xyz) -> np.ndarray:
+    """Lee on the whole mask, or a thickness-gated tree when the GUI toggle is on."""
+    if settings["use_thick_vessel_skeletonisation"]:
+        binary = _to_binary_volume_for_skeletonization(image)
+        return preprocessing.skeletonize_thickness_gated(
+            binary,
+            min_radius_um=float(settings["skeleton_thick_vessel_min_radius_um"]),
+            voxel_size_zyx=io.voxel_size_zyx_from_xyz(
+                tuple(float(v) for v in voxel_size_xyz)
+            ),
+            fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
+        )
+    return _skeletonize_loaded_volume(image)
+
+
 def skeletonise(settings: dict, inputs: SegmentedInputs):
     """Load the mask, resolve its voxel size, and skeletonise it."""
     output_dir = inputs.output_dir
@@ -292,42 +346,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         settings["plot_dir"].mkdir(parents=True, exist_ok=True)
 
     if settings["do_skeletonize"]:
-        if input_format in {"tif", "tiff"}:
-            (
-                image,
-                skeleton,
-                voxel_size_x,
-                voxel_size_y,
-                voxel_size_z,
-                voxel_meta_status,
-            ) = io.load_and_skeletonize_3d_tif(
-                settings["input_path"],
-                axis_order=settings["image_axis_order"],
-            )
-            metadata_voxel_size = (
-                float(voxel_size_x),
-                float(voxel_size_y),
-                float(voxel_size_z),
-            )
-        elif input_format == "h5":
-            (
-                image,
-                skeleton,
-                voxel_size_x,
-                voxel_size_y,
-                voxel_size_z,
-                voxel_meta_status,
-            ) = io.load_and_skeletonize_3d_h5(
-                settings["input_path"],
-                axis_order=settings["image_axis_order"],
-            )
-            metadata_voxel_size = (
-                float(voxel_size_x),
-                float(voxel_size_y),
-                float(voxel_size_z),
-            )
-        else:
-            raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
+        image, metadata_voxel_size, voxel_meta_status = _load_volume_for_skeletonise(
+            settings, input_format
+        )
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(
             metadata_voxel_size_xyz=metadata_voxel_size,
             metadata_status=voxel_meta_status,
@@ -341,6 +362,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             f"metadata={metadata_voxel_size}, "
             f"final={voxel_size}"
         )
+        skeleton = _skeletonize_loaded_mask(image, settings, voxel_size)
         
         preprocessing.log_skeleton_connectivity_stats(
             "raw",
