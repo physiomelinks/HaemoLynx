@@ -365,6 +365,11 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             f"metadata={metadata_voxel_size}, "
             f"final={voxel_size}"
         )
+        if settings["use_thick_vessel_skeletonisation"]:
+            logger.info(
+                "Thickness-gated skeletonisation: "
+                "centreline tree on fat vessels, Lee on the rest"
+            )
         skeleton = _skeletonize_loaded_mask(image, settings, voxel_size)
         
         preprocessing.log_skeleton_connectivity_stats(

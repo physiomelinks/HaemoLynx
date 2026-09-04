@@ -359,3 +359,13 @@ def test_gated_y_keeps_all_fat_arms_and_does_not_sheet():
     # axis: a real side arm occupies one x-slice and looks like a sheet
     # on that metric.
     assert int(gated.sum()) < 0.08 * int(mask.sum())
+
+
+def test_edt_ridge_on_a_small_tube_in_a_large_volume_stays_local():
+    """Geodesics are cropped to the fat component, not allocated for the stack."""
+    volume = np.zeros((80, 80, 80), dtype=bool)
+    volume[10:18, 10:18, 8:48] = True
+    ridge = skeletonize_edt_ridge(volume)
+    assert ridge[10:18, 10:18, 8:48].any()
+    assert not ridge[40:, :, :].any()
+    assert int(ridge.sum()) < int(volume[10:18, 10:18, 8:48].sum())

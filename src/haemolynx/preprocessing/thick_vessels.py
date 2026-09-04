@@ -6,8 +6,8 @@ not a separate tube. Lee thinning of the fat part of that object yields a
 medial *sheet* (several polylines for one vessel). The thin part is already
 fine.
 
-This module does **not** change the pipeline. The functions here are what a
-later wiring step would call.
+This module is used by ``skeletonise`` when
+``use_thick_vessel_skeletonisation`` is on.
 
 A voxel is in the fat region when it belongs to the geodesic reconstruction of
 an inscribed-radius core (see :func:`thick_vessel_object_mask`). Capillaries
@@ -22,6 +22,7 @@ fixture. Volume (µm³) of the whole object is not the gate.
 from __future__ import annotations
 
 import heapq
+import logging
 from typing import Iterable
 
 import numpy as np
@@ -34,6 +35,8 @@ from scipy.ndimage import (
 )
 
 from .skeleton import fill_binary_holes, skeletonize_volume, _draw_line_3d
+
+logger = logging.getLogger(__name__)
 
 # Inscribed radius (EDT of the binary mask, microns) at which Lee begins to
 # produce a multi-polyline medial sheet in the fat part of a plasma-labelled
@@ -167,47 +170,60 @@ def lee_sheet_excess(
     return float(lee.sum()) / float(n_ridge)
 
 
-def _linear_index(coords: np.ndarray, shape: tuple[int, int, int]) -> np.ndarray:
-    z, y, x = shape
-    return coords[:, 0] * (y * x) + coords[:, 1] * x + coords[:, 2]
-
-
-def _from_linear(index: int, shape: tuple[int, int, int]) -> tuple[int, int, int]:
-    yx = shape[1] * shape[2]
-    z, rem = divmod(int(index), yx)
-    y, x = divmod(rem, shape[2])
-    return z, y, x
+def _foreground_bbox(mask: np.ndarray, *, pad: int = 1) -> tuple[slice, slice, slice] | None:
+    """Tight slices around foreground, padded, or None if *mask* is empty."""
+    coords = np.argwhere(mask)
+    if coords.size == 0:
+        return None
+    lo = np.maximum(coords.min(axis=0) - int(pad), 0)
+    hi = np.minimum(coords.max(axis=0) + 1 + int(pad), mask.shape)
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
 
 
 def _dijkstra_parents(
     binary: np.ndarray,
     cost: np.ndarray,
     root: tuple[int, int, int],
-) -> np.ndarray:
-    """Parent linear-index map for a 26-connected Dijkstra on *binary*."""
-    shape = binary.shape
-    n = int(np.prod(shape))
-    parent = np.full(n, -1, dtype=np.int32)
-    dist = np.full(n, np.inf, dtype=np.float64)
-    root_i = int(_linear_index(np.asarray([root], dtype=int), shape)[0])
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Sparse 26-connected Dijkstra on foreground voxels of *binary*.
+
+    Returns ``(parent, fg_coords, index_of)`` where *parent* and *fg_coords*
+    are length-N (N = foreground count) and *index_of* maps a voxel in the
+    array to that compact id, or -1. ``None`` if *root* is not foreground.
+
+    Arrays are sized to the foreground, not ``prod(shape)``: a microscopy
+    stack must not allocate a float64 per background voxel.
+    """
+    binary_f = np.asarray(binary, dtype=bool)
+    fg_coords = np.argwhere(binary_f)
+    n_fg = int(fg_coords.shape[0])
+    if n_fg == 0:
+        return None
+    index_of = np.full(binary_f.shape, -1, dtype=np.int32)
+    index_of[tuple(fg_coords.T)] = np.arange(n_fg, dtype=np.int32)
+    root_i = int(index_of[root])
+    if root_i < 0:
+        return None
+
+    parent = np.full(n_fg, -1, dtype=np.int32)
+    dist = np.full(n_fg, np.inf, dtype=np.float64)
     dist[root_i] = 0.0
     parent[root_i] = root_i
     heap: list[tuple[float, int]] = [(0.0, root_i)]
-    z_max, y_max, x_max = shape
-    binary_f = np.asarray(binary, dtype=bool)
+    z_max, y_max, x_max = binary_f.shape
 
     while heap:
         d, idx = heapq.heappop(heap)
         if d > dist[idx]:
             continue
-        z, y, x = _from_linear(idx, shape)
+        z, y, x = (int(v) for v in fg_coords[idx])
         for dz, dy, dx in _OFFSETS_26:
             nz, ny, nx_ = z + dz, y + dy, x + dx
             if not (0 <= nz < z_max and 0 <= ny < y_max and 0 <= nx_ < x_max):
                 continue
-            if not binary_f[nz, ny, nx_]:
+            nidx = int(index_of[nz, ny, nx_])
+            if nidx < 0:
                 continue
-            nidx = (nz * y_max + ny) * x_max + nx_
             step = float(cost[nz, ny, nx_])
             if not np.isfinite(step) or step <= 0.0:
                 continue
@@ -216,23 +232,26 @@ def _dijkstra_parents(
                 dist[nidx] = nd
                 parent[nidx] = idx
                 heapq.heappush(heap, (nd, nidx))
-    return parent
+    return parent, fg_coords, index_of
 
 
 def _traceback(
     parent: np.ndarray,
+    fg_coords: np.ndarray,
+    index_of: np.ndarray,
     start: tuple[int, int, int],
     end: tuple[int, int, int],
-    shape: tuple[int, int, int],
 ) -> list[tuple[int, int, int]]:
-    start_i = int(_linear_index(np.asarray([start], dtype=int), shape)[0])
-    end_i = int(_linear_index(np.asarray([end], dtype=int), shape)[0])
+    start_i = int(index_of[start])
+    end_i = int(index_of[end])
+    if start_i < 0 or end_i < 0:
+        return []
     path: list[tuple[int, int, int]] = []
     idx = end_i
-    seen = set()
+    seen: set[int] = set()
     while idx >= 0 and idx not in seen:
         seen.add(idx)
-        path.append(_from_linear(idx, shape))
+        path.append(tuple(int(v) for v in fg_coords[idx]))
         if idx == start_i:
             break
         nxt = int(parent[idx])
@@ -270,10 +289,8 @@ def _cover_around_path(
 ) -> np.ndarray:
     mask = np.zeros(shape, dtype=bool)
     _draw_path(mask, path)
-    iterations = max(1, int(radius_voxels))
-    return binary_dilation(
-        mask, structure=generate_binary_structure(3, 3), iterations=iterations
-    )
+    radius = max(1, int(radius_voxels))
+    return distance_transform_edt(~mask) <= radius
 
 
 def _local_principal_axis(
@@ -347,6 +364,19 @@ def _trim_to_tree(
 def _component_edt_ridge(component: np.ndarray, edt: np.ndarray) -> np.ndarray:
     """Centreline tree: trunk geodesic plus every arm that is not a sheet duplicate."""
     result = np.zeros(component.shape, dtype=bool)
+    bbox = _foreground_bbox(component, pad=1)
+    if bbox is None:
+        return result
+    crop = component[bbox]
+    crop_edt = edt[bbox]
+    crop_result = _component_edt_ridge_on_crop(crop, crop_edt)
+    result[bbox] = crop_result
+    return result
+
+
+def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.ndarray:
+    """Like :func:`_component_edt_ridge` on an already-cropped component."""
+    result = np.zeros(component.shape, dtype=bool)
     coords = np.argwhere(component)
     if coords.size == 0:
         return result
@@ -355,8 +385,13 @@ def _component_edt_ridge(component: np.ndarray, edt: np.ndarray) -> np.ndarray:
     max_edt = float(local_edt.max())
     cost = np.where(component, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
     root, far = _principal_endpoints(coords)
-    parent = _dijkstra_parents(component, cost, root)
-    main = _traceback(parent, root, far, component.shape)
+    walked = _dijkstra_parents(component, cost, root)
+    if walked is None:
+        centre = tuple(int(v) for v in coords[int(np.argmax(local_edt[tuple(coords.T)]))])
+        result[centre] = True
+        return result
+    parent, fg_coords, index_of = walked
+    main = _traceback(parent, fg_coords, index_of, root, far)
     if len(main) < 2:
         centre = tuple(int(v) for v in coords[int(np.argmax(local_edt[tuple(coords.T)]))])
         result[centre] = True
@@ -383,7 +418,7 @@ def _component_edt_ridge(component: np.ndarray, edt: np.ndarray) -> np.ndarray:
             for v in cand_coords[int(np.argmax(dist_to_tree[tuple(cand_coords.T)]))]
         )
         branch = _trim_to_tree(
-            _traceback(parent, root, target, component.shape),
+            _traceback(parent, fg_coords, index_of, root, target),
             result,
         )
         if len(branch) < min_arm_voxels:
@@ -403,11 +438,16 @@ def skeletonize_edt_ridge(binary: np.ndarray) -> np.ndarray:
     result = np.zeros(mask.shape, dtype=bool)
     if not mask.any():
         return result
-    edt = distance_transform_edt(mask)
-    labeled, n_labels = label(mask)
+    bbox = _foreground_bbox(mask, pad=1)
+    if bbox is None:
+        return result
+    crop = mask[bbox]
+    edt = distance_transform_edt(crop)
+    labeled, n_labels = label(crop)
+    crop_result = np.zeros(crop.shape, dtype=bool)
     for component_id in range(1, int(n_labels) + 1):
-        component = labeled == component_id
-        result |= _component_edt_ridge(component, edt)
+        crop_result |= _component_edt_ridge(labeled == component_id, edt)
+    result[bbox] = crop_result
     return result.astype(bool)
 
 
@@ -450,7 +490,11 @@ def skeletonize_thickness_gated(
     """
     mask = np.asarray(binary, dtype=bool)
     if fill_mask_holes:
-        mask = fill_binary_holes(mask)
+        bbox = _foreground_bbox(mask, pad=0)
+        if bbox is not None:
+            filled = fill_binary_holes(mask[bbox])
+            mask = mask.copy()
+            mask[bbox] = filled
     if float(min_radius_um) <= 0.0:
         return skeletonize_volume(mask).astype(bool)
 
@@ -461,6 +505,12 @@ def skeletonize_thickness_gated(
         return skeletonize_volume(mask).astype(bool)
 
     thin = mask & ~thick
+    logger.info(
+        "Thickness-gated skeletonisation: shape=%s fat=%d voxels thin=%d voxels",
+        mask.shape,
+        int(thick.sum()),
+        int(thin.sum()),
+    )
     result = np.zeros(mask.shape, dtype=bool)
     if thin.any():
         result |= skeletonize_volume(thin).astype(bool)
