@@ -22,6 +22,7 @@ from haemolynx.gui.results import (  # noqa: E402
     BRANCH_HOVER,
     VESSEL_LABELS,
     VESSEL_LABEL_POINT_SIZE,
+    VESSEL_TUBES,
     VESSELS,
     LayerSpec,
     ResultLayers,
@@ -80,6 +81,9 @@ def test_hovering_along_the_polyline_shows_tooltip(make_napari_viewer, monkeypat
 
     viewer = make_napari_viewer()
     layer = _draw_hover(viewer)
+    assert layer.visible is False
+    assert VESSEL_TUBES in viewer.layers
+    assert viewer.layers[VESSEL_TUBES].visible is True
     # First vessel (0,0,0)->(10,0,0); midpoint was (5,0,0) with size 2.
     _branch_hover_mouse_move(layer, _fake_event((1.0, 0.0, 0.0)))
     assert shown

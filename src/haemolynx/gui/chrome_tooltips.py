@@ -48,18 +48,19 @@ LOAD_CONFIG_TOOLTIP = (
     "paths it names"
 )
 SAVE_CONFIG_TOOLTIP = (
-    "Write the current form values to a YAML config file"
+    "Write the current form values to a YAML config file; relative "
+    "paths stay relative when saving beside the file they came from"
 )
 RUN_CHECKS_TOOLTIP = (
     "Run preflight checks on the current settings without starting a pipeline"
 )
 RUN_PIPELINE_TOOLTIP = (
-    "Run the pipeline stages with the current settings"
+    "Run the full pipeline from the first stage with the current settings"
 )
 CLEAR_LAYERS_TOOLTIP = (
     "Remove HaemoLynx-drawn result and boundary layers from the viewer, "
-    "forget in-memory checkpoints, and discard cached resume/checkpoint "
-    "pickles on disk"
+    "stop a run in progress, forget in-memory checkpoints, restore skip "
+    "toggles, and discard this session's resume/checkpoint pickles on disk"
 )
 SHOW_RESULTS_TOOLTIP = (
     "After each stage finishes, add its graph or mask layers to the viewer"
@@ -72,8 +73,8 @@ USE_LAYER_TOOLTIP = (
     "of its array)"
 )
 REVERT_STAGE_TOOLTIP = (
-    "Reload the checkpoint from the previous stage so later settings can "
-    "be changed without rebuilding earlier work"
+    "Clear this tab and later layers and checkpoints, then rerun the "
+    "pipeline from this stage using the previous tab's saved work"
 )
 
 #: View dock — display-only; never written into pipeline settings.
@@ -86,10 +87,22 @@ Z_PROJECT_TOOLTIP = (
 Z_DEPTH_TOOLTIP = (
     "Clip every displayed layer to this physical Z window; full range is the identity and does not crop the pipeline"
 )
+VESSEL_DRAW_TOOLTIP = (
+    "Draw each centreline step as a 3D tube that stays visible from every "
+    "camera angle, or as napari line ribbons (faster, can vanish edge-on)"
+)
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
 )
 SNAPSHOT_TOOLTIP = (
     "Write a TIFF of the current napari view into the pipeline "
     "output folder (cosmetic export only; does not feed the run)"
+)
+SAVE_RUN_TOOLTIP = (
+    "Write this pipeline run to a .haemorun file: settings, graph, "
+    "checkpoints, and viewer layers, so it can be opened again later"
+)
+LOAD_RUN_TOOLTIP = (
+    "Clear the current HaemoLynx layers and state, then restore a saved "
+    "pipeline run so the viewer looks as it did when that run finished"
 )

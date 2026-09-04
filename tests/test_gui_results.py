@@ -38,6 +38,7 @@ from haemolynx.gui.results import (
     SKELETON,
     VESSEL_LABEL_POINT_SIZE,
     VESSEL_LABELS,
+    VESSEL_TUBES,
     VESSELS,
     ResultLayers,
     filter_points_by_z,
@@ -1116,6 +1117,7 @@ def test_image_z_extent_um_is_voxel_z_times_stack_depth():
 def test_z_depth_filter_targets_graph_vectors_and_points_only():
     """Graph geometry uses this predicate; volumes are clipped separately."""
     assert is_z_depth_filtered_layer(VESSELS, "vectors") is True
+    assert is_z_depth_filtered_layer(VESSEL_TUBES, "surface") is False
     assert is_z_depth_filtered_layer(FLOW_DIRECTION, "vectors") is True
     assert is_z_depth_filtered_layer(NODES, "points") is True
     assert is_z_depth_filtered_layer(IMAGE, "image") is False

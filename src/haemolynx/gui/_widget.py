@@ -40,6 +40,7 @@ from haemolynx.gui.results import (
     FLOW_DIR_RGB_COLUMN,
     FLOW_HEADING_COLUMN,
     NODES,
+    VESSEL_TUBES,
     VESSELS,
     ResultLayers,
     _flow_dir_contrast_limits,
@@ -68,11 +69,35 @@ from haemolynx.gui.stage_checkpoints import (
     StageCheckpoints,
     can_revert_from,
     discard_cached_artefacts_for_settings,
+    output_dir_from_prefix,
     previous_tab,
     restore_message,
 )
+from haemolynx.gui.run_snapshot import (
+    DEFAULT_FILENAME as RUN_SNAPSHOT_FILENAME,
+    SAVE_FILTER as RUN_SNAPSHOT_FILTER,
+    RunSnapshotError,
+    apply_snapshot_to_checkpoints,
+    apply_snapshot_to_results,
+    capture_run,
+    default_run_path,
+    ensure_run_suffix,
+    read_run_snapshot,
+    replay_groups,
+    write_resume_artefacts,
+    write_run_snapshot,
+)
 from haemolynx.gui.tabs import tabs_for
-from haemolynx.parsers import dump_config, load_config
+from haemolynx.gui.vessel_tubes import (
+    DEFAULT_VESSEL_DRAW,
+    VESSEL_DRAW_LINES,
+    VESSEL_DRAW_TUBES,
+    colors_for_tube_vertices,
+    tube_radius_um,
+    tubes_from_vectors,
+    vessel_tubes_layer_name,
+)
+from haemolynx.parsers import dump_config, ensure_yaml_suffix, load_config
 from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
 from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
 
@@ -197,21 +222,20 @@ def output_folder_from_settings(values: Mapping[str, Any]) -> Path | None:
     export into this directory; it is never read back as pipeline input.
 
     A cleared FileEdit arrives as ``"."`` or the working directory rather
-    than None.
+    than None. A bare filename (no directory) is treated the same way, so
+    snapshots and pickle discards do not land in the process cwd.
     """
-    prefix = values.get("vtk_output_prefix")
-    if prefix is None:
+    return output_dir_from_prefix(values.get("vtk_output_prefix"))
+
+
+def _dialog_parent(viewer) -> Any:
+    """The napari main window, so file dialogues stay in front of the viewer."""
+    if viewer is None:
         return None
-    text = str(prefix).strip()
-    if not text or text == ".":
+    window = getattr(viewer, "window", None)
+    if window is None:
         return None
-    path = Path(prefix)
-    try:
-        if path.resolve() == Path.cwd().resolve():
-            return None
-    except OSError:
-        return None
-    return path.parent
+    return getattr(window, "_qt_window", None) or getattr(window, "qt_viewer", None)
 
 
 def unique_snapshot_path(
@@ -343,6 +367,10 @@ OURS = "haemolynx"
 #: napari session so toggling mid-run does not reset after the next stage.
 _branch_hover_session_selected: tuple[str, ...] | None = None
 
+#: View-only vessels drawing: tubes (default) or napari Vectors line ribbons.
+#: Survives layer rebuilds within a napari session; not a pipeline setting.
+_vessel_draw_mode: str = DEFAULT_VESSEL_DRAW
+
 #: Keys stashed on a branch-hover LayerSpec that must not reach napari.
 _BRANCH_HOVER_OPTION_KEYS = frozenset(
     {"branch_hover_available", "branch_hover_selected"}
@@ -351,6 +379,171 @@ _BRANCH_HOVER_OPTION_KEYS = frozenset(
 
 def _is_ours(layer) -> bool:
     return bool(getattr(layer, "metadata", {}).get(OURS))
+
+
+def _is_vessel_vectors_layer(layer) -> bool:
+    """Whether *layer* is the HaemoLynx vessels Vectors source of truth."""
+    if not _is_ours(layer):
+        return False
+    if layer.__class__.__name__ != "Vectors":
+        return False
+    name = str(getattr(layer, "name", ""))
+    return name == VESSELS or name.startswith(f"{VESSELS} ")
+
+
+def _is_vessel_tubes_layer(layer) -> bool:
+    """Whether *layer* is the HaemoLynx vessel-tube Surface."""
+    if not _is_ours(layer):
+        return False
+    name = str(getattr(layer, "name", ""))
+    if name == VESSEL_TUBES or name.startswith(f"{VESSEL_TUBES} "):
+        return True
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    return tag.get("role") == "vessel_tubes"
+
+
+def _vector_edge_rgba(layer) -> np.ndarray:
+    """Per-segment RGBA currently drawn on a Vectors layer."""
+    n = len(np.asarray(getattr(layer, "data", ()), dtype=float))
+    colours = np.asarray(getattr(layer, "edge_color", ()), dtype=float)
+    if colours.ndim == 2 and len(colours) == n and colours.shape[1] >= 3:
+        if colours.shape[1] == 3:
+            return np.concatenate(
+                [colours, np.ones((n, 1), dtype=float)], axis=1
+            )
+        return np.asarray(colours[:, :4], dtype=float)
+    out = np.ones((n, 4), dtype=float)
+    out[:, :3] = UNCOLOURED_RGBA[:3]
+    return out
+
+
+def _retint_vessel_tubes(viewer, vessels) -> None:
+    """Copy Vectors edge colours onto the matching tube Surface vertices."""
+    if viewer is None or _vessel_draw_mode != VESSEL_DRAW_TUBES:
+        return
+    name = vessel_tubes_layer_name(vessels.name)
+    if name not in getattr(viewer, "layers", {}):
+        return
+    tubes = viewer.layers[name]
+    if not _is_vessel_tubes_layer(tubes):
+        return
+    tag = getattr(tubes, "metadata", {}).get(OURS) or {}
+    segment_index = tag.get("segment_index")
+    if segment_index is None:
+        return
+    try:
+        tubes.vertex_colors = colors_for_tube_vertices(
+            np.asarray(segment_index), _vector_edge_rgba(vessels)
+        )
+    except Exception:  # noqa: BLE001 - a missed retint must not break a run
+        logger.debug(
+            "could not retint vessel tubes for %s", vessels.name, exc_info=True
+        )
+
+
+def _maybe_retint_vessel_tubes(layer) -> None:
+    """Retint tubes after a Vectors colouring, even if napari events are quiet."""
+    if not _is_vessel_vectors_layer(layer):
+        return
+    viewer = getattr(layer, "_haemolynx_viewer", None)
+    if viewer is None:
+        viewer = getattr(layer, "viewer", None)
+    if viewer is not None:
+        _retint_vessel_tubes(viewer, layer)
+
+
+def _ensure_tube_colour_follow(viewer, vessels) -> None:
+    """Retint tubes whenever the Vectors edge colours change."""
+    vessels._haemolynx_viewer = viewer
+    if getattr(vessels, "_haemolynx_follow_tubes", False):
+        return
+    events = getattr(vessels, "events", None)
+    signal = getattr(events, "edge_color", None) if events else None
+    if signal is None:
+        return
+
+    def _follow(*_args) -> None:
+        _retint_vessel_tubes(viewer, vessels)
+
+    signal.connect(_follow)
+    vessels._haemolynx_follow_tubes = True
+
+
+def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
+    """Show tubes or line ribbons for one vessels Vectors layer."""
+    name = vessel_tubes_layer_name(vessels.name)
+    existing = viewer.layers[name] if name in viewer.layers else None
+    if existing is not None and not _is_ours(existing):
+        name = f"{name} (HaemoLynx)"
+        existing = viewer.layers[name] if name in viewer.layers else None
+
+    if not tubes_on:
+        if existing is not None:
+            existing.visible = False
+            vessels.visible = True
+        return
+
+    vertices, faces, segment_index = tubes_from_vectors(
+        getattr(vessels, "data", ()),
+        radius=tube_radius_um(getattr(vessels, "edge_width", None)),
+    )
+    if len(vertices) == 0:
+        vessels.visible = False
+        if existing is not None:
+            existing.visible = False
+        return
+    colours = colors_for_tube_vertices(segment_index, _vector_edge_rgba(vessels))
+    ours = {
+        "kind": "surface",
+        "role": "vessel_tubes",
+        "segment_index": np.asarray(segment_index),
+    }
+    scale = tuple(float(v) for v in getattr(vessels, "scale", (1.0, 1.0, 1.0)))
+    if existing is not None and existing.__class__.__name__.lower() == "surface":
+        existing.data = (vertices, faces)
+        existing.vertex_colors = colours
+        existing.visible = True
+        existing.scale = scale
+        extra = dict(getattr(existing, "metadata", {}) or {})
+        tag = dict(extra.get(OURS) or {})
+        tag.update(ours)
+        extra[OURS] = tag
+        existing.metadata = extra
+    else:
+        if existing is not None:
+            viewer.layers.remove(existing)
+        viewer.add_surface(
+            (vertices, faces),
+            name=name,
+            scale=scale,
+            vertex_colors=colours,
+            shading="none",
+            blending="translucent",
+            metadata={OURS: ours},
+        )
+    vessels.visible = False
+    _ensure_tube_colour_follow(viewer, vessels)
+
+
+def _sync_vessel_tubes(viewer) -> None:
+    """Rebuild or hide tube Surfaces to match the session drawing mode."""
+    if viewer is None:
+        return
+    tubes_on = _vessel_draw_mode == VESSEL_DRAW_TUBES
+    seen_tube_names: set[str] = set()
+    try:
+        for layer in list(viewer.layers):
+            if not _is_vessel_vectors_layer(layer):
+                continue
+            _sync_one_vessel_tubes(viewer, layer, tubes_on)
+            seen_tube_names.add(vessel_tubes_layer_name(layer.name))
+        if tubes_on:
+            return
+        for layer in list(viewer.layers):
+            if _is_vessel_tubes_layer(layer) and layer.name not in seen_tube_names:
+                layer.visible = False
+    except Exception:  # noqa: BLE001 - drawing must not stop a run
+        logger.debug("could not sync vessel tubes", exc_info=True)
 
 
 def _store_z_filter_cache(
@@ -438,6 +631,7 @@ def _apply_z_filter(
         column = _active_column(layer)
         if column == FLOW_DIR_RGB_COLUMN:
             _colour_layer(layer, column, "direct")
+    _sync_vessel_tubes(viewer)
 
 
 def _z_project_cache(layer) -> np.ndarray | None:
@@ -1154,6 +1348,7 @@ def _apply_layers(viewer, group, report=None) -> None:
             after()
         except Exception:  # noqa: BLE001 - missing Z filter is survivable
             logger.debug("could not re-apply Z depth filter", exc_info=True)
+    _sync_vessel_tubes(viewer)
     if report is not None and group.note:
         report.value = f"{group.title}: {group.note}"
 
@@ -1292,6 +1487,7 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         for attribute in attributes:
             setattr(layer, attribute, UNCOLOURED)
         _record_colour(layer, None)
+        _maybe_retint_vessel_tubes(layer)
         return
     if column in FLOW_DIR_COLUMNS or column in {FLOW_HEADING_COLUMN, FLOW_DIR_RGB_COLUMN}:
         _ensure_flow_dir_features(layer)
@@ -1324,6 +1520,7 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         for attribute in attributes:
             setattr(layer, attribute, colours)
         _record_colour(layer, column)
+        _maybe_retint_vessel_tubes(layer)
         return
     if kind == "categorical" and cycle:
         # One colour per item, looked up by label, rather than handing napari
@@ -1346,6 +1543,7 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
             # mode still makes napari map it; on some builds that aborts Qt
             # rather than raising, which `_apply_layers` cannot catch.
             _record_colour(layer, column)
+            _maybe_retint_vessel_tubes(layer)
             return
         colormap = _default_colormap_for(column)
         for attribute in attributes:
@@ -1368,6 +1566,7 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         if limits is not None:
             _apply_contrast_limits(layer, *limits)
     _record_colour(layer, column)
+    _maybe_retint_vessel_tubes(layer)
 
 
 def _record_colour(layer, column: str | None) -> None:
@@ -2381,6 +2580,8 @@ def _attach_colour_scale(viewer, layer) -> bool:
     Keyed on the controls widget rather than the layer, because napari builds a
     fresh one whenever a layer is removed and re-added.
     """
+    if _is_vessel_tubes_layer(layer):
+        return False
     from qtpy.QtWidgets import QLabel
 
     controls = _layer_controls(viewer, layer)
@@ -2438,6 +2639,8 @@ def _layer_features(layer):
 def _is_branch_hover_layer(layer) -> bool:
     """Whether *layer* carries branch-tooltip features (vessels / flow / leftover)."""
     if not _is_ours(layer):
+        return False
+    if _is_vessel_tubes_layer(layer):
         return False
     if layer.name == BRANCH_HOVER or layer.name.startswith(f"{BRANCH_HOVER} "):
         return True
@@ -2579,9 +2782,14 @@ def _branch_hover_viewer_mouse_move(viewer, event) -> None:
 
     layers = getattr(viewer, "layers", ())
     for layer in reversed(list(layers)):
-        if not getattr(layer, "visible", False):
-            continue
         if not _is_branch_hover_layer(layer):
+            continue
+        hidden_source = (
+            not getattr(layer, "visible", False)
+            and _is_vessel_vectors_layer(layer)
+            and _vessel_draw_mode == VESSEL_DRAW_TUBES
+        )
+        if not getattr(layer, "visible", False) and not hidden_source:
             continue
         index = _hover_feature_index(layer, event)
         if index is None:
@@ -2769,7 +2977,8 @@ def _progress_bridge():
 
 def _run_in_background(
     settings, schema, report, button, bars=None, viewer=None, results=None,
-    state=None, log=None, checkpoints=None, after_layers=None):
+    state=None, log=None, checkpoints=None, after_layers=None,
+    start_from=None, resume=None):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
@@ -2787,23 +2996,31 @@ def _run_in_background(
     a timer.
 
     *checkpoints* is a :class:`~haemolynx.gui.stage_checkpoints.StageCheckpoints`
-    the panel keeps across a run so a tab can revert to an earlier stage
+    the panel keeps across a run so a tab can re-run from an earlier stage
     without rebuilding topology. Optional: without one, the run is unchanged.
+
+    *start_from* / *resume* are forwarded to
+    :func:`~haemolynx.pipeline.run_pipeline_stages` so "Run from this stage"
+    can skip earlier work.
     """
     from napari.qt.threading import thread_worker
 
     run_state = state if state is not None else RunState()
+    cancel_flag = {"cancelled": False}
     bridge = _progress_bridge()
     show_layers = viewer is not None and results is not None
     #: The capture, while there is one. A namespace rather than a name, because
     #: it is set below `stopped`, which is what releases it.
     capture = SimpleNamespace(attachment=None)
 
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
+
     def progressed(event: ProgressEvent) -> None:
         # A cancelled run's last few events are already on their way here. The
         # bars have been put back to nothing; moving them again would show a
         # run that is no longer going.
-        if run_state.cancelled:
+        if cancel_flag["cancelled"]:
             return
         if bars is not None:
             bars.show_event(event)
@@ -2816,7 +3033,7 @@ def _run_in_background(
         A group emitted just before the cancel is still queued for this thread,
         and applying it would put back the layers just cleared.
         """
-        if run_state.cancelled:
+        if cancel_flag["cancelled"]:
             return
         _apply_layers(viewer, group, report)
         if after_layers is not None:
@@ -2843,7 +3060,7 @@ def _run_in_background(
         would arrive whenever the GUI thread got round to it, and land above or
         below its own counts at random.
         """
-        run_state.check()
+        run_state.check(cancel_flag)
         log_progress(event)
         bridge.event.emit(event)
 
@@ -2858,34 +3075,45 @@ def _run_in_background(
         The cancellation check is outside that guard, deliberately: stopping is
         the one thing that must get past it.
         """
-        run_state.check()
+        run_state.check(cancel_flag)
         try:
             group = results.stage_finished(stage, output)
         except Exception:  # noqa: BLE001 - reported, never raised at the run
             logger.exception("could not build layers for stage %s", stage)
+            return
+        if cancel_flag["cancelled"]:
             return
         if checkpoints is not None:
             try:
                 checkpoints.record(stage, group, results, settings=settings)
             except Exception:  # noqa: BLE001 - a bad snapshot must not end the run
                 logger.exception("could not record checkpoint for stage %s", stage)
+        if cancel_flag["cancelled"]:
+            return
         bridge.layers.emit(group)
 
     @thread_worker
     def run():
         # `bridge` is captured here, which is also what keeps it alive for as
         # long as the run that emits through it.
+        extra = {}
+        if start_from is not None or resume is not None:
+            extra["start_from"] = start_from
+            extra["resume"] = resume
         return run_pipeline_stages(
             settings,
             schema,
             progress=watched,
             on_stage_output=produced if show_layers else None,
+            **extra,
         )
 
     def finished(graph) -> None:
+        if not still_ours():
+            return
         run_state.stopped()
         button.enabled = True
-        if run_state.cancelled:
+        if cancel_flag["cancelled"]:
             # It got to the end between being asked to stop and reaching the
             # next checkpoint. Saying "finished" beside an empty viewer, or
             # "cancelled" about a run that completed, would both be wrong.
@@ -2904,6 +3132,11 @@ def _run_in_background(
         )
 
     def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale worker failed after Clear", exc_info=error)
+            return
         run_state.stopped()
         button.enabled = True
         if isinstance(error, RunCancelled):
@@ -2953,11 +3186,13 @@ def _run_in_background(
         # every way out of a run, and the guard below returns early for two of
         # the three. See `release_log`.
         release_log()
+        if not still_ours():
+            return
         if not run_state.running:
             return
         run_state.stopped()
         button.enabled = True
-        if run_state.cancelled:
+        if cancel_flag["cancelled"]:
             report.value = FINISHED_FIRST
 
     # `errored` is connected here rather than on the worker, because superqt
@@ -2971,7 +3206,9 @@ def _run_in_background(
     worker = run(_connect={"errored": failed}, _start_thread=False)
     worker.returned.connect(finished)
     worker.finished.connect(stopped)
-    run_state.start(worker=worker, results=results)
+    run_state.start(worker=worker, results=results, cancel_flag=cancel_flag)
+    if checkpoints is not None:
+        checkpoints.unfreeze()
     button.enabled = False
     if bars is not None:
         bars.start()
@@ -4332,9 +4569,9 @@ def settings_widget(napari_viewer=None):
     if perturbations is not None:
         pages["run_perturbations"] = perturbations.page
 
-    #: Snapshots from the last run that showed layers: what "Revert to previous
-    #: stage" on a tab reloads. Cleared when the layers are, and replaced when
-    #: a new run that shows layers starts.
+    #: Snapshots from the last run that showed layers: what "Run from this
+    #: stage" on a tab needs from the previous tab. Cleared when the layers
+    #: are, and replaced when a new run that shows layers starts.
     checkpoints = StageCheckpoints()
     revert_buttons: dict[str, Any] = {}
     from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP
@@ -4377,13 +4614,13 @@ def settings_widget(napari_viewer=None):
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.addWidget(native)
-        # Revert lives in shared chrome below "Show each topology step", not
-        # inside the tab page: one button per tab that has a predecessor, shown
-        # for the active tab and centered on the panel. After a full run it
-        # reloads that previous tab's end-of-stage checkpoint so later settings
-        # can be tweaked without rebuilding the network.
+        # "Run from this stage" lives in shared chrome below "Show each
+        # topology step", not inside the tab page: one button per tab that
+        # has a predecessor, shown for the active tab and centered on the
+        # panel. After a full run it drops this tab and later work, then
+        # reruns from here using the previous tab's checkpoint.
         if previous_tab(tab.stage.title) is not None:
-            revert = PushButton(text="Revert to previous stage")
+            revert = PushButton(text="Run from this stage")
             revert.enabled = False
             revert.tooltip = REVERT_STAGE_TOOLTIP
             revert.native.setObjectName("haemolynx_revert")
@@ -4422,6 +4659,12 @@ def settings_widget(napari_viewer=None):
     #: What a loaded config said each path setting was, before its FileEdit
     #: made it absolute. Empty until a config is opened.
     loaded_paths: dict[str, Any] = {}
+    #: Directory of the last loaded or saved config, for relative-path rebasing.
+    loaded_config_dir: list[Path | None] = [None]
+    #: Last path the Load/Save dialogues used, so they reopen in the same place.
+    last_config_path: list[str] = ["config.yaml"]
+    #: Last path the Save run / Load run dialogues used.
+    last_run_path: list[str] = [RUN_SNAPSHOT_FILENAME]
 
     #: What pointing the run at an open layer put into the form, and which
     #: layer it was. `settings` is None until a layer has been adopted.
@@ -4699,17 +4942,22 @@ def settings_widget(napari_viewer=None):
     check_button = PushButton(text="Run checks")
     run_button = PushButton(text="Run pipeline")
     clear_button = PushButton(text="Clear layers and state")
+    save_run_button = PushButton(text="Save run...")
+    load_run_button = PushButton(text="Load run...")
 
     from haemolynx.gui.chrome_tooltips import (
         CLEAR_LAYERS_TOOLTIP,
         LOAD_CONFIG_TOOLTIP,
+        LOAD_RUN_TOOLTIP,
         RUN_CHECKS_TOOLTIP,
         RUN_PIPELINE_TOOLTIP,
         SAVE_CONFIG_TOOLTIP,
+        SAVE_RUN_TOOLTIP,
         SCALE_BAR_TOOLTIP,
         SHOW_RESULTS_TOOLTIP,
         SHOW_STEPS_TOOLTIP,
         SNAPSHOT_TOOLTIP,
+        VESSEL_DRAW_TOOLTIP,
         Z_DEPTH_TOOLTIP,
         Z_PROJECT_ENABLE_TOOLTIP,
         Z_PROJECT_TOOLTIP,
@@ -4720,6 +4968,10 @@ def settings_widget(napari_viewer=None):
     check_button.tooltip = RUN_CHECKS_TOOLTIP
     run_button.tooltip = RUN_PIPELINE_TOOLTIP
     clear_button.tooltip = CLEAR_LAYERS_TOOLTIP
+    save_run_button.tooltip = SAVE_RUN_TOOLTIP
+    load_run_button.tooltip = LOAD_RUN_TOOLTIP
+    save_run_button.native.setObjectName("haemolynx_save_run")
+    load_run_button.native.setObjectName("haemolynx_load_run")
 
     # What a run puts in the viewer, and how it is coloured. These are panel
     # controls rather than settings: a config file is read by CLI runs too,
@@ -4732,7 +4984,8 @@ def settings_widget(napari_viewer=None):
     show_steps.native.setObjectName("haemolynx_show_steps")
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
-        QCheckBox, QFormLayout, QGroupBox, QLabel, QPushButton, QWidget,
+        QCheckBox, QComboBox, QFormLayout, QGroupBox, QLabel, QPushButton,
+        QWidget,
     )
     from superqt import QDoubleSlider
 
@@ -4759,6 +5012,19 @@ def settings_widget(napari_viewer=None):
     z_depth_slider.setEnabled(False)
     z_depth_label.setToolTip(Z_DEPTH_TOOLTIP)
     z_depth_slider.setToolTip(Z_DEPTH_TOOLTIP)
+
+    vessel_draw_label = QLabel("Vessels")
+    vessel_draw_label.setObjectName("haemolynx_vessel_draw_label")
+    vessel_draw = QComboBox()
+    vessel_draw.setObjectName("haemolynx_vessel_draw")
+    vessel_draw.addItem("Tubes", VESSEL_DRAW_TUBES)
+    vessel_draw.addItem("Lines", VESSEL_DRAW_LINES)
+    vessel_draw.setToolTip(VESSEL_DRAW_TOOLTIP)
+    vessel_draw_label.setToolTip(VESSEL_DRAW_TOOLTIP)
+    if _vessel_draw_mode == VESSEL_DRAW_LINES:
+        vessel_draw.setCurrentIndex(1)
+    else:
+        vessel_draw.setCurrentIndex(0)
 
     scale_bar_box = QCheckBox("Scale bar")
     scale_bar_box.setObjectName("haemolynx_scale_bar")
@@ -4902,6 +5168,16 @@ def settings_widget(napari_viewer=None):
             return
         _apply_scale_bar(viewer, bool(checked))
 
+    def on_vessel_draw_changed(_index: int = 0) -> None:
+        global _vessel_draw_mode
+        mode = vessel_draw.currentData()
+        if mode not in {VESSEL_DRAW_TUBES, VESSEL_DRAW_LINES}:
+            text = vessel_draw.currentText()
+            mode = VESSEL_DRAW_LINES if text == "Lines" else VESSEL_DRAW_TUBES
+        _vessel_draw_mode = str(mode)
+        if viewer is not None:
+            _sync_vessel_tubes(viewer)
+
     def on_arrow_length_changed(value: float) -> None:
         if viewer is None:
             return
@@ -4918,6 +5194,7 @@ def settings_widget(napari_viewer=None):
     z_project_slider.sliderReleased.connect(on_z_slider_released)
     z_project_box.toggled.connect(on_z_project_toggled)
     scale_bar_box.toggled.connect(on_scale_bar_toggled)
+    vessel_draw.currentIndexChanged.connect(on_vessel_draw_changed)
     arrow_length_slider.valueChanged.connect(on_arrow_length_changed)
 
     def _settings() -> dict[str, Any]:
@@ -4952,6 +5229,8 @@ def settings_widget(napari_viewer=None):
             report.value = f"Could not load {path}:\n{error}"
             return
         loaded_paths.clear()
+        loaded_config_dir[0] = Path(path).parent
+        last_config_path[0] = str(path)
         for name, value in loaded.items():
             if name in rows:
                 if schema[name].kind == "path" and value is not None:
@@ -4984,11 +5263,38 @@ def settings_widget(napari_viewer=None):
         from qtpy.QtWidgets import QFileDialog
 
         path, _filter = QFileDialog.getOpenFileName(
-            None, "Open a HaemoLynx config", "", "YAML (*.yaml *.yml)"
+            _dialog_parent(viewer),
+            "Open a HaemoLynx config",
+            last_config_path[0],
+            "YAML (*.yaml *.yml)",
         )
         if not path:
             return
+        last_config_path[0] = path
         load_config_file(path)
+
+    def _values_for_save(dest: Path) -> dict[str, Any]:
+        """Form values with relative loaded paths rebased if *dest* left cwd."""
+        values = current_values()
+        try:
+            dest_dir = dest.parent.resolve()
+            keep_relative = dest_dir == Path.cwd().resolve()
+            if loaded_config_dir[0] is not None:
+                keep_relative = dest_dir == loaded_config_dir[0].resolve()
+        except OSError:
+            keep_relative = False
+        if keep_relative:
+            return values
+        for name, original in loaded_paths.items():
+            if original is None or name not in values:
+                continue
+            try:
+                if Path(original).is_absolute():
+                    continue
+                values[name] = Path(original).expanduser().resolve()
+            except (TypeError, ValueError, OSError):
+                continue
+        return values
 
     def save_config_file(path: Path | str) -> bool:
         """Write the panel's current settings to *path*.
@@ -4997,19 +5303,25 @@ def settings_widget(napari_viewer=None):
         I/O, still-broken YAML edge cases) are reported in the panel rather
         than raised through the Qt/psygnal signal — same contract as load.
         """
+        dest = ensure_yaml_suffix(path)
         try:
-            dump_config(Path(path), schema, values=current_values())
+            dump_config(dest, schema, values=_values_for_save(dest))
         except Exception as error:
-            report.value = f"Could not save {path}:\n{error}"
+            report.value = f"Could not save {dest}:\n{error}"
             return False
-        report.value = f"Wrote {path}"
+        last_config_path[0] = str(dest)
+        loaded_config_dir[0] = dest.parent
+        report.value = f"Wrote {dest}"
         return True
 
     def on_save() -> None:
         from qtpy.QtWidgets import QFileDialog
 
         path, _filter = QFileDialog.getSaveFileName(
-            None, "Save these settings", "config.yaml", "YAML (*.yaml *.yml)"
+            _dialog_parent(viewer),
+            "Save these settings",
+            last_config_path[0] or "config.yaml",
+            "YAML (*.yaml *.yml)",
         )
         if not path:
             return
@@ -5022,36 +5334,77 @@ def settings_widget(napari_viewer=None):
         report.value = "\n".join(lines) if lines else "All checks passed."
 
     def refresh_revert_buttons() -> None:
-        """Enable each tab's revert button only when its previous stage is saved."""
+        """Enable each tab's run-from button only when its previous stage is saved."""
         for title, button in revert_buttons.items():
             button.enabled = (
                 not run_state.running and can_revert_from(title, checkpoints)
             )
 
-    def on_run() -> None:
+    def _restore_skip_toggles() -> bool:
+        """Put skeletonize / graph-building / FWHM back to the user's values."""
+        restored = False
+        disconnected: list[str] = []
+        for name in SKIP_FOR_RESUME:
+            if name in rows:
+                try:
+                    rows[name].changed.disconnect(snapshot_skip_toggles)
+                    disconnected.append(name)
+                except (TypeError, RuntimeError):
+                    pass
+        try:
+            for name in SKIP_FOR_RESUME:
+                if name in rows and name in skip_toggle_snapshot:
+                    if rows[name].value != skip_toggle_snapshot[name]:
+                        rows[name].value = skip_toggle_snapshot[name]
+                        restored = True
+        finally:
+            for name in disconnected:
+                rows[name].changed.connect(snapshot_skip_toggles)
+        if restored:
+            apply_prerequisites()
+        return restored
+
+    def on_run(
+        *_args,
+        start_from=None,
+        resume=None,
+        replace_checkpoints: bool = True,
+    ) -> None:
         if run_state.running:
             # The button is disabled while a run is going, so this is only
             # reached from a script or a keyboard -- but it is also the one
             # place that says how to get out of a run, so it says it.
             report.value = ALREADY_RUNNING
             return
-        settings = _settings()
+        if start_from is None:
+            # Run pipeline always uses the user's skip toggles, not leftover
+            # flags from "Run from this stage".
+            _restore_skip_toggles()
+        try:
+            settings = _settings()
+        except Exception as error:
+            report.value = f"Could not read settings:\n{error}"
+            return
         if not preflight(settings, schema).ok:
             report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
             return
         results = None
         if show_results.value and viewer is not None:
-            results = ResultLayers(
-                show_steps=bool(show_steps.value),
-                settings=settings,
-            )
-            view.results = results
-            if boundaries is not None:
-                boundaries.state.results = results
-            # A new run that will show layers replaces the previous run's
-            # checkpoints; a run with layers off leaves them alone so a revert
-            # from an earlier shown run is still possible.
-            checkpoints.clear()
+            if replace_checkpoints or view.results is None:
+                results = ResultLayers(
+                    show_steps=bool(show_steps.value),
+                    settings=settings,
+                )
+                view.results = results
+                if boundaries is not None:
+                    boundaries.state.results = results
+            else:
+                results = view.results
+            # A full run that will show layers replaces the previous run's
+            # checkpoints. "Run from this stage" has already dropped later
+            # ones and must keep the previous tab's snapshot.
+            if replace_checkpoints:
+                checkpoints.clear()
         # How much of the run to show follows the setting that already means
         # "tell me everything"; the window itself is a panel control, like
         # `show_results`, because a config file is read by CLI runs too.
@@ -5068,71 +5421,89 @@ def settings_widget(napari_viewer=None):
             log=log_view,
             checkpoints=checkpoints if results is not None else None,
             after_layers=_after_layers_applied if show_results.value else None,
+            start_from=start_from,
+            resume=resume,
         )
-        # Enable revert once the run has actually stopped (success, failure, or
-        # the quiet finished-after-quit path). Connecting here rather than
-        # inside `_run_in_background` keeps that helper free of panel widgets.
+        # After start(): running is True, so run-from buttons grey out for
+        # the length of the run. They come back when the worker stops.
+        refresh_revert_buttons()
         if worker is not None:
             worker.returned.connect(lambda *_: refresh_revert_buttons())
             worker.errored.connect(lambda *_: refresh_revert_buttons())
             worker.finished.connect(lambda *_: refresh_revert_buttons())
 
-    def on_clear() -> None:
+    def on_clear(*, ask: bool = False) -> None:
         """Take our layers out of the viewer, stop the run, and forget state.
 
-        Clearing mid-run used to leave the run going against layers that were
-        no longer there, and the panel with a permanently greyed-out Run
-        button. Both halves of that are here: the run is asked to stop, and
-        everything it left behind is put back -- so the next run can start as
-        soon as this one has. Cached resume/checkpoint pickles and Revert's
-        skip toggles are also reset so Revert → Clear → Run does not reload
-        an old graph.
+        Cancel first so in-flight layer groups cannot put work back. Then
+        free the Run button immediately: the dying worker keeps its own
+        cancel flag and cannot grey the panel out again.
         """
-        if viewer is None:
-            return
-        removed = _clear_our_layers(viewer)
         stopping = run_state.cancel()
         if stopping:
-            # The log is deliberately not among the things a cancel puts back.
-            # A half-filled bar and a remembered graph are lies once a run has
-            # been stopped, which is why `RunState` resets them; what the run
-            # said before it was stopped is still true, and is usually why the
-            # user stopped it. So it is marked, not cleared.
+            checkpoints.freeze()
+            run_state.supersede()
+            run_button.enabled = True
             log_view.cancelled()
+        removed = 0
+        if viewer is not None:
+            removed = _clear_our_layers(viewer)
+            reparent_arrow_length_slider()
+            z_depth_slider._haemolynx_extent_ready = False
+            z_project_slider._haemolynx_extent_ready = False
+            z_depth_slider.setEnabled(False)
+            z_project_slider.setEnabled(False)
+            arrow_length_slider.setEnabled(False)
+            arrow_length_slider.setVisible(False)
+            apply_view_z(force=True)
         view.results = None
-        reparent_arrow_length_slider()
-        z_depth_slider._haemolynx_extent_ready = False
-        z_project_slider._haemolynx_extent_ready = False
-        z_depth_slider.setEnabled(False)
-        z_project_slider.setEnabled(False)
-        arrow_length_slider.setEnabled(False)
-        arrow_length_slider.setVisible(False)
         if boundaries is not None:
             boundaries.state.results = None
         discarded_artefacts = False
-        settings = _settings()
-        removed_paths = discard_cached_artefacts_for_settings(settings)
-        discarded_artefacts = bool(removed_paths)
-        restored_skips = False
-        disconnected: list[str] = []
-        for name in SKIP_FOR_RESUME:
-            if name in rows:
-                try:
-                    rows[name].changed.disconnect(snapshot_skip_toggles)
-                    disconnected.append(name)
-                except (TypeError, RuntimeError):
-                    pass
+        extra = checkpoints.session_artefact_paths
         try:
-            for name in SKIP_FOR_RESUME:
-                if name in rows and name in skip_toggle_snapshot:
-                    if rows[name].value != skip_toggle_snapshot[name]:
-                        rows[name].value = skip_toggle_snapshot[name]
-                        restored_skips = True
-        finally:
-            for name in disconnected:
-                rows[name].changed.connect(snapshot_skip_toggles)
-        if restored_skips:
-            apply_prerequisites()
+            values = current_values()
+        except Exception:  # noqa: BLE001 - still reset the panel
+            values = None
+            logger.debug("could not read settings while clearing", exc_info=True)
+        pending = list(extra)
+        if values:
+            vtk_prefix = values.get("vtk_output_prefix")
+            output_dir = output_dir_from_prefix(vtk_prefix)
+            if output_dir is not None:
+                from haemolynx.gui.stage_checkpoints import (
+                    graph_resume_path,
+                    stems_for_cached_artefacts,
+                )
+
+                for stem in stems_for_cached_artefacts(values):
+                    pending.append(graph_resume_path(output_dir, stem))
+                    pending.extend(output_dir.glob(f"{stem}_checkpoint_*.pkl"))
+        existing = tuple(path for path in dict.fromkeys(pending) if Path(path).is_file())
+        do_discard = True
+        if ask and existing:
+            from qtpy.QtWidgets import QMessageBox
+
+            listed = "\n".join(str(path) for path in existing[:8])
+            more = "" if len(existing) <= 8 else f"\n... and {len(existing) - 8} more"
+            answer = QMessageBox.question(
+                _dialog_parent(viewer),
+                "Discard cached pickles?",
+                "Clear will delete these resume and checkpoint files:\n"
+                + listed
+                + more,
+            )
+            do_discard = answer == QMessageBox.Yes
+        if do_discard:
+            try:
+                removed_paths = discard_cached_artefacts_for_settings(
+                    values, extra_paths=extra
+                )
+            except Exception:  # noqa: BLE001 - clearing the panel still matters
+                logger.exception("could not discard cached artefacts")
+                removed_paths = ()
+            discarded_artefacts = bool(removed_paths)
+        restored_skips = _restore_skip_toggles()
         checkpoints.clear()
         refresh_revert_buttons()
         report.value = clear_message(
@@ -5142,22 +5513,27 @@ def settings_widget(napari_viewer=None):
             restored_skips=restored_skips,
         )
 
-    def on_revert(tab_title: str) -> None:
-        """Reload the previous tab's end-of-stage state for *tab_title*."""
+    def prepare_run_from(tab_title: str):
+        """Drop this tab and later work; return the plan, or None."""
         if run_state.running:
             report.value = ALREADY_RUNNING
-            return
+            return None
         if viewer is None:
             report.value = "No viewer to restore layers into."
-            return
-        plan = checkpoints.plan_restore(tab_title, settings=_settings())
+            return None
+        try:
+            settings = _settings()
+        except Exception as error:
+            report.value = f"Could not read settings:\n{error}"
+            return None
+        plan = checkpoints.plan_run_from(tab_title, settings=settings)
         if plan is None:
             report.value = (
-                "Nothing to restore: run the pipeline with 'Show each stage "
-                "in the viewer' first."
+                "Nothing ready to run from: run the pipeline with 'Show each "
+                "stage in the viewer' through the previous tab first."
             )
             refresh_revert_buttons()
-            return
+            return None
         results = view.results
         if results is None:
             results = ResultLayers()
@@ -5190,25 +5566,169 @@ def settings_widget(napari_viewer=None):
             for name in disconnected:
                 rows[name].changed.connect(snapshot_skip_toggles)
         apply_prerequisites()
-
-        def select_restored_tab() -> None:
-            """Show the restored stage's tab (M), not the tab that owned Revert (K).
-
-            Selecting immediately covers programmatic / test calls. Scheduling
-            again on the next event-loop tick covers a Qt click quirk: finishing
-            a button press on tab K can restore that tab's page after we have
-            already moved to M, which looked like "revert bounced back".
-            """
+        if plan.tab_title:
             titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
             if plan.tab_title in titles:
                 tab_widget.setCurrentIndex(titles.index(plan.tab_title))
-
-        select_restored_tab()
-        from qtpy.QtCore import QTimer
-
-        QTimer.singleShot(0, select_restored_tab)
         refresh_revert_buttons()
         report.value = restore_message(plan)
+        return plan
+
+    def on_revert(tab_title: str) -> None:
+        """Prepare the previous tab's work, then rerun from this stage."""
+        plan = prepare_run_from(tab_title)
+        if plan is None:
+            return
+        on_run(
+            start_from=plan.start_from or None,
+            resume=plan.resume,
+            replace_checkpoints=False,
+        )
+
+    def save_run_file(path: Path | str) -> bool:
+        """Write the current viewer run to *path*. Returns whether it wrote."""
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return False
+        try:
+            snapshot = capture_run(
+                checkpoints=checkpoints,
+                results=view.results,
+                settings=current_values(),
+                skip_toggle_snapshot=skip_toggle_snapshot,
+                show_results=bool(show_results.value),
+                show_steps=bool(show_steps.value),
+                report=str(report.value or ""),
+            )
+        except RunSnapshotError as error:
+            report.value = str(error)
+            return False
+        dest = ensure_run_suffix(path)
+        try:
+            write_run_snapshot(dest, snapshot)
+        except Exception as error:  # noqa: BLE001 - report in the panel
+            report.value = f"Could not save run {dest}:\n{error}"
+            return False
+        last_run_path[0] = str(dest)
+        report.value = f"Wrote run {dest}"
+        return True
+
+    def _strip_session_for_load() -> None:
+        """Forget the live run so a loaded snapshot owns the panel."""
+        stopping = run_state.cancel()
+        if stopping:
+            checkpoints.freeze()
+            run_state.supersede()
+            run_button.enabled = True
+            log_view.cancelled()
+        if viewer is not None:
+            _clear_our_layers(viewer)
+            reparent_arrow_length_slider()
+            z_depth_slider._haemolynx_extent_ready = False
+            z_project_slider._haemolynx_extent_ready = False
+            z_depth_slider.setEnabled(False)
+            z_project_slider.setEnabled(False)
+            arrow_length_slider.setEnabled(False)
+            arrow_length_slider.setVisible(False)
+            apply_view_z(force=True)
+        view.results = None
+        if boundaries is not None:
+            boundaries.state.results = None
+        try:
+            discard_cached_artefacts_for_settings(
+                current_values(), extra_paths=checkpoints.session_artefact_paths
+            )
+        except Exception:  # noqa: BLE001 - loading still proceeds
+            logger.exception("could not discard cached artefacts before loading a run")
+        checkpoints.clear()
+        bars.reset()
+
+    def load_run_file(path: Path | str) -> bool:
+        """Replace the current session with the run stored at *path*."""
+        try:
+            snapshot = read_run_snapshot(path)
+        except Exception as error:
+            report.value = f"Could not load run {path}:\n{error}"
+            return False
+        _strip_session_for_load()
+        loaded_paths.clear()
+        loaded_config_dir[0] = Path(path).parent
+        last_run_path[0] = str(path)
+        for name, value in snapshot.settings.items():
+            if name not in rows:
+                continue
+            if schema[name].kind == "path" and value is not None:
+                loaded_paths[name] = value
+            rows[name].value = display_value_for(schema[name], value)
+        show_results.value = snapshot.show_results
+        show_steps.value = snapshot.show_steps
+        skip_toggle_snapshot.clear()
+        skip_toggle_snapshot.update(snapshot.skip_toggle_snapshot)
+        if not skip_toggle_snapshot:
+            snapshot_skip_toggles()
+        apply_prerequisites()
+        apply_snapshot_to_checkpoints(checkpoints, snapshot)
+        results = ResultLayers(
+            show_steps=snapshot.show_steps,
+            settings=snapshot.settings,
+        )
+        apply_snapshot_to_results(results, snapshot)
+        view.results = results
+        if boundaries is not None:
+            boundaries.state.results = results
+        if viewer is not None:
+            for group in replay_groups(snapshot):
+                _apply_layers(viewer, group)
+            _after_layers_applied()
+        try:
+            resolved = _settings()
+        except Exception:  # noqa: BLE001 - resume pickles are optional
+            resolved = current_values()
+        write_resume_artefacts(snapshot, resolved, checkpoints)
+        if snapshot.last_tab_title:
+            titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+            if snapshot.last_tab_title in titles:
+                tab_widget.setCurrentIndex(titles.index(snapshot.last_tab_title))
+        bars.start()
+        bars.finish(f"Loaded run ({len(snapshot.stages)} stages)")
+        refresh_revert_buttons()
+        run_button.enabled = True
+        report.value = (
+            f"Loaded run from {path}: {len(snapshot.stages)} stages restored."
+        )
+        return True
+
+    def on_save_run() -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        suggested = last_run_path[0]
+        if suggested == RUN_SNAPSHOT_FILENAME:
+            suggested = default_run_path(current_values())
+        path, _filter = QFileDialog.getSaveFileName(
+            _dialog_parent(viewer),
+            "Save this pipeline run",
+            suggested,
+            RUN_SNAPSHOT_FILTER,
+        )
+        if not path:
+            return
+        save_run_file(path)
+
+    def on_load_run() -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        path, _filter = QFileDialog.getOpenFileName(
+            _dialog_parent(viewer),
+            "Open a HaemoLynx pipeline run",
+            last_run_path[0],
+            RUN_SNAPSHOT_FILTER,
+        )
+        if not path:
+            return
+        load_run_file(path)
 
     for title, button in revert_buttons.items():
         button.changed.connect(
@@ -5219,12 +5739,21 @@ def settings_widget(napari_viewer=None):
     save_button.changed.connect(on_save)
     check_button.changed.connect(on_check)
     run_button.changed.connect(on_run)
-    clear_button.changed.connect(on_clear)
+    clear_button.changed.connect(lambda *_args: on_clear(ask=True))
+    save_run_button.changed.connect(on_save_run)
+    load_run_button.changed.connect(on_load_run)
     buttons = Container(
         widgets=[load_button, save_button, check_button, run_button, clear_button],
         layout="horizontal",
         labels=False,
     )
+    run_file_row = QWidget()
+    run_file_row.setObjectName("haemolynx_run_file_row")
+    run_file_layout = QHBoxLayout(run_file_row)
+    run_file_layout.setContentsMargins(0, 0, 0, 0)
+    run_file_layout.addStretch(1)
+    run_file_layout.addWidget(save_run_button.native)
+    run_file_layout.addWidget(load_run_button.native)
     view_controls = Container(
         widgets=[show_results, show_steps],
         labels=True,
@@ -5244,6 +5773,12 @@ def settings_widget(napari_viewer=None):
     z_depth_form.setContentsMargins(0, 0, 0, 0)
     z_depth_form.addRow(z_depth_label, z_depth_slider)
     display_form.addRow(z_depth_row)
+    vessel_draw_row = QWidget()
+    vessel_draw_row.setObjectName("haemolynx_vessel_draw_row")
+    vessel_draw_form = QFormLayout(vessel_draw_row)
+    vessel_draw_form.setContentsMargins(0, 0, 0, 0)
+    vessel_draw_form.addRow(vessel_draw_label, vessel_draw)
+    display_form.addRow(vessel_draw_row)
     display_form.addRow(scale_bar_box)
 
     def on_save_snapshot() -> None:
@@ -5307,7 +5842,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_log_dock = log_dock
     panel._haemolynx_run = on_run
     panel._haemolynx_clear = on_clear
-    panel._haemolynx_revert = on_revert
+    panel._haemolynx_revert = prepare_run_from
+    panel._haemolynx_run_from = on_revert
     panel._haemolynx_checkpoints = checkpoints
     panel._haemolynx_revert_buttons = revert_buttons
     panel._haemolynx_revert_stack = revert_stack
@@ -5320,6 +5856,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_view_controls = view_controls
     panel._haemolynx_z_depth_slider = z_depth_slider
     panel._haemolynx_z_depth_row = z_depth_row
+    panel._haemolynx_vessel_draw = vessel_draw
+    panel._haemolynx_vessel_draw_row = vessel_draw_row
     panel._haemolynx_view_panel = view_panel
     panel._haemolynx_view_dock = view_dock
     panel._haemolynx_z_project = z_project_box
@@ -5340,6 +5878,11 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_after_layers_applied = _after_layers_applied
     panel._haemolynx_load_config = load_config_file
     panel._haemolynx_save_config = save_config_file
+    panel._haemolynx_save_run = save_run_file
+    panel._haemolynx_load_run = load_run_file
+    panel._haemolynx_save_run_button = save_run_button
+    panel._haemolynx_load_run_button = load_run_button
+    panel._haemolynx_run_file_row = run_file_row
     panel._haemolynx_report = lambda: report.value
     panel._haemolynx_rows = lambda: rows
     panel._haemolynx_boundaries = boundaries
@@ -5361,6 +5904,7 @@ def settings_widget(napari_viewer=None):
     layout.addWidget(view_controls.native)
     layout.addWidget(revert_stack)
     layout.addWidget(buttons.native)
+    layout.addWidget(run_file_row)
     layout.addWidget(bars.native)
     layout.addWidget(report.native)
     if viewer is None:

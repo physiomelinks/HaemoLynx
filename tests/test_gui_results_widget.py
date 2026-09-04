@@ -36,6 +36,7 @@ from haemolynx.gui.results import (  # noqa: E402
     IMAGE,
     NODES,
     SKELETON,
+    VESSEL_TUBES,
     VESSELS,
     LayerSpec,
     ResultLayers,
@@ -81,11 +82,30 @@ def test_a_stage_becomes_layers_of_the_right_type_and_scale(viewer):
     assert isinstance(by_name[IMAGE], napari.layers.Image)
     assert isinstance(by_name[SKELETON], napari.layers.Labels)
     assert isinstance(by_name[VESSELS], napari.layers.Vectors)
+    assert isinstance(by_name[VESSEL_TUBES], napari.layers.Surface)
     assert isinstance(by_name[NODES], napari.layers.Points)
 
     # The registration rule, checked where it can actually be checked.
     assert tuple(by_name[SKELETON].scale) == (2.0, 1.0, 0.5)
     assert tuple(by_name[VESSELS].scale) == (1.0, 1.0, 1.0)
+    assert tuple(by_name[VESSEL_TUBES].scale) == (1.0, 1.0, 1.0)
+    assert by_name[VESSELS].visible is False
+    assert by_name[VESSEL_TUBES].visible is True
+
+
+def test_colouring_vessels_retints_the_tube_mesh(viewer):
+    from haemolynx.gui._widget import _colour_layer
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    vessels = viewer.layers[VESSELS]
+    tubes = viewer.layers[VESSEL_TUBES]
+    _colour_layer(vessels, "none")
+    edge = np.asarray(vessels.edge_color)
+    verts = np.asarray(tubes.vertex_colors)
+    assert len(verts) == len(tubes.data[0])
+    np.testing.assert_allclose(verts[0, :3], edge[0, :3], atol=0.05)
+    assert np.allclose(verts, verts[0], atol=0.05)
 
 
 def test_the_view_turns_to_3d_when_the_geometry_arrives(viewer):
@@ -467,7 +487,7 @@ def paused_run(monkeypatch):
         stages=[],
     )
 
-    def fake_run(settings, schema, progress=None, on_stage_output=None):
+    def fake_run(settings, schema, progress=None, on_stage_output=None, **_kwargs):
         if on_stage_output is not None:
             on_stage_output("build_network", network(graph))
         script.stages.append("build_network")
@@ -503,12 +523,15 @@ def test_clearing_the_layers_mid_run_stops_it_and_frees_the_panel(
     qtbot.waitUntil(lambda: VESSELS in viewer.layers, timeout=5000)
     assert state.running is True
 
-    # What pressing "Clear layers" does, in the order the panel does it.
-    assert _clear_our_layers(viewer) >= 2
+    # What pressing "Clear layers" does: cancel first so queued layer groups
+    # cannot put work back, then free the panel, then strip the layers.
     assert state.cancel() is True
+    state.supersede()
+    assert state.running is False
+    assert _clear_our_layers(viewer) >= 2
     paused_run.resume.set()
 
-    qtbot.waitUntil(lambda: not state.running, timeout=5000)
+    qtbot.waitUntil(lambda: report.value == CANCELLED, timeout=5000)
 
     # It stopped at its next checkpoint rather than running to the end.
     assert paused_run.stages == ["build_network"]
@@ -538,11 +561,12 @@ def test_a_new_run_can_be_started_straight_after_a_cancel(viewer, qtbot, paused_
     qtbot.waitUntil(paused_run.drawn.is_set, timeout=5000)
     _clear_our_layers(viewer)
     state.cancel()
-    paused_run.resume.set()
-    qtbot.waitUntil(lambda: not state.running, timeout=5000)
+    state.supersede()
+    assert state.running is False
 
     _run_in_background({}, None, report, button, bars, viewer=viewer,
                        results=ResultLayers(), state=state)
+    paused_run.resume.set()
     qtbot.waitUntil(lambda: not state.running, timeout=5000)
 
     assert paused_run.stages == ["build_network", "build_network", "solve"]
@@ -626,6 +650,10 @@ def test_the_clear_button_is_what_stops_the_panels_run(make_napari_viewer):
     assert results.colour_options() == []
     assert panel._haemolynx_progress.display.stages == BarState()
     assert len(viewer.layers) == 0
+    assert panel._haemolynx_run_button.enabled is True
+    assert panel._haemolynx_run_state.running is False
+    panel._haemolynx_run()
+    assert panel._haemolynx_report() != ALREADY_RUNNING
 
 
 def test_clearing_the_layers_with_no_run_going_is_unchanged(make_napari_viewer):

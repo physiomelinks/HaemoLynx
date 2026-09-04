@@ -91,3 +91,15 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "plotting: marks tests that create matplotlib figures"
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_vessel_draw_mode():
+    """Tubes/lines is a session view pref; do not leak it between tests."""
+    mod = sys.modules.get("haemolynx.gui._widget")
+    if mod is not None and hasattr(mod, "DEFAULT_VESSEL_DRAW"):
+        mod._vessel_draw_mode = mod.DEFAULT_VESSEL_DRAW
+    yield
+    mod = sys.modules.get("haemolynx.gui._widget")
+    if mod is not None and hasattr(mod, "DEFAULT_VESSEL_DRAW"):
+        mod._vessel_draw_mode = mod.DEFAULT_VESSEL_DRAW

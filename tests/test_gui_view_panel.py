@@ -25,7 +25,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     settings_widget,
     unique_snapshot_path,
 )
-from haemolynx.gui.results import IMAGE, NODES, VESSELS  # noqa: E402
+from haemolynx.gui.results import IMAGE, NODES, VESSEL_TUBES, VESSELS  # noqa: E402
 from test_gui_results_widget import a_run  # noqa: E402
 
 pytestmark = pytest.mark.gui
@@ -97,6 +97,10 @@ def test_the_view_panel_floats_over_the_canvas(make_napari_viewer):
     assert panel._haemolynx_z_project_row.parentWidget() is panel._haemolynx_display_group
     assert panel._haemolynx_z_depth_slider.objectName() == "haemolynx_z_depth_slider"
     assert panel._haemolynx_z_depth_row.parentWidget() is panel._haemolynx_display_group
+    assert panel._haemolynx_vessel_draw.objectName() == "haemolynx_vessel_draw"
+    assert panel._haemolynx_vessel_draw_row.objectName() == "haemolynx_vessel_draw_row"
+    assert panel._haemolynx_vessel_draw_row.parentWidget() is panel._haemolynx_display_group
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
     assert panel._haemolynx_scale_bar.objectName() == "haemolynx_scale_bar"
     assert panel._haemolynx_display_group.objectName() == "haemolynx_display_group"
     snapshot = panel._haemolynx_snapshot_group
@@ -119,6 +123,8 @@ def test_the_view_panel_is_not_on_the_right_settings_column(make_napari_viewer):
         panel._haemolynx_z_project_row,
         panel._haemolynx_z_depth_slider,
         panel._haemolynx_z_depth_row,
+        panel._haemolynx_vessel_draw,
+        panel._haemolynx_vessel_draw_row,
         panel._haemolynx_z_project,
     ):
         ancestor = widget.parentWidget()
@@ -137,6 +143,7 @@ def test_the_panel_still_builds_the_view_chrome_with_no_viewer():
     assert panel._haemolynx_scale_bar.isChecked() is False
     assert panel._haemolynx_scale_bar.isEnabled()
     assert panel._haemolynx_snapshot_button is not None
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
     panel._haemolynx_snapshot_button.click()
     assert "viewer" in panel._haemolynx_report().lower()
 
@@ -672,3 +679,71 @@ def test_two_snapshots_do_not_overwrite(make_napari_viewer, tmp_path, monkeypatc
     written = sorted(out_dir.glob(f"{SNAPSHOT_STEM}_*.tif"))
     assert len(written) == 2
     assert written[0] != written[1]
+
+
+def test_vessels_default_to_tubes_and_toggle_to_lines(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    assert isinstance(viewer.layers[VESSELS], napari.layers.Vectors)
+    assert VESSEL_TUBES in viewer.layers
+    assert isinstance(viewer.layers[VESSEL_TUBES], napari.layers.Surface)
+    assert viewer.layers[VESSELS].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
+
+    n_segments = len(viewer.layers[VESSELS].data)
+    n_verts = len(viewer.layers[VESSEL_TUBES].data[0])
+    assert n_verts == n_segments * 6 * 2
+
+    panel._haemolynx_vessel_draw.setCurrentText("Lines")
+    assert viewer.layers[VESSELS].visible is True
+    assert viewer.layers[VESSEL_TUBES].visible is False
+
+    panel._haemolynx_vessel_draw.setCurrentText("Tubes")
+    assert viewer.layers[VESSELS].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+
+
+def test_vessel_draw_choice_survives_a_layer_rebuild(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    panel._haemolynx_vessel_draw.setCurrentText("Lines")
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    assert panel._haemolynx_vessel_draw.currentText() == "Lines"
+    assert viewer.layers[VESSELS].visible is True
+    if VESSEL_TUBES in viewer.layers:
+        assert viewer.layers[VESSEL_TUBES].visible is False
+
+
+def test_z_depth_filter_rebuilds_tubes_from_filtered_vectors(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
+    full_segments = len(viewer.layers[VESSELS].data)
+    full_verts = len(viewer.layers[VESSEL_TUBES].data[0])
+    assert full_verts == full_segments * 12
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    clipped_segments = len(viewer.layers[VESSELS].data)
+    assert clipped_segments < full_segments
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == clipped_segments * 12
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    assert viewer.layers[VESSELS].visible is False
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 8.0))
+    assert len(viewer.layers[VESSELS].data) == full_segments
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == full_verts
+

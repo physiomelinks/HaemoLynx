@@ -28,6 +28,8 @@ that backwards is invisible on isotropic data and wrong on every real stack.
 """
 from __future__ import annotations
 
+import logging
+import pickle
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -40,11 +42,16 @@ from haemolynx.visualization._helpers import (
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
 from haemolynx.visualization.geometry import edge_polyline
 
+logger = logging.getLogger(__name__)
+
 #: Prefix on every layer this module names, so a re-run can tell its own layers
 #: from the user's and never overwrite theirs.
 PREFIX = "HaemoLynx "
 
 VESSELS = f"{PREFIX}vessels"
+#: Per-segment tube Surface drawn over :data:`VESSELS` in the napari view.
+#: View-only — not a ResultLayers spec; the widget builds it from Vectors data.
+VESSEL_TUBES = f"{PREFIX}vessel tubes"
 VESSEL_LABELS = f"{PREFIX}vessel labels"
 #: Legacy name of the midpoint-circle hover layer. Hover now lives on the
 #: vessels Vectors polyline; the widget drops a leftover layer of this name.
@@ -105,6 +112,7 @@ MASK_VOLUME_OPTIONS: dict[str, Any] = {
 LAYER_NAMES = frozenset(
     {
         VESSELS,
+        VESSEL_TUBES,
         VESSEL_LABELS,
         BRANCH_HOVER,
         FLOW_DIRECTION,
@@ -802,6 +810,17 @@ def _flow_heading_contrast_limits(values: np.ndarray) -> tuple[float, float]:
     return (0.0, 360.0)
 
 
+def _copy_remembered_graph(graph: Any) -> Any | None:
+    """A pickle round-trip copy, or None when the graph will not pickle."""
+    if graph is None:
+        return None
+    try:
+        return pickle.loads(pickle.dumps(graph))
+    except Exception:  # noqa: BLE001 - a loaded run can still show stored layers
+        logger.exception("could not pickle graph for a run snapshot")
+        return None
+
+
 # --- one stage at a time -----------------------------------------------------
 
 
@@ -858,6 +877,47 @@ class ResultLayers:
         self._image_shape_z = None
         self._geometry_shown = False
         self._emitted = []
+
+    def export_state(self) -> dict[str, Any]:
+        """Pickle-safe copy of the memory a loaded run needs to look finished."""
+        graph = _copy_remembered_graph(self._graph)
+        if self._canonical_graph is self._graph:
+            canonical = graph
+        else:
+            canonical = _copy_remembered_graph(self._canonical_graph)
+        return {
+            "graph": graph,
+            "canonical_graph": canonical,
+            "voxel_size_zyx": tuple(float(v) for v in self._voxel_size_zyx),
+            "image_shape_z": self._image_shape_z,
+            "geometry_shown": bool(self._geometry_shown),
+            "emitted": tuple(self._emitted),
+            "settings": dict(self.settings),
+            "show_steps": bool(self.show_steps),
+        }
+
+    def load_state(self, state: Mapping[str, Any] | None) -> None:
+        """Restore :meth:`export_state` so later stages and colouring match."""
+        if not state:
+            self.reset()
+            return
+        graph = _copy_remembered_graph(state.get("graph"))
+        canonical = state.get("canonical_graph")
+        if canonical is state.get("graph"):
+            canonical = graph
+        else:
+            canonical = _copy_remembered_graph(canonical)
+        self._graph = graph
+        self._canonical_graph = canonical
+        voxel = state.get("voxel_size_zyx") or (1.0, 1.0, 1.0)
+        self._voxel_size_zyx = tuple(float(v) for v in voxel)
+        self._image_shape_z = state.get("image_shape_z")
+        self._geometry_shown = bool(state.get("geometry_shown"))
+        self._emitted = list(state.get("emitted") or ())
+        if state.get("settings") is not None:
+            self.settings = dict(state["settings"])
+        if "show_steps" in state:
+            self.show_steps = bool(state["show_steps"])
 
     def image_z_extent_um(self) -> float | None:
         """Physical Z span of the image stack once ``skeletonise`` has run."""
