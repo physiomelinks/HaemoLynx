@@ -193,16 +193,29 @@ def thick_vessel_object_mask(
     *,
     min_radius_um: float,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    wall_absorption_um: float | None = None,
 ) -> np.ndarray:
     """Fat-region voxels of a (possibly single) connected plasma-labelled mask.
 
     1. Core: inscribed radius >= *min_radius_um*.
     2. Body: geodesic reconstruction of that core through voxels fatter than
-       half the threshold, so a flattened plasma column's interior is included
-       without walking down fused capillaries (those stay below the half-gate).
-    3. Wall: Euclidean ball of that half-gate around the body, so the plasma
-       column's surface is not left for Lee to mesh, while capillaries more
-       than that far from the body stay on the Lee path.
+       half *min_radius_um*, so a flattened plasma column's interior is
+       included without walking down fused capillaries (those stay below
+       that gate). Always half *min_radius_um* -- this is about correctly
+       tracing the fat trunk's own (possibly irregular) shape, not about how
+       much of a neighbouring vessel gets absorbed, so *wall_absorption_um*
+       does not affect it.
+    3. Wall: Euclidean ball of *wall_absorption_um* around the body, so the
+       plasma column's surface is not left for Lee to mesh, while capillaries
+       farther than that from the body stay on the Lee path.
+
+    *wall_absorption_um* also swallows the first *wall_absorption_um* of any
+    real vessel fused directly onto the trunk's surface -- the fat region has
+    no way to tell a small vessel's own base from the trunk's own surface
+    roughness, so a larger value costs more of every fused vessel's near-wall
+    length. ``None`` derives it as half of *min_radius_um*, the previous
+    fixed behaviour (both steps 2 and 3 then use the same value, as before
+    this parameter existed).
     """
     mask = np.asarray(binary, dtype=bool)
     out = np.zeros(mask.shape, dtype=bool)
@@ -218,13 +231,18 @@ def thick_vessel_object_mask(
     if not thick_core.any():
         return out
 
-    t_low = 0.5 * float(min_radius_um)
-    allowed = crop & (radius_map >= t_low)
+    propagation_gate = 0.5 * float(min_radius_um)
+    wall_radius = (
+        propagation_gate
+        if wall_absorption_um is None
+        else max(0.0, float(wall_absorption_um))
+    )
+    allowed = crop & (radius_map >= propagation_gate)
     body = binary_propagation(thick_core, mask=allowed)
     dist_to_body = distance_transform_edt(
         ~body, sampling=tuple(float(v) for v in voxel_size_zyx)
     )
-    out[bbox] = crop & (dist_to_body <= t_low)
+    out[bbox] = crop & (dist_to_body <= wall_radius)
     return out
 
 
@@ -588,7 +606,14 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
     tree_coords = np.argwhere(result)
     tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
 
-    max_arms = 12
+    # A real network's single connected fat catchment can legitimately have
+    # far more than a dozen arms (a whole fused sub-network, not one trunk);
+    # 12 was an arbitrary safety bound, not a correctness threshold -- the
+    # real stopping conditions are the two `break`s below. Each iteration
+    # was already made to clear a whole rejected branch's neighbourhood
+    # rather than one voxel, so raising this costs one KD-tree query per
+    # additional *accepted* arm, not per candidate voxel.
+    max_arms = 500
     for _ in range(max_arms):
         candidates = high & ~covered
         if not candidates.any():
@@ -605,7 +630,11 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
             result,
         )
         if len(branch) < min_arm_voxels:
-            covered[target] = True
+            # Cover the whole rejected branch's neighbourhood, not just the
+            # one voxel that triggered it: a real network can have many
+            # nearby too-short candidates, and clearing them one voxel per
+            # iteration made a generous arm cap too slow to raise.
+            covered |= _cover_around_path(branch, cover_r, component.shape)
             continue
         if _touches_tree(result, branch[-1]):
             # Tip already on the tree: this geodesic would close a loop.
@@ -829,6 +858,14 @@ def _join_thin_arms_to_fat_ridge(
     fat_coords = np.argwhere(result & thick_b)
     if fat_coords.size == 0:
         return result
+    # Which physically connected structure (of the real mask, not just the
+    # fat/thin split) each voxel belongs to. A thin arm's Euclidean-nearest
+    # fat voxel can sit in a different, merely-nearby vessel network that it
+    # is not actually connected to at all -- no path can ever exist between
+    # them, full-mask search or not. Scoping the nearest-neighbour search to
+    # fat voxels sharing the arm's own component rules that out up front.
+    allowed_components, _n_allowed = label(allowed_b, structure=structure)
+    fat_component_labels = allowed_components[tuple(fat_coords.T)]
     fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
     fat_now = result & thick_b
 
@@ -845,10 +882,26 @@ def _join_thin_arms_to_fat_ridge(
             continue
         origin_p = np.array([int(s.start) for s in padded], dtype=int)
         pts = pts_local + origin_p
-        _d, nn = fat_kdt.query(pts.astype(np.float64, copy=False), k=1)
+        arm_component_label = int(allowed_components[tuple(pts[0])])
+        same_component = fat_component_labels == arm_component_label
+        if not np.any(same_component):
+            # No fat ridge material anywhere in this arm's own physically
+            # connected structure: it is either a fully self-contained small
+            # network with no fat trunk of its own (already complete, needs
+            # no joining) or genuinely isolated. Either way there is nothing
+            # to join it to -- keep it as already-drawn Lee output, and do
+            # not manufacture a connection to an unrelated nearby network.
+            continue
+        scoped_fat_coords = fat_coords[same_component]
+        scoped_kdt = (
+            fat_kdt
+            if same_component.all()
+            else cKDTree(scoped_fat_coords.astype(np.float64, copy=False))
+        )
+        _d, nn = scoped_kdt.query(pts.astype(np.float64, copy=False), k=1)
         nearest = int(np.argmin(np.atleast_1d(_d)))
         start = tuple(int(v) for v in pts[nearest])
-        end = tuple(int(v) for v in fat_coords[int(np.atleast_1d(nn)[nearest])])
+        end = tuple(int(v) for v in scoped_fat_coords[int(np.atleast_1d(nn)[nearest])])
         for voxel in _path_through_mask(start, end, allowed_b):
             if not allowed_b[voxel]:
                 continue
@@ -861,6 +914,7 @@ def _join_thin_arms_to_fat_ridge(
         # targeting the pre-join ridge alone, picking a farther "nearest"
         # point than the one this loop just made available.
         fat_coords = np.argwhere(fat_now)
+        fat_component_labels = allowed_components[tuple(fat_coords.T)]
         fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
     return result
 
@@ -871,12 +925,29 @@ def skeletonize_thickness_gated(
     min_radius_um: float = THICK_VESSEL_MIN_RADIUS_UM,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     fill_mask_holes: bool = True,
+    wall_absorption_um: float | None = None,
+    flake_filter_um: float | None = None,
 ) -> np.ndarray:
     """Lee on the thin catchment; an EDT-ridge tree (every arm) inside the fat catchment.
 
     ``min_radius_um <= 0`` is the current pipeline behaviour: Lee on the whole
     mask. Capillaries fused into the same object never enter the ridge path
     unless their own EDT peak crosses the threshold.
+
+    *wall_absorption_um* is how far around the fat body's core the wall
+    absorbs surface roughness (and, unavoidably, the first stretch of any
+    real vessel fused directly onto it) into the catchment; see
+    :func:`thick_vessel_object_mask`. ``None`` derives it as half of
+    *min_radius_um*.
+
+    *flake_filter_um* is how far beyond the fat wall a thin-vessel skeleton
+    fragment must reach to be kept rather than dropped as a Lee-thinning
+    flake of the wall's own surface; see :func:`_join_thin_arms_to_fat_ridge`.
+    ``None`` derives it as ``max(4 voxels, 0.75 * min_radius_um)``, the
+    previous fixed behaviour. Together, a vessel fused to a fat trunk needs
+    to reach *wall_absorption_um* + *flake_filter_um* beyond its attachment
+    point to survive at all -- shortening either recovers shorter real
+    vessels at the cost of letting more wall-wrap flakes through.
     """
     mask = np.asarray(binary, dtype=bool)
     if fill_mask_holes:
@@ -890,7 +961,10 @@ def skeletonize_thickness_gated(
 
     t0 = time.perf_counter()
     thick = thick_vessel_object_mask(
-        mask, min_radius_um=float(min_radius_um), voxel_size_zyx=voxel_size_zyx
+        mask,
+        min_radius_um=float(min_radius_um),
+        voxel_size_zyx=voxel_size_zyx,
+        wall_absorption_um=wall_absorption_um,
     )
     t_catchment = time.perf_counter() - t0
     if not thick.any():
@@ -898,7 +972,10 @@ def skeletonize_thickness_gated(
 
     thin = mask & ~thick
     spacing = min(float(v) for v in voxel_size_zyx)
-    min_arm_extent = max(4.0, 0.75 * float(min_radius_um) / max(spacing, 1e-6))
+    if flake_filter_um is None:
+        min_arm_extent = max(4.0, 0.75 * float(min_radius_um) / max(spacing, 1e-6))
+    else:
+        min_arm_extent = max(0.0, float(flake_filter_um) / max(spacing, 1e-6))
     result = np.zeros(mask.shape, dtype=bool)
     t1 = time.perf_counter()
     if thin.any():

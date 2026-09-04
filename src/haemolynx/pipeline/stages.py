@@ -368,6 +368,8 @@ def _skeletonize_loaded_mask(image, settings: dict, voxel_size_xyz) -> np.ndarra
                 tuple(float(v) for v in voxel_size_xyz)
             ),
             fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
+            wall_absorption_um=settings["skeleton_thick_vessel_wall_absorption_um"],
+            flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
         )
     return _skeletonize_loaded_volume(image)
 

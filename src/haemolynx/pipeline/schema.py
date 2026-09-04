@@ -1625,6 +1625,38 @@ SCHEMA = Schema(
             requires=("use_thick_vessel_skeletonisation",),
         ),
         Setting(
+            name="skeleton_thick_vessel_wall_absorption_um",
+            kind="float",
+            default=None,
+            help=(
+                "How far around the fat trunk's core its wall absorbs surface "
+                "roughness; also swallows this much of any real vessel fused "
+                "onto it. Leave unset for half the fat-region radius"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_flake_filter_um",
+            kind="float",
+            default=None,
+            help=(
+                "How far a thin-vessel fragment must reach beyond the fat wall "
+                "to be kept instead of dropped as a Lee-thinning flake of the "
+                "wall's own surface. Leave unset for the automatic default; "
+                "lower it to stop losing short real vessels near a fat trunk, "
+                "at the cost of letting more wall-wrap flakes through"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
+        Setting(
             name="smooth_centrelines",
             kind="bool",
             default=True,

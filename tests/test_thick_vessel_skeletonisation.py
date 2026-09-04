@@ -622,3 +622,179 @@ def test_join_falls_back_to_a_full_mask_geodesic_when_the_tight_box_has_no_path(
         for i in range(len(path) - 1)
     ), "consecutive joined voxels must be 26-adjacent (a real connected path)"
     assert path[0] == start and path[-1] == end
+
+
+def _fat_trunk_with_short_fused_branch(
+    *, branch_len: int, r_fat: float = 8.0, branch_radius: float = 1.5
+) -> tuple[np.ndarray, np.ndarray]:
+    """A fat trunk with one thin branch fused to its side, close to the wall."""
+    trunk_len = 90
+    pad = 12
+    shape = (
+        int(2 * r_fat + 2 * pad),
+        int(2 * r_fat + 2 * pad + branch_len),
+        int(trunk_len + 2 * pad),
+    )
+    cz, cy, cx = shape[0] // 2, pad + int(r_fat), shape[2] // 2
+    mask = _disk_tube_along_axis(
+        shape, (cz, cy, cx - trunk_len // 2), r_fat, trunk_len, axis=2
+    )
+    branch_origin = (cz, cy + int(r_fat) - 2, cx)
+    branch = _disk_tube_along_axis(shape, branch_origin, branch_radius, branch_len, axis=1)
+    mask = mask | branch
+    return mask, branch
+
+
+def test_wall_absorption_um_override_shrinks_the_catchment_monotonically():
+    """Lowering wall_absorption_um must strictly shrink the fat catchment.
+
+    thick_vessel_object_mask's geodesic ``allowed`` gate (step 2, tracing the
+    fat trunk's own possibly-irregular shape) always stays at half
+    min_radius_um; only the wall dilation (step 3, the part that eats into a
+    fused vessel's base) follows the override. Coupling both to the same
+    value made a lower override non-monotonic: it could grow the geodesic
+    body faster than it shrank the wall, absorbing *more* of a fused vessel,
+    the opposite of what a user lowering it would expect.
+    """
+    mask, _branch = _fat_trunk_with_short_fused_branch(branch_len=6)
+    default = thick_vessel_object_mask(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    lowered = thick_vessel_object_mask(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        wall_absorption_um=1.0,
+    )
+    zeroed = thick_vessel_object_mask(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        wall_absorption_um=0.0,
+    )
+    assert int(zeroed.sum()) < int(lowered.sum()) < int(default.sum())
+
+
+def test_lowering_wall_absorption_and_flake_filter_recovers_a_short_fused_vessel():
+    """A short vessel dropped at the default thresholds survives once both are lowered.
+
+    At the default ~7.5 um combined reach (half min_radius_um wall absorption
+    plus the flake filter), a 6-voxel branch fused to an 8 um-radius trunk is
+    deleted entirely -- not a bug, the design's intended trade-off, but one a
+    user needs to be able to relax for real data with shorter fused vessels.
+    """
+    mask, branch = _fat_trunk_with_short_fused_branch(branch_len=6)
+    default = skeletonize_thickness_gated(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    assert int((default & branch).sum()) == 0, "fixture must reproduce the default loss"
+
+    lowered = skeletonize_thickness_gated(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        wall_absorption_um=1.0,
+        flake_filter_um=1.0,
+    )
+    assert int((lowered & branch).sum()) > 0, "lowered thresholds must recover the branch"
+
+
+def test_many_fused_fat_branches_all_get_a_skeleton_arm():
+    """A trunk with more than a dozen fused fat branches must not lose most of them.
+
+    The per-component arm search used to stop after 12 iterations regardless
+    of whether real candidates remained -- a fixed safety bound, not a
+    correctness threshold. A real fused network can have far more than a
+    dozen genuine arms; on production data this was observed dropping over a
+    hundred thousand high-EDT voxels' worth of arms in one component. Locks
+    the fix: every one of 40 fused branches gets at least one skeleton voxel.
+    """
+    r_fat = 7.0
+    trunk_len = 300
+    n_branches = 40
+    branch_radius = 6.5  # itself crosses THICK_VESSEL_MIN_RADIUS_UM
+    branch_len = 20
+    pad = 12
+    shape = (
+        int(2 * max(r_fat, branch_radius) + 2 * pad),
+        int(2 * max(r_fat, branch_radius) + 2 * pad + branch_len),
+        int(trunk_len + 2 * pad),
+    )
+    cz, cy, cx = shape[0] // 2, pad + int(max(r_fat, branch_radius)), shape[2] // 2
+    mask = _disk_tube_along_axis(
+        shape, (cz, cy, cx - trunk_len // 2), r_fat, trunk_len, axis=2
+    )
+    branch_masks = []
+    for i in range(n_branches):
+        t = cx - trunk_len // 2 + int((i + 0.5) * trunk_len / n_branches)
+        origin = (cz, cy + int(r_fat) - 2, t)
+        bm = _disk_tube_along_axis(shape, origin, branch_radius, branch_len, axis=1)
+        mask = mask | bm
+        branch_masks.append(bm)
+
+    ridge = skeletonize_edt_ridge(mask)
+    assert ridge.any()
+    hits = sum(1 for bm in branch_masks if (ridge & bm).any())
+    assert hits == n_branches, f"only {hits}/{n_branches} fused branches got a skeleton arm"
+
+
+def test_disconnected_network_is_not_wrongly_joined_to_a_nearby_fat_trunk():
+    """A self-contained thin-only network must not be bridged to an unrelated trunk.
+
+    The nearest-fat-voxel search used to run over the whole image, so a thin
+    vessel's Euclidean-nearest fat voxel could belong to a completely
+    different, physically disconnected vessel network -- no path could ever
+    exist between them (confirmed on production data: the full-mask Dijkstra
+    fallback still failed and logged a warning). Scoping the search to fat
+    voxels sharing the arm's own physically connected structure means: no
+    such join is even attempted, no warning fires, and the self-contained
+    network is left exactly as Lee thinned it.
+    """
+    shape = (40, 200, 200)
+    r_fat = 8.0
+    trunk_len = 60
+    mask = _disk_tube_along_axis(shape, (10, 20, 20), r_fat, trunk_len, axis=2)
+    branch = _disk_tube_along_axis(
+        shape, (10, 20 + int(r_fat) - 2, 40), 1.5, 14, axis=1
+    )
+    mask = mask | branch
+    # A second, physically separate structure: not touching the trunk at all.
+    isolated = _disk_tube_along_axis(shape, (10, 20, 120), 2.0, 60, axis=2)
+    mask = mask | isolated
+
+    _, n_cc_mask = label(mask, structure=generate_binary_structure(3, 3))
+    assert n_cc_mask == 2, "fixture must have two physically separate structures"
+
+    gated = skeletonize_thickness_gated(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+
+    assert int((gated & branch).sum()) > 0, "the genuinely fused branch must still be joined"
+    assert int((gated & isolated).sum()) > 0, "the isolated network must be preserved"
+    _, n_cc_gated = label(gated, structure=generate_binary_structure(3, 3))
+    assert n_cc_gated == 2, (
+        "gated skeleton must keep the same two components as the input mask -- "
+        "no bogus bridge drawn between physically unconnected structures"
+    )
+
+
+def test_join_skips_silently_when_the_arms_own_component_has_no_fat(caplog):
+    """No fat anywhere in an arm's own component must skip the join, not warn.
+
+    A self-contained small network with no fat trunk of its own is not an
+    error case -- it has nothing to join to because it does not need
+    joining. Only a genuine, still-unexplained failure to connect within a
+    shared component should be loud.
+    """
+    shape = (40, 200, 200)
+    r_fat = 8.0
+    trunk_len = 60
+    mask = _disk_tube_along_axis(shape, (10, 20, 20), r_fat, trunk_len, axis=2)
+    isolated = _disk_tube_along_axis(shape, (10, 20, 120), 2.0, 60, axis=2)
+    mask = mask | isolated
+
+    with caplog.at_level("WARNING", logger="haemolynx.preprocessing.thick_vessels"):
+        skeletonize_thickness_gated(
+            mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+        )
+    assert not any("Could not join" in record.message for record in caplog.records)

@@ -298,6 +298,10 @@ pipeline_stages:
   skeleton_thick_vessel_min_radius_um: 6.0
   # Fill enclosed cavities in the binary mask before measuring inscribed radius; a no-op on solid plasma-labelled lumens  [needs use_thick_vessel_skeletonisation]
   skeleton_fill_mask_holes_before_thickness: true
+  # How far around the fat trunk's core its wall absorbs surface roughness; also swallows this much of any real vessel fused onto it. Leave unset for half the fat-region radius  [um; range 0.0..; needs use_thick_vessel_skeletonisation]
+  skeleton_thick_vessel_wall_absorption_um: null
+  # How far a thin-vessel fragment must reach beyond the fat wall to be kept instead of dropped as a Lee-thinning flake of the wall's own surface. Leave unset for the automatic default; lower it to stop losing short real vessels near a fat trunk, at the cost of letting more wall-wrap flakes through  [um; range 0.0..; needs use_thick_vessel_skeletonisation]
+  skeleton_thick_vessel_flake_filter_um: null
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true
   # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]
