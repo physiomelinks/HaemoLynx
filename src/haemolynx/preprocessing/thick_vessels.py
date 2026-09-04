@@ -24,7 +24,7 @@ from __future__ import annotations
 import gc
 import logging
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 import numpy as np
 from scipy.ndimage import (
@@ -761,12 +761,24 @@ def _geodesic_on_crop(
     crop: np.ndarray,
     local_start: tuple[int, int, int],
     local_end: tuple[int, int, int],
+    *,
+    precomputed_cost: np.ndarray | None = None,
 ) -> list[tuple[int, int, int]]:
-    """Inverted-EDT geodesic in a cropped boolean mask, or empty if unreachable."""
+    """Inverted-EDT geodesic in a cropped boolean mask, or empty if unreachable.
+
+    *precomputed_cost* skips the EDT (the expensive part for a large crop)
+    when the caller already has one for this exact *crop* -- see
+    :func:`_path_through_mask`'s *fallback_cost*, cached per physically
+    connected structure across every arm in it rather than recomputed once
+    per arm.
+    """
     if not crop[local_start] or not crop[local_end]:
         return []
-    edt = distance_transform_edt(crop)
-    cost = np.where(crop, 1.0 / (np.square(edt) + 1e-6), np.inf)
+    if precomputed_cost is not None:
+        cost = precomputed_cost
+    else:
+        edt = distance_transform_edt(crop)
+        cost = np.where(crop, 1.0 / (np.square(edt) + 1e-6), np.inf)
     walked = _dijkstra_parents(crop, cost, local_start)
     if walked is None:
         return []
@@ -781,12 +793,20 @@ def _path_through_mask(
     start: tuple[int, int, int],
     end: tuple[int, int, int],
     allowed: np.ndarray,
+    *,
+    fallback_cost_fn: Callable[[], np.ndarray] | None = None,
 ) -> list[tuple[int, int, int]]:
     """Geodesic in *allowed* from *start* to *end*, falling back to a straight line.
 
     Prefers a straight line when every voxel is in *allowed*, then a dilated-line
-    corridor, then Dijkstra on the AABB of the two points. Does not allocate a
-    full-stack seeds array just to bbox those points.
+    corridor at growing radii, then Dijkstra on the whole of *allowed*. Does not
+    allocate a full-stack seeds array just to bbox those points.
+
+    *fallback_cost_fn*, called only if every corridor attempt fails, returns
+    the Dijkstra cost array for the whole of *allowed* (same shape) -- the
+    caller's chance to memoize one EDT across every arm that shares this
+    *allowed* instead of paying for it again per arm, without paying for it
+    at all when (as for most arms) a corridor attempt already succeeds.
     """
     start = tuple(int(v) for v in start)
     end = tuple(int(v) for v in end)
@@ -800,7 +820,12 @@ def _path_through_mask(
         return line
 
     struct26 = generate_binary_structure(3, 3)
-    for radius in (2, 5):
+    # Radii stay cheap because the corridor's cost scales with the box
+    # around (start, end) plus this padding, not with the whole of
+    # `allowed` -- wider radii here are what let a real winding path (round
+    # a trunk, past a neck) resolve without ever reaching the full-`allowed`
+    # fallback below, which is by far the most expensive step available.
+    for radius in (2, 5, 15, 40):
         slc, origin = _aabb_slices(start, end, allowed_b.shape, pad=int(radius) + 1)
         crop_allowed = allowed_b[slc]
         local_start = tuple(int(s - o) for s, o in zip(start, origin))
@@ -839,7 +864,12 @@ def _path_through_mask(
     # vanishes from the graph the moment anything downstream drops small
     # disconnected components. Fall back to Dijkstra on the whole mask: no
     # crop, so no box to be too tight, at the cost of one full-mask walk.
-    full_path = _geodesic_on_crop(allowed_b, start, end)
+    full_path = _geodesic_on_crop(
+        allowed_b,
+        start,
+        end,
+        precomputed_cost=fallback_cost_fn() if fallback_cost_fn is not None else None,
+    )
     if len(full_path) >= 2:
         return full_path
     logger.warning(
@@ -945,6 +975,22 @@ def _join_thin_arms_to_fat_ridge(
     fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
     fat_now = result & thick_b
 
+    # Memoized per physically-connected structure: the fallback's EDT
+    # depends only on that structure's shape, not on which arm needed it,
+    # so a component with many arms needing the fallback (a real fused
+    # sub-network, not a handful of capillaries) pays for it once instead
+    # of once per arm.
+    cost_cache: dict[int, np.ndarray] = {}
+
+    def _fallback_cost_for(label_key: int, local_mask: np.ndarray) -> np.ndarray:
+        cached = cost_cache.get(label_key)
+        if cached is not None:
+            return cached
+        local_edt = distance_transform_edt(local_mask)
+        cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
+        cost_cache[label_key] = cost
+        return cost
+
     logger.info(
         "_join_thin_arms_to_fat_ridge: joining up to %d thin-arm components to the "
         "fat ridge",
@@ -996,7 +1042,14 @@ def _join_thin_arms_to_fat_ridge(
         local_allowed = allowed_b[component_slc]
         local_start = tuple(int(v) for v in (np.array(start) - component_origin))
         local_end = tuple(int(v) for v in (np.array(end) - component_origin))
-        local_path = _path_through_mask(local_start, local_end, local_allowed)
+        local_path = _path_through_mask(
+            local_start,
+            local_end,
+            local_allowed,
+            fallback_cost_fn=lambda: _fallback_cost_for(
+                arm_component_label, local_allowed
+            ),
+        )
         path = [
             tuple(int(v) for v in (np.array(voxel) + component_origin))
             for voxel in local_path

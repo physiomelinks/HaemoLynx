@@ -32,6 +32,7 @@ from haemolynx.preprocessing import (
 from haemolynx.preprocessing.thick_vessels import (
     _cover_around_path,
     _dijkstra_parents,
+    _geodesic_on_crop,
     _join_thin_arms_to_fat_ridge,
     _path_through_mask,
     _skeletonize_foreground,
@@ -958,3 +959,43 @@ def test_joining_many_arms_does_not_rescan_the_whole_image_per_arm():
     )
     _, n_cc_joined = label(joined, structure=generate_binary_structure(3, 3))
     assert n_cc_joined == 1, "every arm must actually be bridged into one tree"
+
+
+def test_geodesic_on_crop_precomputed_cost_matches_computing_it_fresh():
+    """A cached cost array must give the identical path to computing it fresh.
+
+    _join_thin_arms_to_fat_ridge memoizes the fallback's Dijkstra cost per
+    physically connected structure so a component with many arms needing
+    the fallback pays for its EDT once instead of once per arm. This locks
+    that the memoized path is correct, not just fast: passing a precomputed
+    cost must not change the result.
+    """
+    shape = (3, 21, 21)
+    allowed = np.zeros(shape, dtype=bool)
+    z = 1
+    cy, cx = 10, 10
+    outer_r, inner_r = 9, 8
+    yy, xx = np.indices((21, 21))
+    ring = ((yy - cy) ** 2 + (xx - cx) ** 2 <= outer_r**2) & (
+        (yy - cy) ** 2 + (xx - cx) ** 2 >= inner_r**2
+    )
+    allowed[z] = ring
+
+    def _snap(point):
+        coords = np.argwhere(allowed)
+        d = np.sum((coords - np.array(point)) ** 2, axis=1)
+        return tuple(int(v) for v in coords[np.argmin(d)])
+
+    start = _snap((z, cy, cx + outer_r - 1))
+    end = _snap((z, cy, cx - (outer_r - 1)))
+
+    from scipy.ndimage import distance_transform_edt
+
+    fresh_path = _geodesic_on_crop(allowed, start, end)
+
+    edt = distance_transform_edt(allowed)
+    cost = np.where(allowed, 1.0 / (np.square(edt) + 1e-6), np.inf)
+    cached_path = _geodesic_on_crop(allowed, start, end, precomputed_cost=cost)
+
+    assert fresh_path == cached_path
+    assert len(fresh_path) > 2
