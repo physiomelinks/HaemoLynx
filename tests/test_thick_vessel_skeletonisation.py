@@ -32,6 +32,7 @@ from haemolynx.preprocessing import (
 from haemolynx.preprocessing.thick_vessels import (
     _cover_around_path,
     _dijkstra_parents,
+    _join_thin_arms_to_fat_ridge,
     _path_through_mask,
     _skeletonize_foreground,
     _traceback,
@@ -798,3 +799,62 @@ def test_join_skips_silently_when_the_arms_own_component_has_no_fat(caplog):
             mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
         )
     assert not any("Could not join" in record.message for record in caplog.records)
+
+
+def test_join_fallback_stays_fast_in_a_large_image_with_unrelated_content():
+    """A join needing the full-mask fallback must not scan the whole image.
+
+    _path_through_mask's own local searches are cheap regardless of image
+    size, but its last-resort fallback runs a full EDT + Dijkstra over
+    whatever array it is given. Passing it the whole image (this session's
+    first fix for silent join failures) froze a real run: a real stack is
+    orders of magnitude larger than any one vessel's own connected
+    structure, and that fallback could fire more than once. The caller must
+    crop to the arm's own physically connected component first.
+
+    A generous elapsed-time bound (not a tight one) catches a regression to
+    whole-image scanning without making CI flaky on a slower runner: cropped
+    to one ring's own component this takes milliseconds; scanning the whole
+    5.4M-voxel image directly would not finish in the bound below.
+    """
+    import time
+
+    big_shape = (60, 300, 300)
+    allowed = np.zeros(big_shape, dtype=bool)
+    rng = np.random.default_rng(0)
+    for _ in range(60):
+        z0 = rng.integers(0, big_shape[0] - 3)
+        y0 = rng.integers(0, big_shape[1] - 40)
+        x0 = rng.integers(200, big_shape[2] - 40)
+        allowed[z0 : z0 + 3, y0 : y0 + 30, x0 : x0 + 30] = True
+
+    z = 30
+    cy, cx = 10, 10
+    outer_r, inner_r = 9, 8
+    yy, xx = np.indices((21, 21))
+    ring = ((yy - cy) ** 2 + (xx - cx) ** 2 <= outer_r**2) & (
+        (yy - cy) ** 2 + (xx - cx) ** 2 >= inner_r**2
+    )
+    allowed[z, 0:21, 0:21] |= ring
+
+    thick = np.zeros(big_shape, dtype=bool)
+    thick[z, cy, cx + outer_r - 1] = True
+    allowed[z, cy, cx + outer_r - 1] = True
+
+    thin_skel = np.zeros(big_shape, dtype=bool)
+    thin_skel[z, 0:21, 0:21] = ring
+    thin_skel[z, cy, cx + outer_r - 1] = False
+    skeleton = thin_skel | thick
+
+    _, n_cc = label(allowed, structure=generate_binary_structure(3, 3))
+    assert n_cc > 1, "fixture must have unrelated content outside the ring's component"
+
+    start = time.perf_counter()
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, allowed, min_arm_extent_voxels=0.0
+    )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 10.0, f"join took {elapsed:.2f}s -- looks like it scanned the whole image"
+    _, n_cc_ring = label(joined[z : z + 1], structure=generate_binary_structure(3, 3))
+    assert n_cc_ring == 1, "ring must actually be bridged to the fat wall, not just fast"

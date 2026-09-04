@@ -865,6 +865,7 @@ def _join_thin_arms_to_fat_ridge(
     # them, full-mask search or not. Scoping the nearest-neighbour search to
     # fat voxels sharing the arm's own component rules that out up front.
     allowed_components, _n_allowed = label(allowed_b, structure=structure)
+    component_objects = find_objects(allowed_components)
     fat_component_labels = allowed_components[tuple(fat_coords.T)]
     fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
     fat_now = result & thick_b
@@ -902,7 +903,24 @@ def _join_thin_arms_to_fat_ridge(
         nearest = int(np.argmin(np.atleast_1d(_d)))
         start = tuple(int(v) for v in pts[nearest])
         end = tuple(int(v) for v in scoped_fat_coords[int(np.atleast_1d(nn)[nearest])])
-        for voxel in _path_through_mask(start, end, allowed_b):
+        # Search only this arm's own physically connected structure, not the
+        # whole image: _path_through_mask's own local searches are already
+        # small, but its last-resort fallback runs a full EDT + Dijkstra over
+        # everything passed to it, and one connected structure is a sliver of
+        # a real multi-vessel stack. Without this, that fallback firing even
+        # a handful of times on a real image is what actually froze the run,
+        # not the join logic itself.
+        component_slc = component_objects[arm_component_label - 1]
+        component_origin = np.array([int(s.start) for s in component_slc], dtype=int)
+        local_allowed = allowed_b[component_slc]
+        local_start = tuple(int(v) for v in (np.array(start) - component_origin))
+        local_end = tuple(int(v) for v in (np.array(end) - component_origin))
+        local_path = _path_through_mask(local_start, local_end, local_allowed)
+        path = [
+            tuple(int(v) for v in (np.array(voxel) + component_origin))
+            for voxel in local_path
+        ]
+        for voxel in path:
             if not allowed_b[voxel]:
                 continue
             result[voxel] = True
