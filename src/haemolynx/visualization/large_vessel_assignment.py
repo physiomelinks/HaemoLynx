@@ -9,6 +9,31 @@ import plotly.graph_objects as go
 
 from .plot import _is_pytest_runtime
 
+#: Plotly ``Volume`` styling for mask overlays. Pipeline HTML and the GUI
+#: final-graph writer share these so a selected arteriole/venule volume looks
+#: the same in both files.
+VESSEL_VOLUME_TRACE_STYLES: dict[str, dict[str, Any]] = {
+    "large_arteriole": {
+        "name": "Large arteriole mask",
+        "color": "#B71C1C",
+        "opacity": 0.22,
+    },
+    "large_venule": {
+        "name": "Large venule mask",
+        "color": "#1B5E20",
+        "opacity": 0.22,
+    },
+    "small_arteriole": {
+        "name": "Small arteriole mask",
+        "color": "#FF3B30",
+        "opacity": 0.12,
+    },
+    "small_venule": {
+        "name": "Small venule mask",
+        "color": "#2ECC71",
+        "opacity": 0.12,
+    },
+}
 
 
 def _zyx_points_to_xyz(points: np.ndarray) -> np.ndarray:
@@ -67,6 +92,65 @@ def _downsample_binary_mask_max(
     return np.max(pooled, axis=(1, 3, 5))
 
 
+def add_binary_mask_volume_trace(
+    fig: go.Figure,
+    mask: np.ndarray,
+    *,
+    name: str,
+    color: str,
+    opacity: float,
+    voxel_size_zyx: tuple[float, float, float],
+    volume_downsample_stride: int = 1,
+) -> bool:
+    """Add one pipeline-style Plotly ``Volume`` trace for a binary mask.
+
+    Crops to the nonzero bounding box then max-pools by ``stride`` — the same
+    path ``visualize_3d_plotly_large_vessel_assignment`` uses. Returns True
+    when a trace was added.
+    """
+    mask_bool = mask.astype(bool, copy=False)
+    bbox = _nonzero_bbox_slices_zyx(mask_bool)
+    if bbox is None:
+        return False
+    z_scale, y_scale, x_scale = (
+        float(voxel_size_zyx[0]),
+        float(voxel_size_zyx[1]),
+        float(voxel_size_zyx[2]),
+    )
+    z_slice, y_slice, x_slice = bbox
+    cropped = mask_bool[z_slice, y_slice, x_slice]
+    stride = max(1, int(volume_downsample_stride))
+    downsampled = _downsample_binary_mask_max(cropped, stride)
+    if not np.any(downsampled):
+        # Safety fallback for very sparse masks.
+        downsampled = cropped
+        effective_stride = 1
+    else:
+        effective_stride = stride
+    zz, yy, xx = np.indices(downsampled.shape, dtype=float)
+    xx = (xx * float(effective_stride)) + float(x_slice.start)
+    yy = (yy * float(effective_stride)) + float(y_slice.start)
+    zz = (zz * float(effective_stride)) + float(z_slice.start)
+    fig.add_trace(
+        go.Volume(
+            x=(xx * x_scale).ravel(),
+            y=(yy * y_scale).ravel(),
+            z=(zz * z_scale).ravel(),
+            value=downsampled.astype(float).ravel(),
+            isomin=0.5,
+            isomax=1.0,
+            opacity=float(opacity),
+            surface_count=1,
+            caps=dict(x_show=False, y_show=False, z_show=False),
+            colorscale=[[0.0, color], [1.0, color]],
+            showscale=False,
+            name=name,
+            hoverinfo="skip",
+        )
+    )
+    return True
+
+
 def visualize_3d_plotly_large_vessel_assignment(
     G: nx.Graph,
     *,
@@ -88,11 +172,15 @@ def visualize_3d_plotly_large_vessel_assignment(
     pos = nx.get_node_attributes(G, "pos")
     if not pos:
         raise ValueError("Graph has no node positions ('pos').")
-    if large_arteriole_mask is None or large_venule_mask is None:
+    if (large_arteriole_mask is None) != (large_venule_mask is None):
         raise ValueError(
-            "large_arteriole_mask and large_venule_mask are required for this view."
+            "large_arteriole_mask and large_venule_mask must be both set or both None."
         )
-    if large_arteriole_mask.shape != large_venule_mask.shape:
+    if (
+        large_arteriole_mask is not None
+        and large_venule_mask is not None
+        and large_arteriole_mask.shape != large_venule_mask.shape
+    ):
         raise ValueError(
             "large_arteriole_mask and large_venule_mask must share a shape. "
             f"Got {large_arteriole_mask.shape} and {large_venule_mask.shape}."
@@ -121,46 +209,15 @@ def visualize_3d_plotly_large_vessel_assignment(
         opacity: float,
         fig: go.Figure,
     ) -> bool:
-        mask_bool = mask.astype(bool, copy=False)
-        bbox = _nonzero_bbox_slices_zyx(mask_bool)
-        if bbox is None:
-            return False
-        z_scale, y_scale, x_scale = (
-            float(voxel_size_zyx[0]),
-            float(voxel_size_zyx[1]),
-            float(voxel_size_zyx[2]),
+        return add_binary_mask_volume_trace(
+            fig,
+            mask,
+            name=name,
+            color=color,
+            opacity=opacity,
+            voxel_size_zyx=voxel_size_zyx,
+            volume_downsample_stride=stride,
         )
-        z_slice, y_slice, x_slice = bbox
-        cropped = mask_bool[z_slice, y_slice, x_slice]
-        downsampled = _downsample_binary_mask_max(cropped, stride)
-        if not np.any(downsampled):
-            # Safety fallback for very sparse masks.
-            downsampled = cropped
-            effective_stride = 1
-        else:
-            effective_stride = stride
-        zz, yy, xx = np.indices(downsampled.shape, dtype=float)
-        xx = (xx * float(effective_stride)) + float(x_slice.start)
-        yy = (yy * float(effective_stride)) + float(y_slice.start)
-        zz = (zz * float(effective_stride)) + float(z_slice.start)
-        fig.add_trace(
-            go.Volume(
-                x=(xx * x_scale).ravel(),
-                y=(yy * y_scale).ravel(),
-                z=(zz * z_scale).ravel(),
-                value=downsampled.astype(float).ravel(),
-                isomin=0.5,
-                isomax=1.0,
-                opacity=float(opacity),
-                surface_count=1,
-                caps=dict(x_show=False, y_show=False, z_show=False),
-                colorscale=[[0.0, color], [1.0, color]],
-                showscale=False,
-                name=name,
-                hoverinfo="skip",
-            )
-        )
-        return True
 
     def _empty_line_lists() -> tuple[list[float | None], list[float | None], list[float | None]]:
         return [], [], []
@@ -296,36 +353,41 @@ def visualize_3d_plotly_large_vessel_assignment(
 
     fig = go.Figure()
     volume_trace_indices: list[int] = []
-    if _add_volume_trace(
-        large_arteriole_mask.astype(bool, copy=False),
-        name="Large arteriole mask",
-        color="#B71C1C",
-        opacity=0.22,
-        fig=fig,
-    ):
-        volume_trace_indices.append(len(fig.data) - 1)
-    if _add_volume_trace(
-        large_venule_mask.astype(bool, copy=False),
-        name="Large venule mask",
-        color="#1B5E20",
-        opacity=0.22,
-        fig=fig,
-    ):
-        volume_trace_indices.append(len(fig.data) - 1)
+    if large_arteriole_mask is not None and large_venule_mask is not None:
+        large_art_style = VESSEL_VOLUME_TRACE_STYLES["large_arteriole"]
+        large_ven_style = VESSEL_VOLUME_TRACE_STYLES["large_venule"]
+        if _add_volume_trace(
+            large_arteriole_mask.astype(bool, copy=False),
+            name=str(large_art_style["name"]),
+            color=str(large_art_style["color"]),
+            opacity=float(large_art_style["opacity"]),
+            fig=fig,
+        ):
+            volume_trace_indices.append(len(fig.data) - 1)
+        if _add_volume_trace(
+            large_venule_mask.astype(bool, copy=False),
+            name=str(large_ven_style["name"]),
+            color=str(large_ven_style["color"]),
+            opacity=float(large_ven_style["opacity"]),
+            fig=fig,
+        ):
+            volume_trace_indices.append(len(fig.data) - 1)
     if small_arteriole_mask is not None and small_venule_mask is not None:
+        small_art_style = VESSEL_VOLUME_TRACE_STYLES["small_arteriole"]
+        small_ven_style = VESSEL_VOLUME_TRACE_STYLES["small_venule"]
         if _add_volume_trace(
             small_arteriole_mask.astype(bool, copy=False),
-            name="Small arteriole mask",
-            color="#FF3B30",
-            opacity=0.12,
+            name=str(small_art_style["name"]),
+            color=str(small_art_style["color"]),
+            opacity=float(small_art_style["opacity"]),
             fig=fig,
         ):
             volume_trace_indices.append(len(fig.data) - 1)
         if _add_volume_trace(
             small_venule_mask.astype(bool, copy=False),
-            name="Small venule mask",
-            color="#2ECC71",
-            opacity=0.12,
+            name=str(small_ven_style["name"]),
+            color=str(small_ven_style["color"]),
+            opacity=float(small_ven_style["opacity"]),
             fig=fig,
         ):
             volume_trace_indices.append(len(fig.data) - 1)

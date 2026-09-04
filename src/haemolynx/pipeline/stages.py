@@ -449,6 +449,18 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     )
 
 
+def _want_midrun_plotly_html(settings: dict) -> bool:
+    """Whether a stage should write Plotly HTML as it runs, not only at export.
+
+    Napari turns `show_plots_in_ide` and `interactive_plots` off so a run
+    does not open a browser. Those flags also skip mid-run HTML dumps:
+    `visualize_3d_plotly_vessel_types` copies every centreline voxel into
+    Scatter3d and can stall Diameters for tens of minutes even when FWHM is
+    off. The viewer already shows the network.
+    """
+    return bool(settings["show_plots_in_ide"] or settings["interactive_plots"])
+
+
 def build_network(
     settings: dict,
     volume: SkeletonisedVolume,
@@ -1378,7 +1390,11 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 or settings["venule_boundary_node_coordinates"]
                 or settings["venule_boundary_node_volumes"]
             ),
-            post_assign_callback=_vessel_types_after_branch_assign,
+            post_assign_callback=(
+                _vessel_types_after_branch_assign
+                if _want_midrun_plotly_html(settings)
+                else None
+            ),
         )
         if branch_summary["mode"] == "hierarchical":
             logger.info(

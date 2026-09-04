@@ -10,6 +10,8 @@ from .plot import (
     visualize_skeleton,
 )
 from .large_vessel_assignment import (
+    VESSEL_VOLUME_TRACE_STYLES,
+    add_binary_mask_volume_trace,
     visualize_3d_plotly_large_vessel_assignment,
     visualize_3d_plotly_large_vessel_assignment_flow_direction,
 )
@@ -18,7 +20,11 @@ from .vtk_io import (
     graph_to_vtk,
     visualize_vtk_network,
 )
-from .pipeline_artifacts import save_graph_snapshot
+from .pipeline_artifacts import (
+    save_graph_snapshot,
+    selected_vessel_masks_for_html,
+    write_final_graph_3d_html,
+)
 from .dilation_curves import plot_dilation_curves
 from .perturbation_plots import (
     export_non_sweep_perturbation_artifacts,
@@ -34,6 +40,10 @@ __all__ = [
     "visualize_3d_plotly_vessel_types",
     "visualize_3d_plotly_large_vessel_assignment",
     "visualize_3d_plotly_large_vessel_assignment_flow_direction",
+    "VESSEL_VOLUME_TRACE_STYLES",
+    "add_binary_mask_volume_trace",
+    "write_final_graph_3d_html",
+    "selected_vessel_masks_for_html",
     "visualize_edges_and_nodes",
     "visualize_geometry_with_branch_orders",
     "visualize_geometry_with_edge_resistance",

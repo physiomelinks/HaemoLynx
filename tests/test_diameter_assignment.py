@@ -136,6 +136,47 @@ def _has_resistance(graph: nx.MultiGraph) -> bool:
     )
 
 
+def test_assign_diameters_skips_vessel_type_plotly_when_ide_plots_are_off(
+    tmp_path, monkeypatch
+):
+    """Napari turns IDE plots off; Diameters must not dump every voxel to HTML."""
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("vessel-type Plotly HTML must not run with IDE plots off")
+
+    monkeypatch.setattr(
+        "haemolynx.pipeline.stages.visualization.visualize_3d_plotly_vessel_types",
+        boom,
+    )
+    assign_diameters(
+        _settings(tmp_path, show_plots_in_ide=False, interactive_plots=False),
+        _vessel_network(tmp_path),
+        _boundaries(),
+        SCHEMA,
+    )
+
+
+def test_assign_diameters_writes_vessel_type_plotly_when_ide_plots_are_on(
+    tmp_path, monkeypatch
+):
+    called = []
+
+    def fake_plotly(*_args, **_kwargs):
+        called.append(True)
+
+    monkeypatch.setattr(
+        "haemolynx.pipeline.stages.visualization.visualize_3d_plotly_vessel_types",
+        fake_plotly,
+    )
+    assign_diameters(
+        _settings(tmp_path, show_plots_in_ide=True, interactive_plots=False),
+        _vessel_network(tmp_path),
+        _boundaries(),
+        SCHEMA,
+    )
+    assert called == [True]
+
+
 def test_assign_diameters_does_not_write_resistance(tmp_path):
     model = assign_diameters(
         _settings(tmp_path),
