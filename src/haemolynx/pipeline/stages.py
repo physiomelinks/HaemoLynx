@@ -46,6 +46,7 @@ from haemolynx.haemodynamics.constriction_strategy import (
 from haemolynx.haemodynamics.perturbations import (
     PerturbationSpec,
     is_sweep_perturbation,
+    perturbation_folder_name,
     perturbation_output_dir,
     perturbation_problems,
     perturbations_from_settings,
@@ -1697,7 +1698,7 @@ def _perturb_one(
     # because the global flag survived the merge.
     perturbed["do_pericyte_construction"] = False
     perturbed["run_pericyte_resistance_comparison"] = False
-    result.output_dir = root / spec.name
+    result.output_dir = root / perturbation_folder_name(spec.name, spec.type)
     result.output_dir.mkdir(parents=True, exist_ok=True)
 
     # A copy per perturbation, so that nothing it does reaches the baseline or

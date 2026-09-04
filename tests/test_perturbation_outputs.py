@@ -15,6 +15,7 @@ from haemolynx.haemodynamics import (  # noqa: E402
     PERTURBATION_TYPES,
     SWEEP_PERTURBATION_TYPES,
     is_sweep_perturbation,
+    perturbation_folder_name,
 )
 from haemolynx.gui.results import ResultLayers, perturbation_layer_names  # noqa: E402
 from haemolynx.pipeline import PerturbationResult  # noqa: E402
@@ -60,6 +61,11 @@ def test_a_dilation_sweep_writes_alice_style_plots_and_keeps_geometry(tmp_path):
     assert result.error is None, result.error
     assert result.graph is not None
     assert result.sweep_flows is not None
+    assert result.output_dir == (
+        tmp_path
+        / "out"
+        / perturbation_folder_name(DILATION_SWEEP["name"], DILATION_SWEEP["type"])
+    )
     written = {path.name for path in result.output_dir.iterdir()}
     assert "pericyte_dilation_sweep.csv" in written
     assert "resistance_vs_pericyte_dilation.png" in written
@@ -85,6 +91,13 @@ def test_a_non_sweep_writes_pipeline_like_artifacts_and_keeps_its_graph(tmp_path
     assert result.error is None, result.error
     assert result.graph is not None
     assert result.sweep_flows is None
+    assert result.output_dir == (
+        tmp_path
+        / "out"
+        / perturbation_folder_name(
+            ARTERIOLE_DILATION["name"], ARTERIOLE_DILATION["type"]
+        )
+    )
     written = {path.name for path in result.output_dir.iterdir()}
     assert f"{ARTERIOLE_DILATION['name']}_summary.csv" in written
     assert f"{ARTERIOLE_DILATION['name']}_edges.csv" in written

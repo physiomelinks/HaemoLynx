@@ -27,6 +27,7 @@ from haemolynx.haemodynamics.perturbations import (  # noqa: E402
     SETTINGS_FOR_TYPE,
     PerturbationSpec,
     is_usable_as_a_directory_name,
+    perturbation_folder_name,
     perturbation_output_dir,
     perturbation_problems,
     perturbations_from_settings,
@@ -486,7 +487,7 @@ def test_the_blood_model_cannot_be_perturbed(name):
 
 @pytest.mark.parametrize("name", ("../elsewhere", "sub/dir", r"back\slash", ".."))
 def test_a_name_that_is_a_path_is_a_problem(name):
-    """A perturbation's name is the directory its output goes in."""
+    """A perturbation's name is used in the directory its output goes in."""
     (spec,) = perturbations_from_settings(
         {"perturbations": [{"name": name, "type": "none"}]}
     )
@@ -635,10 +636,30 @@ def test_preflight_reports_a_bad_perturbation(capsys):
 # --- where the output goes ---------------------------------------------------
 
 
-def test_the_output_dir_falls_back_to_beside_the_rest_of_the_run():
+def test_the_folder_name_is_the_user_name_underscore_the_type():
+    """Exactly ``{name}_{type}``: the user-facing name and the type enum string."""
+    assert perturbation_folder_name("strokeA", "constriction") == "strokeA_constriction"
+    assert (
+        perturbation_folder_name("art_dilate_20", "arteriole_diameter_change")
+        == "art_dilate_20_arteriole_diameter_change"
+    )
+    spec = PerturbationSpec(name="strokeA", type="pericyte_diameter_change")
+    assert spec.folder_name == "strokeA_pericyte_diameter_change"
+
+
+def test_the_output_dir_falls_back_to_the_general_output_folder():
     values = _settings(vtk_output_prefix=Path("results/run_one/network"))
 
-    assert perturbation_output_dir(values) == Path("results/run_one/perturbations")
+    assert perturbation_output_dir(values) == Path("results/run_one")
+
+
+def test_the_output_dir_falls_back_to_cwd_when_the_run_has_no_prefix():
+    assert perturbation_output_dir({}) == Path(".")
+
+
+def test_the_perturbation_output_dir_setting_defaults_to_unset():
+    """Unset at schema level; runtime resolution follows vtk_output_prefix."""
+    assert SCHEMA["perturbation_output_dir"].default is None
 
 
 def test_a_configured_output_dir_wins():
@@ -661,6 +682,7 @@ def test_the_perturbation_names_are_reachable_from_the_subpackage():
         "PERTURBATION_TYPES",
         "PerturbationSpec",
         "is_usable_as_a_directory_name",
+        "perturbation_folder_name",
         "perturbations_from_settings",
         "perturbations_to_settings",
         "perturbation_problems",

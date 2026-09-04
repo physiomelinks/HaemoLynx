@@ -50,9 +50,9 @@ __all__ = [
     "PRESSURE_SWEEP_SETTINGS",
     "SETTINGS_FOR_TYPE",
     "SWEEP_PERTURBATION_TYPES",
-    "DEFAULT_PERTURBATION_DIRNAME",
     "PerturbationSpec",
     "is_sweep_perturbation",
+    "perturbation_folder_name",
     "perturbation_output_dir",
     "perturbation_problems",
     "perturbations_from_settings",
@@ -229,11 +229,6 @@ INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
     "haematocrit",
 )
 
-#: Where perturbation output goes when `perturbation_output_dir` is unset: a
-#: directory beside the rest of the run's output rather than in among it,
-#: because there is one subdirectory per perturbation.
-DEFAULT_PERTURBATION_DIRNAME = "perturbations"
-
 #: Types that run a sweep helper and write a sweep CSV rather than one re-solve.
 #: Derived from :data:`PERTURBATION_TYPES` by name so a new ``*_sweep`` type is
 #: classified without editing a second table.
@@ -268,14 +263,27 @@ def settings_for_perturbation_type(perturbation_type: Any) -> tuple[str, ...]:
 def is_usable_as_a_directory_name(name: str) -> bool:
     """Whether *name* names one directory, and not a path to somewhere else.
 
-    A perturbation's output goes in a directory called after it, so a name
-    carrying a separator would write outside the run's output -- and ``..``
-    would write over the run's own files.
+    A perturbation's output goes in ``{name}_{type}``, so a name carrying a
+    separator would write outside the run's output -- and ``..`` would write
+    over the run's own files. That is the whole sanitisation: empty, ``.``,
+    ``..``, and ``/`` ``\\`` ``:`` are refused; everything else is kept as typed.
     """
     stripped = name.strip()
     if not stripped or stripped in {".", ".."}:
         return False
     return not any(character in stripped for character in ("/", "\\", ":"))
+
+
+def perturbation_folder_name(name: str, perturbation_type: str) -> str:
+    """The subdirectory one perturbation writes into: ``{name}_{type}``.
+
+    Uses the user-facing name and the type string as they are, joined by one
+    underscore. The name is already required to be a single path component
+    (see :func:`is_usable_as_a_directory_name`); the type is one of
+    :data:`PERTURBATION_TYPES` and so is already filesystem-safe. Nothing else
+    is rewritten.
+    """
+    return f"{name}_{perturbation_type}"
 
 
 def visible_perturbation_settings(specs: Sequence["PerturbationSpec"]) -> set[str]:
@@ -350,7 +358,8 @@ class PerturbationSpec:
         elif not is_usable_as_a_directory_name(str(name)):
             problems.append(
                 f"{where} name {str(name)!r} cannot be a directory name, and a "
-                "perturbation's name is the directory its output goes in"
+                "perturbation's name is used with its type as the directory "
+                "its output goes in"
             )
 
         perturbation_type = entry.get("type")
@@ -380,6 +389,11 @@ class PerturbationSpec:
             overrides={str(key): value for key, value in overrides.items()},
             problems=tuple(problems),
         )
+
+    @property
+    def folder_name(self) -> str:
+        """The subdirectory this perturbation writes into: ``{name}_{type}``."""
+        return perturbation_folder_name(self.name, self.type)
 
     def to_entry(self) -> dict[str, Any]:
         """This perturbation as the entry a config file holds."""
@@ -549,13 +563,13 @@ def perturbation_problems(values: Mapping[str, Any], schema) -> tuple[str, ...]:
 def perturbation_output_dir(values: Mapping[str, Any]) -> Path:
     """Where perturbation output goes, configured or derived.
 
-    Unset means beside the run's other output, which is what
-    `vtk_output_prefix` names the directory of -- so a perturbation lands with
-    the run it perturbs without anyone configuring a second path.
+    Unset means the run's other output directory, which is what
+    `vtk_output_prefix` names the parent of -- so a perturbation lands with
+    the run it perturbs without anyone configuring a second path. Each
+    perturbation still writes into a ``{name}_{type}`` subfolder of this root.
     """
     configured = values.get("perturbation_output_dir")
     if configured:
         return Path(configured)
     prefix = values.get("vtk_output_prefix")
-    parent = Path(prefix).parent if prefix else Path(".")
-    return parent / DEFAULT_PERTURBATION_DIRNAME
+    return Path(prefix).parent if prefix else Path(".")

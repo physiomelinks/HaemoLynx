@@ -480,7 +480,7 @@ perturbation_runs:
   run_perturbations: false
   # Re-solve the network once for each of these, as a list of {name, type, overrides} entries; each runs from the same baseline rather than on top of the one before
   perturbations: []
-  # Write each perturbation's CSVs here; leave unset for a 'perturbations' directory beside the other output  [needs run_perturbations]
+  # Write each perturbation's CSVs into a '{name}_{type}' subfolder here; leave unset to use the same folder as the other output  [needs run_perturbations]
   perturbation_output_dir: null
   # After the pipeline, sweep pericyte constriction/dilation against inlet pressure (whole-brain example script only; prefer a pericyte_dilation_sweep perturbation in the panel)
   run_pericyte_dilation_sweep: true

@@ -2407,8 +2407,9 @@ SCHEMA = Schema(
             kind="path",
             default=None,
             help=(
-                "Write each perturbation's CSVs here; leave unset for a "
-                "'perturbations' directory beside the other output"
+                "Write each perturbation's CSVs into a '{name}_{type}' "
+                "subfolder here; leave unset to use the same folder as the "
+                "other output"
             ),
             section=_PERTURBATION_RUNS,
             requires=("run_perturbations",),

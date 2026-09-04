@@ -33,7 +33,11 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from haemolynx.haemodynamics import PERTURBATION_TYPES, PoiseuilleModel  # noqa: E402
+from haemolynx.haemodynamics import (  # noqa: E402
+    PERTURBATION_TYPES,
+    PoiseuilleModel,
+    perturbation_folder_name,
+)
 from haemolynx.pipeline import (  # noqa: E402
     BoundaryNodes,
     HaemodynamicModel,
@@ -346,7 +350,11 @@ def test_the_stage_does_nothing_when_it_is_switched_off(tmp_path):
 
     assert run.results == []
     assert run.output_dir is None
-    assert not (tmp_path / "out" / "perturbations").exists()
+    assert not (
+        tmp_path
+        / "out"
+        / perturbation_folder_name(ARTERIOLE_DILATION["name"], ARTERIOLE_DILATION["type"])
+    ).exists()
 
 
 def test_the_stage_does_nothing_without_haemodynamics(tmp_path):
@@ -354,7 +362,11 @@ def test_the_stage_does_nothing_without_haemodynamics(tmp_path):
     run = _run(tmp_path, [ARTERIOLE_DILATION], run_haemodynamics=False)
 
     assert run.results == []
-    assert not (tmp_path / "out" / "perturbations").exists()
+    assert not (
+        tmp_path
+        / "out"
+        / perturbation_folder_name(ARTERIOLE_DILATION["name"], ARTERIOLE_DILATION["type"])
+    ).exists()
 
 
 def test_a_none_perturbation_produces_nothing(tmp_path):
@@ -367,7 +379,9 @@ def test_a_none_perturbation_produces_nothing(tmp_path):
     assert result.graph is None
     assert result.output_dir is None
     assert result.outputs == []
-    assert not (tmp_path / "out" / "perturbations" / "placeholder").exists()
+    assert not (
+        tmp_path / "out" / perturbation_folder_name("placeholder", "none")
+    ).exists()
 
 
 # --- each type writes its own output -----------------------------------------
@@ -380,7 +394,9 @@ def test_each_type_writes_its_own_directory_and_files(tmp_path, perturbation_typ
 
     result = run.results[0]
     assert result.error is None, result.error
-    assert result.output_dir == tmp_path / "out" / "perturbations" / entry["name"]
+    assert result.output_dir == (
+        tmp_path / "out" / perturbation_folder_name(entry["name"], entry["type"])
+    )
     assert result.output_dir.is_dir()
     written = sorted(path.name for path in result.output_dir.iterdir())
     assert f"{entry['name']}_summary.csv" in written
@@ -389,6 +405,49 @@ def test_each_type_writes_its_own_directory_and_files(tmp_path, perturbation_typ
         assert path.exists(), f"{path} was reported but not written"
     # A perturbation is a number to compare, not a second published model.
     assert not list(result.output_dir.glob("*.vtp"))
+
+
+def test_unset_perturbation_output_dir_writes_under_the_general_output_folder(
+    tmp_path,
+):
+    """No custom dir: files go under vtk_output_prefix's parent, in {name}_{type}."""
+    run = _run(tmp_path, [ARTERIOLE_DILATION])
+    result = run.results[0]
+    folder = perturbation_folder_name(
+        ARTERIOLE_DILATION["name"], ARTERIOLE_DILATION["type"]
+    )
+    expected = tmp_path / "out" / folder
+    assert result.output_dir == expected
+    assert (expected / f"{ARTERIOLE_DILATION['name']}_summary.csv").is_file()
+    assert not (tmp_path / "out" / "perturbations").exists()
+
+
+def test_a_custom_perturbation_output_dir_still_gets_named_subfolders(tmp_path):
+    custom = tmp_path / "elsewhere"
+    run = _run(tmp_path, [ARTERIOLE_DILATION], perturbation_output_dir=custom)
+    result = run.results[0]
+    expected = custom / perturbation_folder_name(
+        ARTERIOLE_DILATION["name"], ARTERIOLE_DILATION["type"]
+    )
+    assert result.output_dir == expected
+    assert (expected / f"{ARTERIOLE_DILATION['name']}_summary.csv").is_file()
+    assert not (tmp_path / "out" / expected.name).exists()
+
+
+def test_two_perturbations_write_into_separate_name_type_folders(tmp_path):
+    run = _run(tmp_path, [ARTERIOLE_DILATION, ARTERIOLE_CONSTRICTION])
+    dilated, narrowed = run.results
+    dilated_dir = tmp_path / "out" / perturbation_folder_name(
+        ARTERIOLE_DILATION["name"], ARTERIOLE_DILATION["type"]
+    )
+    narrowed_dir = tmp_path / "out" / perturbation_folder_name(
+        ARTERIOLE_CONSTRICTION["name"], ARTERIOLE_CONSTRICTION["type"]
+    )
+    assert dilated.output_dir == dilated_dir
+    assert narrowed.output_dir == narrowed_dir
+    assert dilated_dir != narrowed_dir
+    assert (dilated_dir / f"{ARTERIOLE_DILATION['name']}_summary.csv").is_file()
+    assert (narrowed_dir / f"{ARTERIOLE_CONSTRICTION['name']}_summary.csv").is_file()
 
 
 def test_a_pressure_and_pericyte_sweep_writes_its_combined_csv(tmp_path):

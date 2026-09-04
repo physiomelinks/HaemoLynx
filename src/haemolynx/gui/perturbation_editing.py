@@ -132,8 +132,8 @@ SETTING_DISPLAY_LABELS: Mapping[str, str] = {
 #: Hover / focus text for controls that are not schema settings. Setting-row
 #: tooltips come from ``Setting.help`` (plus unit) via :func:`haemolynx.gui.form.field_for`.
 NAME_TOOLTIP = (
-    "Also the directory this perturbation's output goes in, so it has "
-    "to be unique and usable as a directory name"
+    "Used with the type to name the output folder ({name}_{type}), so it "
+    "has to be unique and usable as a directory name"
 )
 TYPE_TOOLTIP = (
     "What to change before re-solving (diameter types use constriction/"
@@ -379,7 +379,7 @@ def _with(
 
 
 def name_problems(entries: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
-    """What is wrong with the names, which are also the output directories."""
+    """What is wrong with the names, which are half of each output directory."""
     problems: list[str] = []
     seen: set[str] = set()
     for entry in entries:
@@ -387,7 +387,7 @@ def name_problems(entries: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
         if not is_usable_as_a_directory_name(name):
             problems.append(
                 f"{name!r} cannot be a directory name, and each perturbation "
-                "writes its output into a directory called after it"
+                "writes its output into a {name}_{type} subfolder"
             )
         elif name in seen:
             problems.append(f"two perturbations are called {name!r}")
