@@ -46,6 +46,26 @@ def _stack_results():
     return results
 
 
+def _z_project_range_inputs(panel):
+    """Slider pair, min/max handles, labels, and the Z-project (µm) row."""
+    slider = panel._haemolynx_z_project_slider
+    return [
+        panel._haemolynx_z_project_row,
+        panel._haemolynx_z_project_label,
+        slider,
+        slider._lo,
+        slider._hi,
+        slider._lo_label,
+        slider._hi_label,
+    ]
+
+
+def _assert_z_project_range_enabled(panel, enabled: bool) -> None:
+    for widget in _z_project_range_inputs(panel):
+        name = widget.objectName() or widget.__class__.__name__
+        assert widget.isEnabled() is enabled, name
+
+
 def _load_patterned_image(viewer):
     image = np.zeros((4, 4, 4), dtype=np.uint8)
     image[0] = 1
@@ -70,6 +90,8 @@ def test_the_view_panel_docks_on_the_left(make_napari_viewer):
     assert panel._haemolynx_z_project.objectName() == "haemolynx_z_project"
     assert panel._haemolynx_z_project.isChecked() is False
     assert panel._haemolynx_z_project_slider.objectName() == "haemolynx_z_project_slider"
+    assert panel._haemolynx_z_project_row.objectName() == "haemolynx_z_project_row"
+    assert panel._haemolynx_z_project_row.parentWidget() is panel._haemolynx_display_group
     assert panel._haemolynx_z_depth_slider.objectName() == "haemolynx_z_depth_slider"
     assert panel._haemolynx_z_depth_row.parentWidget() is panel._haemolynx_display_group
     assert panel._haemolynx_scale_bar.objectName() == "haemolynx_scale_bar"
@@ -91,6 +113,7 @@ def test_the_view_panel_is_not_on_the_right_settings_column(make_napari_viewer):
     panel = settings_widget(napari_viewer=viewer)
     for widget in (
         panel._haemolynx_z_project_slider,
+        panel._haemolynx_z_project_row,
         panel._haemolynx_z_depth_slider,
         panel._haemolynx_z_depth_row,
         panel._haemolynx_z_project,
@@ -107,8 +130,9 @@ def test_the_panel_still_builds_the_view_chrome_with_no_viewer():
     assert panel._haemolynx_view_panel is not None
     assert panel._haemolynx_z_project_slider is not None
     assert panel._haemolynx_z_project.isChecked() is False
-    assert panel._haemolynx_z_project_slider.isEnabled() is False
+    _assert_z_project_range_enabled(panel, False)
     assert panel._haemolynx_scale_bar.isChecked() is False
+    assert panel._haemolynx_scale_bar.isEnabled()
     assert panel._haemolynx_snapshot_button is not None
     panel._haemolynx_snapshot_button.click()
     assert "viewer" in panel._haemolynx_report().lower()
@@ -125,10 +149,14 @@ def test_z_project_slider_can_change_min_and_max(make_napari_viewer):
 
     slider = panel._haemolynx_z_project_slider
     assert panel._haemolynx_z_project.isChecked() is False
-    assert slider.isEnabled() is False
+    _assert_z_project_range_enabled(panel, False)
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+    assert panel._haemolynx_scale_bar.isEnabled()
 
     panel._haemolynx_z_project.setChecked(True)
-    assert slider.isEnabled()
+    _assert_z_project_range_enabled(panel, True)
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+    assert panel._haemolynx_scale_bar.isEnabled()
     full_z = float(slider.maximum())
     assert full_z == pytest.approx(8.0)
     assert slider.minimum() == pytest.approx(0.0)
@@ -147,7 +175,41 @@ def test_z_project_slider_can_change_min_and_max(make_napari_viewer):
     assert slider._hi.isEnabled()
 
     panel._haemolynx_z_project.setChecked(False)
-    assert slider.isEnabled() is False
+    _assert_z_project_range_enabled(panel, False)
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+    assert panel._haemolynx_scale_bar.isEnabled()
+
+
+def test_z_project_range_inputs_grey_out_until_the_box_is_ticked(
+    make_napari_viewer,
+):
+    """Min/max sliders, labels, and the Z-project row stay disabled while off."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    assert panel._haemolynx_z_project.isChecked() is False
+    _assert_z_project_range_enabled(panel, False)
+    assert panel._haemolynx_scale_bar.isEnabled()
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert panel._haemolynx_z_project.isChecked() is False
+    _assert_z_project_range_enabled(panel, False)
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+    assert panel._haemolynx_z_depth_row.isEnabled()
+    assert panel._haemolynx_scale_bar.isEnabled()
+
+    panel._haemolynx_z_project.setChecked(True)
+    _assert_z_project_range_enabled(panel, True)
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+    assert panel._haemolynx_scale_bar.isEnabled()
+
+    panel._haemolynx_z_project.setChecked(False)
+    _assert_z_project_range_enabled(panel, False)
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+    assert panel._haemolynx_scale_bar.isEnabled()
 
 
 def test_z_project_off_is_identity_even_if_the_slider_moves(make_napari_viewer):

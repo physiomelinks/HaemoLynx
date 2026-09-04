@@ -647,7 +647,15 @@ def _double_range_pair(object_name: str):
     ``QDoubleSlider`` s match the working Arrow size control.
     """
     from qtpy.QtCore import Qt, Signal
-    from qtpy.QtWidgets import QFormLayout, QSizePolicy, QWidget
+    from qtpy.QtWidgets import (
+        QAbstractSlider,
+        QAbstractSpinBox,
+        QFormLayout,
+        QLabel,
+        QLineEdit,
+        QSizePolicy,
+        QWidget,
+    )
     from superqt import QDoubleSlider
 
     class DoubleRangePair(QWidget):
@@ -665,15 +673,38 @@ def _double_range_pair(object_name: str):
                 slider.setRange(0.0, 1.0)
             self._lo.setValue(0.0)
             self._hi.setValue(0.0)
+            self._lo_label = QLabel("min")
+            self._hi_label = QLabel("max")
             form = QFormLayout(self)
             form.setContentsMargins(0, 0, 0, 0)
             form.setSpacing(2)
-            form.addRow("min", self._lo)
-            form.addRow("max", self._hi)
+            form.addRow(self._lo_label, self._lo)
+            form.addRow(self._hi_label, self._hi)
             self._lo.valueChanged.connect(self._on_lo)
             self._hi.valueChanged.connect(self._on_hi)
             self._updating = False
             self._haemolynx_extent_ready = False
+
+        def setEnabled(self, enabled: bool) -> None:  # noqa: N802 - Qt API
+            """Grey min/max sliders, companion fields, and an optional outer row."""
+            on = bool(enabled)
+            row = getattr(self, "_haemolynx_row", None)
+            if on and row is not None:
+                row.setEnabled(True)
+            super().setEnabled(on)
+            self._lo.setEnabled(on)
+            self._hi.setEnabled(on)
+            self._lo_label.setEnabled(on)
+            self._hi_label.setEnabled(on)
+            for child in self.findChildren(
+                (QAbstractSlider, QAbstractSpinBox, QLineEdit, QLabel)
+            ):
+                child.setEnabled(on)
+            outer = getattr(self, "_haemolynx_label", None)
+            if outer is not None:
+                outer.setEnabled(on)
+            if not on and row is not None:
+                row.setEnabled(False)
 
         def _on_lo(self, value: float) -> None:
             if self._updating:
@@ -4571,9 +4602,18 @@ def settings_widget(napari_viewer=None):
     z_project_box.setChecked(False)
     z_project_box.setToolTip(Z_PROJECT_ENABLE_TOOLTIP)
 
+    z_project_label = QLabel("Z-project (µm)")
+    z_project_label.setToolTip(Z_PROJECT_TOOLTIP)
     z_project_slider = _double_range_pair("haemolynx_z_project_slider")
-    z_project_slider.setEnabled(False)
     z_project_slider.setToolTip(Z_PROJECT_TOOLTIP)
+    z_project_row = QWidget()
+    z_project_row.setObjectName("haemolynx_z_project_row")
+    z_project_form = QFormLayout(z_project_row)
+    z_project_form.setContentsMargins(0, 0, 0, 0)
+    z_project_form.addRow(z_project_label, z_project_slider)
+    z_project_slider._haemolynx_row = z_project_row
+    z_project_slider._haemolynx_label = z_project_label
+    z_project_slider.setEnabled(False)
 
     z_depth_label = QLabel("Z-depth filter (µm)")
     z_depth_slider = _double_range_pair("haemolynx_z_depth_slider")
@@ -5034,7 +5074,7 @@ def settings_widget(napari_viewer=None):
     display_group.setObjectName("haemolynx_display_group")
     display_form = QFormLayout(display_group)
     display_form.addRow(z_project_box)
-    display_form.addRow("Z-project (µm)", z_project_slider)
+    display_form.addRow(z_project_row)
     z_depth_row = QWidget()
     z_depth_row.setObjectName("haemolynx_z_depth_row")
     z_depth_form = QFormLayout(z_depth_row)
@@ -5116,6 +5156,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_view_dock = view_dock
     panel._haemolynx_z_project = z_project_box
     panel._haemolynx_z_project_slider = z_project_slider
+    panel._haemolynx_z_project_row = z_project_row
+    panel._haemolynx_z_project_label = z_project_label
     panel._haemolynx_scale_bar = scale_bar_box
     panel._haemolynx_display_group = display_group
     panel._haemolynx_snapshot_group = snapshot_group
