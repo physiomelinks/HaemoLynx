@@ -959,3 +959,44 @@ def test_an_unset_path_or_number_is_still_blank():
 
     assert field_for(Setting("where", "path", None, "A path", "S")).value == ""
     assert field_for(Setting("guess", "float", None, "A guess", "S")).value == ""
+
+
+def test_placeholder_reaches_the_field_but_never_the_value():
+    """A placeholder hints at an unset box's auto behaviour without setting it."""
+    from haemolynx.parsers import Setting
+
+    setting = Setting(
+        "wall", "float", None, "A wall radius", "S", placeholder="auto"
+    )
+    field = field_for(setting)
+    assert field.placeholder == "auto"
+    assert field.value == ""
+    assert field.nullable is True
+    assert field.to_setting_value("") is None
+
+
+def test_placeholder_is_none_when_the_setting_declares_none():
+    from haemolynx.parsers import Setting
+
+    field = field_for(Setting("radius", "float", 6.0, "A radius", "S"))
+    assert field.placeholder is None
+
+
+def test_placeholder_requires_an_unset_default():
+    """Placeholder text only makes sense on a box that starts empty."""
+    from haemolynx.parsers import ConfigError, Setting
+
+    with pytest.raises(ConfigError):
+        Setting("radius", "float", 6.0, "A radius", "S", placeholder="auto")
+
+
+def test_the_two_thick_vessel_threshold_overrides_show_an_auto_placeholder():
+    """Locks the GUI request: an empty box should say what it will use, not just be blank."""
+    for name in (
+        "skeleton_thick_vessel_wall_absorption_um",
+        "skeleton_thick_vessel_flake_filter_um",
+    ):
+        field = field_for(SCHEMA[name], SCHEMA[name].default)
+        assert field.widget_type == "LineEdit"
+        assert field.value == ""
+        assert field.placeholder == "auto"

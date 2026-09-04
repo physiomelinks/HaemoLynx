@@ -116,6 +116,11 @@ class Field:
     kind: str = "any"
     #: True when the setting has no default, so an empty box means None.
     nullable: bool = False
+    #: Hint text for an empty box, e.g. "auto"; never becomes the value.
+    #: magicgui's ``create_widget`` does not accept a ``placeholder`` kwarg,
+    #: so this is applied to the built widget separately, not through
+    #: :attr:`options`.
+    placeholder: str | None = None
 
     def to_setting_value(self, raw: Any) -> Any:
         """A widget's value as the setting's own value.
@@ -416,6 +421,7 @@ def field_for(setting: Setting, value: Any = None) -> Field:
         enabled_by=tuple(setting.requires or ()),
         kind=setting.kind,
         nullable=setting.default is None,
+        placeholder=setting.placeholder,
     )
 
 

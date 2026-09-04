@@ -126,6 +126,10 @@ class Setting:
     requires: tuple[str, ...] = ()
     must_exist: bool = False
     advanced: bool = False
+    #: Hint text a GUI shows in an empty (unset/``None``-default) box, e.g.
+    #: ``"auto"`` for a setting whose blank value means "compute it from
+    #: something else". Cosmetic only -- never becomes the value.
+    placeholder: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -160,6 +164,12 @@ class Setting:
             raise ConfigError(
                 f"Setting '{self.name}' declares must_exist but is kind "
                 f"'{self.kind}'; only a path can be checked for existence."
+            )
+        if self.placeholder is not None and self.default is not None:
+            raise ConfigError(
+                f"Setting '{self.name}' declares a placeholder but has a "
+                f"non-None default; placeholder text is only shown in an "
+                f"empty (unset) box."
             )
         if self.default is not None:
             # A default that its own rules reject is a schema bug, not a user
@@ -258,6 +268,7 @@ class Setting:
             "requires": list(self.requires),
             "must_exist": self.must_exist,
             "advanced": self.advanced,
+            "placeholder": self.placeholder,
         }
 
 

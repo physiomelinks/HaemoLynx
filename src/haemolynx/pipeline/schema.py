@@ -1638,6 +1638,7 @@ SCHEMA = Schema(
             minimum=0.0,
             requires=("use_thick_vessel_skeletonisation",),
             advanced=True,
+            placeholder="auto",
         ),
         Setting(
             name="skeleton_thick_vessel_flake_filter_um",
@@ -1655,6 +1656,7 @@ SCHEMA = Schema(
             minimum=0.0,
             requires=("use_thick_vessel_skeletonisation",),
             advanced=True,
+            placeholder="auto",
         ),
         Setting(
             name="smooth_centrelines",

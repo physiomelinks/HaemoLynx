@@ -1015,3 +1015,50 @@ def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
     for name in SHARED_ILASTIK_SETTINGS:
         assert rows[name].visible is False, name
     assert_no_new_windows()
+
+
+def test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest(panel):
+    """The two threshold overrides hint 'auto' when empty and hide with their parent.
+
+    Regression for a GUI request: an empty box for these two used to give no
+    indication of what would actually be used. While the Skeletonise tab is
+    not current, magicgui may keep ``visible`` False regardless of prerequisite
+    state, so the tab must be selected before the nesting assertions mean
+    anything (see ``test_shared_ilastik_knobs_...`` above).
+    """
+    from qtpy.QtWidgets import QApplication, QTabWidget
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget.findChild(QTabWidget)
+    for index in range(tabs.count()):
+        if "Skeletonise" in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            break
+    else:
+        raise AssertionError("no tab containing 'Skeletonise'")
+
+    wall = rows["skeleton_thick_vessel_wall_absorption_um"]
+    flake = rows["skeleton_thick_vessel_flake_filter_um"]
+
+    assert wall.value == "" and flake.value == ""
+    assert wall.native.placeholderText() == "auto"
+    assert flake.native.placeholderText() == "auto"
+
+    rows["use_thick_vessel_skeletonisation"].value = False
+    QApplication.processEvents()
+    assert wall.visible is False
+    assert flake.visible is False
+    assert rows["skeleton_thick_vessel_min_radius_um"].visible is False
+    assert rows["skeleton_fill_mask_holes_before_thickness"].visible is False
+
+    rows["use_thick_vessel_skeletonisation"].value = True
+    QApplication.processEvents()
+    assert wall.visible is True
+    assert flake.visible is True
+    assert rows["skeleton_thick_vessel_min_radius_um"].visible is True
+    assert rows["skeleton_fill_mask_holes_before_thickness"].visible is True
+
+

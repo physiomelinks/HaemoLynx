@@ -264,6 +264,13 @@ def _build_row(field: Field):
         options=dict(field.options),
     )
     widget.tooltip = field.help
+    if field.placeholder:
+        # magicgui's create_widget has no placeholder kwarg; the backend
+        # (Qt) does, and every widget kind this applies to (an empty box
+        # means None, so always a LineEdit -- see widget_type_for) has one.
+        set_placeholder = getattr(widget.native, "setPlaceholderText", None)
+        if callable(set_placeholder):
+            set_placeholder(field.placeholder)
     return widget
 
 
