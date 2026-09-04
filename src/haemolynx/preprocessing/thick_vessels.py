@@ -226,8 +226,22 @@ def thick_vessel_object_mask(
     if bbox is None:
         return out
     crop = mask[bbox]
+    logger.info(
+        "thick_vessel_object_mask: cropped to %s (%d voxels, %d foreground) "
+        "from input shape %s",
+        crop.shape,
+        int(crop.size),
+        int(crop.sum()),
+        mask.shape,
+    )
+    t0 = time.perf_counter()
     radius_map = inscribed_radius_map(crop, voxel_size_zyx)
     thick_core = crop & (radius_map >= float(min_radius_um))
+    logger.info(
+        "thick_vessel_object_mask: inscribed radius map took %.2fs (%d core voxels)",
+        time.perf_counter() - t0,
+        int(thick_core.sum()),
+    )
     if not thick_core.any():
         return out
 
@@ -238,11 +252,23 @@ def thick_vessel_object_mask(
         else max(0.0, float(wall_absorption_um))
     )
     allowed = crop & (radius_map >= propagation_gate)
+    t1 = time.perf_counter()
     body = binary_propagation(thick_core, mask=allowed)
+    logger.info(
+        "thick_vessel_object_mask: geodesic body propagation took %.2fs (%d body voxels)",
+        time.perf_counter() - t1,
+        int(body.sum()),
+    )
+    t2 = time.perf_counter()
     dist_to_body = distance_transform_edt(
         ~body, sampling=tuple(float(v) for v in voxel_size_zyx)
     )
     out[bbox] = crop & (dist_to_body <= wall_radius)
+    logger.info(
+        "thick_vessel_object_mask: wall distance transform took %.2fs (%d fat voxels total)",
+        time.perf_counter() - t2,
+        int(out.sum()),
+    )
     return out
 
 
@@ -684,13 +710,27 @@ def skeletonize_edt_ridge(binary: np.ndarray) -> np.ndarray:
     labeled, n_labels = label(crop, structure=generate_binary_structure(3, 3))
     if n_labels == 0:
         return result
+    logger.info(
+        "skeletonize_edt_ridge: %d fat component(s) in a %s crop (%d voxels)",
+        int(n_labels),
+        crop.shape,
+        int(crop.sum()),
+    )
     crop_result = np.zeros(crop.shape, dtype=bool)
     for component_id, slc in enumerate(find_objects(labeled), start=1):
         if slc is None:
             continue
-        crop_result[slc] |= _component_edt_ridge_on_crop(
-            labeled[slc] == component_id, edt[slc]
-        )
+        component_mask = labeled[slc] == component_id
+        t_component = time.perf_counter()
+        crop_result[slc] |= _component_edt_ridge_on_crop(component_mask, edt[slc])
+        if n_labels > 1 or int(component_mask.sum()) > 10_000:
+            logger.info(
+                "skeletonize_edt_ridge: component %d/%d (%d voxels) took %.2fs",
+                component_id,
+                int(n_labels),
+                int(component_mask.sum()),
+                time.perf_counter() - t_component,
+            )
     result[bbox] = crop_result
     return result.astype(bool)
 
@@ -977,6 +1017,12 @@ def skeletonize_thickness_gated(
     if float(min_radius_um) <= 0.0:
         return skeletonize_volume(mask).astype(bool)
 
+    logger.info(
+        "skeletonize_thickness_gated: computing fat catchment (input shape %s, "
+        "%d foreground voxels)",
+        mask.shape,
+        int(mask.sum()),
+    )
     t0 = time.perf_counter()
     thick = thick_vessel_object_mask(
         mask,
@@ -995,6 +1041,13 @@ def skeletonize_thickness_gated(
     else:
         min_arm_extent = max(0.0, float(flake_filter_um) / max(spacing, 1e-6))
     result = np.zeros(mask.shape, dtype=bool)
+    logger.info(
+        "skeletonize_thickness_gated: fat catchment done in %.2fs (%d fat, %d thin "
+        "voxels); Lee-thinning the thin catchment",
+        t_catchment,
+        int(thick.sum()),
+        int(thin.sum()),
+    )
     t1 = time.perf_counter()
     if thin.any():
         # Do not Lee the leftover fat-wall shell: those CCs never extend away
@@ -1008,9 +1061,19 @@ def skeletonize_thickness_gated(
             if lee_crop.any():
                 result[bbox] |= _skeletonize_foreground(lee_crop)
     t_lee = time.perf_counter() - t1
+    logger.info(
+        "skeletonize_thickness_gated: Lee-thinning done in %.2fs; building the "
+        "fat-catchment centreline tree",
+        t_lee,
+    )
     t2 = time.perf_counter()
     result |= skeletonize_edt_ridge(thick)
     t_ridge = time.perf_counter() - t2
+    logger.info(
+        "skeletonize_thickness_gated: centreline tree done in %.2fs; joining thin "
+        "arms to the fat ridge",
+        t_ridge,
+    )
     t3 = time.perf_counter()
     result = _join_thin_arms_to_fat_ridge(
         result,
