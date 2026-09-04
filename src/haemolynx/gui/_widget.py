@@ -469,6 +469,58 @@ def _ensure_tube_colour_follow(viewer, vessels) -> None:
     vessels._haemolynx_follow_tubes = True
 
 
+def _set_tube_mesh(layer, vertices, faces, colours) -> None:
+    """Write vertices, faces and colours without a half-updated vispy mesh.
+
+    Napari refreshes the Surface visual on each assignment. Expanding or
+    shrinking the mesh while ``vertex_colors`` still has the old length
+    raises in vispy (``incorrect number of colors``). Block refresh until
+    both agree, then draw once.
+    """
+    colours = np.asarray(colours, dtype=float)
+    if colours.ndim == 1:
+        colours = np.empty((0, 4), dtype=float)
+    blocker = getattr(layer, "_block_refresh", None)
+    if callable(blocker):
+        with blocker():
+            layer.data = (vertices, faces)
+            layer.vertex_colors = colours
+    else:
+        layer.data = (vertices, faces)
+        layer.vertex_colors = colours
+    if getattr(layer, "visible", False):
+        refresh = getattr(layer, "refresh", None)
+        if callable(refresh):
+            refresh()
+
+
+def _hide_tube_surface(layer) -> None:
+    """Stop drawing a tube Surface, including vispy leftovers while hidden."""
+    if layer is None:
+        return
+    try:
+        _set_tube_mesh(
+            layer,
+            np.empty((0, 3), dtype=float),
+            np.empty((0, 3), dtype=np.intp),
+            np.empty((0, 4), dtype=float),
+        )
+    except Exception:  # noqa: BLE001 - still hide even if the mesh cannot clear
+        logger.debug("could not clear vessel tube mesh", exc_info=True)
+    layer.visible = False
+
+
+def _request_canvas_redraw(viewer) -> None:
+    """Ask the vispy canvas to repaint after a vessels drawing-mode change."""
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window else None
+    canvas = getattr(qt_viewer, "canvas", None)
+    native = getattr(canvas, "native", None)
+    update = getattr(native, "update", None)
+    if callable(update):
+        update()
+
+
 def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
     """Show tubes or line ribbons for one vessels Vectors layer."""
     name = vessel_tubes_layer_name(vessels.name)
@@ -478,9 +530,8 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
         existing = viewer.layers[name] if name in viewer.layers else None
 
     if not tubes_on:
-        if existing is not None:
-            existing.visible = False
-            vessels.visible = True
+        vessels.visible = True
+        _hide_tube_surface(existing)
         return
 
     vertices, faces, segment_index = tubes_from_vectors(
@@ -489,8 +540,7 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
     )
     if len(vertices) == 0:
         vessels.visible = False
-        if existing is not None:
-            existing.visible = False
+        _hide_tube_surface(existing)
         return
     colours = colors_for_tube_vertices(segment_index, _vector_edge_rgba(vessels))
     ours = {
@@ -500,15 +550,14 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
     }
     scale = tuple(float(v) for v in getattr(vessels, "scale", (1.0, 1.0, 1.0)))
     if existing is not None and existing.__class__.__name__.lower() == "surface":
-        existing.data = (vertices, faces)
-        existing.vertex_colors = colours
-        existing.visible = True
         existing.scale = scale
         extra = dict(getattr(existing, "metadata", {}) or {})
         tag = dict(extra.get(OURS) or {})
         tag.update(ours)
         extra[OURS] = tag
         existing.metadata = extra
+        _set_tube_mesh(existing, vertices, faces, colours)
+        existing.visible = True
     else:
         if existing is not None:
             viewer.layers.remove(existing)
@@ -537,13 +586,13 @@ def _sync_vessel_tubes(viewer) -> None:
                 continue
             _sync_one_vessel_tubes(viewer, layer, tubes_on)
             seen_tube_names.add(vessel_tubes_layer_name(layer.name))
-        if tubes_on:
-            return
-        for layer in list(viewer.layers):
-            if _is_vessel_tubes_layer(layer) and layer.name not in seen_tube_names:
-                layer.visible = False
+        if not tubes_on:
+            for layer in list(viewer.layers):
+                if _is_vessel_tubes_layer(layer) and layer.name not in seen_tube_names:
+                    _hide_tube_surface(layer)
+        _request_canvas_redraw(viewer)
     except Exception:  # noqa: BLE001 - drawing must not stop a run
-        logger.debug("could not sync vessel tubes", exc_info=True)
+        logger.exception("could not sync vessel tubes")
 
 
 def _store_z_filter_cache(
@@ -4984,8 +5033,8 @@ def settings_widget(napari_viewer=None):
     show_steps.native.setObjectName("haemolynx_show_steps")
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
-        QCheckBox, QComboBox, QFormLayout, QGroupBox, QLabel, QPushButton,
-        QWidget,
+        QButtonGroup, QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
+        QLabel, QPushButton, QRadioButton, QWidget,
     )
     from superqt import QDoubleSlider
 
@@ -5015,16 +5064,45 @@ def settings_widget(napari_viewer=None):
 
     vessel_draw_label = QLabel("Vessels")
     vessel_draw_label.setObjectName("haemolynx_vessel_draw_label")
-    vessel_draw = QComboBox()
+    # Radios, not a combo: the view dock floats over the vispy canvas, and a
+    # QComboBox popup there often never receives the click that should swap
+    # Tubes/Lines.
+    vessel_draw = QWidget()
     vessel_draw.setObjectName("haemolynx_vessel_draw")
-    vessel_draw.addItem("Tubes", VESSEL_DRAW_TUBES)
-    vessel_draw.addItem("Lines", VESSEL_DRAW_LINES)
+    tubes_radio = QRadioButton("Tubes")
+    lines_radio = QRadioButton("Lines")
+    tubes_radio.setObjectName("haemolynx_vessel_draw_tubes")
+    lines_radio.setObjectName("haemolynx_vessel_draw_lines")
+    draw_group = QButtonGroup(vessel_draw)
+    draw_group.setExclusive(True)
+    draw_group.addButton(tubes_radio)
+    draw_group.addButton(lines_radio)
+    draw_row_layout = QHBoxLayout(vessel_draw)
+    draw_row_layout.setContentsMargins(0, 0, 0, 0)
+    draw_row_layout.addWidget(tubes_radio)
+    draw_row_layout.addWidget(lines_radio)
+    vessel_draw.tubes = tubes_radio
+    vessel_draw.lines = lines_radio
+
+    def _vessel_draw_text() -> str:
+        return "Lines" if lines_radio.isChecked() else "Tubes"
+
+    def _set_vessel_draw_text(text: str) -> None:
+        if text == "Lines":
+            lines_radio.setChecked(True)
+        else:
+            tubes_radio.setChecked(True)
+
+    vessel_draw.currentText = _vessel_draw_text
+    vessel_draw.setCurrentText = _set_vessel_draw_text
     vessel_draw.setToolTip(VESSEL_DRAW_TOOLTIP)
+    tubes_radio.setToolTip(VESSEL_DRAW_TOOLTIP)
+    lines_radio.setToolTip(VESSEL_DRAW_TOOLTIP)
     vessel_draw_label.setToolTip(VESSEL_DRAW_TOOLTIP)
     if _vessel_draw_mode == VESSEL_DRAW_LINES:
-        vessel_draw.setCurrentIndex(1)
+        lines_radio.setChecked(True)
     else:
-        vessel_draw.setCurrentIndex(0)
+        tubes_radio.setChecked(True)
 
     scale_bar_box = QCheckBox("Scale bar")
     scale_bar_box.setObjectName("haemolynx_scale_bar")
@@ -5168,13 +5246,14 @@ def settings_widget(napari_viewer=None):
             return
         _apply_scale_bar(viewer, bool(checked))
 
-    def on_vessel_draw_changed(_index: int = 0) -> None:
+    def on_vessel_draw_changed(checked: bool = True) -> None:
+        if not checked:
+            return
         global _vessel_draw_mode
-        mode = vessel_draw.currentData()
-        if mode not in {VESSEL_DRAW_TUBES, VESSEL_DRAW_LINES}:
-            text = vessel_draw.currentText()
-            mode = VESSEL_DRAW_LINES if text == "Lines" else VESSEL_DRAW_TUBES
-        _vessel_draw_mode = str(mode)
+        mode = (
+            VESSEL_DRAW_LINES if lines_radio.isChecked() else VESSEL_DRAW_TUBES
+        )
+        _vessel_draw_mode = mode
         if viewer is not None:
             _sync_vessel_tubes(viewer)
 
@@ -5194,7 +5273,8 @@ def settings_widget(napari_viewer=None):
     z_project_slider.sliderReleased.connect(on_z_slider_released)
     z_project_box.toggled.connect(on_z_project_toggled)
     scale_bar_box.toggled.connect(on_scale_bar_toggled)
-    vessel_draw.currentIndexChanged.connect(on_vessel_draw_changed)
+    tubes_radio.toggled.connect(on_vessel_draw_changed)
+    lines_radio.toggled.connect(on_vessel_draw_changed)
     arrow_length_slider.valueChanged.connect(on_arrow_length_changed)
 
     def _settings() -> dict[str, Any]:

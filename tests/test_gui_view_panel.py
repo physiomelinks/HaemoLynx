@@ -681,6 +681,12 @@ def test_two_snapshots_do_not_overwrite(make_napari_viewer, tmp_path, monkeypatc
     assert written[0] != written[1]
 
 
+def _choose_vessel_draw(control, text: str) -> None:
+    """Pick Tubes/Lines the way a click on the view-panel radios does."""
+    button = control.lines if text == "Lines" else control.tubes
+    button.click()
+
+
 def test_vessels_default_to_tubes_and_toggle_to_lines(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
@@ -705,6 +711,36 @@ def test_vessels_default_to_tubes_and_toggle_to_lines(make_napari_viewer):
     panel._haemolynx_vessel_draw.setCurrentText("Tubes")
     assert viewer.layers[VESSELS].visible is False
     assert viewer.layers[VESSEL_TUBES].visible is True
+
+
+def test_vessel_draw_activated_toggles_visibility_both_ways(make_napari_viewer):
+    """A click on the Tubes/Lines radios must swap what is drawn."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    combo = panel._haemolynx_vessel_draw
+    n_segments = len(viewer.layers[VESSELS].data)
+    assert n_segments > 0
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == n_segments * 12
+
+    _choose_vessel_draw(combo, "Lines")
+    assert combo.currentText() == "Lines"
+    assert viewer.layers[VESSELS].visible is True
+    assert viewer.layers[VESSEL_TUBES].visible is False
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == 0
+
+    _choose_vessel_draw(combo, "Tubes")
+    assert combo.currentText() == "Tubes"
+    assert viewer.layers[VESSELS].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == n_segments * 12
+
+    _choose_vessel_draw(combo, "Lines")
+    _choose_vessel_draw(combo, "Tubes")
+    assert viewer.layers[VESSELS].visible is False
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) > 0
 
 
 def test_vessel_draw_choice_survives_a_layer_rebuild(make_napari_viewer):

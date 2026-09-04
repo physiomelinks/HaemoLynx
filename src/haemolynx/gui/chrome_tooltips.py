@@ -88,8 +88,8 @@ Z_DEPTH_TOOLTIP = (
     "Clip every displayed layer to this physical Z window; full range is the identity and does not crop the pipeline"
 )
 VESSEL_DRAW_TOOLTIP = (
-    "Draw each centreline step as a 3D tube that stays visible from every "
-    "camera angle, or as napari line ribbons (faster, can vanish edge-on)"
+    "Tubes: each centreline step as a 3D prism that stays visible from every "
+    "camera angle. Lines: napari vector ribbons (faster, can vanish edge-on)"
 )
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
