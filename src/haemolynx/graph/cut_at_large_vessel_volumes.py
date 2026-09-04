@@ -200,44 +200,20 @@ def _remove_small_components_by_edge_count(
     G: nx.MultiGraph,
     *,
     max_edge_count: int,
-    protect_nodes: "set[Any] | None" = None,
 ) -> tuple[nx.MultiGraph, int]:
-    """Drop connected components whose edge count is strictly below threshold.
-
-    A component containing any node in *protect_nodes* is kept regardless of
-    its edge count. This exists specifically for the cut nodes this module
-    creates at large-vessel-mask crossings: a short stub leading to a
-    genuine boundary crossing is not noise, it is the one thing terminal-
-    node assignment is looking for, so this cleanup must not be the reason
-    it never sees it.
-    """
+    """Drop connected components whose edge count is strictly below threshold."""
     if max_edge_count < 1:
         raise ValueError(
             f"orphaned_branch_max_edge_count must be >= 1, got {max_edge_count}."
         )
-    protected = protect_nodes or set()
     keep_nodes: set[Any] = set()
     removed_components = 0
-    protected_components = 0
     for component in nx.connected_components(G):
-        if component & protected:
-            keep_nodes.update(component)
-            if int(G.subgraph(component).number_of_edges()) < int(max_edge_count):
-                protected_components += 1
-            continue
         subgraph = G.subgraph(component)
         if int(subgraph.number_of_edges()) < int(max_edge_count):
             removed_components += 1
             continue
         keep_nodes.update(component)
-    if protected_components:
-        logger.info(
-            "Orphan cleanup: kept %d small component(s) that would otherwise "
-            "have been removed, because each contains a large-vessel-mask "
-            "crossing node -- a short stub there is a boundary candidate, "
-            "not noise.",
-            protected_components,
-        )
     if removed_components == 0:
         return G, 0
     return G.subgraph(keep_nodes).copy(), removed_components
@@ -290,7 +266,6 @@ def cut_graph_at_large_vessel_volumes(
             node_pos[node_id] = np.asarray(data["pos"], dtype=float)
 
     reserved_ids: set[Any] = set(result.nodes)
-    cut_node_ids: set[Any] = set()
     edges_kept = 0
     edges_dropped_interior = 0
     edges_split = 0
@@ -350,7 +325,6 @@ def cut_graph_at_large_vessel_volumes(
                 result.add_node(start_node, pos=start_pos)
                 node_pos[start_node] = np.asarray(start_pos, dtype=float)
                 cut_nodes_created += 1
-                cut_node_ids.add(start_node)
 
             if touches_v:
                 end_node = v
@@ -361,7 +335,6 @@ def cut_graph_at_large_vessel_volumes(
                 result.add_node(end_node, pos=end_pos)
                 node_pos[end_node] = np.asarray(end_pos, dtype=float)
                 cut_nodes_created += 1
-                cut_node_ids.add(end_node)
 
             if start_node == end_node:
                 continue
@@ -380,7 +353,6 @@ def cut_graph_at_large_vessel_volumes(
         result, removed_orphan_components = _remove_small_components_by_edge_count(
             result,
             max_edge_count=int(orphaned_branch_max_edge_count),
-            protect_nodes=cut_node_ids & set(result.nodes),
         )
 
     logger.info(
