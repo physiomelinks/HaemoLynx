@@ -858,3 +858,46 @@ def test_join_fallback_stays_fast_in_a_large_image_with_unrelated_content():
     assert elapsed < 10.0, f"join took {elapsed:.2f}s -- looks like it scanned the whole image"
     _, n_cc_ring = label(joined[z : z + 1], structure=generate_binary_structure(3, 3))
     assert n_cc_ring == 1, "ring must actually be bridged to the fat wall, not just fast"
+
+
+def test_length_filter_stays_scoped_when_thick_and_thin_span_most_of_the_image():
+    """The pre-join length filter must not run one EDT over the whole stack.
+
+    Production data crashed here: "Unable to allocate 1.35 GiB for an array
+    with shape (180948686,)". thick_vessel_object_mask legitimately produces
+    a fat catchment spanning most of a real stack, so thin | thick's own
+    bounding box is close to the whole image -- a dense EDT over that box
+    is what ran out of memory. The fix scopes this per physically connected
+    structure instead; this fixture is deliberately shaped to fail the old
+    approach (one huge fat blob plus a thin arm, filling most of a
+    moderately large volume) while staying small enough to run in a unit
+    test.
+    """
+    import time
+
+    shape = (60, 400, 400)
+    r_fat = 25.0
+    trunk_len = 380
+    mask = _disk_tube_along_axis(
+        shape, (30, 200, 10), r_fat, trunk_len, axis=2
+    )
+    thick = mask.copy()
+    branch = _disk_tube_along_axis(
+        shape, (30, 200 + int(r_fat) - 2, 200), 1.5, 30, axis=1
+    )
+    mask = mask | branch
+    thin_skel = branch.copy()
+    skeleton = thin_skel | thick
+
+    assert mask.sum() > shape[0] * shape[1] * shape[2] * 0.05, (
+        "fixture must occupy a real fraction of the volume, not a sliver"
+    )
+
+    start = time.perf_counter()
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, mask, min_arm_extent_voxels=4.0
+    )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 15.0, f"length filter took {elapsed:.2f}s -- looks unscoped"
+    assert int((joined & branch).sum()) > 0, "the fused branch must still be kept"

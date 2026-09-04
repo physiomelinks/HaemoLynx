@@ -21,6 +21,7 @@ fixture. Volume (µm³) of the whole object is not the gate.
 """
 from __future__ import annotations
 
+import gc
 import logging
 import time
 from typing import Iterable
@@ -252,6 +253,11 @@ def thick_vessel_object_mask(
         else max(0.0, float(wall_absorption_um))
     )
     allowed = crop & (radius_map >= propagation_gate)
+    # radius_map is float64 over the whole crop -- as large as any array in
+    # this function -- and everything from here on only needs the two
+    # boolean masks already derived from it.
+    del radius_map
+    gc.collect()
     t1 = time.perf_counter()
     body = binary_propagation(thick_core, mask=allowed)
     logger.info(
@@ -629,7 +635,13 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
     covered = _cover_around_path(main, cover_r, component.shape)
     min_arm_voxels = max(4, int(2.0 * max_edt))
     high = component & (local_edt >= 0.4 * max_edt)
-    tree_coords = np.argwhere(result)
+    # Every voxel this loop ever adds to `result` is exactly one of `main`
+    # or an accepted `branch` -- both already known as coordinate lists, so
+    # the tree can grow by appending them instead of re-deriving the whole
+    # (up to component-sized) set via np.argwhere(result) on every accepted
+    # arm. On a real multi-million-voxel fat component with many arms, that
+    # full-array rescan per acceptance was most of this function's cost.
+    tree_coords = np.asarray(main, dtype=np.intp)
     tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
 
     # A real network's single connected fat catchment can legitimately have
@@ -671,7 +683,9 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
             continue
         _draw_path(result, branch)
         covered |= _cover_around_path(branch, cover_r, component.shape)
-        tree_coords = np.argwhere(result)
+        tree_coords = np.concatenate(
+            [tree_coords, np.asarray(branch, dtype=np.intp)], axis=0
+        )
         tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
     else:
         # Loop ran out of iterations without a break, i.e. without ever
@@ -866,18 +880,39 @@ def _join_thin_arms_to_fat_ridge(
     if n_labels == 0:
         return fat_skel
 
-    roi = thin_skel | thick_b
-    bbox = _foreground_bbox(roi, pad=1)
     thin_coords = np.argwhere(thin_skel)
     labels_at = labeled[tuple(thin_coords.T)]
-    if bbox is None:
-        dist_to_thick = distance_transform_edt(~thick_b)
-        dists = dist_to_thick[tuple(thin_coords.T)]
-    else:
-        origin = np.array([int(s.start) for s in bbox], dtype=int)
-        dist_crop = distance_transform_edt(~thick_b[bbox])
-        local = thin_coords - origin
-        dists = dist_crop[tuple(local.T)]
+    # Per physically connected structure (thin + thick together), not one
+    # EDT over their shared bounding box: real fat/thin material can span
+    # most of a large stack, so that box is close to the whole image, and a
+    # dense EDT that size is what actually ran the process out of memory (a
+    # 287x512x512 stack: "Unable to allocate 1.35 GiB for an array with
+    # shape (180948686,)"). Each connected roi component is a sliver of
+    # that by comparison -- same reasoning as the per-arm join scoping
+    # below, applied to this earlier length-filter measurement too.
+    roi = thin_skel | thick_b
+    roi_labeled, _n_roi = label(roi, structure=structure)
+    roi_objects = find_objects(roi_labeled)
+    roi_ids_at_thin = roi_labeled[tuple(thin_coords.T)]
+    dists = np.full(len(thin_coords), np.inf, dtype=np.float64)
+    for roi_id in np.unique(roi_ids_at_thin):
+        if roi_id == 0:
+            continue
+        slc = roi_objects[int(roi_id) - 1]
+        if slc is None:
+            continue
+        here = roi_ids_at_thin == roi_id
+        if not thick_b[slc].any():
+            # No fat material anywhere in this thin arm's own connected
+            # structure: it cannot be measured against a wall it has none
+            # of. Leave it at +inf, so it clears the length filter and is
+            # kept as-is -- the per-arm join loop below reaches the same
+            # "nothing to join to" conclusion for exactly this case.
+            continue
+        origin = np.array([int(s.start) for s in slc], dtype=int)
+        dist_crop = distance_transform_edt(~thick_b[slc])
+        local = thin_coords[here] - origin
+        dists[here] = dist_crop[tuple(local.T)]
 
     max_dist = np.zeros(int(n_labels) + 1, dtype=np.float64)
     np.maximum.at(max_dist, labels_at, dists)
@@ -1033,6 +1068,14 @@ def skeletonize_thickness_gated(
     t_catchment = time.perf_counter() - t0
     if not thick.any():
         return skeletonize_volume(mask).astype(bool)
+    # thick_vessel_object_mask's own large locals (the radius map, the
+    # geodesic body, the wall distance transform -- each up to the size of
+    # the input volume) are unreachable now that it has returned, but a big
+    # freed block does not always get handed back to the OS the moment its
+    # refcount drops; collecting explicitly before the next big allocation
+    # (Lee-thinning, then the ridge tree, then joining) gives it the best
+    # chance to.
+    gc.collect()
 
     thin = mask & ~thick
     spacing = min(float(v) for v in voxel_size_zyx)
@@ -1061,6 +1104,7 @@ def skeletonize_thickness_gated(
             if lee_crop.any():
                 result[bbox] |= _skeletonize_foreground(lee_crop)
     t_lee = time.perf_counter() - t1
+    gc.collect()
     logger.info(
         "skeletonize_thickness_gated: Lee-thinning done in %.2fs; building the "
         "fat-catchment centreline tree",
@@ -1069,6 +1113,7 @@ def skeletonize_thickness_gated(
     t2 = time.perf_counter()
     result |= skeletonize_edt_ridge(thick)
     t_ridge = time.perf_counter() - t2
+    gc.collect()
     logger.info(
         "skeletonize_thickness_gated: centreline tree done in %.2fs; joining thin "
         "arms to the fat ridge",
