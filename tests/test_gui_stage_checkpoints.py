@@ -160,13 +160,14 @@ def test_plan_restore_replays_groups_through_the_previous_tab(tmp_path):
 
     assert plan is not None
     assert plan.stage == "assign_boundaries"
-    assert plan.tab_title == "4. Boundaries"
+    assert plan.tab_title == "5. Diameters"
+    assert plan.start_from == "assign_diameters"
     assert [group.stage for group in plan.groups] == [
         "skeletonise",
         "build_network",
         "assign_boundaries",
     ]
-    # Later checkpoints are dropped so a second revert cannot jump forward again.
+    # Later checkpoints are dropped so a second run-from cannot jump forward.
     assert "assign_diameters" not in checkpoints.stages
     assert checkpoints.has("assign_boundaries")
 
@@ -234,7 +235,7 @@ def test_plan_restore_writes_skeleton_npy_so_both_skip_toggles_are_safe(tmp_path
     plan = checkpoints.plan_restore("4. Boundaries", settings=settings)
 
     assert plan is not None
-    assert plan.tab_title == "3. Graph"
+    assert plan.tab_title == "4. Boundaries"
     assert plan.skip_settings == GRAPH_SKIP_FOR_RESUME
     skel_path = skeleton_resume_path(tmp_path / "out", "stack")
     assert skel_path.is_file()
@@ -242,13 +243,18 @@ def test_plan_restore_writes_skeleton_npy_so_both_skip_toggles_are_safe(tmp_path
 
 
 def test_revert_from_every_tab_selects_the_restored_predecessor_tab():
-    """Revert on tab K restores end of M and names M as the tab to show — for every pair."""
+    """Run-from on tab K names K as the tab to stay on, and needs end of M."""
     titles = tab_titles()
     for index in range(1, len(titles)):
         current = titles[index]
         restored = titles[index - 1]
         assert previous_tab(current) == restored
         assert revert_target_stage(current) == tab_end_stage(restored)
+        from haemolynx.gui.stage_checkpoints import tab_start_stage
+
+        plan_tab = current
+        assert tab_start_stage(current) is not None
+        assert plan_tab == current
 
 
 def test_skip_settings_for_resume_requires_skeleton_before_disabling_skeletonize():
@@ -288,7 +294,57 @@ def test_skip_settings_for_resume_keeps_fwhm_when_diameters_are_already_on_the_g
     ) == SKIP_FOR_RESUME
 
 
-def test_plan_restore_from_input_tab_is_impossible():
+def test_skip_settings_for_start_from_diameters_does_not_disable_fwhm():
+    """Re-running Diameters should remeasure; Haemodynamics must not."""
+    assert skip_settings_for_resume(
+        graph_written=True,
+        skeleton_ready=True,
+        start_from="assign_diameters",
+        use_fwhm_edge_diameters=True,
+    ) == GRAPH_SKIP_FOR_RESUME
+    assert skip_settings_for_resume(
+        graph_written=True,
+        skeleton_ready=True,
+        start_from="build_haemodynamic_model",
+        use_fwhm_edge_diameters=True,
+    ) == SKIP_FOR_RESUME
+
+
+def test_tab_start_stage_of_haemodynamics_is_build_model_not_solve():
+    from haemolynx.gui.stage_checkpoints import tab_start_stage
+
+    assert tab_start_stage("6. Haemodynamics") == "build_haemodynamic_model"
+    assert tab_start_stage("5. Diameters") == "assign_diameters"
+
+
+def test_frozen_checkpoints_do_not_record(tmp_path):
+    checkpoints = StageCheckpoints()
+    results = built()
+    checkpoints.freeze()
+    assert (
+        checkpoints.record(
+            "build_network",
+            _group("build_network"),
+            results,
+            settings=_settings(tmp_path),
+        )
+        is None
+    )
+    assert checkpoints.stages == ()
+    checkpoints.unfreeze()
+    assert (
+        checkpoints.record("build_network", _group("build_network"), results)
+        is not None
+    )
+
+
+def test_output_dir_from_prefix_rejects_a_bare_filename():
+    from haemolynx.gui.stage_checkpoints import output_dir_from_prefix
+
+    assert output_dir_from_prefix(None) is None
+    assert output_dir_from_prefix(".") is None
+    assert output_dir_from_prefix("stack") is None
+    assert output_dir_from_prefix(Path("out") / "stack") == Path("out")
     checkpoints = StageCheckpoints()
     assert checkpoints.plan_restore("1. Input") is None
 
@@ -311,12 +367,15 @@ def test_apply_to_results_restores_the_remembered_graph():
 def test_restore_message_mentions_the_resume_graph(tmp_path):
     plan = SimpleNamespace(
         title="4. Boundaries",
+        tab_title="5. Diameters",
+        start_from="assign_diameters",
         graph_path=tmp_path / "stack_graph.pkl",
         skip_settings=SKIP_FOR_RESUME,
     )
     message = restore_message(plan)
-    assert "4. Boundaries" in message
+    assert "5. Diameters" in message
     assert "stack_graph.pkl" in message
+    assert "do_skeletonize" in message
     assert "do_skeletonize" in message
 
 
@@ -378,14 +437,11 @@ def test_discard_cached_artefacts_for_settings_covers_vtk_and_input_stems(
     graph_resume_path(output_dir, "HaemoLynx_image").write_bytes(b"g2")
     checkpoint_pickle_path(output_dir, "stack", "build_network").write_bytes(b"c")
 
-    assert set(stems_for_cached_artefacts(settings)) == {
-        "stack",
-        "HaemoLynx_image",
-    }
+    assert set(stems_for_cached_artefacts(settings)) == {"stack"}
     removed = discard_cached_artefacts_for_settings(settings)
     assert graph_resume_path(output_dir, "stack") in removed
-    assert graph_resume_path(output_dir, "HaemoLynx_image") in removed
+    assert graph_resume_path(output_dir, "HaemoLynx_image") not in removed
     assert checkpoint_pickle_path(output_dir, "stack", "build_network") in removed
     assert not graph_resume_path(output_dir, "stack").is_file()
-    assert not graph_resume_path(output_dir, "HaemoLynx_image").is_file()
+    assert graph_resume_path(output_dir, "HaemoLynx_image").is_file()
     assert not checkpoint_pickle_path(output_dir, "stack", "build_network").is_file()

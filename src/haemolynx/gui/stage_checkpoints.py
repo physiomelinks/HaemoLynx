@@ -1,46 +1,45 @@
-"""Per-stage snapshots from a GUI run, so a tab can revert without a full re-run.
+"""Per-stage snapshots from a GUI run, so a tab can re-run without a full rebuild.
 
 After each pipeline stage finishes in the napari panel, a checkpoint records
 what that stage put in the viewer and a pickle of the graph (when there is
 one), using the same ``pickle.dump`` path the pipeline already uses for
 ``{stem}_graph.pkl`` and for ``save_graph_snapshot``.
 
-**What "previous tab" means.** Standing on tab *K* and pressing "Revert to
-previous stage" restores the checkpoint taken at the **end** of tab *M*
-(the predecessor). The panel then selects tab *M* — the restored stage —
-and must not bounce back to tab *K*. Tabs follow
-:func:`~haemolynx.gui.tabs.tab_titles`; a stage that shares another's tab
-(``solve`` on Haemodynamics) does not open one of its own, so the
-Haemodynamics tab's end-of-tab checkpoint is ``solve``, not
-``build_haemodynamic_model``.
+**What "Run from this stage" means.** Standing on tab *K* requires the
+checkpoint taken at the **end** of tab *M* (the predecessor) to be ready.
+Layers and checkpoints for *K* and later tabs are dropped, earlier layers
+are kept, skip toggles load *M*'s graph, and the pipeline starts at the
+first stage of *K*. Tabs follow :func:`~haemolynx.gui.tabs.tab_titles`; a
+stage that shares another's tab (``solve`` on Haemodynamics) does not open
+one of its own, so the Haemodynamics tab starts at
+``build_haemodynamic_model`` and its end-of-tab checkpoint is ``solve``.
 
-**What is restored.** The viewer layers for that earlier stage (by replaying
-checkpoints from the start through the target), the
-:class:`~haemolynx.gui.results.ResultLayers` memory it needs, and -- when the
+**What is prepared.** The viewer layers through the previous tab (by replaying
+checkpoints from the start through *M*), the
+:class:`~haemolynx.gui.results.ResultLayers` memory they need, and -- when the
 checkpoint carries a graph at or after ``build_network`` -- the on-disk
 ``{stem}_graph.pkl`` plus the ``do_skeletonize`` / ``do_graph_building``
-toggles so the next Run loads that graph and continues from later stages
-rather than rebuilding topology. A revert that already has stamped diameters
-also turns off ``do_fwhm_measurement``, so continuing from Haemodynamics does
-not wipe FWHM approvals. Preflight requires ``{stem}_skeleton.npy``
-whenever ``do_skeletonize`` is off, so resume also ensures that artefact
-exists (re-writing it from the skeletonise checkpoint layers when needed)
-before naming ``do_skeletonize`` among the skip toggles.
+toggles so the run loads that graph. Starting after diameters also turns off
+``do_fwhm_measurement``, so Haemodynamics does not wipe FWHM approvals.
+Preflight requires ``{stem}_skeleton.npy`` whenever ``do_skeletonize`` is
+off, so resume also ensures that artefact exists (re-writing it from the
+skeletonise checkpoint layers when needed) before naming ``do_skeletonize``
+among the skip toggles.
 """
 from __future__ import annotations
 
 import logging
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from haemolynx.gui.results import SKELETON
+from haemolynx.gui.results import BOUNDARY_NODES, SKELETON
 from haemolynx.gui.tabs import tab_title, tab_titles
 from haemolynx.pipeline.progress import STAGES
-from haemolynx.pipeline.stages import TOPOLOGY_STEP
+from haemolynx.pipeline.stages import TOPOLOGY_STEP, PipelineResume
 
 logger = logging.getLogger(__name__)
 
@@ -120,22 +119,47 @@ def skip_settings_for_resume(
     graph_written: bool,
     skeleton_ready: bool,
     target: str | None = None,
+    start_from: str | None = None,
     use_fwhm_edge_diameters: bool = False,
 ) -> tuple[str, ...]:
-    """Which stage toggles to turn off after a successful graph resume write.
+    """Which stage toggles to turn off so a run can start mid-pipeline.
 
-    ``do_graph_building`` is safe whenever the graph pickle was written.
-    ``do_skeletonize`` is only safe when the matching ``.npy`` is on disk —
-    otherwise preflight blocks the next Run. ``do_fwhm_measurement`` is off
-    when the restored stage already carries diameters *and* FWHM is in use,
-    so a continue from Haemodynamics does not wipe FWHM approvals.
+    ``start_from`` is the first stage call of the current tab. ``target`` is
+    the previous tab's end stage (the checkpoint being loaded); it is used
+    only when ``start_from`` is omitted, for older callers.
+
+    ``do_graph_building`` is off when the run starts *after* graph building
+    and the pickle was written. ``do_skeletonize`` is only safe when the
+    matching ``.npy`` is on disk — otherwise preflight blocks the next Run.
+    ``do_fwhm_measurement`` is off when starting *after* diameters *and*
+    FWHM is in use, so Haemodynamics does not wipe FWHM approvals. Starting
+    *at* diameters leaves measurement on, because that is the stage being
+    re-run.
     """
-    if not graph_written:
-        return ()
-    skips: list[str] = ["do_graph_building"]
-    if skeleton_ready:
-        skips.insert(0, "do_skeletonize")
-    if target in DIAMETER_RESUME_STAGES and use_fwhm_edge_diameters:
+    order = [stage.call for stage in STAGES if stage.call]
+    if start_from is None and target is not None and target in order:
+        idx = order.index(target) + 1
+        start_from = order[idx] if idx < len(order) else None
+    if start_from is None or start_from not in order:
+        if not graph_written:
+            return ()
+        skips: list[str] = ["do_graph_building"]
+        if skeleton_ready:
+            skips.insert(0, "do_skeletonize")
+        if target in DIAMETER_RESUME_STAGES and use_fwhm_edge_diameters:
+            skips.append("do_fwhm_measurement")
+        return tuple(skips)
+
+    idx = order.index(start_from)
+    skips = []
+    if idx > order.index("skeletonise") and skeleton_ready:
+        skips.append("do_skeletonize")
+    if idx > order.index("build_network") and graph_written:
+        skips.append("do_graph_building")
+    if (
+        idx > order.index("assign_diameters")
+        and use_fwhm_edge_diameters
+    ):
         skips.append("do_fwhm_measurement")
     return tuple(skips)
 
@@ -152,24 +176,33 @@ class StageCheckpoint:
     geometry_shown: bool = False
     emitted: tuple[str, ...] = ()
     pickle_path: Path | None = None
+    inlet_nodes: tuple[Any, ...] = ()
+    outlet_nodes: tuple[Any, ...] = ()
+    arteriole_boundary_nodes: tuple[Any, ...] = ()
+    venule_boundary_nodes: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
 class RestorePlan:
-    """What reverting to a checkpoint does, described without Qt."""
+    """What preparing a mid-pipeline run does, described without Qt."""
 
-    #: Stage call being restored (end of the previous tab).
+    #: Previous tab's end-of-tab stage call (the checkpoint being loaded).
     stage: str
     title: str
-    #: Groups to put back in the viewer, in order from the start of the run.
+    #: Groups to put back in the viewer, in order from the start of the run
+    #: through the previous tab.
     groups: tuple[Any, ...]
     checkpoint: StageCheckpoint
-    #: Setting names to set False so the next Run loads the written graph.
+    #: Setting names to set False so the run loads the written graph.
     skip_settings: tuple[str, ...] = ()
     #: Where the graph was written for resume, if it was.
     graph_path: Path | None = None
-    #: Tab title to select after the restore.
+    #: Tab that was asked to run: stay here, do not bounce to the predecessor.
     tab_title: str = ""
+    #: First stage call of that tab; ``run_pipeline_stages`` starts here.
+    start_from: str = ""
+    #: Earlier-stage outputs the pipeline should not recompute.
+    resume: PipelineResume | None = None
 
 
 def tab_end_stage(title: str, stages: Sequence = STAGES) -> str | None:
@@ -185,6 +218,18 @@ def tab_end_stage(title: str, stages: Sequence = STAGES) -> str | None:
     return last
 
 
+def tab_start_stage(title: str, stages: Sequence = STAGES) -> str | None:
+    """The first stage call that belongs on *title*.
+
+    Haemodynamics starts at ``build_haemodynamic_model`` (``solve`` shares
+    that tab and is not a starting point of its own).
+    """
+    for stage in stages:
+        if stage.call and tab_title(stage) == title:
+            return stage.call
+    return None
+
+
 def previous_tab(title: str, stages: Sequence | None = None) -> str | None:
     """The tab before *title*, or None when *title* is the first."""
     titles = tab_titles(stages)
@@ -196,7 +241,7 @@ def previous_tab(title: str, stages: Sequence | None = None) -> str | None:
 
 
 def revert_target_stage(current_tab: str, stages: Sequence | None = None) -> str | None:
-    """Stage call to restore when reverting from *current_tab*."""
+    """Stage call whose checkpoint must be ready to run from *current_tab*."""
     previous = previous_tab(current_tab, stages)
     if previous is None:
         return None
@@ -209,6 +254,9 @@ def can_revert_from(current_tab: str, checkpoints: "StageCheckpoints") -> bool:
     return target is not None and checkpoints.has(target)
 
 
+can_run_from = can_revert_from
+
+
 def checkpoint_pickle_path(output_dir: Path, stem: str, stage: str) -> Path:
     """Where a GUI run writes the graph pickle for *stage*."""
     return Path(output_dir) / f"{stem}_checkpoint_{stage}.pkl"
@@ -217,6 +265,24 @@ def checkpoint_pickle_path(output_dir: Path, stem: str, stage: str) -> Path:
 def graph_resume_path(output_dir: Path, stem: str) -> Path:
     """The pickle ``do_graph_building=False`` already loads."""
     return Path(output_dir) / f"{stem}_graph.pkl"
+
+
+def output_dir_from_prefix(vtk_prefix: Any) -> Path | None:
+    """Parent of ``vtk_output_prefix``, or None when it is unset or a bare name.
+
+    A FileEdit that was cleared, ``"."``, or a filename with no directory
+    would otherwise treat the working directory as the run's output folder
+    and delete pickles there.
+    """
+    if vtk_prefix is None:
+        return None
+    text = str(vtk_prefix).strip()
+    if not text or text == ".":
+        return None
+    parent = Path(vtk_prefix).parent
+    if str(parent) in {"", "."}:
+        return None
+    return parent
 
 
 def discard_cached_artefacts(output_dir: Path, stem: str) -> tuple[Path, ...]:
@@ -241,34 +307,51 @@ def discard_cached_artefacts(output_dir: Path, stem: str) -> tuple[Path, ...]:
 def stems_for_cached_artefacts(settings: Mapping[str, Any] | None) -> tuple[str, ...]:
     """Stem names resume/checkpoint pickles may use for *settings*.
 
-    ``vtk_output_prefix``'s final component names the run output; ``input_path``
-    may change when the panel adopts a layer, so both are considered.
+    ``vtk_output_prefix``'s final component names the run output. The input
+    stem is not included: deleting every pickle that happens to share the
+    image's name would take another run's artefacts in the same folder.
     """
     if not settings:
         return ()
     vtk_prefix = settings.get("vtk_output_prefix")
     if vtk_prefix is None:
         return ()
-    stems: set[str] = {Path(vtk_prefix).name}
-    input_path = settings.get("input_path")
-    if input_path is not None:
-        stems.add(Path(input_path).stem)
-    return tuple(stems)
+    return (Path(vtk_prefix).name,)
 
 
 def discard_cached_artefacts_for_settings(
     settings: Mapping[str, Any] | None,
+    extra_paths: Sequence[Path] = (),
 ) -> tuple[Path, ...]:
-    """Like :func:`discard_cached_artefacts` for every stem *settings* implies."""
+    """Like :func:`discard_cached_artefacts` plus any *extra_paths* this session wrote."""
     if not settings:
-        return ()
-    vtk_prefix = settings.get("vtk_output_prefix")
-    if vtk_prefix is None:
-        return ()
-    output_dir = Path(vtk_prefix).parent
+        extra = tuple(Path(path) for path in extra_paths if Path(path).is_file())
+        for path in extra:
+            path.unlink()
+            logger.info("Discarded cached artefact: %s", path)
+        return extra
+    output_dir = output_dir_from_prefix(settings.get("vtk_output_prefix"))
+    if output_dir is None:
+        extra = tuple(Path(path) for path in extra_paths if Path(path).is_file())
+        for path in extra:
+            path.unlink()
+            logger.info("Discarded cached artefact: %s", path)
+        return extra
     removed: list[Path] = []
+    seen: set[Path] = set()
     for stem in stems_for_cached_artefacts(settings):
-        removed.extend(discard_cached_artefacts(output_dir, stem))
+        for path in discard_cached_artefacts(output_dir, stem):
+            if path not in seen:
+                seen.add(path)
+                removed.append(path)
+    for path in extra_paths:
+        path = Path(path)
+        if path in seen or not path.is_file():
+            continue
+        path.unlink()
+        logger.info("Discarded cached artefact: %s", path)
+        seen.add(path)
+        removed.append(path)
     return tuple(removed)
 
 
@@ -286,11 +369,50 @@ def _copy_graph(graph: Any) -> Any | None:
 def _stem_and_output_dir(settings: Mapping[str, Any] | None) -> tuple[str, Path] | None:
     if not settings:
         return None
-    vtk_prefix = settings.get("vtk_output_prefix")
+    output_dir = output_dir_from_prefix(settings.get("vtk_output_prefix"))
     input_path = settings.get("input_path")
-    if vtk_prefix is None or input_path is None:
+    if output_dir is None or input_path is None:
         return None
-    return Path(input_path).stem, Path(vtk_prefix).parent
+    return Path(input_path).stem, output_dir
+
+
+def _boundary_ids_from_group(group: Any) -> dict[str, tuple[Any, ...]]:
+    """Node ids per boundary role, read from a checkpoint's layer specs."""
+    roles: dict[str, list[Any]] = {
+        "inlet": [],
+        "outlet": [],
+        "arteriole_boundary": [],
+        "venule_boundary": [],
+    }
+    for spec in getattr(group, "layers", ()) or ():
+        if getattr(spec, "name", None) != BOUNDARY_NODES:
+            continue
+        features = getattr(spec, "features", None) or {}
+        role_col = features.get("role")
+        id_col = features.get("node_id")
+        if role_col is None or id_col is None:
+            continue
+        for role, node_id in zip(role_col, id_col):
+            key = str(role)
+            if key in roles:
+                roles[key].append(node_id)
+    return {key: tuple(values) for key, values in roles.items()}
+
+
+def resume_from_checkpoint(checkpoint: StageCheckpoint, start_from: str) -> PipelineResume:
+    """Build the pipeline resume payload from a previous-tab checkpoint."""
+    pair = None
+    if checkpoint.inlet_nodes and checkpoint.outlet_nodes:
+        pair = (checkpoint.inlet_nodes[0], checkpoint.outlet_nodes[0])
+    return PipelineResume(
+        start_from=start_from,
+        graph=checkpoint.graph,
+        inlet_nodes=checkpoint.inlet_nodes,
+        outlet_nodes=checkpoint.outlet_nodes,
+        arteriole_boundary_nodes=checkpoint.arteriole_boundary_nodes,
+        venule_boundary_nodes=checkpoint.venule_boundary_nodes,
+        resistance_node_pair=pair,
+    )
 
 
 class StageCheckpoints:
@@ -298,9 +420,29 @@ class StageCheckpoints:
 
     def __init__(self) -> None:
         self._by_stage: dict[str, StageCheckpoint] = {}
+        self._written_paths: list[Path] = []
+        self._recording = True
 
     def clear(self) -> None:
         self._by_stage.clear()
+        self._written_paths.clear()
+        self._recording = True
+
+    def freeze(self) -> None:
+        """Ignore ``record`` until the next run starts (Clear mid-run)."""
+        self._recording = False
+
+    def unfreeze(self) -> None:
+        self._recording = True
+
+    @property
+    def session_artefact_paths(self) -> tuple[Path, ...]:
+        """Pickles this session wrote that are still on disk."""
+        return tuple(path for path in self._written_paths if path.is_file())
+
+    def remember_path(self, path: Path | None) -> None:
+        if path is not None:
+            self._written_paths.append(Path(path))
 
     def has(self, stage: str) -> bool:
         return stage in self._by_stage
@@ -313,6 +455,15 @@ class StageCheckpoints:
         """Recorded stage calls, in the order they were recorded."""
         return tuple(self._by_stage)
 
+    def records(self) -> tuple[StageCheckpoint, ...]:
+        """Checkpoints in the order they were recorded."""
+        return tuple(self._by_stage.values())
+
+    def replace_all(self, checkpoints: Sequence[StageCheckpoint]) -> None:
+        """Install *checkpoints* as the whole in-memory history of a run."""
+        self._by_stage = {item.stage: replace(item, pickle_path=None) for item in checkpoints}
+        self._recording = True
+
     def record(
         self,
         stage: str,
@@ -323,8 +474,12 @@ class StageCheckpoints:
         """Remember *group* (and the graph *results* holds) for *stage*.
 
         Topology-step events are ignored: they are not tabs. A stage that
-        finishes twice in one run replaces the earlier checkpoint.
+        finishes twice in one run replaces the earlier checkpoint. A freeze
+        (Clear while a worker is dying) drops the write so pickles cannot
+        come back after discard.
         """
+        if not self._recording:
+            return None
         if not stage or stage.startswith(TOPOLOGY_STEP):
             return None
 
@@ -339,10 +494,12 @@ class StageCheckpoints:
                 with pickle_path.open("wb") as handle:
                     pickle.dump(graph, handle)
                 logger.info("Saved stage checkpoint graph: %s", pickle_path)
+                self.remember_path(pickle_path)
             except Exception:  # noqa: BLE001 - viewer restore still has the in-memory copy
                 logger.exception("could not write stage checkpoint %s", pickle_path)
                 pickle_path = None
 
+        roles = _boundary_ids_from_group(group)
         checkpoint = StageCheckpoint(
             stage=stage,
             title=getattr(group, "title", stage),
@@ -354,6 +511,10 @@ class StageCheckpoints:
             geometry_shown=bool(getattr(results, "_geometry_shown", False)),
             emitted=tuple(getattr(results, "emitted", ()) or ()),
             pickle_path=pickle_path,
+            inlet_nodes=roles.get("inlet", ()),
+            outlet_nodes=roles.get("outlet", ()),
+            arteriole_boundary_nodes=roles.get("arteriole_boundary", ()),
+            venule_boundary_nodes=roles.get("venule_boundary", ()),
         )
         self._by_stage[stage] = checkpoint
         return checkpoint
@@ -370,56 +531,74 @@ class StageCheckpoints:
         current_tab: str,
         settings: Mapping[str, Any] | None = None,
     ) -> RestorePlan | None:
-        """Everything needed to revert from *current_tab*, or None if impossible."""
+        """Prepare a run that starts at *current_tab*, or None if impossible.
+
+        Requires the previous tab's end-of-tab checkpoint. Drops layers and
+        checkpoints for this tab and later ones, writes the resume graph, and
+        names the skip toggles so :func:`~haemolynx.pipeline.run_pipeline_stages`
+        can start at this tab's first stage.
+        """
+        return self.plan_run_from(current_tab, settings=settings)
+
+    def plan_run_from(
+        self,
+        current_tab: str,
+        settings: Mapping[str, Any] | None = None,
+    ) -> RestorePlan | None:
+        """See :meth:`plan_restore`."""
         target = revert_target_stage(current_tab)
-        if target is None or not self.has(target):
+        start_from = tab_start_stage(current_tab)
+        if target is None or start_from is None or not self.has(target):
             return None
         checkpoint = self._by_stage[target]
         previous = previous_tab(current_tab)
         assert previous is not None
 
-        # Replay every recorded main stage up to and including the target, in
-        # pipeline order, so layers only a later stage added are not left behind.
         order = [stage.call for stage in STAGES if stage.call]
         groups = []
         for name in order:
             if name not in self._by_stage:
                 continue
-            groups.append(self._by_stage[name].group)
-            if name == target:
+            if name == start_from:
                 break
+            groups.append(self._by_stage[name].group)
 
         skip: tuple[str, ...] = ()
         graph_path: Path | None = None
-        if checkpoint.graph is not None and target in GRAPH_RESUME_STAGES:
-            located = _stem_and_output_dir(settings)
-            if located is not None:
-                stem, output_dir = located
-                output_dir.mkdir(parents=True, exist_ok=True)
+        skeleton_path = None
+        located = _stem_and_output_dir(settings)
+        if located is not None:
+            stem, output_dir = located
+            output_dir.mkdir(parents=True, exist_ok=True)
+            skeleton_path = ensure_skeleton_artefact(groups, output_dir, stem)
+            if skeleton_path is not None:
+                self.remember_path(skeleton_path)
+            write_graph = (
+                checkpoint.graph is not None
+                and start_from not in {"segment", "skeletonise", "build_network"}
+            )
+            if write_graph:
                 graph_path = graph_resume_path(output_dir, stem)
                 with graph_path.open("wb") as handle:
                     pickle.dump(checkpoint.graph, handle)
                 logger.info(
-                    "Wrote resumed graph for next Run to %s (from stage %s)",
+                    "Wrote resumed graph for run-from %s to %s (from stage %s)",
+                    start_from,
                     graph_path,
                     target,
                 )
-                # Preflight refuses do_skeletonize=False without the .npy; write
-                # it from the skeletonise checkpoint layers when the file is gone
-                # (or was never beside this vtk_output_prefix).
-                skeleton_path = ensure_skeleton_artefact(groups, output_dir, stem)
-                skip = skip_settings_for_resume(
-                    graph_written=True,
-                    skeleton_ready=skeleton_path is not None,
-                    target=target,
-                    use_fwhm_edge_diameters=bool(
-                        settings and settings.get("use_fwhm_edge_diameters")
-                    ),
-                )
+                self.remember_path(graph_path)
 
-        # Drop checkpoints after the target: they describe a future that no
-        # longer matches the viewer or the graph on disk.
-        keep = set(order[: order.index(target) + 1])
+        skip = skip_settings_for_resume(
+            graph_written=graph_path is not None,
+            skeleton_ready=skeleton_path is not None,
+            start_from=start_from,
+            use_fwhm_edge_diameters=bool(
+                settings and settings.get("use_fwhm_edge_diameters")
+            ),
+        )
+
+        keep = set(order[: order.index(start_from)])
         for name in list(self._by_stage):
             if name not in keep:
                 del self._by_stage[name]
@@ -431,18 +610,26 @@ class StageCheckpoints:
             checkpoint=checkpoint,
             skip_settings=skip,
             graph_path=graph_path,
-            # Select the restored stage's tab (M), not the tab whose Revert
-            # button was pressed (K).
-            tab_title=previous,
+            tab_title=current_tab,
+            start_from=start_from,
+            resume=resume_from_checkpoint(checkpoint, start_from),
         )
 
 
 def restore_message(plan: RestorePlan) -> str:
-    """What the report box says after a successful revert."""
-    note = f"Restored to end of {plan.title}."
+    """What the report box says after preparing a run from this stage."""
+    start = plan.start_from or "this stage"
+    note = f"Running from {plan.tab_title or start} (using {plan.title})."
     if plan.graph_path is not None:
         note += (
-            f" Next Run will load {plan.graph_path.name} "
-            f"(turned off {', '.join(plan.skip_settings)})."
+            f" Loading {plan.graph_path.name}"
+            + (
+                f" (turned off {', '.join(plan.skip_settings)})"
+                if plan.skip_settings
+                else ""
+            )
+            + "."
         )
+    elif plan.skip_settings:
+        note += f" Turned off {', '.join(plan.skip_settings)}."
     return note

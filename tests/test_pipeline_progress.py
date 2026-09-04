@@ -570,3 +570,46 @@ def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
     assert solve.settings == ("inlet_p_bc", "outlet_p_bc", "do_equiv_resistance_calculation")
     others = [stage.tab for stage in STAGES if stage.call != "solve"]
     assert others == [None] * len(others)
+
+
+def test_start_from_skips_earlier_stage_bodies_but_still_reports_them(stubbed, monkeypatch):
+    """A mid-pipeline rerun still counts every stage on the progress bar."""
+    from types import SimpleNamespace
+
+    from haemolynx.pipeline.stages import PipelineResume
+
+    called, model = stubbed()
+    graph = nx.MultiGraph()
+    graph.add_node(0)
+
+    def build_network(*_args, **kwargs):
+        called.append("build_network")
+        reporter = kwargs.get("progress")
+        if reporter is not None:
+            pass
+        return SimpleNamespace(
+            graph=graph, large_arteriole_mask=None, large_venule_mask=None
+        )
+
+    monkeypatch.setattr(stages, "build_network", build_network)
+    events: list[ProgressEvent] = []
+    resume = PipelineResume(
+        start_from="assign_diameters",
+        graph=graph,
+        inlet_nodes=(0,),
+        outlet_nodes=(0,),
+    )
+
+    result = run_pipeline_stages(
+        {},
+        schema=None,
+        progress=events.append,
+        start_from="assign_diameters",
+        resume=resume,
+    )
+
+    assert "assign_boundaries" not in called
+    assert "assign_diameters" in called
+    assert "build_haemodynamic_model" in called
+    assert [event.stage for event in events if event.kind == STAGE_STARTED] == STAGE_NAMES
+    assert result is model.graph

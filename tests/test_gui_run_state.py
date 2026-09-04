@@ -91,24 +91,26 @@ def test_a_run_that_ended_leaves_the_panel_free():
 def test_a_run_cancelled_part_way_lets_a_new_one_start():
     """The user-visible bug, in the object that now decides it.
 
-    Clear the layers mid-run and the panel has to be ready for another run as
-    soon as the one that was going has stopped -- with no restart.
+    Clear the layers mid-run and the panel has to be ready for another run
+    immediately -- with no restart.
     """
     state = RunState(bars=ProgressDisplay())
     state.bars.start()
-    state.start(worker=FakeWorker(), results=built())
+    first_flag = state.start(worker=FakeWorker(), results=built())
 
     assert state.cancel() is True
-    with pytest.raises(RunCancelled):
-        state.check()
-    state.stopped()  # the worker has gone
-
+    state.supersede()
     assert state.running is False
+    with pytest.raises(RunCancelled):
+        state.check(first_flag)
 
-    state.start(worker=FakeWorker(), results=built())
+    second_flag = state.start(worker=FakeWorker(), results=built())
 
     assert state.running is True
     assert state.cancelled is False
+    assert second_flag is not first_flag
+    assert first_flag["cancelled"] is True
+    state.check(second_flag)  # new run is not cancelled
 
 
 def test_a_cancelled_run_stops_where_it_next_reports():

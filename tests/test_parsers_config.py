@@ -309,3 +309,12 @@ def test_settings_for_selects_the_named_subset():
 def test_settings_for_reports_names_that_are_not_present():
     with pytest.raises(ConfigError, match="Settings not present: nope"):
         settings_for(_schema().validate({}), ["mode", "nope"])
+
+
+def test_ensure_yaml_suffix_adds_yaml_when_missing():
+    from haemolynx.parsers import ensure_yaml_suffix
+
+    assert ensure_yaml_suffix("config") == Path("config.yaml")
+    assert ensure_yaml_suffix("config.yaml") == Path("config.yaml")
+    assert ensure_yaml_suffix("config.yml") == Path("config.yml")
+    assert ensure_yaml_suffix(Path("out") / "settings") == Path("out") / "settings.yaml"

@@ -92,6 +92,14 @@ def _flatten_sections(
     return flat
 
 
+def ensure_yaml_suffix(path: Path | str) -> Path:
+    """``config`` becomes ``config.yaml``; ``.yml`` / ``.yaml`` are left alone."""
+    path = Path(path)
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        return path
+    return path.with_suffix(".yaml")
+
+
 def dump_config(
     config_path: Path | str,
     schema: Schema,

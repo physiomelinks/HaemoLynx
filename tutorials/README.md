@@ -161,7 +161,20 @@ behaving oddly, and not otherwise.
 
 A second run updates its own layers in place, so anything you hid stays hidden,
 and a layer of your own that happens to share a name is never touched.
-**Clear layers** removes everything the plugin added and nothing else.
+**Clear layers and state** removes everything the plugin added and nothing else,
+stops a run in progress so **Run pipeline** is available immediately, forgets
+in-memory checkpoints, restores skip toggles, and discards this session's
+resume/checkpoint pickles (after asking).
+
+**Save run...** / **Load run...** (under the Run pipeline row, right-aligned)
+write or restore a complete viewer run: settings, graph, checkpoints, and
+layers. Load clears the current HaemoLynx layers and state first, then puts
+the panel back as it looked when that run finished — in this napari session
+or a new one.
+
+**Run from this stage** (on every tab after Input) needs the previous tab's
+checkpoint. It drops this tab and later layers and checkpoints, then reruns
+the pipeline from this stage.
 
 ### Choosing what the colours mean
 

@@ -326,7 +326,7 @@ def test_save_writes_the_log_where_it_is_told(view, tmp_path, monkeypatch) -> No
     asked: list[tuple] = []
 
     def fake_dialog(parent, caption, name, filter_):
-        asked.append((caption, name, filter_))
+        asked.append((parent, caption, name, filter_))
         return str(target), filter_
 
     monkeypatch.setattr(QFileDialog, "getSaveFileName", fake_dialog)
@@ -336,7 +336,8 @@ def test_save_writes_the_log_where_it_is_told(view, tmp_path, monkeypatch) -> No
 
     assert written == str(target)
     assert target.read_text(encoding="utf-8") == view.run_log.text()
-    assert asked[0][1] == DEFAULT_FILENAME
+    assert asked[0][0] is view.native
+    assert asked[0][2] == DEFAULT_FILENAME
 
 
 def test_save_cancelled_writes_nothing(view, tmp_path, monkeypatch) -> None:
@@ -349,6 +350,19 @@ def test_save_cancelled_writes_nothing(view, tmp_path, monkeypatch) -> None:
 
     assert view.save() is None
     assert list(tmp_path.iterdir()) == []
+
+
+def test_save_that_cannot_write_returns_none(view, tmp_path, monkeypatch) -> None:
+    from qtpy.QtWidgets import QFileDialog
+
+    target = tmp_path / "missing" / "log.txt"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *args: (str(target), "")
+    )
+    push(view, 3)
+
+    assert view.save() is None
+    assert not target.exists()
 
 
 def test_clear_empties_the_window_and_the_buffer(view) -> None:

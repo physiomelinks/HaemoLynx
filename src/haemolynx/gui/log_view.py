@@ -300,13 +300,18 @@ class LogView:
         """Ask where to write the log, and write it. Returns the path, or None."""
         from qtpy.QtWidgets import QFileDialog
 
+        parent = self._native
         path, _filter = QFileDialog.getSaveFileName(
-            None, "Save this run's log", DEFAULT_FILENAME, SAVE_FILTER
+            parent, "Save this run's log", DEFAULT_FILENAME, SAVE_FILTER
         )
         if not path:
             return None
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(self.run_log.text())
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(self.run_log.text())
+        except OSError as error:
+            logger.exception("could not save the run log to %s", path)
+            return None
         return path
 
     def _level_chosen(self, name: str) -> None:

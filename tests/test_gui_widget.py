@@ -647,6 +647,17 @@ def test_panel_save_config_round_trips_long_paths_with_spaces(
     assert Path(panel._haemolynx_values()["large_arteriole_mask_path"]) == arteriole
 
 
+def test_panel_save_config_adds_a_yaml_suffix(make_napari_viewer, tmp_path):
+    make_napari_viewer()
+    panel = settings_widget()
+    dest = tmp_path / "my_settings"
+    assert panel._haemolynx_save_config(dest) is True
+    written = tmp_path / "my_settings.yaml"
+    assert written.is_file()
+    assert "Wrote" in panel._haemolynx_report()
+    assert written.name in panel._haemolynx_report()
+
+
 def test_loading_a_config_for_a_different_schema_reports_instead_of_raising(
     make_napari_viewer,
 ):

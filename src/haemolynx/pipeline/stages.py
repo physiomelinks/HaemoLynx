@@ -87,6 +87,19 @@ StageOutputCallback = Callable[[str, Any], None]
 #: one from a stage: `topology_step:prune_vascular_stubs`.
 TOPOLOGY_STEP = "topology_step:"
 
+#: Pipeline stage calls in run order, for ``start_from`` comparisons.
+STAGE_CALLS: tuple[str, ...] = (
+    "segment",
+    "skeletonise",
+    "build_network",
+    "assign_boundaries",
+    "assign_diameters",
+    "build_haemodynamic_model",
+    "solve",
+    "run_perturbations",
+    "export_results",
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -218,6 +231,26 @@ class PerturbationRun:
     @property
     def failures(self) -> list[PerturbationResult]:
         return [result for result in self.results if result.error is not None]
+
+
+@dataclass
+class PipelineResume:
+    """Earlier-stage outputs so :func:`run_pipeline_stages` can start mid-run.
+
+    The GUI fills this from the previous tab's checkpoint. ``start_from`` is
+    the first stage call of the current tab; stages before it that have no
+    on-disk load path (boundaries, diameters, haemodynamics, solve,
+    perturbations) are reconstructed from *graph* and the node-id lists
+    rather than re-run.
+    """
+
+    start_from: str
+    graph: Any | None = None
+    inlet_nodes: tuple[Any, ...] = ()
+    outlet_nodes: tuple[Any, ...] = ()
+    arteriole_boundary_nodes: tuple[Any, ...] = ()
+    venule_boundary_nodes: tuple[Any, ...] = ()
+    resistance_node_pair: tuple[Any, Any] | None = None
 
 
 def segment(settings: dict):
@@ -2406,11 +2439,77 @@ def _produced(
         callback(stage, output)
 
 
+def _stage_index(name: str) -> int:
+    return STAGE_CALLS.index(name)
+
+
+def _run_stage_body(name: str, start_from: str | None) -> bool:
+    """Whether to call the stage function, or reconstruct from a resume.
+
+    ``segment``, ``skeletonise`` and ``build_network`` always run: the last
+    two load from disk when their skip toggles are off. Later stages are
+    skipped when ``start_from`` is after them.
+    """
+    if start_from is None:
+        return True
+    if name not in STAGE_CALLS or start_from not in STAGE_CALLS:
+        return True
+    if name in {"segment", "skeletonise", "build_network"}:
+        return True
+    return _stage_index(name) >= _stage_index(start_from)
+
+
+def _fill_boundary_settings(settings: dict, resume: PipelineResume) -> None:
+    """Write resume node lists into the mutable settings the later stages read."""
+    mapping = {
+        "inlet_nodes": resume.inlet_nodes,
+        "outlet_nodes": resume.outlet_nodes,
+        "arteriole_boundary_nodes": resume.arteriole_boundary_nodes,
+        "venule_boundary_nodes": resume.venule_boundary_nodes,
+    }
+    for name, values in mapping.items():
+        current = settings.get(name)
+        if isinstance(current, list):
+            current[:] = list(values)
+        else:
+            settings[name] = list(values)
+
+
+def _boundaries_from_resume(
+    resume: PipelineResume, network: VesselNetwork
+) -> BoundaryNodes:
+    graph = resume.graph if resume.graph is not None else network.graph
+    pair = resume.resistance_node_pair
+    if pair is None and resume.inlet_nodes and resume.outlet_nodes:
+        pair = (resume.inlet_nodes[0], resume.outlet_nodes[0])
+    return BoundaryNodes(
+        inlet_nodes=list(resume.inlet_nodes),
+        outlet_nodes=list(resume.outlet_nodes),
+        arteriole_boundary_nodes=list(resume.arteriole_boundary_nodes),
+        venule_boundary_nodes=list(resume.venule_boundary_nodes),
+        resistance_node_pair=pair,
+        graph=graph,
+        large_arteriole_mask=network.large_arteriole_mask,
+        large_venule_mask=network.large_venule_mask,
+    )
+
+
+def _solution_from_graph(solved: nx.MultiGraph) -> Solution:
+    node_list = list(solved)
+    pressure = np.asarray(
+        [solved.nodes[node_id].get("pressure", np.nan) for node_id in node_list],
+        dtype=float,
+    )
+    return Solution(pressure=pressure, node_list=node_list, graph=solved)
+
+
 def run_pipeline_stages(
     settings: dict,
     schema: Schema,
     progress: ProgressCallback | None = None,
     on_stage_output: StageOutputCallback | None = None,
+    start_from: str | None = None,
+    resume: PipelineResume | None = None,
 ) -> nx.MultiGraph | None:
     """Run every stage in order, for one resolved settings dict.
 
@@ -2426,12 +2525,19 @@ def run_pipeline_stages(
     shows a run's work as it happens; a script could pickle each output, or
     count it, or ignore it.
 
+    *start_from* names a stage call to begin work at. Earlier stages that
+    load from disk (skeleton, graph) still run; boundaries / diameters /
+    haemodynamics / solve / perturbations before that point are reconstructed
+    from *resume* instead of being recomputed.
+
     Both run on whatever thread the run is on, and must not raise: a run is not
     stopped, or changed in any way, by whoever is watching it. Note the outputs
     are the live objects, not copies -- every stage after ``build_network``
     writes attributes onto the same graph -- so a consumer that wants a
     snapshot must take one there and then.
     """
+    if resume is not None and start_from is None:
+        start_from = resume.start_from
     run = RunProgress(progress)
     with run.stage("segment"):
         inputs = segment(settings)
@@ -2453,32 +2559,62 @@ def run_pipeline_stages(
                 else None
             ),
         )
+    if resume is not None and resume.graph is not None:
+        network.graph = resume.graph
     _produced(on_stage_output, "build_network", network)
     with run.stage("assign_boundaries"):
-        boundaries = assign_boundaries(settings, network)
+        if _run_stage_body("assign_boundaries", start_from):
+            boundaries = assign_boundaries(settings, network)
+        else:
+            if resume is None:
+                raise ValueError(
+                    "start_from skips assign_boundaries but no PipelineResume "
+                    "was supplied to reconstruct inlet and outlet nodes."
+                )
+            _fill_boundary_settings(settings, resume)
+            boundaries = _boundaries_from_resume(resume, network)
+            if boundaries.graph is not None:
+                network.graph = boundaries.graph
     _produced(on_stage_output, "assign_boundaries", boundaries)
     with run.stage("assign_diameters"):
-        diameters = assign_diameters(settings, network, boundaries, schema)
+        if _run_stage_body("assign_diameters", start_from):
+            diameters = assign_diameters(settings, network, boundaries, schema)
+        else:
+            if resume is not None:
+                _fill_boundary_settings(settings, resume)
+            diameters = HaemodynamicModel(
+                graph=boundaries.graph if boundaries.graph is not None else network.graph
+            )
     _produced(on_stage_output, "assign_diameters", diameters)
     with run.stage("build_haemodynamic_model"):
-        model = build_haemodynamic_model(settings, diameters, schema)
+        if _run_stage_body("build_haemodynamic_model", start_from):
+            model = build_haemodynamic_model(settings, diameters, schema)
+        else:
+            model = diameters
     _produced(on_stage_output, "build_haemodynamic_model", model)
     with run.stage("solve"):
-        solution = solve(settings, model, boundaries)
+        if _run_stage_body("solve", start_from):
+            solution = solve(settings, model, boundaries)
+        else:
+            solution = _solution_from_graph(model.graph)
     _produced(on_stage_output, "solve", solution)
     # After the baseline is solved, so each perturbation has a solved network to
     # difference against, and before the export, which writes that baseline out.
     with run.stage("run_perturbations") as perturbing:
-        perturbations = run_perturbations(
-            settings,
-            model,
-            boundaries,
-            schema,
-            progress=perturbing,
-            network=network,
-        )
+        if _run_stage_body("run_perturbations", start_from):
+            perturbations = run_perturbations(
+                settings,
+                model,
+                boundaries,
+                schema,
+                progress=perturbing,
+                network=network,
+            )
+        else:
+            perturbations = PerturbationRun()
     _produced(on_stage_output, "run_perturbations", perturbations)
     with run.stage("export_results"):
-        export_results(settings, network, model, solution)
+        if _run_stage_body("export_results", start_from):
+            export_results(settings, network, model, solution)
     _produced(on_stage_output, "export_results", solution)
     return model.graph

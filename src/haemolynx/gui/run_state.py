@@ -66,6 +66,10 @@ class RunState:
     to ``reset()``, so the pure :class:`~haemolynx.gui.progress.ProgressDisplay`
     and :class:`~haemolynx.gui.results.ResultLayers` serve a test exactly as
     the panel's own wrappers serve the panel.
+
+    Each run owns a ``cancel_flag`` dict that its callbacks close over. Clear
+    mutates that dict and then :meth:`supersede` frees the panel, so a dying
+    worker cannot cancel or paint over the next run.
     """
 
     def __init__(self, bars: Any = None) -> None:
@@ -74,7 +78,7 @@ class RunState:
         self._worker: Any = None
         self._results: Any = None
         self._running = False
-        self._cancelled = False
+        self._flag: dict[str, bool] = {"cancelled": False}
 
     # -- what the panel asks ------------------------------------------------
 
@@ -91,7 +95,12 @@ class RunState:
         emitted just before the cancel are still crossing between the two, and
         applying them would put back the layers that were just cleared.
         """
-        return self._cancelled
+        return bool(self._flag.get("cancelled"))
+
+    @property
+    def cancel_flag(self) -> dict[str, bool]:
+        """The dict this run's callbacks close over. A new run gets a new one."""
+        return self._flag
 
     @property
     def worker(self) -> Any:
@@ -105,12 +114,24 @@ class RunState:
 
     # -- the run's own lifecycle -------------------------------------------
 
-    def start(self, worker: Any = None, results: Any = None) -> None:
-        """A run has just been handed to *worker*."""
+    def start(
+        self,
+        worker: Any = None,
+        results: Any = None,
+        cancel_flag: dict[str, bool] | None = None,
+    ) -> dict[str, bool]:
+        """A run has just been handed to *worker*.
+
+        Returns the cancel flag that run's callbacks must close over, so a
+        later Clear cannot make a dying worker look like the next run.
+        Pass *cancel_flag* when the callbacks have already closed over one.
+        """
+        self._flag = cancel_flag if cancel_flag is not None else {"cancelled": False}
+        self._flag["cancelled"] = False
         self._worker = worker
         self._results = results
         self._running = True
-        self._cancelled = False
+        return self._flag
 
     def stopped(self) -> None:
         """The run has ended, however it ended: the panel is free again.
@@ -119,6 +140,18 @@ class RunState:
         straggling event that arrives after the worker has gone is still
         ignored.
         """
+        self._running = False
+        self._worker = None
+        self._results = None
+
+    def supersede(self) -> None:
+        """Free the panel while a cancelled worker is still winding down.
+
+        The dying run keeps its own ``cancel_flag``; the next :meth:`start`
+        installs a new one. Run pipeline can be pressed immediately.
+        """
+        if self._running:
+            self._flag["cancelled"] = True
         self._running = False
         self._worker = None
         self._results = None
@@ -140,7 +173,7 @@ class RunState:
         """
         if not self._running:
             return False
-        self._cancelled = True
+        self._flag["cancelled"] = True
         # Before the worker has stopped, on purpose: the graph this remembers
         # is what a stage drawn after the cancel would be drawn against.
         _reset(self._results)
@@ -153,13 +186,15 @@ class RunState:
                 logger.debug("could not ask the run's worker to quit", exc_info=True)
         return True
 
-    def check(self) -> None:
+    def check(self, flag: dict[str, bool] | None = None) -> None:
         """Stop the run here if it has been cancelled. Runs on the run's thread.
 
         Called from the callbacks the pipeline already offers, every one of
-        which lands between stages or between topology steps.
+        which lands between stages or between topology steps. Pass the flag
+        :meth:`start` returned so a superseded run still stops itself.
         """
-        if self._cancelled:
+        owned = flag if flag is not None else self._flag
+        if owned.get("cancelled"):
             raise RunCancelled(CANCELLED)
 
 
@@ -173,7 +208,7 @@ def clear_message(
     """What the report box says when "Clear layers and state" has been pressed."""
     note = f"Removed {removed} HaemoLynx layer(s)."
     if stopping:
-        note += " Stopping the run; the panel is ready for another as soon as it has."
+        note += " Stopping the run; the panel is ready for another run."
     if discarded_artefacts:
         note += " Discarded cached checkpoint and resume pickles."
     if restored_skips:
