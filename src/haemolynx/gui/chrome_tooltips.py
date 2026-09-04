@@ -87,7 +87,7 @@ Z_DEPTH_TOOLTIP = (
     "Clip every displayed layer to this physical Z window; full range is the identity and does not crop the pipeline"
 )
 SCALE_BAR_TOOLTIP = (
-    "Show napari's scale bar on the canvas, in microns when voxel size is known"
+    "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
 )
 SNAPSHOT_TOOLTIP = (
     "Write a TIFF of the current napari view into the pipeline "

@@ -12,10 +12,12 @@ napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
+    SCALE_BAR_POSITION,
     SNAPSHOT_NO_OUTPUT_FOLDER,
     SNAPSHOT_STEM,
     VIEW_DOCK_NAME,
     _apply_layers,
+    _scale_bar_overlay,
     _store_z_project_cache,
     data_for_pipeline,
     output_folder_from_settings,
@@ -330,6 +332,70 @@ def test_z_depth_clips_every_layer_and_full_range_restores(make_napari_viewer):
     assert len(viewer.layers[NODES].data) == node_count
 
 
+def test_z_depth_slider_does_not_rebuild_while_dragging(
+    make_napari_viewer, monkeypatch
+):
+    """valueChanged while a handle is down must not clip volumes or graph layers.
+
+    The expensive work is a full-volume zeros+copy plus napari Vectors/Points
+    rebuilds. Apply once on sliderReleased (and immediately on programmatic
+    setValue when not dragging).
+    """
+    import haemolynx.gui._widget as widget_mod
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, original = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+
+    counts = {"volume": 0, "graph": 0}
+    real_volume = widget_mod._apply_volume_z_display
+    real_graph = widget_mod._apply_z_filter
+
+    def counting_volume(*args, **kwargs):
+        counts["volume"] += 1
+        return real_volume(*args, **kwargs)
+
+    def counting_graph(*args, **kwargs):
+        counts["graph"] += 1
+        return real_graph(*args, **kwargs)
+
+    monkeypatch.setattr(widget_mod, "_apply_volume_z_display", counting_volume)
+    monkeypatch.setattr(widget_mod, "_apply_z_filter", counting_graph)
+
+    panel._haemolynx_after_layers_applied()
+    baseline_volume = counts["volume"]
+    baseline_graph = counts["graph"]
+    assert baseline_volume >= 1
+    assert baseline_graph >= 1
+
+    slider = panel._haemolynx_z_depth_slider
+    slider._hi.sliderPressed.emit()
+    assert slider.isSliderDown()
+    for hi in (7.5, 7.0, 6.5, 6.0, 5.5, 5.0):
+        slider.setValue((0.0, hi))
+    assert counts["volume"] == baseline_volume
+    assert counts["graph"] == baseline_graph
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
+
+    slider._hi.sliderReleased.emit()
+    assert counts["volume"] == baseline_volume + 1
+    assert counts["graph"] == baseline_graph + 1
+    displayed = np.asarray(layer.data)
+    np.testing.assert_array_equal(displayed[0], 1)
+    np.testing.assert_array_equal(displayed[1], 3)
+    np.testing.assert_array_equal(displayed[2], 2)
+    np.testing.assert_array_equal(displayed[3], 0)
+    np.testing.assert_array_equal(data_for_pipeline(layer), original)
+
+    slider.setValue((0.0, 8.0))
+    assert counts["volume"] == baseline_volume + 2
+    assert counts["graph"] == baseline_graph + 2
+    np.testing.assert_array_equal(np.asarray(layer.data), original)
+
+
 def test_z_project_mips_the_z_depth_window_when_both_are_on(make_napari_viewer):
     """Z-depth first, then MIP the remaining intersection with Z-project."""
     viewer = make_napari_viewer()
@@ -369,18 +435,70 @@ def test_both_z_controls_leave_the_pipeline_cache_full(make_napari_viewer):
     assert dict(panel._haemolynx_values()) == settings_before
 
 
+def _vispy_scale_bar_visuals(viewer):
+    """Vispy overlays napari attaches to the scale-bar model, if the window exists."""
+    overlay = _scale_bar_overlay(viewer)
+    if overlay is None:
+        return []
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
+    mapping = getattr(
+        getattr(qt_viewer, "canvas", None), "_viewer_overlay_to_visual", None
+    )
+    if mapping is None:
+        return []
+    return list(mapping.get(overlay, []))
+
+
 def test_scale_bar_checkbox_toggles_viewer_scale_bar(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     box = panel._haemolynx_scale_bar
+    overlay = _scale_bar_overlay(viewer)
     assert box.isChecked() is False
-    assert viewer.scale_bar.visible is False
+    assert overlay is not None
+    assert overlay.visible is False
+    assert str(overlay.position) == SCALE_BAR_POSITION
 
     box.setChecked(True)
-    assert viewer.scale_bar.visible is True
+    assert overlay.visible is True
+    assert str(overlay.position) == SCALE_BAR_POSITION
+    visuals = _vispy_scale_bar_visuals(viewer)
+    assert visuals, "napari should add a canvas scale-bar overlay when the box is ticked"
+    assert visuals[0].node.visible is True
 
     box.setChecked(False)
-    assert viewer.scale_bar.visible is False
+    assert overlay.visible is False
+    visuals = _vispy_scale_bar_visuals(viewer)
+    if visuals:
+        assert visuals[0].node.visible is False
+
+
+def test_scale_bar_is_bottom_right_and_in_microns_once_layers_exist(
+    make_napari_viewer,
+):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    overlay = _scale_bar_overlay(viewer)
+    assert overlay.visible is False
+    panel._haemolynx_scale_bar.setChecked(True)
+    assert overlay.visible is True
+    assert str(overlay.position) == SCALE_BAR_POSITION
+    visuals = _vispy_scale_bar_visuals(viewer)
+    assert visuals
+    assert visuals[0].node.visible is True
+
+    image = viewer.layers[IMAGE]
+    assert all("micrometer" in str(unit) for unit in image.units)
+
+    panel._haemolynx_scale_bar.setChecked(False)
+    assert overlay.visible is False
+    visuals = _vispy_scale_bar_visuals(viewer)
+    if visuals:
+        assert visuals[0].node.visible is False
 
 
 def test_output_folder_is_the_vtk_prefix_parent(tmp_path):

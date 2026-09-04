@@ -85,18 +85,14 @@ UNCOLOURED = "#cccccc"
 UNCOLOURED_RGBA = (0.8, 0.8, 0.8, 1.0)
 
 #: Settings the panel starts with switched off, because they put a run's
-#: results somewhere other than napari: `show_plots_in_ide` makes the 3D graph
-#: open in a web browser (plotly's `fig.show()`), and `interactive_plots`
-#: blocks on windows of its own. They are ordinary rows, so anyone who wants a
-#: browser tab can tick them back on -- they are just the wrong default for a
-#: panel whose whole point is that the viewer is already open.
-#:
-#: `hold_ide_plots_open` is deliberately NOT here: it only does anything while
-#: `show_plots_in_ide` is on, so setting it as well earns an
-#: IneffectiveSettingWarning on a panel nobody has touched.
+#: results somewhere other than napari. ``visualize_results`` (Produce IDE
+#: plots) writes matplotlib PNG and Plotly HTML, including
+#: ``final_graph_3d.html``; the nested Show / mode / hold rows stay at their
+#: schema defaults so an untouched panel does not earn an
+#: IneffectiveSettingWarning. Tick Produce to write files, then Show plots
+#: in IDE if a browser window is wanted -- the viewer is already open.
 DISPLAY_SETTINGS_OFF_IN_NAPARI = {
-    "show_plots_in_ide": False,
-    "interactive_plots": False,
+    "visualize_results": False,
 }
 
 #: What napari calls the log window's dock.
@@ -119,6 +115,9 @@ Z_PROJECT_CACHE_KEY = "haemolynx_z_project_full"
 
 #: Napari layer unit for a physically meaningful scale bar.
 SCALE_BAR_UNIT = "micrometer"
+
+#: Canvas corner for napari's scale-bar overlay (``CanvasPosition`` value).
+SCALE_BAR_POSITION = "bottom_right"
 
 
 def _create_widget(**kwargs):
@@ -560,34 +559,91 @@ def _apply_z_project(
     )
 
 
-def _apply_scale_bar(viewer, visible: bool) -> None:
-    """Toggle napari's scale bar; set µm units when turning it on."""
-    bars = []
-    legacy = getattr(viewer, "scale_bar", None)
-    if legacy is not None:
-        bars.append(legacy)
-    canvas = getattr(viewer, "canvas", None)
-    overlays = getattr(canvas, "overlays", None) if canvas is not None else None
-    overlay = getattr(overlays, "scale_bar", None) if overlays is not None else None
-    if overlay is not None and overlay is not legacy:
-        bars.append(overlay)
-    if not bars:
-        return
-    for scale_bar in bars:
-        scale_bar.visible = bool(visible)
-    if not visible:
-        return
+def _scale_bar_overlay(viewer):
+    """Napari 0.9 ``canvas.overlays.scale_bar``, else deprecated ``viewer.scale_bar``."""
+    overlays = getattr(getattr(viewer, "canvas", None), "overlays", None)
+    if overlays is not None:
+        getter = getattr(overlays, "get", None)
+        overlay = getter("scale_bar") if callable(getter) else None
+        if overlay is None:
+            overlay = getattr(overlays, "scale_bar", None)
+        if overlay is not None:
+            return overlay
+    return getattr(viewer, "scale_bar", None)
+
+
+def _vispy_canvas(viewer):
+    """The vispy canvas that lazily creates overlay visuals, if the window exists."""
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
+    return getattr(qt_viewer, "canvas", None) if qt_viewer is not None else None
+
+
+def _set_scale_bar_units(viewer) -> None:
+    """Label world coordinates as µm so the overlay is physically meaningful."""
     for layer in viewer.layers:
         if not hasattr(layer, "units"):
             continue
         try:
-            layer.units = SCALE_BAR_UNIT
+            ndim = int(getattr(layer, "ndim", 0) or 0)
+            layer.units = (SCALE_BAR_UNIT,) * ndim if ndim else SCALE_BAR_UNIT
         except Exception:  # noqa: BLE001 - a layer that rejects units is fine
             logger.debug(
                 "could not set scale-bar units on %s",
                 getattr(layer, "name", layer),
                 exc_info=True,
             )
+
+
+def _ensure_scale_bar_drawn(viewer, overlay, visible: bool) -> None:
+    """Create/hide the vispy overlay and flush a redraw.
+
+    Napari 0.9 builds the canvas visual only when the overlay becomes visible,
+    and defers unit updates until the next draw. Setting the model flag without
+    that visual (or without a paint) leaves the checkbox as a no-op on screen.
+    """
+    vispy = _vispy_canvas(viewer)
+    if vispy is None:
+        return
+    if visible:
+        update = getattr(vispy, "_update_viewer_overlays", None)
+        if callable(update):
+            try:
+                update()
+            except Exception:  # noqa: BLE001 - private napari; model flag still set
+                logger.debug("could not create the scale-bar visual", exc_info=True)
+        units_update = getattr(vispy, "_update_world_units", None)
+        if callable(units_update):
+            try:
+                units_update()
+            except Exception:  # noqa: BLE001
+                logger.debug("could not refresh scale-bar units", exc_info=True)
+    mapping = getattr(vispy, "_viewer_overlay_to_visual", None)
+    visuals = mapping.get(overlay, []) if mapping is not None else []
+    for visual in visuals:
+        node = getattr(visual, "node", None)
+        if node is not None:
+            node.visible = bool(visible)
+    native = getattr(vispy, "native", None)
+    if native is not None and hasattr(native, "update"):
+        native.update()
+
+
+def _apply_scale_bar(viewer, visible: bool) -> None:
+    """Show or hide napari's canvas scale bar in the bottom-right corner."""
+    overlay = _scale_bar_overlay(viewer)
+    if overlay is None:
+        return
+    show = bool(visible)
+    if hasattr(overlay, "position"):
+        try:
+            overlay.position = SCALE_BAR_POSITION
+        except Exception:  # noqa: BLE001 - older napari used a different enum
+            logger.debug("could not set scale-bar position", exc_info=True)
+    if show:
+        _set_scale_bar_units(viewer)
+    overlay.visible = show
+    _ensure_scale_bar_drawn(viewer, overlay, show)
 
 
 def _uniform_points_property(value: Any, n: int) -> Any:
@@ -645,6 +701,10 @@ def _double_range_pair(object_name: str):
     handles on top of each other at the left edge, and handles sitting at
     the groove ends (full range) often miss hit-testing. Two
     ``QDoubleSlider`` s match the working Arrow size control.
+
+    ``valueChanged`` fires on every handle move (so labels can update);
+    ``sliderReleased`` fires when a drag ends. Display rebuilds should
+    wait for release, not each tick.
     """
     from qtpy.QtCore import Qt, Signal
     from qtpy.QtWidgets import (
@@ -660,6 +720,7 @@ def _double_range_pair(object_name: str):
 
     class DoubleRangePair(QWidget):
         valueChanged = Signal(object)
+        sliderReleased = Signal()
 
         def __init__(self):
             super().__init__()
@@ -682,7 +743,12 @@ def _double_range_pair(object_name: str):
             form.addRow(self._hi_label, self._hi)
             self._lo.valueChanged.connect(self._on_lo)
             self._hi.valueChanged.connect(self._on_hi)
+            self._lo.sliderPressed.connect(self._on_pressed)
+            self._hi.sliderPressed.connect(self._on_pressed)
+            self._lo.sliderReleased.connect(self._on_released)
+            self._hi.sliderReleased.connect(self._on_released)
             self._updating = False
+            self._dragging = False
             self._haemolynx_extent_ready = False
 
         def setEnabled(self, enabled: bool) -> None:  # noqa: N802 - Qt API
@@ -705,6 +771,21 @@ def _double_range_pair(object_name: str):
                 outer.setEnabled(on)
             if not on and row is not None:
                 row.setEnabled(False)
+
+        def isSliderDown(self) -> bool:  # noqa: N802 - Qt API
+            """True while either handle is being dragged."""
+            return bool(
+                self._dragging
+                or self._lo.isSliderDown()
+                or self._hi.isSliderDown()
+            )
+
+        def _on_pressed(self) -> None:
+            self._dragging = True
+
+        def _on_released(self) -> None:
+            self._dragging = False
+            self.sliderReleased.emit()
 
         def _on_lo(self, value: float) -> None:
             if self._updating:
@@ -4643,6 +4724,7 @@ def settings_widget(napari_viewer=None):
     arrow_length_mount: dict[str, Any] = {"controls": None}
 
     view = SimpleNamespace(results=None)
+    _view_z_apply = {"busy": False, "key": None}
 
     def reparent_arrow_length_slider() -> None:
         if viewer is None:
@@ -4661,7 +4743,7 @@ def settings_widget(napari_viewer=None):
             lambda *_args: reparent_arrow_length_slider()
         )
 
-    def apply_view_z() -> None:
+    def apply_view_z(*, force: bool = False) -> None:
         """Re-apply the left-panel Z-depth clip and optional Z-project MIP.
 
         Composition: restrict every displayed layer to the Z-depth window
@@ -4670,8 +4752,13 @@ def settings_widget(napari_viewer=None):
         window. Off + full-range Z-depth is the identity. Neither writes
         into settings or stage inputs; ``data_for_pipeline`` still reads
         the unprojected ``z_project_full`` cache.
+
+        Slider drags emit ``valueChanged`` on every tick; the expensive
+        volume/graph rebuild runs on release (or immediately for
+        programmatic ``setValue``). A matching window is a no-op unless
+        *force* (new layers).
         """
-        if viewer is None:
+        if viewer is None or _view_z_apply["busy"]:
             return
         extent, _step = _z_extent_and_step(view.results, viewer)
         if extent is None or extent <= 0.0:
@@ -4694,17 +4781,25 @@ def settings_widget(napari_viewer=None):
             project_min=p_lo,
             project_max=p_hi,
         )
-        _apply_volume_z_display(
-            viewer, vol_lo, vol_hi, project=project, z_extent=extent
-        )
-        _apply_z_filter(viewer, vol_lo, vol_hi, z_extent=extent)
-        for layer in viewer.layers:
-            if _is_branch_hover_layer(layer):
-                _apply_branch_hover_selection(
-                    layer, _branch_hover_selected_for(layer)
-                )
-        if scale_bar_box.isChecked():
-            _apply_scale_bar(viewer, True)
+        key = (float(vol_lo), float(vol_hi), bool(project))
+        if not force and key == _view_z_apply["key"]:
+            return
+        _view_z_apply["busy"] = True
+        try:
+            _apply_volume_z_display(
+                viewer, vol_lo, vol_hi, project=project, z_extent=extent
+            )
+            _apply_z_filter(viewer, vol_lo, vol_hi, z_extent=extent)
+            for layer in viewer.layers:
+                if _is_branch_hover_layer(layer):
+                    _apply_branch_hover_selection(
+                        layer, _branch_hover_selected_for(layer)
+                    )
+            if scale_bar_box.isChecked():
+                _apply_scale_bar(viewer, True)
+            _view_z_apply["key"] = key
+        finally:
+            _view_z_apply["busy"] = False
 
     def _sync_view_z_sliders() -> None:
         _sync_z_depth_slider(z_depth_slider, view.results, viewer)
@@ -4721,20 +4816,28 @@ def settings_widget(napari_viewer=None):
             return
         _sync_view_z_sliders()
         reparent_arrow_length_slider()
-        apply_view_z()
+        apply_view_z(force=True)
 
     if viewer is not None:
         viewer._haemolynx_after_layers_applied = _after_layers_applied
 
+    def _z_slider_should_apply(slider) -> bool:
+        return not bool(slider.isSliderDown())
+
     def on_z_depth_changed(*_args) -> None:
-        apply_view_z()
+        if _z_slider_should_apply(z_depth_slider):
+            apply_view_z()
 
     def on_z_project_changed(*_args) -> None:
+        if _z_slider_should_apply(z_project_slider):
+            apply_view_z()
+
+    def on_z_slider_released() -> None:
         apply_view_z()
 
     def on_z_project_toggled(_checked: bool) -> None:
         _sync_view_z_sliders()
-        apply_view_z()
+        apply_view_z(force=True)
 
     def on_scale_bar_toggled(checked: bool) -> None:
         if viewer is None:
@@ -4752,7 +4855,9 @@ def settings_widget(napari_viewer=None):
         _remember_arrow_length(active, length)
 
     z_depth_slider.valueChanged.connect(on_z_depth_changed)
+    z_depth_slider.sliderReleased.connect(on_z_slider_released)
     z_project_slider.valueChanged.connect(on_z_project_changed)
+    z_project_slider.sliderReleased.connect(on_z_slider_released)
     z_project_box.toggled.connect(on_z_project_toggled)
     scale_bar_box.toggled.connect(on_scale_bar_toggled)
     arrow_length_slider.valueChanged.connect(on_arrow_length_changed)
