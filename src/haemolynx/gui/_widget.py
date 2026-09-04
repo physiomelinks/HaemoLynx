@@ -3900,6 +3900,33 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
     )
 
 
+#: Height a tab scroll area reports, not the height of its rows. Qt's
+#: QScrollArea.sizeHint adds the inner widget; that became a 1057px window
+#: minimum on Windows, taller than a 1080p work area with a taskbar.
+TAB_SCROLL_HINT_WIDTH = 420
+TAB_SCROLL_HINT_HEIGHT = 240
+TAB_SCROLL_MIN_HEIGHT = 120
+
+
+def _fitting_scroll_area():
+    """A scroll area whose size hint does not include the widget inside it."""
+    from qtpy.QtCore import QSize
+    from qtpy.QtWidgets import QScrollArea, QSizePolicy
+
+    class FittingScrollArea(QScrollArea):
+        def sizeHint(self):
+            return QSize(TAB_SCROLL_HINT_WIDTH, TAB_SCROLL_HINT_HEIGHT)
+
+        def minimumSizeHint(self):
+            return QSize(200, TAB_SCROLL_MIN_HEIGHT)
+
+    scroller = FittingScrollArea()
+    scroller.setWidgetResizable(True)
+    scroller.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    scroller.setMinimumHeight(TAB_SCROLL_MIN_HEIGHT)
+    return scroller
+
+
 def settings_widget(napari_viewer=None):
     """The HaemoLynx panel: the pipeline's stages, in the order it runs them.
 
@@ -3916,7 +3943,7 @@ def settings_widget(napari_viewer=None):
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
         QHBoxLayout,
-        QScrollArea,
+        QSizePolicy,
         QStackedWidget,
         QTabWidget,
         QVBoxLayout,
@@ -3931,9 +3958,15 @@ def settings_widget(napari_viewer=None):
     rows: dict[str, Any] = {}
     fields: dict[str, Field] = {}
     tab_widget = QTabWidget()
+    tab_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    tab_widget.setMinimumHeight(120)
 
     report = TextEdit(value="Ready.")
     report.read_only = True
+    # QTextEdit's default hint is a multi-line slab; the status line should not
+    # be what pushes the dock taller than a 1080p work area.
+    report.native.setMinimumHeight(48)
+    report.native.setMaximumHeight(96)
 
     # Two passes. Every row has to exist before anything that reads them can be
     # built, and the boundary controls read them -- so rows first, pages second.
@@ -4017,12 +4050,12 @@ def settings_widget(napari_viewer=None):
                 widgets=[summary, *(rows[name] for name in names)],
                 labels=True,
             ).native
-        # A plain QScrollArea rather than `Container(scrollable=True)`: the
+        # A bounded QScrollArea rather than `Container(scrollable=True)`: the
         # magicgui one reports the full height of its contents, so a tab with
         # 39 rows stretches the whole napari window instead of scrolling.
-        # QScrollArea's own size hint ignores the widget inside it, which is
-        # exactly what keeps the panel a sensible size. Its scrollbars default
-        # to appearing only when needed, vertically and horizontally.
+        # Qt's QScrollArea.sizeHint *adds* the inner widget's hint, which on
+        # Windows becomes the dock's minimum height -- taller than a 1080p
+        # work area, then QWindowsWindow::setGeometry warns and clamps.
         page = QWidget()
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
@@ -4039,8 +4072,7 @@ def settings_widget(napari_viewer=None):
             revert.native.setObjectName("haemolynx_revert")
             revert_buttons[tab.stage.title] = revert
         page_layout.addStretch(1)
-        scroller = QScrollArea()
-        scroller.setWidgetResizable(True)
+        scroller = _fitting_scroll_area()
         scroller.setWidget(page)
         tab_widget.addTab(scroller, tab.stage.title)
         if tab.stage.call:
@@ -4926,7 +4958,7 @@ def settings_widget(napari_viewer=None):
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
-    layout.addWidget(tab_widget)
+    layout.addWidget(tab_widget, 1)
     # Hidden host for Perturbations-claimed rows that are not flat tab chrome
     # (legacy flags + typed-entry Field shells). Keeps them off the screen and
     # out of the top-level window list while config round-trip still reads them.

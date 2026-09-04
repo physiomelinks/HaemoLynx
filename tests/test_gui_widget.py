@@ -96,6 +96,8 @@ def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
     """
     from qtpy.QtWidgets import QScrollArea, QTabWidget
 
+    from haemolynx.gui._widget import TAB_SCROLL_HINT_HEIGHT
+
     widget, _viewer = panel
     tab_widget = widget.findChild(QTabWidget)
     tallest_content = 0
@@ -104,7 +106,7 @@ def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
         assert isinstance(page, QScrollArea), "each tab must be scrollable"
         content_height = page.widget().sizeHint().height()
         tallest_content = max(tallest_content, content_height)
-        assert page.sizeHint().height() <= content_height + 40, (
+        assert page.sizeHint().height() <= TAB_SCROLL_HINT_HEIGHT + 8, (
             f"tab {tab_widget.tabText(index)} asks for "
             f"{page.sizeHint().height()}px for {content_height}px of content"
         )
@@ -117,6 +119,38 @@ def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
     assert tallest_content > 800, "the fixture no longer has a long tab to test"
     assert asked < tallest_content / 2, (
         f"the tallest tab asks for {asked}px against {tallest_content}px of content"
+    )
+
+
+def test_the_panel_does_not_demand_more_height_than_a_1080p_work_area(panel):
+    """Windows cannot honour a min height taller than the usable screen.
+
+    A 1920x1200 Dell with a taskbar leaves ~1009px of client height. Qt then
+    warns ``QWindowsWindow::setGeometry`` if the main window minimum is 1057
+    because the dock's size hint was the full tab contents. Tabs must report a
+    bounded hint and the panel's own minimum must stay below that work area.
+    """
+    from qtpy.QtWidgets import QScrollArea, QTabWidget
+
+    from haemolynx.gui._widget import TAB_SCROLL_HINT_HEIGHT
+
+    widget, _viewer = panel
+    tab_widget = widget.findChild(QTabWidget)
+    for index in range(tab_widget.count()):
+        page = tab_widget.widget(index)
+        assert isinstance(page, QScrollArea)
+        assert page.sizeHint().height() <= TAB_SCROLL_HINT_HEIGHT + 8, (
+            f"tab {tab_widget.tabText(index)} asks for {page.sizeHint().height()}px"
+        )
+
+    # Menu, title bar and taskbar take the rest of a 1080p screen.
+    assert widget.minimumSizeHint().height() < 900, (
+        f"panel minimum height {widget.minimumSizeHint().height()}px "
+        "will not fit a 1080p work area"
+    )
+    assert widget.sizeHint().height() < 900, (
+        f"panel size hint {widget.sizeHint().height()}px "
+        "will not fit a 1080p work area"
     )
 
 
