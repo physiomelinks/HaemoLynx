@@ -847,38 +847,57 @@ def compute_emergence_angles_by_branch_order(
     Junctions with no unique lowest-order parent (tied ranks, unlabelled
     edges only, or degree < 3) contribute nothing, so root segments have
     no emergence angle.
+
+    Each junction is evaluated independently, but an edge that is a daughter
+    at one end can also be a daughter at its other end -- neither endpoint's
+    local minimum, the way a capillary bridging two comparable-order
+    neighbourhoods looks, not a strict parent -> child step. That edge's
+    emergence still counts once, at whichever of its two junctions is
+    reached first, not once per end.
     """
     sums: Dict[str, float] = {}
     counts: Dict[str, int] = {}
+    # An edge with neither endpoint the local minimum rank (a capillary
+    # bridging two comparable-order neighbourhoods, not a strict parent ->
+    # child step) is a "daughter" at both of its junctions. Each junction is
+    # processed independently, so without this, that one edge's emergence
+    # would be added twice -- once per end -- to the same branch order's
+    # sum/count. An edge id (not just (u, v): parallel edges between the same
+    # two nodes are different edges) makes sure each edge contributes at most
+    # once, no matter which of its two junctions is visited first.
+    seen_daughters: set[tuple[Any, Any]] = set()
 
     for node in G.nodes():
         if int(G.degree(node)) < 3:
             continue
-        labelled: list[tuple[Any, Any, dict, str]] = []
-        for u, v, _key, data in _incident_edge_items(G, node):
+        labelled: list[tuple[Any, Any, Any, dict, str]] = []
+        for u, v, key, data in _incident_edge_items(G, node):
             if u == v:
                 continue
             tag = _normalize_branch_order_tag(data.get("branch_order"))
             if not tag:
                 continue
-            labelled.append((u, v, data, tag))
+            labelled.append((u, v, key, data, tag))
         if len(labelled) < 2:
             continue
-        ranks = [_branch_order_sort_key(item[3]) for item in labelled]
+        ranks = [_branch_order_sort_key(item[4]) for item in labelled]
         min_rank = min(ranks)
         parent_indices = [i for i, rank in enumerate(ranks) if rank == min_rank]
         if len(parent_indices) != 1:
             continue
         parent_i = parent_indices[0]
-        p_u, p_v, p_data, _parent_tag = labelled[parent_i]
+        p_u, p_v, _p_key, p_data, _parent_tag = labelled[parent_i]
         parent_out = _outgoing_unit_tangent(
             G, node, p_u, p_v, p_data, tangent_length_um
         )
         if parent_out is None:
             continue
         parent_in = -parent_out
-        for i, (u, v, data, tag) in enumerate(labelled):
+        for i, (u, v, key, data, tag) in enumerate(labelled):
             if i == parent_i:
+                continue
+            edge_id = (frozenset((u, v)), key)
+            if edge_id in seen_daughters:
                 continue
             daughter_out = _outgoing_unit_tangent(
                 G, node, u, v, data, tangent_length_um
@@ -888,6 +907,7 @@ def compute_emergence_angles_by_branch_order(
             angle = _angle_between_unit_vectors(parent_in, daughter_out)
             sums[tag] = sums.get(tag, 0.0) + angle
             counts[tag] = counts.get(tag, 0) + 1
+            seen_daughters.add(edge_id)
 
     ordered: Dict[str, Dict[str, Any]] = {}
     for tag in sorted(counts, key=_branch_order_sort_key):

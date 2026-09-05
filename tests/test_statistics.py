@@ -275,3 +275,33 @@ def test_emergence_angle_skipped_when_parent_order_is_tied():
 
     angles = compute_emergence_angles_by_branch_order(G)
     assert angles == {}
+
+
+def test_emergence_angle_counts_a_bridging_edge_only_once():
+    """A capillary that is a daughter at both its junctions is one sample.
+
+    node 2 and node 3 are both junctions with their own lower-order (Art1)
+    parent, so the BO5 edge between them is a "daughter" from either end --
+    not a strict parent -> child step, the way a real anastomosis or a
+    capillary bridging two comparable-order neighbourhoods looks. Processing
+    each junction independently must still count that one edge's emergence
+    once, not once per end.
+    """
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(-20.0, 0.0, 0.0))
+    G.add_node(5, pos=(0.0, -20.0, 0.0))
+    G.add_node(2, pos=(0.0, 0.0, 0.0))
+    G.add_node(3, pos=(0.0, 0.0, 20.0))
+    G.add_node(1, pos=(20.0, 0.0, 20.0))
+    G.add_node(6, pos=(0.0, 20.0, 20.0))
+    _straight_edge(G, 0, 2, "Art1")
+    _straight_edge(G, 5, 2, "BO6")
+    _straight_edge(G, 2, 3, "BO5")
+    _straight_edge(G, 1, 3, "Art1")
+    _straight_edge(G, 6, 3, "Ven2")
+
+    angles = compute_emergence_angles_by_branch_order(G)
+
+    assert angles["BO5"]["Emergence Angle Sample Count"] == 1
+    assert angles["BO6"]["Emergence Angle Sample Count"] == 1
+    assert angles["Ven2"]["Emergence Angle Sample Count"] == 1
