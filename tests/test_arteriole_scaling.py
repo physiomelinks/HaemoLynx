@@ -81,9 +81,22 @@ def _baseline(viscosity_law: str = "pries") -> dict[str, float]:
 
 @pytest.mark.parametrize(
     "branch_order,expected",
-    [("Art1", True), ("Art12", True), ("B01", False), ("Ven1", False), (None, False)],
+    [
+        ("Art1", True),
+        ("Art12", True),
+        ("Large_Art1", True),
+        ("Large_Art12", True),
+        ("B01", False),
+        ("Ven1", False),
+        ("Large_Ven1", False),
+        (None, False),
+    ],
 )
 def test_only_the_arteriole_labels_are_arterioles(branch_order, expected):
+    """A large arteriole kept in the network (Large_Art*) is still an
+    arteriole for this perturbation's purposes -- it is upstream and wider,
+    not a different vessel class -- so a whole-tree arteriole scaling must
+    reach it too."""
     assert is_arteriole_branch_order(branch_order) is expected
 
 

@@ -223,9 +223,11 @@ def visualize_3d_plotly_large_vessel_assignment(
         return [], [], []
 
     edge_segments: dict[str, tuple[list[float | None], list[float | None], list[float | None]]] = {
+        "large_arteriole": _empty_line_lists(),
         "arteriole": _empty_line_lists(),
         "capillary": _empty_line_lists(),
         "venule": _empty_line_lists(),
+        "large_venule": _empty_line_lists(),
     }
     branch_label_x: list[float] = []
     branch_label_y: list[float] = []
@@ -236,8 +238,12 @@ def visualize_3d_plotly_large_vessel_assignment(
         branch_order = edge_data.get("branch_order")
         if branch_order is not None:
             bo = str(branch_order).strip()
+            if bo.startswith("Large_Art"):
+                return "large_arteriole"
             if bo.startswith("Art"):
                 return "arteriole"
+            if bo.startswith("Large_Ven"):
+                return "large_venule"
             if bo.startswith("Ven"):
                 return "venule"
             if bo.startswith("B"):
@@ -392,11 +398,13 @@ def visualize_3d_plotly_large_vessel_assignment(
         ):
             volume_trace_indices.append(len(fig.data) - 1)
     vessel_styles = {
+        "large_arteriole": dict(color="rgba(139, 0, 0, 0.9)", name="Edges (large arteriole)"),
         "arteriole": dict(color="rgba(255, 59, 48, 0.9)", name="Edges (arteriole)"),
         "capillary": dict(color="rgba(0, 200, 255, 0.75)", name="Edges (capillary)"),
         "venule": dict(color="rgba(46, 204, 113, 0.9)", name="Edges (venule)"),
+        "large_venule": dict(color="rgba(8, 48, 107, 0.9)", name="Edges (large venule)"),
     }
-    for kind in ("arteriole", "capillary", "venule"):
+    for kind in ("large_arteriole", "arteriole", "capillary", "venule", "large_venule"):
         ex, ey, ez = edge_segments[kind]
         if not ex:
             continue

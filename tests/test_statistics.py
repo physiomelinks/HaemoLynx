@@ -293,6 +293,28 @@ def test_compute_branch_order_statistics_sorted_and_aggregated():
     assert "_diameter_sum_sq" not in s["BO1"]
 
 
+def test_compute_branch_order_statistics_orders_large_vessel_tiers_outermost():
+    """Large_Art sits before Art, Large_Ven sits after Ven -- mirroring the
+    hierarchical BFS tier order in graph/branch_order.py, not sorted
+    alphabetically (which would put Large_Art after BO and Large_Ven
+    before Ven)."""
+    G = nx.MultiGraph()
+    for node in range(6):
+        G.add_node(node, pos=(0.0, 0.0, float(node)))
+    G.add_edge(0, 1, key=0, branch_order="Large_Art1", length=1.0)
+    G.add_edge(1, 2, key=0, branch_order="Art1", length=1.0)
+    G.add_edge(2, 3, key=0, branch_order="B01", length=1.0)
+    G.add_edge(3, 4, key=0, branch_order="Ven1", length=1.0)
+    G.add_edge(4, 5, key=0, branch_order="Large_Ven1", length=1.0)
+
+    pos = nx.get_node_attributes(G, "pos")
+    s = compute_branch_order_statistics(G, node_positions=pos)
+
+    assert list(s.keys()) == ["Large_Art1", "Art1", "BO1", "Ven1", "Large_Ven1"]
+    assert s["Large_Art1"]["Edge Count"] == 1
+    assert s["Large_Ven1"]["Edge Count"] == 1
+
+
 def test_branch_order_pressure_drop_aggregates_magnitude_not_signed_value():
     """pressure_drop's sign is an artefact of an edge's arbitrary (u, v)
     storage order, not physically meaningful -- aggregation must use

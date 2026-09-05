@@ -939,17 +939,23 @@ def export_statistics_to_csv(
 
 
 def _normalize_branch_order_tag(tag: Any) -> Optional[str]:
-    """Normalize branch-order labels to ArtN / BON / VenN where possible."""
+    """Normalize branch-order labels to Large_ArtN / ArtN / BON / VenN / Large_VenN."""
     if tag is None:
         return None
     label = str(tag).strip()
     if not label:
         return None
-    m = re.match(r"^(art|ven|bo|b)\s*0*(\d+)$", label, flags=re.IGNORECASE)
+    m = re.match(
+        r"^(large_art|large_ven|art|ven|bo|b)\s*0*(\d+)$", label, flags=re.IGNORECASE
+    )
     if not m:
         return label
     prefix = m.group(1).lower()
     n = int(m.group(2))
+    if prefix == "large_art":
+        return f"Large_Art{n}"
+    if prefix == "large_ven":
+        return f"Large_Ven{n}"
     if prefix == "art":
         return f"Art{n}"
     if prefix == "ven":
@@ -957,14 +963,28 @@ def _normalize_branch_order_tag(tag: Any) -> Optional[str]:
     return f"BO{n}"
 
 
+#: Sort-group rank per branch-order prefix: Large_Art outermost (upstream of
+#: Art), then Art, BO (capillary), Ven, Large_Ven outermost on the venous
+#: side -- mirrors the hierarchical BFS tier order in graph/branch_order.py.
+_BRANCH_ORDER_SORT_GROUPS = {
+    "large_art": 0,
+    "art": 1,
+    "bo": 2,
+    "ven": 3,
+    "large_ven": 4,
+}
+
+
 def _branch_order_sort_key(tag: str) -> tuple[int, int, str]:
-    """Sort as Art1..ArtN, BO1..BON, Ven1..VenN, then unknown labels."""
-    m = re.match(r"^(art|ven|bo)\s*(\d+)$", str(tag), flags=re.IGNORECASE)
+    """Sort as Large_Art*, Art*, BO*, Ven*, Large_Ven*, then unknown labels."""
+    m = re.match(
+        r"^(large_art|large_ven|art|ven|bo)\s*(\d+)$", str(tag), flags=re.IGNORECASE
+    )
     if not m:
-        return (3, 0, str(tag))
+        return (len(_BRANCH_ORDER_SORT_GROUPS), 0, str(tag))
     prefix = m.group(1).lower()
     n = int(m.group(2))
-    group = {"art": 0, "bo": 1, "ven": 2}.get(prefix, 3)
+    group = _BRANCH_ORDER_SORT_GROUPS.get(prefix, len(_BRANCH_ORDER_SORT_GROUPS))
     return (group, n, str(tag))
 
 

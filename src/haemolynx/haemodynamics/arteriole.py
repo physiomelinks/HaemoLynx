@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ARTERIOLE_PREFIX",
+    "LARGE_ARTERIOLE_PREFIX",
     "is_arteriole_branch_order",
     "percent_change_to_scale",
     "scale_arteriole_diameters",
@@ -46,10 +47,20 @@ __all__ = [
 #: named by prefix rather than by a fixed-width pattern.
 ARTERIOLE_PREFIX = "Art"
 
+#: A large arteriole kept in the network (graph.large_vessel_network) is
+#: still an arteriole -- just upstream and wider -- so a "scale every
+#: arteriole" perturbation should reach it too, not leave the one segment
+#: with the most influence on the whole tree's resistance unperturbed. Its
+#: own literal prefix, not a match against ARTERIOLE_PREFIX: "Large_Art1"
+#: does not start with "Art".
+LARGE_ARTERIOLE_PREFIX = "Large_Art"
+
 
 def is_arteriole_branch_order(branch_order: Any) -> bool:
-    """Whether *branch_order* names an arteriole rather than a capillary or venule."""
-    return str(branch_order).startswith(ARTERIOLE_PREFIX)
+    """Whether *branch_order* names an arteriole (small or large) rather than
+    a capillary or venule."""
+    label = str(branch_order)
+    return label.startswith(ARTERIOLE_PREFIX) or label.startswith(LARGE_ARTERIOLE_PREFIX)
 
 
 def percent_change_to_scale(percent: float) -> float:

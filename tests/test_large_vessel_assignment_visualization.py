@@ -112,6 +112,48 @@ def test_assignment_view_volume_traces_use_shared_styles():
     assert styles == expected
 
 
+def _line_traces(fig):
+    return [trace for trace in fig.data if getattr(trace, "mode", "") == "lines"]
+
+
+def test_assignment_view_gives_large_vessel_edges_their_own_trace_not_capillary():
+    """Large_Art/Large_Ven edges must render as their own line trace, not
+    silently fall through to the "capillary" default -- the normalizer used
+    to only recognise Art*/Ven*/B* prefixes, so a Large_Art/Large_Ven edge
+    (matching none of them, and carrying no vessel_type/mask_vessel_type
+    fallback attribute either) fell all the way through to "capillary"."""
+    G = nx.MultiGraph()
+    G.add_node(1, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([0.0, 0.0, 5.0]))
+    G.add_node(3, pos=np.array([0.0, 0.0, 10.0]))
+    G.add_node(4, pos=np.array([0.0, 0.0, 15.0]))
+    G.add_edge(1, 2, branch_order="Large_Art1")
+    G.add_edge(2, 3, branch_order="Art1")
+    G.add_edge(3, 4, branch_order="Large_Ven1")
+    large_art, large_ven, small_art, small_ven = _tiny_masks()
+
+    fig = visualize_3d_plotly_large_vessel_assignment(
+        G,
+        large_arteriole_mask=large_art,
+        large_venule_mask=large_ven,
+        small_arteriole_mask=small_art,
+        small_venule_mask=small_ven,
+        input_nodes=[1],
+        output_nodes=[4],
+        show=False,
+    )
+
+    line_names = {trace.name for trace in _line_traces(fig)}
+    assert "Edges (large arteriole)" in line_names
+    assert "Edges (large venule)" in line_names
+    assert "Edges (capillary)" not in line_names
+
+    large_art_trace = next(t for t in _line_traces(fig) if t.name == "Edges (large arteriole)")
+    assert large_art_trace.line.color == "rgba(139, 0, 0, 0.9)"
+    large_ven_trace = next(t for t in _line_traces(fig) if t.name == "Edges (large venule)")
+    assert large_ven_trace.line.color == "rgba(8, 48, 107, 0.9)"
+
+
 def test_assignment_view_omits_large_volumes_when_masks_are_none():
     G = _tiny_graph()
     _large_art, _large_ven, small_art, small_ven = _tiny_masks()

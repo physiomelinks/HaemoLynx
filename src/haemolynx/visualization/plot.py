@@ -568,9 +568,11 @@ def visualize_3d_plotly_vessel_types(
     Interactive 3D graph rendering colored by vessel class from branch_order.
 
     Mapping:
-    - Art* -> arteriole (red)
-    - B*   -> capillary (green)
-    - Ven* -> venule (blue)
+    - Large_Art* -> large arteriole (dark red)
+    - Art*       -> arteriole (red)
+    - B*         -> capillary (green)
+    - Ven*       -> venule (blue)
+    - Large_Ven* -> large venule (dark blue)
     """
     pos = nx.get_node_attributes(G, "pos")
     if not pos:
@@ -578,8 +580,12 @@ def visualize_3d_plotly_vessel_types(
 
     def _vessel_type(branch_order: Any) -> str:
         label = str(branch_order or "")
+        if label.startswith("Large_Art"):
+            return "large_arteriole"
         if label.startswith("Art"):
             return "arteriole"
+        if label.startswith("Large_Ven"):
+            return "large_venule"
         if label.startswith("Ven"):
             return "venule"
         if label.startswith("B"):
@@ -587,15 +593,19 @@ def visualize_3d_plotly_vessel_types(
         return "unknown"
 
     type_to_color = {
+        "large_arteriole": "#8b0000",  # dark red
         "arteriole": "#d62728",  # red
         "capillary": "#2ca02c",  # green
         "venule": "#1f77b4",  # blue
+        "large_venule": "#08306b",  # dark blue
         "unknown": "#7f7f7f",
     }
     type_to_label = {
+        "large_arteriole": "Large arterioles",
         "arteriole": "Arterioles",
         "capillary": "Capillaries",
         "venule": "Venules",
+        "large_venule": "Large venules",
         "unknown": "Unknown",
     }
 
@@ -650,7 +660,14 @@ def visualize_3d_plotly_vessel_types(
     node_z = [float(p[0]) for p in pos.values()]
 
     fig = go.Figure()
-    for vessel_type in ("arteriole", "capillary", "venule", "unknown"):
+    for vessel_type in (
+        "large_arteriole",
+        "arteriole",
+        "capillary",
+        "venule",
+        "large_venule",
+        "unknown",
+    ):
         coords = per_type_coords[vessel_type]
         if not coords["x"]:
             continue

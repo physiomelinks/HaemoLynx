@@ -32,6 +32,7 @@ from .apply import (
 )
 from .arteriole import (
     ARTERIOLE_PREFIX,
+    LARGE_ARTERIOLE_PREFIX,
     is_arteriole_branch_order,
     percent_change_to_scale,
     scale_arteriole_diameters,
@@ -84,6 +85,7 @@ __all__ = [
     "set_edge_diameter_override",
     "stamp_edge_diameters",
     "ARTERIOLE_PREFIX",
+    "LARGE_ARTERIOLE_PREFIX",
     "is_arteriole_branch_order",
     "is_capillary_branch_order",
     "percent_change_to_scale",

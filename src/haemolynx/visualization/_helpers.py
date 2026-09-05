@@ -6,15 +6,31 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
+#: Sort-group rank per branch-order prefix, mirroring the hierarchical BFS
+#: tier order in graph/branch_order.py: Large_Art outermost on the arterial
+#: side, then Art, B/BO (capillary), Ven, Large_Ven outermost on the venous
+#: side. Kept in sync with statistics/stats.py's own
+#: _BRANCH_ORDER_SORT_GROUPS -- this module has its own copy rather than
+#: importing it, since visualization does not otherwise depend on statistics.
+_BRANCH_ORDER_SORT_GROUPS = {
+    "large_art": 0,
+    "art": 1,
+    "b": 2,
+    "bo": 2,
+    "ven": 3,
+    "large_ven": 4,
+}
+
+
 def sort_branch_orders_numerically(orders: List[str]) -> List[str]:
-    """Sort branch order strings like B01, Art2, Ven3 numerically."""
+    """Sort branch order strings like B01, Art2, Ven3, Large_Art1 numerically."""
     def key_fn(s):
         m = re.search(r"(\d+)$", s, re.I)
         if not m:
             return (99, 0, s)
         n = int(m.group(1))
         prefix = re.sub(r"\d+$", "", s).lower()
-        group = {"art": 0, "b": 1, "bo": 1, "ven": 2}.get(prefix, 3)
+        group = _BRANCH_ORDER_SORT_GROUPS.get(prefix, len(_BRANCH_ORDER_SORT_GROUPS))
         return (group, n, s)
     return sorted(orders, key=key_fn)
 
