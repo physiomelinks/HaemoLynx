@@ -74,6 +74,38 @@ def find_large_vessel_mask_stump_points(
     return points
 
 
+def select_large_vessel_mask_stump_terminal_nodes_for_role(
+    G: nx.Graph,
+    mask: np.ndarray,
+    *,
+    node_role: str,
+    voxel_size_zyx: tuple[float, float, float],
+    image_shape: tuple[int, ...],
+    coordinates_setting_name: str,
+) -> list[Any]:
+    """One side's terminal nodes at *mask*'s own image-edge stump.
+
+    *mask*'s face-touching components (see
+    :func:`find_large_vessel_mask_stump_points`) are snapped to their nearest
+    graph terminal via the same "coordinates" method manual boundary
+    selection already uses (:func:`haemolynx.graph.boundaries.
+    select_boundary_nodes_by_method`), so a snap that lands suspiciously far
+    from the mask surfaces the same :class:`~haemolynx.graph.boundaries.
+    BoundaryCoordinateWarning` a bad manual coordinate would. A mask with no
+    face-touching component (the vessel ends inside the tissue, not at the
+    field of view's edge) yields no node.
+    """
+    points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=voxel_size_zyx)
+    return select_boundary_nodes_by_method(
+        G,
+        image_shape,
+        method="coordinates",
+        node_role=node_role,
+        coordinates=points,
+        coordinates_setting_name=coordinates_setting_name,
+    )
+
+
 def select_large_vessel_stump_terminal_nodes(
     G: nx.Graph,
     *,
@@ -84,36 +116,22 @@ def select_large_vessel_stump_terminal_nodes(
 ) -> tuple[list[Any], list[Any]]:
     """Inlet/outlet nodes at the large-vessel masks' own image-edge stumps.
 
-    Each mask's face-touching components (see
-    :func:`find_large_vessel_mask_stump_points`) are snapped to their nearest
-    graph terminal via the same "coordinates" method manual boundary
-    selection already uses (:func:`haemolynx.graph.boundaries.
-    select_boundary_nodes_by_method`), so a snap that lands suspiciously far
-    from the mask surfaces the same :class:`~haemolynx.graph.boundaries.
-    BoundaryCoordinateWarning` a bad manual coordinate would. A mask with no
-    face-touching component (the vessel ends inside the tissue, not at the
-    field of view's edge) yields no node for that side.
+    Both sides of :func:`select_large_vessel_mask_stump_terminal_nodes_for_role`.
     """
-    arteriole_points = find_large_vessel_mask_stump_points(
-        large_arteriole_mask, voxel_size_zyx=voxel_size_zyx
-    )
-    venule_points = find_large_vessel_mask_stump_points(
-        large_venule_mask, voxel_size_zyx=voxel_size_zyx
-    )
-    inlet_nodes = select_boundary_nodes_by_method(
+    inlet_nodes = select_large_vessel_mask_stump_terminal_nodes_for_role(
         G,
-        image_shape,
-        method="coordinates",
+        large_arteriole_mask,
         node_role="inlet",
-        coordinates=arteriole_points,
+        voxel_size_zyx=voxel_size_zyx,
+        image_shape=image_shape,
         coordinates_setting_name="large_arteriole_mask stump",
     )
-    outlet_nodes = select_boundary_nodes_by_method(
+    outlet_nodes = select_large_vessel_mask_stump_terminal_nodes_for_role(
         G,
-        image_shape,
-        method="coordinates",
+        large_venule_mask,
         node_role="outlet",
-        coordinates=venule_points,
+        voxel_size_zyx=voxel_size_zyx,
+        image_shape=image_shape,
         coordinates_setting_name="large_venule_mask stump",
     )
     return inlet_nodes, outlet_nodes

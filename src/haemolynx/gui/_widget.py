@@ -3447,6 +3447,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         BC_COORDINATES,
         BC_LAYER_NAMES,
         BC_REGION_NAMES,
+        DISABLED_ROLE_TOOLTIP,
         HANDLE,
         band_boxes,
         ROLES,
@@ -3907,14 +3908,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             enabled = role_manual_controls_enabled(name, values)
             tabs.setTabEnabled(index, enabled)
             if not enabled:
-                if name in ("inlet", "outlet"):
-                    tabs.setTabToolTip(index, AUTOMATED_OVERRIDES_MANUAL_NOTE)
-                else:
-                    tabs.setTabToolTip(
-                        index,
-                        "Small-vessel mask assignment overrides manual "
-                        "arteriole/venule boundary selection.",
-                    )
+                tabs.setTabToolTip(index, DISABLED_ROLE_TOOLTIP[name])
             else:
                 tabs.setTabToolTip(index, fields[method_setting(name)].help)
         if not tabs.isTabEnabled(tabs.currentIndex()):
@@ -3937,13 +3931,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 widget.visible = control in useful
                 if overridden:
                     widget.enabled = False
-                    if name in ("inlet", "outlet"):
-                        widget.tooltip = AUTOMATED_OVERRIDES_MANUAL_NOTE
-                    else:
-                        widget.tooltip = (
-                            "Small-vessel mask assignment overrides manual "
-                            "arteriole/venule boundary selection."
-                        )
+                    widget.tooltip = DISABLED_ROLE_TOOLTIP[name]
                 elif control == "draw" and not drawable:
                     widget.enabled = False
                     widget.tooltip = (
@@ -4148,6 +4136,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         *shared_settings(),
         "automated_vessel_assignment",
         "use_small_vessel_masks_for_boundary_assignment",
+        "assign_large_vessel_branch_orders",
     ):
         if _name in rows:
             rows[_name].changed.connect(on_settings_changed)

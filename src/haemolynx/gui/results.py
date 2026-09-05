@@ -1705,6 +1705,8 @@ def role_colours() -> tuple[tuple[str, tuple[float, float, float, float]], ...]:
         ("outlet", (0.84, 0.15, 0.16, 1.0)),
         ("arteriole_boundary", (1.0, 0.5, 0.05, 1.0)),
         ("venule_boundary", (0.58, 0.40, 0.74, 1.0)),
+        ("large_vessel_inlet", (0.55, 0.0, 0.0, 1.0)),
+        ("large_vessel_outlet", (0.03, 0.19, 0.42, 1.0)),
     )
 
 

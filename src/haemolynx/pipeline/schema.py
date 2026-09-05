@@ -47,6 +47,13 @@ NODE_SELECTION_METHODS = (
     "degree_1_from_inlet",
 )
 
+#: The large-vessel inlet/outlet roles' own methods: everything the other four
+#: roles can do, plus reading the pick from the large-vessel mask's own
+#: geometry (see graph.large_vessel_network). Not folded into
+#: NODE_SELECTION_METHODS itself -- "mask_stump" would be a meaningless choice
+#: for the other four roles' dropdowns.
+LARGE_VESSEL_NODE_SELECTION_METHODS = NODE_SELECTION_METHODS + ("mask_stump",)
+
 _INPUT_AND_SEGMENTATION = "Input and segmentation"
 _VESSEL_MASKS = "Vessel masks"
 _BOUNDARY_ASSIGNMENT = "Boundary assignment"
@@ -1180,6 +1187,39 @@ SCHEMA = Schema(
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
         ),
+        # The large-vessel network's own inlet/outlet, seeded by default from
+        # the arteriole/venule mask's own image-edge stump (see
+        # graph.large_vessel_network) rather than any of the methods above.
+        # Greyed on the Boundaries tab while assign_large_vessel_branch_orders
+        # is off, since there is nothing to override yet.
+        Setting(
+            name="large_vessel_inlet_node_selection_method",
+            kind="choice",
+            default="mask_stump",
+            help=(
+                "Choose how the large-vessel network's inlet node is picked. "
+                "mask_stump reads it from the large arteriole mask's own "
+                "geometry (where the mask is truncated by the image's field "
+                "of view); the other methods override that with a manual pick"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            choices=LARGE_VESSEL_NODE_SELECTION_METHODS,
+            requires=("assign_large_vessel_branch_orders",),
+        ),
+        Setting(
+            name="large_vessel_outlet_node_selection_method",
+            kind="choice",
+            default="mask_stump",
+            help=(
+                "Choose how the large-vessel network's outlet node is picked. "
+                "mask_stump reads it from the large venule mask's own "
+                "geometry (where the mask is truncated by the image's field "
+                "of view); the other methods override that with a manual pick"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            choices=LARGE_VESSEL_NODE_SELECTION_METHODS,
+            requires=("assign_large_vessel_branch_orders",),
+        ),
         # What the "edge_percent" method reads. Shared by every role: one axis
         # and one pair of bands describe the whole network.
         Setting(
@@ -1257,6 +1297,22 @@ SCHEMA = Schema(
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
+        Setting(
+            name="large_vessel_inlet_node_coordinates",
+            kind="any",
+            default=[],
+            help="Pick the large-vessel inlet node nearest to these (z, y, x) coordinates when the coordinates method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+        ),
+        Setting(
+            name="large_vessel_outlet_node_coordinates",
+            kind="any",
+            default=[],
+            help="Pick the large-vessel outlet node nearest to these (z, y, x) coordinates when the coordinates method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+        ),
         # The volume boxes below apply whenever a role's selection method is
         # "volume"; that choice is the switch, so there is no separate flag.
         Setting(
@@ -1292,6 +1348,22 @@ SCHEMA = Schema(
             unit="um",
         ),
         Setting(
+            name="large_vessel_inlet_node_volumes",
+            kind="any",
+            default=[],
+            help="Select the large-vessel inlet node falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+        ),
+        Setting(
+            name="large_vessel_outlet_node_volumes",
+            kind="any",
+            default=[],
+            help="Select the large-vessel outlet node falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+        ),
+        Setting(
             # The pipeline fills these in place (`inlet_nodes[:] = []`), so
             # they must stay mutable lists rather than fixed-length tuples.
             name="inlet_nodes",
@@ -1322,6 +1394,28 @@ SCHEMA = Schema(
             kind="any",
             default=[],
             help="Hold the venule boundary node IDs chosen during the run; leave empty to let the pipeline fill it",
+            section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
+        ),
+        Setting(
+            # Not to be confused with large_arteriole_boundary_nodes below,
+            # which is the Large_Art/Art hand-off point inside a network that
+            # already spans both tiers -- this is the large-vessel network's
+            # own inlet, the same role inlet_nodes plays for the rest of the
+            # network. Also copied into inlet_nodes; kept here too so its own
+            # Boundaries sub-tab has something to show for what was picked.
+            name="large_vessel_inlet_nodes",
+            kind="any",
+            default=[],
+            help="Hold the large-vessel inlet node ID chosen during the run; leave empty to let the pipeline fill it",
+            section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
+        ),
+        Setting(
+            name="large_vessel_outlet_nodes",
+            kind="any",
+            default=[],
+            help="Hold the large-vessel outlet node ID chosen during the run; leave empty to let the pipeline fill it",
             section=_BOUNDARY_ASSIGNMENT,
             advanced=True,
         ),

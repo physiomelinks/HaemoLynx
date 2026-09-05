@@ -74,6 +74,7 @@ from .large_vessels import (
 from .cut_at_large_vessel_volumes import cut_graph_at_large_vessel_volumes
 from .large_vessel_network import (
     find_large_vessel_mask_stump_points,
+    select_large_vessel_mask_stump_terminal_nodes_for_role,
     select_large_vessel_stump_terminal_nodes,
 )
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, insert_thick_vessel_junction_nodes
@@ -160,6 +161,7 @@ __all__ = [
     "remove_small_opposite_attached_large_vessel_components",
     "cut_graph_at_large_vessel_volumes",
     "find_large_vessel_mask_stump_points",
+    "select_large_vessel_mask_stump_terminal_nodes_for_role",
     "select_large_vessel_stump_terminal_nodes",
     "IS_ZERO_RESISTANCE",
     "insert_thick_vessel_junction_nodes",

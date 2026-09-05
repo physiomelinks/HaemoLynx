@@ -760,6 +760,39 @@ def build_network(
     )
 
 
+def _large_vessel_role_terminal_nodes(
+    G: nx.Graph,
+    image_shape: tuple[int, ...],
+    settings: dict,
+    voxel_size_zyx: tuple[float, float, float],
+    *,
+    role: str,
+    mask: np.ndarray,
+    node_role: str,
+) -> list:
+    """One large-vessel-network side's terminal node(s): mask stump, or override.
+
+    ``large_vessel_inlet``/``large_vessel_outlet`` default to "mask_stump" --
+    read straight off the mask's own image-edge geometry -- but can be
+    overridden with any of the same methods (coordinates, volume, ...) the
+    other four boundary roles use, via :func:`graph.select_boundary_nodes_for_role`.
+    "mask_stump" is intercepted here rather than inside
+    ``graph.boundaries.select_boundary_nodes_by_method``, which stays
+    mask-agnostic.
+    """
+    method = str(settings[f"{role}_node_selection_method"]).strip().lower()
+    if method == "mask_stump":
+        return graph.select_large_vessel_mask_stump_terminal_nodes_for_role(
+            G,
+            mask,
+            node_role=node_role,
+            voxel_size_zyx=voxel_size_zyx,
+            image_shape=image_shape,
+            coordinates_setting_name=f"{role} mask stump",
+        )
+    return graph.select_boundary_nodes_for_role(G, image_shape, settings, role)
+
+
 def assign_boundaries(settings: dict, network: VesselNetwork):
     """Choose the inlet, outlet and vessel-boundary nodes for this network."""
     G = network.graph
@@ -966,14 +999,23 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     "vessel material must stay in the network to be tagged "
                     "Large_Art/Large_Ven, not be cut away."
                 )
-            auto_inlet_nodes, auto_outlet_nodes = (
-                graph.select_large_vessel_stump_terminal_nodes(
-                    G,
-                    large_arteriole_mask=assignment_large_arteriole_mask,
-                    large_venule_mask=assignment_large_venule_mask,
-                    voxel_size_zyx=voxel_size_zyx,
-                    image_shape=image.shape,
-                )
+            auto_inlet_nodes = _large_vessel_role_terminal_nodes(
+                G,
+                image.shape,
+                settings,
+                voxel_size_zyx,
+                role="large_vessel_inlet",
+                mask=assignment_large_arteriole_mask,
+                node_role="inlet",
+            )
+            auto_outlet_nodes = _large_vessel_role_terminal_nodes(
+                G,
+                image.shape,
+                settings,
+                voxel_size_zyx,
+                role="large_vessel_outlet",
+                mask=assignment_large_venule_mask,
+                node_role="outlet",
             )
             logger.info(
                 "Large-vessel network mode: arteriole/venule mask interior "
@@ -1074,6 +1116,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     settings["outlet_nodes"][:] = []
     settings["arteriole_boundary_nodes"][:] = []
     settings["venule_boundary_nodes"][:] = []
+    settings["large_vessel_inlet_nodes"][:] = []
+    settings["large_vessel_outlet_nodes"][:] = []
     if settings["automated_vessel_assignment"]:
         # Use direct terminal-node overlap assignment from vessel masks.
         inlet_nodes = auto_inlet_nodes
@@ -1088,6 +1132,9 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         )
     settings["inlet_nodes"].extend(inlet_nodes)
     settings["outlet_nodes"].extend(outlet_nodes)
+    if settings["assign_large_vessel_branch_orders"] and settings["automated_vessel_assignment"]:
+        settings["large_vessel_inlet_nodes"][:] = list(auto_inlet_nodes)
+        settings["large_vessel_outlet_nodes"][:] = list(auto_outlet_nodes)
     used_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
     if settings["arteriole_boundary_node_coordinates"] or settings["arteriole_boundary_node_volumes"]:
         art_boundary = graph.select_boundary_nodes_for_role(

@@ -546,7 +546,9 @@ def test_between_them_the_pages_place_every_boundary_setting():
 @pytest.mark.parametrize(
     "role,title",
     [("inlet", "Inlet"), ("outlet", "Outlet"),
-     ("arteriole_boundary", "Arteriole"), ("venule_boundary", "Venule")],
+     ("arteriole_boundary", "Arteriole"), ("venule_boundary", "Venule"),
+     ("large_vessel_inlet", "Large vessel inlet"),
+     ("large_vessel_outlet", "Large vessel outlet")],
 )
 def test_a_role_reads_as_a_tab_name(role, title):
     from haemolynx.gui.boundary_picking import role_title
@@ -558,14 +560,39 @@ def test_a_role_reads_as_a_tab_name(role, title):
 
 
 def test_both_autos_off_keeps_every_role_manual_controls_enabled():
-    from haemolynx.gui.boundary_picking import ROLES, role_manual_controls_enabled
+    """Excludes LARGE_VESSEL_NETWORK_ROLES: those two have their own gate,
+    assign_large_vessel_branch_orders, not either auto flag -- see
+    test_large_vessel_network_mode_gates_the_new_roles below."""
+    from haemolynx.gui.boundary_picking import (
+        LARGE_VESSEL_NETWORK_ROLES,
+        ROLES,
+        role_manual_controls_enabled,
+    )
 
     values = {
         "automated_vessel_assignment": False,
         "use_small_vessel_masks_for_boundary_assignment": False,
     }
     for role in ROLES:
+        if role in LARGE_VESSEL_NETWORK_ROLES:
+            continue
         assert role_manual_controls_enabled(role, values) is True, role
+
+
+def test_large_vessel_network_mode_gates_the_new_roles():
+    """Inverted polarity from LARGE_AUTO_ROLES/SMALL_AUTO_ROLES: these two grey
+    while the feature is *off*, since there is nothing to override yet."""
+    from haemolynx.gui.boundary_picking import (
+        LARGE_VESSEL_NETWORK_ROLES,
+        role_manual_controls_enabled,
+    )
+
+    off = {"assign_large_vessel_branch_orders": False}
+    on = {"assign_large_vessel_branch_orders": True}
+    for role in LARGE_VESSEL_NETWORK_ROLES:
+        assert role_manual_controls_enabled(role, {}) is False, role
+        assert role_manual_controls_enabled(role, off) is False, role
+        assert role_manual_controls_enabled(role, on) is True, role
 
 
 def test_large_auto_disables_inlet_and_outlet_only():

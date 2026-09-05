@@ -60,6 +60,10 @@ __all__ = [
     "ROLES",
     "LARGE_AUTO_ROLES",
     "SMALL_AUTO_ROLES",
+    "LARGE_VESSEL_NETWORK_ROLES",
+    "SMALL_VESSEL_OVERRIDES_MANUAL_NOTE",
+    "LARGE_VESSEL_NETWORK_MODE_OFF_NOTE",
+    "DISABLED_ROLE_TOOLTIP",
     "BoundaryPicks",
     "box_from_rectangle",
     "box_outline",
@@ -111,6 +115,14 @@ SMALL_AUTO_ROLES: frozenset[str] = frozenset(
     {"arteriole_boundary", "venule_boundary"}
 )
 
+#: Large-vessel network inlet/outlet: greyed while the feature itself is off,
+#: the opposite polarity from LARGE_AUTO_ROLES/SMALL_AUTO_ROLES above (which
+#: grey when some *other* automation has taken the role over). There is
+#: nothing to override until assign_large_vessel_branch_orders is on.
+LARGE_VESSEL_NETWORK_ROLES: frozenset[str] = frozenset(
+    {"large_vessel_inlet", "large_vessel_outlet"}
+)
+
 
 def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
     """Whether *role*'s manual sub-tab should stay interactive.
@@ -127,7 +139,33 @@ def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
         "use_small_vessel_masks_for_boundary_assignment"
     ):
         return False
+    if role in LARGE_VESSEL_NETWORK_ROLES and not values.get(
+        "assign_large_vessel_branch_orders"
+    ):
+        return False
     return True
+
+
+#: Same wording _widget.py used inline for the small-vessel-mask case, now
+#: shared so a third disabled reason does not need adding to two call sites.
+SMALL_VESSEL_OVERRIDES_MANUAL_NOTE = (
+    "Small-vessel mask assignment overrides manual arteriole/venule "
+    "boundary selection."
+)
+LARGE_VESSEL_NETWORK_MODE_OFF_NOTE = (
+    "Only used when assign_large_vessel_branch_orders is on."
+)
+
+#: Why a role's sub-tab/actions are greyed, keyed by role. One lookup instead
+#: of an if/elif duplicated at both call sites in _widget.py.
+DISABLED_ROLE_TOOLTIP: dict[str, str] = {
+    "inlet": AUTOMATED_OVERRIDES_MANUAL_NOTE,
+    "outlet": AUTOMATED_OVERRIDES_MANUAL_NOTE,
+    "arteriole_boundary": SMALL_VESSEL_OVERRIDES_MANUAL_NOTE,
+    "venule_boundary": SMALL_VESSEL_OVERRIDES_MANUAL_NOTE,
+    "large_vessel_inlet": LARGE_VESSEL_NETWORK_MODE_OFF_NOTE,
+    "large_vessel_outlet": LARGE_VESSEL_NETWORK_MODE_OFF_NOTE,
+}
 
 
 BC_COORDINATES = f"{PREFIX}BC coordinates"

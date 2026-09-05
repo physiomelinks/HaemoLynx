@@ -333,6 +333,18 @@ BOUNDARY_ROLE_SETTINGS: dict[str, dict[str, str]] = {
         "volume_boxes": "venule_boundary_node_volumes",
         "node_role": "outlet",
     },
+    "large_vessel_inlet": {
+        "method": "large_vessel_inlet_node_selection_method",
+        "coordinates": "large_vessel_inlet_node_coordinates",
+        "volume_boxes": "large_vessel_inlet_node_volumes",
+        "node_role": "inlet",
+    },
+    "large_vessel_outlet": {
+        "method": "large_vessel_outlet_node_selection_method",
+        "coordinates": "large_vessel_outlet_node_coordinates",
+        "volume_boxes": "large_vessel_outlet_node_volumes",
+        "node_role": "outlet",
+    },
 }
 
 

@@ -570,9 +570,10 @@ def test_there_is_one_sub_tab_per_role(panel):
     widget, viewer, bc = panel
     tabs = bc.state.tabs
 
-    assert tabs.count() == 4
-    assert [tabs.tabText(i) for i in range(4)] == [
-        "Inlet", "Outlet", "Arteriole", "Venule"
+    assert tabs.count() == len(ROLES)
+    assert [tabs.tabText(i) for i in range(tabs.count())] == [
+        "Inlet", "Outlet", "Arteriole", "Venule",
+        "Large vessel inlet", "Large vessel outlet",
     ]
 
 
@@ -599,7 +600,7 @@ def test_large_auto_greys_inlet_and_outlet_role_tabs(panel):
     # Grey out, do not hide: tab bar entries remain present.
     assert tabs.isTabVisible(0) is True
     assert tabs.isTabVisible(1) is True
-    assert tabs.count() == 4
+    assert tabs.count() == len(ROLES)
 
 
 def test_small_auto_greys_arteriole_and_venule_role_tabs(panel):
@@ -618,10 +619,13 @@ def test_small_auto_greys_arteriole_and_venule_role_tabs(panel):
     assert enabled["outlet"] is False
     assert tabs.isTabVisible(2) is True
     assert tabs.isTabVisible(3) is True
-    assert tabs.count() == 4
+    assert tabs.count() == len(ROLES)
 
 
 def test_both_autos_off_enables_every_role_tab(panel):
+    """large_vessel_inlet/outlet stay disabled here -- they gate on
+    assign_large_vessel_branch_orders, not either of these two flags; see
+    test_large_vessel_network_mode_toggles_the_new_role_tabs below."""
     widget, viewer, bc = panel
     rows = rows_of(widget)
 
@@ -634,7 +638,26 @@ def test_both_autos_off_enables_every_role_tab(panel):
         "outlet": True,
         "arteriole_boundary": True,
         "venule_boundary": True,
+        "large_vessel_inlet": False,
+        "large_vessel_outlet": False,
     }
+
+
+def test_large_vessel_network_mode_toggles_the_new_role_tabs(panel):
+    """Inverted polarity: greyed while the feature is off, enabled once on --
+    the opposite of the automated-assignment gates above."""
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["large_vessel_inlet"] is False
+    assert enabled["large_vessel_outlet"] is False
+
+    rows["assign_large_vessel_branch_orders"].value = True
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["large_vessel_inlet"] is True
+    assert enabled["large_vessel_outlet"] is True
 
 
 def test_choosing_a_sub_tab_chooses_the_role(panel):
@@ -795,7 +818,7 @@ def test_each_role_has_its_own_copy_of_a_control(panel, control):
     widget, viewer, bc = panel
     natives = {getattr(bc.actions[role], control).native for role in ROLES}
 
-    assert len(natives) == 4
+    assert len(natives) == len(ROLES)
     page = bc.state.tabs.widget(1)
     own = getattr(bc.actions["outlet"], control).native
     assert own in page.findChildren(type(own))

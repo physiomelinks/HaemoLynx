@@ -190,6 +190,10 @@ boundary_assignment:
   arteriole_boundary_selection_method: coordinates
   # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
   venule_boundary_selection_method: coordinates
+  # Choose how the large-vessel network's inlet node is picked. mask_stump reads it from the large arteriole mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, mask_stump; needs assign_large_vessel_branch_orders]
+  large_vessel_inlet_node_selection_method: mask_stump
+  # Choose how the large-vessel network's outlet node is picked. mask_stump reads it from the large venule mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, mask_stump; needs assign_large_vessel_branch_orders]
+  large_vessel_outlet_node_selection_method: mask_stump
   # Split inlets from outlets along this array axis when the edge_percent method is used (0=z, 1=y, 2=x)  [range 0..2]
   boundary_axis: 1
   # Take inlets from the terminals in this much of the network, measured from its start along the boundary axis  [percent; range 0.0..100.0]
@@ -206,6 +210,10 @@ boundary_assignment:
   arteriole_boundary_node_coordinates: []
   # Pick venule boundary nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   venule_boundary_node_coordinates: []
+  # Pick the large-vessel inlet node nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
+  large_vessel_inlet_node_coordinates: []
+  # Pick the large-vessel outlet node nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
+  large_vessel_outlet_node_coordinates: []
   # Select inlet nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   inlet_node_volumes: []
   # Select outlet nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
@@ -214,6 +222,10 @@ boundary_assignment:
   arteriole_boundary_node_volumes: []
   # Select venule boundary nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   venule_boundary_node_volumes: []
+  # Select the large-vessel inlet node falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
+  large_vessel_inlet_node_volumes: []
+  # Select the large-vessel outlet node falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
+  large_vessel_outlet_node_volumes: []
   # Hold the inlet node IDs chosen during the run; leave empty to let the pipeline fill it
   inlet_nodes: []
   # Hold the outlet node IDs chosen during the run; leave empty to let the pipeline fill it
@@ -222,6 +234,10 @@ boundary_assignment:
   arteriole_boundary_nodes: []
   # Hold the venule boundary node IDs chosen during the run; leave empty to let the pipeline fill it
   venule_boundary_nodes: []
+  # Hold the large-vessel inlet node ID chosen during the run; leave empty to let the pipeline fill it
+  large_vessel_inlet_nodes: []
+  # Hold the large-vessel outlet node ID chosen during the run; leave empty to let the pipeline fill it
+  large_vessel_outlet_nodes: []
   # Hold the Large_Art/Art hand-off node IDs chosen during the run; leave empty to let the pipeline fill it
   large_arteriole_boundary_nodes: []
   # Hold the Ven/Large_Ven hand-off node IDs chosen during the run; leave empty to let the pipeline fill it

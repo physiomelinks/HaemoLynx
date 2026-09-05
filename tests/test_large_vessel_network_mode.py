@@ -7,6 +7,7 @@ import networkx as nx
 
 from haemolynx.graph.large_vessel_network import (
     find_large_vessel_mask_stump_points,
+    select_large_vessel_mask_stump_terminal_nodes_for_role,
     select_large_vessel_stump_terminal_nodes,
 )
 from haemolynx.pipeline import default_schema
@@ -94,6 +95,31 @@ def test_select_large_vessel_stump_terminal_nodes_ignores_interior_dead_end():
     assert outlets == []
 
 
+def test_select_large_vessel_mask_stump_terminal_nodes_for_role_matches_the_two_sided_call():
+    """select_large_vessel_stump_terminal_nodes is now a thin wrapper calling
+    this once per side -- pinned equal for one side, on the same fixture."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 5.0, 5.0))
+    G.add_node(1, pos=(3.0, 5.0, 5.0))
+    G.add_node(2, pos=(3.0, 9.0, 5.0))
+    G.add_edge(0, 1, key=0)
+    G.add_edge(1, 2, key=0)
+
+    arteriole_mask = np.zeros((10, 10, 10), dtype=bool)
+    arteriole_mask[0:5, 4:6, 4:6] = True
+
+    inlets = select_large_vessel_mask_stump_terminal_nodes_for_role(
+        G,
+        arteriole_mask,
+        node_role="inlet",
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        image_shape=(10, 10, 10),
+        coordinates_setting_name="large_arteriole_mask stump",
+    )
+
+    assert inlets == [0]
+
+
 def _assign_boundaries_settings(**overrides):
     schema = default_schema()
     settings = schema.defaults()
@@ -172,6 +198,7 @@ def test_assign_boundaries_large_vessel_network_mode_populates_large_boundary_no
     # Not cut: every original edge (and its interior-mask voxels) survives.
     assert boundaries.graph.number_of_edges() == before_edges
     assert settings["inlet_nodes"] == [0]
+    assert settings["large_vessel_inlet_nodes"] == [0], "mask_stump is the default method"
     assert settings["large_arteriole_boundary_nodes"]
     assert settings["large_venule_boundary_nodes"]
 
@@ -196,3 +223,51 @@ def test_assign_boundaries_logs_large_vessel_network_behaviour_change(tmp_path, 
         assign_boundaries(settings, network)
 
     assert any("Large-vessel network mode" in record.message for record in caplog.records)
+
+
+# --- large_vessel_inlet/outlet: mask_stump default vs. a manual override ----
+
+
+def _chain_with_large_vessel_masks_and_extra_terminal():
+    """Like _chain_with_large_vessel_masks, but with a spur off node 5 ending
+    at a degree-1 node that touches neither mask -- a candidate a manual
+    override can point at, distinct from the arteriole mask's own stump."""
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    G.add_node(10, pos=(5.0, 8.0, 5.0))
+    G.add_edge(5, 10, key=0, voxels=[(5.0, 5.0, 5.0), (5.0, 8.0, 5.0)], length=3.0)
+    return G, arteriole, venule
+
+
+def test_large_vessel_inlet_override_replaces_the_mask_stump(tmp_path):
+    """large_vessel_inlet_node_selection_method defaults to mask_stump; the
+    other four boundary roles' methods (coordinates here) override it with a
+    manual pick, exactly as for inlet/outlet/arteriole_boundary/venule_boundary."""
+    G, arteriole, venule = _chain_with_large_vessel_masks_and_extra_terminal()
+    network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path,
+        large_vessel_inlet_node_selection_method="coordinates",
+        large_vessel_inlet_node_coordinates=[[5.0, 8.0, 5.0]],
+    )
+
+    assign_boundaries(settings, network)
+
+    assert settings["inlet_nodes"] == [10], "the override, not the mask's own stump (node 0)"
+    assert settings["large_vessel_inlet_nodes"] == [10]
+
+
+def test_large_vessel_outlet_still_falls_back_to_mask_stump_when_only_the_inlet_is_overridden(
+    tmp_path,
+):
+    G, arteriole, venule = _chain_with_large_vessel_masks_and_extra_terminal()
+    network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path,
+        large_vessel_inlet_node_selection_method="coordinates",
+        large_vessel_inlet_node_coordinates=[[5.0, 8.0, 5.0]],
+    )
+
+    assign_boundaries(settings, network)
+
+    assert settings["outlet_nodes"] == [9], "untouched: still the venule mask's own stump"
+    assert settings["large_vessel_outlet_nodes"] == [9]
