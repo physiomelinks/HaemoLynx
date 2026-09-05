@@ -72,6 +72,7 @@ from .large_vessels import (
     remove_small_opposite_attached_large_vessel_components,
 )
 from .cut_at_large_vessel_volumes import cut_graph_at_large_vessel_volumes
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE, insert_thick_vessel_junction_nodes
 from .mask_component_volume import (
     remove_small_mask_components_by_volume,
     remove_small_vessel_components_by_volume,
@@ -154,6 +155,8 @@ __all__ = [
     "exclude_smaller_overlapping_small_vessel_components",
     "remove_small_opposite_attached_large_vessel_components",
     "cut_graph_at_large_vessel_volumes",
+    "IS_ZERO_RESISTANCE",
+    "insert_thick_vessel_junction_nodes",
     "remove_small_mask_components_by_volume",
     "remove_small_vessel_components_by_volume",
     "remove_edges_for_self_connected_nodes",

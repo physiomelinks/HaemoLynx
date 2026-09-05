@@ -1659,6 +1659,24 @@ SCHEMA = Schema(
             placeholder="auto",
         ),
         Setting(
+            name="skeleton_thick_vessel_max_bridge_radius_multiple",
+            kind="float",
+            default=4.0,
+            help=(
+                "How far, as a multiple of the fat-region radius, a thin "
+                "vessel arm may bridge to reach the fat centreline. A thin "
+                "vessel should merge into a fat one near where it actually "
+                "touches it; without a cap the nearest-in-Euclidean-distance "
+                "point on the ridge can sit arbitrarily far along the fat "
+                "trunk's own length. An arm past this limit stays "
+                "disconnected rather than drawing an implausibly long bridge"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
+        Setting(
             name="smooth_centrelines",
             kind="bool",
             default=True,

@@ -96,6 +96,9 @@ DIMENSIONLESS = {
     "constriction_by_branch_order",
     "fwhm_min_total_extent_multiplier",
     "fwhm_same_edge_arc_window_multiplier",
+    # A multiple of the fat-region radius, not a distance itself -- the
+    # radius it scales is already in microns.
+    "skeleton_thick_vessel_max_bridge_radius_multiple",
     # Label sentinels written into the int32 branch-label volume.
     "fwhm_background_label",
     "fwhm_junction_label",

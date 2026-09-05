@@ -122,6 +122,9 @@ class SkeletonisedVolume:
     voxel_size_xyz: tuple[float, float, float]
     voxel_size_zyx: tuple[float, float, float]
     output_dir: Path
+    #: The fat/thick vessel region from thickness-gated skeletonisation, if
+    #: that ran; None otherwise (including a resume that skipped it).
+    thick_vessel_mask: np.ndarray | None = None
 
 
 @dataclass
@@ -357,8 +360,14 @@ def _load_volume_for_skeletonise(settings: dict, input_format: str):
     return image, metadata_voxel_size, voxel_meta_status
 
 
-def _skeletonize_loaded_mask(image, settings: dict, voxel_size_xyz) -> np.ndarray:
-    """Lee on the whole mask, or a thickness-gated tree when the GUI toggle is on."""
+def _skeletonize_loaded_mask(
+    image, settings: dict, voxel_size_xyz
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Lee on the whole mask, or a thickness-gated tree when the GUI toggle is on.
+
+    Returns ``(skeleton, thick_vessel_mask)`` -- the mask is None on the
+    plain-Lee path, where there is no fat/thin split at all.
+    """
     if settings["use_thick_vessel_skeletonisation"]:
         binary = _to_binary_volume_for_skeletonization(image)
         return preprocessing.skeletonize_thickness_gated(
@@ -370,8 +379,12 @@ def _skeletonize_loaded_mask(image, settings: dict, voxel_size_xyz) -> np.ndarra
             fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
             wall_absorption_um=settings["skeleton_thick_vessel_wall_absorption_um"],
             flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
+            max_bridge_radius_multiple=settings[
+                "skeleton_thick_vessel_max_bridge_radius_multiple"
+            ],
+            return_thick_mask=True,
         )
-    return _skeletonize_loaded_volume(image)
+    return _skeletonize_loaded_volume(image), None
 
 
 def skeletonise(settings: dict, inputs: SegmentedInputs):
@@ -387,6 +400,10 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     projection_path = settings["plot_dir"] / "skeleton_projection.png"
     if not settings["plot_dir"].exists():
         settings["plot_dir"].mkdir(parents=True, exist_ok=True)
+
+    # Only a fresh skeletonise run can produce this; a loaded (resumed)
+    # skeleton has no mask saved alongside it.
+    thick_vessel_mask: np.ndarray | None = None
 
     if settings["do_skeletonize"]:
         image, metadata_voxel_size, voxel_meta_status = _load_volume_for_skeletonise(
@@ -410,8 +427,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 "Thickness-gated skeletonisation: "
                 "centreline tree on fat vessels, Lee on the rest"
             )
-        skeleton = _skeletonize_loaded_mask(image, settings, voxel_size)
-        
+        skeleton, thick_vessel_mask = _skeletonize_loaded_mask(image, settings, voxel_size)
+
         preprocessing.log_skeleton_connectivity_stats(
             "raw",
             skeleton,
@@ -491,6 +508,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         voxel_size_xyz=main_voxel_size_xyz,
         voxel_size_zyx=io.voxel_size_zyx_from_xyz(main_voxel_size_xyz),
         output_dir=output_dir,
+        thick_vessel_mask=thick_vessel_mask,
     )
 
 
@@ -663,6 +681,18 @@ def build_network(
                 method=settings["centreline_smoothing_method"],
                 iterations=settings["centreline_smoothing_iterations"],
                 max_deviation=settings["centreline_max_deviation"],
+            )
+
+        # Last thing before the graph is saved, after every topology step and
+        # the centreline smoothing above: a thin-vessel-to-fat-vessel join
+        # became one merged edge running through the fat interior with no
+        # marker of where the real thin vessel ends and the fat vessel's own
+        # centreline begins. Splitting here, once, on the fully-built graph
+        # avoids protecting anything through five separate degree-2/collapse/
+        # prune passes -- see graph.insert_thick_vessel_junction_nodes.
+        if volume.thick_vessel_mask is not None:
+            G = graph.insert_thick_vessel_junction_nodes(
+                G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx
             )
 
         with graph_path.open("wb") as f:

@@ -30,6 +30,7 @@ from haemolynx.preprocessing import (
     thick_vessel_object_mask,
 )
 from haemolynx.preprocessing.thick_vessels import (
+    _build_dijkstra_graph,
     _cover_around_path,
     _dijkstra_parents,
     _geodesic_on_crop,
@@ -300,6 +301,42 @@ def test_gated_skeletonisation_matches_lee_when_nothing_is_fat():
         mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
     )
     assert np.array_equal(gated, lee)
+
+
+def test_return_thick_mask_defaults_to_a_bare_array():
+    """Every existing caller must keep getting a bare array back."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    result = skeletonize_thickness_gated(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    assert isinstance(result, np.ndarray)
+
+
+def test_return_thick_mask_reports_the_fat_catchment_when_requested():
+    mask, fat_roi = plasma_labelled_object(8.0)
+    skeleton, thick = skeletonize_thickness_gated(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        return_thick_mask=True,
+    )
+    assert isinstance(skeleton, np.ndarray) and skeleton.dtype == bool
+    assert isinstance(thick, np.ndarray) and thick.dtype == bool
+    assert thick.any()
+    covered_fat = int((fat_roi & thick).sum()) / int(fat_roi.sum())
+    assert covered_fat > 0.7
+
+
+def test_return_thick_mask_is_none_when_nothing_is_fat():
+    mask = capillary_only_object()
+    skeleton, thick = skeletonize_thickness_gated(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        return_thick_mask=True,
+    )
+    assert isinstance(skeleton, np.ndarray)
+    assert thick is None
 
 
 def test_gated_skeletonisation_collapses_the_fat_sheet_and_keeps_capillaries():
@@ -802,6 +839,63 @@ def test_join_skips_silently_when_the_arms_own_component_has_no_fat(caplog):
     assert not any("Could not join" in record.message for record in caplog.records)
 
 
+def _distant_arm_fixture(shape=(1, 1, 30), *, distance: int = 20):
+    """A single fat voxel, a single thin-arm voxel *distance* apart, and a
+    straight corridor between them so a join is possible if not capped."""
+    thick = np.zeros(shape, dtype=bool)
+    thick[0, 0, 0] = True
+    thin_skel = np.zeros(shape, dtype=bool)
+    thin_skel[0, 0, distance] = True
+    allowed = np.zeros(shape, dtype=bool)
+    allowed[0, 0, 0 : distance + 1] = True
+    skeleton = thick | thin_skel
+    return skeleton, thick, allowed
+
+
+def test_a_bridge_past_the_distance_cap_is_left_disconnected():
+    """A thin arm should merge into a fat vessel near where it touches it,
+    not bridge to an arbitrarily distant point on the fat ridge."""
+    skeleton, thick, allowed = _distant_arm_fixture(distance=20)
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton,
+        thick,
+        allowed,
+        min_arm_extent_voxels=0.0,
+        max_bridge_distance_voxels=10.0,
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 2, "arm must stay a separate component, not bridged"
+    assert int(joined.sum()) == 2, "no corridor voxels should have been drawn"
+
+
+def test_a_bridge_within_the_distance_cap_still_joins():
+    skeleton, thick, allowed = _distant_arm_fixture(distance=20)
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton,
+        thick,
+        allowed,
+        min_arm_extent_voxels=0.0,
+        max_bridge_distance_voxels=30.0,
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 1, "arm must be bridged when within the cap"
+
+
+def test_no_cap_leaves_the_join_search_unbounded_as_before():
+    skeleton, thick, allowed = _distant_arm_fixture(distance=20)
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, allowed, min_arm_extent_voxels=0.0
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 1
+
+
 def test_join_fallback_stays_fast_in_a_large_image_with_unrelated_content():
     """A join needing the full-mask fallback must not scan the whole image.
 
@@ -999,3 +1093,112 @@ def test_geodesic_on_crop_precomputed_cost_matches_computing_it_fresh():
 
     assert fresh_path == cached_path
     assert len(fresh_path) > 2
+
+
+def test_geodesic_on_crop_precomputed_graph_matches_computing_it_fresh():
+    """A cached Dijkstra graph must give the identical path to computing it fresh.
+
+    _build_dijkstra_graph lets _join_thin_arms_to_fat_ridge's fallback skip
+    rebuilding the sparse 26-neighbour graph (the expensive part of a
+    Dijkstra call, not the walk itself) for every arm sharing one physically
+    connected structure. Passing a precomputed graph must not change the
+    result -- only whether it gets rebuilt.
+    """
+    shape = (3, 21, 21)
+    allowed = np.zeros(shape, dtype=bool)
+    z = 1
+    cy, cx = 10, 10
+    outer_r, inner_r = 9, 8
+    yy, xx = np.indices((21, 21))
+    ring = ((yy - cy) ** 2 + (xx - cx) ** 2 <= outer_r**2) & (
+        (yy - cy) ** 2 + (xx - cx) ** 2 >= inner_r**2
+    )
+    allowed[z] = ring
+
+    def _snap(point):
+        coords = np.argwhere(allowed)
+        d = np.sum((coords - np.array(point)) ** 2, axis=1)
+        return tuple(int(v) for v in coords[np.argmin(d)])
+
+    start = _snap((z, cy, cx + outer_r - 1))
+    end = _snap((z, cy, cx - (outer_r - 1)))
+
+    from scipy.ndimage import distance_transform_edt
+
+    fresh_path = _geodesic_on_crop(allowed, start, end)
+
+    edt = distance_transform_edt(allowed)
+    cost = np.where(allowed, 1.0 / (np.square(edt) + 1e-6), np.inf)
+    graph = _build_dijkstra_graph(allowed, cost)
+    cached_path = _geodesic_on_crop(allowed, start, end, precomputed_graph=graph)
+
+    assert fresh_path == cached_path
+
+
+def test_path_through_mask_reuses_one_fallback_graph_across_several_arms():
+    """The fallback's cached graph must stay correct for more than one pair.
+
+    A horseshoe (a ring with a small gap) forces the true full-mask fallback
+    for two different (start, end) pairs on either side of the gap -- corridor
+    dilation and the tight padded box around each pair both fail, since the
+    only real path goes the long way around, well outside either. Both pairs
+    share the same physically connected structure, the way two different
+    arms of one fat vessel would, so a caller (_join_thin_arms_to_fat_ridge)
+    builds the Dijkstra graph once and reuses it. This checks two things at
+    once: the graph is actually built only once, and reusing it still gives
+    a correct, connected path for the second pair, not a stale one.
+    """
+    shape = (3, 200, 200)
+    allowed = np.zeros(shape, dtype=bool)
+    z = 1
+    cy, cx = 100, 100
+    outer_r, inner_r = 80, 70
+    yy, xx = np.indices((200, 200))
+    dist2 = (yy - cy) ** 2 + (xx - cx) ** 2
+    ring = (dist2 <= outer_r**2) & (dist2 >= inner_r**2)
+    angle = np.degrees(np.arctan2(yy - cy, xx - cx))
+    gap = (angle > -6) & (angle < 6)
+    allowed[z] = ring & ~gap
+
+    def _snap(point):
+        coords = np.argwhere(allowed)
+        d = np.sum((coords - np.array(point)) ** 2, axis=1)
+        return tuple(int(v) for v in coords[np.argmin(d)])
+
+    from scipy.ndimage import distance_transform_edt
+
+    built: dict = {}
+    build_calls = {"n": 0}
+
+    def fallback_graph_fn():
+        if "graph" not in built:
+            build_calls["n"] += 1
+            edt = distance_transform_edt(allowed)
+            cost = np.where(allowed, 1.0 / (np.square(edt) + 1e-6), np.inf)
+            built["graph"] = _build_dijkstra_graph(allowed, cost)
+        return built["graph"]
+
+    import math
+
+    r_mid = (outer_r + inner_r) / 2
+
+    def point_at(degrees):
+        rad = math.radians(degrees)
+        return (
+            z,
+            int(round(cy + r_mid * math.sin(rad))),
+            int(round(cx + r_mid * math.cos(rad))),
+        )
+
+    for degrees_start, degrees_end in ((8, -8), (10, -10)):
+        start = _snap(point_at(degrees_start))
+        end = _snap(point_at(degrees_end))
+        path = _path_through_mask(start, end, allowed, fallback_graph_fn=fallback_graph_fn)
+        assert len(path) > 2, "join must not silently give up as a bare [start, end]"
+        assert all(allowed[p] for p in path), "every joined voxel must be foreground"
+        assert all(
+            max(abs(a - b) for a, b in zip(path[i], path[i + 1])) <= 1
+            for i in range(len(path) - 1)
+        ), "path must be a real 26-connected walk, not a straight-line jump"
+
+    assert build_calls["n"] == 1, "the graph must be built once, not once per arm"

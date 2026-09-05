@@ -24,7 +24,7 @@ from __future__ import annotations
 import gc
 import logging
 import time
-from typing import Callable, Iterable
+from typing import Iterable
 
 import numpy as np
 from scipy.ndimage import (
@@ -387,32 +387,26 @@ def _skeletonize_foreground(mask: np.ndarray) -> np.ndarray:
     return result
 
 
-def _dijkstra_parents(
-    binary: np.ndarray,
-    cost: np.ndarray,
-    root: tuple[int, int, int],
-) -> tuple[np.ndarray, np.ndarray, _ForegroundIndex] | None:
-    """Sparse 26-connected Dijkstra on foreground voxels of *binary*.
+def _build_dijkstra_graph(binary: np.ndarray, cost: np.ndarray):
+    """The sparse 26-neighbour weighted graph over foreground voxels of *binary*.
 
-    Returns ``(parent, fg_coords, index_of)`` where *parent* and *fg_coords*
-    are length-N (N = foreground count) and *index_of* maps a voxel in the
-    array to that compact id, or -1. ``None`` if *root* is not foreground.
+    This -- not the Dijkstra walk itself -- is the expensive part of a call
+    to :func:`_dijkstra_parents` on a large crop: it means a Python loop over
+    26 neighbour offsets, boolean masking and an ``_ForegroundIndex`` build
+    (sorting all foreground coordinates), all sized to the crop. A caller
+    that runs several Dijkstra calls on the same (*binary*, *cost*) pair with
+    a different *root* each time -- :func:`_join_thin_arms_to_fat_ridge`'s
+    fallback, once per arm that needs it in a given physically connected
+    structure -- should build this once and pass it back in via
+    *precomputed_graph*, rather than pay for an identical rebuild per call
+    (measured at ~90% of the per-call cost on a ~840k-voxel crop).
 
-    Arrays are sized to the foreground, not ``prod(shape)``: a microscopy
-    stack must not allocate a float64 per background voxel. Neighbour lookup
-    uses packed ``z,y,x`` keys and ``searchsorted`` rather than a dense
-    ``index_of`` volume. The walk itself is SciPy's C Dijkstra on a
-    26-neighbour CSR graph of those voxels.
+    Returns ``(graph, fg_coords, index_of)`` -- see :func:`_dijkstra_parents`.
     """
     binary_f = np.asarray(binary, dtype=bool)
     fg_coords = np.argwhere(binary_f)
     n_fg = int(fg_coords.shape[0])
-    if n_fg == 0:
-        return None
     index_of = _ForegroundIndex(fg_coords, binary_f.shape)
-    root_i = int(index_of[root])
-    if root_i < 0:
-        return None
 
     zyx = fg_coords.astype(np.intp, copy=False)
     z_max, y_max, x_max = binary_f.shape
@@ -457,6 +451,43 @@ def _dijkstra_parents(
         graph = csr_matrix((weights_all, (rows, cols)), shape=(n_fg, n_fg))
     else:
         graph = csr_matrix((n_fg, n_fg))
+    return graph, fg_coords, index_of
+
+
+def _dijkstra_parents(
+    binary: np.ndarray,
+    cost: np.ndarray,
+    root: tuple[int, int, int],
+    *,
+    precomputed_graph=None,
+) -> tuple[np.ndarray, np.ndarray, _ForegroundIndex] | None:
+    """Sparse 26-connected Dijkstra on foreground voxels of *binary*.
+
+    Returns ``(parent, fg_coords, index_of)`` where *parent* and *fg_coords*
+    are length-N (N = foreground count) and *index_of* maps a voxel in the
+    array to that compact id, or -1. ``None`` if *root* is not foreground.
+
+    Arrays are sized to the foreground, not ``prod(shape)``: a microscopy
+    stack must not allocate a float64 per background voxel. Neighbour lookup
+    uses packed ``z,y,x`` keys and ``searchsorted`` rather than a dense
+    ``index_of`` volume. The walk itself is SciPy's C Dijkstra on a
+    26-neighbour CSR graph of those voxels.
+
+    *precomputed_graph*, from :func:`_build_dijkstra_graph`, skips rebuilding
+    that graph -- see its docstring for why that matters for a caller
+    re-running this on the same (*binary*, *cost*) with a different *root*.
+    """
+    if precomputed_graph is not None:
+        graph, fg_coords, index_of = precomputed_graph
+    else:
+        graph, fg_coords, index_of = _build_dijkstra_graph(binary, cost)
+    n_fg = int(fg_coords.shape[0])
+    if n_fg == 0:
+        return None
+    root_i = int(index_of[root])
+    if root_i < 0:
+        return None
+
     _dist, predecessors = dijkstra(
         graph,
         directed=True,
@@ -768,23 +799,28 @@ def _geodesic_on_crop(
     local_end: tuple[int, int, int],
     *,
     precomputed_cost: np.ndarray | None = None,
+    precomputed_graph=None,
 ) -> list[tuple[int, int, int]]:
     """Inverted-EDT geodesic in a cropped boolean mask, or empty if unreachable.
 
     *precomputed_cost* skips the EDT (the expensive part for a large crop)
-    when the caller already has one for this exact *crop* -- see
-    :func:`_path_through_mask`'s *fallback_cost_fn*, cached per physically
-    connected structure across every arm in it rather than recomputed once
-    per arm.
+    when the caller already has one for this exact *crop*. *precomputed_graph*
+    (from :func:`_build_dijkstra_graph`) goes further and also skips building
+    the Dijkstra graph itself -- see :func:`_path_through_mask`'s
+    *fallback_graph_fn*, cached per physically connected structure across
+    every arm in it rather than rebuilt once per arm.
     """
     if not crop[local_start] or not crop[local_end]:
         return []
-    if precomputed_cost is not None:
-        cost = precomputed_cost
+    if precomputed_graph is not None:
+        walked = _dijkstra_parents(crop, None, local_start, precomputed_graph=precomputed_graph)
     else:
-        edt = distance_transform_edt(crop)
-        cost = np.where(crop, 1.0 / (np.square(edt) + 1e-6), np.inf)
-    walked = _dijkstra_parents(crop, cost, local_start)
+        if precomputed_cost is not None:
+            cost = precomputed_cost
+        else:
+            edt = distance_transform_edt(crop)
+            cost = np.where(crop, 1.0 / (np.square(edt) + 1e-6), np.inf)
+        walked = _dijkstra_parents(crop, cost, local_start)
     if walked is None:
         return []
     parent, fg_coords, index_of = walked
@@ -799,7 +835,7 @@ def _path_through_mask(
     end: tuple[int, int, int],
     allowed: np.ndarray,
     *,
-    fallback_cost_fn: Callable[[], np.ndarray] | None = None,
+    fallback_graph_fn=None,
 ) -> list[tuple[int, int, int]]:
     """Geodesic in *allowed* from *start* to *end*, falling back to a straight line.
 
@@ -807,11 +843,13 @@ def _path_through_mask(
     corridor at growing radii, then Dijkstra on the whole of *allowed*. Does not
     allocate a full-stack seeds array just to bbox those points.
 
-    *fallback_cost_fn*, called only if every corridor attempt fails, returns
-    the Dijkstra cost array for the whole of *allowed* (same shape) -- the
-    caller's chance to memoize one EDT across every arm that shares this
-    *allowed* instead of paying for it again per arm, without paying for it
-    at all when (as for most arms) a corridor attempt already succeeds.
+    *fallback_graph_fn*, called only if every corridor attempt fails, returns
+    the Dijkstra graph (from :func:`_build_dijkstra_graph`) for the whole of
+    *allowed* -- the caller's chance to memoize one EDT-and-graph build across
+    every arm that shares this *allowed*, instead of rebuilding an identical
+    graph per arm (the dominant cost when several arms in one physically
+    connected structure all need this fallback), without paying for it at
+    all when (as for most arms) a corridor attempt already succeeds.
     """
     start = tuple(int(v) for v in start)
     end = tuple(int(v) for v in end)
@@ -873,7 +911,7 @@ def _path_through_mask(
         allowed_b,
         start,
         end,
-        precomputed_cost=fallback_cost_fn() if fallback_cost_fn is not None else None,
+        precomputed_graph=fallback_graph_fn() if fallback_graph_fn is not None else None,
     )
     if len(full_path) >= 2:
         return full_path
@@ -893,6 +931,7 @@ def _join_thin_arms_to_fat_ridge(
     allowed: np.ndarray,
     *,
     min_arm_extent_voxels: float = 4.0,
+    max_bridge_distance_voxels: float | None = None,
 ) -> np.ndarray:
     """Connect each thin-vessel skeleton that leaves the fat wall to the fat ridge.
 
@@ -900,6 +939,14 @@ def _join_thin_arms_to_fat_ridge(
     mesh on the fat surface) are dropped. Joining those would draw a sheet of
     chords. A fused capillary does extend, and its Lee polyline must meet the
     ridge.
+
+    *max_bridge_distance_voxels*, when given, caps how far an arm's nearest
+    fat-ridge point may be before the join is refused (arm left
+    disconnected, same as when its own structure has no fat material at
+    all). A thin vessel merging into a fat one should attach near where it
+    actually touches it -- without a cap, the nearest-in-Euclidean-distance
+    ridge point can be arbitrarily far along the fat trunk's own length,
+    which is not the same anatomical event.
     """
     result = np.asarray(skeleton, dtype=bool).copy()
     thick_b = np.asarray(thick, dtype=bool)
@@ -980,21 +1027,23 @@ def _join_thin_arms_to_fat_ridge(
     fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
     fat_now = result & thick_b
 
-    # Memoized per physically-connected structure: the fallback's EDT
-    # depends only on that structure's shape, not on which arm needed it,
-    # so a component with many arms needing the fallback (a real fused
-    # sub-network, not a handful of capillaries) pays for it once instead
-    # of once per arm.
-    cost_cache: dict[int, np.ndarray] = {}
+    # Memoized per physically-connected structure: the fallback's EDT and
+    # Dijkstra graph depend only on that structure's shape, not on which arm
+    # needed it, so a component with many arms needing the fallback (a real
+    # fused sub-network, not a handful of capillaries) pays for building
+    # them once instead of once per arm -- measured at ~90% of the fallback's
+    # per-arm cost on a large component (see _build_dijkstra_graph).
+    graph_cache: dict[int, tuple] = {}
 
-    def _fallback_cost_for(label_key: int, local_mask: np.ndarray) -> np.ndarray:
-        cached = cost_cache.get(label_key)
+    def _fallback_graph_for(label_key: int, local_mask: np.ndarray) -> tuple:
+        cached = graph_cache.get(label_key)
         if cached is not None:
             return cached
         local_edt = distance_transform_edt(local_mask)
         cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
-        cost_cache[label_key] = cost
-        return cost
+        built = _build_dijkstra_graph(local_mask, cost)
+        graph_cache[label_key] = built
+        return built
 
     logger.info(
         "_join_thin_arms_to_fat_ridge: joining up to %d thin-arm components to the "
@@ -1034,6 +1083,21 @@ def _join_thin_arms_to_fat_ridge(
         )
         _d, nn = scoped_kdt.query(pts.astype(np.float64, copy=False), k=1)
         nearest = int(np.argmin(np.atleast_1d(_d)))
+        nearest_distance = float(np.atleast_1d(_d)[nearest])
+        if (
+            max_bridge_distance_voxels is not None
+            and nearest_distance > max_bridge_distance_voxels
+        ):
+            logger.info(
+                "Arm's nearest fat ridge point is %.1f voxels away, past the "
+                "%.1f-voxel bridge cap; left disconnected (a thin vessel "
+                "should merge into a fat vessel near where it actually "
+                "touches it, not bridge to an arbitrarily distant point on "
+                "the ridge).",
+                nearest_distance,
+                max_bridge_distance_voxels,
+            )
+            continue
         start = tuple(int(v) for v in pts[nearest])
         end = tuple(int(v) for v in scoped_fat_coords[int(np.atleast_1d(nn)[nearest])])
         # Search only this arm's own physically connected structure, not the
@@ -1052,7 +1116,7 @@ def _join_thin_arms_to_fat_ridge(
             local_start,
             local_end,
             local_allowed,
-            fallback_cost_fn=lambda: _fallback_cost_for(
+            fallback_graph_fn=lambda: _fallback_graph_for(
                 arm_component_label, local_allowed
             ),
         )
@@ -1110,7 +1174,9 @@ def skeletonize_thickness_gated(
     fill_mask_holes: bool = True,
     wall_absorption_um: float | None = None,
     flake_filter_um: float | None = None,
-) -> np.ndarray:
+    max_bridge_radius_multiple: float | None = None,
+    return_thick_mask: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
     """Lee on the thin catchment; an EDT-ridge tree (every arm) inside the fat catchment.
 
     ``min_radius_um <= 0`` is the current pipeline behaviour: Lee on the whole
@@ -1131,6 +1197,16 @@ def skeletonize_thickness_gated(
     to reach *wall_absorption_um* + *flake_filter_um* beyond its attachment
     point to survive at all -- shortening either recovers shorter real
     vessels at the cost of letting more wall-wrap flakes through.
+
+    *max_bridge_radius_multiple*, when given, caps how far a surviving arm
+    may bridge to reach the fat ridge, as a multiple of *min_radius_um* (the
+    same "local vessel radius" scale *wall_absorption_um*/*flake_filter_um*
+    already use). ``None`` leaves the join search unbounded; see
+    :func:`_join_thin_arms_to_fat_ridge`.
+
+    *return_thick_mask*, when ``True``, returns ``(skeleton, thick)``
+    instead of a bare array -- *thick* is ``None`` on every path that never
+    computed one (``min_radius_um <= 0``, or no fat region found).
     """
     mask = np.asarray(binary, dtype=bool)
     if fill_mask_holes:
@@ -1140,7 +1216,8 @@ def skeletonize_thickness_gated(
             mask = mask.copy()
             mask[bbox] = filled
     if float(min_radius_um) <= 0.0:
-        return skeletonize_volume(mask).astype(bool)
+        skeleton = skeletonize_volume(mask).astype(bool)
+        return (skeleton, None) if return_thick_mask else skeleton
 
     logger.info(
         "skeletonize_thickness_gated: computing fat catchment (input shape %s, "
@@ -1157,7 +1234,8 @@ def skeletonize_thickness_gated(
     )
     t_catchment = time.perf_counter() - t0
     if not thick.any():
-        return skeletonize_volume(mask).astype(bool)
+        skeleton = skeletonize_volume(mask).astype(bool)
+        return (skeleton, None) if return_thick_mask else skeleton
     # thick_vessel_object_mask's own large locals (the radius map, the
     # geodesic body, the wall distance transform -- each up to the size of
     # the input volume) are unreachable now that it has returned, but a big
@@ -1173,6 +1251,11 @@ def skeletonize_thickness_gated(
         min_arm_extent = max(4.0, 0.75 * float(min_radius_um) / max(spacing, 1e-6))
     else:
         min_arm_extent = max(0.0, float(flake_filter_um) / max(spacing, 1e-6))
+    max_bridge_distance = (
+        None
+        if max_bridge_radius_multiple is None
+        else max(0.0, float(max_bridge_radius_multiple) * float(min_radius_um) / max(spacing, 1e-6))
+    )
     result = np.zeros(mask.shape, dtype=bool)
     logger.info(
         "skeletonize_thickness_gated: fat catchment done in %.2fs (%d fat, %d thin "
@@ -1215,6 +1298,7 @@ def skeletonize_thickness_gated(
         thick,
         mask,
         min_arm_extent_voxels=min_arm_extent,
+        max_bridge_distance_voxels=max_bridge_distance,
     ).astype(bool)
     t_join = time.perf_counter() - t3
     logger.info(
@@ -1228,7 +1312,7 @@ def skeletonize_thickness_gated(
         t_ridge,
         t_join,
     )
-    return result
+    return (result, thick) if return_thick_mask else result
 
 
 def needs_thick_vessel_treatment(

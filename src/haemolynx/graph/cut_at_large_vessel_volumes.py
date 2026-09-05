@@ -19,7 +19,14 @@ import numpy as np
 
 from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
-from ._helpers import calculate_path_length, orient_path_from_startpoint
+from ._helpers import (
+    calculate_path_length,
+    densify_polyline,
+    edge_sample_points,
+    next_node_id,
+    orient_path_from_startpoint,
+    points_inside_mask,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,90 +76,6 @@ def _combined_large_vessel_mask(
     return arteriole | venule
 
 
-def _points_inside_mask(
-    points_zyx: np.ndarray,
-    mask: np.ndarray,
-    *,
-    voxel_size_zyx: tuple[float, float, float],
-) -> np.ndarray:
-    """True per point where the physical point falls in a True (interior) mask voxel.
-
-    Vectorized over all of an edge's (densified) sample points at once --
-    the densified polyline can have hundreds of points per edge, and this
-    runs for every edge in the graph on every pipeline run that reaches
-    this stage.
-    """
-    points = np.asarray(points_zyx, dtype=float)
-    if points.ndim != 2 or points.shape[1] != 3:
-        raise ValueError(f"points_zyx must be (N, 3), got shape {points.shape}.")
-    n = points.shape[0]
-    if n == 0:
-        return np.zeros(0, dtype=bool)
-    voxel_size = np.asarray(voxel_size_zyx, dtype=float)
-    if voxel_size.shape != (3,) or np.any(voxel_size <= 0):
-        raise ValueError(
-            f"voxel_size_zyx must be three positive values, got {voxel_size_zyx}."
-        )
-    idx = np.rint(points / voxel_size).astype(int)
-    mask_shape = np.asarray(mask.shape, dtype=int)
-    in_bounds = np.all((idx >= 0) & (idx < mask_shape), axis=1)
-    inside = np.zeros(n, dtype=bool)
-    valid = idx[in_bounds]
-    if valid.size:
-        inside[in_bounds] = mask[valid[:, 0], valid[:, 1], valid[:, 2]]
-    return inside
-
-
-def _edge_sample_points(
-    u: Any,
-    v: Any,
-    edge_data: dict[str, Any],
-    node_pos: dict[Any, np.ndarray],
-) -> np.ndarray:
-    """Physical polyline for an edge, oriented from ``u`` toward ``v``."""
-    pos_u = np.asarray(node_pos[u], dtype=float)
-    pos_v = np.asarray(node_pos[v], dtype=float)
-    voxels = edge_data.get("voxels")
-    if voxels is not None:
-        arr = np.asarray(voxels, dtype=float)
-        if arr.ndim == 2 and arr.shape[1] == 3 and arr.shape[0] > 0:
-            oriented = orient_path_from_startpoint(arr.tolist(), pos_u)
-            return np.asarray(oriented, dtype=float)
-    return np.vstack([pos_u.reshape(1, 3), pos_v.reshape(1, 3)])
-
-
-def _densify_polyline(
-    points: np.ndarray,
-    *,
-    max_step_um: float,
-) -> np.ndarray:
-    """Sample a polyline so consecutive points are at most ``max_step_um`` apart.
-
-    Sparse centreline voxels (or a two-endpoint fallback) can leave a straight
-    segment with both ends outside a mask while every interior mask voxel along
-    the chord is missed. Densifying before the inside/outside test catches those
-    crossings.
-    """
-    if max_step_um <= 0:
-        raise ValueError(f"max_step_um must be > 0, got {max_step_um}.")
-    arr = np.asarray(points, dtype=float)
-    if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] == 0:
-        return arr
-    if arr.shape[0] == 1:
-        return arr
-    dense: list[np.ndarray] = [arr[0]]
-    for start, end in zip(arr[:-1], arr[1:]):
-        segment = end - start
-        length = float(np.linalg.norm(segment))
-        if length <= max_step_um:
-            dense.append(end)
-            continue
-        steps = int(np.ceil(length / max_step_um))
-        for step in range(1, steps + 1):
-            dense.append(start + (step / steps) * segment)
-    return np.asarray(dense, dtype=float)
-
-
 def _exterior_runs(inside_flags: list[bool]) -> list[tuple[int, int]]:
     """Inclusive index ranges of contiguous exterior (not-inside) samples.
 
@@ -170,15 +93,6 @@ def _exterior_runs(inside_flags: list[bool]) -> list[tuple[int, int]]:
     if start is not None:
         runs.append((start, len(inside_flags) - 1))
     return runs
-
-
-def _next_node_id(G: nx.MultiGraph, reserved: set[Any]) -> int:
-    numeric = [
-        int(n)
-        for n in list(G.nodes) + list(reserved)
-        if isinstance(n, (int, np.integer))
-    ]
-    return (max(numeric) if numeric else -1) + 1
 
 
 def _edge_attrs_for_segment(
@@ -283,10 +197,10 @@ def cut_graph_at_large_vessel_volumes(
             edges_kept += 1
             continue
 
-        points = _edge_sample_points(u, v, edge_data, node_pos)
+        points = edge_sample_points(u, v, edge_data, node_pos)
         sample_step = min(float(spacing) for spacing in voxel_size_zyx)
-        points = _densify_polyline(points, max_step_um=sample_step)
-        inside_flags = _points_inside_mask(
+        points = densify_polyline(points, max_step_um=sample_step)
+        inside_flags = points_inside_mask(
             points, mask, voxel_size_zyx=voxel_size_zyx
         ).tolist()
 
@@ -319,7 +233,7 @@ def cut_graph_at_large_vessel_volumes(
             if touches_u:
                 start_node = u
             else:
-                start_node = _next_node_id(result, reserved_ids)
+                start_node = next_node_id(result, reserved_ids)
                 reserved_ids.add(start_node)
                 start_pos = tuple(float(c) for c in segment[0])
                 result.add_node(start_node, pos=start_pos)
@@ -329,7 +243,7 @@ def cut_graph_at_large_vessel_volumes(
             if touches_v:
                 end_node = v
             else:
-                end_node = _next_node_id(result, reserved_ids)
+                end_node = next_node_id(result, reserved_ids)
                 reserved_ids.add(end_node)
                 end_pos = tuple(float(c) for c in segment[-1])
                 result.add_node(end_node, pos=end_pos)

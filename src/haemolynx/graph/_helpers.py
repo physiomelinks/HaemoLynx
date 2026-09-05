@@ -584,3 +584,97 @@ def improve_straight_path_with_skeleton(start_pos, end_pos, skeleton_data, debug
     Improve an entire straight path between two endpoints using skeleton.
     """
     return improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug, voxel_size=voxel_size)
+
+
+def points_inside_mask(
+    points_zyx: np.ndarray,
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: Tuple[float, float, float],
+) -> np.ndarray:
+    """True per point where the physical point falls in a True (interior) mask voxel.
+
+    Vectorized over all of an edge's (densified) sample points at once --
+    the densified polyline can have hundreds of points per edge, and this
+    runs for every edge in the graph on every pipeline run that reaches
+    this stage.
+    """
+    points = np.asarray(points_zyx, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"points_zyx must be (N, 3), got shape {points.shape}.")
+    n = points.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    voxel_size = np.asarray(voxel_size_zyx, dtype=float)
+    if voxel_size.shape != (3,) or np.any(voxel_size <= 0):
+        raise ValueError(
+            f"voxel_size_zyx must be three positive values, got {voxel_size_zyx}."
+        )
+    idx = np.rint(points / voxel_size).astype(int)
+    mask_shape = np.asarray(mask.shape, dtype=int)
+    in_bounds = np.all((idx >= 0) & (idx < mask_shape), axis=1)
+    inside = np.zeros(n, dtype=bool)
+    valid = idx[in_bounds]
+    if valid.size:
+        inside[in_bounds] = mask[valid[:, 0], valid[:, 1], valid[:, 2]]
+    return inside
+
+
+def edge_sample_points(
+    u: Any,
+    v: Any,
+    edge_data: Dict[str, Any],
+    node_pos: Dict[Any, np.ndarray],
+) -> np.ndarray:
+    """Physical polyline for an edge, oriented from ``u`` toward ``v``."""
+    pos_u = np.asarray(node_pos[u], dtype=float)
+    pos_v = np.asarray(node_pos[v], dtype=float)
+    voxels = edge_data.get("voxels")
+    if voxels is not None:
+        arr = np.asarray(voxels, dtype=float)
+        if arr.ndim == 2 and arr.shape[1] == 3 and arr.shape[0] > 0:
+            oriented = orient_path_from_startpoint(arr.tolist(), pos_u)
+            return np.asarray(oriented, dtype=float)
+    return np.vstack([pos_u.reshape(1, 3), pos_v.reshape(1, 3)])
+
+
+def densify_polyline(
+    points: np.ndarray,
+    *,
+    max_step_um: float,
+) -> np.ndarray:
+    """Sample a polyline so consecutive points are at most ``max_step_um`` apart.
+
+    Sparse centreline voxels (or a two-endpoint fallback) can leave a straight
+    segment with both ends outside a mask while every interior mask voxel along
+    the chord is missed. Densifying before the inside/outside test catches those
+    crossings.
+    """
+    if max_step_um <= 0:
+        raise ValueError(f"max_step_um must be > 0, got {max_step_um}.")
+    arr = np.asarray(points, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] == 0:
+        return arr
+    if arr.shape[0] == 1:
+        return arr
+    dense: List[np.ndarray] = [arr[0]]
+    for start, end in zip(arr[:-1], arr[1:]):
+        segment = end - start
+        length = float(np.linalg.norm(segment))
+        if length <= max_step_um:
+            dense.append(end)
+            continue
+        steps = int(np.ceil(length / max_step_um))
+        for step in range(1, steps + 1):
+            dense.append(start + (step / steps) * segment)
+    return np.asarray(dense, dtype=float)
+
+
+def next_node_id(G: nx.MultiGraph, reserved: "set[Any]") -> int:
+    """A numeric node id not already used by ``G`` or ``reserved``."""
+    numeric = [
+        int(n)
+        for n in list(G.nodes) + list(reserved)
+        if isinstance(n, (int, np.integer))
+    ]
+    return (max(numeric) if numeric else -1) + 1

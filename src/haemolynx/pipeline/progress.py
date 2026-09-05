@@ -108,6 +108,7 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_fill_mask_holes_before_thickness",
             "skeleton_thick_vessel_wall_absorption_um",
             "skeleton_thick_vessel_flake_filter_um",
+            "skeleton_thick_vessel_max_bridge_radius_multiple",
             "skeleton_closing_radius",
             "skeleton_bridge_gap_size",
             "skeleton_min_branch_length",

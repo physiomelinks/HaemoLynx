@@ -11,6 +11,7 @@ import networkx as nx
 import numpy as np
 
 from haemolynx import io
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 from haemolynx.parsers import prefixed_arguments
 from haemolynx.haemodynamics import automated
@@ -28,6 +29,28 @@ from haemolynx.haemodynamics.constriction_strategy import (
 
 logger = logging.getLogger(__name__)
 
+
+#: How much smaller than the network's own smallest real resistance a
+#: IS_ZERO_RESISTANCE bridge's resistance is (see graph.thick_vessel_
+#: junctions). A literal 0.0 -- infinite conductance -- would corrupt the
+#: whole flow solve: build_conductance_matrix_from_graph sums conductance
+#: into a dense matrix, and calc_laplacian_from_conductance_matrix takes
+#: diag(sum(C)) - C, so one inf entry makes that row/column inf and the
+#: diagonal inf - inf = nan. A fixed absolute epsilon has the same problem
+#: one step removed: real Poiseuille resistances span roughly 1e10 to 1e20
+#: Pa.s/m^3 in this domain, so a constant small enough to be negligible next
+#: to a coarse trunk is many orders of magnitude below a fine capillary's
+#: own resistance, which is exactly as numerically singular as literal zero.
+#: Scaling to the network's own smallest resistance keeps the bridge
+#: negligible relative to *this* graph while keeping the conductance
+#: matrix's dynamic range solvable -- the same compromise circuit
+#: simulators make for an ideal wire.
+ZERO_RESISTANCE_FRACTION = 1e-4
+
+#: Used only when a graph has no real (non-bridge) resistance to scale
+#: against yet -- a graph that is entirely bridges, or resistance assignment
+#: called before any other edge got one.
+FALLBACK_ZERO_RESISTANCE_VALUE = 1e-6
 
 #: FWHM settings are named `fwhm_<parameter>` in the config, matching the
 #: measurement function's parameters one for one.
@@ -283,6 +306,52 @@ def _run_pericyte_comparison(
     return active_pericyte_indices, active_center_indices_by_edge, comparison_results
 
 
+def _zero_out_thick_vessel_bridge_resistances(G: nx.MultiGraph) -> int:
+    """Give every IS_ZERO_RESISTANCE edge a negligible resistance.
+
+    Runs after every other resistance assignment (branch-order Poiseuille,
+    constriction, custom-edge overrides) so it has the final say, and so the
+    network's real resistances are already on the graph to scale against.
+    Writes resistance/conductance directly rather than through
+    poiseuille.set_edge_resistance, which rejects non-positive values --
+    exactly the guard this negligible-but-nonzero value exists to satisfy
+    instead of disable.
+    """
+    tagged_edges = [
+        (u, v, key)
+        for u, v, key, edge_data in G.edges(keys=True, data=True)
+        if edge_data.get(IS_ZERO_RESISTANCE)
+    ]
+    if not tagged_edges:
+        return 0
+
+    real_resistances = [
+        float(edge_data["resistance"])
+        for _u, _v, _key, edge_data in G.edges(keys=True, data=True)
+        if not edge_data.get(IS_ZERO_RESISTANCE)
+        and edge_data.get("resistance") is not None
+        and float(edge_data["resistance"]) > 0
+    ]
+    zero_value = (
+        min(real_resistances) * ZERO_RESISTANCE_FRACTION
+        if real_resistances
+        else FALLBACK_ZERO_RESISTANCE_VALUE
+    )
+
+    for u, v, key in tagged_edges:
+        G[u][v][key]["resistance"] = zero_value
+        G[u][v][key]["conductance"] = 1.0 / zero_value
+    logger.info(
+        "Thin-vessel-to-fat-vessel bridges: gave %d edge(s) a negligible "
+        "resistance (%.3e Pa.s/m^3, %.0e x the network's own smallest) "
+        "instead of a Poiseuille one.",
+        len(tagged_edges),
+        zero_value,
+        ZERO_RESISTANCE_FRACTION,
+    )
+    return len(tagged_edges)
+
+
 def _assign_poiseuille_resistances(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
@@ -353,6 +422,11 @@ def _assign_poiseuille_resistances(
         config.diameter("custom_edges"),
         edge_diameter=config.diameter("custom_edge_diameter"),
     )
+    # Last resistance write, so it has the final say over every edge it
+    # touches: a thin-vessel-to-fat-vessel join is not new vessel material,
+    # so it must not keep whatever branch-order/custom resistance it was
+    # given above.
+    results["thick_vessel_bridges"] = _zero_out_thick_vessel_bridge_resistances(G)
     # Which law produced these resistances travels with them. They are not
     # comparable across laws -- several times apart in the smallest vessels --
     # so a graph pickled today and read next month has to say which it was.
