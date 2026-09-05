@@ -862,7 +862,7 @@ def test_a_bridge_past_the_distance_cap_is_left_disconnected():
         thick,
         allowed,
         min_arm_extent_voxels=0.0,
-        max_bridge_distance_voxels=10.0,
+        max_bridge_distance_um=10.0,
     )
 
     _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
@@ -878,7 +878,7 @@ def test_a_bridge_within_the_distance_cap_still_joins():
         thick,
         allowed,
         min_arm_extent_voxels=0.0,
-        max_bridge_distance_voxels=30.0,
+        max_bridge_distance_um=30.0,
     )
 
     _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
@@ -894,6 +894,140 @@ def test_no_cap_leaves_the_join_search_unbounded_as_before():
 
     _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
     assert n_cc == 1
+
+
+def _wide_trunk_arm_fixture(*, radius: int, gap: int, margin: int | None = None):
+    """A fat trunk whose own local half-width (Y axis) is `radius` voxels,
+    with a single already-drawn ridge point at its centre, and a thin arm
+    `gap` voxels beyond the trunk's surface on the same column -- so the
+    true surface-to-ridge distance is `radius + 1` voxels (EDT counts the
+    first background voxel beyond the trunk), and the total straight-line
+    arm-to-ridge distance is `radius + 1 + gap`."""
+    if margin is None:
+        margin = gap + 5
+    width = margin + (2 * radius + 1) + margin
+    length = 5
+    shape = (1, width, length)
+    thick = np.zeros(shape, dtype=bool)
+    y0 = margin
+    y1 = y0 + 2 * radius + 1
+    thick[0, y0:y1, :] = True
+    ridge_y = y0 + radius
+    x = length // 2
+    skeleton = np.zeros(shape, dtype=bool)
+    skeleton[0, ridge_y, x] = True
+    arm_y = y0 - 1 - gap
+    skeleton[0, arm_y, x] = True
+    allowed = thick.copy()
+    allowed[0, arm_y:y1, x] = True
+    return skeleton, thick, allowed
+
+
+def test_bridge_radius_multiple_scales_with_the_local_fat_radius_not_a_fixed_constant():
+    """A wide trunk's own local radius, not any fixed constant, sets the
+    bridge cap -- an arm attaching near a major trunk has to cross roughly
+    the trunk's own half-width to reach its centreline, and a cap sized for
+    a thin vessel's radius would reject every such legitimate attachment
+    (the reported bug this regresses: real trunks run tens of microns wide,
+    far past any small fixed classification threshold)."""
+    radius, gap, multiplier = 20, 15, 2.0
+    expected_local_radius = radius + 1
+    expected_distance = expected_local_radius + gap
+    assert expected_distance < multiplier * expected_local_radius  # sanity: should join
+    skeleton, thick, allowed = _wide_trunk_arm_fixture(radius=radius, gap=gap)
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton,
+        thick,
+        allowed,
+        min_arm_extent_voxels=0.0,
+        max_bridge_radius_multiple=multiplier,
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 1, (
+        "a cap based on the trunk's own local radius must accept an arm "
+        "that a fixed small constant would have wrongly rejected"
+    )
+
+
+def test_bridge_radius_multiple_still_rejects_a_genuinely_far_arm():
+    radius, gap, multiplier = 20, 60, 2.0
+    expected_local_radius = radius + 1
+    expected_distance = expected_local_radius + gap
+    assert expected_distance > multiplier * expected_local_radius  # sanity: should reject
+    skeleton, thick, allowed = _wide_trunk_arm_fixture(radius=radius, gap=gap)
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton,
+        thick,
+        allowed,
+        min_arm_extent_voxels=0.0,
+        max_bridge_radius_multiple=multiplier,
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 2, "still capped -- just scaled to the trunk's own radius, not unbounded"
+
+
+def _anisotropic_bridge_fixture(*, radius: int, gap_x: int, block_len: int, margin: int = 5):
+    """A trunk whose half-width (Y axis, 1 micron/voxel in the caller's
+    spacing) is `radius` voxels, with a thin arm on the same row, offset
+    along X -- a much coarser-spaced axis in the caller's spacing -- by
+    `gap_x` voxels past the trunk's own end."""
+    width = margin + (2 * radius + 1) + margin
+    length = block_len + gap_x + 5
+    shape = (1, width, length)
+    thick = np.zeros(shape, dtype=bool)
+    y0 = margin
+    y1 = y0 + 2 * radius + 1
+    thick[0, y0:y1, 0:block_len] = True
+    ridge_y = y0 + radius
+    ridge_x = block_len // 2
+    skeleton = np.zeros(shape, dtype=bool)
+    skeleton[0, ridge_y, ridge_x] = True
+    arm_x = block_len + gap_x
+    skeleton[0, ridge_y, arm_x] = True
+    allowed = thick.copy()
+    allowed[0, ridge_y, ridge_x : arm_x + 1] = True
+    return skeleton, thick, allowed
+
+
+def test_bridge_cap_is_evaluated_in_physical_microns_not_raw_voxel_distance():
+    """The trunk's half-width sits on the Y axis (1 micron/voxel); the arm
+    is offset from the trunk purely along X, a much coarser axis (4
+    microns/voxel). In raw voxel counts the arm looks close enough to pass
+    the cap; converted to real microns via voxel_size_zyx it is not -- if
+    the cap were computed on unscaled voxel distance, this arm would
+    wrongly bridge across 28 real microns of tissue."""
+    radius, gap_x, block_len = 5, 3, 8
+    voxel_size_zyx = (1.0, 1.0, 4.0)
+    multiplier = 2.0
+    expected_local_radius_um = (radius + 1) * voxel_size_zyx[1]  # 6.0
+    ridge_x = block_len // 2
+    arm_x = block_len + gap_x
+    expected_distance_um = (arm_x - ridge_x) * voxel_size_zyx[2]  # 28.0
+    assert expected_distance_um > multiplier * expected_local_radius_um  # 28 > 12: reject
+    raw_voxel_distance = arm_x - ridge_x  # 7
+    assert raw_voxel_distance < multiplier * (radius + 1)  # 7 < 12: unscaled would wrongly accept
+    skeleton, thick, allowed = _anisotropic_bridge_fixture(
+        radius=radius, gap_x=gap_x, block_len=block_len
+    )
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton,
+        thick,
+        allowed,
+        voxel_size_zyx=voxel_size_zyx,
+        min_arm_extent_voxels=0.0,
+        max_bridge_radius_multiple=multiplier,
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 2, (
+        "distance must be measured in physical microns -- in raw voxel "
+        "units this arm looks close enough to wrongly bridge"
+    )
 
 
 def test_join_fallback_stays_fast_in_a_large_image_with_unrelated_content():

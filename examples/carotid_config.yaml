@@ -302,7 +302,7 @@ pipeline_stages:
   skeleton_thick_vessel_wall_absorption_um: null
   # How far a thin-vessel fragment must reach beyond the fat wall to be kept instead of dropped as a Lee-thinning flake of the wall's own surface. Leave unset for the automatic default; lower it to stop losing short real vessels near a fat trunk, at the cost of letting more wall-wrap flakes through  [um; range 0.0..; needs use_thick_vessel_skeletonisation]
   skeleton_thick_vessel_flake_filter_um: null
-  # How far, as a multiple of the fat-region radius, a thin vessel arm may bridge to reach the fat centreline. A thin vessel should merge into a fat one near where it actually touches it; without a cap the nearest-in-Euclidean-distance point on the ridge can sit arbitrarily far along the fat trunk's own length. An arm past this limit stays disconnected rather than drawing an implausibly long bridge  [range 0.0..; needs use_thick_vessel_skeletonisation]
+  # How far, as a multiple of the fat vessel's own local radius at the candidate attachment point, a thin vessel arm may bridge to reach the fat centreline. A thin vessel should merge into a fat one near where it actually touches it; without a cap the nearest-in-distance point on the ridge can sit arbitrarily far along the fat trunk's own length. An arm past this limit stays disconnected rather than drawing an implausibly long bridge  [range 0.0..; needs use_thick_vessel_skeletonisation]
   skeleton_thick_vessel_max_bridge_radius_multiple: 4.0
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true

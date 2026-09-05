@@ -930,8 +930,10 @@ def _join_thin_arms_to_fat_ridge(
     thick: np.ndarray,
     allowed: np.ndarray,
     *,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     min_arm_extent_voxels: float = 4.0,
-    max_bridge_distance_voxels: float | None = None,
+    max_bridge_distance_um: float | None = None,
+    max_bridge_radius_multiple: float | None = None,
 ) -> np.ndarray:
     """Connect each thin-vessel skeleton that leaves the fat wall to the fat ridge.
 
@@ -940,17 +942,35 @@ def _join_thin_arms_to_fat_ridge(
     chords. A fused capillary does extend, and its Lee polyline must meet the
     ridge.
 
-    *max_bridge_distance_voxels*, when given, caps how far an arm's nearest
-    fat-ridge point may be before the join is refused (arm left
+    Nearest-neighbour search and the caps below are evaluated in physical
+    microns (via *voxel_size_zyx*), not raw voxel-index distance -- the same
+    convention as the rest of the pipeline's geometry, and required for an
+    anisotropic stack where a voxel step means a different physical distance
+    on each axis.
+
+    *max_bridge_distance_um*, when given, caps how far an arm's nearest
+    fat-ridge point may be (in microns) before the join is refused (arm left
     disconnected, same as when its own structure has no fat material at
     all). A thin vessel merging into a fat one should attach near where it
-    actually touches it -- without a cap, the nearest-in-Euclidean-distance
-    ridge point can be arbitrarily far along the fat trunk's own length,
-    which is not the same anatomical event.
+    actually touches it -- without a cap, the nearest-in-distance ridge
+    point can be arbitrarily far along the fat trunk's own length, which is
+    not the same anatomical event.
+
+    *max_bridge_radius_multiple*, when given, derives a per-arm cap instead
+    of a single fixed one: *that* multiple of the fat vessel's own local
+    radius (in microns) at the candidate ridge point -- an arm attaching at
+    the surface of a wide trunk is expected to bridge roughly the trunk's
+    own half-width to reach its centreline, so the cap has to scale with
+    that local width rather than with any fixed constant (a thin capillary
+    and a major trunk have very different radii, and a cap sized for the
+    smaller one rejects every legitimate attachment to the larger). When
+    both this and *max_bridge_distance_um* are given, the tighter of the
+    two applies.
     """
     result = np.asarray(skeleton, dtype=bool).copy()
     thick_b = np.asarray(thick, dtype=bool)
     allowed_b = np.asarray(allowed, dtype=bool)
+    scale = np.array(voxel_size_zyx, dtype=np.float64)
     thin_skel = result & ~thick_b
     fat_skel = result & thick_b
     if not fat_skel.any():
@@ -1024,7 +1044,7 @@ def _join_thin_arms_to_fat_ridge(
     allowed_components, _n_allowed = label(allowed_b, structure=structure)
     component_objects = find_objects(allowed_components)
     fat_component_labels = allowed_components[tuple(fat_coords.T)]
-    fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
+    fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
     fat_now = result & thick_b
 
     # Memoized per physically-connected structure: the fallback's EDT and
@@ -1044,6 +1064,39 @@ def _join_thin_arms_to_fat_ridge(
         built = _build_dijkstra_graph(local_mask, cost)
         graph_cache[label_key] = built
         return built
+
+    # Memoized per roi component (see the flake-length filter above, which
+    # scopes its own EDT the same way): the fat vessel's own local radius at
+    # a candidate ridge point, in microns -- how far a surface attachment
+    # there is expected to have to bridge to reach the centreline.
+    radius_crop_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+    def _local_fat_radius_um_at(voxel: tuple[int, int, int]) -> float:
+        roi_id = int(roi_labeled[voxel])
+        if roi_id == 0:
+            return 0.0
+        cached = radius_crop_cache.get(roi_id)
+        if cached is None:
+            # Padded by 1 beyond the component's own tight bounding box: a
+            # solid component's real surface can coincide exactly with that
+            # box's edge (nothing of this label exists past it, by
+            # definition of "tight"), so the unpadded crop can be entirely
+            # foreground there with no background left to measure distance
+            # to. One voxel of padding always reveals that surface -- the
+            # true nearest background to any interior point is either
+            # already inside the tight box (an internal cavity) or exactly
+            # one step beyond its edge; nothing needs more.
+            slc = roi_objects[roi_id - 1]
+            padded_slc = _expand_slices(slc, thick_b.shape, pad=1)
+            padded_origin = np.array([int(s.start) for s in padded_slc], dtype=int)
+            crop = distance_transform_edt(
+                thick_b[padded_slc], sampling=tuple(scale)
+            ).astype(np.float32, copy=False)
+            cached = (padded_origin, crop)
+            radius_crop_cache[roi_id] = cached
+        origin, crop = cached
+        local = tuple(int(v) for v in (np.array(voxel) - origin))
+        return float(crop[local])
 
     logger.info(
         "_join_thin_arms_to_fat_ridge: joining up to %d thin-arm components to the "
@@ -1079,27 +1132,30 @@ def _join_thin_arms_to_fat_ridge(
         scoped_kdt = (
             fat_kdt
             if same_component.all()
-            else cKDTree(scoped_fat_coords.astype(np.float64, copy=False))
+            else cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
         )
-        _d, nn = scoped_kdt.query(pts.astype(np.float64, copy=False), k=1)
+        _d, nn = scoped_kdt.query(pts.astype(np.float64, copy=False) * scale, k=1)
         nearest = int(np.argmin(np.atleast_1d(_d)))
         nearest_distance = float(np.atleast_1d(_d)[nearest])
-        if (
-            max_bridge_distance_voxels is not None
-            and nearest_distance > max_bridge_distance_voxels
-        ):
-            logger.info(
-                "Arm's nearest fat ridge point is %.1f voxels away, past the "
-                "%.1f-voxel bridge cap; left disconnected (a thin vessel "
-                "should merge into a fat vessel near where it actually "
-                "touches it, not bridge to an arbitrarily distant point on "
-                "the ridge).",
-                nearest_distance,
-                max_bridge_distance_voxels,
-            )
-            continue
         start = tuple(int(v) for v in pts[nearest])
         end = tuple(int(v) for v in scoped_fat_coords[int(np.atleast_1d(nn)[nearest])])
+        effective_cap = max_bridge_distance_um
+        if max_bridge_radius_multiple is not None:
+            radius_cap = float(max_bridge_radius_multiple) * _local_fat_radius_um_at(end)
+            effective_cap = (
+                radius_cap if effective_cap is None else min(effective_cap, radius_cap)
+            )
+        if effective_cap is not None and nearest_distance > effective_cap:
+            logger.info(
+                "Arm's nearest fat ridge point is %.1f microns away, past "
+                "the %.1f-micron bridge cap; left disconnected (a thin "
+                "vessel should merge into a fat vessel near where it "
+                "actually touches it, not bridge to an arbitrarily distant "
+                "point on the ridge).",
+                nearest_distance,
+                effective_cap,
+            )
+            continue
         # Search only this arm's own physically connected structure, not the
         # whole image: _path_through_mask's own local searches are already
         # small, but its last-resort fallback runs a full EDT + Dijkstra over
@@ -1151,7 +1207,7 @@ def _join_thin_arms_to_fat_ridge(
             fat_component_labels = np.concatenate(
                 [fat_component_labels, allowed_components[tuple(new_coords.T)]]
             )
-            fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False))
+            fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
         if arm_index % 200 == 0 or time.perf_counter() - last_log_time > 30.0:
             now = time.perf_counter()
             logger.info(
@@ -1199,9 +1255,12 @@ def skeletonize_thickness_gated(
     vessels at the cost of letting more wall-wrap flakes through.
 
     *max_bridge_radius_multiple*, when given, caps how far a surviving arm
-    may bridge to reach the fat ridge, as a multiple of *min_radius_um* (the
-    same "local vessel radius" scale *wall_absorption_um*/*flake_filter_um*
-    already use). ``None`` leaves the join search unbounded; see
+    may bridge to reach the fat ridge, as a multiple of the fat vessel's own
+    *local* radius (in microns) at the candidate ridge point -- not the
+    fixed *min_radius_um* threshold that only decides fat-vs-thin, since a
+    major trunk's own radius is typically many times that threshold and an
+    arm attaching to it must cross roughly that much distance to reach its
+    centreline. ``None`` leaves the join search unbounded; see
     :func:`_join_thin_arms_to_fat_ridge`.
 
     *return_thick_mask*, when ``True``, returns ``(skeleton, thick)``
@@ -1251,11 +1310,6 @@ def skeletonize_thickness_gated(
         min_arm_extent = max(4.0, 0.75 * float(min_radius_um) / max(spacing, 1e-6))
     else:
         min_arm_extent = max(0.0, float(flake_filter_um) / max(spacing, 1e-6))
-    max_bridge_distance = (
-        None
-        if max_bridge_radius_multiple is None
-        else max(0.0, float(max_bridge_radius_multiple) * float(min_radius_um) / max(spacing, 1e-6))
-    )
     result = np.zeros(mask.shape, dtype=bool)
     logger.info(
         "skeletonize_thickness_gated: fat catchment done in %.2fs (%d fat, %d thin "
@@ -1297,8 +1351,9 @@ def skeletonize_thickness_gated(
         result,
         thick,
         mask,
+        voxel_size_zyx=voxel_size_zyx,
         min_arm_extent_voxels=min_arm_extent,
-        max_bridge_distance_voxels=max_bridge_distance,
+        max_bridge_radius_multiple=max_bridge_radius_multiple,
     ).astype(bool)
     t_join = time.perf_counter() - t3
     logger.info(
