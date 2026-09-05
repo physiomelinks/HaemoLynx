@@ -57,6 +57,31 @@ def test_compute_tree_asymmetry(simple_graph):
     assert "Tree Asymmetry Index" in s
 
 
+def test_tree_asymmetry_uses_edge_length_not_an_arbitrary_spanning_tree():
+    """The spanning tree reduction must follow length, not edge insertion order.
+
+    The triangle's long edge (2-0, length 100) is inserted first. Without an
+    explicit weight, every edge is treated as weight 1 and Kruskal's stable
+    tie-breaking keeps whichever cycle edge was seen first -- here the long
+    one -- dropping the short 1-2 edge instead. That produces a perfectly
+    symmetric star at node 0 (asymmetry 0), hiding the asymmetry the two
+    pendants on node 0 actually introduce once the real (short) triangle
+    edges are correctly kept and the long one is dropped (asymmetry 0.2).
+    """
+    G = nx.Graph()
+    for n in range(5):
+        G.add_node(n)
+    G.add_edge(2, 0, length=100.0)
+    G.add_edge(0, 1, length=1.0)
+    G.add_edge(1, 2, length=1.0)
+    G.add_edge(0, 3, length=1.0)
+    G.add_edge(0, 4, length=1.0)
+
+    result = compute_tree_asymmetry(G)
+
+    assert result["Tree Asymmetry Index"] == pytest.approx(0.2)
+
+
 def test_compute_fractal_dimension(simple_graph):
     pos = nx.get_node_attributes(simple_graph, "pos")
     s = compute_fractal_dimension(simple_graph, pos)

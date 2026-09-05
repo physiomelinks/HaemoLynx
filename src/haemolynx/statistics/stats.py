@@ -137,7 +137,15 @@ def compute_tree_asymmetry(G: nx.Graph) -> Dict[str, Any]:
 
     if not nx.is_tree(G):
         if nx.is_connected(G):
-            G = nx.minimum_spanning_tree(G.copy())
+            # There is no "weight" edge attribute on these graphs (see
+            # graph.assert_no_forbidden_edge_attributes); without an explicit
+            # weight=, every edge is treated as weight 1 and the "minimum"
+            # spanning tree is really an arbitrary one picked by Kruskal's
+            # tie-breaking, not the vessel network's own shortest-path
+            # skeleton. A real vascular graph has loops (capillary beds
+            # anastomose), so this branch is the common case, not an edge
+            # case.
+            G = nx.minimum_spanning_tree(G.copy(), weight="length")
         else:
             return {"Tree Asymmetry Index": "N/A (disconnected graph)"}
     root = max(G.nodes(), key=G.degree)
