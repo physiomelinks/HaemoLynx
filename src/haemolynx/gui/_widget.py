@@ -4966,6 +4966,30 @@ def settings_widget(napari_viewer=None):
                 widget.enabled = enabled
                 widget.tooltip = field.help if enabled else field.why_disabled(values)
 
+        # Large-vessel-network mode relabels the thick-vessel checkbox: once
+        # both are on, "thick vessel skeletonisation" is no longer the
+        # user-facing action -- turning large vessels into network members
+        # (Large_Art/Large_Ven) is. use_large_vessel_masks alone is not the
+        # trigger: that flag also drives the long-standing cut-away
+        # workflow, unrelated to this feature, so relabeling on it alone
+        # would mislabel that ordinary case. Checking
+        # use_thick_vessel_skeletonisation's own current value too (not
+        # just trusting assign_large_vessel_branch_orders to stay
+        # consistent, since schema `requires` does not enforce that at the
+        # raw-value level) avoids showing the relabeled text for an
+        # inconsistent stored config where the checkbox itself reads
+        # unchecked.
+        thick_vessel_row = rows.get("use_thick_vessel_skeletonisation")
+        if thick_vessel_row is not None:
+            large_vessel_network_mode = bool(
+                values.get("use_thick_vessel_skeletonisation")
+            ) and bool(values.get("assign_large_vessel_branch_orders"))
+            thick_vessel_row.label = (
+                "Also segment large vessels"
+                if large_vessel_network_mode
+                else fields["use_thick_vessel_skeletonisation"].label
+            )
+
     for name, value in DISPLAY_SETTINGS_OFF_IN_NAPARI.items():
         if name in rows:
             rows[name].value = value

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from scipy.ndimage import generate_binary_structure, label
+from scipy.ndimage import distance_transform_edt, generate_binary_structure, label, maximum_filter
 
 from haemolynx.preprocessing import (
     BRAID_FACTOR_LIMIT,
@@ -1028,6 +1028,95 @@ def test_bridge_cap_is_evaluated_in_physical_microns_not_raw_voxel_distance():
         "distance must be measured in physical microns -- in raw voxel "
         "units this arm looks close enough to wrongly bridge"
     )
+
+
+def _narrow_neck_then_wide_trunk_fixture(
+    *, r_narrow: int, r_wide: int, neck_len: int, wide_len: int, gap: int, margin: int = 5
+):
+    """A trunk that starts narrow (half-width `r_narrow`, length `neck_len`)
+    then widens (half-width `r_wide`), sharing one straight ridge row so the
+    whole thing is a single connected component. The only marked ridge
+    point sits mid-neck; the arm hangs `gap` voxels above it. The *raw*
+    local radius there is small (r_narrow + 1) even though the trunk is
+    genuinely wide again a short distance further along the very same
+    connected mask."""
+    width = margin + (2 * r_wide + 1) + margin
+    length = neck_len + wide_len
+    shape = (1, width, length)
+    thick = np.zeros(shape, dtype=bool)
+    y0 = margin
+    ridge_y = y0 + r_wide
+    thick[0, ridge_y - r_narrow : ridge_y + r_narrow + 1, 0:neck_len] = True
+    thick[0, y0 : y0 + 2 * r_wide + 1, neck_len : neck_len + wide_len] = True
+    point_a = (0, ridge_y, neck_len // 2)
+    skeleton = np.zeros(shape, dtype=bool)
+    skeleton[point_a] = True
+    arm_y = ridge_y - r_narrow - 1 - gap
+    skeleton[0, arm_y, neck_len // 2] = True
+    allowed = thick.copy()
+    allowed[0, arm_y:ridge_y, neck_len // 2] = True
+    return skeleton, thick, allowed, point_a
+
+
+def test_local_fat_radius_is_smoothed_over_a_transient_narrow_waist():
+    """The only ridge point in reach of the arm sits in a narrow neck: read
+    raw, its radius rejects a bridge that is otherwise clearly plausible,
+    because the very same connected trunk is genuinely wide again a few
+    microns further along. Smoothing the radius reading over a small
+    physical neighbourhood (not searching other ridge points -- there are
+    none here) must recover that and accept the join."""
+    r_narrow, r_wide, gap, multiplier, radius_smoothing_um = 2, 15, 8, 2.0, 10.0
+    raw_radius_a = r_narrow + 1
+    distance_a = raw_radius_a + gap
+    assert distance_a > multiplier * raw_radius_a  # unsmoothed: would reject
+    skeleton, thick, allowed, point_a = _narrow_neck_then_wide_trunk_fixture(
+        r_narrow=r_narrow, r_wide=r_wide, neck_len=10, wide_len=60, gap=gap
+    )
+    # Ground truth for the smoothed radius at the ridge point, computed
+    # directly with scipy's own primitives rather than duplicating the
+    # implementation's crop/padding logic.
+    edt = distance_transform_edt(thick[0])
+    footprint = 2 * int(np.ceil(radius_smoothing_um)) + 1
+    smoothed = maximum_filter(edt, size=footprint)
+    expected_smoothed_radius = float(smoothed[point_a[1], point_a[2]])
+    assert distance_a <= multiplier * expected_smoothed_radius  # smoothed: should accept
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton,
+        thick,
+        allowed,
+        min_arm_extent_voxels=0.0,
+        max_bridge_radius_multiple=multiplier,
+        radius_smoothing_um=radius_smoothing_um,
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 1, (
+        "smoothing the local radius over a small neighbourhood must "
+        "recover a join that a single raw sample at a transient narrow "
+        "waist would wrongly reject"
+    )
+
+
+def test_radius_smoothing_disabled_falls_back_to_the_raw_single_point_sample():
+    """radius_smoothing_um=0 must reproduce the pre-smoothing behaviour
+    exactly: the same narrow-neck arm, still rejected."""
+    r_narrow, r_wide, gap, multiplier = 2, 15, 8, 2.0
+    skeleton, thick, allowed, _point_a = _narrow_neck_then_wide_trunk_fixture(
+        r_narrow=r_narrow, r_wide=r_wide, neck_len=10, wide_len=60, gap=gap
+    )
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton,
+        thick,
+        allowed,
+        min_arm_extent_voxels=0.0,
+        max_bridge_radius_multiple=multiplier,
+        radius_smoothing_um=0.0,
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 2, "zero smoothing radius must behave like a raw single-point sample"
 
 
 def test_join_fallback_stays_fast_in_a_large_image_with_unrelated_content():

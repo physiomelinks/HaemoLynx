@@ -34,6 +34,7 @@ from scipy.ndimage import (
     find_objects,
     generate_binary_structure,
     label,
+    maximum_filter,
 )
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
@@ -934,6 +935,7 @@ def _join_thin_arms_to_fat_ridge(
     min_arm_extent_voxels: float = 4.0,
     max_bridge_distance_um: float | None = None,
     max_bridge_radius_multiple: float | None = None,
+    radius_smoothing_um: float = 10.0,
 ) -> np.ndarray:
     """Connect each thin-vessel skeleton that leaves the fat wall to the fat ridge.
 
@@ -966,6 +968,15 @@ def _join_thin_arms_to_fat_ridge(
     smaller one rejects every legitimate attachment to the larger). When
     both this and *max_bridge_distance_um* are given, the tighter of the
     two applies.
+
+    The local radius behind *max_bridge_radius_multiple* is not read as a
+    single raw sample at the candidate point -- it is the maximum radius
+    within *radius_smoothing_um* microns of it in every direction. The
+    ridge can pass through a transient narrow waist between two wider
+    lobes, or taper toward the fat/thin classification threshold at its own
+    tail end; sampling exactly there would otherwise report an
+    unrepresentatively small radius even though the trunk is genuinely wide
+    again a short distance further along the very same ridge.
     """
     result = np.asarray(skeleton, dtype=bool).copy()
     thick_b = np.asarray(thick, dtype=bool)
@@ -1069,6 +1080,18 @@ def _join_thin_arms_to_fat_ridge(
     # scopes its own EDT the same way): the fat vessel's own local radius at
     # a candidate ridge point, in microns -- how far a surface attachment
     # there is expected to have to bridge to reach the centreline.
+    #
+    # Smoothed by a maximum filter over a small physical neighbourhood
+    # (radius_smoothing_um in every direction) rather than read as a single
+    # raw sample: the ridge can run through a transient narrow waist -- a
+    # brief neck between two wider lobes, or the tail end of the fat body's
+    # own reconstruction tapering toward the classification threshold --
+    # and a candidate landing exactly there would otherwise report an
+    # unrepresentatively small radius even though the trunk is genuinely
+    # wide again a few microns further along. The window only needs to
+    # span a typical neck, not reach into an unrelated part of the network,
+    # so this stays a local correction, not a way to see a wide vessel from
+    # far away.
     radius_crop_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
     def _local_fat_radius_um_at(voxel: tuple[int, int, int]) -> float:
@@ -1091,8 +1114,15 @@ def _join_thin_arms_to_fat_ridge(
             padded_origin = np.array([int(s.start) for s in padded_slc], dtype=int)
             crop = distance_transform_edt(
                 thick_b[padded_slc], sampling=tuple(scale)
-            ).astype(np.float32, copy=False)
-            cached = (padded_origin, crop)
+            )
+            footprint = tuple(
+                max(1, 2 * int(np.ceil(radius_smoothing_um / max(s, 1e-6))) + 1)
+                for s in scale
+            )
+            smoothed = maximum_filter(crop, size=footprint).astype(
+                np.float32, copy=False
+            )
+            cached = (padded_origin, smoothed)
             radius_crop_cache[roi_id] = cached
         origin, crop = cached
         local = tuple(int(v) for v in (np.array(voxel) - origin))
@@ -1231,6 +1261,7 @@ def skeletonize_thickness_gated(
     wall_absorption_um: float | None = None,
     flake_filter_um: float | None = None,
     max_bridge_radius_multiple: float | None = None,
+    bridge_radius_smoothing_um: float = 10.0,
     return_thick_mask: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
     """Lee on the thin catchment; an EDT-ridge tree (every arm) inside the fat catchment.
@@ -1262,6 +1293,15 @@ def skeletonize_thickness_gated(
     arm attaching to it must cross roughly that much distance to reach its
     centreline. ``None`` leaves the join search unbounded; see
     :func:`_join_thin_arms_to_fat_ridge`.
+
+    *bridge_radius_smoothing_um* widens that local-radius reading to the
+    widest one found within this many microns of the candidate point, in
+    every direction, rather than a single raw sample: the ridge can pass
+    through a transient narrow waist between two wider lobes, or taper
+    toward the fat/thin threshold at its own tail end, and an arm landing
+    exactly there would otherwise see an unrepresentatively small radius
+    even though the trunk is genuinely wide again a short distance further
+    along the same ridge. ``0`` reproduces the raw single-point reading.
 
     *return_thick_mask*, when ``True``, returns ``(skeleton, thick)``
     instead of a bare array -- *thick* is ``None`` on every path that never
@@ -1354,6 +1394,7 @@ def skeletonize_thickness_gated(
         voxel_size_zyx=voxel_size_zyx,
         min_arm_extent_voxels=min_arm_extent,
         max_bridge_radius_multiple=max_bridge_radius_multiple,
+        radius_smoothing_um=bridge_radius_smoothing_um,
     ).astype(bool)
     t_join = time.perf_counter() - t3
     logger.info(

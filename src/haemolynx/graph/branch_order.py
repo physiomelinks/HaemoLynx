@@ -127,14 +127,56 @@ def assign_hierarchical_branch_orders(
     outlet_nodes: list[int],
     arteriole_boundary_nodes: list[int],
     venule_boundary_nodes: list[int],
+    *,
+    large_arteriole_boundary_nodes: list[int] | None = None,
+    large_venule_boundary_nodes: list[int] | None = None,
 ) -> dict:
-    """Assign Art*/Ven*/B* branch orders using arteriole and venule boundaries."""
+    """Assign Art*/Ven*/B* branch orders using arteriole and venule boundaries.
+
+    ``large_arteriole_boundary_nodes``/``large_venule_boundary_nodes``, when
+    non-empty, add a ``Large_Art``/``Large_Ven`` tier "outside" the existing
+    ``Art``/``Ven`` tier: a large vessel kept in the network (see
+    ``graph.large_vessel_network``) runs from the true image-edge inlet/
+    outlet to the point where the large-vessel mask's own coverage ends,
+    which becomes the effective start of the existing ``Art``/``Ven`` BFS
+    instead of ``inlet_nodes``/``outlet_nodes``. Leaving both empty (the
+    default) reproduces today's exact behaviour.
+    """
     arteriole_boundary_set = set(arteriole_boundary_nodes)
     venule_boundary_set = set(venule_boundary_nodes)
+    large_arteriole_boundary_nodes = list(large_arteriole_boundary_nodes or [])
+    large_venule_boundary_nodes = list(large_venule_boundary_nodes or [])
+    large_arteriole_boundary_set = set(large_arteriole_boundary_nodes)
+    large_venule_boundary_set = set(large_venule_boundary_nodes)
 
+    large_arteriole_results = None
+    large_arteriole_edges: set[tuple[int, int, int]] = set()
+    if large_arteriole_boundary_nodes:
+        large_arteriole_node_distances = _compute_node_distances(
+            G,
+            inlet_nodes,
+            stop_nodes=large_arteriole_boundary_set,
+        )
+        large_arteriole_nodes = set(large_arteriole_node_distances.keys())
+        large_arteriole_edges = {
+            edge_id(u, v, key)
+            for u, v, key in G.edges(keys=True)
+            if u in large_arteriole_nodes and v in large_arteriole_nodes
+        }
+        large_arteriole_results = assign_branch_orders(
+            G,
+            inlet_nodes,
+            prefix="Large_Art",
+            stop_nodes=large_arteriole_boundary_set,
+            included_edges=large_arteriole_edges,
+        )
+
+    arteriole_start_nodes = (
+        large_arteriole_boundary_nodes if large_arteriole_boundary_nodes else inlet_nodes
+    )
     arteriole_node_distances = _compute_node_distances(
         G,
-        inlet_nodes,
+        arteriole_start_nodes,
         stop_nodes=arteriole_boundary_set,
     )
     arteriole_nodes = set(arteriole_node_distances.keys())
@@ -145,15 +187,42 @@ def assign_hierarchical_branch_orders(
     }
     arteriole_results = assign_branch_orders(
         G,
-        inlet_nodes,
+        arteriole_start_nodes,
         prefix="Art",
         stop_nodes=arteriole_boundary_set,
+        excluded_edges=large_arteriole_edges,
         included_edges=arteriole_edges,
     )
 
+    large_venule_results = None
+    large_venule_edges: set[tuple[int, int, int]] = set()
+    if large_venule_boundary_nodes:
+        large_venule_node_distances = _compute_node_distances(
+            G,
+            outlet_nodes,
+            stop_nodes=large_venule_boundary_set,
+        )
+        large_venule_nodes = set(large_venule_node_distances.keys())
+        large_venule_edges = {
+            edge_id(u, v, key)
+            for u, v, key in G.edges(keys=True)
+            if u in large_venule_nodes and v in large_venule_nodes
+        }
+        large_venule_results = assign_branch_orders(
+            G,
+            outlet_nodes,
+            prefix="Large_Ven",
+            stop_nodes=large_venule_boundary_set,
+            excluded_edges=arteriole_edges | large_arteriole_edges,
+            included_edges=large_venule_edges,
+        )
+
+    venule_start_nodes = (
+        large_venule_boundary_nodes if large_venule_boundary_nodes else outlet_nodes
+    )
     venule_node_distances = _compute_node_distances(
         G,
-        outlet_nodes,
+        venule_start_nodes,
         stop_nodes=venule_boundary_set,
     )
     venule_nodes = set(venule_node_distances.keys())
@@ -164,15 +233,17 @@ def assign_hierarchical_branch_orders(
     }
     venule_results = assign_branch_orders(
         G,
-        outlet_nodes,
+        venule_start_nodes,
         prefix="Ven",
         stop_nodes=venule_boundary_set,
-        excluded_edges=arteriole_edges,
+        excluded_edges=arteriole_edges | large_arteriole_edges | large_venule_edges,
         included_edges=venule_edges,
     )
 
     capillary_start_nodes = arteriole_boundary_nodes if arteriole_boundary_nodes else inlet_nodes
-    capillary_excluded_edges = arteriole_edges | venule_edges
+    capillary_excluded_edges = (
+        arteriole_edges | venule_edges | large_arteriole_edges | large_venule_edges
+    )
     capillary_results = assign_branch_orders(
         G,
         capillary_start_nodes,
@@ -184,8 +255,12 @@ def assign_hierarchical_branch_orders(
         "arteriole": arteriole_results,
         "venule": venule_results,
         "capillary": capillary_results,
+        "large_arteriole": large_arteriole_results,
+        "large_venule": large_venule_results,
         "arteriole_edge_count": len(arteriole_edges),
         "venule_edge_count": len(venule_edges),
+        "large_arteriole_edge_count": len(large_arteriole_edges),
+        "large_venule_edge_count": len(large_venule_edges),
         "excluded_capillary_edge_count": len(capillary_excluded_edges),
     }
 
@@ -197,6 +272,8 @@ def assign_vessel_branch_orders(
     outlet_nodes: list[int] | None = None,
     arteriole_boundary_nodes: list[int] | None = None,
     venule_boundary_nodes: list[int] | None = None,
+    large_arteriole_boundary_nodes: list[int] | None = None,
+    large_venule_boundary_nodes: list[int] | None = None,
     strict_hierarchical: bool = False,
     expects_hierarchical: bool = False,
     post_assign_callback: PostAssignCallback | None = None,
@@ -216,6 +293,10 @@ def assign_vessel_branch_orders(
         Inlet / arteriole-side seed nodes for capillary or hierarchical assignment.
     outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes
         Optional node sets for hierarchical assignment.
+    large_arteriole_boundary_nodes, large_venule_boundary_nodes
+        Optional node sets adding a ``Large_Art``/``Large_Ven`` tier outside
+        the ``Art``/``Ven`` tier (only takes effect when hierarchical mode is
+        already active -- see :func:`assign_hierarchical_branch_orders`).
     strict_hierarchical
         When hierarchical prerequisites are missing: raise if small-vessel
         (or manual A/V) assignment was expected, otherwise warn and fall back
@@ -237,6 +318,8 @@ def assign_vessel_branch_orders(
     outlet_nodes = list(outlet_nodes or [])
     arteriole_boundary_nodes = list(arteriole_boundary_nodes or [])
     venule_boundary_nodes = list(venule_boundary_nodes or [])
+    large_arteriole_boundary_nodes = list(large_arteriole_boundary_nodes or [])
+    large_venule_boundary_nodes = list(large_venule_boundary_nodes or [])
 
     use_hierarchical = bool(
         arteriole_boundary_nodes and venule_boundary_nodes and outlet_nodes
@@ -269,6 +352,8 @@ def assign_vessel_branch_orders(
             outlet_nodes=outlet_nodes,
             arteriole_boundary_nodes=arteriole_boundary_nodes,
             venule_boundary_nodes=venule_boundary_nodes,
+            large_arteriole_boundary_nodes=large_arteriole_boundary_nodes,
+            large_venule_boundary_nodes=large_venule_boundary_nodes,
         )
         summary: dict[str, Any] = {"mode": "hierarchical", **branch_results}
     else:

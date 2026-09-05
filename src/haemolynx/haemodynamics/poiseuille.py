@@ -18,8 +18,10 @@ def build_diameter_by_branch_order(
     manual_capillary_diameter_by_branch_order: dict[str, float] | None = None,
     manual_arteriole_diameter_by_branch_order: dict[str, float] | None = None,
     manual_venule_diameter_by_branch_order: dict[str, float] | None = None,
+    manual_large_arteriole_diameter_by_branch_order: dict[str, float] | None = None,
+    manual_large_venule_diameter_by_branch_order: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Build diameter mapping for Bxx, Artx, and Venx branch-order labels."""
+    """Build diameter mapping for Bxx, Artx, Venx, Large_Artx, Large_Venx labels."""
     if max_branch_order < 1:
         raise ValueError(
             f"max_branch_order must be >= 1, got {max_branch_order}."
@@ -32,6 +34,8 @@ def build_diameter_by_branch_order(
     capillary_overrides = manual_capillary_diameter_by_branch_order or {}
     arteriole_overrides = manual_arteriole_diameter_by_branch_order or {}
     venule_overrides = manual_venule_diameter_by_branch_order or {}
+    large_arteriole_overrides = manual_large_arteriole_diameter_by_branch_order or {}
+    large_venule_overrides = manual_large_venule_diameter_by_branch_order or {}
 
     diameter_by_branch_order: dict[str, float] = {}
     if all_diams_const:
@@ -39,6 +43,8 @@ def build_diameter_by_branch_order(
             diameter_by_branch_order[f"B{i:02d}"] = default_diameter
             diameter_by_branch_order[f"Art{i}"] = default_diameter
             diameter_by_branch_order[f"Ven{i}"] = default_diameter
+            diameter_by_branch_order[f"Large_Art{i}"] = default_diameter
+            diameter_by_branch_order[f"Large_Ven{i}"] = default_diameter
         return diameter_by_branch_order
 
     for i in range(1, max_branch_order + 1):
@@ -62,6 +68,24 @@ def build_diameter_by_branch_order(
         diameter_by_branch_order[ven_key] = venule_overrides.get(
             ven_key,
             default_small_vessel_diameter,
+        )
+
+    # Large_Art/Large_Ven fall back to default_diameter directly, not the
+    # capillary-derived default_small_vessel_diameter the small Art/Ven loop
+    # above uses: a large vessel is by definition bigger than a capillary,
+    # so that fallback would be actively wrong here, not just approximate.
+    # In practice this fallback rarely fires -- a real run resolves these
+    # from per-edge FWHM measurement, same as the other branch orders.
+    for i in range(1, max_branch_order + 1):
+        large_art_key = f"Large_Art{i}"
+        large_ven_key = f"Large_Ven{i}"
+        diameter_by_branch_order[large_art_key] = large_arteriole_overrides.get(
+            large_art_key,
+            default_diameter,
+        )
+        diameter_by_branch_order[large_ven_key] = large_venule_overrides.get(
+            large_ven_key,
+            default_diameter,
         )
     return diameter_by_branch_order
 

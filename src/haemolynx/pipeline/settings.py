@@ -64,6 +64,12 @@ def fill_derived_settings(settings: dict) -> None:
             manual_venule_diameter_by_branch_order=settings[
                 "manual_venule_diameter_by_branch_order"
             ],
+            manual_large_arteriole_diameter_by_branch_order=settings[
+                "manual_large_arteriole_diameter_by_branch_order"
+            ],
+            manual_large_venule_diameter_by_branch_order=settings[
+                "manual_large_venule_diameter_by_branch_order"
+            ],
         )
     if settings.get("constriction_by_branch_order") is None:
         # Empty override map: every order keeps pericyte_constriction_factor.

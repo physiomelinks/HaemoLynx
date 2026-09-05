@@ -365,6 +365,53 @@ def test_strict_with_small_vessel_terminals_keeps_hierarchical_path_without_warn
     assert G[8][9][0]["branch_order"] == "Ven1"
 
 
+def test_hierarchical_branch_order_assigns_large_art_and_large_ven_tiers():
+    """A Large_Art/Large_Ven tier sits outside Art/Ven, handing off at the
+    existing arteriole/venule inlet-outlet nodes -- reusing those exact
+    nodes as the hand-off point means every pre-existing Art/B/Ven
+    assertion from test_hierarchical_branch_order_pipeline_flow must still
+    hold unchanged; only the two newly prepended edges are new territory."""
+    G, input_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes = (
+        _build_demo_graph()
+    )
+    # True image-edge stumps, one hop upstream/downstream of the graph's
+    # existing inlet/outlet, which becomes the large-vessel boundary (the
+    # point where the large-vessel mask's own coverage ends).
+    true_inlet, true_outlet = 100, 101
+    G.add_node(true_inlet, pos=np.asarray((-1.0, 0.0, 0.0), dtype=float))
+    G.add_node(true_outlet, pos=np.asarray((8.0, 0.0, 0.0), dtype=float))
+    G.add_edge(true_inlet, input_nodes[0], length=1.0, weight=1.0)
+    G.add_edge(outlet_nodes[0], true_outlet, length=1.0, weight=1.0)
+    large_arteriole_boundary_nodes = list(input_nodes)
+    large_venule_boundary_nodes = list(outlet_nodes)
+
+    summary = assign_vessel_branch_orders(
+        G,
+        inlet_nodes=[true_inlet],
+        outlet_nodes=[true_outlet],
+        arteriole_boundary_nodes=arteriole_boundary_nodes,
+        venule_boundary_nodes=venule_boundary_nodes,
+        large_arteriole_boundary_nodes=large_arteriole_boundary_nodes,
+        large_venule_boundary_nodes=large_venule_boundary_nodes,
+    )
+
+    assert summary["mode"] == "hierarchical"
+    assert summary["large_arteriole_edge_count"] == 1
+    assert summary["large_venule_edge_count"] == 1
+    assert G[true_inlet][input_nodes[0]][0]["branch_order"] == "Large_Art1"
+    assert G[outlet_nodes[0]][true_outlet][0]["branch_order"] == "Large_Ven1"
+
+    # Every pre-existing Art/B/Ven assertion holds unchanged: the hand-off
+    # nodes are the same nodes the old inlet/outlet already were.
+    assert G[0][1][0]["branch_order"] == "Art1"
+    assert G[1][2][0]["branch_order"] == "Art2"
+    assert G[1][10][0]["branch_order"].startswith("Art")
+    assert G[2][3][0]["branch_order"].startswith("B")
+    assert G[2][4][0]["branch_order"].startswith("B")
+    assert G[8][9][0]["branch_order"] == "Ven1"
+    assert G[8][11][0]["branch_order"].startswith("Ven")
+
+
 def test_strict_when_small_vessel_assignment_expected_but_missing_still_raises():
     G = _build_linear_capillary_chain()
 

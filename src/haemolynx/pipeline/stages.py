@@ -152,6 +152,10 @@ class BoundaryNodes:
     outlet_nodes: list[int] = field(default_factory=list)
     arteriole_boundary_nodes: list[int] = field(default_factory=list)
     venule_boundary_nodes: list[int] = field(default_factory=list)
+    #: Where the Large_Art/Large_Ven tier hands off to Art/Ven, when
+    #: assign_large_vessel_branch_orders is on (see graph.large_vessel_network).
+    large_arteriole_boundary_nodes: list[int] = field(default_factory=list)
+    large_venule_boundary_nodes: list[int] = field(default_factory=list)
     resistance_node_pair: tuple[int, int] | None = None
     graph: nx.MultiGraph | None = None
     #: Post-assignment-prepass large masks (overlap cleanup applied), when set.
@@ -382,6 +386,9 @@ def _skeletonize_loaded_mask(
             max_bridge_radius_multiple=settings[
                 "skeleton_thick_vessel_max_bridge_radius_multiple"
             ],
+            bridge_radius_smoothing_um=float(
+                settings["skeleton_thick_vessel_bridge_radius_smoothing_um"]
+            ),
             return_thick_mask=True,
         )
     return _skeletonize_loaded_volume(image), None
@@ -951,7 +958,31 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     "automated terminal assignment "
                     f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
                 )
-        if use_legacy_large_vessel_assignment:
+        if settings["assign_large_vessel_branch_orders"]:
+            if bool(settings["cut_network_at_large_vessel_volumes"]):
+                raise ValueError(
+                    "assign_large_vessel_branch_orders requires "
+                    "cut_network_at_large_vessel_volumes=False -- large-"
+                    "vessel material must stay in the network to be tagged "
+                    "Large_Art/Large_Ven, not be cut away."
+                )
+            auto_inlet_nodes, auto_outlet_nodes = (
+                graph.select_large_vessel_stump_terminal_nodes(
+                    G,
+                    large_arteriole_mask=assignment_large_arteriole_mask,
+                    large_venule_mask=assignment_large_venule_mask,
+                    voxel_size_zyx=voxel_size_zyx,
+                    image_shape=image.shape,
+                )
+            )
+            logger.info(
+                "Large-vessel network mode: arteriole/venule mask interior "
+                "kept in the network and seeded from the image-edge stump "
+                f"({len(auto_inlet_nodes)} inlet node(s), "
+                f"{len(auto_outlet_nodes)} outlet node(s)), instead of "
+                "being cut away."
+            )
+        elif use_legacy_large_vessel_assignment:
             auto_inlet_nodes, auto_outlet_nodes = (
                 graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
                     G,
@@ -1070,6 +1101,42 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             G, image.shape, settings, "venule_boundary", exclude_nodes=list(used_nodes)
         )
         settings["venule_boundary_nodes"].extend(ven_boundary)
+
+    settings["large_arteriole_boundary_nodes"][:] = []
+    settings["large_venule_boundary_nodes"][:] = []
+    if settings["assign_large_vessel_branch_orders"] and settings["automated_vessel_assignment"]:
+        # Which edges fall inside the large-vessel masks, and where that
+        # coverage ends -- the Large_Art/Large_Ven <-> Art/Ven hand-off
+        # point (graph/branch_order.py's hierarchical tier extension).
+        # Reuses the small-vessel-mask overlap-labelling machinery against
+        # the large masks instead; its mask_vessel_type diagnostic
+        # attribute is a visualization-only side effect (Phase 2), not used
+        # here -- if use_small_vessel_masks_for_boundary_assignment is also
+        # on, whichever of the two calls runs last "wins" that diagnostic
+        # attribute, which is harmless since neither branch-order
+        # assignment nor resistance reads it back.
+        large_boundary_results = graph.infer_boundary_nodes_from_small_vessel_masks(
+            G,
+            assignment_large_arteriole_mask,
+            assignment_large_venule_mask,
+            voxel_size_zyx=voxel_size_zyx,
+            minimum_overlap_fraction=float(
+                settings["large_vessel_mask_min_overlap_fraction"]
+            ),
+        )
+        settings["large_arteriole_boundary_nodes"][:] = list(
+            large_boundary_results["arteriole_boundary_nodes"]
+        )
+        settings["large_venule_boundary_nodes"][:] = list(
+            large_boundary_results["venule_boundary_nodes"]
+        )
+        logger.info(
+            "Large-vessel-network branch-order tagging: "
+            f"{len(settings['large_arteriole_boundary_nodes'])} Large_Art "
+            f"boundary node(s), {len(settings['large_venule_boundary_nodes'])} "
+            "Large_Ven boundary node(s) (min_overlap_fraction="
+            f"{float(settings['large_vessel_mask_min_overlap_fraction']):.3f})."
+        )
     if settings["use_small_vessel_masks_for_boundary_assignment"]:
         if small_arteriole_mask is None or small_venule_mask is None:
             raise ValueError(
@@ -1455,6 +1522,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         outlet_nodes=settings["outlet_nodes"],
         arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
         venule_boundary_nodes=settings["venule_boundary_nodes"],
+        large_arteriole_boundary_nodes=settings["large_arteriole_boundary_nodes"],
+        large_venule_boundary_nodes=settings["large_venule_boundary_nodes"],
         resistance_node_pair=resistance_node_pair,
         graph=G,
         large_arteriole_mask=network.large_arteriole_mask,
@@ -1511,16 +1580,23 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             outlet_nodes=settings["outlet_nodes"],
             arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
             venule_boundary_nodes=settings["venule_boundary_nodes"],
+            large_arteriole_boundary_nodes=settings["large_arteriole_boundary_nodes"],
+            large_venule_boundary_nodes=settings["large_venule_boundary_nodes"],
             strict_hierarchical=settings["strict_branch_order_assignment"],
             # Hierarchical Art*/Ven* labelling needs small-vessel terminals
             # (auto masks or manual A/V coords/volumes). Large-vessel
-            # automation alone only fills inlets/outlets.
+            # automation alone only fills inlets/outlets. Large_Art/Large_Ven
+            # sits above Art/Ven, so it also needs hierarchical mode to
+            # actually fire -- turning it on without small-vessel/manual A-V
+            # boundaries configured would otherwise silently never tag
+            # anything.
             expects_hierarchical=bool(
                 settings["use_small_vessel_masks_for_boundary_assignment"]
                 or settings["arteriole_boundary_node_coordinates"]
                 or settings["arteriole_boundary_node_volumes"]
                 or settings["venule_boundary_node_coordinates"]
                 or settings["venule_boundary_node_volumes"]
+                or settings["assign_large_vessel_branch_orders"]
             ),
             post_assign_callback=(
                 _vessel_types_after_branch_assign

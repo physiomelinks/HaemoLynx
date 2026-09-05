@@ -190,12 +190,69 @@ def check_large_vessel_cut_when_masks_enabled(
         return report
     if bool(settings.get("cut_network_at_large_vessel_volumes")):
         return report
+    if bool(settings.get("assign_large_vessel_branch_orders")):
+        # Cut is deliberately off: large-vessel material stays in the
+        # network as Large_Art/Large_Ven branch orders instead of being
+        # cut away -- not the oversight this warning otherwise flags.
+        return report
     report.add_warning(
         "use_large_vessel_masks and automated_vessel_assignment are on, but "
         "cut_network_at_large_vessel_volumes is off. Interior branches inside "
         "large arteriole/venule volumes will stay in the network and napari "
         "viewer unless you enable the cut."
     )
+    return report
+
+
+def check_large_vessel_branch_order_mode_prerequisites(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """assign_large_vessel_branch_orders needs its whole prerequisite chain.
+
+    The schema's own ``requires`` tuple only drives GUI nesting and an
+    ``IneffectiveSettingWarning`` — it does not block a raw settings dict
+    (e.g. loaded from a hand-edited YAML) from having the flag on without
+    its prerequisites. This is the run-time check that catches that.
+    """
+    report = CheckReport()
+    if not bool(settings.get("assign_large_vessel_branch_orders")):
+        return report
+
+    missing = [
+        name
+        for name in (
+            "use_large_vessel_masks",
+            "automated_vessel_assignment",
+            "use_thick_vessel_skeletonisation",
+        )
+        if not bool(settings.get(name))
+    ]
+    if missing:
+        report.add_error(
+            "assign_large_vessel_branch_orders requires "
+            f"{', '.join(missing)} to also be on."
+        )
+    if bool(settings.get("cut_network_at_large_vessel_volumes")):
+        report.add_error(
+            "assign_large_vessel_branch_orders requires "
+            "cut_network_at_large_vessel_volumes=False -- large-vessel "
+            "material must stay in the network to be tagged Large_Art/"
+            "Large_Ven, not be cut away."
+        )
+    hierarchical_sources = (
+        "use_small_vessel_masks_for_boundary_assignment",
+        "arteriole_boundary_node_coordinates",
+        "arteriole_boundary_node_volumes",
+        "venule_boundary_node_coordinates",
+        "venule_boundary_node_volumes",
+    )
+    if not any(bool(settings.get(name)) for name in hierarchical_sources):
+        report.add_warning(
+            "assign_large_vessel_branch_orders is on, but none of "
+            f"{', '.join(hierarchical_sources)} is set, so hierarchical "
+            "Art*/Ven* labelling -- and the Large_Art/Large_Ven tier with "
+            "it -- will never actually run."
+        )
     return report
 
 
@@ -265,6 +322,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_ilastik_executable(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
+    report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
     report.extend(check_perturbations(settings, schema))
     report.print("Preflight")
     return report

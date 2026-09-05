@@ -1090,3 +1090,31 @@ def test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest(panel):
     assert rows["skeleton_fill_mask_holes_before_thickness"].visible is True
 
 
+def test_thick_vessel_row_relabels_when_large_vessel_network_mode_is_on(panel):
+    """Once thick-vessel skeletonisation and the large-vessel-network mode
+    are both on, the checkbox's own action is no longer "thick vessel
+    skeletonisation" -- it becomes "also segment large vessels". Turning
+    either back off must revert the label."""
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    original_label = rows["use_thick_vessel_skeletonisation"].label
+
+    rows["use_thick_vessel_skeletonisation"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["automated_vessel_assignment"].value = True
+    rows["cut_network_at_large_vessel_volumes"].value = False
+    QApplication.processEvents()
+    assert rows["use_thick_vessel_skeletonisation"].label == original_label
+
+    rows["assign_large_vessel_branch_orders"].value = True
+    QApplication.processEvents()
+    assert rows["use_thick_vessel_skeletonisation"].label == "Also segment large vessels"
+
+    rows["assign_large_vessel_branch_orders"].value = False
+    QApplication.processEvents()
+    assert rows["use_thick_vessel_skeletonisation"].label == original_label
+
+

@@ -618,6 +618,49 @@ SCHEMA = Schema(
             ),
         ),
         Setting(
+            name="assign_large_vessel_branch_orders",
+            kind="bool",
+            default=False,
+            help=(
+                "Keep large arteriole/venule mask material in the network as "
+                "first-class Large_Art{n}/Large_Ven{n} branch orders "
+                "(numbered by hop distance from the image-edge stump, "
+                "exactly like Art{n}/Ven{n}) instead of cutting it away. "
+                "Requires cut_network_at_large_vessel_volumes=False, and "
+                "needs small-vessel boundaries configured too "
+                "(use_small_vessel_masks_for_boundary_assignment, or manual "
+                "arteriole/venule boundaries) or hierarchical Art*/Ven* "
+                "labelling -- and this tier with it -- will not run"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_thick_vessel_skeletonisation",
+                "!cut_network_at_large_vessel_volumes",
+            ),
+        ),
+        Setting(
+            name="large_vessel_mask_min_overlap_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "Require at least this fraction of an edge to lie inside a "
+                "large-vessel mask before tagging it Large_Art/Large_Ven"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "use_thick_vessel_skeletonisation",
+                "!cut_network_at_large_vessel_volumes",
+                "assign_large_vessel_branch_orders",
+            ),
+        ),
+        Setting(
             name="remove_disconnected_io_components_after_final_assignment",
             kind="bool",
             default=False,
@@ -1283,6 +1326,28 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="large_arteriole_boundary_nodes",
+            kind="any",
+            default=[],
+            help=(
+                "Hold the Large_Art/Art hand-off node IDs chosen during the "
+                "run; leave empty to let the pipeline fill it"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
+        ),
+        Setting(
+            name="large_venule_boundary_nodes",
+            kind="any",
+            default=[],
+            help=(
+                "Hold the Ven/Large_Ven hand-off node IDs chosen during the "
+                "run; leave empty to let the pipeline fill it"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
+        ),
+        Setting(
             name="strict_branch_order_assignment",
             kind="bool",
             default=False,
@@ -1594,8 +1659,10 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "Give fat plasma-labelled vessels a centreline tree of every arm "
-                "instead of Lee thinning; capillaries stay on Lee"
+                "Give fat plasma-labelled vessels (inscribed radius above "
+                "skeleton_thick_vessel_min_radius_um, 6 um by default) a "
+                "centreline tree of every arm instead of Lee thinning; "
+                "capillaries stay on Lee"
             ),
             section=_PIPELINE_STAGES,
             requires=("do_skeletonize",),
@@ -1673,6 +1740,28 @@ SCHEMA = Schema(
                 "drawing an implausibly long bridge"
             ),
             section=_PIPELINE_STAGES,
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_bridge_radius_smoothing_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "How far, in microns, to look around a candidate bridge "
+                "point when measuring the fat vessel's local radius, "
+                "taking the widest reading found rather than the single "
+                "point sampled. The ridge can pass through a transient "
+                "narrow waist between two wider lobes, or taper toward the "
+                "fat/thin threshold at its own tail end; without this, an "
+                "arm landing exactly there would see an unrepresentatively "
+                "small radius even though the trunk is genuinely wide "
+                "again a short distance further along the same ridge. 0 "
+                "uses the raw single-point reading"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
             minimum=0.0,
             requires=("use_thick_vessel_skeletonisation",),
             advanced=True,
@@ -2092,6 +2181,24 @@ SCHEMA = Schema(
             kind="mapping",
             default={},
             help="Override venule diameters per branch-order label, e.g. Ven1",
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            requires=("!all_diams_const",),
+        ),
+        Setting(
+            name="manual_large_arteriole_diameter_by_branch_order",
+            kind="mapping",
+            default={},
+            help="Override large-arteriole diameters per branch-order label, e.g. Large_Art1",
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            requires=("!all_diams_const",),
+        ),
+        Setting(
+            name="manual_large_venule_diameter_by_branch_order",
+            kind="mapping",
+            default={},
+            help="Override large-venule diameters per branch-order label, e.g. Large_Ven1",
             section=_DIAMETERS_AND_PERICYTES,
             unit="um",
             requires=("!all_diams_const",),

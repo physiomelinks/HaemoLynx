@@ -96,6 +96,10 @@ vessel_masks:
   remove_orphaned_branches_outside_large_vessel_volumes: false
   # Edge-count threshold for orphan cleanup after large-vessel volume cuts: drop a remaining exterior component when edge_count < this value  [range 1..; needs use_large_vessel_masks and automated_vessel_assignment and cut_network_at_large_vessel_volumes and remove_orphaned_branches_outside_large_vessel_volumes]
   orphaned_branch_max_edge_count: 3
+  # Keep large arteriole/venule mask material in the network as first-class Large_Art{n}/Large_Ven{n} branch orders (numbered by hop distance from the image-edge stump, exactly like Art{n}/Ven{n}) instead of cutting it away. Requires cut_network_at_large_vessel_volumes=False, and needs small-vessel boundaries configured too (use_small_vessel_masks_for_boundary_assignment, or manual arteriole/venule boundaries) or hierarchical Art*/Ven* labelling -- and this tier with it -- will not run  [needs use_large_vessel_masks and automated_vessel_assignment and use_thick_vessel_skeletonisation and cut_network_at_large_vessel_volumes off]
+  assign_large_vessel_branch_orders: false
+  # Require at least this fraction of an edge to lie inside a large-vessel mask before tagging it Large_Art/Large_Ven  [fraction; range 0.0..1.0; needs use_large_vessel_masks and automated_vessel_assignment and use_thick_vessel_skeletonisation and cut_network_at_large_vessel_volumes off and assign_large_vessel_branch_orders]
+  large_vessel_mask_min_overlap_fraction: 0.5
   # After final I/O assignment, drop graph components that lack both an inlet and an outlet node  [needs automated_vessel_assignment]
   remove_disconnected_io_components_after_final_assignment: false
   # Assign arteriole and venule boundary nodes from small-vessel masks  [needs automated_vessel_assignment]
@@ -238,6 +242,10 @@ boundary_assignment:
   arteriole_boundary_nodes: []
   # Hold the venule boundary node IDs chosen during the run; leave empty to let the pipeline fill it
   venule_boundary_nodes: []
+  # Hold the Large_Art/Art hand-off node IDs chosen during the run; leave empty to let the pipeline fill it
+  large_arteriole_boundary_nodes: []
+  # Hold the Ven/Large_Ven hand-off node IDs chosen during the run; leave empty to let the pipeline fill it
+  large_venule_boundary_nodes: []
   # When small-arteriole/venule terminals were expected but are missing, raise; when they were never assigned, still label capillary B* orders from inlets and warn
   strict_branch_order_assignment: false
 
@@ -312,7 +320,7 @@ pipeline_stages:
   save_step_artifacts: false
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
   skeleton_min_component_percent: 10.0
-  # Give fat plasma-labelled vessels a centreline tree of every arm instead of Lee thinning; capillaries stay on Lee  [needs do_skeletonize]
+  # Give fat plasma-labelled vessels (inscribed radius above skeleton_thick_vessel_min_radius_um, 6 um by default) a centreline tree of every arm instead of Lee thinning; capillaries stay on Lee  [needs do_skeletonize]
   use_thick_vessel_skeletonisation: false
   # Inscribed radius above which a region is treated as fat rather than Lee-thinned  [um; range 0.0..; needs use_thick_vessel_skeletonisation]
   skeleton_thick_vessel_min_radius_um: 6.0
@@ -324,6 +332,8 @@ pipeline_stages:
   skeleton_thick_vessel_flake_filter_um: null
   # How far, as a multiple of the fat vessel's own local radius at the candidate attachment point, a thin vessel arm may bridge to reach the fat centreline. A thin vessel should merge into a fat one near where it actually touches it; without a cap the nearest-in-distance point on the ridge can sit arbitrarily far along the fat trunk's own length. An arm past this limit stays disconnected rather than drawing an implausibly long bridge  [range 0.0..; needs use_thick_vessel_skeletonisation]
   skeleton_thick_vessel_max_bridge_radius_multiple: 4.0
+  # How far, in microns, to look around a candidate bridge point when measuring the fat vessel's local radius, taking the widest reading found rather than the single point sampled. The ridge can pass through a transient narrow waist between two wider lobes, or taper toward the fat/thin threshold at its own tail end; without this, an arm landing exactly there would see an unrepresentatively small radius even though the trunk is genuinely wide again a short distance further along the same ridge. 0 uses the raw single-point reading  [um; range 0.0..; needs use_thick_vessel_skeletonisation]
+  skeleton_thick_vessel_bridge_radius_smoothing_um: 10.0
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true
   # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]
@@ -414,6 +424,10 @@ diameters_and_pericytes:
   manual_arteriole_diameter_by_branch_order: {}
   # Override venule diameters per branch-order label, e.g. Ven1  [um; needs all_diams_const off]
   manual_venule_diameter_by_branch_order: {}
+  # Override large-arteriole diameters per branch-order label, e.g. Large_Art1  [um; needs all_diams_const off]
+  manual_large_arteriole_diameter_by_branch_order: {}
+  # Override large-venule diameters per branch-order label, e.g. Large_Ven1  [um; needs all_diams_const off]
+  manual_large_venule_diameter_by_branch_order: {}
   # Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings  [um; needs all_diams_const off]
   diameter_by_branch_order: null
   # Global focal constriction/dilation factor for every branch order (1.0 = no local change; <1 narrows, >1 widens at pericyte sites). constriction_by_branch_order replaces this for listed orders only — empty map means this global factor alone  [range 0.0..; needs run_haemodynamics]

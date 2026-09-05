@@ -12,7 +12,10 @@ import numpy as np
 from haemolynx.graph import cut_graph_at_large_vessel_volumes
 from haemolynx.gui.results import NODES, VESSELS, ResultLayers, edge_polylines
 from haemolynx.pipeline import default_schema
-from haemolynx.pipeline.checks import check_large_vessel_cut_when_masks_enabled
+from haemolynx.pipeline.checks import (
+    check_large_vessel_branch_order_mode_prerequisites,
+    check_large_vessel_cut_when_masks_enabled,
+)
 from haemolynx.pipeline.stages import (
     BoundaryNodes,
     SkeletonisedVolume,
@@ -466,6 +469,51 @@ def test_assign_boundaries_writes_post_cut_graph_onto_network_and_boundary_nodes
         assert not _edge_has_interior_voxel(data, cut_volume)
 
 
+def test_assign_boundaries_toggle_off_leaves_graph_unchanged_at_stage_level(
+    tmp_path, monkeypatch
+):
+    """The full assign_boundaries stage must honour the toggle exactly like the
+    underlying cut function does -- nothing near a large-vessel mask's own
+    boundary should be removed when cut_network_at_large_vessel_volumes is
+    False, regardless of what else the stage does (terminal assignment,
+    overlap cleanup, orphan removal)."""
+    G, arteriole, venule = _crossing_chain_graph()
+    before_nodes = set(G.nodes)
+    before_edges = G.number_of_edges()
+    network = _network_for_cut(G, arteriole, venule, tmp_path)
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path, cut_network_at_large_vessel_volumes=False
+    )
+
+    def _fake_legacy_assign(graph_obj, **_kwargs):
+        terminals = [n for n, d in graph_obj.degree() if d == 1]
+        assert len(terminals) == 2
+        return [terminals[0]], [terminals[1]]
+
+    monkeypatch.setattr(
+        "haemolynx.graph.select_terminal_nodes_from_large_vessel_masks_progressive_dilation",
+        _fake_legacy_assign,
+    )
+    monkeypatch.setattr(
+        "haemolynx.visualization.visualize_3d_plotly_large_vessel_assignment",
+        lambda *args, **kwargs: None,
+    )
+
+    boundaries = assign_boundaries(settings, network)
+
+    assert boundaries.graph.number_of_edges() == before_edges
+    assert set(boundaries.graph.nodes) == before_nodes
+    cut_volume = arteriole | venule
+    interior_voxel_present = any(
+        _edge_has_interior_voxel(data, cut_volume)
+        for _u, _v, data in boundaries.graph.edges(data=True)
+    )
+    assert interior_voxel_present, (
+        "with the cut disabled, the interior voxel must still be present -- "
+        "a large-vessel mask's own boundary must not remove anything on its own"
+    )
+
+
 def test_napari_assign_boundaries_layers_use_post_cut_graph():
     pre_cut, arteriole, venule = _crossing_chain_graph()
     post_cut = cut_graph_at_large_vessel_volumes(
@@ -790,6 +838,66 @@ def test_preflight_warns_when_large_masks_on_and_cut_off():
         }
     )
     assert not clear.warnings
+
+
+def test_preflight_softens_cut_off_warning_when_large_vessel_mode_is_on():
+    report = check_large_vessel_cut_when_masks_enabled(
+        {
+            "use_large_vessel_masks": True,
+            "automated_vessel_assignment": True,
+            "cut_network_at_large_vessel_volumes": False,
+            "assign_large_vessel_branch_orders": True,
+        }
+    )
+    assert not report.warnings
+
+
+_LARGE_VESSEL_MODE_SETTINGS = {
+    "assign_large_vessel_branch_orders": True,
+    "use_large_vessel_masks": True,
+    "automated_vessel_assignment": True,
+    "use_thick_vessel_skeletonisation": True,
+    "cut_network_at_large_vessel_volumes": False,
+    "use_small_vessel_masks_for_boundary_assignment": True,
+}
+
+
+def test_preflight_errors_when_large_vessel_mode_and_cut_are_both_on():
+    settings = {**_LARGE_VESSEL_MODE_SETTINGS, "cut_network_at_large_vessel_volumes": True}
+    report = check_large_vessel_branch_order_mode_prerequisites(settings)
+    assert report.errors
+    assert any("cut_network_at_large_vessel_volumes" in message for message in report.errors)
+
+
+def test_preflight_errors_when_large_vessel_mode_missing_a_prerequisite():
+    settings = {**_LARGE_VESSEL_MODE_SETTINGS, "use_thick_vessel_skeletonisation": False}
+    report = check_large_vessel_branch_order_mode_prerequisites(settings)
+    assert report.errors
+    assert any("use_thick_vessel_skeletonisation" in message for message in report.errors)
+
+
+def test_preflight_warns_when_large_vessel_mode_missing_small_vessel_hierarchy():
+    settings = {
+        **_LARGE_VESSEL_MODE_SETTINGS,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    report = check_large_vessel_branch_order_mode_prerequisites(settings)
+    assert not report.errors
+    assert report.warnings
+
+
+def test_preflight_large_vessel_mode_prerequisites_clean_when_fully_configured():
+    report = check_large_vessel_branch_order_mode_prerequisites(_LARGE_VESSEL_MODE_SETTINGS)
+    assert not report.errors
+    assert not report.warnings
+
+
+def test_preflight_large_vessel_mode_prerequisites_no_op_when_mode_is_off():
+    report = check_large_vessel_branch_order_mode_prerequisites(
+        {"assign_large_vessel_branch_orders": False}
+    )
+    assert not report.errors
+    assert not report.warnings
 
 
 def _sparse_chord_through_mask_graph():
