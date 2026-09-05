@@ -670,6 +670,7 @@ def compute_comprehensive_vessel_statistics(
         # dimension: a junction's parent/daughter diameters live on specific
         # parallel edges that G_simple would collapse away.
         **compute_murray_law_compliance(G),
+        **compute_daughter_daughter_angles(G),
     }
 
     if statistics_mode == "full":
@@ -1134,6 +1135,50 @@ def _positive_diameter_or_none(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return value_f if value_f > 0 else None
+
+
+def compute_daughter_daughter_angles(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    tangent_length_um: float = 10.0,
+) -> Dict[str, Any]:
+    """Angle between each pair of sibling daughters at a bifurcation.
+
+    Distinct from :func:`compute_emergence_angles_by_branch_order` (parent
+    vs. each daughter): this is the angle between the daughters themselves,
+    the other half of classic bifurcation morphometry. Uses the same
+    junction definition (see :func:`_iter_parent_daughter_junctions`) so a
+    junction only contributes here if it also had a well-defined parent,
+    keeping the two angles comparable measurements of the same events.
+
+    A junction with more than two daughters (a trifurcation or wider)
+    contributes one angle per pair, not just adjacent ones -- there is no
+    inherent ordering among daughters at the same junction.
+    """
+    angles: list[float] = []
+    for node, _parent_item, daughter_items in _iter_parent_daughter_junctions(G):
+        if len(daughter_items) < 2:
+            continue
+        tangents: list[np.ndarray] = []
+        for u, v, _key, data, _tag in daughter_items:
+            tangent = _outgoing_unit_tangent(G, node, u, v, data, tangent_length_um)
+            if tangent is not None:
+                tangents.append(tangent)
+        for i in range(len(tangents)):
+            for j in range(i + 1, len(tangents)):
+                angles.append(_angle_between_unit_vectors(tangents[i], tangents[j]))
+
+    if not angles:
+        return {
+            "Mean Daughter-Daughter Angle (degrees)": (
+                "N/A (no bifurcation with two measurable daughters)"
+            ),
+            "Daughter-Daughter Angle Sample Count": 0,
+        }
+    return {
+        "Mean Daughter-Daughter Angle (degrees)": float(np.mean(angles)),
+        "Daughter-Daughter Angle Sample Count": len(angles),
+    }
 
 
 def compute_branch_order_statistics(

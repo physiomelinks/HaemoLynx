@@ -16,6 +16,7 @@ from haemolynx.statistics import (
     compute_comprehensive_vessel_statistics,
     export_statistics_to_csv,
     compute_branch_order_statistics,
+    compute_daughter_daughter_angles,
     compute_emergence_angles_by_branch_order,
     compute_murray_law_compliance,
     export_branch_order_statistics_to_csv,
@@ -175,6 +176,7 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
     assert "Fractal Dimension (Node Positions)" in s
     assert "Fractal Dimension (Centreline)" in s
     assert "Mean Murray Ratio" in s
+    assert "Mean Daughter-Daughter Angle (degrees)" in s
 
 
 def test_murray_law_compliance_matches_the_cube_law_by_hand():
@@ -408,6 +410,58 @@ def test_emergence_angle_is_deflection_from_the_parent_branch(tmp_path):
     assert "Mean Emergence Angle (degrees)" in text.splitlines()[0]
     assert re.search(r"^BO2,1,20,1,0,", text, flags=re.MULTILINE)
     assert re.search(r"^BO3,1,20,1,90,", text, flags=re.MULTILINE)
+
+
+def test_daughter_daughter_angle_is_between_the_two_daughters_not_the_parent():
+    """The other half of bifurcation morphometry: BO2 continues the parent
+    straight ahead, BO3 leaves at a right angle, so the angle *between*
+    BO2 and BO3 themselves is 90 degrees -- for a different reason than
+    BO3's emergence angle happens to also be 90 degrees in this fixture."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 20.0))
+    G.add_node(2, pos=(0.0, 0.0, 40.0))
+    G.add_node(3, pos=(0.0, 20.0, 20.0))
+    _straight_edge(G, 0, 1, "B01")
+    _straight_edge(G, 1, 2, "B02")
+    _straight_edge(G, 1, 3, "B03")
+
+    result = compute_daughter_daughter_angles(G)
+
+    assert result["Daughter-Daughter Angle Sample Count"] == 1
+    assert result["Mean Daughter-Daughter Angle (degrees)"] == pytest.approx(90.0, abs=1e-9)
+
+
+def test_daughter_daughter_angle_needs_at_least_two_daughters():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 20.0))
+    _straight_edge(G, 0, 1, "B01")
+
+    result = compute_daughter_daughter_angles(G)
+
+    assert result["Daughter-Daughter Angle Sample Count"] == 0
+    assert result["Mean Daughter-Daughter Angle (degrees)"] == (
+        "N/A (no bifurcation with two measurable daughters)"
+    )
+
+
+def test_daughter_daughter_angle_counts_every_pair_at_a_trifurcation():
+    """Three daughters at one junction have C(3, 2) = 3 pairs, not just one."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 20.0))
+    G.add_node(2, pos=(0.0, 0.0, 40.0))
+    G.add_node(3, pos=(0.0, 20.0, 20.0))
+    G.add_node(4, pos=(20.0, 0.0, 20.0))
+    _straight_edge(G, 0, 1, "Art1")
+    _straight_edge(G, 1, 2, "BO1")
+    _straight_edge(G, 1, 3, "BO2")
+    _straight_edge(G, 1, 4, "BO3")
+
+    result = compute_daughter_daughter_angles(G)
+
+    assert result["Daughter-Daughter Angle Sample Count"] == 3
 
 
 def test_emergence_angle_uses_local_centreline_not_node_span():
