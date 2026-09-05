@@ -935,6 +935,9 @@ def _empty_branch_order_record(tag: str) -> Dict[str, Any]:
         "Tortuosity Sample Count": 0,
         "Mean Emergence Angle (degrees)": "N/A (no unique parent junction)",
         "Emergence Angle Sample Count": 0,
+        "Mean Pressure Drop (Pa)": "N/A (no flow solved)",
+        "Total Pressure Drop (Pa)": "N/A (no flow solved)",
+        "Pressure Drop Sample Count": 0,
     }
 
 
@@ -1078,6 +1081,26 @@ def compute_branch_order_statistics(
                 rec["Mean Tortuosity Index"] += tort
                 rec["Tortuosity Sample Count"] += 1
 
+        # Only present once haemodynamics has run and flow has been solved
+        # (haemodynamics.resistance.set_edge_flows). The sign of a single
+        # edge's drop is an artefact of its arbitrary (u, v) storage order,
+        # not physically meaningful, so this aggregates magnitude -- "how
+        # much of the network's total pressure loss happens in this order",
+        # the classic answer being mostly small arterioles, not capillaries.
+        pressure_drop = data.get("pressure_drop")
+        if pressure_drop is not None:
+            try:
+                drop_abs = abs(float(pressure_drop))
+            except (TypeError, ValueError):
+                drop_abs = None
+            if drop_abs is not None:
+                if rec["Mean Pressure Drop (Pa)"] == "N/A (no flow solved)":
+                    rec["Mean Pressure Drop (Pa)"] = 0.0
+                    rec["Total Pressure Drop (Pa)"] = 0.0
+                rec["Mean Pressure Drop (Pa)"] += drop_abs
+                rec["Total Pressure Drop (Pa)"] += drop_abs
+                rec["Pressure Drop Sample Count"] += 1
+
     for rec in by_tag.values():
         edge_count = int(rec["Edge Count"])
         if edge_count > 0:
@@ -1087,6 +1110,12 @@ def compute_branch_order_statistics(
             rec["Mean Tortuosity Index"] = rec["Mean Tortuosity Index"] / t_samples
         elif t_samples == 0:
             rec["Mean Tortuosity Index"] = "N/A (insufficient position data)"
+        p_samples = int(rec["Pressure Drop Sample Count"])
+        if p_samples > 0 and isinstance(rec["Mean Pressure Drop (Pa)"], (int, float)):
+            rec["Mean Pressure Drop (Pa)"] = rec["Mean Pressure Drop (Pa)"] / p_samples
+        elif p_samples == 0:
+            rec["Mean Pressure Drop (Pa)"] = "N/A (no flow solved)"
+            rec["Total Pressure Drop (Pa)"] = "N/A (no flow solved)"
 
     emergence = compute_emergence_angles_by_branch_order(
         G, tangent_length_um=tangent_length_um
@@ -1126,12 +1155,16 @@ def export_branch_order_statistics_to_csv(
                 "Mean Length (microns)",
                 "Mean Tortuosity Index",
                 "Mean Emergence Angle (degrees)",
+                "Mean Pressure Drop (Pa)",
+                "Total Pressure Drop (Pa)",
                 "Notes",
             ]
         )
         writer.writerow(
             [
                 "# Ordered by vessel class",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -1171,6 +1204,20 @@ def export_branch_order_statistics_to_csv(
                     "Emergence angle unavailable (no unique lower-order "
                     "parent junction)."
                 )
+            mean_drop = rec.get("Mean Pressure Drop (Pa)", "N/A (no flow solved)")
+            total_drop = rec.get("Total Pressure Drop (Pa)", "N/A (no flow solved)")
+            if isinstance(mean_drop, (int, float, np.integer, np.floating)):
+                mean_drop_s = f"{float(mean_drop):.6g}"
+                total_drop_s = f"{float(total_drop):.6g}"
+                notes.append(
+                    "Pressure drop is |pressure_u - pressure_v|, only present "
+                    "once flow has been solved; total is this order's share "
+                    "of the network's overall pressure loss."
+                )
+            else:
+                mean_drop_s = str(mean_drop)
+                total_drop_s = str(total_drop)
+                notes.append("Pressure drop unavailable (flow not solved).")
             writer.writerow(
                 [
                     branch_tag,
@@ -1178,6 +1225,8 @@ def export_branch_order_statistics_to_csv(
                     mean_len_s,
                     mean_tort_s,
                     mean_angle_s,
+                    mean_drop_s,
+                    total_drop_s,
                     " ".join(notes),
                 ]
             )

@@ -217,6 +217,27 @@ def test_compute_branch_order_statistics_sorted_and_aggregated():
     assert s["BO3"]["Mean Emergence Angle (degrees)"] == pytest.approx(0.0, abs=1e-9)
     assert s["Art2"]["Mean Emergence Angle (degrees)"] == "N/A (no unique parent junction)"
     assert s["Ven1"]["Mean Emergence Angle (degrees)"] == "N/A (no unique parent junction)"
+    assert s["BO1"]["Mean Pressure Drop (Pa)"] == "N/A (no flow solved)"
+    assert s["BO1"]["Total Pressure Drop (Pa)"] == "N/A (no flow solved)"
+
+
+def test_branch_order_pressure_drop_aggregates_magnitude_not_signed_value():
+    """pressure_drop's sign is an artefact of an edge's arbitrary (u, v)
+    storage order, not physically meaningful -- aggregation must use
+    magnitude, and mean/total must reflect only the edges flow was solved
+    for."""
+    G = nx.MultiGraph()
+    for node in range(4):
+        G.add_node(node, pos=(0.0, 0.0, float(node)))
+    G.add_edge(0, 1, key=0, branch_order="B01", length=1.0, pressure_drop=10.0)
+    G.add_edge(1, 2, key=0, branch_order="B01", length=1.0, pressure_drop=-20.0)
+    G.add_edge(2, 3, key=0, branch_order="B01", length=1.0)  # flow not solved
+
+    s = compute_branch_order_statistics(G, node_positions=nx.get_node_attributes(G, "pos"))
+
+    assert s["BO1"]["Pressure Drop Sample Count"] == 2
+    assert s["BO1"]["Mean Pressure Drop (Pa)"] == pytest.approx(15.0)
+    assert s["BO1"]["Total Pressure Drop (Pa)"] == pytest.approx(30.0)
 
 
 def test_export_branch_order_statistics_to_csv(tmp_path):
@@ -244,13 +265,21 @@ def test_export_branch_order_statistics_to_csv(tmp_path):
     text = out_csv.read_text(encoding="utf-8")
     assert (
         "Branch Order,Edge Count,Mean Length (microns),Mean Tortuosity Index,"
-        "Mean Emergence Angle (degrees),Notes"
+        "Mean Emergence Angle (degrees),Mean Pressure Drop (Pa),"
+        "Total Pressure Drop (Pa),Notes"
     ) in text
-    assert "Art1,3,12.5,1.1,N/A (no unique parent junction)," in text
+    assert (
+        "Art1,3,12.5,1.1,N/A (no unique parent junction),"
+        "N/A (no flow solved),N/A (no flow solved),"
+    ) in text
     assert "Mean tortuosity is path length / straight distance." in text
     assert "Emergence angle unavailable (no unique lower-order parent junction)." in text
-    assert "BO2,2,8,N/A (insufficient position data),N/A (no unique parent junction)," in text
+    assert (
+        "BO2,2,8,N/A (insufficient position data),N/A (no unique parent junction),"
+        "N/A (no flow solved),N/A (no flow solved),"
+    ) in text
     assert "Tortuosity unavailable (missing/insufficient node positions)." in text
+    assert "Pressure drop unavailable (flow not solved)." in text
 
 
 def test_emergence_angle_is_deflection_from_the_parent_branch(tmp_path):
