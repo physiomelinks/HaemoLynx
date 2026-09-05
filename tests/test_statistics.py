@@ -17,6 +17,7 @@ from haemolynx.statistics import (
     export_statistics_to_csv,
     compute_branch_order_statistics,
     compute_emergence_angles_by_branch_order,
+    compute_murray_law_compliance,
     export_branch_order_statistics_to_csv,
 )
 
@@ -173,6 +174,67 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
     assert "Total Nodes" in s
     assert "Fractal Dimension (Node Positions)" in s
     assert "Fractal Dimension (Centreline)" in s
+    assert "Mean Murray Ratio" in s
+
+
+def test_murray_law_compliance_matches_the_cube_law_by_hand():
+    """8**3 + 8**3 = 1024 vs a parent diameter of 10 (1000): ratio 1.024."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 10.0))
+    G.add_node(2, pos=(0.0, 5.0, 20.0))
+    G.add_node(3, pos=(0.0, -5.0, 20.0))
+    G.add_edge(0, 1, key=0, branch_order="Art1", diameter_um=10.0)
+    G.add_edge(1, 2, key=0, branch_order="BO1", diameter_um=8.0)
+    G.add_edge(1, 3, key=0, branch_order="BO2", diameter_um=8.0)
+
+    result = compute_murray_law_compliance(G)
+
+    assert result["Murray Ratio Sample Count"] == 1
+    assert result["Mean Murray Ratio"] == pytest.approx(1.024)
+    assert result["Murray Law Exponent"] == 3.0
+
+
+def test_murray_law_skips_a_junction_missing_any_one_diameter():
+    """A ratio built from a partial set of daughters is not comparable to
+    one built from all of them, so the whole junction is skipped."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 10.0))
+    G.add_node(2, pos=(0.0, 5.0, 20.0))
+    G.add_node(3, pos=(0.0, -5.0, 20.0))
+    G.add_edge(0, 1, key=0, branch_order="Art1", diameter_um=10.0)
+    G.add_edge(1, 2, key=0, branch_order="BO1", diameter_um=8.0)
+    G.add_edge(1, 3, key=0, branch_order="BO2")  # no diameter_um
+
+    result = compute_murray_law_compliance(G)
+
+    assert result["Murray Ratio Sample Count"] == 0
+    assert result["Mean Murray Ratio"] == "N/A (no junction had diameters on every branch)"
+
+
+def test_murray_law_averages_across_several_junctions():
+    parent_d = 8.0
+    # Two equal daughters give ratio = 2 * daughter**3 / parent**3.
+    daughter_for_ratio_1 = (parent_d**3 / 2) ** (1 / 3)  # ratio exactly 1.0
+    daughter_for_ratio_2 = parent_d  # 2 * parent**3 / parent**3 == 2.0
+
+    G = nx.MultiGraph()
+    for node in range(7):
+        G.add_node(node, pos=(0.0, 0.0, float(node)))
+    # Junction A: exact compliance (ratio 1.0).
+    G.add_edge(0, 1, key=0, branch_order="Art1", diameter_um=parent_d)
+    G.add_edge(1, 2, key=0, branch_order="BO1", diameter_um=daughter_for_ratio_1)
+    G.add_edge(1, 3, key=0, branch_order="BO2", diameter_um=daughter_for_ratio_1)
+    # Junction B: double compliance (ratio 2.0).
+    G.add_edge(3, 4, key=0, branch_order="Art2", diameter_um=parent_d)
+    G.add_edge(4, 5, key=0, branch_order="BO3", diameter_um=daughter_for_ratio_2)
+    G.add_edge(4, 6, key=0, branch_order="BO4", diameter_um=daughter_for_ratio_2)
+
+    result = compute_murray_law_compliance(G)
+
+    assert result["Murray Ratio Sample Count"] == 2
+    assert result["Mean Murray Ratio"] == pytest.approx(1.5, rel=1e-6)
 
 
 def test_export_statistics_to_csv(tmp_path):

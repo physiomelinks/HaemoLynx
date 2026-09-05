@@ -666,6 +666,10 @@ def compute_comprehensive_vessel_statistics(
         **compute_vessel_density(
             G, node_positions, voxel_size, image_dimensions, is_mg
         ),
+        # The original G, not G_simple, for the same reason as fractal
+        # dimension: a junction's parent/daughter diameters live on specific
+        # parallel edges that G_simple would collapse away.
+        **compute_murray_law_compliance(G),
     }
 
     if statistics_mode == "full":
@@ -866,6 +870,43 @@ def _incident_edge_items(
     return [(u, v, None, d) for u, v, d in G.edges(node, data=True)]
 
 
+def _iter_parent_daughter_junctions(
+    G: Union[nx.Graph, nx.MultiGraph],
+):
+    """Junctions with a unique lowest-branch-order-rank parent and >=1 daughter.
+
+    Yields ``(node, parent_item, daughter_items)`` where each item is
+    ``(u, v, key, data, tag)``. This is the same junction definition
+    :func:`compute_emergence_angles_by_branch_order` uses (the unique
+    lowest-rank incident edge is the parent, every other labelled edge a
+    daughter; tied ranks, unlabelled-only, or degree < 3 contribute
+    nothing) -- shared here so a second and third junction-level statistic
+    (Murray's law, daughter-daughter angle) do not each redefine "parent"
+    on their own.
+    """
+    for node in G.nodes():
+        if int(G.degree(node)) < 3:
+            continue
+        labelled: list[tuple[Any, Any, Any, dict, str]] = []
+        for u, v, key, data in _incident_edge_items(G, node):
+            if u == v:
+                continue
+            tag = _normalize_branch_order_tag(data.get("branch_order"))
+            if not tag:
+                continue
+            labelled.append((u, v, key, data, tag))
+        if len(labelled) < 2:
+            continue
+        ranks = [_branch_order_sort_key(item[4]) for item in labelled]
+        min_rank = min(ranks)
+        parent_indices = [i for i, rank in enumerate(ranks) if rank == min_rank]
+        if len(parent_indices) != 1:
+            continue
+        parent_i = parent_indices[0]
+        daughter_items = [item for i, item in enumerate(labelled) if i != parent_i]
+        yield node, labelled[parent_i], daughter_items
+
+
 def _point_along_polyline(
     points: np.ndarray, distance_um: float
 ) -> Optional[np.ndarray]:
@@ -1033,6 +1074,66 @@ def compute_emergence_angles_by_branch_order(
             "Emergence Angle Sample Count": n,
         }
     return ordered
+
+
+def compute_murray_law_compliance(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    exponent: float = 3.0,
+) -> Dict[str, Any]:
+    """How well parent^n ~= sum(daughter^n) holds at each qualifying junction.
+
+    Murray's law (the classic ``exponent=3``) predicts the diameter
+    relationship a minimum-total-work vascular network would have at every
+    bifurcation; a ratio of 1.0 is ideal, and systematic deviation from it
+    is a standard marker of abnormal (e.g. tumour) vasculature. Uses the
+    same junction definition as :func:`compute_emergence_angles_by_branch_order`
+    (see :func:`_iter_parent_daughter_junctions`): the unique lowest-rank
+    incident edge is the parent, every other labelled edge a daughter.
+
+    A junction missing a positive diameter on the parent or on any one of
+    its daughters is skipped entirely -- a ratio computed from a partial
+    set of daughters is not comparable to one computed from all of them.
+    """
+    ratios: list[float] = []
+    for _node, parent_item, daughter_items in _iter_parent_daughter_junctions(G):
+        if not daughter_items:
+            continue
+        parent_d = _positive_diameter_or_none(parent_item[3].get("diameter_um"))
+        if parent_d is None:
+            continue
+        daughter_sum = 0.0
+        for daughter_item in daughter_items:
+            daughter_d = _positive_diameter_or_none(daughter_item[3].get("diameter_um"))
+            if daughter_d is None:
+                daughter_sum = None
+                break
+            daughter_sum += daughter_d**exponent
+        if daughter_sum is None:
+            continue
+        ratios.append(daughter_sum / (parent_d**exponent))
+
+    if not ratios:
+        return {
+            "Mean Murray Ratio": "N/A (no junction had diameters on every branch)",
+            "Murray Ratio Sample Count": 0,
+            "Murray Law Exponent": exponent,
+        }
+    return {
+        "Mean Murray Ratio": float(np.mean(ratios)),
+        "Murray Ratio Sample Count": len(ratios),
+        "Murray Law Exponent": exponent,
+    }
+
+
+def _positive_diameter_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        value_f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value_f if value_f > 0 else None
 
 
 def compute_branch_order_statistics(
