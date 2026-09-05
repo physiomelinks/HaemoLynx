@@ -219,6 +219,9 @@ def test_compute_branch_order_statistics_sorted_and_aggregated():
     assert s["Ven1"]["Mean Emergence Angle (degrees)"] == "N/A (no unique parent junction)"
     assert s["BO1"]["Mean Pressure Drop (Pa)"] == "N/A (no flow solved)"
     assert s["BO1"]["Total Pressure Drop (Pa)"] == "N/A (no flow solved)"
+    assert s["BO1"]["Mean Diameter (microns)"] == "N/A (no diameter assigned)"
+    assert s["BO1"]["Diameter Coefficient of Variation"] == "N/A (no diameter assigned)"
+    assert "_diameter_sum_sq" not in s["BO1"]
 
 
 def test_branch_order_pressure_drop_aggregates_magnitude_not_signed_value():
@@ -238,6 +241,36 @@ def test_branch_order_pressure_drop_aggregates_magnitude_not_signed_value():
     assert s["BO1"]["Pressure Drop Sample Count"] == 2
     assert s["BO1"]["Mean Pressure Drop (Pa)"] == pytest.approx(15.0)
     assert s["BO1"]["Total Pressure Drop (Pa)"] == pytest.approx(30.0)
+
+
+def test_branch_order_diameter_mean_and_coefficient_of_variation():
+    G = nx.MultiGraph()
+    for node in range(3):
+        G.add_node(node, pos=(0.0, 0.0, float(node)))
+    G.add_edge(0, 1, key=0, branch_order="B01", length=1.0, diameter_um=4.0)
+    G.add_edge(1, 2, key=0, branch_order="B01", length=1.0, diameter_um=6.0)
+
+    s = compute_branch_order_statistics(G, node_positions=nx.get_node_attributes(G, "pos"))
+
+    assert s["BO1"]["Diameter Sample Count"] == 2
+    assert s["BO1"]["Mean Diameter (microns)"] == pytest.approx(5.0)
+    # population std of [4, 6] is 1.0, so CoV = 1.0 / 5.0
+    assert s["BO1"]["Diameter Coefficient of Variation"] == pytest.approx(0.2)
+    assert "_diameter_sum_sq" not in s["BO1"]
+
+
+def test_branch_order_diameter_ignores_non_positive_or_missing_values():
+    G = nx.MultiGraph()
+    for node in range(3):
+        G.add_node(node, pos=(0.0, 0.0, float(node)))
+    G.add_edge(0, 1, key=0, branch_order="B01", length=1.0, diameter_um=0.0)
+    G.add_edge(1, 2, key=0, branch_order="B01", length=1.0)  # no diameter_um at all
+
+    s = compute_branch_order_statistics(G, node_positions=nx.get_node_attributes(G, "pos"))
+
+    assert s["BO1"]["Diameter Sample Count"] == 0
+    assert s["BO1"]["Mean Diameter (microns)"] == "N/A (no diameter assigned)"
+    assert s["BO1"]["Diameter Coefficient of Variation"] == "N/A (no diameter assigned)"
 
 
 def test_export_branch_order_statistics_to_csv(tmp_path):
@@ -266,20 +299,24 @@ def test_export_branch_order_statistics_to_csv(tmp_path):
     assert (
         "Branch Order,Edge Count,Mean Length (microns),Mean Tortuosity Index,"
         "Mean Emergence Angle (degrees),Mean Pressure Drop (Pa),"
-        "Total Pressure Drop (Pa),Notes"
+        "Total Pressure Drop (Pa),Mean Diameter (microns),"
+        "Diameter Coefficient of Variation,Notes"
     ) in text
     assert (
         "Art1,3,12.5,1.1,N/A (no unique parent junction),"
         "N/A (no flow solved),N/A (no flow solved),"
+        "N/A (no diameter assigned),N/A (no diameter assigned),"
     ) in text
     assert "Mean tortuosity is path length / straight distance." in text
     assert "Emergence angle unavailable (no unique lower-order parent junction)." in text
     assert (
         "BO2,2,8,N/A (insufficient position data),N/A (no unique parent junction),"
         "N/A (no flow solved),N/A (no flow solved),"
+        "N/A (no diameter assigned),N/A (no diameter assigned),"
     ) in text
     assert "Tortuosity unavailable (missing/insufficient node positions)." in text
     assert "Pressure drop unavailable (flow not solved)." in text
+    assert "Diameter unavailable (no diameter assigned)." in text
 
 
 def test_emergence_angle_is_deflection_from_the_parent_branch(tmp_path):

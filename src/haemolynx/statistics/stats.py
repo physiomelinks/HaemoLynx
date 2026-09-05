@@ -938,6 +938,10 @@ def _empty_branch_order_record(tag: str) -> Dict[str, Any]:
         "Mean Pressure Drop (Pa)": "N/A (no flow solved)",
         "Total Pressure Drop (Pa)": "N/A (no flow solved)",
         "Pressure Drop Sample Count": 0,
+        "Mean Diameter (microns)": "N/A (no diameter assigned)",
+        "Diameter Coefficient of Variation": "N/A (no diameter assigned)",
+        "Diameter Sample Count": 0,
+        "_diameter_sum_sq": 0.0,
     }
 
 
@@ -1101,6 +1105,24 @@ def compute_branch_order_statistics(
                 rec["Total Pressure Drop (Pa)"] += drop_abs
                 rec["Pressure Drop Sample Count"] += 1
 
+        # Only present once haemodynamics has assigned a diameter
+        # (haemodynamics.poiseuille), whether measured (FWHM) or from the
+        # branch-order table. Caliber distribution by generation is one of
+        # the most basic readouts in vascular morphometry, and this data
+        # already carries it -- it was just never reported on its own.
+        diameter = data.get("diameter_um")
+        if diameter is not None:
+            try:
+                diameter_f = float(diameter)
+            except (TypeError, ValueError):
+                diameter_f = None
+            if diameter_f is not None and diameter_f > 0:
+                if rec["Mean Diameter (microns)"] == "N/A (no diameter assigned)":
+                    rec["Mean Diameter (microns)"] = 0.0
+                rec["Mean Diameter (microns)"] += diameter_f
+                rec["_diameter_sum_sq"] += diameter_f * diameter_f
+                rec["Diameter Sample Count"] += 1
+
     for rec in by_tag.values():
         edge_count = int(rec["Edge Count"])
         if edge_count > 0:
@@ -1131,6 +1153,25 @@ def compute_branch_order_statistics(
             "Emergence Angle Sample Count"
         ]
 
+    # After the emergence merge, not before: a tag with no length>0 edges but
+    # a real emergence angle gets its record created for the first time
+    # right above, and _diameter_sum_sq (an internal accumulator, never
+    # meant to reach the caller) must be dropped from every record, not just
+    # the ones the main loop already saw.
+    for rec in by_tag.values():
+        d_samples = int(rec["Diameter Sample Count"])
+        if d_samples > 0 and isinstance(rec["Mean Diameter (microns)"], (int, float)):
+            mean_d = rec["Mean Diameter (microns)"] / d_samples
+            variance = max(0.0, rec["_diameter_sum_sq"] / d_samples - mean_d * mean_d)
+            rec["Mean Diameter (microns)"] = mean_d
+            rec["Diameter Coefficient of Variation"] = (
+                (variance**0.5) / mean_d if mean_d > 0 else 0.0
+            )
+        else:
+            rec["Mean Diameter (microns)"] = "N/A (no diameter assigned)"
+            rec["Diameter Coefficient of Variation"] = "N/A (no diameter assigned)"
+        del rec["_diameter_sum_sq"]
+
     ordered = {
         k: by_tag[k]
         for k in sorted(by_tag.keys(), key=_branch_order_sort_key)
@@ -1157,12 +1198,16 @@ def export_branch_order_statistics_to_csv(
                 "Mean Emergence Angle (degrees)",
                 "Mean Pressure Drop (Pa)",
                 "Total Pressure Drop (Pa)",
+                "Mean Diameter (microns)",
+                "Diameter Coefficient of Variation",
                 "Notes",
             ]
         )
         writer.writerow(
             [
                 "# Ordered by vessel class",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -1218,6 +1263,21 @@ def export_branch_order_statistics_to_csv(
                 mean_drop_s = str(mean_drop)
                 total_drop_s = str(total_drop)
                 notes.append("Pressure drop unavailable (flow not solved).")
+            mean_diam = rec.get("Mean Diameter (microns)", "N/A (no diameter assigned)")
+            diam_cv = rec.get(
+                "Diameter Coefficient of Variation", "N/A (no diameter assigned)"
+            )
+            if isinstance(mean_diam, (int, float, np.integer, np.floating)):
+                mean_diam_s = f"{float(mean_diam):.6g}"
+                diam_cv_s = f"{float(diam_cv):.6g}"
+                notes.append(
+                    "Diameter coefficient of variation is its standard "
+                    "deviation / mean across this order's edges."
+                )
+            else:
+                mean_diam_s = str(mean_diam)
+                diam_cv_s = str(diam_cv)
+                notes.append("Diameter unavailable (no diameter assigned).")
             writer.writerow(
                 [
                     branch_tag,
@@ -1227,6 +1287,8 @@ def export_branch_order_statistics_to_csv(
                     mean_angle_s,
                     mean_drop_s,
                     total_drop_s,
+                    mean_diam_s,
+                    diam_cv_s,
                     " ".join(notes),
                 ]
             )
