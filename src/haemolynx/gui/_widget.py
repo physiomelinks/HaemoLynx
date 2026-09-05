@@ -5063,9 +5063,20 @@ def settings_widget(napari_viewer=None):
                 applying = False
 
         def on_layer_added(event) -> None:
-            """A dropped image becomes the input, panel already open or not."""
+            """A dropped image becomes the input, panel already open or not.
+
+            Not one of our own: a run that shows results adds Image-kind
+            layers for its own output (the large-vessel mask volumes, in
+            particular -- see `vessel_mask_volume_layers`). Without this
+            check, showing those masks silently repointed the *next* run's
+            input_path at whichever one was added last, since every added
+            Image layer was treated as something the user just dropped in.
+            """
             layer_picker.reset_choices()
-            adopt(getattr(event, "value", None))
+            layer = getattr(event, "value", None)
+            if _is_ours(layer):
+                return
+            adopt(layer)
 
         def on_layer_removed(_event) -> None:
             layer_picker.reset_choices()
@@ -5078,10 +5089,12 @@ def settings_widget(napari_viewer=None):
         viewer.layers.events.removed.connect(on_layer_removed)
 
         images = [
-            layer for layer in viewer.layers if isinstance(layer, napari.layers.Image)
+            layer
+            for layer in viewer.layers
+            if isinstance(layer, napari.layers.Image) and not _is_ours(layer)
         ]
         active = viewer.layers.selection.active
-        if isinstance(active, napari.layers.Image):
+        if isinstance(active, napari.layers.Image) and not _is_ours(active):
             adopt(active)
         elif images:
             adopt(images[-1])

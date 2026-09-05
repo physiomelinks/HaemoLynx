@@ -22,6 +22,7 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
     DISPLAY_SETTINGS_OFF_IN_NAPARI,
+    OURS,
     settings_widget,
 )
 from haemolynx.gui.progress import TOTAL_STAGES  # noqa: E402
@@ -827,6 +828,33 @@ def test_a_config_still_applies_everything_other_than_the_input(
 
     for name in ("min_stub_length", "inlet_p_bc", "skeleton_bridge_gap_size"):
         assert values[name] == on_file[name], name
+
+
+def test_showing_our_own_mask_layer_does_not_hijack_the_input(make_napari_viewer):
+    """A run's own results layers must never become the next run's input.
+
+    `vessel_mask_volume_layers` shows the large-vessel masks as Image-kind
+    layers (results.py). Adding any Image layer used to be treated as "the
+    user just dropped this in, use it as input" -- so showing those masks
+    silently repointed input_path at the mask's own exported file. Without a
+    full napari restart to wipe that state, every later run then used the
+    mask instead of the real segmentation. Only a layer the user actually
+    brings in should ever become the input.
+    """
+    import numpy as np
+
+    viewer = make_napari_viewer()
+    viewer.open(str(FIXTURE))
+    panel = settings_widget(napari_viewer=viewer)
+    assert Path(panel._haemolynx_values()["input_path"]) == FIXTURE
+
+    viewer.add_image(
+        np.zeros((4, 4, 4), dtype=np.float32),
+        name="HaemoLynx - large venule mask",
+        metadata={OURS: {"kind": "image"}},
+    )
+
+    assert Path(panel._haemolynx_values()["input_path"]) == FIXTURE
 
 
 # --- an adopted layer is put in the same frame as the results ----------------
