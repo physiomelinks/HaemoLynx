@@ -47,9 +47,15 @@ def test_compute_tortuosity_measures(simple_graph):
 
 
 def test_compute_branching_statistics(simple_graph):
-    pos = nx.get_node_attributes(simple_graph, "pos")
-    s = compute_branching_statistics(simple_graph, pos)
-    assert "Average Branching Angle (degrees)" in s
+    s = compute_branching_statistics(simple_graph)
+    assert s == {"Number of Branching Points": 0}
+
+
+def test_compute_branching_statistics_counts_junctions():
+    G = nx.Graph()
+    G.add_edges_from([(0, 1), (0, 2), (0, 3), (1, 4), (1, 5), (1, 6)])
+    s = compute_branching_statistics(G)
+    assert s == {"Number of Branching Points": 2}
 
 
 def test_compute_tree_asymmetry(simple_graph):
@@ -108,7 +114,42 @@ def test_tree_asymmetry_handles_a_chain_deeper_than_the_recursion_limit():
 def test_compute_fractal_dimension(simple_graph):
     pos = nx.get_node_attributes(simple_graph, "pos")
     s = compute_fractal_dimension(simple_graph, pos)
-    assert "Fractal Dimension" in s
+    assert "Fractal Dimension (Node Positions)" in s
+    assert "Fractal Dimension (Centreline)" in s
+
+
+def test_fractal_dimension_centreline_sees_the_polyline_the_node_only_one_misses():
+    """The two estimates are deliberately different lenses on the network.
+
+    Both graphs share the exact same two node positions, so the node-only
+    box count cannot tell them apart -- it never looks at the polyline in
+    between. Only the graph whose single edge actually zigzags between
+    those two points should read differently once every point along its
+    real centreline is counted instead of just its two ends.
+    """
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0)}
+
+    straight = nx.Graph()
+    straight.add_node(0, pos=pos[0])
+    straight.add_node(1, pos=pos[1])
+    straight.add_edge(0, 1, voxels=[pos[0], pos[1]])
+
+    zigzag = nx.Graph()
+    zigzag.add_node(0, pos=pos[0])
+    zigzag.add_node(1, pos=pos[1])
+    zigzag.add_edge(
+        0, 1, voxels=[(float(x), 5.0 if x % 2 else 0.0, 0.0) for x in range(11)]
+    )
+
+    straight_result = compute_fractal_dimension(straight, pos)
+    zigzag_result = compute_fractal_dimension(zigzag, pos)
+
+    assert straight_result["Fractal Dimension (Node Positions)"] == pytest.approx(
+        zigzag_result["Fractal Dimension (Node Positions)"], abs=1e-9
+    )
+    assert straight_result["Fractal Dimension (Centreline)"] != pytest.approx(
+        zigzag_result["Fractal Dimension (Centreline)"], abs=1e-9
+    )
 
 
 def test_compute_path_efficiency(simple_graph):
@@ -130,7 +171,8 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
         simple_graph, node_positions=pos, image_dimensions=(10, 10, 10)
     )
     assert "Total Nodes" in s
-    assert "Fractal Dimension" in s
+    assert "Fractal Dimension (Node Positions)" in s
+    assert "Fractal Dimension (Centreline)" in s
 
 
 def test_export_statistics_to_csv(tmp_path):

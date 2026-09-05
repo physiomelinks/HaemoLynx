@@ -2250,21 +2250,28 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         if settings["run_haemodynamics"]:
             weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
         else:
-            weighted_measurements = {
-                "edge_resistance": {
+            # Resistance and solved |flow| both require haemodynamics; only
+            # length is purely geometric and stays computable either way.
+            def _na_weighted_model() -> dict:
+                na = "N/A (haemodynamics disabled)"
+                return {
                     "Betweenness": {
-                        "Betweenness Mean": "N/A (haemodynamics disabled)",
-                        "Betweenness Max": "N/A (haemodynamics disabled)",
-                        "Betweenness Top Nodes": "N/A (haemodynamics disabled)",
-                        "Betweenness Method": "N/A (haemodynamics disabled)",
+                        "Betweenness Mean": na,
+                        "Betweenness Max": na,
+                        "Betweenness Top Nodes": na,
+                        "Betweenness Method": na,
                     },
                     "Communities": {
-                        "Community Count": "N/A (haemodynamics disabled)",
-                        "Largest Community Size": "N/A (haemodynamics disabled)",
-                        "Mean Community Size": "N/A (haemodynamics disabled)",
-                        "Community Method": "N/A (haemodynamics disabled)",
+                        "Community Count": na,
+                        "Largest Community Size": na,
+                        "Mean Community Size": na,
+                        "Community Method": na,
                     },
-                },
+                }
+
+            weighted_measurements = {
+                "edge_resistance": _na_weighted_model(),
+                "edge_flow_abs": _na_weighted_model(),
                 "edge_length": {
                     "Betweenness": statistics.compute_weighted_betweenness_summary(
                         G,
@@ -2292,8 +2299,13 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         length_path.write_text(
             json.dumps(weighted_measurements["edge_length"], indent=2)
         )
+        flow_path = output_dir / f"{settings['input_path'].stem}_betweenness_communities_edge_flow.json"
+        flow_path.write_text(
+            json.dumps(weighted_measurements["edge_flow_abs"], indent=2)
+        )
         logger.info(f"Saved edge-resistance stats to: {resistance_path}")
         logger.info(f"Saved edge-length stats to: {length_path}")
+        logger.info(f"Saved edge-flow stats to: {flow_path}")
     else:
         logger.info("Vessel statistics skipped.")
 

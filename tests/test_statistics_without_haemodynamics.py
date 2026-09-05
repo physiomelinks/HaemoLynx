@@ -1,9 +1,9 @@
 """Statistics on, haemodynamics off: the one branch that reached missing names.
 
-With `run_haemodynamics=False` there are no edge resistances to weight paths
-by, so `export_results` fills the resistance half of the betweenness/community
-report with "N/A" strings and computes the edge-length half itself, through
-`statistics.compute_weighted_betweenness_summary` and
+With `run_haemodynamics=False` there is neither a resistance nor a solved flow
+to weight paths by, so `export_results` fills those two-thirds of the
+betweenness/community report with "N/A" strings and computes the edge-length
+third itself, through `statistics.compute_weighted_betweenness_summary` and
 `statistics.compute_weighted_communities_summary`. Neither was re-exported from
 `statistics/__init__.py`, so that configuration -- and only that configuration,
 since `compute_betweenness_and_community_measurements` is what the solved run
@@ -101,7 +101,7 @@ def _export_with_haemodynamics_off(tmp_path):
     return G
 
 
-def test_the_export_stage_runs_and_writes_both_reports_without_haemodynamics(tmp_path):
+def test_the_export_stage_runs_and_writes_all_three_reports_without_haemodynamics(tmp_path):
     G = _export_with_haemodynamics_off(tmp_path)
 
     stem = "no_haemodynamics"
@@ -114,12 +114,19 @@ def test_the_export_stage_runs_and_writes_both_reports_without_haemodynamics(tmp
     length = json.loads(
         (tmp_path / f"{stem}_betweenness_communities_edge_length.json").read_text()
     )
+    flow = json.loads(
+        (tmp_path / f"{stem}_betweenness_communities_edge_flow.json").read_text()
+    )
 
-    # No resistances exist to weight by, so that half is explicitly not a number.
+    # No resistances exist to weight by, so that third is explicitly not a number.
     assert resistance["Betweenness"]["Betweenness Method"].startswith("N/A")
     assert resistance["Communities"]["Community Method"].startswith("N/A")
 
-    # The edge-length half is measured, and measured from `length` -- the
+    # No haemodynamics means no solved flow either -- same as resistance.
+    assert flow["Betweenness"]["Betweenness Method"].startswith("N/A")
+    assert flow["Communities"]["Community Method"].startswith("N/A")
+
+    # The edge-length third is measured, and measured from `length` -- the
     # junction is the only node any shortest path passes through.
     assert length["Betweenness"]["Betweenness Method"] == "exact_weighted"
     assert length["Betweenness"]["Betweenness Max"] > 0.0

@@ -81,12 +81,36 @@ def test_statistics_reject_a_graph_carrying_the_removed_weight_attribute():
 
 
 def test_betweenness_resistance_model_uses_resistance_not_inverse_length():
-    """The two distance models must be resistance and length, not 1/weight."""
+    """The three distance models must be resistance, length and flow, not 1/weight."""
     G, _ = _two_segment_graph()
     G, _ = MODEL.set_poiseuille_resistances(G, {"B01": DIAMETER_UM})
 
     measurements = st.compute_betweenness_and_community_measurements(G)
 
-    assert set(measurements) == {"edge_resistance", "edge_length"}
+    assert set(measurements) == {"edge_resistance", "edge_length", "edge_flow_abs"}
     for model in measurements.values():
         assert set(model) == {"Betweenness", "Communities"}
+
+
+def test_betweenness_flow_model_treats_higher_flow_as_shorter_distance():
+    """Flow weighting must prefer the busiest path, not the least-travelled one.
+
+    Two parallel routes from 0 to 3: one (through 1) carries far more flow
+    than the other (through 2). Weighting by inverse |flow| makes the
+    high-flow route the shortest, so every 0->3 shortest path should run
+    through node 1 and none through node 2.
+    """
+    G = nx.Graph()
+    G.add_nodes_from((0, 1, 2, 3))
+    G.add_edge(0, 1, flow_abs=100.0)
+    G.add_edge(1, 3, flow_abs=100.0)
+    G.add_edge(0, 2, flow_abs=1.0)
+    G.add_edge(2, 3, flow_abs=1.0)
+
+    result = st.compute_weighted_betweenness_summary(
+        G, source_attr="flow_abs", inverse_source_attr=True
+    )
+
+    by_node = {row["node"]: row["value"] for row in result["Betweenness Top Nodes"]}
+    assert by_node[1] > 0.0
+    assert by_node[2] == pytest.approx(0.0)

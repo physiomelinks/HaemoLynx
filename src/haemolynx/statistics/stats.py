@@ -82,38 +82,19 @@ def compute_tortuosity_measures(
     }
 
 
-def compute_branching_statistics(
-    G: nx.Graph, node_positions: Optional[dict]
-) -> Dict[str, Any]:
-    """Compute average branching angle."""
-    if node_positions is None:
-        return {"Average Branching Angle (degrees)": "N/A (no position data)"}
-    branching_angles = []
-    for node in G.nodes():
-        neighbors = list(G.neighbors(node))
-        if len(neighbors) >= 3:
-            for i in range(len(neighbors)):
-                for j in range(i + 1, len(neighbors)):
-                    if (
-                        node in node_positions
-                        and neighbors[i] in node_positions
-                        and neighbors[j] in node_positions
-                    ):
-                        c = np.array(node_positions[node])
-                        p1 = np.array(node_positions[neighbors[i]])
-                        p2 = np.array(node_positions[neighbors[j]])
-                        v1 = p1 - c
-                        v2 = p2 - c
-                        n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
-                        if n1 > 0 and n2 > 0:
-                            cos_a = np.clip(
-                                np.dot(v1, v2) / (n1 * n2), -1, 1
-                            )
-                            branching_angles.append(np.degrees(np.arccos(cos_a)))
+def compute_branching_statistics(G: nx.Graph) -> Dict[str, Any]:
+    """Count branching points (degree > 2 nodes).
+
+    This used to also report "Average Branching Angle (degrees)": every
+    pair of a junction's neighbours, angled node-to-node in a straight line
+    and pooled into one network-wide mean. compute_branch_order_statistics's
+    "Mean Emergence Angle (degrees)" (compute_emergence_angles_by_branch_order)
+    replaced it with a more rigorous measurement -- one parent versus each
+    daughter, along the local centreline tangent rather than a straight
+    node-to-node line, broken down per branch order rather than pooled --
+    so the cruder version was removed rather than left alongside it.
+    """
     return {
-        "Average Branching Angle (degrees)": (
-            np.mean(branching_angles) if branching_angles else 0
-        ),
         "Number of Branching Points": len(
             [n for n in G.nodes() if G.degree(n) > 2]
         ),
@@ -185,31 +166,84 @@ def compute_tree_asymmetry(G: nx.Graph) -> Dict[str, Any]:
     }
 
 
-def compute_fractal_dimension(
-    G: nx.Graph, node_positions: Optional[dict]
-) -> Dict[str, Any]:
-    """Compute fractal dimension via box-counting."""
-    if node_positions is None or len(node_positions) < 2:
-        return {"Fractal Dimension": "N/A (insufficient position data)"}
-    positions = np.array(
-        [node_positions[n] for n in G.nodes() if n in node_positions]
-    )
-    if len(positions) < 2:
-        return {"Fractal Dimension": "N/A (insufficient position data)"}
-    max_range = np.max(positions.max(axis=0) - positions.min(axis=0))
+def _box_counting_fractal_dimension(points: np.ndarray) -> float:
+    """Box-counting fractal-dimension estimate for a physical point cloud."""
+    max_range = np.max(points.max(axis=0) - points.min(axis=0))
     min_bs = max_range / 100
     max_bs = max_range / 2
     box_sizes, box_counts = [], []
     for bs in np.logspace(np.log10(min_bs), np.log10(max_bs), 10):
-        min_c = positions.min(axis=0)
-        indices = ((positions - min_c) / bs).astype(int)
+        min_c = points.min(axis=0)
+        indices = ((points - min_c) / bs).astype(int)
         box_sizes.append(bs)
         box_counts.append(len(set(tuple(i) for i in indices)))
     if len(box_sizes) > 1 and all(c > 0 for c in box_counts):
-        fd = -np.polyfit(np.log(box_sizes), np.log(box_counts), 1)[0]
+        return float(-np.polyfit(np.log(box_sizes), np.log(box_counts), 1)[0])
+    return 0.0
+
+
+def _centreline_points(G: Union[nx.Graph, nx.MultiGraph]) -> np.ndarray:
+    """Every point along every edge's real centreline, concatenated.
+
+    Reads each edge's ``voxels`` polyline (the smoothed centreline, where
+    available) via the same `edge_polyline` the vessel-tube drawing and the
+    emergence-angle tangent both use, so this is the network's actual
+    physical shape -- not just the branch/terminal points left after
+    topology simplification.
+    """
+    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    edge_iter = G.edges(keys=True, data=True) if is_mg else G.edges(data=True)
+    chunks: list[np.ndarray] = []
+    for item in edge_iter:
+        u, v = item[0], item[1]
+        data = item[-1]
+        try:
+            chunks.append(edge_polyline(G, u, v, data))
+        except (TypeError, ValueError):
+            continue
+    if not chunks:
+        return np.empty((0, 3))
+    return np.concatenate(chunks, axis=0)
+
+
+def compute_fractal_dimension(
+    G: Union[nx.Graph, nx.MultiGraph], node_positions: Optional[dict]
+) -> Dict[str, Any]:
+    """Compute two box-counting fractal-dimension estimates.
+
+    "Fractal Dimension (Node Positions)" counts only the branch/terminal
+    points left after topology simplification -- fast, but blind to the
+    vessel's actual path shape between junctions, so it understates spatial
+    complexity. "Fractal Dimension (Centreline)" counts every point along
+    every edge's real centreline instead, matching standard vascular
+    fractal-dimension methodology, at the cost of many more points to bin.
+    The two are not expected to agree; both are reported explicitly rather
+    than folded into one "Fractal Dimension" value.
+    """
+    result: Dict[str, Any] = {}
+
+    if node_positions is None or len(node_positions) < 2:
+        result["Fractal Dimension (Node Positions)"] = "N/A (insufficient position data)"
     else:
-        fd = 0
-    return {"Fractal Dimension": fd}
+        node_points = np.array(
+            [node_positions[n] for n in G.nodes() if n in node_positions]
+        )
+        if len(node_points) < 2:
+            result["Fractal Dimension (Node Positions)"] = "N/A (insufficient position data)"
+        else:
+            result["Fractal Dimension (Node Positions)"] = _box_counting_fractal_dimension(
+                node_points
+            )
+
+    centreline_points = _centreline_points(G)
+    if len(centreline_points) < 2:
+        result["Fractal Dimension (Centreline)"] = "N/A (insufficient position data)"
+    else:
+        result["Fractal Dimension (Centreline)"] = _box_counting_fractal_dimension(
+            centreline_points
+        )
+
+    return result
 
 
 def compute_path_efficiency(
@@ -376,7 +410,10 @@ def compute_communities_summary(
 
 
 def compute_communities(G: nx.Graph):
-    # TODO: consider weighted community detection for resistance-aware grouping.
+    # Plain topological communities. Weighted community detection (by
+    # resistance, geometry/length, or solved |flow|) is
+    # compute_weighted_communities_summary, all three reported together by
+    # compute_betweenness_and_community_measurements.
     return list(greedy_modularity_communities(G))
 
 
@@ -411,7 +448,10 @@ def compute_betweenness_summary(
 
 
 def compute_betweenness(G: nx.Graph):
-    # TODO: consider weighted betweenness using resistance.
+    # Plain topological betweenness. Weighted betweenness (by resistance,
+    # geometry/length, or solved |flow|) is compute_weighted_betweenness_
+    # summary, all three reported together by
+    # compute_betweenness_and_community_measurements.
     return nx.betweenness_centrality(G)
 
 
@@ -539,7 +579,22 @@ def compute_weighted_communities_summary(
 def compute_betweenness_and_community_measurements(
     G: Union[nx.Graph, nx.MultiGraph],
 ) -> Dict[str, Dict[str, Any]]:
-    """Compute weighted betweenness/community using two edge distance models."""
+    """Compute weighted betweenness/community using three edge distance models.
+
+    - "edge_resistance": Poiseuille resistance as the shortest-path distance
+      -- the vessels that impede flow least are the most central.
+    - "edge_length": physical length as the distance -- purely geometric,
+      independent of haemodynamics.
+    - "edge_flow_abs": inverse of the solved absolute flow (``flow_abs``,
+      written by haemodynamics.resistance.set_edge_flows) as the distance --
+      vessels carrying the most flow are treated as the shortest, most
+      travelled paths. Only meaningful once flow has been solved; edges with
+      no flow (or none solved yet) drop out the same way a missing
+      resistance or length would.
+
+    All three are reported together rather than one at a time, so a caller
+    never has to guess which distance model a given number came from.
+    """
     resistance_results = {
         "Betweenness": compute_weighted_betweenness_summary(
             G, source_attr="resistance", inverse_source_attr=False
@@ -556,9 +611,18 @@ def compute_betweenness_and_community_measurements(
             G, source_attr="length", inverse_source_attr=False
         ),
     }
+    edge_flow_results = {
+        "Betweenness": compute_weighted_betweenness_summary(
+            G, source_attr="flow_abs", inverse_source_attr=True
+        ),
+        "Communities": compute_weighted_communities_summary(
+            G, source_attr="flow_abs", inverse_source_attr=True
+        ),
+    }
     return {
         "edge_resistance": resistance_results,
         "edge_length": edge_length_results,
+        "edge_flow_abs": edge_flow_results,
     }
 
 
@@ -593,9 +657,12 @@ def compute_comprehensive_vessel_statistics(
     base = {
         **compute_basic_statistics(G, is_mg),
         **compute_tortuosity_measures(G, node_positions, is_mg),
-        **compute_branching_statistics(G_simple, node_positions),
+        **compute_branching_statistics(G_simple),
         **compute_tree_asymmetry(G_simple),
-        **compute_fractal_dimension(G_simple, node_positions),
+        # The original G, not G_simple: collapsing parallel edges to build
+        # G_simple keeps only one edge's data per node pair, which would
+        # silently drop other parallel edges' centreline points here.
+        **compute_fractal_dimension(G, node_positions),
         **compute_vessel_density(
             G, node_positions, voxel_size, image_dimensions, is_mg
         ),
@@ -694,8 +761,11 @@ def _annotation_for_metric(metric_name: str) -> str:
         return "Higher values indicate less straight vessels."
     if "Curvature" in metric_name:
         return "Relative deviation from straight vessel segments."
-    if "Branching Angle" in metric_name:
-        return "Average local bifurcation/trifurcation angle."
+    if "Branching Points" in metric_name:
+        return (
+            "Count of junctions (degree > 2); see the per-branch-order "
+            "Mean Emergence Angle for angle detail."
+        )
     if "Asymmetry" in metric_name:
         return "Tree imbalance estimate after simplification to a tree."
     if "Fractal Dimension" in metric_name:
