@@ -256,6 +256,89 @@ def test_two_masks_that_disagree_with_each_other_are_rejected(tmp_path: Path) ->
         )
 
 
+def test_voxel_size_override_applies_when_mask_metadata_is_missing(
+    tmp_path: Path,
+) -> None:
+    """Masks without ImageJ tags used to stay at (1,1,1) and fail the main check.
+
+    The main image resolves ``voxel_size_override_xyz`` under ``auto`` when its
+    own metadata is incomplete; large/small masks must use the same override
+    rather than comparing the fallback ones against the overridden main size.
+    """
+    shape = (4, 5, 6)
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_tif(arteriole_path, shape)
+    _write_mask_tif(venule_path, shape)
+
+    _a, _v, arteriole_voxel, venule_voxel = load_and_validate_vessel_masks(
+        mask_role="large",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=arteriole_path,
+        venule_mask_path=venule_path,
+        image_shape=shape,
+        main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+        voxel_size_override_xyz=VOXEL_SIZE_XYZ,
+        voxel_size_policy="auto",
+    )
+
+    assert arteriole_voxel == VOXEL_SIZE_XYZ
+    assert venule_voxel == VOXEL_SIZE_XYZ
+
+
+def test_voxel_size_policy_override_forces_mask_units_even_with_complete_metadata(
+    tmp_path: Path,
+) -> None:
+    """``override`` must win over complete but wrong mask metadata, as for main."""
+    shape = (4, 5, 6)
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    wrong = (1.0, 1.0, 1.0)
+    _write_mask_with_voxel_size(arteriole_path, np.zeros(shape, dtype=np.uint8), wrong)
+    _write_mask_with_voxel_size(venule_path, np.zeros(shape, dtype=np.uint8), wrong)
+
+    _a, _v, arteriole_voxel, venule_voxel = load_and_validate_vessel_masks(
+        mask_role="small",
+        enabled=True,
+        use_ilastik=False,
+        arteriole_mask_path=arteriole_path,
+        venule_mask_path=venule_path,
+        image_shape=shape,
+        main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+        voxel_size_override_xyz=VOXEL_SIZE_XYZ,
+        voxel_size_policy="override",
+    )
+
+    assert arteriole_voxel == VOXEL_SIZE_XYZ
+    assert venule_voxel == VOXEL_SIZE_XYZ
+
+
+def test_auto_policy_still_rejects_complete_mask_metadata_that_disagrees(
+    tmp_path: Path,
+) -> None:
+    """Under ``auto``, reliable mask metadata still wins over the override."""
+    shape = (4, 5, 6)
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    wrong = (1.0, 1.0, 1.0)
+    _write_mask_with_voxel_size(arteriole_path, np.zeros(shape, dtype=np.uint8), wrong)
+    _write_mask_with_voxel_size(venule_path, np.zeros(shape, dtype=np.uint8), wrong)
+
+    with pytest.raises(ValueError, match="Voxel-size mismatch"):
+        load_and_validate_vessel_masks(
+            mask_role="large",
+            enabled=True,
+            use_ilastik=False,
+            arteriole_mask_path=arteriole_path,
+            venule_mask_path=venule_path,
+            image_shape=shape,
+            main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_override_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_policy="auto",
+        )
+
+
 # --- dilation converts to per-array-axis spacing ----------------------------
 
 
@@ -482,6 +565,8 @@ LARGE_SETTINGS = {
     "ilastik_output_suffix": ".tif",
     "ilastik_executable": "/usr/bin/ilastik",
     "image_axis_order": "xyz",
+    "voxel_size_override_xyz": [0.4, 0.4, 1.0],
+    "voxel_size_policy": "override",
 }
 
 
@@ -506,6 +591,8 @@ def test_the_large_role_picks_the_large_paths_and_the_dilation() -> None:
     assert arguments["opposite_attached_max_distance_microns"] == 3.0
     assert arguments["exclude_smaller_overlapping_volumes"] is False
     assert arguments["axis_order"] == "xyz"
+    assert arguments["voxel_size_override_xyz"] == [0.4, 0.4, 1.0]
+    assert arguments["voxel_size_policy"] == "override"
 
 
 def test_the_small_role_picks_the_small_paths_and_has_no_dilation() -> None:
@@ -521,7 +608,8 @@ def test_the_small_role_picks_the_small_paths_and_has_no_dilation() -> None:
     assert "dilation_microns" not in arguments
     assert "remove_small_opposite_attached_components" not in arguments
     assert "exclude_smaller_overlapping_volumes" not in arguments
-
+    assert arguments["voxel_size_override_xyz"] == [0.4, 0.4, 1.0]
+    assert arguments["voxel_size_policy"] == "override"
 
 def test_settings_absent_from_the_config_are_left_to_their_defaults() -> None:
     """Passing them as None would override the loader's own defaults with nothing."""

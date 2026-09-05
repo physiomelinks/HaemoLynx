@@ -10,9 +10,12 @@ import numpy as np
 from .axis_order import CANONICAL_AXIS_ORDER, voxel_size_zyx_from_xyz
 from .ilastik import run_ilastik_headless_segmentation
 from .load import (
-    load_binary_mask_and_voxel_size,
+    _to_binary_volume_for_skeletonization,
+    load_3d_h5_with_voxel_size,
+    load_3d_tif_with_voxel_size,
     resolve_image_path_with_optional_zip,
 )
+from .voxel_validation import resolve_voxel_size_xyz
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +24,55 @@ def _load_mask_image(
     mask_path: Path,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
-) -> tuple[np.ndarray, tuple[float, float, float]]:
+) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
     """Load a vessel mask as a boolean volume in canonical ``(z, y, x)`` order.
 
     Must binarise with the shared mask loader, not a raw intensity read:
     ``astype(bool)`` / ``> 0`` on a ``1/2``-encoded mask fills the whole
     volume, and opposite-attached volume cleanup then treats every venule
     voxel as attached to that solid arteriole and can wipe the venule mask.
+
+    Returns the mask, metadata voxel size ``(x, y, z)``, and the metadata
+    status dict so callers can apply the same override policy as the main
+    image.
     """
-    return load_binary_mask_and_voxel_size(mask_path, axis_order=axis_order)
+    path = Path(mask_path)
+    suffix = path.suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_tif_with_voxel_size(
+            str(path),
+            axis_order=axis_order,
+        )
+    elif suffix == ".h5":
+        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_h5_with_voxel_size(
+            str(path),
+            axis_order=axis_order,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported mask format '{suffix}'. Expected .tif, .tiff, or .h5."
+        )
+    if image.ndim != 3:
+        raise ValueError(f"Expected a 3D mask, got shape {image.shape}.")
+    mask = _to_binary_volume_for_skeletonization(image)
+    return mask, (float(voxel_x), float(voxel_y), float(voxel_z)), voxel_meta_status
+
+
+def _resolve_mask_voxel_size_xyz(
+    metadata_voxel_size_xyz: tuple[float, float, float],
+    metadata_status: dict[str, object],
+    *,
+    voxel_size_override_xyz,
+    voxel_size_policy: str,
+) -> tuple[float, float, float]:
+    """Apply the run's voxel-size override policy to one mask's metadata."""
+    resolved, _source = resolve_voxel_size_xyz(
+        metadata_voxel_size_xyz=metadata_voxel_size_xyz,
+        metadata_status=metadata_status,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        voxel_size_policy=voxel_size_policy,
+    )
+    return resolved
 
 
 def load_large_vessel_masks(
@@ -38,6 +81,8 @@ def load_large_vessel_masks(
     large_venule_mask_path: str | Path | None = None,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -48,6 +93,10 @@ def load_large_vessel_masks(
 
     When enabled is False, no mask paths are allowed and (None, None) is returned.
     When enabled is True, both mask paths are required and both are loaded.
+
+    Voxel sizes are resolved with the same ``voxel_size_override_xyz`` /
+    ``voxel_size_policy`` rules as the main image, so a manual unit override
+    applies to the masks instead of leaving them on missing-metadata ``(1,1,1)``.
     """
     has_arteriole = large_arteriole_mask_path is not None
     has_venule = large_venule_mask_path is not None
@@ -73,11 +122,23 @@ def load_large_vessel_masks(
 
     arteriole_path = resolve_image_path_with_optional_zip(Path(large_arteriole_mask_path))
     venule_path = resolve_image_path_with_optional_zip(Path(large_venule_mask_path))
-    large_arteriole_mask, large_arteriole_voxel_size = _load_mask_image(
+    large_arteriole_mask, arteriole_metadata_xyz, arteriole_status = _load_mask_image(
         arteriole_path, axis_order=axis_order
     )
-    large_venule_mask, large_venule_voxel_size = _load_mask_image(
+    large_venule_mask, venule_metadata_xyz, venule_status = _load_mask_image(
         venule_path, axis_order=axis_order
+    )
+    large_arteriole_voxel_size = _resolve_mask_voxel_size_xyz(
+        arteriole_metadata_xyz,
+        arteriole_status,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        voxel_size_policy=voxel_size_policy,
+    )
+    large_venule_voxel_size = _resolve_mask_voxel_size_xyz(
+        venule_metadata_xyz,
+        venule_status,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        voxel_size_policy=voxel_size_policy,
     )
     return (
         large_arteriole_mask,
@@ -200,6 +261,8 @@ _SHARED_VESSEL_MASK_SETTINGS = (
     "ilastik_output_dir",
     "ilastik_output_suffix",
     "ilastik_executable",
+    "voxel_size_override_xyz",
+    "voxel_size_policy",
 )
 
 
@@ -252,6 +315,8 @@ def load_and_validate_vessel_masks(
     exclude_smaller_overlapping_volumes: bool = False,
     loaded_message_suffix: str | None = None,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -335,6 +400,8 @@ def load_and_validate_vessel_masks(
         large_arteriole_mask_path=effective_arteriole_mask_path,
         large_venule_mask_path=effective_venule_mask_path,
         axis_order=axis_order,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        voxel_size_policy=voxel_size_policy,
     )
 
     if arteriole_mask is None or venule_mask is None:
