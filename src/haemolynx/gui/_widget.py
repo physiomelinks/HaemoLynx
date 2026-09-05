@@ -5568,6 +5568,12 @@ def settings_widget(napari_viewer=None):
         if not preflight(settings, schema).ok:
             report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
             return
+        if start_from is None:
+            # A full run starts from a clean slate: old layers, checkpoints
+            # and cached resume pickles from a previous run must not leak
+            # into this one. "Run from this stage" resumes deliberately keep
+            # them, so this only fires for a genuine fresh run.
+            on_clear(ask=False)
         results = None
         if show_results.value and viewer is not None:
             if replace_checkpoints or view.results is None:

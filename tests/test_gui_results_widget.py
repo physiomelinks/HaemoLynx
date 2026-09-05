@@ -674,6 +674,40 @@ def test_clearing_the_layers_with_no_run_going_is_unchanged(make_napari_viewer):
     assert panel._haemolynx_run_state.cancelled is False
 
 
+def test_a_fresh_full_run_clears_old_layers_and_results_first(
+    make_napari_viewer, qtbot, monkeypatch
+):
+    """"Run pipeline" must not run on top of a stale previous run's layers.
+
+    "Run from this stage" (start_from set) deliberately keeps prior layers to
+    resume from; a plain "Run pipeline" click does not pass start_from, so it
+    must behave like pressing Clear immediately before Run.
+    """
+    from haemolynx.gui import _widget
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    # Points, not an image: an image dropped in becomes the run's input, which
+    # is a different behaviour and not the one under test.
+    theirs = viewer.add_points(np.zeros((3, 3)), name="their data")
+    _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    stale_results = ResultLayers()
+    stale_results.stage_finished("build_network", network(a_graph()))
+    panel._haemolynx_view.results = stale_results
+
+    monkeypatch.setattr(_widget, "preflight", lambda *a, **k: SimpleNamespace(ok=True))
+    monkeypatch.setattr(
+        _widget, "run_pipeline_stages", lambda *a, **k: a_graph()
+    )
+
+    panel._haemolynx_run()
+    qtbot.waitUntil(lambda: panel._haemolynx_run_button.enabled, timeout=10000)
+
+    assert [layer.name for layer in viewer.layers] == [theirs.name]
+    assert panel._haemolynx_view.results is not stale_results
+
+
 def test_run_says_how_to_stop_the_run_that_is_already_going(make_napari_viewer):
     """The panel's own answer to "why will Run not do anything?"."""
     from haemolynx.gui._widget import settings_widget
