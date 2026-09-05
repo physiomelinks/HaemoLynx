@@ -773,6 +773,10 @@ def compute_comprehensive_vessel_statistics(
         # The original G, not G_simple: each parallel edge is its own
         # vessel with its own spacing to its neighbours.
         **compute_intercapillary_distance(G),
+        # The original G, not G_simple: a parallel edge between two
+        # junctions is exactly the redundancy that keeps neither of that
+        # pair a bridge, which G_simple's collapse would erase.
+        **compute_network_robustness(G),
     }
 
     if statistics_mode == "full":
@@ -1280,6 +1284,40 @@ def compute_daughter_daughter_angles(
     return {
         "Mean Daughter-Daughter Angle (degrees)": float(np.mean(angles)),
         "Daughter-Daughter Angle Sample Count": len(angles),
+    }
+
+
+def compute_network_robustness(
+    G: Union[nx.Graph, nx.MultiGraph],
+) -> Dict[str, Any]:
+    """How much of the network sits on a single point of failure.
+
+    A *bridge* is an edge whose removal (occluding that one vessel) splits
+    the network into more pieces; a parallel vessel between the same two
+    junctions means neither edge of that pair is a bridge, which
+    ``nx.bridges`` already accounts for correctly on a ``MultiGraph``. An
+    *articulation point* is a node whose removal (occluding every vessel
+    passing through it) does the same, regardless of how many vessels meet
+    there. Both are found in O(V+E) via chain decomposition, in preference
+    to exhaustively counting independent inlet-to-outlet paths -- this is
+    the topology half of an occlusion/stroke-risk framing: where a single
+    occlusion would fragment perfusion rather than just reroute it.
+    """
+    total_edges = G.number_of_edges()
+    total_nodes = G.number_of_nodes()
+    bridge_count = sum(1 for _ in nx.bridges(G))
+    articulation_point_count = sum(1 for _ in nx.articulation_points(G))
+    return {
+        "Bridge Edge Count": bridge_count,
+        "Bridge Edge Fraction": (
+            bridge_count / total_edges if total_edges else "N/A (no edges)"
+        ),
+        "Articulation Point Count": articulation_point_count,
+        "Articulation Point Fraction": (
+            articulation_point_count / total_nodes
+            if total_nodes
+            else "N/A (no nodes)"
+        ),
     }
 
 

@@ -20,6 +20,7 @@ from haemolynx.statistics import (
     compute_emergence_angles_by_branch_order,
     compute_intercapillary_distance,
     compute_murray_law_compliance,
+    compute_network_robustness,
     export_branch_order_statistics_to_csv,
 )
 
@@ -179,6 +180,8 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
     assert "Mean Murray Ratio" in s
     assert "Mean Daughter-Daughter Angle (degrees)" in s
     assert "Mean Intercapillary Distance (microns)" in s
+    assert "Bridge Edge Count" in s
+    assert "Articulation Point Count" in s
 
 
 def test_murray_law_compliance_matches_the_cube_law_by_hand():
@@ -517,6 +520,61 @@ def test_intercapillary_distance_needs_at_least_two_edges():
     assert result["Intercapillary Distance Sample Count"] == 0
     assert result["Mean Intercapillary Distance (microns)"] == "N/A (fewer than two edges)"
     assert result["Median Intercapillary Distance (microns)"] == "N/A (fewer than two edges)"
+
+
+def test_network_robustness_finds_the_single_bridge_joining_two_triangles():
+    """Two triangles joined by one edge: that edge is the sole connection,
+    so it is the only bridge, and both of its endpoints are articulation
+    points (removing either splits the network into two pieces) -- the
+    other four nodes are each protected by their triangle's second path."""
+    G = nx.MultiGraph()
+    G.add_edges_from(
+        [(0, 1), (1, 2), (0, 2), (3, 4), (4, 5), (3, 5), (2, 3)]
+    )
+
+    result = compute_network_robustness(G)
+
+    assert result["Bridge Edge Count"] == 1
+    assert result["Bridge Edge Fraction"] == pytest.approx(1 / 7)
+    assert result["Articulation Point Count"] == 2
+    assert result["Articulation Point Fraction"] == pytest.approx(2 / 6)
+
+
+def test_network_robustness_a_parallel_edge_is_not_a_bridge():
+    """Two physically distinct vessels between the same pair of junctions:
+    occluding either one leaves the other, so neither is a bridge -- a
+    naive collapse-to-simple-graph check would wrongly flag one."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0)
+    G.add_edge(0, 1, key=1)
+
+    result = compute_network_robustness(G)
+
+    assert result["Bridge Edge Count"] == 0
+    assert result["Bridge Edge Fraction"] == pytest.approx(0.0)
+    assert result["Articulation Point Count"] == 0
+
+
+def test_network_robustness_a_single_edge_is_its_own_bridge():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0)
+
+    result = compute_network_robustness(G)
+
+    assert result["Bridge Edge Count"] == 1
+    assert result["Bridge Edge Fraction"] == pytest.approx(1.0)
+    assert result["Articulation Point Count"] == 0
+
+
+def test_network_robustness_handles_an_empty_graph():
+    G = nx.MultiGraph()
+
+    result = compute_network_robustness(G)
+
+    assert result["Bridge Edge Count"] == 0
+    assert result["Bridge Edge Fraction"] == "N/A (no edges)"
+    assert result["Articulation Point Count"] == 0
+    assert result["Articulation Point Fraction"] == "N/A (no nodes)"
 
 
 def test_emergence_angle_uses_local_centreline_not_node_span():
