@@ -1,6 +1,7 @@
 """Vessel network statistics."""
 from __future__ import annotations
 
+from collections import deque
 from typing import Dict, Any, Optional, Union, Callable
 from pathlib import Path
 from datetime import datetime, timezone
@@ -119,21 +120,50 @@ def compute_branching_statistics(
     }
 
 
+def _tree_asymmetry_from_root(G: nx.Graph, root: Any) -> tuple[float, int]:
+    """Iterative post-order asymmetry/subtree-size accumulation, rooted at *root*.
+
+    A recursive version of this (one call per node, following the tree down
+    from the root) hits Python's default recursion limit on a long,
+    sparsely-branching stretch of vessel -- a real shape, not a pathological
+    one, once a network has been simplified to a spanning tree. BFS order
+    reversed is a safe post-order for a tree: every node's children appear
+    strictly later than it in BFS, so processing nodes in reverse guarantees
+    each node's children are already resolved.
+    """
+    parent: Dict[Any, Any] = {root: None}
+    order: list[Any] = [root]
+    queue: deque = deque([root])
+    while queue:
+        node = queue.popleft()
+        for neighbor in G.neighbors(node):
+            if neighbor == parent[node] or neighbor in parent:
+                continue
+            parent[neighbor] = node
+            order.append(neighbor)
+            queue.append(neighbor)
+
+    result: Dict[Any, tuple[float, int]] = {}
+    for node in reversed(order):
+        children = [
+            result[neighbor]
+            for neighbor in G.neighbors(node)
+            if neighbor != parent[node]
+        ]
+        if not children:
+            result[node] = (0.0, 1)
+            continue
+        child_sizes = [size for _asymmetry, size in children]
+        total = sum(asymmetry for asymmetry, _size in children)
+        node_a = max(child_sizes) - min(child_sizes) if len(child_sizes) >= 2 else 0
+        result[node] = (total + node_a, sum(child_sizes) + 1)
+    return result[root]
+
+
 def compute_tree_asymmetry(G: nx.Graph) -> Dict[str, Any]:
     """Compute tree asymmetry index."""
-
-    def _asym(node, parent=None):
-        children = [n for n in G.neighbors(node) if n != parent]
-        if not children:
-            return 0, 1
-        child_sizes = []
-        total = 0
-        for child in children:
-            a, s = _asym(child, node)
-            child_sizes.append(s)
-            total += a
-        node_a = max(child_sizes) - min(child_sizes) if len(child_sizes) >= 2 else 0
-        return total + node_a, sum(child_sizes) + 1
+    if G.number_of_nodes() == 0:
+        return {"Tree Asymmetry Index": "N/A (empty graph)"}
 
     if not nx.is_tree(G):
         if nx.is_connected(G):
@@ -149,7 +179,7 @@ def compute_tree_asymmetry(G: nx.Graph) -> Dict[str, Any]:
         else:
             return {"Tree Asymmetry Index": "N/A (disconnected graph)"}
     root = max(G.nodes(), key=G.degree)
-    asymmetry, size = _asym(root)
+    asymmetry, size = _tree_asymmetry_from_root(G, root)
     return {
         "Tree Asymmetry Index": asymmetry / size if size > 0 else 0
     }

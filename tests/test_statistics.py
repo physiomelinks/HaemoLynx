@@ -82,6 +82,29 @@ def test_tree_asymmetry_uses_edge_length_not_an_arbitrary_spanning_tree():
     assert result["Tree Asymmetry Index"] == pytest.approx(0.2)
 
 
+def test_tree_asymmetry_on_an_empty_graph_does_not_raise():
+    """max() over G.nodes() used to raise ValueError on an empty graph."""
+    result = compute_tree_asymmetry(nx.Graph())
+
+    assert result["Tree Asymmetry Index"] == "N/A (empty graph)"
+
+
+def test_tree_asymmetry_handles_a_chain_deeper_than_the_recursion_limit():
+    """A long, sparsely-branching stretch of vessel is a real shape, not a
+    pathological one, once a network is reduced to a spanning tree -- the
+    old node-by-node recursive walk would raise RecursionError on it.
+
+    Root selection (max degree, ties broken by node order) lands on node 1,
+    the first degree-2 node in a 0..4999 chain, splitting it into a
+    1-node arm and a 4998-node arm: asymmetry (4998 - 1) / 5000.
+    """
+    G = nx.path_graph(5000)
+
+    result = compute_tree_asymmetry(G)
+
+    assert result["Tree Asymmetry Index"] == pytest.approx(4997 / 5000)
+
+
 def test_compute_fractal_dimension(simple_graph):
     pos = nx.get_node_attributes(simple_graph, "pos")
     s = compute_fractal_dimension(simple_graph, pos)
