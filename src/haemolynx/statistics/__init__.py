@@ -15,6 +15,7 @@ from .stats import (
     compute_branch_order_statistics,
     compute_daughter_daughter_angles,
     compute_emergence_angles_by_branch_order,
+    compute_intercapillary_distance,
     compute_murray_law_compliance,
     export_branch_order_statistics_to_csv,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "compute_branch_order_statistics",
     "compute_daughter_daughter_angles",
     "compute_emergence_angles_by_branch_order",
+    "compute_intercapillary_distance",
     "compute_murray_law_compliance",
     "export_branch_order_statistics_to_csv",
     "run_3d_measurement_to_cell_mask",

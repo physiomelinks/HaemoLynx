@@ -11,6 +11,7 @@ import re
 
 import numpy as np
 import networkx as nx
+from scipy.spatial import cKDTree
 from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
 
@@ -379,7 +380,105 @@ def compute_vessel_density(
             "N/A (no image dimension data)"
         )
     return out
-    
+
+
+def compute_intercapillary_distance(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    max_neighbors: int = 64,
+) -> Dict[str, Any]:
+    """Nearest-neighbour spacing between non-adjacent vessels.
+
+    For each edge, the distance from its own centreline to the closest
+    point on any *other* edge that does not share a node with it -- a
+    shared node is trivially close at the junction itself, not a
+    meaningful measure of tissue spacing. This is the key input to
+    Krogh-cylinder oxygen-diffusion modelling: how far apart two vessels
+    actually sit, not how far apart their branch points are.
+
+    Approximate by design: each edge's own polyline (``voxels``, or its two
+    node positions when that is all there is) is queried against a single
+    global k-nearest-neighbour tree of every edge's sampled points, taking
+    the closest of up to *max_neighbors* results that belongs to an allowed
+    (non-self, non-adjacent) edge. An edge whose nearest *max_neighbors*
+    sampled points are all on itself or an adjacent edge -- possible next to
+    one very densely sampled, very long neighbour -- is left out of the
+    average rather than searched exhaustively.
+    """
+    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    raw_edges = (
+        list(G.edges(keys=True, data=True))
+        if is_mg
+        else [(u, v, 0, d) for u, v, d in G.edges(data=True)]
+    )
+
+    edge_points: list = []
+    incident: Dict[Any, set] = {}
+    for u, v, _key, data in raw_edges:
+        try:
+            points = np.asarray(edge_polyline(G, u, v, data), dtype=float)
+        except (TypeError, ValueError):
+            continue
+        if points.ndim != 2 or points.shape[0] == 0:
+            continue
+        idx = len(edge_points)
+        edge_points.append((points, u, v))
+        incident.setdefault(u, set()).add(idx)
+        incident.setdefault(v, set()).add(idx)
+
+    if len(edge_points) < 2:
+        return {
+            "Mean Intercapillary Distance (microns)": "N/A (fewer than two edges)",
+            "Median Intercapillary Distance (microns)": "N/A (fewer than two edges)",
+            "Intercapillary Distance Sample Count": 0,
+        }
+
+    all_points = np.concatenate([pts for pts, _u, _v in edge_points], axis=0)
+    point_edge_idx = np.concatenate(
+        [
+            np.full(pts.shape[0], i, dtype=np.intp)
+            for i, (pts, _u, _v) in enumerate(edge_points)
+        ]
+    )
+    tree = cKDTree(all_points)
+    k = min(int(max_neighbors), all_points.shape[0])
+
+    distances: list[float] = []
+    for i, (points, u, v) in enumerate(edge_points):
+        forbidden = {i} | incident.get(u, set()) | incident.get(v, set())
+        dists, idxs = tree.query(points, k=k)
+        if k == 1:
+            dists = dists.reshape(-1, 1)
+            idxs = idxs.reshape(-1, 1)
+        best: Optional[float] = None
+        for row_d, row_i in zip(dists, idxs):
+            for d, point_i in zip(np.atleast_1d(row_d), np.atleast_1d(row_i)):
+                if int(point_edge_idx[point_i]) in forbidden:
+                    continue
+                d = float(d)
+                if best is None or d < best:
+                    best = d
+                break  # results are sorted ascending; first allowed one wins
+        if best is not None:
+            distances.append(best)
+
+    if not distances:
+        return {
+            "Mean Intercapillary Distance (microns)": (
+                "N/A (no edge found an unrelated neighbour)"
+            ),
+            "Median Intercapillary Distance (microns)": (
+                "N/A (no edge found an unrelated neighbour)"
+            ),
+            "Intercapillary Distance Sample Count": 0,
+        }
+    return {
+        "Mean Intercapillary Distance (microns)": float(np.mean(distances)),
+        "Median Intercapillary Distance (microns)": float(np.median(distances)),
+        "Intercapillary Distance Sample Count": len(distances),
+    }
+
+
 def compute_communities_summary(
     G: nx.Graph, max_nodes_exact: int = 1500
 ) -> Dict[str, Any]:
@@ -671,6 +770,9 @@ def compute_comprehensive_vessel_statistics(
         # parallel edges that G_simple would collapse away.
         **compute_murray_law_compliance(G),
         **compute_daughter_daughter_angles(G),
+        # The original G, not G_simple: each parallel edge is its own
+        # vessel with its own spacing to its neighbours.
+        **compute_intercapillary_distance(G),
     }
 
     if statistics_mode == "full":

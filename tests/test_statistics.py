@@ -18,6 +18,7 @@ from haemolynx.statistics import (
     compute_branch_order_statistics,
     compute_daughter_daughter_angles,
     compute_emergence_angles_by_branch_order,
+    compute_intercapillary_distance,
     compute_murray_law_compliance,
     export_branch_order_statistics_to_csv,
 )
@@ -177,6 +178,7 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
     assert "Fractal Dimension (Centreline)" in s
     assert "Mean Murray Ratio" in s
     assert "Mean Daughter-Daughter Angle (degrees)" in s
+    assert "Mean Intercapillary Distance (microns)" in s
 
 
 def test_murray_law_compliance_matches_the_cube_law_by_hand():
@@ -462,6 +464,59 @@ def test_daughter_daughter_angle_counts_every_pair_at_a_trifurcation():
     result = compute_daughter_daughter_angles(G)
 
     assert result["Daughter-Daughter Angle Sample Count"] == 3
+
+
+def test_intercapillary_distance_between_two_isolated_parallel_edges():
+    """Two edges sharing no node, offset by exactly 100 microns in y: the
+    nearest point on the other edge is 100 microns away for each of them."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 10.0))
+    G.add_node(2, pos=(0.0, 100.0, 0.0))
+    G.add_node(3, pos=(0.0, 100.0, 10.0))
+    _straight_edge(G, 0, 1, "BO1")
+    _straight_edge(G, 2, 3, "BO2")
+
+    result = compute_intercapillary_distance(G)
+
+    assert result["Intercapillary Distance Sample Count"] == 2
+    assert result["Mean Intercapillary Distance (microns)"] == pytest.approx(100.0)
+    assert result["Median Intercapillary Distance (microns)"] == pytest.approx(100.0)
+
+
+def test_intercapillary_distance_excludes_edges_sharing_a_node():
+    """A and B meet at node 1, so their shared point (distance 0) must not
+    count as A's or B's nearest neighbour -- only the unrelated edge C can.
+    A naive nearest-point search that does not exclude adjacent edges would
+    report 0.0 for both A and B instead of 50.0."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 10.0))
+    G.add_node(2, pos=(0.0, 0.0, 20.0))
+    G.add_node(3, pos=(0.0, 50.0, 0.0))
+    G.add_node(4, pos=(0.0, 50.0, 10.0))
+    _straight_edge(G, 0, 1, "BO1")  # A
+    _straight_edge(G, 1, 2, "BO2")  # B, adjacent to A via node 1
+    _straight_edge(G, 3, 4, "BO3")  # C, shares no node with A or B
+
+    result = compute_intercapillary_distance(G)
+
+    assert result["Intercapillary Distance Sample Count"] == 3
+    assert result["Mean Intercapillary Distance (microns)"] == pytest.approx(50.0)
+    assert result["Median Intercapillary Distance (microns)"] == pytest.approx(50.0)
+
+
+def test_intercapillary_distance_needs_at_least_two_edges():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 10.0))
+    _straight_edge(G, 0, 1, "BO1")
+
+    result = compute_intercapillary_distance(G)
+
+    assert result["Intercapillary Distance Sample Count"] == 0
+    assert result["Mean Intercapillary Distance (microns)"] == "N/A (fewer than two edges)"
+    assert result["Median Intercapillary Distance (microns)"] == "N/A (fewer than two edges)"
 
 
 def test_emergence_angle_uses_local_centreline_not_node_span():
