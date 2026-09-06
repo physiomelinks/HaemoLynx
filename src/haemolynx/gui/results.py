@@ -1025,6 +1025,20 @@ class ResultLayers:
             f"{graph.number_of_edges()} vessels.",
         )
 
+    def _skeleton_layer_options(self) -> dict[str, Any]:
+        """Extra options every re-emission of the skeleton layer carries.
+
+        Read by _store_thick_thin_skeleton_metadata in _widget.py, which
+        pops "thick_vessel_mask" before napari ever sees it as a kwarg (see
+        _THICK_THIN_OPTION_KEYS there) and stashes it on the layer so its
+        thick/thin debug toggle survives every later stage re-emitting this
+        same layer, not only the skeletonise stage that first computed it.
+        """
+        thick_vessel_mask = getattr(self, "_thick_vessel_mask", None)
+        if thick_vessel_mask is None:
+            return {}
+        return {"thick_vessel_mask": thick_vessel_mask}
+
     def _from_segment(self, output: Any) -> StageLayers:
         """Nothing to draw: the stage settles which file to read, not its content."""
         path = getattr(output, "image_path", None)
@@ -1049,8 +1063,12 @@ class ResultLayers:
                           options={"blending": "additive", "colormap": "gray"})
             )
         if skeleton is not None:
+            self._thick_vessel_mask = getattr(output, "thick_vessel_mask", None)
             layers.append(
-                LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=scale)
+                LayerSpec(
+                    kind="labels", name=SKELETON, data=skeleton, scale=scale,
+                    options=self._skeleton_layer_options(),
+                )
             )
             self._skeleton = skeleton
         return StageLayers(
@@ -1076,6 +1094,7 @@ class ResultLayers:
                         name=SKELETON,
                         data=skeleton,
                         scale=scale,
+                        options=self._skeleton_layer_options(),
                         visible=False,
                     )
                 )
@@ -1145,6 +1164,7 @@ class ResultLayers:
                         name=SKELETON,
                         data=skeleton,
                         scale=tuple(float(v) for v in self._voxel_size_zyx),
+                        options=self._skeleton_layer_options(),
                         visible=False,
                     )
                 )
@@ -1331,6 +1351,7 @@ class ResultLayers:
                     name=SKELETON,
                     data=skeleton,
                     scale=tuple(float(v) for v in self._voxel_size_zyx),
+                    options=self._skeleton_layer_options(),
                     visible=False,
                 )
             )

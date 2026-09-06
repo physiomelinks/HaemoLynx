@@ -746,6 +746,106 @@ def test_the_panel_offers_the_view_controls(make_napari_viewer):
     assert layout.indexOf(display) == -1
 
 
+def _run_with_thick_vessel_mask(make_napari_viewer):
+    """A viewer with our layers in it, from a run that used thickness-gated
+    skeletonisation -- the skeleton layer's controls should offer the
+    thick/thin debug toggle."""
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    skeleton = np.zeros((4, 4, 4), dtype=bool)
+    skeleton[0, 0, 0] = True
+    skeleton[1, 1, 1] = True
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=skeleton,
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+    _apply_layers(viewer, group)
+    return viewer, skeleton, thick
+
+
+def test_thick_thin_skeleton_toggle_is_offered_when_thickness_gating_was_used(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import (
+        THICK_SKELETON_COLOUR,
+        THIN_SKELETON_COLOUR,
+        _layer_controls,
+    )
+
+    viewer, skeleton, _thick = _run_with_thick_vessel_mask(make_napari_viewer)
+    layer = viewer.layers[SKELETON]
+    controls = _layer_controls(viewer, layer)
+    checkbox = controls._haemolynx_thick_thin
+    assert checkbox.isEnabled()
+    assert checkbox.isChecked() is False
+    np.testing.assert_array_equal(np.asarray(layer.data), skeleton.astype(np.uint8))
+
+    checkbox.setChecked(True)
+    assert layer.data[0, 0, 0] == 2  # thick voxel
+    assert layer.data[1, 1, 1] == 1  # thin voxel
+    assert layer.colormap.color_dict[1] == pytest.approx(THIN_SKELETON_COLOUR)
+    assert layer.colormap.color_dict[2] == pytest.approx(THICK_SKELETON_COLOUR)
+
+    checkbox.setChecked(False)
+    np.testing.assert_array_equal(np.asarray(layer.data), skeleton.astype(np.uint8))
+
+
+def test_thick_thin_skeleton_toggle_is_disabled_without_a_thick_mask(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    controls = _layer_controls(viewer, viewer.layers[SKELETON])
+    checkbox = getattr(controls, "_haemolynx_thick_thin", None)
+    assert checkbox is not None
+    assert checkbox.isEnabled() is False
+
+
+def test_thick_thin_skeleton_toggle_turns_off_when_a_rerun_drops_the_mask(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, _skeleton, _thick = _run_with_thick_vessel_mask(make_napari_viewer)
+    controls = _layer_controls(viewer, viewer.layers[SKELETON])
+    checkbox = controls._haemolynx_thick_thin
+    checkbox.setChecked(True)
+
+    plain_skeleton = np.zeros((4, 4, 4), dtype=bool)
+    plain_skeleton[2, 2, 2] = True
+    _apply_layers(
+        viewer,
+        ResultLayers().stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=np.zeros((4, 4, 4), dtype=np.uint8),
+                skeleton=plain_skeleton,
+                voxel_size_xyz=(1.0, 1.0, 1.0),
+                voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        ),
+    )
+
+    assert checkbox.isEnabled() is False
+    assert checkbox.isChecked() is False
+    np.testing.assert_array_equal(
+        np.asarray(viewer.layers[SKELETON].data), plain_skeleton.astype(np.uint8)
+    )
+
+
 def test_z_depth_slider_is_not_mounted_in_layer_controls(make_napari_viewer):
     from haemolynx.gui._widget import _layer_controls, settings_widget
 

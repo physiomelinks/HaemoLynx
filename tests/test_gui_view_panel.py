@@ -61,6 +61,34 @@ def _load_patterned_image(viewer):
     return layer, image
 
 
+def test_selecting_the_image_layer_gives_it_a_clearer_3d_render(make_napari_viewer):
+    """Plain MIP -- napari's own default -- has no depth cue; the layer being
+    inspected should switch to attenuated MIP while it is the active
+    selection, and fall back once something else is selected."""
+    from haemolynx.gui._widget import (
+        IMAGE_DEFAULT_RENDER_OPTIONS,
+        IMAGE_FOCUS_RENDER_OPTIONS,
+    )
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    image_layer = viewer.layers[IMAGE]
+    for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
+        assert getattr(image_layer, key) == value
+
+    viewer.layers.selection.active = image_layer
+    for key, value in IMAGE_FOCUS_RENDER_OPTIONS.items():
+        assert getattr(image_layer, key) == value
+
+    other = next(l for l in viewer.layers if l is not image_layer)
+    viewer.layers.selection.active = other
+    for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
+        assert getattr(image_layer, key) == value
+
+
 def test_the_view_panel_floats_over_the_canvas(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)

@@ -1336,6 +1336,208 @@ def test_apply_volume_z_display_on_viewer_clips_then_restores():
     np.testing.assert_array_equal(layer.data, volume)
 
 
+class _FakeLayerList(list):
+    """A plain list plus the `.selection.active` napari's LayerList carries."""
+
+    def __init__(self, layers, *, active=None):
+        super().__init__(layers)
+        self.selection = SimpleNamespace(active=active)
+
+
+def _fake_image_layer(name: str):
+    class Image:
+        pass
+
+    layer = Image()
+    layer.name = name
+    layer.rendering = "mip"
+    layer.attenuation = 0.05
+    layer.interpolation3d = "linear"
+    layer.gamma = 1.0
+    return layer
+
+
+def test_focus_image_layer_rendering_enhances_only_the_active_image_layer():
+    from haemolynx.gui._widget import (
+        IMAGE_DEFAULT_RENDER_OPTIONS,
+        IMAGE_FOCUS_RENDER_OPTIONS,
+        _focus_image_layer_rendering,
+    )
+
+    active = _fake_image_layer("a")
+    other = _fake_image_layer("b")
+    viewer = SimpleNamespace(layers=_FakeLayerList([active, other], active=active))
+
+    _focus_image_layer_rendering(viewer)
+
+    for key, value in IMAGE_FOCUS_RENDER_OPTIONS.items():
+        assert getattr(active, key) == value
+    for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
+        assert getattr(other, key) == value
+
+
+def test_focus_image_layer_rendering_with_nothing_selected_defaults_all():
+    from haemolynx.gui._widget import IMAGE_DEFAULT_RENDER_OPTIONS, _focus_image_layer_rendering
+
+    layer = _fake_image_layer("a")
+    layer.rendering = "attenuated_mip"  # left over from a previous selection
+    viewer = SimpleNamespace(layers=_FakeLayerList([layer], active=None))
+
+    _focus_image_layer_rendering(viewer)
+
+    for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
+        assert getattr(layer, key) == value
+
+
+def test_focus_image_layer_rendering_ignores_non_image_layers():
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+
+    class Points:
+        pass
+
+    points = Points()
+    points.name = "points"
+    viewer = SimpleNamespace(layers=_FakeLayerList([points], active=points))
+
+    _focus_image_layer_rendering(viewer)  # must not raise
+
+    assert not hasattr(points, "rendering")
+
+
+def test_focus_image_layer_rendering_with_no_viewer_is_a_no_op():
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+
+    _focus_image_layer_rendering(None)  # must not raise
+
+
+# --- skeleton layer options carry the fat catchment through every stage ----
+
+
+def test_skeleton_layer_options_carry_the_thick_mask():
+    """The thick mask survives every later stage re-emitting this layer, not
+    only the skeletonise run that first computed it."""
+    results = ResultLayers()
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+    assert results._skeleton_layer_options() == {"thick_vessel_mask": thick}
+
+
+def test_skeleton_layer_options_are_empty_when_thickness_gating_was_not_used():
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    assert results._skeleton_layer_options() == {}
+
+
+# --- thick/thin skeleton debug toggle: pure logic ---------------------------
+
+
+def test_thick_thin_skeleton_labels_marks_background_thin_and_thick():
+    from haemolynx.gui._widget import _thick_thin_skeleton_labels
+
+    skeleton = np.array([[[0, 1, 1, 1]]], dtype=bool)
+    thick = np.array([[[0, 0, 1, 1]]], dtype=bool)
+
+    labels = _thick_thin_skeleton_labels(skeleton, thick)
+
+    np.testing.assert_array_equal(labels, [[[0, 1, 2, 2]]])
+    assert labels.dtype == np.uint8
+
+
+class _FakeSkeletonLayer:
+    def __init__(self, data, metadata=None):
+        self.data = data
+        self.metadata = metadata or {}
+        self.colormap = "default"
+
+
+def _fake_spec(data, options):
+    return SimpleNamespace(data=data, options=options)
+
+
+def test_store_thick_thin_skeleton_metadata_keeps_mask_and_bool_skeleton():
+    from haemolynx.gui._widget import OURS, _store_thick_thin_skeleton_metadata
+
+    skeleton = np.array([True, False, True])
+    thick = np.array([True, False, False])
+    layer = _FakeSkeletonLayer(skeleton)
+    spec = _fake_spec(skeleton, {"thick_vessel_mask": thick})
+
+    _store_thick_thin_skeleton_metadata(layer, spec)
+
+    tag = layer.metadata[OURS]
+    np.testing.assert_array_equal(tag["skeleton_bool"], skeleton)
+    np.testing.assert_array_equal(tag["thick_vessel_mask"], thick)
+
+
+def test_store_thick_thin_skeleton_metadata_clears_stale_mask_when_absent():
+    from haemolynx.gui._widget import OURS, _store_thick_thin_skeleton_metadata
+
+    layer = _FakeSkeletonLayer(
+        np.array([True]),
+        metadata={OURS: {"thick_vessel_mask": np.array([True]), "skeleton_bool": np.array([True])}},
+    )
+    spec = _fake_spec(np.array([True]), {})
+
+    _store_thick_thin_skeleton_metadata(layer, spec)
+
+    tag = layer.metadata[OURS]
+    assert "thick_vessel_mask" not in tag
+    assert "skeleton_bool" not in tag
+
+
+def test_apply_thick_thin_skeleton_display_shows_two_colours_then_reverts():
+    from haemolynx.gui._widget import (
+        THICK_SKELETON_COLOUR,
+        THIN_SKELETON_COLOUR,
+        _apply_thick_thin_skeleton_display,
+        _store_thick_thin_skeleton_metadata,
+    )
+
+    skeleton = np.array([True, True, False])
+    thick = np.array([True, False, False])
+    layer = _FakeSkeletonLayer(skeleton)
+    _store_thick_thin_skeleton_metadata(layer, _fake_spec(skeleton, {"thick_vessel_mask": thick}))
+    default_colormap = layer.colormap
+
+    _apply_thick_thin_skeleton_display(layer, show=True, default_colormap=default_colormap)
+    np.testing.assert_array_equal(layer.data, [2, 1, 0])
+    assert layer.colormap[1] == THIN_SKELETON_COLOUR
+    assert layer.colormap[2] == THICK_SKELETON_COLOUR
+
+    _apply_thick_thin_skeleton_display(layer, show=False, default_colormap=default_colormap)
+    np.testing.assert_array_equal(layer.data, [1, 1, 0])
+    assert layer.colormap is default_colormap
+
+
+def test_apply_thick_thin_skeleton_display_without_stored_state_is_a_no_op():
+    from haemolynx.gui._widget import _apply_thick_thin_skeleton_display
+
+    layer = _FakeSkeletonLayer(np.array([True]))
+    original_data = layer.data
+
+    _apply_thick_thin_skeleton_display(layer, show=True, default_colormap="default")
+
+    assert layer.data is original_data
+
+
 def test_result_layers_image_z_extent_after_skeletonise():
     results = ResultLayers()
     assert results.image_z_extent_um() is None

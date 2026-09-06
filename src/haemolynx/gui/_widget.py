@@ -381,6 +381,30 @@ _BRANCH_HOVER_OPTION_KEYS = frozenset(
     {"branch_hover_available", "branch_hover_selected"}
 )
 
+#: Keys stashed on the skeleton LayerSpec that must not reach napari.
+_THICK_THIN_OPTION_KEYS = frozenset({"thick_vessel_mask"})
+
+#: Debug colours for the skeleton layer's thick/thin toggle -- distinct from
+#: every mask/vessel-type colour already in use elsewhere in the viewer.
+THIN_SKELETON_COLOUR: tuple[float, float, float, float] = (0.0, 0.85, 0.85, 1.0)
+THICK_SKELETON_COLOUR: tuple[float, float, float, float] = (1.0, 0.55, 0.0, 1.0)
+
+
+def _thick_thin_skeleton_labels(skeleton: np.ndarray, thick_vessel_mask: np.ndarray) -> np.ndarray:
+    """Skeleton voxels as three labels: 0 background, 1 thin, 2 thick.
+
+    A voxel is "thick" when it is both skeleton and inside the fat catchment
+    ``skeletonize_thickness_gated`` built the tree from; every other skeleton
+    voxel is "thin". Pure and shape-agnostic -- the two inputs just need to
+    broadcast together.
+    """
+    skel = np.asarray(skeleton, dtype=bool)
+    thick = np.asarray(thick_vessel_mask, dtype=bool)
+    labels = np.zeros(skel.shape, dtype=np.uint8)
+    labels[skel] = 1
+    labels[skel & thick] = 2
+    return labels
+
 
 def _is_ours(layer) -> bool:
     return bool(getattr(layer, "metadata", {}).get(OURS))
@@ -1001,6 +1025,55 @@ def _apply_scale_bar(viewer, visible: bool) -> None:
     _ensure_scale_bar_drawn(viewer, overlay, show)
 
 
+#: 3D rendering an Image layer gets once it becomes the active selection, so
+#: its structure is easier to compare against the derived skeleton/graph
+#: while it is the thing being inspected. Plain MIP -- napari's own default --
+#: has no depth cue at all: it takes the brightest voxel along each ray
+#: regardless of how far away it is, which washes a segmented volume's own
+#: foreground into whatever noise sits behind it. Attenuated MIP weights
+#: nearer voxels more heavily instead, and nearest-neighbour 3D interpolation
+#: keeps a binary-ish mask's edges crisp rather than blurred.
+IMAGE_FOCUS_RENDER_OPTIONS: dict[str, Any] = {
+    "rendering": "attenuated_mip",
+    "attenuation": 0.2,
+    "interpolation3d": "nearest",
+    "gamma": 0.7,
+}
+
+#: What every other Image layer's 3D rendering falls back to -- napari's own
+#: defaults -- so only the layer actually being inspected stands out.
+IMAGE_DEFAULT_RENDER_OPTIONS: dict[str, Any] = {
+    "rendering": "mip",
+    "attenuation": 0.05,
+    "interpolation3d": "linear",
+    "gamma": 1.0,
+}
+
+
+def _focus_image_layer_rendering(viewer) -> None:
+    """Give the active Image layer a clearer 3D render; the rest fall back.
+
+    Display-only, like the scale bar and Z-depth filter: never written into
+    settings or stage inputs.
+    """
+    if viewer is None:
+        return
+    active = viewer.layers.selection.active
+    for layer in viewer.layers:
+        if layer.__class__.__name__.lower() != "image":
+            continue
+        focused = layer is active
+        options = IMAGE_FOCUS_RENDER_OPTIONS if focused else IMAGE_DEFAULT_RENDER_OPTIONS
+        for key, value in options.items():
+            try:
+                setattr(layer, key, value)
+            except Exception:  # noqa: BLE001 - a layer that rejects an option is left alone
+                logger.debug(
+                    "could not set %s on %s", key, getattr(layer, "name", layer),
+                    exc_info=True,
+                )
+
+
 def _uniform_points_property(value: Any, n: int) -> Any:
     """Return a scalar or length-*n* value napari Points accepts for size/shown/symbol.
 
@@ -1416,6 +1489,11 @@ def _apply_layers(viewer, group, report=None) -> None:
             except Exception:  # noqa: BLE001 - missing hover panel is survivable
                 logger.debug("could not attach branch-hover controls to %s",
                              spec.name, exc_info=True)
+            try:
+                _attach_thick_thin_skeleton_toggle(viewer, viewer.layers[spec.name])
+            except Exception:  # noqa: BLE001 - missing toggle is survivable
+                logger.debug("could not attach thick/thin skeleton toggle to %s",
+                             spec.name, exc_info=True)
     for name, column in group.recolour:
         layer = viewer.layers[name] if name in viewer.layers else None
         if layer is not None and _is_ours(layer):
@@ -1791,6 +1869,7 @@ def _add_or_update(viewer, spec) -> None:
             _store_sweep_metadata(existing, spec)
             _store_branch_hover_metadata(existing, spec)
             _maybe_store_z_filter_cache(existing, spec)
+            _store_thick_thin_skeleton_metadata(existing, spec)
             return
 
     if existing is not None:
@@ -1801,6 +1880,8 @@ def _add_or_update(viewer, spec) -> None:
     if spec.kind == "image":
         options = _image_options_for_napari(options)
     for key in _BRANCH_HOVER_OPTION_KEYS:
+        options.pop(key, None)
+    for key in _THICK_THIN_OPTION_KEYS:
         options.pop(key, None)
     if spec.features:
         options["features"] = dict(spec.features)
@@ -1820,6 +1901,7 @@ def _add_or_update(viewer, spec) -> None:
     _store_sweep_metadata(layer, spec)
     _store_branch_hover_metadata(layer, spec)
     _maybe_store_z_filter_cache(layer, spec)
+    _store_thick_thin_skeleton_metadata(layer, spec)
 
 
 def _store_sweep_metadata(layer, spec) -> None:
@@ -1856,6 +1938,111 @@ def _store_branch_hover_metadata(layer, spec) -> None:
     metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
+
+
+def _store_thick_thin_skeleton_metadata(layer, spec) -> None:
+    """Keep the boolean skeleton and its fat catchment on the layer.
+
+    Read by the thick/thin debug toggle to recompute its display after every
+    stage that re-emits this same layer (build_network, assign_boundaries,
+    solve all redraw it), not only the skeletonise run that first computed
+    it. Cleared, not left stale, on a run that did not use thickness-gated
+    skeletonisation -- otherwise a later rerun with it off would still offer
+    a toggle backed by a previous run's mask.
+    """
+    thick_vessel_mask = spec.options.get("thick_vessel_mask")
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    tag = dict(metadata.get(OURS) or {})
+    if thick_vessel_mask is None:
+        tag.pop("thick_vessel_mask", None)
+        tag.pop("skeleton_bool", None)
+    else:
+        tag["thick_vessel_mask"] = thick_vessel_mask
+        tag["skeleton_bool"] = np.asarray(spec.data, dtype=bool)
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _thick_thin_skeleton_state(layer) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """The ``(skeleton_bool, thick_vessel_mask)`` a toggle needs, or ``(None, None)``."""
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    return tag.get("skeleton_bool"), tag.get("thick_vessel_mask")
+
+
+def _apply_thick_thin_skeleton_display(layer, *, show: bool, default_colormap) -> None:
+    """Recolour the skeleton layer to show thick vs. thin voxels, or revert.
+
+    Reads the layer's own stashed skeleton/thick-mask fresh every time
+    (rather than a value captured when the toggle was built), so it stays
+    correct across reruns without any separate refresh bookkeeping.
+    *default_colormap* is napari's own colormap object, captured once when
+    the checkbox was first built (before this ever touched it) -- napari 0.9
+    Labels layers have no "reset to default" short of handing the original
+    object back.
+    """
+    skeleton_bool, thick_vessel_mask = _thick_thin_skeleton_state(layer)
+    if skeleton_bool is None:
+        return
+    if show and thick_vessel_mask is not None:
+        layer.data = _thick_thin_skeleton_labels(skeleton_bool, thick_vessel_mask)
+        layer.colormap = {
+            1: THIN_SKELETON_COLOUR,
+            2: THICK_SKELETON_COLOUR,
+            None: (0.0, 0.0, 0.0, 0.0),
+        }
+    else:
+        layer.data = skeleton_bool.astype(np.uint8)
+        layer.colormap = default_colormap
+
+
+def _attach_thick_thin_skeleton_toggle(viewer, layer) -> bool:
+    """Put the thick/thin debug checkbox on the skeleton layer's controls, once.
+
+    Only offered when this run's skeleton actually carries a fat catchment
+    (``use_thick_vessel_skeletonisation`` was on) -- see
+    _store_thick_thin_skeleton_metadata. The checkbox itself lives on the
+    layer's own native controls, so napari already shows it only while this
+    layer is the active selection.
+    """
+    from qtpy.QtWidgets import QCheckBox
+
+    if layer.__class__.__name__.lower() != "labels":
+        return False
+    _skeleton_bool, thick_vessel_mask = _thick_thin_skeleton_state(layer)
+    available = thick_vessel_mask is not None
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        return False
+    checkbox = getattr(controls, "_haemolynx_thick_thin", None)
+    if checkbox is not None:
+        checkbox.setEnabled(available)
+        if not available:
+            checkbox.setChecked(False)
+        _apply_thick_thin_skeleton_display(
+            layer, show=checkbox.isChecked(),
+            default_colormap=checkbox._haemolynx_default_colormap,
+        )
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    checkbox = QCheckBox("Thick/thin skeleton (debug)")
+    checkbox.setToolTip(
+        "Colour skeleton voxels by whether thickness-gated skeletonisation "
+        "treated them as fat (thick) or ridge (thin)"
+    )
+    checkbox.setEnabled(available)
+    # Captured once, before this ever recolours the layer: napari 0.9 Labels
+    # layers have no "reset to default" short of handing this object back.
+    checkbox._haemolynx_default_colormap = layer.colormap
+    checkbox.toggled.connect(
+        lambda checked, l=layer, cb=checkbox: _apply_thick_thin_skeleton_display(
+            l, show=checked, default_colormap=cb._haemolynx_default_colormap,
+        )
+    )
+    layout.addRow(checkbox)
+    controls._haemolynx_thick_thin = checkbox
+    return True
 
 
 #: Axis name -> short slider label.
@@ -5208,6 +5395,9 @@ def settings_widget(napari_viewer=None):
         viewer.layers.selection.events.active.connect(
             lambda *_args: reparent_arrow_length_slider()
         )
+        viewer.layers.selection.events.active.connect(
+            lambda *_args: _focus_image_layer_rendering(viewer)
+        )
 
     def apply_view_z(*, force: bool = False) -> None:
         """Re-apply the left-panel Z-depth clip to every displayed layer.
@@ -5259,6 +5449,7 @@ def settings_widget(napari_viewer=None):
             return
         _sync_view_z_sliders()
         reparent_arrow_length_slider()
+        _focus_image_layer_rendering(viewer)
         apply_view_z(force=True)
 
     if viewer is not None:
