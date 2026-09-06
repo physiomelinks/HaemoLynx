@@ -162,6 +162,121 @@ def test_min_stub_length_reaches_the_pruning_step():
     assert float(next(iter(pruned.edges(data=True)))[2]["length"]) == pytest.approx(35.0)
 
 
+# --- cluster_collapse_method routing -----------------------------------------
+
+
+def test_cluster_collapse_method_defaults_to_the_unmodified_legacy_behaviour(monkeypatch):
+    """Neither opt-in method may change a single caller's behaviour unless
+    explicitly asked for -- see direction_aware_collapse's and
+    persistence_collapse's own docstrings on why each exists as a fully
+    separate, removable module."""
+    import haemolynx.graph.assemble as assemble_module
+
+    def must_not_be_called(name):
+        def _raise(*_args, **_kwargs):
+            raise AssertionError(f"{name} ran even though cluster_collapse_method was not set")
+        return _raise
+
+    monkeypatch.setattr(
+        assemble_module, "collapse_node_clusters_direction_aware",
+        must_not_be_called("collapse_node_clusters_direction_aware"),
+    )
+    monkeypatch.setattr(
+        assemble_module, "collapse_node_clusters_persistence",
+        must_not_be_called("collapse_node_clusters_persistence"),
+    )
+
+    _build(_t_skeleton())
+
+
+def test_cluster_collapse_method_direction_aware_reaches_the_direction_aware_collapse(monkeypatch):
+    import haemolynx.graph.assemble as assemble_module
+
+    calls = []
+
+    def fake_direction_aware(G, *, distance_threshold, max_radial_dispersion, debug):
+        calls.append(max_radial_dispersion)
+        return assemble_module.collapse_node_clusters(G, distance_threshold=distance_threshold, debug=debug)
+
+    monkeypatch.setattr(
+        assemble_module, "collapse_node_clusters_direction_aware", fake_direction_aware
+    )
+
+    _build(
+        _t_skeleton(),
+        cluster_collapse_method="direction_aware",
+        cluster_collapse_max_radial_dispersion=0.7,
+    )
+
+    assert calls == [pytest.approx(0.7)]
+
+
+def test_cluster_collapse_method_distance_only_never_calls_direction_aware_collapse(monkeypatch):
+    import haemolynx.graph.assemble as assemble_module
+
+    def must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("must not be called for distance_only")
+
+    monkeypatch.setattr(
+        assemble_module, "collapse_node_clusters_direction_aware", must_not_be_called
+    )
+
+    _build(_t_skeleton(), cluster_collapse_method="distance_only")
+
+
+def test_cluster_collapse_method_persistence_reaches_the_persistence_collapse(monkeypatch):
+    import haemolynx.graph.assemble as assemble_module
+
+    calls = []
+
+    def fake_persistence(G, *, distance_threshold, search_radius_multiple, debug):
+        calls.append(search_radius_multiple)
+        return assemble_module.collapse_node_clusters(G, distance_threshold=distance_threshold, debug=debug)
+
+    monkeypatch.setattr(
+        assemble_module, "collapse_node_clusters_persistence", fake_persistence
+    )
+
+    _build(
+        _t_skeleton(),
+        cluster_collapse_method="persistence",
+        cluster_collapse_persistence_search_multiple=4.5,
+    )
+
+    assert calls == [pytest.approx(4.5)]
+
+
+def test_cluster_collapse_method_distance_only_never_calls_persistence_collapse(monkeypatch):
+    import haemolynx.graph.assemble as assemble_module
+
+    def must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("must not be called for distance_only")
+
+    monkeypatch.setattr(
+        assemble_module, "collapse_node_clusters_persistence", must_not_be_called
+    )
+
+    _build(_t_skeleton(), cluster_collapse_method="distance_only")
+
+
+def test_cluster_collapse_method_direction_aware_never_calls_persistence_collapse(monkeypatch):
+    import haemolynx.graph.assemble as assemble_module
+
+    def must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("must not be called for direction_aware")
+
+    monkeypatch.setattr(
+        assemble_module, "collapse_node_clusters_persistence", must_not_be_called
+    )
+
+    _build(_t_skeleton(), cluster_collapse_method="direction_aware")
+
+
+def test_an_unknown_cluster_collapse_method_is_rejected():
+    with pytest.raises(ValueError, match="cluster_collapse_method"):
+        _build(_t_skeleton(), cluster_collapse_method="nonsense")
+
+
 # --- step callback contract -------------------------------------------------
 
 

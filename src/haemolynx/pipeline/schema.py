@@ -1727,6 +1727,68 @@ SCHEMA = Schema(
             requires=("do_graph_building",),
         ),
         Setting(
+            name="cluster_collapse_method",
+            kind="choice",
+            default="distance_only",
+            help=(
+                "distance_only collapses every node within cluster_collapse_distance "
+                "of another however far that chains -- the original behaviour. "
+                "direction_aware additionally refuses a merge that would turn the "
+                "collapsed node's incident edges into a cartwheel shape (see the "
+                "cartwheel hub guard below), leaving separate nodes where proximity "
+                "alone could not tell two nearby real junctions apart. persistence "
+                "cuts each local cluster at its own natural gap in single-linkage "
+                "merge distance (0-dimensional persistent homology) instead of one "
+                "global distance -- see graph.persistence_collapse"
+            ),
+            section=_PIPELINE_STAGES,
+            choices=("distance_only", "direction_aware", "persistence"),
+            requires=("do_graph_building",),
+        ),
+        Setting(
+            name="cluster_collapse_max_radial_dispersion",
+            kind="float",
+            default=0.5,
+            help=(
+                "Only used by cluster_collapse_method=direction_aware: refuse a "
+                "merge whose combined incident edges would disperse to at most this "
+                "much (0 = spread evenly in every direction, 1 = all leave the same "
+                "way) -- the same reading as the cartwheel hub guard's own "
+                "threshold, kept separate so the two can be tuned independently"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        Setting(
+            name="cluster_collapse_persistence_search_multiple",
+            kind="float",
+            default=3.0,
+            help=(
+                "Only used by cluster_collapse_method=persistence: how many multiples "
+                "of cluster_collapse_distance to search for candidate pairs -- wider "
+                "than the ordinary collapse distance, so a genuine persistence gap has "
+                "room to appear on both sides of it. See graph.persistence_collapse"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+        ),
+        Setting(
+            name="skeleton_graph_consistency_warn_below",
+            kind="float",
+            default=0.7,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the skeleton's own voxels are still traced by the finished graph's "
+                "edges -- see graph.diagnostics.diagnose_skeleton_graph_consistency for "
+                "what that measures and why"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("do_graph_building",),
+        ),
+        Setting(
             name="save_step_artifacts",
             kind="bool",
             default=False,
@@ -1747,6 +1809,21 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=100.0,
             unit="percent",
+            requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_mask_consistency_warn_below",
+            kind="float",
+            default=0.7,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the segmented-image mask's own voxels sit within their own local radius "
+                "of the skeleton -- see preprocessing.skeleton_consistency for what that "
+                "measures and why"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
             requires=("do_skeletonize",),
         ),
         Setting(

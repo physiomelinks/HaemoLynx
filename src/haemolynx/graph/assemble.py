@@ -10,6 +10,14 @@ from skan import csr
 from ._platform import skan_numba_warmup_skeleton
 from .build import build_graph_segment_skan_stitched_loops
 from .collapse import collapse_node_clusters
+from .direction_aware_collapse import (
+    DEFAULT_MAX_RADIAL_DISPERSION,
+    collapse_node_clusters_direction_aware,
+)
+from .persistence_collapse import (
+    DEFAULT_SEARCH_RADIUS_MULTIPLE,
+    collapse_node_clusters_persistence,
+)
 from .degree2 import smart_multigraph_degree2_removal
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
@@ -84,6 +92,9 @@ def build_graph_from_skeleton(
     min_stub_length: float = 10.0,
     debug: bool = False,
     step_callback: StepCallback | None = None,
+    cluster_collapse_method: str = "distance_only",
+    cluster_collapse_max_radial_dispersion: float = DEFAULT_MAX_RADIAL_DISPERSION,
+    cluster_collapse_persistence_search_multiple: float = DEFAULT_SEARCH_RADIUS_MULTIPLE,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -112,6 +123,23 @@ def build_graph_from_skeleton(
         When True, print degree-2 diagnostic reports after cleanup passes.
     step_callback
         Optional ``callback(G, step_label)`` invoked after each topology step.
+    cluster_collapse_method
+        ``"distance_only"`` (default) is the original, unmodified behaviour --
+        every node within ``cluster_collapse_distance`` of another collapses
+        via single-linkage clustering, however far that chains. ``"direction_
+        aware"`` additionally refuses a merge that would turn the collapsed
+        node's incident edges into a cartwheel shape -- see
+        ``direction_aware_collapse`` for why and how. ``"persistence"`` cuts
+        each local cluster at its own 0-dimensional-persistence gap instead
+        of one global distance -- see ``persistence_collapse`` for the cited
+        mathematics and why it can leave more than one representative node
+        where ``distance_only`` would merge everything into one.
+    cluster_collapse_max_radial_dispersion
+        Only read when *cluster_collapse_method* is ``"direction_aware"`` --
+        see ``direction_aware_collapse.collapse_node_clusters_direction_aware``.
+    cluster_collapse_persistence_search_multiple
+        Only read when *cluster_collapse_method* is ``"persistence"`` -- see
+        ``persistence_collapse.collapse_node_clusters_persistence``.
 
     Returns
     -------
@@ -165,11 +193,31 @@ def build_graph_from_skeleton(
     _notify_step(G, "smart_multigraph_degree2_removal_pass1", step_callback)
     _log_degree2_diagnostics(G, degree2_pass1_max_degree, debug)
 
-    G = collapse_node_clusters(
-        G,
-        distance_threshold=cluster_collapse_distance,
-        debug=debug,
-    )
+    if cluster_collapse_method == "direction_aware":
+        G = collapse_node_clusters_direction_aware(
+            G,
+            distance_threshold=cluster_collapse_distance,
+            max_radial_dispersion=cluster_collapse_max_radial_dispersion,
+            debug=debug,
+        )
+    elif cluster_collapse_method == "persistence":
+        G = collapse_node_clusters_persistence(
+            G,
+            distance_threshold=cluster_collapse_distance,
+            search_radius_multiple=cluster_collapse_persistence_search_multiple,
+            debug=debug,
+        )
+    elif cluster_collapse_method == "distance_only":
+        G = collapse_node_clusters(
+            G,
+            distance_threshold=cluster_collapse_distance,
+            debug=debug,
+        )
+    else:
+        raise ValueError(
+            f"cluster_collapse_method must be 'distance_only', 'direction_aware' "
+            f"or 'persistence', got {cluster_collapse_method!r}."
+        )
     _notify_step(G, "collapse_node_clusters", step_callback)
 
     G = smart_multigraph_degree2_removal(

@@ -1428,6 +1428,36 @@ def test_focus_image_layer_rendering_never_touches_a_haemolynx_mask_volume():
     assert mask.rendering == "mip"  # untouched, still its original fake default
 
 
+def test_focus_image_layer_rendering_only_adjusts_opacity_for_a_binary_image():
+    """A binary-ish segmented image was already given translucent rendering
+    and a transparent-background colour at layer-creation time (see
+    results.binary_value_range / BINARY_IMAGE_VOLUME_OPTIONS) -- overwriting
+    rendering back to mip/attenuated_mip here would turn it solid again, so
+    only opacity is adjusted for focus, identified by the shared colormap
+    name results._image_options_for_napari gives every mask_colour layer."""
+    from haemolynx.gui._widget import (
+        IMAGE_DEFAULT_OPACITY_BINARY,
+        IMAGE_FOCUS_OPACITY_BINARY,
+        _focus_image_layer_rendering,
+    )
+
+    active = _fake_image_layer(IMAGE)
+    active.colormap = SimpleNamespace(name="haemolynx_vessel_mask")
+    active.rendering = "translucent"
+    viewer = SimpleNamespace(layers=_FakeLayerList([active], active=active))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert active.opacity == pytest.approx(IMAGE_FOCUS_OPACITY_BINARY)
+    assert active.rendering == "translucent"  # untouched
+
+    viewer.layers.selection.active = None
+    _focus_image_layer_rendering(viewer)
+
+    assert active.opacity == pytest.approx(IMAGE_DEFAULT_OPACITY_BINARY)
+    assert active.rendering == "translucent"  # still untouched
+
+
 def test_focus_image_layer_rendering_ignores_non_image_layers():
     from haemolynx.gui._widget import _focus_image_layer_rendering
 
@@ -1461,6 +1491,69 @@ def test_focus_image_layer_rendering_with_no_viewer_is_a_no_op():
     # the function's own contract: the early return yields None rather than
     # raising or falling through into the (viewer-less) loop below it.
     assert _focus_image_layer_rendering(None) is None
+
+
+# --- the segmented image gets a mask-style display when it is binary-ish --
+
+
+def test_binary_value_range_detects_all_three_real_encodings():
+    from haemolynx.gui.results import binary_value_range
+
+    assert binary_value_range(np.array([0, 1, 1, 0], dtype=np.uint8)) == (0.0, 1.0)
+    assert binary_value_range(np.array([1, 2, 2, 1], dtype=np.uint8)) == (1.0, 2.0)
+    assert binary_value_range(np.array([0, 255, 255, 0], dtype=np.uint8)) == (0.0, 255.0)
+
+
+def test_binary_value_range_is_none_for_a_blank_or_genuine_grayscale_array():
+    from haemolynx.gui.results import binary_value_range
+
+    assert binary_value_range(np.zeros((3, 3, 3), dtype=np.uint8)) is None
+    assert binary_value_range(np.array([0, 1, 2, 3], dtype=np.uint8)) is None
+    assert binary_value_range(np.array([], dtype=np.uint8)) is None
+
+
+def test_a_binary_segmented_image_gets_translucent_mask_style_options():
+    """0/1, 1/2 and 0/255 must all be recognised and treated the same way --
+    a plain 'gray' colormap has no notion of background, so a dense vessel
+    volume rendered that way turns solid (MIP-family rendering shows only
+    the single brightest sample per ray). See results.BINARY_IMAGE_VOLUME_OPTIONS."""
+    from haemolynx.gui.results import BINARY_IMAGE_VOLUME_OPTIONS, SEGMENTED_IMAGE_COLOUR
+
+    for image, expected_range in (
+        (np.array([[[0, 1], [1, 0]]], dtype=np.uint8), (0.0, 1.0)),
+        (np.array([[[1, 2], [2, 1]]], dtype=np.uint8), (1.0, 2.0)),
+        (np.array([[[0, 255], [255, 0]]], dtype=np.uint8), (0.0, 255.0)),
+    ):
+        group = ResultLayers().stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=image,
+                skeleton=np.zeros(image.shape, dtype=bool),
+                voxel_size_xyz=(1.0, 1.0, 1.0),
+                voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        )
+        spec = spec_named(group, IMAGE)
+        assert spec.contrast_limits == expected_range
+        assert spec.options["mask_colour"] == SEGMENTED_IMAGE_COLOUR
+        for key, value in BINARY_IMAGE_VOLUME_OPTIONS.items():
+            assert spec.options[key] == value
+
+
+def test_a_grayscale_segmented_image_keeps_the_plain_gray_colormap():
+    image = np.array([[[0, 10], [40, 120]]], dtype=np.uint8)
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=image,
+            skeleton=np.zeros(image.shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    spec = spec_named(group, IMAGE)
+    assert spec.contrast_limits is None
+    assert spec.options == {"blending": "additive", "colormap": "gray"}
 
 
 # --- skeleton layer options carry the fat catchment through every stage ----

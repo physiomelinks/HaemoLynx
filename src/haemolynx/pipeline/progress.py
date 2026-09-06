@@ -121,6 +121,9 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_max_bridge_distance",
             "skeleton_component_connectivity",
             "skeleton_min_component_percent",
+            # A read-only check on the skeleton this stage just built -- see
+            # preprocessing.skeleton_consistency.
+            "skeleton_mask_consistency_warn_below",
         ),
     ),
     Stage(
@@ -132,6 +135,9 @@ STAGES: tuple[Stage, ...] = (
             "graph_reconnect_threshold",
             "final_orphan_reconnect_threshold",
             "cluster_collapse_distance",
+            "cluster_collapse_method",
+            "cluster_collapse_max_radial_dispersion",
+            "cluster_collapse_persistence_search_multiple",
             "min_stub_length",
             "save_step_artifacts",
             # Centreline smoothing is the last thing graph building does.
@@ -145,6 +151,9 @@ STAGES: tuple[Stage, ...] = (
             "cartwheel_hub_min_degree",
             "cartwheel_hub_max_radial_dispersion",
             "cartwheel_hub_tangent_length_um",
+            # A read-only check on the graph this stage just built -- see
+            # graph.diagnostics.diagnose_skeleton_graph_consistency.
+            "skeleton_graph_consistency_warn_below",
         ),
     ),
     Stage(

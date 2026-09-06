@@ -104,6 +104,49 @@ MASK_VOLUME_OPTIONS: dict[str, Any] = {
     "interpolation3d": "nearest",
 }
 
+#: Neutral, role-free colour for the segmented input image when it turns out
+#: to be a binary-ish mask (see ``binary_value_range``) -- distinct from
+#: every ``MASK_COLOURS`` role so it never reads as one of them.
+SEGMENTED_IMAGE_COLOUR: tuple[float, float, float, float] = (0.78, 0.78, 0.82, 0.6)
+
+#: The segmented-image layer's own look once its data is binary-ish. Plain
+#: "gray" (this pipeline's default for genuine grayscale) has no notion of
+#: "background", so a dense, mostly space-filling vessel volume rendered
+#: that way turns solid: MIP-family rendering shows the single brightest
+#: sample along each ray regardless of depth, and on this data nearly every
+#: ray hits foreground somewhere. ``rendering: "translucent"`` composites
+#: each voxel's own opacity front-to-back instead of an any-hit silhouette,
+#: so actual 3D structure reads rather than a flat outline; the two-stop
+#: transparent-to-colour colormap this pairs with (built from ``mask_colour``,
+#: the same mechanism vessel-mask overlays already use) is what makes the
+#: background stop occluding whatever is drawn behind or around it.
+BINARY_IMAGE_VOLUME_OPTIONS: dict[str, Any] = {
+    "blending": "translucent",
+    "rendering": "translucent",
+    "interpolation2d": "nearest",
+    "interpolation3d": "nearest",
+}
+
+
+def binary_value_range(data: Any) -> tuple[float, float] | None:
+    """``(low, high)`` if *data* takes on exactly two distinct values.
+
+    A segmented mask ships as any of 0/1, 1/2 or 0/255 -- never assume which.
+    Returns ``None`` for a blank array (nothing to threshold) or one with
+    more than two distinct values (genuine grayscale), so a caller can fall
+    back to treating it as a continuous image.
+    """
+    array = np.asarray(data)
+    if array.size == 0:
+        return None
+    low = float(array.min())
+    high = float(array.max())
+    if low == high:
+        return None
+    if not bool(np.all((array == low) | (array == high))):
+        return None
+    return (low, high)
+
 #: The fixed names this module emits -- one set of layers per run, whatever the
 #: settings say. It is *not* the whole set any more: a perturbation's layers are
 #: named after the perturbation, so they cannot be enumerated ahead of a run.
@@ -1073,9 +1116,17 @@ class ResultLayers:
         self._image_shape_z = int(np.asarray(image).shape[0]) if image is not None else None
         layers: list[LayerSpec] = []
         if image is not None:
+            value_range = binary_value_range(image)
+            if value_range is not None:
+                image_options: dict[str, Any] = {
+                    **BINARY_IMAGE_VOLUME_OPTIONS,
+                    "mask_colour": SEGMENTED_IMAGE_COLOUR,
+                }
+            else:
+                image_options = {"blending": "additive", "colormap": "gray"}
             layers.append(
                 LayerSpec(kind="image", name=IMAGE, data=image, scale=scale,
-                          options={"blending": "additive", "colormap": "gray"})
+                          options=image_options, contrast_limits=value_range)
             )
         if skeleton is not None:
             self._thick_vessel_mask = getattr(output, "thick_vessel_mask", None)

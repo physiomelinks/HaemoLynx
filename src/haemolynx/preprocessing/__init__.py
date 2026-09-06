@@ -30,6 +30,10 @@ from .thick_vessel_braid_guard import (
     detect_braided_thick_vessel_components,
     format_braided_thick_vessel_report,
 )
+from .skeleton_consistency import (
+    diagnose_skeleton_mask_consistency,
+    format_skeleton_mask_consistency_report,
+)
 
 __all__ = [
     "BRAID_FACTOR_LIMIT",
@@ -57,4 +61,6 @@ __all__ = [
     "component_long_axis",
     "detect_braided_thick_vessel_components",
     "format_braided_thick_vessel_report",
+    "diagnose_skeleton_mask_consistency",
+    "format_skeleton_mask_consistency_report",
 ]

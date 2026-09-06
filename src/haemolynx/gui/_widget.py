@@ -1070,6 +1070,23 @@ IMAGE_DEFAULT_RENDER_OPTIONS: dict[str, Any] = {
     "gamma": 1.0,
 }
 
+#: The name results._image_options_for_napari's expanded ``mask_colour``
+#: colormap carries -- shared by every binary-mask-style Image layer
+#: (vessel-mask overlays and, when its data is binary-ish, the segmented
+#: input image itself). Used here purely to tell "was this laid out with
+#: a transparent-background colormap" apart from "is this plain grayscale",
+#: without re-scanning the layer's own (possibly large) data a second time.
+_BINARY_MASK_COLORMAP_NAME = "haemolynx_vessel_mask"
+
+#: Opacity the segmented-image layer gets when it is binary-ish (see
+#: results.binary_value_range) and is the active selection, vs. every other
+#: time -- rendering/interpolation stay whatever results.py laid out
+#: (BINARY_IMAGE_VOLUME_OPTIONS's own "translucent" mode, which must not be
+#: overwritten back to mip here), so opacity is the one knob adjusted to
+#: make the focused layer stand out.
+IMAGE_FOCUS_OPACITY_BINARY = 0.85
+IMAGE_DEFAULT_OPACITY_BINARY = 0.45
+
 
 def _focus_image_layer_rendering(viewer) -> None:
     """Give the pipeline's own input-image layer a clearer 3D render while
@@ -1084,6 +1101,15 @@ def _focus_image_layer_rendering(viewer) -> None:
     nearest-neighbour edges) that this must not overwrite either. Display-only,
     like the scale bar and Z-depth filter: never written into settings or
     stage inputs.
+
+    A binary-ish segmented image (see ``results.binary_value_range``) was
+    already given its own translucent rendering and transparent-background
+    colour at layer-creation time -- napari's MIP-family rendering shows
+    only whichever single sample is brightest along a ray, which for a
+    dense, space-filling vessel volume is foreground almost everywhere,
+    turning it solid regardless of colour. Overwriting that back to
+    ``mip``/``attenuated_mip`` here would undo the fix, so only its opacity
+    is adjusted for focus; everything else is left as results.py laid it out.
     """
     if viewer is None:
         return
@@ -1095,6 +1121,14 @@ def _focus_image_layer_rendering(viewer) -> None:
     if layer is None:
         return
     focused = layer is viewer.layers.selection.active
+    if getattr(getattr(layer, "colormap", None), "name", None) == _BINARY_MASK_COLORMAP_NAME:
+        try:
+            layer.opacity = (
+                IMAGE_FOCUS_OPACITY_BINARY if focused else IMAGE_DEFAULT_OPACITY_BINARY
+            )
+        except Exception:  # noqa: BLE001 - a layer that rejects opacity is left alone
+            logger.debug("could not set opacity on %s", getattr(layer, "name", layer), exc_info=True)
+        return
     options = IMAGE_FOCUS_RENDER_OPTIONS if focused else IMAGE_DEFAULT_RENDER_OPTIONS
     for key, value in options.items():
         try:

@@ -530,11 +530,29 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     main_voxel_size_xyz = tuple(float(v) for v in voxel_size)
     # Image metadata reports (x, y, z); array axes are canonical (z, y, x).
     # Everything downstream that scales array indices uses voxel_size_zyx.
+    voxel_size_zyx = io.voxel_size_zyx_from_xyz(main_voxel_size_xyz)
+
+    # Read-only check on the skeleton just produced (or loaded): how much of
+    # the segmented image it actually runs through -- see
+    # preprocessing.skeleton_consistency. Never changes skeleton or image.
+    mask_consistency = preprocessing.diagnose_skeleton_mask_consistency(
+        skeleton, image, voxel_size_zyx=voxel_size_zyx
+    )
+    consistency_report = preprocessing.format_skeleton_mask_consistency_report(
+        mask_consistency
+    )
+    if mask_consistency["coverage_fraction"] < float(
+        settings["skeleton_mask_consistency_warn_below"]
+    ):
+        logger.warning(consistency_report)
+    else:
+        logger.info(consistency_report)
+
     return SkeletonisedVolume(
         image=image,
         skeleton=skeleton,
         voxel_size_xyz=main_voxel_size_xyz,
-        voxel_size_zyx=io.voxel_size_zyx_from_xyz(main_voxel_size_xyz),
+        voxel_size_zyx=voxel_size_zyx,
         output_dir=output_dir,
         thick_vessel_mask=thick_vessel_mask,
     )
@@ -695,6 +713,13 @@ def build_network(
             min_stub_length=settings["min_stub_length"],
             debug=settings["verbose_logging"],
             step_callback=_graph_build_step_callback,
+            cluster_collapse_method=settings["cluster_collapse_method"],
+            cluster_collapse_max_radial_dispersion=float(
+                settings["cluster_collapse_max_radial_dispersion"]
+            ),
+            cluster_collapse_persistence_search_multiple=float(
+                settings["cluster_collapse_persistence_search_multiple"]
+            ),
         )
 
         # Last thing before the graph is saved: take the voxel staircase out of
@@ -758,6 +783,22 @@ def build_network(
         )
         if cartwheel_hubs:
             logger.warning(graph.format_cartwheel_hub_report(cartwheel_hubs))
+
+    # Read-only check on the graph just built: how much of the skeleton it
+    # still traces -- see graph.diagnostics.diagnose_skeleton_graph_consistency.
+    # Never changes G.
+    graph_consistency = graph.diagnose_skeleton_graph_consistency(
+        G, skeleton, voxel_size_zyx=voxel_size_zyx
+    )
+    graph_consistency_report = graph.format_skeleton_graph_consistency_report(
+        graph_consistency
+    )
+    if graph_consistency["coverage_fraction"] < float(
+        settings["skeleton_graph_consistency_warn_below"]
+    ):
+        logger.warning(graph_consistency_report)
+    else:
+        logger.info(graph_consistency_report)
 
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:

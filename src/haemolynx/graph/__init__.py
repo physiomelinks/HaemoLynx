@@ -27,7 +27,12 @@ from .prune import (
     remove_components_without_connected_io,
     remove_edges_for_self_connected_nodes,
 )
-from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
+from .diagnostics import (
+    diagnose_degree2_nodes,
+    diagnose_skeleton_graph_consistency,
+    format_degree2_diagnostics_report,
+    format_skeleton_graph_consistency_report,
+)
 from .cartwheel_guard import (
     CartwheelHub,
     detect_cartwheel_hubs,
@@ -36,6 +41,8 @@ from .cartwheel_guard import (
     hub_spoke_directions,
 )
 from .collapse import collapse_node_clusters
+from .direction_aware_collapse import collapse_node_clusters_direction_aware
+from .persistence_collapse import collapse_node_clusters_persistence
 from .branch_order import (
     MissingSmallVesselAssignmentWarning,
     assign_branch_orders,
@@ -138,13 +145,17 @@ __all__ = [
     "prune_vascular_stubs",
     "remove_components_without_connected_io",
     "diagnose_degree2_nodes",
+    "diagnose_skeleton_graph_consistency",
     "format_degree2_diagnostics_report",
+    "format_skeleton_graph_consistency_report",
     "CartwheelHub",
     "detect_cartwheel_hubs",
     "format_cartwheel_hub_report",
     "hub_radial_dispersion",
     "hub_spoke_directions",
     "collapse_node_clusters",
+    "collapse_node_clusters_direction_aware",
+    "collapse_node_clusters_persistence",
     "assign_branch_orders",
     "assign_hierarchical_branch_orders",
     "assign_vessel_branch_orders",
