@@ -29,8 +29,10 @@ from .prune import (
 )
 from .diagnostics import (
     diagnose_degree2_nodes,
+    diagnose_graph_mask_consistency,
     diagnose_skeleton_graph_consistency,
     format_degree2_diagnostics_report,
+    format_graph_mask_consistency_report,
     format_skeleton_graph_consistency_report,
 )
 from .cartwheel_guard import (
@@ -145,8 +147,10 @@ __all__ = [
     "prune_vascular_stubs",
     "remove_components_without_connected_io",
     "diagnose_degree2_nodes",
+    "diagnose_graph_mask_consistency",
     "diagnose_skeleton_graph_consistency",
     "format_degree2_diagnostics_report",
+    "format_graph_mask_consistency_report",
     "format_skeleton_graph_consistency_report",
     "CartwheelHub",
     "detect_cartwheel_hubs",

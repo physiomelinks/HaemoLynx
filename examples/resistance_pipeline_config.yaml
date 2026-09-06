@@ -340,6 +340,8 @@ pipeline_stages:
   cluster_collapse_persistence_search_multiple: 3.0
   # Log a warning instead of an info line when fewer than this fraction of the skeleton's own voxels are still traced by the finished graph's edges -- see graph.diagnostics.diagnose_skeleton_graph_consistency for what that measures and why  [range 0.0..1.0; needs do_graph_building]
   skeleton_graph_consistency_warn_below: 0.7
+  # Log a warning instead of an info line when fewer than this fraction of the segmented image's own voxels are within their own local radius of the finished graph's edges -- see graph.diagnostics.diagnose_graph_mask_consistency for what that measures and why  [range 0.0..1.0; needs do_graph_building]
+  graph_mask_consistency_warn_below: 0.7
   # Write a graph pickle and an overlay PNG after each graph-building step. Turn on to debug a bad topology; it dominates the runtime of a large run, so it is off by default  [needs do_graph_building]
   save_step_artifacts: false
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]

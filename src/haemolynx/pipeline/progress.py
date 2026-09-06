@@ -151,9 +151,11 @@ STAGES: tuple[Stage, ...] = (
             "cartwheel_hub_min_degree",
             "cartwheel_hub_max_radial_dispersion",
             "cartwheel_hub_tangent_length_um",
-            # A read-only check on the graph this stage just built -- see
-            # graph.diagnostics.diagnose_skeleton_graph_consistency.
+            # Read-only checks on the graph this stage just built -- see
+            # graph.diagnostics.diagnose_skeleton_graph_consistency and
+            # diagnose_graph_mask_consistency.
             "skeleton_graph_consistency_warn_below",
+            "graph_mask_consistency_warn_below",
         ),
     ),
     Stage(

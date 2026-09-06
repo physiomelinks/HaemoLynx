@@ -800,6 +800,22 @@ def build_network(
     else:
         logger.info(graph_consistency_report)
 
+    # Read-only check on the graph just built: how much of the original
+    # segmented image it still runs through -- see
+    # graph.diagnostics.diagnose_graph_mask_consistency. Never changes G.
+    graph_mask_consistency = graph.diagnose_graph_mask_consistency(
+        G, image, voxel_size_zyx=voxel_size_zyx
+    )
+    graph_mask_consistency_report = graph.format_graph_mask_consistency_report(
+        graph_mask_consistency
+    )
+    if graph_mask_consistency["coverage_fraction"] < float(
+        settings["graph_mask_consistency_warn_below"]
+    ):
+        logger.warning(graph_mask_consistency_report)
+    else:
+        logger.info(graph_mask_consistency_report)
+
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:
         if settings["final_render_mode"] == "3d":

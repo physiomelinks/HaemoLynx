@@ -1789,6 +1789,22 @@ SCHEMA = Schema(
             requires=("do_graph_building",),
         ),
         Setting(
+            name="graph_mask_consistency_warn_below",
+            kind="float",
+            default=0.7,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the segmented image's own voxels are within their own local radius of "
+                "the finished graph's edges -- see "
+                "graph.diagnostics.diagnose_graph_mask_consistency for what that measures "
+                "and why"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("do_graph_building",),
+        ),
+        Setting(
             name="save_step_artifacts",
             kind="bool",
             default=False,
