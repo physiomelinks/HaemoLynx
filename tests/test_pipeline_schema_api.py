@@ -71,6 +71,114 @@ def test_no_path_default_points_inside_the_examples_directory():
     )
 
 
+# --- nested/gated settings must not be silently read while hidden ----------
+
+
+def _non_default_probe_value(setting):
+    """A value that differs from *setting*'s default, generic across kinds.
+
+    Prefers a declared bound (minimum/maximum) over an arbitrary offset, so
+    it stays inside a narrow range (a 0.0-1.0 fraction, say) instead of
+    guessing a step size that happens to land out of bounds. Returns None
+    when no value can be constructed generically (mapping/any/list kinds),
+    which the caller skips rather than guesses at.
+    """
+    default = setting.default
+    kind = setting.kind
+    if kind == "bool":
+        return not bool(default)
+    if kind == "choice":
+        for choice in setting.choices or ():
+            if choice != default:
+                return choice
+        return None
+    if kind in ("int", "float"):
+        for bound in (setting.minimum, setting.maximum):
+            if bound is not None and bound != default:
+                return bound
+        base = default if default is not None else 0
+        return base + (1 if kind == "int" else 1.0)
+    if kind in ("str", "path"):
+        base = "" if default is None else str(default)
+        return base + "_probe"
+    return None
+
+
+def _first_unmet_prerequisite(setting) -> tuple[str, bool]:
+    """One ``(setting_name, value)`` pair that makes *setting*'s first
+    prerequisite unmet -- ``all()`` over requires means unmeeting just one
+    is enough to make the whole setting ineffective."""
+    prerequisite = setting.requires[0]
+    if prerequisite.startswith("!"):
+        return prerequisite[1:], True
+    return prerequisite, False
+
+
+def test_every_requires_prerequisite_names_a_real_setting():
+    """A typo'd or renamed prerequisite is invisible to the ineffectiveness
+    check below: ``is_prerequisite_met`` reads an unknown key as `False` via
+    a plain dict `.get`, the same as a real setting deliberately turned off,
+    so a stale `requires` entry would still "work" there by accident. This
+    is the one check that actually looks at the name itself.
+    """
+    schema = default_schema()
+    names = set(schema.names)
+    bad = [
+        (setting.name, prerequisite)
+        for setting in schema
+        for prerequisite in (setting.requires or ())
+        if (prerequisite[1:] if prerequisite.startswith("!") else prerequisite) not in names
+    ]
+    assert bad == []
+
+
+def test_every_gated_setting_is_ineffective_when_its_prerequisite_is_off():
+    """Nested options must not silently be read once their prerequisite is
+    off -- the GUI hides or greys them out on exactly that condition, and
+    Schema.ineffective_settings is the general mechanism that is supposed to
+    catch every such setting, not just the one hand-picked case in
+    test_parsers_schema.py. This walks the real pipeline schema's 180+ gated
+    settings and proves the claim for each one a probe value can be built
+    for, so a `requires` tuple that stops matching what a stage actually
+    reads (a typo, a renamed setting) shows up here instead of only as a
+    silently-wrong run.
+    """
+    schema = default_schema()
+    defaults = schema.defaults()
+    checked = 0
+    skipped = []
+
+    for setting in schema:
+        if not setting.requires:
+            continue
+        probe = _non_default_probe_value(setting)
+        if probe is None:
+            skipped.append(setting.name)
+            continue
+        unmet_name, unmet_value = _first_unmet_prerequisite(setting)
+        resolved = {
+            **defaults,
+            setting.name: setting.coerce(probe),
+            unmet_name: unmet_value,
+        }
+        messages = schema.ineffective_settings(resolved)
+        assert any(f"Setting '{setting.name}'" in message for message in messages), (
+            f"{setting.name} requires {setting.requires!r}, but setting it to "
+            f"{probe!r} while {unmet_name}={unmet_value!r} did not get flagged "
+            "as ineffective -- something may still read it while its own "
+            "prerequisite is off."
+        )
+        checked += 1
+
+    # A floor, not the exact count: proves the probe-value generator is
+    # actually covering the bulk of the schema's gated settings rather than
+    # skipping nearly all of them without anyone noticing.
+    assert checked > 100, (
+        f"only checked {checked} of the schema's gated settings "
+        f"(skipped, no generic probe value: {skipped})"
+    )
+
+
 # --- the generated config file ---------------------------------------------
 
 
