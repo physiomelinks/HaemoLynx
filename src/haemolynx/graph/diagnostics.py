@@ -3,7 +3,6 @@ from typing import Any, Dict, List, Union
 
 import networkx as nx
 import numpy as np
-from scipy.ndimage import distance_transform_edt
 
 from ._helpers import get_all_edge_data
 
@@ -205,7 +204,7 @@ def diagnose_graph_mask_consistency(
     same reason.
     """
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
-    from haemolynx.preprocessing.thick_vessels import inscribed_radius_map
+    from haemolynx.preprocessing.skeleton_consistency import _explained_by_local_radius
 
     mask_bool = _to_binary_volume_for_skeletonization(mask)
     mask_voxel_count = int(mask_bool.sum())
@@ -217,18 +216,12 @@ def diagnose_graph_mask_consistency(
             "coverage_fraction": 1.0,
         }
 
-    spacing_tuple = tuple(float(v) for v in voxel_size_zyx)
-    spacing = np.asarray(spacing_tuple, dtype=float)
+    spacing = np.asarray([float(v) for v in voxel_size_zyx], dtype=float)
     covered = _rasterize_graph_edges(G, mask_bool.shape, spacing)
 
-    local_radius = inscribed_radius_map(mask_bool, spacing_tuple)
-    discretisation_margin = float(np.linalg.norm(spacing))
-    if covered.any():
-        distance_to_graph = distance_transform_edt(~covered, sampling=spacing_tuple)
-    else:
-        distance_to_graph = np.full(mask_bool.shape, np.inf)
-
-    explained = mask_bool & (distance_to_graph <= local_radius + discretisation_margin)
+    explained = _explained_by_local_radius(
+        covered, mask_bool, voxel_size_zyx=voxel_size_zyx
+    )
     explained_voxel_count = int(explained.sum())
     return {
         "mask_voxel_count": mask_voxel_count,

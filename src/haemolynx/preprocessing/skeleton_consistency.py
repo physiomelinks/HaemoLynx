@@ -17,6 +17,38 @@ from scipy.ndimage import distance_transform_edt
 from .thick_vessels import inscribed_radius_map
 
 
+def _explained_by_local_radius(
+    source_bool: np.ndarray,
+    mask_bool: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+) -> np.ndarray:
+    """Which *mask_bool* voxels count as "explained" by *source_bool*.
+
+    A mask voxel is explained when the nearest True voxel of *source_bool*
+    is no farther from it than that point's own local inscribed radius
+    (:func:`thick_vessels.inscribed_radius_map`), plus one voxel diagonal's
+    worth of grid-discretisation slack -- see
+    :func:`diagnose_skeleton_mask_consistency`'s own docstring for the
+    empirical justification of that margin.
+
+    Shared by :func:`diagnose_skeleton_mask_consistency` (*source_bool* is
+    the skeleton) and ``graph.diagnostics.diagnose_graph_mask_consistency``
+    (*source_bool* is the graph's own rasterised edges) -- both compare
+    against the same kind of segmented-image mask with the identical
+    local-radius-plus-margin geometry, so a fix to that geometry (like the
+    margin itself) only has to be made once.
+    """
+    spacing = tuple(float(v) for v in voxel_size_zyx)
+    local_radius = inscribed_radius_map(mask_bool, spacing)
+    discretisation_margin = float(np.linalg.norm(spacing))
+    if source_bool.any():
+        distance_to_source = distance_transform_edt(~source_bool, sampling=spacing)
+    else:
+        distance_to_source = np.full(mask_bool.shape, np.inf)
+    return mask_bool & (distance_to_source <= local_radius + discretisation_margin)
+
+
 def diagnose_skeleton_mask_consistency(
     skeleton: np.ndarray,
     mask: np.ndarray,
@@ -76,16 +108,10 @@ def diagnose_skeleton_mask_consistency(
             "coverage_fraction": 1.0,
         }
 
-    spacing = tuple(float(v) for v in voxel_size_zyx)
     skeleton_bool = np.asarray(skeleton, dtype=bool)
-    local_radius = inscribed_radius_map(mask_bool, spacing)
-    discretisation_margin = float(np.linalg.norm(spacing))
-    if skeleton_bool.any():
-        distance_to_skeleton = distance_transform_edt(~skeleton_bool, sampling=spacing)
-    else:
-        distance_to_skeleton = np.full(mask_bool.shape, np.inf)
-
-    explained = mask_bool & (distance_to_skeleton <= local_radius + discretisation_margin)
+    explained = _explained_by_local_radius(
+        skeleton_bool, mask_bool, voxel_size_zyx=voxel_size_zyx
+    )
     explained_voxel_count = int(explained.sum())
     return {
         "mask_voxel_count": mask_voxel_count,

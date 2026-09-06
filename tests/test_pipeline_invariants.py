@@ -257,3 +257,69 @@ def test_cluster_collapse_persistence_runs_end_to_end_and_never_flags_more_hubs(
         graph_persistence, min_degree=3, max_radial_dispersion=1.0
     )
     assert len(hubs_persistence) <= len(hubs_distance_only)
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_consistency_warn_below_settings_choose_the_right_log_level(tmp_path, caplog):
+    """Stage-wiring regression test for the three *_consistency_warn_below
+    settings (skeleton_mask_, skeleton_graph_, graph_mask_consistency_warn_
+    below): each is read from the right settings-dict key, compared with
+    the right operator, and drives WARNING vs INFO correctly.
+
+    None of tests/test_skeleton_consistency_diagnostics.py's unit tests can
+    catch a bug here: they exercise the diagnose_*/format_* functions
+    directly, never the settings lookup and log-level choice around them in
+    pipeline/stages.py. That gap is exactly where the last review's bug
+    lived -- a `requires` naming the wrong prerequisite setting -- and unit
+    tests on the functions alone stayed green through it.
+    """
+    schema = default_schema()
+    checks = (
+        ("skeleton_mask_consistency_warn_below", "Skeleton/mask consistency"),
+        ("skeleton_graph_consistency_warn_below", "Skeleton/graph consistency"),
+        ("graph_mask_consistency_warn_below", "Graph/mask consistency"),
+    )
+
+    def _settings(**overrides):
+        values = {setting.name: setting.default for setting in schema}
+        values.update(
+            {
+                "input_path": FIXTURE,
+                "vtk_output_prefix": tmp_path / overrides.pop("run_name"),
+                "plot_dir": tmp_path / "plots",
+                "statistics": False,
+                "show_plots_in_ide": False,
+                "interactive_plots": False,
+            }
+        )
+        values.update(overrides)
+        return resolve_settings(values, schema=schema, config_path=None)
+
+    # 1.0 is above any coverage_fraction this real, noisy fixture achieves
+    # for any of the three checks (all measured well under 1.0 elsewhere in
+    # this test suite) -- guaranteed to warn on all three at once.
+    warn_high = _settings(run_name="warn_high", **{name: 1.0 for name, _ in checks})
+    # 0.0 is at or below any achievable coverage_fraction -- guaranteed to
+    # never warn on any of the three.
+    warn_low = _settings(run_name="warn_low", **{name: 0.0 for name, _ in checks})
+
+    with caplog.at_level(logging.INFO, logger="haemolynx.pipeline.stages"):
+        caplog.clear()
+        run_pipeline_stages(warn_high, schema)
+        high_records = list(caplog.records)
+
+        caplog.clear()
+        run_pipeline_stages(warn_low, schema)
+        low_records = list(caplog.records)
+
+    for name, substring in checks:
+        assert any(
+            r.levelname == "WARNING" and substring in r.getMessage() for r in high_records
+        ), f"{name}=1.0 should have produced a WARNING containing {substring!r}"
+        assert any(
+            r.levelname == "INFO" and substring in r.getMessage() for r in low_records
+        ), f"{name}=0.0 should have produced an INFO line containing {substring!r}"
+        assert not any(
+            r.levelname == "WARNING" and substring in r.getMessage() for r in low_records
+        ), f"{name}=0.0 must never produce a WARNING containing {substring!r}"
