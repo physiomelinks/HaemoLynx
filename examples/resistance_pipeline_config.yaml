@@ -350,6 +350,12 @@ pipeline_stages:
   skeleton_thick_vessel_max_bridge_radius_multiple: 4.0
   # How far, in microns, to look around a candidate bridge point when measuring the fat vessel's local radius, taking the widest reading found rather than the single point sampled. The ridge can pass through a transient narrow waist between two wider lobes, or taper toward the fat/thin threshold at its own tail end; without this, an arm landing exactly there would see an unrepresentatively small radius even though the trunk is genuinely wide again a short distance further along the same ridge. 0 uses the raw single-point reading  [um; range 0.0..; needs use_thick_vessel_skeletonisation]
   skeleton_thick_vessel_bridge_radius_smoothing_um: 10.0
+  # After thickness-gated skeletonisation, warn about any fat vessel component whose tree still braids into a multi-strand medial sheet instead of a single centreline. Diagnostic only: never changes the skeleton  [needs use_thick_vessel_skeletonisation]
+  detect_thick_vessel_braiding: false
+  # Only warn about a fat vessel component whose skeleton has more than this many voxels, on average, in each occupied slice along its own long axis (1 is a single centreline)  [range 0.0..; needs use_thick_vessel_skeletonisation and detect_thick_vessel_braiding]
+  thick_vessel_braid_factor_limit: 2.0
+  # Only warn about a fat vessel component whose long axis has at least this many occupied slices, so a short stub end does not decide the average on its own  [range 1..; needs use_thick_vessel_skeletonisation and detect_thick_vessel_braiding]
+  thick_vessel_braid_min_occupied_slices: 5
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true
   # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]

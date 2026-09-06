@@ -24,6 +24,12 @@ from .thick_vessels import (
     thick_vessel_object_mask,
     lee_sheet_excess,
 )
+from .thick_vessel_braid_guard import (
+    BraidedThickVesselComponent,
+    component_long_axis,
+    detect_braided_thick_vessel_components,
+    format_braided_thick_vessel_report,
+)
 
 __all__ = [
     "BRAID_FACTOR_LIMIT",
@@ -47,4 +53,8 @@ __all__ = [
     "skeletonize_volume",
     "skeletonize_3d",  # deprecated alias
     "thick_vessel_object_mask",
+    "BraidedThickVesselComponent",
+    "component_long_axis",
+    "detect_braided_thick_vessel_components",
+    "format_braided_thick_vessel_report",
 ]

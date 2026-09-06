@@ -436,6 +436,27 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             )
         skeleton, thick_vessel_mask = _skeletonize_loaded_mask(image, settings, voxel_size)
 
+        # Purely diagnostic: off by default, and never changes `skeleton` even
+        # when on -- see preprocessing.thick_vessel_braid_guard for what this
+        # looks for and why.
+        if (
+            thick_vessel_mask is not None
+            and settings["detect_thick_vessel_braiding"]
+        ):
+            braided = preprocessing.detect_braided_thick_vessel_components(
+                thick_vessel_mask,
+                skeleton,
+                voxel_size_zyx=io.voxel_size_zyx_from_xyz(
+                    tuple(float(v) for v in voxel_size)
+                ),
+                braid_factor_limit=float(settings["thick_vessel_braid_factor_limit"]),
+                min_occupied_slices=int(
+                    settings["thick_vessel_braid_min_occupied_slices"]
+                ),
+            )
+            if braided:
+                logger.warning(preprocessing.format_braided_thick_vessel_report(braided))
+
         preprocessing.log_skeleton_connectivity_stats(
             "raw",
             skeleton,

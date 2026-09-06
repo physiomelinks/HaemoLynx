@@ -110,6 +110,11 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_thick_vessel_flake_filter_um",
             "skeleton_thick_vessel_max_bridge_radius_multiple",
             "skeleton_thick_vessel_bridge_radius_smoothing_um",
+            # A read-only check on the tree this stage just built -- see
+            # preprocessing.thick_vessel_braid_guard.
+            "detect_thick_vessel_braiding",
+            "thick_vessel_braid_factor_limit",
+            "thick_vessel_braid_min_occupied_slices",
             "skeleton_closing_radius",
             "skeleton_bridge_gap_size",
             "skeleton_min_branch_length",

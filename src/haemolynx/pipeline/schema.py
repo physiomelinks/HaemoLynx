@@ -1861,6 +1861,49 @@ SCHEMA = Schema(
             requires=("use_thick_vessel_skeletonisation",),
             advanced=True,
         ),
+        # A purely additive, read-only QC check on the tree
+        # skeletonize_thickness_gated just built: off by default, and even on,
+        # it only logs a warning -- it never changes the skeleton. See
+        # preprocessing.thick_vessel_braid_guard for what it looks for and why.
+        Setting(
+            name="detect_thick_vessel_braiding",
+            kind="bool",
+            default=False,
+            help=(
+                "After thickness-gated skeletonisation, warn about any fat "
+                "vessel component whose tree still braids into a multi-strand "
+                "medial sheet instead of a single centreline. Diagnostic only: "
+                "never changes the skeleton"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation",),
+        ),
+        Setting(
+            name="thick_vessel_braid_factor_limit",
+            kind="float",
+            default=2.0,
+            help=(
+                "Only warn about a fat vessel component whose skeleton has more "
+                "than this many voxels, on average, in each occupied slice "
+                "along its own long axis (1 is a single centreline)"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation", "detect_thick_vessel_braiding"),
+        ),
+        Setting(
+            name="thick_vessel_braid_min_occupied_slices",
+            kind="int",
+            default=5,
+            help=(
+                "Only warn about a fat vessel component whose long axis has at "
+                "least this many occupied slices, so a short stub end does not "
+                "decide the average on its own"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("use_thick_vessel_skeletonisation", "detect_thick_vessel_braiding"),
+        ),
         Setting(
             name="smooth_centrelines",
             kind="bool",
