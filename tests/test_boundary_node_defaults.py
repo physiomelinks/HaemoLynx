@@ -229,3 +229,82 @@ def test_the_defaults_find_inlets_and_outlets_on_the_fixture_image(tmp_path):
     assert set(boundaries.inlet_nodes).isdisjoint(boundaries.outlet_nodes)
     assert boundaries.resistance_node_pair is not None
     assert boundaries.resistance_node_pair[0] != boundaries.resistance_node_pair[1]
+
+
+# --- a role's coordinates/volumes are hidden by its own *method* choice ----
+#
+# inlet_node_coordinates, inlet_node_volumes and their counterparts on the
+# other five roles carry no `requires` at all -- Setting.requires can only
+# express "some boolean flag is on/off", not "this choice setting equals
+# 'coordinates'", so the schema has no bookkeeping entry for this relevance
+# rule the way it does for every other gated setting (see
+# tests/test_pipeline_schema_api.py and
+# tests/test_hidden_settings_cannot_affect_a_run.py, which both skip these
+# names outright since they see no `requires` to check). The GUI still hides
+# them (gui/boundary_picking.py only shows the coordinates/volumes editor for
+# whichever method is selected), and the only thing standing between that and
+# a stale coordinate silently steering a run is select_boundary_nodes_by_
+# method's own if/elif dispatch on `method`. This pins that directly, for
+# every role BOUNDARY_ROLE_SETTINGS knows about (the four manual-pick roles,
+# plus the two large-vessel ones' "override" methods -- their third method,
+# "mask_stump", is a different mechanism entirely and is already covered by
+# tests/test_large_vessel_network_mode.py).
+
+
+def _all_role_settings() -> dict[str, dict[str, str]]:
+    from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS
+
+    return BOUNDARY_ROLE_SETTINGS
+
+
+@pytest.mark.parametrize("role", sorted(_all_role_settings()))
+def test_a_roles_coordinates_are_ignored_unless_its_method_is_coordinates(role):
+    names = _all_role_settings()[role]
+    G = _branching_network()
+    base = {
+        names["method"]: "all_degree_1",
+        names["coordinates"]: [],
+        names["volume_boxes"]: [],
+        "inlet_nodes": [],
+    }
+    probe = {
+        **base,
+        # Wildly different from anything in _branching_network's positions,
+        # and -- if it were read -- would snap to whichever terminal happens
+        # to be nearest it, changing the selection.
+        names["coordinates"]: [(1000.0, 1000.0, 1000.0)],
+    }
+
+    default_selection = graph.select_boundary_nodes_for_role(G, IMAGE_SHAPE, base, role)
+    probe_selection = graph.select_boundary_nodes_for_role(G, IMAGE_SHAPE, probe, role)
+
+    assert default_selection == probe_selection, (
+        f"{names['coordinates']!r} changed {role!r}'s selected nodes even "
+        f"though {names['method']!r} is 'all_degree_1', not 'coordinates'."
+    )
+
+
+@pytest.mark.parametrize("role", sorted(_all_role_settings()))
+def test_a_roles_volumes_are_ignored_unless_its_method_is_volume(role):
+    names = _all_role_settings()[role]
+    G = _branching_network()
+    base = {
+        names["method"]: "all_degree_1",
+        names["coordinates"]: [],
+        names["volume_boxes"]: [],
+        "inlet_nodes": [],
+    }
+    probe = {
+        **base,
+        # Any box, if it were read, selects only the terminals inside it --
+        # a strict subset of "every degree-1 node" here.
+        names["volume_boxes"]: [((0.0, 0.0, 0.0), (25.0, 25.0, 25.0))],
+    }
+
+    default_selection = graph.select_boundary_nodes_for_role(G, IMAGE_SHAPE, base, role)
+    probe_selection = graph.select_boundary_nodes_for_role(G, IMAGE_SHAPE, probe, role)
+
+    assert default_selection == probe_selection, (
+        f"{names['volume_boxes']!r} changed {role!r}'s selected nodes even "
+        f"though {names['method']!r} is 'all_degree_1', not 'volume'."
+    )
