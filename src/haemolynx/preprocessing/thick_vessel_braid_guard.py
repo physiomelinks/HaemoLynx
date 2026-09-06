@@ -118,8 +118,8 @@ def detect_braided_thick_vessel_components(
     skipped rather than guessed at either way. Returned worst-first (highest
     braid factor first).
     """
-    if braid_factor_limit <= 0.0:
-        raise ValueError("braid_factor_limit must be > 0")
+    if braid_factor_limit < 0.0:
+        raise ValueError("braid_factor_limit must be >= 0")
     if min_occupied_slices < 1:
         raise ValueError("min_occupied_slices must be >= 1")
 

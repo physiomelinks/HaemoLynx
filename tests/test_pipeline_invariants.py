@@ -13,6 +13,7 @@ is stated here.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -75,9 +76,18 @@ def test_no_stage_after_the_graph_is_built_changes_its_topology(tmp_path):
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_the_cartwheel_hub_guard_never_changes_the_graph(tmp_path):
+def test_the_cartwheel_hub_guard_never_changes_the_graph(tmp_path, caplog):
     """detect_cartwheel_hub_artifacts is diagnostic-only: turning it on must
-    produce byte-identical topology to a run with it off (the default)."""
+    produce byte-identical topology to a run with it off (the default).
+
+    Also pins that the fixture/threshold combination actually gets the guard
+    to flag a hub (via the log line it emits), not just that "on" and "off"
+    happen to agree -- without this, a regression that silently made
+    detect_cartwheel_hubs always return [] (the same class of bug as a
+    schema-legal cartwheel_hub_tangent_length_um of 0.0 used to cause) would
+    still leave "on" and "off" topologies trivially equal, and this test
+    would keep passing with zero signal that the diagnostic path ever ran.
+    """
     schema = default_schema()
 
     def _settings(**overrides):
@@ -116,4 +126,12 @@ def test_the_cartwheel_hub_guard_never_changes_the_graph(tmp_path):
         cartwheel_hub_max_radial_dispersion=1.0,
     )
 
-    assert _built_graph_topology(off) == _built_graph_topology(on)
+    topology_off = _built_graph_topology(off)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.pipeline.stages"):
+        topology_on = _built_graph_topology(on)
+
+    assert topology_off == topology_on
+    assert any(
+        "Cartwheel hub guard" in record.getMessage() and "flagged" in record.getMessage()
+        for record in caplog.records
+    ), "the guard never actually flagged a hub, so this test proves nothing about it running"

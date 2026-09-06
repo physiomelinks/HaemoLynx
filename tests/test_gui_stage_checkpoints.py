@@ -364,6 +364,38 @@ def test_apply_to_results_restores_the_remembered_graph():
     assert fresh.emitted == results.emitted
 
 
+def test_apply_to_results_restores_the_thick_vessel_mask():
+    """A run that used thickness-gated skeletonisation carries its fat
+    catchment (results._thick_vessel_mask) forward across a resume -- it has
+    no per-stage-output equivalent the way the skeleton array itself does, so
+    without this a resumed run silently disabled the thick/thin debug toggle
+    for a run that genuinely used it, even though nothing about the run
+    changed."""
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4)),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+    results.stage_finished("build_network", network(a_graph(), (1.0, 1.0, 1.0)))
+    checkpoints = StageCheckpoints()
+    checkpoints.record("build_network", _group("build_network"), results)
+    fresh = ResultLayers()
+
+    checkpoints.apply_to_results(fresh, checkpoints.get("build_network"))
+
+    assert fresh._thick_vessel_mask is not None
+    np.testing.assert_array_equal(fresh._thick_vessel_mask, thick)
+    assert fresh._skeleton_layer_options() == {"thick_vessel_mask": fresh._thick_vessel_mask}
+
+
 def test_restore_message_mentions_the_resume_graph(tmp_path):
     plan = SimpleNamespace(
         title="4. Boundaries",

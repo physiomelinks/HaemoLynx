@@ -375,7 +375,7 @@ cartwheel_hub_guard:
   cartwheel_hub_min_degree: 6
   # Only warn about a node whose incident edges' outgoing directions cancel out to at most this much (0 = spread evenly in every direction, 1 = all leave the same way)  [range 0.0..1.0; needs detect_cartwheel_hub_artifacts]
   cartwheel_hub_max_radial_dispersion: 0.5
-  # How far along each incident edge's own centreline to measure the direction it leaves the node  [um; range 0.0..; needs detect_cartwheel_hub_artifacts]
+  # How far along each incident edge's own centreline to measure the direction it leaves the node  [um; range 0.1..; needs detect_cartwheel_hub_artifacts]
   cartwheel_hub_tangent_length_um: 10.0
 
 # ------------------------------------------------------------------------

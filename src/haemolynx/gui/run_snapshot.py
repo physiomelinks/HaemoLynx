@@ -229,6 +229,7 @@ def apply_snapshot_to_results(
                 "geometry_shown": last.geometry_shown,
                 "emitted": last.emitted,
                 "show_steps": snapshot.show_steps,
+                "thick_vessel_mask": last.thick_vessel_mask,
             }
         )
         return

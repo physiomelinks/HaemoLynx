@@ -160,14 +160,33 @@ def test_an_empty_mask_flags_nothing():
     assert detect_braided_thick_vessel_components(empty, empty) == []
 
 
-@pytest.mark.parametrize("braid_factor_limit", [0.0, -1.0])
-def test_a_nonpositive_braid_limit_is_rejected(braid_factor_limit):
+def test_a_negative_braid_limit_is_rejected():
     with pytest.raises(ValueError, match="braid_factor_limit"):
         detect_braided_thick_vessel_components(
             np.zeros((3, 3, 3), dtype=bool),
             np.zeros((3, 3, 3), dtype=bool),
-            braid_factor_limit=braid_factor_limit,
+            braid_factor_limit=-1.0,
         )
+
+
+def test_a_braid_limit_of_zero_flags_every_component_instead_of_crashing():
+    """The schema's own bound on this setting is inclusive of 0.0 (a
+    maximally-sensitive "flag everything" reading), so this diagnostic-only
+    function must accept it rather than raise -- see
+    test_pipeline_schema_api.py's boundary-value regression for the crash
+    this used to cause when the schema and this function disagreed. Even a
+    single clean centreline (braid_factor == 1.0, normally well under the
+    default limit) is flagged once the limit itself is 0.0."""
+    mask = _block()
+    skeleton = np.zeros_like(mask)
+    skeleton[1, 1, :] = True
+
+    flagged = detect_braided_thick_vessel_components(
+        mask, skeleton, braid_factor_limit=0.0
+    )
+
+    assert len(flagged) == 1
+    assert flagged[0].braid_factor == pytest.approx(1.0)
 
 
 def test_a_nonpositive_min_occupied_slices_is_rejected():

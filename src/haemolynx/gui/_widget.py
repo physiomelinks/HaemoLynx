@@ -39,7 +39,9 @@ from haemolynx.gui.results import (
     FLOW_DIR_COLUMNS,
     FLOW_DIR_RGB_COLUMN,
     FLOW_HEADING_COLUMN,
+    IMAGE,
     NODES,
+    SKELETON,
     VESSEL_TUBES,
     VESSELS,
     ResultLayers,
@@ -938,6 +940,25 @@ def _apply_volume_z_display(
         layer.data = clip_volume_to_z(cached, dz, z_min, z_max, z_extent=z_extent)
 
 
+def _current_z_depth_window(viewer) -> tuple[float, float, float | None] | None:
+    """The Z-depth filter's current ``(z_min, z_max, z_extent)``, or ``None``.
+
+    ``None`` when nothing has run ``apply_view_z`` yet, or the window covers
+    the full range (nothing for a caller to compose with). Set by
+    ``apply_view_z`` on ``viewer._haemolynx_z_depth_window`` so the thick/thin
+    skeleton toggle -- a separate module-level mechanism with no other link
+    to that closure -- can clip its own redraws to the same window instead of
+    silently discarding it (see ``_apply_thick_thin_skeleton_display``).
+    """
+    window = getattr(viewer, "_haemolynx_z_depth_window", None) if viewer is not None else None
+    if window is None:
+        return None
+    z_min, z_max, z_extent = window
+    if z_window_is_full(z_min, z_max, z_extent):
+        return None
+    return window
+
+
 def _scale_bar_overlay(viewer):
     """Napari 0.9 ``canvas.overlays.scale_bar``, else deprecated ``viewer.scale_bar``."""
     overlays = getattr(getattr(viewer, "canvas", None), "overlays", None)
@@ -1051,27 +1072,38 @@ IMAGE_DEFAULT_RENDER_OPTIONS: dict[str, Any] = {
 
 
 def _focus_image_layer_rendering(viewer) -> None:
-    """Give the active Image layer a clearer 3D render; the rest fall back.
+    """Give the pipeline's own input-image layer a clearer 3D render while
+    it is the active selection, and napari's plain default otherwise.
 
-    Display-only, like the scale bar and Z-depth filter: never written into
-    settings or stage inputs.
+    Scoped to the one layer this feature is for (HaemoLynx's own ``IMAGE``
+    layer, the segmented input drawn for comparison against the derived
+    skeleton/graph) rather than every napari Image-kind layer in the viewer:
+    a user's own reference image dropped into the viewer is not ours to
+    touch, and HaemoLynx's own vessel-mask volumes (also Image-kind) have
+    their own deliberately-chosen rendering (``MASK_VOLUME_OPTIONS``, crisp
+    nearest-neighbour edges) that this must not overwrite either. Display-only,
+    like the scale bar and Z-depth filter: never written into settings or
+    stage inputs.
     """
     if viewer is None:
         return
-    active = viewer.layers.selection.active
-    for layer in viewer.layers:
-        if layer.__class__.__name__.lower() != "image":
-            continue
-        focused = layer is active
-        options = IMAGE_FOCUS_RENDER_OPTIONS if focused else IMAGE_DEFAULT_RENDER_OPTIONS
-        for key, value in options.items():
-            try:
-                setattr(layer, key, value)
-            except Exception:  # noqa: BLE001 - a layer that rejects an option is left alone
-                logger.debug(
-                    "could not set %s on %s", key, getattr(layer, "name", layer),
-                    exc_info=True,
-                )
+    layer = None
+    for candidate in viewer.layers:
+        if _is_ours(candidate) and getattr(candidate, "name", None) == IMAGE:
+            layer = candidate
+            break
+    if layer is None:
+        return
+    focused = layer is viewer.layers.selection.active
+    options = IMAGE_FOCUS_RENDER_OPTIONS if focused else IMAGE_DEFAULT_RENDER_OPTIONS
+    for key, value in options.items():
+        try:
+            setattr(layer, key, value)
+        except Exception:  # noqa: BLE001 - a layer that rejects an option is left alone
+            logger.debug(
+                "could not set %s on %s", key, getattr(layer, "name", layer),
+                exc_info=True,
+            )
 
 
 def _uniform_points_property(value: Any, n: int) -> Any:
@@ -1969,7 +2001,10 @@ def _thick_thin_skeleton_state(layer) -> tuple[np.ndarray | None, np.ndarray | N
     return tag.get("skeleton_bool"), tag.get("thick_vessel_mask")
 
 
-def _apply_thick_thin_skeleton_display(layer, *, show: bool, default_colormap) -> None:
+def _apply_thick_thin_skeleton_display(
+    layer, *, show: bool, default_colormap,
+    z_window: tuple[float, float, float | None] | None = None,
+) -> None:
     """Recolour the skeleton layer to show thick vs. thin voxels, or revert.
 
     Reads the layer's own stashed skeleton/thick-mask fresh every time
@@ -1978,21 +2013,41 @@ def _apply_thick_thin_skeleton_display(layer, *, show: bool, default_colormap) -
     *default_colormap* is napari's own colormap object, captured once when
     the checkbox was first built (before this ever touched it) -- napari 0.9
     Labels layers have no "reset to default" short of handing the original
-    object back.
+    object back. *z_window*, when given, is the Z-depth filter's current
+    ``(z_min, z_max, z_extent)`` (see ``_current_z_depth_window``): both
+    caches this reads are the full, unclipped volume, so without this the
+    Z-depth window and this recolouring would each silently discard
+    whichever one the other applied last.
     """
     skeleton_bool, thick_vessel_mask = _thick_thin_skeleton_state(layer)
-    if skeleton_bool is None:
-        return
-    if show and thick_vessel_mask is not None:
+    if show and skeleton_bool is not None and thick_vessel_mask is not None:
+        if z_window is not None:
+            z_min, z_max, z_extent = z_window
+            dz = _layer_voxel_size_z(layer)
+            skeleton_bool = clip_volume_to_z(
+                skeleton_bool, dz, z_min, z_max, z_extent=z_extent
+            ).astype(bool)
+            thick_vessel_mask = clip_volume_to_z(
+                thick_vessel_mask, dz, z_min, z_max, z_extent=z_extent
+            ).astype(bool)
         layer.data = _thick_thin_skeleton_labels(skeleton_bool, thick_vessel_mask)
         layer.colormap = {
             1: THIN_SKELETON_COLOUR,
             2: THICK_SKELETON_COLOUR,
             None: (0.0, 0.0, 0.0, 0.0),
         }
-    else:
-        layer.data = skeleton_bool.astype(np.uint8)
-        layer.colormap = default_colormap
+        return
+    # Revert the colormap even when there is no skeleton_bool to redraw from
+    # (a rerun dropped the fat catchment) -- otherwise the layer is left
+    # stuck on the two-colour debug scheme with no control left to fix it.
+    layer.colormap = default_colormap
+    if skeleton_bool is not None:
+        data = skeleton_bool.astype(np.uint8)
+        if z_window is not None:
+            z_min, z_max, z_extent = z_window
+            dz = _layer_voxel_size_z(layer)
+            data = clip_volume_to_z(data, dz, z_min, z_max, z_extent=z_extent)
+        layer.data = data
 
 
 def _attach_thick_thin_skeleton_toggle(viewer, layer) -> bool:
@@ -2002,11 +2057,16 @@ def _attach_thick_thin_skeleton_toggle(viewer, layer) -> bool:
     (``use_thick_vessel_skeletonisation`` was on) -- see
     _store_thick_thin_skeleton_metadata. The checkbox itself lives on the
     layer's own native controls, so napari already shows it only while this
-    layer is the active selection.
+    layer is the active selection. Scoped to the skeleton layer by name, not
+    just by its napari Labels kind, so a future non-skeleton Labels layer
+    does not silently pick up this checkbox and get recoloured from whatever
+    unrelated thick_vessel_mask/skeleton_bool metadata happens to be on it.
     """
     from qtpy.QtWidgets import QCheckBox
 
     if layer.__class__.__name__.lower() != "labels":
+        return False
+    if getattr(layer, "name", None) != SKELETON:
         return False
     _skeleton_bool, thick_vessel_mask = _thick_thin_skeleton_state(layer)
     available = thick_vessel_mask is not None
@@ -2021,6 +2081,7 @@ def _attach_thick_thin_skeleton_toggle(viewer, layer) -> bool:
         _apply_thick_thin_skeleton_display(
             layer, show=checkbox.isChecked(),
             default_colormap=checkbox._haemolynx_default_colormap,
+            z_window=_current_z_depth_window(viewer),
         )
         return True
     layout = controls.layout()
@@ -2038,11 +2099,40 @@ def _attach_thick_thin_skeleton_toggle(viewer, layer) -> bool:
     checkbox.toggled.connect(
         lambda checked, l=layer, cb=checkbox: _apply_thick_thin_skeleton_display(
             l, show=checked, default_colormap=cb._haemolynx_default_colormap,
+            z_window=_current_z_depth_window(viewer),
         )
     )
     layout.addRow(checkbox)
     controls._haemolynx_thick_thin = checkbox
     return True
+
+
+def _resync_thick_thin_skeleton_after_z_change(viewer) -> None:
+    """Re-apply the thick/thin recolouring on top of a just-changed Z-depth
+    window, for whichever skeleton layer has the toggle checked.
+
+    ``_apply_volume_z_display`` (called just before this, from
+    ``apply_view_z``) overwrites the skeleton layer's data from its own
+    plain, unclipped cache -- silently discarding the two-colour recolouring
+    if the toggle is on. This puts it back, clipped to the same window, so
+    the two features compose instead of clobbering each other.
+    """
+    if viewer is None:
+        return
+    z_window = _current_z_depth_window(viewer)
+    for layer in viewer.layers:
+        if layer.__class__.__name__.lower() != "labels":
+            continue
+        if getattr(layer, "name", None) != SKELETON:
+            continue
+        controls = _layer_controls(viewer, layer)
+        checkbox = getattr(controls, "_haemolynx_thick_thin", None) if controls is not None else None
+        if checkbox is None or not checkbox.isChecked():
+            continue
+        _apply_thick_thin_skeleton_display(
+            layer, show=True, default_colormap=checkbox._haemolynx_default_colormap,
+            z_window=z_window,
+        )
 
 
 #: Axis name -> short slider label.
@@ -5427,7 +5517,9 @@ def settings_widget(napari_viewer=None):
             return
         _view_z_apply["busy"] = True
         try:
+            viewer._haemolynx_z_depth_window = (float(vol_lo), float(vol_hi), float(extent))
             _apply_volume_z_display(viewer, vol_lo, vol_hi, z_extent=extent)
+            _resync_thick_thin_skeleton_after_z_change(viewer)
             _apply_z_filter(viewer, vol_lo, vol_hi, z_extent=extent)
             for layer in viewer.layers:
                 if _is_branch_hover_layer(layer):

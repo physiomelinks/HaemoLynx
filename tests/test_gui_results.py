@@ -1344,7 +1344,9 @@ class _FakeLayerList(list):
         self.selection = SimpleNamespace(active=active)
 
 
-def _fake_image_layer(name: str):
+def _fake_image_layer(name: str, *, ours: bool = True):
+    from haemolynx.gui._widget import OURS
+
     class Image:
         pass
 
@@ -1354,39 +1356,76 @@ def _fake_image_layer(name: str):
     layer.attenuation = 0.05
     layer.interpolation3d = "linear"
     layer.gamma = 1.0
+    layer.metadata = {OURS: {"kind": "image"}} if ours else {}
     return layer
 
 
-def test_focus_image_layer_rendering_enhances_only_the_active_image_layer():
+def test_focus_image_layer_rendering_enhances_the_haemolynx_image_layer_when_active():
     from haemolynx.gui._widget import (
-        IMAGE_DEFAULT_RENDER_OPTIONS,
         IMAGE_FOCUS_RENDER_OPTIONS,
         _focus_image_layer_rendering,
     )
 
-    active = _fake_image_layer("a")
-    other = _fake_image_layer("b")
-    viewer = SimpleNamespace(layers=_FakeLayerList([active, other], active=active))
+    active = _fake_image_layer(IMAGE)
+    viewer = SimpleNamespace(layers=_FakeLayerList([active], active=active))
 
     _focus_image_layer_rendering(viewer)
 
     for key, value in IMAGE_FOCUS_RENDER_OPTIONS.items():
         assert getattr(active, key) == value
-    for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
-        assert getattr(other, key) == value
 
 
-def test_focus_image_layer_rendering_with_nothing_selected_defaults_all():
+def test_focus_image_layer_rendering_defaults_the_haemolynx_image_layer_when_not_active():
+    """Also covers the 'nothing selected' case, since `active=None` never
+    equals the image layer either."""
     from haemolynx.gui._widget import IMAGE_DEFAULT_RENDER_OPTIONS, _focus_image_layer_rendering
 
-    layer = _fake_image_layer("a")
+    layer = _fake_image_layer(IMAGE)
     layer.rendering = "attenuated_mip"  # left over from a previous selection
-    viewer = SimpleNamespace(layers=_FakeLayerList([layer], active=None))
+    other = _fake_image_layer("something_else", ours=False)
+    viewer = SimpleNamespace(layers=_FakeLayerList([layer, other], active=other))
 
     _focus_image_layer_rendering(viewer)
 
     for key, value in IMAGE_DEFAULT_RENDER_OPTIONS.items():
         assert getattr(layer, key) == value
+
+
+def test_focus_image_layer_rendering_never_touches_a_foreign_image_layer():
+    """A user's own reference image (or any Image layer HaemoLynx did not
+    create) must be left exactly as the user set it, active or not -- this
+    used to be forced to IMAGE_DEFAULT_RENDER_OPTIONS whenever it wasn't the
+    active selection, silently clobbering the user's own settings."""
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+
+    foreign_active = _fake_image_layer("users_own_reference_image", ours=False)
+    foreign_active.rendering = "iso"
+    foreign_active.gamma = 2.5
+    viewer = SimpleNamespace(layers=_FakeLayerList([foreign_active], active=foreign_active))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert foreign_active.rendering == "iso"
+    assert foreign_active.gamma == 2.5
+
+
+def test_focus_image_layer_rendering_never_touches_a_haemolynx_mask_volume():
+    """Vessel-mask volumes are also Image-kind and HaemoLynx's own, but this
+    feature is for the input image alone -- MASK_VOLUME_OPTIONS's own choice
+    of nearest-neighbour interpolation (crisp mask edges) must survive
+    regardless of which layer is selected."""
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+    from haemolynx.gui.results import MASK_LAYERS
+
+    mask = _fake_image_layer(MASK_LAYERS["large_arteriole_mask"])
+    mask.interpolation3d = "nearest"
+    other = _fake_image_layer(IMAGE)
+    viewer = SimpleNamespace(layers=_FakeLayerList([mask, other], active=other))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert mask.interpolation3d == "nearest"
+    assert mask.rendering == "mip"  # untouched, still its original fake default
 
 
 def test_focus_image_layer_rendering_ignores_non_image_layers():
@@ -1404,10 +1443,24 @@ def test_focus_image_layer_rendering_ignores_non_image_layers():
     assert not hasattr(points, "rendering")
 
 
+def test_focus_image_layer_rendering_with_no_haemolynx_image_layer_is_a_no_op():
+    from haemolynx.gui._widget import _focus_image_layer_rendering
+
+    foreign = _fake_image_layer("not_ours", ours=False)
+    viewer = SimpleNamespace(layers=_FakeLayerList([foreign], active=foreign))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert foreign.rendering == "mip"  # its original fake default, untouched
+
+
 def test_focus_image_layer_rendering_with_no_viewer_is_a_no_op():
     from haemolynx.gui._widget import _focus_image_layer_rendering
 
-    _focus_image_layer_rendering(None)  # must not raise
+    # There is no viewer to inspect afterwards, so the concrete check is on
+    # the function's own contract: the early return yields None rather than
+    # raising or falling through into the (viewer-less) loop below it.
+    assert _focus_image_layer_rendering(None) is None
 
 
 # --- skeleton layer options carry the fat catchment through every stage ----

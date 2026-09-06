@@ -814,6 +814,12 @@ class ResultLayers:
         self._image_shape_z: int | None = None
         self._geometry_shown = False
         self._emitted: list[str] = []
+        #: The fat catchment `skeletonise` produced, if thickness-gated
+        #: skeletonisation was on -- read by `_skeleton_layer_options` on
+        #: every later re-emission of the skeleton layer. Restored by
+        #: `load_state` so a resumed/reloaded run does not silently disable
+        #: the thick/thin debug toggle for a run that genuinely used it.
+        self._thick_vessel_mask: np.ndarray | None = None
 
     @property
     def emitted(self) -> tuple[str, ...]:
@@ -835,6 +841,7 @@ class ResultLayers:
         self._image_shape_z = None
         self._geometry_shown = False
         self._emitted = []
+        self._thick_vessel_mask = None
 
     def export_state(self) -> dict[str, Any]:
         """Pickle-safe copy of the memory a loaded run needs to look finished."""
@@ -843,6 +850,7 @@ class ResultLayers:
             canonical = graph
         else:
             canonical = copy_graph(self._canonical_graph)
+        thick_vessel_mask = self._thick_vessel_mask
         return {
             "graph": graph,
             "canonical_graph": canonical,
@@ -852,6 +860,9 @@ class ResultLayers:
             "emitted": tuple(self._emitted),
             "settings": dict(self.settings),
             "show_steps": bool(self.show_steps),
+            "thick_vessel_mask": (
+                None if thick_vessel_mask is None else np.array(thick_vessel_mask, copy=True)
+            ),
         }
 
     def load_state(self, state: Mapping[str, Any] | None) -> None:
@@ -876,6 +887,10 @@ class ResultLayers:
             self.settings = dict(state["settings"])
         if "show_steps" in state:
             self.show_steps = bool(state["show_steps"])
+        thick_vessel_mask = state.get("thick_vessel_mask")
+        self._thick_vessel_mask = (
+            None if thick_vessel_mask is None else np.array(thick_vessel_mask)
+        )
 
     def image_z_extent_um(self) -> float | None:
         """Physical Z span of the image stack once ``skeletonise`` has run."""

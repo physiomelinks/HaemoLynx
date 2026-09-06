@@ -1999,7 +1999,11 @@ SCHEMA = Schema(
             help="How far along each incident edge's own centreline to measure the direction it leaves the node",
             section=_CARTWHEEL_GUARD,
             unit="um",
-            minimum=0.0,
+            # A sample distance of exactly 0 always lands back on the node
+            # itself, giving a zero-length vector -- hub_spoke_directions
+            # would then find no usable direction on any edge, silently
+            # turning the guard into a no-op. Strictly positive.
+            minimum=0.1,
             requires=("detect_cartwheel_hub_artifacts",),
         ),
         # ------------------------------------------------------------------

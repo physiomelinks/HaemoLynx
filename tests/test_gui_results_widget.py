@@ -800,6 +800,24 @@ def test_thick_thin_skeleton_toggle_is_offered_when_thickness_gating_was_used(
     np.testing.assert_array_equal(np.asarray(layer.data), skeleton.astype(np.uint8))
 
 
+def test_thick_thin_skeleton_toggle_is_not_offered_on_a_non_skeleton_labels_layer(
+    make_napari_viewer,
+):
+    """Scoped by layer name, not just napari Labels kind -- today SKELETON is
+    the only Labels-kind layer this plugin ever draws, but any future one
+    must not silently inherit this checkbox and get recoloured from whatever
+    unrelated thick_vessel_mask/skeleton_bool metadata happens to be on it."""
+    from haemolynx.gui._widget import _attach_thick_thin_skeleton_toggle, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    layer = viewer.add_labels(
+        np.zeros((3, 3, 3), dtype=np.uint8), name="some_other_labels_layer"
+    )
+
+    assert _attach_thick_thin_skeleton_toggle(viewer, layer) is False
+
+
 def test_thick_thin_skeleton_toggle_is_disabled_without_a_thick_mask(make_napari_viewer):
     from haemolynx.gui._widget import _layer_controls, settings_widget
 
@@ -841,9 +859,68 @@ def test_thick_thin_skeleton_toggle_turns_off_when_a_rerun_drops_the_mask(
 
     assert checkbox.isEnabled() is False
     assert checkbox.isChecked() is False
-    np.testing.assert_array_equal(
-        np.asarray(viewer.layers[SKELETON].data), plain_skeleton.astype(np.uint8)
+    layer = viewer.layers[SKELETON]
+    np.testing.assert_array_equal(np.asarray(layer.data), plain_skeleton.astype(np.uint8))
+    # Regression: the colormap must revert too, not just the data -- a rerun
+    # that drops the mask used to leave the layer stuck on the two-colour
+    # debug scheme (every voxel rendering as THIN_SKELETON_COLOUR) with no
+    # control left to fix it, since the early return in
+    # _apply_thick_thin_skeleton_display ran before the colormap reset.
+    assert layer.colormap is checkbox._haemolynx_default_colormap
+
+
+def test_thick_thin_skeleton_toggle_composes_with_an_active_z_depth_window(
+    make_napari_viewer,
+):
+    """Checking the debug toggle while a Z-depth clip is active must keep
+    the clip, and moving the Z-depth slider while the toggle is checked must
+    keep the thick/thin recolouring -- each used to silently discard the
+    other's effect, since both are unconditional full-volume rewrites of the
+    same layer's data with no awareness of one another."""
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    thick[3, 3, 3] = True
+    skeleton = np.zeros((4, 4, 4), dtype=bool)
+    skeleton[0, 0, 0] = True
+    skeleton[1, 1, 1] = True
+    skeleton[3, 3, 3] = True
+    results = ResultLayers()
+    group = results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=skeleton,
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
     )
+    _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    layer = viewer.layers[SKELETON]
+    controls = _layer_controls(viewer, layer)
+    checkbox = controls._haemolynx_thick_thin
+
+    # Clip to z in [0, 2): slice 3 falls outside the window.
+    panel._haemolynx_z_depth_slider.setValue((0.0, 2.0))
+    checkbox.setChecked(True)
+    data = np.asarray(layer.data)
+    assert data[0, 0, 0] == 2  # thick voxel, inside the window
+    assert data[1, 1, 1] == 1  # thin voxel, inside the window
+    assert data[3, 3, 3] == 0, "outside the Z-depth window: must stay clipped"
+
+    # Now move the slider while the toggle stays checked.
+    panel._haemolynx_z_depth_slider.setValue((0.0, 4.0))
+    data = np.asarray(layer.data)
+    assert data[0, 0, 0] == 2
+    assert data[1, 1, 1] == 1
+    assert data[3, 3, 3] == 2, "back in range, and still thick/thin recoloured"
 
 
 def test_z_depth_slider_is_not_mounted_in_layer_controls(make_napari_viewer):

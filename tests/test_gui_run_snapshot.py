@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -164,6 +165,54 @@ def test_result_layers_state_round_trips():
     )
     assert fresh.emitted == results.emitted
     assert fresh._voxel_size_zyx == results._voxel_size_zyx
+
+
+def test_result_layers_state_round_trips_the_thick_vessel_mask():
+    """A resumed/reloaded run must not silently disable the thick/thin
+    debug toggle for a run that genuinely used thickness-gated
+    skeletonisation -- results._thick_vessel_mask has no per-stage-output
+    equivalent the way the skeleton array itself does, so it must travel
+    through export_state/load_state explicitly."""
+    thick = np.zeros((4, 4, 4), dtype=bool)
+    thick[0, 0, 0] = True
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4)),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+        ),
+    )
+
+    fresh = ResultLayers()
+    fresh.load_state(results.export_state())
+
+    assert fresh._thick_vessel_mask is not None
+    np.testing.assert_array_equal(fresh._thick_vessel_mask, thick)
+
+
+def test_apply_snapshot_to_results_restores_the_thick_vessel_mask_from_checkpoints():
+    """The older, results_state-less fallback path (built straight from the
+    last StageCheckpoint) must carry the mask forward too."""
+    from haemolynx.gui.run_snapshot import RunSnapshot
+    from haemolynx.gui.stage_checkpoints import StageCheckpoint
+
+    thick = np.zeros((3, 3, 3), dtype=bool)
+    thick[1, 1, 1] = True
+    checkpoint = StageCheckpoint(
+        stage="skeletonise", title="skeletonise", group=_group("skeletonise"),
+        thick_vessel_mask=thick,
+    )
+    snapshot = RunSnapshot(settings={}, results_state=None, checkpoints=(checkpoint,))
+    fresh = ResultLayers()
+
+    apply_snapshot_to_results(fresh, snapshot)
+
+    assert fresh._thick_vessel_mask is not None
+    np.testing.assert_array_equal(fresh._thick_vessel_mask, thick)
 
 
 def test_the_module_imports_no_gui():

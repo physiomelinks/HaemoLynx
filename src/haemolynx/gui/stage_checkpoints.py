@@ -182,6 +182,12 @@ class StageCheckpoint:
     venule_boundary_nodes: tuple[Any, ...] = ()
     large_arteriole_mask: Any | None = None
     large_venule_mask: Any | None = None
+    #: The fat catchment `skeletonise` produced, if thickness-gated
+    #: skeletonisation was on -- carried forward so a stage resumed from a
+    #: later tab does not silently disable the thick/thin debug toggle for a
+    #: run that genuinely used it (results._thick_vessel_mask has no
+    #: per-stage-output equivalent the way the skeleton array itself does).
+    thick_vessel_mask: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -579,6 +585,7 @@ class StageCheckpoints:
             venule_boundary_nodes=roles.get("venule_boundary", ()),
             large_arteriole_mask=large_arteriole_mask,
             large_venule_mask=large_venule_mask,
+            thick_vessel_mask=getattr(results, "_thick_vessel_mask", None),
         )
         self._by_stage[stage] = checkpoint
         return checkpoint
@@ -589,6 +596,7 @@ class StageCheckpoints:
         results._voxel_size_zyx = checkpoint.voxel_size_zyx
         results._geometry_shown = checkpoint.geometry_shown
         results._emitted = list(checkpoint.emitted)
+        results._thick_vessel_mask = checkpoint.thick_vessel_mask
 
     def plan_restore(
         self,

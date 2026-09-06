@@ -179,6 +179,29 @@ def test_every_gated_setting_is_ineffective_when_its_prerequisite_is_off():
     )
 
 
+# --- schema bounds must agree with what the setting's own consumer accepts -
+
+
+def test_cartwheel_hub_tangent_length_um_excludes_the_degenerate_zero_value():
+    """A sample distance of exactly 0 always lands back on the node itself
+    (graph.cartwheel_guard._point_along_polyline), giving a zero-length
+    vector for every edge and silently turning detect_cartwheel_hubs into a
+    no-op that never flags anything. The schema's own bound must exclude
+    this value, not rely on the guard function to reject it."""
+    setting = default_schema()["cartwheel_hub_tangent_length_um"]
+    with pytest.raises(ConfigError, match="cartwheel_hub_tangent_length_um"):
+        setting.coerce(0.0)
+
+
+def test_thick_vessel_braid_factor_limit_zero_is_schema_legal_and_accepted():
+    """Unlike the cartwheel setting above, 0.0 here has a sensible reading
+    (flag every component) rather than a silent no-op, so the schema keeps
+    accepting it -- see test_thick_vessel_braid_guard.py for the guard
+    function's matching acceptance of this boundary."""
+    setting = default_schema()["thick_vessel_braid_factor_limit"]
+    assert setting.coerce(0.0) == 0.0
+
+
 # --- the generated config file ---------------------------------------------
 
 
