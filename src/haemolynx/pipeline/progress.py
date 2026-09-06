@@ -134,6 +134,12 @@ STAGES: tuple[Stage, ...] = (
             "centreline_smoothing_method",
             "centreline_smoothing_iterations",
             "centreline_max_deviation",
+            # A read-only check on the graph this stage just built -- see
+            # graph.cartwheel_guard.
+            "detect_cartwheel_hub_artifacts",
+            "cartwheel_hub_min_degree",
+            "cartwheel_hub_max_radial_dispersion",
+            "cartwheel_hub_tangent_length_um",
         ),
     ),
     Stage(

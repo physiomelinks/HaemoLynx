@@ -190,9 +190,9 @@ boundary_assignment:
   arteriole_boundary_selection_method: coordinates
   # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
   venule_boundary_selection_method: coordinates
-  # Choose how the large-vessel network's inlet node is picked. mask_stump reads it from the large arteriole mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, mask_stump; needs assign_large_vessel_branch_orders]
+  # Choose how the large-vessel network's inlet node(s) are picked. mask_stump reads them from the large arteriole mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, mask_stump; needs assign_large_vessel_branch_orders]
   large_vessel_inlet_node_selection_method: mask_stump
-  # Choose how the large-vessel network's outlet node is picked. mask_stump reads it from the large venule mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, mask_stump; needs assign_large_vessel_branch_orders]
+  # Choose how the large-vessel network's outlet node(s) are picked. mask_stump reads them from the large venule mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, mask_stump; needs assign_large_vessel_branch_orders]
   large_vessel_outlet_node_selection_method: mask_stump
   # Split inlets from outlets along this array axis when the edge_percent method is used (0=z, 1=y, 2=x)  [range 0..2]
   boundary_axis: 1
@@ -210,9 +210,9 @@ boundary_assignment:
   arteriole_boundary_node_coordinates: []
   # Pick venule boundary nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   venule_boundary_node_coordinates: []
-  # Pick the large-vessel inlet node nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
+  # Pick the large-vessel inlet node(s) nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   large_vessel_inlet_node_coordinates: []
-  # Pick the large-vessel outlet node nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
+  # Pick the large-vessel outlet node(s) nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   large_vessel_outlet_node_coordinates: []
   # Select inlet nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   inlet_node_volumes: []
@@ -222,9 +222,9 @@ boundary_assignment:
   arteriole_boundary_node_volumes: []
   # Select venule boundary nodes falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   venule_boundary_node_volumes: []
-  # Select the large-vessel inlet node falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
+  # Select the large-vessel inlet node(s) falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   large_vessel_inlet_node_volumes: []
-  # Select the large-vessel outlet node falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
+  # Select the large-vessel outlet node(s) falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   large_vessel_outlet_node_volumes: []
   # Hold the inlet node IDs chosen during the run; leave empty to let the pipeline fill it
   inlet_nodes: []
@@ -234,9 +234,9 @@ boundary_assignment:
   arteriole_boundary_nodes: []
   # Hold the venule boundary node IDs chosen during the run; leave empty to let the pipeline fill it
   venule_boundary_nodes: []
-  # Hold the large-vessel inlet node ID chosen during the run; leave empty to let the pipeline fill it
+  # Hold the large-vessel inlet node ID(s) chosen during the run; leave empty to let the pipeline fill it
   large_vessel_inlet_nodes: []
-  # Hold the large-vessel outlet node ID chosen during the run; leave empty to let the pipeline fill it
+  # Hold the large-vessel outlet node ID(s) chosen during the run; leave empty to let the pipeline fill it
   large_vessel_outlet_nodes: []
   # Hold the Large_Art/Art hand-off node IDs chosen during the run; leave empty to let the pipeline fill it
   large_arteriole_boundary_nodes: []
@@ -338,6 +338,19 @@ pipeline_stages:
   centreline_smoothing_iterations: 10
   # How far a smoothed centreline may sit from the skeleton before it is blended back towards the original  [um; range 0.0..; needs smooth_centrelines]
   centreline_max_deviation: 1.0
+
+# ------------------------------------------------------------------------
+# Cartwheel hub guard
+# ------------------------------------------------------------------------
+cartwheel_hub_guard:
+  # After building the graph, warn about any node whose incident edges radiate in too many directions to be a real vessel junction -- a known side effect of collapsing nearby nodes together. Diagnostic only: never changes the graph
+  detect_cartwheel_hub_artifacts: false
+  # Only warn about a node with at least this many incident edges  [range 2..; needs detect_cartwheel_hub_artifacts]
+  cartwheel_hub_min_degree: 6
+  # Only warn about a node whose incident edges' outgoing directions cancel out to at most this much (0 = spread evenly in every direction, 1 = all leave the same way)  [range 0.0..1.0; needs detect_cartwheel_hub_artifacts]
+  cartwheel_hub_max_radial_dispersion: 0.5
+  # How far along each incident edge's own centreline to measure the direction it leaves the node  [um; range 0.0..; needs detect_cartwheel_hub_artifacts]
+  cartwheel_hub_tangent_length_um: 10.0
 
 # ------------------------------------------------------------------------
 # Statistics and measurements

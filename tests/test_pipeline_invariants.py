@@ -71,3 +71,49 @@ def test_no_stage_after_the_graph_is_built_changes_its_topology(tmp_path):
             "stage that edits topology needs that design revisited."
         )
         assert edges == built_edges, f"{stage} changed the graph's edges, likewise"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_the_cartwheel_hub_guard_never_changes_the_graph(tmp_path):
+    """detect_cartwheel_hub_artifacts is diagnostic-only: turning it on must
+    produce byte-identical topology to a run with it off (the default)."""
+    schema = default_schema()
+
+    def _settings(**overrides):
+        values = {setting.name: setting.default for setting in schema}
+        values.update(
+            {
+                "input_path": FIXTURE,
+                "vtk_output_prefix": tmp_path / overrides.pop("run_name"),
+                "plot_dir": tmp_path / "plots",
+                "statistics": False,
+                "show_plots_in_ide": False,
+                "interactive_plots": False,
+            }
+        )
+        values.update(overrides)
+        return resolve_settings(values, schema=schema, config_path=None)
+
+    def _built_graph_topology(settings) -> tuple[frozenset, frozenset]:
+        captured = {}
+
+        def remember(stage: str, output) -> None:
+            if stage == "build_network":
+                captured["graph"] = output.graph
+
+        run_pipeline_stages(settings, schema, on_stage_output=remember)
+        graph = captured["graph"]
+        return frozenset(graph.nodes), frozenset(graph.edges(keys=True))
+
+    off = _settings(run_name="off", detect_cartwheel_hub_artifacts=False)
+    on = _settings(
+        run_name="on",
+        detect_cartwheel_hub_artifacts=True,
+        # Low enough to actually flag something on this fixture, proving the
+        # check ran rather than trivially finding nothing to warn about.
+        cartwheel_hub_min_degree=3,
+        cartwheel_hub_max_radial_dispersion=1.0,
+    )
+
+    assert _built_graph_topology(off) == _built_graph_topology(on)

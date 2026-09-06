@@ -62,6 +62,7 @@ _PIPELINE_STAGES = "Pipeline stages"
 # Named "Statistics and measurements" rather than "Statistics" so the YAML
 # section heading does not collide with the setting also called `statistics`.
 _STATISTICS = "Statistics and measurements"
+_CARTWHEEL_GUARD = "Cartwheel hub guard"
 _DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
 _FWHM = "FWHM diameter measurement"
 # Not "Perturbations": the YAML key of a section may not collide with a
@@ -1197,8 +1198,8 @@ SCHEMA = Schema(
             kind="choice",
             default="mask_stump",
             help=(
-                "Choose how the large-vessel network's inlet node is picked. "
-                "mask_stump reads it from the large arteriole mask's own "
+                "Choose how the large-vessel network's inlet node(s) are picked. "
+                "mask_stump reads them from the large arteriole mask's own "
                 "geometry (where the mask is truncated by the image's field "
                 "of view); the other methods override that with a manual pick"
             ),
@@ -1211,8 +1212,8 @@ SCHEMA = Schema(
             kind="choice",
             default="mask_stump",
             help=(
-                "Choose how the large-vessel network's outlet node is picked. "
-                "mask_stump reads it from the large venule mask's own "
+                "Choose how the large-vessel network's outlet node(s) are picked. "
+                "mask_stump reads them from the large venule mask's own "
                 "geometry (where the mask is truncated by the image's field "
                 "of view); the other methods override that with a manual pick"
             ),
@@ -1301,7 +1302,7 @@ SCHEMA = Schema(
             name="large_vessel_inlet_node_coordinates",
             kind="any",
             default=[],
-            help="Pick the large-vessel inlet node nearest to these (z, y, x) coordinates when the coordinates method is used",
+            help="Pick the large-vessel inlet node(s) nearest to these (z, y, x) coordinates when the coordinates method is used",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
@@ -1309,7 +1310,7 @@ SCHEMA = Schema(
             name="large_vessel_outlet_node_coordinates",
             kind="any",
             default=[],
-            help="Pick the large-vessel outlet node nearest to these (z, y, x) coordinates when the coordinates method is used",
+            help="Pick the large-vessel outlet node(s) nearest to these (z, y, x) coordinates when the coordinates method is used",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
@@ -1351,7 +1352,7 @@ SCHEMA = Schema(
             name="large_vessel_inlet_node_volumes",
             kind="any",
             default=[],
-            help="Select the large-vessel inlet node falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
+            help="Select the large-vessel inlet node(s) falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
@@ -1359,7 +1360,7 @@ SCHEMA = Schema(
             name="large_vessel_outlet_node_volumes",
             kind="any",
             default=[],
-            help="Select the large-vessel outlet node falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
+            help="Select the large-vessel outlet node(s) falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
         ),
@@ -1407,7 +1408,7 @@ SCHEMA = Schema(
             name="large_vessel_inlet_nodes",
             kind="any",
             default=[],
-            help="Hold the large-vessel inlet node ID chosen during the run; leave empty to let the pipeline fill it",
+            help="Hold the large-vessel inlet node ID(s) chosen during the run; leave empty to let the pipeline fill it",
             section=_BOUNDARY_ASSIGNMENT,
             advanced=True,
         ),
@@ -1415,7 +1416,7 @@ SCHEMA = Schema(
             name="large_vessel_outlet_nodes",
             kind="any",
             default=[],
-            help="Hold the large-vessel outlet node ID chosen during the run; leave empty to let the pipeline fill it",
+            help="Hold the large-vessel outlet node ID(s) chosen during the run; leave empty to let the pipeline fill it",
             section=_BOUNDARY_ASSIGNMENT,
             advanced=True,
         ),
@@ -1905,6 +1906,58 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=("smooth_centrelines",),
+        ),
+        # ------------------------------------------------------------------
+        # Cartwheel hub guard
+        # ------------------------------------------------------------------
+        # A purely additive, read-only QC check: off by default, and even on,
+        # it only logs a warning after build_network -- it never changes the
+        # graph or any other stage's behaviour. See graph.cartwheel_guard for
+        # what it looks for and why.
+        Setting(
+            name="detect_cartwheel_hub_artifacts",
+            kind="bool",
+            default=False,
+            help=(
+                "After building the graph, warn about any node whose incident "
+                "edges radiate in too many directions to be a real vessel "
+                "junction -- a known side effect of collapsing nearby nodes "
+                "together. Diagnostic only: never changes the graph"
+            ),
+            section=_CARTWHEEL_GUARD,
+        ),
+        Setting(
+            name="cartwheel_hub_min_degree",
+            kind="int",
+            default=6,
+            help="Only warn about a node with at least this many incident edges",
+            section=_CARTWHEEL_GUARD,
+            minimum=2,
+            requires=("detect_cartwheel_hub_artifacts",),
+        ),
+        Setting(
+            name="cartwheel_hub_max_radial_dispersion",
+            kind="float",
+            default=0.5,
+            help=(
+                "Only warn about a node whose incident edges' outgoing "
+                "directions cancel out to at most this much (0 = spread evenly "
+                "in every direction, 1 = all leave the same way)"
+            ),
+            section=_CARTWHEEL_GUARD,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("detect_cartwheel_hub_artifacts",),
+        ),
+        Setting(
+            name="cartwheel_hub_tangent_length_um",
+            kind="float",
+            default=10.0,
+            help="How far along each incident edge's own centreline to measure the direction it leaves the node",
+            section=_CARTWHEEL_GUARD,
+            unit="um",
+            minimum=0.0,
+            requires=("detect_cartwheel_hub_artifacts",),
         ),
         # ------------------------------------------------------------------
         # Statistics

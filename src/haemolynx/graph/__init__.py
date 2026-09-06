@@ -28,6 +28,13 @@ from .prune import (
     remove_edges_for_self_connected_nodes,
 )
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
+from .cartwheel_guard import (
+    CartwheelHub,
+    detect_cartwheel_hubs,
+    format_cartwheel_hub_report,
+    hub_radial_dispersion,
+    hub_spoke_directions,
+)
 from .collapse import collapse_node_clusters
 from .branch_order import (
     MissingSmallVesselAssignmentWarning,
@@ -132,6 +139,11 @@ __all__ = [
     "remove_components_without_connected_io",
     "diagnose_degree2_nodes",
     "format_degree2_diagnostics_report",
+    "CartwheelHub",
+    "detect_cartwheel_hubs",
+    "format_cartwheel_hub_report",
+    "hub_radial_dispersion",
+    "hub_spoke_directions",
     "collapse_node_clusters",
     "assign_branch_orders",
     "assign_hierarchical_branch_orders",
