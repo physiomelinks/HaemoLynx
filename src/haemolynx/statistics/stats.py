@@ -1121,7 +1121,8 @@ def compute_emergence_angles_by_branch_order(
     """Angle each daughter leaves its parent, grouped by the daughter's order.
 
     At a junction the parent is the unique incident edge with the lowest
-    branch-order rank (Art* before BO* before Ven*, then the numeric index).
+    branch-order rank (Large_Art* before Art* before BO* before Ven* before
+    Large_Ven*, then the numeric index).
     Each other labelled incident edge is a daughter. The emergence angle is
     the deflection of the daughter's outgoing centreline tangent from the
     parent's incoming tangent: 0° continues the parent, 90° leaves at a
@@ -1520,7 +1521,7 @@ def export_branch_order_statistics_to_csv(
                 "",
                 "",
                 "",
-                "Art* first, then BO*, then Ven*.",
+                "Large_Art* first, then Art*, then BO*, then Ven*, then Large_Ven*.",
             ]
         )
         for branch_tag in sorted(branch_order_stats.keys(), key=_branch_order_sort_key):

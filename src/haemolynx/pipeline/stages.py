@@ -725,7 +725,19 @@ def build_network(
         G.graph["large_venule_mask_voxel_size_xyz"] = tuple(
             float(v) for v in large_venule_mask_voxel_size
         )
-    
+
+    # Purely diagnostic: off by default, and never changes G even when on --
+    # see graph.cartwheel_guard for what this looks for and why.
+    if settings["detect_cartwheel_hub_artifacts"]:
+        cartwheel_hubs = graph.detect_cartwheel_hubs(
+            G,
+            min_degree=int(settings["cartwheel_hub_min_degree"]),
+            max_radial_dispersion=float(settings["cartwheel_hub_max_radial_dispersion"]),
+            tangent_length_um=float(settings["cartwheel_hub_tangent_length_um"]),
+        )
+        if cartwheel_hubs:
+            logger.warning(graph.format_cartwheel_hub_report(cartwheel_hubs))
+
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:
         if settings["final_render_mode"] == "3d":
@@ -769,6 +781,7 @@ def _large_vessel_role_terminal_nodes(
     role: str,
     mask: np.ndarray,
     node_role: str,
+    exclude_nodes: list | None = None,
 ) -> list:
     """One large-vessel-network side's terminal node(s): mask stump, or override.
 
@@ -778,7 +791,9 @@ def _large_vessel_role_terminal_nodes(
     other four boundary roles use, via :func:`graph.select_boundary_nodes_for_role`.
     "mask_stump" is intercepted here rather than inside
     ``graph.boundaries.select_boundary_nodes_by_method``, which stays
-    mask-agnostic.
+    mask-agnostic. *exclude_nodes* keeps the other side's node(s) out of
+    reach, mirroring how the plain inlet/outlet pair excludes inlet_nodes
+    when it picks the outlet a few lines below in ``assign_boundaries``.
     """
     method = str(settings[f"{role}_node_selection_method"]).strip().lower()
     if method == "mask_stump":
@@ -789,8 +804,11 @@ def _large_vessel_role_terminal_nodes(
             voxel_size_zyx=voxel_size_zyx,
             image_shape=image_shape,
             coordinates_setting_name=f"{role} mask stump",
+            exclude_nodes=exclude_nodes,
         )
-    return graph.select_boundary_nodes_for_role(G, image_shape, settings, role)
+    return graph.select_boundary_nodes_for_role(
+        G, image_shape, settings, role, exclude_nodes=exclude_nodes
+    )
 
 
 def assign_boundaries(settings: dict, network: VesselNetwork):
@@ -999,6 +1017,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     "vessel material must stay in the network to be tagged "
                     "Large_Art/Large_Ven, not be cut away."
                 )
+            # A manual override (e.g. degree_1_from_inlet) reads settings
+            # like inlet_nodes through the normal graph.select_boundary_nodes_for_role
+            # path -- reset them first so an override cannot see inlet_nodes
+            # left over from an earlier run of this same settings dict (the
+            # napari GUI reuses one across runs). They are recomputed from
+            # scratch below regardless of which branch this run takes.
+            settings["inlet_nodes"][:] = []
+            settings["outlet_nodes"][:] = []
             auto_inlet_nodes = _large_vessel_role_terminal_nodes(
                 G,
                 image.shape,
@@ -1008,6 +1034,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 mask=assignment_large_arteriole_mask,
                 node_role="inlet",
             )
+            # Written now, not only after this whole block, so a
+            # large_vessel_outlet override using degree_1_from_inlet measures
+            # distance from the inlet this run just chose, not an empty list.
+            settings["inlet_nodes"][:] = list(auto_inlet_nodes)
             auto_outlet_nodes = _large_vessel_role_terminal_nodes(
                 G,
                 image.shape,
@@ -1016,6 +1046,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 role="large_vessel_outlet",
                 mask=assignment_large_venule_mask,
                 node_role="outlet",
+                exclude_nodes=auto_inlet_nodes,
             )
             logger.info(
                 "Large-vessel network mode: arteriole/venule mask interior "

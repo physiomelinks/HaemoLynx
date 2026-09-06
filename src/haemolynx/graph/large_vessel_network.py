@@ -15,7 +15,7 @@ doesn't was not.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 import networkx as nx
@@ -82,6 +82,7 @@ def select_large_vessel_mask_stump_terminal_nodes_for_role(
     voxel_size_zyx: tuple[float, float, float],
     image_shape: tuple[int, ...],
     coordinates_setting_name: str,
+    exclude_nodes: Iterable[Any] | None = None,
 ) -> list[Any]:
     """One side's terminal nodes at *mask*'s own image-edge stump.
 
@@ -93,7 +94,10 @@ def select_large_vessel_mask_stump_terminal_nodes_for_role(
     from the mask surfaces the same :class:`~haemolynx.graph.boundaries.
     BoundaryCoordinateWarning` a bad manual coordinate would. A mask with no
     face-touching component (the vessel ends inside the tissue, not at the
-    field of view's edge) yields no node.
+    field of view's edge) yields no node. *exclude_nodes* keeps the other
+    side's already-chosen node(s) out of reach, so an arteriole and venule
+    mask that both happen to touch the same corner of the volume cannot snap
+    to the same terminal for both the inlet and the outlet.
     """
     points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=voxel_size_zyx)
     return select_boundary_nodes_by_method(
@@ -103,6 +107,7 @@ def select_large_vessel_mask_stump_terminal_nodes_for_role(
         node_role=node_role,
         coordinates=points,
         coordinates_setting_name=coordinates_setting_name,
+        exclude_nodes=exclude_nodes,
     )
 
 

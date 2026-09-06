@@ -370,8 +370,8 @@ def select_boundary_nodes_for_role(
 ) -> list[Any]:
     """Select one role's boundary nodes from the boundary-assignment settings.
 
-    The four roles differ only in which settings they read, so naming the role
-    is enough; :data:`BOUNDARY_ROLE_SETTINGS` records which those are.
+    The roles differ only in which settings they read, so naming the role is
+    enough; :data:`BOUNDARY_ROLE_SETTINGS` records which those are.
 
     A method whose settings hold nothing for it to work with raises here,
     naming the setting to change: it would otherwise return an empty list and

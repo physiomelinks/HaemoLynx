@@ -101,8 +101,8 @@ AUTOMATED_OVERRIDES_MANUAL_NOTE = (
     "(manual) inlet/outlet selection methods below."
 )
 
-#: The four boundary roles, in the order a run assigns them. Taken from the
-#: selector's own table rather than restated, so a fifth role would reach the
+#: The boundary roles, in the order a run assigns them. Taken from the
+#: selector's own table rather than restated, so a new role would reach the
 #: panel without anything here changing.
 ROLES: tuple[str, ...] = tuple(BOUNDARY_ROLE_SETTINGS)
 
@@ -216,9 +216,10 @@ def settings_for_method(role: str, method: str) -> tuple[str, ...]:
 def visible_settings(values: Mapping[str, Any]) -> set[str]:
     """Which boundary settings the chosen methods will actually read.
 
-    The Boundaries tab declares twenty-one rows and a run reads a handful of
-    them: four methods, plus whatever those four methods ask for. Showing the
-    rest invites filling in a coordinate list that nothing will look at.
+    The Boundaries tab declares many rows and a run reads a handful of them:
+    one method per role, plus whatever each role's chosen method asks for.
+    Showing the rest invites filling in a coordinate list that nothing will
+    look at.
     """
     wanted: set[str] = set()
     for role in ROLES:

@@ -271,3 +271,52 @@ def test_large_vessel_outlet_still_falls_back_to_mask_stump_when_only_the_inlet_
 
     assert settings["outlet_nodes"] == [9], "untouched: still the venule mask's own stump"
     assert settings["large_vessel_outlet_nodes"] == [9]
+
+
+def test_large_vessel_outlet_override_reads_this_runs_inlet_not_a_stale_one(tmp_path):
+    """degree_1_from_inlet measures distance from inlet_nodes -- a bug fixed
+    after code review let it read whatever inlet_nodes held over from a
+    PREVIOUS run of this same settings dict (the napari GUI reuses one
+    across runs), instead of the large-vessel inlet this run just computed.
+
+    settings["inlet_nodes"] is seeded here with a stale value (node 10) that
+    is wrong for this run, whose real inlet is node 0 (the arteriole mask's
+    own stump). If the stale value leaked through, node 0 -- this run's own
+    inlet -- would wrongly qualify as "far enough from the (stale) inlet"
+    and be offered as an outlet candidate too.
+    """
+    G, arteriole, venule = _chain_with_large_vessel_masks_and_extra_terminal()
+    network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path,
+        large_vessel_outlet_node_selection_method="degree_1_from_inlet",
+        inlet_nodes=[10],
+    )
+
+    assign_boundaries(settings, network)
+
+    assert settings["inlet_nodes"] == [0], "this run's real inlet: the arteriole mask's stump"
+    # sort_nodes orders by string form ("10" < "9"), hence [10, 9] not [9, 10].
+    assert settings["outlet_nodes"] == [10, 9], "far from node 0, not from the stale node 10"
+    assert 0 not in settings["outlet_nodes"], "the inlet must never also be offered as an outlet"
+
+
+def test_large_vessel_inlet_and_outlet_overrides_cannot_collide_on_the_same_node(tmp_path):
+    """Two independent overrides that happen to point at the same terminal
+    must not both claim it -- exactly like the plain inlet/outlet pair, where
+    select_boundary_nodes_for_role's exclude_nodes already prevents this
+    (pipeline/stages.py's outlet_nodes = ...exclude_nodes=inlet_nodes). Once
+    excluded, the outlet side has nothing left, which correctly raises rather
+    than silently duplicating the inlet as the outlet too."""
+    G, arteriole, venule = _chain_with_large_vessel_masks_and_extra_terminal()
+    network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path,
+        large_vessel_inlet_node_selection_method="coordinates",
+        large_vessel_inlet_node_coordinates=[[5.0, 8.0, 5.0]],
+        large_vessel_outlet_node_selection_method="coordinates",
+        large_vessel_outlet_node_coordinates=[[5.0, 8.0, 5.0]],
+    )
+
+    with pytest.raises(ValueError, match="venule mask"):
+        assign_boundaries(settings, network)
