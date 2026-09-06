@@ -78,12 +78,6 @@ REVERT_STAGE_TOOLTIP = (
 )
 
 #: View dock — display-only; never written into pipeline settings.
-Z_PROJECT_ENABLE_TOOLTIP = (
-    "Turn on a max-intensity Z project for image-like layers; off shows the full stack"
-)
-Z_PROJECT_TOOLTIP = (
-    "Physical Z window in microns for the max-intensity project; enabled only when Z-project is on"
-)
 Z_DEPTH_TOOLTIP = (
     "Clip every displayed layer to this physical Z window; full range is the identity and does not crop the pipeline"
 )

@@ -47,12 +47,10 @@ from haemolynx.gui.results import (
     _flow_heading_contrast_limits,
     clip_volume_to_z,
     colour_cycle_for,
-    compose_z_display_window,
     filter_points_by_z,
     filter_vectors_by_z,
     is_z_depth_filtered_layer,
-    is_z_project_volume_layer,
-    project_volume_max_z,
+    is_z_depth_windowed_volume_layer,
     z_window_is_full,
 )
 from haemolynx.gui.progress import ProgressDisplay
@@ -123,7 +121,7 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
 #: What napari calls the log window's dock.
 LOG_DOCK_NAME = "HaemoLynx run log"
 
-#: View chrome (Z-project, Z-depth, scale bar, snapshot). Floated over the
+#: View chrome (Z-depth, scale bar, snapshot). Floated over the
 #: canvas so a left strip cannot steal height from the bottom run log.
 VIEW_DOCK_NAME = "HaemoLynx view"
 
@@ -134,10 +132,10 @@ SNAPSHOT_NO_OUTPUT_FOLDER = (
 )
 SNAPSHOT_NO_VIEWER = "No viewer to snapshot."
 
-#: Metadata key for the unprojected volume on a layer that is not tagged
+#: Metadata key for the unclipped volume on a layer that is not tagged
 #: as ours (a user-dropped image). Ours layers keep the same array on the
-#: ``OURS`` tag as ``z_project_full``.
-Z_PROJECT_CACHE_KEY = "haemolynx_z_project_full"
+#: ``OURS`` tag as ``z_window_full``.
+Z_WINDOW_CACHE_KEY = "haemolynx_z_window_full"
 
 #: Napari layer unit for a physically meaningful scale bar.
 SCALE_BAR_UNIT = "micrometer"
@@ -762,23 +760,23 @@ def _apply_z_filter(
     _sync_vessel_tubes(viewer)
 
 
-def _z_project_cache(layer) -> np.ndarray | None:
-    """The unprojected volume stored for a view-only Z project, if any."""
+def _z_window_cache(layer) -> np.ndarray | None:
+    """The unclipped volume stored for the view-only Z depth filter, if any."""
     metadata = getattr(layer, "metadata", None) or {}
     tag = metadata.get(OURS) or {}
-    cached = tag.get("z_project_full")
+    cached = tag.get("z_window_full")
     if cached is not None:
         return np.asarray(cached)
-    extra = metadata.get(Z_PROJECT_CACHE_KEY)
+    extra = metadata.get(Z_WINDOW_CACHE_KEY)
     if extra is not None:
         return np.asarray(extra)
     return None
 
 
-def _store_z_project_cache(layer, data: Any = None) -> None:
-    """Remember the full volume so a Z project can restore it."""
+def _store_z_window_cache(layer, data: Any = None) -> None:
+    """Remember the full volume so the Z depth filter can restore it."""
     kind = layer.__class__.__name__.lower()
-    if not is_z_project_volume_layer(kind):
+    if not is_z_depth_windowed_volume_layer(kind):
         return
     if data is None:
         data = layer.data
@@ -786,16 +784,16 @@ def _store_z_project_cache(layer, data: Any = None) -> None:
     metadata = dict(getattr(layer, "metadata", {}) or {})
     if _is_ours(layer):
         tag = dict(metadata.get(OURS) or {})
-        tag["z_project_full"] = stored
+        tag["z_window_full"] = stored
         metadata[OURS] = tag
     else:
-        metadata[Z_PROJECT_CACHE_KEY] = stored
+        metadata[Z_WINDOW_CACHE_KEY] = stored
     layer.metadata = metadata
 
 
 def data_for_pipeline(layer) -> Any:
-    """The full volume a run should read, ignoring view-only Z project/Z-depth."""
-    cached = _z_project_cache(layer)
+    """The full volume a run should read, ignoring the view-only Z-depth filter."""
+    cached = _z_window_cache(layer)
     return cached if cached is not None else getattr(layer, "data", None)
 
 
@@ -827,9 +825,9 @@ def write_viewer_snapshot(
 ) -> Path:
     """Write one 2D TIFF of the current napari canvas into *output_dir*.
 
-    This is a screenshot of what the user sees — visible layers, Z-project,
-    colours, scale bar — not a multi-page dump of layer arrays and not the
-    hidden ``z_project_full`` cache. Cosmetic only; never pipeline input.
+    This is a screenshot of what the user sees — visible layers, the Z-depth
+    filter, colours, scale bar — not a multi-page dump of layer arrays and
+    not the hidden ``z_window_full`` cache. Cosmetic only; never pipeline input.
 
     Filename: ``haemolynx_snapshot_YYYYMMDD_HHMMSS.tif``, with ``_2``,
     ``_3``, … when that timestamp is already taken.
@@ -865,8 +863,8 @@ def _viewer_z_extent_um(viewer) -> float | None:
     max_extent = 0.0
     for layer in viewer.layers:
         kind = layer.__class__.__name__.lower()
-        if is_z_project_volume_layer(kind):
-            full = _z_project_cache(layer)
+        if is_z_depth_windowed_volume_layer(kind):
+            full = _z_window_cache(layer)
             data = full if full is not None else getattr(layer, "data", None)
             if data is None:
                 continue
@@ -891,51 +889,29 @@ def _apply_volume_z_display(
     z_min: float,
     z_max: float,
     *,
-    project: bool,
     z_extent: float | None = None,
 ) -> None:
-    """Clip image/labels to a Z window; MIP that window when *project* is True.
+    """Clip image/labels layers to a physical Z window.
 
-    Reads the unprojected ``z_project_full`` cache. Full-range + project off
-    (or a full-range MIP) restores the cached stack. Does not crop pipeline
-    inputs.
+    Reads the unclipped ``z_window_full`` cache. Full-range restores the
+    cached stack. Does not crop pipeline inputs.
     """
     identity = z_window_is_full(z_min, z_max, z_extent)
     for layer in viewer.layers:
         kind = layer.__class__.__name__.lower()
-        if not is_z_project_volume_layer(kind):
+        if not is_z_depth_windowed_volume_layer(kind):
             continue
-        cached = _z_project_cache(layer)
+        cached = _z_window_cache(layer)
         if cached is None:
-            _store_z_project_cache(layer)
-            cached = _z_project_cache(layer)
+            _store_z_window_cache(layer)
+            cached = _z_window_cache(layer)
         if cached is None:
             continue
         if identity:
             layer.data = np.array(cached, copy=True)
             continue
         dz = _layer_voxel_size_z(layer)
-        if project:
-            layer.data = project_volume_max_z(
-                cached, dz, z_min, z_max, z_extent=z_extent
-            )
-        else:
-            layer.data = clip_volume_to_z(
-                cached, dz, z_min, z_max, z_extent=z_extent
-            )
-
-
-def _apply_z_project(
-    viewer,
-    z_min: float,
-    z_max: float,
-    *,
-    z_extent: float | None = None,
-) -> None:
-    """MIP image/labels layers to a physical Z window. Does not crop pipeline inputs."""
-    _apply_volume_z_display(
-        viewer, z_min, z_max, project=True, z_extent=z_extent
-    )
+        layer.data = clip_volume_to_z(cached, dz, z_min, z_max, z_extent=z_extent)
 
 
 def _scale_bar_overlay(viewer):
@@ -1247,7 +1223,7 @@ def _z_extent_and_step(results: ResultLayers | None, viewer=None) -> tuple[float
         if viewer is not None:
             for layer in viewer.layers:
                 kind = layer.__class__.__name__.lower()
-                if is_z_project_volume_layer(kind):
+                if is_z_depth_windowed_volume_layer(kind):
                     step = _layer_voxel_size_z(layer)
                     break
     if step is None or step <= 0.0:
@@ -1255,14 +1231,8 @@ def _z_extent_and_step(results: ResultLayers | None, viewer=None) -> tuple[float
     return extent, step
 
 
-def _sync_z_range_slider(
-    slider,
-    results: ResultLayers | None,
-    viewer=None,
-    *,
-    enabled: bool = True,
-) -> None:
-    """Set a left-panel Z range from the stack; full range until the user moves it."""
+def _sync_z_depth_slider(slider, results: ResultLayers | None, viewer=None) -> None:
+    """Set the Z-depth range from the image/skeleton; stay visible on the left."""
     extent, step = _z_extent_and_step(results, viewer)
     if extent is None or extent <= 0.0:
         slider.setEnabled(False)
@@ -1284,19 +1254,7 @@ def _sync_z_range_slider(
         slider._haemolynx_extent_ready = True
     finally:
         slider.blockSignals(False)
-    slider.setEnabled(bool(enabled))
-
-
-def _sync_z_depth_slider(slider, results: ResultLayers | None, viewer=None) -> None:
-    """Set the Z-depth range from the image/skeleton; stay visible on the left."""
-    _sync_z_range_slider(slider, results, viewer, enabled=True)
-
-
-def _sync_z_project_slider(
-    slider, results: ResultLayers | None, viewer=None, *, enabled: bool = True
-) -> None:
-    """Set the Z-project range from the stack; *enabled* follows the checkbox."""
-    _sync_z_range_slider(slider, results, viewer, enabled=enabled)
+    slider.setEnabled(True)
 
 
 def _park_layer_control_host(host, parking) -> None:
@@ -1415,8 +1373,8 @@ def _maybe_store_z_filter_cache(layer, spec) -> None:
             spec.features,
             segment_owner=getattr(spec, "segment_owner", None),
         )
-    if is_z_project_volume_layer(spec.kind):
-        _store_z_project_cache(layer, spec.data)
+    if is_z_depth_windowed_volume_layer(spec.kind):
+        _store_z_window_cache(layer, spec.data)
 
 
 def _drop_legacy_branch_hover_layer(viewer, group) -> None:
@@ -5134,8 +5092,6 @@ def settings_widget(napari_viewer=None):
         SNAPSHOT_TOOLTIP,
         VESSEL_DRAW_TOOLTIP,
         Z_DEPTH_TOOLTIP,
-        Z_PROJECT_ENABLE_TOOLTIP,
-        Z_PROJECT_TOOLTIP,
     )
 
     load_button.tooltip = LOAD_CONFIG_TOOLTIP
@@ -5163,24 +5119,6 @@ def settings_widget(napari_viewer=None):
         QLabel, QPushButton, QRadioButton, QWidget,
     )
     from superqt import QDoubleSlider
-
-    z_project_box = QCheckBox("Z-project")
-    z_project_box.setObjectName("haemolynx_z_project")
-    z_project_box.setChecked(False)
-    z_project_box.setToolTip(Z_PROJECT_ENABLE_TOOLTIP)
-
-    z_project_label = QLabel("Z-project (µm)")
-    z_project_label.setToolTip(Z_PROJECT_TOOLTIP)
-    z_project_slider = _double_range_pair("haemolynx_z_project_slider")
-    z_project_slider.setToolTip(Z_PROJECT_TOOLTIP)
-    z_project_row = QWidget()
-    z_project_row.setObjectName("haemolynx_z_project_row")
-    z_project_form = QFormLayout(z_project_row)
-    z_project_form.setContentsMargins(0, 0, 0, 0)
-    z_project_form.addRow(z_project_label, z_project_slider)
-    z_project_slider._haemolynx_row = z_project_row
-    z_project_slider._haemolynx_label = z_project_label
-    z_project_slider.setEnabled(False)
 
     z_depth_label = QLabel("Z-depth filter (µm)")
     z_depth_slider = _double_range_pair("haemolynx_z_depth_slider")
@@ -5272,14 +5210,11 @@ def settings_widget(napari_viewer=None):
         )
 
     def apply_view_z(*, force: bool = False) -> None:
-        """Re-apply the left-panel Z-depth clip and optional Z-project MIP.
+        """Re-apply the left-panel Z-depth clip to every displayed layer.
 
-        Composition: restrict every displayed layer to the Z-depth window
-        first, then if Z-project is on, MIP (images/labels) / clip (graph)
-        the remaining slab using the intersection with the Z-project
-        window. Off + full-range Z-depth is the identity. Neither writes
-        into settings or stage inputs; ``data_for_pipeline`` still reads
-        the unprojected ``z_project_full`` cache.
+        Full-range is the identity. Does not write into settings or stage
+        inputs; ``data_for_pipeline`` still reads the unclipped
+        ``z_window_full`` cache.
 
         Slider drags emit ``valueChanged`` on every tick; the expensive
         volume/graph rebuild runs on release (or immediately for
@@ -5294,29 +5229,15 @@ def settings_widget(napari_viewer=None):
         if z_depth_slider.isEnabled() or getattr(
             z_depth_slider, "_haemolynx_extent_ready", False
         ):
-            d_lo, d_hi = z_depth_slider.value()
+            vol_lo, vol_hi = z_depth_slider.value()
         else:
-            d_lo, d_hi = 0.0, extent
-        project_on = bool(z_project_box.isChecked())
-        if project_on:
-            p_lo, p_hi = z_project_slider.value()
-        else:
-            p_lo, p_hi = 0.0, extent
-        vol_lo, vol_hi, project = compose_z_display_window(
-            d_lo,
-            d_hi,
-            project=project_on,
-            project_min=p_lo,
-            project_max=p_hi,
-        )
-        key = (float(vol_lo), float(vol_hi), bool(project))
+            vol_lo, vol_hi = 0.0, extent
+        key = (float(vol_lo), float(vol_hi))
         if not force and key == _view_z_apply["key"]:
             return
         _view_z_apply["busy"] = True
         try:
-            _apply_volume_z_display(
-                viewer, vol_lo, vol_hi, project=project, z_extent=extent
-            )
+            _apply_volume_z_display(viewer, vol_lo, vol_hi, z_extent=extent)
             _apply_z_filter(viewer, vol_lo, vol_hi, z_extent=extent)
             for layer in viewer.layers:
                 if _is_branch_hover_layer(layer):
@@ -5331,12 +5252,6 @@ def settings_widget(napari_viewer=None):
 
     def _sync_view_z_sliders() -> None:
         _sync_z_depth_slider(z_depth_slider, view.results, viewer)
-        _sync_z_project_slider(
-            z_project_slider,
-            view.results,
-            viewer,
-            enabled=bool(z_project_box.isChecked()),
-        )
 
     def _after_layers_applied() -> None:
         """Refresh Z sliders and re-apply the current view-only filters."""
@@ -5356,16 +5271,8 @@ def settings_widget(napari_viewer=None):
         if _z_slider_should_apply(z_depth_slider):
             apply_view_z()
 
-    def on_z_project_changed(*_args) -> None:
-        if _z_slider_should_apply(z_project_slider):
-            apply_view_z()
-
     def on_z_slider_released() -> None:
         apply_view_z()
-
-    def on_z_project_toggled(_checked: bool) -> None:
-        _sync_view_z_sliders()
-        apply_view_z(force=True)
 
     def on_scale_bar_toggled(checked: bool) -> None:
         if viewer is None:
@@ -5395,9 +5302,6 @@ def settings_widget(napari_viewer=None):
 
     z_depth_slider.valueChanged.connect(on_z_depth_changed)
     z_depth_slider.sliderReleased.connect(on_z_slider_released)
-    z_project_slider.valueChanged.connect(on_z_project_changed)
-    z_project_slider.sliderReleased.connect(on_z_slider_released)
-    z_project_box.toggled.connect(on_z_project_toggled)
     scale_bar_box.toggled.connect(on_scale_bar_toggled)
     tubes_radio.toggled.connect(on_vessel_draw_changed)
     lines_radio.toggled.connect(on_vessel_draw_changed)
@@ -5662,9 +5566,7 @@ def settings_widget(napari_viewer=None):
             removed = _clear_our_layers(viewer)
             reparent_arrow_length_slider()
             z_depth_slider._haemolynx_extent_ready = False
-            z_project_slider._haemolynx_extent_ready = False
             z_depth_slider.setEnabled(False)
-            z_project_slider.setEnabled(False)
             arrow_length_slider.setEnabled(False)
             arrow_length_slider.setVisible(False)
             apply_view_z(force=True)
@@ -5837,9 +5739,7 @@ def settings_widget(napari_viewer=None):
             _clear_our_layers(viewer)
             reparent_arrow_length_slider()
             z_depth_slider._haemolynx_extent_ready = False
-            z_project_slider._haemolynx_extent_ready = False
             z_depth_slider.setEnabled(False)
-            z_project_slider.setEnabled(False)
             arrow_length_slider.setEnabled(False)
             arrow_length_slider.setVisible(False)
             apply_view_z(force=True)
@@ -5977,8 +5877,6 @@ def settings_widget(napari_viewer=None):
     display_group = QGroupBox("Display")
     display_group.setObjectName("haemolynx_display_group")
     display_form = QFormLayout(display_group)
-    display_form.addRow(z_project_box)
-    display_form.addRow(z_project_row)
     z_depth_row = QWidget()
     z_depth_row.setObjectName("haemolynx_z_depth_row")
     z_depth_form = QFormLayout(z_depth_row)
@@ -6072,15 +5970,10 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_vessel_draw_row = vessel_draw_row
     panel._haemolynx_view_panel = view_panel
     panel._haemolynx_view_dock = view_dock
-    panel._haemolynx_z_project = z_project_box
-    panel._haemolynx_z_project_slider = z_project_slider
-    panel._haemolynx_z_project_row = z_project_row
-    panel._haemolynx_z_project_label = z_project_label
     panel._haemolynx_scale_bar = scale_bar_box
     panel._haemolynx_display_group = display_group
     panel._haemolynx_snapshot_group = snapshot_group
     panel._haemolynx_snapshot_button = snapshot_button
-    panel._haemolynx_apply_z_project = _apply_z_project
     panel._haemolynx_apply_view_z = apply_view_z
     panel._haemolynx_data_for_pipeline = data_for_pipeline
     panel._haemolynx_arrow_length_slider = arrow_length_slider

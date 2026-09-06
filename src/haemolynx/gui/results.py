@@ -159,7 +159,7 @@ def is_z_depth_filtered_layer(name: str, kind: str) -> bool:
     """Whether the view-only Z depth filter clips graph geometry on *layer*.
 
     Image and labels volumes are clipped too, but they use the
-    ``z_project_full`` cache and :func:`clip_volume_to_z` rather than this
+    ``z_window_full`` cache and :func:`clip_volume_to_z` rather than this
     graph-geometry predicate. Boundary-picking layers stay unfiltered so a
     picker cannot hide the points it is meant to edit.
     """
@@ -175,8 +175,11 @@ def is_z_depth_filtered_layer(name: str, kind: str) -> bool:
     return True
 
 
-def is_z_project_volume_layer(kind: str) -> bool:
-    """Whether the view-only Z project MIP applies to a layer kind."""
+def is_z_depth_windowed_volume_layer(kind: str) -> bool:
+    """Whether the view-only Z depth filter clips this layer kind by caching
+    the full volume and restoring a clipped copy (image/labels), rather than
+    filtering rows the way :func:`is_z_depth_filtered_layer` does for graph
+    geometry (vectors/points)."""
     return kind in ("image", "labels")
 
 
@@ -220,30 +223,6 @@ def z_slice_window(
     return int(indices[0]), int(indices[-1])
 
 
-def compose_z_display_window(
-    depth_min: float,
-    depth_max: float,
-    *,
-    project: bool,
-    project_min: float,
-    project_max: float,
-) -> tuple[float, float, bool]:
-    """Combine Z-depth clip and optional Z-project into one display window.
-
-    Z-depth is applied first (restrict the visible slab). If *project* is on,
-    the Z-project window is then intersected with that slab and MIP'd. An
-    empty intersection (``z_max < z_min``) is a blank display, not a fallback
-    slice. Full-range Z-depth with project off is the identity.
-    """
-    if not project:
-        return float(depth_min), float(depth_max), False
-    return (
-        max(float(depth_min), float(project_min)),
-        min(float(depth_max), float(project_max)),
-        True,
-    )
-
-
 def clip_volume_to_z(
     volume: np.ndarray,
     voxel_size_z: float,
@@ -271,42 +250,6 @@ def clip_volume_to_z(
     start, stop = z_slice_window(n_z, dz, z_min, z_max)
     out = np.zeros_like(volume)
     out[start : stop + 1] = volume[start : stop + 1]
-    return out
-
-
-def project_volume_max_z(
-    volume: np.ndarray,
-    voxel_size_z: float,
-    z_min: float,
-    z_max: float,
-    *,
-    z_extent: float | None = None,
-) -> np.ndarray:
-    """Max-intensity project *volume* over a physical Z window, view-only.
-
-    The returned array has the same shape as *volume*. Slices whose origin Z
-    falls in ``[z_min, z_max]`` are replaced by the MIP of that slab; slices
-    outside the window are zero. A window covering the full extent returns
-    *volume* unchanged (identity — the pipeline must keep the original stack).
-    ``z_max < z_min`` returns zeros.
-    """
-    volume = np.asarray(volume)
-    if volume.ndim < 3:
-        return volume
-    if z_max < z_min:
-        return np.zeros_like(volume)
-    n_z = int(volume.shape[0])
-    dz = float(voxel_size_z) if voxel_size_z else 1.0
-    extent = float(z_extent) if z_extent is not None else dz * n_z
-    if z_window_is_full(z_min, z_max, extent):
-        return volume
-    start, stop = z_slice_window(n_z, dz, z_min, z_max)
-    slab = volume[start : stop + 1]
-    if slab.shape[0] == 0:
-        return np.zeros_like(volume)
-    projected = slab.max(axis=0)
-    out = np.zeros_like(volume)
-    out[start : stop + 1] = projected
     return out
 
 

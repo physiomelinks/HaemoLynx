@@ -46,18 +46,16 @@ from haemolynx.gui.results import (
     image_z_extent_um,
     is_ours_name,
     is_z_depth_filtered_layer,
-    is_z_project_volume_layer,
+    is_z_depth_windowed_volume_layer,
     perturbation_layer_names,
     available_edge_columns,
     clip_volume_to_z,
-    compose_z_display_window,
     edge_features,
     edge_polylines,
     midpoints_of,
     node_points,
     pericyte_points,
     polylines_to_vectors,
-    project_volume_max_z,
     z_slice_window,
     z_window_is_full,
 )
@@ -1125,15 +1123,15 @@ def test_z_depth_filter_targets_graph_vectors_and_points_only():
     assert is_z_depth_filtered_layer(FWHM_RAW, "image") is False
     assert is_z_depth_filtered_layer(FWHM_PROFILES, "vectors") is True
     assert is_z_depth_filtered_layer("HaemoLynx BC coordinates", "points") is False
-    assert is_z_project_volume_layer("image") is True
-    assert is_z_project_volume_layer("labels") is True
+    assert is_z_depth_windowed_volume_layer("image") is True
+    assert is_z_depth_windowed_volume_layer("labels") is True
 
 
-def test_z_project_targets_image_and_labels_not_graph_kinds():
-    assert is_z_project_volume_layer("image") is True
-    assert is_z_project_volume_layer("labels") is True
-    assert is_z_project_volume_layer("vectors") is False
-    assert is_z_project_volume_layer("points") is False
+def test_z_depth_windowed_volume_layer_targets_image_and_labels_not_graph_kinds():
+    assert is_z_depth_windowed_volume_layer("image") is True
+    assert is_z_depth_windowed_volume_layer("labels") is True
+    assert is_z_depth_windowed_volume_layer("vectors") is False
+    assert is_z_depth_windowed_volume_layer("points") is False
 
 
 def test_z_window_is_full_covers_the_stack_extent():
@@ -1147,29 +1145,6 @@ def test_z_slice_window_uses_slice_origin_in_microns():
     # 4 slices, dz = 2 µm → origins 0, 2, 4, 6; extent 8 µm.
     assert z_slice_window(4, 2.0, 0.0, 5.0) == (0, 2)
     assert z_slice_window(4, 2.0, 0.0, 8.0) == (0, 3)
-
-
-def test_project_volume_max_z_is_identity_at_full_range():
-    volume = np.arange(4 * 2 * 2, dtype=np.uint8).reshape(4, 2, 2)
-    out = project_volume_max_z(volume, 2.0, 0.0, 8.0, z_extent=8.0)
-    assert out is volume
-    np.testing.assert_array_equal(out, volume)
-
-
-def test_project_volume_max_z_mips_the_window_and_zeros_the_rest():
-    volume = np.zeros((4, 2, 2), dtype=np.uint8)
-    volume[0] = 1
-    volume[1] = 3
-    volume[2] = 2
-    volume[3] = 9
-    # Window [0, 5] µm keeps slices 0, 1, 2 (origins 0, 2, 4); MIP is 3.
-    out = project_volume_max_z(volume, 2.0, 0.0, 5.0, z_extent=8.0)
-    assert out.shape == volume.shape
-    np.testing.assert_array_equal(out[0], 3)
-    np.testing.assert_array_equal(out[1], 3)
-    np.testing.assert_array_equal(out[2], 3)
-    np.testing.assert_array_equal(out[3], 0)
-    np.testing.assert_array_equal(volume[3], 9)
 
 
 def test_clip_volume_to_z_is_identity_at_full_range():
@@ -1198,20 +1173,6 @@ def test_clip_volume_to_z_empty_window_is_zeros():
     volume = np.ones((4, 2, 2), dtype=np.uint8)
     out = clip_volume_to_z(volume, 2.0, 6.0, 5.0, z_extent=8.0)
     np.testing.assert_array_equal(out, np.zeros_like(volume))
-
-
-def test_compose_z_display_window_applies_depth_then_optional_project():
-    assert compose_z_display_window(
-        0.0, 8.0, project=False, project_min=0.0, project_max=5.0
-    ) == (0.0, 8.0, False)
-    assert compose_z_display_window(
-        0.0, 5.0, project=True, project_min=2.0, project_max=8.0
-    ) == (2.0, 5.0, True)
-    lo, hi, project = compose_z_display_window(
-        0.0, 5.0, project=True, project_min=6.0, project_max=8.0
-    )
-    assert project is True
-    assert hi < lo
 
 
 def _flow_graph_at_z(*z_values: float) -> nx.MultiGraph:
@@ -1342,8 +1303,8 @@ def test_apply_z_filter_on_viewer_filters_flow_direction_layer():
     assert len(layer.data) == len(vectors)
 
 
-def test_apply_z_project_on_viewer_mips_then_restores():
-    from haemolynx.gui._widget import OURS, _apply_z_project, data_for_pipeline
+def test_apply_volume_z_display_on_viewer_clips_then_restores():
+    from haemolynx.gui._widget import OURS, _apply_volume_z_display, data_for_pipeline
 
     volume = np.zeros((4, 2, 2), dtype=np.uint8)
     volume[0] = 1
@@ -1359,17 +1320,19 @@ def test_apply_z_project_on_viewer_mips_then_restores():
     layer.data = volume.copy()
     layer.scale = (2.0, 1.0, 0.5)
     layer.metadata = {
-        OURS: {"kind": "image", "z_project_full": volume.copy()}
+        OURS: {"kind": "image", "z_window_full": volume.copy()}
     }
     viewer = SimpleNamespace(layers=[layer])
     full_z = 8.0
 
-    _apply_z_project(viewer, 0.0, 5.0, z_extent=full_z)
-    np.testing.assert_array_equal(layer.data[0], 3)
+    _apply_volume_z_display(viewer, 0.0, 5.0, z_extent=full_z)
+    np.testing.assert_array_equal(layer.data[0], 1)
+    np.testing.assert_array_equal(layer.data[1], 3)
+    np.testing.assert_array_equal(layer.data[2], 2)
     np.testing.assert_array_equal(layer.data[3], 0)
     np.testing.assert_array_equal(data_for_pipeline(layer), volume)
 
-    _apply_z_project(viewer, 0.0, full_z, z_extent=full_z)
+    _apply_volume_z_display(viewer, 0.0, full_z, z_extent=full_z)
     np.testing.assert_array_equal(layer.data, volume)
 
 

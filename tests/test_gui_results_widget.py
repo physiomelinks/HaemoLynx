@@ -769,8 +769,8 @@ def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
     """Left-panel Z-depth clips graph layers; volumes are clipped without MIP.
 
     ``_apply_z_filter`` is still the graph-geometry half. Image/labels go
-    through the same window via the view-panel apply path, without a MIP
-    unless Z-project is also on.
+    through the same window via the view-panel apply path, clipped, never
+    projected.
     """
     from haemolynx.gui._widget import settings_widget
     from haemolynx.gui.results import ResultLayers
@@ -801,16 +801,15 @@ def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
     image[3] = 9
     layer = viewer.layers[IMAGE]
     layer.data = image
-    from haemolynx.gui._widget import _store_z_project_cache, data_for_pipeline
+    from haemolynx.gui._widget import _store_z_window_cache, data_for_pipeline
 
-    _store_z_project_cache(layer, image)
+    _store_z_window_cache(layer, image)
     panel._haemolynx_view.results = results
     panel._haemolynx_after_layers_applied()
 
     full_z = 8.0
     vessel_count = len(viewer.layers[VESSELS].data)
     original = image.copy()
-    assert panel._haemolynx_z_project.isChecked() is False
 
     panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
     assert len(viewer.layers[VESSELS].data) < vessel_count
