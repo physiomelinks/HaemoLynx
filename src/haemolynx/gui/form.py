@@ -66,13 +66,17 @@ SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
 
 #: Parents whose children hide when unmet even outside
 #: :data:`HIDE_WHEN_UNMET_SECTIONS` (Graph centreline knobs live under
-#: ``Pipeline stages``; Export IDE-plot knobs live under ``Solver and output``).
+#: ``Pipeline stages``; Export IDE-plot knobs live under ``Solver and output``;
+#: cartwheel hub guard knobs live under their own ``Cartwheel hub guard``
+#: section, which is too small a slice of "3. Graph" to earn a whole-section
+#: entry in :data:`HIDE_WHEN_UNMET_SECTIONS`).
 HIDE_WHEN_UNMET_PARENTS = frozenset(
     {
         "smooth_centrelines",
         "use_thick_vessel_skeletonisation",
         "visualize_results",
         "show_plots_in_ide",
+        "detect_cartwheel_hub_artifacts",
     }
 )
 

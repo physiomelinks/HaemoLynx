@@ -1090,6 +1090,47 @@ def test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest(panel):
     assert rows["skeleton_fill_mask_holes_before_thickness"].visible is True
 
 
+def test_cartwheel_hub_guard_knobs_nest_under_its_own_toggle(panel):
+    """The cartwheel hub guard's three knobs hide with their own toggle, on
+    the "3. Graph" tab -- same live-Qt check as
+    test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest
+    above, for a group that used to only grey out instead of hide.
+
+    While the Graph tab is not current, magicgui may keep ``visible`` False
+    regardless of prerequisite state, so the tab must be selected before
+    the nesting assertions mean anything (see that test's own note).
+    """
+    from qtpy.QtWidgets import QApplication, QTabWidget
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget.findChild(QTabWidget)
+    for index in range(tabs.count()):
+        if "Graph" in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            break
+    else:
+        raise AssertionError("no tab containing 'Graph'")
+
+    children = [
+        rows["cartwheel_hub_min_degree"],
+        rows["cartwheel_hub_max_radial_dispersion"],
+        rows["cartwheel_hub_tangent_length_um"],
+    ]
+
+    rows["detect_cartwheel_hub_artifacts"].value = False
+    QApplication.processEvents()
+    for child in children:
+        assert child.visible is False
+
+    rows["detect_cartwheel_hub_artifacts"].value = True
+    QApplication.processEvents()
+    for child in children:
+        assert child.visible is True
+
+
 def test_thick_vessel_row_relabels_when_large_vessel_network_mode_is_on(panel):
     """Once thick-vessel skeletonisation and the large-vessel-network mode
     are both on, the checkbox's own action is no longer "thick vessel

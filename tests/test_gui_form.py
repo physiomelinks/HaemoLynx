@@ -501,6 +501,35 @@ def test_thick_vessel_children_hide_when_the_toggle_is_off():
     assert SCHEMA["skeleton_thick_vessel_min_radius_um"].default == pytest.approx(6.0)
 
 
+def test_cartwheel_hub_children_hide_when_the_toggle_is_off():
+    """Graph nests the cartwheel hub guard's own knobs under its toggle,
+    same as use_thick_vessel_skeletonisation nests the thickness-gate
+    knobs above -- its own small "Cartwheel hub guard" section is too
+    small a slice of "3. Graph" to add to HIDE_WHEN_UNMET_SECTIONS, so it
+    is listed by name in HIDE_WHEN_UNMET_PARENTS instead."""
+    assert "detect_cartwheel_hub_artifacts" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["detect_cartwheel_hub_artifacts"]
+    assert not parent.hide_when_unmet
+    assert parent.widget_type == "CheckBox"
+    assert parent.value is False
+
+    children = (
+        "cartwheel_hub_min_degree",
+        "cartwheel_hub_max_radial_dispersion",
+        "cartwheel_hub_tangent_length_um",
+    )
+    off = {"detect_cartwheel_hub_artifacts": False}
+    on = {"detect_cartwheel_hub_artifacts": True}
+    for name in children:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert SCHEMA[name].requires == ("detect_cartwheel_hub_artifacts",), name
+        assert not child.is_visible(off), name
+        assert child.is_visible(on), name
+
+
 def test_diameter_rows_hide_when_parent_toggles_are_unmet():
     """Diameters nests per-order tables and FWHM knobs under parent bools."""
     assert "Diameters and pericytes" in HIDE_WHEN_UNMET_SECTIONS

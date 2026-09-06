@@ -595,6 +595,28 @@ def test_thick_vessel_fields_on_skeletonise_declare_hide_when_unmet():
         assert fields[name].is_visible(on), name
 
 
+def test_cartwheel_hub_fields_on_graph_declare_hide_when_unmet():
+    """The cartwheel hub guard's own knobs hide until its toggle is on."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["3. Graph"].fields}
+
+    assert "detect_cartwheel_hub_artifacts" in fields
+    assert not fields["detect_cartwheel_hub_artifacts"].hide_when_unmet
+    assert SCHEMA["detect_cartwheel_hub_artifacts"].default is False
+
+    off = {"detect_cartwheel_hub_artifacts": False}
+    on = {"detect_cartwheel_hub_artifacts": True}
+    for name in (
+        "cartwheel_hub_min_degree",
+        "cartwheel_hub_max_radial_dispersion",
+        "cartwheel_hub_tangent_length_um",
+    ):
+        assert fields[name].hide_when_unmet, name
+        assert SCHEMA[name].requires == ("detect_cartwheel_hub_artifacts",), name
+        assert not fields[name].is_visible(off), name
+        assert fields[name].is_visible(on), name
+
+
 def test_diameter_fields_on_diameters_declare_hide_when_unmet():
     """Gated Diameters / FWHM rows hide until their parent toggles hold."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
