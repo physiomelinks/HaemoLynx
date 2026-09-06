@@ -1536,8 +1536,17 @@ def test_a_binary_segmented_image_gets_translucent_mask_style_options():
         spec = spec_named(group, IMAGE)
         assert spec.contrast_limits == expected_range
         assert spec.options["mask_colour"] == SEGMENTED_IMAGE_COLOUR
-        for key, value in BINARY_IMAGE_VOLUME_OPTIONS.items():
-            assert spec.options[key] == value
+        # Literal expected values, not BINARY_IMAGE_VOLUME_OPTIONS itself --
+        # comparing against the same constant the spec is built from could
+        # never catch it being reverted to e.g. "mip"/"attenuated_mip",
+        # which is the exact silhouette-rendering bug this feature fixes.
+        assert spec.options["blending"] == "translucent"
+        assert spec.options["rendering"] == "translucent"
+        assert spec.options["interpolation2d"] == "nearest"
+        assert spec.options["interpolation3d"] == "nearest"
+        assert set(BINARY_IMAGE_VOLUME_OPTIONS) == {
+            "blending", "rendering", "interpolation2d", "interpolation3d",
+        }
 
 
 def test_a_grayscale_segmented_image_keeps_the_plain_gray_colormap():

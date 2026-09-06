@@ -285,7 +285,7 @@ def test_an_empty_graph_against_a_real_mask_explains_none_of_it():
     assert report["coverage_fraction"] == pytest.approx(0.0)
 
 
-def test_an_edge_with_no_voxels_is_skipped_not_a_crash():
+def test_a_graph_mask_edge_with_no_voxels_is_skipped_not_a_crash():
     mask = np.zeros((5, 5, 5), dtype=bool)
     mask[2, 2, 2] = True
 

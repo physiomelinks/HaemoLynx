@@ -61,6 +61,24 @@ def test_direction_falls_back_to_the_straight_line_to_the_neighbor():
     np.testing.assert_allclose(directions[(1, 0)], [0.0, 0.6, 0.8])
 
 
+def test_a_plain_graph_is_supported_alongside_multigraph():
+    """_incident_edge_items has a dedicated branch for a plain nx.Graph
+    (key always None, no parallel edges) -- exercise it directly, since
+    every other fixture in this file builds an nx.MultiGraph."""
+    G = nx.Graph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 3.0, 4.0))
+    G.add_node(2, pos=(0.0, -3.0, 4.0))
+    G.add_edge(0, 1)
+    G.add_edge(0, 2)
+
+    directions = hub_spoke_directions(G, 0)
+
+    assert set(directions) == {(1, None), (2, None)}
+    np.testing.assert_allclose(directions[(1, None)], [0.0, 0.6, 0.8])
+    np.testing.assert_allclose(directions[(2, None)], [0.0, -0.6, 0.8])
+
+
 def test_direction_uses_the_voxel_path_not_the_chord():
     """A curving path leaves in a different direction than the straight chord
     to its far end -- the whole reason to prefer voxels when they exist."""
@@ -76,6 +94,12 @@ def test_direction_uses_the_voxel_path_not_the_chord():
 
     chord = np.array([0.0, 5.0, 10.0]) / math.hypot(5.0, 10.0)
     assert not np.allclose(directions[(1, 0)], chord)
+    # Hand-computed: 10um along the polyline lands 1/sqrt(2) of the way from
+    # (0,0,5) to (0,5,10) (the first leg is exactly 5um, leaving 5 of the
+    # second leg's 5*sqrt(2)um), at physical point (0, 5/sqrt(2), 5+5/sqrt(2)).
+    np.testing.assert_allclose(
+        directions[(1, 0)], [0.0, 0.38268343, 0.92387953], atol=1e-8
+    )
 
 
 def test_a_voxel_path_stored_neighbor_to_hub_is_reoriented():

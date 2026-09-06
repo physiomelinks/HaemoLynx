@@ -1781,12 +1781,12 @@ SCHEMA = Schema(
                 "Log a warning instead of an info line when fewer than this fraction of "
                 "the skeleton's own voxels are still traced by the finished graph's "
                 "edges -- see graph.diagnostics.diagnose_skeleton_graph_consistency for "
-                "what that measures and why"
+                "what that measures and why. Checked whether the graph was just built or "
+                "loaded from cache, so this is not gated on do_graph_building"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
-            requires=("do_graph_building",),
         ),
         Setting(
             name="graph_mask_consistency_warn_below",
@@ -1797,12 +1797,12 @@ SCHEMA = Schema(
                 "the segmented image's own voxels are within their own local radius of "
                 "the finished graph's edges -- see "
                 "graph.diagnostics.diagnose_graph_mask_consistency for what that measures "
-                "and why"
+                "and why. Checked whether the graph was just built or loaded from cache, "
+                "so this is not gated on do_graph_building"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
-            requires=("do_graph_building",),
         ),
         Setting(
             name="save_step_artifacts",
@@ -1835,12 +1835,12 @@ SCHEMA = Schema(
                 "Log a warning instead of an info line when fewer than this fraction of "
                 "the segmented-image mask's own voxels sit within their own local radius "
                 "of the skeleton -- see preprocessing.skeleton_consistency for what that "
-                "measures and why"
+                "measures and why. Checked whether the skeleton was just computed or "
+                "loaded from cache, so this is not gated on do_skeletonize"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
-            requires=("do_skeletonize",),
         ),
         Setting(
             name="use_thick_vessel_skeletonisation",

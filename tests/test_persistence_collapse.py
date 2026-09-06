@@ -48,9 +48,18 @@ def test_persistence_cutoff_is_none_for_a_smooth_run_with_no_gap():
     assert _persistence_cutoff([1.0, 1.5, 2.0, 2.5, 3.0]) is None
 
 
-def test_persistence_cutoff_needs_at_least_two_distances():
+def test_persistence_cutoff_needs_at_least_three_distances():
+    """Regression test: with exactly 2 weights (a 3-node cluster's MST has
+    exactly 1 edge pair, hence 1 gap), that single gap is *always* the
+    entire spread by construction, so relative_gaps[0] comes out to 1.0
+    whenever the two weights differ at all -- even a near-uniform pair like
+    3.0 and 3.05 (a 1.6% difference) would previously read as a "clear
+    gap" and get flagged, which is wrong: the statistic needs at least two
+    gaps to judge whether one of them stands out."""
     assert _persistence_cutoff([]) is None
     assert _persistence_cutoff([1.0]) is None
+    assert _persistence_cutoff([3.0, 3.05]) is None
+    assert _persistence_cutoff([1.0, 100.0]) is None  # even a huge, "obvious" gap
 
 
 # --- the core claim: splits at a real gap, agrees with distance_only when
@@ -113,6 +122,29 @@ def test_a_cluster_with_no_internal_structure_matches_distance_only():
 
     assert persistent.number_of_nodes() == legacy.number_of_nodes()
     assert persistent.number_of_edges() == legacy.number_of_edges()
+
+
+def test_a_three_node_near_uniform_cluster_merges_all_three_like_distance_only():
+    """Regression test for the 3-node persistence-cutoff degeneracy: three
+    nodes at 0, 3.0 and 6.05 microns apart (a near-uniform run, ~1.6%
+    difference between the two hops) have no genuine persistence gap -- a
+    cluster this small can never provide one (see
+    test_persistence_cutoff_needs_at_least_three_distances) -- so all three
+    should collapse into one node, exactly like distance_only, rather than
+    splitting off the third node because a single 2-weight MST trivially
+    reads as "all gap"."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([3.0, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([6.05, 0.0, 0.0]))
+    for u, v in ((0, 1), (1, 2)):
+        G.add_edge(u, v, length=float(np.linalg.norm(G.nodes[v]["pos"] - G.nodes[u]["pos"])))
+
+    legacy = collapse_node_clusters(G, distance_threshold=5.0)
+    persistent = collapse_node_clusters_persistence(G, distance_threshold=5.0)
+
+    assert legacy.number_of_nodes() == 1, "fixture bug: distance_only did not merge all three"
+    assert persistent.number_of_nodes() == 1
 
 
 def test_a_second_pass_can_remerge_a_correct_split_which_is_why_the_default_is_one_pass():

@@ -318,15 +318,15 @@ pipeline_stages:
   cluster_collapse_max_radial_dispersion: 0.5
   # Only used by cluster_collapse_method=persistence: how many multiples of cluster_collapse_distance to search for candidate pairs -- wider than the ordinary collapse distance, so a genuine persistence gap has room to appear on both sides of it. See graph.persistence_collapse  [range 0.0..]
   cluster_collapse_persistence_search_multiple: 3.0
-  # Log a warning instead of an info line when fewer than this fraction of the skeleton's own voxels are still traced by the finished graph's edges -- see graph.diagnostics.diagnose_skeleton_graph_consistency for what that measures and why  [range 0.0..1.0; needs do_graph_building]
+  # Log a warning instead of an info line when fewer than this fraction of the skeleton's own voxels are still traced by the finished graph's edges -- see graph.diagnostics.diagnose_skeleton_graph_consistency for what that measures and why. Checked whether the graph was just built or loaded from cache, so this is not gated on do_graph_building  [range 0.0..1.0]
   skeleton_graph_consistency_warn_below: 0.7
-  # Log a warning instead of an info line when fewer than this fraction of the segmented image's own voxels are within their own local radius of the finished graph's edges -- see graph.diagnostics.diagnose_graph_mask_consistency for what that measures and why  [range 0.0..1.0; needs do_graph_building]
+  # Log a warning instead of an info line when fewer than this fraction of the segmented image's own voxels are within their own local radius of the finished graph's edges -- see graph.diagnostics.diagnose_graph_mask_consistency for what that measures and why. Checked whether the graph was just built or loaded from cache, so this is not gated on do_graph_building  [range 0.0..1.0]
   graph_mask_consistency_warn_below: 0.7
   # Write a graph pickle and an overlay PNG after each graph-building step. Turn on to debug a bad topology; it dominates the runtime of a large run, so it is off by default  [needs do_graph_building]
   save_step_artifacts: false
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
   skeleton_min_component_percent: 5.0
-  # Log a warning instead of an info line when fewer than this fraction of the segmented-image mask's own voxels sit within their own local radius of the skeleton -- see preprocessing.skeleton_consistency for what that measures and why  [range 0.0..1.0; needs do_skeletonize]
+  # Log a warning instead of an info line when fewer than this fraction of the segmented-image mask's own voxels sit within their own local radius of the skeleton -- see preprocessing.skeleton_consistency for what that measures and why. Checked whether the skeleton was just computed or loaded from cache, so this is not gated on do_skeletonize  [range 0.0..1.0]
   skeleton_mask_consistency_warn_below: 0.7
   # Give fat plasma-labelled vessels (inscribed radius above skeleton_thick_vessel_min_radius_um, 6 um by default) a centreline tree of every arm instead of Lee thinning; capillaries stay on Lee  [needs do_skeletonize]
   use_thick_vessel_skeletonisation: false

@@ -194,8 +194,13 @@ def test_cluster_collapse_method_direction_aware_reaches_the_direction_aware_col
 
     calls = []
 
-    def fake_direction_aware(G, *, distance_threshold, max_radial_dispersion, debug):
-        calls.append(max_radial_dispersion)
+    def fake_direction_aware(
+        G, *, distance_threshold, max_radial_dispersion,
+        min_degree_for_dispersion_check, tangent_length_um, debug,
+    ):
+        calls.append(
+            (max_radial_dispersion, min_degree_for_dispersion_check, tangent_length_um)
+        )
         return assemble_module.collapse_node_clusters(G, distance_threshold=distance_threshold, debug=debug)
 
     monkeypatch.setattr(
@@ -206,9 +211,11 @@ def test_cluster_collapse_method_direction_aware_reaches_the_direction_aware_col
         _t_skeleton(),
         cluster_collapse_method="direction_aware",
         cluster_collapse_max_radial_dispersion=0.7,
+        cluster_collapse_direction_aware_min_degree=9,
+        cluster_collapse_direction_aware_tangent_length_um=15.0,
     )
 
-    assert calls == [pytest.approx(0.7)]
+    assert calls == [(pytest.approx(0.7), 9, pytest.approx(15.0))]
 
 
 def test_cluster_collapse_method_distance_only_never_calls_direction_aware_collapse(monkeypatch):

@@ -159,6 +159,33 @@ def test_two_cluster_members_reaching_the_same_neighbour_keep_only_the_shorter_e
     assert remaining["length"] == pytest.approx(19.2)
 
 
+def test_a_genuine_pre_existing_loop_survives_a_merged_members_shorter_edge():
+    """Regression test: the representative already has a real loop -- two
+    pre-existing parallel edges to the same external neighbour, lengths 8
+    and 12 -- before any cluster member merges into it. A cluster member
+    contributing a shorter edge to that same neighbour (noise, or simply a
+    closer path) must not delete either genuine pre-existing edge: only
+    edges introduced *during this collapse* are fair game for the
+    keep-the-shorter rule (see test_two_cluster_members_reaching_the_same_
+    neighbour_keep_only_the_shorter_edge above), not edges that predate it."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))
+    G.add_node(99, pos=np.array([20.0, 0.0, 0.0]))
+    G.add_edge(0, 99, length=8.0, voxels=[[0, 0, 0], [20, 0, 0]])
+    G.add_edge(0, 99, length=12.0, voxels=[[0, 0, 0], [20, 0, 0]])
+    G.add_edge(1, 99, length=5.0, voxels=[[1, 0, 0], [20, 0, 0]])
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 2  # 0 and 1 merged into one representative
+    lengths = sorted(data["length"] for _, _, data in out.edges(0, data=True))
+    assert lengths == pytest.approx([5.0, 8.0, 12.0]), (
+        "both genuine pre-existing edges (8, 12) must survive alongside the "
+        "merged member's edge (5), none of them deleted"
+    )
+
+
 # --- distance_only parity: reusing the option must not add new settings ---
 
 

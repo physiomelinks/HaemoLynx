@@ -131,8 +131,20 @@ def _persistence_cutoff(sorted_weights: list[float]) -> float | None:
     """The distance at the biggest gap in *sorted_weights*, or ``None`` when
     no gap spans enough of the cluster's own spread to act on -- see
     ``MIN_RELATIVE_GAP`` for why that is measured against the spread rather
-    than against the merge distance just below the gap."""
-    if len(sorted_weights) < 2:
+    than against the merge distance just below the gap.
+
+    Needs at least 3 weights (2 gaps): with exactly 2 weights (a 3-node
+    cluster's MST has exactly 1 edge pair, hence 1 gap), that single gap is
+    *always* the entire spread by construction -- ``relative_gaps[0]`` comes
+    out to 1.0 whenever the two weights differ at all, regardless of how
+    close together they actually are, which would report a "clear gap" for
+    even a near-uniform triple (e.g. weights 3.0 and 3.05 -- a 1.6%
+    difference). The statistic only has anything to compare a gap *against*
+    once there are at least two of them, so a 3-node cluster falls back to
+    the ordinary ``cluster_collapse_distance`` instead, the same as the
+    genuinely-no-gap case below.
+    """
+    if len(sorted_weights) < 3:
         return None
     weights = np.asarray(sorted_weights, dtype=float)
     spread = weights[-1] - weights[0]
@@ -267,10 +279,25 @@ def collapse_node_clusters_persistence(
                 )
                 G.nodes[rep]["pos"] = cluster_positions.mean(axis=0)
 
+                # Neighbours rep already reaches by 2+ parallel edges before
+                # any of this cluster's members are merged in -- a genuine
+                # loop, not noise -- must not have one of those edges
+                # deleted to make room for a shorter one a merged member
+                # happens to contribute. See direction_aware_collapse's
+                # identical guard for the concrete failure this prevents.
+                protected_loop_neighbors = {
+                    neighbor
+                    for neighbor in (set(G.neighbors(rep)) - set(group))
+                    if G.number_of_edges(rep, neighbor) >= 2
+                } if is_multi else set()
+
                 for other in others:
                     if not G.has_node(other):
                         continue
-                    _rewire_edges_deduplicating(G, other, rep, is_multi)
+                    _rewire_edges_deduplicating(
+                        G, other, rep, is_multi,
+                        protected_loop_neighbors=protected_loop_neighbors,
+                    )
                     G.remove_node(other)
                     merged_this_iter += 1
 

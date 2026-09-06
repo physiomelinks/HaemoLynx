@@ -77,8 +77,16 @@ class CartwheelHub:
 
 
 def _incident_edge_items(G: Union[nx.Graph, nx.MultiGraph], node: Any):
-    """Incident edges as ``(neighbor, key, data)``, ``key`` None for a plain Graph."""
-    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
+    """Incident edges as ``(neighbor, key, data)``, ``key`` None for a plain Graph.
+
+    Only ``nx.Graph``/``nx.MultiGraph`` are supported (matching this
+    module's declared type hints): a directed graph's ``.edges(node)``
+    returns out-edges only, which would silently undercount a node's real
+    incident edges, so a ``MultiDiGraph`` is deliberately not special-cased
+    here and falls through to the plain-graph branch below rather than
+    being treated as if it were fully supported.
+    """
+    if isinstance(G, nx.MultiGraph):
         for u, v, key, data in G.edges(node, keys=True, data=True):
             if u == v:
                 continue
@@ -261,8 +269,16 @@ def format_cartwheel_hub_report(hubs: Sequence[CartwheelHub]) -> str:
         return "Cartwheel hub guard: no hubs flagged."
     lines = [f"Cartwheel hub guard: {len(hubs)} hub(s) flagged."]
     for hub in hubs:
+        # spoke_count only differs from degree when some incident edges had
+        # no resolvable direction (missing pos, a duplicate point) and were
+        # excluded from the dispersion calculation -- worth surfacing, since
+        # otherwise the reader has no way to tell the dispersion figure was
+        # computed from fewer edges than the node actually has.
+        spoke_note = (
+            f", spoke_count={hub.spoke_count}" if hub.spoke_count != hub.degree else ""
+        )
         lines.append(
-            f"  node={hub.node}: degree={hub.degree}, "
+            f"  node={hub.node}: degree={hub.degree}{spoke_note}, "
             f"radial_dispersion={hub.radial_dispersion:.3f}, "
             f"mean_spoke_length_um={hub.mean_spoke_length_um:.1f}"
         )

@@ -62,13 +62,41 @@ DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK = 6
 DEFAULT_MAX_RADIAL_DISPERSION = 0.5
 
 
-def _merge_is_direction_safe(
+def _precompute_node_spokes(
     G: Union[nx.Graph, nx.MultiGraph],
+    nodes: list,
+    *,
+    tangent_length_um: float,
+) -> dict[Any, list[tuple[Any, "np.ndarray | None"]]]:
+    """Every candidate node's own (neighbor, direction) pairs, computed once
+    per iteration.
+
+    G's edges are not mutated until every candidate pair in an iteration has
+    been tested against them (the actual rewiring happens afterwards, once
+    the union-find grouping is final) -- so without this, checking each
+    candidate pair via :func:`_merge_is_direction_safe` re-walked the same
+    node's incident edges from scratch on every pair it happened to appear
+    in, which is wasted, repeated work in exactly the densely-braided case
+    this module targets, where one node can appear in many candidate pairs.
+    """
+    spokes: dict[Any, list[tuple[Any, Any]]] = {}
+    for node in nodes:
+        node_spokes = []
+        for neighbor, _key, data in _incident_edge_items(G, node):
+            direction, _length = _spoke_direction_and_length(
+                G, node, neighbor, data, tangent_length_um=tangent_length_um
+            )
+            node_spokes.append((neighbor, direction))
+        spokes[node] = node_spokes
+    return spokes
+
+
+def _merge_is_direction_safe(
+    node_spokes: dict,
     candidate_members: set,
     *,
     min_degree_for_dispersion_check: int,
     max_radial_dispersion: float,
-    tangent_length_um: float,
 ) -> bool:
     """Whether merging *candidate_members* into one node stays coherent.
 
@@ -78,17 +106,17 @@ def _merge_is_direction_safe(
     fairly (fewer than *min_degree_for_dispersion_check*, or too few with a
     resolvable direction), or when the spokes that do resolve still agree
     well enough (dispersion above *max_radial_dispersion*).
+
+    *node_spokes* is precomputed once per iteration by
+    :func:`_precompute_node_spokes` -- see there for why.
     """
     directions: list[np.ndarray] = []
     degree = 0
     for node in candidate_members:
-        for neighbor, _key, data in _incident_edge_items(G, node):
+        for neighbor, direction in node_spokes.get(node, ()):
             if neighbor in candidate_members:
                 continue
             degree += 1
-            direction, _length = _spoke_direction_and_length(
-                G, node, neighbor, data, tangent_length_um=tangent_length_um
-            )
             if direction is not None:
                 directions.append(direction)
 
@@ -106,6 +134,8 @@ def _rewire_edges_deduplicating(
     old_node: Any,
     new_node: Any,
     is_multi: bool,
+    *,
+    protected_loop_neighbors: set | None = None,
 ) -> None:
     """Move every edge incident to *old_node* onto *new_node*.
 
@@ -115,7 +145,18 @@ def _rewire_edges_deduplicating(
     the two rather than both -- a cluster's internal nodes reaching the same
     external neighbour by slightly different noise paths should not inflate
     that neighbour's apparent number of distinct connections.
+
+    *protected_loop_neighbors*, when given, names neighbours *new_node*
+    already reached by two or more parallel edges before this cluster's
+    collapse began -- a genuine vascular loop the pipeline built earlier
+    (see ``reconnect_secondary_loop_edges``), not skeletonisation noise.
+    An edge to one of those neighbours is only ever added, never removed,
+    so collapsing a nearby noisy cluster cannot delete a real loop to make
+    room for a shorter, spurious duplicate. Neighbours with at most one
+    pre-existing edge keep the ordinary keep-the-shorter-of-the-two rule,
+    which is what actually deduplicates cluster-introduced noise.
     """
+    protected_loop_neighbors = protected_loop_neighbors or set()
     old_pos = np.asarray(G.nodes[old_node].get("pos", [0, 0, 0]), dtype=float)
     new_pos = np.asarray(G.nodes[new_node].get("pos", [0, 0, 0]), dtype=float)
 
@@ -128,7 +169,7 @@ def _rewire_edges_deduplicating(
             patched = _patch_voxel_endpoint(data, old_pos, new_pos)
             new_length = patched.get("length", float("inf"))
             existing = G.get_edge_data(new_node, neighbor) or {}
-            if existing:
+            if existing and neighbor not in protected_loop_neighbors:
                 shortest_key = min(
                     existing, key=lambda k: existing[k].get("length", float("inf"))
                 )
@@ -216,6 +257,13 @@ def collapse_node_clusters_direction_aware(
             pairs, key=lambda ij: float(np.linalg.norm(coords[ij[0]] - coords[ij[1]]))
         )
 
+        # Computed once for the whole iteration -- see _precompute_node_spokes
+        # for why this is safe (G's edges don't change until every candidate
+        # pair below has been tested).
+        node_spokes = _precompute_node_spokes(
+            G, node_ids, tangent_length_um=tangent_length_um
+        )
+
         parent = {n: n for n in node_ids}
         members: dict[Any, set] = {n: {n} for n in node_ids}
 
@@ -232,11 +280,10 @@ def collapse_node_clusters_direction_aware(
                 continue
             candidate = members[root_a] | members[root_b]
             if not _merge_is_direction_safe(
-                G,
+                node_spokes,
                 candidate,
                 min_degree_for_dispersion_check=min_degree_for_dispersion_check,
                 max_radial_dispersion=max_radial_dispersion,
-                tangent_length_um=tangent_length_um,
             ):
                 blocked_this_iter += 1
                 continue
@@ -269,10 +316,23 @@ def collapse_node_clusters_direction_aware(
             )
             G.nodes[rep]["pos"] = cluster_positions.mean(axis=0)
 
+            # Neighbours rep already reaches by 2+ parallel edges before any
+            # of this cluster's members are merged in -- a genuine loop, not
+            # noise -- must not have one of those edges deleted to make room
+            # for a shorter one a merged member happens to contribute.
+            protected_loop_neighbors = {
+                neighbor
+                for neighbor in (set(G.neighbors(rep)) - set(group))
+                if G.number_of_edges(rep, neighbor) >= 2
+            } if is_multi else set()
+
             for other in others:
                 if not G.has_node(other):
                     continue
-                _rewire_edges_deduplicating(G, other, rep, is_multi)
+                _rewire_edges_deduplicating(
+                    G, other, rep, is_multi,
+                    protected_loop_neighbors=protected_loop_neighbors,
+                )
                 G.remove_node(other)
                 merged_this_iter += 1
 

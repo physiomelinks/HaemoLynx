@@ -12,8 +12,10 @@ from .build import build_graph_segment_skan_stitched_loops
 from .collapse import collapse_node_clusters
 from .direction_aware_collapse import (
     DEFAULT_MAX_RADIAL_DISPERSION,
+    DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
     collapse_node_clusters_direction_aware,
 )
+from .cartwheel_guard import DEFAULT_TANGENT_LENGTH_UM
 from .persistence_collapse import (
     DEFAULT_SEARCH_RADIUS_MULTIPLE,
     collapse_node_clusters_persistence,
@@ -95,6 +97,8 @@ def build_graph_from_skeleton(
     cluster_collapse_method: str = "distance_only",
     cluster_collapse_max_radial_dispersion: float = DEFAULT_MAX_RADIAL_DISPERSION,
     cluster_collapse_persistence_search_multiple: float = DEFAULT_SEARCH_RADIUS_MULTIPLE,
+    cluster_collapse_direction_aware_min_degree: int = DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
+    cluster_collapse_direction_aware_tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -140,6 +144,13 @@ def build_graph_from_skeleton(
     cluster_collapse_persistence_search_multiple
         Only read when *cluster_collapse_method* is ``"persistence"`` -- see
         ``persistence_collapse.collapse_node_clusters_persistence``.
+    cluster_collapse_direction_aware_min_degree, cluster_collapse_direction_aware_tangent_length_um
+        Only read when *cluster_collapse_method* is ``"direction_aware"`` --
+        deliberately the same ``cartwheel_hub_min_degree`` /
+        ``cartwheel_hub_tangent_length_um`` settings the cartwheel hub guard
+        itself uses, since this collapse method gates merges with that
+        guard's own geometry: tuning one without the other would silently
+        decouple the diagnostic from the corrective gate it is modelled on.
 
     Returns
     -------
@@ -198,6 +209,8 @@ def build_graph_from_skeleton(
             G,
             distance_threshold=cluster_collapse_distance,
             max_radial_dispersion=cluster_collapse_max_radial_dispersion,
+            min_degree_for_dispersion_check=cluster_collapse_direction_aware_min_degree,
+            tangent_length_um=cluster_collapse_direction_aware_tangent_length_um,
             debug=debug,
         )
     elif cluster_collapse_method == "persistence":
