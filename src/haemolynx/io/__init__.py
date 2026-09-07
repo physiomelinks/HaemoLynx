@@ -11,6 +11,10 @@ from .load import (
     resolve_image_path_with_optional_zip,
     simplify_to_3d,
 )
+from .load_2d import (
+    load_image_with_voxel_size_2d_aware,
+    promote_2d_to_single_slice_volume,
+)
 from .ilastik import run_ilastik_headless_segmentation
 from .automated_vessel_assignment import (
     load_and_validate_vessel_masks,
@@ -40,6 +44,8 @@ __all__ = [
     "load_volume_and_voxel_size",
     "resolve_image_path_with_optional_zip",
     "simplify_to_3d",
+    "load_image_with_voxel_size_2d_aware",
+    "promote_2d_to_single_slice_volume",
     "bridge_gaps",
     "run_ilastik_headless_segmentation",
     "load_large_vessel_masks",

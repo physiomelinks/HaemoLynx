@@ -331,31 +331,29 @@ def segment(settings: dict):
 
 
 def _load_volume_for_skeletonise(settings: dict, input_format: str):
-    """Image plus voxel metadata; skeletonisation is chosen after size is resolved."""
-    if input_format in {"tif", "tiff"}:
-        (
-            image,
-            voxel_size_x,
-            voxel_size_y,
-            voxel_size_z,
-            voxel_meta_status,
-        ) = io.load_3d_tif_with_voxel_size(
-            settings["input_path"],
-            axis_order=settings["image_axis_order"],
-        )
-    elif input_format == "h5":
-        (
-            image,
-            voxel_size_x,
-            voxel_size_y,
-            voxel_size_z,
-            voxel_meta_status,
-        ) = io.load_3d_h5_with_voxel_size(
-            settings["input_path"],
-            axis_order=settings["image_axis_order"],
-        )
-    else:
+    """Image plus voxel metadata; skeletonisation is chosen after size is resolved.
+
+    Goes through io.load_2d's format-dispatching loader rather than
+    calling the TIFF/H5 readers directly -- identical behaviour for an
+    ordinary 3D input, and a genuinely 2D one is promoted to a
+    single-slice volume (with a logged warning) instead of silently
+    passing through 2D or raising. Reads settings["input_path"] /
+    settings["image_axis_order"] exactly as before, so a 2D file reaches
+    the pipeline through the same GUI input row every other file does.
+    """
+    if input_format not in {"tif", "tiff", "h5"}:
         raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
+    (
+        image,
+        voxel_size_x,
+        voxel_size_y,
+        voxel_size_z,
+        voxel_meta_status,
+    ) = io.load_image_with_voxel_size_2d_aware(
+        settings["input_path"],
+        input_format=input_format,
+        axis_order=settings["image_axis_order"],
+    )
     metadata_voxel_size = (
         float(voxel_size_x),
         float(voxel_size_y),

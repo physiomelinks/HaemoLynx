@@ -433,11 +433,19 @@ def load_3d_h5_with_voxel_size(
     dataset_name: str | None = None,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    allow_2d: bool = False,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load 3D H5 image and return image + voxel size (x, y, z) + metadata status.
 
     *axis_order* names what the dataset's array axes mean (default ``"zyx"``);
     the volume is transposed into the canonical ``(z, y, x)`` order on load.
+
+    *allow_2d*, when True, returns a genuinely 2D dataset as-is instead of
+    raising -- *axis_order* is not applied to it, since a 2-axis array has
+    no ``(z, y, x)`` to reorder; the caller is responsible for turning it
+    into a volume. :mod:`haemolynx.io.load_2d` is what actually sets this
+    and does that promotion. Every other caller leaves it False, unchanged
+    from before this parameter existed.
     """
     if h5py is None:
         raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
@@ -479,6 +487,9 @@ def load_3d_h5_with_voxel_size(
             (voxel_size_x, voxel_size_y, voxel_size_z),
             voxel_meta_status,
         ) = _extract_h5_voxel_size(dataset, f)
+
+    if image.ndim == 2 and allow_2d:
+        return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")

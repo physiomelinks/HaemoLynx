@@ -45,6 +45,12 @@ def _write_mask(tmp_path: Path, mask: np.ndarray) -> Path:
     return path
 
 
+def _write_2d_mask(tmp_path: Path, mask: np.ndarray) -> Path:
+    path = tmp_path / "mask_2d.tif"
+    tifffile.imwrite(path, np.asarray(mask, dtype=np.uint8) * 255)
+    return path
+
+
 def test_thickness_gate_defaults_off_and_matches_the_locked_radius():
     assert SCHEMA["use_thick_vessel_skeletonisation"].default is False
     assert SCHEMA["skeleton_thick_vessel_min_radius_um"].default == pytest.approx(
@@ -193,3 +199,38 @@ def test_skeletonise_toggle_on_collapses_the_fat_sheet_and_keeps_capillaries(tmp
     assert braid_factor(volume.skeleton & thick, axis=2) < lee_braid
     capillaries = mask & ~fat_roi
     assert int((volume.skeleton & capillaries).sum()) > 0
+
+
+def test_skeletonise_loads_a_genuinely_2d_tiff_as_a_single_slice_volume_and_warns(
+    tmp_path, caplog
+):
+    """A 2D input reaches skeletonise() through the same input_path /
+    image_axis_order settings row as any other file -- no separate control
+    -- and comes out promoted to a (1, H, W) volume with a logged warning,
+    per haemolynx.io.load_2d.
+
+    skeleton_closing_radius is disabled here: its morphological closing
+    uses a 3D ball structuring element that erodes away a single-slice
+    volume entirely, a pre-existing limitation of that particular
+    genuinely-3D-specific operation (exactly the kind the loader's own
+    warning already tells a caller to check for), not something this
+    loading feature is responsible for fixing. Plain Lee skeletonisation
+    is dimension-generic and unaffected -- confirmed here on the actual
+    stage path, matching the isolated check already done for
+    skeletonize_volume."""
+    mask_2d = np.zeros((40, 40), dtype=bool)
+    mask_2d[20, 5:35] = True
+    mask_2d[5:35, 20] = True
+    settings = settings_for(
+        tmp_path,
+        _write_2d_mask(tmp_path, mask_2d),
+        skeleton_closing_radius=0,
+    )
+
+    with caplog.at_level("WARNING", logger="haemolynx.io.load_2d"):
+        volume = skeletonise(settings, segment(settings))
+
+    assert volume.skeleton.shape[0] == 1
+    assert volume.skeleton.shape[1:] == mask_2d.shape
+    assert int(volume.skeleton.sum()) > 0
+    assert any("2D image" in r.message for r in caplog.records)
