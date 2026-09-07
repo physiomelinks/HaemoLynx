@@ -1188,3 +1188,29 @@ def test_thick_vessel_row_relabels_when_large_vessel_network_mode_is_on(panel):
     assert rows["use_thick_vessel_skeletonisation"].label == original_label
 
 
+def test_turning_off_thick_vessel_skeletonisation_auto_disables_large_vessel_network_mode(panel):
+    """assign_large_vessel_branch_orders hard-requires
+    use_thick_vessel_skeletonisation (see pipeline.checks.
+    check_large_vessel_branch_order_mode_prerequisites, a preflight error,
+    not just a nested/greyed row) -- turning the prerequisite off must not
+    leave a config that fails preflight outright the next time Run is
+    pressed."""
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+
+    rows["use_thick_vessel_skeletonisation"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["automated_vessel_assignment"].value = True
+    rows["assign_large_vessel_branch_orders"].value = True
+    QApplication.processEvents()
+    assert bool(rows["assign_large_vessel_branch_orders"].value) is True
+
+    rows["use_thick_vessel_skeletonisation"].value = False
+    QApplication.processEvents()
+
+    assert bool(rows["assign_large_vessel_branch_orders"].value) is False
+
+

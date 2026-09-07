@@ -5198,6 +5198,27 @@ def settings_widget(napari_viewer=None):
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""
         values = current_values()
+
+        # assign_large_vessel_branch_orders hard-requires
+        # use_thick_vessel_skeletonisation (see pipeline.checks.
+        # check_large_vessel_branch_order_mode_prerequisites) -- a schema
+        # `requires` alone only nests/greys the row, it does not stop the
+        # raw value from staying True underneath, which is exactly what
+        # otherwise happens here: turning thickness-gating off to compare
+        # skeletonisation methods would silently carry forward a
+        # large-vessel-network config that fails preflight outright.
+        # Setting .value re-enters this function once (its own `changed`
+        # signal); the recursive call sees the corrected state and this
+        # branch is not true a second time, so it does not loop.
+        large_vessel_row = rows.get("assign_large_vessel_branch_orders")
+        if (
+            large_vessel_row is not None
+            and bool(large_vessel_row.value)
+            and not bool(values.get("use_thick_vessel_skeletonisation"))
+        ):
+            large_vessel_row.value = False
+            return
+
         place_shared_ilastik()
         for name, widget in rows.items():
             if name in SHARED_ILASTIK_SETTING_SET:
