@@ -124,6 +124,8 @@ STAGES: tuple[Stage, ...] = (
             # A read-only check on the skeleton this stage just built -- see
             # preprocessing.skeleton_consistency.
             "skeleton_mask_consistency_warn_below",
+            "missing_vessel_min_voxels",
+            "skeleton_missing_vessel_warn_below",
         ),
     ),
     Stage(
@@ -156,6 +158,7 @@ STAGES: tuple[Stage, ...] = (
             # diagnose_graph_mask_consistency.
             "skeleton_graph_consistency_warn_below",
             "graph_mask_consistency_warn_below",
+            "graph_missing_vessel_warn_below",
         ),
     ),
     Stage(

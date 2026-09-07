@@ -31,9 +31,11 @@ from .diagnostics import (
     diagnose_degree2_nodes,
     diagnose_graph_mask_consistency,
     diagnose_skeleton_graph_consistency,
+    diagnose_vessels_missing_from_graph,
     format_degree2_diagnostics_report,
     format_graph_mask_consistency_report,
     format_skeleton_graph_consistency_report,
+    format_vessels_missing_from_graph_report,
 )
 from .cartwheel_guard import (
     CartwheelHub,
@@ -149,9 +151,11 @@ __all__ = [
     "diagnose_degree2_nodes",
     "diagnose_graph_mask_consistency",
     "diagnose_skeleton_graph_consistency",
+    "diagnose_vessels_missing_from_graph",
     "format_degree2_diagnostics_report",
     "format_graph_mask_consistency_report",
     "format_skeleton_graph_consistency_report",
+    "format_vessels_missing_from_graph_report",
     "CartwheelHub",
     "detect_cartwheel_hubs",
     "format_cartwheel_hub_report",

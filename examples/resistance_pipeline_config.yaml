@@ -348,6 +348,12 @@ pipeline_stages:
   skeleton_min_component_percent: 10.0
   # Log a warning instead of an info line when fewer than this fraction of the segmented-image mask's own voxels sit within their own local radius of the skeleton -- see preprocessing.skeleton_consistency for what that measures and why. Checked whether the skeleton was just computed or loaded from cache, so this is not gated on do_skeletonize  [range 0.0..1.0]
   skeleton_mask_consistency_warn_below: 0.7
+  # A segmented-image connected component smaller than this many voxels is treated as noise, not a genuine vessel, and excluded from both missing-vessel checks below -- see preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton for why that floor matters on real, imperfectly segmented data  [range 1..]
+  missing_vessel_min_voxels: 2
+  # Log a warning instead of an info line when fewer than this fraction of the segmented image's genuine vessels (see missing_vessel_min_voxels) have any skeleton voxel at all -- the inverse of skeleton_mask_consistency_warn_below's per-voxel coverage: this catches a whole vessel dropped, not just imprecisely traced. See preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton. Checked whether the skeleton was just computed or loaded from cache, so this is not gated on do_skeletonize  [range 0.0..1.0]
+  skeleton_missing_vessel_warn_below: 1.0
+  # Log a warning instead of an info line when fewer than this fraction of the segmented image's genuine vessels (see missing_vessel_min_voxels) have any graph edge at all -- the inverse of graph_mask_consistency_warn_below's per-voxel coverage: this catches a whole vessel a topology-repair pass dropped, not just imprecisely traced. See graph.diagnostics.diagnose_vessels_missing_from_graph. Checked whether the graph was just built or loaded from cache, so this is not gated on do_graph_building  [range 0.0..1.0]
+  graph_missing_vessel_warn_below: 1.0
   # Give fat plasma-labelled vessels (inscribed radius above skeleton_thick_vessel_min_radius_um, 6 um by default) a centreline tree of every arm instead of Lee thinning; capillaries stay on Lee  [needs do_skeletonize]
   use_thick_vessel_skeletonisation: false
   # Inscribed radius above which a region is treated as fat rather than Lee-thinned  [um; range 0.0..; needs use_thick_vessel_skeletonisation]

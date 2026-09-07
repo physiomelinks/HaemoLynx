@@ -1,6 +1,7 @@
 """How well a skeleton represents its mask, a graph represents its skeleton,
-and a graph represents the original mask directly: hand-verified geometry,
-no pipeline involved.
+a graph represents the original mask directly, and -- the inverse question
+-- whether any genuine vessel is missing from the skeleton or graph
+entirely: hand-verified geometry, no pipeline involved.
 """
 from __future__ import annotations
 
@@ -11,12 +12,16 @@ import pytest
 from haemolynx.graph.diagnostics import (
     diagnose_graph_mask_consistency,
     diagnose_skeleton_graph_consistency,
+    diagnose_vessels_missing_from_graph,
     format_graph_mask_consistency_report,
     format_skeleton_graph_consistency_report,
+    format_vessels_missing_from_graph_report,
 )
 from haemolynx.preprocessing.skeleton_consistency import (
     diagnose_skeleton_mask_consistency,
+    diagnose_vessels_missing_from_skeleton,
     format_skeleton_mask_consistency_report,
+    format_vessels_missing_from_skeleton_report,
 )
 
 
@@ -552,3 +557,172 @@ def test_healthy_individual_checks_can_still_compound_into_a_poor_graph_mask_rea
     assert skeleton_mask["coverage_fraction"] == pytest.approx(1088 / 1400)
     assert skeleton_graph["coverage_fraction"] == pytest.approx(50 / 70)
     assert graph_mask["coverage_fraction"] == pytest.approx(555 / 1400)
+
+
+# --- diagnose_vessels_missing_from_skeleton (the inverse question) ---------
+
+
+def _two_vessels_and_a_noise_speck():
+    """Two well-separated 2-voxel-wide bars (16 voxels each) plus one
+    isolated single-voxel speck -- 3 connected components, only 2 of which
+    are big enough to count as a genuine vessel at the default
+    min_vessel_voxels=2."""
+    shape = (2, 20, 4)
+    mask = np.zeros(shape, dtype=bool)
+    mask[:, 2:4, :] = True   # vessel A: 16 voxels
+    mask[:, 10:12, :] = True  # vessel B: 16 voxels
+    mask[0, 16, 0] = True     # noise speck: 1 voxel
+    return mask
+
+
+def test_vessels_missing_from_skeleton_is_trivial_for_an_empty_mask():
+    empty = np.zeros((5, 5, 5), dtype=bool)
+    report = diagnose_vessels_missing_from_skeleton(empty, empty)
+    assert report == {
+        "vessel_count": 0,
+        "missing_vessel_count": 0,
+        "missing_vessel_voxel_counts": [],
+        "explained_vessel_fraction": 1.0,
+    }
+
+
+def test_a_vessel_with_no_skeleton_at_all_is_flagged_while_a_covered_one_is_not():
+    mask = _two_vessels_and_a_noise_speck()
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[:, 2, :] = True  # fully explains vessel A only; nothing near B
+
+    report = diagnose_vessels_missing_from_skeleton(skeleton, mask)
+
+    # The noise speck never counts as a vessel at the default floor.
+    assert report["vessel_count"] == 2
+    assert report["missing_vessel_count"] == 1
+    assert report["missing_vessel_voxel_counts"] == [16]
+    assert report["explained_vessel_fraction"] == pytest.approx(0.5)
+
+
+def test_an_empty_skeleton_flags_every_genuine_vessel_as_missing():
+    mask = _two_vessels_and_a_noise_speck()
+    report = diagnose_vessels_missing_from_skeleton(np.zeros(mask.shape, dtype=bool), mask)
+    assert report["vessel_count"] == 2
+    assert report["missing_vessel_count"] == 2
+    assert sorted(report["missing_vessel_voxel_counts"]) == [16, 16]
+    assert report["explained_vessel_fraction"] == pytest.approx(0.0)
+
+
+def test_min_vessel_voxels_controls_the_noise_size_floor():
+    """The same fixture's noise speck is excluded at the default floor, but
+    becomes a (missing) vessel of its own once the floor drops to 1."""
+    mask = _two_vessels_and_a_noise_speck()
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[:, 2, :] = True
+
+    default_floor = diagnose_vessels_missing_from_skeleton(skeleton, mask)
+    assert default_floor["vessel_count"] == 2
+
+    no_floor = diagnose_vessels_missing_from_skeleton(
+        skeleton, mask, min_vessel_voxels=1
+    )
+    assert no_floor["vessel_count"] == 3
+    assert no_floor["missing_vessel_count"] == 2
+    assert sorted(no_floor["missing_vessel_voxel_counts"]) == [1, 16]
+
+
+def test_missing_vessels_from_skeleton_uses_canonical_binarisation():
+    """Same Phase-9 canonical-binarisation fix as diagnose_skeleton_mask_
+    consistency: a 1/2-labelled mask must not be read as bare != 0."""
+    mask = np.full((6, 6, 6), 1, dtype=np.uint8)
+    mask[2:4, 2:4, 2:4] = 2  # minority label: the true foreground, 8 voxels
+    skeleton = np.zeros((6, 6, 6), dtype=bool)
+    skeleton[2:4, 2:4, 2:4] = True
+
+    report = diagnose_vessels_missing_from_skeleton(skeleton, mask)
+
+    assert report["vessel_count"] == 1  # not treating all 208 background voxels as vessels
+    assert report["missing_vessel_count"] == 0
+
+
+def test_vessels_missing_from_skeleton_report_formatter_reads_the_real_functions_own_keys():
+    mask = _two_vessels_and_a_noise_speck()
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[:, 2, :] = True
+
+    report = diagnose_vessels_missing_from_skeleton(skeleton, mask)
+    text = format_vessels_missing_from_skeleton_report(report)
+
+    assert str(report["missing_vessel_count"]) in text
+    assert str(report["vessel_count"]) in text
+    assert f"{report['explained_vessel_fraction']:.1%}" in text
+
+
+# --- diagnose_vessels_missing_from_graph (the inverse question) ------------
+
+
+def test_vessels_missing_from_graph_is_trivial_for_an_empty_mask():
+    empty = np.zeros((5, 5, 5), dtype=bool)
+    report = diagnose_vessels_missing_from_graph(nx.MultiGraph(), empty)
+    assert report == {
+        "vessel_count": 0,
+        "missing_vessel_count": 0,
+        "missing_vessel_voxel_counts": [],
+        "explained_vessel_fraction": 1.0,
+    }
+
+
+def test_a_vessel_with_no_graph_edge_at_all_is_flagged_while_a_covered_one_is_not():
+    mask = _two_vessels_and_a_noise_speck()
+    voxels = [[float(z), 2.0, float(x)] for z in range(2) for x in range(4)]
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array(voxels[0]))
+    G.add_node(1, pos=np.array(voxels[-1]))
+    G.add_edge(0, 1, length=1.0, voxels=voxels)  # traces vessel A only
+
+    report = diagnose_vessels_missing_from_graph(G, mask)
+
+    assert report["vessel_count"] == 2
+    assert report["missing_vessel_count"] == 1
+    assert report["missing_vessel_voxel_counts"] == [16]
+    assert report["explained_vessel_fraction"] == pytest.approx(0.5)
+
+
+def test_an_empty_graph_flags_every_genuine_vessel_as_missing():
+    mask = _two_vessels_and_a_noise_speck()
+    report = diagnose_vessels_missing_from_graph(nx.MultiGraph(), mask)
+    assert report["vessel_count"] == 2
+    assert report["missing_vessel_count"] == 2
+    assert report["explained_vessel_fraction"] == pytest.approx(0.0)
+
+
+def test_missing_vessels_from_graph_uses_canonical_binarisation():
+    mask = np.full((6, 6, 6), 1, dtype=np.uint8)
+    mask[2:4, 2:4, 2:4] = 2  # minority label: the true foreground, 8 voxels
+    voxels = [
+        [float(z), float(y), float(x)]
+        for z in range(2, 4)
+        for y in range(2, 4)
+        for x in range(2, 4)
+    ]
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array(voxels[0]))
+    G.add_node(1, pos=np.array(voxels[-1]))
+    G.add_edge(0, 1, length=1.0, voxels=voxels)
+
+    report = diagnose_vessels_missing_from_graph(G, mask)
+
+    assert report["vessel_count"] == 1
+    assert report["missing_vessel_count"] == 0
+
+
+def test_vessels_missing_from_graph_report_formatter_reads_the_real_functions_own_keys():
+    mask = _two_vessels_and_a_noise_speck()
+    voxels = [[float(z), 2.0, float(x)] for z in range(2) for x in range(4)]
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array(voxels[0]))
+    G.add_node(1, pos=np.array(voxels[-1]))
+    G.add_edge(0, 1, length=1.0, voxels=voxels)
+
+    report = diagnose_vessels_missing_from_graph(G, mask)
+    text = format_vessels_missing_from_graph_report(report)
+
+    assert str(report["missing_vessel_count"]) in text
+    assert str(report["vessel_count"]) in text
+    assert f"{report['explained_vessel_fraction']:.1%}" in text

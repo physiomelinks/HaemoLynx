@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, generate_binary_structure, label
 
 from .thick_vessels import inscribed_radius_map
 
@@ -47,6 +47,70 @@ def _explained_by_local_radius(
     else:
         distance_to_source = np.full(mask_bool.shape, np.inf)
     return mask_bool & (distance_to_source <= local_radius + discretisation_margin)
+
+
+def _missing_mask_components(
+    explained: np.ndarray,
+    mask_bool: np.ndarray,
+    *,
+    min_vessel_voxels: int,
+) -> dict[str, Any]:
+    """How many of *mask_bool*'s 26-connected components ("vessels") have no
+    ``True`` voxel at all in *explained* (see :func:`_explained_by_local_radius`).
+
+    This is the inverse question to the coverage-fraction checks above: those
+    measure how much of the mask's *volume* is well-traced, which a whole
+    small vessel going missing might barely move if it is a tiny fraction of
+    total volume; this instead asks, per discrete vessel, "is any of it
+    represented at all" -- catching a vessel dropped whole (e.g. by an
+    over-aggressive small-object or connectivity filter) that a single
+    blended percentage can hide.
+
+    A component with fewer than *min_vessel_voxels* voxels is not a genuine
+    vessel -- it is treated as segmentation noise and excluded from both the
+    count and the check. Real segmented volumes routinely carry a handful of
+    stray single-voxel thresholding specks alongside the actual vasculature;
+    without this floor, a healthy run that correctly leaves that noise
+    unskeletonised would otherwise report dozens of "missing vessels" that
+    were never vessels to begin with.
+
+    Shared by ``diagnose_vessels_missing_from_skeleton`` (this module) and
+    ``graph.diagnostics.diagnose_vessels_missing_from_graph``, which differ
+    only in what they pass as *explained*.
+    """
+    structure = generate_binary_structure(mask_bool.ndim, mask_bool.ndim)
+    labeled, n_components = label(mask_bool, structure=structure)
+    if n_components == 0:
+        return {
+            "vessel_count": 0,
+            "missing_vessel_count": 0,
+            "missing_vessel_voxel_counts": [],
+            "explained_vessel_fraction": 1.0,
+        }
+
+    sizes = np.bincount(labeled.ravel())
+    vessel_ids = [i for i in range(1, n_components + 1) if sizes[i] >= min_vessel_voxels]
+    if not vessel_ids:
+        return {
+            "vessel_count": 0,
+            "missing_vessel_count": 0,
+            "missing_vessel_voxel_counts": [],
+            "explained_vessel_fraction": 1.0,
+        }
+
+    missing_voxel_counts = [
+        int(sizes[vessel_id])
+        for vessel_id in vessel_ids
+        if not explained[labeled == vessel_id].any()
+    ]
+    vessel_count = len(vessel_ids)
+    missing_vessel_count = len(missing_voxel_counts)
+    return {
+        "vessel_count": vessel_count,
+        "missing_vessel_count": missing_vessel_count,
+        "missing_vessel_voxel_counts": missing_voxel_counts,
+        "explained_vessel_fraction": (vessel_count - missing_vessel_count) / vessel_count,
+    }
 
 
 def diagnose_skeleton_mask_consistency(
@@ -128,4 +192,49 @@ def format_skeleton_mask_consistency_report(report: dict[str, Any]) -> str:
         f"{report.get('mask_voxel_count', 0)} segmented-image voxels are "
         f"within their own local radius (plus discretisation margin) of the "
         f"skeleton ({report.get('coverage_fraction', 1.0):.1%})."
+    )
+
+
+def diagnose_vessels_missing_from_skeleton(
+    skeleton: np.ndarray,
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    min_vessel_voxels: int = 2,
+) -> dict[str, Any]:
+    """Whole segmented-image vessels the skeleton drops entirely.
+
+    The inverse question to :func:`diagnose_skeleton_mask_consistency`'s
+    coverage fraction: that measures how much of the mask's *volume* the
+    skeleton runs through, which can stay comfortably high even while an
+    entire small vessel is completely unrepresented, as long as it is a
+    small enough slice of total volume. This instead treats each connected
+    component of the mask as one candidate vessel and asks whether the
+    skeleton explains *any* of it at all -- see
+    :func:`_missing_mask_components` for why that per-vessel framing, and
+    the noise-vessel size floor, matter.
+
+    *mask* is read via the same canonical binarisation the other checks in
+    this family use (see :func:`diagnose_skeleton_mask_consistency`).
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    mask_bool = _to_binary_volume_for_skeletonization(mask)
+    skeleton_bool = np.asarray(skeleton, dtype=bool)
+    explained = _explained_by_local_radius(
+        skeleton_bool, mask_bool, voxel_size_zyx=voxel_size_zyx
+    )
+    return _missing_mask_components(
+        explained, mask_bool, min_vessel_voxels=min_vessel_voxels
+    )
+
+
+def format_vessels_missing_from_skeleton_report(report: dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_vessels_missing_from_skeleton`."""
+    return (
+        "Vessels missing from skeleton: "
+        f"{report.get('missing_vessel_count', 0)} of "
+        f"{report.get('vessel_count', 0)} segmented-image vessels have no "
+        f"skeleton voxel anywhere within their own local radius "
+        f"({report.get('explained_vessel_fraction', 1.0):.1%} represented)."
     )

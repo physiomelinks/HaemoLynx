@@ -323,3 +323,70 @@ def test_consistency_warn_below_settings_choose_the_right_log_level(tmp_path, ca
         assert not any(
             r.levelname == "WARNING" and substring in r.getMessage() for r in low_records
         ), f"{name}=0.0 must never produce a WARNING containing {substring!r}"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_missing_vessel_warn_below_settings_choose_the_right_log_level(tmp_path, caplog):
+    """Stage-wiring regression test for skeleton_missing_vessel_warn_below
+    and graph_missing_vessel_warn_below, mirroring the consistency test
+    above -- same rationale: a bug in the settings lookup/log-level choice
+    around diagnose_vessels_missing_from_skeleton/_graph would not be
+    caught by tests/test_skeleton_consistency_diagnostics.py's unit tests
+    on those functions alone.
+
+    missing_vessel_min_voxels=1 is set on both runs so the fixture's ~56
+    single-voxel noise specks count as vessels too, guaranteeing at least
+    one genuine miss regardless of collapse method -- at the default
+    min_vessel_voxels=2 this fixture has only one real vessel, which the
+    skeleton/graph do explain, so there would be nothing to warn about at
+    warn_below=1.0 either.
+    """
+    schema = default_schema()
+    checks = (
+        ("skeleton_missing_vessel_warn_below", "Vessels missing from skeleton"),
+        ("graph_missing_vessel_warn_below", "Vessels missing from graph"),
+    )
+
+    def _settings(**overrides):
+        values = {setting.name: setting.default for setting in schema}
+        values.update(
+            {
+                "input_path": FIXTURE,
+                "vtk_output_prefix": tmp_path / overrides.pop("run_name"),
+                "plot_dir": tmp_path / "plots",
+                "statistics": False,
+                "show_plots_in_ide": False,
+                "interactive_plots": False,
+                "missing_vessel_min_voxels": 1,
+            }
+        )
+        values.update(overrides)
+        return resolve_settings(values, schema=schema, config_path=None)
+
+    # 1.0 is the schema default, and this fixture's noise specks (once
+    # counted as vessels via min_vessel_voxels=1) are guaranteed missing.
+    warn_high = _settings(run_name="warn_high", **{name: 1.0 for name, _ in checks})
+    # 0.0 is at or below any achievable explained_vessel_fraction --
+    # guaranteed to never warn on either.
+    warn_low = _settings(run_name="warn_low", **{name: 0.0 for name, _ in checks})
+
+    with caplog.at_level(logging.INFO, logger="haemolynx.pipeline.stages"):
+        caplog.clear()
+        run_pipeline_stages(warn_high, schema)
+        high_records = list(caplog.records)
+
+        caplog.clear()
+        run_pipeline_stages(warn_low, schema)
+        low_records = list(caplog.records)
+
+    for name, substring in checks:
+        assert any(
+            r.levelname == "WARNING" and substring in r.getMessage() for r in high_records
+        ), f"{name}=1.0 should have produced a WARNING containing {substring!r}"
+        assert any(
+            r.levelname == "INFO" and substring in r.getMessage() for r in low_records
+        ), f"{name}=0.0 should have produced an INFO line containing {substring!r}"
+        assert not any(
+            r.levelname == "WARNING" and substring in r.getMessage() for r in low_records
+        ), f"{name}=0.0 must never produce a WARNING containing {substring!r}"

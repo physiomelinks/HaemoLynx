@@ -240,3 +240,54 @@ def format_graph_mask_consistency_report(report: Dict[str, Any]) -> str:
         f"within their own local radius (plus discretisation margin) of "
         f"the graph's edges ({report.get('coverage_fraction', 1.0):.1%})."
     )
+
+
+def diagnose_vessels_missing_from_graph(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    min_vessel_voxels: int = 2,
+) -> Dict[str, Any]:
+    """Whole segmented-image vessels the finished graph drops entirely.
+
+    The graph-side counterpart of
+    ``preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton``
+    -- the inverse question to :func:`diagnose_graph_mask_consistency`'s
+    coverage fraction, which can stay high even while a whole small vessel
+    is unrepresented, as long as it is a small enough slice of total
+    volume. This instead treats each connected component of the mask as
+    one candidate vessel and asks whether the graph's own rasterised edges
+    explain *any* of it at all -- catching a vessel a topology-repair pass
+    (pruning, orphan removal, cluster collapse) dropped whole, which a
+    single blended percentage can hide. See
+    ``preprocessing.skeleton_consistency._missing_mask_components`` for the
+    noise-vessel size floor and why it matters.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.skeleton_consistency import (
+        _explained_by_local_radius,
+        _missing_mask_components,
+    )
+
+    mask_bool = _to_binary_volume_for_skeletonization(mask)
+    spacing = np.asarray([float(v) for v in voxel_size_zyx], dtype=float)
+    covered = _rasterize_graph_edges(G, mask_bool.shape, spacing)
+
+    explained = _explained_by_local_radius(
+        covered, mask_bool, voxel_size_zyx=voxel_size_zyx
+    )
+    return _missing_mask_components(
+        explained, mask_bool, min_vessel_voxels=min_vessel_voxels
+    )
+
+
+def format_vessels_missing_from_graph_report(report: Dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_vessels_missing_from_graph`."""
+    return (
+        "Vessels missing from graph: "
+        f"{report.get('missing_vessel_count', 0)} of "
+        f"{report.get('vessel_count', 0)} segmented-image vessels have no "
+        f"graph edge anywhere within their own local radius "
+        f"({report.get('explained_vessel_fraction', 1.0):.1%} represented)."
+    )

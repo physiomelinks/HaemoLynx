@@ -32,7 +32,9 @@ from .thick_vessel_braid_guard import (
 )
 from .skeleton_consistency import (
     diagnose_skeleton_mask_consistency,
+    diagnose_vessels_missing_from_skeleton,
     format_skeleton_mask_consistency_report,
+    format_vessels_missing_from_skeleton_report,
 )
 
 __all__ = [
@@ -63,4 +65,6 @@ __all__ = [
     "format_braided_thick_vessel_report",
     "diagnose_skeleton_mask_consistency",
     "format_skeleton_mask_consistency_report",
+    "diagnose_vessels_missing_from_skeleton",
+    "format_vessels_missing_from_skeleton_report",
 ]

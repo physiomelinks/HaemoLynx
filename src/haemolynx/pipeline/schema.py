@@ -1843,6 +1843,55 @@ SCHEMA = Schema(
             maximum=1.0,
         ),
         Setting(
+            name="missing_vessel_min_voxels",
+            kind="int",
+            default=2,
+            help=(
+                "A segmented-image connected component smaller than this many voxels is "
+                "treated as noise, not a genuine vessel, and excluded from both missing-"
+                "vessel checks below -- see "
+                "preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton "
+                "for why that floor matters on real, imperfectly segmented data"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=1,
+        ),
+        Setting(
+            name="skeleton_missing_vessel_warn_below",
+            kind="float",
+            default=1.0,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the segmented image's genuine vessels (see missing_vessel_min_voxels) "
+                "have any skeleton voxel at all -- the inverse of skeleton_mask_"
+                "consistency_warn_below's per-voxel coverage: this catches a whole "
+                "vessel dropped, not just imprecisely traced. See preprocessing."
+                "skeleton_consistency.diagnose_vessels_missing_from_skeleton. Checked "
+                "whether the skeleton was just computed or loaded from cache, so this is "
+                "not gated on do_skeletonize"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        Setting(
+            name="graph_missing_vessel_warn_below",
+            kind="float",
+            default=1.0,
+            help=(
+                "Log a warning instead of an info line when fewer than this fraction of "
+                "the segmented image's genuine vessels (see missing_vessel_min_voxels) "
+                "have any graph edge at all -- the inverse of graph_mask_consistency_"
+                "warn_below's per-voxel coverage: this catches a whole vessel a topology-"
+                "repair pass dropped, not just imprecisely traced. See graph.diagnostics."
+                "diagnose_vessels_missing_from_graph. Checked whether the graph was just "
+                "built or loaded from cache, so this is not gated on do_graph_building"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        Setting(
             name="use_thick_vessel_skeletonisation",
             kind="bool",
             default=False,

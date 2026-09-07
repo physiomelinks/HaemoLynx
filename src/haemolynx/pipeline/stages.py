@@ -548,6 +548,24 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     else:
         logger.info(consistency_report)
 
+    # Read-only check on the same skeleton/image pair, the inverse question:
+    # not how well-traced the mask is overall, but whether any genuine
+    # vessel is missing from the skeleton entirely -- see
+    # preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton.
+    missing_vessels = preprocessing.diagnose_vessels_missing_from_skeleton(
+        skeleton, image, voxel_size_zyx=voxel_size_zyx,
+        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+    )
+    missing_vessels_report = preprocessing.format_vessels_missing_from_skeleton_report(
+        missing_vessels
+    )
+    if missing_vessels["explained_vessel_fraction"] < float(
+        settings["skeleton_missing_vessel_warn_below"]
+    ):
+        logger.warning(missing_vessels_report)
+    else:
+        logger.info(missing_vessels_report)
+
     return SkeletonisedVolume(
         image=image,
         skeleton=skeleton,
@@ -821,6 +839,24 @@ def build_network(
         logger.warning(graph_mask_consistency_report)
     else:
         logger.info(graph_mask_consistency_report)
+
+    # Read-only check on the same graph/image pair, the inverse question:
+    # not how well-traced the mask is overall, but whether any genuine
+    # vessel is missing from the graph entirely -- see
+    # graph.diagnostics.diagnose_vessels_missing_from_graph. Never changes G.
+    missing_vessels = graph.diagnose_vessels_missing_from_graph(
+        G, image, voxel_size_zyx=voxel_size_zyx,
+        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+    )
+    missing_vessels_report = graph.format_vessels_missing_from_graph_report(
+        missing_vessels
+    )
+    if missing_vessels["explained_vessel_fraction"] < float(
+        settings["graph_missing_vessel_warn_below"]
+    ):
+        logger.warning(missing_vessels_report)
+    else:
+        logger.info(missing_vessels_report)
 
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:
