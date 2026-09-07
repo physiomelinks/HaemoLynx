@@ -1162,7 +1162,24 @@ class ResultLayers:
         if image is not None:
             display_image = image
             value_range = binary_value_range(image)
-            if value_range is None:
+            if value_range is not None:
+                # binary_value_range only tells us the image is two-valued,
+                # not which value is foreground -- an ilastik export's class
+                # labels carry no relation to which one is the minority
+                # (e.g. 1=vessel/10%, 2=background/90% is exactly as likely
+                # as the reverse). Using (low, high) directly as
+                # contrast_limits assumes low=background, which silently
+                # inverts the mask whenever the smaller label number happens
+                # to be the foreground: the real vessel becomes transparent
+                # and the majority background becomes the opaque colour,
+                # rendering as a solid box. Binarizing through the same
+                # canonical foreground split the pipeline itself uses keeps
+                # the display always agreeing with what gets skeletonized.
+                from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+                display_image = _to_binary_volume_for_skeletonization(image)
+                value_range = (0.0, 1.0)
+            else:
                 binarized = binarize_for_display(image)
                 if binarized is not None:
                     display_image = binarized

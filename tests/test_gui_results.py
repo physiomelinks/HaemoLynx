@@ -1618,13 +1618,20 @@ def test_a_binary_segmented_image_gets_translucent_mask_style_options():
     """0/1, 1/2 and 0/255 must all be recognised and treated the same way --
     a plain 'gray' colormap has no notion of background, so a dense vessel
     volume rendered that way turns solid (MIP-family rendering shows only
-    the single brightest sample per ray). See results.BINARY_IMAGE_VOLUME_OPTIONS."""
-    from haemolynx.gui.results import BINARY_IMAGE_VOLUME_OPTIONS, SEGMENTED_IMAGE_COLOUR
+    the single brightest sample per ray). See results.BINARY_IMAGE_VOLUME_OPTIONS.
 
-    for image, expected_range in (
-        (np.array([[[0, 1], [1, 0]]], dtype=np.uint8), (0.0, 1.0)),
-        (np.array([[[1, 2], [2, 1]]], dtype=np.uint8), (1.0, 2.0)),
-        (np.array([[[0, 255], [255, 0]]], dtype=np.uint8), (0.0, 255.0)),
+    The displayed data is always the canonically-binarized boolean array,
+    with contrast_limits pinned at (0.0, 1.0) -- not the image's own raw
+    (low, high) -- so which raw label number is foreground never matters;
+    see test_a_binary_segmented_image_with_minority_low_value_is_not_inverted
+    for the real-world case this distinction actually protects against."""
+    from haemolynx.gui.results import BINARY_IMAGE_VOLUME_OPTIONS, SEGMENTED_IMAGE_COLOUR
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    for image in (
+        np.array([[[0, 1], [1, 0]]], dtype=np.uint8),
+        np.array([[[1, 2], [2, 1]]], dtype=np.uint8),
+        np.array([[[0, 255], [255, 0]]], dtype=np.uint8),
     ):
         group = ResultLayers().stage_finished(
             "skeletonise",
@@ -1636,7 +1643,8 @@ def test_a_binary_segmented_image_gets_translucent_mask_style_options():
             ),
         )
         spec = spec_named(group, IMAGE)
-        assert spec.contrast_limits == expected_range
+        assert spec.contrast_limits == (0.0, 1.0)
+        assert np.array_equal(spec.data, _to_binary_volume_for_skeletonization(image))
         assert spec.options["mask_colour"] == SEGMENTED_IMAGE_COLOUR
         # Literal expected values, not BINARY_IMAGE_VOLUME_OPTIONS itself --
         # comparing against the same constant the spec is built from could
@@ -1649,6 +1657,37 @@ def test_a_binary_segmented_image_gets_translucent_mask_style_options():
         assert set(BINARY_IMAGE_VOLUME_OPTIONS) == {
             "blending", "rendering", "interpolation2d", "interpolation3d",
         }
+
+
+def test_a_binary_segmented_image_with_minority_low_value_is_not_inverted():
+    """Regression test for a real production bug: an ilastik export's class
+    label numbering carries no relation to which class is the minority --
+    1=vessel (10%)/2=background (90%) is exactly as likely as the reverse.
+    Using the image's raw (low, high) as contrast_limits assumes low is
+    background, which silently inverts the mask whenever, as here, the
+    lower label number is actually the minority foreground: the real
+    vessel structure would map to the transparent end of the colormap and
+    the majority background to the opaque end, rendering as a solid box
+    even though binary_value_range correctly detected a binary-ish image."""
+    image = np.full((4, 4, 4), 2, dtype=np.uint8)  # 90% background, label 2
+    image[0, 0, 0:6] = 1  # 10% foreground, the minority, label 1 (< 2)
+
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=image,
+            skeleton=np.zeros(image.shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    spec = spec_named(group, IMAGE)
+
+    assert spec.contrast_limits == (0.0, 1.0)
+    # The minority label (1) is what gets treated True/opaque, matching
+    # what the pipeline itself skeletonizes -- not the numerically higher
+    # majority label, which the old (low, high) contrast_limits favoured.
+    assert np.array_equal(spec.data, image == 1)
 
 
 def test_a_majority_background_label_image_also_gets_translucent_mask_style_options():
