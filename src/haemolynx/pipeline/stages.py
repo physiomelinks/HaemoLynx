@@ -386,6 +386,7 @@ def _skeletonize_loaded_mask(
             max_bridge_radius_multiple=settings[
                 "skeleton_thick_vessel_max_bridge_radius_multiple"
             ],
+            max_bridge_distance_um=settings["skeleton_thick_vessel_max_bridge_distance_um"],
             bridge_radius_smoothing_um=float(
                 settings["skeleton_thick_vessel_bridge_radius_smoothing_um"]
             ),

@@ -66,6 +66,35 @@ def test_skeletonise_toggle_off_leaves_the_fat_sheet_on_lee(tmp_path):
     assert braid_factor(volume.skeleton & thick, axis=2) > BRAID_FACTOR_LIMIT
 
 
+def test_skeletonise_forwards_max_bridge_distance_um_setting(tmp_path, monkeypatch):
+    """Stage-wiring regression test: skeleton_thick_vessel_max_bridge_distance_um
+    must reach skeletonize_thickness_gated's own max_bridge_distance_um
+    parameter -- the lower levels (thick_vessels.py) are already pinned,
+    but nothing previously checked the settings-dict key this stage reads
+    actually matches the one wired through."""
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.skeletonize_thickness_gated
+
+    def spy(*args, **kwargs):
+        captured["max_bridge_distance_um"] = kwargs.get("max_bridge_distance_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "skeletonize_thickness_gated", spy)
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_max_bridge_distance_um=37.0,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["max_bridge_distance_um"] == pytest.approx(37.0)
+
+
 def test_skeletonise_toggle_on_collapses_the_fat_sheet_and_keeps_capillaries(tmp_path):
     mask, fat_roi = plasma_labelled_object(8.0)
     lee_braid = lee_braid_factor(fat_roi, axis=2)

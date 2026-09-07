@@ -1982,6 +1982,29 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="skeleton_thick_vessel_max_bridge_distance_um",
+            kind="float",
+            default=None,
+            help=(
+                "A fixed cap, in microns, on how far a thin vessel arm may "
+                "bridge to reach the fat centreline -- independent of local "
+                "radius, so the tighter of this and "
+                "skeleton_thick_vessel_max_bridge_radius_multiple applies. "
+                "Useful when the radius-based cap alone is too tight: an "
+                "arm's nearest attachment point sits right at the fat/thin "
+                "classification boundary, where local radius reads close to "
+                "its own minimum even for a trunk that is genuinely wide a "
+                "short distance further along the same ridge. Leave unset "
+                "to use the radius-based cap alone"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+            placeholder="auto",
+        ),
+        Setting(
             name="skeleton_thick_vessel_bridge_radius_smoothing_um",
             kind="float",
             default=10.0,

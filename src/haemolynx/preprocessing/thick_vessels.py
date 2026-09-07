@@ -1261,6 +1261,7 @@ def skeletonize_thickness_gated(
     wall_absorption_um: float | None = None,
     flake_filter_um: float | None = None,
     max_bridge_radius_multiple: float | None = None,
+    max_bridge_distance_um: float | None = None,
     bridge_radius_smoothing_um: float = 10.0,
     return_thick_mask: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
@@ -1292,6 +1293,15 @@ def skeletonize_thickness_gated(
     major trunk's own radius is typically many times that threshold and an
     arm attaching to it must cross roughly that much distance to reach its
     centreline. ``None`` leaves the join search unbounded; see
+    :func:`_join_thin_arms_to_fat_ridge`.
+
+    *max_bridge_distance_um*, when given, is an additional fixed cap in
+    microns, independent of local radius -- the tighter of the two applies
+    when both are given. Useful when the radius-based cap alone is too
+    tight (the candidate point sits right at the fat/thin classification
+    boundary, where local radius reads close to its own minimum even for a
+    trunk that is genuinely wide a short distance further along the same
+    ridge) or too loose for a particular dataset; see
     :func:`_join_thin_arms_to_fat_ridge`.
 
     *bridge_radius_smoothing_um* widens that local-radius reading to the
@@ -1394,6 +1404,7 @@ def skeletonize_thickness_gated(
         voxel_size_zyx=voxel_size_zyx,
         min_arm_extent_voxels=min_arm_extent,
         max_bridge_radius_multiple=max_bridge_radius_multiple,
+        max_bridge_distance_um=max_bridge_distance_um,
         radius_smoothing_um=bridge_radius_smoothing_um,
     ).astype(bool)
     t_join = time.perf_counter() - t3

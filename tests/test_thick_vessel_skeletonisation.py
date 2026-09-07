@@ -896,6 +896,34 @@ def test_no_cap_leaves_the_join_search_unbounded_as_before():
     assert n_cc == 1
 
 
+def test_skeletonize_thickness_gated_forwards_max_bridge_distance_um(monkeypatch):
+    """Stage-wiring regression test: skeletonize_thickness_gated's own
+    max_bridge_distance_um parameter must reach _join_thin_arms_to_fat_ridge
+    unchanged -- the low-level behaviour above is already pinned, but
+    nothing previously checked that this higher-level function (what
+    pipeline/stages.py actually calls) forwards it at all."""
+    import haemolynx.preprocessing.thick_vessels as thick_vessels_module
+
+    captured = {}
+    real = thick_vessels_module._join_thin_arms_to_fat_ridge
+
+    def spy(*args, **kwargs):
+        captured["max_bridge_distance_um"] = kwargs.get("max_bridge_distance_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(thick_vessels_module, "_join_thin_arms_to_fat_ridge", spy)
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    skeletonize_thickness_gated(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        max_bridge_distance_um=42.0,
+    )
+
+    assert captured["max_bridge_distance_um"] == pytest.approx(42.0)
+
+
 def _wide_trunk_arm_fixture(*, radius: int, gap: int, margin: int | None = None):
     """A fat trunk whose own local half-width (Y axis) is `radius` voxels,
     with a single already-drawn ridge point at its centre, and a thin arm
