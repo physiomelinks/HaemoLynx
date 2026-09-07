@@ -1555,6 +1555,65 @@ def test_binary_value_range_is_none_for_a_blank_or_genuine_grayscale_array():
     assert binary_value_range(np.array([], dtype=np.uint8)) is None
 
 
+def test_binarize_for_display_catches_a_majority_background_label_image():
+    """Regression test: a real segmented image is not always exactly
+    two-valued -- an ilastik "Simple Segmentation" export can carry a
+    handful of unclassified-border pixels at 0 alongside its 1/2 class
+    labels, which binary_value_range (exactly two values only) reads as
+    "genuine grayscale", rendering an apparently solid opaque box in 3D
+    even though the binary-image rendering fix is otherwise working.
+
+    A background value covering the overwhelming majority of voxels (here
+    98.7%) is what actually distinguishes this from real grayscale content,
+    which essentially never lands on a handful of distinct values with one
+    of them this dominant -- see test_binarize_for_display_is_none_for_a_
+    genuinely_grayscale_small_sample below for the contrasting case.
+    """
+    from haemolynx.gui.results import binarize_for_display
+
+    image = np.ones((10, 10, 10), dtype=np.uint8)  # background label: 987 voxels
+    image[0, 0, 0:5] = 0  # 5 stray unclassified-border voxels
+    image[5:7, 5:7, 5:7] = 2  # 8 voxels: the true minority foreground
+
+    result = binarize_for_display(image)
+
+    assert result is not None
+    assert result.dtype == bool
+    assert result.shape == image.shape
+    assert np.array_equal(result, image == 2)
+
+
+def test_binarize_for_display_is_none_for_a_genuinely_grayscale_small_sample():
+    """The same tiny four-pixel fixture test_a_grayscale_segmented_image_
+    keeps_the_plain_gray_colormap uses: four distinct values with no
+    majority at all (25% each) -- comfortably short of the >50% bar a real
+    background-dominated segmentation mask clears, so this must stay None
+    and let the image keep its plain grayscale colormap."""
+    from haemolynx.gui.results import binarize_for_display
+
+    assert binarize_for_display(np.array([[[0, 10], [40, 120]]], dtype=np.uint8)) is None
+
+
+def test_binarize_for_display_is_none_outside_the_three_or_four_value_window():
+    from haemolynx.gui.results import binarize_for_display
+
+    # Exactly two values is binary_value_range's job, not this function's.
+    two_valued = np.zeros((10, 10, 10), dtype=np.uint8)
+    two_valued[0, 0, 0] = 1
+    assert binarize_for_display(two_valued) is None
+
+    # More than four distinct values, even with a dominant majority, is
+    # past io.load._to_binary_volume_for_skeletonization's own small-label-
+    # set cutoff -- deliberately not mirrored here.
+    five_valued = np.zeros((10, 10, 10), dtype=np.uint8)
+    five_valued.ravel()[:5] = [1, 2, 3, 4, 5]
+    assert binarize_for_display(five_valued) is None
+
+    # Blank and non-integer input.
+    assert binarize_for_display(np.array([], dtype=np.uint8)) is None
+    assert binarize_for_display(np.ones((3, 3, 3), dtype=np.float32)) is None
+
+
 def test_a_binary_segmented_image_gets_translucent_mask_style_options():
     """0/1, 1/2 and 0/255 must all be recognised and treated the same way --
     a plain 'gray' colormap has no notion of background, so a dense vessel
@@ -1590,6 +1649,37 @@ def test_a_binary_segmented_image_gets_translucent_mask_style_options():
         assert set(BINARY_IMAGE_VOLUME_OPTIONS) == {
             "blending", "rendering", "interpolation2d", "interpolation3d",
         }
+
+
+def test_a_majority_background_label_image_also_gets_translucent_mask_style_options():
+    """The same fix as above, for the case binary_value_range alone cannot
+    catch: a segmented image with a stray third label value (see
+    test_binarize_for_display_catches_a_majority_background_label_image).
+    The displayed data becomes the binarised boolean array, not the
+    original 0/1/2 image, so a 3-stop-colormap ambiguity never arises."""
+    from haemolynx.gui.results import BINARY_IMAGE_VOLUME_OPTIONS, SEGMENTED_IMAGE_COLOUR
+
+    image = np.ones((10, 10, 10), dtype=np.uint8)
+    image[0, 0, 0:5] = 0
+    image[5:7, 5:7, 5:7] = 2
+
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=image,
+            skeleton=np.zeros(image.shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    spec = spec_named(group, IMAGE)
+
+    assert spec.contrast_limits == (0.0, 1.0)
+    assert spec.options["mask_colour"] == SEGMENTED_IMAGE_COLOUR
+    for key, value in BINARY_IMAGE_VOLUME_OPTIONS.items():
+        assert spec.options[key] == value
+    assert spec.data.dtype == bool
+    assert np.array_equal(spec.data, image == 2)
 
 
 def test_a_grayscale_segmented_image_keeps_the_plain_gray_colormap():

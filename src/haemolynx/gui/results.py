@@ -147,6 +147,50 @@ def binary_value_range(data: Any) -> tuple[float, float] | None:
         return None
     return (low, high)
 
+
+def binarize_for_display(data: Any) -> np.ndarray | None:
+    """The already-binarised array to render *data* as a transparent-
+    background mask, for a segmented image ``binary_value_range`` misses --
+    or ``None`` when *data* does not look like a segmentation mask at all.
+
+    A real segmented image is not always exactly two-valued the way
+    ``binary_value_range`` requires: an ilastik "Simple Segmentation"
+    export, for instance, can carry a handful of unclassified-border pixels
+    at 0 alongside its 1/2 class labels, three distinct values where
+    ``binary_value_range`` sees "genuine grayscale" and falls back to a
+    flat, opaque colour block -- the segmented image rendering an
+    apparently solid box in 3D even though the earlier binary-image fix is
+    otherwise working exactly as designed.
+
+    Confidently a mask, not real grayscale: an integer array with 3 or 4
+    distinct values (matching ``io.load._to_binary_volume_for_skeletonization``'s
+    own small-label-set heuristic -- beyond 4 it falls back to an
+    Otsu-style threshold instead, which this deliberately does not mirror)
+    where one value covers more than half of all voxels. A tiny grayscale
+    sample can easily land on 3-4 distinct integer values too, but real
+    image content essentially never splits into a handful of values with no
+    majority at all the way a background-dominated segmentation mask does
+    -- a real production volume with 89.8% background is comfortably past
+    this bar, while a synthetic four-pixel grayscale fixture with one of
+    each value (25% each) is comfortably short of it.
+
+    Reuses the pipeline's own canonical binarisation for the actual
+    foreground split once this check passes, so what is displayed always
+    matches what the pipeline analyses.
+    """
+    array = np.asarray(data)
+    if array.size == 0 or not np.issubdtype(array.dtype, np.integer):
+        return None
+    _values, counts = np.unique(array, return_counts=True)
+    if _values.size not in (3, 4):
+        return None
+    if float(counts.max()) / float(array.size) <= 0.5:
+        return None
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    return _to_binary_volume_for_skeletonization(array)
+
+
 #: The fixed names this module emits -- one set of layers per run, whatever the
 #: settings say. It is *not* the whole set any more: a perturbation's layers are
 #: named after the perturbation, so they cannot be enumerated ahead of a run.
@@ -1116,7 +1160,13 @@ class ResultLayers:
         self._image_shape_z = int(np.asarray(image).shape[0]) if image is not None else None
         layers: list[LayerSpec] = []
         if image is not None:
+            display_image = image
             value_range = binary_value_range(image)
+            if value_range is None:
+                binarized = binarize_for_display(image)
+                if binarized is not None:
+                    display_image = binarized
+                    value_range = (0.0, 1.0)
             if value_range is not None:
                 image_options: dict[str, Any] = {
                     **BINARY_IMAGE_VOLUME_OPTIONS,
@@ -1125,7 +1175,7 @@ class ResultLayers:
             else:
                 image_options = {"blending": "additive", "colormap": "gray"}
             layers.append(
-                LayerSpec(kind="image", name=IMAGE, data=image, scale=scale,
+                LayerSpec(kind="image", name=IMAGE, data=display_image, scale=scale,
                           options=image_options, contrast_limits=value_range)
             )
         if skeleton is not None:
