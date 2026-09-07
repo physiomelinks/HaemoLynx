@@ -363,7 +363,7 @@ def _load_volume_for_skeletonise(settings: dict, input_format: str):
 
 
 def _thick_vessel_restriction_mask(
-    image_shape: tuple[int, ...], settings: dict, voxel_size_xyz
+    binary_image: np.ndarray, settings: dict, voxel_size_xyz
 ) -> np.ndarray | None:
     """Union of the configured large/small vessel masks, per
     ``skeleton_thick_vessel_restrict_to_mask`` -- or ``None`` for no
@@ -376,11 +376,19 @@ def _thick_vessel_restriction_mask(
     masks through ``SkeletonisedVolume``: every stage that needs a vessel
     mask already reloads it independently rather than trusting an earlier
     stage's state, and this keeps the checkpoint/resume format untouched.
+
+    *binary_image* is the already-binarised segmented image (not just its
+    shape) -- needed to log a per-mask alignment warning when a loaded
+    mask's own voxels mostly do not fall on it at all; see
+    preprocessing.diagnose_mask_restriction_alignment for what that
+    measures and why a low fraction matters here specifically.
     """
     choice = str(settings["skeleton_thick_vessel_restrict_to_mask"]).strip().lower()
     if choice == "off":
         return None
+    image_shape = binary_image.shape
     restriction = np.zeros(image_shape, dtype=bool)
+    role_masks: dict[str, np.ndarray] = {}
     if choice in ("large", "both"):
         large_arteriole_mask, large_venule_mask, *_ = io.load_and_validate_vessel_masks(
             **io.vessel_mask_arguments(settings, "large"),
@@ -389,8 +397,10 @@ def _thick_vessel_restriction_mask(
         )
         if large_arteriole_mask is not None:
             restriction |= large_arteriole_mask
+            role_masks["large_arteriole_mask"] = large_arteriole_mask
         if large_venule_mask is not None:
             restriction |= large_venule_mask
+            role_masks["large_venule_mask"] = large_venule_mask
     if choice in ("small", "both"):
         small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
             **io.vessel_mask_arguments(settings, "small"),
@@ -399,8 +409,21 @@ def _thick_vessel_restriction_mask(
         )
         if small_arteriole_mask is not None:
             restriction |= small_arteriole_mask
+            role_masks["small_arteriole_mask"] = small_arteriole_mask
         if small_venule_mask is not None:
             restriction |= small_venule_mask
+            role_masks["small_venule_mask"] = small_venule_mask
+
+    warn_below = float(settings["skeleton_thick_vessel_restrict_to_mask_warn_below"])
+    for report in preprocessing.diagnose_mask_restriction_alignment(
+        role_masks, binary_image
+    ):
+        message = preprocessing.format_mask_restriction_alignment_report(report)
+        if report["overlap_fraction"] < warn_below:
+            logger.warning(message)
+        else:
+            logger.info(message)
+
     return restriction
 
 
@@ -423,7 +446,7 @@ def _skeletonize_loaded_mask(
             fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
             wall_absorption_um=settings["skeleton_thick_vessel_wall_absorption_um"],
             restrict_thick_to_mask=_thick_vessel_restriction_mask(
-                image.shape, settings, voxel_size_xyz
+                binary, settings, voxel_size_xyz
             ),
             flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
             max_bridge_radius_multiple=settings[

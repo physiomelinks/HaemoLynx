@@ -20,7 +20,9 @@ from haemolynx.preprocessing import (
     BRAID_FACTOR_LIMIT,
     THICK_VESSEL_MIN_RADIUS_UM,
     braid_factor,
+    diagnose_mask_restriction_alignment,
     foreground_volume_um3,
+    format_mask_restriction_alignment_report,
     lee_braid_factor,
     max_inscribed_radius_um,
     needs_thick_vessel_treatment,
@@ -714,12 +716,14 @@ def test_wall_absorption_um_override_shrinks_the_catchment_monotonically():
     assert int(zeroed.sum()) < int(lowered.sum()) < int(default.sum())
 
 
-def test_restrict_to_mask_excludes_the_uncorroborated_half_of_a_fat_trunk():
-    """restrict_to_mask corroborates the geometric fat/thick classification
-    against independent ground truth (e.g. a known large-vessel mask): a
-    voxel only ends up in the final catchment if it is also inside the
-    restriction, even though the geodesic reconstruction (steps 1-2) still
-    traces the whole trunk's true shape using the real geometry alone."""
+def test_restrict_to_mask_seeds_directly_from_the_mask_not_from_radius():
+    """restrict_to_mask is authoritative: the restricted half of a fat trunk
+    becomes fat from mask membership alone (with wall_absorption_um=0.0, so
+    there is no dilation to blur the boundary), not from the geodesic
+    core/corridor steps -- those do not even run when a restriction is
+    given. See test_restrict_to_mask_ignores_min_radius_um_entirely for the
+    case this is actually for: a real vessel too narrow to seed a core at
+    all without the mask."""
     radius = THICK_VESSEL_MIN_RADIUS_UM + 2.0
     length = 40
     shape = (int(2 * radius + 16), int(2 * radius + 16), length + 16)
@@ -738,14 +742,79 @@ def test_restrict_to_mask_excludes_the_uncorroborated_half_of_a_fat_trunk():
         mask,
         min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
         voxel_size_zyx=SPACING_ZYX,
+        wall_absorption_um=0.0,
         restrict_to_mask=restriction,
     )
 
     assert restricted.any(), "the corroborated half must still be classified fat"
-    assert int((restricted & ~restriction).sum()) == 0, (
-        "nothing outside the restriction may be classified fat"
-    )
+    np.testing.assert_array_equal(restricted, mask & restriction)
     assert int(restricted.sum()) < int(unrestricted.sum())
+
+
+def test_restrict_to_mask_ignores_min_radius_um_entirely():
+    """The whole point: a real vessel can measure narrower than
+    min_radius_um everywhere in the image (an artery imaged before full
+    muscularisation can be narrower than its paired vein, for instance)
+    and still genuinely be the vessel a mask says it is. Unrestricted, a
+    tube narrower than min_radius_um never seeds a core at all -- the
+    function returns nothing. Restricted to that same tube's own
+    footprint, min_radius_um does not gate it and the whole tube becomes
+    fat."""
+    narrow_radius = THICK_VESSEL_MIN_RADIUS_UM - 2.0
+    assert narrow_radius > 0
+    length = 40
+    shape = (int(2 * narrow_radius + 16), int(2 * narrow_radius + 16), length + 16)
+    origin = (shape[0] // 2, shape[1] // 2, 8)
+    mask = _disk_tube_along_axis(shape, origin, narrow_radius, length, axis=2)
+
+    unrestricted = thick_vessel_object_mask(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    assert not unrestricted.any(), (
+        "fixture must be narrow enough to never seed a core unrestricted"
+    )
+
+    restricted = thick_vessel_object_mask(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        wall_absorption_um=0.0,
+        restrict_to_mask=mask,
+    )
+
+    np.testing.assert_array_equal(restricted, mask)
+
+
+def test_restrict_to_mask_wall_absorption_still_extends_past_the_mask_edge():
+    """Step 3 (wall absorption) still runs on a mask-defined body exactly as
+    it would on a geodesic one, so restricting to a mask does not forbid
+    the ordinary near-wall spillover onto fused/adjacent material -- only
+    membership in the mask is exempt from the min_radius_um test, not the
+    wall-absorption step that already runs regardless of how the core was
+    found."""
+    radius = THICK_VESSEL_MIN_RADIUS_UM + 2.0
+    length = 40
+    shape = (int(2 * radius + 16), int(2 * radius + 16), length + 16)
+    origin = (shape[0] // 2, shape[1] // 2, 8)
+    mask = _disk_tube_along_axis(shape, origin, radius, length, axis=2)
+    restriction = np.zeros(shape, dtype=bool)
+    restriction[:, :, : 8 + length // 2] = True  # only the tube's first half
+
+    restricted = thick_vessel_object_mask(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        wall_absorption_um=3.0,
+        restrict_to_mask=restriction,
+    )
+
+    spillover = restricted & ~restriction
+    assert spillover.any(), "wall absorption must still extend past the mask edge"
+    # Bounded: nothing more than wall_absorption_um beyond the restriction.
+    from scipy.ndimage import distance_transform_edt as _edt
+
+    dist_outside_restriction = _edt(~restriction, sampling=SPACING_ZYX)
+    assert float(dist_outside_restriction[spillover].max()) <= 3.0 + 1e-6
 
 
 def test_restrict_to_mask_that_corroborates_nothing_leaves_no_fat_region():
@@ -789,6 +858,52 @@ def test_skeletonize_thickness_gated_forwards_restrict_thick_to_mask(monkeypatch
     )
 
     assert captured["restrict_to_mask"] is restriction
+
+
+def test_diagnose_mask_restriction_alignment_reports_overlap_per_role():
+    seg = np.zeros((10, 10, 10), dtype=bool)
+    seg[2:8, 2:8, 2:8] = True  # 216 voxels
+
+    aligned = np.zeros((10, 10, 10), dtype=bool)
+    aligned[3:5, 3:5, 3:5] = True  # 8 voxels, fully inside seg
+
+    half_off = np.zeros((10, 10, 10), dtype=bool)
+    half_off[6:9, 6:9, 6:9] = True  # 27 voxels: 8 inside seg (6:8), 19 outside
+
+    reports = diagnose_mask_restriction_alignment(
+        {"large_arteriole_mask": aligned, "large_venule_mask": half_off}, seg
+    )
+
+    by_role = {report["role"]: report for report in reports}
+    assert by_role["large_arteriole_mask"]["overlap_fraction"] == pytest.approx(1.0)
+    assert by_role["large_venule_mask"]["mask_voxels"] == 27
+    assert by_role["large_venule_mask"]["overlap_voxels"] == 8
+    assert by_role["large_venule_mask"]["overlap_fraction"] == pytest.approx(8 / 27)
+
+
+def test_diagnose_mask_restriction_alignment_skips_empty_and_absent_masks():
+    seg = np.ones((4, 4, 4), dtype=bool)
+    reports = diagnose_mask_restriction_alignment(
+        {
+            "small_arteriole_mask": np.zeros((4, 4, 4), dtype=bool),
+            "small_venule_mask": None,
+        },
+        seg,
+    )
+    assert reports == []
+
+
+def test_format_mask_restriction_alignment_report_names_the_role_and_fraction():
+    report = {
+        "role": "large_arteriole_mask",
+        "mask_voxels": 100,
+        "overlap_voxels": 12,
+        "overlap_fraction": 0.12,
+    }
+    text = format_mask_restriction_alignment_report(report)
+    assert "large_arteriole_mask" in text
+    assert "12 of 100" in text
+    assert "12.0%" in text
 
 
 def test_lowering_wall_absorption_and_flake_filter_recovers_a_short_fused_vessel():

@@ -181,6 +181,51 @@ def test_skeletonise_restrict_to_mask_unions_the_configured_masks(tmp_path, monk
     assert np.array_equal(captured["restrict_thick_to_mask"], expected)
 
 
+def test_skeletonise_warns_when_a_restriction_mask_is_misaligned(tmp_path, monkeypatch, caplog):
+    """A restriction mask whose own voxels mostly fall on background (not
+    the real segmented image) must log a warning naming which mask and its
+    overlap fraction -- see preprocessing.diagnose_mask_restriction_
+    alignment. An aligned mask logs an info line instead, not a warning."""
+    import haemolynx.io as io_module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    shape = mask.shape
+
+    aligned = np.zeros(shape, dtype=bool)
+    inside = tuple(np.argwhere(mask)[0])
+    aligned[inside] = True  # a real voxel of the segmented mask itself
+
+    misaligned = np.zeros(shape, dtype=bool)
+    misaligned[0, 0, 0] = True  # the fixture's own corner, outside the vessel
+    assert not mask[0, 0, 0], "fixture assumption: the corner is background"
+
+    def fake_load(**kwargs):
+        return aligned, misaligned, (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)
+
+    monkeypatch.setattr(io_module, "load_and_validate_vessel_masks", fake_load)
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_restrict_to_mask="large",
+    )
+    with caplog.at_level("INFO", logger="haemolynx.pipeline.stages"):
+        skeletonise(settings, segment(settings))
+
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    infos = [r.message for r in caplog.records if r.levelname == "INFO"]
+    assert any(
+        "large_venule_mask" in m and "Thick-vessel mask restriction" in m
+        for m in warnings
+    ), warnings
+    assert any(
+        "large_arteriole_mask" in m and "Thick-vessel mask restriction" in m
+        for m in infos
+    ), infos
+    assert not any("large_arteriole_mask" in m for m in warnings)
+
+
 def test_skeletonise_toggle_on_collapses_the_fat_sheet_and_keeps_capillaries(tmp_path):
     mask, fat_roi = plasma_labelled_object(8.0)
     lee_braid = lee_braid_factor(fat_roi, axis=2)

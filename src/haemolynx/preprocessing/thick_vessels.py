@@ -24,7 +24,7 @@ from __future__ import annotations
 import gc
 import logging
 import time
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 from scipy.ndimage import (
@@ -220,16 +220,20 @@ def thick_vessel_object_mask(
     fixed behaviour (both steps 2 and 3 then use the same value, as before
     this parameter existed).
 
-    *restrict_to_mask*, when given, is intersected with the *final* fat
-    catchment only (step 3's own result) -- steps 1 and 2 still trace the
-    fat trunk's true geodesic shape using the real geometry alone, so a
-    tight or slightly misaligned restriction cannot fragment the body
-    reconstruction itself, only exclude the surplus at the edges from
-    counting as fat. Local radius alone cannot tell a genuinely wide trunk
-    from densely-packed thin vessels that happen to measure just as wide;
-    this lets a caller with independent ground truth for where the real
-    large vessels are (e.g. a large/small-vessel mask) corroborate that
-    before trusting the geometry.
+    *restrict_to_mask*, when given, is authoritative: every foreground
+    voxel inside it becomes the fat body directly, and steps 1 and 2 (the
+    radius-seeded core and its geodesic corridor) do not run at all --
+    *min_radius_um* only still sets step 3's own wall radius (via
+    *wall_absorption_um*'s default). This matters because a real vessel can
+    fail to reach *min_radius_um* anywhere in the image and still
+    genuinely be the large vessel a mask says it is -- an artery imaged
+    before full muscularisation can measure narrower everywhere than its
+    paired vein, for instance -- in which case the ordinary radius-seeded
+    path would never find a core to propagate from at all, no matter how
+    good the mask is. Step 3 still runs on this mask-defined body exactly
+    as it would on a geodesic one, so nearby fused-vessel/surface
+    roughness just past the mask's own edge is still absorbed the same way
+    -- the result is not strictly confined to the mask's own footprint.
     """
     mask = np.asarray(binary, dtype=bool)
     out = np.zeros(mask.shape, dtype=bool)
@@ -248,6 +252,30 @@ def thick_vessel_object_mask(
         int(crop.sum()),
         mask.shape,
     )
+    wall_radius = (
+        0.5 * float(min_radius_um)
+        if wall_absorption_um is None
+        else max(0.0, float(wall_absorption_um))
+    )
+
+    if restrict_to_mask is not None:
+        body = crop & np.asarray(restrict_to_mask, dtype=bool)[bbox]
+        if not body.any():
+            return out
+        t0 = time.perf_counter()
+        dist_to_body = distance_transform_edt(
+            ~body, sampling=tuple(float(v) for v in voxel_size_zyx)
+        )
+        out[bbox] = crop & (dist_to_body <= wall_radius)
+        logger.info(
+            "thick_vessel_object_mask: restricted to mask directly (no "
+            "radius test), wall distance transform took %.2fs (%d fat "
+            "voxels total)",
+            time.perf_counter() - t0,
+            int(out.sum()),
+        )
+        return out
+
     t0 = time.perf_counter()
     radius_map = inscribed_radius_map(crop, voxel_size_zyx)
     thick_core = crop & (radius_map >= float(min_radius_um))
@@ -260,11 +288,6 @@ def thick_vessel_object_mask(
         return out
 
     propagation_gate = 0.5 * float(min_radius_um)
-    wall_radius = (
-        propagation_gate
-        if wall_absorption_um is None
-        else max(0.0, float(wall_absorption_um))
-    )
     allowed = crop & (radius_map >= propagation_gate)
     # radius_map is float64 over the whole crop -- as large as any array in
     # this function -- and everything from here on only needs the two
@@ -283,14 +306,67 @@ def thick_vessel_object_mask(
         ~body, sampling=tuple(float(v) for v in voxel_size_zyx)
     )
     out[bbox] = crop & (dist_to_body <= wall_radius)
-    if restrict_to_mask is not None:
-        out[bbox] &= np.asarray(restrict_to_mask, dtype=bool)[bbox]
     logger.info(
         "thick_vessel_object_mask: wall distance transform took %.2fs (%d fat voxels total)",
         time.perf_counter() - t2,
         int(out.sum()),
     )
     return out
+
+
+def diagnose_mask_restriction_alignment(
+    masks: Mapping[str, np.ndarray | None],
+    segmented_mask: np.ndarray,
+) -> list[dict[str, Any]]:
+    """How much of each named restriction mask actually falls on real
+    segmented foreground.
+
+    ``thick_vessel_object_mask``'s *restrict_to_mask* seeds the fat body
+    directly from mask membership, with no radius test at all (see its own
+    docstring) -- so the restriction is only as good as the mask's own
+    agreement with where the vessel actually is in the segmented image. A
+    low fraction here means much of the mask sits on background: it is
+    misaligned with, or a different shape/size than, the vessel as it
+    actually appears in the segmented image, and wall absorption (a fixed
+    distance from wherever the mask *did* land on real foreground) may not
+    be enough to compensate for that on its own.
+
+    *masks* maps a name (e.g. ``"large_arteriole_mask"``) to its array, or
+    ``None`` for a role that was not loaded -- skipped, along with any mask
+    with no voxels of its own (nothing to compare). Returns one report per
+    remaining mask, in the order given.
+    """
+    seg = np.asarray(segmented_mask, dtype=bool)
+    reports: list[dict[str, Any]] = []
+    for role, mask in masks.items():
+        if mask is None:
+            continue
+        restrict = np.asarray(mask, dtype=bool)
+        n_mask = int(restrict.sum())
+        if n_mask == 0:
+            continue
+        n_overlap = int((restrict & seg).sum())
+        reports.append(
+            {
+                "role": role,
+                "mask_voxels": n_mask,
+                "overlap_voxels": n_overlap,
+                "overlap_fraction": n_overlap / n_mask,
+            }
+        )
+    return reports
+
+
+def format_mask_restriction_alignment_report(report: Mapping[str, Any]) -> str:
+    """A one-line summary of one entry from :func:`diagnose_mask_restriction_alignment`."""
+    return (
+        f"Thick-vessel mask restriction: {report['role']} has "
+        f"{report['overlap_voxels']} of {report['mask_voxels']} voxels "
+        f"({report['overlap_fraction']:.1%}) on the segmented image -- the "
+        "rest sit on background, which usually means the mask is "
+        "misaligned with, or a different shape than, the vessel as it "
+        "actually appears in the segmented image."
+    )
 
 
 def braid_factor(
@@ -1293,14 +1369,15 @@ def skeletonize_thickness_gated(
     *min_radius_um*.
 
     *restrict_thick_to_mask*, when given, is forwarded to
-    :func:`thick_vessel_object_mask`'s own *restrict_to_mask* -- a voxel
-    only ends up in the fat catchment if it is also inside this mask.
-    Local radius alone cannot distinguish a genuinely wide trunk from
-    densely-packed thin vessels that happen to measure just as wide; this
-    lets a caller with independent ground truth (e.g. a known large/small
-    vessel mask) corroborate the geometry before trusting it. If the
-    restriction leaves no fat region at all, this falls back to plain Lee
-    on the whole mask, the same path taken when no fat trunk is present.
+    :func:`thick_vessel_object_mask`'s own *restrict_to_mask* -- every
+    foreground voxel inside this mask becomes fat directly, with no
+    *min_radius_um* test at all. A caller with independent ground truth
+    for where the real large vessels are (e.g. a known large/small vessel
+    mask) does not need local radius to agree first: a real vessel can
+    measure narrower than *min_radius_um* everywhere in the image and
+    still genuinely be the vessel the mask says it is. If the restriction
+    leaves no fat region at all, this falls back to plain Lee on the whole
+    mask, the same path taken when no fat trunk is present.
 
     *flake_filter_um* is how far beyond the fat wall a thin-vessel skeleton
     fragment must reach to be kept rather than dropped as a Lee-thinning

@@ -686,21 +686,49 @@ SCHEMA = Schema(
             default="off",
             choices=("off", "large", "small", "both"),
             help=(
-                "Only classify a voxel as fat/thick if it also falls inside "
-                "the chosen mask(s), instead of relying on local radius "
-                "alone across the whole image -- avoids dense, complex "
-                "vasculature elsewhere being swept into one large connected "
-                "'fat' region purely because it locally measures wide. "
-                "'large' needs use_large_vessel_masks; 'small' needs "
+                "Classify every voxel inside the chosen mask(s) as fat/"
+                "thick directly -- skeleton_thick_vessel_min_radius_um does "
+                "not gate it there, only its own local radius does "
+                "elsewhere. Off (the default), local radius alone decides, "
+                "which can sweep dense, complex vasculature into one large "
+                "connected 'fat' region purely because it locally measures "
+                "wide, or -- the opposite failure -- miss a real large "
+                "vessel entirely when it never reaches the radius "
+                "threshold anywhere (an artery imaged before full "
+                "muscularisation can measure narrower everywhere than its "
+                "paired vein, for instance). 'large' needs "
+                "use_large_vessel_masks; 'small' needs "
                 "use_small_vessel_masks_for_boundary_assignment; 'both' "
-                "needs both. If the restriction leaves no fat region at "
-                "all, skeletonisation falls back to plain Lee on the whole "
-                "mask, same as when no fat trunk is present today"
+                "needs both. If the mask has no overlap with the segmented "
+                "image at all, skeletonisation falls back to plain Lee on "
+                "the whole mask, same as when no fat trunk is present today"
             ),
             section=_VESSEL_MASKS,
             requires=("use_thick_vessel_skeletonisation",),
         ),
-                                                        Setting(
+        Setting(
+            name="skeleton_thick_vessel_restrict_to_mask_warn_below",
+            kind="float",
+            default=0.5,
+            help=(
+                "Log a warning instead of an info line when fewer than "
+                "this fraction of a large/small vessel mask's own voxels "
+                "fall on the segmented image, while "
+                "skeleton_thick_vessel_restrict_to_mask is using it -- see "
+                "preprocessing.thick_vessels.diagnose_mask_restriction_"
+                "alignment. A low fraction usually means that mask is "
+                "misaligned with, or a different shape than, the vessel "
+                "as it actually appears in the segmented image, so much "
+                "of it contributes nothing to the fat catchment "
+                "regardless of wall absorption. Reported per mask (large "
+                "arteriole and venule counted separately), not blended"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("use_thick_vessel_skeletonisation",),
+        ),
+        Setting(
             name="use_small_vessel_masks_for_boundary_assignment",
             kind="bool",
             default=False,
