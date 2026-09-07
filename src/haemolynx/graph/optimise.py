@@ -7,6 +7,14 @@ import networkx as nx
 from scipy.spatial import cKDTree
 
 from ._helpers import add_edge_safe, calculate_path_length
+from .cartwheel_guard import (
+    DEFAULT_MAX_RADIAL_DISPERSION,
+    DEFAULT_MIN_DEGREE,
+    DEFAULT_TANGENT_LENGTH_UM,
+    _incident_edge_items,
+    _spoke_direction_and_length,
+    hub_radial_dispersion,
+)
 from .validate import validate_skeleton_connection
 
 logger = logging.getLogger(__name__)
@@ -152,6 +160,61 @@ def optimise_graph_topology_fixed(
     return G, voxel_loops
 
 
+def _reconnection_is_direction_safe(
+    G: nx.MultiGraph,
+    tgt,
+    tgt_pos: np.ndarray,
+    src_pos: np.ndarray,
+    *,
+    min_degree_for_dispersion_check: int,
+    max_radial_dispersion: float,
+    tangent_length_um: float,
+) -> bool:
+    """Whether adding a new edge from *tgt* toward *src_pos* would keep
+    *tgt*'s own spoke pattern directionally coherent.
+
+    The same question ``direction_aware_collapse._merge_is_direction_safe``
+    asks of a cluster merge, asked here of a single new spoke instead: this
+    is the gap that guard does not cover on its own -- it only protects the
+    one collapse step it wraps, while orphan/dangling reconnection runs
+    later in the same topology pipeline with no cartwheel-awareness at all,
+    and can independently attach many separate dangling stubs to the same
+    nearby node (``max_new_edges_per_node`` caps how many edges *one
+    source* contributes, not how many different sources one *target*
+    accepts), recreating exactly the wheel shape the collapse step was
+    built to prevent.
+
+    Queries *tgt*'s incident edges fresh from *G* rather than a
+    precomputed snapshot: unlike ``direction_aware_collapse``'s single
+    static pass, this function's caller adds edges one at a time within
+    the same loop, so an earlier reconnection to the same *tgt* in this
+    same pass must count toward this check, not be invisible to it.
+    """
+    directions: list[np.ndarray] = []
+    degree = 0
+    for neighbor, _key, data in _incident_edge_items(G, tgt):
+        degree += 1
+        direction, _length = _spoke_direction_and_length(
+            G, tgt, neighbor, data, tangent_length_um=tangent_length_um
+        )
+        if direction is not None:
+            directions.append(direction)
+
+    degree += 1
+    new_vector = src_pos - tgt_pos
+    norm = float(np.linalg.norm(new_vector))
+    if norm > 0.0:
+        directions.append(new_vector / norm)
+
+    if degree < min_degree_for_dispersion_check:
+        return True
+    if len(directions) < min_degree_for_dispersion_check:
+        # Too many spokes (existing or the candidate) have no resolvable
+        # direction to judge fairly -- do not block on missing data.
+        return True
+    return hub_radial_dispersion(directions) > max_radial_dispersion
+
+
 def reconnect_orphan_and_dangling_nodes(
     G: nx.MultiGraph,
     skeleton_data=None,
@@ -160,8 +223,22 @@ def reconnect_orphan_and_dangling_nodes(
     max_new_edges_per_node: int = 1,
     validate_reconnections: bool = True,
     debug: bool = False,
+    *,
+    direction_aware: bool = False,
+    max_radial_dispersion: float = DEFAULT_MAX_RADIAL_DISPERSION,
+    min_degree_for_dispersion_check: int = DEFAULT_MIN_DEGREE,
+    tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
 ) -> nx.MultiGraph:
-    """Reconnect degree-0/degree-1 nodes to nearby nodes via skeleton path."""
+    """Reconnect degree-0/degree-1 nodes to nearby nodes via skeleton path.
+
+    *direction_aware*, when set, additionally refuses a reconnection that
+    would push its target's own incident-edge dispersion at or below
+    *max_radial_dispersion* -- see :func:`_reconnection_is_direction_safe`
+    for why this step needs its own copy of that check rather than relying
+    on ``cluster_collapse_method="direction_aware"``'s own guard on the
+    earlier collapse step alone. Off by default, matching every other
+    caller of this function that predates the option.
+    """
     if reconnect_threshold <= 0:
         return G
     if max_new_edges_per_node < 1:
@@ -232,6 +309,16 @@ def reconnect_orphan_and_dangling_nodes(
         src_pos = np.array(G.nodes[src]["pos"], dtype=float)
         tgt_pos = np.array(G.nodes[tgt]["pos"], dtype=float)
         voxel_path = None
+
+        # Cheap direction check first: no point paying for skeleton-path
+        # validation below on a reconnection this would reject anyway.
+        if direction_aware and not _reconnection_is_direction_safe(
+            G, tgt, tgt_pos, src_pos,
+            min_degree_for_dispersion_check=min_degree_for_dispersion_check,
+            max_radial_dispersion=max_radial_dispersion,
+            tangent_length_um=tangent_length_um,
+        ):
+            continue
 
         if validate_reconnections and skeleton_data is not None:
             connection_valid, voxel_path = validate_skeleton_connection(

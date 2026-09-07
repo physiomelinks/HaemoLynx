@@ -265,6 +265,17 @@ def build_graph_from_skeleton(
         max_new_edges_per_node=1,
         validate_reconnections=True,
         debug=debug,
+        # Direction-aware collapse only guards its own step (above); without
+        # this, orphan/dangling reconnection -- which runs later in this
+        # same pipeline with no cartwheel-awareness of its own -- can
+        # independently attach many separate dangling stubs to the same
+        # nearby node and recreate the wheel shape the collapse step just
+        # spent its own pass preventing. Only turned on for the method that
+        # makes this same trade-off everywhere else in the graph.
+        direction_aware=cluster_collapse_method == "direction_aware",
+        max_radial_dispersion=cluster_collapse_max_radial_dispersion,
+        min_degree_for_dispersion_check=cluster_collapse_direction_aware_min_degree,
+        tangent_length_um=cluster_collapse_direction_aware_tangent_length_um,
     )
     _notify_step(G, "reconnect_orphan_and_dangling_nodes", step_callback)
 

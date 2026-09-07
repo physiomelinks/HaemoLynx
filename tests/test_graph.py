@@ -7,6 +7,7 @@ from haemolynx.graph import (
     build_graph_segment_skan_stitched_loops,
     reconnect_secondary_loop_edges,
     optimise_graph_topology_fixed,
+    reconnect_orphan_and_dangling_nodes,
     validate_skeleton_connection,
     safer_simple_remove_all_degree2_nodes,
     trivial_remove_all_degree2_nodes,
@@ -21,6 +22,7 @@ from haemolynx.graph import (
     diagnose_degree2_nodes,
     format_degree2_diagnostics_report,
 )
+from haemolynx.graph.optimise import _reconnection_is_direction_safe
 from haemolynx.graph._helpers import (
     get_line_points_3d,
     calculate_path_length,
@@ -131,6 +133,102 @@ def test_optimise_graph_topology_fixed(tiny_skeleton):
         G, loops, loop_edges, skeleton_data=tiny_skeleton, debug=False
     )
     assert isinstance(G2, nx.Graph)
+
+
+def _wheel_target(n_existing: int = 5, spoke_length: float = 10.0) -> nx.MultiGraph:
+    """A node at the origin with *n_existing* spokes evenly spread around a
+    circle in the y-z plane -- the same "wheel" arrangement
+    test_direction_aware_collapse.py uses, just for one node's own incident
+    edges rather than a cluster of nodes being merged."""
+    import math
+
+    G = nx.MultiGraph()
+    G.add_node("tgt", pos=np.array([0.0, 0.0, 0.0]))
+    for i in range(n_existing):
+        angle = 2 * math.pi * i / n_existing
+        pos = np.array([0.0, spoke_length * math.cos(angle), spoke_length * math.sin(angle)])
+        name = f"n{i}"
+        G.add_node(name, pos=pos)
+        G.add_edge("tgt", name, key=0, length=spoke_length, voxels=[[0.0, 0.0, 0.0], pos.tolist()])
+    return G
+
+
+def test_reconnection_is_direction_safe_below_min_degree_is_always_safe():
+    """Fewer than min_degree_for_dispersion_check spokes (existing + the
+    candidate): an ordinary bifurcation cannot look wheel-shaped."""
+    G = _wheel_target(n_existing=4)
+    candidate = np.array([0.0, 10.0, 0.0])
+    assert _reconnection_is_direction_safe(
+        G, "tgt", np.array([0.0, 0.0, 0.0]), candidate,
+        min_degree_for_dispersion_check=6, max_radial_dispersion=0.5,
+        tangent_length_um=10.0,
+    )
+
+
+def test_reconnection_is_direction_safe_rejects_completing_a_wheel():
+    """5 existing evenly-spaced spokes plus a 6th continuing the same even
+    spread is exactly the cartwheel shape this check exists to catch."""
+    import math
+
+    G = _wheel_target(n_existing=5)
+    candidate = np.array(
+        [0.0, 10.0 * math.cos(2 * math.pi * 2.5 / 5), 10.0 * math.sin(2 * math.pi * 2.5 / 5)]
+    )
+    assert not _reconnection_is_direction_safe(
+        G, "tgt", np.array([0.0, 0.0, 0.0]), candidate,
+        min_degree_for_dispersion_check=6, max_radial_dispersion=0.5,
+        tangent_length_um=10.0,
+    )
+
+
+def test_reconnection_is_direction_safe_allows_a_coherent_direction():
+    """5 existing spokes all pointing roughly the same way, plus a 6th
+    agreeing with them, stays coherent even past min_degree."""
+    G = nx.MultiGraph()
+    G.add_node("tgt", pos=np.array([0.0, 0.0, 0.0]))
+    for i in range(5):
+        jitter = (i - 2) * 2.0
+        pos = np.array([20.0, jitter, 0.0])
+        G.add_node(f"n{i}", pos=pos)
+        G.add_edge("tgt", f"n{i}", key=0, length=20.0, voxels=[[0.0, 0.0, 0.0], pos.tolist()])
+    candidate = np.array([20.0, 1.0, 0.0])
+    assert _reconnection_is_direction_safe(
+        G, "tgt", np.array([0.0, 0.0, 0.0]), candidate,
+        min_degree_for_dispersion_check=6, max_radial_dispersion=0.5,
+        tangent_length_um=10.0,
+    )
+
+
+def test_reconnect_orphan_and_dangling_nodes_direction_aware_skips_a_wheel_completing_reconnection():
+    """End-to-end: an orphan sitting exactly where it would complete tgt's
+    wheel is reconnected when direction_aware is off (today's default
+    behaviour, unchanged) and skipped when it is on."""
+    import math
+
+    def _graph_with_orphan():
+        # Close to tgt (radius 2, well inside the spoke tips' own radius 10),
+        # so tgt -- not one of the spoke-tip nodes, also nearby -- is
+        # unambiguously the nearest reconnection target. Only the *angle*
+        # (matching the wheel-completing direction) needs to be exact.
+        G = _wheel_target(n_existing=5)
+        angle = 2 * math.pi * 2.5 / 5
+        orphan_pos = np.array([0.0, 2.0 * math.cos(angle), 2.0 * math.sin(angle)])
+        G.add_node("orphan", pos=orphan_pos)
+        return G
+
+    without = reconnect_orphan_and_dangling_nodes(
+        _graph_with_orphan(), reconnect_threshold=5.0, validate_reconnections=False,
+    )
+    assert without.has_edge("tgt", "orphan")
+
+    with_guard = reconnect_orphan_and_dangling_nodes(
+        _graph_with_orphan(), reconnect_threshold=5.0, validate_reconnections=False,
+        direction_aware=True, max_radial_dispersion=0.5, min_degree_for_dispersion_check=6,
+        tangent_length_um=10.0,
+    )
+    assert not with_guard.has_edge("tgt", "orphan")
+    # The orphan is genuinely left disconnected, not connected some other way.
+    assert with_guard.degree["orphan"] == 0
 
 
 def test_smart_multigraph_degree2_removal(simple_graph):

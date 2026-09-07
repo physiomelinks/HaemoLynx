@@ -231,6 +231,55 @@ def test_cluster_collapse_method_distance_only_never_calls_direction_aware_colla
     _build(_t_skeleton(), cluster_collapse_method="distance_only")
 
 
+def test_cluster_collapse_method_direction_aware_also_makes_orphan_reconnect_direction_aware(monkeypatch):
+    """direction_aware_collapse only guards its own step; orphan/dangling
+    reconnection runs later with no cartwheel-awareness of its own unless
+    this is threaded through too -- see graph.optimise._reconnection_is_
+    direction_safe and the comment at its call site in assemble.py."""
+    import haemolynx.graph.assemble as assemble_module
+
+    calls = []
+    real = assemble_module.reconnect_orphan_and_dangling_nodes
+
+    def spy(G, **kwargs):
+        calls.append(kwargs)
+        return real(G, **kwargs)
+
+    monkeypatch.setattr(assemble_module, "reconnect_orphan_and_dangling_nodes", spy)
+
+    _build(
+        _t_skeleton(),
+        cluster_collapse_method="direction_aware",
+        cluster_collapse_max_radial_dispersion=0.7,
+        cluster_collapse_direction_aware_min_degree=9,
+        cluster_collapse_direction_aware_tangent_length_um=15.0,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["direction_aware"] is True
+    assert calls[0]["max_radial_dispersion"] == pytest.approx(0.7)
+    assert calls[0]["min_degree_for_dispersion_check"] == 9
+    assert calls[0]["tangent_length_um"] == pytest.approx(15.0)
+
+
+def test_cluster_collapse_method_distance_only_leaves_orphan_reconnect_not_direction_aware(monkeypatch):
+    import haemolynx.graph.assemble as assemble_module
+
+    calls = []
+    real = assemble_module.reconnect_orphan_and_dangling_nodes
+
+    def spy(G, **kwargs):
+        calls.append(kwargs)
+        return real(G, **kwargs)
+
+    monkeypatch.setattr(assemble_module, "reconnect_orphan_and_dangling_nodes", spy)
+
+    _build(_t_skeleton(), cluster_collapse_method="distance_only")
+
+    assert len(calls) == 1
+    assert calls[0]["direction_aware"] is False
+
+
 def test_cluster_collapse_method_persistence_reaches_the_persistence_collapse(monkeypatch):
     import haemolynx.graph.assemble as assemble_module
 
