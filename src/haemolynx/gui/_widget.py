@@ -93,6 +93,7 @@ from haemolynx.gui.vessel_tubes import (
     VESSEL_DRAW_LINES,
     VESSEL_DRAW_TUBES,
     colors_for_tube_vertices,
+    tube_radii_um,
     tube_radius_um,
     tubes_from_vectors,
     vessel_tubes_layer_name,
@@ -563,6 +564,24 @@ def _request_canvas_redraw(viewer) -> None:
         update()
 
 
+def _vessel_segment_diameters_um(vessels) -> np.ndarray | None:
+    """Per-segment ``diameter_um`` off a vessels Vectors layer, if present.
+
+    ``_vessel_layers`` (results.py) always writes this column onto every
+    vessels layer it builds (NaN before the Diameters stage has assigned
+    one), aligned one row per Vectors segment the same way ``edge_color``
+    is -- so tube radii can follow it directly. ``None`` for a layer this
+    codebase did not build (no ``features``, or missing the column).
+    """
+    features = getattr(vessels, "features", None)
+    if features is None:
+        return None
+    try:
+        return np.asarray(features["diameter_um"], dtype=float)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
     """Show tubes or line ribbons for one vessels Vectors layer."""
     name = vessel_tubes_layer_name(vessels.name)
@@ -576,9 +595,14 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
         _hide_tube_surface(existing)
         return
 
+    radii = tube_radii_um(_vessel_segment_diameters_um(vessels))
     vertices, faces, segment_index = tubes_from_vectors(
         getattr(vessels, "data", ()),
-        radius=tube_radius_um(getattr(vessels, "edge_width", None)),
+        radius=(
+            radii
+            if radii is not None
+            else tube_radius_um(getattr(vessels, "edge_width", None))
+        ),
     )
     if len(vertices) == 0:
         vessels.visible = False

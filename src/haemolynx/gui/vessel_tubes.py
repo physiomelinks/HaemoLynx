@@ -15,8 +15,10 @@ import numpy as np
 from haemolynx.gui.results import VESSELS, VESSEL_TUBES
 
 #: Tube radius in microns. Vectors ``edge_width=0.6`` µm is half a voxel and
-#: still subpixel at whole-network zoom; 2 µm stays visible. Do not scale by
-#: vessel diameter here — that is out of scope.
+#: still subpixel at whole-network zoom; 2 µm stays visible. Also the
+#: fallback radius for a segment whose own diameter is not yet known (NaN,
+#: e.g. before the Diameters stage has run) when tubes are drawn per-vessel
+#: diameter -- see :func:`tube_radii_um`.
 TUBE_RADIUS_UM = 2.0
 DEFAULT_TUBE_SIDES = 6
 
@@ -38,6 +40,24 @@ def tube_radius_um(edge_width: float | None = None) -> float:
     if not np.isfinite(width) or width < 0.0:
         width = 0.0
     return max(width, TUBE_RADIUS_UM)
+
+
+def tube_radii_um(diameter_um: np.ndarray | None) -> np.ndarray | None:
+    """Per-segment tube radius from each segment's own diameter, halved.
+
+    ``None`` when *diameter_um* is missing or empty, so a caller falls back
+    to the uniform :func:`tube_radius_um`. A non-finite or non-positive
+    entry (diameter not yet assigned, e.g. before the Diameters stage has
+    run) is left as-is here -- :func:`tubes_from_vectors` substitutes
+    :data:`TUBE_RADIUS_UM` for any such entry itself, so every caller gets
+    the same fallback without repeating it.
+    """
+    if diameter_um is None:
+        return None
+    values = np.asarray(diameter_um, dtype=float)
+    if values.size == 0:
+        return None
+    return values / 2.0
 
 
 def vessel_tubes_layer_name(vessels_name: str) -> str:
@@ -75,7 +95,7 @@ def _normal_plane_frames(tangents: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def tubes_from_vectors(
     vectors: np.ndarray,
     *,
-    radius: float = TUBE_RADIUS_UM,
+    radius: float | np.ndarray = TUBE_RADIUS_UM,
     sides: int = DEFAULT_TUBE_SIDES,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build independent N-gon prisms from ``(M, 2, 3)`` origin+direction data.
@@ -85,6 +105,13 @@ def tubes_from_vectors(
     repeated onto the prism. Zero-length and non-finite segments are skipped.
     Joins are not mitred: consecutive steps of a polyline produce disjoint
     vertex sets whose end/start rings abut when the steps share a point.
+
+    *radius* is either one value for every segment, or an array of shape
+    ``(M,)`` matching *vectors*' own row count -- one radius per segment,
+    e.g. each vessel's own measured/set diameter halved (see
+    :func:`tube_radii_um`). A non-finite or non-positive entry in a
+    per-segment array falls back to :data:`TUBE_RADIUS_UM` rather than
+    breaking that segment's prism.
     """
     empty = (_EMPTY_VERTICES.copy(), _EMPTY_FACES.copy(), _EMPTY_INDEX.copy())
     data = np.asarray(vectors, dtype=float)
@@ -97,9 +124,22 @@ def tubes_from_vectors(
     sides = int(sides)
     if sides < 3:
         raise ValueError(f"sides must be >= 3; got {sides}")
-    radius = float(radius)
-    if not np.isfinite(radius) or radius <= 0.0:
-        raise ValueError(f"radius must be a positive finite number; got {radius}")
+
+    radius_arr = np.asarray(radius, dtype=float)
+    per_segment_radius: np.ndarray | None
+    scalar_radius = 0.0
+    if radius_arr.ndim == 0:
+        if not np.isfinite(radius_arr) or radius_arr <= 0.0:
+            raise ValueError(f"radius must be a positive finite number; got {radius}")
+        per_segment_radius = None
+        scalar_radius = float(radius_arr)
+    else:
+        if radius_arr.shape != (data.shape[0],):
+            raise ValueError(
+                "radius array must have one entry per vectors row "
+                f"({data.shape[0]},); got shape {radius_arr.shape!r}"
+            )
+        per_segment_radius = radius_arr
 
     origins = data[:, 0, :]
     directions = data[:, 1, :]
@@ -116,6 +156,13 @@ def tubes_from_vectors(
     tangent = direction / lengths[keep, None]
     normal, binormal = _normal_plane_frames(tangent)
 
+    if per_segment_radius is None:
+        kept_radius = np.full(n_keep, scalar_radius)
+    else:
+        kept_radius = per_segment_radius[keep].copy()
+        invalid = ~np.isfinite(kept_radius) | (kept_radius <= 0.0)
+        kept_radius[invalid] = TUBE_RADIUS_UM
+
     angles = np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False)
     cos_a = np.cos(angles)
     sin_a = np.sin(angles)
@@ -124,7 +171,7 @@ def tubes_from_vectors(
     ring = (
         cos_a[None, :, None] * normal[:, None, :]
         + sin_a[None, :, None] * binormal[:, None, :]
-    ) * radius
+    ) * kept_radius[:, None, None]
 
     # verts_per = 2 * sides per segment: ring at the origin, then the ring at
     # origin + direction -- matches the base/base+sides layout faces indexes

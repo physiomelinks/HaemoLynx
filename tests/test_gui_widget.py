@@ -15,6 +15,7 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 napari = pytest.importorskip("napari")
@@ -23,6 +24,7 @@ pytest.importorskip("magicgui")
 from haemolynx.gui._widget import (  # noqa: E402
     DISPLAY_SETTINGS_OFF_IN_NAPARI,
     OURS,
+    _vessel_segment_diameters_um,
     settings_widget,
 )
 from haemolynx.gui.progress import TOTAL_STAGES  # noqa: E402
@@ -59,6 +61,25 @@ def panel(make_napari_viewer):
     """The panel, built against a real viewer."""
     viewer = make_napari_viewer()
     return settings_widget(napari_viewer=viewer), viewer
+
+
+# --- per-segment tube radius reads the vessels layer's own diameter column --
+
+
+def test_vessel_segment_diameters_um_reads_the_features_column():
+    from types import SimpleNamespace
+
+    vessels = SimpleNamespace(features={"diameter_um": [4.0, np.nan, 8.5]})
+    values = _vessel_segment_diameters_um(vessels)
+    np.testing.assert_allclose(values, [4.0, np.nan, 8.5], equal_nan=True)
+
+
+def test_vessel_segment_diameters_um_is_none_without_the_column():
+    from types import SimpleNamespace
+
+    assert _vessel_segment_diameters_um(SimpleNamespace(features={})) is None
+    assert _vessel_segment_diameters_um(SimpleNamespace(features=None)) is None
+    assert _vessel_segment_diameters_um(SimpleNamespace()) is None
 
 
 # --- it builds at all --------------------------------------------------------

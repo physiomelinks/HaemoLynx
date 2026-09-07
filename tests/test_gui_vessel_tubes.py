@@ -9,6 +9,7 @@ from haemolynx.gui.vessel_tubes import (
     DEFAULT_TUBE_SIDES,
     TUBE_RADIUS_UM,
     colors_for_tube_vertices,
+    tube_radii_um,
     tube_radius_um,
     tubes_from_vectors,
     vessel_tubes_layer_name,
@@ -124,6 +125,61 @@ def test_tube_radius_is_at_least_two_microns():
     assert tube_radius_um(0.6) == pytest.approx(TUBE_RADIUS_UM)
     assert tube_radius_um(3.0) == pytest.approx(3.0)
     assert tube_radius_um(None) == pytest.approx(TUBE_RADIUS_UM)
+
+
+def test_per_segment_radius_array_gives_each_segment_its_own_radius():
+    """A vessel's own diameter, not one uniform radius for the whole network."""
+    vectors = np.array(
+        [
+            [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 5.0]],
+        ]
+    )
+    radii = np.array([1.0, 6.5])
+    sides = 6
+    vertices, _faces, index = tubes_from_vectors(vectors, radius=radii, sides=sides)
+
+    for src, expected in enumerate(radii):
+        owned = vertices[index == src]
+        distances = _radial_distances(vectors[src, 0], vectors[src, 1], owned)
+        np.testing.assert_allclose(distances, expected, atol=1e-9)
+
+
+def test_per_segment_radius_falls_back_to_default_for_invalid_entries():
+    """A missing/zero/negative diameter (not yet assigned) still draws a
+    visible tube instead of vanishing or breaking the whole mesh -- only
+    that one segment falls back, the valid one keeps its own radius."""
+    vectors = np.array(
+        [
+            [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+        ]
+    )
+    radii = np.array([np.nan, 0.0, 3.0])
+    vertices, _faces, index = tubes_from_vectors(vectors, radius=radii, sides=6)
+
+    for src in (0, 1):
+        owned = vertices[index == src]
+        distances = _radial_distances(vectors[src, 0], vectors[src, 1], owned)
+        np.testing.assert_allclose(distances, TUBE_RADIUS_UM, atol=1e-9)
+    owned = vertices[index == 2]
+    distances = _radial_distances(vectors[2, 0], vectors[2, 1], owned)
+    np.testing.assert_allclose(distances, 3.0, atol=1e-9)
+
+
+def test_per_segment_radius_array_wrong_length_raises():
+    vectors = np.array([[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]]])
+    with pytest.raises(ValueError):
+        tubes_from_vectors(vectors, radius=np.array([1.0, 2.0]))
+
+
+def test_tube_radii_um_halves_diameters_and_handles_empty_input():
+    np.testing.assert_allclose(
+        tube_radii_um(np.array([4.0, 8.0, 3.0])), [2.0, 4.0, 1.5]
+    )
+    assert tube_radii_um(None) is None
+    assert tube_radii_um(np.array([])) is None
 
 
 def test_tube_layer_name_stays_haemolynx_owned():
