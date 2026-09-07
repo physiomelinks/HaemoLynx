@@ -1395,29 +1395,46 @@ def _z_extent_and_step(results: ResultLayers | None, viewer=None) -> tuple[float
 
 
 def _sync_z_depth_slider(slider, results: ResultLayers | None, viewer=None) -> None:
-    """Set the Z-depth range from the image/skeleton; stay visible on the left."""
-    extent, step = _z_extent_and_step(results, viewer)
-    if extent is None or extent <= 0.0:
-        slider.setEnabled(False)
-        return
-    slider.blockSignals(True)
+    """Set the Z-depth range from the image/skeleton; stay visible on the left.
+
+    Guarded the way ``_park_layer_control_host`` already is: this slider
+    lives in a floating dock, and a stage-completion callback firing once
+    per stage of a real run has, on real production-scale data, found its
+    underlying Qt widget already deleted (``RuntimeError: wrapped C/C++
+    object ... has been deleted``) -- reproducible only under that load,
+    not in a synthetic test. Left unguarded, the exception is raised
+    inside a Qt-queued slot, where PyQt/PySide print it and move on rather
+    than propagating it, silently skipping ``slider.setEnabled(True)``
+    below and leaving every later stage's sync attempt to fail the same
+    way. Catching it here means one destroyed widget degrades to an inert
+    Z-depth filter instead of a repeating, swallowed exception on every
+    subsequent stage of the run.
+    """
     try:
-        slider.setRange(0.0, extent)
-        if hasattr(slider, "setSingleStep"):
-            # Finer than a voxel so setValue(µm) sticks and handles can move.
-            slider.setSingleStep(max(min(step, 0.1), 1e-6))
-        lo, hi = slider.value()
-        uninitialized = not getattr(slider, "_haemolynx_extent_ready", False)
-        if uninitialized or hi <= lo or hi > extent or lo < 0.0:
-            lo, hi = 0.0, extent
-        else:
-            lo = max(0.0, min(lo, extent))
-            hi = max(lo, min(hi, extent))
-        slider.setValue((lo, hi))
-        slider._haemolynx_extent_ready = True
-    finally:
-        slider.blockSignals(False)
-    slider.setEnabled(True)
+        extent, step = _z_extent_and_step(results, viewer)
+        if extent is None or extent <= 0.0:
+            slider.setEnabled(False)
+            return
+        slider.blockSignals(True)
+        try:
+            slider.setRange(0.0, extent)
+            if hasattr(slider, "setSingleStep"):
+                # Finer than a voxel so setValue(µm) sticks and handles can move.
+                slider.setSingleStep(max(min(step, 0.1), 1e-6))
+            lo, hi = slider.value()
+            uninitialized = not getattr(slider, "_haemolynx_extent_ready", False)
+            if uninitialized or hi <= lo or hi > extent or lo < 0.0:
+                lo, hi = 0.0, extent
+            else:
+                lo = max(0.0, min(lo, extent))
+                hi = max(lo, min(hi, extent))
+            slider.setValue((lo, hi))
+            slider._haemolynx_extent_ready = True
+        finally:
+            slider.blockSignals(False)
+        slider.setEnabled(True)
+    except RuntimeError:
+        logger.debug("Z-depth slider is gone; skipping this sync", exc_info=True)
 
 
 def _park_layer_control_host(host, parking) -> None:
@@ -5629,11 +5646,18 @@ def settings_widget(napari_viewer=None):
         extent, _step = _z_extent_and_step(view.results, viewer)
         if extent is None or extent <= 0.0:
             return
-        if z_depth_slider.isEnabled() or getattr(
-            z_depth_slider, "_haemolynx_extent_ready", False
-        ):
-            vol_lo, vol_hi = z_depth_slider.value()
-        else:
+        try:
+            if z_depth_slider.isEnabled() or getattr(
+                z_depth_slider, "_haemolynx_extent_ready", False
+            ):
+                vol_lo, vol_hi = z_depth_slider.value()
+            else:
+                vol_lo, vol_hi = 0.0, extent
+        except RuntimeError:
+            # See _sync_z_depth_slider: the slider's Qt widget has, on real
+            # production-scale data, been found already deleted. Fall back
+            # to the full range rather than let this raise inside a Qt slot.
+            logger.debug("Z-depth slider is gone; using the full range", exc_info=True)
             vol_lo, vol_hi = 0.0, extent
         key = (float(vol_lo), float(vol_hi))
         if not force and key == _view_z_apply["key"]:

@@ -1097,6 +1097,91 @@ def test_z_depth_extent_fallback_survives_a_vessel_tubes_surface_layer(viewer):
     assert panel._haemolynx_z_depth_slider.isEnabled()
 
 
+def test_z_depth_sync_survives_its_slider_widget_being_gone(viewer):
+    """On real production-scale data, a stage-completion callback has been
+    caught mid-run with the Z-depth slider's underlying Qt widget already
+    deleted (``RuntimeError: wrapped C/C++ object of type QDoubleSlider has
+    been deleted``) while the Python DoubleRangePair wrapper itself was
+    still alive -- not reproducible in a fast synthetic test even through
+    the real threaded run path, but directly forceable here by deleting
+    the wrapped widget. Uncaught, that RuntimeError is raised inside a
+    Qt-queued slot, where PyQt/PySide print it and move on rather than
+    propagating it -- silently skipping the rest of the sync (in
+    particular ``slider.setEnabled(True)``) and repeating identically on
+    every later stage of the run. _sync_z_depth_slider must catch it and
+    degrade to an inert slider instead.
+    """
+    from haemolynx.gui._widget import _sync_z_depth_slider, settings_widget
+    from qtpy.QtCore import QEvent
+    from qtpy.QtWidgets import QApplication
+
+    panel = settings_widget(napari_viewer=viewer)
+    slider = panel._haemolynx_z_depth_slider
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+
+    slider._lo.deleteLater()
+    # A plain processEvents() does not reliably deliver a DeferredDelete
+    # outside a real running event loop; force it so the widget is
+    # actually gone, matching what happens by the time a real run's
+    # stage-completion callback reaches this slider.
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    with capture_exceptions() as raised:
+        _sync_z_depth_slider(slider, results, viewer)
+
+    assert [kind for kind, _value, _tb in raised] == []
+
+
+def test_apply_view_z_survives_its_slider_widget_being_gone(viewer):
+    """The other direct touch: apply_view_z reads
+    ``z_depth_slider.isEnabled()``/``.value()`` itself before ever calling
+    _sync_z_depth_slider (see
+    test_z_depth_sync_survives_its_slider_widget_being_gone for why that
+    matters). ``isEnabled()`` is inherited straight from QWidget, so it
+    reliably raises once the wrapped Qt object is gone -- unlike
+    DoubleRangePair's own pure-Python ``value()``, which this Qt binding
+    lets run to completion on a dead object and return a stale default
+    instead of raising, so it cannot be used to force this test's failure.
+    """
+    from haemolynx.gui._widget import settings_widget
+    from qtpy.QtCore import QEvent
+    from qtpy.QtWidgets import QApplication
+
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    results = ResultLayers()
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8),
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    )
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+    assert panel._haemolynx_z_depth_slider.isEnabled()
+
+    panel._haemolynx_z_depth_slider.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    with capture_exceptions() as raised:
+        panel._haemolynx_apply_view_z(force=True)
+
+    assert [kind for kind, _value, _tb in raised] == []
+
+
 # --- the colour-by dropdowns learn what a stage made available ---------------
 
 
