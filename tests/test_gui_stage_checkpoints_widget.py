@@ -212,6 +212,74 @@ def test_revert_restores_previous_tab_layers_and_stays_on_this_tab(panel):
     assert "Running from 5. Diameters" in report
 
 
+def test_revert_restores_tube_radii_from_the_replayed_diameter_column(panel):
+    """The per-branch tube-diameter feature (vessel_tubes.tube_radii_um) must
+    keep working after "Run from this stage": the replayed vessels Vectors
+    layer's diameter_um feature column is what drives it, and
+    _apply_layers (the same code path a live run and a checkpoint replay
+    both go through) already calls _sync_vessel_tubes unconditionally --
+    this is the end-to-end proof that wiring actually holds."""
+    from haemolynx.gui.vessel_tubes import TUBE_RADIUS_UM, vessel_tubes_layer_name
+
+    widget, viewer, _tmp = panel
+    diameter_um = 8.0
+    graph = a_graph(branch_order="A1", resistance=2.5, diameter_um=diameter_um)
+    results = ResultLayers()
+    widget._haemolynx_view.results = results
+    checkpoints = widget._haemolynx_checkpoints
+    from haemolynx.pipeline import default_schema, resolve_settings
+
+    resolved = resolve_settings(widget._haemolynx_values(), schema=default_schema(), config_path=None)
+    from haemolynx.gui._widget import _apply_layers
+
+    for stage, output in (
+        (
+            "skeletonise",
+            SimpleNamespace(
+                image=np.zeros((4, 4, 4), dtype=np.uint8),
+                skeleton=np.zeros((4, 4, 4), dtype=bool),
+                voxel_size_xyz=(1.0, 1.0, 1.0),
+                voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        ),
+        ("build_network", network(graph)),
+        (
+            "assign_boundaries",
+            SimpleNamespace(
+                inlet_nodes=[0], outlet_nodes=[3],
+                arteriole_boundary_nodes=[], venule_boundary_nodes=[],
+            ),
+        ),
+        ("assign_diameters", SimpleNamespace(graph=graph, results={})),
+    ):
+        group = results.stage_finished(stage, output)
+        checkpoints.record(stage, group, results, settings=resolved)
+        _apply_layers(viewer, group)
+    widget._haemolynx_refresh_revert()
+
+    widget._haemolynx_revert("5. Diameters")
+
+    tube_name = vessel_tubes_layer_name(VESSELS)
+    assert tube_name in viewer.layers, "tube Surface must be rebuilt on replay"
+    vessels = viewer.layers[VESSELS]
+    tubes = viewer.layers[tube_name]
+    vertices = tubes.data[0]
+    assert len(vertices) > 0
+
+    vectors = np.asarray(vessels.data)
+    origins = vectors[:, 0, :]
+    directions = vectors[:, 1, :]
+    segment_index = tubes.metadata["haemolynx"]["segment_index"]
+    tangents = directions[segment_index]
+    tangents = tangents / np.linalg.norm(tangents, axis=1, keepdims=True)
+    rel = vertices - origins[segment_index]
+    axial = np.einsum("ij,ij->i", rel, tangents)
+    radial = np.linalg.norm(rel - axial[:, None] * tangents, axis=1)
+    # Each edge's own diameter (8.0 um), halved -- not the 2.0 um fallback.
+    assert np.all(radial > TUBE_RADIUS_UM + 0.5)
+    np.testing.assert_allclose(radial, diameter_um / 2.0, atol=1e-6)
+
+
 def test_revert_writes_graph_pkl_and_turns_off_rebuild_toggles(panel):
     widget, viewer, tmp_path = panel
     _seed_run(widget, viewer, through="assign_diameters")

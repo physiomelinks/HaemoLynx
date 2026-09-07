@@ -923,6 +923,13 @@ def _viewer_z_extent_um(viewer) -> float | None:
                 continue
             max_extent = max(max_extent, _layer_voxel_size_z(layer) * int(arr.shape[0]))
             continue
+        if kind not in ("points", "vectors"):
+            # Anything else -- surface (tube mesh), shapes, tracks -- has no
+            # single per-row array this function knows how to read, and a
+            # tube mesh's ``(vertices, faces, values)`` tuple is genuinely
+            # ragged: np.asarray on it raises. Its own vessels Vectors
+            # layer already contributes the same extent below.
+            continue
         data = getattr(layer, "data", None)
         if data is None:
             continue
@@ -1094,14 +1101,6 @@ IMAGE_DEFAULT_RENDER_OPTIONS: dict[str, Any] = {
     "gamma": 1.0,
 }
 
-#: The name results._image_options_for_napari's expanded ``mask_colour``
-#: colormap carries -- shared by every binary-mask-style Image layer
-#: (vessel-mask overlays and, when its data is binary-ish, the segmented
-#: input image itself). Used here purely to tell "was this laid out with
-#: a transparent-background colormap" apart from "is this plain grayscale",
-#: without re-scanning the layer's own (possibly large) data a second time.
-_BINARY_MASK_COLORMAP_NAME = "haemolynx_vessel_mask"
-
 #: Opacity the segmented-image layer gets when it is binary-ish (see
 #: results.binary_value_range) and is the active selection, vs. every other
 #: time -- rendering/interpolation stay whatever results.py laid out
@@ -1145,7 +1144,8 @@ def _focus_image_layer_rendering(viewer) -> None:
     if layer is None:
         return
     focused = layer is viewer.layers.selection.active
-    if getattr(getattr(layer, "colormap", None), "name", None) == _BINARY_MASK_COLORMAP_NAME:
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    if tag.get("binary_render"):
         try:
             layer.opacity = (
                 IMAGE_FOCUS_OPACITY_BINARY if focused else IMAGE_DEFAULT_OPACITY_BINARY
@@ -1960,6 +1960,7 @@ def _add_or_update(viewer, spec) -> None:
             _store_branch_hover_metadata(existing, spec)
             _maybe_store_z_filter_cache(existing, spec)
             _store_thick_thin_skeleton_metadata(existing, spec)
+            _store_binary_render_metadata(existing, spec)
             return
 
     if existing is not None:
@@ -1992,6 +1993,7 @@ def _add_or_update(viewer, spec) -> None:
     _store_branch_hover_metadata(layer, spec)
     _maybe_store_z_filter_cache(layer, spec)
     _store_thick_thin_skeleton_metadata(layer, spec)
+    _store_binary_render_metadata(layer, spec)
 
 
 def _store_sweep_metadata(layer, spec) -> None:
@@ -2049,6 +2051,34 @@ def _store_thick_thin_skeleton_metadata(layer, spec) -> None:
     else:
         tag["thick_vessel_mask"] = thick_vessel_mask
         tag["skeleton_bool"] = np.asarray(spec.data, dtype=bool)
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _store_binary_render_metadata(layer, spec) -> None:
+    """Remember that *layer* was laid out with the transparent-background
+    mask style (``results.BINARY_IMAGE_VOLUME_OPTIONS`` /
+    ``MASK_VOLUME_OPTIONS``), independent of which colormap is currently
+    applied.
+
+    ``_focus_image_layer_rendering`` used to tell this apart from plain
+    grayscale by checking ``layer.colormap.name`` against the custom
+    ``haemolynx_vessel_mask`` colormap's own name -- which broke the moment
+    a user picked any other colormap from napari's own dropdown: the check
+    then read the layer as ordinary grayscale and overwrote its rendering
+    back to MIP-family, turning a dense volume solid again (the exact bug
+    the translucent rendering exists to avoid) regardless of which
+    colormap they chose. A metadata flag set once at layer-creation time
+    survives any later colormap change.
+    """
+    if spec.kind != "image":
+        return
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    if "mask_colour" in spec.options:
+        tag["binary_render"] = True
+    else:
+        tag.pop("binary_render", None)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
 
@@ -3378,11 +3408,46 @@ def _attach_branch_hover_controls(viewer, layer) -> bool:
     return True
 
 
+def _process_pending_qt_events() -> None:
+    """Let Qt/vispy finish any already-queued GL work before more layer
+    teardown queues more.
+
+    A no-op when there is no live ``QApplication`` (some test contexts);
+    otherwise just drains whatever is already pending -- it does not block
+    waiting for new events, so this is cheap enough to call often.
+    """
+    try:
+        from qtpy.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+    except Exception:  # noqa: BLE001 - never let this stop a clear
+        logger.debug("could not process pending Qt events", exc_info=True)
+
+
 def _clear_our_layers(viewer) -> int:
-    """Remove every layer this plugin added. Leaves the user's alone."""
+    """Remove every layer this plugin added. Leaves the user's alone.
+
+    Processes pending Qt events before starting, and after every removal.
+    ``viewer.layers.remove`` tears down that layer's GL resources
+    synchronously (napari's vispy canvas -> glDeleteProgram and friends),
+    but vispy's own GLIR command queue can still hold earlier GL work
+    queued by recent user interaction (a camera move, a colormap change, a
+    visibility toggle) that has not been flushed yet. Starting a
+    synchronous teardown on top of that queue crashed the whole process
+    with a Windows access violation deep inside vispy's own cleanup --
+    below Python, so there is no exception to catch. Letting the queue
+    drain before, and between, each removal is the standard mitigation for
+    this class of vispy/GL race.
+    """
     ours = [layer for layer in list(viewer.layers) if _is_ours(layer)]
+    if not ours:
+        return 0
+    _process_pending_qt_events()
     for layer in ours:
         viewer.layers.remove(layer)
+        _process_pending_qt_events()
     return len(ours)
 
 

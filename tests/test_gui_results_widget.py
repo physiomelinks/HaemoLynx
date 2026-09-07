@@ -26,6 +26,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     _add_or_update,
     _apply_layers,
     _clear_our_layers,
+    _process_pending_qt_events,
     _run_in_background,
 )
 from haemolynx.gui.progress import BarState  # noqa: E402
@@ -229,6 +230,45 @@ def test_clearing_removes_only_our_layers(viewer):
 
     assert removed >= 4
     assert [layer.name for layer in viewer.layers] == [theirs.name]
+
+
+def test_clearing_processes_qt_events_before_and_between_each_removal(viewer, monkeypatch):
+    """Regression test for a real crash: napari's vispy canvas tears down a
+    removed layer's GL resources synchronously (glDeleteProgram and
+    friends), and starting that teardown while earlier GL work from user
+    interaction (a camera move, a colormap change, a visibility toggle) is
+    still queued in vispy's own GLIR command queue crashed the whole
+    process with a Windows access violation -- below Python, so nothing
+    here could catch it as an exception; only a real crash reproduction
+    with a large dataset surfaced it. Cannot assert "did not crash" in a
+    unit test, so this pins the actual mitigation instead: pending Qt
+    events are drained before starting, and after every single removal,
+    not just once at the end.
+    """
+    from haemolynx.gui import _widget as widget_mod
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    n_ours = sum(1 for layer in viewer.layers if layer.name.startswith("HaemoLynx"))
+    assert n_ours >= 2, "fixture must leave more than one of our layers to remove"
+
+    calls = []
+    monkeypatch.setattr(
+        widget_mod, "_process_pending_qt_events", lambda: calls.append(len(viewer.layers))
+    )
+
+    removed = _clear_our_layers(viewer)
+
+    # Once before the loop starts, plus once after every removal.
+    assert len(calls) == removed + 1
+
+
+def test_process_pending_qt_events_is_a_safe_no_op_without_a_running_app(monkeypatch):
+    """Must never raise, even if QApplication.instance() is unexpectedly None."""
+    from qtpy.QtWidgets import QApplication
+
+    monkeypatch.setattr(QApplication, "instance", staticmethod(lambda: None))
+    _process_pending_qt_events()  # must not raise
 
 
 def a_perturbation_group(*names):
@@ -1025,6 +1065,36 @@ def test_z_depth_filter_keeps_all_edges_at_default_full_slider(viewer):
 
     assert results.image_z_extent_um() == pytest.approx(8.0)
     assert len(viewer.layers[VESSELS].data) == expected
+
+
+def test_z_depth_extent_fallback_survives_a_vessel_tubes_surface_layer(viewer):
+    """``_z_extent_and_step`` falls back to scanning open layers
+    (``_viewer_z_extent_um``) whenever the panel's own
+    ``results.image_z_extent_um()`` has nothing to report -- exactly the
+    state here, since ``_apply_layers`` puts layers in the viewer without
+    also telling ``panel._haemolynx_view.results`` about them. That fallback
+    used to call ``np.asarray`` on every non-volume layer's ``.data``
+    unconditionally; a vessel-tubes Surface layer's data is a ragged
+    ``(vertices, faces, values)`` tuple, which raised ``ValueError`` the
+    moment tubes -- the default vessel-drawing mode -- were on screen, i.e.
+    every time the Z-depth slider's range gets (re)computed with a run's
+    results showing. See ``_viewer_z_extent_um``.
+    """
+    from haemolynx.gui._widget import settings_widget
+
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    results = panel._haemolynx_view.results
+    assert results is None or results.image_z_extent_um() is None
+    assert VESSEL_TUBES in {layer.name for layer in viewer.layers}
+
+    with capture_exceptions() as raised:
+        panel._haemolynx_after_layers_applied()
+
+    assert [kind for kind, _value, _tb in raised] == []
+    assert panel._haemolynx_z_depth_slider.isEnabled()
 
 
 # --- the colour-by dropdowns learn what a stage made available ---------------

@@ -120,8 +120,16 @@ SEGMENTED_IMAGE_COLOUR: tuple[float, float, float, float] = (0.78, 0.78, 0.82, 0
 #: transparent-to-colour colormap this pairs with (built from ``mask_colour``,
 #: the same mechanism vessel-mask overlays already use) is what makes the
 #: background stop occluding whatever is drawn behind or around it.
+#: ``blending: "translucent_no_depth"`` (not plain "translucent") turns off
+#: GPU depth-testing for this layer specifically -- with depth-testing on,
+#: a voxel whose alpha happens to be near-zero under the *current* colormap
+#: can still write the depth buffer, so switching to a colormap with a
+#: different alpha profile (or just a different contrast) can leave parts
+#: of the volume behind it wrongly discarded rather than blended. No depth
+#: test means every visible voxel always composites correctly regardless
+#: of which colormap is applied.
 BINARY_IMAGE_VOLUME_OPTIONS: dict[str, Any] = {
-    "blending": "translucent",
+    "blending": "translucent_no_depth",
     "rendering": "translucent",
     "interpolation2d": "nearest",
     "interpolation3d": "nearest",

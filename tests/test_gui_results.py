@@ -1476,16 +1476,20 @@ def test_focus_image_layer_rendering_only_adjusts_opacity_for_a_binary_image():
     and a transparent-background colour at layer-creation time (see
     results.binary_value_range / BINARY_IMAGE_VOLUME_OPTIONS) -- overwriting
     rendering back to mip/attenuated_mip here would turn it solid again, so
-    only opacity is adjusted for focus, identified by the shared colormap
-    name results._image_options_for_napari gives every mask_colour layer."""
+    only opacity is adjusted for focus, identified by the layer's own
+    "binary_render" metadata tag (_add_or_update / _store_binary_render_
+    metadata), not by which colormap happens to be applied -- see
+    test_focus_image_layer_rendering_survives_a_colormap_change below for
+    the regression this specifically protects against."""
     from haemolynx.gui._widget import (
         IMAGE_DEFAULT_OPACITY_BINARY,
         IMAGE_FOCUS_OPACITY_BINARY,
+        OURS,
         _focus_image_layer_rendering,
     )
 
     active = _fake_image_layer(IMAGE)
-    active.colormap = SimpleNamespace(name="haemolynx_vessel_mask")
+    active.metadata[OURS]["binary_render"] = True
     active.rendering = "translucent"
     viewer = SimpleNamespace(layers=_FakeLayerList([active], active=active))
 
@@ -1499,6 +1503,32 @@ def test_focus_image_layer_rendering_only_adjusts_opacity_for_a_binary_image():
 
     assert active.opacity == pytest.approx(IMAGE_DEFAULT_OPACITY_BINARY)
     assert active.rendering == "translucent"  # still untouched
+
+
+def test_focus_image_layer_rendering_survives_a_colormap_change():
+    """Regression test: this used to detect a binary-ish image by checking
+    layer.colormap.name against the one fixed name results.py's own
+    mask_colour colormap carries -- so the moment a user picked any other
+    colormap from napari's own dropdown, the layer read as ordinary
+    grayscale and its rendering was overwritten back to MIP-family, turning
+    a dense volume solid again regardless of which colormap they chose.
+    The metadata tag survives any colormap the user applies."""
+    from haemolynx.gui._widget import (
+        IMAGE_FOCUS_OPACITY_BINARY,
+        OURS,
+        _focus_image_layer_rendering,
+    )
+
+    active = _fake_image_layer(IMAGE)
+    active.metadata[OURS]["binary_render"] = True
+    active.rendering = "translucent"
+    active.colormap = SimpleNamespace(name="viridis")  # user's own choice
+    viewer = SimpleNamespace(layers=_FakeLayerList([active], active=active))
+
+    _focus_image_layer_rendering(viewer)
+
+    assert active.rendering == "translucent"  # not reverted to mip
+    assert active.opacity == pytest.approx(IMAGE_FOCUS_OPACITY_BINARY)
 
 
 def test_focus_image_layer_rendering_ignores_non_image_layers():
@@ -1650,7 +1680,10 @@ def test_a_binary_segmented_image_gets_translucent_mask_style_options():
         # comparing against the same constant the spec is built from could
         # never catch it being reverted to e.g. "mip"/"attenuated_mip",
         # which is the exact silhouette-rendering bug this feature fixes.
-        assert spec.options["blending"] == "translucent"
+        # "translucent_no_depth", not plain "translucent": depth-testing off
+        # so a colormap change cannot leave near-zero-alpha voxels wrongly
+        # discarding what is behind them.
+        assert spec.options["blending"] == "translucent_no_depth"
         assert spec.options["rendering"] == "translucent"
         assert spec.options["interpolation2d"] == "nearest"
         assert spec.options["interpolation3d"] == "nearest"
