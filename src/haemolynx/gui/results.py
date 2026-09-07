@@ -1181,6 +1181,12 @@ class ResultLayers:
                         "size": NODE_POINT_SIZE,
                         "out_of_slice_display": True,
                     },
+                    # Start hidden -- a busy point cloud on first view of a new
+                    # run. Only the first emission sets this: later stages'
+                    # own NODES specs default to visible=True, which restores
+                    # whatever the user last set rather than re-hiding it (see
+                    # _add_or_update's saved_visible handling in _widget.py).
+                    visible=False,
                 )
             )
 
@@ -1298,6 +1304,11 @@ class ResultLayers:
                             "size": BOUNDARY_NODE_POINT_SIZE,
                             "out_of_slice_display": True,
                         },
+                        # Start hidden -- this is the only stage that ever
+                        # builds this layer, so there is no later spec whose
+                        # own visible=True would need to preserve a user
+                        # toggle (see the matching NODES comment above).
+                        visible=False,
                     )
                 )
 

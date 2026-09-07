@@ -530,6 +530,26 @@ def test_cartwheel_hub_children_hide_when_the_toggle_is_off():
         assert child.is_visible(on), name
 
 
+def test_perturbation_output_dir_hides_when_run_perturbations_is_off():
+    """Perturbations nests its one same-tab child (perturbation_output_dir)
+    under run_perturbations -- everything else in "Perturbation runs" is
+    only ever edited inside a perturbation entry's own typed editor, gated
+    by that entry's type dropdown rather than this checkbox mechanism."""
+    assert "run_perturbations" in HIDE_WHEN_UNMET_PARENTS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    parent = fields["run_perturbations"]
+    assert not parent.hide_when_unmet
+    assert parent.widget_type == "CheckBox"
+    assert parent.value is False
+
+    child = fields["perturbation_output_dir"]
+    assert child.hide_when_unmet
+    assert SCHEMA["perturbation_output_dir"].requires == ("run_perturbations",)
+    assert not child.is_visible({"run_perturbations": False})
+    assert child.is_visible({"run_perturbations": True})
+
+
 def test_diameter_rows_hide_when_parent_toggles_are_unmet():
     """Diameters nests per-order tables and FWHM knobs under parent bools."""
     assert "Diameters and pericytes" in HIDE_WHEN_UNMET_SECTIONS

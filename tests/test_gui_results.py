@@ -196,6 +196,49 @@ def test_assign_boundaries_keeps_skeleton_hidden_after_cut():
     assert skeleton.visible is False
 
 
+def test_nodes_start_hidden_when_the_graph_is_first_built():
+    """A busy point cloud shouldn't be the first thing a new run shows."""
+    group = built().stage_finished("build_network", network(a_graph()))
+    assert spec_named(group, NODES).visible is False
+
+
+def test_nodes_default_to_visible_again_on_later_stages():
+    """Only the first emission force-hides NODES -- assign_boundaries and
+    solve rebuild the same layer with visible defaulting back to True, so
+    _add_or_update restores whatever the user last set instead of
+    re-hiding a layer they turned on (see the matching comment in
+    ResultLayers._from_build_network)."""
+    results = ResultLayers()
+    results.stage_finished("build_network", network(a_graph()))
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            graph=a_graph(),
+        ),
+    )
+    assert spec_named(group, NODES).visible is True
+
+
+def test_boundary_nodes_start_hidden():
+    results = ResultLayers()
+    results.stage_finished("build_network", network(a_graph()))
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            graph=a_graph(),
+        ),
+    )
+    assert spec_named(group, BOUNDARY_NODES).visible is False
+
+
 # --- geometry ----------------------------------------------------------------
 
 

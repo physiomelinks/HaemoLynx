@@ -69,7 +69,11 @@ SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
 #: ``Pipeline stages``; Export IDE-plot knobs live under ``Solver and output``;
 #: cartwheel hub guard knobs live under their own ``Cartwheel hub guard``
 #: section, which is too small a slice of "3. Graph" to earn a whole-section
-#: entry in :data:`HIDE_WHEN_UNMET_SECTIONS`).
+#: entry in :data:`HIDE_WHEN_UNMET_SECTIONS`; likewise ``run_perturbations``'s
+#: one same-tab child in "Perturbation runs" -- the other settings in that
+#: section are only ever edited inside a perturbation entry's own typed
+#: editor, gated by that entry's type dropdown rather than this mechanism,
+#: so they are not listed here).
 HIDE_WHEN_UNMET_PARENTS = frozenset(
     {
         "smooth_centrelines",
@@ -77,6 +81,7 @@ HIDE_WHEN_UNMET_PARENTS = frozenset(
         "visualize_results",
         "show_plots_in_ide",
         "detect_cartwheel_hub_artifacts",
+        "run_perturbations",
     }
 )
 

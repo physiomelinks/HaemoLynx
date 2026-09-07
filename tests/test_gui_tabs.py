@@ -617,6 +617,22 @@ def test_cartwheel_hub_fields_on_graph_declare_hide_when_unmet():
         assert fields[name].is_visible(on), name
 
 
+def test_perturbation_output_dir_field_on_perturbations_declares_hide_when_unmet():
+    """perturbation_output_dir hides until run_perturbations is on."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["7. Perturbations"].fields}
+
+    assert "run_perturbations" in fields
+    assert not fields["run_perturbations"].hide_when_unmet
+    assert SCHEMA["run_perturbations"].default is False
+
+    child = fields["perturbation_output_dir"]
+    assert child.hide_when_unmet
+    assert SCHEMA["perturbation_output_dir"].requires == ("run_perturbations",)
+    assert not child.is_visible({"run_perturbations": False})
+    assert child.is_visible({"run_perturbations": True})
+
+
 def test_diameter_fields_on_diameters_declare_hide_when_unmet():
     """Gated Diameters / FWHM rows hide until their parent toggles hold."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}

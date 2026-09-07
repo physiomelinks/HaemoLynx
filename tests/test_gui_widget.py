@@ -1131,6 +1131,35 @@ def test_cartwheel_hub_guard_knobs_nest_under_its_own_toggle(panel):
         assert child.visible is True
 
 
+def test_perturbation_output_dir_nests_under_run_perturbations(panel):
+    """perturbation_output_dir hides with its own toggle, on the
+    "7. Perturbations" tab -- same live-Qt check as the cartwheel-hub-guard
+    test above, and same reason the tab must be selected first."""
+    from qtpy.QtWidgets import QApplication, QTabWidget
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget.findChild(QTabWidget)
+    for index in range(tabs.count()):
+        if "Perturbations" in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            break
+    else:
+        raise AssertionError("no tab containing 'Perturbations'")
+
+    output_dir = rows["perturbation_output_dir"]
+
+    rows["run_perturbations"].value = False
+    QApplication.processEvents()
+    assert output_dir.visible is False
+
+    rows["run_perturbations"].value = True
+    QApplication.processEvents()
+    assert output_dir.visible is True
+
+
 def test_thick_vessel_row_relabels_when_large_vessel_network_mode_is_on(panel):
     """Once thick-vessel skeletonisation and the large-vessel-network mode
     are both on, the checkbox's own action is no longer "thick vessel
