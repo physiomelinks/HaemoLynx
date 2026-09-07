@@ -255,6 +255,39 @@ def check_large_vessel_branch_order_mode_prerequisites(
     return report
 
 
+def check_thick_vessel_restriction_prerequisites(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """skeleton_thick_vessel_restrict_to_mask needs the mask(s) it names.
+
+    The schema's own ``requires`` only gates ``use_thick_vessel_skeletonisation``
+    -- it cannot express "large needs use_large_vessel_masks, small needs
+    use_small_vessel_masks_for_boundary_assignment, both needs both" since
+    that depends on *which value* the choice holds, not just whether it is
+    non-default. This is the run-time check that catches that.
+    """
+    report = CheckReport()
+    choice = str(
+        settings.get("skeleton_thick_vessel_restrict_to_mask", "off")
+    ).strip().lower()
+    if choice == "off":
+        return report
+
+    missing = []
+    if choice in ("large", "both") and not bool(settings.get("use_large_vessel_masks")):
+        missing.append("use_large_vessel_masks")
+    if choice in ("small", "both") and not bool(
+        settings.get("use_small_vessel_masks_for_boundary_assignment")
+    ):
+        missing.append("use_small_vessel_masks_for_boundary_assignment")
+    if missing:
+        report.add_error(
+            f"skeleton_thick_vessel_restrict_to_mask={choice!r} requires "
+            f"{', '.join(missing)} to also be on."
+        )
+    return report
+
+
 def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every configured perturbation must name a type and settings that exist.
 
@@ -322,6 +355,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
+    report.extend(check_thick_vessel_restriction_prerequisites(settings))
     report.extend(check_perturbations(settings, schema))
     report.print("Preflight")
     return report

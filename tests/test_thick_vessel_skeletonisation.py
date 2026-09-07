@@ -714,6 +714,83 @@ def test_wall_absorption_um_override_shrinks_the_catchment_monotonically():
     assert int(zeroed.sum()) < int(lowered.sum()) < int(default.sum())
 
 
+def test_restrict_to_mask_excludes_the_uncorroborated_half_of_a_fat_trunk():
+    """restrict_to_mask corroborates the geometric fat/thick classification
+    against independent ground truth (e.g. a known large-vessel mask): a
+    voxel only ends up in the final catchment if it is also inside the
+    restriction, even though the geodesic reconstruction (steps 1-2) still
+    traces the whole trunk's true shape using the real geometry alone."""
+    radius = THICK_VESSEL_MIN_RADIUS_UM + 2.0
+    length = 40
+    shape = (int(2 * radius + 16), int(2 * radius + 16), length + 16)
+    origin = (shape[0] // 2, shape[1] // 2, 8)
+    mask = _disk_tube_along_axis(shape, origin, radius, length, axis=2)
+
+    unrestricted = thick_vessel_object_mask(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    assert unrestricted.any(), "fixture must reproduce an unrestricted fat catchment"
+
+    restriction = np.zeros(shape, dtype=bool)
+    restriction[:, :, : 8 + length // 2] = True  # only the tube's first half
+
+    restricted = thick_vessel_object_mask(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        restrict_to_mask=restriction,
+    )
+
+    assert restricted.any(), "the corroborated half must still be classified fat"
+    assert int((restricted & ~restriction).sum()) == 0, (
+        "nothing outside the restriction may be classified fat"
+    )
+    assert int(restricted.sum()) < int(unrestricted.sum())
+
+
+def test_restrict_to_mask_that_corroborates_nothing_leaves_no_fat_region():
+    mask, _branch = _fat_trunk_with_short_fused_branch(branch_len=6)
+    restriction = np.zeros_like(mask)  # corroborates nothing
+
+    restricted = thick_vessel_object_mask(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        restrict_to_mask=restriction,
+    )
+
+    assert not restricted.any()
+
+
+def test_skeletonize_thickness_gated_forwards_restrict_thick_to_mask(monkeypatch):
+    """Stage-wiring regression test: skeletonize_thickness_gated's own
+    restrict_thick_to_mask parameter must reach thick_vessel_object_mask's
+    restrict_to_mask unchanged -- the low-level behaviour above is already
+    pinned, but nothing previously checked that this higher-level function
+    (what pipeline/stages.py actually calls) forwards it at all."""
+    import haemolynx.preprocessing.thick_vessels as thick_vessels_module
+
+    captured = {}
+    real = thick_vessels_module.thick_vessel_object_mask
+
+    def spy(*args, **kwargs):
+        captured["restrict_to_mask"] = kwargs.get("restrict_to_mask")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(thick_vessels_module, "thick_vessel_object_mask", spy)
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    restriction = np.ones_like(mask)
+    skeletonize_thickness_gated(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        restrict_thick_to_mask=restriction,
+    )
+
+    assert captured["restrict_to_mask"] is restriction
+
+
 def test_lowering_wall_absorption_and_flake_filter_recovers_a_short_fused_vessel():
     """A short vessel dropped at the default thresholds survives once both are lowered.
 

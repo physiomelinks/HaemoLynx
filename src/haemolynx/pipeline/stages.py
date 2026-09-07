@@ -364,6 +364,48 @@ def _load_volume_for_skeletonise(settings: dict, input_format: str):
     return image, metadata_voxel_size, voxel_meta_status
 
 
+def _thick_vessel_restriction_mask(
+    image_shape: tuple[int, ...], settings: dict, voxel_size_xyz
+) -> np.ndarray | None:
+    """Union of the configured large/small vessel masks, per
+    ``skeleton_thick_vessel_restrict_to_mask`` -- or ``None`` for no
+    restriction (the default, and the only path taken while that setting
+    is ``"off"``, so an ordinary run pays nothing extra for this feature).
+
+    Reuses ``io.load_and_validate_vessel_masks``/``io.vessel_mask_arguments``
+    directly on the full settings dict -- the same functions
+    ``build_network`` uses for boundary assignment -- rather than threading
+    masks through ``SkeletonisedVolume``: every stage that needs a vessel
+    mask already reloads it independently rather than trusting an earlier
+    stage's state, and this keeps the checkpoint/resume format untouched.
+    """
+    choice = str(settings["skeleton_thick_vessel_restrict_to_mask"]).strip().lower()
+    if choice == "off":
+        return None
+    restriction = np.zeros(image_shape, dtype=bool)
+    if choice in ("large", "both"):
+        large_arteriole_mask, large_venule_mask, *_ = io.load_and_validate_vessel_masks(
+            **io.vessel_mask_arguments(settings, "large"),
+            image_shape=image_shape,
+            main_voxel_size_xyz=voxel_size_xyz,
+        )
+        if large_arteriole_mask is not None:
+            restriction |= large_arteriole_mask
+        if large_venule_mask is not None:
+            restriction |= large_venule_mask
+    if choice in ("small", "both"):
+        small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
+            **io.vessel_mask_arguments(settings, "small"),
+            image_shape=image_shape,
+            main_voxel_size_xyz=voxel_size_xyz,
+        )
+        if small_arteriole_mask is not None:
+            restriction |= small_arteriole_mask
+        if small_venule_mask is not None:
+            restriction |= small_venule_mask
+    return restriction
+
+
 def _skeletonize_loaded_mask(
     image, settings: dict, voxel_size_xyz
 ) -> tuple[np.ndarray, np.ndarray | None]:
@@ -382,6 +424,9 @@ def _skeletonize_loaded_mask(
             ),
             fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
             wall_absorption_um=settings["skeleton_thick_vessel_wall_absorption_um"],
+            restrict_thick_to_mask=_thick_vessel_restriction_mask(
+                image.shape, settings, voxel_size_xyz
+            ),
             flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
             max_bridge_radius_multiple=settings[
                 "skeleton_thick_vessel_max_bridge_radius_multiple"

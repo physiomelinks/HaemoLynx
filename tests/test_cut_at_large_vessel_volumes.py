@@ -15,6 +15,7 @@ from haemolynx.pipeline import default_schema
 from haemolynx.pipeline.checks import (
     check_large_vessel_branch_order_mode_prerequisites,
     check_large_vessel_cut_when_masks_enabled,
+    check_thick_vessel_restriction_prerequisites,
 )
 from haemolynx.pipeline.stages import (
     BoundaryNodes,
@@ -908,6 +909,67 @@ def test_preflight_large_vessel_mode_prerequisites_no_op_when_mode_is_off():
     )
     assert not report.errors
     assert not report.warnings
+
+
+def test_preflight_thick_vessel_restriction_no_op_when_off():
+    report = check_thick_vessel_restriction_prerequisites(
+        {"skeleton_thick_vessel_restrict_to_mask": "off"}
+    )
+    assert not report.errors
+
+
+def test_preflight_thick_vessel_restriction_no_op_when_unset():
+    """The setting missing from the dict entirely (an old/partial config)
+    must read the same as its own "off" default, not raise a KeyError."""
+    report = check_thick_vessel_restriction_prerequisites({})
+    assert not report.errors
+
+
+def test_preflight_thick_vessel_restriction_errors_for_large_without_its_mask():
+    report = check_thick_vessel_restriction_prerequisites(
+        {"skeleton_thick_vessel_restrict_to_mask": "large", "use_large_vessel_masks": False}
+    )
+    assert report.errors
+    assert any("use_large_vessel_masks" in message for message in report.errors)
+
+
+def test_preflight_thick_vessel_restriction_errors_for_small_without_its_mask():
+    report = check_thick_vessel_restriction_prerequisites(
+        {
+            "skeleton_thick_vessel_restrict_to_mask": "small",
+            "use_small_vessel_masks_for_boundary_assignment": False,
+        }
+    )
+    assert report.errors
+    assert any(
+        "use_small_vessel_masks_for_boundary_assignment" in message
+        for message in report.errors
+    )
+
+
+def test_preflight_thick_vessel_restriction_errors_for_both_missing_either():
+    settings = {
+        "skeleton_thick_vessel_restrict_to_mask": "both",
+        "use_large_vessel_masks": True,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+    }
+    report = check_thick_vessel_restriction_prerequisites(settings)
+    assert report.errors
+    assert any(
+        "use_small_vessel_masks_for_boundary_assignment" in message
+        for message in report.errors
+    )
+    assert not any("use_large_vessel_masks" in message for message in report.errors)
+
+
+def test_preflight_thick_vessel_restriction_clean_when_fully_configured():
+    settings = {
+        "skeleton_thick_vessel_restrict_to_mask": "both",
+        "use_large_vessel_masks": True,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+    }
+    report = check_thick_vessel_restriction_prerequisites(settings)
+    assert not report.errors
 
 
 def _sparse_chord_through_mask_graph():

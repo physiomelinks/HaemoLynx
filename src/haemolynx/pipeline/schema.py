@@ -680,6 +680,26 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=("automated_vessel_assignment",),
         ),
+        Setting(
+            name="skeleton_thick_vessel_restrict_to_mask",
+            kind="choice",
+            default="off",
+            choices=("off", "large", "small", "both"),
+            help=(
+                "Only classify a voxel as fat/thick if it also falls inside "
+                "the chosen mask(s), instead of relying on local radius "
+                "alone across the whole image -- avoids dense, complex "
+                "vasculature elsewhere being swept into one large connected "
+                "'fat' region purely because it locally measures wide. "
+                "'large' needs use_large_vessel_masks; 'small' needs "
+                "use_small_vessel_masks_for_boundary_assignment; 'both' "
+                "needs both. If the restriction leaves no fat region at "
+                "all, skeletonisation falls back to plain Lee on the whole "
+                "mask, same as when no fat trunk is present today"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_thick_vessel_skeletonisation",),
+        ),
                                                         Setting(
             name="use_small_vessel_masks_for_boundary_assignment",
             kind="bool",

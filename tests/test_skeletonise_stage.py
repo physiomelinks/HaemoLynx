@@ -95,6 +95,86 @@ def test_skeletonise_forwards_max_bridge_distance_um_setting(tmp_path, monkeypat
     assert captured["max_bridge_distance_um"] == pytest.approx(37.0)
 
 
+def test_skeletonise_restrict_to_mask_off_never_loads_vessel_masks(tmp_path, monkeypatch):
+    """The default ("off") must cost nothing extra: no vessel-mask load at
+    all, matching plain thickness-gated skeletonisation's existing cost --
+    skeleton_thick_vessel_restrict_to_mask is opt-in."""
+    import haemolynx.io as io_module
+
+    calls: list = []
+    real = io_module.load_and_validate_vessel_masks
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("mask_role"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(io_module, "load_and_validate_vessel_masks", spy)
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert calls == []
+
+
+def test_skeletonise_restrict_to_mask_unions_the_configured_masks(tmp_path, monkeypatch):
+    """skeleton_thick_vessel_restrict_to_mask="both" must load both the
+    large and small vessel masks and OR them together before forwarding
+    the union to skeletonize_thickness_gated's own restrict_thick_to_mask
+    -- proving the settings-dict key this stage reads reaches the right
+    place, not just that some restriction is passed."""
+    import haemolynx.io as io_module
+    import haemolynx.preprocessing as preprocessing_module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    shape = mask.shape
+
+    large_art = np.zeros(shape, dtype=bool)
+    large_art[0, 0, 0] = True
+    large_ven = np.zeros(shape, dtype=bool)
+    large_ven[0, 0, 1] = True
+    small_art = np.zeros(shape, dtype=bool)
+    small_art[0, 0, 2] = True
+    small_ven = np.zeros(shape, dtype=bool)
+    small_ven[0, 0, 3] = True
+
+    calls: list = []
+
+    def fake_load(**kwargs):
+        role = kwargs["mask_role"]
+        calls.append(role)
+        if role == "large":
+            return large_art, large_ven, (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)
+        return small_art, small_ven, (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)
+
+    monkeypatch.setattr(io_module, "load_and_validate_vessel_masks", fake_load)
+
+    captured = {}
+    real = preprocessing_module.skeletonize_thickness_gated
+
+    def spy(*args, **kwargs):
+        captured["restrict_thick_to_mask"] = kwargs.get("restrict_thick_to_mask")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "skeletonize_thickness_gated", spy)
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_restrict_to_mask="both",
+    )
+    skeletonise(settings, segment(settings))
+
+    assert set(calls) == {"large", "small"}
+    expected = large_art | large_ven | small_art | small_ven
+    assert np.array_equal(captured["restrict_thick_to_mask"], expected)
+
+
 def test_skeletonise_toggle_on_collapses_the_fat_sheet_and_keeps_capillaries(tmp_path):
     mask, fat_roi = plasma_labelled_object(8.0)
     lee_braid = lee_braid_factor(fat_roi, axis=2)

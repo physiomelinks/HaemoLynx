@@ -388,6 +388,20 @@ NEEDS_EXTERNAL_INFRASTRUCTURE = frozenset(
 )
 
 
+#: skeleton_thick_vessel_restrict_to_mask deliberately sits on the
+#: Boundaries tab (grouped with the large/small vessel mask toggles it
+#: depends on: use_large_vessel_masks, use_small_vessel_masks_for_
+#: boundary_assignment), which is what its section=_VESSEL_MASKS -> "4.
+#: Boundaries" claim gives it -- but it is actually read inside
+#: skeletonise() (see pipeline/stages.py's _thick_vessel_restriction_mask),
+#: not assign_boundaries. Probing assign_boundaries here would trivially
+#: "pass" without exercising the real code path -- assign_boundaries never
+#: reads this setting regardless of its value. Covered directly, and more
+#: precisely, by tests/test_skeletonise_stage.py's own monkeypatch-based
+#: forwarding tests instead.
+TAB_DIVERGES_FROM_READING_STAGE = frozenset({"skeleton_thick_vessel_restrict_to_mask"})
+
+
 def _stage_level_cases():
     cases: list[tuple[str, str, Any]] = []
     skipped: list[tuple[str, str]] = []
@@ -397,6 +411,12 @@ def _stage_level_cases():
         owner = _setting_owner_stage(setting)
         if owner == "export_results":
             continue  # handled by the separate file-diffing test below
+        if setting.name in TAB_DIVERGES_FROM_READING_STAGE:
+            skipped.append(
+                (setting.name, "tab placement diverges from the stage that "
+                 "actually reads it -- see tests/test_skeletonise_stage.py")
+            )
+            continue
         if owner not in STAGE_RUNNERS:
             skipped.append((setting.name, f"owner stage {owner!r} has no runner"))
             continue

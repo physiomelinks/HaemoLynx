@@ -196,6 +196,7 @@ def thick_vessel_object_mask(
     min_radius_um: float,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     wall_absorption_um: float | None = None,
+    restrict_to_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Fat-region voxels of a (possibly single) connected plasma-labelled mask.
 
@@ -218,6 +219,17 @@ def thick_vessel_object_mask(
     length. ``None`` derives it as half of *min_radius_um*, the previous
     fixed behaviour (both steps 2 and 3 then use the same value, as before
     this parameter existed).
+
+    *restrict_to_mask*, when given, is intersected with the *final* fat
+    catchment only (step 3's own result) -- steps 1 and 2 still trace the
+    fat trunk's true geodesic shape using the real geometry alone, so a
+    tight or slightly misaligned restriction cannot fragment the body
+    reconstruction itself, only exclude the surplus at the edges from
+    counting as fat. Local radius alone cannot tell a genuinely wide trunk
+    from densely-packed thin vessels that happen to measure just as wide;
+    this lets a caller with independent ground truth for where the real
+    large vessels are (e.g. a large/small-vessel mask) corroborate that
+    before trusting the geometry.
     """
     mask = np.asarray(binary, dtype=bool)
     out = np.zeros(mask.shape, dtype=bool)
@@ -271,6 +283,8 @@ def thick_vessel_object_mask(
         ~body, sampling=tuple(float(v) for v in voxel_size_zyx)
     )
     out[bbox] = crop & (dist_to_body <= wall_radius)
+    if restrict_to_mask is not None:
+        out[bbox] &= np.asarray(restrict_to_mask, dtype=bool)[bbox]
     logger.info(
         "thick_vessel_object_mask: wall distance transform took %.2fs (%d fat voxels total)",
         time.perf_counter() - t2,
@@ -1259,6 +1273,7 @@ def skeletonize_thickness_gated(
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     fill_mask_holes: bool = True,
     wall_absorption_um: float | None = None,
+    restrict_thick_to_mask: np.ndarray | None = None,
     flake_filter_um: float | None = None,
     max_bridge_radius_multiple: float | None = None,
     max_bridge_distance_um: float | None = None,
@@ -1276,6 +1291,16 @@ def skeletonize_thickness_gated(
     real vessel fused directly onto it) into the catchment; see
     :func:`thick_vessel_object_mask`. ``None`` derives it as half of
     *min_radius_um*.
+
+    *restrict_thick_to_mask*, when given, is forwarded to
+    :func:`thick_vessel_object_mask`'s own *restrict_to_mask* -- a voxel
+    only ends up in the fat catchment if it is also inside this mask.
+    Local radius alone cannot distinguish a genuinely wide trunk from
+    densely-packed thin vessels that happen to measure just as wide; this
+    lets a caller with independent ground truth (e.g. a known large/small
+    vessel mask) corroborate the geometry before trusting it. If the
+    restriction leaves no fat region at all, this falls back to plain Lee
+    on the whole mask, the same path taken when no fat trunk is present.
 
     *flake_filter_um* is how far beyond the fat wall a thin-vessel skeleton
     fragment must reach to be kept rather than dropped as a Lee-thinning
@@ -1340,6 +1365,7 @@ def skeletonize_thickness_gated(
         min_radius_um=float(min_radius_um),
         voxel_size_zyx=voxel_size_zyx,
         wall_absorption_um=wall_absorption_um,
+        restrict_to_mask=restrict_thick_to_mask,
     )
     t_catchment = time.perf_counter() - t0
     if not thick.any():
