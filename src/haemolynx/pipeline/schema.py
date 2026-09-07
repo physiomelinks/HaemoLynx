@@ -634,8 +634,11 @@ SCHEMA = Schema(
                 "first-class Large_Art{n}/Large_Ven{n} branch orders "
                 "(numbered by hop distance from the image-edge stump, "
                 "exactly like Art{n}/Ven{n}) instead of cutting it away. "
-                "Requires cut_network_at_large_vessel_volumes=False, and "
-                "needs small-vessel boundaries configured too "
+                "Works with either skeletonisation method -- thickness-gated "
+                "or plain Lee -- since it tags edges by large-vessel-mask "
+                "overlap alone, not by how the centreline through them was "
+                "built. Requires cut_network_at_large_vessel_volumes=False, "
+                "and needs small-vessel boundaries configured too "
                 "(use_small_vessel_masks_for_boundary_assignment, or manual "
                 "arteriole/venule boundaries) or hierarchical Art*/Ven* "
                 "labelling -- and this tier with it -- will not run"
@@ -644,7 +647,6 @@ SCHEMA = Schema(
             requires=(
                 "use_large_vessel_masks",
                 "automated_vessel_assignment",
-                "use_thick_vessel_skeletonisation",
                 "!cut_network_at_large_vessel_volumes",
             ),
         ),
@@ -663,7 +665,6 @@ SCHEMA = Schema(
             requires=(
                 "use_large_vessel_masks",
                 "automated_vessel_assignment",
-                "use_thick_vessel_skeletonisation",
                 "!cut_network_at_large_vessel_volumes",
                 "assign_large_vessel_branch_orders",
             ),

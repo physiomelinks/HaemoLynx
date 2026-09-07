@@ -1188,13 +1188,15 @@ def test_thick_vessel_row_relabels_when_large_vessel_network_mode_is_on(panel):
     assert rows["use_thick_vessel_skeletonisation"].label == original_label
 
 
-def test_turning_off_thick_vessel_skeletonisation_auto_disables_large_vessel_network_mode(panel):
-    """assign_large_vessel_branch_orders hard-requires
-    use_thick_vessel_skeletonisation (see pipeline.checks.
-    check_large_vessel_branch_order_mode_prerequisites, a preflight error,
-    not just a nested/greyed row) -- turning the prerequisite off must not
-    leave a config that fails preflight outright the next time Run is
-    pressed."""
+def test_large_vessel_network_mode_survives_thick_vessel_skeletonisation_turning_off(panel):
+    """assign_large_vessel_branch_orders (keep large arteriole/venule mask
+    material in the network as Large_Art/Large_Ven, instead of cutting it
+    away) does not need thickness-gated skeletonisation specifically --
+    graph.large_vessel_network works purely off mask overlap, regardless
+    of which method produced the graph's centrelines. Turning thickness
+    gating off (e.g. to compare it against plain Lee on a dataset where it
+    hurts coverage) must leave large-vessel-network mode exactly as the
+    user left it, not silently clear it."""
     from qtpy.QtWidgets import QApplication
 
     widget, _viewer = panel
@@ -1211,6 +1213,7 @@ def test_turning_off_thick_vessel_skeletonisation_auto_disables_large_vessel_net
     rows["use_thick_vessel_skeletonisation"].value = False
     QApplication.processEvents()
 
-    assert bool(rows["assign_large_vessel_branch_orders"].value) is False
+    assert bool(rows["assign_large_vessel_branch_orders"].value) is True
+    assert rows["assign_large_vessel_branch_orders"].enabled is True
 
 

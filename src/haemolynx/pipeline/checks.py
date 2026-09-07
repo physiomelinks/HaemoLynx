@@ -223,7 +223,6 @@ def check_large_vessel_branch_order_mode_prerequisites(
         for name in (
             "use_large_vessel_masks",
             "automated_vessel_assignment",
-            "use_thick_vessel_skeletonisation",
         )
         if not bool(settings.get(name))
     ]

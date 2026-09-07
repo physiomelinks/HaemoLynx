@@ -870,10 +870,20 @@ def test_preflight_errors_when_large_vessel_mode_and_cut_are_both_on():
 
 
 def test_preflight_errors_when_large_vessel_mode_missing_a_prerequisite():
-    settings = {**_LARGE_VESSEL_MODE_SETTINGS, "use_thick_vessel_skeletonisation": False}
+    settings = {**_LARGE_VESSEL_MODE_SETTINGS, "use_large_vessel_masks": False}
     report = check_large_vessel_branch_order_mode_prerequisites(settings)
     assert report.errors
-    assert any("use_thick_vessel_skeletonisation" in message for message in report.errors)
+    assert any("use_large_vessel_masks" in message for message in report.errors)
+
+
+def test_preflight_large_vessel_mode_works_without_thick_vessel_skeletonisation():
+    """graph.large_vessel_network tags Large_Art/Large_Ven purely by mask
+    overlap, regardless of which method built the graph's centrelines -- so
+    this must not be a required prerequisite (unlike use_large_vessel_masks
+    and automated_vessel_assignment, which the mode genuinely reads)."""
+    settings = {**_LARGE_VESSEL_MODE_SETTINGS, "use_thick_vessel_skeletonisation": False}
+    report = check_large_vessel_branch_order_mode_prerequisites(settings)
+    assert not report.errors
 
 
 def test_preflight_warns_when_large_vessel_mode_missing_small_vessel_hierarchy():
