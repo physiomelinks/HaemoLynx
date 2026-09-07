@@ -1,5 +1,6 @@
 """Vessel network statistics."""
 from .stats import (
+    STATISTIC_MEASURES,
     compute_comprehensive_vessel_statistics,
     compute_basic_statistics,
     compute_tortuosity_measures,
@@ -24,6 +25,7 @@ from .stats import (
 from .three_dim_distances import run_3d_measurement_to_cell_mask
 
 __all__ = [
+    "STATISTIC_MEASURES",
     "compute_comprehensive_vessel_statistics",
     "compute_basic_statistics",
     "compute_tortuosity_measures",

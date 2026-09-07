@@ -416,8 +416,34 @@ statistics_and_measurements:
   measurement_3d_reference_image_path: null
   # Read this dataset from the 3D-distance reference image when it is an H5 file  [needs measurement_3d_to_cell_mask]
   measurement_3d_reference_h5_dataset_name: null
-  # Compute either the fast subset of vessel statistics or the full set  [one of: fast, full; needs statistics]
+  # fast computes sampled/capped path efficiency, community and betweenness measures; full computes them exactly over the whole graph, which is far slower on a large network. Every other statistic below is unaffected by this choice  [one of: fast, full; needs statistics]
   statistics_mode: fast
+  # Node/edge counts, total length, mean diameter and the other basic vessel statistics  [needs statistics]
+  statistics_basic: true
+  # How much each vessel's centreline deviates from a straight line  [needs statistics]
+  statistics_tortuosity: true
+  # Branch-point counts and per-node branching-factor statistics  [needs statistics]
+  statistics_branching: true
+  # Asymmetry between sibling sub-tree sizes at each branch point  [needs statistics]
+  statistics_tree_asymmetry: true
+  # Fractal dimension of the network, from both node positions and centrelines  [needs statistics]
+  statistics_fractal_dimension: true
+  # Vessel length and volume per unit of imaged tissue volume  [needs statistics]
+  statistics_vessel_density: true
+  # How closely parent/daughter diameters at each junction follow Murray's cube law  [needs statistics]
+  statistics_murray_law: true
+  # Branching angle between sibling daughter vessels at each junction  [needs statistics]
+  statistics_daughter_angles: true
+  # Typical spacing between neighbouring capillaries  [needs statistics]
+  statistics_intercapillary_distance: true
+  # Bridge-edge and articulation-point counts -- how much of the network depends on a single connection  [needs statistics]
+  statistics_network_robustness: true
+  # How close shortest network paths are to straight-line distance, sampled (fast) or exact (full) per statistics_mode  [needs statistics]
+  statistics_path_efficiency: true
+  # Community/module detection over the network's topology, sampled (fast) or exact (full) per statistics_mode  [needs statistics]
+  statistics_community: true
+  # Betweenness centrality of each node, sampled (fast) or exact (full) per statistics_mode  [needs statistics]
+  statistics_betweenness: true
 
 # ------------------------------------------------------------------------
 # Diameters and pericytes

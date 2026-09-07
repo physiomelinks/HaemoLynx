@@ -2520,6 +2520,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 f"Choose one of {sorted(valid_statistics_modes)}."
             )
         node_positions = nx.get_node_attributes(G, "pos")
+        enabled_measures = frozenset(
+            measure
+            for measure in statistics.STATISTIC_MEASURES
+            if settings[f"statistics_{measure}"]
+        )
         stats = statistics.compute_comprehensive_vessel_statistics(
             G,
             node_positions=node_positions,
@@ -2530,6 +2535,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             # stack whose z spacing is not 1 um.
             voxel_size=voxel_size_zyx,
             statistics_mode=settings["statistics_mode"],
+            enabled_measures=enabled_measures,
         )
 
         logger.info("=== Statistics ===")

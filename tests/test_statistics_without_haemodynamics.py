@@ -70,7 +70,7 @@ def _forked_vessel_graph() -> nx.MultiGraph:
     return G
 
 
-def _export_with_haemodynamics_off(tmp_path):
+def _export_with_haemodynamics_off(tmp_path, **overrides):
     settings = default_schema().defaults()
     settings.update(
         {
@@ -84,6 +84,7 @@ def _export_with_haemodynamics_off(tmp_path):
             "visualize_results": False,
         }
     )
+    settings.update(overrides)
     volume = stages.SkeletonisedVolume(
         image=np.zeros(IMAGE_SHAPE, dtype=np.uint8),
         skeleton=np.zeros(IMAGE_SHAPE, dtype=bool),
@@ -159,3 +160,31 @@ def test_the_edge_length_report_matches_calling_the_functions_directly(tmp_path)
         expected_betweenness["Betweenness Max"]
     )
     assert length["Communities"]["Community Count"] == expected_communities["Community Count"]
+
+
+def test_a_disabled_statistics_measure_setting_is_missing_from_the_exported_csv(tmp_path):
+    """Stage-wiring regression test for the statistics_<measure> settings:
+    each is read from the right settings-dict key (statistics_murray_law,
+    not e.g. a typo'd murray_law) and actually reaches
+    compute_comprehensive_vessel_statistics's enabled_measures. Unit tests
+    on that function alone (tests/test_statistics.py) cannot catch a bug in
+    this wiring, only in the function itself.
+    """
+    with_dir = tmp_path / "with"
+    without_dir = tmp_path / "without"
+    with_dir.mkdir()
+    without_dir.mkdir()
+    _export_with_haemodynamics_off(with_dir, input_path=with_dir / "with.tif")
+    _export_with_haemodynamics_off(
+        without_dir, input_path=without_dir / "without.tif",
+        statistics_murray_law=False,
+    )
+
+    with_csv = (with_dir / "with_statistics.csv").read_text()
+    without_csv = (without_dir / "without_statistics.csv").read_text()
+
+    assert "Murray" in with_csv
+    assert "Murray" not in without_csv
+    # Nothing else should have been affected by disabling just this one.
+    assert "Fractal Dimension" in without_csv
+    assert "Tortuosity" in without_csv

@@ -6,6 +6,7 @@ import numpy as np
 import networkx as nx
 
 from haemolynx.statistics import (
+    STATISTIC_MEASURES,
     compute_basic_statistics,
     compute_tortuosity_measures,
     compute_branching_statistics,
@@ -182,6 +183,81 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
     assert "Mean Intercapillary Distance (microns)" in s
     assert "Bridge Edge Count" in s
     assert "Articulation Point Count" in s
+
+
+def test_enabled_measures_none_matches_every_measure_running(simple_graph):
+    """The default (no enabled_measures argument) must be unchanged from
+    before this parameter existed: every measure runs, keyed identically."""
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    default = compute_comprehensive_vessel_statistics(
+        simple_graph, node_positions=pos, image_dimensions=(10, 10, 10)
+    )
+    explicit_all = compute_comprehensive_vessel_statistics(
+        simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
+        enabled_measures=frozenset(STATISTIC_MEASURES),
+    )
+    assert default == explicit_all
+
+
+def test_disabling_a_measure_removes_exactly_its_own_keys(simple_graph):
+    """Murray's law is a clean, isolated measure to switch off: its own two
+    keys disappear and nothing else does."""
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    full = compute_comprehensive_vessel_statistics(
+        simple_graph, node_positions=pos, image_dimensions=(10, 10, 10)
+    )
+    without_murray = compute_comprehensive_vessel_statistics(
+        simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
+        enabled_measures=frozenset(STATISTIC_MEASURES) - {"murray_law"},
+    )
+    assert "Mean Murray Ratio" in full
+    assert "Mean Murray Ratio" not in without_murray
+    assert {**without_murray, **compute_murray_law_compliance(simple_graph)} == full
+
+
+def test_enabled_measures_with_nothing_enabled_still_reports_the_mode(simple_graph):
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    s = compute_comprehensive_vessel_statistics(
+        simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
+        enabled_measures=frozenset(),
+    )
+    assert s == {"Statistics Mode": "fast"}
+
+
+def test_an_unknown_enabled_measure_name_is_rejected(simple_graph):
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    with pytest.raises(ValueError, match="Unknown statistic measure"):
+        compute_comprehensive_vessel_statistics(
+            simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
+            enabled_measures=frozenset({"not_a_real_measure"}),
+        )
+
+
+def test_community_and_betweenness_measures_are_independently_toggleable(simple_graph):
+    """These two back the "fast/slow community and betweenness" GUI
+    toggle's underlying statistics_mode -- confirm they can each be
+    switched off without disturbing the other, in both modes."""
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    for mode in ("fast", "full"):
+        full = compute_comprehensive_vessel_statistics(
+            simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
+            statistics_mode=mode,
+        )
+        no_community = compute_comprehensive_vessel_statistics(
+            simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
+            statistics_mode=mode,
+            enabled_measures=frozenset(STATISTIC_MEASURES) - {"community"},
+        )
+        no_betweenness = compute_comprehensive_vessel_statistics(
+            simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
+            statistics_mode=mode,
+            enabled_measures=frozenset(STATISTIC_MEASURES) - {"betweenness"},
+        )
+        community_keys = set(full) - set(no_community)
+        betweenness_keys = set(full) - set(no_betweenness)
+        assert community_keys, f"mode={mode}: disabling community removed nothing"
+        assert betweenness_keys, f"mode={mode}: disabling betweenness removed nothing"
+        assert community_keys.isdisjoint(betweenness_keys)
 
 
 def test_murray_law_compliance_matches_the_cube_law_by_hand():

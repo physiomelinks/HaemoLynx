@@ -36,6 +36,7 @@ from haemolynx.gui.form import (
 )
 from haemolynx.parsers import Schema, Setting
 from haemolynx.pipeline import default_schema
+from haemolynx.statistics import STATISTIC_MEASURES
 
 SCHEMA = default_schema()
 
@@ -681,6 +682,10 @@ _MEASUREMENT_3D_CHILDREN = (
     "measurement_3d_reference_h5_dataset_name",
 )
 
+#: One flat per-measure checkbox per haemolynx.statistics.STATISTIC_MEASURES
+#: entry, all nesting under "statistics" the same way statistics_mode does.
+_STATISTICS_MEASURE_CHILDREN = tuple(f"statistics_{measure}" for measure in STATISTIC_MEASURES)
+
 
 def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
     """Export nests cell-mask paths under measurement_3d_to_cell_mask."""
@@ -706,6 +711,16 @@ def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
     assert SCHEMA["statistics_mode"].requires == ("statistics",)
     assert not mode.is_visible({"statistics": False})
     assert mode.is_visible({"statistics": True})
+
+    # Every per-measure checkbox nests under statistics the same way, and
+    # starts checked so a user opts individual measures out rather than in.
+    for name in _STATISTICS_MEASURE_CHILDREN:
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert SCHEMA[name].requires == ("statistics",), name
+        assert SCHEMA[name].default is True, name
+        assert not child.is_visible({"statistics": False}), name
+        assert child.is_visible({"statistics": True}), name
 
     # Ungated parents stay visible either way.
     assert not fields["statistics"].hide_when_unmet
@@ -734,7 +749,10 @@ def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
 
     stats_on = {**off, "statistics": True}
     shown = visible_statistics_settings(SCHEMA, stats_on)
-    assert shown == {"statistics", "measurement_3d_to_cell_mask", "statistics_mode"}
+    assert shown == {
+        "statistics", "measurement_3d_to_cell_mask", "statistics_mode",
+        *_STATISTICS_MEASURE_CHILDREN,
+    }
     for name in _MEASUREMENT_3D_CHILDREN:
         assert name not in shown, name
 
