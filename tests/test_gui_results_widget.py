@@ -1042,6 +1042,67 @@ def test_z_depth_filter_redraws_graph_layers_not_image(viewer):
     np.testing.assert_array_equal(np.asarray(layer.data), original)
 
 
+def test_shrinking_the_z_depth_window_drains_qt_events_around_the_layer_recreate(
+    viewer, monkeypatch
+):
+    """Regression test for the same crash class as
+    test_clearing_processes_qt_events_before_and_between_each_removal, via a
+    different code path: narrowing the Z-depth window shrinks the visible
+    vessel count, and _set_z_filtered_layer_data recreates the Vectors layer
+    on shrink (viewer.layers.remove immediately followed by re-adding it) --
+    the exact same synchronous GL teardown _clear_our_layers was fixed to
+    protect, just reached by dragging the slider rather than starting a
+    second run. Cannot assert "did not crash" in a unit test, so this pins
+    the mitigation: the event queue is drained immediately before and after
+    the remove.
+    """
+    from haemolynx.gui import _widget as widget_mod
+    from haemolynx.gui._widget import settings_widget
+    from haemolynx.gui.results import ResultLayers
+
+    panel = settings_widget(napari_viewer=viewer)
+    results = ResultLayers()
+    graph = a_graph()
+    groups = [
+        results.stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=np.zeros((4, 4, 4), dtype=np.uint8),
+                skeleton=np.zeros((4, 4, 4), dtype=bool),
+                voxel_size_xyz=(0.5, 1.0, 2.0),
+                voxel_size_zyx=(2.0, 1.0, 0.5),
+            ),
+        ),
+        results.stage_finished("build_network", network(graph, (2.0, 1.0, 0.5))),
+    ]
+    for group in groups:
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    vessel_count = len(viewer.layers[VESSELS].data)
+
+    calls: list[str] = []
+    real_remove = viewer.layers.remove
+
+    def spy_remove(*args, **kwargs):
+        calls.append("remove")
+        return real_remove(*args, **kwargs)
+
+    monkeypatch.setattr(viewer.layers, "remove", spy_remove)
+    monkeypatch.setattr(
+        widget_mod, "_process_pending_qt_events", lambda: calls.append("drain")
+    )
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+
+    assert len(viewer.layers[VESSELS].data) < vessel_count
+    assert "remove" in calls, "narrowing the window did not exercise the recreate path"
+    remove_index = calls.index("remove")
+    assert calls[remove_index - 1] == "drain", "no drain immediately before remove"
+    assert calls[remove_index + 1] == "drain", "no drain immediately after remove"
+
+
 def test_z_depth_filter_keeps_all_edges_at_default_full_slider(viewer):
     from haemolynx.gui._widget import _apply_layers
 

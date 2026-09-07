@@ -626,7 +626,9 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
         existing.visible = True
     else:
         if existing is not None:
+            _process_pending_qt_events()
             viewer.layers.remove(existing)
+            _process_pending_qt_events()
         viewer.add_surface(
             (vertices, faces),
             name=name,
@@ -703,6 +705,17 @@ def _set_z_filtered_layer_data(
     """Write filtered geometry; recreate when shrinking avoids stale Vectors draw.
 
     Returns the layer the data ended up on (a new one when recreated).
+
+    The recreate path below removes the old layer and immediately adds its
+    replacement -- the same ``viewer.layers.remove`` that
+    ``_clear_our_layers`` found could crash the process outright (a native
+    access violation, not a catchable Python exception): vispy tears down
+    that layer's GL resources synchronously, and queued-but-unflushed GL
+    work from recent interaction racing with that teardown is what
+    crashed. This is the Z-depth slider's own version of the same
+    operation -- shrinking the visible vessel count recreates the Vectors/
+    Points layer on essentially every drag -- so it gets the same
+    before-and-between event-queue drain.
     """
     old_count = len(np.asarray(getattr(layer, "data", ())))
     new_count = len(np.asarray(data))
@@ -739,7 +752,9 @@ def _set_z_filtered_layer_data(
             if hasattr(layer, "out_of_slice_display"):
                 add_kwargs["out_of_slice_display"] = layer.out_of_slice_display
             colour_attr, colour = "face_color", getattr(layer, "face_color", None)
+        _process_pending_qt_events()
         viewer.layers.remove(layer)
+        _process_pending_qt_events()
         new_layer = adder(data, **add_kwargs)
         if colour is not None:
             setattr(new_layer, colour_attr, colour)
