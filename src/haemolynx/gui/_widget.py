@@ -822,6 +822,22 @@ def _apply_z_filter(
         column = _active_column(layer)
         if column == FLOW_DIR_RGB_COLUMN:
             _colour_layer(layer, column, "direct")
+        # _set_z_filtered_layer_data recreates the layer (a new object) when
+        # the window shrinks -- the branch-hover mouse-move callback and the
+        # "branch tooltip metrics" checkbox panel were attached to the old
+        # one and do not carry over, so hovering the recreated layer would
+        # silently stop showing a tooltip until the next real pipeline run.
+        # _apply_layers attaches these the same way for a freshly-built
+        # layer; do it here too so a recreated layer keeps working, and a
+        # merely-updated one is a cheap no-op (_attach_branch_hover_controls
+        # only rebuilds the panel when it is missing).
+        try:
+            _attach_branch_hover_controls(viewer, layer)
+        except Exception:  # noqa: BLE001 - missing hover panel is survivable
+            logger.debug(
+                "could not reattach branch-hover controls to %s",
+                getattr(layer, "name", "?"), exc_info=True,
+            )
     _sync_vessel_tubes(viewer)
 
 

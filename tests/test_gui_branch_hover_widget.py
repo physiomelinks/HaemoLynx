@@ -247,3 +247,34 @@ def test_vessel_label_z_filter_with_stale_size_array_does_not_raise(make_napari_
     restored = viewer.layers[VESSEL_LABELS]
     assert len(restored.data) == full_count
     assert np.isscalar(restored.size) or len(np.asarray(restored.size)) == full_count
+
+
+def test_z_filter_shrink_reattaches_branch_hover_after_layer_recreate(
+    make_napari_viewer,
+):
+    """_set_z_filtered_layer_data recreates the VESSELS Vectors layer (a new
+    object) when narrowing the Z window shrinks the visible count. The
+    branch-hover mouse-move callback and the "branch tooltip metrics" panel
+    were attached to the old object and do not carry over automatically --
+    hovering silently stopped showing a tooltip after moving the Z-depth
+    slider, even though it worked right after the run finished.
+    _apply_z_filter must reattach both to whichever layer object the
+    vessels end up on.
+    """
+    from haemolynx.gui._widget import _apply_z_filter, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    layer = _draw_hover(viewer, a_graph())
+    assert _branch_hover_mouse_move in layer.mouse_move_callbacks
+    assert _layer_controls(viewer, layer)._haemolynx_branch_hover is not None
+
+    full_z = 30.0
+    _apply_z_filter(viewer, 0.0, 15.0, z_extent=full_z)
+
+    shrunk = viewer.layers[VESSELS]
+    assert shrunk is not layer, "fixture must actually exercise the recreate path"
+    assert _branch_hover_mouse_move in shrunk.mouse_move_callbacks
+    controls = _layer_controls(viewer, shrunk)
+    assert controls is not None
+    assert controls._haemolynx_branch_hover is not None
