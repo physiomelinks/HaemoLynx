@@ -387,10 +387,22 @@ _BRANCH_HOVER_OPTION_KEYS = frozenset(
 #: Keys stashed on the skeleton LayerSpec that must not reach napari.
 _THICK_THIN_OPTION_KEYS = frozenset({"thick_vessel_mask"})
 
+#: Keys stashed on the IMAGE LayerSpec that must not reach napari.
+_SEGMENTATION_CLEANUP_OPTION_KEYS = frozenset({"raw_segmented_image"})
+
 #: Debug colours for the skeleton layer's thick/thin toggle -- distinct from
 #: every mask/vessel-type colour already in use elsewhere in the viewer.
 THIN_SKELETON_COLOUR: tuple[float, float, float, float] = (0.0, 0.85, 0.85, 1.0)
 THICK_SKELETON_COLOUR: tuple[float, float, float, float] = (1.0, 0.55, 0.0, 1.0)
+
+#: Debug colours for the segmentation-cleanup toggle: unchanged voxels,
+#: voxels cleanup added (reconnect/smooth), voxels cleanup removed
+#: (smooth/remove-small) -- three colours, not one "changed" colour, so a
+#: user can tell an over-eager reconnect bridge (green) apart from a
+#: cleanup step that deleted real vessel (red) at a glance.
+SEGMENTATION_CLEANUP_UNCHANGED_COLOUR: tuple[float, float, float, float] = (0.78, 0.78, 0.82, 0.35)
+SEGMENTATION_CLEANUP_ADDED_COLOUR: tuple[float, float, float, float] = (0.20, 0.85, 0.25, 1.0)
+SEGMENTATION_CLEANUP_REMOVED_COLOUR: tuple[float, float, float, float] = (0.90, 0.20, 0.20, 1.0)
 
 
 def _thick_thin_skeleton_labels(skeleton: np.ndarray, thick_vessel_mask: np.ndarray) -> np.ndarray:
@@ -1632,6 +1644,11 @@ def _apply_layers(viewer, group, report=None) -> None:
             except Exception:  # noqa: BLE001 - missing toggle is survivable
                 logger.debug("could not attach thick/thin skeleton toggle to %s",
                              spec.name, exc_info=True)
+            try:
+                _attach_segmentation_cleanup_toggle(viewer, viewer.layers[spec.name])
+            except Exception:  # noqa: BLE001 - missing toggle is survivable
+                logger.debug("could not attach segmentation-cleanup toggle to %s",
+                             spec.name, exc_info=True)
     for name, column in group.recolour:
         layer = viewer.layers[name] if name in viewer.layers else None
         if layer is not None and _is_ours(layer):
@@ -2009,6 +2026,7 @@ def _add_or_update(viewer, spec) -> None:
             _maybe_store_z_filter_cache(existing, spec)
             _store_thick_thin_skeleton_metadata(existing, spec)
             _store_binary_render_metadata(existing, spec)
+            _store_segmentation_cleanup_metadata(existing, spec)
             return
 
     if existing is not None:
@@ -2021,6 +2039,8 @@ def _add_or_update(viewer, spec) -> None:
     for key in _BRANCH_HOVER_OPTION_KEYS:
         options.pop(key, None)
     for key in _THICK_THIN_OPTION_KEYS:
+        options.pop(key, None)
+    for key in _SEGMENTATION_CLEANUP_OPTION_KEYS:
         options.pop(key, None)
     if spec.features:
         options["features"] = dict(spec.features)
@@ -2042,6 +2062,7 @@ def _add_or_update(viewer, spec) -> None:
     _maybe_store_z_filter_cache(layer, spec)
     _store_thick_thin_skeleton_metadata(layer, spec)
     _store_binary_render_metadata(layer, spec)
+    _store_segmentation_cleanup_metadata(layer, spec)
 
 
 def _store_sweep_metadata(layer, spec) -> None:
@@ -2267,6 +2288,183 @@ def _resync_thick_thin_skeleton_after_z_change(viewer) -> None:
             continue
         _apply_thick_thin_skeleton_display(
             layer, show=True, default_colormap=checkbox._haemolynx_default_colormap,
+            z_window=z_window,
+        )
+
+
+def _store_segmentation_cleanup_metadata(layer, spec) -> None:
+    """Keep the pre-cleanup mask on the IMAGE layer, plus the corrected mask
+    it is being drawn with, for the raw-vs-corrected debug toggle.
+
+    Mirrors ``_store_thick_thin_skeleton_metadata``. Cleared, not left
+    stale, on a run whose segmentation_cleanup_* settings were all off --
+    otherwise a later rerun without cleanup would still offer a toggle
+    backed by a previous run's mask.
+    """
+    if spec.kind != "image":
+        return
+    raw_segmented_image = spec.options.get("raw_segmented_image")
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    tag = dict(metadata.get(OURS) or {})
+    if raw_segmented_image is None:
+        tag.pop("raw_segmented_image", None)
+        tag.pop("corrected_mask_bool", None)
+    else:
+        tag["raw_segmented_image"] = np.asarray(raw_segmented_image, dtype=bool)
+        tag["corrected_mask_bool"] = np.asarray(spec.data, dtype=bool)
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _segmentation_cleanup_state(layer) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """The ``(corrected_mask_bool, raw_segmented_image)`` a toggle needs, or ``(None, None)``."""
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    return tag.get("corrected_mask_bool"), tag.get("raw_segmented_image")
+
+
+def _segmentation_cleanup_diff_labels(corrected: np.ndarray, raw: np.ndarray) -> np.ndarray:
+    """Four labels: 0 background, 1 unchanged, 2 added by cleanup, 3 removed
+    by cleanup. Pure, shape-agnostic, like ``_thick_thin_skeleton_labels``."""
+    corr = np.asarray(corrected, dtype=bool)
+    raw_bool = np.asarray(raw, dtype=bool)
+    labels = np.zeros(corr.shape, dtype=np.uint8)
+    labels[corr & raw_bool] = 1
+    labels[corr & ~raw_bool] = 2
+    labels[~corr & raw_bool] = 3
+    return labels
+
+
+def _apply_segmentation_cleanup_display(
+    layer, *, show: bool, default_colormap, default_contrast_limits,
+    z_window: tuple[float, float, float | None] | None = None,
+) -> None:
+    """Recolour the IMAGE layer to show cleanup's changes, or revert.
+
+    ``IMAGE`` is a napari Image layer, not a Labels layer like ``SKELETON``,
+    so the thick/thin toggle's ``layer.colormap = {1: ..., ...}`` dict trick
+    (valid only for Labels) does not apply. Reuses this codebase's only
+    existing Image-layer recolour precedent instead --
+    ``_image_options_for_napari``'s two-stop ``Colormap`` trick for
+    ``mask_colour`` -- extended to four stops, with
+    ``contrast_limits=(0, 3)`` so each integer label lands exactly on a
+    control point with no interpolation.
+    """
+    corrected_bool, raw_mask = _segmentation_cleanup_state(layer)
+    if show and corrected_bool is not None and raw_mask is not None:
+        if z_window is not None:
+            z_min, z_max, z_extent = z_window
+            dz = _layer_voxel_size_z(layer)
+            corrected_bool = clip_volume_to_z(
+                corrected_bool, dz, z_min, z_max, z_extent=z_extent
+            ).astype(bool)
+            raw_mask = clip_volume_to_z(
+                raw_mask, dz, z_min, z_max, z_extent=z_extent
+            ).astype(bool)
+        from napari.utils.colormaps import Colormap
+
+        layer.data = _segmentation_cleanup_diff_labels(corrected_bool, raw_mask)
+        layer.colormap = Colormap(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                list(SEGMENTATION_CLEANUP_UNCHANGED_COLOUR),
+                list(SEGMENTATION_CLEANUP_ADDED_COLOUR),
+                list(SEGMENTATION_CLEANUP_REMOVED_COLOUR),
+            ],
+            name="haemolynx_segmentation_cleanup_diff",
+        )
+        layer.contrast_limits = (0.0, 3.0)
+        return
+    layer.colormap = default_colormap
+    layer.contrast_limits = default_contrast_limits
+    if corrected_bool is not None:
+        data = corrected_bool.astype(np.uint8)
+        if z_window is not None:
+            z_min, z_max, z_extent = z_window
+            dz = _layer_voxel_size_z(layer)
+            data = clip_volume_to_z(data, dz, z_min, z_max, z_extent=z_extent)
+        layer.data = data
+
+
+def _attach_segmentation_cleanup_toggle(viewer, layer) -> bool:
+    """Put the segmentation-cleanup debug checkbox on the IMAGE layer's
+    controls, once.
+
+    Only offered when this run's mask actually carries a pre-cleanup
+    version (at least one segmentation_cleanup_* step was on) -- see
+    ``_store_segmentation_cleanup_metadata``. Mirrors
+    ``_attach_thick_thin_skeleton_toggle`` including its defensive
+    ``hasattr(layout, "addRow")`` guard: if napari's Image-layer controls
+    widget does not expose an addRow-capable layout the way Labels controls
+    do, the toggle is simply not offered rather than raising.
+    """
+    from qtpy.QtWidgets import QCheckBox
+
+    if layer.__class__.__name__.lower() != "image":
+        return False
+    if getattr(layer, "name", None) != IMAGE:
+        return False
+    _corrected, raw_mask = _segmentation_cleanup_state(layer)
+    available = raw_mask is not None
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        return False
+    checkbox = getattr(controls, "_haemolynx_segmentation_cleanup", None)
+    if checkbox is not None:
+        checkbox.setEnabled(available)
+        if not available:
+            checkbox.setChecked(False)
+        _apply_segmentation_cleanup_display(
+            layer, show=checkbox.isChecked(),
+            default_colormap=checkbox._haemolynx_default_colormap,
+            default_contrast_limits=checkbox._haemolynx_default_contrast_limits,
+            z_window=_current_z_depth_window(viewer),
+        )
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    checkbox = QCheckBox("Segmentation cleanup: show changes (debug)")
+    checkbox.setToolTip(
+        "Colour mask voxels by whether pre-skeletonisation cleanup "
+        "(reconnect / smooth / remove-small) changed them"
+    )
+    checkbox.setEnabled(available)
+    # Captured once, before this ever recolours the layer.
+    checkbox._haemolynx_default_colormap = layer.colormap
+    checkbox._haemolynx_default_contrast_limits = layer.contrast_limits
+    checkbox.toggled.connect(
+        lambda checked, l=layer, cb=checkbox: _apply_segmentation_cleanup_display(
+            l, show=checked, default_colormap=cb._haemolynx_default_colormap,
+            default_contrast_limits=cb._haemolynx_default_contrast_limits,
+            z_window=_current_z_depth_window(viewer),
+        )
+    )
+    layout.addRow(checkbox)
+    controls._haemolynx_segmentation_cleanup = checkbox
+    return True
+
+
+def _resync_segmentation_cleanup_after_z_change(viewer) -> None:
+    """Mirror of ``_resync_thick_thin_skeleton_after_z_change`` for the
+    IMAGE layer's segmentation-cleanup toggle."""
+    if viewer is None:
+        return
+    z_window = _current_z_depth_window(viewer)
+    for layer in viewer.layers:
+        if layer.__class__.__name__.lower() != "image":
+            continue
+        if getattr(layer, "name", None) != IMAGE:
+            continue
+        controls = _layer_controls(viewer, layer)
+        checkbox = (
+            getattr(controls, "_haemolynx_segmentation_cleanup", None)
+            if controls is not None else None
+        )
+        if checkbox is None or not checkbox.isChecked():
+            continue
+        _apply_segmentation_cleanup_display(
+            layer, show=True, default_colormap=checkbox._haemolynx_default_colormap,
+            default_contrast_limits=checkbox._haemolynx_default_contrast_limits,
             z_window=z_window,
         )
 
@@ -5698,6 +5896,7 @@ def settings_widget(napari_viewer=None):
             viewer._haemolynx_z_depth_window = (float(vol_lo), float(vol_hi), float(extent))
             _apply_volume_z_display(viewer, vol_lo, vol_hi, z_extent=extent)
             _resync_thick_thin_skeleton_after_z_change(viewer)
+            _resync_segmentation_cleanup_after_z_change(viewer)
             _apply_z_filter(viewer, vol_lo, vol_hi, z_extent=extent)
             for layer in viewer.layers:
                 if _is_branch_hover_layer(layer):

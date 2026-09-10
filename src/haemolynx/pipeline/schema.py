@@ -164,6 +164,117 @@ SCHEMA = Schema(
             choices=AXIS_ORDERS,
         ),
         # ------------------------------------------------------------------
+        # Segmentation cleanup (Input tab): three independently-toggleable
+        # cleanup steps on the raw segmented mask, before skeletonisation.
+        # Each defaults off -- an existing run's output does not change
+        # unless a toggle is explicitly turned on.
+        # ------------------------------------------------------------------
+        Setting(
+            name="segmentation_cleanup_reconnect_gaps",
+            kind="bool",
+            default=False,
+            help=(
+                "Bridge disconnected mask fragments that look like the same "
+                "vessel tube continuing, before skeletonisation. Limited to "
+                "cylindrical, well-aligned pairs -- does not indiscriminately "
+                "join nearby blobs"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_max_bridge_distance_um",
+            kind="float",
+            default=30.0,
+            help="Bridge fragment pairs no further apart than this physical distance",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup_reconnect_gaps",),
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_min_cylindricality",
+            kind="float",
+            default=0.5,
+            help=(
+                "Require both fragments' PCA linearity (near 1 = tube-like, "
+                "near 0 = blob-like) to be at least this before bridging"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("segmentation_cleanup_reconnect_gaps",),
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_max_axis_angle_degrees",
+            kind="float",
+            default=30.0,
+            help=(
+                "Reject a bridge when the two fragments' principal axes "
+                "disagree by more than this many degrees -- no degrees unit "
+                "is registered in the schema vocabulary"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=90.0,
+            requires=("segmentation_cleanup_reconnect_gaps",),
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_min_facing_cosine",
+            kind="float",
+            default=0.85,
+            help=(
+                "Require the candidate endpoints to face each other at least "
+                "this closely along each fragment's own axis"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("segmentation_cleanup_reconnect_gaps",),
+        ),
+        Setting(
+            name="segmentation_cleanup_reconnect_max_radius_ratio",
+            kind="float",
+            default=3.0,
+            help="Reject a bridge when the fragments' median radii differ by more than this ratio",
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=1.0,
+            requires=("segmentation_cleanup_reconnect_gaps",),
+        ),
+        Setting(
+            name="segmentation_cleanup_smooth_surfaces",
+            kind="bool",
+            default=False,
+            help="Gaussian-blur-then-rethreshold the mask to reduce surface noise, before skeletonisation",
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="segmentation_cleanup_smooth_sigma_um",
+            kind="float",
+            default=1.0,
+            help="Physical smoothing sigma, sampled anisotropy-aware per axis from voxel_size_zyx",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup_smooth_surfaces",),
+        ),
+        Setting(
+            name="segmentation_cleanup_remove_small_volumes",
+            kind="bool",
+            default=False,
+            help="Remove small disconnected segmented volumes, before skeletonisation",
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="segmentation_cleanup_remove_small_min_volume_um3",
+            kind="float",
+            default=5.0,
+            help="Remove connected components smaller than this physical volume",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um3",
+            minimum=0.0,
+            requires=("segmentation_cleanup_remove_small_volumes",),
+        ),
+        # ------------------------------------------------------------------
         # Vessel masks (Boundaries tab: under automated_vessel_assignment)
         # ------------------------------------------------------------------
         # Gate first: the Boundaries panel lists this checkbox, then the mask

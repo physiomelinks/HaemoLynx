@@ -552,6 +552,41 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
     assert fields["ilastik_output_suffix"].is_visible(on)
 
 
+def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():
+    """The three cleanup toggles and their dependent params land on "1.
+    Input" (declared under _INPUT_AND_SEGMENTATION, the only section that
+    tab claims), and each dependent param hides until its own master
+    toggle is on."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    fields = {field.name: field for field in tabs["1. Input"].fields}
+
+    masters_and_children = {
+        "segmentation_cleanup_reconnect_gaps": (
+            "segmentation_cleanup_reconnect_max_bridge_distance_um",
+            "segmentation_cleanup_reconnect_min_cylindricality",
+            "segmentation_cleanup_reconnect_max_axis_angle_degrees",
+            "segmentation_cleanup_reconnect_min_facing_cosine",
+            "segmentation_cleanup_reconnect_max_radius_ratio",
+        ),
+        "segmentation_cleanup_smooth_surfaces": (
+            "segmentation_cleanup_smooth_sigma_um",
+        ),
+        "segmentation_cleanup_remove_small_volumes": (
+            "segmentation_cleanup_remove_small_min_volume_um3",
+        ),
+    }
+
+    for master, children in masters_and_children.items():
+        assert not fields[master].hide_when_unmet
+        off = {master: False}
+        on = {master: True}
+        for child in children:
+            assert fields[child].hide_when_unmet
+            assert SCHEMA[child].requires == (master,)
+            assert not fields[child].is_visible(off)
+            assert fields[child].is_visible(on)
+
+
 def test_centreline_fields_on_graph_declare_hide_when_unmet():
     """Centreline children on Graph hide until smooth_centrelines applies."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}

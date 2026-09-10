@@ -38,6 +38,12 @@ from .skeleton_consistency import (
     format_skeleton_mask_consistency_report,
     format_vessels_missing_from_skeleton_report,
 )
+from .segmentation_cleanup import (
+    clean_segmented_mask_for_skeletonisation,
+    reconnect_vessel_like_components,
+    remove_small_segmented_volumes,
+    smooth_vessel_surfaces,
+)
 
 __all__ = [
     "BRAID_FACTOR_LIMIT",
@@ -71,4 +77,8 @@ __all__ = [
     "format_skeleton_mask_consistency_report",
     "diagnose_vessels_missing_from_skeleton",
     "format_vessels_missing_from_skeleton_report",
+    "clean_segmented_mask_for_skeletonisation",
+    "reconnect_vessel_like_components",
+    "remove_small_segmented_volumes",
+    "smooth_vessel_surfaces",
 ]

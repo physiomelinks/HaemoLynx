@@ -279,3 +279,168 @@ def test_skeletonise_loads_a_genuinely_2d_tiff_as_a_single_slice_volume_and_warn
     assert volume.skeleton.shape[1:] == mask_2d.shape
     assert int(volume.skeleton.sum()) > 0
     assert any("2D image" in r.message for r in caplog.records)
+
+
+# --- segmentation cleanup (Input tab, before skeletonisation) ----------------
+
+
+def _fragmented_mask() -> np.ndarray:
+    """Two collinear tube fragments with a small gap, one tiny disconnected
+    speck -- exercises reconnect + remove-small in one fixture."""
+    mask = np.zeros((10, 10, 40), dtype=bool)
+    mask[4:6, 4:6, 0:15] = True
+    mask[4:6, 4:6, 20:35] = True
+    mask[0, 0, 0] = True
+    return mask
+
+
+def test_segmentation_cleanup_off_by_default_never_calls_clean_segmented_mask(
+    tmp_path, monkeypatch
+):
+    """Default settings must cost nothing extra: the orchestrator is never
+    called at all, matching the codebase's "off is free" convention for
+    every other opt-in stage feature."""
+    import haemolynx.preprocessing as preprocessing_module
+
+    calls: list = []
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(tmp_path, _write_mask(tmp_path, _fragmented_mask()))
+    volume = skeletonise(settings, segment(settings))
+
+    assert calls == []
+    assert volume.raw_segmented_image is None
+
+
+def test_skeletonise_forwards_reconnect_max_bridge_distance_um_setting(
+    tmp_path, monkeypatch
+):
+    """`parameters_of` introspects whatever function currently sits at
+    ``preprocessing.clean_segmented_mask_for_skeletonisation`` to decide
+    which settings to forward -- a plain ``*args, **kwargs`` spy would
+    replace that signature and silently break the forwarding it is meant
+    to test, so the spy must keep the real one (functools.wraps)."""
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["reconnect_max_bridge_distance_um"] = kwargs.get(
+            "reconnect_max_bridge_distance_um"
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_reconnect_gaps=True,
+        segmentation_cleanup_reconnect_max_bridge_distance_um=17.0,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["reconnect_max_bridge_distance_um"] == pytest.approx(17.0)
+
+
+def test_skeletonise_forwards_smooth_sigma_um_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["smooth_sigma_um"] = kwargs.get("smooth_sigma_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_smooth_surfaces=True,
+        segmentation_cleanup_smooth_sigma_um=2.5,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["smooth_sigma_um"] == pytest.approx(2.5)
+
+
+def test_skeletonise_forwards_remove_small_min_volume_um3_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["remove_small_min_volume_um3"] = kwargs.get(
+            "remove_small_min_volume_um3"
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_small_volumes=True,
+        segmentation_cleanup_remove_small_min_volume_um3=9.0,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["remove_small_min_volume_um3"] == pytest.approx(9.0)
+
+
+def test_skeletonise_raw_segmented_image_is_set_only_when_cleanup_ran(tmp_path):
+    settings_off = settings_for(tmp_path, _write_mask(tmp_path, _fragmented_mask()))
+    volume_off = skeletonise(settings_off, segment(settings_off))
+    assert volume_off.raw_segmented_image is None
+
+    settings_on = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_small_volumes=True,
+        segmentation_cleanup_remove_small_min_volume_um3=5.0,
+    )
+    volume_on = skeletonise(settings_on, segment(settings_on))
+    assert volume_on.raw_segmented_image is not None
+    assert bool(volume_on.raw_segmented_image[0, 0, 0])  # the speck, pre-cleanup
+
+
+def test_skeletonise_feeds_the_cleaned_mask_to_skeletonisation(tmp_path):
+    """volume.image (what skeletonisation and everything downstream reads)
+    must be the corrected mask, not the raw one -- the speck removed by
+    cleanup must not still be present in volume.image."""
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_small_volumes=True,
+        segmentation_cleanup_remove_small_min_volume_um3=5.0,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert not bool(np.asarray(volume.image)[0, 0, 0])

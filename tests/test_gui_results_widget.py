@@ -963,6 +963,178 @@ def test_thick_thin_skeleton_toggle_composes_with_an_active_z_depth_window(
     assert data[3, 3, 3] == 2, "back in range, and still thick/thin recoloured"
 
 
+def _run_with_raw_segmented_image(make_napari_viewer):
+    """A viewer with our layers in it, from a run whose segmentation
+    cleanup changed the mask -- the IMAGE layer's controls should offer
+    the raw-vs-corrected debug toggle."""
+    from haemolynx.gui._widget import settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    corrected = np.zeros((4, 4, 4), dtype=np.uint8)
+    corrected[0, 0, 0] = 1
+    corrected[1, 1, 1] = 1  # added by cleanup
+    raw = np.zeros((4, 4, 4), dtype=bool)
+    raw[0, 0, 0] = True
+    group = ResultLayers().stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=corrected,
+            skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            raw_segmented_image=raw,
+        ),
+    )
+    _apply_layers(viewer, group)
+    return viewer, corrected, raw
+
+
+def test_segmentation_cleanup_toggle_is_offered_when_cleanup_ran(make_napari_viewer):
+    from haemolynx.gui._widget import (
+        SEGMENTATION_CLEANUP_ADDED_COLOUR,
+        SEGMENTATION_CLEANUP_UNCHANGED_COLOUR,
+        _layer_controls,
+    )
+
+    viewer, corrected, _raw = _run_with_raw_segmented_image(make_napari_viewer)
+    layer = viewer.layers[IMAGE]
+    controls = _layer_controls(viewer, layer)
+    checkbox = controls._haemolynx_segmentation_cleanup
+    assert checkbox.isEnabled()
+    assert checkbox.isChecked() is False
+    original_data = np.asarray(layer.data).copy()
+    original_colormap = layer.colormap
+    original_contrast_limits = layer.contrast_limits
+
+    checkbox.setChecked(True)
+    assert layer.data[0, 0, 0] == 1  # unchanged voxel
+    assert layer.data[1, 1, 1] == 2  # added by cleanup
+    assert tuple(layer.contrast_limits) == pytest.approx((0.0, 3.0))
+    assert layer.colormap.colors[1] == pytest.approx(SEGMENTATION_CLEANUP_UNCHANGED_COLOUR)
+    assert layer.colormap.colors[2] == pytest.approx(SEGMENTATION_CLEANUP_ADDED_COLOUR)
+
+    checkbox.setChecked(False)
+    np.testing.assert_array_equal(np.asarray(layer.data), original_data)
+    assert layer.colormap is original_colormap
+    assert tuple(layer.contrast_limits) == pytest.approx(tuple(original_contrast_limits))
+
+
+def test_segmentation_cleanup_toggle_is_not_offered_on_a_non_image_or_wrong_name_layer(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import (
+        _attach_segmentation_cleanup_toggle,
+        settings_widget,
+    )
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    labels_layer = viewer.add_labels(
+        np.zeros((3, 3, 3), dtype=np.uint8), name="some_labels_layer"
+    )
+    assert _attach_segmentation_cleanup_toggle(viewer, labels_layer) is False
+
+    image_layer = viewer.add_image(
+        np.zeros((3, 3, 3), dtype=np.uint8), name="some_other_image_layer"
+    )
+    assert _attach_segmentation_cleanup_toggle(viewer, image_layer) is False
+
+
+def test_segmentation_cleanup_toggle_is_disabled_without_a_raw_mask(make_napari_viewer):
+    from haemolynx.gui._widget import _layer_controls, settings_widget
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    controls = _layer_controls(viewer, viewer.layers[IMAGE])
+    checkbox = getattr(controls, "_haemolynx_segmentation_cleanup", None)
+    assert checkbox is not None
+    assert checkbox.isEnabled() is False
+
+
+def test_segmentation_cleanup_toggle_turns_off_when_a_rerun_drops_the_raw_mask(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import _layer_controls
+
+    viewer, _corrected, _raw = _run_with_raw_segmented_image(make_napari_viewer)
+    controls = _layer_controls(viewer, viewer.layers[IMAGE])
+    checkbox = controls._haemolynx_segmentation_cleanup
+    checkbox.setChecked(True)
+
+    plain_image = np.zeros((4, 4, 4), dtype=np.uint8)
+    plain_image[2, 2, 2] = 1
+    _apply_layers(
+        viewer,
+        ResultLayers().stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=plain_image,
+                skeleton=np.zeros((4, 4, 4), dtype=bool),
+                voxel_size_xyz=(1.0, 1.0, 1.0),
+                voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        ),
+    )
+
+    assert checkbox.isEnabled() is False
+    assert checkbox.isChecked() is False
+    layer = viewer.layers[IMAGE]
+    # Regression, matching the thick/thin toggle's own: the colormap and
+    # contrast limits must revert too, not just the data -- a rerun that
+    # drops the mask must not leave the layer stuck on the debug scheme.
+    assert layer.colormap is checkbox._haemolynx_default_colormap
+    assert tuple(layer.contrast_limits) == pytest.approx(
+        tuple(checkbox._haemolynx_default_contrast_limits)
+    )
+
+
+def test_segmentation_cleanup_toggle_composes_with_an_active_z_depth_window(
+    make_napari_viewer,
+):
+    from haemolynx.gui._widget import settings_widget, _layer_controls
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    corrected = np.zeros((4, 1, 4), dtype=np.uint8)
+    corrected[0, 0, 0] = 1
+    corrected[3, 0, 3] = 1
+    raw = np.zeros((4, 1, 4), dtype=bool)
+    raw[0, 0, 0] = True
+    results = ResultLayers()
+    group = results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=corrected,
+            skeleton=np.zeros((4, 1, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            raw_segmented_image=raw,
+        ),
+    )
+    _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+
+    layer = viewer.layers[IMAGE]
+    controls = _layer_controls(viewer, layer)
+    checkbox = controls._haemolynx_segmentation_cleanup
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 2.0))
+    checkbox.setChecked(True)
+    data = np.asarray(layer.data)
+    assert data[0, 0, 0] == 1  # unchanged, inside the window
+    assert data[3, 0, 3] == 0, "outside the Z-depth window: must stay clipped"
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 4.0))
+    data = np.asarray(layer.data)
+    assert data[0, 0, 0] == 1
+    assert data[3, 0, 3] == 2, "back in range, and still showing the cleanup diff"
+
+
 def test_z_depth_slider_is_not_mounted_in_layer_controls(make_napari_viewer):
     from haemolynx.gui._widget import _layer_controls, settings_widget
 

@@ -915,6 +915,11 @@ class ResultLayers:
         #: `load_state` so a resumed/reloaded run does not silently disable
         #: the thick/thin debug toggle for a run that genuinely used it.
         self._thick_vessel_mask: np.ndarray | None = None
+        #: The pre-cleanup segmented mask, if a segmentation_cleanup_* step
+        #: ran -- read by `_segmentation_cleanup_image_options` on every
+        #: later re-emission of the IMAGE layer. Same restore-on-load
+        #: treatment as `_thick_vessel_mask`.
+        self._raw_segmented_image: np.ndarray | None = None
 
     @property
     def emitted(self) -> tuple[str, ...]:
@@ -937,6 +942,7 @@ class ResultLayers:
         self._geometry_shown = False
         self._emitted = []
         self._thick_vessel_mask = None
+        self._raw_segmented_image = None
 
     def export_state(self) -> dict[str, Any]:
         """Pickle-safe copy of the memory a loaded run needs to look finished."""
@@ -946,6 +952,7 @@ class ResultLayers:
         else:
             canonical = copy_graph(self._canonical_graph)
         thick_vessel_mask = self._thick_vessel_mask
+        raw_segmented_image = self._raw_segmented_image
         return {
             "graph": graph,
             "canonical_graph": canonical,
@@ -957,6 +964,10 @@ class ResultLayers:
             "show_steps": bool(self.show_steps),
             "thick_vessel_mask": (
                 None if thick_vessel_mask is None else np.array(thick_vessel_mask, copy=True)
+            ),
+            "raw_segmented_image": (
+                None if raw_segmented_image is None
+                else np.array(raw_segmented_image, copy=True)
             ),
         }
 
@@ -985,6 +996,10 @@ class ResultLayers:
         thick_vessel_mask = state.get("thick_vessel_mask")
         self._thick_vessel_mask = (
             None if thick_vessel_mask is None else np.array(thick_vessel_mask)
+        )
+        raw_segmented_image = state.get("raw_segmented_image")
+        self._raw_segmented_image = (
+            None if raw_segmented_image is None else np.array(raw_segmented_image)
         )
 
     def image_z_extent_um(self) -> float | None:
@@ -1149,6 +1164,15 @@ class ResultLayers:
             return {}
         return {"thick_vessel_mask": thick_vessel_mask}
 
+    def _segmentation_cleanup_image_options(self) -> dict[str, Any]:
+        """Extra options every re-emission of the IMAGE layer carries, read
+        by _store_segmentation_cleanup_metadata in _widget.py -- same shape
+        as _skeleton_layer_options, for the raw-vs-corrected mask toggle."""
+        raw_segmented_image = getattr(self, "_raw_segmented_image", None)
+        if raw_segmented_image is None:
+            return {}
+        return {"raw_segmented_image": raw_segmented_image}
+
     def _from_segment(self, output: Any) -> StageLayers:
         """Nothing to draw: the stage settles which file to read, not its content."""
         path = getattr(output, "image_path", None)
@@ -1197,6 +1221,13 @@ class ResultLayers:
                     **BINARY_IMAGE_VOLUME_OPTIONS,
                     "mask_colour": SEGMENTED_IMAGE_COLOUR,
                 }
+                # raw_segmented_image is always a canonical boolean mask, so
+                # the corrected-vs-raw comparison only makes sense when the
+                # layer is actually rendered in this translucent binary-mask
+                # style -- the grayscale fallback below is a genuine
+                # continuous image, where a boolean diff means nothing.
+                self._raw_segmented_image = getattr(output, "raw_segmented_image", None)
+                image_options.update(self._segmentation_cleanup_image_options())
             else:
                 image_options = {"blending": "additive", "colormap": "gray"}
             layers.append(

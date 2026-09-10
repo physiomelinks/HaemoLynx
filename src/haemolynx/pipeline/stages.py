@@ -125,6 +125,11 @@ class SkeletonisedVolume:
     #: The fat/thick vessel region from thickness-gated skeletonisation, if
     #: that ran; None otherwise (including a resume that skipped it).
     thick_vessel_mask: np.ndarray | None = None
+    #: The pre-cleanup, canonically-binarised mask, if at least one
+    #: segmentation_cleanup_* step ran; None otherwise (including when
+    #: every step is off, or a resume that skipped skeletonise entirely) --
+    #: same "None costs nothing extra" convention as thick_vessel_mask.
+    raw_segmented_image: np.ndarray | None = None
 
 
 @dataclass
@@ -475,9 +480,10 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     if not settings["plot_dir"].exists():
         settings["plot_dir"].mkdir(parents=True, exist_ok=True)
 
-    # Only a fresh skeletonise run can produce this; a loaded (resumed)
+    # Only a fresh skeletonise run can produce these; a loaded (resumed)
     # skeleton has no mask saved alongside it.
     thick_vessel_mask: np.ndarray | None = None
+    raw_segmented_image: np.ndarray | None = None
 
     if settings["do_skeletonize"]:
         image, metadata_voxel_size, voxel_meta_status = _load_volume_for_skeletonise(
@@ -501,6 +507,30 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 "Thickness-gated skeletonisation: "
                 "centreline tree on fat vessels, Lee on the rest"
             )
+
+        cleanup_kwargs = prefixed_arguments(
+            settings, "segmentation_cleanup_",
+            parameters_of(preprocessing.clean_segmented_mask_for_skeletonisation),
+        )
+        if any(
+            cleanup_kwargs.get(flag)
+            for flag in ("reconnect_gaps", "smooth_surfaces", "remove_small_volumes")
+        ):
+            logger.info(
+                "Segmentation cleanup: reconnect=%s smooth=%s remove_small=%s",
+                cleanup_kwargs.get("reconnect_gaps"),
+                cleanup_kwargs.get("smooth_surfaces"),
+                cleanup_kwargs.get("remove_small_volumes"),
+            )
+            binary_image = _to_binary_volume_for_skeletonization(image)
+            image, raw_segmented_image = preprocessing.clean_segmented_mask_for_skeletonisation(
+                binary_image,
+                voxel_size_zyx=io.voxel_size_zyx_from_xyz(
+                    tuple(float(v) for v in voxel_size)
+                ),
+                **cleanup_kwargs,
+            )
+
         skeleton, thick_vessel_mask = _skeletonize_loaded_mask(image, settings, voxel_size)
 
         # Purely diagnostic: off by default, and never changes `skeleton` even
@@ -640,6 +670,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         voxel_size_zyx=voxel_size_zyx,
         output_dir=output_dir,
         thick_vessel_mask=thick_vessel_mask,
+        raw_segmented_image=raw_segmented_image,
     )
 
 

@@ -188,6 +188,10 @@ class StageCheckpoint:
     #: run that genuinely used it (results._thick_vessel_mask has no
     #: per-stage-output equivalent the way the skeleton array itself does).
     thick_vessel_mask: Any | None = None
+    #: The pre-cleanup segmented mask, if a segmentation_cleanup_* step ran
+    #: -- same "carried forward across a resume" reasoning as
+    #: thick_vessel_mask, for the raw-vs-corrected debug toggle.
+    raw_segmented_image: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -586,6 +590,7 @@ class StageCheckpoints:
             large_arteriole_mask=large_arteriole_mask,
             large_venule_mask=large_venule_mask,
             thick_vessel_mask=getattr(results, "_thick_vessel_mask", None),
+            raw_segmented_image=getattr(results, "_raw_segmented_image", None),
         )
         self._by_stage[stage] = checkpoint
         return checkpoint
@@ -597,6 +602,7 @@ class StageCheckpoints:
         results._geometry_shown = checkpoint.geometry_shown
         results._emitted = list(checkpoint.emitted)
         results._thick_vessel_mask = checkpoint.thick_vessel_mask
+        results._raw_segmented_image = checkpoint.raw_segmented_image
 
     def plan_restore(
         self,

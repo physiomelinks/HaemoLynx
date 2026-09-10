@@ -25,6 +25,26 @@ input_and_segmentation:
   voxel_size_policy: auto
   # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
   image_axis_order: zyx
+  # Bridge disconnected mask fragments that look like the same vessel tube continuing, before skeletonisation. Limited to cylindrical, well-aligned pairs -- does not indiscriminately join nearby blobs
+  segmentation_cleanup_reconnect_gaps: false
+  # Bridge fragment pairs no further apart than this physical distance  [um; range 0.0..; needs segmentation_cleanup_reconnect_gaps]
+  segmentation_cleanup_reconnect_max_bridge_distance_um: 30.0
+  # Require both fragments' PCA linearity (near 1 = tube-like, near 0 = blob-like) to be at least this before bridging  [range 0.0..1.0; needs segmentation_cleanup_reconnect_gaps]
+  segmentation_cleanup_reconnect_min_cylindricality: 0.5
+  # Reject a bridge when the two fragments' principal axes disagree by more than this many degrees -- no degrees unit is registered in the schema vocabulary  [range 0.0..90.0; needs segmentation_cleanup_reconnect_gaps]
+  segmentation_cleanup_reconnect_max_axis_angle_degrees: 30.0
+  # Require the candidate endpoints to face each other at least this closely along each fragment's own axis  [range 0.0..1.0; needs segmentation_cleanup_reconnect_gaps]
+  segmentation_cleanup_reconnect_min_facing_cosine: 0.85
+  # Reject a bridge when the fragments' median radii differ by more than this ratio  [range 1.0..; needs segmentation_cleanup_reconnect_gaps]
+  segmentation_cleanup_reconnect_max_radius_ratio: 3.0
+  # Gaussian-blur-then-rethreshold the mask to reduce surface noise, before skeletonisation
+  segmentation_cleanup_smooth_surfaces: false
+  # Physical smoothing sigma, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup_smooth_surfaces]
+  segmentation_cleanup_smooth_sigma_um: 1.0
+  # Remove small disconnected segmented volumes, before skeletonisation
+  segmentation_cleanup_remove_small_volumes: false
+  # Remove connected components smaller than this physical volume  [um3; range 0.0..; needs segmentation_cleanup_remove_small_volumes]
+  segmentation_cleanup_remove_small_min_volume_um3: 5.0
 
 # ------------------------------------------------------------------------
 # Vessel masks
