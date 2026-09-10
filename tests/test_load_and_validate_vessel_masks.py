@@ -287,6 +287,48 @@ def test_voxel_size_override_applies_when_mask_metadata_is_missing(
     assert venule_voxel == VOXEL_SIZE_XYZ
 
 
+@pytest.mark.parametrize("mask_role", ["large", "small"])
+def test_loaded_masks_and_voxel_size_check_are_logged_for_every_role(
+    tmp_path: Path, caplog, mask_role: str
+) -> None:
+    """The confirmation logging (loaded shapes, resolved voxel sizes, and
+    "Voxel-size check passed") used to be written only for mask_role="large"
+    -- a "small" role run applied the exact same override correctly but
+    never said so, leaving no way to tell from the log whether it had
+    (this is the wiring test_voxel_size_override_applies_when_mask_metadata_
+    is_missing above already pins for the value itself; this pins that
+    every role reports it)."""
+    shape = (4, 5, 6)
+    arteriole_path = tmp_path / "arteriole.tif"
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_tif(arteriole_path, shape)
+    _write_mask_tif(venule_path, shape)
+
+    with caplog.at_level("INFO", logger="haemolynx.io.automated_vessel_assignment"):
+        load_and_validate_vessel_masks(
+            mask_role=mask_role,
+            enabled=True,
+            use_ilastik=False,
+            arteriole_mask_path=arteriole_path,
+            venule_mask_path=venule_path,
+            image_shape=shape,
+            main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_override_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_policy="auto",
+        )
+
+    messages = [record.message for record in caplog.records]
+    assert any(
+        f"Loaded {mask_role}-vessel masks" in m and str(shape) in m for m in messages
+    ), messages
+    assert any(
+        f"{mask_role.capitalize()}-vessel mask voxel sizes" in m
+        and str(VOXEL_SIZE_XYZ) in m
+        for m in messages
+    ), messages
+    assert any("Voxel-size check passed" in m for m in messages), messages
+
+
 def test_voxel_size_policy_override_forces_mask_units_even_with_complete_metadata(
     tmp_path: Path,
 ) -> None:

@@ -198,11 +198,10 @@ def _assert_voxel_sizes_match_main_image(
             arteriole_voxel_size_xyz, venule_voxel_size_xyz, rtol=0.0, atol=0.0
         )
     ):
-        if mask_role == "large":
-            logger.info(
-                "Voxel-size check passed. Arteriole and venule masks are aligned "
-                "to the same physical voxel units as the main image."
-            )
+        logger.info(
+            f"Voxel-size check passed. {vessel_phrase.capitalize()} are aligned "
+            "to the same physical voxel units as the main image."
+        )
         return
 
     error_message = (
@@ -212,8 +211,7 @@ def _assert_voxel_sizes_match_main_image(
         f"{venule_label}={venule_voxel_size_xyz}. "
         "All must match exactly in x, y, and z."
     )
-    if mask_role == "large":
-        logger.error(error_message)
+    logger.error(error_message)
     raise ValueError(error_message)
 
 
@@ -422,15 +420,14 @@ def load_and_validate_vessel_masks(
 
     arteriole_voxel_size_xyz = tuple(float(v) for v in arteriole_mask_voxel_size)
     venule_voxel_size_xyz = tuple(float(v) for v in venule_mask_voxel_size)
-    if mask_role == "large":
-        logger.info(
-            f"Loaded {scale_label}-vessel masks: "
-            f"arteriole={arteriole_mask.shape}, venule={venule_mask.shape}"
-        )
-        logger.info(
-            "Large-vessel mask voxel sizes (x, y, z): "
-            f"arteriole={arteriole_mask_voxel_size}, venule={venule_mask_voxel_size}"
-        )
+    logger.info(
+        f"Loaded {scale_label}-vessel masks: "
+        f"arteriole={arteriole_mask.shape}, venule={venule_mask.shape}"
+    )
+    logger.info(
+        f"{scale_label.capitalize()}-vessel mask voxel sizes (x, y, z): "
+        f"arteriole={arteriole_mask_voxel_size}, venule={venule_mask_voxel_size}"
+    )
     _assert_voxel_sizes_match_main_image(
         main_voxel_size_xyz=main_voxel_size_xyz,
         arteriole_voxel_size_xyz=arteriole_voxel_size_xyz,
