@@ -25,6 +25,18 @@ input_and_segmentation:
   voxel_size_policy: auto
   # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
   image_axis_order: zyx
+  # Morphologically open the mask to strip thin (1-2 voxel) surface spikes still attached to an otherwise clean vessel, before skeletonisation -- run first, so later steps measure radii and axes off the cleaned-up shape
+  segmentation_cleanup_remove_whiskers: false
+  # Strip surface spikes with no core at least this physical radius thick  [um; range 0.0..; needs segmentation_cleanup_remove_whiskers]
+  segmentation_cleanup_whisker_radius_um: 1.0
+  # Cut the mask apart at genuine pinch points -- narrow necks where two distinct, touching vessels were segmented as one blob -- before skeletonisation. The inverse of reconnecting gaps: gated so a uniform-radius vessel is never cut
+  segmentation_cleanup_split_narrow_necks: false
+  # Treat two local-radius maxima as separate vessel bodies only if at least this far apart  [um; range 0.0..; needs segmentation_cleanup_split_narrow_necks]
+  segmentation_cleanup_split_min_marker_separation_um: 10.0
+  # Only cut where the narrowest point between two vessel bodies is at most this fraction of their own typical radius  [range 0.0..1.0; needs segmentation_cleanup_split_narrow_necks]
+  segmentation_cleanup_split_min_pinch_radius_ratio: 0.6
+  # Ignore candidate vessel bodies with a typical radius below this -- too thin to judge reliably  [um; range 0.0..; needs segmentation_cleanup_split_narrow_necks]
+  segmentation_cleanup_split_min_body_radius_um: 1.0
   # Bridge disconnected mask fragments that look like the same vessel tube continuing, before skeletonisation. Limited to cylindrical, well-aligned pairs -- does not indiscriminately join nearby blobs
   segmentation_cleanup_reconnect_gaps: false
   # Bridge fragment pairs no further apart than this physical distance  [um; range 0.0..; needs segmentation_cleanup_reconnect_gaps]

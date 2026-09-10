@@ -4069,6 +4069,30 @@ def _optimisation_progress_bridge():
     return _OPTIMISATION_PROGRESS_BRIDGE_CLASS()
 
 
+def _names_with_prerequisite_closure(schema: Schema, names: Sequence[str]) -> tuple[str, ...]:
+    """*names* plus every setting they (transitively) ``requires``.
+
+    ``Schema.__init__`` validates each setting's ``requires`` targets against
+    its own subset, not the parent schema -- building a documentation-only
+    subset (like the optimiser's generated config schema) straight from a
+    fixed list of "quality knobs" raises ``ConfigError`` the moment one of
+    them, or one of *its* prerequisites, needs a stage toggle or another
+    setting that fixed list never named. Walking the whole chain here means
+    a new setting or a new layer of prerequisites never needs a matching
+    edit at the call site.
+    """
+    closure: set[str] = set()
+    stack = list(names)
+    while stack:
+        name = stack.pop()
+        if name in closure:
+            continue
+        closure.add(name)
+        for prerequisite in schema[name].requires:
+            stack.append(prerequisite.lstrip("!"))
+    return tuple(setting.name for setting in schema if setting.name in closure)
+
+
 def _run_optimisation_in_background(
     settings: dict[str, Any],
     schema: Schema,
@@ -4153,8 +4177,23 @@ def _run_optimisation_in_background(
                 rows[name].value = display_value_for(schema[name], value)
         apply_prerequisites()
         out_path = Path(input_path).parent / config_filename(input_path)
+        # OPTIMISE_SETTING_NAMES are quality knobs only -- several of them
+        # (and "input_path" itself) `requires` a stage toggle or upstream
+        # setting Schema validates against its own subset, not the parent
+        # schema, so the documented config schema needs the whole closure,
+        # not just the names the optimiser actually tunes. Every added
+        # prerequisite defaults to what a config meant to be loaded and run
+        # implies (skeletonisation/graph-building on, ilastik off), so
+        # leaving them out of `values` below and letting `dump_config` fill
+        # the schema default is correct.
         documented_schema = Schema(
-            list(schema.subset((*OPTIMISE_SETTING_NAMES, "input_path"))),
+            list(
+                schema.subset(
+                    _names_with_prerequisite_closure(
+                        schema, (*OPTIMISE_SETTING_NAMES, "input_path")
+                    )
+                )
+            ),
             title="HaemoLynx optimised settings",
             description=build_report_text(result),
         )
@@ -4202,6 +4241,95 @@ def _run_optimisation_in_background(
     button.enabled = False
     bars.start()
     report.value = "Optimising settings..."
+    worker.start()
+    return worker
+
+
+def _run_segmentation_quality_check_in_background(
+    settings: dict[str, Any],
+    report,
+    button,
+    *,
+    run_state: RunState,
+):
+    """Score the segmented input image off the GUI thread, printing the
+    breakdown to *report* when done.
+
+    Shares *run_state* with "Run pipeline" and "Optimise settings" purely
+    for mutual exclusion -- a large volume's EDT/connected-components/
+    smoothing pass is real work, so this must never race the other two
+    against the same input. No progress bars: unlike the optimiser's dozens
+    of pipeline sub-stage runs, this is one pass over the mask, reported as
+    a single before/after message like "Run checks" already is.
+    """
+    from napari.qt.threading import thread_worker
+
+    from haemolynx.io import voxel_size_zyx_from_xyz
+    from haemolynx.preprocessing import format_segmentation_quality_report, score_segmented_mask
+
+    cancel_flag = {"cancelled": False}
+
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
+
+    @thread_worker
+    def run():
+        local_settings = dict(settings)
+        inputs = segment(local_settings)
+        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
+            local_settings, inputs.input_format
+        )
+        voxel_size_xyz, _source = resolve_voxel_size_xyz(
+            metadata_voxel_size_xyz=metadata_voxel_size,
+            metadata_status=voxel_meta_status,
+            voxel_size_override_xyz=local_settings["voxel_size_override_xyz"],
+            voxel_size_policy=local_settings["voxel_size_policy"],
+        )
+        mask = np.asarray(image).astype(bool)
+        voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
+        return score_segmented_mask(mask, voxel_size_zyx=voxel_size_zyx)
+
+    def finished(score) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+            return
+        report.value = format_segmentation_quality_report(score)
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale segmented-image check worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        report.value = f"{type(error).__name__}: {error}"
+        logger.exception("segmented image quality check failed", exc_info=error)
+        raise error
+
+    def stopped() -> None:
+        if not still_ours():
+            return
+        if not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+
+    worker = run(_connect={"errored": failed}, _start_thread=False)
+    worker.returned.connect(finished)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, cancel_flag=cancel_flag)
+    button.enabled = False
+    report.value = "Checking segmented image..."
     worker.start()
     return worker
 
@@ -6008,6 +6136,18 @@ def settings_widget(napari_viewer=None):
     if input_settings is not None:
         input_settings.append(group_checkboxes_container)
 
+    #: "Check segmented image": scores the raw segmented input mask, 0-10,
+    #: before any pipeline stage runs on it -- see
+    #: haemolynx.preprocessing.segmentation_quality for the five 0-2
+    #: sub-scores. A read-only diagnostic: never writes to `rows`, unlike
+    #: "Optimise settings" beside it.
+    check_image_button = PushButton(text="Check segmented image")
+    from haemolynx.gui.chrome_tooltips import CHECK_SEGMENTED_IMAGE_TOOLTIP
+
+    check_image_button.tooltip = CHECK_SEGMENTED_IMAGE_TOOLTIP
+    if input_settings is not None:
+        input_settings.append(check_image_button)
+
     def _toggle_group_checkboxes(*_args) -> None:
         group_checkboxes_container.visible = bool(choose_groups_checkbox.value)
 
@@ -6418,6 +6558,22 @@ def settings_widget(napari_viewer=None):
             run_state=run_state,
             downsample_factor=downsample_factor,
             groups=groups,
+        )
+
+    def on_check_segmented_image() -> None:
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        values = current_values()
+        input_path = values.get("input_path")
+        if not input_path or not Path(input_path).is_file():
+            report.value = "Choose a segmented input image first, then press Check segmented image."
+            return
+        _run_segmentation_quality_check_in_background(
+            _settings(),
+            report,
+            check_image_button,
+            run_state=run_state,
         )
 
     def on_check() -> None:
@@ -6841,6 +6997,7 @@ def settings_widget(napari_viewer=None):
     load_button.changed.connect(on_load)
     save_button.changed.connect(on_save)
     optimise_button.changed.connect(lambda *_args: on_optimise_settings())
+    check_image_button.changed.connect(lambda *_args: on_check_segmented_image())
     check_button.changed.connect(on_check)
     run_button.changed.connect(on_run)
     clear_button.changed.connect(lambda *_args: on_clear(ask=True))
@@ -6992,6 +7149,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_choose_groups = choose_groups_checkbox
     panel._haemolynx_optimise_group_checkboxes = group_checkboxes
     panel._haemolynx_optimise_group_checkboxes_container = group_checkboxes_container
+    panel._haemolynx_check_image_button = check_image_button
+    panel._haemolynx_check_segmented_image = on_check_segmented_image
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)

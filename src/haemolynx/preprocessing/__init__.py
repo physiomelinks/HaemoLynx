@@ -45,7 +45,14 @@ from .segmentation_cleanup import (
     clean_segmented_mask_for_skeletonisation,
     reconnect_vessel_like_components,
     remove_small_segmented_volumes,
+    remove_surface_whiskers,
     smooth_vessel_surfaces,
+    split_narrow_neck_components,
+)
+from .segmentation_quality import (
+    SegmentationQualityScore,
+    format_segmentation_quality_report,
+    score_segmented_mask,
 )
 
 __all__ = [
@@ -86,5 +93,10 @@ __all__ = [
     "clean_segmented_mask_for_skeletonisation",
     "reconnect_vessel_like_components",
     "remove_small_segmented_volumes",
+    "remove_surface_whiskers",
     "smooth_vessel_surfaces",
+    "split_narrow_neck_components",
+    "SegmentationQualityScore",
+    "format_segmentation_quality_report",
+    "score_segmented_mask",
 ]

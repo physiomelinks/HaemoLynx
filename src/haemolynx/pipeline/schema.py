@@ -164,11 +164,78 @@ SCHEMA = Schema(
             choices=AXIS_ORDERS,
         ),
         # ------------------------------------------------------------------
-        # Segmentation cleanup (Input tab): three independently-toggleable
+        # Segmentation cleanup (Input tab): five independently-toggleable
         # cleanup steps on the raw segmented mask, before skeletonisation.
         # Each defaults off -- an existing run's output does not change
         # unless a toggle is explicitly turned on.
         # ------------------------------------------------------------------
+        Setting(
+            name="segmentation_cleanup_remove_whiskers",
+            kind="bool",
+            default=False,
+            help=(
+                "Morphologically open the mask to strip thin (1-2 voxel) "
+                "surface spikes still attached to an otherwise clean vessel, "
+                "before skeletonisation -- run first, so later steps measure "
+                "radii and axes off the cleaned-up shape"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="segmentation_cleanup_whisker_radius_um",
+            kind="float",
+            default=1.0,
+            help="Strip surface spikes with no core at least this physical radius thick",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup_remove_whiskers",),
+        ),
+        Setting(
+            name="segmentation_cleanup_split_narrow_necks",
+            kind="bool",
+            default=False,
+            help=(
+                "Cut the mask apart at genuine pinch points -- narrow necks "
+                "where two distinct, touching vessels were segmented as one "
+                "blob -- before skeletonisation. The inverse of reconnecting "
+                "gaps: gated so a uniform-radius vessel is never cut"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="segmentation_cleanup_split_min_marker_separation_um",
+            kind="float",
+            default=10.0,
+            help="Treat two local-radius maxima as separate vessel bodies only if at least this far apart",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup_split_narrow_necks",),
+        ),
+        Setting(
+            name="segmentation_cleanup_split_min_pinch_radius_ratio",
+            kind="float",
+            default=0.6,
+            help=(
+                "Only cut where the narrowest point between two vessel "
+                "bodies is at most this fraction of their own typical radius"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("segmentation_cleanup_split_narrow_necks",),
+        ),
+        Setting(
+            name="segmentation_cleanup_split_min_body_radius_um",
+            kind="float",
+            default=1.0,
+            help="Ignore candidate vessel bodies with a typical radius below this -- too thin to judge reliably",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup_split_narrow_necks",),
+        ),
         Setting(
             name="segmentation_cleanup_reconnect_gaps",
             kind="bool",

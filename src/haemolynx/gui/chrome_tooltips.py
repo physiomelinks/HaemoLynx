@@ -76,6 +76,11 @@ OPTIMISE_SETTINGS_TOOLTIP = (
     "Empirically choose Skeletonise and Graph tab settings from the "
     "segmented input image, and write a config file beside it"
 )
+CHECK_SEGMENTED_IMAGE_TOOLTIP = (
+    "Score the segmented input image out of 10 -- fragmentation, "
+    "connectivity, vessels leaving the image, surface noise and resolution "
+    "-- and print the breakdown to the log below"
+)
 REVERT_STAGE_TOOLTIP = (
     "Clear this tab and later layers and checkpoints, then rerun the "
     "pipeline from this stage using the previous tab's saved work"

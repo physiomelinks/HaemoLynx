@@ -1,14 +1,23 @@
 """Pre-skeletonization cleanup of the raw segmented binary vessel mask.
 
-Three independently-toggleable steps, always applied reconnect -> smooth ->
-remove-small when more than one is on (see
-:func:`clean_segmented_mask_for_skeletonisation` for why that order).  All
-distance/volume parameters are physical (microns / cubic microns), sampled
-via ``voxel_size_zyx`` -- unlike :func:`haemolynx.preprocessing.skeleton.
-close_binary_mask`/``bridge_gaps``, which are voxel-unit only, a real
-problem for this project's anisotropic datasets (e.g. a ``(1.0, 0.4, 0.4)``
-zyx voxel size, where a "radius=2 voxel" ball is 2.0 microns in z but only
-0.8 microns in x/y).
+Five independently-toggleable steps, always applied remove-whiskers ->
+split-narrow-necks -> reconnect -> smooth -> remove-small when more than one
+is on (see :func:`clean_segmented_mask_for_skeletonisation` for why that
+order). All distance/volume parameters are physical (microns / cubic
+microns), sampled via ``voxel_size_zyx`` -- unlike
+:func:`haemolynx.preprocessing.skeleton.close_binary_mask`/``bridge_gaps``,
+which are voxel-unit only, a real problem for this project's anisotropic
+datasets (e.g. a ``(1.0, 0.4, 0.4)`` zyx voxel size, where a "radius=2
+voxel" ball is 2.0 microns in z but only 0.8 microns in x/y).
+
+:func:`split_narrow_neck_components` is the inverse of
+:func:`reconnect_vessel_like_components`: reconnect repairs a false split
+(one vessel broken into fragments by a segmentation gap); split repairs a
+false merge (two distinct, touching vessels segmented as one blob), cutting
+at a genuine pinch -- a watershed ridge between two mask "bodies" whose own
+cross-sectional radius there is markedly narrower than either body, not
+just wherever a marker-controlled watershed happens to place a boundary
+along an otherwise uniform vessel.
 
 Nothing here imports :mod:`haemolynx.io` or :mod:`haemolynx.graph` --
 ``preprocessing`` sits at the bottom of this package's dependency stack (both
@@ -25,21 +34,41 @@ solves a different, narrower problem (arteriole/venule redefinition against
 large masks, post-boundary-assignment) with the same PCA/endpoint/cylinder
 gating idea. Its helpers are module-private and live one layer above this
 one, so the pieces this module needs are re-implemented here rather than
-imported.
+imported -- except the crash-avoiding 3x3 eigen helpers below, shared with
+:mod:`haemolynx.preprocessing.thick_vessels`, which solves the identical
+"BLAS crashes on this environment" problem for the identical 3x3
+covariance case.
 """
 from __future__ import annotations
 
 from typing import Any
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, gaussian_filter, label
+from scipy.ndimage import (
+    binary_dilation,
+    binary_opening,
+    distance_transform_edt,
+    gaussian_filter,
+    label,
+)
 from scipy.spatial import cKDTree
+from skimage.feature import peak_local_max
 from skimage.morphology import remove_small_objects
+from skimage.segmentation import watershed
+
+from .thick_vessels import (
+    _dominant_eigenvector_3x3,
+    _matvec_3x3,
+    _project_onto_axis,
+    _symmetric_covariance_3x3,
+)
 
 __all__ = [
     "reconnect_vessel_like_components",
     "smooth_vessel_surfaces",
     "remove_small_segmented_volumes",
+    "split_narrow_neck_components",
+    "remove_surface_whiskers",
     "clean_segmented_mask_for_skeletonisation",
 ]
 
@@ -51,6 +80,53 @@ def _connected_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
     return labeled, int(count)
 
 
+def _outer_3x3(vector: np.ndarray) -> np.ndarray:
+    """*vector* (x) *vector* as an explicit 3x3 -- not ``np.outer``, kept in
+    the same elementwise style as ``thick_vessels._symmetric_covariance_3x3``
+    so nothing here reintroduces a BLAS-backed call.
+    """
+    result = np.empty((3, 3), dtype=float)
+    for i in range(3):
+        for j in range(3):
+            result[i, j] = float(vector[i] * vector[j])
+    return result
+
+
+def _rayleigh_quotient_3x3(matrix: np.ndarray, vector: np.ndarray) -> float:
+    """``v^T A v / v^T v`` -- *vector*'s own eigenvalue when it is (close to)
+    one of *matrix*'s eigenvectors, without a full eigendecomposition.
+    """
+    mv = _matvec_3x3(matrix, vector)
+    numerator = float(mv[0] * vector[0] + mv[1] * vector[1] + mv[2] * vector[2])
+    denominator = float(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
+    return numerator / denominator if denominator > 1e-300 else 0.0
+
+
+def _top_two_eigen_3x3(
+    matrix: np.ndarray,
+) -> tuple[tuple[float, np.ndarray], tuple[float, np.ndarray]]:
+    """The two largest (eigenvalue, eigenvector) pairs of a symmetric 3x3
+    matrix, in ``np.linalg.eigh``'s own descending order, without ``eigh``
+    itself -- it crashes natively on this environment's broken NumPy/BLAS
+    build for a non-trivial matrix (see
+    ``haemolynx.preprocessing.thick_vessels``, which hit the identical
+    fault). Power iteration finds the dominant pair
+    (:func:`haemolynx.preprocessing.thick_vessels._dominant_eigenvector_3x3`,
+    plus its Rayleigh-quotient eigenvalue); Hotelling deflation --
+    subtracting that eigenvector's own outer-product contribution -- leaves
+    a matrix whose new dominant eigenvector is the original's second, found
+    the same way. Only the top two are ever needed here (a linearity
+    ratio), so stopping there is the whole answer, not an approximation of
+    a full decomposition.
+    """
+    axis0 = _dominant_eigenvector_3x3(matrix)
+    eigval0 = _rayleigh_quotient_3x3(matrix, axis0)
+    deflated = matrix - eigval0 * _outer_3x3(axis0)
+    axis1 = _dominant_eigenvector_3x3(deflated)
+    eigval1 = _rayleigh_quotient_3x3(matrix, axis1)
+    return (eigval0, axis0), (eigval1, axis1)
+
+
 def _component_descriptors(
     *, labeled: np.ndarray, count: int, edt_inside: np.ndarray
 ) -> dict[int, dict[str, Any]]:
@@ -60,11 +136,15 @@ def _component_descriptors(
 
     Linearity is ``(eigval[0] - eigval[1]) / eigval[0]`` on the covariance of
     the component's own voxel coordinates -- near 1 for an elongated,
-    tube-like component, near 0 for a blob. PCA runs on raw voxel indices,
-    not physical coordinates (matching ``graph.mask_continuity``'s own
-    precedent): a genuinely anisotropic dataset biases this somewhat toward
-    the more finely sampled axes, a known, accepted limitation of the same
-    approach already used in production elsewhere in this codebase.
+    tube-like component, near 0 for a blob -- computed via
+    :func:`_top_two_eigen_3x3` (power iteration plus one deflation step),
+    not ``np.linalg.eigh``, which crashes natively on this environment's
+    broken NumPy/BLAS build for a non-trivial component. PCA runs on raw
+    voxel indices, not physical coordinates (matching
+    ``graph.mask_continuity``'s own precedent): a genuinely anisotropic
+    dataset biases this somewhat toward the more finely sampled axes, a
+    known, accepted limitation of the same approach already used in
+    production elsewhere in this codebase.
 
     *edt_inside* is a Euclidean distance transform of the *whole* mask,
     computed once by the caller with physical ``sampling=voxel_size_zyx``
@@ -90,24 +170,22 @@ def _component_descriptors(
             [int(s.start) for s in component_slice], dtype=int
         ).reshape(1, 3)
         coords = local_coords + offset
-        centroid = np.mean(coords.astype(float), axis=0)
+        coords_float = coords.astype(float)
+        centroid = np.mean(coords_float, axis=0)
         if coords.shape[0] >= 3:
-            cov = np.cov(coords.astype(float).T)
-            eigvals, eigvecs = np.linalg.eigh(cov)
-            order = np.argsort(eigvals)[::-1]
-            eigvals = eigvals[order]
-            principal_axis = eigvecs[:, order[0]]
+            cov = _symmetric_covariance_3x3(coords_float - centroid)
+            (eigval0, principal_axis), (eigval1, _axis1) = _top_two_eigen_3x3(cov)
             linearity = float(
-                (eigvals[0] - eigvals[1]) / max(1e-9, float(eigvals[0]))
+                (eigval0 - eigval1) / max(1e-9, float(eigval0))
             )
         else:
             principal_axis = np.asarray([1.0, 0.0, 0.0], dtype=float)
             linearity = 0.0
         norm = float(np.linalg.norm(principal_axis))
         principal_axis = principal_axis / norm if norm > 1e-9 else principal_axis
-        projections = coords.astype(float) @ principal_axis.reshape(3, 1)
-        end_a = coords[int(np.argmin(projections[:, 0]))]
-        end_b = coords[int(np.argmax(projections[:, 0]))]
+        projections = _project_onto_axis(coords_float, principal_axis)
+        end_a = coords[int(np.argmin(projections))]
+        end_b = coords[int(np.argmax(projections))]
         radii = edt_inside[coords[:, 0], coords[:, 1], coords[:, 2]]
         median_radius_um = float(np.median(radii)) if radii.size else 0.0
         descriptors[component_id] = {
@@ -141,8 +219,6 @@ def _line_indices(start: np.ndarray, end: np.ndarray) -> np.ndarray:
 def _bridge_mask_from_line(
     line: np.ndarray, shape: tuple[int, int, int], *, radius_voxels: int
 ) -> np.ndarray:
-    from scipy.ndimage import binary_dilation
-
     bridge = np.zeros(shape, dtype=bool)
     if line.size == 0:
         return bridge
@@ -351,6 +427,189 @@ def reconnect_vessel_like_components(
     return result, stats
 
 
+def _adjacent_label_pairs(labels: np.ndarray) -> set[tuple[int, int]]:
+    """Every unordered pair of distinct positive labels that touch (26-conn).
+
+    Zero-padding the array first means every one of the 26 shifted views can
+    be compared against the unpadded array elementwise, with no wrap-around
+    false adjacency at the volume's own edges.
+    """
+    padded = np.pad(labels, 1, mode="constant", constant_values=0)
+    shape = labels.shape
+    pairs: set[tuple[int, int]] = set()
+    for dz in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dz == 0 and dy == 0 and dx == 0:
+                    continue
+                shifted = padded[
+                    1 + dz : 1 + dz + shape[0],
+                    1 + dy : 1 + dy + shape[1],
+                    1 + dx : 1 + dx + shape[2],
+                ]
+                both_fg = (labels > 0) & (shifted > 0) & (labels != shifted)
+                if not both_fg.any():
+                    continue
+                for a, b in zip(labels[both_fg].tolist(), shifted[both_fg].tolist()):
+                    pairs.add((a, b) if a < b else (b, a))
+    return pairs
+
+
+def split_narrow_neck_components(
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    min_marker_separation_um: float = 10.0,
+    min_pinch_radius_ratio: float = 0.6,
+    min_body_radius_um: float = 1.0,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Cut the mask apart at genuine pinch points -- narrow necks where two
+    separate vessels have been fused by segmentation blur, not a real
+    vessel's own natural taper.
+
+    Marker-controlled watershed of the mask's own physical distance
+    transform: each local radius maximum at least ``min_marker_separation_um``
+    from its neighbours seeds one "body" (matching
+    ``skimage``'s own touching-object-splitting recipe of ``peak_local_max``
+    + ``watershed(-distance, markers, mask=...)``). For every pair of bodies
+    that end up touching, the interface between them -- the watershed ridge
+    -- is only cut when its own narrowest point (the minimum distance-
+    transform value along it) is at least ``min_pinch_radius_ratio`` thinner
+    than *both* bodies' own peak radius (the distance-transform value at the
+    marker that seeded each one, not a mean/median over its whole catchment,
+    which can swallow a long stretch of a genuinely thin neck and read as
+    thin itself); a uniform-radius vessel that watershed happens to split
+    into two markers has no such narrowing at the interface and is left
+    untouched, physically still one component.
+
+    Returns ``(mask, stats)`` where ``stats`` has ``bodies_found``,
+    ``adjacent_pairs``, ``cuts_made`` and ``rejected_reasons`` (a
+    ``dict[str, int]``), mirroring :func:`reconnect_vessel_like_components`.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    sampling = tuple(float(v) for v in voxel_size_zyx)
+    stats: dict[str, Any] = {
+        "bodies_found": 0,
+        "adjacent_pairs": 0,
+        "cuts_made": 0,
+        "rejected_reasons": {},
+    }
+    if not mask.any():
+        return mask, stats
+
+    edt = distance_transform_edt(mask, sampling=sampling)
+    voxel_scale_um = min(sampling)
+    min_distance_voxels = max(
+        1, int(round(float(min_marker_separation_um) / max(1e-9, voxel_scale_um)))
+    )
+    # exclude_border defaults to min_distance, which would blank out the
+    # whole array whenever a volume's own extent is not much bigger than
+    # the marker-separation distance (real vessels legitimately run close
+    # to a stack's edge) -- physical proximity to another marker is already
+    # what min_distance enforces, so a plain edge is not disqualifying.
+    peaks = peak_local_max(
+        edt,
+        min_distance=min_distance_voxels,
+        labels=mask.astype(np.int32),
+        exclude_border=False,
+    )
+    if peaks.shape[0] < 2:
+        return mask, stats
+
+    peak_mask = np.zeros(mask.shape, dtype=bool)
+    peak_mask[tuple(peaks.T)] = True
+    markers, _n_markers = label(peak_mask, structure=_STRUCTURE_26)
+    labels = watershed(-edt, markers, mask=mask)
+    n_labels = int(labels.max())
+    stats["bodies_found"] = n_labels
+    if n_labels < 2:
+        return mask, stats
+
+    pairs = _adjacent_label_pairs(labels)
+    stats["adjacent_pairs"] = len(pairs)
+    to_remove = np.zeros(mask.shape, dtype=bool)
+    for label_a, label_b in pairs:
+        region_a = labels == label_a
+        region_b = labels == label_b
+        # Each body's own peak EDT, i.e. the radius at the marker that seeded
+        # it -- not the mean/median over the whole watershed catchment, which
+        # for a body whose basin swallows a long stretch of a thin neck would
+        # be dragged down by all those low-EDT neck voxels and never read as
+        # "thick" at all.
+        radius_a = float(edt[region_a].max()) if region_a.any() else 0.0
+        radius_b = float(edt[region_b].max()) if region_b.any() else 0.0
+        if radius_a < min_body_radius_um or radius_b < min_body_radius_um:
+            stats["rejected_reasons"]["body_too_thin"] = (
+                stats["rejected_reasons"].get("body_too_thin", 0) + 1
+            )
+            continue
+        interface = (region_a & binary_dilation(region_b, structure=_STRUCTURE_26)) | (
+            region_b & binary_dilation(region_a, structure=_STRUCTURE_26)
+        )
+        if not interface.any():
+            continue
+        # The interface's own *peak* EDT, not its minimum: any interface
+        # cross-section, thin neck or full-bore tube alike, always runs from
+        # its own surface (EDT near 0) up to its centre -- the surface edge
+        # is not evidence of a pinch, only the centre value is a genuine
+        # local radius to compare against the two bodies'.
+        neck_radius = float(edt[interface].max())
+        body_radius = min(radius_a, radius_b)
+        if neck_radius <= float(min_pinch_radius_ratio) * body_radius:
+            to_remove |= interface
+            stats["cuts_made"] += 1
+        else:
+            stats["rejected_reasons"]["not_narrow_enough"] = (
+                stats["rejected_reasons"].get("not_narrow_enough", 0) + 1
+            )
+
+    if not to_remove.any():
+        return mask, stats
+    return mask & ~to_remove, stats
+
+
+def _ellipsoid_structure(radius_voxels: tuple[int, int, int]) -> np.ndarray:
+    """Boolean footprint of the ellipsoid ``radius_voxels`` describes.
+
+    Per-axis radii, not a single scalar, so an anisotropic ``voxel_size_zyx``
+    still opens a physically round (not axis-stretched) neighbourhood.
+    """
+    rz, ry, rx = (max(1, int(r)) for r in radius_voxels)
+    zz, yy, xx = np.ogrid[-rz : rz + 1, -ry : ry + 1, -rx : rx + 1]
+    return (zz / rz) ** 2 + (yy / ry) ** 2 + (xx / rx) ** 2 <= 1.0
+
+
+def remove_surface_whiskers(
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    whisker_radius_um: float = 1.0,
+) -> np.ndarray:
+    """Morphological opening: strips thin surface spikes still attached to
+    an otherwise clean vessel, before they can survive into the skeleton as
+    spurious degree-1 stub branches.
+
+    Erosion by a ``whisker_radius_um`` ball removes anything with no core
+    that thick (a 1-2 voxel whisker has none), then dilation by the same
+    ball restores the vessel body's own size -- a whisker does not reappear
+    since erosion left nothing there to dilate back from. The structuring
+    element is an anisotropy-aware ellipsoid (:func:`_ellipsoid_structure`),
+    matching :func:`smooth_vessel_surfaces`'s own precedent, so a
+    ``(1.0, 0.4, 0.4)`` zyx dataset does not strip more aggressively along
+    the coarser z axis than the finer y/x ones. ``whisker_radius_um <= 0``
+    is a no-op.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if float(whisker_radius_um) <= 0.0:
+        return mask
+    radius_voxels = tuple(
+        max(1, int(round(float(whisker_radius_um) / max(1e-9, float(v)))))
+        for v in voxel_size_zyx
+    )
+    structure = _ellipsoid_structure(radius_voxels)
+    return binary_opening(mask, structure=structure)
+
+
 def smooth_vessel_surfaces(
     mask: np.ndarray,
     *,
@@ -405,6 +664,12 @@ def clean_segmented_mask_for_skeletonisation(
     image: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float],
+    remove_whiskers: bool = False,
+    whisker_radius_um: float = 1.0,
+    split_narrow_necks: bool = False,
+    split_min_marker_separation_um: float = 10.0,
+    split_min_pinch_radius_ratio: float = 0.6,
+    split_min_body_radius_um: float = 1.0,
     reconnect_gaps: bool = False,
     reconnect_max_bridge_distance_um: float = 30.0,
     reconnect_min_cylindricality: float = 0.5,
@@ -416,12 +681,19 @@ def clean_segmented_mask_for_skeletonisation(
     remove_small_volumes: bool = False,
     remove_small_min_volume_um3: float = 5.0,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Reconnect -> smooth -> remove-small, each independently toggleable.
+    """Remove-whiskers -> split-narrow-necks -> reconnect -> smooth ->
+    remove-small, each independently toggleable.
 
-    Order matters: reconnect first so fragments merge before size-filtering
-    (a two-piece vessel that is individually below the volume threshold
-    survives once bridged); smooth in the middle so the bridge geometry
-    itself also gets smoothed, not left a hard-edged stub; remove-small last
+    Order matters: whisker removal first, so a spike does not throw off the
+    radius/axis measurements every later step relies on; split before
+    reconnect so a genuine false-merge is cut apart before reconnect ever
+    gets a chance to characterise (and potentially re-bridge) the same
+    fused pair -- running them in the other order could have reconnect
+    immediately re-joining the very neck split just cut; reconnect before
+    smooth so fragments merge before size-filtering (a two-piece vessel
+    that is individually below the volume threshold survives once
+    bridged); smooth before remove-small so the bridge/cut geometry itself
+    also gets smoothed, not left a hard-edged stub, with remove-small last
     so voxels smoothing erodes off a marginal component are still caught by
     the same pass.
 
@@ -432,10 +704,28 @@ def clean_segmented_mask_for_skeletonisation(
     when at least one step actually ran, which is what feeds the GUI's
     corrected-vs-raw comparison toggle.
     """
-    if not (reconnect_gaps or smooth_surfaces or remove_small_volumes):
+    if not (
+        remove_whiskers
+        or split_narrow_necks
+        or reconnect_gaps
+        or smooth_surfaces
+        or remove_small_volumes
+    ):
         return image, None
     raw = np.asarray(image, dtype=bool).copy()
     cleaned = raw
+    if remove_whiskers:
+        cleaned = remove_surface_whiskers(
+            cleaned, voxel_size_zyx=voxel_size_zyx, whisker_radius_um=whisker_radius_um
+        )
+    if split_narrow_necks:
+        cleaned, _stats = split_narrow_neck_components(
+            cleaned,
+            voxel_size_zyx=voxel_size_zyx,
+            min_marker_separation_um=split_min_marker_separation_um,
+            min_pinch_radius_ratio=split_min_pinch_radius_ratio,
+            min_body_radius_um=split_min_body_radius_um,
+        )
     if reconnect_gaps:
         cleaned, _stats = reconnect_vessel_like_components(
             cleaned,

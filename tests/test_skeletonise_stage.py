@@ -415,6 +415,88 @@ def test_skeletonise_forwards_remove_small_min_volume_um3_setting(tmp_path, monk
     assert captured["remove_small_min_volume_um3"] == pytest.approx(9.0)
 
 
+def test_skeletonise_forwards_whisker_radius_um_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["whisker_radius_um"] = kwargs.get("whisker_radius_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_whiskers=True,
+        segmentation_cleanup_whisker_radius_um=1.3,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["whisker_radius_um"] == pytest.approx(1.3)
+
+
+def test_skeletonise_forwards_split_min_marker_separation_um_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["split_min_marker_separation_um"] = kwargs.get(
+            "split_min_marker_separation_um"
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_split_narrow_necks=True,
+        segmentation_cleanup_split_min_marker_separation_um=6.0,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["split_min_marker_separation_um"] == pytest.approx(6.0)
+
+
+def test_skeletonise_raw_segmented_image_is_set_when_only_remove_whiskers_is_on(
+    tmp_path,
+):
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_remove_whiskers=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+    assert volume.raw_segmented_image is not None
+
+
+def test_skeletonise_raw_segmented_image_is_set_when_only_split_narrow_necks_is_on(
+    tmp_path,
+):
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_split_narrow_necks=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+    assert volume.raw_segmented_image is not None
+
+
 def test_skeletonise_raw_segmented_image_is_set_only_when_cleanup_ran(tmp_path):
     settings_off = settings_for(tmp_path, _write_mask(tmp_path, _fragmented_mask()))
     volume_off = skeletonise(settings_off, segment(settings_off))

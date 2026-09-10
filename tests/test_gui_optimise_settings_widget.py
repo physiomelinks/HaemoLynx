@@ -273,6 +273,49 @@ def test_groups_kwarg_reflects_only_the_ticked_boxes_when_chosen(panel, monkeypa
     assert set(started[0]["groups"]) == {"closing_radius", "min_stub_length"}
 
 
+# --- the generated config's schema must always be buildable ------------------
+
+
+def test_names_with_prerequisite_closure_pulls_in_the_whole_requires_chain():
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    names = widget_mod._names_with_prerequisite_closure(
+        schema, ("use_thick_vessel_skeletonisation", "input_path")
+    )
+
+    assert "use_thick_vessel_skeletonisation" in names
+    assert "input_path" in names
+    # use_thick_vessel_skeletonisation requires do_skeletonize;
+    # input_path requires use_ilastik_segmentation -- both one-hop
+    # prerequisites, and the closure must include every hop, not just one.
+    assert "do_skeletonize" in names
+    assert "use_ilastik_segmentation" in names
+    # The whole point: a Schema built from just this closure must not raise
+    # ConfigError for a missing requires target.
+    schema.subset(names)
+
+
+def test_optimise_settings_generated_config_schema_is_buildable():
+    """Regression: every OPTIMISE_SETTING_NAMES entry's own requires chain
+    must resolve inside the documented config schema the "finished" handler
+    builds, or writing the optimised-settings YAML crashes after a real
+    run completes (this crashed in production before
+    `_names_with_prerequisite_closure` existed)."""
+    from haemolynx.optimisation import OPTIMISE_SETTING_NAMES
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    names = widget_mod._names_with_prerequisite_closure(
+        schema, (*OPTIMISE_SETTING_NAMES, "input_path")
+    )
+
+    documented_schema = schema.subset(names)  # must not raise ConfigError
+
+    assert set(OPTIMISE_SETTING_NAMES) <= set(documented_schema.names)
+    assert "input_path" in documented_schema.names
+
+
 # --- a real, slow, end-to-end run --------------------------------------------
 
 

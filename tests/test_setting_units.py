@@ -123,6 +123,10 @@ DIMENSIONLESS = {
     "segmentation_cleanup_reconnect_min_facing_cosine",
     # A PCA linearity score in [0, 1] (near 1 = tube-like), not a distance.
     "segmentation_cleanup_reconnect_min_cylindricality",
+    # A neck-radius-to-body-radius ratio in [0, 1] (dimensionless), not a distance.
+    "segmentation_cleanup_split_min_pinch_radius_ratio",
+    # A fraction of a window's own voxels, in [0, 1] -- not a physical size.
+    "skeleton_bundle_density_fraction",
 }
 
 #: Substrings that mark a name as describing a measurement.
