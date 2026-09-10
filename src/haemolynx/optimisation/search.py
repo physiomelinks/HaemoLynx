@@ -1,10 +1,12 @@
 """Sequential, image-informed search over the Skeletonise and Graph tab settings.
 
-:func:`optimise_skeleton_and_graph_settings` decides all 21 settings by running
-a fixed sequence of *sweeps*, each varying one setting (or, for the four
-bundle-refinement knobs and the three centreline-smoothing knobs, a short joint
-sweep over the couple of settings one function call actually shares) while
-holding every other setting at its current value. The order matches the order
+:func:`optimise_skeleton_and_graph_settings` decides every setting in
+:data:`OPTIMISE_SETTING_NAMES` by running a fixed sequence of *sweeps*, each
+varying one setting (or, for the four bundle-refinement knobs, the five
+thick-vessel refinement knobs, the three centreline-smoothing knobs, and the
+cluster-collapse method plus its own one method-specific knob, a short joint
+sweep over the settings one function call actually shares) while holding every
+other setting at its current value. The order matches the order
 ``preprocess_skeleton_for_graph`` itself applies its own parameters
 internally -- thick-vessel gating decides which raw skeleton every later sweep
 even sees, then min-branch-length, bundle refinement, closing, gap-bridging,
@@ -34,8 +36,8 @@ search raises, because there is nothing later sweeps could run on.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping, Optional
 
 import numpy as np
 
@@ -57,6 +59,11 @@ SKELETON_SETTING_NAMES: tuple[str, ...] = (
     "use_thick_vessel_skeletonisation",
     "skeleton_thick_vessel_min_radius_um",
     "skeleton_fill_mask_holes_before_thickness",
+    "skeleton_thick_vessel_wall_absorption_um",
+    "skeleton_thick_vessel_flake_filter_um",
+    "skeleton_thick_vessel_max_bridge_radius_multiple",
+    "skeleton_thick_vessel_max_bridge_distance_um",
+    "skeleton_thick_vessel_bridge_radius_smoothing_um",
     "skeleton_min_branch_length",
     "skeleton_bundle_scan_size",
     "skeleton_bundle_density_fraction",
@@ -74,6 +81,9 @@ GRAPH_SETTING_NAMES: tuple[str, ...] = (
     "graph_reconnect_threshold",
     "final_orphan_reconnect_threshold",
     "cluster_collapse_distance",
+    "cluster_collapse_method",
+    "cluster_collapse_max_radial_dispersion",
+    "cluster_collapse_persistence_search_multiple",
     "min_stub_length",
     "smooth_centrelines",
     "centreline_smoothing_method",
@@ -83,9 +93,96 @@ GRAPH_SETTING_NAMES: tuple[str, ...] = (
 
 OPTIMISE_SETTING_NAMES: tuple[str, ...] = SKELETON_SETTING_NAMES + GRAPH_SETTING_NAMES
 
+#: Deliberately not in scope: the cartwheel-hub-guard settings
+#: (detect_cartwheel_hub_artifacts, cartwheel_hub_min_degree,
+#: cartwheel_hub_max_radial_dispersion, cartwheel_hub_tangent_length_um) and
+#: the *_consistency_warn_below / missing_vessel_* settings are all read-only
+#: QC checks -- they only decide whether a warning is logged, never anything
+#: about the skeleton or graph itself. There is no "better" or "worse" value
+#: for a warning threshold in the sense the rest of this search means it, so
+#: nothing here empirically tests them; they stay exactly as the GUI/config
+#: already had them.
+
 #: An upper bound on how many sweeps a run does, for progress display. Guarded
 #: sweeps that are skipped mean a real run can finish before reaching this.
-_GROUP_TOTAL_UPPER_BOUND = 16
+_GROUP_TOTAL_UPPER_BOUND = 23
+
+#: The ten independently selectable groups this search runs, in the order
+#: :meth:`_Search.run` runs them -- a GUI's "choose optimisation types"
+#: checkbox list is built from this and :data:`GROUP_LABELS`, one checkbox
+#: per name.
+GROUP_NAMES: tuple[str, ...] = (
+    "thick_vessel_gating",
+    "min_branch_length",
+    "bundle_refinement",
+    "closing_radius",
+    "gap_bridging",
+    "connectivity_and_component_filter",
+    "reconnect_thresholds",
+    "cluster_collapse_distance",
+    "min_stub_length",
+    "centreline_smoothing",
+)
+
+#: A short, human-readable label for each group, for a GUI checkbox list.
+GROUP_LABELS: dict[str, str] = {
+    "thick_vessel_gating": "Thick-vessel gating (on/off, radius, refinement)",
+    "min_branch_length": "Minimum branch length",
+    "bundle_refinement": "Bundle refinement (confluence hubs)",
+    "closing_radius": "Closing radius",
+    "gap_bridging": "Gap bridging",
+    "connectivity_and_component_filter": "Component connectivity + filtering",
+    "reconnect_thresholds": "Graph reconnect thresholds",
+    "cluster_collapse_distance": "Cluster collapse",
+    "min_stub_length": "Minimum stub length",
+    "centreline_smoothing": "Centreline smoothing",
+}
+
+#: Settings measured in voxels of whatever grid the search actually ran on.
+#: When the search runs on a downsampled copy for speed (see
+#: :func:`resolve_auto_downsample_factor`), these need scaling back up by the
+#: downsample factor before they mean anything on the full-resolution grid a
+#: real run skeletonises. Every other numeric setting this search decides is
+#: already resolution-independent: a physical micron distance (scaled voxel
+#: size already accounts for those), a fraction, a count, or a mode choice.
+_VOXEL_SCALED_SETTING_NAMES: tuple[str, ...] = (
+    "skeleton_closing_radius",
+    "skeleton_bridge_gap_size",
+    "skeleton_max_bridge_distance",
+    "skeleton_min_branch_length",
+    "skeleton_bundle_scan_size",
+    "skeleton_bundle_hub_min_spacing",
+)
+
+#: Downsampling factors "Optimisation downsampling" offers, "off" (1) first.
+DOWNSAMPLE_FACTORS: tuple[int, ...] = (1, 2, 4, 8, 16)
+
+#: Above this many voxels, "Auto" downsampling starts choosing a factor > 1 --
+#: chosen so a typical sweep's real preprocessing/graph-building calls stay in
+#: the tens-of-seconds range rather than minutes on a whole-brain-scale stack.
+AUTO_DOWNSAMPLE_TARGET_VOXELS = 20_000_000
+
+
+def resolve_auto_downsample_factor(shape: tuple[int, ...]) -> int:
+    """The smallest offered factor bringing *shape* under the search's own target size."""
+    total = 1
+    for dim in shape:
+        total *= int(dim)
+    for factor in DOWNSAMPLE_FACTORS:
+        if total / (factor ** 3) <= AUTO_DOWNSAMPLE_TARGET_VOXELS:
+            return factor
+    return DOWNSAMPLE_FACTORS[-1]
+
+
+def _downsample_mask(mask: np.ndarray, factor: int) -> np.ndarray:
+    """Block-max reduction: a downsampled voxel is foreground if any voxel in
+    its block was. Plain striding could skip clean over a thin vessel that
+    happens to fall between the sampled points; this cannot lose one."""
+    if factor <= 1:
+        return mask
+    from skimage.measure import block_reduce
+
+    return block_reduce(mask, block_size=(factor, factor, factor), func=np.max)
 
 #: Reject a closing/bridging candidate that merges components further apart
 #: than this many typical-vessel-radii -- more likely two distinct vessels
@@ -122,6 +219,13 @@ class OptimisationResult:
 
     settings: dict[str, Any]
     trials: tuple[TrialRecord, ...]
+    #: 1 when the search ran at full resolution; > 1 when it ran on a
+    #: downsampled copy (see :func:`resolve_auto_downsample_factor`) and the
+    #: voxel-scaled settings were multiplied back up before being returned.
+    downsample_factor: int = 1
+    #: Which of :data:`GROUP_NAMES` actually ran; a name missing here kept its
+    #: starting value untouched.
+    groups_run: tuple[str, ...] = field(default_factory=lambda: GROUP_NAMES)
 
 
 def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -140,15 +244,36 @@ def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def _thick_vessel_kwargs(
+    settings: Mapping[str, Any], voxel_size_zyx: tuple[float, float, float]
+) -> dict[str, Any]:
+    """``skeletonize_thickness_gated`` keyword arguments from a settings dict.
+
+    ``restrict_thick_to_mask`` is deliberately not threaded through: it needs
+    the configured large/small vessel masks loaded from disk, which would
+    pull ``haemolynx.io`` and mask-loading into this package's dependencies
+    for a setting that names *which other settings to trust*, not a
+    quality knob with a better or worse value an image measurement could
+    inform -- it stays whatever the GUI/config already had it at.
+    """
+    return dict(
+        min_radius_um=float(settings["skeleton_thick_vessel_min_radius_um"]),
+        voxel_size_zyx=voxel_size_zyx,
+        fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
+        wall_absorption_um=settings["skeleton_thick_vessel_wall_absorption_um"],
+        flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
+        max_bridge_radius_multiple=settings["skeleton_thick_vessel_max_bridge_radius_multiple"],
+        max_bridge_distance_um=settings["skeleton_thick_vessel_max_bridge_distance_um"],
+        bridge_radius_smoothing_um=float(settings["skeleton_thick_vessel_bridge_radius_smoothing_um"]),
+    )
+
+
 def _raw_skeleton(
     mask: np.ndarray, settings: Mapping[str, Any], voxel_size_zyx: tuple[float, float, float]
 ) -> np.ndarray:
     if settings["use_thick_vessel_skeletonisation"]:
         return preprocessing.skeletonize_thickness_gated(
-            mask,
-            min_radius_um=float(settings["skeleton_thick_vessel_min_radius_um"]),
-            voxel_size_zyx=voxel_size_zyx,
-            fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
+            mask, **_thick_vessel_kwargs(settings, voxel_size_zyx)
         )
     return preprocessing.skeletonize_volume(mask)
 
@@ -162,6 +287,7 @@ class _Search:
         voxel_size_xyz: tuple[float, float, float],
         starting_values: Mapping[str, Any],
         progress: Optional[ProgressCallback],
+        enabled_groups: Optional[Iterable[str]] = None,
     ) -> None:
         self.raw_mask = np.asarray(raw_mask, dtype=bool)
         voxel_size_xyz = tuple(float(v) for v in voxel_size_xyz)
@@ -171,6 +297,12 @@ class _Search:
         self.voxel_size_zyx: tuple[float, float, float] = tuple(reversed(voxel_size_xyz))
         self.current: dict[str, Any] = dict(starting_values)
         self.progress = progress
+        #: ``None`` means every group runs; otherwise only the named ones do
+        #: -- see :meth:`_group_enabled`.
+        self.enabled_groups: Optional[frozenset[str]] = (
+            frozenset(enabled_groups) if enabled_groups is not None else None
+        )
+        self.groups_run: list[str] = []
         self.trials: list[TrialRecord] = []
         self.raw_skeleton: np.ndarray = np.zeros_like(self.raw_mask)
         self.current_skeleton: np.ndarray = self.raw_skeleton
@@ -180,6 +312,12 @@ class _Search:
         radius_map = preprocessing.inscribed_radius_map(self.raw_mask, self.voxel_size_zyx)
         nonzero = radius_map[radius_map > 0]
         self.typical_radius_um = float(np.median(nonzero)) if nonzero.size else 1.0
+
+    def _group_enabled(self, name: str) -> bool:
+        enabled = self.enabled_groups is None or name in self.enabled_groups
+        if enabled:
+            self.groups_run.append(name)
+        return enabled
 
     # -- progress / bookkeeping -------------------------------------------------
     def _emit(self, kind: str, group_name: str, **extra: Any) -> None:
@@ -258,27 +396,71 @@ class _Search:
             self.raw_skeleton = preprocessing.skeletonize_volume(self.raw_mask)
             return
 
+        def trial_with(overrides: Mapping[str, Any]) -> np.ndarray:
+            kwargs = _thick_vessel_kwargs({**self.current, **overrides}, self.voxel_size_zyx)
+            return preprocessing.skeletonize_thickness_gated(self.raw_mask, **kwargs)
+
         radius_candidates = cand.thick_vessel_min_radius_candidates(
             self.raw_mask, self.voxel_size_zyx, self.current["skeleton_thick_vessel_min_radius_um"]
         )
+        self._sweep(
+            group, "skeleton_thick_vessel_min_radius_um", radius_candidates,
+            lambda value: cost_for(trial_with({"skeleton_thick_vessel_min_radius_um": value}), True),
+        )
 
-        def trial_radius(value: float) -> float:
-            skeleton = preprocessing.skeletonize_thickness_gated(
-                self.raw_mask, min_radius_um=value, voxel_size_zyx=self.voxel_size_zyx,
-                fill_mask_holes=bool(self.current["skeleton_fill_mask_holes_before_thickness"]),
-            )
-            return cost_for(skeleton, True)
+        self._sweep(
+            group, "skeleton_fill_mask_holes_before_thickness", [True, False],
+            lambda value: cost_for(trial_with({"skeleton_fill_mask_holes_before_thickness": value}), True),
+        )
 
-        self._sweep(group, "skeleton_thick_vessel_min_radius_um", radius_candidates, trial_radius)
+        # The five refinement settings below (wall absorption, flake filter,
+        # the two bridge caps, bridge-radius smoothing) exist specifically to
+        # stop the fat region's centreline coming out as a medial *sheet*
+        # rather than one line, so they are scored on braid factor -- the
+        # measure this codebase already uses for exactly that failure mode --
+        # rather than on connectivity alone.
+        def cost_braid(skeleton: np.ndarray) -> float:
+            stats = preprocessing.compute_skeleton_connectivity_stats(skeleton, self._connectivity())
+            return met.braid_factor_along_long_axis(skeleton) + (1.0 - stats.largest_fraction)
 
-        def trial_fill(value: bool) -> float:
-            skeleton = preprocessing.skeletonize_thickness_gated(
-                self.raw_mask, min_radius_um=float(self.current["skeleton_thick_vessel_min_radius_um"]),
-                voxel_size_zyx=self.voxel_size_zyx, fill_mask_holes=value,
-            )
-            return cost_for(skeleton, True)
+        typical_thick_radius_um = cand.typical_thick_vessel_radius_um(
+            self.raw_mask, self.voxel_size_zyx, float(self.current["skeleton_thick_vessel_min_radius_um"])
+        )
 
-        self._sweep(group, "skeleton_fill_mask_holes_before_thickness", [True, False], trial_fill)
+        self._sweep(
+            group, "skeleton_thick_vessel_wall_absorption_um",
+            cand.thick_vessel_wall_absorption_candidates(typical_thick_radius_um),
+            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_wall_absorption_um": value})),
+        )
+        self._sweep(
+            group, "skeleton_thick_vessel_flake_filter_um",
+            cand.thick_vessel_flake_filter_candidates(self.voxel_size_zyx),
+            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_flake_filter_um": value})),
+        )
+        self._sweep(
+            group, "skeleton_thick_vessel_max_bridge_radius_multiple",
+            cand.thick_vessel_max_bridge_radius_multiple_candidates(
+                float(self.current["skeleton_thick_vessel_max_bridge_radius_multiple"])
+            ),
+            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_max_bridge_radius_multiple": value})),
+        )
+        # The raw mask's own connected-component gaps stand in for "how far
+        # apart are the fragments a bridge might need to reach" -- the real
+        # skeleton does not exist yet at this point in the very first group.
+        gap_distances_um = preprocessing.inter_component_gap_distances(
+            self.raw_mask, self._connectivity(), self.voxel_size_zyx
+        )
+        self._sweep(
+            group, "skeleton_thick_vessel_max_bridge_distance_um",
+            cand.thick_vessel_max_bridge_distance_candidates(gap_distances_um),
+            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_max_bridge_distance_um": value})),
+        )
+        self._sweep(
+            group, "skeleton_thick_vessel_bridge_radius_smoothing_um",
+            cand.thick_vessel_bridge_radius_smoothing_candidates(typical_thick_radius_um),
+            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_bridge_radius_smoothing_um": value})),
+        )
+
         self.raw_skeleton = _raw_skeleton(self.raw_mask, self.current, self.voxel_size_zyx)
 
     # -- group 2: minimum branch length --------------------------------------------
@@ -458,6 +640,11 @@ class _Search:
             final_orphan_reconnect_threshold=float(settings["final_orphan_reconnect_threshold"]),
             cluster_collapse_distance=float(settings["cluster_collapse_distance"]),
             min_stub_length=float(settings["min_stub_length"]),
+            cluster_collapse_method=str(settings["cluster_collapse_method"]),
+            cluster_collapse_max_radial_dispersion=float(settings["cluster_collapse_max_radial_dispersion"]),
+            cluster_collapse_persistence_search_multiple=float(
+                settings["cluster_collapse_persistence_search_multiple"]
+            ),
         )
 
     def _group_reconnect_thresholds(self) -> None:
@@ -494,23 +681,54 @@ class _Search:
                 "graph settings."
             )
 
-    # -- group 8: cluster collapse distance --------------------------------------------
+    # -- group 8: cluster collapse (distance, method, and the method's own knob) -------
     def _group_cluster_collapse(self) -> None:
         group = "cluster_collapse_distance"
         baseline = met.graph_topology_metrics(self.current_graph)
-        node_gaps = cand.nearest_neighbour_node_distances_um(self.current_graph)
-        candidate_values = cand.cluster_collapse_distance_candidates(
-            node_gaps, float(self.current["cluster_collapse_distance"])
-        )
 
-        def cost(value: float) -> float:
-            G = self._build_graph({"cluster_collapse_distance": value})
+        def cost_for(key: str, value: Any) -> float:
+            G = self._build_graph({key: value})
             metrics = met.graph_topology_metrics(G)
             fragmentation_penalty = _GUARD_PENALTY * max(0, metrics.n_components - baseline.n_components)
             return float(metrics.total_degree2) + fragmentation_penalty
 
-        self._sweep(group, "cluster_collapse_distance", candidate_values, cost)
+        node_gaps = cand.nearest_neighbour_node_distances_um(self.current_graph)
+        candidate_values = cand.cluster_collapse_distance_candidates(
+            node_gaps, float(self.current["cluster_collapse_distance"])
+        )
+        self._sweep(
+            group, "cluster_collapse_distance", candidate_values,
+            lambda value: cost_for("cluster_collapse_distance", value),
+        )
         self.current_graph = self._build_graph({})
+
+        self._sweep(
+            group, "cluster_collapse_method", cand.cluster_collapse_method_candidates(),
+            lambda value: cost_for("cluster_collapse_method", value),
+        )
+        self.current_graph = self._build_graph({})
+
+        # The other two settings are each read by exactly one method, so only
+        # the one the search just chose is worth a sweep of its own.
+        method = self.current["cluster_collapse_method"]
+        if method == "direction_aware":
+            self._sweep(
+                group, "cluster_collapse_max_radial_dispersion",
+                cand.cluster_collapse_max_radial_dispersion_candidates(
+                    float(self.current["cluster_collapse_max_radial_dispersion"])
+                ),
+                lambda value: cost_for("cluster_collapse_max_radial_dispersion", value),
+            )
+            self.current_graph = self._build_graph({})
+        elif method == "persistence":
+            self._sweep(
+                group, "cluster_collapse_persistence_search_multiple",
+                cand.cluster_collapse_persistence_search_multiple_candidates(
+                    float(self.current["cluster_collapse_persistence_search_multiple"])
+                ),
+                lambda value: cost_for("cluster_collapse_persistence_search_multiple", value),
+            )
+            self.current_graph = self._build_graph({})
 
     # -- group 9: minimum stub length -----------------------------------------------
     def _group_min_stub_length(self) -> None:
@@ -600,18 +818,47 @@ class _Search:
             self.raw_skeleton = self.raw_mask.copy()
             self.current_skeleton = self.raw_skeleton
             return
-        self._group_thick_vessel_gating()
-        self._group_min_branch_length()
-        self._group_bundle_refinement()
-        self._group_closing_radius()
-        self._group_gap_bridging()
-        self._group_connectivity_and_component_filter()
+
+        if self._group_enabled("thick_vessel_gating"):
+            self._group_thick_vessel_gating()
+        else:
+            self.raw_skeleton = _raw_skeleton(self.raw_mask, self.current, self.voxel_size_zyx)
+
+        for name, method in (
+            ("min_branch_length", self._group_min_branch_length),
+            ("bundle_refinement", self._group_bundle_refinement),
+            ("closing_radius", self._group_closing_radius),
+            ("gap_bridging", self._group_gap_bridging),
+            ("connectivity_and_component_filter", self._group_connectivity_and_component_filter),
+        ):
+            if self._group_enabled(name):
+                method()
+        # Whichever of the skeleton-cleaning groups ran -- or none did, every
+        # one deselected -- this makes sure `current_skeleton` reflects every
+        # decision actually in `self.current`, cheaply (one more real call).
+        self.current_skeleton = self._preprocess_trial({})
+
         if not self.current_skeleton.any():
             return
-        self._group_reconnect_thresholds()
-        self._group_cluster_collapse()
-        self._group_min_stub_length()
-        self._group_centreline_smoothing()
+
+        if self._group_enabled("reconnect_thresholds"):
+            self._group_reconnect_thresholds()
+        else:
+            self.current_graph = self._build_graph({})
+            if self.current_graph.number_of_nodes() == 0:
+                raise RuntimeError(
+                    "No graph could be built from the optimised skeleton with "
+                    "the current graph settings; cannot continue optimising "
+                    "graph settings."
+                )
+
+        for name, method in (
+            ("cluster_collapse_distance", self._group_cluster_collapse),
+            ("min_stub_length", self._group_min_stub_length),
+            ("centreline_smoothing", self._group_centreline_smoothing),
+        ):
+            if self._group_enabled(name):
+                method()
 
 
 def optimise_skeleton_and_graph_settings(
@@ -620,6 +867,8 @@ def optimise_skeleton_and_graph_settings(
     voxel_size_xyz: tuple[float, float, float],
     starting_values: Mapping[str, Any],
     progress: Optional[ProgressCallback] = None,
+    downsample_factor: Optional[int] = None,
+    groups: Optional[Iterable[str]] = None,
 ) -> OptimisationResult:
     """Empirically choose every Skeletonise/Graph tab setting for *raw_mask*.
 
@@ -627,8 +876,44 @@ def optimise_skeleton_and_graph_settings(
     :data:`OPTIMISE_SETTING_NAMES` -- the settings this run does not manage to
     improve on simply keep their starting value. See the module docstring for
     the search strategy.
+
+    *downsample_factor* trades accuracy for speed on a large volume: ``None``
+    (the default) auto-detects from voxel count via
+    :func:`resolve_auto_downsample_factor`, ``1`` runs at full resolution, and
+    ``2``/``4``/``8``/``16`` (:data:`DOWNSAMPLE_FACTORS`) run the whole search
+    on a block-max-reduced copy of *raw_mask* with *voxel_size_xyz* scaled up
+    to match. Micron-based settings come back unaffected by this (the scaled
+    voxel size already accounts for it); the handful of settings measured in
+    voxels (:data:`_VOXEL_SCALED_SETTING_NAMES`) are multiplied back up by the
+    factor before being returned, so they are correct against the
+    full-resolution volume a real run actually skeletonises.
+
+    *groups* restricts the search to some of :data:`GROUP_NAMES` -- ``None``
+    (the default) runs all ten; any other setting simply keeps its starting
+    value, exactly as if every one of its candidates had failed.
     """
-    search = _Search(raw_mask, voxel_size_xyz, starting_values, progress)
+    raw_mask = np.asarray(raw_mask, dtype=bool)
+    voxel_size_xyz = tuple(float(v) for v in voxel_size_xyz)
+    factor = int(downsample_factor) if downsample_factor else resolve_auto_downsample_factor(raw_mask.shape)
+    factor = factor if factor in DOWNSAMPLE_FACTORS else 1
+
+    if factor > 1:
+        search_mask = _downsample_mask(raw_mask, factor)
+        search_voxel_size_xyz = tuple(v * factor for v in voxel_size_xyz)
+    else:
+        search_mask = raw_mask
+        search_voxel_size_xyz = voxel_size_xyz
+
+    search = _Search(search_mask, search_voxel_size_xyz, starting_values, progress, enabled_groups=groups)
     search.run()
     settings = {name: search.current[name] for name in OPTIMISE_SETTING_NAMES if name in search.current}
-    return OptimisationResult(settings=settings, trials=tuple(search.trials))
+    if factor > 1:
+        for name in _VOXEL_SCALED_SETTING_NAMES:
+            if settings.get(name) is not None:
+                settings[name] = int(round(settings[name] * factor))
+    return OptimisationResult(
+        settings=settings,
+        trials=tuple(search.trials),
+        downsample_factor=factor,
+        groups_run=tuple(dict.fromkeys(search.groups_run)),
+    )

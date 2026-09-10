@@ -4079,6 +4079,8 @@ def _run_optimisation_in_background(
     *,
     apply_prerequisites,
     run_state: RunState,
+    downsample_factor: "int | None" = None,
+    groups: "tuple[str, ...] | None" = None,
 ):
     """Run the settings optimiser off the GUI thread, reporting progress as it goes.
 
@@ -4132,6 +4134,8 @@ def _run_optimisation_in_background(
             voxel_size_xyz=voxel_size_xyz,
             starting_values=starting_values,
             progress=watched,
+            downsample_factor=downsample_factor,
+            groups=groups,
         )
         return result, local_settings["input_path"]
 
@@ -5957,6 +5961,58 @@ def settings_widget(napari_viewer=None):
         input_settings.append(optimise_button)
     optimise_bars = OptimiseProgressBars()
 
+    #: "Optimisation downsampling": how coarse a copy of the image the search
+    #: runs on, independent of the resolution a real pipeline run always uses
+    #: -- see haemolynx.optimisation.search.resolve_auto_downsample_factor for
+    #: what "Auto" picks. Kept as a display-label -> factor mapping, since
+    #: "None" (auto-detect) is not a value a ComboBox choice can hold directly.
+    _DOWNSAMPLE_CHOICES: dict[str, Any] = {
+        "Auto": None,
+        "Off": 1,
+        "2x": 2,
+        "4x": 4,
+        "8x": 8,
+        "16x": 16,
+    }
+    downsample_dropdown = ComboBox(
+        label="Optimisation downsampling",
+        choices=list(_DOWNSAMPLE_CHOICES),
+        value="Auto",
+    )
+    downsample_dropdown.tooltip = (
+        "How coarse a copy of the image to search on for speed -- applies "
+        "only to Optimise settings, never to the pipeline run itself. Auto "
+        "picks a factor from the image's own voxel count"
+    )
+    if input_settings is not None:
+        input_settings.append(downsample_dropdown)
+
+    #: "Choose optimisation types": restricts Optimise settings to a subset of
+    #: its ten groups. The per-group checkboxes stay hidden until asked for --
+    #: most runs want every group, so the list only appears once asked for.
+    from haemolynx.optimisation import GROUP_LABELS, GROUP_NAMES
+
+    choose_groups_checkbox = CheckBox(text="Choose optimisation types", value=False)
+    choose_groups_checkbox.tooltip = (
+        "Restrict Optimise settings to only the ticked group(s) below, "
+        "instead of every Skeletonise/Graph setting"
+    )
+    if input_settings is not None:
+        input_settings.append(choose_groups_checkbox)
+
+    group_checkboxes: dict[str, Any] = {
+        name: CheckBox(text=GROUP_LABELS[name], value=True) for name in GROUP_NAMES
+    }
+    group_checkboxes_container = Container(widgets=list(group_checkboxes.values()), labels=False)
+    group_checkboxes_container.visible = False
+    if input_settings is not None:
+        input_settings.append(group_checkboxes_container)
+
+    def _toggle_group_checkboxes(*_args) -> None:
+        group_checkboxes_container.visible = bool(choose_groups_checkbox.value)
+
+    choose_groups_checkbox.changed.connect(_toggle_group_checkboxes)
+
     load_button = PushButton(text="Load config...")
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
@@ -6347,6 +6403,10 @@ def settings_widget(napari_viewer=None):
         if not input_path or not Path(input_path).is_file():
             report.value = "Choose a segmented input image first, then press Optimise settings."
             return
+        downsample_factor = _DOWNSAMPLE_CHOICES.get(downsample_dropdown.value)
+        groups = None
+        if choose_groups_checkbox.value:
+            groups = tuple(name for name, box in group_checkboxes.items() if box.value)
         _run_optimisation_in_background(
             _settings(),
             schema,
@@ -6356,6 +6416,8 @@ def settings_widget(napari_viewer=None):
             optimise_bars,
             apply_prerequisites=apply_prerequisites,
             run_state=run_state,
+            downsample_factor=downsample_factor,
+            groups=groups,
         )
 
     def on_check() -> None:
@@ -6926,6 +6988,10 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_button = optimise_button
     panel._haemolynx_optimise_bars = optimise_bars
     panel._haemolynx_optimise_settings = on_optimise_settings
+    panel._haemolynx_optimise_downsample = downsample_dropdown
+    panel._haemolynx_optimise_choose_groups = choose_groups_checkbox
+    panel._haemolynx_optimise_group_checkboxes = group_checkboxes
+    panel._haemolynx_optimise_group_checkboxes_container = group_checkboxes_container
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)

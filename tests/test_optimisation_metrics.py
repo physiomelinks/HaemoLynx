@@ -8,6 +8,7 @@ import pytest
 from haemolynx.optimisation.metrics import (
     GapFusionSignal,
     GraphTopologyMetrics,
+    braid_factor_along_long_axis,
     gap_vs_fusion_signal,
     graph_topology_metrics,
     smoothing_quality,
@@ -97,3 +98,23 @@ def test_total_edge_length_sums_present_lengths_only():
     G.add_edge("B", "C", length=4.5)
     G.add_edge("C", "D")  # no length attribute
     assert total_edge_length(G) == pytest.approx(7.5)
+
+
+def test_braid_factor_along_long_axis_on_empty_skeleton():
+    assert braid_factor_along_long_axis(np.zeros((10, 10, 10), dtype=bool)) == 0.0
+
+
+def test_braid_factor_along_long_axis_reads_low_for_a_clean_single_line():
+    """A straight line lying entirely within one z/y slice must not be
+    mistaken for a braid just because the wrong axis was checked -- this is
+    exactly the failure mode a fixture-specific `axis=0` default would hit."""
+    skel = np.zeros((3, 3, 20), dtype=bool)
+    skel[0, 0, :] = True
+    assert braid_factor_along_long_axis(skel) == pytest.approx(1.0)
+
+
+def test_braid_factor_along_long_axis_reads_high_for_two_parallel_strands():
+    skel = np.zeros((3, 3, 20), dtype=bool)
+    skel[0, 0, :] = True
+    skel[0, 1, :] = True  # a second strand, parallel, one voxel over
+    assert braid_factor_along_long_axis(skel) == pytest.approx(2.0)

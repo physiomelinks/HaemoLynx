@@ -133,6 +133,8 @@ def test_optimise_settings_starts_the_background_worker(panel, monkeypatch, tmp_
     assert bars is panel._haemolynx_optimise_bars
     assert kwargs["apply_prerequisites"] is not None
     assert kwargs["run_state"] is panel._haemolynx_run_state
+    assert kwargs["downsample_factor"] is None  # "Auto" is the default dropdown value
+    assert kwargs["groups"] is None  # "Choose optimisation types" is unticked by default
 
 
 def test_clicking_the_native_button_triggers_optimisation(panel, monkeypatch, tmp_path):
@@ -150,6 +152,125 @@ def test_clicking_the_native_button_triggers_optimisation(panel, monkeypatch, tm
     panel._haemolynx_optimise_button.native.click()
 
     assert len(started) == 1
+
+
+# --- optimisation downsampling ------------------------------------------------
+
+
+def test_downsample_dropdown_exists_with_the_right_choices_and_default(panel):
+    dropdown = panel._haemolynx_optimise_downsample
+    assert list(dropdown.choices) == ["Auto", "Off", "2x", "4x", "8x", "16x"]
+    assert dropdown.value == "Auto"
+    assert dropdown.tooltip.strip()
+    assert "only" in dropdown.tooltip and "Optimise settings" in dropdown.tooltip
+
+
+def test_downsample_dropdown_choice_is_passed_through(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_downsample.value = "4x"
+    panel._haemolynx_optimise_settings()
+
+    assert started[0]["downsample_factor"] == 4
+
+
+def test_downsample_dropdown_off_maps_to_factor_1(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_downsample.value = "Off"
+    panel._haemolynx_optimise_settings()
+
+    assert started[0]["downsample_factor"] == 1
+
+
+# --- choose optimisation types ------------------------------------------------
+
+
+def test_choose_groups_checkbox_and_list_exist_and_start_hidden(panel):
+    from haemolynx.optimisation import GROUP_LABELS, GROUP_NAMES
+
+    checkbox = panel._haemolynx_optimise_choose_groups
+    assert checkbox.value is False
+    assert checkbox.tooltip.strip()
+
+    group_checkboxes = panel._haemolynx_optimise_group_checkboxes
+    assert set(group_checkboxes) == set(GROUP_NAMES)
+    for name, box in group_checkboxes.items():
+        assert box.text == GROUP_LABELS[name]
+        assert box.value is True  # every group runs unless the user narrows it down
+
+
+def test_ticking_choose_groups_reveals_the_checkbox_list(panel):
+    """A nested Container's own ``.visible`` only reflects reality once its
+    top-level ancestor is actually shown -- true in the real app (the panel is
+    docked and displayed), not true of a bare, never-shown widget in a test,
+    so this test shows the panel itself first."""
+    panel.show()
+
+    container = panel._haemolynx_optimise_group_checkboxes_container
+    assert container.visible is False
+
+    panel._haemolynx_optimise_choose_groups.value = True
+    assert container.visible is True
+
+    panel._haemolynx_optimise_choose_groups.value = False
+    assert container.visible is False
+
+
+def test_groups_kwarg_is_none_when_choose_groups_is_unticked(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    # Untick one group's box without ticking "Choose optimisation types" --
+    # it must have no effect, since the list is not in play yet.
+    panel._haemolynx_optimise_group_checkboxes["min_stub_length"].value = False
+    panel._haemolynx_optimise_settings()
+
+    assert started[0]["groups"] is None
+
+
+def test_groups_kwarg_reflects_only_the_ticked_boxes_when_chosen(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_choose_groups.value = True
+    group_checkboxes = panel._haemolynx_optimise_group_checkboxes
+    for name, box in group_checkboxes.items():
+        box.value = name in ("closing_radius", "min_stub_length")
+
+    panel._haemolynx_optimise_settings()
+
+    assert set(started[0]["groups"]) == {"closing_radius", "min_stub_length"}
 
 
 # --- a real, slow, end-to-end run --------------------------------------------

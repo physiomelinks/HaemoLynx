@@ -15,6 +15,7 @@ from .metrics import (
     GapFusionSignal,
     GraphTopologyMetrics,
     SmoothingQuality,
+    braid_factor_along_long_axis,
     gap_vs_fusion_signal,
     graph_topology_metrics,
     smoothing_quality,
@@ -29,18 +30,24 @@ from .progress import (
 )
 from .report import build_report_text, config_filename
 from .search import (
+    AUTO_DOWNSAMPLE_TARGET_VOXELS,
+    DOWNSAMPLE_FACTORS,
     GRAPH_SETTING_NAMES,
+    GROUP_LABELS,
+    GROUP_NAMES,
     OPTIMISE_SETTING_NAMES,
     SKELETON_SETTING_NAMES,
     OptimisationResult,
     TrialRecord,
     optimise_skeleton_and_graph_settings,
+    resolve_auto_downsample_factor,
 )
 
 __all__ = [
     "GapFusionSignal",
     "GraphTopologyMetrics",
     "SmoothingQuality",
+    "braid_factor_along_long_axis",
     "gap_vs_fusion_signal",
     "graph_topology_metrics",
     "smoothing_quality",
@@ -52,10 +59,15 @@ __all__ = [
     "OptimisationEvent",
     "build_report_text",
     "config_filename",
+    "AUTO_DOWNSAMPLE_TARGET_VOXELS",
+    "DOWNSAMPLE_FACTORS",
     "GRAPH_SETTING_NAMES",
+    "GROUP_LABELS",
+    "GROUP_NAMES",
     "OPTIMISE_SETTING_NAMES",
     "SKELETON_SETTING_NAMES",
     "OptimisationResult",
     "TrialRecord",
     "optimise_skeleton_and_graph_settings",
+    "resolve_auto_downsample_factor",
 ]

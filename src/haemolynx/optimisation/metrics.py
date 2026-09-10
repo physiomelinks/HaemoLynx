@@ -23,6 +23,7 @@ from scipy.ndimage import generate_binary_structure, label
 from scipy.spatial import cKDTree
 
 from haemolynx.graph import diagnose_degree2_nodes
+from haemolynx.preprocessing import braid_factor as _braid_factor_along_axis
 
 
 def _resolve_connectivity(ndim: int, connectivity: int | None) -> int:
@@ -214,3 +215,30 @@ def smoothing_quality(
 def total_edge_length(G: nx.Graph) -> float:
     """Sum of every edge's ``length`` attribute, 0.0 for edges missing one."""
     return float(sum(d.get("length", 0.0) or 0.0 for _, _, d in G.edges(data=True)))
+
+
+def braid_factor_along_long_axis(skeleton: np.ndarray) -> float:
+    """:func:`haemolynx.preprocessing.braid_factor`, checked along the
+    skeleton's own longest axis of extent.
+
+    The thick-vessel refinement settings (wall absorption, flake filter, the
+    two bridge caps, bridge-radius smoothing) exist specifically to stop
+    ``skeletonize_thickness_gated`` leaving a medial *sheet* -- several
+    parallel strands -- instead of one centreline through the fat region.
+    ``braid_factor`` is already the codebase's own measure of that (~1 for a
+    single line, higher for a sheet), but it needs an axis running roughly
+    along the vessel's own direction of travel: checked across that
+    direction instead, even a single clean line reads as heavily braided,
+    because nearly every voxel then falls into the same one or two slices
+    (counted the other way -- see the module docstring's fixture, "axis 2 is
+    the trunk axis"). A fixture-specific caller knows its own trunk axis; an
+    optimiser does not, so this measures the skeleton's own bounding-box
+    extent and uses whichever axis it is longest along.
+    """
+    skeleton_bool = np.asarray(skeleton, dtype=bool)
+    if not skeleton_bool.any():
+        return 0.0
+    coords = np.argwhere(skeleton_bool)
+    extents = coords.max(axis=0) - coords.min(axis=0)
+    long_axis = int(np.argmax(extents))
+    return _braid_factor_along_axis(skeleton_bool, axis=long_axis)

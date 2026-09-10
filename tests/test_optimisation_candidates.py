@@ -41,6 +41,60 @@ def test_thick_vessel_min_radius_candidates_include_default():
     assert result == sorted(result)
 
 
+def test_typical_thick_vessel_radius_um_empty_falls_back_to_min_radius():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    assert c.typical_thick_vessel_radius_um(empty, (1.0, 1.0, 1.0), min_radius_um=6.0) == 6.0
+
+
+def test_typical_thick_vessel_radius_um_measures_the_fat_region_only():
+    mask = np.zeros((30, 30, 30), dtype=bool)
+    mask[5:25, 5:25, 5:25] = True  # a big solid block, inscribed radius up to ~10
+    result = c.typical_thick_vessel_radius_um(mask, (1.0, 1.0, 1.0), min_radius_um=6.0)
+    assert result >= 6.0
+
+
+# ---------------------------------------------------------------------------
+# Group 1b: thick-vessel refinement
+# ---------------------------------------------------------------------------
+def test_thick_vessel_wall_absorption_candidates_always_includes_none_first():
+    result = c.thick_vessel_wall_absorption_candidates(typical_thick_radius_um=8.0)
+    assert result[0] is None
+    assert all(v is None or v > 0.0 for v in result)
+    assert len(result) == len(set(result))
+
+
+def test_thick_vessel_flake_filter_candidates_scale_with_voxel_size():
+    result = c.thick_vessel_flake_filter_candidates((2.0, 2.0, 2.0))
+    assert result[0] is None
+    assert min(v for v in result if v is not None) == pytest.approx(2.0)
+    assert max(v for v in result if v is not None) == pytest.approx(8.0)
+
+
+def test_thick_vessel_max_bridge_radius_multiple_candidates_include_default():
+    result = c.thick_vessel_max_bridge_radius_multiple_candidates(default=4.0)
+    assert 4.0 in result
+    assert all(v >= 0.0 for v in result)
+    assert None not in result
+
+
+def test_thick_vessel_max_bridge_distance_candidates_empty_gaps_is_none_only():
+    result = c.thick_vessel_max_bridge_distance_candidates(np.array([]))
+    assert result == [None]
+
+
+def test_thick_vessel_max_bridge_distance_candidates_include_none_and_percentiles():
+    gaps = np.array([1.0, 2.0, 3.0, 4.0, 100.0])
+    result = c.thick_vessel_max_bridge_distance_candidates(gaps)
+    assert result[0] is None
+    assert len(result) > 1
+
+
+def test_thick_vessel_bridge_radius_smoothing_candidates_include_zero():
+    result = c.thick_vessel_bridge_radius_smoothing_candidates(typical_thick_radius_um=8.0)
+    assert 0.0 in result
+    assert result == sorted(result)
+
+
 # ---------------------------------------------------------------------------
 # Group 2: min branch length
 # ---------------------------------------------------------------------------
@@ -173,6 +227,22 @@ def test_orphan_threshold_candidates_are_fractions_of_reconnect():
 # ---------------------------------------------------------------------------
 def test_cluster_collapse_distance_candidates_empty_falls_back_to_default():
     assert c.cluster_collapse_distance_candidates(np.array([]), default=5.0) == [5.0]
+
+
+def test_cluster_collapse_method_candidates_match_the_schema_choices():
+    assert c.cluster_collapse_method_candidates() == ["distance_only", "direction_aware", "persistence"]
+
+
+def test_cluster_collapse_max_radial_dispersion_candidates_bounded_unit_interval():
+    result = c.cluster_collapse_max_radial_dispersion_candidates()
+    assert 0.5 in result
+    assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_cluster_collapse_persistence_search_multiple_candidates_include_default():
+    result = c.cluster_collapse_persistence_search_multiple_candidates()
+    assert 3.0 in result
+    assert all(v >= 0.0 for v in result)
 
 
 def test_min_stub_length_candidates_empty_falls_back_to_default():

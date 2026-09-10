@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from .search import OptimisationResult, TrialRecord
+from .search import GROUP_NAMES, OptimisationResult, TrialRecord
 
 
 def config_filename(input_path: Union[str, Path], now: Optional[datetime] = None) -> str:
@@ -30,6 +30,17 @@ def build_report_text(result: OptimisationResult) -> str:
     ``schema.description``), and it is also shown as the GUI's status message.
     """
     lines = ["HaemoLynx settings, optimised from the segmented input image:"]
+    if result.downsample_factor > 1:
+        lines.append(
+            f"Searched on a {result.downsample_factor}x downsampled copy for speed; "
+            "voxel-based settings below are already scaled back up to the full-resolution grid."
+        )
+    skipped_groups = [name for name in GROUP_NAMES if name not in result.groups_run]
+    if skipped_groups:
+        lines.append(
+            "Not optimised (left at their starting value): " + ", ".join(skipped_groups)
+        )
+
     by_group: dict[str, list[TrialRecord]] = {}
     for trial in result.trials:
         by_group.setdefault(trial.group, []).append(trial)

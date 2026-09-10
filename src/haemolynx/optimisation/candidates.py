@@ -46,6 +46,16 @@ def _clip_round(values: set[float], *, lo: float, hi: float, as_int: bool) -> li
     return kept
 
 
+def _sorted_with_none_first(values: set) -> list:
+    """Sort a candidate set that may contain ``None`` ("auto") among floats.
+
+    Several thick-vessel refinement settings default to ``None``, meaning
+    "let the algorithm compute its own value" -- a real, often-good candidate,
+    not a missing one, so it is always included and always tried first.
+    """
+    return sorted(values, key=lambda v: (0, 0.0) if v is None else (1, float(v)))
+
+
 # ---------------------------------------------------------------------------
 # Group 1: thick-vessel gating
 # ---------------------------------------------------------------------------
@@ -73,6 +83,69 @@ def thick_vessel_min_radius_candidates(
     nonzero = radius_map[radius_map > 0]
     candidates = {float(default)} | set(_percentiles(nonzero, (75.0, 90.0, 95.0, 99.0)))
     return sorted(v for v in candidates if v > 0.0) or [float(default)]
+
+
+def typical_thick_vessel_radius_um(
+    raw_mask: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    min_radius_um: float,
+) -> float:
+    """Median inscribed radius of the mask's own fat region (>= *min_radius_um*).
+
+    The scale the thick-vessel refinement settings below are stated in terms
+    of ("half the fat-region radius", multiples of the local radius) -- so
+    their candidates come from this, not an arbitrary micron grid.
+    """
+    radius_map = inscribed_radius_map(raw_mask, voxel_size_zyx)
+    thick = radius_map[radius_map >= min_radius_um]
+    if thick.size == 0:
+        return float(min_radius_um)
+    return float(np.median(thick))
+
+
+# ---------------------------------------------------------------------------
+# Group 1b: thick-vessel refinement (only searched when thick-vessel gating
+# is on -- these five settings are only read on that path)
+# ---------------------------------------------------------------------------
+def thick_vessel_wall_absorption_candidates(typical_thick_radius_um: float) -> list[float | None]:
+    """``None`` (the algorithm's own "half the fat radius") plus concrete alternatives."""
+    candidates = {None} | {round(typical_thick_radius_um * m, 6) for m in (0.25, 0.5, 1.0)}
+    return _sorted_with_none_first(candidates)
+
+
+def thick_vessel_flake_filter_candidates(voxel_size_zyx: tuple[float, float, float]) -> list[float | None]:
+    """``None`` (automatic) plus a few voxel-scale alternatives.
+
+    A flake is a Lee-thinning surface artefact of the fat wall, a few voxels
+    across, so this setting's own natural scale is voxel size, not the vessel
+    radius wall-absorption uses.
+    """
+    one_voxel_um = min(float(v) for v in voxel_size_zyx) or 1.0
+    candidates = {None} | {round(one_voxel_um * m, 6) for m in (1.0, 2.0, 4.0)}
+    return _sorted_with_none_first(candidates)
+
+
+def thick_vessel_max_bridge_radius_multiple_candidates(default: float) -> list[float]:
+    """A fixed grid bracketing the schema default -- no image measurement maps
+    directly onto "how many multiples of local radius", unlike this group's
+    other settings."""
+    candidates = {float(default)} | {2.0, 4.0, 6.0, 8.0}
+    return sorted(v for v in candidates if v >= 0.0) or [float(default)]
+
+
+def thick_vessel_max_bridge_distance_candidates(
+    gap_distances_um: np.ndarray,
+) -> list[float | None]:
+    """``None`` (radius-based cap only) plus percentiles of the mask's own
+    inter-fragment gaps, in microns -- the distances this cap actually limits."""
+    candidates = {None} | set(_percentiles(gap_distances_um, (50.0, 75.0, 90.0)))
+    return _sorted_with_none_first({v for v in candidates if v is None or v >= 0.0})
+
+
+def thick_vessel_bridge_radius_smoothing_candidates(typical_thick_radius_um: float) -> list[float]:
+    """0 (raw single-point reading) plus multiples of the fat region's own radius."""
+    candidates = {0.0} | {round(typical_thick_radius_um * m, 6) for m in (0.5, 1.0, 2.0)}
+    return sorted(v for v in candidates if v >= 0.0) or [0.0]
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +316,30 @@ def cluster_collapse_distance_candidates(
     candidates = {float(default)} | set(
         _percentiles(node_gap_distances_um, (5.0, 10.0, 25.0))
     )
+    return sorted(v for v in candidates if v >= 0.0) or [float(default)]
+
+
+def cluster_collapse_method_candidates() -> list[str]:
+    return ["distance_only", "direction_aware", "persistence"]
+
+
+def cluster_collapse_max_radial_dispersion_candidates(default: float = 0.5) -> list[float]:
+    """A fixed grid bracketing the schema default within its [0, 1] bounds.
+
+    Only read when ``cluster_collapse_method="direction_aware"``; dispersion
+    is a shape-purity measure (0 = spread evenly, 1 = all edges leave the same
+    way) with no image measurement that maps onto it directly.
+    """
+    candidates = {float(default)} | {0.25, 0.5, 0.75}
+    return sorted(v for v in candidates if 0.0 <= v <= 1.0) or [float(default)]
+
+
+def cluster_collapse_persistence_search_multiple_candidates(default: float = 3.0) -> list[float]:
+    """A fixed grid bracketing the schema default.
+
+    Only read when ``cluster_collapse_method="persistence"``.
+    """
+    candidates = {float(default)} | {2.0, 3.0, 5.0}
     return sorted(v for v in candidates if v >= 0.0) or [float(default)]
 
 

@@ -44,3 +44,32 @@ def test_build_report_text_on_empty_result():
     result = OptimisationResult(settings={}, trials=())
     text = build_report_text(result)
     assert text == "HaemoLynx settings, optimised from the segmented input image:"
+
+
+def test_build_report_text_mentions_downsampling_when_used():
+    result = OptimisationResult(settings={}, trials=(), downsample_factor=4)
+    text = build_report_text(result)
+    assert "4x downsampled" in text
+
+
+def test_build_report_text_omits_downsampling_note_at_factor_1():
+    result = OptimisationResult(settings={}, trials=(), downsample_factor=1)
+    text = build_report_text(result)
+    assert "downsampled" not in text
+
+
+def test_build_report_text_lists_skipped_groups():
+    result = OptimisationResult(
+        settings={}, trials=(), groups_run=("closing_radius", "min_branch_length"),
+    )
+    text = build_report_text(result)
+    skipped_line = next(line for line in text.splitlines() if line.startswith("Not optimised"))
+    assert "closing_radius" not in skipped_line
+    assert "min_branch_length" not in skipped_line
+    assert "thick_vessel_gating" in skipped_line
+
+
+def test_build_report_text_omits_skipped_note_when_everything_ran():
+    result = OptimisationResult(settings={}, trials=())  # default groups_run = every group
+    text = build_report_text(result)
+    assert "Not optimised" not in text
