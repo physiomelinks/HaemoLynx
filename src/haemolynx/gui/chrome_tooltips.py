@@ -72,6 +72,10 @@ USE_LAYER_TOOLTIP = (
     "Point the run at the image layer chosen above (its path, or an export "
     "of its array)"
 )
+OPTIMISE_SETTINGS_TOOLTIP = (
+    "Empirically choose Skeletonise and Graph tab settings from the "
+    "segmented input image, and write a config file beside it"
+)
 REVERT_STAGE_TOOLTIP = (
     "Clear this tab and later layers and checkpoints, then rerun the "
     "pipeline from this stage using the previous tab's saved work"

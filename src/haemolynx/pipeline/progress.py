@@ -122,6 +122,10 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_max_bridge_distance",
             "skeleton_component_connectivity",
             "skeleton_min_component_percent",
+            "skeleton_bundle_scan_size",
+            "skeleton_bundle_density_fraction",
+            "skeleton_bundle_max_connections_per_hub",
+            "skeleton_bundle_hub_min_spacing",
             # A read-only check on the skeleton this stage just built -- see
             # preprocessing.skeleton_consistency.
             "skeleton_mask_consistency_warn_below",

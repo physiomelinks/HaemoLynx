@@ -1988,6 +1988,51 @@ SCHEMA = Schema(
             requires=("do_skeletonize",),
         ),
         Setting(
+            name="skeleton_bundle_scan_size",
+            kind="int",
+            default=9,
+            help=(
+                "Sliding-window size used to detect dense skeleton bundles and "
+                "collapse each into a hub with clean in/out paths"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="voxels",
+            minimum=3,
+            requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_bundle_density_fraction",
+            kind="float",
+            default=0.35,
+            help="Mark a window as a dense bundle when this fraction of its voxels are skeleton foreground",
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            maximum=1.0,
+            requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_bundle_max_connections_per_hub",
+            kind="int",
+            default=8,
+            help="Keep at most this many directional links when reconnecting paths to a bundle hub",
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_bundle_hub_min_spacing",
+            kind="int",
+            default=4,
+            help=(
+                "Minimum spacing between bundle hub centres; 4 matches the "
+                "automatic half-window spacing used when scan size is 9"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="voxels",
+            minimum=1,
+            requires=("do_skeletonize",),
+        ),
+        Setting(
             name="skeleton_mask_consistency_warn_below",
             kind="float",
             default=0.7,

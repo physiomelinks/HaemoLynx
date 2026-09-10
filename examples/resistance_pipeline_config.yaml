@@ -370,6 +370,14 @@ pipeline_stages:
   save_step_artifacts: false
   # Discard skeleton components smaller than this percentage of the total after cleanup  [percent; range 0.0..100.0; needs do_skeletonize]
   skeleton_min_component_percent: 10.0
+  # Sliding-window size used to detect dense skeleton bundles and collapse each into a hub with clean in/out paths  [voxels; range 3..; needs do_skeletonize]
+  skeleton_bundle_scan_size: 9
+  # Mark a window as a dense bundle when this fraction of its voxels are skeleton foreground  [range 0.0..1.0; needs do_skeletonize]
+  skeleton_bundle_density_fraction: 0.35
+  # Keep at most this many directional links when reconnecting paths to a bundle hub  [range 1..; needs do_skeletonize]
+  skeleton_bundle_max_connections_per_hub: 8
+  # Minimum spacing between bundle hub centres; 4 matches the automatic half-window spacing used when scan size is 9  [voxels; range 1..; needs do_skeletonize]
+  skeleton_bundle_hub_min_spacing: 4
   # Log a warning instead of an info line when fewer than this fraction of the segmented-image mask's own voxels sit within their own local radius of the skeleton -- see preprocessing.skeleton_consistency for what that measures and why. Checked whether the skeleton was just computed or loaded from cache, so this is not gated on do_skeletonize  [range 0.0..1.0]
   skeleton_mask_consistency_warn_below: 0.7
   # A segmented-image connected component smaller than this many voxels is treated as noise, not a genuine vessel, and excluded from both missing-vessel checks below -- see preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton for why that floor matters on real, imperfectly segmented data  [range 1..]

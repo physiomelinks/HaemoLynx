@@ -86,6 +86,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.SHOW_RESULTS_TOOLTIP,
         chrome.SHOW_STEPS_TOOLTIP,
         chrome.USE_LAYER_TOOLTIP,
+        chrome.OPTIMISE_SETTINGS_TOOLTIP,
         chrome.REVERT_STAGE_TOOLTIP,
         chrome.Z_DEPTH_TOOLTIP,
         chrome.VESSEL_DRAW_TOOLTIP,

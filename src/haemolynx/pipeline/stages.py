@@ -335,8 +335,13 @@ def segment(settings: dict):
 
 
 
-def _load_volume_for_skeletonise(settings: dict, input_format: str):
+def load_volume_for_skeletonise(settings: dict, input_format: str):
     """Image plus voxel metadata; skeletonisation is chosen after size is resolved.
+
+    Public because the settings optimiser (``haemolynx.optimisation``) needs
+    the same raw mask and voxel metadata a real run would skeletonise, without
+    running ``skeletonise`` itself -- that also applies the *current*
+    skeleton_* settings, which is exactly what the optimiser is deciding.
 
     Goes through io.load_2d's format-dispatching loader rather than
     calling the TIFF/H5 readers directly -- identical behaviour for an
@@ -486,7 +491,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     raw_segmented_image: np.ndarray | None = None
 
     if settings["do_skeletonize"]:
-        image, metadata_voxel_size, voxel_meta_status = _load_volume_for_skeletonise(
+        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
             settings, input_format
         )
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(

@@ -55,6 +55,7 @@ from haemolynx.gui.results import (
     is_z_depth_windowed_volume_layer,
     z_window_is_full,
 )
+from haemolynx.gui.optimise_progress import OptimisationProgressDisplay
 from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.run_state import (
     ALREADY_RUNNING,
@@ -98,8 +99,23 @@ from haemolynx.gui.vessel_tubes import (
     tubes_from_vectors,
     vessel_tubes_layer_name,
 )
-from haemolynx.parsers import dump_config, ensure_yaml_suffix, load_config
-from haemolynx.pipeline import default_schema, preflight, resolve_settings, run_pipeline_stages
+from haemolynx.io import resolve_voxel_size_xyz
+from haemolynx.optimisation import (
+    OPTIMISE_SETTING_NAMES,
+    OptimisationEvent,
+    build_report_text,
+    config_filename,
+    optimise_skeleton_and_graph_settings,
+)
+from haemolynx.parsers import Schema, dump_config, ensure_yaml_suffix, load_config
+from haemolynx.pipeline import (
+    default_schema,
+    load_volume_for_skeletonise,
+    preflight,
+    resolve_settings,
+    run_pipeline_stages,
+    segment,
+)
 from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
 
 logger = logging.getLogger(__name__)
@@ -358,6 +374,61 @@ class ProgressBars:
         ):
             # Range 0..0 is Qt's own "no end in sight": the bar animates rather
             # than filling, which is the honest reading for an unknown total.
+            bar.setRange(0, state.total)
+            bar.setValue(min(state.value, state.total) if state.total else 0)
+            bar.setTextVisible(bool(state.text))
+            bar.setFormat(state.text or "%p%")
+            bar.setVisible(state.visible)
+
+
+class OptimiseProgressBars:
+    """The "Optimise settings" run's own two progress bars.
+
+    Structurally identical to :class:`ProgressBars`, but reading
+    :class:`~haemolynx.gui.optimise_progress.OptimisationProgressDisplay`
+    instead -- kept separate rather than generalising `ProgressBars`, so the
+    pipeline run's well-tested bars are untouched. Every method here touches
+    Qt, so all of them must be called on the GUI thread.
+    """
+
+    def __init__(self) -> None:
+        from qtpy.QtWidgets import QProgressBar, QVBoxLayout, QWidget
+
+        self.display = OptimisationProgressDisplay()
+        self.group_bar = QProgressBar()
+        self.candidate_bar = QProgressBar()
+        self.native = QWidget()
+        layout = QVBoxLayout(self.native)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.group_bar)
+        layout.addWidget(self.candidate_bar)
+        self._refresh()
+
+    def start(self) -> None:
+        self.display.start()
+        self._refresh()
+
+    def show_event(self, event: OptimisationEvent) -> None:
+        self.display.update(event)
+        self._refresh()
+
+    def finish(self, message: str = "Optimised") -> None:
+        self.display.finish(message)
+        self._refresh()
+
+    def fail(self, message: str = "Failed") -> None:
+        self.display.fail(message)
+        self._refresh()
+
+    def reset(self) -> None:
+        self.display.reset()
+        self._refresh()
+
+    def _refresh(self) -> None:
+        for bar, state in (
+            (self.group_bar, self.display.groups),
+            (self.candidate_bar, self.display.candidates),
+        ):
             bar.setRange(0, state.total)
             bar.setValue(min(state.value, state.total) if state.total else 0)
             bar.setTextVisible(bool(state.text))
@@ -3976,6 +4047,161 @@ def _run_in_background(
     return worker
 
 
+_OPTIMISATION_PROGRESS_BRIDGE_CLASS = None
+
+
+def _optimisation_progress_bridge():
+    """Same rationale as `_progress_bridge`: a QObject whose signal carries an
+    `OptimisationEvent` from the optimiser's worker thread to the GUI thread.
+
+    A separate bridge class from `_progress_bridge`'s, so the two event types
+    (a pipeline run's `ProgressEvent`, the optimiser's `OptimisationEvent`)
+    never share a Signal.
+    """
+    global _OPTIMISATION_PROGRESS_BRIDGE_CLASS
+    if _OPTIMISATION_PROGRESS_BRIDGE_CLASS is None:
+        from qtpy.QtCore import QObject, Signal
+
+        class OptimisationProgressBridge(QObject):
+            event = Signal(object)
+
+        _OPTIMISATION_PROGRESS_BRIDGE_CLASS = OptimisationProgressBridge
+    return _OPTIMISATION_PROGRESS_BRIDGE_CLASS()
+
+
+def _run_optimisation_in_background(
+    settings: dict[str, Any],
+    schema: Schema,
+    rows: dict[str, Any],
+    report,
+    button,
+    bars: "OptimiseProgressBars",
+    *,
+    apply_prerequisites,
+    run_state: RunState,
+):
+    """Run the settings optimiser off the GUI thread, reporting progress as it goes.
+
+    Structurally parallel to `_run_in_background`, but not a reuse of it: that
+    one is tightly coupled to `run_pipeline_stages` / `ResultLayers` /
+    checkpoints, none of which apply to a search that never produces a graph
+    worth drawing in the viewer. Shares *run_state* with the pipeline Run
+    button purely for mutual exclusion and cooperative cancellation --
+    "Optimise settings" and "Run pipeline" must never run concurrently against
+    the same `rows`.
+    """
+    from napari.qt.threading import thread_worker
+
+    bridge = _optimisation_progress_bridge()
+    cancel_flag = {"cancelled": False}
+
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
+
+    def progressed(event: OptimisationEvent) -> None:
+        if cancel_flag["cancelled"]:
+            return
+        bars.show_event(event)
+
+    bridge.event.connect(progressed)
+
+    def watched(event: OptimisationEvent) -> None:
+        # Runs on the worker's own thread; raises RunCancelled if a "Clear
+        # layers and state" press asked this run to stop, exactly like the
+        # pipeline run's own `watched` in `_run_in_background`.
+        run_state.check(cancel_flag)
+        bridge.event.emit(event)
+
+    @thread_worker
+    def run():
+        local_settings = dict(settings)
+        inputs = segment(local_settings)
+        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
+            local_settings, inputs.input_format
+        )
+        voxel_size_xyz, _source = resolve_voxel_size_xyz(
+            metadata_voxel_size_xyz=metadata_voxel_size,
+            metadata_status=voxel_meta_status,
+            voxel_size_override_xyz=local_settings["voxel_size_override_xyz"],
+            voxel_size_policy=local_settings["voxel_size_policy"],
+        )
+        raw_mask = np.asarray(image).astype(bool)
+        starting_values = {name: local_settings[name] for name in OPTIMISE_SETTING_NAMES}
+        result = optimise_skeleton_and_graph_settings(
+            raw_mask,
+            voxel_size_xyz=voxel_size_xyz,
+            starting_values=starting_values,
+            progress=watched,
+        )
+        return result, local_settings["input_path"]
+
+    def finished(payload) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+            return
+        result, input_path = payload
+        for name, value in result.settings.items():
+            if name in rows:
+                rows[name].value = display_value_for(schema[name], value)
+        apply_prerequisites()
+        out_path = Path(input_path).parent / config_filename(input_path)
+        documented_schema = Schema(
+            list(schema.subset((*OPTIMISE_SETTING_NAMES, "input_path"))),
+            title="HaemoLynx optimised settings",
+            description=build_report_text(result),
+        )
+        try:
+            dump_config(
+                out_path, documented_schema, values={**result.settings, "input_path": input_path}
+            )
+            wrote_note = f" Wrote {out_path}."
+        except Exception:  # noqa: BLE001 - the optimised settings are already applied
+            logger.exception("could not write optimised config to %s", out_path)
+            wrote_note = f" Could not write {out_path} (see log)."
+        bars.finish("Optimised")
+        report.value = "Optimised settings applied." + wrote_note
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale optimisation worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        bars.fail(f"Failed: {type(error).__name__}")
+        report.value = f"{type(error).__name__}: {error}"
+        logger.exception("settings optimisation failed", exc_info=error)
+        raise error
+
+    def stopped() -> None:
+        if not still_ours():
+            return
+        if not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+
+    worker = run(_connect={"errored": failed}, _start_thread=False)
+    worker.returned.connect(finished)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, cancel_flag=cancel_flag)
+    button.enabled = False
+    bars.start()
+    report.value = "Optimising settings..."
+    worker.start()
+    return worker
+
+
 #: What the About panel says. Written here rather than in the widget so it can
 #: be checked without a display -- and so the two questions it answers stay
 #: answered: where the colour controls are (napari's own layer controls, not
@@ -5716,6 +5942,21 @@ def settings_widget(napari_viewer=None):
         elif images:
             adopt(images[-1])
 
+    #: "Optimise settings": empirically choose Skeletonise/Graph tab values
+    #: from the segmented input image. The button lives on the Input tab
+    #: itself (appended to `input_settings`, a magicgui Container, like
+    #: `place_shared_ilastik` appends shared rows there); its progress bars are
+    #: plain Qt (`OptimiseProgressBars.native`), so they join the shared panel
+    #: chrome beside the pipeline's own `bars.native` rather than being forced
+    #: into a magicgui Container, which only accepts magicgui widgets.
+    optimise_button = PushButton(text="Optimise settings")
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_SETTINGS_TOOLTIP
+
+    optimise_button.tooltip = OPTIMISE_SETTINGS_TOOLTIP
+    if input_settings is not None:
+        input_settings.append(optimise_button)
+    optimise_bars = OptimiseProgressBars()
+
     load_button = PushButton(text="Load config...")
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
@@ -6097,6 +6338,26 @@ def settings_widget(napari_viewer=None):
             return
         save_config_file(path)
 
+    def on_optimise_settings() -> None:
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        values = current_values()
+        input_path = values.get("input_path")
+        if not input_path or not Path(input_path).is_file():
+            report.value = "Choose a segmented input image first, then press Optimise settings."
+            return
+        _run_optimisation_in_background(
+            _settings(),
+            schema,
+            rows,
+            report,
+            optimise_button,
+            optimise_bars,
+            apply_prerequisites=apply_prerequisites,
+            run_state=run_state,
+        )
+
     def on_check() -> None:
         result = preflight(_settings(), schema)
         lines = [f"FAILED: {message}" for message in result.errors]
@@ -6220,6 +6481,10 @@ def settings_widget(napari_viewer=None):
             checkpoints.freeze()
             run_state.supersede()
             run_button.enabled = True
+            # Whichever of the two was the one running: cancel() does not say
+            # which, and re-enabling/resetting the other is a no-op.
+            optimise_button.enabled = True
+            optimise_bars.reset()
             log_view.cancelled()
         removed = 0
         if viewer is not None:
@@ -6394,6 +6659,10 @@ def settings_widget(napari_viewer=None):
             checkpoints.freeze()
             run_state.supersede()
             run_button.enabled = True
+            # Whichever of the two was the one running: cancel() does not say
+            # which, and re-enabling/resetting the other is a no-op.
+            optimise_button.enabled = True
+            optimise_bars.reset()
             log_view.cancelled()
         if viewer is not None:
             _clear_our_layers(viewer)
@@ -6509,6 +6778,7 @@ def settings_widget(napari_viewer=None):
 
     load_button.changed.connect(on_load)
     save_button.changed.connect(on_save)
+    optimise_button.changed.connect(lambda *_args: on_optimise_settings())
     check_button.changed.connect(on_check)
     run_button.changed.connect(on_run)
     clear_button.changed.connect(lambda *_args: on_clear(ask=True))
@@ -6653,6 +6923,9 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_boundaries = boundaries
     panel._haemolynx_perturbations = perturbations
     panel._haemolynx_tabs = tab_widget
+    panel._haemolynx_optimise_button = optimise_button
+    panel._haemolynx_optimise_bars = optimise_bars
+    panel._haemolynx_optimise_settings = on_optimise_settings
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
@@ -6671,6 +6944,10 @@ def settings_widget(napari_viewer=None):
     layout.addWidget(buttons.native)
     layout.addWidget(run_file_row)
     layout.addWidget(bars.native)
+    # Optimise settings' own bars, beside the pipeline run's: the button
+    # itself is on the Input tab, but its progress is chrome shared across
+    # every tab, same as the pipeline run's bars above.
+    layout.addWidget(optimise_bars.native)
     layout.addWidget(report.native)
     if viewer is None:
         view_panel.setParent(panel)

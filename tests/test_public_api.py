@@ -23,6 +23,7 @@ SUBPACKAGES = [
     "haemolynx.graph",
     "haemolynx.io",
     "haemolynx.haemodynamics",
+    "haemolynx.optimisation",
     "haemolynx.parsers",
     "haemolynx.pipeline",
     "haemolynx.preprocessing",

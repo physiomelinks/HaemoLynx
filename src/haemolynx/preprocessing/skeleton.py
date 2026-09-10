@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.ndimage import (
@@ -57,6 +58,67 @@ def _filter_components_by_total_fraction(
     return np.isin(labeled, keep_labels)
 
 
+@dataclass(frozen=True)
+class SkeletonConnectivityStats:
+    """Connected-component summary of a binary skeleton, largest component first."""
+
+    shape: tuple[int, ...]
+    voxel_count: int
+    n_components: int
+    largest_component_size: int
+    largest_fraction: float
+    component_sizes: tuple[int, ...]
+
+
+def compute_skeleton_connectivity_stats(
+    skeleton: np.ndarray,
+    component_connectivity: int | None = None,
+) -> SkeletonConnectivityStats:
+    """Connected-component sizes of *skeleton*, largest first.
+
+    Labelling a full stack is not free, so a caller that only wants this
+    occasionally in a log line should keep using
+    :func:`log_skeleton_connectivity_stats`, which skips the computation
+    entirely when INFO logging is off. A caller that needs the numbers
+    themselves -- the settings optimiser scoring a cleanup candidate -- calls
+    this directly.
+    """
+    # `astype` copies a whole volume even when it is already boolean.
+    skeleton_bool = np.asarray(skeleton, dtype=bool)
+    voxel_count = int(skeleton_bool.sum())
+    if voxel_count == 0:
+        return SkeletonConnectivityStats(
+            shape=tuple(skeleton.shape),
+            voxel_count=0,
+            n_components=0,
+            largest_component_size=0,
+            largest_fraction=0.0,
+            component_sizes=(),
+        )
+
+    conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
+    structure = generate_binary_structure(skeleton_bool.ndim, conn)
+    labeled, n_components = label(skeleton_bool, structure=structure)
+
+    # Only foreground voxels carry a component label, so counting those is the
+    # same tally as counting the whole volume -- minus the background at index
+    # 0, which is zeroed here anyway. On a sparse skeleton that is thousands of
+    # voxels rather than hundreds of millions.
+    component_sizes = np.bincount(labeled[skeleton_bool], minlength=n_components + 1)
+    component_sizes[0] = 0
+    sorted_sizes = np.sort(component_sizes[1:])[::-1]
+    largest = int(sorted_sizes[0]) if sorted_sizes.size else 0
+    largest_fraction = (largest / voxel_count) if voxel_count else 0.0
+    return SkeletonConnectivityStats(
+        shape=tuple(skeleton.shape),
+        voxel_count=voxel_count,
+        n_components=int(n_components),
+        largest_component_size=largest,
+        largest_fraction=largest_fraction,
+        component_sizes=tuple(int(s) for s in sorted_sizes),
+    )
+
+
 def log_skeleton_connectivity_stats(
     name: str,
     skeleton: np.ndarray,
@@ -71,33 +133,20 @@ def log_skeleton_connectivity_stats(
     if not logger.isEnabledFor(logging.INFO):
         return
 
-    # `astype` copies a whole volume even when it is already boolean.
-    skeleton_bool = np.asarray(skeleton, dtype=bool)
-    voxel_count = int(skeleton_bool.sum())
-    conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
-    structure = generate_binary_structure(skeleton_bool.ndim, conn)
-    labeled, n_components = label(skeleton_bool, structure=structure)
-    if n_components == 0:
+    stats = compute_skeleton_connectivity_stats(skeleton, component_connectivity)
+    if stats.n_components == 0:
         logger.warning(f"[skeleton:{name}] empty skeleton (0 foreground voxels).")
         return
 
-    # Only foreground voxels carry a component label, so counting those is the
-    # same tally as counting the whole volume -- minus the background at index
-    # 0, which is zeroed here anyway. On a sparse skeleton that is thousands of
-    # voxels rather than hundreds of millions.
-    component_sizes = np.bincount(labeled[skeleton_bool], minlength=n_components + 1)
-    component_sizes[0] = 0
-    sorted_sizes = np.sort(component_sizes[1:])[::-1]
-    largest = int(sorted_sizes[0]) if sorted_sizes.size else 0
-    largest_fraction = (largest / voxel_count) if voxel_count else 0.0
-    top_sizes = sorted_sizes[:10].tolist()
-
     logger.info(
-        f"[skeleton:{name}] shape={skeleton.shape}, dtype={skeleton.dtype}, "
-        f"voxels={voxel_count}, components={int(n_components)}, "
-        f"largest={largest} ({largest_fraction:.2%} of voxels)"
+        f"[skeleton:{name}] shape={stats.shape}, dtype={skeleton.dtype}, "
+        f"voxels={stats.voxel_count}, components={stats.n_components}, "
+        f"largest={stats.largest_component_size} ({stats.largest_fraction:.2%} of voxels)"
     )
-    logger.info(f"[skeleton:{name}] top component sizes (up to 10): {top_sizes}")
+    logger.info(
+        f"[skeleton:{name}] top component sizes (up to 10): "
+        f"{list(stats.component_sizes[:10])}"
+    )
 
 
 def fill_binary_holes(mask: np.ndarray) -> np.ndarray:
@@ -450,6 +499,61 @@ def connect_skeleton_components(
         result = skeletonize_volume(result)
 
     return result.astype(bool)
+
+
+def inter_component_gap_distances(
+    skeleton: np.ndarray,
+    component_connectivity: int | None = None,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> np.ndarray:
+    """Nearest-neighbour distance between every pair of skeleton components.
+
+    The same union of per-component :class:`~scipy.spatial.cKDTree` nearest-pair
+    queries :func:`connect_skeleton_components` uses to decide what to bridge,
+    without a distance cutoff and without drawing anything -- just the
+    distribution of gaps that exist. Distances are in the units of
+    *voxel_size_zyx* (microns when given, voxels when left at the default).
+
+    A skeleton with 0 or 1 components has no gaps, so this returns an empty
+    array rather than raising -- the caller (candidate-value generation for the
+    settings optimiser) always wants a percentile of this array, and
+    ``np.percentile`` of an empty array raises, so it is on the caller to check
+    ``.size`` first and fall back to a schema default.
+    """
+    from scipy.spatial import cKDTree
+
+    conn = _resolve_component_connectivity(skeleton.ndim, component_connectivity)
+    structure = generate_binary_structure(skeleton.ndim, conn)
+    labeled, n_components = label(skeleton, structure=structure)
+    if n_components <= 1:
+        return np.array([], dtype=float)
+
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    coords_all = np.argwhere(labeled)
+    labels_all = labeled[tuple(coords_all.T)]
+    order = np.argsort(labels_all, kind="stable")
+    coords_all = coords_all[order]
+    labels_all = labels_all[order]
+    starts = np.searchsorted(labels_all, np.arange(1, n_components + 2))
+
+    comp_coords: dict[int, np.ndarray] = {}
+    comp_trees: dict[int, cKDTree] = {}
+    for comp_id in range(1, n_components + 1):
+        lo, hi = int(starts[comp_id - 1]), int(starts[comp_id])
+        if hi <= lo:
+            continue
+        physical = coords_all[lo:hi] * spacing
+        comp_coords[comp_id] = physical
+        comp_trees[comp_id] = cKDTree(physical)
+
+    comp_ids = sorted(comp_coords.keys())
+    distances: list[float] = []
+    for i, cid_a in enumerate(comp_ids):
+        for cid_b in comp_ids[i + 1:]:
+            dists, _ = comp_trees[cid_b].query(comp_coords[cid_a])
+            distances.append(float(dists.min()))
+
+    return np.sort(np.asarray(distances, dtype=float))
 
 
 def preprocess_skeleton_for_graph(
