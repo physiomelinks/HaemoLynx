@@ -618,16 +618,94 @@ def _traceback(
     return path
 
 
+def _symmetric_covariance_3x3(centered: np.ndarray) -> np.ndarray:
+    """Covariance matrix of *centered* (N x 3, already mean-subtracted).
+
+    Six elementwise sums rather than ``np.cov``: ``np.cov`` crashes the
+    interpreter outright (no Python exception, a native fault) on some
+    Windows NumPy/BLAS builds, even though what it computes here is nothing
+    more than that -- no linear-algebra library involved either way.
+    """
+    divisor = max(centered.shape[0] - 1, 1)
+    cov = np.empty((3, 3), dtype=float)
+    for i in range(3):
+        for j in range(i, 3):
+            value = float(np.sum(centered[:, i] * centered[:, j])) / divisor
+            cov[i, j] = value
+            cov[j, i] = value
+    return cov
+
+
+def _matvec_3x3(matrix: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    """*matrix* @ *vector* for a 3x3 matrix, by explicit scalar arithmetic.
+
+    Not ``matrix @ vector``: matrix-vector product crashes the interpreter
+    outright on some Windows NumPy/BLAS builds too, for a large enough left
+    operand -- not just the full decompositions this module's other
+    LAPACK-avoidance helpers exist for (see :func:`_dominant_eigenvector_3x3`
+    and :func:`_project_onto_axis`, its other caller). A fixed 3x3 case never
+    dispatches to a matrix routine at all when spelled out this way.
+    """
+    return np.array(
+        [
+            matrix[0, 0] * vector[0] + matrix[0, 1] * vector[1] + matrix[0, 2] * vector[2],
+            matrix[1, 0] * vector[0] + matrix[1, 1] * vector[1] + matrix[1, 2] * vector[2],
+            matrix[2, 0] * vector[0] + matrix[2, 1] * vector[1] + matrix[2, 2] * vector[2],
+        ]
+    )
+
+
+def _project_onto_axis(centered: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """*centered* (N x 3) projected onto unit vector *axis*, elementwise.
+
+    Not ``centered @ axis``: see :func:`_matvec_3x3` -- the same crash, this
+    time for the (potentially large) N x 3 case rather than a fixed 3x3 one.
+    """
+    return centered[:, 0] * axis[0] + centered[:, 1] * axis[1] + centered[:, 2] * axis[2]
+
+
+def _dominant_eigenvector_3x3(matrix: np.ndarray, *, iterations: int = 100) -> np.ndarray:
+    """Unit eigenvector for the largest eigenvalue of a symmetric 3x3 matrix.
+
+    Power iteration -- repeatedly multiply a seed vector by *matrix* and
+    renormalise, which converges to the dominant eigenvector geometrically in
+    the eigenvalue gap ratio -- rather than ``np.linalg.eigh``, which crashes
+    the interpreter outright (no Python exception, a native fault) on some
+    Windows NumPy/BLAS builds; ``scipy.linalg.eigh`` crashes identically, so
+    this is not a numpy-specific problem to route around by switching
+    library. Every caller below only ever wanted this one eigenvector, never
+    a full decomposition or the eigenvalues themselves, so this is not an
+    approximation of what they needed -- just a different, LAPACK-free way to
+    get exactly that. 100 iterations is generous for a 3x3 matrix: real
+    convergence is geometric in the (typically well-separated) eigenvalue
+    gap and settles in well under 20.
+    """
+    vector = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
+    for _ in range(iterations):
+        vector = _matvec_3x3(matrix, vector)
+        norm = float(np.sqrt(np.sum(vector * vector)))
+        if norm < 1e-300:
+            # matrix is (numerically) the zero matrix: every direction is as
+            # arbitrary -- and as valid -- an answer as any other.
+            return np.array([1.0, 0.0, 0.0])
+        vector = vector / norm
+    return vector
+
+
+def _principal_axis(coords: np.ndarray) -> np.ndarray:
+    """Unit vector along *coords*' (N x 3) own direction of greatest spread."""
+    centered = coords.astype(float) - coords.astype(float).mean(axis=0)
+    return _dominant_eigenvector_3x3(_symmetric_covariance_3x3(centered))
+
+
 def _principal_endpoints(coords: np.ndarray) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     """Voxels at the ends of the component's long axis."""
-    centered = coords.astype(float) - coords.astype(float).mean(axis=0)
     if coords.shape[0] < 2:
         voxel = tuple(int(v) for v in coords[0])
         return voxel, voxel
-    cov = np.cov(centered.T)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    axis = eigvecs[:, int(np.argmax(eigvals))]
-    projection = centered @ axis
+    centered = coords.astype(float) - coords.astype(float).mean(axis=0)
+    axis = _dominant_eigenvector_3x3(_symmetric_covariance_3x3(centered))
+    projection = _project_onto_axis(centered, axis)
     start = tuple(int(v) for v in coords[int(np.argmin(projection))])
     end = tuple(int(v) for v in coords[int(np.argmax(projection))])
     return start, end
@@ -674,12 +752,7 @@ def _local_principal_axis(
     coords = np.argwhere(crop & ball)
     if coords.shape[0] < 8:
         return None
-    centered = coords.astype(float) - coords.astype(float).mean(axis=0)
-    cov = np.cov(centered.T)
-    if cov.ndim != 2 or cov.shape != (3, 3):
-        return None
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    return eigvecs[:, int(np.argmax(eigvals))]
+    return _principal_axis(coords)
 
 
 def _path_cuts_across_lumen(
@@ -703,8 +776,16 @@ def _path_cuts_across_lumen(
     if norm < 1e-6:
         return True
     direction /= norm
+    # Anchored at the path's midpoint, not its tip: a real arm's tip sits on
+    # the component's rounded end-cap, where the local neighbourhood is
+    # ball-shaped rather than tube-shaped and PCA has no reliable long axis
+    # (confirmed on a symmetric 4-arm cross fixture -- the tip-anchored axis
+    # picked up curvature from the cap and rejected a genuine arm). The
+    # midpoint sits inside the tube on both a real arm and a short
+    # perpendicular sheet-crossing stub, so it reads the same in the case
+    # this check exists to catch.
     axis = _local_principal_axis(
-        component, path[-1], radius=max(3.0, 1.25 * float(max_edt))
+        component, path[len(path) // 2], radius=max(3.0, 1.25 * float(max_edt))
     )
     if axis is None:
         return False

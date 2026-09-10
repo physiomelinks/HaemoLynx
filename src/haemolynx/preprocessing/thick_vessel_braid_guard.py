@@ -36,7 +36,7 @@ from typing import Sequence
 import numpy as np
 from scipy.ndimage import find_objects, generate_binary_structure, label
 
-from .thick_vessels import BRAID_FACTOR_LIMIT, braid_factor
+from .thick_vessels import BRAID_FACTOR_LIMIT, _principal_axis, braid_factor
 
 __all__ = [
     "BraidedThickVesselComponent",
@@ -70,8 +70,11 @@ def component_long_axis(mask: np.ndarray) -> int:
     """Which array axis (0, 1 or 2) *mask*'s foreground is most elongated along.
 
     The principal axis of the foreground's own coordinates (largest-eigenvalue
-    eigenvector of their covariance), matched to whichever canonical axis
-    agrees with it most. A general-purpose orientation estimate -- not used by
+    eigenvector of their covariance, via
+    :func:`haemolynx.preprocessing.thick_vessels._principal_axis` -- computed
+    without ``np.linalg.eigh``, which crashes the interpreter outright on some
+    Windows NumPy/BLAS builds), matched to whichever canonical axis agrees
+    with it most. A general-purpose orientation estimate -- not used by
     :func:`detect_braided_thick_vessel_components` itself, which tries every
     axis rather than trusting one guess (see its own docstring for why: a
     vessel much wider than the trunk length in view, an elliptical
@@ -80,12 +83,7 @@ def component_long_axis(mask: np.ndarray) -> int:
     coords = np.argwhere(mask)
     if len(coords) < 2:
         return 0
-    centred = coords - coords.mean(axis=0)
-    covariance = np.cov(centred, rowvar=False)
-    if covariance.shape != (3, 3):
-        return 0
-    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-    principal = eigenvectors[:, int(np.argmax(eigenvalues))]
+    principal = _principal_axis(coords)
     return int(np.argmax(np.abs(principal)))
 
 
