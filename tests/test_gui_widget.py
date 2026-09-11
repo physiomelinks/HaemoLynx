@@ -275,11 +275,27 @@ def test_a_layer_with_a_scale_sets_the_voxel_size(panel):
 # wiring: that the panel has bars at all, and that an event moves them.
 
 
-def test_the_panel_has_a_bar_for_the_stages_and_one_for_the_steps(panel):
+def test_the_panel_has_exactly_the_stage_step_group_and_candidate_bars(panel):
+    """Named, not counted: a bare ``== N`` count would silently go stale the
+    next time a feature adds its own progress bars, the way "Optimise
+    settings"'s own group/candidate pair once did to this test. Comparing
+    the found widgets against the named bars themselves catches that --
+    both a missing wiring (a named bar absent from the panel) and a stray
+    extra bar nothing here expects."""
     from qtpy.QtWidgets import QProgressBar
 
     widget, _viewer = panel
-    assert len(widget.findChildren(QProgressBar)) == 2
+    bars = widget._haemolynx_progress
+    optimise_bars = widget._haemolynx_optimise_bars
+
+    found = set(widget.findChildren(QProgressBar))
+    expected = {
+        bars.stage_bar,
+        bars.step_bar,
+        optimise_bars.group_bar,
+        optimise_bars.candidate_bar,
+    }
+    assert found == expected
 
 
 def test_the_bars_are_hidden_until_a_run_starts(panel):
