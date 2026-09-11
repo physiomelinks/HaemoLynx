@@ -13,6 +13,106 @@ from haemolynx.optimisation import candidates as c
 
 
 # ---------------------------------------------------------------------------
+# Group 0: segmentation cleanup
+# ---------------------------------------------------------------------------
+def test_mask_component_gap_distances_um_two_blocks():
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[2:5, 2:5, 2:5] = True
+    mask[2:5, 2:5, 10:13] = True
+    distances = c.mask_component_gap_distances_um(mask, (1.0, 1.0, 1.0))
+    assert distances.size == 1
+    assert distances[0] == pytest.approx(6.0)  # nearest faces at x=4 and x=10
+
+
+def test_mask_component_gap_distances_um_single_component_is_empty():
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[2:5, 2:5, 2:5] = True
+    assert c.mask_component_gap_distances_um(mask, (1.0, 1.0, 1.0)).size == 0
+
+
+def test_small_radius_candidates_include_default_and_are_positive():
+    result = c.small_radius_candidates((1.0, 1.0, 1.0), default=1.0)
+    assert 1.0 in result
+    assert all(v > 0 for v in result)
+    assert result == sorted(result)
+
+
+def test_small_radius_candidates_scale_with_finest_voxel_axis():
+    result = c.small_radius_candidates((1.0, 0.25, 0.25), default=1.0)
+    assert min(result) == pytest.approx(0.125)  # 0.5 * finest axis (0.25)
+
+
+def test_split_marker_separation_candidates_include_default():
+    result = c.split_marker_separation_candidates(typical_radius_um=4.0, default=10.0)
+    assert 10.0 in result
+    assert all(v >= 0.0 for v in result)
+
+
+def test_split_min_body_radius_candidates_include_default():
+    result = c.split_min_body_radius_candidates(typical_radius_um=4.0, default=1.0)
+    assert 1.0 in result
+
+
+def test_split_pinch_radius_ratio_candidates_bounded_and_include_default():
+    result = c.split_pinch_radius_ratio_candidates(default=0.6)
+    assert 0.6 in result
+    assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_reconnect_max_bridge_distance_candidates_empty_gaps_falls_back_to_default():
+    result = c.reconnect_max_bridge_distance_candidates(np.array([]), default=30.0)
+    assert result == [30.0]
+
+
+def test_reconnect_max_bridge_distance_candidates_include_default():
+    gaps = np.array([5.0, 10.0, 15.0, 20.0])
+    result = c.reconnect_max_bridge_distance_candidates(gaps, default=30.0)
+    assert 30.0 in result
+
+
+def test_reconnect_min_cylindricality_candidates_bounded_and_include_default():
+    result = c.reconnect_min_cylindricality_candidates(default=0.5)
+    assert 0.5 in result
+    assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_reconnect_max_axis_angle_candidates_bounded_and_include_default():
+    result = c.reconnect_max_axis_angle_candidates(default=30.0)
+    assert 30.0 in result
+    assert all(0.0 <= v <= 90.0 for v in result)
+
+
+def test_reconnect_min_facing_cosine_candidates_bounded_and_include_default():
+    result = c.reconnect_min_facing_cosine_candidates(default=0.85)
+    assert 0.85 in result
+    assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_reconnect_max_radius_ratio_candidates_at_least_one_and_include_default():
+    result = c.reconnect_max_radius_ratio_candidates(default=3.0)
+    assert 3.0 in result
+    assert all(v >= 1.0 for v in result)
+
+
+def test_smooth_method_candidates_are_the_two_known_methods():
+    assert c.smooth_method_candidates() == ["gaussian", "morphological"]
+
+
+def test_remove_small_min_volume_candidates_empty_mask_falls_back_to_default():
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    assert c.remove_small_min_volume_candidates(empty, (1.0, 1.0, 1.0), default=5.0) == [5.0]
+
+
+def test_remove_small_min_volume_candidates_include_default_and_are_non_negative():
+    mask = np.zeros((20, 20, 20), dtype=bool)
+    mask[2:4, 2:4, 2:4] = True  # a small fragment
+    mask[10:18, 10:18, 10:18] = True  # a large body
+    result = c.remove_small_min_volume_candidates(mask, (1.0, 1.0, 1.0), default=5.0)
+    assert 5.0 in result
+    assert all(v >= 0.0 for v in result)
+
+
+# ---------------------------------------------------------------------------
 # Group 1: thick-vessel gating
 # ---------------------------------------------------------------------------
 def test_thick_vessel_worth_checking_false_for_thin_mask():

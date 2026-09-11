@@ -10,6 +10,7 @@ everywhere those are missing, same as `test_gui_widget.py`.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -192,3 +193,67 @@ def test_check_segmented_image_end_to_end_on_a_real_fixture(panel, tmp_path):
     report = panel._haemolynx_report()
     assert "Segmented image quality:" in report, report
     assert "/10" in report
+
+
+def test_check_segmented_image_binarizes_a_normalized_float_probability_mask(
+    panel, monkeypatch, tmp_path
+):
+    """Regression test: the check used to score
+    ``np.asarray(image).astype(bool)`` -- equivalent to ``image != 0`` --
+    directly on the *raw* loaded image, instead of running it through the
+    canonical `_to_binary_volume_for_skeletonization` threshold the real
+    `skeletonise()` stage always applies. A normalized [0, 1] probability
+    mask with nonzero background noise then reads as 100% foreground in one
+    giant "component", exactly the symptom a user reported (score 8.9/10,
+    "largest component holds 100% of the volume", vessel radius in the
+    hundreds of microns) for a genuinely well-segmented binary mask.
+    """
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    rng = np.random.default_rng(0)
+    # Background noise well under the 0.5 threshold; a real ~12.5%-occupied
+    # vessel-like block well over it. Naive `!= 0` reads every noisy
+    # background voxel as foreground; the real threshold-at-0.5 binarisation
+    # reads only the block.
+    image = rng.uniform(0.0, 0.2, size=(20, 20, 20)).astype(np.float32)
+    image[5:15, 5:15, 5:15] = 0.9
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (image, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_check_segmented_image()
+    assert "Checking segmented image..." in panel._haemolynx_report()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "Checking segmented image..." not in panel._haemolynx_report():
+            break
+    else:
+        pytest.fail("segmented image check did not finish within 10s")
+
+    report = panel._haemolynx_report()
+    assert "Segmented image quality:" in report, report
+    # The buggy naive `!= 0` binarisation reads all the background noise as
+    # foreground too, which (a) reaches every face of the volume -- several
+    # boundary-touching patches instead of none -- and (b) inflates the
+    # measured vessel radius by an order of magnitude (the whole 20x20x20
+    # volume's own inscribed radius, not the 10x10x10 thresholded block's).
+    boundary_match = re.search(r"\((\d+) place\(s\) the mask touches the image edge\)", report)
+    assert boundary_match, report
+    assert int(boundary_match.group(1)) == 0, report
+    radius_match = re.search(r"typical vessel radius ([\d.]+)um", report)
+    assert radius_match, report
+    assert float(radius_match.group(1)) < 5.0, report

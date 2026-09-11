@@ -316,6 +316,65 @@ def test_optimise_settings_generated_config_schema_is_buildable():
     assert "input_path" in documented_schema.names
 
 
+def test_optimise_settings_binarizes_a_normalized_float_probability_mask(
+    panel, monkeypatch, tmp_path
+):
+    """Regression test for the same mis-binarization bug fixed in
+    `_run_segmentation_quality_check_in_background` (see
+    test_gui_check_segmented_image_widget.py) --
+    `_run_optimisation_in_background` had the identical
+    ``np.asarray(image).astype(bool)`` bug on the raw loaded image, before
+    the optimiser ever saw it. Captures the ``raw_mask`` actually passed to
+    :func:`optimise_skeleton_and_graph_settings` rather than running the
+    full (slow) real search, to isolate just this fix.
+    """
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.optimisation.search import OptimisationResult
+
+    rng = np.random.default_rng(0)
+    # Background noise well under the 0.5 threshold; a real 6x6x6 block well
+    # over it. Naive `!= 0` reads every noisy background voxel as foreground;
+    # the real threshold-at-0.5 binarisation reads only the block.
+    image = rng.uniform(0.0, 0.2, size=(12, 12, 12)).astype(np.float32)
+    image[3:9, 3:9, 3:9] = 0.9
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (image, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+
+    captured = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        captured["raw_mask"] = raw_mask
+        return OptimisationResult(settings={}, trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "raw_mask" in captured:
+            break
+    else:
+        pytest.fail("optimiser worker did not run within 10s")
+
+    assert captured["raw_mask"].sum() == 6 ** 3  # only the thresholded block
+
+
 # --- a real, slow, end-to-end run --------------------------------------------
 
 

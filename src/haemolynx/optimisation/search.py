@@ -1,20 +1,32 @@
-"""Sequential, image-informed search over the Skeletonise and Graph tab settings.
+"""Sequential, image-informed search over segmentation-cleanup, Skeletonise
+and Graph tab settings.
 
 :func:`optimise_skeleton_and_graph_settings` decides every setting in
 :data:`OPTIMISE_SETTING_NAMES` by running a fixed sequence of *sweeps*, each
-varying one setting (or, for the four bundle-refinement knobs, the five
-thick-vessel refinement knobs, the three centreline-smoothing knobs, and the
-cluster-collapse method plus its own one method-specific knob, a short joint
-sweep over the settings one function call actually shares) while holding every
-other setting at its current value. The order matches the order
-``preprocess_skeleton_for_graph`` itself applies its own parameters
-internally -- thick-vessel gating decides which raw skeleton every later sweep
-even sees, then min-branch-length, bundle refinement, closing, gap-bridging,
-and finally component-connectivity/filtering -- so that at every sweep,
-"everything not yet decided" really is what the real pipeline call would still
-use by default. The graph-side settings (reconnect thresholds, cluster
-collapse, stub pruning, centreline smoothing) run afterwards, each on the
-single already-decided skeleton or graph the previous sweep produced.
+varying one setting (or, for the seven segmentation-cleanup steps' own knobs,
+the four bundle-refinement knobs, the five thick-vessel refinement knobs, the
+three centreline-smoothing knobs, and the cluster-collapse method plus its own
+one method-specific knob, a short joint sweep over the settings one function
+call actually shares) while holding every other setting at its current value.
+The order matches the order the real pipeline itself applies these parameters
+-- segmentation cleanup runs first, directly on the raw mask, in the same
+fixed order ``clean_segmented_mask_for_skeletonisation`` itself applies its
+own steps (fill cavities, remove whiskers, split narrow necks, close small
+gaps, reconnect, smooth, remove small volumes); then thick-vessel gating
+decides which raw skeleton every later sweep even sees, then min-branch-length,
+bundle refinement, closing, gap-bridging, and finally
+component-connectivity/filtering -- so that at every sweep, "everything not
+yet decided" really is what the real pipeline call would still use by default.
+The graph-side settings (reconnect thresholds, cluster collapse, stub
+pruning, centreline smoothing) run afterwards, each on the single
+already-decided skeleton or graph the previous sweep produced.
+
+Segmentation cleanup's own sweeps score each candidate with
+:func:`haemolynx.preprocessing.score_segmented_mask` (the same 0-10
+fragmentation/connectivity/boundary/noise/resolution score the "Check
+segmented image" button reports) rather than a skeleton-connectivity or
+braid metric -- these settings act on the mask itself, before any skeleton
+exists to measure.
 
 This is coordinate-descent, not a joint grid search over all 21 settings at
 once (which would be combinatorial): every sweep still calls the real
@@ -54,6 +66,33 @@ from .progress import (
     ProgressCallback,
 )
 
+#: Settings this search decides, on the Input tab's segmentation-cleanup
+#: block (the raw mask, before skeletonisation) -- in the same fixed order
+#: `clean_segmented_mask_for_skeletonisation` itself applies them.
+SEGMENTATION_CLEANUP_SETTING_NAMES: tuple[str, ...] = (
+    "segmentation_cleanup_fill_cavities",
+    "segmentation_cleanup_remove_whiskers",
+    "segmentation_cleanup_whisker_radius_um",
+    "segmentation_cleanup_split_narrow_necks",
+    "segmentation_cleanup_split_min_marker_separation_um",
+    "segmentation_cleanup_split_min_pinch_radius_ratio",
+    "segmentation_cleanup_split_min_body_radius_um",
+    "segmentation_cleanup_close_gaps",
+    "segmentation_cleanup_close_gaps_radius_um",
+    "segmentation_cleanup_reconnect_gaps",
+    "segmentation_cleanup_reconnect_max_bridge_distance_um",
+    "segmentation_cleanup_reconnect_min_cylindricality",
+    "segmentation_cleanup_reconnect_max_axis_angle_degrees",
+    "segmentation_cleanup_reconnect_min_facing_cosine",
+    "segmentation_cleanup_reconnect_max_radius_ratio",
+    "segmentation_cleanup_smooth_surfaces",
+    "segmentation_cleanup_smooth_method",
+    "segmentation_cleanup_smooth_sigma_um",
+    "segmentation_cleanup_smooth_morphological_radius_um",
+    "segmentation_cleanup_remove_small_volumes",
+    "segmentation_cleanup_remove_small_min_volume_um3",
+)
+
 #: Settings this search decides, on the Skeletonise tab.
 SKELETON_SETTING_NAMES: tuple[str, ...] = (
     "use_thick_vessel_skeletonisation",
@@ -91,7 +130,9 @@ GRAPH_SETTING_NAMES: tuple[str, ...] = (
     "centreline_max_deviation",
 )
 
-OPTIMISE_SETTING_NAMES: tuple[str, ...] = SKELETON_SETTING_NAMES + GRAPH_SETTING_NAMES
+OPTIMISE_SETTING_NAMES: tuple[str, ...] = (
+    SEGMENTATION_CLEANUP_SETTING_NAMES + SKELETON_SETTING_NAMES + GRAPH_SETTING_NAMES
+)
 
 #: Deliberately not in scope: the cartwheel-hub-guard settings
 #: (detect_cartwheel_hub_artifacts, cartwheel_hub_min_degree,
@@ -105,13 +146,14 @@ OPTIMISE_SETTING_NAMES: tuple[str, ...] = SKELETON_SETTING_NAMES + GRAPH_SETTING
 
 #: An upper bound on how many sweeps a run does, for progress display. Guarded
 #: sweeps that are skipped mean a real run can finish before reaching this.
-_GROUP_TOTAL_UPPER_BOUND = 23
+_GROUP_TOTAL_UPPER_BOUND = 44
 
-#: The ten independently selectable groups this search runs, in the order
+#: The eleven independently selectable groups this search runs, in the order
 #: :meth:`_Search.run` runs them -- a GUI's "choose optimisation types"
 #: checkbox list is built from this and :data:`GROUP_LABELS`, one checkbox
 #: per name.
 GROUP_NAMES: tuple[str, ...] = (
+    "segmentation_cleanup",
     "thick_vessel_gating",
     "min_branch_length",
     "bundle_refinement",
@@ -126,6 +168,7 @@ GROUP_NAMES: tuple[str, ...] = (
 
 #: A short, human-readable label for each group, for a GUI checkbox list.
 GROUP_LABELS: dict[str, str] = {
+    "segmentation_cleanup": "Segmentation cleanup (mask, before skeletonisation)",
     "thick_vessel_gating": "Thick-vessel gating (on/off, radius, refinement)",
     "min_branch_length": "Minimum branch length",
     "bundle_refinement": "Bundle refinement (confluence hubs)",
@@ -290,6 +333,14 @@ class _Search:
         enabled_groups: Optional[Iterable[str]] = None,
     ) -> None:
         self.raw_mask = np.asarray(raw_mask, dtype=bool)
+        #: The mask exactly as given, before any segmentation-cleanup
+        #: candidate is tried -- every cleanup trial re-cleans this same
+        #: fixed input (never the previous trial's own output), matching how
+        #: `_preprocess_trial` always re-runs from `self.raw_skeleton`. Kept
+        #: even when the segmentation-cleanup group is disabled, since
+        #: `self.raw_mask` may still be reassigned to a cleaned copy once
+        #: that group actually runs.
+        self.original_raw_mask: np.ndarray = self.raw_mask
         voxel_size_xyz = tuple(float(v) for v in voxel_size_xyz)
         # zyx is xyz reversed -- the same relationship
         # haemolynx.io.voxel_size_zyx_from_xyz encodes, kept local here so
@@ -370,6 +421,261 @@ class _Search:
 
     def _connectivity(self) -> Optional[int]:
         return int(self.current["skeleton_component_connectivity"])
+
+    # -- group 0: segmentation cleanup (raw mask, before skeletonisation) --------
+    def _cleanup_kwargs(self, settings: Mapping[str, Any]) -> dict[str, Any]:
+        """``clean_segmented_mask_for_skeletonisation`` keyword arguments from
+        a settings dict -- the ``segmentation_cleanup_``-prefixed schema names
+        stripped down to the plain names that function actually takes."""
+        return dict(
+            fill_cavities=bool(settings["segmentation_cleanup_fill_cavities"]),
+            remove_whiskers=bool(settings["segmentation_cleanup_remove_whiskers"]),
+            whisker_radius_um=float(settings["segmentation_cleanup_whisker_radius_um"]),
+            split_narrow_necks=bool(settings["segmentation_cleanup_split_narrow_necks"]),
+            split_min_marker_separation_um=float(
+                settings["segmentation_cleanup_split_min_marker_separation_um"]
+            ),
+            split_min_pinch_radius_ratio=float(
+                settings["segmentation_cleanup_split_min_pinch_radius_ratio"]
+            ),
+            split_min_body_radius_um=float(settings["segmentation_cleanup_split_min_body_radius_um"]),
+            close_gaps=bool(settings["segmentation_cleanup_close_gaps"]),
+            close_gaps_radius_um=float(settings["segmentation_cleanup_close_gaps_radius_um"]),
+            reconnect_gaps=bool(settings["segmentation_cleanup_reconnect_gaps"]),
+            reconnect_max_bridge_distance_um=float(
+                settings["segmentation_cleanup_reconnect_max_bridge_distance_um"]
+            ),
+            reconnect_min_cylindricality=float(
+                settings["segmentation_cleanup_reconnect_min_cylindricality"]
+            ),
+            reconnect_max_axis_angle_degrees=float(
+                settings["segmentation_cleanup_reconnect_max_axis_angle_degrees"]
+            ),
+            reconnect_min_facing_cosine=float(
+                settings["segmentation_cleanup_reconnect_min_facing_cosine"]
+            ),
+            reconnect_max_radius_ratio=float(
+                settings["segmentation_cleanup_reconnect_max_radius_ratio"]
+            ),
+            smooth_surfaces=bool(settings["segmentation_cleanup_smooth_surfaces"]),
+            smooth_sigma_um=float(settings["segmentation_cleanup_smooth_sigma_um"]),
+            smooth_method=str(settings["segmentation_cleanup_smooth_method"]),
+            smooth_morphological_radius_um=float(
+                settings["segmentation_cleanup_smooth_morphological_radius_um"]
+            ),
+            remove_small_volumes=bool(settings["segmentation_cleanup_remove_small_volumes"]),
+            remove_small_min_volume_um3=float(
+                settings["segmentation_cleanup_remove_small_min_volume_um3"]
+            ),
+        )
+
+    def _cleanup_trial(self, overrides: Mapping[str, Any]) -> np.ndarray:
+        """Re-clean :attr:`original_raw_mask` (never a previous trial's own
+        output -- matches how ``_preprocess_trial`` always re-runs from
+        ``self.raw_skeleton``) with ``self.current`` plus *overrides*."""
+        settings = {**self.current, **overrides}
+        cleaned, _raw = preprocessing.clean_segmented_mask_for_skeletonisation(
+            self.original_raw_mask,
+            voxel_size_zyx=self.voxel_size_zyx,
+            **self._cleanup_kwargs(settings),
+        )
+        return cleaned
+
+    def _group_segmentation_cleanup(self) -> None:
+        """Choose the seven segmentation-cleanup toggles and their own knobs,
+        each scored on the resulting mask's own quality score -- these act
+        directly on the mask, before any skeleton exists to measure instead.
+        """
+        group = "segmentation_cleanup"
+
+        def quality(mask_trial: np.ndarray) -> float:
+            return -preprocessing.score_segmented_mask(
+                mask_trial, voxel_size_zyx=self.voxel_size_zyx
+            ).total
+
+        self._sweep(
+            group, "segmentation_cleanup_fill_cavities", [False, True],
+            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_fill_cavities": value})),
+        )
+
+        self._sweep(
+            group, "segmentation_cleanup_remove_whiskers", [False, True],
+            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_remove_whiskers": value})),
+        )
+        if self.current["segmentation_cleanup_remove_whiskers"]:
+            self._sweep(
+                group, "segmentation_cleanup_whisker_radius_um",
+                cand.small_radius_candidates(
+                    self.voxel_size_zyx, float(self.current["segmentation_cleanup_whisker_radius_um"])
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_whisker_radius_um": value})
+                ),
+            )
+
+        self._sweep(
+            group, "segmentation_cleanup_split_narrow_necks", [False, True],
+            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_split_narrow_necks": value})),
+        )
+        if self.current["segmentation_cleanup_split_narrow_necks"]:
+            self._sweep(
+                group, "segmentation_cleanup_split_min_marker_separation_um",
+                cand.split_marker_separation_candidates(
+                    self.typical_radius_um,
+                    float(self.current["segmentation_cleanup_split_min_marker_separation_um"]),
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_split_min_marker_separation_um": value})
+                ),
+            )
+            self._sweep(
+                group, "segmentation_cleanup_split_min_pinch_radius_ratio",
+                cand.split_pinch_radius_ratio_candidates(
+                    float(self.current["segmentation_cleanup_split_min_pinch_radius_ratio"])
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_split_min_pinch_radius_ratio": value})
+                ),
+            )
+            self._sweep(
+                group, "segmentation_cleanup_split_min_body_radius_um",
+                cand.split_min_body_radius_candidates(
+                    self.typical_radius_um,
+                    float(self.current["segmentation_cleanup_split_min_body_radius_um"]),
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_split_min_body_radius_um": value})
+                ),
+            )
+
+        self._sweep(
+            group, "segmentation_cleanup_close_gaps", [False, True],
+            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_close_gaps": value})),
+        )
+        if self.current["segmentation_cleanup_close_gaps"]:
+            self._sweep(
+                group, "segmentation_cleanup_close_gaps_radius_um",
+                cand.small_radius_candidates(
+                    self.voxel_size_zyx, float(self.current["segmentation_cleanup_close_gaps_radius_um"])
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_close_gaps_radius_um": value})
+                ),
+            )
+
+        self._sweep(
+            group, "segmentation_cleanup_reconnect_gaps", [False, True],
+            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_reconnect_gaps": value})),
+        )
+        if self.current["segmentation_cleanup_reconnect_gaps"]:
+            gap_distances_um = cand.mask_component_gap_distances_um(
+                self.original_raw_mask, self.voxel_size_zyx
+            )
+            self._sweep(
+                group, "segmentation_cleanup_reconnect_max_bridge_distance_um",
+                cand.reconnect_max_bridge_distance_candidates(
+                    gap_distances_um,
+                    float(self.current["segmentation_cleanup_reconnect_max_bridge_distance_um"]),
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_reconnect_max_bridge_distance_um": value})
+                ),
+            )
+            self._sweep(
+                group, "segmentation_cleanup_reconnect_min_cylindricality",
+                cand.reconnect_min_cylindricality_candidates(
+                    float(self.current["segmentation_cleanup_reconnect_min_cylindricality"])
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_reconnect_min_cylindricality": value})
+                ),
+            )
+            self._sweep(
+                group, "segmentation_cleanup_reconnect_max_axis_angle_degrees",
+                cand.reconnect_max_axis_angle_candidates(
+                    float(self.current["segmentation_cleanup_reconnect_max_axis_angle_degrees"])
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_reconnect_max_axis_angle_degrees": value})
+                ),
+            )
+            self._sweep(
+                group, "segmentation_cleanup_reconnect_min_facing_cosine",
+                cand.reconnect_min_facing_cosine_candidates(
+                    float(self.current["segmentation_cleanup_reconnect_min_facing_cosine"])
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_reconnect_min_facing_cosine": value})
+                ),
+            )
+            self._sweep(
+                group, "segmentation_cleanup_reconnect_max_radius_ratio",
+                cand.reconnect_max_radius_ratio_candidates(
+                    float(self.current["segmentation_cleanup_reconnect_max_radius_ratio"])
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_reconnect_max_radius_ratio": value})
+                ),
+            )
+
+        self._sweep(
+            group, "segmentation_cleanup_smooth_surfaces", [False, True],
+            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_smooth_surfaces": value})),
+        )
+        if self.current["segmentation_cleanup_smooth_surfaces"]:
+            self._sweep(
+                group, "segmentation_cleanup_smooth_method",
+                cand.smooth_method_candidates(),
+                lambda value: quality(self._cleanup_trial({"segmentation_cleanup_smooth_method": value})),
+            )
+            if self.current["segmentation_cleanup_smooth_method"] == "gaussian":
+                self._sweep(
+                    group, "segmentation_cleanup_smooth_sigma_um",
+                    cand.small_radius_candidates(
+                        self.voxel_size_zyx, float(self.current["segmentation_cleanup_smooth_sigma_um"])
+                    ),
+                    lambda value: quality(
+                        self._cleanup_trial({"segmentation_cleanup_smooth_sigma_um": value})
+                    ),
+                )
+            else:
+                self._sweep(
+                    group, "segmentation_cleanup_smooth_morphological_radius_um",
+                    cand.small_radius_candidates(
+                        self.voxel_size_zyx,
+                        float(self.current["segmentation_cleanup_smooth_morphological_radius_um"]),
+                    ),
+                    lambda value: quality(
+                        self._cleanup_trial({"segmentation_cleanup_smooth_morphological_radius_um": value})
+                    ),
+                )
+
+        self._sweep(
+            group, "segmentation_cleanup_remove_small_volumes", [False, True],
+            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_remove_small_volumes": value})),
+        )
+        if self.current["segmentation_cleanup_remove_small_volumes"]:
+            self._sweep(
+                group, "segmentation_cleanup_remove_small_min_volume_um3",
+                cand.remove_small_min_volume_candidates(
+                    self.original_raw_mask,
+                    self.voxel_size_zyx,
+                    float(self.current["segmentation_cleanup_remove_small_min_volume_um3"]),
+                ),
+                lambda value: quality(
+                    self._cleanup_trial({"segmentation_cleanup_remove_small_min_volume_um3": value})
+                ),
+            )
+
+        self.raw_mask = self._cleanup_trial({})
+        # The typical-radius scale used by later groups' own candidate
+        # generation (thick-vessel refinement, bundle scan size) should
+        # reflect the mask cleanup actually decided on, not the pre-cleanup
+        # input measured in `__init__`.
+        radius_map = preprocessing.inscribed_radius_map(self.raw_mask, self.voxel_size_zyx)
+        nonzero = radius_map[radius_map > 0]
+        if nonzero.size:
+            self.typical_radius_um = float(np.median(nonzero))
 
     # -- group 1: thick-vessel gating ---------------------------------------------
     def _group_thick_vessel_gating(self) -> None:
@@ -818,6 +1124,13 @@ class _Search:
             self.raw_skeleton = self.raw_mask.copy()
             self.current_skeleton = self.raw_skeleton
             return
+
+        if self._group_enabled("segmentation_cleanup"):
+            self._group_segmentation_cleanup()
+            if not self.raw_mask.any():
+                self.raw_skeleton = self.raw_mask.copy()
+                self.current_skeleton = self.raw_skeleton
+                return
 
         if self._group_enabled("thick_vessel_gating"):
             self._group_thick_vessel_gating()

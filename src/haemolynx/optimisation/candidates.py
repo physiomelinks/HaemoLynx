@@ -19,10 +19,14 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
-from scipy.ndimage import convolve
+from scipy.ndimage import convolve, label
 from scipy.spatial import cKDTree
 
-from haemolynx.preprocessing import inscribed_radius_map, needs_thick_vessel_treatment
+from haemolynx.preprocessing import (
+    inscribed_radius_map,
+    inter_component_gap_distances,
+    needs_thick_vessel_treatment,
+)
 
 #: Below this inscribed radius, thickness-gated skeletonisation cannot matter
 #: for any candidate this module would ever propose -- used only to decide
@@ -54,6 +58,109 @@ def _sorted_with_none_first(values: set) -> list:
     not a missing one, so it is always included and always tried first.
     """
     return sorted(values, key=lambda v: (0, 0.0) if v is None else (1, float(v)))
+
+
+# ---------------------------------------------------------------------------
+# Group 0: segmentation cleanup (raw mask, before skeletonisation)
+# ---------------------------------------------------------------------------
+_STRUCTURE_26_FULL = np.ones((3, 3, 3), dtype=bool)
+
+
+def mask_component_gap_distances_um(
+    mask: np.ndarray, voxel_size_zyx: tuple[float, float, float]
+) -> np.ndarray:
+    """Nearest-neighbour distance between every pair of the raw mask's own
+    connected components, in physical microns -- the actual gaps
+    ``reconnect_vessel_like_components`` would need to bridge, before any
+    cleanup step or skeletonisation has run."""
+    return inter_component_gap_distances(mask, component_connectivity=3, voxel_size_zyx=voxel_size_zyx)
+
+
+def small_radius_candidates(
+    voxel_size_zyx: tuple[float, float, float], default: float
+) -> list[float]:
+    """Voxel-scale alternatives to a plain small closing/opening/smoothing
+    radius setting.
+
+    Shared by every segmentation-cleanup radius knob with no image
+    measurement that maps onto it more directly than the grid's own voxel
+    size (whisker radius, small-gap closing radius, gaussian/morphological
+    smoothing radius) -- unlike ``thick_vessel_flake_filter_candidates``,
+    none of these settings has an "auto" (``None``) option to include.
+    """
+    one_voxel_um = min(float(v) for v in voxel_size_zyx) or 1.0
+    candidates = {float(default)} | {round(one_voxel_um * m, 6) for m in (0.5, 1.0, 2.0, 4.0)}
+    return sorted(v for v in candidates if v > 0.0) or [float(default)]
+
+
+def split_marker_separation_candidates(typical_radius_um: float, default: float) -> list[float]:
+    """Multiples of the mask's own typical vessel radius -- the scale two
+    genuinely separate vessel bodies' local-radius maxima should sit apart."""
+    candidates = {float(default)} | {round(typical_radius_um * m, 6) for m in (0.5, 1.0, 2.0)}
+    return sorted(v for v in candidates if v >= 0.0) or [float(default)]
+
+
+def split_min_body_radius_candidates(typical_radius_um: float, default: float) -> list[float]:
+    candidates = {float(default)} | {round(typical_radius_um * m, 6) for m in (0.25, 0.5, 1.0)}
+    return sorted(v for v in candidates if v >= 0.0) or [float(default)]
+
+
+def split_pinch_radius_ratio_candidates(default: float = 0.6) -> list[float]:
+    """A fixed grid bracketing the schema default within its [0, 1] bounds --
+    a shape-purity ratio, like ``cluster_collapse_max_radial_dispersion``,
+    with no image measurement that maps onto it directly."""
+    candidates = {float(default)} | {0.4, 0.6, 0.8}
+    return sorted(v for v in candidates if 0.0 <= v <= 1.0) or [float(default)]
+
+
+def reconnect_max_bridge_distance_candidates(
+    gap_distances_um: np.ndarray, default: float
+) -> list[float]:
+    candidates = {float(default)} | set(_percentiles(gap_distances_um, (50.0, 75.0, 90.0)))
+    return sorted(v for v in candidates if v >= 0.0) or [float(default)]
+
+
+def reconnect_min_cylindricality_candidates(default: float = 0.5) -> list[float]:
+    candidates = {float(default)} | {0.3, 0.5, 0.7}
+    return sorted(v for v in candidates if 0.0 <= v <= 1.0) or [float(default)]
+
+
+def reconnect_max_axis_angle_candidates(default: float = 30.0) -> list[float]:
+    candidates = {float(default)} | {15.0, 30.0, 45.0}
+    return sorted(v for v in candidates if 0.0 <= v <= 90.0) or [float(default)]
+
+
+def reconnect_min_facing_cosine_candidates(default: float = 0.85) -> list[float]:
+    candidates = {float(default)} | {0.7, 0.85, 0.95}
+    return sorted(v for v in candidates if 0.0 <= v <= 1.0) or [float(default)]
+
+
+def reconnect_max_radius_ratio_candidates(default: float = 3.0) -> list[float]:
+    candidates = {float(default)} | {2.0, 3.0, 5.0}
+    return sorted(v for v in candidates if v >= 1.0) or [float(default)]
+
+
+def smooth_method_candidates() -> list[str]:
+    return ["gaussian", "morphological"]
+
+
+def remove_small_min_volume_candidates(
+    mask: np.ndarray, voxel_size_zyx: tuple[float, float, float], default: float
+) -> list[float]:
+    """Percentiles of the mask's own per-component volume distribution, in
+    physical um^3 -- the same percentile-of-the-thing-it-filters pattern as
+    ``min_branch_length_candidates``, one level up (volume instead of voxel
+    count) since this setting's own units are physical, not voxel counts."""
+    labeled, n_components = label(mask, structure=_STRUCTURE_26_FULL)
+    if n_components == 0:
+        return [float(default)]
+    sizes_voxels = np.bincount(labeled.ravel())[1:]
+    voxel_volume_um3 = (
+        float(voxel_size_zyx[0]) * float(voxel_size_zyx[1]) * float(voxel_size_zyx[2])
+    )
+    sizes_um3 = sizes_voxels.astype(float) * voxel_volume_um3
+    candidates = {float(default)} | set(_percentiles(sizes_um3, (5.0, 10.0, 25.0)))
+    return sorted(v for v in candidates if v >= 0.0) or [float(default)]
 
 
 # ---------------------------------------------------------------------------

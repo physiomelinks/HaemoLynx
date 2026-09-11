@@ -18,8 +18,10 @@ from haemolynx.optimisation.progress import (
 from haemolynx.optimisation.search import (
     AUTO_DOWNSAMPLE_TARGET_VOXELS,
     DOWNSAMPLE_FACTORS,
+    GRAPH_SETTING_NAMES,
     GROUP_NAMES,
     OPTIMISE_SETTING_NAMES,
+    SKELETON_SETTING_NAMES,
     _VOXEL_SCALED_SETTING_NAMES,
     optimise_skeleton_and_graph_settings,
     resolve_auto_downsample_factor,
@@ -51,6 +53,27 @@ def _y_shaped_vessel(shape=(30, 30, 30), radius=2) -> np.ndarray:
 #: pipeline/schema.py -- kept local so this test does not depend on
 #: haemolynx.pipeline (the optimisation package's own purity boundary).
 _DEFAULT_STARTING_VALUES = {
+    "segmentation_cleanup_fill_cavities": False,
+    "segmentation_cleanup_remove_whiskers": False,
+    "segmentation_cleanup_whisker_radius_um": 1.0,
+    "segmentation_cleanup_split_narrow_necks": False,
+    "segmentation_cleanup_split_min_marker_separation_um": 10.0,
+    "segmentation_cleanup_split_min_pinch_radius_ratio": 0.6,
+    "segmentation_cleanup_split_min_body_radius_um": 1.0,
+    "segmentation_cleanup_close_gaps": False,
+    "segmentation_cleanup_close_gaps_radius_um": 0.5,
+    "segmentation_cleanup_reconnect_gaps": False,
+    "segmentation_cleanup_reconnect_max_bridge_distance_um": 30.0,
+    "segmentation_cleanup_reconnect_min_cylindricality": 0.5,
+    "segmentation_cleanup_reconnect_max_axis_angle_degrees": 30.0,
+    "segmentation_cleanup_reconnect_min_facing_cosine": 0.85,
+    "segmentation_cleanup_reconnect_max_radius_ratio": 3.0,
+    "segmentation_cleanup_smooth_surfaces": False,
+    "segmentation_cleanup_smooth_method": "gaussian",
+    "segmentation_cleanup_smooth_sigma_um": 1.0,
+    "segmentation_cleanup_smooth_morphological_radius_um": 1.0,
+    "segmentation_cleanup_remove_small_volumes": False,
+    "segmentation_cleanup_remove_small_min_volume_um3": 5.0,
     "use_thick_vessel_skeletonisation": False,
     "skeleton_thick_vessel_min_radius_um": 6.0,
     "skeleton_fill_mask_holes_before_thickness": True,
@@ -416,6 +439,50 @@ def test_optimise_settings_with_only_graph_groups_still_builds_a_graph(y_shaped_
     tried_settings = {trial.setting for trial in result.trials}
     assert tried_settings == {"min_stub_length"}
     assert result.settings["skeleton_closing_radius"] == _DEFAULT_STARTING_VALUES["skeleton_closing_radius"]
+
+
+def test_optimise_settings_with_only_segmentation_cleanup_group_leaves_other_settings_untouched(y_shaped_mask):
+    result = optimise_skeleton_and_graph_settings(
+        y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,
+        groups=("segmentation_cleanup",),
+    )
+    assert result.groups_run == ("segmentation_cleanup",)
+    for name in SKELETON_SETTING_NAMES + GRAPH_SETTING_NAMES:
+        assert result.settings[name] == _DEFAULT_STARTING_VALUES[name]
+    tried_groups = {trial.group for trial in result.trials}
+    assert tried_groups == {"segmentation_cleanup"}
+
+
+def test_segmentation_cleanup_group_removes_a_small_disconnected_speck():
+    """An end-to-end demonstration that the new group actually improves the
+    mask's own quality score, not just that it runs without crashing.
+
+    Either `remove_whiskers` (an isolated single voxel has no core to survive
+    an opening) or `remove_small_volumes` can clear a lone speck like this --
+    which one wins is an implementation detail of where each sits in the
+    fixed cleanup order, so this asserts on the outcome (the speck is gone,
+    the score improved), not on which specific toggle did it.
+    """
+    from haemolynx.preprocessing import clean_segmented_mask_for_skeletonisation, score_segmented_mask
+
+    mask = _y_shaped_vessel()
+    mask[1, 1, 1] = True  # a single-voxel speck, far from the vessel body
+    baseline_score = score_segmented_mask(mask, voxel_size_zyx=(1.0, 1.0, 1.0)).total
+
+    result = optimise_skeleton_and_graph_settings(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,
+        groups=("segmentation_cleanup",),
+    )
+    cleanup_kwargs = {
+        name[len("segmentation_cleanup_"):]: value
+        for name, value in result.settings.items()
+        if name.startswith("segmentation_cleanup_")
+    }
+    cleaned, _raw = clean_segmented_mask_for_skeletonisation(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), **cleanup_kwargs
+    )
+    assert not cleaned[1, 1, 1]
+    assert score_segmented_mask(cleaned, voxel_size_zyx=(1.0, 1.0, 1.0)).total > baseline_score
 
 
 def test_group_names_cover_every_group_a_trial_could_report():

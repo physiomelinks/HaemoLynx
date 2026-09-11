@@ -100,6 +100,7 @@ from haemolynx.gui.vessel_tubes import (
     vessel_tubes_layer_name,
 )
 from haemolynx.io import resolve_voxel_size_xyz
+from haemolynx.io.load import _to_binary_volume_for_skeletonization
 from haemolynx.optimisation import (
     OPTIMISE_SETTING_NAMES,
     OptimisationEvent,
@@ -4177,7 +4178,7 @@ def _run_optimisation_in_background(
             voxel_size_override_xyz=local_settings["voxel_size_override_xyz"],
             voxel_size_policy=local_settings["voxel_size_policy"],
         )
-        raw_mask = np.asarray(image).astype(bool)
+        raw_mask = _to_binary_volume_for_skeletonization(image)
         starting_values = {name: local_settings[name] for name in OPTIMISE_SETTING_NAMES}
         result = optimise_skeleton_and_graph_settings(
             raw_mask,
@@ -4311,7 +4312,7 @@ def _run_segmentation_quality_check_in_background(
             voxel_size_override_xyz=local_settings["voxel_size_override_xyz"],
             voxel_size_policy=local_settings["voxel_size_policy"],
         )
-        mask = np.asarray(image).astype(bool)
+        mask = _to_binary_volume_for_skeletonization(image)
         voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
         return score_segmented_mask(mask, voxel_size_zyx=voxel_size_zyx)
 
@@ -6142,7 +6143,7 @@ def settings_widget(napari_viewer=None):
         input_settings.append(downsample_dropdown)
 
     #: "Choose optimisation types": restricts Optimise settings to a subset of
-    #: its ten groups. The per-group checkboxes stay hidden until asked for --
+    #: its eleven groups. The per-group checkboxes stay hidden until asked for --
     #: most runs want every group, so the list only appears once asked for.
     from haemolynx.optimisation import GROUP_LABELS, GROUP_NAMES
 
