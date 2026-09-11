@@ -26,6 +26,7 @@ import inspect
 import json
 import logging
 import pickle
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -520,6 +521,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         if any(
             cleanup_kwargs.get(flag)
             for flag in (
+                "fill_cavities",
                 "remove_whiskers",
                 "split_narrow_necks",
                 "reconnect_gaps",
@@ -528,8 +530,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             )
         ):
             logger.info(
-                "Segmentation cleanup: remove_whiskers=%s split_narrow_necks=%s "
-                "reconnect=%s smooth=%s remove_small=%s",
+                "Segmentation cleanup: fill_cavities=%s remove_whiskers=%s "
+                "split_narrow_necks=%s reconnect=%s smooth=%s remove_small=%s",
+                cleanup_kwargs.get("fill_cavities"),
                 cleanup_kwargs.get("remove_whiskers"),
                 cleanup_kwargs.get("split_narrow_necks"),
                 cleanup_kwargs.get("reconnect_gaps"),
@@ -1950,7 +1953,18 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                     "table diameters without per-edge FWHM)."
                 )
             if "diameters" in haemo_results:
-                logger.info(f"Diameter sources: {haemo_results['diameters']}")
+                # "table"/"measured" alone doesn't say *why* -- an edge FWHM
+                # never even attempted and one where it outright failed both
+                # land on "table" identically. fwhm_status distinguishes them.
+                status_counts = Counter(
+                    "not_attempted" if status is None else status.split(":", 1)[0]
+                    for _u, _v, _key, edge_data in G.edges(keys=True, data=True)
+                    for status in (edge_data.get("fwhm_status"),)
+                )
+                logger.info(
+                    f"Diameter sources: {haemo_results['diameters']} "
+                    f"(FWHM: {dict(status_counts)})"
+                )
 
     return HaemodynamicModel(
         graph=G,
@@ -2224,7 +2238,7 @@ def _write_perturbation_csvs(
                     "key": key,
                     "branch_order": data.get("branch_order"),
                     "length_um": data.get("length"),
-                    "diameter_um": data.get("fwhm_diameter_um"),
+                    "diameter_um": data.get("diameter_um"),
                     "resistance": now,
                     "conductance": data.get("conductance"),
                     "pressure_drop": data.get("pressure_drop"),

@@ -26,6 +26,8 @@ input_and_segmentation:
   voxel_size_policy: auto
   # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
   image_axis_order: zyx
+  # Fill small internal air-gaps/voids -- imaging noise inside an otherwise solid vessel lumen -- before skeletonisation, the same fill done for use_thick_vessel_skeletonisation's own thickness-gated path but here for the plain-Lee path too. Run first, so a hollow lumen does not throw off later steps' own radius measurements. No parameter: a cavity is either enclosed or it is not, with nothing to size
+  segmentation_cleanup_fill_cavities: false
   # Morphologically open the mask to strip thin (1-2 voxel) surface spikes still attached to an otherwise clean vessel, before skeletonisation -- run first, so later steps measure radii and axes off the cleaned-up shape
   segmentation_cleanup_remove_whiskers: false
   # Strip surface spikes with no core at least this physical radius thick  [um; range 0.0..; needs segmentation_cleanup_remove_whiskers]

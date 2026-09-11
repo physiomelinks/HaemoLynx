@@ -43,6 +43,7 @@ from .skeleton_consistency import (
 )
 from .segmentation_cleanup import (
     clean_segmented_mask_for_skeletonisation,
+    fill_enclosed_cavities,
     reconnect_vessel_like_components,
     remove_small_segmented_volumes,
     remove_surface_whiskers,
@@ -91,6 +92,7 @@ __all__ = [
     "diagnose_vessels_missing_from_skeleton",
     "format_vessels_missing_from_skeleton_report",
     "clean_segmented_mask_for_skeletonisation",
+    "fill_enclosed_cavities",
     "reconnect_vessel_like_components",
     "remove_small_segmented_volumes",
     "remove_surface_whiskers",

@@ -526,3 +526,29 @@ def test_skeletonise_feeds_the_cleaned_mask_to_skeletonisation(tmp_path):
     volume = skeletonise(settings, segment(settings))
 
     assert not bool(np.asarray(volume.image)[0, 0, 0])
+
+
+def _solid_mask_with_an_internal_cavity() -> np.ndarray:
+    """A solid block with a small enclosed void -- an imaging-noise-style
+    air gap inside an otherwise solid vessel lumen."""
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    mask[4:6, 4:6, 4:6] = False  # the cavity itself
+    return mask
+
+
+def test_skeletonise_fill_cavities_fills_the_hollow_lumen_in_volume_image(tmp_path):
+    """volume.image (what skeletonisation and everything downstream reads)
+    must have the enclosed cavity filled in -- a hollow lumen from imaging
+    noise must not survive into the mask fed to skeletonisation, and
+    raw_segmented_image must still show it hollow, pre-cleanup."""
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _solid_mask_with_an_internal_cavity()),
+        segmentation_cleanup_fill_cavities=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert bool(np.asarray(volume.image)[5, 5, 5])  # the cavity, now filled
+    assert volume.raw_segmented_image is not None
+    assert not bool(volume.raw_segmented_image[5, 5, 5])  # cavity, pre-cleanup

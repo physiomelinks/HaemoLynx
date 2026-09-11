@@ -24,6 +24,51 @@ def _sphere(
     return (zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2 <= radius ** 2
 
 
+# --- fill_enclosed_cavities ---------------------------------------------------
+
+
+def test_fill_cavities_fills_an_internal_void_but_not_outside_background():
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    mask[4:6, 4:6, 4:6] = False  # an enclosed cavity, imaging-noise-style
+
+    filled = sc.fill_enclosed_cavities(mask)
+
+    assert filled[5, 5, 5]  # the cavity itself
+    assert np.array_equal(filled[2:8, 2:8, 2:8], np.ones((6, 6, 6), dtype=bool))
+    assert not filled[0, 0, 0]  # true background, outside the shell entirely
+
+
+def test_fill_cavities_leaves_a_solid_mask_unchanged():
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+
+    filled = sc.fill_enclosed_cavities(mask)
+
+    assert np.array_equal(filled, mask)
+
+
+def test_fill_cavities_does_not_fill_a_cavity_open_to_the_background():
+    """A void that reaches the mask's own boundary is not "enclosed" -- it
+    is background, and must stay background."""
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 2:8, 2:8] = True
+    mask[4:6, 4:6, 2:6] = False  # channel from the cavity out through a face
+
+    filled = sc.fill_enclosed_cavities(mask)
+
+    assert not filled[5, 5, 3]
+    assert np.array_equal(filled, mask)
+
+
+def test_fill_cavities_empty_mask_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    assert np.array_equal(sc.fill_enclosed_cavities(mask), mask)
+
+
 # --- reconnect_vessel_like_components ----------------------------------------
 
 
@@ -355,6 +400,10 @@ def test_clean_segmented_mask_all_off_returns_input_unchanged_and_calls_nothing(
 ):
     calls: list[str] = []
     monkeypatch.setattr(
+        sc, "fill_enclosed_cavities",
+        lambda *a, **k: calls.append("fill_cavities") or None,
+    )
+    monkeypatch.setattr(
         sc, "remove_surface_whiskers",
         lambda *a, **k: calls.append("remove_whiskers") or None,
     )
@@ -387,6 +436,10 @@ def test_clean_segmented_mask_all_off_returns_input_unchanged_and_calls_nothing(
 def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
     order: list[str] = []
 
+    def fake_fill_cavities(mask, **kwargs):
+        order.append("fill_cavities")
+        return mask
+
     def fake_whiskers(mask, **kwargs):
         order.append("remove_whiskers")
         return mask
@@ -407,6 +460,7 @@ def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
         order.append("remove_small")
         return mask
 
+    monkeypatch.setattr(sc, "fill_enclosed_cavities", fake_fill_cavities)
     monkeypatch.setattr(sc, "remove_surface_whiskers", fake_whiskers)
     monkeypatch.setattr(sc, "split_narrow_neck_components", fake_split)
     monkeypatch.setattr(sc, "reconnect_vessel_like_components", fake_reconnect)
@@ -417,6 +471,7 @@ def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
     sc.clean_segmented_mask_for_skeletonisation(
         image,
         voxel_size_zyx=(1.0, 1.0, 1.0),
+        fill_cavities=True,
         remove_whiskers=True,
         split_narrow_necks=True,
         reconnect_gaps=True,
@@ -425,6 +480,7 @@ def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
     )
 
     assert order == [
+        "fill_cavities",
         "remove_whiskers",
         "split_narrow_necks",
         "reconnect",

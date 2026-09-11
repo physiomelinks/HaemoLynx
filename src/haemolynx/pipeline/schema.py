@@ -164,11 +164,26 @@ SCHEMA = Schema(
             choices=AXIS_ORDERS,
         ),
         # ------------------------------------------------------------------
-        # Segmentation cleanup (Input tab): five independently-toggleable
+        # Segmentation cleanup (Input tab): six independently-toggleable
         # cleanup steps on the raw segmented mask, before skeletonisation.
         # Each defaults off -- an existing run's output does not change
         # unless a toggle is explicitly turned on.
         # ------------------------------------------------------------------
+        Setting(
+            name="segmentation_cleanup_fill_cavities",
+            kind="bool",
+            default=False,
+            help=(
+                "Fill small internal air-gaps/voids -- imaging noise inside "
+                "an otherwise solid vessel lumen -- before skeletonisation, "
+                "the same fill done for use_thick_vessel_skeletonisation's "
+                "own thickness-gated path but here for the plain-Lee path "
+                "too. Run first, so a hollow lumen does not throw off later "
+                "steps' own radius measurements. No parameter: a cavity is "
+                "either enclosed or it is not, with nothing to size"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
         Setting(
             name="segmentation_cleanup_remove_whiskers",
             kind="bool",

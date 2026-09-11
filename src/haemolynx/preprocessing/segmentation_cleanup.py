@@ -1,10 +1,11 @@
 """Pre-skeletonization cleanup of the raw segmented binary vessel mask.
 
-Five independently-toggleable steps, always applied remove-whiskers ->
-split-narrow-necks -> reconnect -> smooth -> remove-small when more than one
-is on (see :func:`clean_segmented_mask_for_skeletonisation` for why that
-order). All distance/volume parameters are physical (microns / cubic
-microns), sampled via ``voxel_size_zyx`` -- unlike
+Six independently-toggleable steps, always applied fill-cavities ->
+remove-whiskers -> split-narrow-necks -> reconnect -> smooth -> remove-small
+when more than one is on (see
+:func:`clean_segmented_mask_for_skeletonisation` for why that order). All
+distance/volume parameters are physical (microns / cubic microns), sampled
+via ``voxel_size_zyx`` -- unlike
 :func:`haemolynx.preprocessing.skeleton.close_binary_mask`/``bridge_gaps``,
 which are voxel-unit only, a real problem for this project's anisotropic
 datasets (e.g. a ``(1.0, 0.4, 0.4)`` zyx voxel size, where a "radius=2
@@ -56,6 +57,7 @@ from skimage.feature import peak_local_max
 from skimage.morphology import remove_small_objects
 from skimage.segmentation import watershed
 
+from .skeleton import fill_binary_holes
 from .thick_vessels import (
     _dominant_eigenvector_3x3,
     _matvec_3x3,
@@ -64,6 +66,7 @@ from .thick_vessels import (
 )
 
 __all__ = [
+    "fill_enclosed_cavities",
     "reconnect_vessel_like_components",
     "smooth_vessel_surfaces",
     "remove_small_segmented_volumes",
@@ -73,6 +76,30 @@ __all__ = [
 ]
 
 _STRUCTURE_26 = np.ones((3, 3, 3), dtype=bool)
+
+
+def fill_enclosed_cavities(mask: np.ndarray) -> np.ndarray:
+    """Fill small internal air-gaps/voids -- imaging noise inside an
+    otherwise solid vessel lumen -- that would otherwise survive into the
+    skeleton as a spurious closed loop (a handle in the topology, not a
+    real vessel branch).
+
+    Reuses :func:`haemolynx.preprocessing.skeleton.fill_binary_holes`, the
+    same function ``use_thick_vessel_skeletonisation``'s
+    ``skeleton_fill_mask_holes_before_thickness`` already applies -- but
+    that only runs on the thickness-gated branch of skeletonisation
+    (:func:`haemolynx.preprocessing.thick_vessels.skeletonize_thickness_gated`).
+    Doing it here, once, on the mask itself, covers the plain-Lee path too,
+    and does it before every later step in this module -- whisker removal,
+    splitting, reconnecting -- rather than leaving a hollow lumen to
+    distort their own radius/linearity measurements (an enclosed cavity
+    would otherwise be counted as *not* part of the vessel).
+
+    Purely topological -- an enclosed background region either exists or
+    it does not, with nothing to size -- so unlike every other step here,
+    this has no physical parameter to make anisotropy-aware.
+    """
+    return fill_binary_holes(np.asarray(mask, dtype=bool))
 
 
 def _connected_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
@@ -664,6 +691,7 @@ def clean_segmented_mask_for_skeletonisation(
     image: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float],
+    fill_cavities: bool = False,
     remove_whiskers: bool = False,
     whisker_radius_um: float = 1.0,
     split_narrow_necks: bool = False,
@@ -681,10 +709,13 @@ def clean_segmented_mask_for_skeletonisation(
     remove_small_volumes: bool = False,
     remove_small_min_volume_um3: float = 5.0,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Remove-whiskers -> split-narrow-necks -> reconnect -> smooth ->
-    remove-small, each independently toggleable.
+    """Fill-cavities -> remove-whiskers -> split-narrow-necks -> reconnect ->
+    smooth -> remove-small, each independently toggleable.
 
-    Order matters: whisker removal first, so a spike does not throw off the
+    Order matters: cavity filling first, so a hollow lumen from imaging
+    noise does not throw off every later step's own radius/linearity
+    measurements (an enclosed cavity would otherwise read as *not* part of
+    the vessel); whisker removal next, so a spike does not throw off the
     radius/axis measurements every later step relies on; split before
     reconnect so a genuine false-merge is cut apart before reconnect ever
     gets a chance to characterise (and potentially re-bridge) the same
@@ -705,7 +736,8 @@ def clean_segmented_mask_for_skeletonisation(
     corrected-vs-raw comparison toggle.
     """
     if not (
-        remove_whiskers
+        fill_cavities
+        or remove_whiskers
         or split_narrow_necks
         or reconnect_gaps
         or smooth_surfaces
@@ -714,6 +746,8 @@ def clean_segmented_mask_for_skeletonisation(
         return image, None
     raw = np.asarray(image, dtype=bool).copy()
     cleaned = raw
+    if fill_cavities:
+        cleaned = fill_enclosed_cavities(cleaned)
     if remove_whiskers:
         cleaned = remove_surface_whiskers(
             cleaned, voxel_size_zyx=voxel_size_zyx, whisker_radius_um=whisker_radius_um
