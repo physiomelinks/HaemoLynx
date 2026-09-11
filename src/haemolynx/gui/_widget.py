@@ -1743,6 +1743,32 @@ def _apply_layers(viewer, group, report=None) -> None:
         report.value = f"{group.title}: {group.note}"
 
 
+def _apply_layer_groups(viewer, groups, report=None) -> None:
+    """Apply several stage groups to *viewer*, one Qt event-loop cycle apart.
+
+    A live pipeline run never calls :func:`_apply_layers` back to back like a
+    plain loop would: each stage's group crosses a worker-thread Qt signal to
+    the GUI thread as its own queued event, so the event loop fully cycles
+    (paints, vispy/GPU work settles) between one stage's layers landing and
+    the next stage's. Loading a saved run or reverting to an earlier stage
+    both used to build every group in the same call with a bare ``for`` loop,
+    applying all of them inside a single GUI-thread call with the event loop
+    never getting to run in between -- several tube-mesh Surface layers and
+    colour recomputations queuing up back to back this way is what actually
+    crashed napari (confirmed: the identical live per-stage path, through
+    "Run pipeline", does not). ``processEvents()`` between groups reproduces
+    that same one-cycle-per-stage pacing for a case that never goes through
+    the worker-thread signal at all.
+    """
+    from qtpy.QtWidgets import QApplication
+
+    for group in groups:
+        _apply_layers(viewer, group, report)
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
+
 def _colour_attribute(layer) -> str:
     """Where a layer keeps its colour: vessels on the edge, points on the face."""
     return "edge_color" if layer.__class__.__name__ == "Vectors" else "face_color"
@@ -6799,8 +6825,7 @@ def settings_widget(napari_viewer=None):
                 boundaries.state.results = results
         checkpoints.apply_to_results(results, plan.checkpoint)
         _clear_our_layers(viewer)
-        for group in plan.groups:
-            _apply_layers(viewer, group)
+        _apply_layer_groups(viewer, plan.groups)
         _after_layers_applied()
         saved_skip_snapshot = dict(skip_toggle_snapshot)
         disconnected: list[str] = []
@@ -6936,8 +6961,7 @@ def settings_widget(napari_viewer=None):
         if boundaries is not None:
             boundaries.state.results = results
         if viewer is not None:
-            for group in replay_groups(snapshot):
-                _apply_layers(viewer, group)
+            _apply_layer_groups(viewer, replay_groups(snapshot))
             _after_layers_applied()
         try:
             resolved = _settings()
