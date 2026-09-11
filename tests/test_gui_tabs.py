@@ -568,6 +568,9 @@ def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():
             "segmentation_cleanup_reconnect_min_facing_cosine",
             "segmentation_cleanup_reconnect_max_radius_ratio",
         ),
+        "segmentation_cleanup_close_gaps": (
+            "segmentation_cleanup_close_gaps_radius_um",
+        ),
         "segmentation_cleanup_smooth_surfaces": (
             "segmentation_cleanup_smooth_method",
             "segmentation_cleanup_smooth_sigma_um",

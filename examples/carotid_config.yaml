@@ -40,6 +40,10 @@ input_and_segmentation:
   segmentation_cleanup_split_min_pinch_radius_ratio: 0.6
   # Ignore candidate vessel bodies with a typical radius below this -- too thin to judge reliably  [um; range 0.0..; needs segmentation_cleanup_split_narrow_necks]
   segmentation_cleanup_split_min_body_radius_um: 1.0
+  # Morphologically close single-voxel-scale dropouts within a vessel, indiscriminately (no shape test) -- a much smaller, lighter version of reconnect_gaps for gaps too small and too close to a junction for reconnect's own shape test to confidently accept, before skeletonisation
+  segmentation_cleanup_close_gaps: false
+  # Physical closing radius, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup_close_gaps]
+  segmentation_cleanup_close_gaps_radius_um: 0.5
   # Bridge disconnected mask fragments that look like the same vessel tube continuing, before skeletonisation. Limited to cylindrical, well-aligned pairs -- does not indiscriminately join nearby blobs
   segmentation_cleanup_reconnect_gaps: false
   # Bridge fragment pairs no further apart than this physical distance  [um; range 0.0..; needs segmentation_cleanup_reconnect_gaps]

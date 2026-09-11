@@ -164,7 +164,7 @@ SCHEMA = Schema(
             choices=AXIS_ORDERS,
         ),
         # ------------------------------------------------------------------
-        # Segmentation cleanup (Input tab): six independently-toggleable
+        # Segmentation cleanup (Input tab): seven independently-toggleable
         # cleanup steps on the raw segmented mask, before skeletonisation.
         # Each defaults off -- an existing run's output does not change
         # unless a toggle is explicitly turned on.
@@ -250,6 +250,29 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
             requires=("segmentation_cleanup_split_narrow_necks",),
+        ),
+        Setting(
+            name="segmentation_cleanup_close_gaps",
+            kind="bool",
+            default=False,
+            help=(
+                "Morphologically close single-voxel-scale dropouts within a "
+                "vessel, indiscriminately (no shape test) -- a much smaller, "
+                "lighter version of reconnect_gaps for gaps too small and "
+                "too close to a junction for reconnect's own shape test to "
+                "confidently accept, before skeletonisation"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="segmentation_cleanup_close_gaps_radius_um",
+            kind="float",
+            default=0.5,
+            help="Physical closing radius, sampled anisotropy-aware per axis from voxel_size_zyx",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup_close_gaps",),
         ),
         Setting(
             name="segmentation_cleanup_reconnect_gaps",

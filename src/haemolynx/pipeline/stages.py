@@ -524,6 +524,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 "fill_cavities",
                 "remove_whiskers",
                 "split_narrow_necks",
+                "close_gaps",
                 "reconnect_gaps",
                 "smooth_surfaces",
                 "remove_small_volumes",
@@ -531,10 +532,12 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         ):
             logger.info(
                 "Segmentation cleanup: fill_cavities=%s remove_whiskers=%s "
-                "split_narrow_necks=%s reconnect=%s smooth=%s remove_small=%s",
+                "split_narrow_necks=%s close_gaps=%s reconnect=%s smooth=%s "
+                "remove_small=%s",
                 cleanup_kwargs.get("fill_cavities"),
                 cleanup_kwargs.get("remove_whiskers"),
                 cleanup_kwargs.get("split_narrow_necks"),
+                cleanup_kwargs.get("close_gaps"),
                 cleanup_kwargs.get("reconnect_gaps"),
                 cleanup_kwargs.get("smooth_surfaces"),
                 cleanup_kwargs.get("remove_small_volumes"),

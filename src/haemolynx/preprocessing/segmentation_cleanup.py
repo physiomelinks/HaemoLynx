@@ -1,8 +1,8 @@
 """Pre-skeletonization cleanup of the raw segmented binary vessel mask.
 
-Six independently-toggleable steps, always applied fill-cavities ->
-remove-whiskers -> split-narrow-necks -> reconnect -> smooth -> remove-small
-when more than one is on (see
+Seven independently-toggleable steps, always applied fill-cavities ->
+remove-whiskers -> split-narrow-necks -> close-small-gaps -> reconnect ->
+smooth -> remove-small when more than one is on (see
 :func:`clean_segmented_mask_for_skeletonisation` for why that order). All
 distance/volume parameters are physical (microns / cubic microns), sampled
 via ``voxel_size_zyx`` -- unlike
@@ -19,6 +19,14 @@ at a genuine pinch -- a watershed ridge between two mask "bodies" whose own
 cross-sectional radius there is markedly narrower than either body, not
 just wherever a marker-controlled watershed happens to place a boundary
 along an otherwise uniform vessel.
+
+:func:`close_small_gaps` is a lighter, indiscriminate complement to
+:func:`reconnect_vessel_like_components`: a single-voxel-scale dropout
+right at a junction leaves a fragment too short for a principal axis to be
+well-defined, so reconnect's own cylindricality gate correctly declines to
+bridge it -- but a gap that size needs no shape test to trust, so a small
+anisotropy-aware morphological closing handles it instead, before
+reconnect ever sees it.
 
 Nothing here imports :mod:`haemolynx.io` or :mod:`haemolynx.graph` --
 ``preprocessing`` sits at the bottom of this package's dependency stack (both
@@ -73,6 +81,7 @@ __all__ = [
     "remove_small_segmented_volumes",
     "split_narrow_neck_components",
     "remove_surface_whiskers",
+    "close_small_gaps",
     "clean_segmented_mask_for_skeletonisation",
 ]
 
@@ -638,6 +647,43 @@ def remove_surface_whiskers(
     return binary_opening(mask, structure=structure)
 
 
+def close_small_gaps(
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    closing_radius_um: float = 0.5,
+) -> np.ndarray:
+    """Anisotropy-aware morphological closing, at a much smaller, more
+    conservative scale than
+    :func:`haemolynx.preprocessing.skeleton.close_binary_mask`'s own
+    voxel-only closing: bridges single-voxel-scale dropouts within one
+    vessel, indiscriminately -- no shape test, unlike
+    :func:`reconnect_vessel_like_components`.
+
+    Meant for gaps too small, and too close to a junction, for reconnect's
+    own PCA-based cylindricality gate to confidently accept -- a short
+    fragment right at a branch point has a poorly-defined principal axis,
+    so reconnect correctly declines to bridge it, but a gap that size needs
+    no shape test to trust: dilation by a ``closing_radius_um`` ball merges
+    it, then erosion by the same ball removes the added surface layer
+    everywhere except right at the bridge, leaving genuinely separate
+    vessels further apart than ``closing_radius_um`` untouched. Reuses the
+    same anisotropy-aware ellipsoid footprint (:func:`_ellipsoid_structure`)
+    :func:`remove_surface_whiskers` already uses, so a ``(1.0, 0.4, 0.4)``
+    zyx dataset closes the same physical distance on every axis.
+    ``closing_radius_um <= 0`` is a no-op.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if float(closing_radius_um) <= 0.0:
+        return mask
+    radius_voxels = tuple(
+        max(1, int(round(float(closing_radius_um) / max(1e-9, float(v)))))
+        for v in voxel_size_zyx
+    )
+    structure = _ellipsoid_structure(radius_voxels)
+    return binary_closing(mask, structure=structure)
+
+
 _SMOOTH_METHODS = ("gaussian", "morphological")
 
 
@@ -760,6 +806,8 @@ def clean_segmented_mask_for_skeletonisation(
     split_min_marker_separation_um: float = 10.0,
     split_min_pinch_radius_ratio: float = 0.6,
     split_min_body_radius_um: float = 1.0,
+    close_gaps: bool = False,
+    close_gaps_radius_um: float = 0.5,
     reconnect_gaps: bool = False,
     reconnect_max_bridge_distance_um: float = 30.0,
     reconnect_min_cylindricality: float = 0.5,
@@ -773,8 +821,9 @@ def clean_segmented_mask_for_skeletonisation(
     remove_small_volumes: bool = False,
     remove_small_min_volume_um3: float = 5.0,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Fill-cavities -> remove-whiskers -> split-narrow-necks -> reconnect ->
-    smooth -> remove-small, each independently toggleable.
+    """Fill-cavities -> remove-whiskers -> split-narrow-necks ->
+    close-small-gaps -> reconnect -> smooth -> remove-small, each
+    independently toggleable.
 
     Order matters: cavity filling first, so a hollow lumen from imaging
     noise does not throw off every later step's own radius/linearity
@@ -784,13 +833,18 @@ def clean_segmented_mask_for_skeletonisation(
     reconnect so a genuine false-merge is cut apart before reconnect ever
     gets a chance to characterise (and potentially re-bridge) the same
     fused pair -- running them in the other order could have reconnect
-    immediately re-joining the very neck split just cut; reconnect before
-    smooth so fragments merge before size-filtering (a two-piece vessel
-    that is individually below the volume threshold survives once
-    bridged); smooth before remove-small so the bridge/cut geometry itself
-    also gets smoothed, not left a hard-edged stub, with remove-small last
-    so voxels smoothing erodes off a marginal component are still caught by
-    the same pass.
+    immediately re-joining the very neck split just cut; close-small-gaps
+    right before reconnect, so trivial single-voxel-scale dropouts are
+    already bridged indiscriminately by the time reconnect runs, leaving
+    it to spend its own shape-gated, longer-range bridging only on
+    fragments genuinely too far apart or too ambiguous for a small,
+    untargeted closing to have already fixed; reconnect before smooth so
+    fragments merge before size-filtering (a two-piece vessel that is
+    individually below the volume threshold survives once bridged); smooth
+    before remove-small so the bridge/cut geometry itself also gets
+    smoothed, not left a hard-edged stub, with remove-small last so voxels
+    smoothing erodes off a marginal component are still caught by the same
+    pass.
 
     *image* must already be canonically binarised by the caller -- this
     module has no ``io`` dependency (see the module docstring). Returns
@@ -803,6 +857,7 @@ def clean_segmented_mask_for_skeletonisation(
         fill_cavities
         or remove_whiskers
         or split_narrow_necks
+        or close_gaps
         or reconnect_gaps
         or smooth_surfaces
         or remove_small_volumes
@@ -823,6 +878,10 @@ def clean_segmented_mask_for_skeletonisation(
             min_marker_separation_um=split_min_marker_separation_um,
             min_pinch_radius_ratio=split_min_pinch_radius_ratio,
             min_body_radius_um=split_min_body_radius_um,
+        )
+    if close_gaps:
+        cleaned = close_small_gaps(
+            cleaned, voxel_size_zyx=voxel_size_zyx, closing_radius_um=close_gaps_radius_um
         )
     if reconnect_gaps:
         cleaned, _stats = reconnect_vessel_like_components(

@@ -312,6 +312,80 @@ def test_ellipsoid_structure_shape_matches_per_axis_radius():
     assert structure[1, 3, 2]
 
 
+# --- close_small_gaps -----------------------------------------------------
+
+
+def test_close_small_gaps_bridges_a_single_voxel_dropout():
+    shape = (20, 20, 20)
+    tube = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+    gapped = tube.copy()
+    gapped[:, :, 9] = False  # a single dropped cross-section slice
+
+    closed = sc.close_small_gaps(
+        gapped, voxel_size_zyx=(1.0, 1.0, 1.0), closing_radius_um=0.5
+    )
+
+    assert closed[10, 10, 9]
+    _, count = sc._connected_components(closed)
+    assert count == 1
+
+
+def test_close_small_gaps_does_not_bridge_a_large_gap():
+    """Deliberately indiscriminate but small-scoped: a gap wide enough to be
+    a genuine separation, not a dropout, must stay separate -- that is
+    reconnect_vessel_like_components's job, with its own shape gating."""
+    shape = (20, 20, 20)
+    tube = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+    gapped = tube.copy()
+    gapped[:, :, 7:13] = False  # a 6-voxel-wide gap
+
+    closed = sc.close_small_gaps(
+        gapped, voxel_size_zyx=(1.0, 1.0, 1.0), closing_radius_um=0.5
+    )
+
+    _, count = sc._connected_components(closed)
+    assert count == 2
+
+
+def test_close_small_gaps_leaves_a_clean_tube_nearly_unchanged():
+    shape = (20, 20, 20)
+    tube = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+
+    closed = sc.close_small_gaps(
+        tube, voxel_size_zyx=(1.0, 1.0, 1.0), closing_radius_um=0.5
+    )
+
+    assert _iou(closed, tube) > 0.9
+
+
+def test_close_small_gaps_radius_zero_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, :] = True
+    out = sc.close_small_gaps(mask, voxel_size_zyx=(1.0, 1.0, 1.0), closing_radius_um=0.0)
+    assert np.array_equal(out, mask)
+    assert out is mask
+
+
+def test_close_small_gaps_converts_physical_radius_per_axis_anisotropically(monkeypatch):
+    """The structuring element radius must come from voxel_size_zyx per axis,
+    not a single scalar -- else an anisotropic dataset closes more
+    aggressively along its coarser axis than its finer ones."""
+    captured = {}
+
+    def fake_ellipsoid(radius_voxels):
+        captured["radius_voxels"] = radius_voxels
+        return np.ones((1, 1, 1), dtype=bool)
+
+    monkeypatch.setattr(sc, "_ellipsoid_structure", fake_ellipsoid)
+    monkeypatch.setattr(sc, "binary_closing", lambda mask, structure=None: mask)
+
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, 2] = True
+    sc.close_small_gaps(mask, voxel_size_zyx=(2.0, 0.5, 0.25), closing_radius_um=1.0)
+
+    assert captured["radius_voxels"] == (1, 2, 4)
+
+
 # --- smooth_vessel_surfaces ---------------------------------------------------
 
 
@@ -484,6 +558,10 @@ def test_clean_segmented_mask_all_off_returns_input_unchanged_and_calls_nothing(
         lambda *a, **k: calls.append("split_narrow_necks") or (None, {}),
     )
     monkeypatch.setattr(
+        sc, "close_small_gaps",
+        lambda *a, **k: calls.append("close_gaps") or None,
+    )
+    monkeypatch.setattr(
         sc, "reconnect_vessel_like_components",
         lambda *a, **k: calls.append("reconnect") or (None, {}),
     )
@@ -520,6 +598,10 @@ def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
         order.append("split_narrow_necks")
         return mask, {}
 
+    def fake_close_gaps(mask, **kwargs):
+        order.append("close_gaps")
+        return mask
+
     def fake_reconnect(mask, **kwargs):
         order.append("reconnect")
         return mask, {}
@@ -535,6 +617,7 @@ def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
     monkeypatch.setattr(sc, "fill_enclosed_cavities", fake_fill_cavities)
     monkeypatch.setattr(sc, "remove_surface_whiskers", fake_whiskers)
     monkeypatch.setattr(sc, "split_narrow_neck_components", fake_split)
+    monkeypatch.setattr(sc, "close_small_gaps", fake_close_gaps)
     monkeypatch.setattr(sc, "reconnect_vessel_like_components", fake_reconnect)
     monkeypatch.setattr(sc, "smooth_vessel_surfaces", fake_smooth)
     monkeypatch.setattr(sc, "remove_small_segmented_volumes", fake_remove_small)
@@ -546,6 +629,7 @@ def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
         fill_cavities=True,
         remove_whiskers=True,
         split_narrow_necks=True,
+        close_gaps=True,
         reconnect_gaps=True,
         smooth_surfaces=True,
         remove_small_volumes=True,
@@ -555,6 +639,7 @@ def test_clean_segmented_mask_runs_every_step_in_order(monkeypatch):
         "fill_cavities",
         "remove_whiskers",
         "split_narrow_necks",
+        "close_gaps",
         "reconnect",
         "smooth",
         "remove_small",

@@ -508,6 +508,34 @@ def test_skeletonise_forwards_split_min_marker_separation_um_setting(tmp_path, m
     assert captured["split_min_marker_separation_um"] == pytest.approx(6.0)
 
 
+def test_skeletonise_forwards_close_gaps_radius_um_setting(tmp_path, monkeypatch):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["close_gaps_radius_um"] = kwargs.get("close_gaps_radius_um")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_close_gaps=True,
+        segmentation_cleanup_close_gaps_radius_um=1.5,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["close_gaps_radius_um"] == pytest.approx(1.5)
+
+
 def test_skeletonise_raw_segmented_image_is_set_when_only_remove_whiskers_is_on(
     tmp_path,
 ):
@@ -527,6 +555,16 @@ def test_skeletonise_raw_segmented_image_is_set_when_only_split_narrow_necks_is_
         tmp_path,
         _write_mask(tmp_path, _fragmented_mask()),
         segmentation_cleanup_split_narrow_necks=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+    assert volume.raw_segmented_image is not None
+
+
+def test_skeletonise_raw_segmented_image_is_set_when_only_close_gaps_is_on(tmp_path):
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_close_gaps=True,
     )
     volume = skeletonise(settings, segment(settings))
     assert volume.raw_segmented_image is not None
@@ -587,3 +625,31 @@ def test_skeletonise_fill_cavities_fills_the_hollow_lumen_in_volume_image(tmp_pa
     assert bool(np.asarray(volume.image)[5, 5, 5])  # the cavity, now filled
     assert volume.raw_segmented_image is not None
     assert not bool(volume.raw_segmented_image[5, 5, 5])  # cavity, pre-cleanup
+
+
+def _tube_with_a_single_voxel_dropout() -> np.ndarray:
+    """A solid tube with one dropped cross-section slice -- too small (and,
+    on a real vessel, often too close to a junction) for
+    reconnect_vessel_like_components's PCA-based cylindricality gate to
+    confidently bridge, exactly what close_small_gaps exists to bridge
+    indiscriminately instead."""
+    shape = (20, 20, 20)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    radial = np.sqrt((zz - 10) ** 2 + (yy - 10) ** 2)
+    tube = (radial <= 4.0) & (xx >= 2) & (xx <= 17)
+    tube[:, :, 9] = False
+    return tube
+
+
+def test_skeletonise_close_gaps_bridges_a_single_voxel_dropout_in_volume_image(tmp_path):
+    """volume.image (what skeletonisation and everything downstream reads)
+    must have the dropout bridged -- reconnect_gaps is not on, so only
+    close_gaps could have done it."""
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _tube_with_a_single_voxel_dropout()),
+        segmentation_cleanup_close_gaps=True,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert bool(np.asarray(volume.image)[10, 10, 9])  # the dropout, now bridged
