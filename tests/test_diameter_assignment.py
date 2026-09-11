@@ -24,10 +24,13 @@ from haemolynx.haemodynamics.apply import (  # noqa: E402
     assign_edge_diameters,
 )
 from haemolynx.haemodynamics.poiseuille import (  # noqa: E402
+    DIAMETER_SOURCE_EDT,
     DIAMETER_SOURCE_MEASURED,
     DIAMETER_SOURCE_OVERRIDE,
     DIAMETER_SOURCE_TABLE,
+    flag_fwhm_edt_disagreement,
     set_edge_diameter_override,
+    stamp_edge_diameters,
 )
 from haemolynx.pipeline import (  # noqa: E402
     BoundaryNodes,
@@ -299,3 +302,93 @@ def test_set_edge_diameter_override_rejects_non_positive():
         set_edge_diameter_override({}, 0.0)
     with pytest.raises(ValueError, match="positive"):
         set_edge_diameter_override({}, float("nan"))
+
+
+# --- EDT fallback / disagreement flag (stamp_edge_diameters, flag_fwhm_edt_disagreement) --
+
+
+def _table_only_network() -> nx.MultiGraph:
+    """One edge with only a branch order and an ``edt_diameter_um`` -- no
+    ``fwhm_diameter_um`` at all, as if FWHM measurement failed for it."""
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=np.asarray([0.0, 0.0, 0.0]))
+    graph.add_node(1, pos=np.asarray([0.0, 0.0, EDGE_LENGTH_UM]))
+    graph.add_edge(
+        0, 1, key=0, branch_order="B01", length=EDGE_LENGTH_UM, edt_diameter_um=5.0
+    )
+    return graph
+
+
+def test_stamp_edge_diameters_use_edt_fallback_false_keeps_table_default():
+    graph = _table_only_network()
+    counts = stamp_edge_diameters(graph, DIAMETERS, use_edt_fallback=False)
+    assert counts["edt_mask"] == 0
+    assert counts["table"] == 1
+    assert graph[0][1][0]["diameter_source"] == DIAMETER_SOURCE_TABLE
+    assert graph[0][1][0]["diameter_um"] == pytest.approx(DIAMETERS["B01"])
+
+
+def test_stamp_edge_diameters_use_edt_fallback_true_prefers_edt_over_table():
+    graph = _table_only_network()
+    counts = stamp_edge_diameters(graph, DIAMETERS, use_edt_fallback=True)
+    assert counts["edt_mask"] == 1
+    assert counts["table"] == 0
+    assert graph[0][1][0]["diameter_source"] == DIAMETER_SOURCE_EDT
+    assert graph[0][1][0]["diameter_um"] == pytest.approx(5.0)
+
+
+def test_stamp_edge_diameters_fwhm_still_wins_over_edt_fallback():
+    graph = _table_only_network()
+    graph[0][1][0]["fwhm_diameter_um"] = 7.0
+    stamp_edge_diameters(graph, DIAMETERS, use_edt_fallback=True)
+    assert graph[0][1][0]["diameter_source"] == DIAMETER_SOURCE_MEASURED
+    assert graph[0][1][0]["diameter_um"] == pytest.approx(7.0)
+
+
+def test_stamp_edge_diameters_keeps_an_edt_sourced_diameter_on_resume():
+    """An edge previously resolved via the EDT fallback survives a
+    ``keep_existing`` resume -- the same protection ``measured``/``override``
+    already have."""
+    graph = _table_only_network()
+    stamp_edge_diameters(graph, DIAMETERS, use_edt_fallback=True)
+    assert graph[0][1][0]["diameter_source"] == DIAMETER_SOURCE_EDT
+
+    counts = stamp_edge_diameters(graph, DIAMETERS, keep_existing=True)
+    assert counts["edt_mask"] == 1
+    assert graph[0][1][0]["diameter_source"] == DIAMETER_SOURCE_EDT
+    assert graph[0][1][0]["diameter_um"] == pytest.approx(5.0)
+
+
+def test_fwhm_edt_disagreement_flag_fires_past_the_ratio():
+    graph = _network()
+    graph[0][1][0]["fwhm_diameter_um"] = 10.0
+    graph[0][1][0]["edt_diameter_um"] = 5.0  # 2x disagreement
+
+    flagged = flag_fwhm_edt_disagreement(graph, warn_ratio=1.5)
+
+    assert flagged == 1
+    assert graph[0][1][0]["fwhm_edt_disagreement_ratio"] == pytest.approx(2.0)
+    assert graph[0][1][0]["fwhm_low_confidence_vs_edt"] is True
+
+
+def test_fwhm_edt_disagreement_flag_stays_off_for_close_agreement():
+    graph = _network()
+    graph[0][1][0]["fwhm_diameter_um"] = 5.0
+    graph[0][1][0]["edt_diameter_um"] = 5.2
+
+    flagged = flag_fwhm_edt_disagreement(graph, warn_ratio=1.5)
+
+    assert flagged == 0
+    assert graph[0][1][0]["fwhm_low_confidence_vs_edt"] is False
+    assert graph[0][1][0]["fwhm_edt_disagreement_ratio"] == pytest.approx(5.2 / 5.0)
+
+
+def test_fwhm_edt_disagreement_flag_skips_edges_missing_either_value():
+    graph = _network()
+    graph[0][1][0]["fwhm_diameter_um"] = 5.0  # no edt_diameter_um at all
+
+    flagged = flag_fwhm_edt_disagreement(graph, warn_ratio=1.5)
+
+    assert flagged == 0
+    assert "fwhm_edt_disagreement_ratio" not in graph[0][1][0]
+    assert "fwhm_low_confidence_vs_edt" not in graph[0][1][0]

@@ -65,6 +65,7 @@ _STATISTICS = "Statistics and measurements"
 _CARTWHEEL_GUARD = "Cartwheel hub guard"
 _DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
 _FWHM = "FWHM diameter measurement"
+_EDT_DIAMETER = "EDT mask diameter estimate"
 # Not "Perturbations": the YAML key of a section may not collide with a
 # setting name, and `perturbations` is one of the settings in it.
 _PERTURBATION_RUNS = "Perturbation runs"
@@ -3373,6 +3374,110 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("use_fwhm_edge_diameters", "fwhm_reject_samples_with_low_fit_r2"),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_reject_samples_with_plateau_shape",
+            kind="bool",
+            default=True,
+            help="Discard samples whose transverse profile looks like a flat plateau rather than a peak",
+            section=_FWHM,
+            requires=("use_fwhm_edge_diameters",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_max_plateau_shape_ratio",
+            kind="float",
+            default=0.85,
+            help="Reject a sample once its 80%-height width is at least this fraction of its half-max width",
+            section=_FWHM,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("use_fwhm_edge_diameters", "fwhm_reject_samples_with_plateau_shape"),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_transverse_sampling_mode",
+            kind="choice",
+            default="in_plane_yx",
+            help="Sample transverse profiles in the y-x slice plane, or perpendicular to the true 3D tangent",
+            section=_FWHM,
+            choices=("in_plane_yx", "true_3d_perpendicular"),
+            requires=("use_fwhm_edge_diameters",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_warn_out_of_plane_tangent_fraction",
+            kind="float",
+            default=0.3,
+            help="Flag a sample whose tangent's out-of-plane component exceeds this fraction while sampling stays in-plane",
+            section=_FWHM,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("use_fwhm_edge_diameters",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_edge_diameter_aggregation",
+            kind="choice",
+            default="median",
+            help="Collapse an edge's accepted per-sample diameters to one value by median or mean",
+            section=_FWHM,
+            choices=("median", "mean"),
+            requires=("use_fwhm_edge_diameters",),
+            advanced=True,
+        ),
+        # ------------------------------------------------------------------
+        # EDT mask diameter estimate: a segmentation-mask-based cross-check
+        # and fallback for FWHM, from the mask's own inscribed radius.
+        # ------------------------------------------------------------------
+        Setting(
+            name="use_edt_diameter_crosscheck",
+            kind="bool",
+            default=False,
+            help="Estimate per-edge diameters from the segmentation mask's inscribed radius, for fallback and cross-checking against FWHM",
+            section=_EDT_DIAMETER,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="edt_mask_path",
+            kind="path",
+            default=None,
+            help="Load the vessel mask from here when no in-memory segmentation volume is available (e.g. a resumed run)",
+            section=_EDT_DIAMETER,
+            requires=("use_edt_diameter_crosscheck",),
+            must_exist=True,
+            advanced=True,
+        ),
+        Setting(
+            name="edt_diameter_prefer_over_table_on_fwhm_failure",
+            kind="bool",
+            default=True,
+            help="Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge",
+            section=_EDT_DIAMETER,
+            requires=("use_edt_diameter_crosscheck",),
+        ),
+        Setting(
+            name="edt_junction_proximity_exclusion_um",
+            kind="float",
+            default=10.0,
+            help="Skip EDT sample positions within this distance of a branch endpoint",
+            section=_EDT_DIAMETER,
+            minimum=0.0,
+            unit="um",
+            requires=("use_edt_diameter_crosscheck",),
+            advanced=True,
+        ),
+        Setting(
+            name="edt_fwhm_disagreement_warn_ratio",
+            kind="float",
+            default=1.5,
+            help="Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio",
+            section=_EDT_DIAMETER,
+            minimum=1.0,
+            requires=("use_edt_diameter_crosscheck",),
             advanced=True,
         ),
         Setting(

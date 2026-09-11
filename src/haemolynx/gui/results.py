@@ -400,6 +400,7 @@ EDGE_COLUMNS: dict[str, str] = {
     "diameter_um": "assign_diameters",
     "diameter_source": "assign_diameters",
     "fwhm_diameter_um": "assign_diameters",
+    "fwhm_status": "assign_diameters",
     "pericyte_count_assigned": "assign_diameters",
     "resistance": "build_haemodynamic_model",
     "conductance": "build_haemodynamic_model",
@@ -418,6 +419,9 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "flow_dir_x": "solve",
     "flow_heading_deg": "solve",
     "flow_dir_rgb": "solve",
+    "edt_diameter_um": "assign_diameters",
+    "fwhm_edt_disagreement_ratio": "assign_diameters",
+    "fwhm_low_confidence_vs_edt": "assign_diameters",
 }
 
 #: Derived flow columns always offered on vessel layers once flows exist.
@@ -466,7 +470,9 @@ def _enrich_flow_colour_columns(
 
 
 #: Columns holding text rather than numbers; a missing one is "" not NaN.
-TEXT_COLUMNS = frozenset({"branch_order", "mask_vessel_type", "diameter_source"})
+TEXT_COLUMNS = frozenset(
+    {"branch_order", "mask_vessel_type", "diameter_source", "fwhm_status"}
+)
 
 #: What each stage colours the vessels by once it has run, unless the user has
 #: chosen otherwise. `flow_abs`, not `flow_signed`: the sign follows the order

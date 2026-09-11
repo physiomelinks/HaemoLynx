@@ -618,6 +618,31 @@ fwhm_diameter_measurement:
   fwhm_reject_samples_with_low_fit_r2: true
   # Keep a sample only when its transverse Gaussian fit reaches this R-squared  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_low_fit_r2]
   fwhm_min_fit_r2: 0.85
+  # Discard samples whose transverse profile looks like a flat plateau rather than a peak  [needs use_fwhm_edge_diameters]
+  fwhm_reject_samples_with_plateau_shape: true
+  # Reject a sample once its 80%-height width is at least this fraction of its half-max width  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_plateau_shape]
+  fwhm_max_plateau_shape_ratio: 0.85
+  # Sample transverse profiles in the y-x slice plane, or perpendicular to the true 3D tangent  [one of: in_plane_yx, true_3d_perpendicular; needs use_fwhm_edge_diameters]
+  fwhm_transverse_sampling_mode: in_plane_yx
+  # Flag a sample whose tangent's out-of-plane component exceeds this fraction while sampling stays in-plane  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters]
+  fwhm_warn_out_of_plane_tangent_fraction: 0.3
+  # Collapse an edge's accepted per-sample diameters to one value by median or mean  [one of: median, mean; needs use_fwhm_edge_diameters]
+  fwhm_edge_diameter_aggregation: median
+
+# ------------------------------------------------------------------------
+# EDT mask diameter estimate
+# ------------------------------------------------------------------------
+edt_mask_diameter_estimate:
+  # Estimate per-edge diameters from the segmentation mask's inscribed radius, for fallback and cross-checking against FWHM  [needs run_haemodynamics]
+  use_edt_diameter_crosscheck: false
+  # Load the vessel mask from here when no in-memory segmentation volume is available (e.g. a resumed run)  [needs use_edt_diameter_crosscheck; must exist]
+  edt_mask_path: null
+  # Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge  [needs use_edt_diameter_crosscheck]
+  edt_diameter_prefer_over_table_on_fwhm_failure: true
+  # Skip EDT sample positions within this distance of a branch endpoint  [um; range 0.0..; needs use_edt_diameter_crosscheck]
+  edt_junction_proximity_exclusion_um: 10.0
+  # Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio  [range 1.0..; needs use_edt_diameter_crosscheck]
+  edt_fwhm_disagreement_warn_ratio: 1.5
 
 # ------------------------------------------------------------------------
 # Perturbation runs

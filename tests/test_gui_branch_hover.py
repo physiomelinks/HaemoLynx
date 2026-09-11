@@ -121,6 +121,7 @@ def test_available_metrics_full_solved_graph():
         flow_abs=3e-13,
         diameter_um=5.0,
         diameter_source="measured",
+        fwhm_status="measured",
     )
     assert available_branch_hover_metrics(graph) == BRANCH_HOVER_METRICS
 
@@ -128,6 +129,21 @@ def test_available_metrics_full_solved_graph():
 def test_empty_branch_order_does_not_count_as_available():
     graph = a_graph(branch_order="")
     assert "order" not in available_branch_hover_metrics(graph)
+
+
+def test_fwhm_status_is_available_once_set_and_shown_as_text():
+    graph = a_graph(fwhm_status="failed:fwhm_failed")
+    assert "fwhm_status" in available_branch_hover_metrics(graph)
+    u, v, _key, data = next(iter(graph.edges(keys=True, data=True)))
+    text = format_branch_tooltip(
+        "0", {"fwhm_status": data["fwhm_status"]}, selected=("fwhm_status",)
+    )
+    assert "FWHM status: failed:fwhm_failed" in text
+
+
+def test_fwhm_status_absent_does_not_count_as_available():
+    graph = a_graph()
+    assert "fwhm_status" not in available_branch_hover_metrics(graph)
 
 
 def test_nan_flow_does_not_count_as_available():
@@ -304,6 +320,7 @@ def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
         data["branch_order"] = "C0"
         data["diameter_um"] = 5.0
         data["diameter_source"] = "measured"
+        data["fwhm_status"] = "measured"
 
     group = results.stage_finished(
         "solve",

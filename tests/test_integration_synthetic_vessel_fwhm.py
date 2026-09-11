@@ -985,6 +985,174 @@ def _write_single_demo_html(
         raw_path.unlink(missing_ok=True)
 
 
+def build_synthetic_diagonal_vessel_volume_and_target(
+    voxel_size_zyx: tuple[float, float, float] = (0.25, 0.25, 0.25),
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """A single Gaussian-cross-section tube whose tangent has a genuine
+    component along z, y, *and* x -- unlike every other fixture in this
+    file, which runs flat within one z-plane. Reuses
+    ``_dist_point_to_segment_batch`` (already fully 3D), so this is only a
+    choice of endpoints, not new geometry code.
+
+    Returns ``(volume, endpoint_a, endpoint_b, target_fwhm_um)``.
+    """
+    vz, vy, vx = voxel_size_zyx
+    a = np.array([2.0, 5.0, 5.0], dtype=float)
+    b = np.array([14.0, 20.0, 35.0], dtype=float)
+    fwhm = 4.0
+    sigma = fwhm / _GAUSSIAN_FWHM_FROM_SIGMA
+    pad = 4.0 * sigma + 4.0  # generous margin in every direction, not just perpendicular
+
+    nz = int(np.ceil((b[0] + pad) / vz)) + 1
+    ny = int(np.ceil((b[1] + pad) / vy)) + 1
+    nx = int(np.ceil((b[2] + pad) / vx)) + 1
+
+    iz = np.arange(nz, dtype=float)[:, None, None]
+    iy = np.arange(ny, dtype=float)[None, :, None]
+    ix = np.arange(nx, dtype=float)[None, None, :]
+    pz = iz * vz
+    py = iy * vy
+    px = ix * vx
+
+    d = _dist_point_to_segment_batch(pz, py, px, a, b)
+    vol = (_I0 * np.exp(-(d**2) / (2.0 * sigma**2))).astype(np.float32)
+    return vol, a, b, fwhm
+
+
+def build_single_edge_multigraph(
+    a: np.ndarray, b: np.ndarray, voxel_size_zyx: tuple[float, float, float], step_um: float = 0.25
+) -> nx.MultiGraph:
+    """One straight edge from *a* to *b* -- same convention as
+    ``build_matching_multigraph``, for a single (a, b) pair rather than a list."""
+    vz, vy, vx = voxel_size_zyx
+    step = min(step_um, vz, vy, vx)
+    ab = b - a
+    length = float(np.linalg.norm(ab))
+    assert length > 0
+    direc = ab / length
+    n = max(2, int(np.floor(length / step)) + 1)
+    tvals = np.linspace(0.0, length, n)
+    voxels = [tuple((a + t * direc).tolist()) for t in tvals]
+    G = nx.MultiGraph()
+    G.add_node(0, pos=a.copy())
+    G.add_node(1, pos=b.copy())
+    G.add_edge(0, 1, weight=1.0, length=length, branch_order="B01", voxels=voxels)
+    return G
+
+
+@pytest.mark.integration
+def test_diagonal_vessel_default_mode_unchanged_regression(tmp_path: Path) -> None:
+    """A flat-in-z fixture (this file's existing straight-tube geometry)
+    must give bit-for-bit-equivalent results whether or not
+    ``transverse_sampling_mode`` is passed explicitly -- proving the new
+    parameter is a true no-op at its default."""
+    voxel_size_zyx = (0.25, 0.25, 0.25)
+    raw, targets = build_synthetic_vessel_volume_and_targets(voxel_size_zyx)
+    raw_path = tmp_path / "synthetic_vessels.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    g_implicit = build_matching_multigraph(targets, voxel_size_zyx, step_um=0.25)
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        g_implicit,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=voxel_size_zyx,
+        **_DEFAULT_FWHM_MEASURE_KWARGS,
+    )
+    g_explicit = build_matching_multigraph(targets, voxel_size_zyx, step_um=0.25)
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        g_explicit,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=voxel_size_zyx,
+        transverse_sampling_mode="in_plane_yx",
+        **_DEFAULT_FWHM_MEASURE_KWARGS,
+    )
+    for (u, v, k) in g_implicit.edges(keys=True):
+        assert g_implicit[u][v][k]["fwhm_diameter_um"] == pytest.approx(
+            g_explicit[u][v][k]["fwhm_diameter_um"]
+        )
+
+
+@pytest.mark.integration
+def test_diagonal_vessel_in_plane_mode_overestimates_diameter(tmp_path: Path) -> None:
+    """The default y-x-plane-only ray is perpendicular to the tangent's
+    in-plane *projection*, not its true 3D direction -- for a vessel with a
+    real z-component to its tangent, this foreshortens the cross-section
+    and biases the measured diameter high relative to the known ground
+    truth."""
+    voxel_size_zyx = (0.25, 0.25, 0.25)
+    raw, a, b, target_fwhm = build_synthetic_diagonal_vessel_volume_and_target(voxel_size_zyx)
+    raw_path = tmp_path / "synthetic_diagonal_vessel.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    G = build_single_edge_multigraph(a, b, voxel_size_zyx)
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=voxel_size_zyx,
+        transverse_sampling_mode="in_plane_yx",
+        **_measure_kwargs_with_overrides(),
+    )
+    assert summary["edges_measured"] == 1
+    measured = float(G[0][1][0]["fwhm_diameter_um"])
+    assert measured > target_fwhm  # foreshortening bias: overestimates, not just noisy
+
+
+@pytest.mark.integration
+def test_diagonal_vessel_true_3d_mode_recovers_ground_truth(tmp_path: Path) -> None:
+    """The same diagonal vessel, sampled perpendicular to its real 3D
+    tangent, recovers the known ground truth within the same tolerance the
+    existing straight-tube tests use."""
+    voxel_size_zyx = (0.25, 0.25, 0.25)
+    raw, a, b, target_fwhm = build_synthetic_diagonal_vessel_volume_and_target(voxel_size_zyx)
+    raw_path = tmp_path / "synthetic_diagonal_vessel.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    G = build_single_edge_multigraph(a, b, voxel_size_zyx)
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=voxel_size_zyx,
+        transverse_sampling_mode="true_3d_perpendicular",
+        **_measure_kwargs_with_overrides(),
+    )
+    assert summary["edges_measured"] == 1
+    measured = float(G[0][1][0]["fwhm_diameter_um"])
+    assert abs(measured - target_fwhm) < max(0.9, 0.18 * target_fwhm)
+
+
+@pytest.mark.integration
+def test_out_of_plane_warning_flags_diagonal_not_straight_edge(tmp_path: Path) -> None:
+    """The out-of-plane warning fires (in the default in-plane mode) for
+    the diagonal edge, and not for a flat-in-z straight edge, without
+    changing either edge's measured diameter."""
+    voxel_size_zyx = (0.25, 0.25, 0.25)
+    raw_diag, a, b, _target = build_synthetic_diagonal_vessel_volume_and_target(voxel_size_zyx)
+    raw_path = tmp_path / "synthetic_diagonal_vessel.tif"
+    tifffile.imwrite(str(raw_path), raw_diag)
+    g_diag = build_single_edge_multigraph(a, b, voxel_size_zyx)
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        g_diag,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=voxel_size_zyx,
+        transverse_sampling_mode="in_plane_yx",
+        **_measure_kwargs_with_overrides(),
+    )
+    assert g_diag[0][1][0].get("fwhm_out_of_plane_warning") is True
+
+    raw_straight, targets = build_synthetic_vessel_volume_and_targets(voxel_size_zyx)
+    straight_path = tmp_path / "synthetic_vessels.tif"
+    tifffile.imwrite(str(straight_path), raw_straight)
+    g_straight = build_matching_multigraph(targets, voxel_size_zyx, step_um=0.25)
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        g_straight,
+        raw_tiff_path=straight_path,
+        voxel_size_zyx=voxel_size_zyx,
+        **_DEFAULT_FWHM_MEASURE_KWARGS,
+    )
+    for u, v, k in g_straight.edges(keys=True):
+        assert g_straight[u][v][k].get("fwhm_out_of_plane_warning") is None
+
+
 def _write_demo_html() -> list[Path]:
     repo_root = Path(__file__).resolve().parents[1]
     out_dir = repo_root / "examples" / "plots"

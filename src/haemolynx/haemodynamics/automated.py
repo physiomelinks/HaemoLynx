@@ -81,10 +81,19 @@ def physical_points_to_continuous_indices(
 
 
 def _gram_schmidt_perpendicular(tangent: np.ndarray) -> np.ndarray:
-    """Unit vector perpendicular to ``tangent`` in full 3D (unused for FWHM profiles).
+    """Unit vector perpendicular to ``tangent`` in full 3D.
 
-    Transverse intensity profiles use ``_transverse_unit_in_physical_yx_plane`` so rays stay
-    in the slice (y–x) plane when ``z`` spacing is coarse.
+    For an axisymmetric vessel, any direction genuinely perpendicular to the
+    real 3D tangent gives the same diameter -- which reference axis
+    Gram-Schmidt happens to pick (the one least parallel to *tangent*)
+    doesn't matter for correctness, only that the result is perpendicular to
+    the *actual* tangent rather than to its y-x projection. This is the
+    ``transverse_sampling_mode="true_3d_perpendicular"`` direction (see
+    :func:`_transverse_unit_for_mode`); the default
+    ``"in_plane_yx"`` mode uses ``_transverse_unit_in_physical_yx_plane``
+    instead, whose ray is perpendicular only to the tangent's projection --
+    correct for a vessel running within one slice, foreshortened (biased
+    high) for one with a real z-component to its direction.
     """
     t = np.asarray(tangent, dtype=float).ravel()
     nrm = np.linalg.norm(t)
@@ -123,6 +132,37 @@ def _transverse_unit_in_physical_yx_plane(tangent: np.ndarray) -> np.ndarray:
     if n2 < 1e-12:
         return np.array([0.0, 1.0, 0.0], dtype=float)
     return np.array([0.0, -tx / n2, ty / n2], dtype=float)
+
+
+TransverseSamplingMode = Literal["in_plane_yx", "true_3d_perpendicular"]
+
+
+def _transverse_unit_for_mode(tangent: np.ndarray, mode: TransverseSamplingMode) -> np.ndarray:
+    """The transverse sampling direction ``mode`` selects, for one tangent."""
+    if mode == "in_plane_yx":
+        return _transverse_unit_in_physical_yx_plane(tangent)
+    if mode == "true_3d_perpendicular":
+        return _gram_schmidt_perpendicular(tangent)
+    raise ValueError(
+        f"Unknown transverse_sampling_mode={mode!r}; "
+        "use 'in_plane_yx' or 'true_3d_perpendicular'."
+    )
+
+
+def _out_of_plane_fraction(tangent: np.ndarray) -> float:
+    """How much of *tangent* points along physical ``z`` (axis 0), in [0, 1].
+
+    ``0`` for a tangent entirely within the y-x slice plane, ``1`` for one
+    running purely along ``z``. Used to warn that ``"in_plane_yx"``
+    sampling -- perpendicular only to the tangent's in-plane projection --
+    is likely biased for this particular vessel, without needing to switch
+    the whole run to ``"true_3d_perpendicular"``.
+    """
+    t = np.asarray(tangent, dtype=float).ravel()
+    norm = float(np.sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]))
+    if norm < 1e-12:
+        return 0.0
+    return float(abs(t[0]) / norm)
 
 
 def _arc_length_parameterize(poly_phys: np.ndarray) -> tuple[np.ndarray, float]:
@@ -272,16 +312,21 @@ def _sample_transverse_profile(
     same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None,
     same_edge_s0_um: float | None = None,
     same_edge_arc_window_um: float | None = None,
+    transverse_sampling_mode: TransverseSamplingMode = "in_plane_yx",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sample intensity along a line through ``center_phys``, perpendicular to ``tangent``.
 
-    The line lies in the physical y–x plane (fixed ``z``); see
-    ``_transverse_unit_in_physical_yx_plane``.
+    ``transverse_sampling_mode="in_plane_yx"`` (default) keeps the line in
+    the physical y-x plane (fixed ``z``); see
+    ``_transverse_unit_in_physical_yx_plane``. ``"true_3d_perpendicular"``
+    instead uses the tangent's real 3D perpendicular (see
+    ``_gram_schmidt_perpendicular``), correcting the foreshortening bias the
+    default has for a vessel with a real z-component to its direction.
 
     Returns (positions_along_line_um, intensities).
     """
     spacing = _spacing_vec(voxel_size_zyx)
-    n_hat = _transverse_unit_in_physical_yx_plane(tangent)
+    n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
     center_idx = center_phys / spacing
 
     pos_plus = _max_extent_along_ray(
@@ -384,6 +429,94 @@ def robust_baseline_from_profile_wings(
     return float(min(np.median(left), np.median(right)))
 
 
+def _aggregate_edge_diameter(diameters: list[float], method: Literal["median", "mean"]) -> float:
+    """Collapse one edge's accepted per-sample diameters to a single value.
+
+    ``median`` (default) resists a single outlier sample -- one skewed
+    fit pulling a plain mean is exactly the failure mode this exists to
+    avoid -- and is well-defined for any sample count down to one, unlike a
+    trimmed mean or an outlier-filtered mean, which need enough points to
+    define what to trim/filter. ``mean`` is kept for anyone who wants the
+    literal old behaviour reproduced.
+    """
+    values = np.asarray(diameters, dtype=float)
+    if method == "median":
+        return float(np.median(values))
+    if method == "mean":
+        return float(np.mean(values))
+    raise ValueError(f"Unknown edge_diameter_aggregation={method!r}; use 'median' or 'mean'.")
+
+
+def _full_width_at_fraction(
+    x: np.ndarray, y: np.ndarray, baseline: float, peak: float, fraction: float
+) -> float | None:
+    """Width of the profile above ``baseline + fraction*(peak-baseline)``.
+
+    Finds the first crossing on each side of the profile's own centre
+    (smallest ``|x|``), linearly interpolating between the two bracketing
+    samples. ``None`` if either side never reaches that level within the
+    sampled extent -- fail-open, since an indeterminate shape is not
+    evidence either way, and other gates still apply.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if x.size < 2:
+        return None
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    level = float(baseline) + float(fraction) * (float(peak) - float(baseline))
+    center_idx = int(np.argmin(np.abs(x)))
+
+    def _crossing(indices: range) -> float | None:
+        prev_x, prev_y = x[center_idx], y[center_idx]
+        if prev_y < level:
+            return None
+        for i in indices:
+            xi, yi = x[i], y[i]
+            if yi < level:
+                span = prev_y - yi
+                if span <= 0:
+                    return None
+                t = (prev_y - level) / span
+                return float(prev_x + t * (xi - prev_x))
+            prev_x, prev_y = xi, yi
+        return None
+
+    left = _crossing(range(center_idx - 1, -1, -1))
+    right = _crossing(range(center_idx + 1, x.size))
+    if left is None or right is None:
+        return None
+    return float(right - left)
+
+
+def _profile_plateau_shape_ratio(
+    x: np.ndarray, y: np.ndarray, baseline: float
+) -> float | None:
+    """``width(80% height) / width(50% height)`` -- how plateau-like a
+    profile's own shape is, independent of any parametric fit's R².
+
+    An ideal Gaussian has a fixed ratio of ``sqrt(ln 0.8 / ln 0.5) ~= 0.567``
+    regardless of its width. A flat-topped/saturated profile (e.g. a
+    detector-clipped signal, or a probability/segmentation field instead of
+    real intensity) has near-vertical edges, so its width barely narrows
+    between 80% and 50% height -- the ratio approaches 1. A parametric
+    Gaussian fit can still report a deceptively high R² against such a
+    shape (an overparameterized 4-parameter fit smoothing over a rounded
+    plateau), so this check reads the sampled profile directly instead of
+    the fit's own residuals.
+    """
+    y = np.asarray(y, dtype=float)
+    if y.size == 0:
+        return None
+    peak = float(np.max(y))
+    w80 = _full_width_at_fraction(x, y, baseline, peak, 0.8)
+    w50 = _full_width_at_fraction(x, y, baseline, peak, 0.5)
+    if w80 is None or w50 is None or w50 <= 0:
+        return None
+    return float(w80 / w50)
+
+
 def fwhm_from_profile(
     positions_um: np.ndarray,
     intensities: np.ndarray,
@@ -398,6 +531,10 @@ def fwhm_from_profile(
 
     The model is ``baseline + amplitude * exp(-(x - x0)^2 / (2 sigma^2))`` with
     ``amplitude > 0``. Returns ``FWHM = 2 * sqrt(2 ln 2) * sigma``.
+
+    Thin wrapper around :func:`_fwhm_gaussian_fit_with_diagnostics` (same model,
+    same fit) so the two never silently diverge -- this used to be a second,
+    independent implementation of the identical fit.
 
     Parameters
     ----------
@@ -414,78 +551,16 @@ def fwhm_from_profile(
         Half-width of that band as a fraction of peak-to-peak intensity (only if
         ``constrain_fitted_baseline`` is True).
     """
-    x = np.asarray(positions_um, dtype=float).ravel()
-    y = np.asarray(intensities, dtype=float).ravel()
-    if x.size < min_points or y.size != x.size:
-        return None
-
-    order = np.argsort(x)
-    x = x[order]
-    y = y[order]
-
-    span = float(np.ptp(x))
-    if span <= 0 or not np.isfinite(span):
-        return None
-
-    dx = float(np.median(np.abs(np.diff(x)))) if x.size > 1 else span
-    sigma_min = max(0.25 * dx, span * 1e-6, 1e-9)
-
-    y_min, y_max = float(np.min(y)), float(np.max(y))
-    y_ptp = max(y_max - y_min, 1e-12)
-
-    if profile_baseline_mode == "wings":
-        try:
-            b_anchor = robust_baseline_from_profile_wings(
-                x, y, wing_fraction=profile_baseline_wing_fraction
-            )
-        except ValueError:
-            b_anchor = float(np.percentile(y, 10))
-    elif profile_baseline_mode == "percentile":
-        b_anchor = float(np.percentile(y, 10))
-    else:
-        raise ValueError(
-            f"Unknown profile_baseline_mode={profile_baseline_mode!r}; "
-            "use 'wings' or 'percentile'."
-        )
-
-    b0 = min(max(b_anchor, y_min - y_ptp), y_max - 0.01 * y_ptp)
-    amp0 = max(y_max - b0, y_ptp * 0.5, 1e-9)
-    x0_guess = float(x[int(np.argmax(y))])
-    sig0 = max(span / 5.0, sigma_min)
-
-    p0 = np.array([b0, amp0, x0_guess, sig0], dtype=float)
-    half_w = float(baseline_constraint_half_width_ptp) * y_ptp
-    if constrain_fitted_baseline and half_w > 0:
-        b_lo = max(y_min - 0.5 * y_ptp, b_anchor - half_w)
-        b_hi = min(y_max + 0.5 * y_ptp, b_anchor + half_w)
-        if b_lo >= b_hi:
-            b_lo, b_hi = y_min - 2.0 * y_ptp, y_max + 2.0 * y_ptp
-    else:
-        b_lo = y_min - 5.0 * y_ptp
-        b_hi = y_max + 5.0 * y_ptp
-    lo = np.array([b_lo, 1e-12, np.min(x) - span, sigma_min], dtype=float)
-    hi = np.array([b_hi, max(y_max * 20.0, amp0 * 1e3), np.max(x) + span, span], dtype=float)
-
-    try:
-        popt, _ = curve_fit(
-            _gaussian_fluorescence_1d,
-            x,
-            y,
-            p0=p0,
-            bounds=(lo, hi),
-            maxfev=50000,
-        )
-    except (RuntimeError, ValueError):
-        return None
-
-    baseline_fit, amplitude_fit, _, sigma_fit = (float(popt[0]), float(popt[1]), float(popt[2]), float(popt[3]))
-    if not np.isfinite(sigma_fit) or sigma_fit <= 0:
-        return None
-    if amplitude_fit <= 0:
-        return None
-
-    fwhm = float(_GAUSSIAN_FWHM_FROM_SIGMA * sigma_fit)
-    return fwhm if fwhm > 0 else None
+    fwhm, _center, _r2 = _fwhm_gaussian_fit_with_diagnostics(
+        positions_um,
+        intensities,
+        min_points=min_points,
+        profile_baseline_mode=profile_baseline_mode,
+        profile_baseline_wing_fraction=profile_baseline_wing_fraction,
+        constrain_fitted_baseline=constrain_fitted_baseline,
+        baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+    )
+    return fwhm
 
 
 def _fwhm_gaussian_fit_with_diagnostics(
@@ -528,7 +603,10 @@ def _fwhm_gaussian_fit_with_diagnostics(
     elif profile_baseline_mode == "percentile":
         b_anchor = float(np.percentile(y, 10))
     else:
-        return None, None, None
+        raise ValueError(
+            f"Unknown profile_baseline_mode={profile_baseline_mode!r}; "
+            "use 'wings' or 'percentile'."
+        )
     b0 = min(max(b_anchor, y_min - y_ptp), y_max - 0.01 * y_ptp)
     amp0 = max(y_max - b0, y_ptp * 0.5, 1e-9)
     x0_guess = float(x[int(np.argmax(y))])
@@ -752,6 +830,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     max_fit_center_offset_um: float = 1.5,
     reject_samples_with_low_fit_r2: bool = True,
     min_fit_r2: float = 0.85,
+    reject_samples_with_plateau_shape: bool = True,
+    max_plateau_shape_ratio: float = 0.85,
+    transverse_sampling_mode: TransverseSamplingMode = "in_plane_yx",
+    warn_out_of_plane_tangent_fraction: float = 0.3,
+    edge_diameter_aggregation: Literal["median", "mean"] = "median",
     axis_order: str = CANONICAL_AXIS_ORDER,
     raw_volume: np.ndarray | None = None,
 ) -> dict[str, Any]:
@@ -841,6 +924,46 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         If True, discard samples with poor Gaussian fit quality.
     min_fit_r2 :
         Minimum accepted R² for Gaussian fit.
+    reject_samples_with_plateau_shape :
+        If True, discard samples whose profile *shape* -- not the parametric
+        fit's own R² -- looks like a flat plateau rather than a peak (e.g. a
+        saturated detector, or a probability/segmentation field mistakenly
+        used as the raw intensity). A heavily-overparameterized Gaussian fit
+        can still score a deceptively high R² against a rounded plateau, so
+        this checks the sampled profile directly. See
+        :func:`_profile_plateau_shape_ratio`.
+    max_plateau_shape_ratio :
+        Reject a sample once its 80%-height width is at least this fraction
+        of its 50%-height (half-max) width -- an ideal Gaussian's ratio is
+        ~0.567 regardless of width; a genuine plateau approaches 1.
+    transverse_sampling_mode :
+        ``"in_plane_yx"`` (default): sample perpendicular to the tangent's
+        projection onto the y-x slice plane, never stepping along ``z`` --
+        correct for a vessel running within one slice, but foreshortens
+        (biases high) the measured diameter of one with a real z-component
+        to its direction. ``"true_3d_perpendicular"``: sample perpendicular
+        to the tangent's actual 3D direction instead -- see
+        :func:`_gram_schmidt_perpendicular`.
+    warn_out_of_plane_tangent_fraction :
+        While ``transverse_sampling_mode="in_plane_yx"``, flag an edge
+        (``data["fwhm_out_of_plane_warning"]``) once any accepted sample's
+        tangent has an out-of-plane fraction (see
+        :func:`_out_of_plane_fraction`) at or above this -- a concrete,
+        per-edge signal of which vessels are most likely to carry the
+        foreshortening bias, without changing any measured value or
+        requiring the whole run to switch sampling mode.
+    edge_diameter_aggregation :
+        How to collapse one edge's accepted per-sample diameters into one
+        value -- ``median`` (default, resists a single outlier sample) or
+        ``mean`` (the previous behaviour). See :func:`_aggregate_edge_diameter`.
+
+    Every edge this function iterates gets ``data["fwhm_status"]`` written:
+    ``"measured"`` on success, ``f"failed:{reason}"`` on any of the skip
+    paths below -- so an edge FWHM never even reaches (outside this
+    function's scope entirely) simply has no ``fwhm_status`` key at all,
+    distinguishing "not attempted" from "attempted and failed" for a caller
+    that would otherwise see both as an identical, silent branch-order-table
+    fallback.
     """
     if profile_baseline_mode not in ("wings", "percentile"):
         raise ValueError(
@@ -864,6 +987,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         "edges_measured": 0,
         "edges_skipped": [],
         "per_edge": [],
+        "edges_with_out_of_plane_warning": [],
     }
 
     mult = float(min_total_extent_multiplier)
@@ -875,17 +999,36 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     junction_excl = max(0.0, float(junction_proximity_exclusion_um))
     d_guess0 = 0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
 
+    def _passes_plateau_gate(pos_fit: np.ndarray, prof_fit: np.ndarray) -> bool:
+        """Independent of the parametric fit's own R² -- see
+        ``reject_samples_with_plateau_shape``'s docstring entry above."""
+        if not reject_samples_with_plateau_shape:
+            return True
+        if profile_baseline_mode == "wings":
+            try:
+                baseline = robust_baseline_from_profile_wings(
+                    pos_fit, prof_fit, wing_fraction=profile_baseline_wing_fraction
+                )
+            except ValueError:
+                baseline = float(np.percentile(prof_fit, 10))
+        else:
+            baseline = float(np.percentile(prof_fit, 10))
+        ratio = _profile_plateau_shape_ratio(pos_fit, prof_fit, baseline)
+        return ratio is None or ratio < float(max_plateau_shape_ratio)
+
     for u, v, key, data in G.edges(keys=True, data=True):
         vox = data.get("voxels")
         assigned = data.get("graph_edge_label_id")
         if not vox or len(vox) < 2 or assigned is None:
             summary["edges_skipped"].append((u, v, key, "no_voxels_or_label"))
+            data["fwhm_status"] = "failed:no_voxels_or_label"
             continue
 
         poly = np.asarray(vox, dtype=float)
         s, total_len = _arc_length_parameterize(poly)
         if total_len <= 0:
             summary["edges_skipped"].append((u, v, key, "zero_length"))
+            data["fwhm_status"] = "failed:zero_length"
             continue
 
         if sample_spacing_along_edge_um <= 0:
@@ -943,6 +1086,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         diameters: list[float] = []
         profile_lines_phys: list[np.ndarray] = []
         profile_anchors_phys: list[np.ndarray] = []
+        max_out_of_plane_fraction = 0.0
         for s0, center in zip(targets, pts):
             if u_is_branch and float(s0) < branch_excl:
                 continue
@@ -951,7 +1095,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
                 continue
             tangent = _tangent_at(poly, s, float(s0))
-            n_hat = _transverse_unit_in_physical_yx_plane(tangent)
+            n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
+            sample_out_of_plane_fraction = _out_of_plane_fraction(tangent)
             if same_edge_arc_window_um is None:
                 local_arc_window = max(
                     float(same_edge_arc_window_min_um),
@@ -1000,6 +1145,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 same_edge_s_lookup=same_edge_s_lookup,
                 same_edge_s0_um=float(s0),
                 same_edge_arc_window_um=local_arc_window,
+                transverse_sampling_mode=transverse_sampling_mode,
             )
             pos_fit, prof_fit = (
                 _clip_profile_to_central_lobe(
@@ -1023,6 +1169,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 if reject_samples_with_center_offset and x0_0 is not None and abs(float(x0_0)) > float(max_fit_center_offset_um):
                     d0 = None
                 if reject_samples_with_low_fit_r2 and r2_0 is not None and float(r2_0) < float(min_fit_r2):
+                    d0 = None
+                if d0 is not None and not _passes_plateau_gate(pos_fit, prof_fit):
                     d0 = None
             accepted_offsets: np.ndarray | None = None
             if d0 is not None and d0 > 0:
@@ -1052,6 +1200,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     same_edge_s_lookup=same_edge_s_lookup,
                     same_edge_s0_um=float(s0),
                     same_edge_arc_window_um=local_arc_window,
+                    transverse_sampling_mode=transverse_sampling_mode,
                 )
                 pos_fit, prof_fit = (
                     _clip_profile_to_central_lobe(
@@ -1075,6 +1224,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     if reject_samples_with_center_offset and x0_1 is not None and abs(float(x0_1)) > float(max_fit_center_offset_um):
                         d1 = None
                     if reject_samples_with_low_fit_r2 and r2_1 is not None and float(r2_1) < float(min_fit_r2):
+                        d1 = None
+                    if d1 is not None and not _passes_plateau_gate(pos_fit, prof_fit):
                         d1 = None
                 if d1 is not None and d1 > 0:
                     desired_half = 0.5 * mult * float(d1)
@@ -1101,6 +1252,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                             same_edge_s_lookup=same_edge_s_lookup,
                             same_edge_s0_um=float(s0),
                             same_edge_arc_window_um=local_arc_window,
+                            transverse_sampling_mode=transverse_sampling_mode,
                         )
                         pos_fit, prof_fit = (
                             _clip_profile_to_central_lobe(
@@ -1125,6 +1277,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                                 d2 = None
                             if reject_samples_with_low_fit_r2 and r2_2 is not None and float(r2_2) < float(min_fit_r2):
                                 d2 = None
+                            if d2 is not None and not _passes_plateau_gate(pos_fit, prof_fit):
+                                d2 = None
                         if d2 is not None:
                             diameters.append(d2)
                             accepted_offsets = pos
@@ -1138,6 +1292,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 diameters.append(d0)
                 accepted_offsets = pos
 
+            if accepted_offsets is not None:
+                max_out_of_plane_fraction = max(
+                    max_out_of_plane_fraction, sample_out_of_plane_fraction
+                )
+
             if store_profile_debug and accepted_offsets is not None and accepted_offsets.size > 0:
                 c = np.asarray(center, dtype=float)
                 profile_lines_phys.append(
@@ -1150,11 +1309,20 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             if branch_excl > 0 and (u_is_branch or v_is_branch):
                 reason = "fwhm_failed_or_excluded_near_branch"
             summary["edges_skipped"].append((u, v, key, reason))
+            data["fwhm_status"] = f"failed:{reason}"
             continue
 
-        d_mean = float(np.mean(diameters))
-        data["fwhm_diameter_um"] = d_mean
+        d_final = _aggregate_edge_diameter(diameters, edge_diameter_aggregation)
+        data["fwhm_diameter_um"] = d_final
         data["fwhm_diameter_samples_um"] = diameters
+        data["fwhm_status"] = "measured"
+        if (
+            transverse_sampling_mode == "in_plane_yx"
+            and max_out_of_plane_fraction >= float(warn_out_of_plane_tangent_fraction)
+        ):
+            data["fwhm_out_of_plane_warning"] = True
+            data["fwhm_max_tangent_out_of_plane_fraction"] = max_out_of_plane_fraction
+            summary["edges_with_out_of_plane_warning"].append((u, v, key))
         if store_profile_debug:
             data["fwhm_profile_lines_phys"] = profile_lines_phys
             data["fwhm_profile_anchors_phys"] = profile_anchors_phys
@@ -1163,7 +1331,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             {
                 "edge": (u, v, key),
                 "graph_edge_label_id": int(assigned),
-                "fwhm_diameter_um": d_mean,
+                "fwhm_diameter_um": d_final,
                 "n_samples": len(diameters),
             }
         )

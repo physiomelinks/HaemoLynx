@@ -1861,6 +1861,7 @@ def _haemodynamics_apply_config(
     return HaemodynamicsApplyConfig(
         diameters=diameters,
         fwhm=schema.section_values(settings, "FWHM diameter measurement"),
+        edt=schema.section_values(settings, "EDT mask diameter estimate"),
         resistance_node_pair=resistance_node_pair,
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         axis_order=settings["image_axis_order"],
@@ -1947,7 +1948,9 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 schema,
                 voxel_size_zyx=voxel_size_zyx,
             )
-            G, haemo_results, fwhm_raw = assign_edge_diameters(G, haemo_config)
+            G, haemo_results, fwhm_raw = assign_edge_diameters(
+                G, haemo_config, mask_volume=network.volume.image
+            )
             if "fwhm" in haemo_results:
                 logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
             elif settings["use_fwhm_edge_diameters"] is False:
@@ -1955,6 +1958,8 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                     "table diameters without per-edge FWHM)."
                 )
+            if "edt" in haemo_results:
+                logger.info(f"EDT mask diameter measurement summary: {haemo_results['edt']}")
             if "diameters" in haemo_results:
                 # "table"/"measured" alone doesn't say *why* -- an edge FWHM
                 # never even attempted and one where it outright failed both

@@ -190,7 +190,11 @@ STAGES: tuple[Stage, ...] = (
         # (see `pipeline/stages.py`), so the settings and the tab agree.
         # Pericyte / constriction knobs live under Perturbation runs: they
         # configure a typed perturbation, not the baseline diameter model.
-        sections=("Diameters and pericytes", "FWHM diameter measurement"),
+        sections=(
+            "Diameters and pericytes",
+            "FWHM diameter measurement",
+            "EDT mask diameter estimate",
+        ),
     ),
     Stage(
         call="build_haemodynamic_model",

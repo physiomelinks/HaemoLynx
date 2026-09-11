@@ -15,9 +15,11 @@ from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 from haemolynx.parsers import prefixed_arguments
 from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import edt_diameter
 from haemolynx.haemodynamics.poiseuille import (
     PoiseuilleModel,
     clear_edge_resistances,
+    flag_fwhm_edt_disagreement,
     stamp_edge_diameters,
 )
 from haemolynx.haemodynamics.viscosity import describe_law
@@ -87,7 +89,7 @@ DIAMETER_DEFAULTS: dict[str, Any] = {
 class HaemodynamicsApplyConfig:
     """Settings for Poiseuille conductance assignment on a vascular graph.
 
-    The two large groups arrive as dicts rather than as forty-odd separate
+    The three groups arrive as dicts rather than as forty-odd separate
     fields, keyed exactly as they are in the config file so a value can be
     traced from YAML to here by name:
 
@@ -97,12 +99,18 @@ class HaemodynamicsApplyConfig:
     ``fwhm``
         The ``fwhm_diameter_measurement`` section — whether to measure diameters
         from the raw image, and the fitting parameters if so.
+    ``edt``
+        The ``EDT mask diameter estimate`` section — whether to cross-check/
+        fall back to the segmentation mask's own inscribed radius (see
+        :mod:`haemolynx.haemodynamics.edt_diameter`) when FWHM measurement
+        fails for an edge.
 
     Anything a run computes rather than configures stays an ordinary field.
     """
 
     diameters: dict[str, Any] = field(default_factory=dict)
     fwhm: dict[str, Any] = field(default_factory=dict)
+    edt: dict[str, Any] = field(default_factory=dict)
 
     # Computed per run, not configured.
     comparison_output_csv_path: Path | None = None
@@ -168,6 +176,18 @@ class HaemodynamicsApplyConfig:
     def do_pericyte_constriction(self) -> bool:
         return bool(self.diameters.get("do_pericyte_construction", False))
 
+    def edt_setting(self, name: str, default: Any = None) -> Any:
+        """One value from the EDT group, named as it is in the config."""
+        return self.edt.get(name, default)
+
+    @property
+    def use_edt_diameter_crosscheck(self) -> bool:
+        return bool(self.edt.get("use_edt_diameter_crosscheck", False))
+
+    @property
+    def edt_diameter_prefer_over_table_on_fwhm_failure(self) -> bool:
+        return bool(self.edt.get("edt_diameter_prefer_over_table_on_fwhm_failure", True))
+
     def fwhm_measurement_arguments(self, valid_parameters: Iterable[str]) -> dict[str, Any]:
         """FWHM settings as measurement-function arguments."""
         return prefixed_arguments(self.fwhm, FWHM_SETTING_PREFIX, valid_parameters)
@@ -216,15 +236,74 @@ def _measure_fwhm_diameters(
     )
 
 
+def load_edt_mask_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
+    """The binary mask EDT diameter measurement samples from
+    ``edt_mask_path``, or ``None`` when no path is configured.
+
+    Only consulted when the caller has no in-memory segmentation volume to
+    pass directly (the common case does -- ``assign_diameters`` already
+    holds the mask that was skeletonised right where it calls
+    :func:`assign_edge_diameters`); this is the fallback for a resumed run
+    where that volume was not reloaded.
+    """
+    mask_path = config.edt_setting("edt_mask_path")
+    if mask_path is None:
+        return None
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    path = io.resolve_image_path_with_optional_zip(Path(mask_path))
+    raw = automated.load_single_channel_tiff_volume(path, axis_order=config.axis_order)
+    return _to_binary_volume_for_skeletonization(raw)
+
+
+def _measure_edt_diameters(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    *,
+    mask_volume: np.ndarray,
+) -> dict[str, Any]:
+    voxel_sz = tuple(
+        float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
+    )
+    return edt_diameter.measure_edge_diameters_from_binary_mask(
+        G,
+        binary_mask=mask_volume,
+        voxel_size_zyx=voxel_sz,
+        # Shares FWHM's own along-edge sample spacing and aggregation policy
+        # rather than duplicating either as a separate EDT-only setting --
+        # one aggregation policy for both techniques (see
+        # automated._aggregate_edge_diameter).
+        sample_spacing_along_edge_um=float(
+            config.fwhm_setting("fwhm_sample_spacing_along_edge_um", 2.0)
+        ),
+        branch_endpoint_exclusion_um=float(
+            config.edt_setting("edt_junction_proximity_exclusion_um", 10.0)
+        ),
+        aggregation=config.fwhm_setting("fwhm_edge_diameter_aggregation", "median"),
+    )
+
+
 def assign_edge_diameters(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
+    *,
+    mask_volume: np.ndarray | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     """Stamp modelled diameters on *G* without writing resistance.
 
     Measures FWHM when that is enabled and ``do_fwhm_measurement`` is on.
-    Otherwise keeps measured / override values already on the graph. Returns
-    the graph, a summary, and the raw intensity volume when a FWHM path is set.
+    Otherwise keeps measured / override values already on the graph.
+
+    When ``use_edt_diameter_crosscheck`` is on, also measures each edge's
+    diameter from the segmentation mask's own inscribed radius (*mask_volume*
+    if given, else ``edt_mask_path``) -- as a fallback for an edge FWHM
+    measurement failed on when ``edt_diameter_prefer_over_table_on_fwhm_
+    failure`` is set, and always as a QA cross-check
+    (``fwhm_edt_disagreement_ratio``/``fwhm_low_confidence_vs_edt``)
+    independent of that fallback.
+
+    Returns the graph, a summary, and the raw FWHM intensity volume when a
+    FWHM path is set.
     """
     clear_edge_resistances(G)
     summary: dict[str, Any] = {}
@@ -240,11 +319,28 @@ def assign_edge_diameters(
                 "skipped": True,
                 "reason": "do_fwhm_measurement is off; keeping existing diameters",
             }
+
+    use_edt_fallback = False
+    if config.use_edt_diameter_crosscheck:
+        edt_mask = mask_volume if mask_volume is not None else load_edt_mask_volume(config)
+        if edt_mask is not None:
+            summary["edt"] = _measure_edt_diameters(G, config, mask_volume=edt_mask)
+            use_edt_fallback = config.edt_diameter_prefer_over_table_on_fwhm_failure
+        else:
+            summary["edt"] = {
+                "skipped": True,
+                "reason": "no in-memory segmentation volume and no edt_mask_path configured",
+            }
+
     summary["diameters"] = stamp_edge_diameters(
         G,
         config.diameter("diameter_by_branch_order"),
         keep_existing=keep_existing,
+        use_edt_fallback=use_edt_fallback,
     )
+    if config.use_edt_diameter_crosscheck:
+        warn_ratio = float(config.edt_setting("edt_fwhm_disagreement_warn_ratio", 1.5))
+        flag_fwhm_edt_disagreement(G, warn_ratio=warn_ratio)
     return G, summary, raw_volume
 
 

@@ -91,20 +91,25 @@ def build_diameter_by_branch_order(
 
 
 #: How an edge's modelled ``diameter_um`` was chosen. ``measured`` is a FWHM
-#: fit; ``table`` is the branch-order lookup; ``override`` is a human value.
+#: fit; ``edt_mask`` is the segmentation mask's own inscribed radius, used
+#: only when FWHM measurement failed for that edge and ``use_edt_fallback``
+#: is on (see ``haemolynx.haemodynamics.edt_diameter`)); ``table`` is the
+#: branch-order lookup; ``override`` is a human value.
 DIAMETER_SOURCE_MEASURED = "measured"
+DIAMETER_SOURCE_EDT = "edt_mask"
 DIAMETER_SOURCE_TABLE = "table"
 DIAMETER_SOURCE_OVERRIDE = "override"
 DIAMETER_SOURCES = frozenset(
     {
         DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_EDT,
         DIAMETER_SOURCE_TABLE,
         DIAMETER_SOURCE_OVERRIDE,
     }
 )
 
 _KEPT_DIAMETER_SOURCES = frozenset(
-    {DIAMETER_SOURCE_MEASURED, DIAMETER_SOURCE_OVERRIDE}
+    {DIAMETER_SOURCE_MEASURED, DIAMETER_SOURCE_EDT, DIAMETER_SOURCE_OVERRIDE}
 )
 
 
@@ -160,15 +165,20 @@ def stamp_edge_diameters(
     diameter_by_branch_order: dict | None,
     *,
     keep_existing: bool = False,
+    use_edt_fallback: bool = False,
 ) -> dict[str, int]:
     """Write ``diameter_um`` and ``diameter_source`` on every edge that can.
 
-    When *keep_existing* is True, measured and override edges stay as they are
-    (so a resume does not wipe approvals). Otherwise FWHM, when present, wins,
-    then the branch-order table.
+    When *keep_existing* is True, measured/EDT/override edges stay as they
+    are (so a resume does not wipe approvals or re-fall-back). Otherwise
+    FWHM, when present, wins; then -- when *use_edt_fallback* is True and
+    the edge carries an ``edt_diameter_um`` (see
+    ``haemolynx.haemodynamics.edt_diameter``) -- the segmentation mask's own
+    inscribed-radius estimate, a vessel-specific reading unlike the generic
+    branch-order table; then the table.
     """
     table = diameter_by_branch_order or {}
-    counts = {"measured": 0, "table": 0, "override": 0, "unset": 0}
+    counts = {"measured": 0, "edt_mask": 0, "table": 0, "override": 0, "unset": 0}
     for _u, _v, _key, data in G.edges(keys=True, data=True):
         source = data.get("diameter_source")
         if keep_existing and source in _KEPT_DIAMETER_SOURCES:
@@ -194,6 +204,13 @@ def stamp_edge_diameters(
             data["diameter_source"] = DIAMETER_SOURCE_MEASURED
             counts["measured"] += 1
             continue
+        if use_edt_fallback:
+            edt = positive_diameter_um(data.get("edt_diameter_um"))
+            if edt is not None:
+                data["diameter_um"] = edt
+                data["diameter_source"] = DIAMETER_SOURCE_EDT
+                counts["edt_mask"] += 1
+                continue
         table_diameter = positive_diameter_um(table.get(data.get("branch_order")))
         if table_diameter is not None:
             data["diameter_um"] = table_diameter
@@ -202,6 +219,34 @@ def stamp_edge_diameters(
             continue
         counts["unset"] += 1
     return counts
+
+
+def flag_fwhm_edt_disagreement(G: nx.MultiGraph, *, warn_ratio: float) -> int:
+    """Compare each edge's ``fwhm_diameter_um`` and ``edt_diameter_um`` and
+    flag a large disagreement between the two measurement techniques.
+
+    Writes ``fwhm_edt_disagreement_ratio`` (>= 1, the larger divided by the
+    smaller) and ``fwhm_low_confidence_vs_edt`` (whether that ratio reaches
+    *warn_ratio*) on every edge that carries *both* values -- a pure QA
+    signal, independent of which one (if either) :func:`stamp_edge_diameters`
+    picked as the edge's modelled ``diameter_um``, so it works whether or
+    not ``use_edt_fallback`` is on.
+
+    Returns how many edges were flagged as low-confidence.
+    """
+    flagged = 0
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        fwhm = positive_diameter_um(data.get("fwhm_diameter_um"))
+        edt = positive_diameter_um(data.get("edt_diameter_um"))
+        if fwhm is None or edt is None:
+            continue
+        ratio = max(fwhm, edt) / min(fwhm, edt)
+        data["fwhm_edt_disagreement_ratio"] = ratio
+        low_confidence = ratio >= float(warn_ratio)
+        data["fwhm_low_confidence_vs_edt"] = low_confidence
+        if low_confidence:
+            flagged += 1
+    return flagged
 
 
 # --- Viscosity model -------------------------------------------------------

@@ -707,6 +707,25 @@ def test_every_declared_column_names_a_stage_that_exists():
     assert set(OPTIONAL_EDGE_COLUMNS.values()) <= known
 
 
+def test_edge_columns_includes_fwhm_status_and_edt_crosscheck_columns():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    assert EDGE_COLUMNS["fwhm_status"] == "assign_diameters"
+    assert TEXT_COLUMNS >= {"fwhm_status"}
+    for name in (
+        "edt_diameter_um",
+        "fwhm_edt_disagreement_ratio",
+        "fwhm_low_confidence_vs_edt",
+    ):
+        assert OPTIONAL_EDGE_COLUMNS[name] == "assign_diameters"
+    assert set(edge_columns_for_settings()) >= {
+        "fwhm_status",
+        "edt_diameter_um",
+        "fwhm_edt_disagreement_ratio",
+        "fwhm_low_confidence_vs_edt",
+    }
+
+
 # --- one layer per perturbation ----------------------------------------------
 
 

@@ -20,6 +20,7 @@ and compare element by element after it.
 """
 from __future__ import annotations
 
+import csv
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from haemolynx.haemodynamics import (  # noqa: E402
     PERTURBATION_TYPES,
     PoiseuilleModel,
     perturbation_folder_name,
+    stamp_edge_diameters,
 )
 from haemolynx.pipeline import (  # noqa: E402
     BoundaryNodes,
@@ -47,7 +49,11 @@ from haemolynx.pipeline import (  # noqa: E402
     run_perturbations,
 )
 from haemolynx.pipeline.progress import STEP, ProgressEvent, RunProgress  # noqa: E402
-from haemolynx.pipeline.stages import _perturbation_copy  # noqa: E402
+from haemolynx.pipeline.stages import (  # noqa: E402
+    PerturbationResult,
+    _perturbation_copy,
+    _write_perturbation_csvs,
+)
 
 SCHEMA = default_schema()
 
@@ -1054,3 +1060,66 @@ def test_one_step_is_reported_per_entry(tmp_path):
     assert [event.step_index for event in steps] == list(range(len(EVERY_TYPE_ONCE)))
     assert {event.step_total for event in steps} == {len(EVERY_TYPE_ONCE)}
     assert {event.stage for event in steps} == {"run_perturbations"}
+
+
+# --- edges CSV reports the resolved diameter, not the raw FWHM attribute -----
+
+
+def test_perturbation_edges_csv_reports_resolved_diameter_for_table_fallback_edges(
+    tmp_path,
+):
+    """An edge with no ``fwhm_diameter_um`` (FWHM never ran, or fell back to
+    the branch-order table) must still export its resolved ``diameter_um`` --
+    the value its own ``resistance`` in the same CSV row was computed from,
+    not a blank next to a real number.
+
+    Calls ``_write_perturbation_csvs`` directly with a synthetic ``solved``/
+    ``baseline`` dict rather than going through a real pressure/flow solve
+    (``run_perturbations``): this pins the CSV-writing logic on its own,
+    independent of whatever numeric solve machinery is available in a given
+    environment.
+    """
+    graph = _network()
+    stamp_edge_diameters(graph, dict(DIAMETERS))
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        assert data["diameter_source"] == "table"
+        assert "fwhm_diameter_um" not in data
+        data["resistance"] = 1.0
+        data["conductance"] = 1.0
+
+    result = PerturbationResult(
+        name="art_dilate_20", type="arteriole_diameter_change", graph=graph
+    )
+    result.output_dir = tmp_path
+    result.output_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_perturbation_csvs(
+        result,
+        baseline_graph=graph,
+        solved={
+            "equivalent_resistance": 1.0,
+            "total_inlet_flow": 1.0,
+            "total_outlet_flow": -1.0,
+        },
+        baseline={"equivalent_resistance": 1.0},
+        settings={"inlet_p_bc": 5000.0, "outlet_p_bc": 0.0},
+        overrides={},
+    )
+
+    edges_csv = tmp_path / "art_dilate_20_edges.csv"
+    assert edges_csv.is_file()
+    rows = list(csv.DictReader(edges_csv.open()))
+    assert rows
+
+    for row in rows:
+        key = (row["u"], row["v"], row["key"])
+        data = None
+        for u, v, edge_key, edge_data in graph.edges(keys=True, data=True):
+            if (str(u), str(v), str(edge_key)) == key:
+                data = edge_data
+                break
+        assert data is not None, f"edge {key} in the CSV not found on the graph"
+        assert "fwhm_diameter_um" not in data
+        assert data["diameter_source"] == "table"
+        assert row["diameter_um"] != ""
+        assert float(row["diameter_um"]) == pytest.approx(float(data["diameter_um"]))

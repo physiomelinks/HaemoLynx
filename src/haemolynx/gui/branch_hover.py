@@ -19,6 +19,7 @@ BRANCH_HOVER_METRICS: tuple[str, ...] = (
     "order",
     "diameter",
     "diameter_source",
+    "fwhm_status",
     "resistance",
     "tortuosity",
     "length",
@@ -30,6 +31,7 @@ BRANCH_HOVER_LABELS: dict[str, str] = {
     "order": "branch order",
     "diameter": "branch diameter",
     "diameter_source": "diameter source",
+    "fwhm_status": "FWHM status",
     "resistance": "branch resistance",
     "tortuosity": "branch tortuosity",
     "length": "branch length",
@@ -41,12 +43,13 @@ _METRIC_ATTR: dict[str, str | None] = {
     "order": "branch_order",
     "diameter": "diameter_um",
     "diameter_source": "diameter_source",
+    "fwhm_status": "fwhm_status",
     "resistance": "resistance",
     "tortuosity": None,
     "length": "length",
 }
 
-_TEXT_HOVER_METRICS = frozenset({"order", "diameter_source"})
+_TEXT_HOVER_METRICS = frozenset({"order", "diameter_source", "fwhm_status"})
 
 _BRANCH_ID_LINE = "branchID: {branch_id}"
 
