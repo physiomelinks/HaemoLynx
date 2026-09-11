@@ -46,6 +46,7 @@ from typing import Any
 
 import numpy as np
 from scipy.ndimage import (
+    binary_closing,
     binary_dilation,
     binary_opening,
     distance_transform_edt,
@@ -637,22 +638,83 @@ def remove_surface_whiskers(
     return binary_opening(mask, structure=structure)
 
 
+_SMOOTH_METHODS = ("gaussian", "morphological")
+
+
+def _smooth_vessel_surfaces_morphological(
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    radius_um: float,
+) -> np.ndarray:
+    """Closing-then-opening with an anisotropic ellipsoid structuring
+    element: the curvature-preserving alternative to blur-then-rethreshold.
+
+    Closing first fills small surface concavities (imaging-noise dents)
+    without adding to the vessel's own width; opening second removes small
+    protrusions the same way -- the standard morphological pair for
+    smoothing a binary shape without a re-threshold step, so it does not
+    carry that step's own curvature-dependent bias (see
+    :func:`smooth_vessel_surfaces`). Reuses :func:`_ellipsoid_structure`, the
+    same anisotropy-aware footprint :func:`remove_surface_whiskers` already
+    uses, so a ``(1.0, 0.4, 0.4)`` zyx dataset closes/opens the same
+    physical distance on every axis. ``radius_um <= 0`` is a no-op.
+    """
+    if float(radius_um) <= 0.0:
+        return mask
+    radius_voxels = tuple(
+        max(1, int(round(float(radius_um) / max(1e-9, float(v)))))
+        for v in voxel_size_zyx
+    )
+    structure = _ellipsoid_structure(radius_voxels)
+    return binary_opening(binary_closing(mask, structure=structure), structure=structure)
+
+
 def smooth_vessel_surfaces(
     mask: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float],
     sigma_um: float = 1.0,
+    method: str = "gaussian",
+    morphological_radius_um: float = 1.0,
 ) -> np.ndarray:
-    """Gaussian-blur-then-rethreshold: reduces surface noise, pulling a
-    ragged mask toward a smoother, more cylindrical shape.
+    """Reduce surface noise, pulling a ragged mask toward a smoother, more
+    cylindrical shape.
 
-    Anisotropy-aware: ``sigma_voxels[axis] = sigma_um / voxel_size_zyx[axis]``,
-    so a ``(1.0, 0.4, 0.4)`` zyx dataset smooths the same physical distance
-    on every axis despite sampling y/x 2.5x more densely than z. One
-    vectorised ``scipy.ndimage.gaussian_filter`` call; no per-voxel loop.
-    ``sigma_um <= 0`` is a no-op.
+    Two methods, chosen by *method*:
+
+    ``"gaussian"`` (default) blurs then rethresholds at 0.5 -- one vectorised
+    ``scipy.ndimage.gaussian_filter`` call, anisotropy-aware
+    (``sigma_voxels[axis] = sigma_um / voxel_size_zyx[axis]``, so a
+    ``(1.0, 0.4, 0.4)`` zyx dataset smooths the same physical distance on
+    every axis despite sampling y/x 2.5x more densely than z). Known,
+    accepted tradeoff: a blur softens a thin tube's edge by roughly the same
+    physical amount on both the inside and outside, but re-thresholding at
+    0.5 keeps only the inside half -- a small, systematic narrowing whose
+    size grows with the mask's local curvature, i.e. worst on exactly the
+    thin, highly-curved vessels whose diameter (and therefore resistance)
+    this step must not distort.
+
+    ``"morphological"`` (:func:`_smooth_vessel_surfaces_morphological`)
+    closes then opens with an anisotropic ellipsoid structuring element
+    instead -- no threshold step, so it does not carry that same bias, at
+    the cost of coarser (voxel-radius-grained, not continuous-sigma) size
+    control and more compute for a large *radius_um*. Reach for this when
+    diameter accuracy on thin/curved vessels matters more than smoothing a
+    perfectly continuous amount.
+
+    ``sigma_um <= 0`` (gaussian) or ``morphological_radius_um <= 0``
+    (morphological) is a no-op for the method actually selected.
     """
     mask = np.asarray(mask, dtype=bool)
+    if method == "morphological":
+        return _smooth_vessel_surfaces_morphological(
+            mask, voxel_size_zyx=voxel_size_zyx, radius_um=morphological_radius_um
+        )
+    if method != "gaussian":
+        raise ValueError(
+            f"Unknown smoothing method {method!r}. Known: {', '.join(_SMOOTH_METHODS)}."
+        )
     if float(sigma_um) <= 0.0:
         return mask
     sigma_voxels = tuple(
@@ -706,6 +768,8 @@ def clean_segmented_mask_for_skeletonisation(
     reconnect_max_radius_ratio: float = 3.0,
     smooth_surfaces: bool = False,
     smooth_sigma_um: float = 1.0,
+    smooth_method: str = "gaussian",
+    smooth_morphological_radius_um: float = 1.0,
     remove_small_volumes: bool = False,
     remove_small_min_volume_um3: float = 5.0,
 ) -> tuple[np.ndarray, np.ndarray | None]:
@@ -772,7 +836,11 @@ def clean_segmented_mask_for_skeletonisation(
         )
     if smooth_surfaces:
         cleaned = smooth_vessel_surfaces(
-            cleaned, voxel_size_zyx=voxel_size_zyx, sigma_um=smooth_sigma_um
+            cleaned,
+            voxel_size_zyx=voxel_size_zyx,
+            sigma_um=smooth_sigma_um,
+            method=smooth_method,
+            morphological_radius_um=smooth_morphological_radius_um,
         )
     if remove_small_volumes:
         cleaned = remove_small_segmented_volumes(

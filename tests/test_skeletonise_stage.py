@@ -385,6 +385,41 @@ def test_skeletonise_forwards_smooth_sigma_um_setting(tmp_path, monkeypatch):
     assert captured["smooth_sigma_um"] == pytest.approx(2.5)
 
 
+def test_skeletonise_forwards_smooth_method_and_morphological_radius_um_settings(
+    tmp_path, monkeypatch
+):
+    import functools
+
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.clean_segmented_mask_for_skeletonisation
+
+    @functools.wraps(real)
+    def spy(*args, **kwargs):
+        captured["smooth_method"] = kwargs.get("smooth_method")
+        captured["smooth_morphological_radius_um"] = kwargs.get(
+            "smooth_morphological_radius_um"
+        )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        preprocessing_module, "clean_segmented_mask_for_skeletonisation", spy
+    )
+
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, _fragmented_mask()),
+        segmentation_cleanup_smooth_surfaces=True,
+        segmentation_cleanup_smooth_method="morphological",
+        segmentation_cleanup_smooth_morphological_radius_um=1.75,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["smooth_method"] == "morphological"
+    assert captured["smooth_morphological_radius_um"] == pytest.approx(1.75)
+
+
 def test_skeletonise_forwards_remove_small_min_volume_um3_setting(tmp_path, monkeypatch):
     import functools
 

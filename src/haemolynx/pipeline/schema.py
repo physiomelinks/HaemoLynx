@@ -326,14 +326,39 @@ SCHEMA = Schema(
             name="segmentation_cleanup_smooth_surfaces",
             kind="bool",
             default=False,
-            help="Gaussian-blur-then-rethreshold the mask to reduce surface noise, before skeletonisation",
+            help="Smooth the mask to reduce surface noise, before skeletonisation",
             section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="segmentation_cleanup_smooth_method",
+            kind="choice",
+            default="gaussian",
+            help=(
+                "How to smooth: gaussian blur-then-rethreshold is fast but "
+                "slightly erodes thin/highly-curved vessels (worse the more "
+                "curved), which biases their diameter and therefore "
+                "resistance; morphological closing-then-opening avoids that "
+                "threshold-driven bias, at the cost of coarser size control"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=("gaussian", "morphological"),
+            requires=("segmentation_cleanup_smooth_surfaces",),
         ),
         Setting(
             name="segmentation_cleanup_smooth_sigma_um",
             kind="float",
             default=1.0,
-            help="Physical smoothing sigma, sampled anisotropy-aware per axis from voxel_size_zyx",
+            help="Physical smoothing sigma for the gaussian method, sampled anisotropy-aware per axis from voxel_size_zyx",
+            section=_INPUT_AND_SEGMENTATION,
+            unit="um",
+            minimum=0.0,
+            requires=("segmentation_cleanup_smooth_surfaces",),
+        ),
+        Setting(
+            name="segmentation_cleanup_smooth_morphological_radius_um",
+            kind="float",
+            default=1.0,
+            help="Physical closing/opening radius for the morphological method, sampled anisotropy-aware per axis from voxel_size_zyx",
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,

@@ -352,6 +352,78 @@ def test_smooth_sigma_zero_is_a_no_op():
     assert out is mask
 
 
+def test_smooth_unknown_method_raises_value_error():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, :] = True
+    with pytest.raises(ValueError, match="Unknown smoothing method"):
+        sc.smooth_vessel_surfaces(mask, voxel_size_zyx=(1.0, 1.0, 1.0), method="bogus")
+
+
+def test_smooth_morphological_reduces_surface_roughness_of_a_jagged_tube():
+    shape = (20, 20, 20)
+    clean = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+    rng = np.random.default_rng(0)
+    noisy = clean.copy()
+    flip = rng.random(shape) < 0.05
+    noisy[flip] = ~noisy[flip]
+
+    smoothed = sc.smooth_vessel_surfaces(
+        noisy, voxel_size_zyx=(1.0, 1.0, 1.0), method="morphological", morphological_radius_um=1.5
+    )
+
+    assert _iou(smoothed, clean) > _iou(noisy, clean)
+
+
+def test_smooth_morphological_leaves_a_clean_tube_nearly_unchanged():
+    shape = (20, 20, 20)
+    clean = _cylinder_along_x(shape, z=10, y=10, radius=4.0, x0=2, x1=17)
+
+    smoothed = sc.smooth_vessel_surfaces(
+        clean, voxel_size_zyx=(1.0, 1.0, 1.0), method="morphological", morphological_radius_um=0.6
+    )
+
+    assert _iou(smoothed, clean) > 0.9
+
+
+def test_smooth_morphological_radius_zero_is_a_no_op():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[2, 2, :] = True
+    out = sc.smooth_vessel_surfaces(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), method="morphological", morphological_radius_um=0.0
+    )
+    assert np.array_equal(out, mask)
+    assert out is mask
+
+
+def test_smooth_morphological_preserves_cross_section_better_than_gaussian_on_a_thin_vessel():
+    """The curvature bias this feature exists to avoid: gaussian
+    blur-then-rethreshold shrinks a round vessel's cross-section (a
+    threshold-driven effect that grows with curvature, i.e. worse the
+    thinner the vessel), while morphological closing-then-opening -- no
+    threshold step -- shrinks it markedly less at the same physical scale."""
+    shape = (30, 30, 30)
+    tube = _cylinder_along_x(shape, z=15, y=15, radius=5.0, x0=2, x1=27)
+    mid_x = 14  # well inside the tube body, away from its flat end caps
+    original_area = int(tube[:, :, mid_x].sum())
+
+    gaussian = sc.smooth_vessel_surfaces(
+        tube, voxel_size_zyx=(1.0, 1.0, 1.0), sigma_um=1.5, method="gaussian"
+    )
+    morphological = sc.smooth_vessel_surfaces(
+        tube,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        method="morphological",
+        morphological_radius_um=1.5,
+    )
+
+    gaussian_area = int(gaussian[:, :, mid_x].sum())
+    morphological_area = int(morphological[:, :, mid_x].sum())
+
+    assert gaussian_area < original_area  # the bias this feature exists to avoid
+    assert morphological_area > gaussian_area
+    assert abs(morphological_area - original_area) < abs(gaussian_area - original_area)
+
+
 # --- remove_small_segmented_volumes -------------------------------------------
 
 
