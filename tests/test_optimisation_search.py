@@ -215,15 +215,15 @@ def test_optimise_settings_thick_vessel_refinement_sweeps_run_when_on(monkeypatc
     from haemolynx import preprocessing as preprocessing_module
     from haemolynx.optimisation.search import _Search
 
-    fat_line = np.zeros((10, 10, 10), dtype=bool)
-    fat_line[5, 5, :] = True  # a real, single-component "skeleton"
+    blob = np.zeros((20, 20, 20), dtype=bool)
+    blob[5:15, 5:15, 5:15] = True  # Lee thinning of this is empty -- see the test above
+
+    fat_line = np.zeros(blob.shape, dtype=bool)
+    fat_line[10, 10, :] = True  # a real, single-component "skeleton", same shape as blob
 
     monkeypatch.setattr(
         preprocessing_module, "skeletonize_thickness_gated", lambda binary, **kwargs: fat_line
     )
-
-    blob = np.zeros((20, 20, 20), dtype=bool)
-    blob[5:15, 5:15, 5:15] = True  # Lee thinning of this is empty -- see the test above
     search = _Search(
         blob, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES, progress=None,
     )
@@ -245,6 +245,178 @@ def test_optimise_settings_thick_vessel_refinement_sweeps_run_when_on(monkeypatc
     assert search.current["skeleton_thick_vessel_max_bridge_radius_multiple"] >= 0.0
     assert search.current["skeleton_thick_vessel_bridge_radius_smoothing_um"] >= 0.0
     assert search.raw_skeleton.any()
+
+
+# ---------------------------------------------------------------------------
+# Input-data-consistency guards (reusing the existing diagnose_* functions)
+# ---------------------------------------------------------------------------
+def test_regression_penalty_is_zero_when_current_meets_or_beats_baseline():
+    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+
+    assert _Search._regression_penalty(current=0.9, baseline=0.9, tolerance=0.02) == 0.0
+    assert _Search._regression_penalty(current=0.95, baseline=0.9, tolerance=0.02) == 0.0
+    # Within tolerance: a small dip must not trip the guard.
+    assert _Search._regression_penalty(current=0.89, baseline=0.9, tolerance=0.02) == 0.0
+
+
+def test_regression_penalty_fires_past_tolerance():
+    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+
+    assert _Search._regression_penalty(current=0.5, baseline=0.9, tolerance=0.02) == _GUARD_PENALTY
+
+
+def test_min_branch_length_guard_rejects_a_candidate_that_drops_a_real_small_vessel():
+    """Without the vessels-missing guard, pruning a real-but-tiny (and far
+    from the main body, so never re-bridged) vessel's own skeleton barely
+    moves `largest_fraction` -- the guard is what actually catches this."""
+    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+
+    shape = (30, 30, 30)
+    main_mask = np.zeros(shape, dtype=bool)
+    main_mask[10:20, 14:16, 14:16] = True  # a solid main vessel body
+    small_vessel_mask = np.zeros(shape, dtype=bool)
+    small_vessel_mask[2:6, 2:6, 2:6] = True  # a real, separate small vessel (64 voxels)
+    raw_mask = main_mask | small_vessel_mask
+
+    raw_skeleton = np.zeros(shape, dtype=bool)
+    raw_skeleton[10:20, 15, 15] = True  # 10-voxel main skeleton line
+    raw_skeleton[3, 3, 3:5] = True  # 2-voxel stub for the small vessel, far from the main line
+
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+    # The guard's own baseline is measured at the group's *starting*
+    # min_branch_length value (run through the full pipeline, see
+    # `_group_min_branch_length`'s own comment) -- it must start below the
+    # small vessel's own 2-voxel stub, or the baseline would already prune
+    # it and no candidate could "regress" any further.
+    starting_values["skeleton_min_branch_length"] = 0
+    search = _Search(
+        raw_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None,
+    )
+    search.raw_skeleton = raw_skeleton
+    search._group_min_branch_length()
+
+    trials_by_value = {
+        trial.value: trial.score
+        for trial in search.trials
+        if trial.setting == "skeleton_min_branch_length"
+    }
+    removing_candidates = [value for value in trials_by_value if value >= 3]
+    assert removing_candidates, "expected at least one candidate >= the small vessel's own 2-voxel stub"
+    for value in removing_candidates:
+        assert trials_by_value[value] >= _GUARD_PENALTY, (
+            f"skeleton_min_branch_length={value} removes the small vessel's stub "
+            f"entirely and should have tripped the vessels-missing guard, got "
+            f"score={trials_by_value[value]}"
+        )
+
+
+def test_min_branch_length_guard_ignores_segmentation_noise_flecks():
+    """A real-data run showed the guard's default noise floor
+    (`diagnose_vessels_missing_from_skeleton`'s own `min_vessel_voxels=2`)
+    treated tiny segmentation-noise flecks in the mask as "real vessels" it
+    had to protect, blocking min_branch_length from pruning almost
+    anything at all (3 of 4 real-data candidates rejected) -- see
+    `_MIN_VESSEL_VOLUME_UM3_FOR_GUARD`'s own docstring. This proves the
+    fix: pruning a skeleton stub backed only by a mask-noise fleck (well
+    under the physical volume floor) must not trip the guard."""
+    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+
+    shape = (30, 30, 30)
+    main_mask = np.zeros(shape, dtype=bool)
+    main_mask[10:20, 14:16, 14:16] = True
+    noise_fleck_mask = np.zeros(shape, dtype=bool)
+    noise_fleck_mask[2, 2, 2:4] = True  # 2 voxels -- segmentation noise, not a real vessel
+    raw_mask = main_mask | noise_fleck_mask
+
+    raw_skeleton = np.zeros(shape, dtype=bool)
+    raw_skeleton[10:20, 15, 15] = True  # 10-voxel main skeleton line
+    raw_skeleton[2, 2, 2:4] = True  # 2-voxel stub matching the noise fleck, far from the main line
+
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+    # See the sibling test above: the baseline is measured at the group's
+    # starting value, which must start below the fleck's own 2-voxel stub.
+    starting_values["skeleton_min_branch_length"] = 0
+    search = _Search(
+        raw_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None,
+    )
+    search.raw_skeleton = raw_skeleton
+    search._group_min_branch_length()
+
+    trials_by_value = {
+        trial.value: trial.score
+        for trial in search.trials
+        if trial.setting == "skeleton_min_branch_length"
+    }
+    removing_candidates = [value for value in trials_by_value if value >= 3]
+    assert removing_candidates, "expected at least one candidate >= the noise fleck's 2-voxel stub"
+    for value in removing_candidates:
+        assert trials_by_value[value] < _GUARD_PENALTY, (
+            f"skeleton_min_branch_length={value} only removes a 2-voxel "
+            f"segmentation-noise fleck (well under the physical volume "
+            f"floor) and should not trip the vessels-missing guard, got "
+            f"score={trials_by_value[value]}"
+        )
+
+
+def test_segmentation_cleanup_raw_image_guard_rejects_invented_foreground():
+    """Turning close_gaps on bridges a real gap the raw signal does not
+    support -- quality() alone (fragmentation/connectivity) would favour
+    bridging it, but the raw-image guard must reject that once a reference
+    image shows there is nothing there."""
+    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+
+    shape = (16, 16, 16)
+    mask = np.zeros(shape, dtype=bool)
+    mask[4:12, 4:7, 4:7] = True
+    mask[4:12, 8:11, 4:7] = True  # two blocks, a genuine 1-voxel gap at y=7
+
+    # Raw image: bright exactly where the mask already is, dark everywhere
+    # else -- including the gap -- so bridging it invents unsupported
+    # foreground with no raw signal behind it at all.
+    raw_image = np.where(mask, 200.0, 10.0).astype(np.float32)
+
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+    starting_values["segmentation_cleanup_close_gaps"] = False
+
+    search = _Search(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None,
+        raw_image=raw_image,
+    )
+    search._group_segmentation_cleanup()
+
+    toggle_trials = {
+        trial.value: trial.score
+        for trial in search.trials
+        if trial.setting == "segmentation_cleanup_close_gaps"
+    }
+    # Comfortably above any un-guarded quality() score (roughly [-10, 10]) --
+    # the guard's own `_GUARD_PENALTY` (1000) minus quality()'s own
+    # contribution, not the raw 1000 itself.
+    assert toggle_trials.get(True, 0.0) > 500.0, (
+        "turning close_gaps on bridges a gap the raw image does not "
+        f"support and should have tripped the guard, got trials={toggle_trials}"
+    )
+    assert toggle_trials[True] > toggle_trials[False]
+    assert search.current["segmentation_cleanup_close_gaps"] is False
+
+
+def test_segmentation_cleanup_raw_image_none_matches_todays_behaviour():
+    """raw_image=None (the default) must not change anything about how
+    segmentation_cleanup scores its candidates."""
+    from haemolynx.optimisation.search import _Search
+
+    mask = _y_shaped_vessel()
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+
+    without_raw = _Search(mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None)
+    without_raw._group_segmentation_cleanup()
+
+    with_none_raw = _Search(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None, raw_image=None,
+    )
+    with_none_raw._group_segmentation_cleanup()
+
+    assert without_raw.current == with_none_raw.current
 
 
 def test_optimise_settings_on_scattered_speckle_does_not_raise():
@@ -328,7 +500,7 @@ def test_optimise_settings_downsample_rescales_voxel_settings_but_not_micron_one
     # rescaling logic in `optimise_skeleton_and_graph_settings` itself is
     # under test here, not any group's own decision-making.
     class _FakeSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None):
             self.mask = mask
             self.voxel_size_xyz_seen = voxel_size_xyz
             self.current = dict(starting_values)
@@ -361,7 +533,7 @@ def test_optimise_settings_downsample_scales_the_voxel_size_the_search_sees(monk
     seen = {}
 
     class _FakeSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None):
             seen["mask_shape"] = mask.shape
             seen["voxel_size_xyz"] = voxel_size_xyz
             self.current = dict(starting_values)

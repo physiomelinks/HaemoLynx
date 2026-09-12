@@ -12,7 +12,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
-from .search import GROUP_NAMES, OptimisationResult, TrialRecord
+from .search import _GUARD_PENALTY, GROUP_NAMES, OptimisationResult, TrialRecord
+
+#: A trial scoring at or above this counts as "rejected by an input-data
+#: guard" for the report below -- comfortably under `_GUARD_PENALTY` itself
+#: (1000) to allow for the underlying quality/topology term's own (possibly
+#: negative) contribution, comfortably over any score a real, un-guarded
+#: trial has ever been observed to reach.
+_GUARD_REJECTED_SCORE_THRESHOLD = _GUARD_PENALTY / 2
 
 
 def config_filename(input_path: Union[str, Path], now: Optional[datetime] = None) -> str:
@@ -52,6 +59,20 @@ def build_report_text(result: OptimisationResult) -> str:
         )
         failures = sum(1 for trial in trials if trial.note.startswith("failed"))
         failure_note = f", {failures} failed" if failures else ""
-        lines.append(f"- {group}: tried {len(trials)} candidate(s){failure_note} -> {winners}")
+        # A trial that raised is already counted above as "failed", not here
+        # -- this counts a candidate that ran fine but was rejected by one
+        # of the input-data-consistency guards (dropped real coverage of
+        # the segmented mask, or -- for segmentation_cleanup with a raw
+        # image supplied -- invented foreground the raw signal does not
+        # support). See `search._Search._regression_penalty`.
+        guarded = sum(
+            1
+            for trial in trials
+            if not trial.note.startswith("failed") and trial.score >= _GUARD_REJECTED_SCORE_THRESHOLD
+        )
+        guard_note = f", {guarded} rejected by an input-data guard" if guarded else ""
+        lines.append(
+            f"- {group}: tried {len(trials)} candidate(s){failure_note}{guard_note} -> {winners}"
+        )
 
     return "\n".join(lines)

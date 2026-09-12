@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt, generate_binary_structure, label
+from scipy.ndimage import sum as ndi_sum
 
 from .thick_vessels import inscribed_radius_map
 
@@ -98,10 +99,17 @@ def _missing_mask_components(
             "explained_vessel_fraction": 1.0,
         }
 
+    # One vectorised pass over the whole volume rather than a fresh
+    # full-volume `labeled == vessel_id` boolean array per component --
+    # `ndi_sum` of a boolean array within each label is its True-voxel
+    # count, so "no True voxel at all" is just "count == 0". Matters once
+    # this is called from inside a settings-search sweep loop, not just
+    # once per real pipeline run.
+    explained_counts = ndi_sum(explained, labeled, index=vessel_ids)
     missing_voxel_counts = [
         int(sizes[vessel_id])
-        for vessel_id in vessel_ids
-        if not explained[labeled == vessel_id].any()
+        for vessel_id, explained_count in zip(vessel_ids, explained_counts)
+        if explained_count == 0
     ]
     vessel_count = len(vessel_ids)
     missing_vessel_count = len(missing_voxel_counts)

@@ -73,3 +73,36 @@ def test_build_report_text_omits_skipped_note_when_everything_ran():
     result = OptimisationResult(settings={}, trials=())  # default groups_run = every group
     text = build_report_text(result)
     assert "Not optimised" not in text
+
+
+def test_build_report_text_flags_input_data_guard_rejections():
+    """A trial that ran fine (no exception) but scored at the guard-penalty
+    level -- see `search._Search._regression_penalty` -- must be reported
+    distinctly from an outright failure."""
+    trials = (
+        TrialRecord(group="bundle_refinement", setting="skeleton_bundle_scan_size", value=5, score=-2.0),
+        TrialRecord(
+            group="bundle_refinement", setting="skeleton_bundle_scan_size", value=9, score=999.0,
+            note="",
+        ),
+    )
+    result = OptimisationResult(
+        settings={"skeleton_bundle_scan_size": 5}, trials=trials,
+    )
+    text = build_report_text(result)
+    assert "1 rejected by an input-data guard" in text
+
+
+def test_build_report_text_does_not_double_count_a_failed_trial_as_guarded():
+    """A trial scoring at guard-penalty level *because it raised* is already
+    counted as "failed" -- it must not also be counted as guard-rejected."""
+    trials = (
+        TrialRecord(
+            group="closing_radius", setting="skeleton_closing_radius", value=5, score=1000.0,
+            note="failed: boom",
+        ),
+    )
+    result = OptimisationResult(settings={"skeleton_closing_radius": 0}, trials=trials)
+    text = build_report_text(result)
+    assert "1 failed" in text
+    assert "rejected by an input-data guard" not in text

@@ -227,6 +227,19 @@ def _downsample_mask(mask: np.ndarray, factor: int) -> np.ndarray:
 
     return block_reduce(mask, block_size=(factor, factor, factor), func=np.max)
 
+
+def _downsample_intensity(image: np.ndarray, factor: int) -> np.ndarray:
+    """Block-mean reduction for a raw intensity image -- unlike the mask's
+    own block-*max* (foreground survives if any voxel in the block was),
+    an intensity value should average over its block, or Otsu thresholding
+    the downsampled copy would systematically read brighter than the real
+    volume and bias every added/removed-voxel comparison."""
+    if factor <= 1:
+        return image
+    from skimage.measure import block_reduce
+
+    return block_reduce(image, block_size=(factor, factor, factor), func=np.mean)
+
 #: Reject a closing/bridging candidate that merges components further apart
 #: than this many typical-vessel-radii -- more likely two distinct vessels
 #: than one gap.
@@ -243,6 +256,38 @@ _MAX_GRAPH_LENGTH_REMOVED_FRACTION = 0.05
 _MAX_LENGTH_SHRINK_FRACTION = 0.15
 #: A candidate rejected by a guard scores this much worse than any real trial.
 _GUARD_PENALTY = 1000.0
+
+#: Guard several groups' own narrow proxy metrics against the one failure
+#: mode none of them can see: a candidate that improves its own score while
+#: quietly dropping real coverage of the segmented mask -- measured against
+#: the existing, already-tested `preprocessing.diagnose_skeleton_mask_consistency`/
+#: `diagnose_vessels_missing_from_skeleton`/`graph.diagnose_skeleton_graph_consistency`
+#: (previously computed only as end-of-run warning diagnostics, never used
+#: to choose between candidates). Reasoned, not empirically fitted: small
+#: enough that ordinary EDT/labelling rounding noise between two very
+#: similar candidates never falsely trips the guard, big enough to catch a
+#: candidate that genuinely erodes coverage rather than one that's a coin
+#: flip away from the baseline.
+_MAX_COVERAGE_FRACTION_REGRESSION = 0.02
+_MAX_MISSING_VESSEL_FRACTION_REGRESSION = 0.02
+#: Same idea, applied to the "does a segmentation-cleanup candidate invent
+#: foreground the raw reference image does not support" check
+#: (`preprocessing.compare_segmentation_to_raw_image`) -- only ever
+#: evaluated when a raw image is actually supplied.
+_MAX_RAW_ADDED_FRACTION_REGRESSION = 0.02
+
+#: Below this physical volume, a mask connected component is segmentation
+#: noise, not a real vessel worth protecting from pruning -- matches
+#: `preprocessing.segmentation_raw_comparison.DEFAULT_MISSED_STRUCTURE_MIN_VOLUME_UM3`'s
+#: own reasoning, adopted here for the same reason it was adopted there: a
+#: real run against noisy real data showed `diagnose_vessels_missing_from_skeleton`'s
+#: own default floor (``min_vessel_voxels=2``) counts tiny segmentation-noise
+#: flecks in the mask as "real vessels" the guard must protect, which made
+#: `skeleton_min_branch_length` -- whose entire purpose is pruning exactly
+#: that noise -- unable to prune anything at all (every non-zero candidate
+#: got guard-rejected). A voxel-count floor also does not generalise across
+#: resolutions the way a physical volume does.
+_MIN_VESSEL_VOLUME_UM3_FOR_GUARD = 20.0
 
 
 @dataclass(frozen=True)
@@ -331,8 +376,21 @@ class _Search:
         starting_values: Mapping[str, Any],
         progress: Optional[ProgressCallback],
         enabled_groups: Optional[Iterable[str]] = None,
+        raw_image: Optional[np.ndarray] = None,
     ) -> None:
         self.raw_mask = np.asarray(raw_mask, dtype=bool)
+        #: An optional raw (unsegmented) reference image, already resampled
+        #: to match `raw_mask`'s own shape (see `optimise_skeleton_and_graph_settings`).
+        #: `None` (the default) is today's exact behaviour -- only
+        #: `segmentation_cleanup` reads this, and only to add an extra,
+        #: additive guard (see `_group_segmentation_cleanup`), never to
+        #: change what the group otherwise decides.
+        if raw_image is not None and raw_image.shape != self.raw_mask.shape:
+            raise ValueError(
+                "raw_image shape does not match the segmented mask shape: "
+                f"{raw_image.shape} != {self.raw_mask.shape}"
+            )
+        self.raw_image = raw_image
         #: The mask exactly as given, before any segmentation-cleanup
         #: candidate is tried -- every cleanup trial re-cleans this same
         #: fixed input (never the previous trial's own output), matching how
@@ -359,6 +417,11 @@ class _Search:
         self.current_skeleton: np.ndarray = self.raw_skeleton
         self.current_graph = None
         self._group_index = 0
+        #: Set fresh at the top of `_group_closing_radius`/`_group_gap_bridging`
+        #: (each group's own entering state) -- `_fusion_cost` is a shared
+        #: method, not a sweep-local closure, so its own coverage-regression
+        #: guard needs this as instance state rather than a captured local.
+        self._fusion_baseline_coverage: float = 1.0
 
         radius_map = preprocessing.inscribed_radius_map(self.raw_mask, self.voxel_size_zyx)
         nonzero = radius_map[radius_map > 0]
@@ -488,10 +551,33 @@ class _Search:
         """
         group = "segmentation_cleanup"
 
+        # Optional: when a raw reference image is supplied (see
+        # `optimise_skeleton_and_graph_settings`'s own `raw_image`
+        # parameter), guard every candidate against inventing foreground
+        # the raw signal does not support -- `score_segmented_mask` alone
+        # cannot see this, since it only ever looks at the mask's own
+        # geometry (see `preprocessing.segmentation_raw_comparison`'s own
+        # module docstring for why this is a genuinely different signal).
+        baseline_added_fraction: Optional[float] = None
+        if self.raw_image is not None:
+            baseline_added_fraction = preprocessing.compare_segmentation_to_raw_image(
+                self._cleanup_trial({}), self.raw_image, voxel_size_zyx=self.voxel_size_zyx
+            ).added_fraction
+
         def quality(mask_trial: np.ndarray) -> float:
-            return -preprocessing.score_segmented_mask(
+            score = -preprocessing.score_segmented_mask(
                 mask_trial, voxel_size_zyx=self.voxel_size_zyx
             ).total
+            if baseline_added_fraction is not None:
+                added_fraction = preprocessing.compare_segmentation_to_raw_image(
+                    mask_trial, self.raw_image, voxel_size_zyx=self.voxel_size_zyx
+                ).added_fraction
+                score += self._regression_penalty(
+                    1.0 - added_fraction,
+                    1.0 - baseline_added_fraction,
+                    _MAX_RAW_ADDED_FRACTION_REGRESSION,
+                )
+            return score
 
         self._sweep(
             group, "segmentation_cleanup_fill_cavities", [False, True],
@@ -677,6 +763,62 @@ class _Search:
         if nonzero.size:
             self.typical_radius_um = float(np.median(nonzero))
 
+    # -- shared input-data-consistency guards -------------------------------------
+    # Every helper below returns a "higher is better" fraction so
+    # `_regression_penalty` has one uniform shape, and every one reuses an
+    # existing, already-tested diagnostic that previously only ran as an
+    # end-of-a-real-run warning (`pipeline/stages.py`) -- never used to
+    # choose between candidates until now.
+    def _vessels_represented_fraction(self, skeleton: np.ndarray) -> float:
+        """Fraction of self.raw_mask's own real vessels (see
+        preprocessing.diagnose_vessels_missing_from_skeleton) with at least
+        one skeleton voxel anywhere in them -- catches a whole vessel
+        dropped, which a blended coverage percentage can hide.
+
+        Uses `_MIN_VESSEL_VOLUME_UM3_FOR_GUARD`, not
+        `diagnose_vessels_missing_from_skeleton`'s own default
+        ``min_vessel_voxels=2`` -- see that constant's own docstring for
+        the real-data run that showed why the bare default is far too
+        permissive here.
+        """
+        voxel_volume_um3 = (
+            float(self.voxel_size_zyx[0]) * float(self.voxel_size_zyx[1]) * float(self.voxel_size_zyx[2])
+        )
+        min_vessel_voxels = max(
+            2, int(round(_MIN_VESSEL_VOLUME_UM3_FOR_GUARD / max(1e-9, voxel_volume_um3)))
+        )
+        report = preprocessing.diagnose_vessels_missing_from_skeleton(
+            skeleton, self.raw_mask, voxel_size_zyx=self.voxel_size_zyx,
+            min_vessel_voxels=min_vessel_voxels,
+        )
+        return float(report["explained_vessel_fraction"])
+
+    def _skeleton_mask_coverage_fraction(self, skeleton: np.ndarray) -> float:
+        """Fraction of self.raw_mask's own volume the skeleton still runs
+        through. See preprocessing.diagnose_skeleton_mask_consistency."""
+        report = preprocessing.diagnose_skeleton_mask_consistency(
+            skeleton, self.raw_mask, voxel_size_zyx=self.voxel_size_zyx
+        )
+        return float(report["coverage_fraction"])
+
+    def _skeleton_graph_coverage_fraction(self, G) -> float:
+        """Fraction of self.current_skeleton the graph's own rasterised
+        edges still trace. See graph.diagnose_skeleton_graph_consistency --
+        the cheapest of the three (no EDT, no labelling), so used across
+        every graph-level sweep below."""
+        report = graph_mod.diagnose_skeleton_graph_consistency(
+            G, self.current_skeleton, voxel_size_zyx=self.voxel_size_zyx
+        )
+        return float(report["coverage_fraction"])
+
+    @staticmethod
+    def _regression_penalty(current: float, baseline: float, tolerance: float) -> float:
+        """`_GUARD_PENALTY` when *current* has fallen more than *tolerance*
+        below *baseline*, else 0 -- purely additive: a candidate that does
+        not regress pays nothing and is scored exactly as it was before
+        this guard existed."""
+        return _GUARD_PENALTY if (baseline - current) > tolerance else 0.0
+
     # -- group 1: thick-vessel gating ---------------------------------------------
     def _group_thick_vessel_gating(self) -> None:
         group = "thick_vessel_gating"
@@ -725,9 +867,19 @@ class _Search:
         # rather than one line, so they are scored on braid factor -- the
         # measure this codebase already uses for exactly that failure mode --
         # rather than on connectivity alone.
+        baseline_skeleton_for_refinement = trial_with({})
+        baseline_vessels_represented = self._vessels_represented_fraction(
+            baseline_skeleton_for_refinement
+        )
+
         def cost_braid(skeleton: np.ndarray) -> float:
             stats = preprocessing.compute_skeleton_connectivity_stats(skeleton, self._connectivity())
-            return met.braid_factor_along_long_axis(skeleton) + (1.0 - stats.largest_fraction)
+            penalty = self._regression_penalty(
+                self._vessels_represented_fraction(skeleton),
+                baseline_vessels_represented,
+                _MAX_MISSING_VESSEL_FRACTION_REGRESSION,
+            )
+            return met.braid_factor_along_long_axis(skeleton) + (1.0 - stats.largest_fraction) + penalty
 
         typical_thick_radius_um = cand.typical_thick_vessel_radius_um(
             self.raw_mask, self.voxel_size_zyx, float(self.current["skeleton_thick_vessel_min_radius_um"])
@@ -776,14 +928,38 @@ class _Search:
         candidate_values = cand.min_branch_length_candidates(
             raw_stats.component_sizes, int(self.current["skeleton_min_branch_length"])
         )
+        # Baseline through the *whole* `_preprocess_trial` pipeline at the
+        # settings entering this group (closing/bridging/bundle knobs still
+        # at their own not-yet-optimised current values) -- not the bare
+        # pre-pipeline `self.raw_skeleton`, which every candidate below is
+        # NOT compared against (every candidate goes through the full
+        # pipeline too). This fixes a real, pre-existing bug the
+        # voxels-removed guard already had, not just the new
+        # vessels-missing guard: a real, noisy dataset showed the full
+        # pipeline's own closing/bridging/bundle-refinement steps (at their
+        # not-yet-tuned defaults) discarding ~34% of the raw skeleton's
+        # voxels even at min_branch_length=0, which alone already exceeded
+        # `_MAX_VOXELS_REMOVED_FRACTION` regardless of this sweep's own
+        # candidate value -- every real candidate was rejected, no matter
+        # how little it actually pruned (see project memory).
+        baseline_cleaned = self._preprocess_trial({})
+        baseline_voxel_count = preprocessing.compute_skeleton_connectivity_stats(
+            baseline_cleaned, self._connectivity()
+        ).voxel_count
+        baseline_vessels_represented = self._vessels_represented_fraction(baseline_cleaned)
 
         def cost(value: int) -> float:
             cleaned = self._preprocess_trial({"skeleton_min_branch_length": value})
             stats = preprocessing.compute_skeleton_connectivity_stats(cleaned, self._connectivity())
             removed_fraction = (
-                1.0 - stats.voxel_count / raw_stats.voxel_count if raw_stats.voxel_count else 0.0
+                1.0 - stats.voxel_count / baseline_voxel_count if baseline_voxel_count else 0.0
             )
             penalty = _GUARD_PENALTY if removed_fraction > _MAX_VOXELS_REMOVED_FRACTION else 0.0
+            penalty += self._regression_penalty(
+                self._vessels_represented_fraction(cleaned),
+                baseline_vessels_represented,
+                _MAX_MISSING_VESSEL_FRACTION_REGRESSION,
+            )
             return -stats.largest_fraction + penalty
 
         self._sweep(group, "skeleton_min_branch_length", candidate_values, cost)
@@ -795,6 +971,7 @@ class _Search:
         baseline_components = preprocessing.compute_skeleton_connectivity_stats(
             self.current_skeleton, self._connectivity()
         ).n_components
+        baseline_coverage = self._skeleton_mask_coverage_fraction(self.current_skeleton)
 
         def leftover_density(cleaned: np.ndarray, scan_size: int, density_fraction: float) -> float:
             from scipy.ndimage import uniform_filter
@@ -806,7 +983,13 @@ class _Search:
             n_components = preprocessing.compute_skeleton_connectivity_stats(
                 cleaned, self._connectivity()
             ).n_components
-            return _GUARD_PENALTY if n_components > baseline_components else 0.0
+            penalty = _GUARD_PENALTY if n_components > baseline_components else 0.0
+            penalty += self._regression_penalty(
+                self._skeleton_mask_coverage_fraction(cleaned),
+                baseline_coverage,
+                _MAX_COVERAGE_FRACTION_REGRESSION,
+            )
+            return penalty
 
         scan_candidates = cand.bundle_scan_size_candidates(
             self.raw_mask, self.voxel_size_zyx, int(self.current["skeleton_bundle_scan_size"])
@@ -859,10 +1042,16 @@ class _Search:
             component_connectivity=self._connectivity(), typical_radius_um=self.typical_radius_um,
         )
         penalty = _GUARD_PENALTY if signal.largest_gap_bridged_ratio > _GAP_FUSION_RATIO_GUARD else 0.0
+        penalty += self._regression_penalty(
+            self._skeleton_mask_coverage_fraction(cleaned),
+            self._fusion_baseline_coverage,
+            _MAX_COVERAGE_FRACTION_REGRESSION,
+        )
         return -float(signal.components_merged) + penalty
 
     def _group_closing_radius(self) -> None:
         group = "closing_radius"
+        self._fusion_baseline_coverage = self._skeleton_mask_coverage_fraction(self.current_skeleton)
         candidate_values = cand.closing_radius_candidates(
             self._gap_distances_voxels(), int(self.current["skeleton_closing_radius"])
         )
@@ -877,6 +1066,7 @@ class _Search:
     # -- group 5: gap bridging --------------------------------------------------------
     def _group_gap_bridging(self) -> None:
         group = "gap_bridging"
+        self._fusion_baseline_coverage = self._skeleton_mask_coverage_fraction(self.current_skeleton)
         gaps = self._gap_distances_voxels()
         bridge_candidates = cand.bridge_gap_size_candidates(gaps, int(self.current["skeleton_bridge_gap_size"]))
 
@@ -902,11 +1092,17 @@ class _Search:
     # -- group 6: component connectivity + minimum component percent -----------------
     def _group_connectivity_and_component_filter(self) -> None:
         group = "connectivity_and_component_filter"
+        baseline_coverage = self._skeleton_mask_coverage_fraction(self.current_skeleton)
 
         def cost_connectivity(value: int) -> float:
             cleaned = self._preprocess_trial({"skeleton_component_connectivity": value})
             stats = preprocessing.compute_skeleton_connectivity_stats(cleaned, value)
-            return -stats.largest_fraction
+            penalty = self._regression_penalty(
+                self._skeleton_mask_coverage_fraction(cleaned),
+                baseline_coverage,
+                _MAX_COVERAGE_FRACTION_REGRESSION,
+            )
+            return -stats.largest_fraction + penalty
 
         self._sweep(group, "skeleton_component_connectivity", cand.component_connectivity_candidates(), cost_connectivity)
         self.current_skeleton = self._preprocess_trial({})
@@ -924,6 +1120,13 @@ class _Search:
         )
 
         def cost_percent(value: float) -> float:
+            # No coverage-regression guard here, deliberately: discarding a
+            # genuinely small, noise-scale component is this sweep's own
+            # purpose, and necessarily costs some raw-mask coverage by
+            # design -- `protect_second_component` below is the targeted
+            # guard against the one real risk (a genuine second vessel tree
+            # mistaken for noise), not a blanket coverage floor that would
+            # fight the setting's own intent.
             cleaned = self._preprocess_trial({"skeleton_min_component_percent": value})
             stats = preprocessing.compute_skeleton_connectivity_stats(cleaned, connectivity)
             penalty = 0.0
@@ -962,10 +1165,21 @@ class _Search:
         reconnect_candidates = cand.reconnect_threshold_candidates(
             gap_um, float(self.current["graph_reconnect_threshold"])
         )
+        # The graph built from the settings as they stand entering this
+        # group -- not `baseline_graph` above, which is a zero-threshold
+        # probe purely for gap-distance candidate generation -- is the
+        # right reference for "did a threshold choice reduce how much of
+        # the skeleton the graph still traces".
+        baseline_graph_coverage = self._skeleton_graph_coverage_fraction(self._build_graph({}))
 
         def cost_reconnect(value: float) -> float:
             G = self._build_graph({"graph_reconnect_threshold": value})
-            return met.graph_topology_metrics(G).score
+            penalty = self._regression_penalty(
+                self._skeleton_graph_coverage_fraction(G),
+                baseline_graph_coverage,
+                _MAX_COVERAGE_FRACTION_REGRESSION,
+            )
+            return met.graph_topology_metrics(G).score + penalty
 
         self._sweep(group, "graph_reconnect_threshold", reconnect_candidates, cost_reconnect)
 
@@ -975,7 +1189,12 @@ class _Search:
 
         def cost_orphan(value: float) -> float:
             G = self._build_graph({"final_orphan_reconnect_threshold": value})
-            return met.graph_topology_metrics(G).score
+            penalty = self._regression_penalty(
+                self._skeleton_graph_coverage_fraction(G),
+                baseline_graph_coverage,
+                _MAX_COVERAGE_FRACTION_REGRESSION,
+            )
+            return met.graph_topology_metrics(G).score + penalty
 
         self._sweep(group, "final_orphan_reconnect_threshold", orphan_candidates, cost_orphan)
 
@@ -991,11 +1210,17 @@ class _Search:
     def _group_cluster_collapse(self) -> None:
         group = "cluster_collapse_distance"
         baseline = met.graph_topology_metrics(self.current_graph)
+        baseline_graph_coverage = self._skeleton_graph_coverage_fraction(self.current_graph)
 
         def cost_for(key: str, value: Any) -> float:
             G = self._build_graph({key: value})
             metrics = met.graph_topology_metrics(G)
             fragmentation_penalty = _GUARD_PENALTY * max(0, metrics.n_components - baseline.n_components)
+            fragmentation_penalty += self._regression_penalty(
+                self._skeleton_graph_coverage_fraction(G),
+                baseline_graph_coverage,
+                _MAX_COVERAGE_FRACTION_REGRESSION,
+            )
             return float(metrics.total_degree2) + fragmentation_penalty
 
         node_gaps = cand.nearest_neighbour_node_distances_um(self.current_graph)
@@ -1038,6 +1263,14 @@ class _Search:
 
     # -- group 9: minimum stub length -----------------------------------------------
     def _group_min_stub_length(self) -> None:
+        # No `_skeleton_graph_coverage_fraction` guard here, deliberately --
+        # unlike reconnect_thresholds/cluster_collapse_distance, pruning a
+        # terminal stub is this sweep's own purpose and necessarily reduces
+        # how much of the skeleton the graph still traces; a coverage-
+        # regression guard would fight the setting's own intent exactly the
+        # way it would for skeleton_min_component_percent (see that sweep's
+        # own comment). `_MAX_GRAPH_LENGTH_REMOVED_FRACTION` below is the
+        # existing, purpose-built guard against removing too much.
         group = "min_stub_length"
         terminal_lengths = cand.terminal_edge_lengths_um(self.current_graph)
         candidate_values = cand.min_stub_length_candidates(
@@ -1182,6 +1415,7 @@ def optimise_skeleton_and_graph_settings(
     progress: Optional[ProgressCallback] = None,
     downsample_factor: Optional[int] = None,
     groups: Optional[Iterable[str]] = None,
+    raw_image: Optional[np.ndarray] = None,
 ) -> OptimisationResult:
     """Empirically choose every Skeletonise/Graph tab setting for *raw_mask*.
 
@@ -1204,6 +1438,14 @@ def optimise_skeleton_and_graph_settings(
     *groups* restricts the search to some of :data:`GROUP_NAMES` -- ``None``
     (the default) runs all ten; any other setting simply keeps its starting
     value, exactly as if every one of its candidates had failed.
+
+    *raw_image* is an optional raw (unsegmented) reference image, same shape
+    as *raw_mask*, same physical dataset -- when given, the
+    ``segmentation_cleanup`` group additionally guards its candidates against
+    the raw signal (see :func:`haemolynx.preprocessing.compare_segmentation_to_raw_image`);
+    ``None`` (the default) is today's exact behaviour. Downsampled the same
+    way *raw_mask* is (block-mean, not block-max -- an intensity value
+    averages over its block rather than taking the brightest voxel in it).
     """
     raw_mask = np.asarray(raw_mask, dtype=bool)
     voxel_size_xyz = tuple(float(v) for v in voxel_size_xyz)
@@ -1213,11 +1455,18 @@ def optimise_skeleton_and_graph_settings(
     if factor > 1:
         search_mask = _downsample_mask(raw_mask, factor)
         search_voxel_size_xyz = tuple(v * factor for v in voxel_size_xyz)
+        search_raw_image = (
+            _downsample_intensity(np.asarray(raw_image), factor) if raw_image is not None else None
+        )
     else:
         search_mask = raw_mask
         search_voxel_size_xyz = voxel_size_xyz
+        search_raw_image = raw_image
 
-    search = _Search(search_mask, search_voxel_size_xyz, starting_values, progress, enabled_groups=groups)
+    search = _Search(
+        search_mask, search_voxel_size_xyz, starting_values, progress,
+        enabled_groups=groups, raw_image=search_raw_image,
+    )
     search.run()
     settings = {name: search.current[name] for name in OPTIMISE_SETTING_NAMES if name in search.current}
     if factor > 1:

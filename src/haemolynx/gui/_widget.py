@@ -4152,6 +4152,9 @@ def _run_optimisation_in_background(
     """
     from napari.qt.threading import thread_worker
 
+    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.io import resolve_image_path_with_optional_zip
+
     bridge = _optimisation_progress_bridge()
     cancel_flag = {"cancelled": False}
 
@@ -4187,6 +4190,28 @@ def _run_optimisation_in_background(
         )
         raw_mask = _to_binary_volume_for_skeletonization(image)
         starting_values = {name: local_settings[name] for name in OPTIMISE_SETTING_NAMES}
+
+        # Optional: same shared fwhm_raw_tiff_path the "Raw data file" row
+        # feeds "Check segmented image" with -- when present, guards the
+        # segmentation_cleanup group against inventing foreground the raw
+        # signal does not support. Never fatal: a missing/unreadable/
+        # mismatched-shape raw file just means the search runs without this
+        # extra guard, exactly like leaving the field empty.
+        raw_image = None
+        raw_path = local_settings.get("fwhm_raw_tiff_path")
+        if raw_path:
+            try:
+                raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
+                raw_image = load_single_channel_tiff_volume(
+                    raw_path_resolved, axis_order=local_settings["image_axis_order"]
+                )
+            except Exception:  # noqa: BLE001 - degrade to no raw-image guard
+                logger.exception(
+                    "could not load fwhm_raw_tiff_path for the optimiser's raw-image guard; "
+                    "continuing without it"
+                )
+                raw_image = None
+
         result = optimise_skeleton_and_graph_settings(
             raw_mask,
             voxel_size_xyz=voxel_size_xyz,
@@ -4194,6 +4219,7 @@ def _run_optimisation_in_background(
             progress=watched,
             downsample_factor=downsample_factor,
             groups=groups,
+            raw_image=raw_image,
         )
         return result, local_settings["input_path"]
 

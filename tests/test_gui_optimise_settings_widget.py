@@ -375,6 +375,108 @@ def test_optimise_settings_binarizes_a_normalized_float_probability_mask(
     assert captured["raw_mask"].sum() == 6 ** 3  # only the thresholded block
 
 
+def test_optimise_settings_loads_the_raw_data_row_as_the_raw_image(panel, monkeypatch, tmp_path):
+    """The shared "Raw data file" row (fwhm_raw_tiff_path) reaches the
+    optimiser's own `raw_image` parameter, the same way it reaches "Check
+    segmented image"'s raw comparison."""
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    import haemolynx.haemodynamics.automated as automated_mod
+    from haemolynx.optimisation.search import OptimisationResult
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+    raw_image = np.where(mask, 200.0, 10.0).astype(np.float32)
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+    monkeypatch.setattr(
+        automated_mod, "load_single_channel_tiff_volume", lambda path, axis_order: raw_image,
+    )
+
+    captured = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        captured["raw_image"] = kwargs.get("raw_image")
+        return OptimisationResult(settings={}, trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+    panel._haemolynx_raw_data_row.value = raw_file
+
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "raw_image" in captured:
+            break
+    else:
+        pytest.fail("optimiser worker did not run within 10s")
+
+    assert captured["raw_image"] is not None
+    assert np.array_equal(captured["raw_image"], raw_image)
+
+
+def test_optimise_settings_raw_image_none_when_raw_data_row_is_empty(panel, monkeypatch, tmp_path):
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    from haemolynx.optimisation.search import OptimisationResult
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+
+    captured = {}
+
+    def fake_optimise(raw_mask, **kwargs):
+        captured["raw_image"] = kwargs.get("raw_image")
+        return OptimisationResult(settings={}, trials=())
+
+    monkeypatch.setattr(widget_mod, "optimise_skeleton_and_graph_settings", fake_optimise)
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "raw_image" in captured:
+            break
+    else:
+        pytest.fail("optimiser worker did not run within 10s")
+
+    assert captured["raw_image"] is None
+
+
 # --- a real, slow, end-to-end run --------------------------------------------
 
 
