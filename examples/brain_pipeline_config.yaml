@@ -584,7 +584,7 @@ fwhm_diameter_measurement:
   use_fwhm_edge_diameters: false
   # Measure FWHM diameters from the raw image; turn off to keep diameters already on the graph  [needs use_fwhm_edge_diameters]
   do_fwhm_measurement: true
-  # Measure FWHM diameters from this raw single-channel image  [needs use_fwhm_edge_diameters; must exist]
+  # Measure FWHM diameters from this raw single-channel image. Also usable, independent of use_fwhm_edge_diameters, as the 'Raw data file' shown next to 'Check segmented image' on the Input tab, so the segmentation can be cross-checked against it without turning FWHM measurement on  [needs use_fwhm_edge_diameters; must exist]
   fwhm_raw_tiff_path: null
   # Sample a transverse profile every this far along the centerline  [um; range 0.0..; needs use_fwhm_edge_diameters]
   fwhm_sample_spacing_along_edge_um: 2.0

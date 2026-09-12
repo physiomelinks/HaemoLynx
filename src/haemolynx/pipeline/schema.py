@@ -3121,10 +3121,17 @@ SCHEMA = Schema(
             name="fwhm_raw_tiff_path",
             kind="path",
             default=None,
-            help="Measure FWHM diameters from this raw single-channel image",
+            help=(
+                "Measure FWHM diameters from this raw single-channel image. "
+                "Also usable, independent of use_fwhm_edge_diameters, as the "
+                "'Raw data file' shown next to 'Check segmented image' on the "
+                "Input tab, so the segmentation can be cross-checked against "
+                "it without turning FWHM measurement on"
+            ),
             section=_FWHM,
             requires=("use_fwhm_edge_diameters",),
             must_exist=True,
+            always_effective=True,
         ),
         Setting(
             name="fwhm_sample_spacing_along_edge_um",

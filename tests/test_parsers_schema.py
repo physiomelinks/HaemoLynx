@@ -113,6 +113,28 @@ def test_ineffective_settings_can_be_listed_without_running_validation():
     assert len(_schema().ineffective_settings(values)) == 1
 
 
+def test_always_effective_suppresses_the_ineffective_warning():
+    """A setting genuinely read by more than one feature -- one gated by its
+    own `requires`, one not -- must not warn just because the gated feature
+    is off; the value can still be doing something."""
+    schema = Schema(
+        [
+            Setting("use_masks", "bool", False, "Assign boundaries from masks", "Boundaries"),
+            Setting(
+                "mask_path", "path", None, "Arteriole mask", "Boundaries",
+                requires=("use_masks",), always_effective=True,
+            ),
+        ],
+        title="Test schema",
+    )
+    import warnings as warnings_mod
+
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("error", IneffectiveSettingWarning)
+        resolved = schema.validate({"mask_path": "art.tif"})
+    assert resolved["mask_path"] == Path("art.tif")
+
+
 def test_a_setting_whose_prerequisite_is_on_is_accepted():
     resolved = _schema().validate({"mask_path": "art.tif", "use_masks": True})
     assert resolved["mask_path"] == Path("art.tif")

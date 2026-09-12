@@ -56,6 +56,11 @@ from .segmentation_quality import (
     format_segmentation_quality_report,
     score_segmented_mask,
 )
+from .segmentation_raw_comparison import (
+    SegmentationRawComparison,
+    compare_segmentation_to_raw_image,
+    format_segmentation_raw_comparison_report,
+)
 
 __all__ = [
     "BRAID_FACTOR_LIMIT",
@@ -103,4 +108,7 @@ __all__ = [
     "SegmentationQualityScore",
     "format_segmentation_quality_report",
     "score_segmented_mask",
+    "SegmentationRawComparison",
+    "compare_segmentation_to_raw_image",
+    "format_segmentation_raw_comparison_report",
 ]

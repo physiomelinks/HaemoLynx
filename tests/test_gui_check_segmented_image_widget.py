@@ -59,6 +59,55 @@ def test_check_image_button_is_a_child_of_the_input_tab(panel):
     assert found, "the Check segmented image button is not on the Input tab"
 
 
+# --- raw data file row: exists, placed correctly, two-way synced -------------------
+
+
+def test_raw_data_row_exists_with_a_tooltip(panel):
+    row = panel._haemolynx_raw_data_row
+    assert row.tooltip.strip()
+
+
+def test_raw_data_row_is_a_child_of_the_input_tab(panel):
+    from haemolynx.gui.tabs import tab_titles
+
+    tabs = panel._haemolynx_tabs
+    input_index = list(tab_titles()).index("1. Input")
+    input_page = tabs.widget(input_index)
+    ancestor = panel._haemolynx_raw_data_row.native.parent()
+    found = False
+    while ancestor is not None:
+        if ancestor is input_page:
+            found = True
+            break
+        ancestor = ancestor.parent()
+    assert found, "the raw data file row is not on the Input tab"
+
+
+def test_raw_data_row_starts_in_sync_with_fwhm_raw_tiff_path(panel):
+    rows = panel._haemolynx_rows()
+    assert panel._haemolynx_raw_data_row.value == rows["fwhm_raw_tiff_path"].value
+
+
+def test_setting_raw_data_row_updates_fwhm_raw_tiff_path(panel, tmp_path):
+    rows = panel._haemolynx_rows()
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+
+    panel._haemolynx_raw_data_row.value = raw_file
+
+    assert Path(rows["fwhm_raw_tiff_path"].value) == raw_file
+
+
+def test_setting_fwhm_raw_tiff_path_updates_the_raw_data_row(panel, tmp_path):
+    rows = panel._haemolynx_rows()
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+
+    rows["fwhm_raw_tiff_path"].value = raw_file
+
+    assert Path(panel._haemolynx_raw_data_row.value) == raw_file
+
+
 # --- guards ------------------------------------------------------------------
 
 
@@ -306,3 +355,106 @@ def test_check_segmented_image_reports_raw_vs_after_cleanup_when_cleanup_is_on(
     assert "Raw segmentation:" in report, report
     assert "After your current cleanup settings:" in report, report
     assert "does not mean your source data improved" in report, report
+
+
+def test_check_segmented_image_cross_checks_against_a_raw_file_when_set(
+    panel, monkeypatch, tmp_path
+):
+    """When the "Raw data file" row (shared with fwhm_raw_tiff_path) names a
+    file, the report gains an added/removed/missed-structures section
+    comparing the segmentation against it."""
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    import haemolynx.haemodynamics.automated as automated_mod
+
+    shape = (20, 20, 20)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    mask = (np.sqrt((zz - 10) ** 2 + (yy - 10) ** 2) <= 4.0) & (xx >= 2) & (xx <= 17)
+    raw_image = np.where(mask, 200.0, 10.0).astype(np.float32)
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+    monkeypatch.setattr(
+        automated_mod,
+        "load_single_channel_tiff_volume",
+        lambda path, axis_order: raw_image,
+    )
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+    panel._haemolynx_raw_data_row.value = raw_file
+
+    panel._haemolynx_check_segmented_image()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "Checking segmented image..." not in panel._haemolynx_report():
+            break
+    else:
+        pytest.fail("segmented image check did not finish within 10s")
+
+    report = panel._haemolynx_report()
+    assert "Raw-image cross-check" in report, report
+    assert "agreement" in report.lower(), report
+    assert "added voxels" in report, report
+    assert "removed voxels" in report, report
+    assert "missed structures" in report, report
+
+
+def test_check_segmented_image_degrades_gracefully_when_raw_file_is_missing(
+    panel, monkeypatch, tmp_path
+):
+    """A raw path that fails to load must not crash the whole check -- the
+    mask-only score is still useful; the raw cross-check just gets skipped
+    with a note explaining why."""
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    shape = (15, 15, 15)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    mask = (np.sqrt((zz - 7) ** 2 + (yy - 7) ** 2) <= 3.0) & (xx >= 2) & (xx <= 12)
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+    panel._haemolynx_raw_data_row.value = tmp_path / "does_not_exist.tif"
+
+    panel._haemolynx_check_segmented_image()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "Checking segmented image..." not in panel._haemolynx_report():
+            break
+    else:
+        pytest.fail("segmented image check did not finish within 10s")
+
+    report = panel._haemolynx_report()
+    assert "Segmented image quality:" in report, report
+    assert "Raw-image cross-check skipped:" in report, report

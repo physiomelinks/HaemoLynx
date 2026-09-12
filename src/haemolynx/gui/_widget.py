@@ -4298,10 +4298,13 @@ def _run_segmentation_quality_check_in_background(
     """
     from napari.qt.threading import thread_worker
 
-    from haemolynx.io import voxel_size_zyx_from_xyz
+    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.io import resolve_image_path_with_optional_zip, voxel_size_zyx_from_xyz
     from haemolynx.preprocessing import (
         clean_segmented_mask_for_skeletonisation,
+        compare_segmentation_to_raw_image,
         format_segmentation_quality_report,
+        format_segmentation_raw_comparison_report,
         score_segmented_mask,
     )
 
@@ -4353,7 +4356,29 @@ def _run_segmentation_quality_check_in_background(
                 target_voxels_across_radius=local_settings.get("min_voxels_across_vessel_radius"),
                 boundary_patch_allowance=local_settings.get("expected_boundary_vessel_count"),
             )
-        return score, after_cleanup
+
+        # Optional: cross-check against the raw (unsegmented) image, when
+        # one is configured -- shares fwhm_raw_tiff_path with FWHM diameter
+        # measurement (see the "Raw data file" row next to this button).
+        # Never fatal: a missing/unreadable/mismatched-shape raw file
+        # degrades to a report note, not a failed check -- the mask-only
+        # score above is still useful on its own.
+        raw_comparison = None
+        raw_comparison_error = None
+        raw_path = local_settings.get("fwhm_raw_tiff_path")
+        if raw_path:
+            try:
+                raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
+                raw_image = load_single_channel_tiff_volume(
+                    raw_path_resolved, axis_order=local_settings["image_axis_order"]
+                )
+                raw_comparison = compare_segmentation_to_raw_image(
+                    mask, raw_image, voxel_size_zyx=voxel_size_zyx
+                )
+            except Exception as error:  # noqa: BLE001 - degrade to a report note
+                raw_comparison_error = f"{type(error).__name__}: {error}"
+
+        return score, after_cleanup, raw_comparison, raw_comparison_error
 
     def finished(payload) -> None:
         if not still_ours():
@@ -4363,8 +4388,13 @@ def _run_segmentation_quality_check_in_background(
         if cancel_flag["cancelled"]:
             report.value = FINISHED_FIRST
             return
-        score, after_cleanup = payload
-        report.value = format_segmentation_quality_report(score, after_cleanup=after_cleanup)
+        score, after_cleanup, raw_comparison, raw_comparison_error = payload
+        text = format_segmentation_quality_report(score, after_cleanup=after_cleanup)
+        if raw_comparison is not None:
+            text += "\n\n" + format_segmentation_raw_comparison_report(raw_comparison)
+        elif raw_comparison_error is not None:
+            text += f"\n\nRaw-image cross-check skipped: {raw_comparison_error}"
+        report.value = text
 
     def failed(error: Exception) -> None:
         if not still_ours():
@@ -5660,7 +5690,15 @@ def settings_widget(napari_viewer=None):
     script would.
     """
     import napari
-    from magicgui.widgets import CheckBox, ComboBox, Container, Label, PushButton, TextEdit
+    from magicgui.widgets import (
+        CheckBox,
+        ComboBox,
+        Container,
+        FileEdit,
+        Label,
+        PushButton,
+        TextEdit,
+    )
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
         QHBoxLayout,
@@ -6214,6 +6252,54 @@ def settings_widget(napari_viewer=None):
     check_image_button.tooltip = CHECK_SEGMENTED_IMAGE_TOOLTIP
     if input_settings is not None:
         input_settings.append(check_image_button)
+
+    #: A mirror of the FWHM raw-image path (`fwhm_raw_tiff_path`), shown here
+    #: too so "Check segmented image" can cross-check the segmentation
+    #: against its own raw data without needing use_fwhm_edge_diameters on.
+    #: The Diameters-tab row for the same setting stays gated behind that
+    #: toggle (its own `requires`) -- a real pipeline run only needs the
+    #: file to exist when FWHM measurement itself is on -- but this mirror
+    #: is a separate widget, so it stays enabled regardless. Two-way synced
+    #: with rows["fwhm_raw_tiff_path"]: one underlying setting, editable
+    #: from either place, so a path entered here also feeds FWHM
+    #: measurement and vice versa.
+    raw_data_row = FileEdit(
+        mode="r",
+        value=rows["fwhm_raw_tiff_path"].value,
+        label="Raw data file (optional)",
+    )
+    raw_data_row.tooltip = (
+        "Optional raw (unsegmented) image of the same dataset. When set, "
+        "'Check segmented image' also cross-checks the segmentation against "
+        "it for added voxels, removed voxels, and whole missed structures. "
+        "Shares its value with fwhm_raw_tiff_path on the Diameters tab "
+        "(also used there for FWHM diameter measurement)."
+    )
+    if input_settings is not None:
+        input_settings.append(raw_data_row)
+
+    _raw_data_row_syncing = {"active": False}
+
+    def _sync_raw_data_row_from_primary(*_args) -> None:
+        if _raw_data_row_syncing["active"]:
+            return
+        _raw_data_row_syncing["active"] = True
+        try:
+            raw_data_row.value = rows["fwhm_raw_tiff_path"].value
+        finally:
+            _raw_data_row_syncing["active"] = False
+
+    def _sync_primary_from_raw_data_row(*_args) -> None:
+        if _raw_data_row_syncing["active"]:
+            return
+        _raw_data_row_syncing["active"] = True
+        try:
+            rows["fwhm_raw_tiff_path"].value = raw_data_row.value
+        finally:
+            _raw_data_row_syncing["active"] = False
+
+    raw_data_row.changed.connect(_sync_primary_from_raw_data_row)
+    rows["fwhm_raw_tiff_path"].changed.connect(_sync_raw_data_row_from_primary)
 
     def _toggle_group_checkboxes(*_args) -> None:
         group_checkboxes_container.visible = bool(choose_groups_checkbox.value)
@@ -7215,6 +7301,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_group_checkboxes = group_checkboxes
     panel._haemolynx_optimise_group_checkboxes_container = group_checkboxes_container
     panel._haemolynx_check_image_button = check_image_button
+    panel._haemolynx_raw_data_row = raw_data_row
     panel._haemolynx_check_segmented_image = on_check_segmented_image
     layout = QVBoxLayout(panel)
     if layer_row is not None:

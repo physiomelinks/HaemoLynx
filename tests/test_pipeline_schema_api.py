@@ -151,6 +151,13 @@ def test_every_gated_setting_is_ineffective_when_its_prerequisite_is_off():
     for setting in schema:
         if not setting.requires:
             continue
+        if setting.always_effective:
+            # Deliberately exempt: genuinely read by a second, unconditional
+            # feature too (see the setting's own `always_effective` usage
+            # and help text for what that is), so "ineffective while its
+            # own prerequisite is off" would be simply wrong for this one.
+            skipped.append(setting.name)
+            continue
         probe = _non_default_probe_value(setting)
         if probe is None:
             skipped.append(setting.name)

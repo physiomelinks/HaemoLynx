@@ -112,6 +112,15 @@ class Setting:
         show the problem rather than refuse to open the file.
     advanced:
         Hide behind an "advanced" disclosure by default.
+    always_effective:
+        Skip the ``requires``-based "nothing will read this" warning for this
+        one setting. For the rare setting genuinely read by more than one
+        feature with different activation conditions (e.g. a raw image path
+        used by both a `requires`-gated pipeline stage and an always-available
+        GUI diagnostic), a blanket `requires` warning would be simply wrong
+        whenever the second use is what set the value. `requires` itself is
+        untouched -- `must_exist`/GUI-enabled-state gating still only applies
+        when the prerequisite is met.
     """
 
     name: str
@@ -126,6 +135,7 @@ class Setting:
     requires: tuple[str, ...] = ()
     must_exist: bool = False
     advanced: bool = False
+    always_effective: bool = False
     #: Hint text a GUI shows in an empty (unset/``None``-default) box, e.g.
     #: ``"auto"`` for a setting whose blank value means "compute it from
     #: something else". Cosmetic only -- never becomes the value.
@@ -451,7 +461,11 @@ class Schema:
     def _ineffective_messages(self, resolved: Mapping[str, Any]) -> list[str]:
         messages: list[str] = []
         for setting in self.settings:
-            if setting.name not in resolved or not setting.requires:
+            if (
+                setting.name not in resolved
+                or not setting.requires
+                or setting.always_effective
+            ):
                 continue
             value = resolved[setting.name]
             if value is None or value == setting.coerce(setting.default):
