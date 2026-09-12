@@ -406,6 +406,55 @@ SCHEMA = Schema(
             requires=("segmentation_cleanup_remove_small_volumes",),
         ),
         # ------------------------------------------------------------------
+        # Segmented-image quality check (Input tab): dataset-specific
+        # overrides for "Check segmented image"'s own reasoned defaults.
+        # Both default to unset, which reproduces today's behaviour exactly
+        # (see preprocessing.segmentation_quality's module docstring for why
+        # a single universal number is wrong for some of these).
+        # ------------------------------------------------------------------
+        Setting(
+            name="expected_boundary_vessel_count",
+            kind="int",
+            default=None,
+            help=(
+                "How many places this dataset's own vessel network is expected to "
+                "cross the image boundary (a whole-organ scan or multi-inlet "
+                "preparation legitimately has more than a single-vessel crop). "
+                "Leave unset to use a generic default of 2"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0,
+        ),
+        Setting(
+            name="min_voxels_across_vessel_radius",
+            kind="float",
+            default=None,
+            help=(
+                "How many voxels across a vessel's own radius the 'Check segmented "
+                "image' resolution score expects for full marks -- below this, "
+                "FWHM and EDT diameter measurements are known to carry a growing, "
+                "uncorrectable discretisation bias. Leave unset to use a generic "
+                "default of 3.0"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+        ),
+        Setting(
+            name="min_acceptable_segmentation_quality",
+            kind="float",
+            default=None,
+            help=(
+                "If set, preflight logs a warning (never blocks the run) when the "
+                "segmented input's own 0-10 quality score -- the same score 'Check "
+                "segmented image' reports -- falls below this, naming which tier "
+                "(source data vs pipeline-fixable) is responsible. Leave unset to "
+                "opt out entirely, which is the default"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            maximum=10.0,
+        ),
+        # ------------------------------------------------------------------
         # Vessel masks (Boundaries tab: under automated_vessel_assignment)
         # ------------------------------------------------------------------
         # Gate first: the Boundaries panel lists this checkbox, then the mask

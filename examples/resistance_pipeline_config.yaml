@@ -67,6 +67,12 @@ input_and_segmentation:
   segmentation_cleanup_remove_small_volumes: false
   # Remove connected components smaller than this physical volume  [um3; range 0.0..; needs segmentation_cleanup_remove_small_volumes]
   segmentation_cleanup_remove_small_min_volume_um3: 5.0
+  # How many places this dataset's own vessel network is expected to cross the image boundary (a whole-organ scan or multi-inlet preparation legitimately has more than a single-vessel crop). Leave unset to use a generic default of 2  [range 0..]
+  expected_boundary_vessel_count: null
+  # How many voxels across a vessel's own radius the 'Check segmented image' resolution score expects for full marks -- below this, FWHM and EDT diameter measurements are known to carry a growing, uncorrectable discretisation bias. Leave unset to use a generic default of 3.0  [range 0.0..]
+  min_voxels_across_vessel_radius: null
+  # If set, preflight logs a warning (never blocks the run) when the segmented input's own 0-10 quality score -- the same score 'Check segmented image' reports -- falls below this, naming which tier (source data vs pipeline-fixable) is responsible. Leave unset to opt out entirely, which is the default  [range 0.0..10.0]
+  min_acceptable_segmentation_quality: null
 
 # ------------------------------------------------------------------------
 # Vessel masks

@@ -343,6 +343,77 @@ def check_perturbations(settings: Mapping[str, Any], schema: Schema) -> CheckRep
     return report
 
 
+def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
+    """Warn (never block) when the segmented input's own 0-10 quality score
+    -- the same score "Check segmented image" reports -- is below a
+    user-configured minimum.
+
+    Opt-in via ``min_acceptable_segmentation_quality`` (default unset, which
+    skips this entirely): unlike every other check here, this one has to
+    load and score the actual image, real work this module otherwise never
+    does, so it only runs for someone who has deliberately asked for the
+    nudge in their normal automated workflow.
+    """
+    report = CheckReport()
+    threshold = settings.get("min_acceptable_segmentation_quality")
+    if threshold is None:
+        return report
+
+    from haemolynx.io import resolve_voxel_size_xyz, voxel_size_zyx_from_xyz
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.pipeline.stages import load_volume_for_skeletonise, segment
+    from haemolynx.preprocessing import score_segmented_mask
+    from haemolynx.preprocessing.segmentation_quality import RESOLUTION_LIMITING_THRESHOLD
+
+    local_settings = dict(settings)
+    try:
+        inputs = segment(local_settings)
+        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
+            local_settings, inputs.input_format
+        )
+    except Exception as error:  # noqa: BLE001 - a missing/unreadable image is
+        # already reported by check_settings/check_cached_artefacts; this
+        # optional check must not itself crash preflight over it.
+        report.add_warning(
+            "min_acceptable_segmentation_quality is set, but the segmented "
+            f"input could not be loaded to check it: {error}"
+        )
+        return report
+
+    voxel_size_xyz, _source = resolve_voxel_size_xyz(
+        metadata_voxel_size_xyz=metadata_voxel_size,
+        metadata_status=voxel_meta_status,
+        voxel_size_override_xyz=local_settings.get("voxel_size_override_xyz"),
+        voxel_size_policy=local_settings.get("voxel_size_policy", "auto"),
+    )
+    mask = _to_binary_volume_for_skeletonization(image)
+    voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
+    score = score_segmented_mask(
+        mask,
+        voxel_size_zyx=voxel_size_zyx,
+        target_voxels_across_radius=local_settings.get("min_voxels_across_vessel_radius"),
+        boundary_patch_allowance=local_settings.get("expected_boundary_vessel_count"),
+    )
+    threshold = float(threshold)
+    if score.total >= threshold:
+        report.add_pass("segmentation quality", f"{score.total:.1f}/10 >= {threshold:.1f}")
+        return report
+
+    # Same condition segmentation_quality's own report verdict uses -- one
+    # source of truth for "is this a source-data problem or a
+    # pipeline-fixable one", so preflight and "Check segmented image" never
+    # disagree about which tier is responsible.
+    if score.resolution < RESOLUTION_LIMITING_THRESHOLD:
+        tier = "source data -- resegment or re-image; cleanup will not fix this"
+    else:
+        tier = "pipeline-fixable -- try the segmentation_cleanup_* settings"
+    report.add_warning(
+        f"Segmented input quality is {score.total:.1f}/10, below the configured "
+        f"minimum of {threshold:.1f}. Likely limiting tier: {tier}."
+    )
+    return report
+
+
 def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every pre-run check, printed as a checklist.
 
@@ -357,5 +428,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))
     report.extend(check_perturbations(settings, schema))
+    report.extend(check_segmentation_quality(settings))
     report.print("Preflight")
     return report

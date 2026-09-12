@@ -684,6 +684,91 @@ def test_preflight_warns_when_input_path_is_the_large_venule_mask(tmp_path):
     assert any("input_path" in w for w in report.warnings)
 
 
+def test_preflight_segmentation_quality_check_is_a_no_op_when_threshold_unset():
+    from haemolynx.pipeline.checks import check_segmentation_quality
+
+    report = check_segmentation_quality({"min_acceptable_segmentation_quality": None})
+
+    assert not report.warnings
+    assert not report.errors
+    assert not report.passed
+
+
+def test_preflight_warns_below_threshold_and_names_the_source_data_tier(tmp_path, monkeypatch):
+    """A vessel barely wider than a voxel is a resolution (source-data)
+    problem -- no cleanup setting fixes it -- so preflight's warning must
+    name that tier, matching "Check segmented image"'s own verdict line."""
+    import haemolynx.pipeline.stages as stages_mod
+    from haemolynx.pipeline.checks import check_segmentation_quality
+
+    shape = (20, 20, 20)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    mask = (np.sqrt((zz - 10) ** 2 + (yy - 10) ** 2) <= 0.9) & (xx >= 2) & (xx <= 17)
+
+    monkeypatch.setattr(
+        stages_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    report = check_segmentation_quality(
+        {
+            "input_path": str(real_input),
+            "use_ilastik_segmentation": False,
+            "image_axis_order": "zyx",
+            "vtk_output_prefix": str(tmp_path / "out" / "run"),
+            "final_render_mode": "3d",
+            "voxel_size_override_xyz": None,
+            "voxel_size_policy": "auto",
+            "min_acceptable_segmentation_quality": 9.9,
+            "min_voxels_across_vessel_radius": None,
+            "expected_boundary_vessel_count": None,
+        }
+    )
+
+    assert report.warnings
+    assert any("source data" in w.lower() for w in report.warnings)
+    assert not report.errors
+
+
+def test_preflight_passes_above_threshold(tmp_path, monkeypatch):
+    import haemolynx.pipeline.stages as stages_mod
+    from haemolynx.pipeline.checks import check_segmentation_quality
+
+    shape = (30, 30, 30)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    mask = (np.sqrt((zz - 15) ** 2 + (yy - 15) ** 2) <= 8.0) & (xx >= 5) & (xx <= 24)
+
+    monkeypatch.setattr(
+        stages_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    report = check_segmentation_quality(
+        {
+            "input_path": str(real_input),
+            "use_ilastik_segmentation": False,
+            "image_axis_order": "zyx",
+            "vtk_output_prefix": str(tmp_path / "out" / "run"),
+            "final_render_mode": "3d",
+            "voxel_size_override_xyz": None,
+            "voxel_size_policy": "auto",
+            "min_acceptable_segmentation_quality": 1.0,
+            "min_voxels_across_vessel_radius": None,
+            "expected_boundary_vessel_count": None,
+        }
+    )
+
+    assert not report.warnings
+    assert not report.errors
+    assert report.passed
+
+
 def test_napari_empty_post_cut_graph_emits_empty_vessel_and_node_layers():
     """An empty post-cut graph must clear pre-cut geometry, not omit layer specs."""
     pre_cut, arteriole, venule = _crossing_chain_graph()

@@ -108,7 +108,14 @@ from haemolynx.optimisation import (
     config_filename,
     optimise_skeleton_and_graph_settings,
 )
-from haemolynx.parsers import Schema, dump_config, ensure_yaml_suffix, load_config
+from haemolynx.parsers import (
+    Schema,
+    dump_config,
+    ensure_yaml_suffix,
+    load_config,
+    parameters_of,
+    prefixed_arguments,
+)
 from haemolynx.pipeline import (
     default_schema,
     load_volume_for_skeletonise,
@@ -4292,7 +4299,11 @@ def _run_segmentation_quality_check_in_background(
     from napari.qt.threading import thread_worker
 
     from haemolynx.io import voxel_size_zyx_from_xyz
-    from haemolynx.preprocessing import format_segmentation_quality_report, score_segmented_mask
+    from haemolynx.preprocessing import (
+        clean_segmented_mask_for_skeletonisation,
+        format_segmentation_quality_report,
+        score_segmented_mask,
+    )
 
     cancel_flag = {"cancelled": False}
 
@@ -4314,9 +4325,37 @@ def _run_segmentation_quality_check_in_background(
         )
         mask = _to_binary_volume_for_skeletonization(image)
         voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
-        return score_segmented_mask(mask, voxel_size_zyx=voxel_size_zyx)
+        score = score_segmented_mask(
+            mask,
+            voxel_size_zyx=voxel_size_zyx,
+            target_voxels_across_radius=local_settings.get("min_voxels_across_vessel_radius"),
+            boundary_patch_allowance=local_settings.get("expected_boundary_vessel_count"),
+        )
 
-    def finished(score) -> None:
+        # Also score the mask after the run's *currently configured*
+        # segmentation_cleanup_* settings, so the report can show whether a
+        # good number reflects the source data or just this pipeline's own
+        # cleanup patching over it -- see segmentation_quality's own module
+        # docstring for why that distinction matters. `raw_segmented_image`
+        # is `None` (nothing to compare) when every cleanup step is off.
+        cleanup_kwargs = prefixed_arguments(
+            local_settings, "segmentation_cleanup_",
+            parameters_of(clean_segmented_mask_for_skeletonisation),
+        )
+        cleaned_mask, raw_segmented_image = clean_segmented_mask_for_skeletonisation(
+            mask, voxel_size_zyx=voxel_size_zyx, **cleanup_kwargs
+        )
+        after_cleanup = None
+        if raw_segmented_image is not None:
+            after_cleanup = score_segmented_mask(
+                cleaned_mask,
+                voxel_size_zyx=voxel_size_zyx,
+                target_voxels_across_radius=local_settings.get("min_voxels_across_vessel_radius"),
+                boundary_patch_allowance=local_settings.get("expected_boundary_vessel_count"),
+            )
+        return score, after_cleanup
+
+    def finished(payload) -> None:
         if not still_ours():
             return
         run_state.stopped()
@@ -4324,7 +4363,8 @@ def _run_segmentation_quality_check_in_background(
         if cancel_flag["cancelled"]:
             report.value = FINISHED_FIRST
             return
-        report.value = format_segmentation_quality_report(score)
+        score, after_cleanup = payload
+        report.value = format_segmentation_quality_report(score, after_cleanup=after_cleanup)
 
     def failed(error: Exception) -> None:
         if not still_ours():

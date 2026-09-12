@@ -127,6 +127,9 @@ DIMENSIONLESS = {
     "segmentation_cleanup_split_min_pinch_radius_ratio",
     # A fraction of a window's own voxels, in [0, 1] -- not a physical size.
     "skeleton_bundle_density_fraction",
+    # A count of voxels per radius (a ratio), not a distance itself -- the
+    # radius it's measured against is already in microns.
+    "min_voxels_across_vessel_radius",
 }
 
 #: Substrings that mark a name as describing a measurement.

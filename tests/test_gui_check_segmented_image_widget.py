@@ -257,3 +257,52 @@ def test_check_segmented_image_binarizes_a_normalized_float_probability_mask(
     radius_match = re.search(r"typical vessel radius ([\d.]+)um", report)
     assert radius_match, report
     assert float(radius_match.group(1)) < 5.0, report
+
+
+def test_check_segmented_image_reports_raw_vs_after_cleanup_when_cleanup_is_on(
+    panel, monkeypatch, tmp_path
+):
+    """When the run's segmentation_cleanup_* settings are on, the report
+    must show both the raw score and what those settings achieve on top of
+    it, with the caveat that the second number is not evidence the source
+    data/imaging itself was adequate (see segmentation_quality's own module
+    docstring for why conflating the two defeats the point of this check)."""
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    shape = (30, 30, 30)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    body = (np.sqrt((zz - 15) ** 2 + (yy - 15) ** 2) <= 5.0) & (xx >= 5) & (xx <= 24)
+    mask = body.copy()
+    mask[1, 1, 1] = True  # an isolated single-voxel speck, far from the body
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+
+    rows = panel._haemolynx_rows()
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    rows["input_path"].value = real_input
+    rows["segmentation_cleanup_remove_small_volumes"].value = True
+
+    panel._haemolynx_check_segmented_image()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "Checking segmented image..." not in panel._haemolynx_report():
+            break
+    else:
+        pytest.fail("segmented image check did not finish within 10s")
+
+    report = panel._haemolynx_report()
+    assert "Raw segmentation:" in report, report
+    assert "After your current cleanup settings:" in report, report
+    assert "does not mean your source data improved" in report, report
