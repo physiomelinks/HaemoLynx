@@ -381,19 +381,23 @@ def solve_coupled_flow_and_hematocrit(
             mu_app = calculate_pries_secomb_viscosity(d, h)
             data["viscosity"] = mu_app
             
-            # To preserve the complex geometric integration of sphincters/pericytes,
-            # we scale the resistance by the ratio of the new in-vivo viscosity to the old artificial viscosity,
-            # rather than overwriting it with a straight-tube approximation.
-            if "original_resistance" not in data:
-                # Save the base resistance from Phase 4
-                data["original_resistance"] = data.get("resistance", (128.0 * 1.0 * data.get("length", 10.0)) / (np.pi * d**4))
-                
-            # The old viscosity formula used in poiseuille.py was: 1.0 / d^1.647
-            mu_old = 1.0 / (d ** 1.647)
-            
-            # Scale the resistance geometrically
-            data["resistance"] = data["original_resistance"] * (mu_app / mu_old)
-            
+            # Poiseuille directly, rather than rescaling a stored baseline by
+            # mu_app / mu_old. The rescale was meant to preserve a geometric constriction
+            # profile integrated into original_resistance, and it telescopes correctly only
+            # if that baseline still carries the poiseuille.py power law mu_old = 1/d^1.647.
+            # It does not: the initialisation above overwrites resistance with the
+            # Pries-Secomb value before the loop starts, so original_resistance was captured
+            # from a baseline that no longer contained mu_old. Dividing by it therefore
+            # applied viscosity twice and inflated every resistance by 200-540x, and
+            # calibre-dependently, since the surviving factor is mu_PS(d, H) * d^1.647.
+            #
+            # constrict_at_pericytes is False and HaemodynamicsConfig.__post_init__ raises
+            # when it is set True, so on this path original_resistance held a plain
+            # straight-tube value and there was no profile to preserve. Recomputing gives
+            # the same expression the initialisation uses, so the two now agree.
+            length = data.get("length", 10.0)
+            data["resistance"] = (128.0 * mu_app * length) / (np.pi * d**4)
+
             # WSS = (32 * mu * Q) / (pi * D^3)
             # Units: mu is in mPa*s (cP), Q is in um^3/s, D is in um
             # To get WSS in Pa: (mPa*s * um^3/s) / um^3 = mPa. So WSS is in mPa.

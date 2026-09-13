@@ -56,19 +56,26 @@ def test_coupled_solver_convergence():
     # on. See test_skimming_direction_depends_on_the_flow_split below.
 
 
-def test_skimming_direction_depends_on_the_flow_split():
-    """The skimming model favours the faster branch, not the wider one.
+def test_skimming_follows_the_flow_fraction_not_the_velocity():
+    """Red cells concentrate in the branch taking the larger share of *flow*.
 
-    Under the in vitro relation this Y-junction sends 84% of flow down the 10 um branch, which
-    is then also the faster of the two, so it skims red cells and the classic picture holds.
-    Under the in vivo relation the narrow branch's viscosity rises much further, the split
-    evens out to 64/36, and 36% of flow through a quarter of the area makes the *narrow*
-    branch the faster one. The model then concentrates red cells there instead.
+    That is the invariant the implemented model can actually guarantee.
+    ``calculate_phase_separation_hematocrit`` is posed in fractional blood flow:
 
-    Recorded as behaviour rather than asserted as correct. The Pries phase-separation law is
-    normally posed in fractional blood flow with a diameter-dependent threshold, and a
-    velocity-keyed form can inverse the expected direction at a near-even split. That is a
-    question about the skimming model, surfaced by fixing the viscosity law, and it is open.
+        fq1 = q_out1 / q_in
+        logit_fq = log((fq1 - x0) / (1 - fq1 - x0))
+
+    Velocity appears nowhere in it. This test previously asserted that red cells follow the
+    *faster* branch, which held only because the flow split happened to put the faster branch
+    and the larger flow fraction on the same side. Correcting the resistance update to plain
+    Poiseuille moved the in vivo split from 64/36 to 72/28, the two parted company, and the
+    old assertion failed while the model was behaving exactly as written.
+
+    The velocity divergence is still worth recording, so it is asserted below as observed
+    behaviour rather than as correctness. Under the in vivo relation the narrow branch is the
+    faster one despite drawing less than a third of the flow, because a quarter of the area
+    carries 28% of it. Whether a velocity-keyed skimming law would be the better model is a
+    question about phase separation, not about the viscosity relation, and it is open.
     """
     import ImageLynx.haemodynamics.rheology as rh
 
@@ -96,13 +103,23 @@ def test_skimming_direction_depends_on_the_flow_split():
         rh.calculate_pries_secomb_viscosity = original
 
     for law, r in results.items():
-        faster_is_wide = r["v_wide"] > r["v_narrow"]
+        wide_takes_more_flow = r["share_wide"] > 0.5
         richer_is_wide = r["h_wide"] > r["h_narrow"]
-        assert faster_is_wide == richer_is_wide, (
-            f"{law}: red cells did not follow the faster branch ({r})")
+        assert wide_takes_more_flow == richer_is_wide, (
+            f"{law}: red cells did not follow the larger flow fraction ({r})")
 
     assert results["in_vitro"]["share_wide"] > results["in_vivo"]["share_wide"], (
         "the in vivo law should even out the split by penalising the narrow branch harder")
+
+    # Recorded, not asserted as correct: under the in vivo relation velocity and flow
+    # fraction point at different branches. The narrow branch draws under a third of the
+    # flow through a quarter of the area, so it is the faster one while the wide branch is
+    # the one that skims red cells. See the docstring.
+    in_vivo = results["in_vivo"]
+    assert in_vivo["share_wide"] > 0.5, "expected the wide branch to take the larger share"
+    assert in_vivo["v_narrow"] > in_vivo["v_wide"], (
+        "expected the narrow branch to remain the faster one despite the smaller share; "
+        f"if this has changed, the divergence noted in the docstring has gone away ({in_vivo})")
 
 
 def test_coupled_solver_dag_cycle_handling(caplog):
@@ -216,3 +233,98 @@ def test_carotid_pipeline_end_to_end_resistance_and_skimming():
             
     except Exception as e:
         pytest.fail(f"End-to-End Pipeline Phase 4 failed: {e}")
+
+
+def _bifurcation_graph():
+    """Inlet, one junction, two unequal daughters. Diameters span the capillary range."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=40.0, fwhm_diameter_um=12.0)
+    G.add_edge(1, 2, key=0, length=25.0, fwhm_diameter_um=8.0)
+    G.add_edge(1, 3, key=0, length=60.0, fwhm_diameter_um=4.0)
+    return G
+
+
+def test_resistance_matches_poiseuille_at_the_solved_viscosity():
+    """Every edge's resistance must be the straight-tube value at its own viscosity.
+
+    The update step used to rescale a stored baseline by ``mu_app / mu_old``, where
+    ``mu_old = 1 / d**1.647`` is the power law ``poiseuille.py`` assigns. That telescopes to
+    Poiseuille only if the baseline still carries ``mu_old``, and it does not: the solver
+    overwrites resistance with the Pries-Secomb value before the loop starts, so the
+    baseline was captured without it. Viscosity was therefore applied twice.
+    """
+    G_solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(),
+        starting_nodes=[0],
+        output_nodes=[2, 3],
+        input_p_bc=13.332e6,
+        output_p_bc=0.27e6,
+        systemic_hematocrit=0.45,
+        max_iterations=10,
+        tolerance=1e-4,
+    )
+
+    for u, v, key, data in G_solved.edges(keys=True, data=True):
+        d = data["fwhm_diameter_um"]
+        expected = (128.0 * data["viscosity"] * data["length"]) / (np.pi * d ** 4)
+        assert data["resistance"] == pytest.approx(expected, rel=1e-9), (
+            f"edge ({u}, {v}, {key}) at d={d} um carries "
+            f"{data['resistance']:.6g} against Poiseuille's {expected:.6g}"
+        )
+
+
+def test_resistance_is_not_inflated_by_the_power_law_viscosity():
+    """Guard the specific defect: the surviving factor was mu_PS(d, H) * d**1.647.
+
+    That factor is calibre-dependent, running roughly 200x at 3 um to 540x at 20 um, so it
+    distorted the distribution of flow and not merely its scale. Asserting the ratio is 1
+    rather than merely 'small' is what makes a partial reintroduction fail here.
+    """
+    G_solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(),
+        starting_nodes=[0],
+        output_nodes=[2, 3],
+        input_p_bc=13.332e6,
+        output_p_bc=0.27e6,
+        systemic_hematocrit=0.45,
+        max_iterations=10,
+        tolerance=1e-4,
+    )
+
+    for u, v, key, data in G_solved.edges(keys=True, data=True):
+        d = data["fwhm_diameter_um"]
+        poiseuille = (128.0 * data["viscosity"] * data["length"]) / (np.pi * d ** 4)
+        inflated = poiseuille * (data["viscosity"] * d ** 1.647)
+
+        assert data["resistance"] / poiseuille == pytest.approx(1.0, rel=1e-9)
+        assert data["resistance"] < inflated / 10.0, (
+            f"edge ({u}, {v}, {key}) resistance is within an order of magnitude of the "
+            f"double-applied value {inflated:.6g}"
+        )
+
+
+def test_the_update_step_agrees_with_the_initialisation():
+    """One iteration and many must give the same resistance where haematocrit is unchanged.
+
+    The inlet edge carries systemic haematocrit throughout, so its viscosity never changes.
+    Its resistance must therefore be identical however many passes the solver makes. A
+    mismatch means the initialisation and the in-loop update disagree on the formula, which
+    is how the double application went unnoticed.
+    """
+    common = dict(
+        starting_nodes=[0],
+        output_nodes=[2, 3],
+        input_p_bc=13.332e6,
+        output_p_bc=0.27e6,
+        systemic_hematocrit=0.45,
+        tolerance=1e-4,
+    )
+    one_pass, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=1, **common)
+    many_passes, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=10, **common)
+
+    assert one_pass[0][1][0]["hematocrit"] == pytest.approx(0.45, abs=1e-9)
+    assert many_passes[0][1][0]["hematocrit"] == pytest.approx(0.45, abs=1e-9)
+    assert many_passes[0][1][0]["resistance"] == pytest.approx(
+        one_pass[0][1][0]["resistance"], rel=1e-9)
