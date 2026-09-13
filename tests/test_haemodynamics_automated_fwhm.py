@@ -109,18 +109,28 @@ def test_profile_plateau_shape_ratio_flags_flat_top_profile():
 
 
 def _cylinder_saturated_volume(
-    nz: int, ny: int, nx: int, radius: float, saturation: float = 100.0
+    nz: int, ny: int, nx: int, radius: float, saturation: float = 100.0, tau: float = 0.15
 ) -> np.ndarray:
     """A flat-topped (saturated) cylindrical cross-section: ~``saturation``
     inside ``radius`` with a short logistic falloff at the edge, ~0 outside
     -- mimics a detector-clipped signal (or a probability/segmentation
-    field mistakenly used as raw intensity), not a real Gaussian bump."""
-    zc, yc = 5.0, 5.0
+    field mistakenly used as raw intensity), not a real Gaussian bump.
+
+    ``tau`` (the falloff's own width) needs to be sharp enough that it
+    still reads as flat-topped once rasterised onto a 1-physical-unit-per-
+    voxel grid and trilinearly re-interpolated for transverse sampling --
+    interpolation smooths a logistic edge into something closer to a
+    Gaussian ramp, and too soft a ``tau`` (this fixture's own original
+    0.3) reads as under 0.85 once discretised even though the identical
+    continuous profile clears it comfortably (see
+    ``test_profile_plateau_shape_ratio_flags_flat_top_profile``, whose
+    fixture is analytic, not voxelised, and does not have this problem).
+    """
+    zc, yc = (nz - 1) / 2.0, (ny - 1) / 2.0
     z = np.arange(nz, dtype=float)[:, None, None]
     y = np.arange(ny, dtype=float)[None, :, None]
     x = np.arange(nx, dtype=float)[None, None, :]
     r = np.sqrt((y - yc) ** 2 + (z - zc) ** 2) + 0.0 * (x - 10.0)
-    tau = 0.3
     return (saturation / (1.0 + np.exp((r - radius) / tau))).astype(np.float32)
 
 
@@ -130,18 +140,34 @@ def test_measure_edge_diameters_rejects_saturated_synthetic_vessel(tmp_path: Pat
     deceptively well against a rounded plateau) -- the plateau-shape gate
     is independent of that fit and should measurably reduce how much of
     this saturated fixture gets accepted, whether that means fewer per-edge
-    samples or the edge failing outright."""
-    nz, ny, nx_dim = 11, 11, 21
+    samples or the edge failing outright.
+
+    The edge runs 36um (well past ``nonlocal_same_edge_arc_separation_um``'s
+    own 6um default) so ``cap_half_extent_by_nonlocal_same_edge_distance``
+    does not truncate the transverse sampling window down near the
+    vessel's own radius before the profile ever reaches background --
+    a short test edge (this fixture's original 16um) triggers exactly that
+    cap and starves every gate of a profile wide enough to judge at all.
+    ``reject_samples_with_center_offset``/``reject_samples_with_low_fit_r2``
+    are disabled so this isolates the plateau-shape gate itself, matching
+    what this test is actually about -- left at their defaults, the
+    Gaussian fit's own R² gate (not the plateau gate) rejects everything
+    regardless of ``reject_samples_with_plateau_shape``, which is what
+    made the "ungated" sanity check below fail before this fixture was
+    recalibrated.
+    """
+    nz, ny, nx_dim = 15, 15, 41
     raw = _cylinder_saturated_volume(nz, ny, nx_dim, radius=3.0)
     raw_path = tmp_path / "raw.tif"
     tifffile.imwrite(str(raw_path), raw)
+    zc, yc = (nz - 1) / 2.0, (ny - 1) / 2.0
 
     def _build_graph() -> nx.MultiGraph:
         graph = nx.MultiGraph()
-        graph.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
-        graph.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
-        voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
-        graph.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
+        graph.add_node(0, pos=np.array([zc, yc, 2.0], dtype=float))
+        graph.add_node(1, pos=np.array([zc, yc, 38.0], dtype=float))
+        voxels = [(zc, yc, float(x)) for x in range(2, 39)]
+        graph.add_edge(0, 1, weight=1.0, length=36.0, branch_order="B01", voxels=voxels)
         return graph
 
     common = dict(
@@ -149,8 +175,10 @@ def test_measure_edge_diameters_rejects_saturated_synthetic_vessel(tmp_path: Pat
         voxel_size_zyx=(1.0, 1.0, 1.0),
         sample_spacing_along_edge_um=5.0,
         transverse_profile_step_um=0.2,
-        transverse_half_extent_um=8.0,
+        transverse_half_extent_um=7.0,
         diameter_guess_um=2.0,
+        reject_samples_with_center_offset=False,
+        reject_samples_with_low_fit_r2=False,
     )
     summary_gated = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(), reject_samples_with_plateau_shape=True, **common
@@ -167,8 +195,8 @@ def test_measure_edge_diameters_rejects_saturated_synthetic_vessel(tmp_path: Pat
         if summary_ungated["edges_measured"]
         else 0
     )
-    assert gated_n <= ungated_n
     assert ungated_n > 0  # sanity: the fixture is fittable at all without the gate
+    assert gated_n < ungated_n  # the plateau gate measurably rejects samples
 
 
 def test_aggregate_edge_diameter_median_resists_one_outlier_sample():
