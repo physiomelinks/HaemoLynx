@@ -159,6 +159,46 @@ def test_local_same_edge_window_does_not_use_sample_spacing_when_an_estimate_exi
     assert window > 2.0
 
 
+# --- _local_max_center_offset ------------------------------------------------
+
+
+def _offset(diameter_estimate, **overrides):
+    kwargs = dict(max_fit_center_offset_um=1.5, max_fit_center_offset_fraction_of_diameter=0.3)
+    kwargs.update(overrides)
+    return automated._local_max_center_offset(diameter_estimate, **kwargs)
+
+
+def test_local_max_center_offset_scales_with_the_diameter_estimate():
+    assert _offset(20.0) == pytest.approx(6.0)
+    assert _offset(20.0, max_fit_center_offset_fraction_of_diameter=0.5) == pytest.approx(10.0)
+
+
+def test_local_max_center_offset_respects_its_own_floor():
+    """A narrow vessel's own scaled offset is smaller than the fixed
+    floor -- the floor wins, exactly like today's behaviour for a vessel
+    at roughly the scale max_fit_center_offset_um was chosen for."""
+    assert _offset(1.0) == pytest.approx(1.5)
+
+
+def test_local_max_center_offset_with_no_diameter_estimate_uses_only_the_floor():
+    """Regression: a genuinely unknown diameter (<= 0, before any fit
+    exists) must not be treated as a diameter of 0 -- that would make the
+    scaled term 0 and (if it somehow won) reject every sample outright."""
+    assert _offset(0.0) == pytest.approx(1.5)
+    assert _offset(-1.0) == pytest.approx(1.5)
+
+
+def test_local_max_center_offset_does_not_use_a_fixed_value_for_a_wide_vessel():
+    """Regression: max_fit_center_offset_um used to be the ONLY threshold,
+    regardless of vessel width -- comfortably loose for a narrow capillary,
+    disproportionately strict for a wide vessel. A 30um vessel's own
+    scaled offset must exceed the fixed floor that was tuned for a much
+    narrower one."""
+    wide_vessel_offset = _offset(30.0)
+    assert wide_vessel_offset == pytest.approx(9.0)
+    assert wide_vessel_offset > 1.5
+
+
 def _cylinder_saturated_volume(
     nz: int, ny: int, nx: int, radius: float, saturation: float = 100.0, tau: float = 0.15
 ) -> np.ndarray:
@@ -592,6 +632,176 @@ def test_transverse_window_scales_with_diameter_on_a_tortuous_vessel(tmp_path: P
     # fixture, with margin: this must clear that, proving the window is no
     # longer sized off sample_spacing_along_edge_um.
     assert float(np.median(ratios)) > 1.75
+
+
+def test_center_offset_gate_scales_with_diameter_estimate(tmp_path: Path):
+    """Regression: max_fit_center_offset_um used to be the only threshold
+    for how far a fitted center may sit from the sampling origin,
+    regardless of vessel width. A wide (30um) vessel whose recorded
+    centerline is only mildly (2um) off from its own true center -- a
+    modest imprecision any real skeleton/graph can reasonably have --
+    used to fail every sample outright under the fixed 1.5um floor alone,
+    even though a 2um offset on a 30um vessel is a trivial, unremarkable
+    fraction of its own radius. Confirms the offset gate, scaled to the
+    diameter estimate, now accepts it.
+    """
+    true_diameter = 30.0
+    sigma = true_diameter / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    nz, ny, nx_dim = 120, 120, 21
+    zc, yc = 60.0, 60.0
+    z = np.arange(nz, dtype=float)[:, None, None]
+    y = np.arange(ny, dtype=float)[None, :, None]
+    x = np.arange(nx_dim, dtype=float)[None, None, :]
+    r2 = (y - yc) ** 2 + (z - zc) ** 2 + 0.0 * (x - 10.0)
+    raw = (100.0 * np.exp(-r2 / (2.0 * sigma**2))).astype(np.float32)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    centerline_offset = 2.0  # the recorded centerline is 2um off the true peak
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([zc, yc + centerline_offset, 2.0], dtype=float))
+    G.add_node(1, pos=np.array([zc, yc + centerline_offset, 18.0], dtype=float))
+    voxels = [(zc, yc + centerline_offset, float(x)) for x in range(2, 19)]
+    G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
+
+    common = dict(
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=20.0,  # > edge length: exactly one sample
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=8.0,
+        diameter_guess_um=true_diameter,
+    )
+    fixed_only = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G, max_fit_center_offset_fraction_of_diameter=0.0, **common,
+    )
+    assert fixed_only["edges_measured"] == 0, (
+        "a 2um offset should still exceed the fixed 1.5um floor alone "
+        "(fraction_of_diameter=0.0 reproduces that old, fixed-only behaviour)"
+    )
+
+    scaled = automated.measure_edge_diameters_fwhm_from_raw_tiff(G, **common)
+    assert scaled["edges_measured"] == 1
+    d = scaled["per_edge"][0]["fwhm_diameter_um"]
+    assert abs(d - true_diameter) < 2.0
+
+
+def test_transverse_widening_loop_converges_beyond_two_widening_passes(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: the widening cascade used to be hand-unrolled to
+    exactly 3 passes (the initial one, then two widenings) regardless of
+    whether that was enough to converge. A slowly-converging sequence of
+    fitted diameters needs 6 widenings to fully converge -- confirms the
+    loop now keeps going as far as max_transverse_widen_passes allows,
+    and that the parameter genuinely caps it rather than being ignored.
+    """
+    nz, ny, nx_dim = 11, 11, 21
+    raw = _cylinder_gaussian_volume(nz, ny, nx_dim, sigma=1.5)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    def _build_graph() -> nx.MultiGraph:
+        G = nx.MultiGraph()
+        G.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
+        G.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
+        voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
+        G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
+        return G
+
+    # Each successive "fit" asks for a bigger window than the last pass
+    # granted, right up until the final two calls agree -- needs 6
+    # widenings (7 total passes) to settle.
+    sequence = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 12.0]
+    calls = {"n": 0}
+
+    def fake_fit(pos_fit, prof_fit, **kwargs):
+        idx = min(calls["n"], len(sequence) - 1)
+        calls["n"] += 1
+        return sequence[idx], 0.0, 1.0
+
+    monkeypatch.setattr(automated, "_fwhm_gaussian_fit_with_diagnostics", fake_fit)
+
+    common = dict(
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=20.0,  # > edge length: exactly one sample
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=1.0,
+        diameter_guess_um=1.0,
+        min_total_extent_multiplier=3.0,
+        cap_half_extent_by_nonlocal_same_edge_distance=False,
+        reject_samples_with_center_offset=False,
+        reject_samples_with_low_fit_r2=False,
+        reject_samples_with_plateau_shape=False,
+    )
+
+    calls["n"] = 0
+    capped = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        _build_graph(), max_transverse_widen_passes=1, **common,
+    )
+    # Only 2 total passes allowed: settles on the second call's own value,
+    # nowhere near the sequence's final, fully-converged one.
+    assert capped["per_edge"][0]["fwhm_diameter_um"] == pytest.approx(4.0)
+
+    calls["n"] = 0
+    converged = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        _build_graph(), max_transverse_widen_passes=10, **common,
+    )
+    assert converged["per_edge"][0]["fwhm_diameter_um"] == pytest.approx(sequence[-1])
+
+
+def test_transverse_widening_keeps_the_last_good_measurement_if_a_wider_pass_fails(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: if the initial pass's fit succeeded but a subsequent,
+    wider pass's own fit failed a rejection gate, the whole sample used to
+    be discarded outright -- even though the narrower, already-accepted
+    measurement was perfectly good. Widening is only ever an attempt to
+    improve an already-accepted measurement; it must never cost the
+    sample the measurement it already had.
+    """
+    nz, ny, nx_dim = 11, 11, 21
+    raw = _cylinder_gaussian_volume(nz, ny, nx_dim, sigma=1.5)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    def _build_graph() -> nx.MultiGraph:
+        G = nx.MultiGraph()
+        G.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
+        G.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
+        voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
+        G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
+        return G
+
+    calls = {"n": 0}
+
+    def fake_fit(pos_fit, prof_fit, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 5.0, 0.0, 1.0  # accepted
+        return None, None, None  # every wider pass's own fit fails
+
+    monkeypatch.setattr(automated, "_fwhm_gaussian_fit_with_diagnostics", fake_fit)
+
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        _build_graph(),
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=20.0,  # > edge length: exactly one sample
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=1.0,
+        diameter_guess_um=1.0,
+        min_total_extent_multiplier=3.0,
+        cap_half_extent_by_nonlocal_same_edge_distance=False,
+        reject_samples_with_center_offset=False,
+        reject_samples_with_low_fit_r2=False,
+        reject_samples_with_plateau_shape=False,
+        max_transverse_widen_passes=5,
+    )
+    assert summary["edges_measured"] == 1
+    assert summary["per_edge"][0]["fwhm_diameter_um"] == pytest.approx(5.0)
+    assert calls["n"] > 1, "the widening pass that fails must actually have been attempted"
 
 
 def test_set_poiseuille_resistances_prefers_fwhm_optional(multigraph_with_branch_order):

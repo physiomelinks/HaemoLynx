@@ -845,6 +845,38 @@ def _local_same_edge_window(
     return max(float(same_edge_arc_window_min_um), float(same_edge_arc_window_multiplier) * basis)
 
 
+def _local_max_center_offset(
+    diameter_estimate: float,
+    *,
+    max_fit_center_offset_um: float,
+    max_fit_center_offset_fraction_of_diameter: float,
+) -> float:
+    """How far a fitted Gaussian center may sit from the sampling origin
+    before a sample counts as off-target (an oblique/nonlocal transect)
+    rather than a genuinely centered cross-section -- see
+    ``measure_edge_diameters_fwhm_from_raw_tiff``'s
+    ``reject_samples_with_center_offset``.
+
+    At least ``max_fit_center_offset_um`` (a floor), and at least
+    ``max_fit_center_offset_fraction_of_diameter`` x *diameter_estimate*
+    when a diameter estimate is available -- the same "scale the guard to
+    the vessel's own width" fix as :func:`_local_same_edge_window`. A fixed
+    micron offset alone means the same absolute number regardless of
+    vessel width: comfortably loose for a 2um capillary (barely
+    constraining anything) and disproportionately strict for a 30um
+    vessel (rejecting a well-centered fit for an offset that is a much
+    smaller fraction of its own radius).
+
+    *diameter_estimate* of 0 (or less, meaning no estimate is available
+    yet) uses only the fixed floor, unchanged from before this existed.
+    """
+    basis = float(diameter_estimate) if diameter_estimate > 0 else 0.0
+    return max(
+        float(max_fit_center_offset_um),
+        float(max_fit_center_offset_fraction_of_diameter) * basis,
+    )
+
+
 def measure_edge_diameters_fwhm_from_raw_tiff(
     G: nx.MultiGraph,
     *,
@@ -877,6 +909,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     nonlocal_same_edge_half_extent_factor: float = 0.45,
     reject_samples_with_center_offset: bool = True,
     max_fit_center_offset_um: float = 1.5,
+    max_fit_center_offset_fraction_of_diameter: float = 0.3,
+    max_transverse_widen_passes: int = 5,
     reject_samples_with_low_fit_r2: bool = True,
     min_fit_r2: float = 0.85,
     reject_samples_with_plateau_shape: bool = True,
@@ -973,7 +1007,34 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         If True, discard samples whose fitted Gaussian center is far from the
         intended profile origin (offset 0), indicating oblique/nonlocal transect.
     max_fit_center_offset_um :
-        Maximum allowed absolute fitted center offset from 0 for accepted samples.
+        Floor on the maximum allowed fitted center offset from 0 for
+        accepted samples -- the actual limit used is at least this, and at
+        least ``max_fit_center_offset_fraction_of_diameter`` x the current
+        diameter estimate (see that parameter's own docstring), so a fixed
+        micron floor tuned for one vessel size does not silently become
+        far too loose or far too strict at another.
+    max_fit_center_offset_fraction_of_diameter :
+        Scales the center-offset limit to the vessel's own current
+        diameter estimate (the initial guess, then each widening pass's
+        own fitted value) -- see :func:`_local_max_center_offset`. A fixed
+        absolute offset alone (``max_fit_center_offset_um`` on its own)
+        means the same number regardless of vessel width: comfortably loose
+        for a narrow capillary and disproportionately strict for a wide
+        vessel. 0.3 (reasoned, not empirically fitted) reproduces
+        ``max_fit_center_offset_um``'s own historical default at roughly a
+        5um vessel, the scale that default was chosen against, while
+        scaling sensibly at other diameters.
+    max_transverse_widen_passes :
+        How many times a sample's transverse half-extent may be widened
+        (each time to ``min_total_extent_multiplier`` x that pass's own
+        fitted diameter) before settling for whatever the last accepted
+        pass measured -- an upper bound on iteration count, not a target:
+        widening stops as soon as a pass's own fit no longer asks for a
+        bigger window. If a later, wider pass's own fit fails a rejection
+        gate, the sample keeps the last successfully-fitted, gate-passing
+        measurement rather than being discarded outright -- widening
+        further is only ever an attempt to improve an already-accepted
+        measurement, never a precondition for keeping it.
     reject_samples_with_low_fit_r2 :
         If True, discard samples with poor Gaussian fit quality.
     min_fit_r2 :
@@ -1162,15 +1223,19 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             tangent = _tangent_at(poly, s, float(s0))
             n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
             sample_out_of_plane_fraction = _out_of_plane_fraction(tangent)
-            local_arc_window = _local_arc_window(d_guess0)
 
-            half_extent = max(
-                float(transverse_half_extent_um),
-                0.5 * mult * d_guess0,
-            )
-            if cap_half_extent_by_nonlocal_same_edge_distance and len(poly) > 2:
+            def _capped_initial_half_extent(half_extent: float, local_arc_window: float) -> float:
+                """`half_extent`, further capped by the nearest non-local
+                same-edge point's own physical distance -- see
+                `cap_half_extent_by_nonlocal_same_edge_distance`'s own
+                docstring. Only ever applied to the very first pass's own
+                half-extent: later widening passes only ever grow from a
+                fitted diameter, never re-derive it from raw geometry.
+                """
+                if not (cap_half_extent_by_nonlocal_same_edge_distance and len(poly) > 2):
+                    return half_extent
                 # At least the same diameter-aware local window used for the
-                # ray-stop guard above -- a fixed nonlocal_same_edge_arc_separation_um
+                # ray-stop guard -- a fixed nonlocal_same_edge_arc_separation_um
                 # alone silently caps the window for any vessel wider than
                 # that constant, regardless of how gently it curves (see
                 # _local_arc_window's own docstring).
@@ -1178,72 +1243,27 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 ref_pts = dense_poly if dense_poly is not None else poly
                 ref_s = dense_s if dense_s is not None else s
                 nonlocal_mask = np.abs(ref_s - float(s0)) >= arc_sep
-                if np.any(nonlocal_mask):
-                    center_arr = np.asarray(center, dtype=float)
-                    # Conservative cap using the closer of 3D and in-plane (y-x) nonlocal distances.
-                    d_nonlocal_3d = float(
-                        np.min(np.linalg.norm(ref_pts[nonlocal_mask] - center_arr, axis=1))
-                    )
-                    d_nonlocal_yx = float(
-                        np.min(np.linalg.norm(ref_pts[nonlocal_mask][:, 1:3] - center_arr[1:3], axis=1))
-                    )
-                    d_nonlocal = min(d_nonlocal_3d, d_nonlocal_yx)
-                    if np.isfinite(d_nonlocal) and d_nonlocal > 0:
-                        half_extent = min(
-                            half_extent,
-                            float(nonlocal_same_edge_half_extent_factor) * d_nonlocal,
-                        )
-            pos, prof = _sample_transverse_profile(
-                raw,
-                labels,
-                center,
-                tangent,
-                int(assigned),
-                half_extent,
-                float(transverse_profile_step_um),
-                voxel_size_zyx,
-                background_label=int(background_label),
-                junction_label=jn,
-                allow_junction_crossing=bool(allow_junction_crossing),
-                same_edge_s_lookup=same_edge_s_lookup,
-                same_edge_s0_um=float(s0),
-                same_edge_arc_window_um=local_arc_window,
-                transverse_sampling_mode=transverse_sampling_mode,
-            )
-            pos_fit, prof_fit = (
-                _clip_profile_to_central_lobe(
-                    pos,
-                    prof,
-                    min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                    re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                if not np.any(nonlocal_mask):
+                    return half_extent
+                center_arr = np.asarray(center, dtype=float)
+                # Conservative cap using the closer of 3D and in-plane (y-x) nonlocal distances.
+                d_nonlocal_3d = float(
+                    np.min(np.linalg.norm(ref_pts[nonlocal_mask] - center_arr, axis=1))
                 )
-                if clip_profile_to_single_vessel
-                else (pos, prof)
-            )
-            d0, x0_0, r2_0 = _fwhm_gaussian_fit_with_diagnostics(
-                pos_fit,
-                prof_fit,
-                profile_baseline_mode=profile_baseline_mode,
-                profile_baseline_wing_fraction=profile_baseline_wing_fraction,
-                constrain_fitted_baseline=constrain_fitted_baseline,
-                baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
-            )
-            if d0 is not None:
-                if reject_samples_with_center_offset and x0_0 is not None and abs(float(x0_0)) > float(max_fit_center_offset_um):
-                    d0 = None
-                if reject_samples_with_low_fit_r2 and r2_0 is not None and float(r2_0) < float(min_fit_r2):
-                    d0 = None
-                if d0 is not None and not _passes_plateau_gate(pos_fit, prof_fit):
-                    d0 = None
-            accepted_offsets: np.ndarray | None = None
-            if d0 is not None and d0 > 0:
-                # Enforce at least (min_total_extent_multiplier × estimated width)
-                # when geometry allows (other-edge/junction/volume bounds still truncate).
-                half_extent = max(
-                    half_extent,
-                    0.5 * mult * d0,
+                d_nonlocal_yx = float(
+                    np.min(np.linalg.norm(ref_pts[nonlocal_mask][:, 1:3] - center_arr[1:3], axis=1))
                 )
-                local_arc_window = _local_arc_window(d0)
+                d_nonlocal = min(d_nonlocal_3d, d_nonlocal_yx)
+                if not (np.isfinite(d_nonlocal) and d_nonlocal > 0):
+                    return half_extent
+                return min(half_extent, float(nonlocal_same_edge_half_extent_factor) * d_nonlocal)
+
+            def _sample_and_fit(
+                half_extent: float, local_arc_window: float, diameter_for_gate: float
+            ) -> tuple[float | None, np.ndarray | None]:
+                """One sample-clip-fit-gate pass. Returns (diameter, offsets)
+                -- diameter is None if the fit itself failed or any gate
+                rejected it, in which case offsets is also None."""
                 pos, prof = _sample_transverse_profile(
                     raw,
                     labels,
@@ -1271,7 +1291,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     if clip_profile_to_single_vessel
                     else (pos, prof)
                 )
-                d1, x0_1, r2_1 = _fwhm_gaussian_fit_with_diagnostics(
+                d, x0, r2 = _fwhm_gaussian_fit_with_diagnostics(
                     pos_fit,
                     prof_fit,
                     profile_baseline_mode=profile_baseline_mode,
@@ -1279,73 +1299,50 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     constrain_fitted_baseline=constrain_fitted_baseline,
                     baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
                 )
-                if d1 is not None:
-                    if reject_samples_with_center_offset and x0_1 is not None and abs(float(x0_1)) > float(max_fit_center_offset_um):
-                        d1 = None
-                    if reject_samples_with_low_fit_r2 and r2_1 is not None and float(r2_1) < float(min_fit_r2):
-                        d1 = None
-                    if d1 is not None and not _passes_plateau_gate(pos_fit, prof_fit):
-                        d1 = None
-                if d1 is not None and d1 > 0:
-                    desired_half = 0.5 * mult * float(d1)
-                    # One extra pass if first estimate was low and we can still extend.
-                    if desired_half > (half_extent + float(transverse_profile_step_um)):
-                        half_extent = desired_half
-                        local_arc_window = _local_arc_window(d1)
-                        pos, prof = _sample_transverse_profile(
-                            raw,
-                            labels,
-                            center,
-                            tangent,
-                            int(assigned),
-                            half_extent,
-                            float(transverse_profile_step_um),
-                            voxel_size_zyx,
-                            background_label=int(background_label),
-                            junction_label=jn,
-                            allow_junction_crossing=bool(allow_junction_crossing),
-                            same_edge_s_lookup=same_edge_s_lookup,
-                            same_edge_s0_um=float(s0),
-                            same_edge_arc_window_um=local_arc_window,
-                            transverse_sampling_mode=transverse_sampling_mode,
-                        )
-                        pos_fit, prof_fit = (
-                            _clip_profile_to_central_lobe(
-                                pos,
-                                prof,
-                                min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
-                                re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
-                            )
-                            if clip_profile_to_single_vessel
-                            else (pos, prof)
-                        )
-                        d2, x0_2, r2_2 = _fwhm_gaussian_fit_with_diagnostics(
-                            pos_fit,
-                            prof_fit,
-                            profile_baseline_mode=profile_baseline_mode,
-                            profile_baseline_wing_fraction=profile_baseline_wing_fraction,
-                            constrain_fitted_baseline=constrain_fitted_baseline,
-                            baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
-                        )
-                        if d2 is not None:
-                            if reject_samples_with_center_offset and x0_2 is not None and abs(float(x0_2)) > float(max_fit_center_offset_um):
-                                d2 = None
-                            if reject_samples_with_low_fit_r2 and r2_2 is not None and float(r2_2) < float(min_fit_r2):
-                                d2 = None
-                            if d2 is not None and not _passes_plateau_gate(pos_fit, prof_fit):
-                                d2 = None
-                        if d2 is not None:
-                            diameters.append(d2)
-                            accepted_offsets = pos
-                    else:
-                        diameters.append(d1)
-                        accepted_offsets = pos
-                elif d1 is not None:
-                    diameters.append(d1)
-                    accepted_offsets = pos
-            elif d0 is not None:
-                diameters.append(d0)
+                if d is None:
+                    return None, None
+                max_offset = _local_max_center_offset(
+                    diameter_for_gate,
+                    max_fit_center_offset_um=max_fit_center_offset_um,
+                    max_fit_center_offset_fraction_of_diameter=max_fit_center_offset_fraction_of_diameter,
+                )
+                if reject_samples_with_center_offset and x0 is not None and abs(float(x0)) > max_offset:
+                    return None, None
+                if reject_samples_with_low_fit_r2 and r2 is not None and float(r2) < float(min_fit_r2):
+                    return None, None
+                if not _passes_plateau_gate(pos_fit, prof_fit):
+                    return None, None
+                return d, pos
+
+            # Widen the transverse window until a pass's own fit no longer
+            # asks for more room, up to max_transverse_widen_passes -- an
+            # upper bound on iteration, not a target (see that parameter's
+            # own docstring). If a wider pass's fit fails a gate, the last
+            # successfully-fitted, gate-passing pass is kept: widening is
+            # only ever an attempt to improve an already-accepted
+            # measurement, never a precondition for keeping one.
+            diameter_estimate = d_guess0
+            local_arc_window = _local_arc_window(diameter_estimate)
+            half_extent = _capped_initial_half_extent(
+                max(float(transverse_half_extent_um), 0.5 * mult * diameter_estimate),
+                local_arc_window,
+            )
+            best_diameter: float | None = None
+            accepted_offsets: np.ndarray | None = None
+            for _pass in range(max(1, int(max_transverse_widen_passes)) + 1):
+                d, pos = _sample_and_fit(half_extent, local_arc_window, diameter_estimate)
+                if d is None:
+                    break
+                best_diameter = d
                 accepted_offsets = pos
+                diameter_estimate = d
+                desired_half = 0.5 * mult * d
+                if desired_half <= half_extent + float(transverse_profile_step_um):
+                    break
+                half_extent = desired_half
+                local_arc_window = _local_arc_window(d)
+            if best_diameter is not None:
+                diameters.append(best_diameter)
 
             if accepted_offsets is not None:
                 max_out_of_plane_fraction = max(
