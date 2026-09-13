@@ -430,3 +430,73 @@ def test_the_two_point_resistance_depends_on_which_resistances_are_in_force():
         f"expected the Pries-Secomb resistances to give a far larger effective resistance "
         f"than the power law; got {before:.6g} against {after:.6g}"
     )
+
+
+def test_vessel_statistics_are_computed_after_the_rheology_solve():
+    """Graph statistics must be weighted by the resistances the model actually solves on.
+
+    ``compute_comprehensive_vessel_statistics`` weights betweenness and community detection
+    by the edge ``resistance`` attribute. It used to run before
+    ``solve_coupled_flow_and_hematocrit``, so those weights came from
+    ``set_poiseuille_resistances`` - the power law mu = 1/d^1.647, giving an effective
+    d^-5.647 dependence against the solved network's d^-4 mu(d), which fits d^-5.221 over
+    the capillary range.
+
+    Same reasoning as ``test_two_point_resistance_is_computed_after_the_rheology_solve`` for
+    why this is asserted on call order rather than behaviourally.
+    """
+    calls = _driver_call_lines(
+        "_export_and_solve_haemodynamics",
+        ("solve_coupled_flow_and_hematocrit",
+         "compute_comprehensive_vessel_statistics",
+         "export_per_edge_morphometry"),
+    )
+
+    assert len(calls["solve_coupled_flow_and_hematocrit"]) == 1
+    assert len(calls["compute_comprehensive_vessel_statistics"]) == 1
+    solve_line = calls["solve_coupled_flow_and_hematocrit"][0]
+    stats_line = calls["compute_comprehensive_vessel_statistics"][0]
+
+    assert stats_line > solve_line, (
+        f"vessel statistics are computed at line {stats_line}, before the rheology solve at "
+        f"line {solve_line}, so betweenness is weighted by the power-law resistances"
+    )
+
+    # Per-edge morphometry is purely geometric, so it is unaffected either way. It is kept
+    # alongside the statistics only so the reported block stays contiguous.
+    assert calls["export_per_edge_morphometry"][0] > solve_line
+
+
+def test_the_two_resistance_models_weight_edges_differently():
+    """The ordering above matters because the two models do not rank edges identically.
+
+    Asserted on relative weight rather than on a betweenness value. Betweenness uses only
+    the ordering of path costs, and on a small graph a moderate reweighting often leaves the
+    shortest paths unchanged - measured, it does exactly that on the ladder below. So a test
+    asserting that some betweenness summary changes would pass or fail on the shape of the
+    fixture rather than on the thing being fixed.
+
+    What is reliably true is that the two models have different effective exponents, so the
+    weight of a narrow edge relative to a wide one differs. That is what makes weighting by
+    one rather than the other a real choice.
+    """
+    from ImageLynx.haemodynamics.rheology import calculate_pries_secomb_viscosity
+
+    def power_law(d):
+        return (1.0 / d ** 1.647) / d ** 4
+
+    def pries(d):
+        return calculate_pries_secomb_viscosity(d, 0.45) / d ** 4
+
+    # Relative to an 8 um reference edge, across the range these graphs span.
+    ratios = []
+    for d in (3.0, 4.0, 6.0, 8.0, 12.0, 20.0):
+        rel_power = power_law(d) / power_law(8.0)
+        rel_pries = pries(d) / pries(8.0)
+        ratios.append(rel_pries / rel_power)
+
+    spread = max(ratios) / min(ratios)
+    assert spread > 2.0, (
+        f"expected the two models to rank edges differently across the calibre range; "
+        f"relative weighting varies by only {spread:.2f}x"
+    )

@@ -1238,6 +1238,28 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     # Pries-Secomb resistances, so reporting an effective resistance from the other set put
     # two different viscosity models behind two numbers in the same results table.
 
+    # Statistics and per-edge morphometry are reported *after* the rheology solve, further
+    # down. compute_comprehensive_vessel_statistics weights betweenness and community
+    # detection by the edge "resistance" attribute, and running it here weighted them by
+    # set_poiseuille_resistances' power law mu = 1 / d^1.647 - a d^-5.647 dependence rather
+    # than the d^-4 mu(d) the solved network actually has. Per-edge morphometry is purely
+    # geometric and unaffected either way; it moves with the statistics so the reported
+    # block stays in one place.
+
+    # Inject boundary pressures and solve the system of linear equations to find pressure at every node and flow in every edge
+    print("Running Iterative Flow-Hematocrit solver (Phase Separation and Fåhræus–Lindqvist effect)...")
+    import ImageLynx.haemodynamics.rheology as rheo
+    G, final_pressure = rheo.solve_coupled_flow_and_hematocrit(
+        G,
+        starting_nodes,
+        output_nodes,
+        hemo_config.input_p_bc,
+        hemo_config.output_p_bc,
+        systemic_hematocrit=perf_config.systemic_hematocrit,
+        max_iterations=hemo_config.rheology_max_iterations,
+        tolerance=hemo_config.rheology_tolerance
+    )
+
     node_positions = nx.get_node_attributes(G, "pos")
     # Calculate physical and topological statistics (e.g. total length, mean tortuosity, degree distribution)
     stats = statistics.compute_comprehensive_vessel_statistics(
@@ -1265,20 +1287,6 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             counts[row[column]] = counts.get(row[column], 0) + 1
         print(f"    {column}: {counts}")
 
-    # Inject boundary pressures and solve the system of linear equations to find pressure at every node and flow in every edge
-    print("Running Iterative Flow-Hematocrit solver (Phase Separation and Fåhræus–Lindqvist effect)...")
-    import ImageLynx.haemodynamics.rheology as rheo
-    G, final_pressure = rheo.solve_coupled_flow_and_hematocrit(
-        G,
-        starting_nodes,
-        output_nodes,
-        hemo_config.input_p_bc,
-        hemo_config.output_p_bc,
-        systemic_hematocrit=perf_config.systemic_hematocrit,
-        max_iterations=hemo_config.rheology_max_iterations,
-        tolerance=hemo_config.rheology_tolerance
-    )
-    
     # We still need to export the final flow data to VTK
     # Let's build the conductance matrix now that the iterative solver has settled all the resistances
     conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
