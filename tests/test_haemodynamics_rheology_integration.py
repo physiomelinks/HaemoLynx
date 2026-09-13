@@ -53,7 +53,7 @@ def test_coupled_solver_convergence():
 
     # The direction of skimming is *not* asserted here, and that is deliberate: it depends on
     # the viscosity law through the flow split, and the split is what the skimming model keys
-    # on. See test_skimming_direction_depends_on_the_flow_split below.
+    # on. See test_skimming_follows_the_flow_fraction_not_the_velocity below.
 
 
 def test_skimming_follows_the_flow_fraction_not_the_velocity():
@@ -328,3 +328,105 @@ def test_the_update_step_agrees_with_the_initialisation():
     assert many_passes[0][1][0]["hematocrit"] == pytest.approx(0.45, abs=1e-9)
     assert many_passes[0][1][0]["resistance"] == pytest.approx(
         one_pass[0][1][0]["resistance"], rel=1e-9)
+
+
+def _driver_call_lines(function_name, call_attrs):
+    """Line numbers of calls to ``call_attrs`` inside ``function_name`` of the CB driver."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
+    tree = ast.parse(source)
+    target = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    found = {name: [] for name in call_attrs}
+    for node in ast.walk(target):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in found:
+                found[node.func.attr].append(node.lineno)
+    return found
+
+
+def test_two_point_resistance_is_computed_after_the_rheology_solve():
+    """The reported effective resistance must come from the Pries-Secomb resistances.
+
+    It used to be computed before ``solve_coupled_flow_and_hematocrit`` ran, so it was built
+    from whatever ``set_poiseuille_resistances`` had written - the power law mu = 1/d^1.647,
+    which is not a viscosity in cP and carries a d^-5.647 dependence rather than Poiseuille's
+    d^-4. Every flow and pressure in the model comes from the Pries-Secomb resistances, so
+    the results table held two numbers derived from two different viscosity models.
+
+    Asserted on call order in the source rather than behaviourally: the enclosing driver
+    function also writes VTK, computes statistics and runs perfusion, and no test harness
+    exists that can execute it. The ordering is the whole of the fix, so pinning the ordering
+    is what stops it regressing.
+    """
+    calls = _driver_call_lines(
+        "_export_and_solve_haemodynamics",
+        ("solve_coupled_flow_and_hematocrit",
+         "calc_two_point_from_laplacian_matrix_nodeID",
+         "build_conductance_matrix_from_graph"),
+    )
+
+    assert len(calls["solve_coupled_flow_and_hematocrit"]) == 1
+    assert len(calls["calc_two_point_from_laplacian_matrix_nodeID"]) == 1
+    solve_line = calls["solve_coupled_flow_and_hematocrit"][0]
+    two_point_line = calls["calc_two_point_from_laplacian_matrix_nodeID"][0]
+
+    assert two_point_line > solve_line, (
+        f"the two-point resistance is computed at line {two_point_line}, before the rheology "
+        f"solve at line {solve_line}, so it reports the power-law resistances"
+    )
+
+    # One matrix build, not two. The pre-rheology build existed only to feed the two-point
+    # calculation; leaving it behind would rebuild an ~8000-edge matrix for nothing.
+    builds = calls["build_conductance_matrix_from_graph"]
+    assert len(builds) == 1, f"expected a single conductance build, found {len(builds)}"
+    assert builds[0] > solve_line
+
+
+def test_the_two_point_resistance_depends_on_which_resistances_are_in_force():
+    """Show the ordering is not cosmetic: the two resistance sets give different answers.
+
+    If these agreed, computing the effective resistance before or after the rheology solve
+    would not matter and the ordering test above would be pinning nothing.
+    """
+    from ImageLynx.haemodynamics.resistance import (
+        build_conductance_matrix_from_graph,
+        calc_laplacian_from_conductance_matrix,
+        calc_two_point_from_laplacian_matrix_nodeID,
+    )
+
+    def two_point(graph):
+        conductance, _ = build_conductance_matrix_from_graph(graph)
+        laplacian = calc_laplacian_from_conductance_matrix(conductance)
+        return calc_two_point_from_laplacian_matrix_nodeID(laplacian, graph, 0, 2)
+
+    # As set_poiseuille_resistances leaves them, with mu = 1 / d^1.647.
+    power_law = _bifurcation_graph()
+    for u, v, key, data in power_law.edges(keys=True, data=True):
+        d = data["fwhm_diameter_um"]
+        mu_old = 1.0 / (d ** 1.647)
+        data["resistance"] = (128.0 * mu_old * data["length"]) / (np.pi * d ** 4)
+    before = two_point(power_law)
+
+    # As the rheology solver leaves them.
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(),
+        starting_nodes=[0],
+        output_nodes=[2, 3],
+        input_p_bc=13.332e6,
+        output_p_bc=0.27e6,
+        systemic_hematocrit=0.45,
+        max_iterations=10,
+        tolerance=1e-4,
+    )
+    after = two_point(solved)
+
+    assert np.isfinite(before) and np.isfinite(after)
+    assert after / before > 100.0, (
+        f"expected the Pries-Secomb resistances to give a far larger effective resistance "
+        f"than the power law; got {before:.6g} against {after:.6g}"
+    )

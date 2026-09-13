@@ -1230,30 +1230,13 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             show_nodes=False,
         )
 
-    # Convert the networkx graph into a massive symmetric Conductance Matrix representing flow ease between all nodes
-    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
-    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-
-    # Optional: Calculate the exact effective mathematical resistance between a single specific inlet and outlet pair
-    if pipeline_config.do_resistance_calculation:
-        source_node, target_node = resistance_node_pair
-        if source_node in node_to_idx and target_node in node_to_idx:
-            laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-            two_point_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
-                laplacian,
-                G,
-                source_node,
-                target_node,
-            )
-            print(
-                f"\nEffective resistance between nodes {source_node} and "
-                f"{target_node}: {two_point_resistance}"
-            )
-        else:
-            print(
-                f"\nSkipped two-point resistance: nodes {resistance_node_pair} "
-                "are not both present in the graph."
-            )
+    # The conductance matrix and the two-point effective resistance are both built *after*
+    # the rheology solve, further down. They used to be built here, before it, which meant
+    # the reported effective resistance came from set_poiseuille_resistances' power law
+    # mu = 1 / d^1.647 - not a viscosity in cP, and carrying a d^-5.647 dependence rather
+    # than Poiseuille's d^-4. Every flow and pressure in the model comes from the
+    # Pries-Secomb resistances, so reporting an effective resistance from the other set put
+    # two different viscosity models behind two numbers in the same results table.
 
     node_positions = nx.get_node_attributes(G, "pos")
     # Calculate physical and topological statistics (e.g. total length, mean tortuosity, degree distribution)
@@ -1297,8 +1280,31 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     )
     
     # We still need to export the final flow data to VTK
-    # Let's rebuild the final conductance matrix now that the iterative solver updated all the resistances
-    conductance, _ = haemodynamics.build_conductance_matrix_from_graph(G)
+    # Let's build the conductance matrix now that the iterative solver has settled all the resistances
+    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+
+    # Optional: Calculate the exact effective mathematical resistance between a single specific inlet and outlet pair
+    if pipeline_config.do_resistance_calculation:
+        source_node, target_node = resistance_node_pair
+        if source_node in node_to_idx and target_node in node_to_idx:
+            laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+            two_point_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+                laplacian,
+                G,
+                source_node,
+                target_node,
+            )
+            print(
+                f"\nEffective resistance between nodes {source_node} and "
+                f"{target_node}: {two_point_resistance}"
+            )
+        else:
+            print(
+                f"\nSkipped two-point resistance: nodes {resistance_node_pair} "
+                "are not both present in the graph."
+            )
+
     flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
