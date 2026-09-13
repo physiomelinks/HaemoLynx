@@ -164,12 +164,13 @@ class PoiseuilleModel:
         *,
         radius_assignment_mode: str = "fwhm_radius",
         constant_radius_um: float = 5.0,
+        assign_resistance: bool = True,
     ) -> tuple[nx.MultiGraph, dict]:
         """
         Set edge resistances using Poiseuille's law with calculated viscosity.
         Resistance = (128 * viscosity * length) / (π * diameter^4)
         Where viscosity = 1 / diameter^1.647
-        
+
         Parameters:
         -----------
         G : networkx.MultiGraph
@@ -181,7 +182,22 @@ class PoiseuilleModel:
             "fwhm_radius" to use measurements, "constant_radius" to use the prescribed value.
         constant_radius_um : float
             The uniform radius to apply if in constant mode.
-            
+        assign_resistance : bool
+            Whether to write a ``resistance`` attribute. Defaults to True, which is what
+            ``resistance_network_pipeline.py`` and its sibling need: neither runs the rheology
+            solver, so the power-law resistance written here is the only one they ever have.
+
+            ``carotid_image_to_model.py`` passes False. There, ``solve_coupled_flow_and_hematocrit``
+            assumes systemic haematocrit and recomputes every resistance from Pries-Secomb
+            before the first solve, so the power-law value was overwritten without ever being
+            read - and the circular dependency it exists to break is broken by that haematocrit
+            assumption rather than by this viscosity. Writing it there was a provisional number
+            nothing consumed, and three reported quantities did consume it until 69dbe70,
+            8634298 and 9b1459b moved them after the solve.
+
+            ``assigned_diameter_um`` is written either way. It is what the rheology solver reads
+            for calibre, and it comes from the measured radius rather than from this power law.
+
         Returns:
         --------
         dict : Summary of resistance assignments
@@ -200,15 +216,20 @@ class PoiseuilleModel:
             'used_fwhm_edge_diameter': 0,
         }
         
-        print(f"=== Poiseuille Resistance Calculation (Branch Order Based) ===")
-        print(f"Formula: Resistance = (128 * viscosity * length) / (π * diameter^4)")
-        print(f"Viscosity calculation: μ = 1 / diameter^1.647")
-        print(f"Units: diameter and length in micrometers (μm)")
+        if assign_resistance:
+            print(f"=== Poiseuille Resistance Calculation (Branch Order Based) ===")
+            print(f"Formula: Resistance = (128 * viscosity * length) / (π * diameter^4)")
+            print(f"Viscosity calculation: μ = 1 / diameter^1.647")
+            print(f"Units: diameter and length in micrometers (μm)")
+        else:
+            print(f"=== Diameter Assignment (Branch Order Based) ===")
+            print(f"Resistance is not assigned here; the rheology solver computes it from "
+                  f"Pries-Secomb before the first solve.")
         print()
-        
+
         # Pre-calculate viscosities for each diameter to avoid redundant calculations
         diameter_viscosity_map = {}
-        for branch_order, val in diameter_by_branch_order.items():
+        for branch_order, val in (diameter_by_branch_order.items() if assign_resistance else ()):
             # Support both float and dict {"d1": ..., "d2": ...}
             diameter = val["d1"] if isinstance(val, dict) else val
             
@@ -284,24 +305,33 @@ class PoiseuilleModel:
                 results['invalid_diameter'].append((u, v, key, branch_order, diameter))
                 continue
             
-            # Get pre-calculated viscosity for this diameter
-            viscosity = diameter_viscosity_map.get(diameter, None)
-            if viscosity is None:
-                # Fallback calculation if not in map
-                viscosity = 1.0 / (diameter ** 1.647)
-            
-            # Calculate resistance using Poiseuille's law
-            # Resistance = (128 * viscosity * length) / (π * diameter^4)
-            resistance = (128.0 * viscosity * length) / (PI * diameter**4)
-            
-            G[u][v][key]['resistance'] = resistance
             G[u][v][key]['assigned_diameter_um'] = diameter
-            
+
+            if assign_resistance:
+                # Get pre-calculated viscosity for this diameter
+                viscosity = diameter_viscosity_map.get(diameter, None)
+                if viscosity is None:
+                    # Fallback calculation if not in map
+                    viscosity = 1.0 / (diameter ** 1.647)
+
+                # Calculate resistance using Poiseuille's law
+                # Resistance = (128 * viscosity * length) / (π * diameter^4)
+                resistance = (128.0 * viscosity * length) / (PI * diameter**4)
+                G[u][v][key]['resistance'] = resistance
+            else:
+                viscosity = resistance = None
+
+            # Counts edges that were processed and given a diameter, which is what the
+            # provenance guard below reads it as. It keeps incrementing when no resistance is
+            # written, because the guard exists to catch a diameter that was fabricated rather
+            # than measured, and that failure is unrelated to whether a resistance follows.
             results['resistances_set'] += 1
-            
-            logger.debug(f"Edge ({u}, {v}, {key}): {branch_order}, "
-                        f"diameter={diameter}μm, length={length:.3f}μm, "
-                        f"viscosity={viscosity:.6f}, resistance={resistance:.6f}")
+
+            if logger.isEnabledFor(logging.DEBUG):
+                detail = (f"viscosity={viscosity:.6f}, resistance={resistance:.6f}"
+                          if assign_resistance else "resistance not assigned")
+                logger.debug(f"Edge ({u}, {v}, {key}): {branch_order}, "
+                             f"diameter={diameter}μm, length={length:.3f}μm, {detail}")
         
         _raise_if_measurement_mode_measured_nothing(
             radius_assignment_mode, results['resistances_set'], results['used_fwhm_edge_diameter']
@@ -309,7 +339,10 @@ class PoiseuilleModel:
 
         # Print summary
         print(f"=== Summary ===")
-        print(f"Resistances successfully set: {results['resistances_set']}")
+        if assign_resistance:
+            print(f"Resistances successfully set: {results['resistances_set']}")
+        else:
+            print(f"Diameters successfully assigned: {results['resistances_set']}")
         if results['missing_branch_order']:
             print(f"Edges missing branch_order: {len(results['missing_branch_order'])}")
         if results['missing_length']:

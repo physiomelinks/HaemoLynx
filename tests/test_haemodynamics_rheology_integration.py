@@ -226,11 +226,19 @@ def test_carotid_pipeline_end_to_end_resistance_and_skimming():
         assert len(start) > 0
         assert len(end) > 0
         
-        # Ensure Phase 4 correctly attached the resistance from the Sphincter PoiseuilleModel
+        # Phase 4 attaches the measured diameter, not a resistance. It used to write the
+        # power-law resistance mu = 1/d^1.647 as well, which the rheology solver overwrote
+        # before anything read it; the CB driver now passes assign_resistance=False so that
+        # provisional value is never created. assigned_diameter_um is what the solver reads.
         for u, v, k, d in G.edges(keys=True, data=True):
-            assert "resistance" in d
-            assert d["resistance"] > 0
-            
+            assert "assigned_diameter_um" in d
+            assert d["assigned_diameter_um"] > 0
+            assert "resistance" not in d, (
+                "Phase 4 should no longer write a provisional power-law resistance on the "
+                "CB path; the rheology solver assigns it from Pries-Secomb"
+            )
+
+
     except Exception as e:
         pytest.fail(f"End-to-End Pipeline Phase 4 failed: {e}")
 
@@ -560,3 +568,70 @@ def test_the_vtk_resistance_array_is_refreshed_after_the_rheology_solve():
     for name in ("hematocrit", "viscosity", "wall_shear_stress_pa"):
         assert name in writes, f"{name} is no longer written to cell_data"
         assert min(writes[name]) > solve_line
+
+
+def _diameter_graph():
+    """One edge carrying everything set_poiseuille_resistances needs."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    return G
+
+
+def _poiseuille_model():
+    from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
+    return PoiseuilleModel(constriction_length=5.0, constriction_spacing=100.0, mode="sphincter")
+
+
+def test_assign_resistance_false_writes_the_diameter_but_no_resistance():
+    """The CB path needs the diameter and the provenance guard, not the power-law resistance.
+
+    mu = 1 / d^1.647 is written and then overwritten by the rheology solver before anything
+    reads it, so on that path it is a provisional number nothing consumes.
+    ``assigned_diameter_um`` is what the solver actually reads, and it comes from the
+    measured radius.
+    """
+    G, results = _poiseuille_model().set_poiseuille_resistances(
+        _diameter_graph(), {"DEFAULT": 5.0},
+        radius_assignment_mode="edt_radius", assign_resistance=False)
+
+    data = G[0][1][0]
+    assert "resistance" not in data, "no resistance should be written when the flag is off"
+    assert data["assigned_diameter_um"] == pytest.approx(8.0)
+    assert data["diameter_provenance"] == "measured_edt"
+
+
+def test_assign_resistance_defaults_to_writing_one():
+    """The default must stay True: resistance_network_pipeline.py has no other resistance.
+
+    That pipeline never calls solve_coupled_flow_and_hematocrit - it has no rheology stage at
+    all - so the value written here is the one its conductance matrix, two-point resistance,
+    statistics and flow solve all use. Flipping the default would silently leave it with no
+    resistance rather than a wrong one.
+    """
+    G, _ = _poiseuille_model().set_poiseuille_resistances(
+        _diameter_graph(), {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius")
+
+    data = G[0][1][0]
+    d, L = 8.0, 20.0
+    expected = (128.0 * (1.0 / d ** 1.647) * L) / (np.pi * d ** 4)
+    assert data["resistance"] == pytest.approx(expected, rel=1e-12)
+
+
+def test_the_diameter_provenance_guard_still_fires_when_no_resistance_is_written():
+    """The guard counts processed edges, and that counter must not depend on the flag.
+
+    ``_raise_if_measurement_mode_measured_nothing`` reads ``results['resistances_set']`` as
+    the number of edges processed. That counter is incremented in the same loop that assigns
+    the resistance, so skipping the assignment naively would leave it at zero and the guard
+    would stop firing - silently disabling the check that stops a fabricated diameter
+    reaching the model. Resistance goes as the inverse fourth power of diameter, so that is
+    not a small failure to hide.
+    """
+    # edt_radius selected, but no edge carries edt_diameter_um: every edge falls back to a
+    # synthetic branch-order diameter, which is what the guard exists to refuse.
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01")
+
+    with pytest.raises(ValueError, match="edt_radius"):
+        _poiseuille_model().set_poiseuille_resistances(
+            G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius", assign_resistance=False)

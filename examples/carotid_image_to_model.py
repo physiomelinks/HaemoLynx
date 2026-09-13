@@ -1185,11 +1185,19 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
                 k: (v["d1"] if isinstance(v, dict) else v)
                 for k, v in hemo_config.diameter_by_branch_order.items()
             }
+            # assign_resistance=False: this call is here for assigned_diameter_um and the
+            # diameter-provenance guard, not for a resistance. solve_coupled_flow_and_hematocrit
+            # recomputes every resistance from Pries-Secomb at systemic haematocrit before its
+            # first solve, so the power-law value mu = 1 / d^1.647 was written and then
+            # overwritten without being read. It broke no circular dependency either: the
+            # solver breaks that by assuming a haematocrit, which is what lets it use a real
+            # viscosity relation immediately.
             poiseuille_model.set_poiseuille_resistances(
                 G,
                 simple_diameters,
                 radius_assignment_mode=hemo_config.radius_assignment_mode,
-                constant_radius_um=hemo_config.constant_radius_um
+                constant_radius_um=hemo_config.constant_radius_um,
+                assign_resistance=False,
             )
             
     return starting_nodes, output_nodes, resistance_node_pair
