@@ -243,6 +243,33 @@ def test_split_pinch_radius_ratio_gates_how_much_narrowing_counts():
     assert stats_lenient["cuts_made"] == 1
 
 
+def test_split_cuts_both_necks_of_a_three_body_chain():
+    """Three bodies in a row (A-B and B-C each pinched) exercises more than
+    one adjacent pair sharing a body -- each pair is only ever cropped to
+    its own local bounding box, so this catches a crop that clips off part
+    of a body, or a cut written to the wrong place when two pairs' padded
+    boxes overlap around the shared middle body."""
+    shape = (20, 20, 55)
+    sphere_a = _sphere(shape, (10, 10, 6), 5.0)
+    sphere_b = _sphere(shape, (10, 10, 26), 5.0)
+    sphere_c = _sphere(shape, (10, 10, 46), 5.0)
+    neck_ab = _cylinder_along_x(shape, z=10, y=10, radius=1.5, x0=6, x1=26)
+    neck_bc = _cylinder_along_x(shape, z=10, y=10, radius=1.5, x0=26, x1=46)
+    mask = sphere_a | sphere_b | sphere_c | neck_ab | neck_bc
+    _labeled, before = sc._connected_components(mask)
+    assert before == 1
+
+    cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert stats["cuts_made"] == 2
+    _labeled, after = sc._connected_components(cleaned)
+    assert after == 3
+    # Each sphere survives whole -- a mis-cropped cut could not just sever
+    # the neck but also bite into the sphere it was seeded from.
+    for sphere in (sphere_a, sphere_b, sphere_c):
+        assert (cleaned & sphere).sum() == sphere.sum()
+
+
 def test_split_empty_mask_is_a_no_op():
     mask = np.zeros((10, 10, 10), dtype=bool)
     cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(1.0, 1.0, 1.0))

@@ -477,6 +477,67 @@ def test_optimise_settings_raw_image_none_when_raw_data_row_is_empty(panel, monk
     assert captured["raw_image"] is None
 
 
+def test_optimise_settings_raw_image_shape_mismatch_degrades_instead_of_crashing(
+    panel, monkeypatch, tmp_path
+):
+    """Regression: a raw reference image whose shape doesn't match the
+    segmented mask used to raise inside the *real*
+    `optimise_skeleton_and_graph_settings` (`_Search.__init__`'s own shape
+    check), outside the try/except meant to make a bad raw file non-fatal --
+    crashing the whole run instead of degrading exactly like a missing or
+    unreadable raw file already did. Deliberately does not fake
+    `optimise_skeleton_and_graph_settings`: a fake would hide the very bug
+    this guards against, since the crash happened inside the real function.
+    """
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    import haemolynx.haemodynamics.automated as automated_mod
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[3:9, 3:9, 3:9] = True
+    mismatched_raw_image = np.zeros((5, 5, 5), dtype=np.float32)
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+    monkeypatch.setattr(
+        automated_mod,
+        "load_single_channel_tiff_volume",
+        lambda path, axis_order: mismatched_raw_image,
+    )
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+
+    rows = panel._haemolynx_rows()
+    rows["input_path"].value = real_input
+    panel._haemolynx_raw_data_row.value = raw_file
+
+    panel._haemolynx_optimise_settings()
+
+    app = QApplication.instance()
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        current = panel._haemolynx_report()
+        if current and current != "Optimising settings...":
+            break
+    else:
+        pytest.fail("optimiser worker did not finish within 30s")
+
+    final_report = panel._haemolynx_report()
+    assert "Optimised settings applied" in final_report
+    assert "skipped" in final_report.lower()
+
+
 # --- a real, slow, end-to-end run --------------------------------------------
 
 

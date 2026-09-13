@@ -58,6 +58,7 @@ from scipy.ndimage import (
     binary_dilation,
     binary_opening,
     distance_transform_edt,
+    find_objects,
     gaussian_filter,
     label,
 )
@@ -565,16 +566,38 @@ def split_narrow_neck_components(
     pairs = _adjacent_label_pairs(labels)
     stats["adjacent_pairs"] = len(pairs)
     to_remove = np.zeros(mask.shape, dtype=bool)
+    # One label -> bounding-box pass shared by every pair below, instead of
+    # each pair's own `labels == label_x` / `binary_dilation(...)` scanning
+    # and allocating over the *entire* volume -- real, branchy vasculature
+    # can watershed into many bodies with many touching pairs, and every one
+    # of those full-volume passes is wasted work outside the two bodies'
+    # own (usually tiny, relative to the whole stack) local neighbourhood.
+    bboxes = find_objects(labels, max_label=n_labels)
     for label_a, label_b in pairs:
-        region_a = labels == label_a
-        region_b = labels == label_b
+        bbox_a = bboxes[label_a - 1]
+        bbox_b = bboxes[label_b - 1]
+        if bbox_a is None or bbox_b is None:
+            continue
+        # The pair's shared bounding box, padded by 1 voxel -- exactly
+        # enough margin that a single-iteration `binary_dilation` (below)
+        # sees the same neighbours it would against the full volume, since
+        # both bodies' own true extents are already fully inside the
+        # unpadded union (`find_objects` gives each label's own tight box).
+        crop = tuple(
+            slice(max(0, min(a.start, b.start) - 1), min(dim, max(a.stop, b.stop) + 1))
+            for a, b, dim in zip(bbox_a, bbox_b, mask.shape)
+        )
+        labels_crop = labels[crop]
+        edt_crop = edt[crop]
+        region_a = labels_crop == label_a
+        region_b = labels_crop == label_b
         # Each body's own peak EDT, i.e. the radius at the marker that seeded
         # it -- not the mean/median over the whole watershed catchment, which
         # for a body whose basin swallows a long stretch of a thin neck would
         # be dragged down by all those low-EDT neck voxels and never read as
         # "thick" at all.
-        radius_a = float(edt[region_a].max()) if region_a.any() else 0.0
-        radius_b = float(edt[region_b].max()) if region_b.any() else 0.0
+        radius_a = float(edt_crop[region_a].max()) if region_a.any() else 0.0
+        radius_b = float(edt_crop[region_b].max()) if region_b.any() else 0.0
         if radius_a < min_body_radius_um or radius_b < min_body_radius_um:
             stats["rejected_reasons"]["body_too_thin"] = (
                 stats["rejected_reasons"].get("body_too_thin", 0) + 1
@@ -590,10 +613,10 @@ def split_narrow_neck_components(
         # its own surface (EDT near 0) up to its centre -- the surface edge
         # is not evidence of a pinch, only the centre value is a genuine
         # local radius to compare against the two bodies'.
-        neck_radius = float(edt[interface].max())
+        neck_radius = float(edt_crop[interface].max())
         body_radius = min(radius_a, radius_b)
         if neck_radius <= float(min_pinch_radius_ratio) * body_radius:
-            to_remove |= interface
+            to_remove[crop] |= interface
             stats["cuts_made"] += 1
         else:
             stats["rejected_reasons"]["not_narrow_enough"] = (

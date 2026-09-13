@@ -9,7 +9,7 @@ of it only showing up later as an unexplained missing vessel.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt, generate_binary_structure, label
@@ -23,6 +23,7 @@ def _explained_by_local_radius(
     mask_bool: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float],
+    local_radius_map: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Which *mask_bool* voxels count as "explained" by *source_bool*.
 
@@ -39,9 +40,19 @@ def _explained_by_local_radius(
     against the same kind of segmented-image mask with the identical
     local-radius-plus-margin geometry, so a fix to that geometry (like the
     margin itself) only has to be made once.
+
+    *local_radius_map*, when given, is used as-is instead of being
+    recomputed from *mask_bool* -- a caller that already has
+    :func:`thick_vessels.inscribed_radius_map` for this exact *mask_bool*
+    (e.g. a settings search re-checking the same fixed mask many times
+    across many candidates) can pass it through to skip a full-volume EDT
+    it has already paid for. The caller is responsible for it actually
+    matching *mask_bool*; nothing here re-validates that.
     """
     spacing = tuple(float(v) for v in voxel_size_zyx)
-    local_radius = inscribed_radius_map(mask_bool, spacing)
+    local_radius = (
+        local_radius_map if local_radius_map is not None else inscribed_radius_map(mask_bool, spacing)
+    )
     discretisation_margin = float(np.linalg.norm(spacing))
     if source_bool.any():
         distance_to_source = distance_transform_edt(~source_bool, sampling=spacing)
@@ -126,6 +137,7 @@ def diagnose_skeleton_mask_consistency(
     mask: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    local_radius_map: Optional[np.ndarray] = None,
 ) -> dict[str, Any]:
     """Fraction of *mask* the skeleton actually runs through.
 
@@ -168,6 +180,10 @@ def diagnose_skeleton_mask_consistency(
     way, not the 105,594 a bare ``!= 0`` reads. (Imported locally: ``io.load``
     imports ``preprocessing.skeleton`` at module scope, so importing it back
     at this module's own top level would be circular.)
+
+    *local_radius_map*, when given, is passed straight through to
+    :func:`_explained_by_local_radius` instead of recomputing it from
+    *mask* -- see that function's own docstring.
     """
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
@@ -182,7 +198,7 @@ def diagnose_skeleton_mask_consistency(
 
     skeleton_bool = np.asarray(skeleton, dtype=bool)
     explained = _explained_by_local_radius(
-        skeleton_bool, mask_bool, voxel_size_zyx=voxel_size_zyx
+        skeleton_bool, mask_bool, voxel_size_zyx=voxel_size_zyx, local_radius_map=local_radius_map,
     )
     explained_voxel_count = int(explained.sum())
     return {
@@ -209,6 +225,7 @@ def diagnose_vessels_missing_from_skeleton(
     *,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     min_vessel_voxels: int = 2,
+    local_radius_map: Optional[np.ndarray] = None,
 ) -> dict[str, Any]:
     """Whole segmented-image vessels the skeleton drops entirely.
 
@@ -224,13 +241,17 @@ def diagnose_vessels_missing_from_skeleton(
 
     *mask* is read via the same canonical binarisation the other checks in
     this family use (see :func:`diagnose_skeleton_mask_consistency`).
+
+    *local_radius_map*, when given, is passed straight through to
+    :func:`_explained_by_local_radius` instead of recomputing it from
+    *mask* -- see that function's own docstring.
     """
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
     mask_bool = _to_binary_volume_for_skeletonization(mask)
     skeleton_bool = np.asarray(skeleton, dtype=bool)
     explained = _explained_by_local_radius(
-        skeleton_bool, mask_bool, voxel_size_zyx=voxel_size_zyx
+        skeleton_bool, mask_bool, voxel_size_zyx=voxel_size_zyx, local_radius_map=local_radius_map,
     )
     return _missing_mask_components(
         explained, mask_bool, min_vessel_voxels=min_vessel_voxels

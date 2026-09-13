@@ -63,6 +63,29 @@ def test_a_skeleton_far_from_the_mask_explains_none_of_it():
     assert report["coverage_fraction"] == pytest.approx(0.0)
 
 
+def test_a_supplied_local_radius_map_is_used_instead_of_being_recomputed():
+    """A caller-supplied `local_radius_map` must actually be used -- not
+    silently ignored in favour of recomputing it from `mask` internally --
+    since the settings optimiser relies on exactly this to avoid a fresh
+    full-volume EDT on every single candidate it evaluates (see
+    `optimisation.search._Search._raw_mask_local_radius_map`).
+    """
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[3:7, 4:6, :] = True
+    skeleton = np.zeros((10, 10, 10), dtype=bool)
+    skeleton[0, 0, 0] = True  # far from the mask -- explains none of it by default
+
+    # A radius map large enough that "no farther than the local radius" is
+    # true everywhere flips a normally-unexplained mask to fully explained
+    # -- if this were ignored and recomputed internally instead, the result
+    # would be unchanged from the no-argument case above (coverage ~ 0).
+    huge_radius_map = np.full(mask.shape, 1000.0)
+    report = diagnose_skeleton_mask_consistency(
+        skeleton, mask, voxel_size_zyx=(1.0, 1.0, 1.0), local_radius_map=huge_radius_map,
+    )
+    assert report["coverage_fraction"] == pytest.approx(1.0)
+
+
 def test_an_empty_skeleton_against_a_real_mask_explains_none_of_it():
     mask = np.ones((3, 3, 3), dtype=bool)
     empty_skeleton = np.zeros((3, 3, 3), dtype=bool)
@@ -607,6 +630,29 @@ def test_an_empty_skeleton_flags_every_genuine_vessel_as_missing():
     assert report["missing_vessel_count"] == 2
     assert sorted(report["missing_vessel_voxel_counts"]) == [16, 16]
     assert report["explained_vessel_fraction"] == pytest.approx(0.0)
+
+
+def test_vessels_missing_from_skeleton_uses_a_supplied_local_radius_map():
+    """Same contract as `diagnose_skeleton_mask_consistency`'s own
+    `local_radius_map` parameter -- a caller-supplied map must actually be
+    used, not silently recomputed, since the settings optimiser relies on
+    this to avoid a fresh full-volume EDT on every candidate it tries."""
+    mask = _two_vessels_and_a_noise_speck()
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[:, 2, :] = True  # fully explains vessel A only; nothing near B by default
+
+    default_report = diagnose_vessels_missing_from_skeleton(skeleton, mask)
+    assert default_report["missing_vessel_count"] == 1
+
+    huge_radius_map = np.full(mask.shape, 1000.0)
+    report = diagnose_vessels_missing_from_skeleton(
+        skeleton, mask, local_radius_map=huge_radius_map,
+    )
+    assert report["missing_vessel_count"] == 0, (
+        "a supplied local_radius_map large enough to explain any distance "
+        "was not used -- diagnose_vessels_missing_from_skeleton must be "
+        "reading the parameter, not silently recomputing its own radius map"
+    )
 
 
 def test_min_vessel_voxels_controls_the_noise_size_floor():

@@ -4127,6 +4127,44 @@ def _names_with_prerequisite_closure(schema: Schema, names: Sequence[str]) -> tu
     return tuple(setting.name for setting in schema if setting.name in closure)
 
 
+def _load_raw_reference_image_or_none(
+    local_settings: dict[str, Any], *, expected_shape: tuple[int, ...]
+) -> tuple["np.ndarray | None", "str | None"]:
+    """Load the optional raw reference image from ``fwhm_raw_tiff_path``.
+
+    Shared by "Check segmented image" and "Optimise settings" -- one setting
+    feeds both (see the "Raw data file" row's own docstring) -- so a fix to
+    how that load degrades only has to be made once, and both callers agree
+    on what "the raw file didn't work out" means. Never raises: a missing
+    setting, an unreadable file, or a raw image whose shape does not match
+    *expected_shape* (the segmented mask's own shape) all degrade to
+    ``(None, reason)`` rather than failing the caller's own real work --
+    including the shape check itself, which every actual consumer of the
+    returned image (`compare_segmentation_to_raw_image`, `_Search.__init__`)
+    would otherwise raise on directly, one of them outside any try/except
+    the caller has around this load.
+    """
+    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.io import resolve_image_path_with_optional_zip
+
+    raw_path = local_settings.get("fwhm_raw_tiff_path")
+    if not raw_path:
+        return None, None
+    try:
+        raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
+        raw_image = load_single_channel_tiff_volume(
+            raw_path_resolved, axis_order=local_settings["image_axis_order"]
+        )
+        if raw_image.shape != expected_shape:
+            raise ValueError(
+                "raw_image shape does not match the segmented mask shape: "
+                f"{raw_image.shape} != {expected_shape}"
+            )
+        return raw_image, None
+    except Exception as error:  # noqa: BLE001 - degrade, never fail the caller
+        return None, f"{type(error).__name__}: {error}"
+
+
 def _run_optimisation_in_background(
     settings: dict[str, Any],
     schema: Schema,
@@ -4151,9 +4189,6 @@ def _run_optimisation_in_background(
     the same `rows`.
     """
     from napari.qt.threading import thread_worker
-
-    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
-    from haemolynx.io import resolve_image_path_with_optional_zip
 
     bridge = _optimisation_progress_bridge()
     cancel_flag = {"cancelled": False}
@@ -4194,23 +4229,13 @@ def _run_optimisation_in_background(
         # Optional: same shared fwhm_raw_tiff_path the "Raw data file" row
         # feeds "Check segmented image" with -- when present, guards the
         # segmentation_cleanup group against inventing foreground the raw
-        # signal does not support. Never fatal: a missing/unreadable/
+        # signal does not support. Never fatal (see
+        # `_load_raw_reference_image_or_none`): a missing/unreadable/
         # mismatched-shape raw file just means the search runs without this
         # extra guard, exactly like leaving the field empty.
-        raw_image = None
-        raw_path = local_settings.get("fwhm_raw_tiff_path")
-        if raw_path:
-            try:
-                raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
-                raw_image = load_single_channel_tiff_volume(
-                    raw_path_resolved, axis_order=local_settings["image_axis_order"]
-                )
-            except Exception:  # noqa: BLE001 - degrade to no raw-image guard
-                logger.exception(
-                    "could not load fwhm_raw_tiff_path for the optimiser's raw-image guard; "
-                    "continuing without it"
-                )
-                raw_image = None
+        raw_image, raw_image_error = _load_raw_reference_image_or_none(
+            local_settings, expected_shape=raw_mask.shape
+        )
 
         result = optimise_skeleton_and_graph_settings(
             raw_mask,
@@ -4221,7 +4246,7 @@ def _run_optimisation_in_background(
             groups=groups,
             raw_image=raw_image,
         )
-        return result, local_settings["input_path"]
+        return result, local_settings["input_path"], raw_image_error
 
     def finished(payload) -> None:
         if not still_ours():
@@ -4231,7 +4256,7 @@ def _run_optimisation_in_background(
         if cancel_flag["cancelled"]:
             report.value = FINISHED_FIRST
             return
-        result, input_path = payload
+        result, input_path, raw_image_error = payload
         for name, value in result.settings.items():
             if name in rows:
                 rows[name].value = display_value_for(schema[name], value)
@@ -4266,7 +4291,10 @@ def _run_optimisation_in_background(
             logger.exception("could not write optimised config to %s", out_path)
             wrote_note = f" Could not write {out_path} (see log)."
         bars.finish("Optimised")
-        report.value = "Optimised settings applied." + wrote_note
+        raw_note = (
+            f" Raw-image cross-check skipped: {raw_image_error}" if raw_image_error else ""
+        )
+        report.value = "Optimised settings applied." + wrote_note + raw_note
 
     def failed(error: Exception) -> None:
         if not still_ours():
@@ -4324,8 +4352,7 @@ def _run_segmentation_quality_check_in_background(
     """
     from napari.qt.threading import thread_worker
 
-    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
-    from haemolynx.io import resolve_image_path_with_optional_zip, voxel_size_zyx_from_xyz
+    from haemolynx.io import voxel_size_zyx_from_xyz
     from haemolynx.preprocessing import (
         clean_segmented_mask_for_skeletonisation,
         compare_segmentation_to_raw_image,
@@ -4390,14 +4417,11 @@ def _run_segmentation_quality_check_in_background(
         # degrades to a report note, not a failed check -- the mask-only
         # score above is still useful on its own.
         raw_comparison = None
-        raw_comparison_error = None
-        raw_path = local_settings.get("fwhm_raw_tiff_path")
-        if raw_path:
+        raw_image, raw_comparison_error = _load_raw_reference_image_or_none(
+            local_settings, expected_shape=mask.shape
+        )
+        if raw_image is not None:
             try:
-                raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
-                raw_image = load_single_channel_tiff_volume(
-                    raw_path_resolved, axis_order=local_settings["image_axis_order"]
-                )
                 raw_comparison = compare_segmentation_to_raw_image(
                     mask, raw_image, voxel_size_zyx=voxel_size_zyx
                 )

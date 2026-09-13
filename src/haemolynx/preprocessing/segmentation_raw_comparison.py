@@ -51,13 +51,16 @@ independent, additive section instead.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 from scipy.ndimage import label
 from skimage.filters import threshold_otsu
 
 __all__ = [
+    "RawImageForeground",
     "SegmentationRawComparison",
+    "analyze_raw_image_foreground",
     "compare_segmentation_to_raw_image",
     "format_segmentation_raw_comparison_report",
 ]
@@ -109,6 +112,75 @@ class SegmentationRawComparison:
     missed_structure_total_volume_um3: float
 
 
+@dataclass(frozen=True)
+class RawImageForeground:
+    """The mask-independent half of :func:`compare_segmentation_to_raw_image`:
+    the raw image's own Otsu threshold, its implied foreground, and that
+    foreground's connected-component labelling.
+
+    None of this depends on the segmented mask being compared against it --
+    only on *raw_image* itself (and the *voxel_size_zyx*/
+    *missed_structure_min_volume_um3* a caller keeps fixed across repeated
+    comparisons). A caller checking many candidate masks against the same
+    raw image -- a settings search sweeping segmentation-cleanup settings,
+    one candidate mask per trial -- can compute this once with
+    :func:`analyze_raw_image_foreground` and pass it to every
+    :func:`compare_segmentation_to_raw_image` call via *precomputed*,
+    instead of redoing Otsu thresholding and a full connected-components
+    labelling pass over the (unchanging) raw image for every candidate.
+    """
+
+    threshold: float
+    raw_foreground: np.ndarray
+    raw_total: int
+    labeled: np.ndarray
+    sizes: np.ndarray
+    missed_structure_min_voxels: int
+
+
+def analyze_raw_image_foreground(
+    raw_image: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    missed_structure_min_volume_um3: float = DEFAULT_MISSED_STRUCTURE_MIN_VOLUME_UM3,
+) -> Optional[RawImageForeground]:
+    """Precompute :class:`RawImageForeground` for *raw_image*, to reuse
+    across many :func:`compare_segmentation_to_raw_image` calls.
+
+    Returns ``None`` for a raw image with no intensity contrast at all
+    (uniformly one value, or every voxel non-finite) -- passing that back
+    in as *precomputed* reproduces exactly the same degenerate-case
+    handling :func:`compare_segmentation_to_raw_image` gives without it.
+    """
+    raw_image = np.asarray(raw_image)
+    voxel_volume_um3 = (
+        float(voxel_size_zyx[0]) * float(voxel_size_zyx[1]) * float(voxel_size_zyx[2])
+    )
+    finite = raw_image[np.isfinite(raw_image)]
+    if finite.size == 0 or float(finite.max()) <= float(finite.min()):
+        return None
+
+    threshold = float(threshold_otsu(finite))
+    raw_foreground = raw_image > threshold
+    raw_total = int(raw_foreground.sum())
+    missed_structure_min_voxels = max(
+        1, int(round(missed_structure_min_volume_um3 / max(1e-9, voxel_volume_um3)))
+    )
+    if raw_total:
+        labeled, n_components = label(raw_foreground, structure=_STRUCTURE_26)
+    else:
+        labeled, n_components = np.zeros(raw_foreground.shape, dtype=np.int32), 0
+    sizes = np.bincount(labeled.ravel()) if n_components else np.zeros(1, dtype=np.int64)
+    return RawImageForeground(
+        threshold=threshold,
+        raw_foreground=raw_foreground,
+        raw_total=raw_total,
+        labeled=labeled,
+        sizes=sizes,
+        missed_structure_min_voxels=missed_structure_min_voxels,
+    )
+
+
 def compare_segmentation_to_raw_image(
     mask: np.ndarray,
     raw_image: np.ndarray,
@@ -116,6 +188,7 @@ def compare_segmentation_to_raw_image(
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     missed_structure_max_overlap_fraction: float = DEFAULT_MISSED_STRUCTURE_MAX_OVERLAP_FRACTION,
     missed_structure_min_volume_um3: float = DEFAULT_MISSED_STRUCTURE_MIN_VOLUME_UM3,
+    precomputed: Optional[RawImageForeground] = None,
 ) -> SegmentationRawComparison:
     """Compare *mask* against the raw intensity volume it was derived from.
 
@@ -129,6 +202,13 @@ def compare_segmentation_to_raw_image(
     every voxel non-finite) has no Otsu threshold to compute; that
     degenerate case reports every mask voxel as "added" rather than raising
     -- there is genuinely nothing in the raw data to support any of it.
+
+    *precomputed*, when given, is used instead of re-deriving
+    :class:`RawImageForeground` from *raw_image* -- see
+    :func:`analyze_raw_image_foreground`, which is what a caller uses to
+    build it. The caller is responsible for it actually matching
+    *raw_image*/*voxel_size_zyx*/*missed_structure_min_volume_um3*; nothing
+    here re-validates that.
     """
     mask = np.asarray(mask, dtype=bool)
     raw_image = np.asarray(raw_image)
@@ -142,8 +222,12 @@ def compare_segmentation_to_raw_image(
         float(voxel_size_zyx[0]) * float(voxel_size_zyx[1]) * float(voxel_size_zyx[2])
     )
     mask_total = int(mask.sum())
-    finite = raw_image[np.isfinite(raw_image)]
-    if finite.size == 0 or float(finite.max()) <= float(finite.min()):
+
+    foreground = precomputed if precomputed is not None else analyze_raw_image_foreground(
+        raw_image, voxel_size_zyx=voxel_size_zyx,
+        missed_structure_min_volume_um3=missed_structure_min_volume_um3,
+    )
+    if foreground is None:
         return SegmentationRawComparison(
             raw_threshold=0.0,
             raw_foreground_voxel_count=0,
@@ -157,9 +241,8 @@ def compare_segmentation_to_raw_image(
             missed_structure_total_volume_um3=0.0,
         )
 
-    threshold = float(threshold_otsu(finite))
-    raw_foreground = raw_image > threshold
-    raw_total = int(raw_foreground.sum())
+    raw_foreground = foreground.raw_foreground
+    raw_total = foreground.raw_total
 
     added = mask & ~raw_foreground
     removed = raw_foreground & ~mask
@@ -170,27 +253,22 @@ def compare_segmentation_to_raw_image(
     intersection = int((mask & raw_foreground).sum())
     agreement_iou = float(intersection) / union if union else 1.0
 
-    missed_structure_min_voxels = max(
-        1, int(round(missed_structure_min_volume_um3 / max(1e-9, voxel_volume_um3)))
-    )
     missed_count = 0
     missed_voxels = 0
     if raw_total:
-        labeled, n_components = label(raw_foreground, structure=_STRUCTURE_26)
-        if n_components:
-            sizes = np.bincount(labeled.ravel())
-            overlap_counts = np.bincount(labeled[mask].ravel(), minlength=sizes.size)
-            for component_id in range(1, sizes.size):
-                size = int(sizes[component_id])
-                if size < missed_structure_min_voxels:
-                    continue
-                overlap_fraction = float(overlap_counts[component_id]) / size
-                if overlap_fraction <= missed_structure_max_overlap_fraction:
-                    missed_count += 1
-                    missed_voxels += size
+        sizes = foreground.sizes
+        overlap_counts = np.bincount(foreground.labeled[mask].ravel(), minlength=sizes.size)
+        for component_id in range(1, sizes.size):
+            size = int(sizes[component_id])
+            if size < foreground.missed_structure_min_voxels:
+                continue
+            overlap_fraction = float(overlap_counts[component_id]) / size
+            if overlap_fraction <= missed_structure_max_overlap_fraction:
+                missed_count += 1
+                missed_voxels += size
 
     return SegmentationRawComparison(
-        raw_threshold=threshold,
+        raw_threshold=foreground.threshold,
         raw_foreground_voxel_count=raw_total,
         added_voxel_count=added_count,
         added_fraction=float(added_count) / mask_total if mask_total else 0.0,

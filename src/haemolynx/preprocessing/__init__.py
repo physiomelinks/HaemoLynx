@@ -57,7 +57,9 @@ from .segmentation_quality import (
     score_segmented_mask,
 )
 from .segmentation_raw_comparison import (
+    RawImageForeground,
     SegmentationRawComparison,
+    analyze_raw_image_foreground,
     compare_segmentation_to_raw_image,
     format_segmentation_raw_comparison_report,
 )
@@ -108,7 +110,9 @@ __all__ = [
     "SegmentationQualityScore",
     "format_segmentation_quality_report",
     "score_segmented_mask",
+    "RawImageForeground",
     "SegmentationRawComparison",
+    "analyze_raw_image_foreground",
     "compare_segmentation_to_raw_image",
     "format_segmentation_raw_comparison_report",
 ]

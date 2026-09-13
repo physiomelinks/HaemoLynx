@@ -32,6 +32,16 @@ def test_a_single_voxel_defaults_to_axis_zero():
     assert component_long_axis(mask) == 0
 
 
+def test_a_non_3d_mask_defaults_to_axis_zero_instead_of_crashing():
+    """Regression: the LAPACK-crash-avoidance covariance helper used to
+    assume its input was always N x 3 and raised an opaque IndexError for
+    anything else; a genuinely 2D mask (not expected in practice, but not
+    guarded against either) must degrade to a default axis instead."""
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[2:6, 3] = True
+    assert component_long_axis(mask) == 0
+
+
 # --- detect_braided_thick_vessel_components: the metric itself -----------
 
 

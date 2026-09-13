@@ -256,6 +256,21 @@ def test_gram_schmidt_perpendicular_true_3d():
     assert abs(float(np.dot(n, t_hat))) < 1e-9
 
 
+def test_gram_schmidt_perpendicular_uses_the_least_parallel_axis():
+    """Regression: the docstring promises the reference axis *least*
+    parallel to the tangent is subtracted, not the most parallel one.
+
+    ``t`` is mostly aligned with x (axis 2), moderately with y (axis 1), and
+    least with z (axis 0). Subtracting the least-parallel axis (z, correct)
+    leaves the result dominated by z; subtracting the most-parallel one
+    (x, the inverted-condition bug) leaves it dominated by y instead.
+    """
+    t = np.array([0.1, 0.3, 0.95], dtype=float)
+    n = automated._gram_schmidt_perpendicular(t)
+    assert abs(n[0]) > abs(n[1])
+    assert abs(n[0]) > abs(n[2])
+
+
 def test_transverse_unit_for_mode_dispatches_correctly():
     t = np.array([1.0, 2.0, 3.0], dtype=float)
     in_plane = automated._transverse_unit_for_mode(t, "in_plane_yx")

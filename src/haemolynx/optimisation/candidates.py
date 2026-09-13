@@ -43,13 +43,6 @@ def _percentiles(values: np.ndarray, percentiles: tuple[float, ...]) -> list[flo
     return [float(np.percentile(values, p)) for p in percentiles]
 
 
-def _clip_round(values: set[float], *, lo: float, hi: float, as_int: bool) -> list:
-    kept = sorted(v for v in values if lo <= v <= hi)
-    if as_int:
-        return sorted({int(round(v)) for v in kept})
-    return kept
-
-
 def _sorted_with_none_first(values: set) -> list:
     """Sort a candidate set that may contain ``None`` ("auto") among floats.
 

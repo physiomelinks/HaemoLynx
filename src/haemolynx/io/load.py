@@ -412,6 +412,7 @@ def load_3d_tif_with_voxel_size(
     filepath: str,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    allow_2d: bool = False,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status.
 
@@ -419,9 +420,21 @@ def load_3d_tif_with_voxel_size(
     volume is transposed into the canonical ``(z, y, x)`` order on load. The
     returned voxel size is always physical ``(x, y, z)`` — use
     :func:`haemolynx.io.voxel_size_zyx_from_xyz` before scaling array indices.
+
+    *allow_2d*, when True, returns a genuinely 2D image as-is instead of
+    letting :func:`apply_axis_order` raise for a non-default *axis_order* --
+    a 2-axis array has no ``(z, y, x)`` to reorder, so it is returned
+    untransposed and the caller is responsible for turning it into a volume.
+    Mirrors :func:`load_3d_h5_with_voxel_size`'s own *allow_2d*;
+    :mod:`haemolynx.io.load_2d` is what actually sets this. Every other
+    caller leaves it False, unchanged from before this parameter existed.
     """
     with tifffile.TiffFile(filepath) as tif:
-        image = apply_axis_order(tif.asarray(), axis_order)
+        raw = tif.asarray()
+        if allow_2d and raw.ndim == 2:
+            image = raw
+        else:
+            image = apply_axis_order(raw, axis_order)
         voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
             _voxel_size_xyz_from_tiff(tif)
         )

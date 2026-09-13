@@ -693,7 +693,17 @@ def _dominant_eigenvector_3x3(matrix: np.ndarray, *, iterations: int = 100) -> n
 
 
 def _principal_axis(coords: np.ndarray) -> np.ndarray:
-    """Unit vector along *coords*' (N x 3) own direction of greatest spread."""
+    """Unit vector along *coords*' (N x 3) own direction of greatest spread.
+
+    *coords* that is not N x 3 (every real caller's own argwhere() on a 3D
+    array always is) has no principal axis to compute against -- an
+    arbitrary axis is as valid an answer as any other, matching
+    :func:`_dominant_eigenvector_3x3`'s own zero-matrix fallback, rather
+    than an opaque IndexError out of :func:`_symmetric_covariance_3x3`.
+    """
+    coords = np.asarray(coords)
+    if coords.ndim != 2 or coords.shape[1] != 3:
+        return np.array([1.0, 0.0, 0.0])
     centered = coords.astype(float) - coords.astype(float).mean(axis=0)
     return _dominant_eigenvector_3x3(_symmetric_covariance_3x3(centered))
 

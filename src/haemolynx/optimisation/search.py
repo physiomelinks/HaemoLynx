@@ -378,7 +378,12 @@ class _Search:
         enabled_groups: Optional[Iterable[str]] = None,
         raw_image: Optional[np.ndarray] = None,
     ) -> None:
-        self.raw_mask = np.asarray(raw_mask, dtype=bool)
+        # Always a fresh copy, even when raw_mask is already a bool array
+        # (np.asarray would then return the caller's own object unchanged):
+        # self.original_raw_mask below must never alias memory the caller
+        # still owns, since nothing downstream is allowed to assume it can
+        # safely mutate `raw_mask` in place just because this search does not.
+        self.raw_mask = np.array(raw_mask, dtype=bool, copy=True)
         #: An optional raw (unsegmented) reference image, already resampled
         #: to match `raw_mask`'s own shape (see `optimise_skeleton_and_graph_settings`).
         #: `None` (the default) is today's exact behaviour -- only
@@ -422,6 +427,20 @@ class _Search:
         #: method, not a sweep-local closure, so its own coverage-regression
         #: guard needs this as instance state rather than a captured local.
         self._fusion_baseline_coverage: float = 1.0
+        #: (id(self.raw_mask), radius_map) -- see `_raw_mask_local_radius_map`.
+        self._raw_mask_local_radius_map_cache: Optional[tuple[int, np.ndarray]] = None
+        #: Precomputed once (Otsu threshold + labelled foreground of
+        #: `self.raw_image`) so `_group_segmentation_cleanup` does not redo
+        #: that -- mask-independent -- work for every one of its ~20
+        #: sequential sub-sweeps' worth of candidates. `None` when no raw
+        #: image was supplied, exactly like `self.raw_image` itself.
+        self._raw_image_foreground: Optional[preprocessing.RawImageForeground] = (
+            preprocessing.analyze_raw_image_foreground(
+                self.raw_image, voxel_size_zyx=self.voxel_size_zyx
+            )
+            if self.raw_image is not None
+            else None
+        )
 
         radius_map = preprocessing.inscribed_radius_map(self.raw_mask, self.voxel_size_zyx)
         nonzero = radius_map[radius_map > 0]
@@ -559,10 +578,6 @@ class _Search:
         # geometry (see `preprocessing.segmentation_raw_comparison`'s own
         # module docstring for why this is a genuinely different signal).
         baseline_added_fraction: Optional[float] = None
-        if self.raw_image is not None:
-            baseline_added_fraction = preprocessing.compare_segmentation_to_raw_image(
-                self._cleanup_trial({}), self.raw_image, voxel_size_zyx=self.voxel_size_zyx
-            ).added_fraction
 
         def quality(mask_trial: np.ndarray) -> float:
             score = -preprocessing.score_segmented_mask(
@@ -570,7 +585,8 @@ class _Search:
             ).total
             if baseline_added_fraction is not None:
                 added_fraction = preprocessing.compare_segmentation_to_raw_image(
-                    mask_trial, self.raw_image, voxel_size_zyx=self.voxel_size_zyx
+                    mask_trial, self.raw_image, voxel_size_zyx=self.voxel_size_zyx,
+                    precomputed=self._raw_image_foreground,
                 ).added_fraction
                 score += self._regression_penalty(
                     1.0 - added_fraction,
@@ -579,177 +595,142 @@ class _Search:
                 )
             return score
 
-        self._sweep(
-            group, "segmentation_cleanup_fill_cavities", [False, True],
-            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_fill_cavities": value})),
-        )
+        def sweep_cleanup(setting: str, candidate_values: list) -> Any:
+            """`self._sweep` for one segmentation-cleanup setting, refreshing
+            the raw-image baseline immediately beforehand.
 
-        self._sweep(
-            group, "segmentation_cleanup_remove_whiskers", [False, True],
-            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_remove_whiskers": value})),
-        )
+            Every sub-sweep in this group can move `self.current`, which
+            `self._cleanup_trial({})` (what the baseline is measured
+            against) reads -- computing the baseline once at group entry
+            would leave it fixed at the *pre-group* mask while later
+            sub-sweeps' candidates are judged against whatever every prior
+            sub-sweep in this same group already decided, silently
+            misattributing their own effect on `added_fraction` to
+            whichever setting happens to run next (the same "matched
+            processing stage" bug `_group_min_branch_length` was fixed for
+            -- see project memory). Refreshing here keeps the baseline at
+            exactly this sub-sweep's own starting point instead.
+            """
+            nonlocal baseline_added_fraction
+            if self.raw_image is not None:
+                baseline_added_fraction = preprocessing.compare_segmentation_to_raw_image(
+                    self._cleanup_trial({}), self.raw_image, voxel_size_zyx=self.voxel_size_zyx,
+                    precomputed=self._raw_image_foreground,
+                ).added_fraction
+            return self._sweep(
+                group, setting, candidate_values,
+                lambda value: quality(self._cleanup_trial({setting: value})),
+            )
+
+        sweep_cleanup("segmentation_cleanup_fill_cavities", [False, True])
+
+        sweep_cleanup("segmentation_cleanup_remove_whiskers", [False, True])
         if self.current["segmentation_cleanup_remove_whiskers"]:
-            self._sweep(
-                group, "segmentation_cleanup_whisker_radius_um",
+            sweep_cleanup(
+                "segmentation_cleanup_whisker_radius_um",
                 cand.small_radius_candidates(
                     self.voxel_size_zyx, float(self.current["segmentation_cleanup_whisker_radius_um"])
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_whisker_radius_um": value})
-                ),
             )
 
-        self._sweep(
-            group, "segmentation_cleanup_split_narrow_necks", [False, True],
-            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_split_narrow_necks": value})),
-        )
+        sweep_cleanup("segmentation_cleanup_split_narrow_necks", [False, True])
         if self.current["segmentation_cleanup_split_narrow_necks"]:
-            self._sweep(
-                group, "segmentation_cleanup_split_min_marker_separation_um",
+            sweep_cleanup(
+                "segmentation_cleanup_split_min_marker_separation_um",
                 cand.split_marker_separation_candidates(
                     self.typical_radius_um,
                     float(self.current["segmentation_cleanup_split_min_marker_separation_um"]),
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_split_min_marker_separation_um": value})
-                ),
             )
-            self._sweep(
-                group, "segmentation_cleanup_split_min_pinch_radius_ratio",
+            sweep_cleanup(
+                "segmentation_cleanup_split_min_pinch_radius_ratio",
                 cand.split_pinch_radius_ratio_candidates(
                     float(self.current["segmentation_cleanup_split_min_pinch_radius_ratio"])
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_split_min_pinch_radius_ratio": value})
-                ),
             )
-            self._sweep(
-                group, "segmentation_cleanup_split_min_body_radius_um",
+            sweep_cleanup(
+                "segmentation_cleanup_split_min_body_radius_um",
                 cand.split_min_body_radius_candidates(
                     self.typical_radius_um,
                     float(self.current["segmentation_cleanup_split_min_body_radius_um"]),
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_split_min_body_radius_um": value})
-                ),
             )
 
-        self._sweep(
-            group, "segmentation_cleanup_close_gaps", [False, True],
-            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_close_gaps": value})),
-        )
+        sweep_cleanup("segmentation_cleanup_close_gaps", [False, True])
         if self.current["segmentation_cleanup_close_gaps"]:
-            self._sweep(
-                group, "segmentation_cleanup_close_gaps_radius_um",
+            sweep_cleanup(
+                "segmentation_cleanup_close_gaps_radius_um",
                 cand.small_radius_candidates(
                     self.voxel_size_zyx, float(self.current["segmentation_cleanup_close_gaps_radius_um"])
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_close_gaps_radius_um": value})
-                ),
             )
 
-        self._sweep(
-            group, "segmentation_cleanup_reconnect_gaps", [False, True],
-            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_reconnect_gaps": value})),
-        )
+        sweep_cleanup("segmentation_cleanup_reconnect_gaps", [False, True])
         if self.current["segmentation_cleanup_reconnect_gaps"]:
             gap_distances_um = cand.mask_component_gap_distances_um(
                 self.original_raw_mask, self.voxel_size_zyx
             )
-            self._sweep(
-                group, "segmentation_cleanup_reconnect_max_bridge_distance_um",
+            sweep_cleanup(
+                "segmentation_cleanup_reconnect_max_bridge_distance_um",
                 cand.reconnect_max_bridge_distance_candidates(
                     gap_distances_um,
                     float(self.current["segmentation_cleanup_reconnect_max_bridge_distance_um"]),
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_reconnect_max_bridge_distance_um": value})
-                ),
             )
-            self._sweep(
-                group, "segmentation_cleanup_reconnect_min_cylindricality",
+            sweep_cleanup(
+                "segmentation_cleanup_reconnect_min_cylindricality",
                 cand.reconnect_min_cylindricality_candidates(
                     float(self.current["segmentation_cleanup_reconnect_min_cylindricality"])
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_reconnect_min_cylindricality": value})
-                ),
             )
-            self._sweep(
-                group, "segmentation_cleanup_reconnect_max_axis_angle_degrees",
+            sweep_cleanup(
+                "segmentation_cleanup_reconnect_max_axis_angle_degrees",
                 cand.reconnect_max_axis_angle_candidates(
                     float(self.current["segmentation_cleanup_reconnect_max_axis_angle_degrees"])
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_reconnect_max_axis_angle_degrees": value})
-                ),
             )
-            self._sweep(
-                group, "segmentation_cleanup_reconnect_min_facing_cosine",
+            sweep_cleanup(
+                "segmentation_cleanup_reconnect_min_facing_cosine",
                 cand.reconnect_min_facing_cosine_candidates(
                     float(self.current["segmentation_cleanup_reconnect_min_facing_cosine"])
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_reconnect_min_facing_cosine": value})
-                ),
             )
-            self._sweep(
-                group, "segmentation_cleanup_reconnect_max_radius_ratio",
+            sweep_cleanup(
+                "segmentation_cleanup_reconnect_max_radius_ratio",
                 cand.reconnect_max_radius_ratio_candidates(
                     float(self.current["segmentation_cleanup_reconnect_max_radius_ratio"])
                 ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_reconnect_max_radius_ratio": value})
-                ),
             )
 
-        self._sweep(
-            group, "segmentation_cleanup_smooth_surfaces", [False, True],
-            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_smooth_surfaces": value})),
-        )
+        sweep_cleanup("segmentation_cleanup_smooth_surfaces", [False, True])
         if self.current["segmentation_cleanup_smooth_surfaces"]:
-            self._sweep(
-                group, "segmentation_cleanup_smooth_method",
-                cand.smooth_method_candidates(),
-                lambda value: quality(self._cleanup_trial({"segmentation_cleanup_smooth_method": value})),
+            sweep_cleanup(
+                "segmentation_cleanup_smooth_method", cand.smooth_method_candidates(),
             )
             if self.current["segmentation_cleanup_smooth_method"] == "gaussian":
-                self._sweep(
-                    group, "segmentation_cleanup_smooth_sigma_um",
+                sweep_cleanup(
+                    "segmentation_cleanup_smooth_sigma_um",
                     cand.small_radius_candidates(
                         self.voxel_size_zyx, float(self.current["segmentation_cleanup_smooth_sigma_um"])
                     ),
-                    lambda value: quality(
-                        self._cleanup_trial({"segmentation_cleanup_smooth_sigma_um": value})
-                    ),
                 )
             else:
-                self._sweep(
-                    group, "segmentation_cleanup_smooth_morphological_radius_um",
+                sweep_cleanup(
+                    "segmentation_cleanup_smooth_morphological_radius_um",
                     cand.small_radius_candidates(
                         self.voxel_size_zyx,
                         float(self.current["segmentation_cleanup_smooth_morphological_radius_um"]),
                     ),
-                    lambda value: quality(
-                        self._cleanup_trial({"segmentation_cleanup_smooth_morphological_radius_um": value})
-                    ),
                 )
 
-        self._sweep(
-            group, "segmentation_cleanup_remove_small_volumes", [False, True],
-            lambda value: quality(self._cleanup_trial({"segmentation_cleanup_remove_small_volumes": value})),
-        )
+        sweep_cleanup("segmentation_cleanup_remove_small_volumes", [False, True])
         if self.current["segmentation_cleanup_remove_small_volumes"]:
-            self._sweep(
-                group, "segmentation_cleanup_remove_small_min_volume_um3",
+            sweep_cleanup(
+                "segmentation_cleanup_remove_small_min_volume_um3",
                 cand.remove_small_min_volume_candidates(
                     self.original_raw_mask,
                     self.voxel_size_zyx,
                     float(self.current["segmentation_cleanup_remove_small_min_volume_um3"]),
-                ),
-                lambda value: quality(
-                    self._cleanup_trial({"segmentation_cleanup_remove_small_min_volume_um3": value})
                 ),
             )
 
@@ -769,6 +750,30 @@ class _Search:
     # existing, already-tested diagnostic that previously only ran as an
     # end-of-a-real-run warning (`pipeline/stages.py`) -- never used to
     # choose between candidates until now.
+    def _raw_mask_local_radius_map(self) -> np.ndarray:
+        """`inscribed_radius_map` of `self.raw_mask`'s own canonical
+        binarisation, cached against `id(self.raw_mask)`.
+
+        `self.raw_mask` is reassigned to a new array exactly once, at the
+        end of `_group_segmentation_cleanup`, and never mutated in place
+        afterward -- so its identity is a valid cache key for the rest of
+        a run. Every later group's own guard calls (`_vessels_represented_fraction`,
+        `_skeleton_mask_coverage_fraction`) would otherwise redo this same
+        full-volume EDT from scratch on every single candidate, dozens of
+        times over in a real run, for a mask that has not changed since the
+        previous call.
+        """
+        from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+        key = id(self.raw_mask)
+        cached = self._raw_mask_local_radius_map_cache
+        if cached is None or cached[0] != key:
+            mask_bool = _to_binary_volume_for_skeletonization(self.raw_mask)
+            radius_map = preprocessing.inscribed_radius_map(mask_bool, self.voxel_size_zyx)
+            self._raw_mask_local_radius_map_cache = (key, radius_map)
+            return radius_map
+        return cached[1]
+
     def _vessels_represented_fraction(self, skeleton: np.ndarray) -> float:
         """Fraction of self.raw_mask's own real vessels (see
         preprocessing.diagnose_vessels_missing_from_skeleton) with at least
@@ -790,6 +795,7 @@ class _Search:
         report = preprocessing.diagnose_vessels_missing_from_skeleton(
             skeleton, self.raw_mask, voxel_size_zyx=self.voxel_size_zyx,
             min_vessel_voxels=min_vessel_voxels,
+            local_radius_map=self._raw_mask_local_radius_map(),
         )
         return float(report["explained_vessel_fraction"])
 
@@ -797,7 +803,8 @@ class _Search:
         """Fraction of self.raw_mask's own volume the skeleton still runs
         through. See preprocessing.diagnose_skeleton_mask_consistency."""
         report = preprocessing.diagnose_skeleton_mask_consistency(
-            skeleton, self.raw_mask, voxel_size_zyx=self.voxel_size_zyx
+            skeleton, self.raw_mask, voxel_size_zyx=self.voxel_size_zyx,
+            local_radius_map=self._raw_mask_local_radius_map(),
         )
         return float(report["coverage_fraction"])
 
@@ -867,10 +874,7 @@ class _Search:
         # rather than one line, so they are scored on braid factor -- the
         # measure this codebase already uses for exactly that failure mode --
         # rather than on connectivity alone.
-        baseline_skeleton_for_refinement = trial_with({})
-        baseline_vessels_represented = self._vessels_represented_fraction(
-            baseline_skeleton_for_refinement
-        )
+        baseline_vessels_represented: float = 0.0
 
         def cost_braid(skeleton: np.ndarray) -> float:
             stats = preprocessing.compute_skeleton_connectivity_stats(skeleton, self._connectivity())
@@ -881,26 +885,38 @@ class _Search:
             )
             return met.braid_factor_along_long_axis(skeleton) + (1.0 - stats.largest_fraction) + penalty
 
+        def sweep_refinement(setting: str, candidate_values: list) -> Any:
+            """`self._sweep` for one thick-vessel refinement setting,
+            refreshing the vessels-represented baseline immediately
+            beforehand -- see `_group_segmentation_cleanup`'s own
+            `sweep_cleanup` for why a baseline shared across sequential
+            sub-sweeps must be refreshed at each one's own starting point
+            rather than fixed once for the whole group.
+            """
+            nonlocal baseline_vessels_represented
+            baseline_vessels_represented = self._vessels_represented_fraction(trial_with({}))
+            return self._sweep(
+                group, setting, candidate_values,
+                lambda value: cost_braid(trial_with({setting: value})),
+            )
+
         typical_thick_radius_um = cand.typical_thick_vessel_radius_um(
             self.raw_mask, self.voxel_size_zyx, float(self.current["skeleton_thick_vessel_min_radius_um"])
         )
 
-        self._sweep(
-            group, "skeleton_thick_vessel_wall_absorption_um",
+        sweep_refinement(
+            "skeleton_thick_vessel_wall_absorption_um",
             cand.thick_vessel_wall_absorption_candidates(typical_thick_radius_um),
-            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_wall_absorption_um": value})),
         )
-        self._sweep(
-            group, "skeleton_thick_vessel_flake_filter_um",
+        sweep_refinement(
+            "skeleton_thick_vessel_flake_filter_um",
             cand.thick_vessel_flake_filter_candidates(self.voxel_size_zyx),
-            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_flake_filter_um": value})),
         )
-        self._sweep(
-            group, "skeleton_thick_vessel_max_bridge_radius_multiple",
+        sweep_refinement(
+            "skeleton_thick_vessel_max_bridge_radius_multiple",
             cand.thick_vessel_max_bridge_radius_multiple_candidates(
                 float(self.current["skeleton_thick_vessel_max_bridge_radius_multiple"])
             ),
-            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_max_bridge_radius_multiple": value})),
         )
         # The raw mask's own connected-component gaps stand in for "how far
         # apart are the fragments a bridge might need to reach" -- the real
@@ -908,15 +924,13 @@ class _Search:
         gap_distances_um = preprocessing.inter_component_gap_distances(
             self.raw_mask, self._connectivity(), self.voxel_size_zyx
         )
-        self._sweep(
-            group, "skeleton_thick_vessel_max_bridge_distance_um",
+        sweep_refinement(
+            "skeleton_thick_vessel_max_bridge_distance_um",
             cand.thick_vessel_max_bridge_distance_candidates(gap_distances_um),
-            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_max_bridge_distance_um": value})),
         )
-        self._sweep(
-            group, "skeleton_thick_vessel_bridge_radius_smoothing_um",
+        sweep_refinement(
+            "skeleton_thick_vessel_bridge_radius_smoothing_um",
             cand.thick_vessel_bridge_radius_smoothing_candidates(typical_thick_radius_um),
-            lambda value: cost_braid(trial_with({"skeleton_thick_vessel_bridge_radius_smoothing_um": value})),
         )
 
         self.raw_skeleton = _raw_skeleton(self.raw_mask, self.current, self.voxel_size_zyx)
@@ -968,10 +982,23 @@ class _Search:
     # -- group 3: bundle refinement -------------------------------------------------
     def _group_bundle_refinement(self) -> None:
         group = "bundle_refinement"
-        baseline_components = preprocessing.compute_skeleton_connectivity_stats(
-            self.current_skeleton, self._connectivity()
-        ).n_components
-        baseline_coverage = self._skeleton_mask_coverage_fraction(self.current_skeleton)
+
+        def guard_baseline() -> tuple[int, float]:
+            """(n_components, coverage_fraction) for the skeleton
+            `self.current` would produce right now -- matches
+            `self.current_skeleton` at group entry (nothing in `self.current`
+            has moved yet), but must be recomputed after this group's own
+            first sub-sweep decides a winner, or the second sub-sweep's
+            guard would judge its candidates against a stale, pre-sweep
+            reference (see project memory: "matched processing stage").
+            """
+            cleaned = self._preprocess_trial({})
+            n_components = preprocessing.compute_skeleton_connectivity_stats(
+                cleaned, self._connectivity()
+            ).n_components
+            return n_components, self._skeleton_mask_coverage_fraction(cleaned)
+
+        baseline_components, baseline_coverage = guard_baseline()
 
         def leftover_density(cleaned: np.ndarray, scan_size: int, density_fraction: float) -> float:
             from scipy.ndimage import uniform_filter
@@ -1001,6 +1028,11 @@ class _Search:
             return leftover_density(cleaned, value, density_fraction) + guard(cleaned)
 
         self._sweep(group, "skeleton_bundle_scan_size", scan_candidates, cost_scan)
+
+        # Refresh: the scan-size sweep above may have moved self.current, so
+        # `guard`'s own baseline must be recomputed at this sub-sweep's own
+        # starting point (see `guard_baseline`'s own docstring).
+        baseline_components, baseline_coverage = guard_baseline()
 
         density_candidates = cand.bundle_density_fraction_candidates(
             self.raw_mask, int(self.current["skeleton_bundle_scan_size"]),
@@ -1076,6 +1108,13 @@ class _Search:
 
         self._sweep(group, "skeleton_bridge_gap_size", bridge_candidates, cost_bridge)
         self.current_skeleton = self._preprocess_trial({})
+        # Refresh: `_fusion_cost` reads `self._fusion_baseline_coverage` as
+        # shared instance state (see its own docstring), so the bridge-gap
+        # sweep just above moving `self.current_skeleton` must be reflected
+        # here before the max-bridge-distance sweep below judges its own
+        # candidates against it (see project memory: "matched processing
+        # stage").
+        self._fusion_baseline_coverage = self._skeleton_mask_coverage_fraction(self.current_skeleton)
 
         gaps = self._gap_distances_voxels()
         max_distance_candidates = cand.max_bridge_distance_candidates(
@@ -1183,6 +1222,13 @@ class _Search:
 
         self._sweep(group, "graph_reconnect_threshold", reconnect_candidates, cost_reconnect)
 
+        # Refresh: the reconnect-threshold sweep above may have moved
+        # self.current["graph_reconnect_threshold"], which this baseline's
+        # own self._build_graph({}) call must reflect before the
+        # orphan-threshold sweep below judges its candidates against it
+        # (see project memory: "matched processing stage").
+        baseline_graph_coverage = self._skeleton_graph_coverage_fraction(self._build_graph({}))
+
         orphan_candidates = cand.orphan_threshold_candidates(
             float(self.current["graph_reconnect_threshold"]), float(self.current["final_orphan_reconnect_threshold"])
         )
@@ -1232,12 +1278,23 @@ class _Search:
             lambda value: cost_for("cluster_collapse_distance", value),
         )
         self.current_graph = self._build_graph({})
+        # Refresh: the distance sweep above may have moved
+        # self.current["cluster_collapse_distance"], which `cost_for`'s own
+        # baseline must reflect before the method sweep below judges its
+        # candidates against it (see project memory: "matched processing
+        # stage").
+        baseline = met.graph_topology_metrics(self.current_graph)
+        baseline_graph_coverage = self._skeleton_graph_coverage_fraction(self.current_graph)
 
         self._sweep(
             group, "cluster_collapse_method", cand.cluster_collapse_method_candidates(),
             lambda value: cost_for("cluster_collapse_method", value),
         )
         self.current_graph = self._build_graph({})
+        # Refresh again for the same reason, ahead of the method-specific
+        # knob sweep below.
+        baseline = met.graph_topology_metrics(self.current_graph)
+        baseline_graph_coverage = self._skeleton_graph_coverage_fraction(self.current_graph)
 
         # The other two settings are each read by exactly one method, so only
         # the one the search just chose is worth a sweep of its own.

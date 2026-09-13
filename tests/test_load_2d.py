@@ -52,6 +52,22 @@ def test_2d_aware_loader_promotes_a_2d_tiff_and_warns(tmp_path, caplog):
     assert any("2D image" in r.message for r in caplog.records)
 
 
+def test_2d_aware_loader_promotes_a_2d_tiff_with_non_default_axis_order(tmp_path, caplog):
+    """Regression: a 2D TIFF loaded with a non-default axis_order used to
+    raise inside apply_axis_order (a 2-axis array has no (z, y, x) to
+    reorder) instead of being promoted like the default-axis_order case."""
+    path = tmp_path / "flat.tif"
+    tifffile.imwrite(path, np.random.randint(0, 255, (12, 9), dtype=np.uint16))
+
+    with caplog.at_level("WARNING", logger="haemolynx.io.load_2d"):
+        image, _x, _y, _z, status = load_image_with_voxel_size_2d_aware(
+            str(path), input_format="tif", axis_order="xyz"
+        )
+
+    assert image.shape == (1, 12, 9)
+    assert status["promoted_from_2d"] is True
+
+
 def test_2d_aware_loader_passes_a_3d_tiff_through_unchanged(tmp_path, caplog):
     path = tmp_path / "volume.tif"
     raw = np.random.randint(0, 255, (4, 6, 8), dtype=np.uint16)
@@ -135,3 +151,16 @@ def test_load_3d_h5_with_voxel_size_still_rejects_2d_by_default(tmp_path):
 
     with pytest.raises(ValueError, match="Expected 3D image"):
         load_3d_h5_with_voxel_size(str(path), "data")
+
+
+def test_load_3d_tif_with_voxel_size_still_rejects_2d_with_non_default_axis_order_by_default(
+    tmp_path,
+):
+    """allow_2d defaults to False; every existing caller (not going through
+    load_2d) must keep raising for a 2D TIFF with a non-default axis_order
+    exactly as before."""
+    path = tmp_path / "flat.tif"
+    tifffile.imwrite(path, np.random.randint(0, 255, (12, 9), dtype=np.uint16))
+
+    with pytest.raises(ValueError, match="requires a 3D volume"):
+        load_3d_tif_with_voxel_size(str(path), axis_order="xyz")

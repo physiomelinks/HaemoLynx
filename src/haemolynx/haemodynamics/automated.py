@@ -106,7 +106,7 @@ def _gram_schmidt_perpendicular(tangent: np.ndarray) -> np.ndarray:
         np.array([0.0, 1.0, 0.0]),
         np.array([0.0, 0.0, 1.0]),
     )
-    best = max(refs, key=lambda r: abs(float(np.dot(r, t))))
+    best = min(refs, key=lambda r: abs(float(np.dot(r, t))))
     n = best - np.dot(best, t) * t
     nn = np.linalg.norm(n)
     if nn < 1e-12:

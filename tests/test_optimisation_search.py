@@ -265,6 +265,134 @@ def test_regression_penalty_fires_past_tolerance():
     assert _Search._regression_penalty(current=0.5, baseline=0.9, tolerance=0.02) == _GUARD_PENALTY
 
 
+def test_reconnect_thresholds_baseline_is_refreshed_between_sub_sweeps():
+    """Regression: `baseline_graph_coverage` used to be computed once
+    before the graph_reconnect_threshold sub-sweep and reused unchanged for
+    the final_orphan_reconnect_threshold sub-sweep that runs right after it
+    -- even though the first sub-sweep can move
+    self.current["graph_reconnect_threshold"], which the baseline's own
+    `self._build_graph({})` call reads (see project memory: "matched
+    processing stage"). The same stale-baseline-across-sequential-sub-
+    sweeps bug, and the same fix (refresh immediately before the next
+    sub-sweep), also applies to `_group_bundle_refinement`,
+    `_group_thick_vessel_gating`'s five refinement sub-sweeps,
+    `_group_gap_bridging`, `_group_cluster_collapse`, and
+    `_group_segmentation_cleanup`'s ~20 sequential sub-sweeps -- this test
+    covers the mechanism once, on the simplest of the six groups to
+    instrument precisely.
+    """
+    from haemolynx import preprocessing
+    from haemolynx.optimisation.search import _Search
+
+    mask = _y_shaped_vessel()
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+    search = _Search(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None,
+    )
+    search.current_skeleton = preprocessing.skeletonize_volume(mask)
+
+    recorded_thresholds_at_baseline_calls = []
+    real_build_graph = search._build_graph
+
+    def recording_build_graph(overrides):
+        graph = real_build_graph(overrides)
+        if not overrides:  # every baseline call in this group uses no overrides
+            recorded_thresholds_at_baseline_calls.append(
+                float(search.current["graph_reconnect_threshold"])
+            )
+        return graph
+
+    search._build_graph = recording_build_graph
+    search._group_reconnect_thresholds()
+
+    # Three no-override `_build_graph({})` calls happen in the fixed group:
+    # the graph_reconnect_threshold sub-sweep's own baseline, the refreshed
+    # baseline right before final_orphan_reconnect_threshold's sub-sweep,
+    # and the group's own closing `self.current_graph = self._build_graph({})`.
+    # The stale-baseline bug this guards against never made that middle,
+    # refreshing call at all -- only two no-override calls would have
+    # happened (the initial baseline and the closing one).
+    assert len(recorded_thresholds_at_baseline_calls) == 3, (
+        "expected the orphan-threshold sub-sweep's baseline to be refreshed "
+        f"as its own _build_graph({{}}) call, got calls={recorded_thresholds_at_baseline_calls}"
+    )
+    winning_threshold = float(search.current["graph_reconnect_threshold"])
+    assert recorded_thresholds_at_baseline_calls[1] == winning_threshold, (
+        "the refreshed baseline must reflect the graph_reconnect_threshold "
+        "sub-sweep's own already-decided winner, not a stale pre-sweep value"
+    )
+
+
+def test_search_never_aliases_the_callers_own_mask_array():
+    """`self.original_raw_mask` must be the search's own private copy, never
+    the caller's own array -- even when the caller already passed a bool
+    array, where `np.asarray(..., dtype=bool)` would otherwise return that
+    same object unchanged. Mutating the caller's array after construction
+    must not be visible through either `raw_mask` or `original_raw_mask`."""
+    from haemolynx.optimisation.search import _Search
+
+    caller_mask = np.zeros((10, 10, 10), dtype=bool)
+    caller_mask[2:5, 2:5, 2:5] = True
+
+    search = _Search(
+        caller_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES, progress=None,
+    )
+    caller_mask[:] = False  # mutate after construction
+
+    assert search.raw_mask.any()
+    assert search.original_raw_mask.any()
+    assert search.raw_mask is not caller_mask
+    assert search.original_raw_mask is not caller_mask
+
+
+def test_raw_mask_local_radius_map_is_cached_across_guard_calls(monkeypatch):
+    """Regression: `_vessels_represented_fraction`/
+    `_skeleton_mask_coverage_fraction` used to trigger a fresh full-volume
+    EDT (via `inscribed_radius_map`) inside `diagnose_*` on every single
+    call, even though `self.raw_mask` is fixed for most of a run -- dozens
+    of avoidable EDT/labelling passes on a real, whole-brain-scale volume
+    across one "Optimise settings" run. Confirms the cache means only one
+    such computation happens across many guard calls against the same mask.
+    """
+    from haemolynx import preprocessing as preprocessing_module
+    from haemolynx.optimisation.search import _Search
+
+    mask = _y_shaped_vessel()
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+    search = _Search(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None,
+    )
+    search.raw_skeleton = preprocessing_module.skeletonize_volume(mask)
+
+    real_inscribed_radius_map = preprocessing_module.inscribed_radius_map
+    call_count = {"n": 0}
+
+    def counting(mask_arr, voxel_size_zyx):
+        call_count["n"] += 1
+        return real_inscribed_radius_map(mask_arr, voxel_size_zyx)
+
+    monkeypatch.setattr(preprocessing_module, "inscribed_radius_map", counting)
+
+    search._vessels_represented_fraction(search.raw_skeleton)
+    search._skeleton_mask_coverage_fraction(search.raw_skeleton)
+    search._vessels_represented_fraction(search.raw_skeleton)
+    search._skeleton_mask_coverage_fraction(search.raw_skeleton)
+
+    assert call_count["n"] == 1, (
+        "self.raw_mask's own local radius map should be computed once and "
+        f"reused across guard calls, got {call_count['n']} separate "
+        "full-volume EDT calls"
+    )
+
+    # The cache must not go stale once self.raw_mask is reassigned to a
+    # genuinely different array (segmentation_cleanup does this exactly
+    # once, mid-run) -- a new mask needs its own fresh radius map.
+    search.raw_mask = np.zeros_like(search.raw_mask)
+    search.raw_mask[0:3, 0:3, 0:3] = True
+    search._vessels_represented_fraction(search.raw_skeleton)
+    assert call_count["n"] == 2
+
+
 def test_min_branch_length_guard_rejects_a_candidate_that_drops_a_real_small_vessel():
     """Without the vessels-missing guard, pruning a real-but-tiny (and far
     from the main body, so never re-bridged) vessel's own skeleton barely
@@ -398,6 +526,38 @@ def test_segmentation_cleanup_raw_image_guard_rejects_invented_foreground():
     )
     assert toggle_trials[True] > toggle_trials[False]
     assert search.current["segmentation_cleanup_close_gaps"] is False
+
+
+def test_segmentation_cleanup_reuses_one_precomputed_raw_image_foreground(monkeypatch):
+    """Regression: `_group_segmentation_cleanup` used to redo Otsu
+    thresholding and connected-components labelling of `self.raw_image`
+    inside every single `compare_segmentation_to_raw_image` call -- once
+    per candidate, across ~20 sequential sub-sweeps. Confirms the
+    `RawImageForeground` computed once in `_Search.__init__` is what every
+    one of those calls reuses instead."""
+    from haemolynx.preprocessing import segmentation_raw_comparison as src_module
+    from haemolynx.optimisation.search import _Search
+
+    mask = _y_shaped_vessel()
+    raw_image = np.where(mask, 200.0, 10.0).astype(np.float32)
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+
+    search = _Search(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None,
+        raw_image=raw_image,
+    )
+    assert search._raw_image_foreground is not None
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError(
+            "threshold_otsu/label should not run again once the group has "
+            "a precomputed RawImageForeground for its own raw_image"
+        )
+
+    monkeypatch.setattr(src_module, "threshold_otsu", boom)
+    monkeypatch.setattr(src_module, "label", boom)
+
+    search._group_segmentation_cleanup()  # must not raise
 
 
 def test_segmentation_cleanup_raw_image_none_matches_todays_behaviour():

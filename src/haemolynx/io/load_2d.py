@@ -96,7 +96,7 @@ def load_image_with_voxel_size_2d_aware(
     fmt = input_format.strip().lower()
     if fmt in {"tif", "tiff"}:
         image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
-            load_3d_tif_with_voxel_size(filepath, axis_order=axis_order)
+            load_3d_tif_with_voxel_size(filepath, axis_order=axis_order, allow_2d=True)
         )
     elif fmt == "h5":
         image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
