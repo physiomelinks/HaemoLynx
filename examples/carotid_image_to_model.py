@@ -1333,17 +1333,26 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     hematocrit_array = np.full(vessels.n_cells, 0.45, dtype=float)
     viscosity_array = np.full(vessels.n_cells, 1.2, dtype=float)
     wss_array = np.zeros(vessels.n_cells, dtype=float)
-    
+    # graph_to_vtk ran before the rheology solve, so the resistance array it wrote holds
+    # set_poiseuille_resistances' power-law values while the viscosity array below holds the
+    # Pries-Secomb ones. The two did not satisfy R = 128 mu L / (pi d^4) together, and a
+    # reader of the file had no way to tell. Refreshed here alongside the others. NaN is the
+    # missing-value convention graph_to_vtk itself uses.
+    resistance_array = np.full(vessels.n_cells, np.nan, dtype=float)
+
     for ii in range(vessels.n_cells):
         u, v, k = int(edge_u[ii]), int(edge_v[ii]), int(edge_k[ii])
         if G.has_edge(u, v, k):
             hematocrit_array[ii] = G[u][v][k].get("hematocrit", 0.45)
             viscosity_array[ii] = G[u][v][k].get("viscosity", 1.2)
             wss_array[ii] = G[u][v][k].get("wall_shear_stress_pa", 0.0)
-            
+            r = G[u][v][k].get("resistance")
+            resistance_array[ii] = float(r) if r is not None else np.nan
+
     vessels.cell_data["hematocrit"] = hematocrit_array
     vessels.cell_data["viscosity"] = viscosity_array
     vessels.cell_data["wall_shear_stress_pa"] = wss_array
+    vessels.cell_data["resistance"] = resistance_array
     vessels.save(vtk_export['vessels_path'])
     
     print("Flow through the network solved and VTK updated with Rheology fields.")

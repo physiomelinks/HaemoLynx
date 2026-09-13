@@ -500,3 +500,63 @@ def test_the_two_resistance_models_weight_edges_differently():
         f"expected the two models to rank edges differently across the calibre range; "
         f"relative weighting varies by only {spread:.2f}x"
     )
+
+
+def _driver_cell_data_writes(function_name):
+    """Line numbers of ``<something>.cell_data["name"] = ...`` inside a driver function."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
+    tree = ast.parse(source)
+    target = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    writes = {}
+    for node in ast.walk(target):
+        if not isinstance(node, ast.Assign):
+            continue
+        for t in node.targets:
+            if (isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Attribute)
+                    and t.value.attr == "cell_data"
+                    and isinstance(t.slice, ast.Constant)):
+                writes.setdefault(t.slice.value, []).append(node.lineno)
+    return writes
+
+
+def test_the_vtk_resistance_array_is_refreshed_after_the_rheology_solve():
+    """The exported mesh must not carry a resistance and a viscosity from different models.
+
+    ``graph_to_vtk`` runs before the solver and writes a ``resistance`` cell array from
+    ``set_poiseuille_resistances``' power-law values. The post-solve pass then adds
+    ``hematocrit``, ``viscosity`` and ``wall_shear_stress_pa`` from the converged graph. It
+    used not to touch ``resistance``, so a reader of the file had a resistance and a
+    viscosity that do not satisfy R = 128 mu L / (pi d^4) together, and no way to tell.
+
+    Asserted on the source for the same reason as the two ordering tests above: the
+    enclosing driver function cannot be executed by any existing harness. Testing it
+    behaviourally would mean duplicating the refresh loop in the test, which would guard the
+    duplicate rather than the driver.
+    """
+    writes = _driver_cell_data_writes("_export_and_solve_haemodynamics")
+    calls = _driver_call_lines(
+        "_export_and_solve_haemodynamics", ("solve_coupled_flow_and_hematocrit",))
+    solve_line = calls["solve_coupled_flow_and_hematocrit"][0]
+
+    assert "resistance" in writes, (
+        "the VTK resistance cell array is never refreshed after the solve, so it keeps the "
+        "power-law values graph_to_vtk wrote before it"
+    )
+    assert min(writes["resistance"]) > solve_line, (
+        f"the resistance cell array is written at line {min(writes['resistance'])}, before "
+        f"the rheology solve at line {solve_line}"
+    )
+
+    # The four rheology-derived arrays are refreshed together. If a fifth is added later it
+    # should join them rather than being left on pre-solve values, which is the defect this
+    # test exists for.
+    for name in ("hematocrit", "viscosity", "wall_shear_stress_pa"):
+        assert name in writes, f"{name} is no longer written to cell_data"
+        assert min(writes[name]) > solve_line
