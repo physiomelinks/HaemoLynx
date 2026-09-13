@@ -108,6 +108,57 @@ def test_profile_plateau_shape_ratio_flags_flat_top_profile():
     assert saturated_ratio > gaussian_ratio
 
 
+# --- _local_same_edge_window ------------------------------------------------
+
+
+def _window(diameter_estimate, **overrides):
+    kwargs = dict(
+        same_edge_arc_window_um=None,
+        same_edge_arc_window_min_um=1.0,
+        same_edge_arc_window_multiplier=1.0,
+        sample_spacing_along_edge_um=5.0,
+        transverse_profile_step_um=0.2,
+    )
+    kwargs.update(overrides)
+    return automated._local_same_edge_window(diameter_estimate, **kwargs)
+
+
+def test_local_same_edge_window_scales_with_the_diameter_estimate():
+    """window = max(min, multiplier x diameter_estimate) -- the documented
+    contract this function implements."""
+    assert _window(20.0) == pytest.approx(20.0)
+    assert _window(20.0, same_edge_arc_window_multiplier=2.0) == pytest.approx(40.0)
+
+
+def test_local_same_edge_window_respects_its_own_floor():
+    assert _window(0.5, same_edge_arc_window_min_um=3.0) == pytest.approx(3.0)
+
+
+def test_local_same_edge_window_falls_back_to_spacing_only_with_no_estimate():
+    """Regression: a genuinely unknown diameter (<= 0, the very first
+    sampling pass when diameter_guess_um=None) falls back to sample
+    spacing -- but only then, not whenever a real estimate is available."""
+    assert _window(0.0, sample_spacing_along_edge_um=7.0) == pytest.approx(7.0)
+    assert _window(-1.0, sample_spacing_along_edge_um=7.0) == pytest.approx(7.0)
+
+
+def test_local_same_edge_window_an_explicit_override_wins():
+    assert _window(20.0, same_edge_arc_window_um=2.5) == pytest.approx(2.5)
+
+
+def test_local_same_edge_window_does_not_use_sample_spacing_when_an_estimate_exists():
+    """Regression: the window must scale with the vessel's own width, not
+    with an unrelated quantity like how far apart FWHM samples are placed
+    along the edge -- a wide vessel measured with fine sample spacing used
+    to get a window pinned to that spacing regardless of its own diameter,
+    silently shrinking the transverse sampling window (and, via
+    cap_half_extent_by_nonlocal_same_edge_distance, the visualized/measured
+    extent) for any vessel wider than the chosen spacing."""
+    window = _window(30.0, sample_spacing_along_edge_um=2.0)  # spacing << diameter
+    assert window == pytest.approx(30.0)
+    assert window > 2.0
+
+
 def _cylinder_saturated_volume(
     nz: int, ny: int, nx: int, radius: float, saturation: float = 100.0, tau: float = 0.15
 ) -> np.ndarray:
@@ -475,6 +526,72 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     expect_r = model.resistance_of_uniform_segment(16.0, d)
     assert abs(r - expect_r) < expect_r * 0.05
     assert G2[0][1][0]["conductance"] == pytest.approx(1.0 / r)
+
+
+def _wavy_gaussian_volume(nz, ny, nx, radius, amplitude, wavelength, saturation=200.0):
+    """A single vessel of ``radius`` whose centerline wiggles sinusoidally in
+    y as a function of x -- mimics real vessel tortuosity, unlike every
+    other fixture in this file, which is a straight tube."""
+    zc = (nz - 1) / 2.0
+    yc = ny / 2.0
+    sigma = (2.0 * radius) / 2.3548  # so the fitted FWHM should recover 2*radius
+    vol = np.zeros((nz, ny, nx), dtype=np.float32)
+    z = np.arange(nz, dtype=float)[:, None]
+    y = np.arange(ny, dtype=float)[None, :]
+    centerline_y = []
+    for xi in range(nx):
+        y_here = yc + amplitude * np.sin(2 * np.pi * xi / wavelength)
+        centerline_y.append(y_here)
+        r = np.sqrt((y - y_here) ** 2 + (z - zc) ** 2)
+        vol[:, :, xi] = saturation * np.exp(-(r**2) / (2 * sigma**2))
+    return vol, zc, np.array(centerline_y)
+
+
+def test_transverse_window_scales_with_diameter_on_a_tortuous_vessel(tmp_path: Path):
+    """Regression: for a vessel wide enough that its own diameter exceeds
+    sample_spacing_along_edge_um, the same-edge-locality guards used to
+    size their "how close counts as a genuine self-crossing" threshold off
+    that unrelated sample spacing instead of the vessel's own width --
+    correct for a ruler-straight vessel (where the guards never bind
+    tightly enough to matter) but not for a realistically tortuous one,
+    where it left both the visualized transverse window and the fitted
+    diameter itself well under the requested
+    min_total_extent_multiplier x diameter target.
+    """
+    true_diameter = 20.0
+    nz, ny, nx_dim = 60, 100, 81
+    raw, zc, centerline_y = _wavy_gaussian_volume(
+        nz, ny, nx_dim, radius=true_diameter / 2.0, amplitude=10.0, wavelength=30.0
+    )
+    raw_path = tmp_path / "wavy.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    xs = list(range(5, 76))
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([zc, centerline_y[5], 5.0], dtype=float))
+    G.add_node(1, pos=np.array([zc, centerline_y[75], 75.0], dtype=float))
+    voxels = [(zc, float(centerline_y[x]), float(x)) for x in xs]
+    G.add_edge(0, 1, weight=1.0, length=70.0, branch_order="B01", voxels=voxels)
+
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=5.0,  # well under the vessel's own 20um diameter
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=3.0,
+        diameter_guess_um=true_diameter,
+        store_profile_debug=True,
+    )
+    assert summary["edges_measured"] == 1
+    data = G.edges[0, 1, 0]
+    lines = data["fwhm_profile_lines_phys"]
+    assert lines, "expected at least one accepted transverse profile line"
+    ratios = [float(np.linalg.norm(line[-1] - line[0])) / true_diameter for line in lines]
+    # Pinned to the pre-fix code's own measured value (1.65) on this exact
+    # fixture, with margin: this must clear that, proving the window is no
+    # longer sized off sample_spacing_along_edge_um.
+    assert float(np.median(ratios)) > 1.75
 
 
 def test_set_poiseuille_resistances_prefers_fwhm_optional(multigraph_with_branch_order):

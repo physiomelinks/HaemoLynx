@@ -796,6 +796,55 @@ def build_graph_branch_label_volume(
     return labels, edge_key_to_label
 
 
+def _local_same_edge_window(
+    diameter_estimate: float,
+    *,
+    same_edge_arc_window_um: float | None,
+    same_edge_arc_window_min_um: float,
+    same_edge_arc_window_multiplier: float,
+    sample_spacing_along_edge_um: float,
+    transverse_profile_step_um: float,
+) -> float:
+    """How far along an edge's own centerline (in arc-length) a
+    re-encountered same-edge voxel must be before it counts as a genuinely
+    different part of the vessel, rather than the current cross-section's
+    own local vicinity -- see ``measure_edge_diameters_fwhm_from_raw_tiff``'s
+    ``same_edge_arc_window_multiplier`` docstring entry ("window = max(min,
+    multiplier x current diameter estimate)"), which this implements.
+
+    Used both for the same-edge-locality ray-stop guard during transverse
+    sampling itself, and (as a floor alongside
+    ``nonlocal_same_edge_arc_separation_um``) for the pre-emptive
+    half-extent cap -- see ``cap_half_extent_by_nonlocal_same_edge_distance``.
+
+    Scaled to *diameter_estimate* -- the best estimate available at the
+    point this is called (the initial guess, then each sampling pass's own
+    fitted value) -- not to an unrelated quantity like how far apart
+    samples are placed along the edge: a wider vessel's own wall can
+    legitimately curve back within a wider arc-length radius than a
+    narrower one's without that meaning anything is actually wrong. Before
+    this existed, the very first pass (before any diameter estimate exists
+    at all) always fell back to ``sample_spacing_along_edge_um``,
+    contradicting the documented contract above and silently shrinking the
+    transverse sampling window -- and, via the pre-emptive cap, the
+    visualized/measured extent too -- for any vessel wider than that
+    spacing, regardless of how gently it actually curves.
+
+    *diameter_estimate* of 0 (or less) means no estimate is available yet
+    (``diameter_guess_um=None`` on the very first pass) -- falls back to
+    ``max(sample_spacing_along_edge_um, transverse_profile_step_um)``, the
+    best available scale in that specific case.
+    """
+    if same_edge_arc_window_um is not None:
+        return float(same_edge_arc_window_um)
+    basis = (
+        float(diameter_estimate)
+        if diameter_estimate > 0
+        else max(float(sample_spacing_along_edge_um), float(transverse_profile_step_um))
+    )
+    return max(float(same_edge_arc_window_min_um), float(same_edge_arc_window_multiplier) * basis)
+
+
 def measure_edge_diameters_fwhm_from_raw_tiff(
     G: nx.MultiGraph,
     *,
@@ -911,8 +960,13 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         If True, cap each sample's transverse half-extent using the nearest
         non-local point on the same edge centerline (geometry-only guard).
     nonlocal_same_edge_arc_separation_um :
-        Arc-length separation defining "non-local" centerline points for the
-        above cap.
+        Floor on the arc-length separation defining "non-local" centerline
+        points for the above cap -- the actual separation used is at least
+        this, and at least the same diameter-aware window
+        ``same_edge_arc_window_multiplier`` computes for the ray-stop guard
+        (see its own docstring), so a wide vessel does not get an
+        unrealistically small "non-local" threshold just because this
+        constant was tuned for a narrower one.
     nonlocal_same_edge_half_extent_factor :
         Half-extent cap = factor × nearest non-local centerline distance.
     reject_samples_with_center_offset :
@@ -997,6 +1051,17 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     jn = int(junction_label)
     branch_excl = max(0.0, float(branch_endpoint_exclusion_um))
     junction_excl = max(0.0, float(junction_proximity_exclusion_um))
+
+    def _local_arc_window(diameter_estimate: float) -> float:
+        return _local_same_edge_window(
+            diameter_estimate,
+            same_edge_arc_window_um=same_edge_arc_window_um,
+            same_edge_arc_window_min_um=same_edge_arc_window_min_um,
+            same_edge_arc_window_multiplier=same_edge_arc_window_multiplier,
+            sample_spacing_along_edge_um=sample_spacing_along_edge_um,
+            transverse_profile_step_um=transverse_profile_step_um,
+        )
+
     d_guess0 = 0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
 
     def _passes_plateau_gate(pos_fit: np.ndarray, prof_fit: np.ndarray) -> bool:
@@ -1097,21 +1162,19 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             tangent = _tangent_at(poly, s, float(s0))
             n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
             sample_out_of_plane_fraction = _out_of_plane_fraction(tangent)
-            if same_edge_arc_window_um is None:
-                local_arc_window = max(
-                    float(same_edge_arc_window_min_um),
-                    float(same_edge_arc_window_multiplier)
-                    * max(float(sample_spacing_along_edge_um), float(transverse_profile_step_um)),
-                )
-            else:
-                local_arc_window = float(same_edge_arc_window_um)
+            local_arc_window = _local_arc_window(d_guess0)
 
             half_extent = max(
                 float(transverse_half_extent_um),
                 0.5 * mult * d_guess0,
             )
             if cap_half_extent_by_nonlocal_same_edge_distance and len(poly) > 2:
-                arc_sep = max(0.0, float(nonlocal_same_edge_arc_separation_um))
+                # At least the same diameter-aware local window used for the
+                # ray-stop guard above -- a fixed nonlocal_same_edge_arc_separation_um
+                # alone silently caps the window for any vessel wider than
+                # that constant, regardless of how gently it curves (see
+                # _local_arc_window's own docstring).
+                arc_sep = max(float(nonlocal_same_edge_arc_separation_um), local_arc_window)
                 ref_pts = dense_poly if dense_poly is not None else poly
                 ref_s = dense_s if dense_s is not None else s
                 nonlocal_mask = np.abs(ref_s - float(s0)) >= arc_sep
@@ -1180,11 +1243,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     half_extent,
                     0.5 * mult * d0,
                 )
-                if same_edge_arc_window_um is None:
-                    local_arc_window = max(
-                        float(same_edge_arc_window_min_um),
-                        float(same_edge_arc_window_multiplier) * float(d0),
-                    )
+                local_arc_window = _local_arc_window(d0)
                 pos, prof = _sample_transverse_profile(
                     raw,
                     labels,
@@ -1232,11 +1291,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     # One extra pass if first estimate was low and we can still extend.
                     if desired_half > (half_extent + float(transverse_profile_step_um)):
                         half_extent = desired_half
-                        if same_edge_arc_window_um is None:
-                            local_arc_window = max(
-                                float(same_edge_arc_window_min_um),
-                                float(same_edge_arc_window_multiplier) * float(d1),
-                            )
+                        local_arc_window = _local_arc_window(d1)
                         pos, prof = _sample_transverse_profile(
                             raw,
                             labels,
