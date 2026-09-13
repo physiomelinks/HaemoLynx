@@ -635,3 +635,84 @@ def test_the_diameter_provenance_guard_still_fires_when_no_resistance_is_written
     with pytest.raises(ValueError, match="edt_radius"):
         _poiseuille_model().set_poiseuille_resistances(
             G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius", assign_resistance=False)
+
+
+def test_a_partial_synthetic_fallback_is_refused():
+    """The whole-graph guard cannot see a per-edge fallback; this is the one that can.
+
+    ``_raise_if_measurement_mode_measured_nothing`` fires only when *no* edge was measured.
+    A graph where EDT measured most edges and fabricated the rest passed it silently, and
+    resistance goes as the inverse fourth power of diameter, so the fabricated edges carry a
+    fabricated resistance of unknown size.
+
+    ``check_diameter_provenance`` catches that, and has been called from
+    ``set_poiseuille_resistances_with_constrictions`` since 79baf86 - but not from
+    ``set_poiseuille_resistances``, which is the only one the carotid body pipeline reaches.
+    """
+    G = nx.MultiGraph()
+    # Two edges measured, one not: 33% synthetic, against a 0.0 allowance for edt_radius.
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, length=20.0, branch_order="B01", edt_diameter_um=6.0)
+    G.add_edge(2, 3, key=0, length=20.0, branch_order="B01")
+
+    with pytest.raises(ValueError, match="synthetic"):
+        _poiseuille_model().set_poiseuille_resistances(
+            G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius")
+
+
+def test_a_fully_measured_graph_records_its_provenance_and_passes():
+    """The report travels with the result even when nothing is wrong.
+
+    That is what makes the fabricated share auditable rather than merely absent: a caller can
+    read the counts off the result instead of inferring them from the absence of an exception.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, length=20.0, branch_order="B01", edt_diameter_um=6.0)
+
+    _, results = _poiseuille_model().set_poiseuille_resistances(
+        G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius")
+
+    check = results["diameter_provenance_check"]
+    assert check["ok"] is True
+    assert check["edges"] == 2
+    assert check["synthetic_edges"] == 0
+    assert check["synthetic_fraction"] == pytest.approx(0.0)
+    assert results["diameter_provenance_counts"] == {"measured_edt": 2}
+
+
+def test_the_partial_guard_also_applies_when_no_resistance_is_written():
+    """The CB path passes assign_resistance=False, and must still be guarded.
+
+    The two are independent: whether a resistance is written says nothing about whether the
+    diameter it would have used was measured or fabricated, and it is the diameter the
+    rheology solver goes on to read.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, length=20.0, branch_order="B01")
+
+    with pytest.raises(ValueError, match="synthetic"):
+        _poiseuille_model().set_poiseuille_resistances(
+            G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius",
+            assign_resistance=False)
+
+
+def test_a_raised_allowance_lets_a_partial_fallback_through():
+    """The bound is a parameter, so a run that accepts fabricated calibre can say so.
+
+    Deliberately explicit: the guard's own message tells the caller to raise it only if the
+    fabricated share is acceptable *and recorded*, and the recorded share comes back in the
+    result either way.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, length=20.0, branch_order="B01")
+
+    _, results = _poiseuille_model().set_poiseuille_resistances(
+        G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius",
+        max_synthetic_fraction=0.5)
+
+    check = results["diameter_provenance_check"]
+    assert check["ok"] is True
+    assert check["synthetic_fraction"] == pytest.approx(0.5)

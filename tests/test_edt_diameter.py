@@ -116,6 +116,12 @@ def test_diameter_provenance_distinguishes_measured_from_synthetic():
     """assigned_diameter_um recorded measured and fabricated diameters identically.
 
     Section 1.2 is a distributional claim, so a mixed distribution has to be separable.
+
+    ``max_synthetic_fraction=1.0`` is required to construct the mixture at all.
+    ``set_poiseuille_resistances`` now calls ``check_diameter_provenance``, which refuses any
+    synthetic share under ``edt_radius``, so a half-synthetic graph raises before the tagging
+    can be inspected. Raising the bound here is what that parameter exists for: this test is
+    about whether the two are *distinguishable*, not about whether the mixture is allowed.
     """
     G = nx.MultiGraph()
     G.add_edge(0, 1, branch_order="B01", length=100.0, edt_diameter_um=12.0)  # measured
@@ -123,7 +129,8 @@ def test_diameter_provenance_distinguishes_measured_from_synthetic():
     model = PoiseuilleModel(constriction_length=5.0, constriction_spacing=100.0)
 
     _, stats = model.set_poiseuille_resistances(
-        G, {"B01": {"d1": 4.0, "d2": 4.0}}, radius_assignment_mode="edt_radius"
+        G, {"B01": {"d1": 4.0, "d2": 4.0}}, radius_assignment_mode="edt_radius",
+        max_synthetic_fraction=1.0,
     )
 
     assert stats["diameter_provenance_counts"] == {

@@ -165,6 +165,7 @@ class PoiseuilleModel:
         radius_assignment_mode: str = "fwhm_radius",
         constant_radius_um: float = 5.0,
         assign_resistance: bool = True,
+        max_synthetic_fraction: float | None = None,
     ) -> tuple[nx.MultiGraph, dict]:
         """
         Set edge resistances using Poiseuille's law with calculated viscosity.
@@ -197,6 +198,10 @@ class PoiseuilleModel:
 
             ``assigned_diameter_um`` is written either way. It is what the rheology solver reads
             for calibre, and it comes from the measured radius rather than from this power law.
+        max_synthetic_fraction : float | None
+            Largest share of edges allowed to carry a synthetic branch-order diameter rather
+            than a measured one, passed to :func:`check_diameter_provenance`. None takes that
+            function's default, which is 0.0 for ``edt_radius`` and 1.0 otherwise.
 
         Returns:
         --------
@@ -335,6 +340,21 @@ class PoiseuilleModel:
         
         _raise_if_measurement_mode_measured_nothing(
             radius_assignment_mode, results['resistances_set'], results['used_fwhm_edge_diameter']
+        )
+        # And on a *partial* fallback, which the guard above cannot see: it is whole-graph and
+        # fires only when nothing at all was measured, while the fallback is per-edge. A run
+        # where EDT measured most edges and fabricated the rest passed silently, and resistance
+        # goes as the inverse fourth power of diameter, so a fabricated calibre is not a small
+        # perturbation on the edges carrying it.
+        #
+        # set_poiseuille_resistances_with_constrictions has called this since 79baf86; this
+        # method did not, so the stronger check was absent from the only path the carotid body
+        # pipeline takes. The report is kept either way, so the fabricated share travels with
+        # the result rather than only being absent when it is zero.
+        results["diameter_provenance_check"] = check_diameter_provenance(
+            results.get("diameter_provenance_counts", {}),
+            radius_assignment_mode=radius_assignment_mode,
+            max_synthetic_fraction=max_synthetic_fraction,
         )
 
         # Print summary
