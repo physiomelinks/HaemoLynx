@@ -107,6 +107,9 @@ DIMENSIONLESS = {
     # Names a file, an axis order, a mode -- not a quantity.
     "image_axis_order",
     "voxel_size_policy",
+    # Names a graph edge attribute to read a diameter guess from -- not a
+    # diameter itself.
+    "fwhm_diameter_guess_edge_attribute",
     # Graph hop count (edge steps), not a physical distance.
     "small_vessel_boundary_fallback_hop_distance",
     # Edge-count threshold for orphan cleanup after large-vessel volume cuts.

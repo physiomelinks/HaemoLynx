@@ -877,6 +877,40 @@ def _local_max_center_offset(
     )
 
 
+def _edge_diameter_guess(
+    data: dict[str, Any],
+    *,
+    diameter_guess_edge_attribute: str | None,
+    fallback_diameter_guess: float,
+) -> float:
+    """One edge's own starting diameter estimate -- see
+    ``measure_edge_diameters_fwhm_from_raw_tiff``'s
+    ``diameter_guess_edge_attribute`` docstring entry.
+
+    *diameter_guess_um* (surfaced here as *fallback_diameter_guess*) was
+    previously the only source, one number applied to every edge
+    regardless of its real width -- comfortably wrong at both ends of a
+    network spanning capillaries to large vessels. When
+    *diameter_guess_edge_attribute* names an edge attribute already
+    holding a real, positive, vessel-specific estimate (the default,
+    ``"edt_diameter_um"``, is what
+    :func:`haemolynx.haemodynamics.edt_diameter.measure_edge_diameters_from_binary_mask`
+    writes -- cheap, no curve fitting, and already computed as a
+    cross-check/fallback signal in a typical run that also enables FWHM),
+    that per-edge value is used instead. Falls back to
+    *fallback_diameter_guess* when the attribute is unset, not a finite
+    positive number, or *diameter_guess_edge_attribute* is ``None`` --
+    unchanged from before this existed.
+    """
+    if diameter_guess_edge_attribute:
+        value = data.get(diameter_guess_edge_attribute)
+        if value is not None:
+            value = float(value)
+            if np.isfinite(value) and value > 0:
+                return value
+    return float(fallback_diameter_guess)
+
+
 def measure_edge_diameters_fwhm_from_raw_tiff(
     G: nx.MultiGraph,
     *,
@@ -886,6 +920,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     transverse_profile_step_um: float,
     transverse_half_extent_um: float,
     diameter_guess_um: float | None = None,
+    diameter_guess_edge_attribute: str | None = "edt_diameter_um",
     background_label: int = 0,
     junction_label: int = -1,
     min_total_extent_multiplier: float = 3.0,
@@ -947,8 +982,28 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         the half-extent is enlarged to at least ``min_total_extent_multiplier / 2``
         times that diameter unless truncated earlier.
     diameter_guess_um :
-        Optional initial width guess (µm). If None, initial half-extent uses
-        ``transverse_half_extent_um`` only.
+        Optional initial width guess (µm), one global fallback value for
+        every edge -- used when *diameter_guess_edge_attribute* is unset,
+        or that edge has no usable value under it (see below). If both are
+        unavailable, initial half-extent uses ``transverse_half_extent_um``
+        only.
+    diameter_guess_edge_attribute :
+        Name of an edge attribute already holding a real, per-edge
+        diameter estimate (µm) to seed that edge's own initial guess with,
+        instead of the one global *diameter_guess_um* every edge would
+        otherwise share regardless of its real width. Default
+        ``"edt_diameter_um"`` -- what
+        :func:`haemolynx.haemodynamics.edt_diameter.measure_edge_diameters_from_binary_mask`
+        writes: a cheap (no curve fitting), vessel-specific estimate from
+        the segmentation mask's own inscribed radius, already computed in
+        a typical run that also cross-checks or falls back to it (see
+        ``haemodynamics.apply.assign_edge_diameters``, which now runs that
+        measurement before this one so the attribute is there to use).
+        Read once per edge, before that edge's own first sampling pass;
+        ignored (falls back to *diameter_guess_um*) for an edge where the
+        attribute is absent, non-finite, or not a positive number. Pass
+        ``None`` to always use the one global guess, matching this
+        function's behaviour before this parameter existed.
     junction_label :
         Reserved value marking voxels shared by multiple edges in the rasterized volume.
         Transverse rays stop at this label by default to avoid crossing onto neighbouring
@@ -1123,7 +1178,16 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             transverse_profile_step_um=transverse_profile_step_um,
         )
 
-    d_guess0 = 0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
+    fallback_diameter_guess = (
+        0.0 if diameter_guess_um is None else max(0.0, float(diameter_guess_um))
+    )
+
+    def _initial_diameter_guess(data: dict[str, Any]) -> float:
+        return _edge_diameter_guess(
+            data,
+            diameter_guess_edge_attribute=diameter_guess_edge_attribute,
+            fallback_diameter_guess=fallback_diameter_guess,
+        )
 
     def _passes_plateau_gate(pos_fit: np.ndarray, prof_fit: np.ndarray) -> bool:
         """Independent of the parametric fit's own R² -- see
@@ -1159,6 +1223,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
 
         if sample_spacing_along_edge_um <= 0:
             raise ValueError("sample_spacing_along_edge_um must be positive.")
+
+        # This edge's own starting diameter estimate -- the same for every
+        # sample along it, so read once here rather than on every pass.
+        edge_diameter_guess = _initial_diameter_guess(data)
 
         n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
         targets = np.linspace(0.0, total_len, n_samples)
@@ -1321,7 +1389,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             # successfully-fitted, gate-passing pass is kept: widening is
             # only ever an attempt to improve an already-accepted
             # measurement, never a precondition for keeping one.
-            diameter_estimate = d_guess0
+            diameter_estimate = edge_diameter_guess
             local_arc_window = _local_arc_window(diameter_estimate)
             half_extent = _capped_initial_half_extent(
                 max(float(transverse_half_extent_um), 0.5 * mult * diameter_estimate),

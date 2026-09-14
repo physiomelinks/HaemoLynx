@@ -596,8 +596,12 @@ fwhm_diameter_measurement:
   fwhm_transverse_half_extent_um: 6.0
   # Start the Gaussian fit from this diameter guess instead of an automatic one  [um; range 0.0..; needs use_fwhm_edge_diameters]
   fwhm_diameter_guess_um: null
+  # Seed each edge's own starting diameter guess from this graph attribute when present, instead of the one guess above for every edge  [needs use_fwhm_edge_diameters]
+  fwhm_diameter_guess_edge_attribute: edt_diameter_um
   # Require the sampled profile to span at least this multiple of the fitted width  [range 0.0..; needs use_fwhm_edge_diameters]
   fwhm_min_total_extent_multiplier: 3.0
+  # Widen the transverse sampling window at most this many times while the fit keeps asking for more room  [range 0..; needs use_fwhm_edge_diameters]
+  fwhm_max_transverse_widen_passes: 5
   # Mark background voxels with this label in the rasterized branch label volume  [needs use_fwhm_edge_diameters]
   fwhm_background_label: 0
   # Mark junction voxels with this label in the rasterized branch label volume  [needs use_fwhm_edge_diameters]
@@ -640,6 +644,8 @@ fwhm_diameter_measurement:
   fwhm_reject_samples_with_center_offset: true
   # Discard a sample once its fitted centre is further than this from the expected centre  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_center_offset]
   fwhm_max_fit_center_offset_um: 1.5
+  # Also allow a fitted centre this fraction of the current diameter estimate away, whichever is looser  [fraction; range 0.0..; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_center_offset]
+  fwhm_max_fit_center_offset_fraction_of_diameter: 0.3
   # Discard samples whose transverse Gaussian fit quality is too low  [needs use_fwhm_edge_diameters]
   fwhm_reject_samples_with_low_fit_r2: true
   # Keep a sample only when its transverse Gaussian fit reaches this R-squared  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_low_fit_r2]

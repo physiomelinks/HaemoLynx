@@ -199,6 +199,46 @@ def test_local_max_center_offset_does_not_use_a_fixed_value_for_a_wide_vessel():
     assert wide_vessel_offset > 1.5
 
 
+# --- _edge_diameter_guess -----------------------------------------------------
+
+
+def test_edge_diameter_guess_prefers_the_edge_attribute_when_present():
+    data = {"edt_diameter_um": 12.0}
+    guess = automated._edge_diameter_guess(
+        data, diameter_guess_edge_attribute="edt_diameter_um", fallback_diameter_guess=2.0,
+    )
+    assert guess == pytest.approx(12.0)
+
+
+def test_edge_diameter_guess_falls_back_when_the_attribute_is_absent():
+    guess = automated._edge_diameter_guess(
+        {}, diameter_guess_edge_attribute="edt_diameter_um", fallback_diameter_guess=2.0,
+    )
+    assert guess == pytest.approx(2.0)
+
+
+def test_edge_diameter_guess_falls_back_for_a_non_positive_or_non_finite_attribute():
+    """Regression: a stray 0, negative, or NaN value under the attribute
+    name must not silently become this edge's own diameter guess."""
+    for bad_value in (0.0, -5.0, float("nan"), float("inf")):
+        guess = automated._edge_diameter_guess(
+            {"edt_diameter_um": bad_value},
+            diameter_guess_edge_attribute="edt_diameter_um",
+            fallback_diameter_guess=2.0,
+        )
+        assert guess == pytest.approx(2.0), f"bad_value={bad_value!r} should have fallen back"
+
+
+def test_edge_diameter_guess_none_attribute_name_always_uses_the_fallback():
+    """diameter_guess_edge_attribute=None reproduces this function's
+    behaviour from before per-edge seeding existed: only the one global
+    guess, even when the edge itself carries a real per-edge value."""
+    guess = automated._edge_diameter_guess(
+        {"edt_diameter_um": 12.0}, diameter_guess_edge_attribute=None, fallback_diameter_guess=2.0,
+    )
+    assert guess == pytest.approx(2.0)
+
+
 def _cylinder_saturated_volume(
     nz: int, ny: int, nx: int, radius: float, saturation: float = 100.0, tau: float = 0.15
 ) -> np.ndarray:
@@ -566,6 +606,64 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     expect_r = model.resistance_of_uniform_segment(16.0, d)
     assert abs(r - expect_r) < expect_r * 0.05
     assert G2[0][1][0]["conductance"] == pytest.approx(1.0 / r)
+
+
+def test_measure_edge_diameters_seeds_the_first_pass_from_an_edt_diameter_attribute(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: diameter_guess_um used to be the only seed for every
+    edge's own first sampling pass, one number shared regardless of a
+    given edge's real width. An edge already carrying edt_diameter_um
+    (what haemodynamics.edt_diameter.measure_edge_diameters_from_binary_mask
+    writes) must seed its own first pass from that instead of the one
+    global fallback -- confirmed here by recording the half-extent each
+    first sampling call actually requests.
+    """
+    nz, ny, nx_dim = 11, 11, 21
+    raw = _cylinder_gaussian_volume(nz, ny, nx_dim, sigma=1.5)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    def _build_graph(edt_value: float | None) -> nx.MultiGraph:
+        G = nx.MultiGraph()
+        G.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
+        G.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
+        voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
+        edge_kwargs = {} if edt_value is None else {"edt_diameter_um": edt_value}
+        G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels, **edge_kwargs)
+        return G
+
+    recorded_half_extents: list[float] = []
+    real_sample = automated._sample_transverse_profile
+
+    def recording_sample(raw_arr, labels, center, tangent, assigned, half_extent, *args, **kwargs):
+        recorded_half_extents.append(half_extent)
+        return real_sample(raw_arr, labels, center, tangent, assigned, half_extent, *args, **kwargs)
+
+    common = dict(
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=20.0,  # > edge length: exactly one sample
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=1.0,
+        diameter_guess_um=2.0,  # the one global fallback
+        min_total_extent_multiplier=3.0,
+        cap_half_extent_by_nonlocal_same_edge_distance=False,
+    )
+
+    monkeypatch.setattr(automated, "_sample_transverse_profile", recording_sample)
+
+    recorded_half_extents.clear()
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(_build_graph(None), **common)
+    without_edt_first_half_extent = recorded_half_extents[0]
+
+    recorded_half_extents.clear()
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(_build_graph(9.0), **common)
+    with_edt_first_half_extent = recorded_half_extents[0]
+
+    assert without_edt_first_half_extent == pytest.approx(max(1.0, 0.5 * 3.0 * 2.0))
+    assert with_edt_first_half_extent == pytest.approx(max(1.0, 0.5 * 3.0 * 9.0))
+    assert with_edt_first_half_extent > without_edt_first_half_extent
 
 
 def _wavy_gaussian_volume(nz, ny, nx, radius, amplitude, wavelength, saturation=200.0):

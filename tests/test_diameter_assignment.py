@@ -297,6 +297,57 @@ def test_fresh_fwhm_run_wipes_overrides(monkeypatch):
     assert stamped[0][1][0]["diameter_um"] == pytest.approx(3.0)
 
 
+def test_edt_measurement_runs_before_fwhm_so_it_can_seed_the_diameter_guess(monkeypatch):
+    """Regression: EDT measurement used to run after FWHM in
+    assign_edge_diameters, so edt_diameter_um was never actually on the
+    graph in time for FWHM's own diameter_guess_edge_attribute to read it
+    -- confirms EDT now runs first, and that its result is genuinely
+    visible to FWHM's own measurement call by then, not just that the
+    call order changed with no effect on what FWHM actually sees.
+    """
+    call_order: list[str] = []
+    seen_edt_values: list[float | None] = []
+
+    def fake_measure_edt(G, _config, mask_volume=None):
+        call_order.append("edt")
+        for _u, _v, _key, data in G.edges(keys=True, data=True):
+            data["edt_diameter_um"] = 7.0
+        return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
+
+    def fake_measure_fwhm(G, _config, raw_volume=None):
+        call_order.append("fwhm")
+        for _u, _v, _key, data in G.edges(keys=True, data=True):
+            seen_edt_values.append(data.get("edt_diameter_um"))
+            data["fwhm_diameter_um"] = 3.0
+        return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
+
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply._measure_edt_diameters", fake_measure_edt
+    )
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply._measure_fwhm_diameters", fake_measure_fwhm
+    )
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply.load_fwhm_raw_volume",
+        lambda _config: np.zeros((2, 2, 2), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply.load_edt_mask_volume",
+        lambda _config: np.zeros((2, 2, 2), dtype=bool),
+    )
+
+    graph = _network()
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": True},
+        edt={"use_edt_diameter_crosscheck": True},
+    )
+    assign_edge_diameters(graph, config)
+
+    assert call_order == ["edt", "fwhm"]
+    assert seen_edt_values == [7.0] * graph.number_of_edges()
+
+
 def test_set_edge_diameter_override_rejects_non_positive():
     with pytest.raises(ValueError, match="positive"):
         set_edge_diameter_override({}, 0.0)

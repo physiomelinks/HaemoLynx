@@ -296,11 +296,20 @@ def assign_edge_diameters(
 
     When ``use_edt_diameter_crosscheck`` is on, also measures each edge's
     diameter from the segmentation mask's own inscribed radius (*mask_volume*
-    if given, else ``edt_mask_path``) -- as a fallback for an edge FWHM
+    if given, else ``edt_mask_path``) -- runs *before* FWHM measurement
+    (not just after, as this used to) so FWHM can seed each edge's own
+    initial diameter guess from it instead of the one global
+    ``diameter_guess_um`` every edge would otherwise share regardless of
+    its real width (see
+    :func:`haemolynx.haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff`'s
+    ``diameter_guess_edge_attribute``, default ``"edt_diameter_um"`` --
+    exactly what this stamps). Independently of that seeding, EDT also
+    still serves its original two purposes: a fallback for an edge FWHM
     measurement failed on when ``edt_diameter_prefer_over_table_on_fwhm_
-    failure`` is set, and always as a QA cross-check
+    failure`` is set, and always a QA cross-check
     (``fwhm_edt_disagreement_ratio``/``fwhm_low_confidence_vs_edt``)
-    independent of that fallback.
+    independent of that fallback -- reordering which measurement runs
+    first changes neither, since EDT never reads anything FWHM produces.
 
     Returns the graph, a summary, and the raw FWHM intensity volume when a
     FWHM path is set.
@@ -310,15 +319,6 @@ def assign_edge_diameters(
     raw_volume: np.ndarray | None = None
     remeasure = bool(config.use_fwhm_edge_diameters and config.do_fwhm_measurement)
     keep_existing = bool(config.use_fwhm_edge_diameters and not config.do_fwhm_measurement)
-    if config.use_fwhm_edge_diameters:
-        raw_volume = load_fwhm_raw_volume(config)
-        if remeasure:
-            summary["fwhm"] = _measure_fwhm_diameters(G, config, raw_volume=raw_volume)
-        else:
-            summary["fwhm"] = {
-                "skipped": True,
-                "reason": "do_fwhm_measurement is off; keeping existing diameters",
-            }
 
     use_edt_fallback = False
     if config.use_edt_diameter_crosscheck:
@@ -330,6 +330,16 @@ def assign_edge_diameters(
             summary["edt"] = {
                 "skipped": True,
                 "reason": "no in-memory segmentation volume and no edt_mask_path configured",
+            }
+
+    if config.use_fwhm_edge_diameters:
+        raw_volume = load_fwhm_raw_volume(config)
+        if remeasure:
+            summary["fwhm"] = _measure_fwhm_diameters(G, config, raw_volume=raw_volume)
+        else:
+            summary["fwhm"] = {
+                "skipped": True,
+                "reason": "do_fwhm_measurement is off; keeping existing diameters",
             }
 
     summary["diameters"] = stamp_edge_diameters(
