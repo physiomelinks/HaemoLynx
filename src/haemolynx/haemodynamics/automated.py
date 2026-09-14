@@ -242,6 +242,7 @@ def _max_extent_along_ray(
     same_edge_s_lookup: dict[tuple[int, int, int], float] | None = None,
     same_edge_s0_um: float | None = None,
     same_edge_arc_window_um: float | None = None,
+    allow_crossing_other_edges: bool = False,
 ) -> float:
     """Positive distance along +direction until hitting another edge or the volume edge.
 
@@ -251,7 +252,18 @@ def _max_extent_along_ray(
     If ``same_edge_s_lookup`` + ``same_edge_s0_um`` + ``same_edge_arc_window_um`` are
     provided, same-edge traversal is additionally restricted to local arc-length
     neighbourhood around the current sample to avoid zig-zag self-intersections.
-    Any other positive label is treated as a different graph edge and truncates the line.
+
+    By default, any other positive label is treated as a different graph edge and
+    truncates the line -- a single centerline voxel a few microns away is a poor proxy
+    for "this is a different vessel": a wide vessel represented as several nearby
+    graph edges (a common real skeleton/graph-build outcome near dense branching) has
+    its own other edges' centerlines well inside its own true radius, truncating the
+    profile long before the real background and severely underestimating diameter.
+    ``allow_crossing_other_edges=True`` treats another edge's label the same as
+    background instead, leaving the caller's intensity-based single-vessel clip
+    (``_clip_profile_to_single_vessel``) -- which looks for an actual valley-then-rise
+    in the sampled intensity, not just nearby topology -- as the one thing deciding
+    where this vessel's own profile actually ends.
     """
     spacing = _spacing_vec(voxel_size_zyx)
     if step_um <= 0:
@@ -292,6 +304,8 @@ def _max_extent_along_ray(
             if allow_junction_crossing:
                 continue
             return max(0.0, (k - 1) * step_um)
+        if allow_crossing_other_edges:
+            continue
         return max(0.0, (k - 1) * step_um)
     return max_physical_extent
 
@@ -313,6 +327,7 @@ def _sample_transverse_profile(
     same_edge_s0_um: float | None = None,
     same_edge_arc_window_um: float | None = None,
     transverse_sampling_mode: TransverseSamplingMode = "in_plane_yx",
+    allow_crossing_other_edges: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sample intensity along a line through ``center_phys``, perpendicular to ``tangent``.
 
@@ -343,6 +358,7 @@ def _sample_transverse_profile(
         same_edge_s_lookup=same_edge_s_lookup,
         same_edge_s0_um=same_edge_s0_um,
         same_edge_arc_window_um=same_edge_arc_window_um,
+        allow_crossing_other_edges=allow_crossing_other_edges,
     )
     pos_minus = _max_extent_along_ray(
         center_idx,
@@ -358,6 +374,7 @@ def _sample_transverse_profile(
         same_edge_s_lookup=same_edge_s_lookup,
         same_edge_s0_um=same_edge_s0_um,
         same_edge_arc_window_um=same_edge_arc_window_um,
+        allow_crossing_other_edges=allow_crossing_other_edges,
     )
 
     n_neg = int(np.floor(pos_minus / transverse_step_um))
@@ -929,6 +946,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     constrain_fitted_baseline: bool = False,
     baseline_constraint_half_width_ptp: float = 0.35,
     allow_junction_crossing: bool = False,
+    allow_crossing_other_edges: bool = True,
     clip_profile_to_single_vessel: bool = True,
     clip_min_drop_fraction_of_center: float = 0.35,
     clip_re_rise_fraction_of_center: float = 0.08,
@@ -1009,6 +1027,18 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         Transverse rays stop at this label by default to avoid crossing onto neighbouring
         vessel branches near bifurcations. Set ``allow_junction_crossing=True`` to permit
         traversal through junction-labeled voxels.
+    allow_crossing_other_edges :
+        A transverse ray also stops the moment it reaches *any other edge's own*
+        centerline voxel -- not just a shared junction. That is a poor proxy for
+        "this is a different vessel": a wide vessel represented as several nearby
+        graph edges (a common real skeleton/graph-build outcome near dense
+        branching) has its own other edges' centerlines well inside its own true
+        radius, truncating the sampled profile long before the real background and
+        severely underestimating diameter. Default ``True`` treats another edge's
+        label the same as background instead, leaving
+        *clip_profile_to_single_vessel*'s intensity-based valley detection -- not
+        nearby topology -- as what decides where this vessel's own profile ends.
+        Set ``False`` to restore the stricter, topology-only behaviour.
     min_total_extent_multiplier :
         Ensures total transverse extent >= this factor × measured FWHM when not truncated.
     profile_baseline_mode :
@@ -1348,6 +1378,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     same_edge_s0_um=float(s0),
                     same_edge_arc_window_um=local_arc_window,
                     transverse_sampling_mode=transverse_sampling_mode,
+                    allow_crossing_other_edges=bool(allow_crossing_other_edges),
                 )
                 pos_fit, prof_fit = (
                     _clip_profile_to_central_lobe(
@@ -1369,8 +1400,17 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 )
                 if d is None:
                     return None, None
+                # The larger of the pre-fit guess and this pass's own fitted
+                # diameter: on an edge with no per-edge diameter guess (or a
+                # guess much narrower than reality), the first pass's guess
+                # alone would reject an excellent, well-fit-but-off-center
+                # measurement of a genuinely wide vessel just because the
+                # offset looks large relative to a stale, too-small estimate.
+                # Never narrows today's tolerance -- only widens it when the
+                # fit itself is the more current evidence of this vessel's
+                # own width.
                 max_offset = _local_max_center_offset(
-                    diameter_for_gate,
+                    max(diameter_for_gate, d),
                     max_fit_center_offset_um=max_fit_center_offset_um,
                     max_fit_center_offset_fraction_of_diameter=max_fit_center_offset_fraction_of_diameter,
                 )

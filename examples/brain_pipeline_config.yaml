@@ -610,6 +610,8 @@ fwhm_diameter_measurement:
   fwhm_junction_label: -1
   # Let a transverse profile pass through junction voxels while sampling  [needs use_fwhm_edge_diameters]
   fwhm_allow_junction_crossing: false
+  # Let a transverse profile pass through another edge's own centerline voxel instead of stopping there -- a single nearby centerline is a poor proxy for 'this is a different vessel': a wide vessel split into several nearby graph edges has its own other edges' centerlines well inside its own true radius, which otherwise truncates the profile long before the real background and severely underestimates diameter. The intensity-based single-vessel clip (clip_profile_to_single_vessel) is what actually bounds the profile instead. Disable to restore the stricter, topology-only stop  [needs use_fwhm_edge_diameters]
+  fwhm_allow_crossing_other_edges: true
   # Estimate the profile baseline from the profile wings or from a percentile  [one of: wings, percentile; needs use_fwhm_edge_diameters]
   fwhm_profile_baseline_mode: wings
   # Take this fraction of each profile end as the wing used for baseline estimation  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters]

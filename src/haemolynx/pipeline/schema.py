@@ -3262,6 +3262,26 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="fwhm_allow_crossing_other_edges",
+            kind="bool",
+            default=True,
+            help=(
+                "Let a transverse profile pass through another edge's own centerline "
+                "voxel instead of stopping there -- a single nearby centerline is a "
+                "poor proxy for 'this is a different vessel': a wide vessel split "
+                "into several nearby graph edges has its own other edges' "
+                "centerlines well inside its own true radius, which otherwise "
+                "truncates the profile long before the real background and "
+                "severely underestimates diameter. The intensity-based single-"
+                "vessel clip (clip_profile_to_single_vessel) is what actually "
+                "bounds the profile instead. Disable to restore the stricter, "
+                "topology-only stop"
+            ),
+            section=_FWHM,
+            requires=("use_fwhm_edge_diameters",),
+            advanced=True,
+        ),
+        Setting(
             name="fwhm_profile_baseline_mode",
             kind="choice",
             default="wings",

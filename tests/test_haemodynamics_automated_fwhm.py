@@ -915,3 +915,134 @@ def test_set_poiseuille_resistances_prefers_fwhm_optional(multigraph_with_branch
     d_used = 2.0
     expect = model.resistance_of_uniform_segment(5.0, d_used)
     assert G[0][1][0]["resistance"] == pytest.approx(expect)
+
+
+def _parallel_edges_sharing_one_wide_vessel(
+    tmp_path: Path, *, true_diameter: float, separation: float
+) -> tuple[Path, nx.MultiGraph, tuple[float, float, float]]:
+    """Two straight, parallel graph edges *separation* um apart, both embedded
+    in ONE wide vessel body centred on the midpoint between them.
+
+    Models a real, recurring skeleton/graph-build outcome for a fat vessel:
+    a spurious double centerline (e.g. from a near-loop the thickness-gated
+    skeletoniser did not fully collapse), or two genuinely separate branches
+    that happen to run close together through a shared, wide trunk. Either
+    way, each edge's own transverse ray finds the *other* edge's centerline
+    voxel well inside the true vessel radius when *separation* is small
+    relative to *true_diameter*.
+    """
+    sigma = true_diameter / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    voxel = (0.25, 0.25, 0.25)
+    z0, x0, x1 = 10.0, 5.0, 35.0
+    y_a = 15.0
+    y_b = y_a + separation
+    mid_y = (y_a + y_b) / 2.0
+
+    nz, ny, nx_dim = 80, 140, 160
+    z = np.arange(nz, dtype=float)[:, None, None] * voxel[0]
+    y = np.arange(ny, dtype=float)[None, :, None] * voxel[1]
+    x = np.arange(nx_dim, dtype=float)[None, None, :] * voxel[2]
+    t = np.clip((x - x0) / (x1 - x0), 0.0, 1.0)
+    d2 = (z - z0) ** 2 + (y - mid_y) ** 2 + 0.0 * t
+    raw = (100.0 * np.exp(-d2 / (2.0 * sigma**2))).astype(np.float32)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    G = nx.MultiGraph()
+    n_points = 400  # dense enough that no voxel along either centerline is missed
+    tvals = np.linspace(0.0, 1.0, n_points)
+    voxels_a = [(z0, y_a, x0 + t_ * (x1 - x0)) for t_ in tvals]
+    voxels_b = [(z0, y_b, x0 + t_ * (x1 - x0)) for t_ in tvals]
+    G.add_node(0, pos=np.array([z0, y_a, x0]))
+    G.add_node(1, pos=np.array([z0, y_a, x1]))
+    G.add_node(2, pos=np.array([z0, y_b, x0]))
+    G.add_node(3, pos=np.array([z0, y_b, x1]))
+    G.add_edge(0, 1, weight=1.0, length=x1 - x0, branch_order="B01", voxels=voxels_a)
+    G.add_edge(2, 3, weight=1.0, length=x1 - x0, branch_order="B02", voxels=voxels_b)
+    return raw_path, G, voxel
+
+
+def test_allow_crossing_other_edges_recovers_a_wide_vessel_split_into_close_edges(
+    tmp_path: Path,
+):
+    """Regression: a transverse ray used to hard-stop the instant it reached
+    *any other edge's own* centerline voxel, even one just a few microns
+    away -- a poor proxy for "this is a different vessel" when that nearby
+    edge is really another fragment of the same wide vessel (e.g. a
+    spurious double centerline a thickness-gated skeletoniser did not fully
+    collapse on a fat vessel). Two edges 6um apart, both embedded in one
+    true 16um-diameter vessel, must both recover that true diameter under
+    the default settings -- confirmed to fail before this fix by stashing
+    ``automated.py`` (see the module docstring for the general convention).
+    """
+    true_diameter = 16.0
+    raw_path, G, voxel = _parallel_edges_sharing_one_wide_vessel(
+        tmp_path, true_diameter=true_diameter, separation=6.0
+    )
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=voxel,
+        sample_spacing_along_edge_um=2.0,
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=20.0,
+        min_total_extent_multiplier=3.0,
+    )
+    assert summary["edges_measured"] == 2
+    for entry in summary["per_edge"]:
+        assert abs(entry["fwhm_diameter_um"] - true_diameter) < 0.5
+
+    # allow_crossing_other_edges=False restores the stricter, topology-only
+    # stop for anyone who prefers it -- explicitly asking for it must still
+    # work as its own documented, opt-out knob.
+    restored = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=voxel,
+        sample_spacing_along_edge_um=2.0,
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=20.0,
+        min_total_extent_multiplier=3.0,
+        allow_crossing_other_edges=False,
+    )
+    assert restored["edges_measured"] + len(restored["edges_skipped"]) == 2
+
+
+def test_center_offset_gate_uses_the_just_fitted_diameter_not_a_stale_guess(
+    tmp_path: Path,
+):
+    """Regression: the center-offset gate scaled its tolerance to the
+    pre-fit diameter *estimate* only -- on an edge with no per-edge
+    diameter guess, that estimate starts small (or absent), so an
+    excellent, well-fit-but-off-center first pass on a genuinely wide
+    vessel was rejected purely because the offset looked large relative to
+    a stale, too-small guess, and the widening loop that would otherwise
+    grow the estimate never got a chance to run (a rejected first pass
+    aborts immediately). Scaling against max(guess, this pass's own fitted
+    diameter) fixes it without loosening the gate for a genuinely oblique
+    sample -- confirmed here with true_diameter=16, no diameter_guess_um,
+    and a real 3um centerline offset (a plausible, modest skeleton
+    imprecision on a vessel this wide).
+    """
+    true_diameter = 16.0
+    raw_path, G, voxel = _parallel_edges_sharing_one_wide_vessel(
+        tmp_path, true_diameter=true_diameter, separation=6.0
+    )
+    # Edge (0, 1)'s own centerline is 3um off the true vessel peak (at the
+    # midpoint between it and the unrelated edge (2, 3)) -- drop the other
+    # edge so this test isolates the offset-gate fix alone.
+    G.remove_edge(2, 3)
+    G.remove_nodes_from([2, 3])
+
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=voxel,
+        sample_spacing_along_edge_um=2.0,
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=20.0,
+        diameter_guess_um=None,
+        min_total_extent_multiplier=3.0,
+    )
+    assert summary["edges_measured"] == 1
+    assert abs(summary["per_edge"][0]["fwhm_diameter_um"] - true_diameter) < 0.5
