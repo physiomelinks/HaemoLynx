@@ -14,6 +14,13 @@ degrades to ``[default]`` on pathological input (an empty mask, a single
 component, no gaps) rather than raising -- ``np.percentile`` of an empty array
 raises, and a settings optimiser must never crash on a bad image, it should
 just fall back to leaving that setting alone.
+
+The one deliberate exception is :func:`small_radius_candidates`'s optional
+``typical_radius_um`` cap: a default (or any other candidate) at or beyond a
+vessel's own typical radius is not a gentle version of that setting, it
+operates on the scale of the vessel itself, so it is dropped along with
+every other unsafe candidate rather than kept just because it happened to
+be the starting value.
 """
 from __future__ import annotations
 
@@ -70,7 +77,11 @@ def mask_component_gap_distances_um(
 
 
 def small_radius_candidates(
-    voxel_size_zyx: tuple[float, float, float], default: float
+    voxel_size_zyx: tuple[float, float, float],
+    default: float,
+    *,
+    typical_radius_um: float | None = None,
+    max_multiple_of_typical_radius: float = 1.0,
 ) -> list[float]:
     """Voxel-scale alternatives to a plain small closing/opening/smoothing
     radius setting.
@@ -80,10 +91,32 @@ def small_radius_candidates(
     size (whisker radius, small-gap closing radius, gaussian/morphological
     smoothing radius) -- unlike ``thick_vessel_flake_filter_candidates``,
     none of these settings has an "auto" (``None``) option to include.
+
+    *typical_radius_um*, when given, caps every candidate at
+    *max_multiple_of_typical_radius* times it: a closing/smoothing radius
+    at or beyond a vessel's own typical radius does not clean up that
+    vessel, it operates on the scale of the vessel itself, and can bridge
+    or blur away real, separate structure the same size (confirmed on real
+    capillary data -- a smoothing sigma several times the ~1.4um typical
+    radius there erased ~88% of the true vasculature before it was even
+    re-thresholded back to binary). Voxel size alone has no way to know
+    this: for a coarse enough grid relative to the vessels in it, "a few
+    voxels" is already several times a real vessel's own diameter. The
+    smallest voxel-scale candidate always survives the cap, so a genuinely
+    fine dataset is never left with no safe option at all.
     """
     one_voxel_um = min(float(v) for v in voxel_size_zyx) or 1.0
-    candidates = {float(default)} | {round(one_voxel_um * m, 6) for m in (0.5, 1.0, 2.0, 4.0)}
-    return sorted(v for v in candidates if v > 0.0) or [float(default)]
+    candidates = {
+        v for v in ({float(default)} | {round(one_voxel_um * m, 6) for m in (0.5, 1.0, 2.0, 4.0)})
+        if v > 0.0
+    }
+    if not candidates:
+        return [float(default)]
+    if typical_radius_um is not None and typical_radius_um > 0:
+        cap = float(typical_radius_um) * float(max_multiple_of_typical_radius)
+        within_cap = {v for v in candidates if v <= cap}
+        candidates = within_cap or {min(candidates)}
+    return sorted(candidates)
 
 
 def split_marker_separation_candidates(typical_radius_um: float, default: float) -> list[float]:

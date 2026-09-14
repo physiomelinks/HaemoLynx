@@ -23,6 +23,8 @@ from .thick_vessels import (
     inscribed_radius_map,
     lee_braid_factor,
     max_inscribed_radius_um,
+    medial_ridge_mask,
+    medial_ridge_radii_um,
     needs_thick_vessel_treatment,
     skeletonize_edt_ridge,
     skeletonize_thickness_gated,
@@ -52,6 +54,7 @@ from .segmentation_cleanup import (
     split_narrow_neck_components,
 )
 from .segmentation_quality import (
+    DEFAULT_TARGET_VOXELS_ACROSS_RADIUS,
     SegmentationQualityScore,
     format_segmentation_quality_report,
     score_segmented_mask,
@@ -66,6 +69,7 @@ from .segmentation_raw_comparison import (
 
 __all__ = [
     "BRAID_FACTOR_LIMIT",
+    "DEFAULT_TARGET_VOXELS_ACROSS_RADIUS",
     "THICK_VESSEL_MIN_RADIUS_UM",
     "SkeletonConnectivityStats",
     "braid_factor",
@@ -83,6 +87,8 @@ __all__ = [
     "lee_sheet_excess",
     "log_skeleton_connectivity_stats",
     "max_inscribed_radius_um",
+    "medial_ridge_mask",
+    "medial_ridge_radii_um",
     "needs_thick_vessel_treatment",
     "preprocess_skeleton_for_graph",
     "skeletonize_edt_ridge",

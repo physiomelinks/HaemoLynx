@@ -443,9 +443,38 @@ class _Search:
             else None
         )
 
-        radius_map = preprocessing.inscribed_radius_map(self.raw_mask, self.voxel_size_zyx)
-        nonzero = radius_map[radius_map > 0]
-        self.typical_radius_um = float(np.median(nonzero)) if nonzero.size else 1.0
+        self.typical_radius_um = self._measure_typical_radius_um(self.raw_mask) or 1.0
+
+    def _measure_typical_radius_um(self, mask: np.ndarray) -> Optional[float]:
+        """*mask*'s own typical vessel radius, or ``None`` for an empty mask.
+
+        Medial-ridge median (see ``preprocessing.medial_ridge_radii_um``),
+        further restricted to ridge points at or above the same
+        ``DEFAULT_TARGET_VOXELS_ACROSS_RADIUS`` floor "Check segmented
+        image" already treats as too discretisation-biased for a reliable
+        radius/diameter reading. Without that floor, a dataset with a lot
+        of capillaries at or near the voxel-resolution limit drags the
+        "typical" scale down to something far smaller than any vessel a
+        person could actually point to -- exactly the scale every
+        size-based candidate in this module (closing/smoothing radii,
+        split thresholds, bundle scan size) is calibrated against, so an
+        unreliable, too-small scale reference lets those candidates
+        propose a closing/smoothing radius comparable to or larger than a
+        real vessel's own diameter (confirmed on real data to erase most
+        of the vasculature before it is even re-thresholded). Falls back
+        to the unfiltered ridge median when nothing clears the floor --
+        still better than every foreground voxel, and this module has no
+        more reliable number to offer for a mask that is entirely
+        borderline-resolved.
+        """
+        ridge_radii = preprocessing.medial_ridge_radii_um(mask, self.voxel_size_zyx)
+        if not ridge_radii.size:
+            return None
+        coarsest_voxel_um = max(float(v) for v in self.voxel_size_zyx)
+        reliable = ridge_radii[
+            ridge_radii >= preprocessing.DEFAULT_TARGET_VOXELS_ACROSS_RADIUS * coarsest_voxel_um
+        ]
+        return float(np.median(reliable)) if reliable.size else float(np.median(ridge_radii))
 
     def _group_enabled(self, name: str) -> bool:
         enabled = self.enabled_groups is None or name in self.enabled_groups
@@ -630,7 +659,9 @@ class _Search:
             sweep_cleanup(
                 "segmentation_cleanup_whisker_radius_um",
                 cand.small_radius_candidates(
-                    self.voxel_size_zyx, float(self.current["segmentation_cleanup_whisker_radius_um"])
+                    self.voxel_size_zyx,
+                    float(self.current["segmentation_cleanup_whisker_radius_um"]),
+                    typical_radius_um=self.typical_radius_um,
                 ),
             )
 
@@ -662,7 +693,9 @@ class _Search:
             sweep_cleanup(
                 "segmentation_cleanup_close_gaps_radius_um",
                 cand.small_radius_candidates(
-                    self.voxel_size_zyx, float(self.current["segmentation_cleanup_close_gaps_radius_um"])
+                    self.voxel_size_zyx,
+                    float(self.current["segmentation_cleanup_close_gaps_radius_um"]),
+                    typical_radius_um=self.typical_radius_um,
                 ),
             )
 
@@ -712,7 +745,9 @@ class _Search:
                 sweep_cleanup(
                     "segmentation_cleanup_smooth_sigma_um",
                     cand.small_radius_candidates(
-                        self.voxel_size_zyx, float(self.current["segmentation_cleanup_smooth_sigma_um"])
+                        self.voxel_size_zyx,
+                        float(self.current["segmentation_cleanup_smooth_sigma_um"]),
+                        typical_radius_um=self.typical_radius_um,
                     ),
                 )
             else:
@@ -721,6 +756,7 @@ class _Search:
                     cand.small_radius_candidates(
                         self.voxel_size_zyx,
                         float(self.current["segmentation_cleanup_smooth_morphological_radius_um"]),
+                        typical_radius_um=self.typical_radius_um,
                     ),
                 )
 
@@ -759,10 +795,9 @@ class _Search:
         # generation (thick-vessel refinement, bundle scan size) should
         # reflect the mask cleanup actually decided on, not the pre-cleanup
         # input measured in `__init__`.
-        radius_map = preprocessing.inscribed_radius_map(self.raw_mask, self.voxel_size_zyx)
-        nonzero = radius_map[radius_map > 0]
-        if nonzero.size:
-            self.typical_radius_um = float(np.median(nonzero))
+        measured = self._measure_typical_radius_um(self.raw_mask)
+        if measured is not None:
+            self.typical_radius_um = measured
 
     # -- shared input-data-consistency guards -------------------------------------
     # Every helper below returns a "higher is better" fraction so

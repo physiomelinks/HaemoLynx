@@ -49,9 +49,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, label, maximum_filter
+from scipy.ndimage import distance_transform_edt, label
 
 from .segmentation_cleanup import smooth_vessel_surfaces
+from .thick_vessels import medial_ridge_mask
 
 __all__ = [
     "SegmentationQualityScore",
@@ -297,8 +298,7 @@ def score_segmented_mask(
     component_size = np.concatenate(([0], sizes))[labeled]
     significant = mask & (component_size >= small_threshold)
     ridge_source = significant if significant.any() else mask
-    ridge = ridge_source & (maximum_filter(edt, footprint=_STRUCTURE_26) == edt)
-    ridge_radii = edt[ridge]
+    ridge_radii = edt[medial_ridge_mask(edt, ridge_source)]
     median_radius_um = float(np.median(ridge_radii)) if ridge_radii.size else 0.0
     coarsest_voxel_um = float(max(sampling))
     voxels_across_radius = median_radius_um / max(1e-9, coarsest_voxel_um)

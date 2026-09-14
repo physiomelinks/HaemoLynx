@@ -180,6 +180,49 @@ def max_inscribed_radius_um(
     return float(radii.max()) if radii.size else 0.0
 
 
+_STRUCTURE_26 = np.ones((3, 3, 3), dtype=bool)
+
+
+def medial_ridge_mask(radii: np.ndarray, source_mask: np.ndarray) -> np.ndarray:
+    """Voxels of *source_mask* whose own *radii* value is a local maximum
+    among its 26 neighbours -- the medial ridge, one voxel per
+    centreline-ish point rather than one per foreground voxel.
+
+    *radii* is taken as given (e.g. the full mask's own
+    :func:`inscribed_radius_map`) so a caller that wants the ridge of only
+    *part* of a mask -- :mod:`haemolynx.preprocessing.segmentation_quality`
+    restricts to components that are not small fragments -- still compares
+    against each voxel's true neighbourhood, not one recomputed from the
+    restricted subset alone (which would change distances near whatever got
+    excluded).
+    """
+    return np.asarray(source_mask, dtype=bool) & (
+        maximum_filter(radii, footprint=_STRUCTURE_26) == radii
+    )
+
+
+def medial_ridge_radii_um(
+    binary: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> np.ndarray:
+    """Inscribed radius, sampled only at the mask's own medial ridge.
+
+    Most of a solid vessel's volume sits near its own surface, where
+    distance-to-background is small, so a statistic (e.g. a median) taken
+    over every foreground voxel systematically underestimates the vessel's
+    true radius -- confirmed on a synthetic cylinder to read roughly 3-4x
+    too low. Callers that want a genuine "typical vessel radius"
+    (:mod:`haemolynx.preprocessing.segmentation_quality`'s resolution
+    score, :mod:`haemolynx.optimisation.search`'s own scale reference) both
+    need this, not the raw per-voxel map.
+    """
+    mask = np.asarray(binary, dtype=bool)
+    if not mask.any():
+        return np.zeros(0, dtype=np.float64)
+    radii = inscribed_radius_map(mask, voxel_size_zyx)
+    return radii[medial_ridge_mask(radii, mask)]
+
+
 def foreground_volume_um3(
     binary: np.ndarray,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),

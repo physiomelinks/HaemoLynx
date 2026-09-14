@@ -824,6 +824,116 @@ def test_segmentation_cleanup_group_removes_a_small_disconnected_speck():
     assert result.settings["segmentation_cleanup"] is True
 
 
+def _capillary_bed_with_one_resolved_trunk(shape=(40, 60, 60)) -> np.ndarray:
+    """One thick (radius ~4 voxel), clearly-resolved trunk, with many thin
+    (radius ~1 voxel) capillary-scale branches off it -- like a real, dense
+    microvascular bed where a handful of larger vessels feed a much larger
+    number of near-resolution-limit capillaries. Many more ridge points
+    come from the thin branches than from the trunk, so a plain median
+    over all of them -- even a medial-ridge one -- is dominated by the
+    thin branches, not the only part of this mask any radius-based
+    candidate could safely operate at the scale of.
+    """
+    skeleton = np.zeros(shape, dtype=bool)
+    trunk_a = np.array([20, 5, 30])
+    trunk_b = np.array([20, 55, 30])
+    _draw_line(skeleton, trunk_a, trunk_b)
+    trunk_mask = binary_dilation(skeleton, structure=np.ones((9, 9, 9), dtype=bool))
+
+    thin_skeleton = np.zeros(shape, dtype=bool)
+    rng = np.random.default_rng(0)
+    for y in range(6, 55, 2):
+        far = [20 + int(rng.integers(-10, 11)), y, 30 + int(rng.integers(-25, 26))]
+        _draw_line(thin_skeleton, [20, y, 30], far)
+    thin_mask = binary_dilation(thin_skeleton, structure=np.ones((3, 3, 3), dtype=bool))
+
+    return trunk_mask | thin_mask
+
+
+def test_typical_radius_um_is_not_dragged_down_by_many_thin_capillaries():
+    """Regression: ``typical_radius_um`` used to be the median inscribed
+    radius over every foreground voxel of the whole mask -- a whole-mask
+    bias (most of a vessel's own volume sits near its surface, so this
+    underestimates its true radius by roughly 3-4x -- see
+    ``segmentation_quality.py``'s own fix for the same bias) stacked with,
+    even switching to the medial ridge alone, still just its raw median.
+    On a mask with many more thin (~1 voxel radius) capillary branches
+    than points on one much wider, clearly-resolved trunk (~4 voxel
+    radius), the raw ridge median is dominated by the thin branches even
+    though they sit at or below this codebase's own discretisation-bias
+    floor (``DEFAULT_TARGET_VOXELS_ACROSS_RADIUS``). Restricting to ridge
+    points at or above that floor recovers the trunk's own scale instead
+    -- the only scale any of this group's size-based candidates could
+    safely use.
+    """
+    from haemolynx.optimisation.search import _Search
+
+    mask = _capillary_bed_with_one_resolved_trunk()
+    search = _Search(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES, progress=None,
+    )
+    assert search.typical_radius_um >= 3.0
+
+
+def test_smooth_sigma_candidates_capped_by_typical_radius_do_not_erase_the_mask():
+    """Regression, isolating the actual mechanism (see
+    ``test_typical_radius_um_is_not_dragged_down_by_many_thin_capillaries``
+    for why ``typical_radius_um`` itself needed fixing first): applying
+    Gaussian smooth-then-rethreshold at the *uncapped* candidate
+    ``small_radius_candidates`` used to offer (up to 4x the coarsest voxel
+    spacing, with no reference to vessel size) against a mask whose real
+    vessels are only ~1 voxel radius must still behave exactly as before
+    -- badly, confirmed on real data to erase ~88% of a comparable network
+    -- while the same call at the *capped* candidate (typical_radius_um
+    aware) leaves most of the mask intact. This is what
+    ``_group_segmentation_cleanup``'s own sweep now always chooses from,
+    for every dataset, without needing its own end-to-end test here.
+    """
+    from haemolynx.optimisation import candidates as cand
+    from haemolynx.preprocessing import clean_segmented_mask_for_skeletonisation
+
+    mask = _capillary_bed_with_one_resolved_trunk()
+    voxel_size_zyx = (1.0, 1.0, 1.0)
+    typical_radius_um = 1.0  # this mask's own thin-capillary scale
+
+    uncapped_candidates = cand.small_radius_candidates(voxel_size_zyx, default=1.0)
+    capped_candidates = cand.small_radius_candidates(
+        voxel_size_zyx, default=1.0, typical_radius_um=typical_radius_um
+    )
+    assert max(uncapped_candidates) > max(capped_candidates)
+
+    def _smoothed_fraction(sigma_um: float) -> float:
+        cleaned, _raw = clean_segmented_mask_for_skeletonisation(
+            mask,
+            voxel_size_zyx=voxel_size_zyx,
+            fill_cavities=False,
+            remove_whiskers=False,
+            whisker_radius_um=1.0,
+            split_narrow_necks=False,
+            split_min_marker_separation_um=10.0,
+            split_min_pinch_radius_ratio=0.6,
+            split_min_body_radius_um=1.0,
+            close_gaps=False,
+            close_gaps_radius_um=0.5,
+            reconnect_gaps=False,
+            reconnect_max_bridge_distance_um=30.0,
+            reconnect_min_cylindricality=0.5,
+            reconnect_max_axis_angle_degrees=30.0,
+            reconnect_min_facing_cosine=0.85,
+            reconnect_max_radius_ratio=3.0,
+            smooth_surfaces=True,
+            smooth_method="gaussian",
+            smooth_sigma_um=sigma_um,
+            smooth_morphological_radius_um=1.0,
+            remove_small_volumes=False,
+            remove_small_min_volume_um3=5.0,
+        )
+        return cleaned.sum() / mask.sum()
+
+    assert _smoothed_fraction(max(uncapped_candidates)) < 0.5
+    assert _smoothed_fraction(max(capped_candidates)) >= 0.5
+
+
 def test_group_names_cover_every_group_a_trial_could_report():
     """Every group string search.py actually uses to record a trial must be
     one of the selectable names, or a user could never disable it."""

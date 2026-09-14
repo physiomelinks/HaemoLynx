@@ -42,6 +42,56 @@ def test_small_radius_candidates_scale_with_finest_voxel_axis():
     assert min(result) == pytest.approx(0.125)  # 0.5 * finest axis (0.25)
 
 
+def test_small_radius_candidates_with_no_typical_radius_is_unchanged():
+    """No cap requested (the pre-existing signature): identical to before."""
+    without_cap_arg = c.small_radius_candidates((1.0, 1.0, 1.0), default=1.0)
+    with_none = c.small_radius_candidates(
+        (1.0, 1.0, 1.0), default=1.0, typical_radius_um=None
+    )
+    assert with_none == without_cap_arg
+
+
+def test_small_radius_candidates_caps_at_the_typical_vessel_radius():
+    """Regression: candidates scaled purely off voxel size have no way to
+    know a vessel's own real size -- on a fine capillary bed (typical
+    radius ~1.4um), the uncapped 4x-voxel candidate (3.92um at 0.98um
+    voxels) is already ~2.8x the vessel's own radius, large enough to blur
+    or bridge distinct vessels away entirely (confirmed on real data: this
+    exact scale erased ~88% of the true vasculature). Capping at the
+    typical radius drops every candidate that reaches or exceeds it.
+    """
+    voxel_size_zyx = (1.0, 0.98, 0.98)
+    typical_radius_um = 1.4
+    uncapped = c.small_radius_candidates(voxel_size_zyx, default=1.0)
+    assert max(uncapped) > typical_radius_um, "fixture must actually need capping"
+
+    capped = c.small_radius_candidates(
+        voxel_size_zyx, default=1.0, typical_radius_um=typical_radius_um
+    )
+    assert all(v <= typical_radius_um for v in capped)
+    assert capped == sorted(capped)
+    assert capped, "must never return an empty list"
+
+
+def test_small_radius_candidates_cap_keeps_at_least_the_smallest_option():
+    """Even a typical radius smaller than every voxel-scale candidate must
+    not leave the sweep with nothing to try."""
+    result = c.small_radius_candidates(
+        (1.0, 1.0, 1.0), default=1.0, typical_radius_um=0.01
+    )
+    assert result == [pytest.approx(0.5)]  # the smallest pre-cap candidate
+
+
+def test_small_radius_candidates_cap_can_drop_the_default_itself():
+    """The one deliberate exception to 'always includes the default' (see
+    this module's own docstring): an unsafe default is not kept just
+    because it was the starting value."""
+    result = c.small_radius_candidates(
+        (1.0, 0.98, 0.98), default=7.84, typical_radius_um=1.4
+    )
+    assert 7.84 not in result
+
+
 def test_split_marker_separation_candidates_include_default():
     result = c.split_marker_separation_candidates(typical_radius_um=4.0, default=10.0)
     assert 10.0 in result
