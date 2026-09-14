@@ -299,13 +299,14 @@ def test_check_segmented_image_binarizes_a_normalized_float_probability_mask(
     # foreground too, which (a) reaches every face of the volume -- several
     # boundary-touching patches instead of none -- and (b) inflates the
     # measured vessel radius by an order of magnitude (the whole 20x20x20
-    # volume's own inscribed radius, not the 10x10x10 thresholded block's).
+    # volume's own inscribed radius -- about 33um at its medial ridge -- not
+    # the 10x10x10 thresholded block's, exactly 5.00um at its own centre).
     boundary_match = re.search(r"\((\d+) place\(s\) the mask touches the image edge\)", report)
     assert boundary_match, report
     assert int(boundary_match.group(1)) == 0, report
     radius_match = re.search(r"typical vessel radius ([\d.]+)um", report)
     assert radius_match, report
-    assert float(radius_match.group(1)) < 5.0, report
+    assert float(radius_match.group(1)) < 10.0, report
 
 
 def test_check_segmented_image_reports_raw_vs_after_cleanup_when_cleanup_is_on(

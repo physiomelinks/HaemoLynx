@@ -18,10 +18,11 @@ sensitive to, so a user can tell *why* a score is low, not just that it is:
 - ``noise``: how much the mask's own shape changes under a light surface
   smoothing (:func:`haemolynx.preprocessing.smooth_vessel_surfaces`) --
   a jagged, poorly-resolved vessel changes a lot; a clean one barely moves.
-- ``resolution``: the typical vessel radius (from the mask's own distance
-  transform) measured in units of the coarsest sampled axis -- a vessel
-  only one or two voxels across is undersampled, whatever its physical
-  size.
+- ``resolution``: the typical vessel radius (the mask's own distance
+  transform, sampled at its medial ridge -- see
+  :data:`DEFAULT_TARGET_VOXELS_ACROSS_RADIUS`) measured in units of the
+  coarsest sampled axis -- a vessel only one or two voxels across is
+  undersampled, whatever its physical size.
 
 The report this drives (:func:`format_segmentation_quality_report`) leads
 with a verdict grouping these five into two tiers, not just the blended
@@ -48,7 +49,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, label
+from scipy.ndimage import distance_transform_edt, label, maximum_filter
 
 from .segmentation_cleanup import smooth_vessel_surfaces
 
@@ -91,6 +92,15 @@ DEFAULT_NOISE_SIGMA_UM = 1.0
 #: increasingly large, currently-uncorrectable discretisation bias.
 #: Overridable per dataset via the `min_voxels_across_vessel_radius`
 #: pipeline setting (`None` here means "use this default").
+#:
+#: This is compared against the mask's radius sampled at its own medial
+#: ridge (each voxel whose EDT value is a local maximum among its 26
+#: neighbours), not a median over every foreground voxel: most of a solid
+#: vessel's volume sits near its surface, where distance-to-background is
+#: small, so a plain median over the whole mask underestimates the true
+#: radius by roughly 3-4x (confirmed against a synthetic cylinder of known
+#: radius) -- systematically failing this target for vessels that are
+#: genuinely well-resolved.
 DEFAULT_TARGET_VOXELS_ACROSS_RADIUS = 3.0
 
 #: Up to this many boundary-touching patches costs nothing (a normal
@@ -274,7 +284,22 @@ def score_segmented_mask(
     noise = 2.0 * surface_iou
 
     edt = distance_transform_edt(mask, sampling=sampling)
-    median_radius_um = float(np.median(edt[mask]))
+    # The medial ridge (local maxima of the distance transform), not every
+    # foreground voxel: most of a solid vessel's volume sits near its own
+    # surface, where distance-to-background is small, so a median over the
+    # whole mask underestimates the true radius by roughly 3-4x. Sampling
+    # only the ridge -- one value per centreline-ish point -- recovers it.
+    # Restricted to the same "not a small fragment" components as the
+    # fragmentation score above: an isolated noise speck is its own trivial
+    # ridge point (radius 1 voxel), and unlike the old whole-mask median --
+    # where one stray voxel was swamped by a real vessel's volume -- a ridge
+    # sample gives a speck equal footing with a real centreline point.
+    component_size = np.concatenate(([0], sizes))[labeled]
+    significant = mask & (component_size >= small_threshold)
+    ridge_source = significant if significant.any() else mask
+    ridge = ridge_source & (maximum_filter(edt, footprint=_STRUCTURE_26) == edt)
+    ridge_radii = edt[ridge]
+    median_radius_um = float(np.median(ridge_radii)) if ridge_radii.size else 0.0
     coarsest_voxel_um = float(max(sampling))
     voxels_across_radius = median_radius_um / max(1e-9, coarsest_voxel_um)
     resolution = 2.0 * min(1.0, voxels_across_radius / max(1e-9, target_voxels_across_radius))

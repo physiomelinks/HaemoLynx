@@ -535,6 +535,7 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
     assert fields["ilastik_executable"].hide_when_unmet
     assert fields["ilastik_output_dir"].hide_when_unmet
     assert fields["ilastik_output_suffix"].hide_when_unmet
+    assert fields["ilastik_timeout_seconds"].hide_when_unmet
 
     off = {"use_ilastik_segmentation": False}
     assert fields["input_path"].is_visible(off)
@@ -543,6 +544,7 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
     assert not fields["ilastik_executable"].is_visible(off)
     assert not fields["ilastik_output_dir"].is_visible(off)
     assert not fields["ilastik_output_suffix"].is_visible(off)
+    assert not fields["ilastik_timeout_seconds"].is_visible(off)
 
     on = {"use_ilastik_segmentation": True}
     assert not fields["input_path"].is_visible(on)
@@ -551,6 +553,7 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
     assert fields["ilastik_executable"].is_visible(on)
     assert fields["ilastik_output_dir"].is_visible(on)
     assert fields["ilastik_output_suffix"].is_visible(on)
+    assert fields["ilastik_timeout_seconds"].is_visible(on)
 
 
 def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():

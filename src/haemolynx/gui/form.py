@@ -67,6 +67,7 @@ SHARED_ILASTIK_SETTINGS: tuple[str, ...] = (
     "ilastik_executable",
     "ilastik_output_dir",
     "ilastik_output_suffix",
+    "ilastik_timeout_seconds",
 )
 SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
 

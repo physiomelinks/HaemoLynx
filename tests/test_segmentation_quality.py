@@ -168,14 +168,34 @@ def test_noise_score_drops_for_a_jagged_surface():
 
 
 def test_resolution_score_is_high_for_a_well_sampled_vessel():
-    # The score reads the *median* distance-to-background over the whole
-    # solid cylinder, not its nominal radius -- most of a filled disk's own
-    # area sits near its edge, so the median is well below the radius
-    # (~0.29x for a 2D disk); a big enough radius still saturates the score.
+    # A cylinder right at the documented target (3 voxels of radius) should
+    # saturate the score -- proving the score reads the mask's medial ridge
+    # (each centreline-ish point's own true local radius), not a median over
+    # every foreground voxel: most of a solid cylinder's volume sits near its
+    # own surface, where distance-to-background is small, so that whole-mask
+    # median would read well under the true radius and never saturate here.
     shape = (30, 30, 30)
-    mask = _cylinder_along_x(shape, z=15, y=15, radius=12.0, x0=2, x1=27)
+    mask = _cylinder_along_x(shape, z=15, y=15, radius=3.0, x0=2, x1=27)
     score = sq.score_segmented_mask(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
 
+    assert score.median_radius_um == pytest.approx(3.0, abs=0.2)
+    assert score.resolution == pytest.approx(2.0)
+
+
+def test_resolution_score_is_not_dragged_down_by_a_noise_speck_far_smaller_than_the_vessel():
+    """A single stray voxel is its own trivial ridge point (radius 1 voxel);
+    with a ridge-based measurement it must not out-vote a real, well-sampled
+    vessel's own centreline the way a naive whole-mask median would resist
+    (there, one voxel is swamped by the vessel's own volume) but a per-point
+    ridge sample would not, unless small components are excluded first."""
+    shape = (30, 30, 30)
+    mask = _cylinder_along_x(shape, z=15, y=15, radius=8.0, x0=5, x1=24)
+    speckled = mask.copy()
+    speckled[1, 1, 1] = True
+
+    score = sq.score_segmented_mask(speckled, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert score.median_radius_um == pytest.approx(8.0, abs=0.2)
     assert score.resolution == pytest.approx(2.0)
 
 

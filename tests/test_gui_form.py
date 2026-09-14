@@ -301,6 +301,7 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     assert "ilastik_executable" not in shown_off
     assert "ilastik_output_dir" not in shown_off
     assert "ilastik_output_suffix" not in shown_off
+    assert "ilastik_timeout_seconds" not in shown_off
     assert "voxel_size_override_xyz" in shown_off
 
     on = {"use_ilastik_segmentation": True}
@@ -311,6 +312,7 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     assert "ilastik_executable" in shown_on
     assert "ilastik_output_dir" in shown_on
     assert "ilastik_output_suffix" in shown_on
+    assert "ilastik_timeout_seconds" in shown_on
     assert "use_ilastik_segmentation" in shown_on
 
 
