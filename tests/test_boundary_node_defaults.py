@@ -231,6 +231,38 @@ def test_the_defaults_find_inlets_and_outlets_on_the_fixture_image(tmp_path):
     assert boundaries.resistance_node_pair[0] != boundaries.resistance_node_pair[1]
 
 
+# --- solve() must not crash when resistance_node_pair was never resolved --
+
+
+def test_solve_reports_rather_than_crashes_when_resistance_node_pair_is_unresolved(caplog):
+    """A resolved-but-empty inlet/outlet selection leaves resistance_node_pair
+
+    None (see BoundaryNodes' own default). solve() used to unpack it
+    unconditionally -- ``TypeError: cannot unpack non-iterable NoneType`` --
+    instead of the same clear, actionable warning it already gives for a
+    pair that names nodes absent from the graph.
+    """
+    from haemolynx.pipeline.stages import BoundaryNodes, HaemodynamicModel, solve
+
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([0.0, 0.0, 10.0]))
+    G.add_edge(0, 1, length=10.0, resistance=1.0, conductance=1.0)
+
+    settings = _defaults(inlet_nodes=[0], outlet_nodes=[1])
+    model = HaemodynamicModel(graph=G)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[1], resistance_node_pair=None)
+
+    with caplog.at_level("WARNING"):
+        solution = solve(settings, model, boundaries)
+
+    assert solution.equivalent_resistance is None
+    assert any(
+        "no resistance_node_pair was determined" in record.message
+        for record in caplog.records
+    )
+
+
 # --- a role's coordinates/volumes are hidden by its own *method* choice ----
 #
 # inlet_node_coordinates, inlet_node_volumes and their counterparts on the

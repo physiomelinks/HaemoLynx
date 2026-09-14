@@ -106,6 +106,20 @@ def test_a_setting_whose_prerequisite_is_off_warns_but_still_loads():
     assert resolved["mask_path"] == Path("art.tif")
 
 
+def test_the_ineffective_warning_also_reaches_the_haemolynx_logger(caplog):
+    """warnings.warn alone never reaches the GUI's own run log: it only
+
+    listens to the "haemolynx" logger (gui.run_log.attach), so this used to
+    be visible only to someone watching stderr. It must also go through
+    logging, at the same level, so the GUI's log dock shows it like any
+    other pipeline warning.
+    """
+    with caplog.at_level("WARNING", logger="haemolynx.parsers.schema"):
+        with pytest.warns(IneffectiveSettingWarning):
+            _schema().validate({"mask_path": "art.tif"})
+    assert any("nothing will read it" in record.message for record in caplog.records)
+
+
 def test_ineffective_settings_can_be_listed_without_running_validation():
     values = _schema().validate({"use_masks": True, "mask_path": "art.tif"})
     assert _schema().ineffective_settings(values) == []

@@ -9,6 +9,15 @@ from .smoothing import (
 )
 from .build import build_graph_segment_skan_stitched_loops
 from .reconnect import reconnect_secondary_loop_edges
+from .edit import (
+    EdgeDraft,
+    astar_path,
+    commit_new_edge,
+    delete_edge_and_collapse,
+    insert_node_on_edge,
+    mask_cost_field,
+    voxel_path_to_microns,
+)
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .validate import (
     EDGE_ATTRIBUTE_UNITS,
@@ -224,4 +233,11 @@ __all__ = [
     "astar_skeleton_path",
     "are_paths_similar",
     "should_add_merged_edge",
+    "EdgeDraft",
+    "astar_path",
+    "commit_new_edge",
+    "delete_edge_and_collapse",
+    "insert_node_on_edge",
+    "mask_cost_field",
+    "voxel_path_to_microns",
 ]

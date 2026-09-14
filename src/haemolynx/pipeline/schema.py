@@ -127,6 +127,19 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
         ),
         Setting(
+            name="ilastik_timeout_seconds",
+            kind="float",
+            default=7200.0,
+            help=(
+                "Kill an ilastik headless run that takes longer than this. A "
+                "hang usually means a bad project file or unreadable input, "
+                "not a slow but working run -- raise it for very large volumes"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.0,
+            advanced=True,
+        ),
+        Setting(
             name="ilastik_output_dir",
             kind="path",
             default=f"{_OUTPUTS}/segmentations",
@@ -168,8 +181,17 @@ SCHEMA = Schema(
         # Segmentation cleanup (Input tab): seven independently-toggleable
         # cleanup steps on the raw segmented mask, before skeletonisation.
         # Each defaults off -- an existing run's output does not change
-        # unless a toggle is explicitly turned on.
+        # unless a toggle is explicitly turned on. All seven nest under one
+        # master switch, so a panel with none of them wanted shows one
+        # checkbox rather than twenty rows.
         # ------------------------------------------------------------------
+        Setting(
+            name="segmentation_cleanup",
+            kind="bool",
+            default=False,
+            help="Clean up the raw segmented mask before skeletonisation -- reveals the individual cleanup steps below",
+            section=_INPUT_AND_SEGMENTATION,
+        ),
         Setting(
             name="segmentation_cleanup_fill_cavities",
             kind="bool",
@@ -184,6 +206,7 @@ SCHEMA = Schema(
                 "either enclosed or it is not, with nothing to size"
             ),
             section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
         ),
         Setting(
             name="segmentation_cleanup_remove_whiskers",
@@ -196,6 +219,7 @@ SCHEMA = Schema(
                 "radii and axes off the cleaned-up shape"
             ),
             section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
         ),
         Setting(
             name="segmentation_cleanup_whisker_radius_um",
@@ -205,7 +229,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup_remove_whiskers",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_remove_whiskers"),
         ),
         Setting(
             name="segmentation_cleanup_split_narrow_necks",
@@ -218,6 +242,7 @@ SCHEMA = Schema(
                 "gaps: gated so a uniform-radius vessel is never cut"
             ),
             section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
         ),
         Setting(
             name="segmentation_cleanup_split_min_marker_separation_um",
@@ -227,7 +252,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup_split_narrow_necks",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
         ),
         Setting(
             name="segmentation_cleanup_split_min_pinch_radius_ratio",
@@ -240,7 +265,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
             maximum=1.0,
-            requires=("segmentation_cleanup_split_narrow_necks",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
         ),
         Setting(
             name="segmentation_cleanup_split_min_body_radius_um",
@@ -250,7 +275,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup_split_narrow_necks",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
         ),
         Setting(
             name="segmentation_cleanup_close_gaps",
@@ -264,6 +289,7 @@ SCHEMA = Schema(
                 "confidently accept, before skeletonisation"
             ),
             section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
         ),
         Setting(
             name="segmentation_cleanup_close_gaps_radius_um",
@@ -273,7 +299,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup_close_gaps",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_close_gaps"),
         ),
         Setting(
             name="segmentation_cleanup_reconnect_gaps",
@@ -286,6 +312,7 @@ SCHEMA = Schema(
                 "join nearby blobs"
             ),
             section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
         ),
         Setting(
             name="segmentation_cleanup_reconnect_max_bridge_distance_um",
@@ -295,7 +322,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup_reconnect_gaps",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
         ),
         Setting(
             name="segmentation_cleanup_reconnect_min_cylindricality",
@@ -308,7 +335,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
             maximum=1.0,
-            requires=("segmentation_cleanup_reconnect_gaps",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
         ),
         Setting(
             name="segmentation_cleanup_reconnect_max_axis_angle_degrees",
@@ -322,7 +349,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
             maximum=90.0,
-            requires=("segmentation_cleanup_reconnect_gaps",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
         ),
         Setting(
             name="segmentation_cleanup_reconnect_min_facing_cosine",
@@ -335,7 +362,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
             maximum=1.0,
-            requires=("segmentation_cleanup_reconnect_gaps",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
         ),
         Setting(
             name="segmentation_cleanup_reconnect_max_radius_ratio",
@@ -344,7 +371,7 @@ SCHEMA = Schema(
             help="Reject a bridge when the fragments' median radii differ by more than this ratio",
             section=_INPUT_AND_SEGMENTATION,
             minimum=1.0,
-            requires=("segmentation_cleanup_reconnect_gaps",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
         ),
         Setting(
             name="segmentation_cleanup_smooth_surfaces",
@@ -352,6 +379,7 @@ SCHEMA = Schema(
             default=False,
             help="Smooth the mask to reduce surface noise, before skeletonisation",
             section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
         ),
         Setting(
             name="segmentation_cleanup_smooth_method",
@@ -366,7 +394,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             choices=("gaussian", "morphological"),
-            requires=("segmentation_cleanup_smooth_surfaces",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_smooth_surfaces"),
         ),
         Setting(
             name="segmentation_cleanup_smooth_sigma_um",
@@ -376,7 +404,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup_smooth_surfaces",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_smooth_surfaces"),
         ),
         Setting(
             name="segmentation_cleanup_smooth_morphological_radius_um",
@@ -386,7 +414,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup_smooth_surfaces",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_smooth_surfaces"),
         ),
         Setting(
             name="segmentation_cleanup_remove_small_volumes",
@@ -394,6 +422,7 @@ SCHEMA = Schema(
             default=False,
             help="Remove small disconnected segmented volumes, before skeletonisation",
             section=_INPUT_AND_SEGMENTATION,
+            requires=("segmentation_cleanup",),
         ),
         Setting(
             name="segmentation_cleanup_remove_small_min_volume_um3",
@@ -403,7 +432,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um3",
             minimum=0.0,
-            requires=("segmentation_cleanup_remove_small_volumes",),
+            requires=("segmentation_cleanup", "segmentation_cleanup_remove_small_volumes"),
         ),
         # ------------------------------------------------------------------
         # Segmented-image quality check (Input tab): dataset-specific
@@ -3528,7 +3557,11 @@ SCHEMA = Schema(
             default=False,
             help="Estimate per-edge diameters from the segmentation mask's inscribed radius, for fallback and cross-checking against FWHM",
             section=_EDT_DIAMETER,
-            requires=("run_haemodynamics",),
+            # Every role this plays -- seeding FWHM's own first-pass guess,
+            # falling back for an edge FWHM failed on, flagging disagreement
+            # with FWHM -- is meaningless with FWHM off (see
+            # haemodynamics.apply.assign_edge_diameters); nest it there too.
+            requires=("run_haemodynamics", "use_fwhm_edge_diameters"),
         ),
         Setting(
             name="edt_mask_path",
@@ -3536,7 +3569,7 @@ SCHEMA = Schema(
             default=None,
             help="Load the vessel mask from here when no in-memory segmentation volume is available (e.g. a resumed run)",
             section=_EDT_DIAMETER,
-            requires=("use_edt_diameter_crosscheck",),
+            requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
             must_exist=True,
             advanced=True,
         ),
@@ -3546,7 +3579,7 @@ SCHEMA = Schema(
             default=True,
             help="Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge",
             section=_EDT_DIAMETER,
-            requires=("use_edt_diameter_crosscheck",),
+            requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
         ),
         Setting(
             name="edt_junction_proximity_exclusion_um",
@@ -3556,7 +3589,7 @@ SCHEMA = Schema(
             section=_EDT_DIAMETER,
             minimum=0.0,
             unit="um",
-            requires=("use_edt_diameter_crosscheck",),
+            requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
             advanced=True,
         ),
         Setting(
@@ -3566,7 +3599,7 @@ SCHEMA = Schema(
             help="Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio",
             section=_EDT_DIAMETER,
             minimum=1.0,
-            requires=("use_edt_diameter_crosscheck",),
+            requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
             advanced=True,
         ),
         Setting(

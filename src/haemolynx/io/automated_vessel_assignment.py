@@ -181,6 +181,15 @@ def _vessel_mask_config(mask_role: Literal["large", "small"]) -> dict[str, str]:
     }
 
 
+#: Relative tolerance for comparing voxel sizes loaded independently from
+#: separate files (main image, arteriole mask, venule mask). Physically
+#: identical spacing can still differ by a float ULP or two after passing
+#: through a different loader's own division of a TIFF resolution rational
+#: tag; a genuine mismatch (wrong axis order, a different acquisition) is
+#: orders of magnitude larger than this, so it is not swallowed by it.
+_VOXEL_SIZE_RELATIVE_TOLERANCE = 1e-6
+
+
 def _assert_voxel_sizes_match_main_image(
     *,
     main_voxel_size_xyz: tuple[float, float, float],
@@ -192,10 +201,23 @@ def _assert_voxel_sizes_match_main_image(
     venule_label = "venule" if mask_role == "large" else "small_venule"
     vessel_phrase = "large-vessel masks" if mask_role == "large" else "small-vessel masks"
     if (
-        np.allclose(main_voxel_size_xyz, arteriole_voxel_size_xyz, rtol=0.0, atol=0.0)
-        and np.allclose(main_voxel_size_xyz, venule_voxel_size_xyz, rtol=0.0, atol=0.0)
+        np.allclose(
+            main_voxel_size_xyz,
+            arteriole_voxel_size_xyz,
+            rtol=_VOXEL_SIZE_RELATIVE_TOLERANCE,
+            atol=0.0,
+        )
         and np.allclose(
-            arteriole_voxel_size_xyz, venule_voxel_size_xyz, rtol=0.0, atol=0.0
+            main_voxel_size_xyz,
+            venule_voxel_size_xyz,
+            rtol=_VOXEL_SIZE_RELATIVE_TOLERANCE,
+            atol=0.0,
+        )
+        and np.allclose(
+            arteriole_voxel_size_xyz,
+            venule_voxel_size_xyz,
+            rtol=_VOXEL_SIZE_RELATIVE_TOLERANCE,
+            atol=0.0,
         )
     ):
         logger.info(
@@ -209,7 +231,7 @@ def _assert_voxel_sizes_match_main_image(
         f"main={main_voxel_size_xyz}, "
         f"{arteriole_label}={arteriole_voxel_size_xyz}, "
         f"{venule_label}={venule_voxel_size_xyz}. "
-        "All must match exactly in x, y, and z."
+        "All must match in x, y, and z (within floating-point round-off)."
     )
     logger.error(error_message)
     raise ValueError(error_message)
@@ -259,6 +281,7 @@ _SHARED_VESSEL_MASK_SETTINGS = (
     "ilastik_output_dir",
     "ilastik_output_suffix",
     "ilastik_executable",
+    "ilastik_timeout_seconds",
     "voxel_size_override_xyz",
     "voxel_size_policy",
 )
@@ -305,6 +328,7 @@ def load_and_validate_vessel_masks(
     ilastik_output_dir: str | Path | None = None,
     ilastik_output_suffix: str = ".tif",
     ilastik_executable: str | None = None,
+    ilastik_timeout_seconds: float | None = None,
     dilation_microns: float = 0.0,
     min_component_volume_um3: float = 0.0,
     remove_small_opposite_attached_components: bool = False,
@@ -371,6 +395,7 @@ def load_and_validate_vessel_masks(
             classifier_path=Path(ilastik_arteriole_classifier_path),
             output_path=segmented_arteriole_path,
             ilastik_executable=ilastik_executable,
+            timeout=ilastik_timeout_seconds,
         )
         logger.info(
             f"Running ilastik segmentation for {scale_label} venule image: "
@@ -381,6 +406,7 @@ def load_and_validate_vessel_masks(
             classifier_path=Path(ilastik_venule_classifier_path),
             output_path=segmented_venule_path,
             ilastik_executable=ilastik_executable,
+            timeout=ilastik_timeout_seconds,
         )
         logger.info(
             f"Using ilastik-segmented {scale_label}-vessel masks: "

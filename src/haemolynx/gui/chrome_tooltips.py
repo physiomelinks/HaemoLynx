@@ -47,6 +47,12 @@ LOAD_CONFIG_TOOLTIP = (
     "Open a YAML config into these form rows without loading the image "
     "paths it names"
 )
+EDIT_GRAPH_TOOLTIP = (
+    "Open the graph editor: add a branch by clicking along the segmented "
+    "image, or delete a vessel by clicking it, then Regenerate to catch "
+    "diameters, haemodynamics, perturbations, measurements and export up "
+    "to the edit"
+)
 SAVE_CONFIG_TOOLTIP = (
     "Write the current form values to a YAML config file; relative "
     "paths stay relative when saving beside the file they came from"

@@ -15,6 +15,8 @@ input_and_segmentation:
   ilastik_classifier_path: classifiers/nerve_classifier.ilp
   # Run this ilastik executable name or path in headless mode
   ilastik_executable: ilastik.exe
+  # Kill an ilastik headless run that takes longer than this. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
+  ilastik_timeout_seconds: 7200.0
   # Write ilastik-generated segmentations into this directory
   ilastik_output_dir: examples/outputs/segmentations
   # Give ilastik segmentation outputs this file suffix
@@ -25,47 +27,49 @@ input_and_segmentation:
   voxel_size_policy: auto
   # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
   image_axis_order: zyx
-  # Fill small internal air-gaps/voids -- imaging noise inside an otherwise solid vessel lumen -- before skeletonisation, the same fill done for use_thick_vessel_skeletonisation's own thickness-gated path but here for the plain-Lee path too. Run first, so a hollow lumen does not throw off later steps' own radius measurements. No parameter: a cavity is either enclosed or it is not, with nothing to size
+  # Clean up the raw segmented mask before skeletonisation -- reveals the individual cleanup steps below
+  segmentation_cleanup: false
+  # Fill small internal air-gaps/voids -- imaging noise inside an otherwise solid vessel lumen -- before skeletonisation, the same fill done for use_thick_vessel_skeletonisation's own thickness-gated path but here for the plain-Lee path too. Run first, so a hollow lumen does not throw off later steps' own radius measurements. No parameter: a cavity is either enclosed or it is not, with nothing to size  [needs segmentation_cleanup]
   segmentation_cleanup_fill_cavities: false
-  # Morphologically open the mask to strip thin (1-2 voxel) surface spikes still attached to an otherwise clean vessel, before skeletonisation -- run first, so later steps measure radii and axes off the cleaned-up shape
+  # Morphologically open the mask to strip thin (1-2 voxel) surface spikes still attached to an otherwise clean vessel, before skeletonisation -- run first, so later steps measure radii and axes off the cleaned-up shape  [needs segmentation_cleanup]
   segmentation_cleanup_remove_whiskers: false
-  # Strip surface spikes with no core at least this physical radius thick  [um; range 0.0..; needs segmentation_cleanup_remove_whiskers]
+  # Strip surface spikes with no core at least this physical radius thick  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_remove_whiskers]
   segmentation_cleanup_whisker_radius_um: 1.0
-  # Cut the mask apart at genuine pinch points -- narrow necks where two distinct, touching vessels were segmented as one blob -- before skeletonisation. The inverse of reconnecting gaps: gated so a uniform-radius vessel is never cut
+  # Cut the mask apart at genuine pinch points -- narrow necks where two distinct, touching vessels were segmented as one blob -- before skeletonisation. The inverse of reconnecting gaps: gated so a uniform-radius vessel is never cut  [needs segmentation_cleanup]
   segmentation_cleanup_split_narrow_necks: false
-  # Treat two local-radius maxima as separate vessel bodies only if at least this far apart  [um; range 0.0..; needs segmentation_cleanup_split_narrow_necks]
+  # Treat two local-radius maxima as separate vessel bodies only if at least this far apart  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_split_narrow_necks]
   segmentation_cleanup_split_min_marker_separation_um: 10.0
-  # Only cut where the narrowest point between two vessel bodies is at most this fraction of their own typical radius  [range 0.0..1.0; needs segmentation_cleanup_split_narrow_necks]
+  # Only cut where the narrowest point between two vessel bodies is at most this fraction of their own typical radius  [range 0.0..1.0; needs segmentation_cleanup and segmentation_cleanup_split_narrow_necks]
   segmentation_cleanup_split_min_pinch_radius_ratio: 0.6
-  # Ignore candidate vessel bodies with a typical radius below this -- too thin to judge reliably  [um; range 0.0..; needs segmentation_cleanup_split_narrow_necks]
+  # Ignore candidate vessel bodies with a typical radius below this -- too thin to judge reliably  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_split_narrow_necks]
   segmentation_cleanup_split_min_body_radius_um: 1.0
-  # Morphologically close single-voxel-scale dropouts within a vessel, indiscriminately (no shape test) -- a much smaller, lighter version of reconnect_gaps for gaps too small and too close to a junction for reconnect's own shape test to confidently accept, before skeletonisation
+  # Morphologically close single-voxel-scale dropouts within a vessel, indiscriminately (no shape test) -- a much smaller, lighter version of reconnect_gaps for gaps too small and too close to a junction for reconnect's own shape test to confidently accept, before skeletonisation  [needs segmentation_cleanup]
   segmentation_cleanup_close_gaps: false
-  # Physical closing radius, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup_close_gaps]
+  # Physical closing radius, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_close_gaps]
   segmentation_cleanup_close_gaps_radius_um: 0.5
-  # Bridge disconnected mask fragments that look like the same vessel tube continuing, before skeletonisation. Limited to cylindrical, well-aligned pairs -- does not indiscriminately join nearby blobs
+  # Bridge disconnected mask fragments that look like the same vessel tube continuing, before skeletonisation. Limited to cylindrical, well-aligned pairs -- does not indiscriminately join nearby blobs  [needs segmentation_cleanup]
   segmentation_cleanup_reconnect_gaps: false
-  # Bridge fragment pairs no further apart than this physical distance  [um; range 0.0..; needs segmentation_cleanup_reconnect_gaps]
+  # Bridge fragment pairs no further apart than this physical distance  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_reconnect_gaps]
   segmentation_cleanup_reconnect_max_bridge_distance_um: 30.0
-  # Require both fragments' PCA linearity (near 1 = tube-like, near 0 = blob-like) to be at least this before bridging  [range 0.0..1.0; needs segmentation_cleanup_reconnect_gaps]
+  # Require both fragments' PCA linearity (near 1 = tube-like, near 0 = blob-like) to be at least this before bridging  [range 0.0..1.0; needs segmentation_cleanup and segmentation_cleanup_reconnect_gaps]
   segmentation_cleanup_reconnect_min_cylindricality: 0.5
-  # Reject a bridge when the two fragments' principal axes disagree by more than this many degrees -- no degrees unit is registered in the schema vocabulary  [range 0.0..90.0; needs segmentation_cleanup_reconnect_gaps]
+  # Reject a bridge when the two fragments' principal axes disagree by more than this many degrees -- no degrees unit is registered in the schema vocabulary  [range 0.0..90.0; needs segmentation_cleanup and segmentation_cleanup_reconnect_gaps]
   segmentation_cleanup_reconnect_max_axis_angle_degrees: 30.0
-  # Require the candidate endpoints to face each other at least this closely along each fragment's own axis  [range 0.0..1.0; needs segmentation_cleanup_reconnect_gaps]
+  # Require the candidate endpoints to face each other at least this closely along each fragment's own axis  [range 0.0..1.0; needs segmentation_cleanup and segmentation_cleanup_reconnect_gaps]
   segmentation_cleanup_reconnect_min_facing_cosine: 0.85
-  # Reject a bridge when the fragments' median radii differ by more than this ratio  [range 1.0..; needs segmentation_cleanup_reconnect_gaps]
+  # Reject a bridge when the fragments' median radii differ by more than this ratio  [range 1.0..; needs segmentation_cleanup and segmentation_cleanup_reconnect_gaps]
   segmentation_cleanup_reconnect_max_radius_ratio: 3.0
-  # Smooth the mask to reduce surface noise, before skeletonisation
+  # Smooth the mask to reduce surface noise, before skeletonisation  [needs segmentation_cleanup]
   segmentation_cleanup_smooth_surfaces: false
-  # How to smooth: gaussian blur-then-rethreshold is fast but slightly erodes thin/highly-curved vessels (worse the more curved), which biases their diameter and therefore resistance; morphological closing-then-opening avoids that threshold-driven bias, at the cost of coarser size control  [one of: gaussian, morphological; needs segmentation_cleanup_smooth_surfaces]
+  # How to smooth: gaussian blur-then-rethreshold is fast but slightly erodes thin/highly-curved vessels (worse the more curved), which biases their diameter and therefore resistance; morphological closing-then-opening avoids that threshold-driven bias, at the cost of coarser size control  [one of: gaussian, morphological; needs segmentation_cleanup and segmentation_cleanup_smooth_surfaces]
   segmentation_cleanup_smooth_method: gaussian
-  # Physical smoothing sigma for the gaussian method, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup_smooth_surfaces]
+  # Physical smoothing sigma for the gaussian method, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_smooth_surfaces]
   segmentation_cleanup_smooth_sigma_um: 1.0
-  # Physical closing/opening radius for the morphological method, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup_smooth_surfaces]
+  # Physical closing/opening radius for the morphological method, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_smooth_surfaces]
   segmentation_cleanup_smooth_morphological_radius_um: 1.0
-  # Remove small disconnected segmented volumes, before skeletonisation
+  # Remove small disconnected segmented volumes, before skeletonisation  [needs segmentation_cleanup]
   segmentation_cleanup_remove_small_volumes: false
-  # Remove connected components smaller than this physical volume  [um3; range 0.0..; needs segmentation_cleanup_remove_small_volumes]
+  # Remove connected components smaller than this physical volume  [um3; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_remove_small_volumes]
   segmentation_cleanup_remove_small_min_volume_um3: 5.0
   # How many places this dataset's own vessel network is expected to cross the image boundary (a whole-organ scan or multi-inlet preparation legitimately has more than a single-vessel crop). Leave unset to use a generic default of 2  [range 0..]
   expected_boundary_vessel_count: null
@@ -665,15 +669,15 @@ fwhm_diameter_measurement:
 # EDT mask diameter estimate
 # ------------------------------------------------------------------------
 edt_mask_diameter_estimate:
-  # Estimate per-edge diameters from the segmentation mask's inscribed radius, for fallback and cross-checking against FWHM  [needs run_haemodynamics]
+  # Estimate per-edge diameters from the segmentation mask's inscribed radius, for fallback and cross-checking against FWHM  [needs run_haemodynamics and use_fwhm_edge_diameters]
   use_edt_diameter_crosscheck: false
-  # Load the vessel mask from here when no in-memory segmentation volume is available (e.g. a resumed run)  [needs use_edt_diameter_crosscheck; must exist]
+  # Load the vessel mask from here when no in-memory segmentation volume is available (e.g. a resumed run)  [needs use_fwhm_edge_diameters and use_edt_diameter_crosscheck; must exist]
   edt_mask_path: null
-  # Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge  [needs use_edt_diameter_crosscheck]
+  # Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge  [needs use_fwhm_edge_diameters and use_edt_diameter_crosscheck]
   edt_diameter_prefer_over_table_on_fwhm_failure: true
-  # Skip EDT sample positions within this distance of a branch endpoint  [um; range 0.0..; needs use_edt_diameter_crosscheck]
+  # Skip EDT sample positions within this distance of a branch endpoint  [um; range 0.0..; needs use_fwhm_edge_diameters and use_edt_diameter_crosscheck]
   edt_junction_proximity_exclusion_um: 10.0
-  # Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio  [range 1.0..; needs use_edt_diameter_crosscheck]
+  # Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio  [range 1.0..; needs use_fwhm_edge_diameters and use_edt_diameter_crosscheck]
   edt_fwhm_disagreement_warn_ratio: 1.5
 
 # ------------------------------------------------------------------------

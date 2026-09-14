@@ -142,3 +142,75 @@ def test_read_voxel_size_xyz_is_none_for_what_it_cannot_read(tmp_path):
     not_a_tiff = tmp_path / "notes.txt"
     not_a_tiff.write_text("hello")
     assert read_voxel_size_xyz(not_a_tiff) is None
+
+
+# --- run_ilastik_headless_segmentation: timeout and error messages ---------
+
+
+def _ilastik_inputs(tmp_path):
+    image = tmp_path / "raw.tif"
+    image.write_bytes(b"not a real tiff, never opened by this function")
+    project = tmp_path / "classifier.ilp"
+    project.write_bytes(b"not a real project, never opened by this function")
+    return image, project, tmp_path / "out" / "raw_segmented.tif"
+
+
+def test_ilastik_timeout_is_passed_to_the_subprocess(tmp_path, monkeypatch):
+    """A hung ilastik process must be killable, not block the caller forever."""
+    import subprocess
+
+    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
+
+    image, project, output = _ilastik_inputs(tmp_path)
+    seen_kwargs = {}
+
+    def fake_run(command, **kwargs):
+        seen_kwargs.update(kwargs)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"segmented")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run_ilastik_headless_segmentation(image, project, output, timeout=123.0)
+
+    assert seen_kwargs.get("timeout") == 123.0
+
+
+def test_ilastik_timeout_expiring_raises_an_actionable_error(tmp_path, monkeypatch):
+    """Regression: an unhandled ``TimeoutExpired`` used to propagate as-is."""
+    import subprocess
+
+    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
+
+    image, project, output = _ilastik_inputs(tmp_path)
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="ilastik_timeout_seconds"):
+        run_ilastik_headless_segmentation(image, project, output, timeout=5.0)
+
+
+def test_missing_ilastik_executable_names_the_real_setting(tmp_path, monkeypatch):
+    """Regression: this used to tell users to set an env var nothing reads.
+
+    ``ILASTIK_EXECUTABLE`` is never read as an environment variable anywhere
+    in this codebase -- the real knob is the ``ilastik_executable`` setting.
+    """
+    import subprocess
+
+    from haemolynx.io.ilastik import run_ilastik_headless_segmentation
+
+    image, project, output = _ilastik_inputs(tmp_path)
+
+    def fake_run(command, **kwargs):
+        raise FileNotFoundError("no such file")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(FileNotFoundError, match="ilastik_executable") as raised:
+        run_ilastik_headless_segmentation(image, project, output)
+
+    assert "ILASTIK_EXECUTABLE" not in str(raised.value)

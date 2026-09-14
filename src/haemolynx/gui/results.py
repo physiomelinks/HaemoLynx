@@ -1133,6 +1133,44 @@ class ResultLayers:
         ]
         return tuple(layers)
 
+    def layers_for_graph(self, graph: Any, *, stage: str = "edit") -> StageLayers:
+        """Rebuild the vessels/nodes layers straight from *graph*.
+
+        Every other builder here reads a real stage's ``output`` object; the
+        "Edit" window has no such object -- just a graph it just mutated --
+        so this is the one entry point that takes a graph directly instead.
+        The NODES layer built here mirrors :meth:`_from_build_network`'s own
+        (``node_id``/``degree`` features, coloured by degree), since an edit
+        is closest in spirit to a freshly built network, not a haemodynamics
+        result the node layer would otherwise carry.
+        """
+        self._graph = graph
+        layers: list[LayerSpec] = list(self._vessel_layers(stage))
+        points, ids = node_points(graph)
+        degrees = np.asarray([graph.degree(node_id) for node_id in ids], dtype=float)
+        layers.append(
+            LayerSpec(
+                kind="points",
+                name=NODES,
+                data=points,
+                features={
+                    "node_id": ids,
+                    "degree": degrees,
+                    "pressure": np.full(len(ids), np.nan),
+                },
+                colour_by="degree",
+                colour_kind="continuous",
+                contrast_limits=_limits(degrees),
+                options={"size": NODE_POINT_SIZE, "out_of_slice_display": True},
+            )
+        )
+        return StageLayers(
+            stage=stage,
+            title="Edit",
+            layers=tuple(layers),
+            note=f"{graph.number_of_nodes()} nodes, {graph.number_of_edges()} vessels (edited).",
+        )
+
     def _from_topology_step(self, label: str, graph: Any) -> StageLayers:
         """The graph part-way through its repair, when asked for.
 

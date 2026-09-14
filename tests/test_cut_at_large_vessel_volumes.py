@@ -13,6 +13,7 @@ from haemolynx.graph import cut_graph_at_large_vessel_volumes
 from haemolynx.gui.results import NODES, VESSELS, ResultLayers, edge_polylines
 from haemolynx.pipeline import default_schema
 from haemolynx.pipeline.checks import (
+    check_ilastik_vessel_mask_prerequisites,
     check_large_vessel_branch_order_mode_prerequisites,
     check_large_vessel_cut_when_masks_enabled,
     check_thick_vessel_restriction_prerequisites,
@@ -994,6 +995,62 @@ def test_preflight_large_vessel_mode_prerequisites_no_op_when_mode_is_off():
     )
     assert not report.errors
     assert not report.warnings
+
+
+def test_preflight_ilastik_vessel_mask_prerequisites_no_op_when_both_flags_off():
+    report = check_ilastik_vessel_mask_prerequisites({})
+    assert not report.errors
+
+
+def test_preflight_errors_when_ilastik_large_vessel_segmentation_missing_a_prerequisite():
+    """Regression: the schema's own `requires` only warns (IneffectiveSettingWarning)
+
+    for a raw settings dict, so this flag could reach the segmentation stage
+    as a silent no-op with no prerequisite check anywhere -- unlike the
+    structurally identical assign_large_vessel_branch_orders chain above.
+    """
+    settings = {
+        "use_ilastik_large_vessel_segmentation": True,
+        "use_large_vessel_masks": False,
+        "automated_vessel_assignment": True,
+    }
+    report = check_ilastik_vessel_mask_prerequisites(settings)
+    assert report.errors
+    assert any("use_large_vessel_masks" in message for message in report.errors)
+
+
+def test_preflight_ilastik_large_vessel_segmentation_clean_when_fully_configured():
+    settings = {
+        "use_ilastik_large_vessel_segmentation": True,
+        "use_large_vessel_masks": True,
+        "automated_vessel_assignment": True,
+    }
+    report = check_ilastik_vessel_mask_prerequisites(settings)
+    assert not report.errors
+
+
+def test_preflight_errors_when_ilastik_small_vessel_segmentation_missing_a_prerequisite():
+    settings = {
+        "use_ilastik_small_vessel_segmentation": True,
+        "use_small_vessel_masks_for_boundary_assignment": False,
+        "automated_vessel_assignment": True,
+    }
+    report = check_ilastik_vessel_mask_prerequisites(settings)
+    assert report.errors
+    assert any(
+        "use_small_vessel_masks_for_boundary_assignment" in message
+        for message in report.errors
+    )
+
+
+def test_preflight_ilastik_small_vessel_segmentation_clean_when_fully_configured():
+    settings = {
+        "use_ilastik_small_vessel_segmentation": True,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "automated_vessel_assignment": True,
+    }
+    report = check_ilastik_vessel_mask_prerequisites(settings)
+    assert not report.errors
 
 
 def test_preflight_thick_vessel_restriction_no_op_when_off():

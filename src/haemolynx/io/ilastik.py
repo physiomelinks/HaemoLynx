@@ -10,6 +10,7 @@ def run_ilastik_headless_segmentation(
     classifier_path: str | Path,
     output_path: str | Path,
     ilastik_executable: str | Path = "ilastik.exe",
+    timeout: float | None = None,
 ) -> Path:
     """Run ilastik headless segmentation for a single image.
 
@@ -23,6 +24,12 @@ def run_ilastik_headless_segmentation(
         Path to write the segmented output image.
     ilastik_executable:
         ilastik executable. Defaults to ``ilastik.exe`` and can also be a full path.
+    timeout:
+        Kill the subprocess and raise if it runs longer than this many
+        seconds. ``None`` (this function's own default) waits forever; the
+        pipeline itself always passes ``ilastik_timeout_seconds`` so a hung
+        or misconfigured ilastik process cannot block a run indefinitely
+        with no way to cancel it.
     """
     input_image_path = Path(input_image_path)
     classifier_path = Path(classifier_path)
@@ -52,11 +59,21 @@ def run_ilastik_headless_segmentation(
         str(input_image_path),
     ]
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(
+            command, check=True, capture_output=True, text=True, timeout=timeout
+        )
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             f"Could not find ilastik executable '{ilastik_executable}'. "
-            "Set ILASTIK_EXECUTABLE to the full ilastik path."
+            "Set the ilastik_executable setting to the full ilastik path."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"ilastik segmentation did not finish within {timeout} seconds "
+            "and was killed. Raise ilastik_timeout_seconds if this is a "
+            "genuinely large volume, or check the project file and input "
+            "for what is making ilastik hang.\n"
+            f"Command: {' '.join(command)}"
         ) from exc
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(

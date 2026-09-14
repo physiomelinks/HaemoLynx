@@ -6,6 +6,7 @@ from pathlib import Path
 
 import networkx as nx
 import numpy as np
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -268,6 +269,81 @@ def test_pressure_and_arteriole_sweep_varies_both_axes(tmp_path: Path):
     pressures = {int(r["inlet_pressure_pa"]) for r in sweep["results"]}
     assert percents == {0, 10}
     assert pressures == {4500, 5000}
+
+
+# --- solve_pressure_and_boundary_flow shares resistance.py's reachability --
+#
+# This solver used to compute pressures for *every* non-boundary node, so a
+# component the boundary conditions cannot reach forced np.linalg.solve to
+# raise on the zero row it creates, and the whole-system np.linalg.lstsq
+# fallback then degraded every node's pressure, not just the disconnected
+# ones. It now shares haemodynamics.resistance's reachability restriction,
+# mirroring that module's own pinned tests (test_hemodynamics.py).
+
+from haemolynx.haemodynamics.pericyte_sweep import solve_pressure_and_boundary_flow
+from haemolynx.haemodynamics.resistance import build_conductance_matrix_from_graph
+
+_SI_CONDUCTANCE = 1e-16  # m^3/(Pa.s), the real magnitude for a capillary
+
+
+def _disconnected_network() -> nx.MultiGraph:
+    """A conductive diamond carrying both boundary conditions, plus a
+
+    conductive component no boundary condition reaches -- same shape as
+    test_hemodynamics.py's own fixture for the equivalent resistance.py test.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=2.0 * _SI_CONDUCTANCE)
+    G.add_edge(1, 3, conductance=1.0 * _SI_CONDUCTANCE)
+    G.add_edge(0, 2, conductance=1.0 * _SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=3.0 * _SI_CONDUCTANCE)
+    # A conductive component with no path to any boundary node.
+    G.add_edge(6, 7, conductance=2.0 * _SI_CONDUCTANCE)
+    G.add_edge(7, 8, conductance=1.0 * _SI_CONDUCTANCE)
+    return G
+
+
+def _solve(G, **overrides):
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    kwargs = {
+        "inlet_p_bc": 1000.0,
+        "outlet_p_bc": 500.0,
+        "inlet_nodes": [0],
+        "outlet_nodes": [3],
+        **overrides,
+    }
+    return solve_pressure_and_boundary_flow(conductance, node_list, **kwargs)
+
+
+def test_pericyte_sweep_solve_does_not_fall_back_to_lstsq_for_a_disconnected_part(
+    monkeypatch,
+):
+    """The old whole-system lstsq fallback must not fire for a network that is
+
+    merely disconnected; only what the boundary conditions reach is solved.
+    """
+
+    def _no_lstsq(*args, **kwargs):
+        raise AssertionError("np.linalg.lstsq must not be needed here")
+
+    monkeypatch.setattr(np.linalg, "lstsq", _no_lstsq)
+    _solve(_disconnected_network())
+
+
+def test_pericyte_sweep_solve_gives_an_unreached_component_zero_pressure():
+    flow = _solve(_disconnected_network())
+    _, node_list = build_conductance_matrix_from_graph(_disconnected_network())
+    idx = {n: i for i, n in enumerate(node_list)}
+    for node in (6, 7, 8):
+        assert flow["pressure"][idx[node]] == 0.0
+
+
+def test_pericyte_sweep_solve_raises_for_a_disconnected_inlet_and_outlet():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=_SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=_SI_CONDUCTANCE)
+    with pytest.raises(ValueError, match="not connected by conductance-carrying edges"):
+        _solve(G, inlet_nodes=[0], outlet_nodes=[3])
 
 
 if __name__ == "__main__":

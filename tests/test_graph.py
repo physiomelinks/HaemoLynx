@@ -123,6 +123,53 @@ def test_reconnect_secondary_loop_edges(tiny_skeleton):
     assert G2.number_of_nodes() == G.number_of_nodes()
 
 
+def _degree2_chain_graph():
+    """A 5-node straight chain: the middle 1-2 and 2-3 edges are both
+
+    deg==2 -> deg==2, so reconnect_secondary_loop_edges actually attempts
+    them (an all-terminal fixture like ``tiny_skeleton``'s never does).
+    """
+    G = nx.MultiGraph()
+    for i in range(5):
+        G.add_node(i, pos=np.array([float(i), 4.0, 4.0]))
+    for i in range(4):
+        G.add_edge(
+            i, i + 1, length=1.0, voxels=[(i, 4, 4), (i + 1, 4, 4)]
+        )
+    return G
+
+
+def test_reconnect_reports_a_failure_summary_even_without_debug_logging(
+    monkeypatch, caplog
+):
+    """Regression: subvolume/pathfinding/metric exceptions used to be logged
+
+    only ``if debug`` -- off by default (tied to verbose_logging) -- so a run
+    where every candidate pair hit the same exception looked identical to a
+    run that cleanly found nothing to reconnect. A count must reach the log
+    regardless of ``debug``.
+    """
+    from haemolynx.graph import reconnect as reconnect_module
+
+    def _always_raises(*_args, **_kwargs):
+        raise RuntimeError("synthetic EDT failure")
+
+    monkeypatch.setattr(reconnect_module, "distance_transform_edt", _always_raises)
+
+    skeleton = np.zeros((8, 8, 8), dtype=bool)
+    skeleton[0:5, 4, 4] = True
+
+    with caplog.at_level("WARNING"):
+        result = reconnect_module.reconnect_secondary_loop_edges(
+            _degree2_chain_graph(), skeleton, debug=False
+        )
+
+    assert result.number_of_nodes() == 5
+    assert any(
+        "subvolume creation failed" in record.message for record in caplog.records
+    )
+
+
 def test_optimise_graph_topology_fixed(tiny_skeleton):
     pytest.importorskip("skan")
     from skan import csr

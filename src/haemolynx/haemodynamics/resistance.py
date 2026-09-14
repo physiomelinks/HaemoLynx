@@ -76,7 +76,7 @@ def calc_two_point_from_laplacian_matrix_nodeID(
     return R
 
 
-def _reachable_through_conductances(
+def reachable_through_conductances(
     adjacency: np.ndarray, seed_idx: np.ndarray
 ) -> np.ndarray:
     """Boolean mask of nodes connected to any seed through conductive edges."""
@@ -94,8 +94,36 @@ def _conductively_connected(
     adjacency: np.ndarray, source_idx: np.ndarray, target_idx: np.ndarray
 ) -> bool:
     """Return True if any *target* is reachable from any *source* through conductive edges."""
-    reached = _reachable_through_conductances(adjacency, source_idx)
+    reached = reachable_through_conductances(adjacency, source_idx)
     return bool(np.any(reached[np.asarray(target_idx, dtype=int)]))
+
+
+def reachable_unknown_node_indices(
+    conductance: np.ndarray, known_idx: np.ndarray
+) -> tuple[np.ndarray, int]:
+    """Non-boundary node indices with a conductive path to a boundary node.
+
+    This is the module's shared policy for a node with no such path: a zero
+    row in the reduced Laplacian, which forces ``np.linalg.solve``'s
+    ``lstsq`` fallback to degrade *every* node's pressure, not just the
+    disconnected ones. Restricting the solve to this reachable set instead
+    leaves an unreachable node's pressure at 0 and its edges at zero flow.
+    Both solvers in this package (:func:`solve_flow_from_conductance_matrix`
+    and :func:`haemolynx.haemodynamics.pericyte_sweep.solve_pressure_and_boundary_flow`)
+    apply it, so a disconnected component degrades the same way in either one.
+
+    Returns the restricted ``unknown_idx`` and how many additional nodes
+    carry a conductance but were excluded as unreachable, for the caller to
+    warn about.
+    """
+    n_nodes = conductance.shape[0]
+    adjacency = conductance > 0
+    reached = reachable_through_conductances(adjacency, known_idx)
+    unknown_mask = np.ones(n_nodes, dtype=bool)
+    unknown_mask[known_idx] = False
+    unknown_idx = np.nonzero(unknown_mask & reached)[0]
+    stranded_conductive = int(np.sum(unknown_mask & ~reached & adjacency.any(axis=1)))
+    return unknown_idx, stranded_conductive
 
 
 def _warn_components_pinned_to_one_pressure(
@@ -107,7 +135,7 @@ def _warn_components_pinned_to_one_pressure(
     for start in sorted(bc_idx_to_p):
         if visited[start] or not adjacency[start].any():
             continue
-        component = _reachable_through_conductances(adjacency, np.array([start]))
+        component = reachable_through_conductances(adjacency, np.array([start]))
         visited |= component
         pressures = {
             bc_idx_to_p[idx] for idx in np.nonzero(component)[0] if idx in bc_idx_to_p
@@ -207,12 +235,9 @@ def solve_flow_from_conductance_matrix(
             "large-vessel cut or boundary reassignment, check that the inlet "
             "and outlet land on the same conductive part of the network."
         )
-    reached = _reachable_through_conductances(adjacency, known_idx)
-    unknown_mask = np.ones(n_nodes, dtype=bool)
-    unknown_mask[known_idx] = False
-    unknown_idx = np.nonzero(unknown_mask & reached)[0]
-
-    stranded_conductive = int(np.sum(unknown_mask & ~reached & adjacency.any(axis=1)))
+    unknown_idx, stranded_conductive = reachable_unknown_node_indices(
+        conductance, known_idx
+    )
     if stranded_conductive:
         logger.warning(
             f"{stranded_conductive} node(s) carry conductances but have no "

@@ -238,7 +238,8 @@ def test_the_tabs_read_in_pipeline_order():
         # `solve` renders its rows onto the haemodynamics tab rather than
         # opening one of its own.
         "7. Perturbations",
-        "8. Export",
+        "8. Additional measurements",
+        "9. Export",
     ]
 
 
@@ -553,23 +554,37 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
 
 
 def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():
-    """The three cleanup toggles and their dependent params land on "1.
-    Input" (declared under _INPUT_AND_SEGMENTATION, the only section that
-    tab claims), and each dependent param hides until its own master
-    toggle is on."""
+    """All seven cleanup toggles nest under the segmentation_cleanup master
+
+    switch (declared under _INPUT_AND_SEGMENTATION, the only section "1.
+    Input" claims), and each toggle's own dependent params additionally nest
+    under that toggle -- both ancestors must be met for a leaf setting to
+    show, not just its immediate parent.
+    """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     fields = {field.name: field for field in tabs["1. Input"].fields}
 
-    masters_and_children = {
+    assert not fields["segmentation_cleanup"].hide_when_unmet
+
+    toggles_and_children = {
+        "segmentation_cleanup_fill_cavities": (),
+        "segmentation_cleanup_remove_whiskers": (
+            "segmentation_cleanup_whisker_radius_um",
+        ),
+        "segmentation_cleanup_split_narrow_necks": (
+            "segmentation_cleanup_split_min_marker_separation_um",
+            "segmentation_cleanup_split_min_pinch_radius_ratio",
+            "segmentation_cleanup_split_min_body_radius_um",
+        ),
+        "segmentation_cleanup_close_gaps": (
+            "segmentation_cleanup_close_gaps_radius_um",
+        ),
         "segmentation_cleanup_reconnect_gaps": (
             "segmentation_cleanup_reconnect_max_bridge_distance_um",
             "segmentation_cleanup_reconnect_min_cylindricality",
             "segmentation_cleanup_reconnect_max_axis_angle_degrees",
             "segmentation_cleanup_reconnect_min_facing_cosine",
             "segmentation_cleanup_reconnect_max_radius_ratio",
-        ),
-        "segmentation_cleanup_close_gaps": (
-            "segmentation_cleanup_close_gaps_radius_um",
         ),
         "segmentation_cleanup_smooth_surfaces": (
             "segmentation_cleanup_smooth_method",
@@ -581,15 +596,24 @@ def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():
         ),
     }
 
-    for master, children in masters_and_children.items():
-        assert not fields[master].hide_when_unmet
-        off = {master: False}
-        on = {master: True}
+    for toggle, children in toggles_and_children.items():
+        assert fields[toggle].hide_when_unmet
+        assert SCHEMA[toggle].requires == ("segmentation_cleanup",)
+        assert not fields[toggle].is_visible({"segmentation_cleanup": False})
+        assert fields[toggle].is_visible({"segmentation_cleanup": True})
+
+        cleanup_off = {"segmentation_cleanup": True, toggle: False}
+        cleanup_on = {"segmentation_cleanup": True, toggle: True}
+        master_off_too = {"segmentation_cleanup": False, toggle: True}
         for child in children:
             assert fields[child].hide_when_unmet
-            assert SCHEMA[child].requires == (master,)
-            assert not fields[child].is_visible(off)
-            assert fields[child].is_visible(on)
+            assert SCHEMA[child].requires == ("segmentation_cleanup", toggle)
+            assert not fields[child].is_visible(cleanup_off)
+            assert fields[child].is_visible(cleanup_on)
+            # Regression: a child used to check only its own immediate
+            # parent, so it stayed visible even with the segmentation_cleanup
+            # master switch itself off.
+            assert not fields[child].is_visible(master_off_too)
 
 
 def test_centreline_fields_on_graph_declare_hide_when_unmet():
@@ -728,7 +752,7 @@ _MEASUREMENT_3D_CHILDREN = (
 def test_ide_plot_fields_on_export_declare_hide_when_unmet():
     """Produce IDE plots nests Show / mode / hold on the Export tab."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    fields = {field.name: field for field in tabs["8. Export"].fields}
+    fields = {field.name: field for field in tabs["9. Export"].fields}
 
     assert not fields["visualize_results"].hide_when_unmet
     assert fields["visualize_results"].label == "Produce IDE plots"
@@ -748,11 +772,11 @@ def test_ide_plot_fields_on_export_declare_hide_when_unmet():
 
 
 def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
-    """Gated Statistics rows on Export hide until their parent toggles hold."""
+    """Gated Statistics rows on Additional measurements hide until their parent toggles hold."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     fields = {
         field.name: field
-        for field in tabs["8. Export"].fields
+        for field in tabs["8. Additional measurements"].fields
         if field.section == "Statistics and measurements"
     }
 

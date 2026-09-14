@@ -673,6 +673,53 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     assert "fwhm_baseline_constraint_half_width_ptp" in shown
 
 
+_EDT_CHILDREN = (
+    "edt_mask_path",
+    "edt_diameter_prefer_over_table_on_fwhm_failure",
+    "edt_junction_proximity_exclusion_um",
+    "edt_fwhm_disagreement_warn_ratio",
+)
+
+
+def test_edt_diameter_crosscheck_nests_under_fwhm_then_itself():
+    """EDT only ever seeds, falls back for, or cross-checks FWHM -- it has
+
+    nothing to show while use_fwhm_edge_diameters is off, and its own
+    children have nothing to show while use_edt_diameter_crosscheck is off.
+    """
+    assert "EDT mask diameter estimate" in HIDE_WHEN_UNMET_SECTIONS
+    base = {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+
+    shown = visible_diameter_settings(SCHEMA, base)
+    assert "use_edt_diameter_crosscheck" not in shown
+    for name in _EDT_CHILDREN:
+        assert name not in shown
+
+    fwhm_on_edt_off = {
+        **base,
+        "use_fwhm_edge_diameters": True,
+        "use_edt_diameter_crosscheck": False,
+    }
+    shown = visible_diameter_settings(SCHEMA, fwhm_on_edt_off)
+    assert "use_edt_diameter_crosscheck" in shown
+    for name in _EDT_CHILDREN:
+        assert name not in shown
+
+    both_on = {**fwhm_on_edt_off, "use_edt_diameter_crosscheck": True}
+    shown = visible_diameter_settings(SCHEMA, both_on)
+    assert "use_edt_diameter_crosscheck" in shown
+    for name in _EDT_CHILDREN:
+        assert name in shown
+
+    # Regression: EDT used to require only run_haemodynamics, so it and its
+    # children stayed visible with FWHM off.
+    edt_on_fwhm_off = {**base, "use_edt_diameter_crosscheck": True}
+    shown = visible_diameter_settings(SCHEMA, edt_on_fwhm_off)
+    assert "use_edt_diameter_crosscheck" not in shown
+    for name in _EDT_CHILDREN:
+        assert name not in shown
+
+
 _MEASUREMENT_3D_CHILDREN = (
     "cell_mask_path",
     "cell_mask_h5_dataset_name",

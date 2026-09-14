@@ -337,6 +337,7 @@ def test_check_segmented_image_reports_raw_vs_after_cleanup_when_cleanup_is_on(
     real_input = tmp_path / "mask.tif"
     real_input.write_bytes(b"")
     rows["input_path"].value = real_input
+    rows["segmentation_cleanup"].value = True
     rows["segmentation_cleanup_remove_small_volumes"].value = True
 
     panel._haemolynx_check_segmented_image()

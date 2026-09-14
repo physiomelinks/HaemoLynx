@@ -15,10 +15,13 @@ loading numpy, ilastik, or any image data — a GUI can render the form from
 from __future__ import annotations
 
 import difflib
+import logging
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any, Iterable, Iterator, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 #: Widget/coercion kinds. Kept as strings rather than Python types so that
 #: ``Schema.describe()`` is directly JSON-serialisable for a GUI.
@@ -449,6 +452,13 @@ class Schema:
 
         for message in self._ineffective_messages(resolved):
             warnings.warn(message, IneffectiveSettingWarning, stacklevel=3)
+            # warnings.warn alone reaches a console, but not the GUI's own
+            # run log: that only ever listens to the "haemolynx" logger (see
+            # gui.run_log.attach), so a setting toggled on with an unmet
+            # prerequisite used to be visible only if someone was watching
+            # stderr. Logged too so it reaches the same place every other
+            # pipeline warning already does.
+            logger.warning(message)
 
         if errors:
             raise ConfigError(

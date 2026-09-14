@@ -45,6 +45,7 @@ from haemolynx.gui.results import (
     VESSEL_TUBES,
     VESSELS,
     ResultLayers,
+    copy_graph,
     _flow_dir_contrast_limits,
     _flow_heading_contrast_limits,
     clip_volume_to_z,
@@ -72,6 +73,7 @@ from haemolynx.gui.stage_checkpoints import (
     discard_cached_artefacts_for_settings,
     output_dir_from_prefix,
     previous_tab,
+    resume_from_edit,
     restore_message,
 )
 from haemolynx.gui.run_snapshot import (
@@ -4393,14 +4395,21 @@ def _run_segmentation_quality_check_in_background(
         # good number reflects the source data or just this pipeline's own
         # cleanup patching over it -- see segmentation_quality's own module
         # docstring for why that distinction matters. `raw_segmented_image`
-        # is `None` (nothing to compare) when every cleanup step is off.
-        cleanup_kwargs = prefixed_arguments(
-            local_settings, "segmentation_cleanup_",
-            parameters_of(clean_segmented_mask_for_skeletonisation),
-        )
-        cleaned_mask, raw_segmented_image = clean_segmented_mask_for_skeletonisation(
-            mask, voxel_size_zyx=voxel_size_zyx, **cleanup_kwargs
-        )
+        # is `None` (nothing to compare) when every cleanup step is off, or
+        # when the segmentation_cleanup master switch itself is off -- a
+        # real run's skeletonise() skips cleanup entirely in that case (see
+        # pipeline.schema's segmentation_cleanup), and this preview must
+        # show the same run the pipeline will actually do.
+        if local_settings["segmentation_cleanup"]:
+            cleanup_kwargs = prefixed_arguments(
+                local_settings, "segmentation_cleanup_",
+                parameters_of(clean_segmented_mask_for_skeletonisation),
+            )
+            cleaned_mask, raw_segmented_image = clean_segmented_mask_for_skeletonisation(
+                mask, voxel_size_zyx=voxel_size_zyx, **cleanup_kwargs
+            )
+        else:
+            cleaned_mask, raw_segmented_image = mask, None
         after_cleanup = None
         if raw_segmented_image is not None:
             after_cleanup = score_segmented_mask(
@@ -5711,7 +5720,7 @@ TAB_SCROLL_MIN_HEIGHT = 120
 
 def _fitting_scroll_area():
     """A scroll area whose size hint does not include the widget inside it."""
-    from qtpy.QtCore import QSize
+    from qtpy.QtCore import QSize, Qt
     from qtpy.QtWidgets import QScrollArea, QSizePolicy
 
     class FittingScrollArea(QScrollArea):
@@ -5725,7 +5734,107 @@ def _fitting_scroll_area():
     scroller.setWidgetResizable(True)
     scroller.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     scroller.setMinimumHeight(TAB_SCROLL_MIN_HEIGHT)
+    # A tab scrolls up/down only: a long row label (several settings' names
+    # run past 50 characters) must wrap onto a second line rather than widen
+    # the row and force a sideways scrollbar.
+    scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     return scroller
+
+
+def _wrap_row_labels(native) -> None:
+    """Let every row's label wrap instead of forcing the row wider.
+
+    magicgui gives each row's ``QLabel`` word wrap off, which is fine for a
+    short name but not for e.g. "Segmentation cleanup reconnect max axis
+    angle degrees (degrees)" -- long enough on its own to push a row past a
+    docked panel's width and force the horizontal scrollbar
+    :func:`_fitting_scroll_area` turns off. Wrapping is the general fix,
+    applied to every tab rather than only the ones with today's longest
+    labels, since a future setting name is not something to special-case for.
+    """
+    from qtpy.QtWidgets import QLabel
+
+    for label in native.findChildren(QLabel):
+        label.setWordWrap(True)
+
+
+#: Status text for each GraphEditorState.click_add / mode-arm outcome.
+_GRAPH_EDITOR_STATUS = {
+    "rejected": "First click must land on an existing node or edge.",
+    "started": "Branch started -- click along the vessel to extend it, or Finish.",
+    "extended": "Extended -- click again, or press Finish.",
+    "finished": "Branch finished.",
+    "add-armed": "Add branch: click an existing node or edge to start.",
+    "delete-armed": "Delete edge: click an edge to remove it.",
+    "idle": "Edit graph, then Regenerate to catch up haemodynamics onward.",
+}
+
+
+class _GraphEditorWindow:
+    """The floating "Edit" window: Add edge / Finish / Delete edge / Regenerate.
+
+    Plain Qt glue and nothing else -- see :class:`haemolynx.gui.graph_editor.GraphEditorState`
+    for what each button actually does to the graph, and :mod:`haemolynx.gui._widget`'s
+    own ``on_open_graph_editor`` for how a click on the vessels/nodes layers
+    reaches it. A standalone top-level window (not a docked tab), since
+    editing needs the viewer in full view underneath it, not a panel
+    replacing the settings form.
+    """
+
+    def __init__(self, *, on_add, on_finish, on_delete, on_regenerate) -> None:
+        from qtpy.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
+
+        self.native = QWidget()
+        self.native.setWindowTitle("HaemoLynx: Edit graph")
+        self.native.setObjectName("haemolynx_graph_editor")
+        layout = QVBoxLayout(self.native)
+
+        self._status = QLabel(_GRAPH_EDITOR_STATUS["idle"])
+        self._status.setWordWrap(True)
+        layout.addWidget(self._status)
+
+        add_button = QPushButton("Add edge")
+        add_button.setToolTip(
+            "Click an existing node or edge to start a new branch, then click "
+            "along the segmented volume to extend it -- A* routed, preferring "
+            "the segmented mask but able to cross a real gap in it. Ends when "
+            "a click lands on existing structure, or when Finish is pressed."
+        )
+        finish_button = QPushButton("Finish")
+        finish_button.setToolTip("End the branch being drawn as a new dangling terminal.")
+        delete_button = QPushButton("Delete edge")
+        delete_button.setToolTip(
+            "Click an edge to remove it. A node left at degree 2 by the "
+            "removal is collapsed into one continuous edge; a node left with "
+            "no edges at all is removed too."
+        )
+        regenerate_button = QPushButton("Regenerate")
+        regenerate_button.setToolTip(
+            "Re-run diameters, haemodynamics, perturbations, additional "
+            "measurements and export from the edited graph, and refresh "
+            "every dependent layer."
+        )
+
+        add_button.clicked.connect(lambda: self._run(on_add, "add-armed"))
+        finish_button.clicked.connect(lambda: self._run(on_finish, "finished"))
+        delete_button.clicked.connect(lambda: self._run(on_delete, "delete-armed"))
+        regenerate_button.clicked.connect(lambda: on_regenerate())
+
+        for button in (add_button, finish_button, delete_button, regenerate_button):
+            layout.addWidget(button)
+
+    def _run(self, action, status_key: str) -> None:
+        action()
+        self.report(status_key)
+
+    def report(self, status_key: str) -> None:
+        self._status.setText(_GRAPH_EDITOR_STATUS.get(status_key, status_key))
+
+    def show(self) -> None:
+        self.native.show()
+
+    def is_open(self) -> bool:
+        return bool(self.native.isVisible())
 
 
 def settings_widget(napari_viewer=None):
@@ -6357,6 +6466,7 @@ def settings_widget(napari_viewer=None):
     choose_groups_checkbox.changed.connect(_toggle_group_checkboxes)
 
     load_button = PushButton(text="Load config...")
+    edit_button = PushButton(text="Edit")
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
     run_button = PushButton(text="Run pipeline")
@@ -6366,6 +6476,7 @@ def settings_widget(napari_viewer=None):
 
     from haemolynx.gui.chrome_tooltips import (
         CLEAR_LAYERS_TOOLTIP,
+        EDIT_GRAPH_TOOLTIP,
         LOAD_CONFIG_TOOLTIP,
         LOAD_RUN_TOOLTIP,
         RUN_CHECKS_TOOLTIP,
@@ -6381,6 +6492,7 @@ def settings_widget(napari_viewer=None):
     )
 
     load_button.tooltip = LOAD_CONFIG_TOOLTIP
+    edit_button.tooltip = EDIT_GRAPH_TOOLTIP
     save_button.tooltip = SAVE_CONFIG_TOOLTIP
     check_button.tooltip = RUN_CHECKS_TOOLTIP
     run_button.tooltip = RUN_PIPELINE_TOOLTIP
@@ -7044,6 +7156,130 @@ def settings_widget(napari_viewer=None):
             replace_checkpoints=False,
         )
 
+    # --- "Edit": add or delete a vessel by hand, then Regenerate to catch
+    # haemodynamics/perturbations/measurements/export up to the edit. The
+    # editing rules live in gui.graph_editor.GraphEditorState (pure, tested
+    # without a viewer); everything here is just wiring a click on the
+    # vessels/nodes layers to it and pushing the layers it changes back.
+    graph_editor: dict[str, Any] = {"state": None, "window": None}
+
+    def _graph_editor_layer(name: str):
+        return viewer.layers[name] if viewer is not None and name in viewer.layers else None
+
+    def _refresh_graph_editor_layers() -> None:
+        state = graph_editor["state"]
+        if state is None or view.results is None:
+            return
+        _apply_layers(viewer, view.results.layers_for_graph(state.graph))
+
+    def _graph_editor_click(_layer, event) -> None:
+        window = graph_editor["window"]
+        state = graph_editor["state"]
+        if window is None or state is None or not window.is_open() or state.mode == "idle":
+            return
+        from haemolynx.gui.graph_click import hit_test_nodes, hit_test_vessels
+
+        position = event.position
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view_direction = getattr(event, "view_direction", None)
+
+        edge_hit = None
+        vessels = _graph_editor_layer(VESSELS)
+        if vessels is not None:
+            edge_hit = hit_test_vessels(
+                vessels.data, _layer_features(vessels), position,
+                view_direction=view_direction, dims=dims,
+            )
+        node_hit = None
+        if edge_hit is None:
+            nodes_layer = _graph_editor_layer(NODES)
+            if nodes_layer is not None:
+                try:
+                    index = nodes_layer.get_value(
+                        position, view_direction=view_direction,
+                        dims_displayed=dims, world=True,
+                    )
+                except TypeError:
+                    index = nodes_layer.get_value(position, world=True)
+                node_hit = hit_test_nodes(index, _layer_features(nodes_layer))
+        hit = edge_hit if edge_hit is not None else node_hit
+
+        if state.mode == "delete":
+            if edge_hit is None:
+                return
+            state.click_delete(edge_hit)
+            _refresh_graph_editor_layers()
+            window.report("delete-armed")
+            return
+
+        raw_point = tuple(float(c) for c in position[-3:])
+        result = state.click_add(raw_point, hit)
+        if result != "rejected":
+            _refresh_graph_editor_layers()
+        window.report(result)
+
+    def _arm_graph_editor(mode: str) -> None:
+        state = graph_editor["state"]
+        if state is None:
+            return
+        if mode == "add":
+            state.start_add()
+        else:
+            state.start_delete()
+
+    def _finish_graph_editor_branch() -> None:
+        state = graph_editor["state"]
+        if state is None:
+            return
+        state.finish_add()
+        _refresh_graph_editor_layers()
+
+    def on_regenerate_from_edit() -> None:
+        state = graph_editor["state"]
+        if state is None:
+            return
+        stages_recorded = checkpoints.stages
+        checkpoint = checkpoints.get(stages_recorded[-1]) if stages_recorded else None
+        if checkpoint is None:
+            report.value = (
+                "Nothing to regenerate from: run the pipeline through at "
+                "least Boundaries first."
+            )
+            return
+        resume = resume_from_edit(checkpoint, state.graph)
+        on_run(start_from=resume.start_from, resume=resume, replace_checkpoints=False)
+
+    def on_open_graph_editor() -> None:
+        if view.results is None or getattr(view.results, "_graph", None) is None:
+            report.value = "Nothing to edit yet: run the pipeline through at least Graph first."
+            return
+        from haemolynx.gui.graph_editor import GraphEditorState
+
+        results = view.results
+        state = GraphEditorState(
+            graph=copy_graph(results._graph),
+            voxel_size_zyx=tuple(
+                float(v) for v in getattr(results, "_voxel_size_zyx", (1.0, 1.0, 1.0))
+            ),
+        )
+        image_layer = _graph_editor_layer(IMAGE)
+        if image_layer is not None:
+            state.cost_field_from_mask(np.asarray(image_layer.data))
+        graph_editor["state"] = state
+
+        window = _GraphEditorWindow(
+            on_add=lambda: _arm_graph_editor("add"),
+            on_finish=_finish_graph_editor_branch,
+            on_delete=lambda: _arm_graph_editor("delete"),
+            on_regenerate=on_regenerate_from_edit,
+        )
+        graph_editor["window"] = window
+        for name in (VESSELS, NODES):
+            layer = _graph_editor_layer(name)
+            if layer is not None and _graph_editor_click not in layer.mouse_drag_callbacks:
+                layer.mouse_drag_callbacks.append(_graph_editor_click)
+        window.show()
+
     def save_run_file(path: Path | str) -> bool:
         """Write the current viewer run to *path*. Returns whether it wrote."""
         if run_state.running:
@@ -7196,6 +7432,7 @@ def settings_widget(napari_viewer=None):
         )
 
     load_button.changed.connect(on_load)
+    edit_button.changed.connect(lambda *_args: on_open_graph_editor())
     save_button.changed.connect(on_save)
     optimise_button.changed.connect(lambda *_args: on_optimise_settings())
     check_image_button.changed.connect(lambda *_args: on_check_segmented_image())
@@ -7214,6 +7451,7 @@ def settings_widget(napari_viewer=None):
     run_file_layout = QHBoxLayout(run_file_row)
     run_file_layout.setContentsMargins(0, 0, 0, 0)
     run_file_layout.addStretch(1)
+    run_file_layout.addWidget(edit_button.native)
     run_file_layout.addWidget(save_run_button.native)
     run_file_layout.addWidget(load_run_button.native)
     view_controls = Container(
@@ -7353,6 +7591,10 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_check_image_button = check_image_button
     panel._haemolynx_raw_data_row = raw_data_row
     panel._haemolynx_check_segmented_image = on_check_segmented_image
+    panel._haemolynx_edit_button = edit_button
+    panel._haemolynx_graph_editor = graph_editor
+    panel._haemolynx_open_graph_editor = on_open_graph_editor
+    panel._haemolynx_regenerate_from_edit = on_regenerate_from_edit
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)
@@ -7382,4 +7624,7 @@ def settings_widget(napari_viewer=None):
     else:
         _after_layers_applied()
     refresh_revert_buttons()
+    # Applied once, panel-wide, after every row -- including the buttons and
+    # dropdowns appended onto the Input tab above -- is in place.
+    _wrap_row_labels(panel)
     return panel

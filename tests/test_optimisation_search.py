@@ -53,6 +53,7 @@ def _y_shaped_vessel(shape=(30, 30, 30), radius=2) -> np.ndarray:
 #: pipeline/schema.py -- kept local so this test does not depend on
 #: haemolynx.pipeline (the optimisation package's own purity boundary).
 _DEFAULT_STARTING_VALUES = {
+    "segmentation_cleanup": False,
     "segmentation_cleanup_fill_cavities": False,
     "segmentation_cleanup_remove_whiskers": False,
     "segmentation_cleanup_whisker_radius_um": 1.0,
@@ -815,6 +816,12 @@ def test_segmentation_cleanup_group_removes_a_small_disconnected_speck():
     )
     assert not cleaned[1, 1, 1]
     assert score_segmented_mask(cleaned, voxel_size_zyx=(1.0, 1.0, 1.0)).total > baseline_score
+    # Regression: whichever toggle cleared the speck, the master switch that
+    # gates all seven (pipeline.schema's segmentation_cleanup) must also end
+    # up on, or a real run applying result.settings would silently ignore
+    # the very toggle that just fixed this.
+    assert any(cleanup_kwargs.values())
+    assert result.settings["segmentation_cleanup"] is True
 
 
 def test_group_names_cover_every_group_a_trial_could_report():

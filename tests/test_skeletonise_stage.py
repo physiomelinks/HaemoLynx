@@ -36,6 +36,15 @@ def settings_for(tmp_path: Path, mask_path: Path, **overrides) -> dict:
             **overrides,
         }
     )
+    # A test turning on one segmentation_cleanup_* step almost always wants
+    # the master switch on too -- it now gates every one of them (see
+    # pipeline.schema's segmentation_cleanup) -- unless it explicitly says
+    # otherwise, which test_segmentation_cleanup_off_by_default... does by
+    # passing no overrides at all.
+    if "segmentation_cleanup" not in overrides and any(
+        name.startswith("segmentation_cleanup_") for name in overrides
+    ):
+        values["segmentation_cleanup"] = True
     return values
 
 

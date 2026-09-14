@@ -369,9 +369,12 @@ class PoiseuilleModel:
     def resistance_of_uniform_segment(self, length: float, diameter: float) -> float:
         """Poiseuille resistance (Pa.s/m^3) of a straight uniform segment.
 
-        ``length`` and ``diameter`` are in micrometres.
+        ``length`` and ``diameter`` are in micrometres. A non-positive
+        diameter has no physical channel to carry flow through, so it is
+        treated the same as a non-positive length rather than raising
+        ``ZeroDivisionError`` when ``diameter`` is exactly 0.
         """
-        if length <= 0:
+        if length <= 0 or diameter <= 0:
             return float("inf")
         viscosity = self.calculate_viscosity(diameter)
         length_m = length / UM_PER_M
@@ -381,8 +384,15 @@ class PoiseuilleModel:
     def resistance_integrand(
         self, position: float, length: float, d1: float, d2: float
     ) -> float:
-        """Resistance per unit length (Pa.s/m^4) at *position* um along the vessel."""
+        """Resistance per unit length (Pa.s/m^4) at *position* um along the vessel.
+
+        ``pericyte_constriction_factor`` is schema-permitted down to 0.0 (a
+        fully closed vessel), which would otherwise reach this with
+        diameter=0 and raise ``ZeroDivisionError``.
+        """
         diameter = self.get_diameter_at_position(position, length, d1, d2)
+        if diameter <= 0:
+            return float("inf")
         viscosity = self.calculate_viscosity(diameter)
         diameter_m = diameter / UM_PER_M
         return (128.0 * viscosity) / (np.pi * diameter_m ** 4)

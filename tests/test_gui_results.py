@@ -223,6 +223,34 @@ def test_nodes_default_to_visible_again_on_later_stages():
     assert spec_named(group, NODES).visible is True
 
 
+def test_layers_for_graph_rebuilds_vessels_and_nodes_from_an_edited_graph():
+    """The "Edit" window's own refresh entry point: no stage `output` object,
+
+    just a graph it just mutated.
+    """
+    results = built()
+    edited = a_graph()
+    edited.add_node(99, pos=np.array([40.0, 0.0, 0.0]))
+    edited.add_edge(
+        3, 99, key=0,
+        voxels=[edited.nodes[3]["pos"].tolist(), edited.nodes[99]["pos"].tolist()],
+        length=10.0,
+    )
+
+    group = results.layers_for_graph(edited)
+
+    assert group.stage == "edit"
+    vessels = spec_named(group, VESSELS)
+    assert len(vessels.data) == 4  # one segment per edge, including the new one
+    nodes = spec_named(group, NODES)
+    assert 99 in list(nodes.features["node_id"])
+    assert group.note == "5 nodes, 4 vessels (edited)."
+    # The new node's degree (1) is a real value, not NaN -- coloured by
+    # degree like a freshly built network's own NODES layer.
+    new_index = list(nodes.features["node_id"]).index(99)
+    assert nodes.features["degree"][new_index] == 1
+
+
 def test_boundary_nodes_start_hidden():
     results = ResultLayers()
     results.stage_finished("build_network", network(a_graph()))

@@ -45,12 +45,18 @@ DEFAULT_FLOAT_RANGE = (-1e12, 1e12)
 #: than staying visible and greyed. Input swaps segmented-file vs ilastik
 #: children; Vessel masks nests under ``automated_vessel_assignment``;
 #: Diameters nests constant vs per-order tables and FWHM under its parents;
-#: Statistics nests cell-mask / ``statistics_mode`` under their parent bools.
+#: Statistics nests cell-mask / ``statistics_mode`` under their parent bools;
+#: EDT mask diameter estimate nests entirely under ``use_fwhm_edge_diameters``
+#: then ``use_edt_diameter_crosscheck`` -- its own diameter estimate only
+#: ever seeds, falls back for, or cross-checks a FWHM measurement (see
+#: haemodynamics.apply.assign_edge_diameters), so it has nothing to show
+#: while FWHM is off.
 HIDE_WHEN_UNMET_SECTIONS = frozenset({
     "Input and segmentation",
     "Vessel masks",
     "Diameters and pericytes",
     "FWHM diameter measurement",
+    "EDT mask diameter estimate",
     "Statistics and measurements",
 })
 
@@ -273,14 +279,18 @@ def visible_graph_centreline_settings(
 def visible_diameter_settings(
     schema: Schema, values: Mapping[str, Any]
 ) -> set[str]:
-    """Diameters-tab diameter + FWHM setting names that should appear for *values*.
+    """Diameters-tab diameter + FWHM + EDT setting names that should appear.
 
-    Parent toggles (``all_diams_const``, ``use_fwhm_edge_diameters``, …) stay;
-    gated children follow their ``requires`` chains.
+    Parent toggles (``all_diams_const``, ``use_fwhm_edge_diameters``,
+    ``use_edt_diameter_crosscheck``, …) stay; gated children follow their
+    ``requires`` chains. EDT mask diameter estimate nests two levels under
+    ``use_fwhm_edge_diameters`` then ``use_edt_diameter_crosscheck``.
     """
-    return _visible_settings_in_section(
-        schema, values, "Diameters and pericytes"
-    ) | _visible_settings_in_section(schema, values, "FWHM diameter measurement")
+    return (
+        _visible_settings_in_section(schema, values, "Diameters and pericytes")
+        | _visible_settings_in_section(schema, values, "FWHM diameter measurement")
+        | _visible_settings_in_section(schema, values, "EDT mask diameter estimate")
+    )
 
 
 def visible_statistics_settings(
@@ -308,6 +318,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "show_plots_in_ide": "Show plots in IDE",
     "ide_plot_mode": "IDE plot mode",
     "hold_ide_plots_open": "Hold IDE plots open",
+    "use_thick_vessel_skeletonisation": "Use alternate skeletonisation for thick vessels",
 }
 
 

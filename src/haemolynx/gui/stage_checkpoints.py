@@ -222,12 +222,21 @@ def tab_end_stage(title: str, stages: Sequence = STAGES) -> str | None:
 
     When several stages share a tab, the last one in run order wins -- so the
     Haemodynamics tab ends at ``solve``, after pressures and flows are written.
+
+    A tab with no stage of its own (``call=None`` -- "8. Additional
+    measurements" is the one today, splitting export_results's settings
+    across two tabs without splitting the function itself) runs nothing when
+    visited, so its end-of-tab state is whatever its predecessor's already
+    was; falls back to that tab instead of reporting no checkpoint at all.
     """
     last: str | None = None
     for stage in stages:
         if stage.call and tab_title(stage) == title:
             last = stage.call
-    return last
+    if last is not None:
+        return last
+    previous = previous_tab(title, stages)
+    return tab_end_stage(previous, stages) if previous is not None else None
 
 
 def tab_start_stage(title: str, stages: Sequence = STAGES) -> str | None:
@@ -235,10 +244,23 @@ def tab_start_stage(title: str, stages: Sequence = STAGES) -> str | None:
 
     Haemodynamics starts at ``build_haemodynamic_model`` (``solve`` shares
     that tab and is not a starting point of its own).
+
+    A tab with no stage of its own (see :func:`tab_end_stage`) starts
+    whatever the next tab starts -- "Run from this stage" on it must re-run
+    the same stage a change on the next tab would.
     """
     for stage in stages:
         if stage.call and tab_title(stage) == title:
             return stage.call
+    titles = tab_titles(stages)
+    try:
+        index = titles.index(title)
+    except ValueError:
+        return None
+    for later in titles[index + 1:]:
+        found = tab_start_stage(later, stages)
+        if found is not None:
+            return found
     return None
 
 
@@ -431,14 +453,19 @@ def _boundary_masks_from_group(group: Any) -> tuple[Any | None, Any | None]:
     return arteriole, venule
 
 
-def resume_from_checkpoint(checkpoint: StageCheckpoint, start_from: str) -> PipelineResume:
-    """Build the pipeline resume payload from a previous-tab checkpoint."""
+def _resume_payload(checkpoint: StageCheckpoint, *, graph: Any, start_from: str) -> PipelineResume:
+    """The boundary-node lists a checkpoint carries, threaded onto *graph*.
+
+    Shared by :func:`resume_from_checkpoint` (graph = the checkpoint's own)
+    and :func:`resume_from_edit` (graph = a hand-edited one) -- the boundary
+    roles are a property of the checkpoint, not of which graph is resumed.
+    """
     pair = None
     if checkpoint.inlet_nodes and checkpoint.outlet_nodes:
         pair = (checkpoint.inlet_nodes[0], checkpoint.outlet_nodes[0])
     return PipelineResume(
         start_from=start_from,
-        graph=checkpoint.graph,
+        graph=graph,
         inlet_nodes=checkpoint.inlet_nodes,
         outlet_nodes=checkpoint.outlet_nodes,
         arteriole_boundary_nodes=checkpoint.arteriole_boundary_nodes,
@@ -447,6 +474,39 @@ def resume_from_checkpoint(checkpoint: StageCheckpoint, start_from: str) -> Pipe
         large_arteriole_mask=checkpoint.large_arteriole_mask,
         large_venule_mask=checkpoint.large_venule_mask,
     )
+
+
+def resume_from_checkpoint(checkpoint: StageCheckpoint, start_from: str) -> PipelineResume:
+    """Build the pipeline resume payload from a previous-tab checkpoint."""
+    return _resume_payload(checkpoint, graph=checkpoint.graph, start_from=start_from)
+
+
+def resume_from_edit(
+    checkpoint: StageCheckpoint,
+    edited_graph: Any,
+    start_from: str = "assign_diameters",
+) -> PipelineResume:
+    """Build the pipeline resume payload from a hand-edited graph.
+
+    *checkpoint* only supplies the boundary-node-id lists (any checkpoint at
+    or after ``assign_boundaries`` carries these forward -- see
+    :meth:`StageCheckpoints._carried_boundary_roles` -- so the caller can
+    pass whichever is the most recently recorded one); *edited_graph* is
+    threaded through in place of the checkpoint's own stored graph.
+
+    Defaults to starting at ``assign_diameters`` rather than
+    ``build_haemodynamic_model``: a hand-added edge has no ``branch_order``
+    or ``length`` yet, and both must be recomputed for the edited topology
+    before haemodynamics can give it a real resistance (see
+    ``haemodynamics.poiseuille.set_poiseuille_resistances`` for what an edge
+    missing either one costs -- a silent zero-conductance edge).
+
+    If the edit deleted a node that was one of these boundary nodes (or the
+    resistance-pair node), ``solve`` raises a clear error rather than
+    solving silently wrong -- see
+    ``haemodynamics.resistance.solve_flow_from_conductance_matrix``.
+    """
+    return _resume_payload(checkpoint, graph=edited_graph, start_from=start_from)
 
 
 class StageCheckpoints:

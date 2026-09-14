@@ -319,15 +319,15 @@ def test_flow_arrow_scale_schema_default_and_requires():
 
 def test_flow_arrow_scale_lives_on_export_tab():
     owner = assign_to_stages(default_schema())
-    assert owner["flow_arrow_scale"] == "8. Export"
+    assert owner["flow_arrow_scale"] == "9. Export"
 
 
 def test_show_flow_direction_layer_lives_on_export_tab():
-    """Last tab is 8. Export (STAGES); Solver and output section lands there."""
+    """Last tab is 9. Export (STAGES); Solver and output section lands there."""
     assert STAGES[-1].call == "export_results"
-    assert STAGES[-1].title == "8. Export"
+    assert STAGES[-1].title == "9. Export"
     owner = assign_to_stages(default_schema())
-    assert owner["show_flow_direction_layer"] == "8. Export"
+    assert owner["show_flow_direction_layer"] == "9. Export"
 
 
 def test_flow_heading_deg_pure_axes():
@@ -392,7 +392,7 @@ def test_flow_direction_colouring_schema_default_and_requires():
 
 def test_flow_direction_colouring_lives_on_export_tab():
     owner = assign_to_stages(default_schema())
-    assert owner["flow_direction_colouring"] == "8. Export"
+    assert owner["flow_direction_colouring"] == "9. Export"
 
 
 def _perpendicular_arrow_graph() -> nx.MultiGraph:

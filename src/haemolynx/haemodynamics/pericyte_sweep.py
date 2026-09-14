@@ -25,6 +25,8 @@ from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
+    reachable_through_conductances,
+    reachable_unknown_node_indices,
 )
 from .sweep_flows import build_sweep_flow_grid, record_flows_after_solve
 
@@ -94,17 +96,45 @@ def solve_pressure_and_boundary_flow(
 
     known_idx = np.array(sorted(bc_idx_to_p.keys()), dtype=int)
     pressure[known_idx] = np.array([bc_idx_to_p[idx] for idx in known_idx], dtype=float)
-    unknown_idx = np.array(
-        sorted(set(range(n_nodes)).difference(set(known_idx))), dtype=int
+
+    # Same policy as solve_flow_from_conductance_matrix: a node with no
+    # conductive path to any boundary node gives the reduced Laplacian a
+    # zero row, and solving for it anyway forced the lstsq fallback below to
+    # degrade every node's pressure, not just the disconnected ones.
+    adjacency = conductance > 0
+    inlet_idx = np.array([node_to_idx[n] for n in inlet_nodes], dtype=int)
+    outlet_idx = np.array([node_to_idx[n] for n in outlet_nodes], dtype=int)
+    if float(inlet_p_bc) != float(outlet_p_bc) and not bool(
+        np.any(reachable_through_conductances(adjacency, inlet_idx)[outlet_idx])
+    ):
+        raise ValueError(
+            "Inlet and outlet boundary nodes are not connected by "
+            "conductance-carrying edges; cannot solve for flow. Check that "
+            "the inlet and outlet land on the same conductive part of the "
+            "network."
+        )
+    unknown_idx, stranded_conductive = reachable_unknown_node_indices(
+        conductance, known_idx
     )
+    if stranded_conductive:
+        logger.warning(
+            f"{stranded_conductive} node(s) carry conductances but have no "
+            "conductive path to any boundary node; their pressure stays 0 "
+            "and their edges carry zero flow."
+        )
     if unknown_idx.size:
         l_uu = laplacian[np.ix_(unknown_idx, unknown_idx)]
         l_uk = laplacian[np.ix_(unknown_idx, known_idx)]
         rhs = -l_uk @ pressure[known_idx]
         try:
             pressure[unknown_idx] = np.linalg.solve(l_uu, rhs)
-        except np.linalg.LinAlgError:
-            pressure[unknown_idx] = np.linalg.lstsq(l_uu, rhs, rcond=None)[0]
+        except np.linalg.LinAlgError as exc:
+            raise ValueError(
+                "Conductance network Laplacian is singular and cannot be "
+                "solved. Check that inlet and outlet boundary nodes lie on "
+                "the same connected, conductance-carrying part of the "
+                "network and that boundary pressures differ."
+            ) from exc
 
     def _boundary_flow(nodes: Iterable[int]) -> float:
         total = 0.0

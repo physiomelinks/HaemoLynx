@@ -144,6 +144,25 @@ def reconnect_secondary_loop_edges(
         )
         return 1 + dist[inner] ** 2
 
+    # Each category is only ever logged per-occurrence behind `debug` --
+    # normally off, tied to verbose_logging -- so a run where every single
+    # candidate pair hit the same exception looked identical to a run that
+    # found nothing to reconnect. Counted here so a summary can say so
+    # regardless of `debug`, the same way set_poiseuille_resistances reports
+    # its own skipped-edge counts.
+    failure_counts = {
+        "subvolume creation failed": 0,
+        "pathfinding failed": 0,
+        "metric calculation failed": 0,
+        "candidate pair raised unexpectedly": 0,
+        "result processing raised unexpectedly": 0,
+    }
+    failure_counts_lock = threading.Lock()
+
+    def record_failure(category: str) -> None:
+        with failure_counts_lock:
+            failure_counts[category] += 1
+
     cache_lock = threading.Lock()
     sub_cache = {}
     cache_access_order = []
@@ -271,6 +290,7 @@ def reconnect_secondary_loop_edges(
                         cached_result = (sub_cost, minc)
                         manage_cache(cache_key, cached_result)
                     except Exception as e:
+                        record_failure("subvolume creation failed")
                         if debug:
                             logger.warning("Subvolume creation failed for %s-%s: %s", u, v, e)
                         continue
@@ -347,10 +367,12 @@ def reconnect_secondary_loop_edges(
                         if len(best_paths) >= k_paths:
                             break
                     except Exception as e:
+                        record_failure("metric calculation failed")
                         if debug:
                             logger.warning("Metric calculation failed: %s", e)
                         continue
                 except Exception as e:
+                    record_failure("pathfinding failed")
                     if debug:
                         logger.warning("Pathfinding failed for %s-%s: %s", u, v, e)
                     continue
@@ -363,6 +385,7 @@ def reconnect_secondary_loop_edges(
             )
             return u, v, best_paths[:k_paths]
         except Exception as e:
+            record_failure("candidate pair raised unexpectedly")
             if debug:
                 logger.error("Attempt failed for %s-%s: %s", u, v, e)
             return None
@@ -418,6 +441,7 @@ def reconnect_secondary_loop_edges(
                                     best["novelty"],
                                 )
                     except Exception as e:
+                        record_failure("result processing raised unexpectedly")
                         if debug:
                             logger.error("Processing failed for %s-%s: %s", u, v, e)
                         continue
@@ -428,6 +452,19 @@ def reconnect_secondary_loop_edges(
     with cache_lock:
         sub_cache.clear()
         cache_access_order.clear()
+
+    # Always reported, unlike the per-occurrence messages above: a run where
+    # every candidate pair failed the same way must not look identical to a
+    # run that cleanly found nothing to reconnect.
+    for category, count in failure_counts.items():
+        if count:
+            logger.warning(
+                "reconnect_secondary_loop_edges: %s (%d occurrence%s; "
+                "enable verbose_logging for per-pair detail)",
+                category,
+                count,
+                "" if count == 1 else "s",
+            )
 
     if debug:
         logger.info("Done: added %d secondary edges", added)

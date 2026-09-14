@@ -18,17 +18,20 @@ from haemolynx.gui.stage_checkpoints import (
     GRAPH_RESUME_STAGES,
     GRAPH_SKIP_FOR_RESUME,
     SKIP_FOR_RESUME,
+    StageCheckpoint,
     StageCheckpoints,
     can_revert_from,
     checkpoint_pickle_path,
     discard_cached_artefacts,
     graph_resume_path,
     previous_tab,
+    resume_from_edit,
     restore_message,
     revert_target_stage,
     skeleton_resume_path,
     skip_settings_for_resume,
     tab_end_stage,
+    tab_start_stage,
 )
 from haemolynx.gui.tabs import tab_titles
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
@@ -52,6 +55,76 @@ def _settings(tmp_path: Path, stem: str = "stack") -> dict:
 def test_haemodynamics_tab_ends_at_solve_not_build_model():
     """Solve shares the Haemodynamics tab; revert must land after pressures."""
     assert tab_end_stage("6. Haemodynamics") == "solve"
+
+
+def test_additional_measurements_tab_shares_export_results_with_no_call_of_its_own():
+    """"8. Additional measurements" opens its own tab but runs nothing on its
+
+    own -- its rows (Statistics and measurements) are read by export_results,
+    the same function "9. Export"'s VTK/plot rows are read by. Both tabs must
+    resolve to export_results for "Run from this stage", and both must
+    revert from the same predecessor checkpoint, or one of the two tabs would
+    silently re-run nothing when its own "Run from this stage" is pressed.
+    """
+    assert tab_start_stage("8. Additional measurements") == "export_results"
+    assert tab_start_stage("9. Export") == "export_results"
+    assert tab_end_stage("8. Additional measurements") == tab_end_stage("7. Perturbations")
+    assert revert_target_stage("8. Additional measurements") == revert_target_stage(
+        "9. Export"
+    )
+    assert previous_tab("9. Export") == "8. Additional measurements"
+
+
+def _boundaries_checkpoint(**overrides) -> StageCheckpoint:
+    defaults = dict(
+        stage="assign_boundaries",
+        title="4. Boundaries",
+        group=None,
+        graph="the-checkpoints-own-graph",
+        inlet_nodes=(0,),
+        outlet_nodes=(5,),
+        arteriole_boundary_nodes=(0, 1),
+        venule_boundary_nodes=(4, 5),
+    )
+    defaults.update(overrides)
+    return StageCheckpoint(**defaults)
+
+
+def test_resume_from_edit_threads_the_edited_graph_through():
+    checkpoint = _boundaries_checkpoint()
+    edited_graph = "the-users-hand-edited-graph"
+
+    resume = resume_from_edit(checkpoint, edited_graph)
+
+    assert resume.graph is edited_graph
+    assert resume.graph is not checkpoint.graph
+
+
+def test_resume_from_edit_defaults_to_starting_at_assign_diameters():
+    """A hand-added edge has no branch_order/length yet -- Regenerate must
+
+    recompute both for the edited topology, not skip straight to
+    haemodynamics (see set_poiseuille_resistances: either missing silently
+    zeroes that edge's conductance).
+    """
+    resume = resume_from_edit(_boundaries_checkpoint(), "graph")
+    assert resume.start_from == "assign_diameters"
+
+
+def test_resume_from_edit_carries_the_checkpoints_own_boundary_roles():
+    checkpoint = _boundaries_checkpoint()
+    resume = resume_from_edit(checkpoint, "edited-graph")
+
+    assert resume.inlet_nodes == checkpoint.inlet_nodes
+    assert resume.outlet_nodes == checkpoint.outlet_nodes
+    assert resume.arteriole_boundary_nodes == checkpoint.arteriole_boundary_nodes
+    assert resume.venule_boundary_nodes == checkpoint.venule_boundary_nodes
+    assert resume.resistance_node_pair == (0, 5)
+
+
+def test_resume_from_edit_accepts_an_explicit_start_from():
+    resume = resume_from_edit(_boundaries_checkpoint(), "graph", start_from="solve")
+    assert resume.start_from == "solve"
 
 
 def test_previous_tab_of_the_first_is_none():

@@ -255,6 +255,39 @@ def check_large_vessel_branch_order_mode_prerequisites(
     return report
 
 
+#: Ilastik-driven vessel-mask segmentation toggle -> the flags its own
+#: schema ``requires`` names (see pipeline/schema.py). Structurally the same
+#: gap as assign_large_vessel_branch_orders above: the schema's ``requires``
+#: only drives GUI nesting and an ``IneffectiveSettingWarning``, so a raw
+#: settings dict can have the ilastik flag on with its prerequisites off and
+#: reach the segmentation stage before anything says so -- there it is
+#: silently a no-op (nothing reads the ilastik output), not a crash, which
+#: is exactly the kind of "ran to completion but did nothing" outcome a
+#: preflight check exists to catch before it looks like a real run.
+_ILASTIK_VESSEL_MASK_PREREQUISITES = {
+    "use_ilastik_large_vessel_segmentation": (
+        "use_large_vessel_masks",
+        "automated_vessel_assignment",
+    ),
+    "use_ilastik_small_vessel_segmentation": (
+        "use_small_vessel_masks_for_boundary_assignment",
+        "automated_vessel_assignment",
+    ),
+}
+
+
+def check_ilastik_vessel_mask_prerequisites(settings: Mapping[str, Any]) -> CheckReport:
+    """An ilastik large/small-vessel segmentation toggle needs its mask on too."""
+    report = CheckReport()
+    for flag, requires in _ILASTIK_VESSEL_MASK_PREREQUISITES.items():
+        if not bool(settings.get(flag)):
+            continue
+        missing = [name for name in requires if not bool(settings.get(name))]
+        if missing:
+            report.add_error(f"{flag} requires {', '.join(missing)} to also be on.")
+    return report
+
+
 def check_thick_vessel_restriction_prerequisites(
     settings: Mapping[str, Any],
 ) -> CheckReport:
@@ -426,6 +459,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
+    report.extend(check_ilastik_vessel_mask_prerequisites(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))

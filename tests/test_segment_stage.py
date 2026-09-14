@@ -127,3 +127,34 @@ def test_ilastik_hands_on_the_path_it_produced(tmp_path, monkeypatch):
 
     assert inputs.image_path == produced
     assert settings["input_path"] == produced
+
+
+def test_ilastik_timeout_setting_reaches_the_subprocess_call(tmp_path, monkeypatch):
+    """ilastik_timeout_seconds must actually be threaded through, not just declared."""
+    from haemolynx import io
+
+    raw = a_segmented_tiff(tmp_path)
+    produced = tmp_path / "segmentations" / "mask_segmented.tif"
+    produced.parent.mkdir()
+    produced.write_bytes(raw.read_bytes())
+
+    seen = {}
+
+    def fake_run(**kwargs):
+        seen.update(kwargs)
+        return produced
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", fake_run)
+
+    settings = settings_for(
+        tmp_path,
+        use_ilastik_segmentation=True,
+        input_path=None,
+        ilastik_unsegmented_image_path=raw,
+        ilastik_classifier_path=tmp_path / "classifier.ilp",
+        ilastik_output_dir=tmp_path / "segmentations",
+        ilastik_timeout_seconds=42.0,
+    )
+    segment(settings)
+
+    assert seen.get("timeout") == 42.0

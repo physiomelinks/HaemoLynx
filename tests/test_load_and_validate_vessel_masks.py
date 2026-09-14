@@ -28,6 +28,7 @@ from haemolynx.io import (
     load_large_vessel_masks,
     vessel_mask_arguments,
 )
+from haemolynx.io.automated_vessel_assignment import _assert_voxel_sizes_match_main_image
 
 # Coarse z, fine x — the usual confocal case, and all three spacings differ.
 VOXEL_SIZE_XYZ = (0.4, 0.5, 2.0)
@@ -210,6 +211,36 @@ def test_masks_matching_the_main_image_voxel_size_are_accepted(tmp_path: Path) -
 
     assert arteriole_voxel == VOXEL_SIZE_XYZ
     assert venule_voxel == VOXEL_SIZE_XYZ
+
+
+def test_voxel_size_check_tolerates_floating_point_round_off() -> None:
+    """Regression: this used to compare with rtol=0, atol=0 -- bit-exact
+
+    equality across three independently-loaded floats. Physically identical
+    spacing that merely round-trips through a different loader's own
+    division can differ by a ULP or two; that must not fail the check that a
+    genuine mismatch (a different axis order, a different acquisition) still
+    does.
+    """
+    base = VOXEL_SIZE_XYZ
+    almost_equal = tuple(v * (1.0 + 1e-9) for v in base)
+    _assert_voxel_sizes_match_main_image(
+        main_voxel_size_xyz=base,
+        arteriole_voxel_size_xyz=almost_equal,
+        venule_voxel_size_xyz=base,
+        mask_role="large",
+    )
+
+
+def test_voxel_size_check_still_rejects_a_real_mismatch() -> None:
+    genuinely_different = tuple(v * 1.05 for v in VOXEL_SIZE_XYZ)
+    with pytest.raises(ValueError, match="Voxel-size mismatch"):
+        _assert_voxel_sizes_match_main_image(
+            main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            arteriole_voxel_size_xyz=genuinely_different,
+            venule_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            mask_role="large",
+        )
 
 
 def test_a_mask_whose_z_and_x_spacings_are_swapped_is_rejected(tmp_path: Path) -> None:

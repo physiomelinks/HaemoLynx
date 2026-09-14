@@ -518,7 +518,8 @@ def test_the_sixth_stage_is_named_haemodynamics():
         "6. Haemodynamics",
         "Solve",
         "7. Perturbations",
-        "8. Export",
+        "8. Additional measurements",
+        "9. Export",
     ]
     haemodynamics = next(s for s in STAGES if s.title == "6. Haemodynamics")
     assert haemodynamics.call == "build_haemodynamic_model"

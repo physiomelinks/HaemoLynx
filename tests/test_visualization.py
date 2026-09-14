@@ -8,6 +8,7 @@ import networkx as nx
 
 from haemolynx.visualization import (
     plot_node_degree_distribution,
+    visualize_3d_plotly,
     visualize_3d_plotly_vessel_types,
     visualize_edges_and_nodes,
     visualize_geometry_with_branch_orders,
@@ -48,6 +49,45 @@ def test_visualize_3d_plotly_vessel_types_renders_large_vessel_traces():
     assert large_art_trace.line.color == "#8b0000"
     large_ven_trace = next(t for t in fig.data if t.name.startswith("Large venules"))
     assert large_ven_trace.line.color == "#08306b"
+
+
+def test_visualize_3d_plotly_snaps_edge_endpoints_to_node_positions():
+    """Regression: plot.py used to draw an edge's raw ``voxels`` as stored,
+
+    the same duplicated logic geometry.edge_polyline was written to replace
+    (see its own module docstring: "two plotly writers" used to answer this
+    separately). A voxels path left a little short of its node -- exactly
+    what centreline smoothing/cluster collapse produces -- used to leave a
+    visible gap; edge_polyline's snap closes it.
+    """
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 10.0))
+    # Falls 2 microns short of node 1's actual position.
+    G.add_edge(0, 1, voxels=[(0.0, 0.0, 0.0), (0.0, 0.0, 8.0)])
+
+    fig = visualize_3d_plotly(G, show=False)
+
+    edge_trace = next(t for t in fig.data if t.name == "Edges")
+    # Stored (z, y, x) -> plotted (x, y, z): the last real point before the
+    # None separator must land exactly on node 1's x-coordinate (10.0), not
+    # the raw voxels path's short 8.0.
+    real_x = [x for x in edge_trace.x if x is not None]
+    assert real_x[-1] == pytest.approx(10.0)
+
+
+def test_visualize_3d_plotly_falls_back_to_a_node_to_node_segment():
+    """An edge with no ``voxels`` at all must still be drawn, from pos alone."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 5.0))
+    G.add_edge(0, 1)
+
+    fig = visualize_3d_plotly(G, show=False)
+
+    edge_trace = next(t for t in fig.data if t.name == "Edges")
+    real_x = [x for x in edge_trace.x if x is not None]
+    assert real_x == pytest.approx([0.0, 5.0])
 
 
 def test_sort_branch_orders_numerically():

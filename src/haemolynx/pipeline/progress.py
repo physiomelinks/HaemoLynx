@@ -229,11 +229,24 @@ STAGES: tuple[Stage, ...] = (
         sections=("Perturbation runs",),
     ),
     Stage(
+        # Statistics and the 3D cell-mask measurement are computed inside
+        # export_results (there is no separate pipeline stage for them), but
+        # get a tab of their own so a long, rarely-touched options list does
+        # not crowd the VTK/plot settings on "9. Export". call=None is the
+        # same feature "Solve" above uses in the other direction (a real
+        # stage sharing another's tab): a tab the pipeline does not run as
+        # its own stage.
+        call=None,
+        title="8. Additional measurements",
+        summary="Global vessel statistics, and 3D distance to a cell mask.",
+        sections=("Statistics and measurements",),
+    ),
+    Stage(
         call="export_results",
-        title="8. Export",
-        summary="VTK, statistics and plots.",
+        title="9. Export",
+        summary="VTK and plots.",
         settings=("vtk_output_prefix", "base_plot_dir", "verbose_logging"),
-        sections=("Solver and output", "Statistics and measurements"),
+        sections=("Solver and output",),
     ),
 )
 

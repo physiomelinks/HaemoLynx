@@ -297,6 +297,7 @@ def segment(settings: dict):
             classifier_path=Path(settings["ilastik_classifier_path"]),
             output_path=ilastik_segmented_path,
             ilastik_executable=settings["ilastik_executable"],
+            timeout=settings["ilastik_timeout_seconds"],
         )
         logger.info(f"Using ilastik-segmented image: {settings['input_path']}")
     else:
@@ -518,7 +519,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             settings, "segmentation_cleanup_",
             parameters_of(preprocessing.clean_segmented_mask_for_skeletonisation),
         )
-        if any(
+        if settings["segmentation_cleanup"] and any(
             cleanup_kwargs.get(flag)
             for flag in (
                 "fill_cavities",
@@ -2029,24 +2030,31 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
         node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
         logger.info(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
     if settings["run_haemodynamics"] and settings["do_equiv_resistance_calculation"]:
-        source_node, target_node = resistance_node_pair
-        if source_node in node_to_idx and target_node in node_to_idx:
-            laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-            solution.equivalent_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
-                laplacian,
-                G,
-                source_node,
-                target_node,
-            )
-            logger.info(
-                f"Effective resistance between nodes {source_node} and "
-                f"{target_node}: {solution.equivalent_resistance}"
+        if resistance_node_pair is None:
+            logger.warning(
+                "Skipped two-point resistance: do_equiv_resistance_calculation "
+                "is on but no resistance_node_pair was determined (check "
+                "inlet_nodes/outlet_nodes and boundary assignment)."
             )
         else:
-            logger.warning(
-                f"Skipped two-point resistance: nodes {resistance_node_pair} "
-                "are not both present in the graph."
-            )
+            source_node, target_node = resistance_node_pair
+            if source_node in node_to_idx and target_node in node_to_idx:
+                laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
+                solution.equivalent_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+                    laplacian,
+                    G,
+                    source_node,
+                    target_node,
+                )
+                logger.info(
+                    f"Effective resistance between nodes {source_node} and "
+                    f"{target_node}: {solution.equivalent_resistance}"
+                )
+            else:
+                logger.warning(
+                    f"Skipped two-point resistance: nodes {resistance_node_pair} "
+                    "are not both present in the graph."
+                )
 
     # 9) Also solve for flow throughout the network using the conductance matrix 
     # and the input and output pressures.

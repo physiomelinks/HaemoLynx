@@ -70,6 +70,7 @@ from .progress import (
 #: block (the raw mask, before skeletonisation) -- in the same fixed order
 #: `clean_segmented_mask_for_skeletonisation` itself applies them.
 SEGMENTATION_CLEANUP_SETTING_NAMES: tuple[str, ...] = (
+    "segmentation_cleanup",
     "segmentation_cleanup_fill_cavities",
     "segmentation_cleanup_remove_whiskers",
     "segmentation_cleanup_whisker_radius_um",
@@ -733,6 +734,25 @@ class _Search:
                     float(self.current["segmentation_cleanup_remove_small_min_volume_um3"]),
                 ),
             )
+
+        # The seven toggles above are only read at all while this master
+        # switch is on (see pipeline.schema's segmentation_cleanup and
+        # pipeline.stages.skeletonise) -- a real run applying these chosen
+        # settings must not silently ignore what this group just decided
+        # was worth turning on.
+        if any(
+            self.current[flag]
+            for flag in (
+                "segmentation_cleanup_fill_cavities",
+                "segmentation_cleanup_remove_whiskers",
+                "segmentation_cleanup_split_narrow_necks",
+                "segmentation_cleanup_close_gaps",
+                "segmentation_cleanup_reconnect_gaps",
+                "segmentation_cleanup_smooth_surfaces",
+                "segmentation_cleanup_remove_small_volumes",
+            )
+        ):
+            self.current["segmentation_cleanup"] = True
 
         self.raw_mask = self._cleanup_trial({})
         # The typical-radius scale used by later groups' own candidate

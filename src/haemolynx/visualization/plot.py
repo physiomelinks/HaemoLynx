@@ -16,6 +16,7 @@ from ._helpers import (
     create_color_mapping,
     group_branch_orders_for_legend,
 )
+from .geometry import edge_polyline
 
 
 def _resolve_voxel_size(
@@ -212,10 +213,11 @@ def visualize_edges_and_nodes(image: np.ndarray, G: nx.Graph, label_nodes: bool 
     plt.figure(figsize=(10, 10))
     plt.imshow(projection, cmap="gray", extent=extent)
     for u, v, d in G.edges(data=True):
-        path = d.get("voxels", [])
-        if len(path) > 1:
-            path = np.array(path)
-            plt.plot(path[:, 2], path[:, 1], color="cyan", linewidth=0.5)
+        try:
+            path = edge_polyline(G, u, v, d)
+        except ValueError:
+            continue
+        plt.plot(path[:, 2], path[:, 1], color="cyan", linewidth=0.5)
     if pos:
         coords = np.array(list(pos.values()))
         plt.scatter(coords[:, 2], coords[:, 1], c="red", s=3)
@@ -292,12 +294,14 @@ def visualize_geometry_with_branch_orders(
     edge_paths = {}
     for u, v, key, data in G.edges(keys=True, data=True):
         bo = data.get("branch_order", "No_BO")
-        path = data.get("voxels", [])
-        if bo != "No_BO":
-            all_branch_orders.add(bo)
-        if bo != "No_BO" and len(path) > 1:
-            edge_branch_orders[(u, v, key)] = bo
-            edge_paths[(u, v, key)] = path
+        if bo == "No_BO":
+            continue
+        all_branch_orders.add(bo)
+        try:
+            edge_paths[(u, v, key)] = edge_polyline(G, u, v, data)
+        except ValueError:
+            continue
+        edge_branch_orders[(u, v, key)] = bo
     visualizable = {
         (u, v, k) for (u, v, k), bo in edge_branch_orders.items()
         if len(edge_paths[(u, v, k)]) > 1
@@ -405,8 +409,11 @@ def visualize_geometry_with_edge_resistance(
     edge_paths = {}
     weights_list = []
     for u, v, key, data in G.edges(keys=True, data=True):
+        try:
+            path = edge_polyline(G, u, v, data)
+        except ValueError:
+            continue
         weight = data.get("resistance")
-        path = data.get("voxels", [])
         if weight is not None:
             proc = 1.0 / weight if use_inverse else weight
             if use_inverse and weight == 0:
@@ -488,40 +495,27 @@ def visualize_3d_plotly(
     if not pos:
         raise ValueError("Graph has no node positions ('pos').")
     edge_x, edge_y, edge_z = [], [], []
+
+    def _append_edge_polyline(u, v, edge_data) -> None:
+        try:
+            points = edge_polyline(G, u, v, edge_data)
+        except ValueError:
+            return
+        for pt in points:
+            # Stored as (z, y, x)
+            edge_x.append(float(pt[2]))
+            edge_y.append(float(pt[1]))
+            edge_z.append(float(pt[0]))
+        edge_x.append(None)
+        edge_y.append(None)
+        edge_z.append(None)
+
     if isinstance(G, nx.MultiGraph):
-        edge_iter = G.edges(keys=True, data=True)
-        for u, v, _k, edge_data in edge_iter:
-            voxels = edge_data.get("voxels", [])
-            if len(voxels) > 1:
-                for pt in voxels:
-                    # Stored as (z, y, x)
-                    edge_x.append(float(pt[2]))
-                    edge_y.append(float(pt[1]))
-                    edge_z.append(float(pt[0]))
-                edge_x.append(None)
-                edge_y.append(None)
-                edge_z.append(None)
-            elif u in pos and v in pos:
-                pu, pv = pos[u], pos[v]
-                edge_x += [float(pu[2]), float(pv[2]), None]
-                edge_y += [float(pu[1]), float(pv[1]), None]
-                edge_z += [float(pu[0]), float(pv[0]), None]
+        for u, v, _k, edge_data in G.edges(keys=True, data=True):
+            _append_edge_polyline(u, v, edge_data)
     else:
         for u, v, edge_data in G.edges(data=True):
-            voxels = edge_data.get("voxels", [])
-            if len(voxels) > 1:
-                for pt in voxels:
-                    edge_x.append(float(pt[2]))
-                    edge_y.append(float(pt[1]))
-                    edge_z.append(float(pt[0]))
-                edge_x.append(None)
-                edge_y.append(None)
-                edge_z.append(None)
-            elif u in pos and v in pos:
-                pu, pv = pos[u], pos[v]
-                edge_x += [float(pu[2]), float(pv[2]), None]
-                edge_y += [float(pu[1]), float(pv[1]), None]
-                edge_z += [float(pu[0]), float(pv[0]), None]
+            _append_edge_polyline(u, v, edge_data)
 
     # Stored as (z, y, x) -> plot as (x, y, z)
     node_x = [float(p[2]) for p in pos.values()]
@@ -615,45 +609,27 @@ def visualize_3d_plotly_vessel_types(
     }
     per_type_counts = {k: 0 for k in type_to_color}
 
+    def _append_typed_edge_polyline(u, v, edge_data) -> None:
+        try:
+            points = edge_polyline(G, u, v, edge_data)
+        except ValueError:
+            return
+        vessel_type = _vessel_type(edge_data.get("branch_order"))
+        for pt in points:
+            per_type_coords[vessel_type]["x"].append(float(pt[2]))
+            per_type_coords[vessel_type]["y"].append(float(pt[1]))
+            per_type_coords[vessel_type]["z"].append(float(pt[0]))
+        per_type_coords[vessel_type]["x"].append(None)
+        per_type_coords[vessel_type]["y"].append(None)
+        per_type_coords[vessel_type]["z"].append(None)
+        per_type_counts[vessel_type] += 1
+
     if isinstance(G, nx.MultiGraph):
-        edge_iter = G.edges(keys=True, data=True)
-        for u, v, _k, edge_data in edge_iter:
-            vessel_type = _vessel_type(edge_data.get("branch_order"))
-            voxels = edge_data.get("voxels", [])
-            if len(voxels) > 1:
-                for pt in voxels:
-                    per_type_coords[vessel_type]["x"].append(float(pt[2]))
-                    per_type_coords[vessel_type]["y"].append(float(pt[1]))
-                    per_type_coords[vessel_type]["z"].append(float(pt[0]))
-                per_type_coords[vessel_type]["x"].append(None)
-                per_type_coords[vessel_type]["y"].append(None)
-                per_type_coords[vessel_type]["z"].append(None)
-                per_type_counts[vessel_type] += 1
-            elif u in pos and v in pos:
-                pu, pv = pos[u], pos[v]
-                per_type_coords[vessel_type]["x"] += [float(pu[2]), float(pv[2]), None]
-                per_type_coords[vessel_type]["y"] += [float(pu[1]), float(pv[1]), None]
-                per_type_coords[vessel_type]["z"] += [float(pu[0]), float(pv[0]), None]
-                per_type_counts[vessel_type] += 1
+        for u, v, _k, edge_data in G.edges(keys=True, data=True):
+            _append_typed_edge_polyline(u, v, edge_data)
     else:
         for u, v, edge_data in G.edges(data=True):
-            vessel_type = _vessel_type(edge_data.get("branch_order"))
-            voxels = edge_data.get("voxels", [])
-            if len(voxels) > 1:
-                for pt in voxels:
-                    per_type_coords[vessel_type]["x"].append(float(pt[2]))
-                    per_type_coords[vessel_type]["y"].append(float(pt[1]))
-                    per_type_coords[vessel_type]["z"].append(float(pt[0]))
-                per_type_coords[vessel_type]["x"].append(None)
-                per_type_coords[vessel_type]["y"].append(None)
-                per_type_coords[vessel_type]["z"].append(None)
-                per_type_counts[vessel_type] += 1
-            elif u in pos and v in pos:
-                pu, pv = pos[u], pos[v]
-                per_type_coords[vessel_type]["x"] += [float(pu[2]), float(pv[2]), None]
-                per_type_coords[vessel_type]["y"] += [float(pu[1]), float(pv[1]), None]
-                per_type_coords[vessel_type]["z"] += [float(pu[0]), float(pv[0]), None]
-                per_type_counts[vessel_type] += 1
+            _append_typed_edge_polyline(u, v, edge_data)
 
     node_x = [float(p[2]) for p in pos.values()]
     node_y = [float(p[1]) for p in pos.values()]
