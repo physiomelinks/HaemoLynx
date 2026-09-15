@@ -376,6 +376,10 @@ pipeline_stages:
   skeleton_min_branch_length: 3
   # Reconnect skeleton fragments no further apart than this distance  [voxels; range 0..; needs do_skeletonize]
   skeleton_max_bridge_distance: 4
+  # Draw skeleton bridges by routing through the segmented mask instead of a straight line -- prefers a path that stays inside real segmented tissue over one that cuts through background. A bridge within skeleton_max_bridge_distance is always drawn either way; this only changes its shape  [needs do_skeletonize]
+  skeleton_bridge_weight_by_segmentation: false
+  # Multiplies the z-component of a gap distance before it is compared to skeleton_max_bridge_distance -- z and xy voxels otherwise count equally regardless of actual voxel size. Above 1.0 discourages bridging mostly through z relative to xy; below 1.0 does the reverse; 1.0 leaves z and xy voxels equally weighted  [range 0.0..; needs do_skeletonize]
+  skeleton_bridge_z_distance_weight: 1.0
   # Use this voxel connectivity when analysing skeleton components  [range 1..3; needs do_skeletonize]
   skeleton_component_connectivity: 3
   # Reconnect graph fragments whose endpoints lie within this distance  [um; range 0.0..; needs do_graph_building]

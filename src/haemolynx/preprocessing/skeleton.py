@@ -406,10 +406,59 @@ def skeletonize_voxel_bundles_into_paths(
     return skeletonize_volume(result.astype(bool)).astype(bool)
 
 
+#: Padding (voxels) added around a candidate bridge's own bounding box when
+#: cropping the segmentation mask for :func:`_bridge_path_through_mask` --
+#: enough slack for the router to curve around a nearby obstruction without
+#: needing the full-volume windowed-cost-budget machinery
+#: `graph/reconnect.py` uses for its much larger search space (a skeleton
+#: bridge is already bounded by ``max_bridge_distance``).
+_BRIDGE_MASK_WINDOW_PAD = 3
+
+
+def _bridge_path_through_mask(
+    mask: np.ndarray, start: np.ndarray, end: np.ndarray
+) -> np.ndarray | None:
+    """A* path from *start* to *end* that prefers staying inside *mask*.
+
+    Same cost-field convention as `graph.reconnect`'s own skeleton-proximity
+    router (``1 + distance_transform_edt(~reference) ** 2``), but built from
+    the segmentation mask instead of the skeleton, and only over a small
+    local window around the two endpoints. Returns ``None`` (never raises) on
+    any failure -- a shape mismatch, an out-of-bounds window, or a routing
+    exception -- so the caller can fall back to a straight line.
+    """
+    try:
+        from skimage.graph import route_through_array
+
+        lo = np.maximum(np.minimum(start, end) - _BRIDGE_MASK_WINDOW_PAD, 0)
+        hi = np.minimum(
+            np.maximum(start, end) + _BRIDGE_MASK_WINDOW_PAD + 1, np.array(mask.shape)
+        )
+        if np.any(hi <= lo):
+            return None
+        window = mask[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
+        cost = 1 + distance_transform_edt(~window.astype(bool)) ** 2
+        start_local = tuple((start - lo).astype(int))
+        end_local = tuple((end - lo).astype(int))
+        path_coords, _cost = route_through_array(
+            cost, start_local, end_local, fully_connected=True
+        )
+        if not path_coords:
+            return None
+        return np.asarray(path_coords, dtype=int) + lo
+    except Exception:
+        logger.debug("Mask-weighted bridge routing failed; using a straight line.", exc_info=True)
+        return None
+
+
 def connect_skeleton_components(
     skeleton: np.ndarray,
     max_bridge_distance: int = 20,
     component_connectivity: int | None = None,
+    *,
+    z_distance_weight: float = 1.0,
+    segmentation_mask: np.ndarray | None = None,
+    weight_by_segmentation: bool = False,
 ) -> np.ndarray:
     """Bridge nearby skeleton components with straight voxel lines.
 
@@ -425,6 +474,24 @@ def connect_skeleton_components(
     max_bridge_distance:
         Maximum voxel distance allowed for bridging.  Component pairs
         further apart than this are left disconnected.
+    z_distance_weight:
+        Multiplies the z-component of every inter-voxel distance used both
+        to pick the nearest pair and to compare against
+        *max_bridge_distance* -- the z and xy axes are otherwise treated as
+        equally spaced regardless of the actual voxel size. 1.0 (default)
+        reproduces that voxel-isotropic behaviour exactly; above 1.0 a given
+        z-gap counts for more, discouraging bridges that reach mostly
+        through z relative to xy; below 1.0 does the reverse.
+    segmentation_mask:
+        Optional binary mask of the real segmented tissue, same shape as
+        *skeleton*. Only used when *weight_by_segmentation* is also true.
+    weight_by_segmentation:
+        When true and *segmentation_mask* is given, each accepted bridge is
+        drawn by routing through the mask (preferring to stay inside real
+        segmented signal) rather than an unconditional straight line --
+        see :func:`_bridge_path_through_mask`. A bridge within
+        *max_bridge_distance* is always drawn either way; this only changes
+        the path's shape, never whether two components get connected.
     """
     from scipy.ndimage import label
     from scipy.spatial import cKDTree
@@ -434,6 +501,9 @@ def connect_skeleton_components(
     labeled, n_components = label(skeleton, structure=structure)
     if n_components <= 1:
         return skeleton
+
+    z_weight = float(z_distance_weight)
+    axis_weights = np.array([z_weight, 1.0, 1.0], dtype=float)
 
     # One pass over the labels, then split by component. Asking
     # `labeled == comp_id` per component instead re-reads the whole volume once
@@ -454,7 +524,10 @@ def connect_skeleton_components(
             continue
         coords = coords_all[lo:hi]
         comp_coords[comp_id] = coords
-        comp_trees[comp_id] = cKDTree(coords)
+        # The tree is built (and queried) in z-weighted space so nearest-pair
+        # selection and the distance cutoff both respect `z_distance_weight`;
+        # the original, unscaled `coords` above are what actually get drawn.
+        comp_trees[comp_id] = cKDTree(coords * axis_weights)
 
     # Union-find helpers
     _parent: dict[int, int] = {c: c for c in comp_coords}
@@ -475,7 +548,7 @@ def connect_skeleton_components(
     candidates: list[tuple[float, np.ndarray, np.ndarray, int, int]] = []
     for i, cid_a in enumerate(comp_ids):
         for cid_b in comp_ids[i + 1 :]:
-            dists, idxs = comp_trees[cid_b].query(comp_coords[cid_a])
+            dists, idxs = comp_trees[cid_b].query(comp_coords[cid_a] * axis_weights)
             nearest_idx = int(np.argmin(dists))
             min_dist = float(dists[nearest_idx])
             if min_dist <= max_bridge_distance:
@@ -490,7 +563,14 @@ def connect_skeleton_components(
     for _, start, end, cid_a, cid_b in candidates:
         if _find(cid_a) == _find(cid_b):
             continue
-        _draw_line_3d(result, start, end)
+        path = None
+        if weight_by_segmentation and segmentation_mask is not None:
+            if segmentation_mask.shape == skeleton.shape:
+                path = _bridge_path_through_mask(segmentation_mask, start, end)
+        if path is not None:
+            result[tuple(path.T)] = True
+        else:
+            _draw_line_3d(result, start, end)
         _union(cid_a, cid_b)
         bridged += 1
 
@@ -505,6 +585,8 @@ def inter_component_gap_distances(
     skeleton: np.ndarray,
     component_connectivity: int | None = None,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    *,
+    z_distance_weight: float = 1.0,
 ) -> np.ndarray:
     """Nearest-neighbour distance between every pair of skeleton components.
 
@@ -519,6 +601,12 @@ def inter_component_gap_distances(
     settings optimiser) always wants a percentile of this array, and
     ``np.percentile`` of an empty array raises, so it is on the caller to check
     ``.size`` first and fall back to a schema default.
+
+    *z_distance_weight* is the same extra z-axis multiplier
+    :func:`connect_skeleton_components` accepts -- applied on top of
+    *voxel_size_zyx* -- so a caller generating candidate distance thresholds
+    for that function sees the same metric it will actually be compared
+    against.
     """
     from scipy.spatial import cKDTree
 
@@ -528,7 +616,9 @@ def inter_component_gap_distances(
     if n_components <= 1:
         return np.array([], dtype=float)
 
-    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    spacing = np.asarray(voxel_size_zyx, dtype=float) * np.array(
+        [float(z_distance_weight), 1.0, 1.0]
+    )
     coords_all = np.argwhere(labeled)
     labels_all = labeled[tuple(coords_all.T)]
     order = np.argsort(labels_all, kind="stable")
@@ -568,6 +658,10 @@ def preprocess_skeleton_for_graph(
     bundle_density_fraction: float = 0.35,
     bundle_max_connections_per_hub: int = 8,
     bundle_hub_min_spacing: int | None = None,
+    *,
+    bridge_z_distance_weight: float = 1.0,
+    segmentation_mask: np.ndarray | None = None,
+    bridge_weight_by_segmentation: bool = False,
 ) -> np.ndarray:
     """Remove small objects, re-skeletonize, and reconnect isolated fragments.
 
@@ -607,6 +701,10 @@ def preprocess_skeleton_for_graph(
         Max directional links retained when reconnecting paths to each hub.
     bundle_hub_min_spacing:
         Minimum spacing between neighboring dense hub centers.
+    bridge_z_distance_weight, segmentation_mask, bridge_weight_by_segmentation:
+        Forwarded to :func:`connect_skeleton_components` as
+        ``z_distance_weight``, ``segmentation_mask``, and
+        ``weight_by_segmentation`` respectively -- see its own docstring.
     """
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
     cleaned = remove_small_objects(
@@ -640,6 +738,9 @@ def preprocess_skeleton_for_graph(
             cleaned.astype(bool),
             max_bridge_distance=max_bridge_distance,
             component_connectivity=conn,
+            z_distance_weight=bridge_z_distance_weight,
+            segmentation_mask=segmentation_mask,
+            weight_by_segmentation=bridge_weight_by_segmentation,
         )
 
     if min_component_fraction > 0.0:

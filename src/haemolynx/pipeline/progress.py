@@ -120,6 +120,8 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_bridge_gap_size",
             "skeleton_min_branch_length",
             "skeleton_max_bridge_distance",
+            "skeleton_bridge_weight_by_segmentation",
+            "skeleton_bridge_z_distance_weight",
             "skeleton_component_connectivity",
             "skeleton_min_component_percent",
             "skeleton_bundle_scan_size",

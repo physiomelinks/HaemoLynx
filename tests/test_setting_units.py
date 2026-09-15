@@ -133,6 +133,8 @@ DIMENSIONLESS = {
     # A count of voxels per radius (a ratio), not a distance itself -- the
     # radius it's measured against is already in microns.
     "min_voxels_across_vessel_radius",
+    # A multiplier on a gap distance's z-component, not a distance itself.
+    "skeleton_bridge_z_distance_weight",
 }
 
 #: Substrings that mark a name as describing a measurement.

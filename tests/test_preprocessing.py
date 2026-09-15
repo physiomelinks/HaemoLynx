@@ -79,3 +79,24 @@ def test_inter_component_gap_distances_scales_with_voxel_size():
         skel, component_connectivity=1, voxel_size_zyx=(1.0, 1.0, 2.0)
     )
     assert gaps == pytest.approx([10.0])
+
+
+def test_inter_component_gap_distances_z_distance_weight_scales_only_z():
+    """z_distance_weight is the same knob connect_skeleton_components takes
+    -- a caller generating candidate thresholds for that function needs
+    this to reflect the metric it will actually be compared against."""
+    z_separated = np.zeros((10, 1, 1), dtype=bool)
+    z_separated[0, 0, 0] = True
+    z_separated[5, 0, 0] = True
+    gaps = inter_component_gap_distances(
+        z_separated, component_connectivity=1, z_distance_weight=3.0
+    )
+    assert gaps == pytest.approx([15.0])
+
+    xy_separated = np.zeros((1, 1, 10), dtype=bool)
+    xy_separated[0, 0, 0] = True
+    xy_separated[0, 0, 5] = True
+    gaps_xy = inter_component_gap_distances(
+        xy_separated, component_connectivity=1, z_distance_weight=3.0
+    )
+    assert gaps_xy == pytest.approx([5.0]), "an xy-only gap must be unaffected"

@@ -164,6 +164,133 @@ def test_connect_skeleton_components_joins_a_close_pair_only_when_allowed():
 
 
 # ---------------------------------------------------------------------------
+# connect_skeleton_components: z_distance_weight and weight_by_segmentation
+# ---------------------------------------------------------------------------
+def test_connect_skeleton_components_z_distance_weight_discourages_z_bridges():
+    """Regression: bridging treated z and xy voxels as equally spaced
+    regardless of the real voxel size, so a fixed max_bridge_distance let
+    through more physical reach in z than in xy whenever z spacing is
+    coarser. z_distance_weight lets a caller compensate: at the default
+    1.0, behaviour is unchanged; above 1.0 the same raw voxel gap along z
+    no longer qualifies."""
+    from scipy.ndimage import generate_binary_structure, label
+
+    volume = np.zeros((20, 5, 5), dtype=bool)
+    volume[2, 2, 2] = True
+    volume[8, 2, 2] = True  # 6 voxels apart, purely along z
+    structure = generate_binary_structure(3, 3)
+
+    default = connect_skeleton_components(volume, max_bridge_distance=10)
+    assert label(default, structure=structure)[1] == 1, "default weight should bridge"
+
+    weighted = connect_skeleton_components(
+        volume, max_bridge_distance=10, z_distance_weight=3.0
+    )
+    assert label(weighted, structure=structure)[1] == 2, (
+        "a z_distance_weight of 3.0 on a 6-voxel z gap (effective distance "
+        "18) should exceed max_bridge_distance=10 and stay unbridged"
+    )
+
+
+def test_connect_skeleton_components_z_distance_weight_below_one_favors_z_bridges():
+    """The reverse of the case above: a weight below 1.0 makes a z gap that
+    would not otherwise qualify count for less, and get bridged."""
+    from scipy.ndimage import generate_binary_structure, label
+
+    volume = np.zeros((20, 5, 5), dtype=bool)
+    volume[2, 2, 2] = True
+    volume[10, 2, 2] = True  # 8 voxels apart, purely along z
+    structure = generate_binary_structure(3, 3)
+
+    default = connect_skeleton_components(volume, max_bridge_distance=5)
+    assert label(default, structure=structure)[1] == 2, "default weight should not bridge"
+
+    weighted = connect_skeleton_components(
+        volume, max_bridge_distance=5, z_distance_weight=0.5
+    )
+    assert label(weighted, structure=structure)[1] == 1, (
+        "a z_distance_weight of 0.5 on an 8-voxel z gap (effective distance "
+        "4) should now be within max_bridge_distance=5"
+    )
+
+
+def test_connect_skeleton_components_weight_by_segmentation_follows_the_mask():
+    """Regression: bridging drew an unconditional straight line with no
+    regard for the segmented mask. With weight_by_segmentation and a mask
+    that only supports an L-shaped corridor (not the direct diagonal), the
+    bridge should follow that corridor rather than cut through background."""
+    shape = (1, 15, 15)
+    volume = np.zeros(shape, dtype=bool)
+    volume[0, 2, 2] = True
+    volume[0, 12, 12] = True
+
+    mask = np.zeros(shape, dtype=bool)
+    mask[0, 2:13, 2] = True
+    mask[0, 12, 2:13] = True
+
+    straight = connect_skeleton_components(volume.copy(), max_bridge_distance=20)
+    masked = connect_skeleton_components(
+        volume.copy(),
+        max_bridge_distance=20,
+        segmentation_mask=mask,
+        weight_by_segmentation=True,
+    )
+
+    new_straight = straight & ~volume
+    new_masked = masked & ~volume
+    assert new_straight.any() and new_masked.any(), "both should have bridged something"
+    assert (new_straight & mask).sum() == 0, (
+        "baseline straight line should cut through background, not the corridor"
+    )
+    assert (new_masked & mask).sum() == new_masked.sum(), (
+        "mask-weighted bridge should stay entirely inside the corridor"
+    )
+
+
+def test_connect_skeleton_components_weight_by_segmentation_off_by_default():
+    """weight_by_segmentation defaults to False: passing a mask without
+    also opting in must reproduce today's straight-line behaviour exactly."""
+    shape = (1, 15, 15)
+    volume = np.zeros(shape, dtype=bool)
+    volume[0, 2, 2] = True
+    volume[0, 12, 12] = True
+    mask = np.zeros(shape, dtype=bool)
+    mask[0, 2:13, 2] = True
+    mask[0, 12, 2:13] = True
+
+    without_toggle = connect_skeleton_components(
+        volume.copy(), max_bridge_distance=20, segmentation_mask=mask
+    )
+    plain = connect_skeleton_components(volume.copy(), max_bridge_distance=20)
+    assert np.array_equal(without_toggle, plain)
+
+
+def test_connect_skeleton_components_weight_by_segmentation_falls_back_without_a_mask():
+    """Defensive: the toggle with no mask (or a mismatched one) must still
+    bridge via the straight-line fallback rather than raising."""
+    from scipy.ndimage import generate_binary_structure, label
+
+    volume = np.zeros((5, 5, 10), dtype=bool)
+    volume[2, 2, 2] = True
+    volume[2, 2, 7] = True
+    structure = generate_binary_structure(3, 3)
+
+    result = connect_skeleton_components(
+        volume, max_bridge_distance=10, weight_by_segmentation=True
+    )
+    assert label(result, structure=structure)[1] == 1
+
+    mismatched_mask = np.zeros((3, 3, 3), dtype=bool)
+    result2 = connect_skeleton_components(
+        volume,
+        max_bridge_distance=10,
+        segmentation_mask=mismatched_mask,
+        weight_by_segmentation=True,
+    )
+    assert label(result2, structure=structure)[1] == 1
+
+
+# ---------------------------------------------------------------------------
 # reconnect: the windowed routing cost field
 # ---------------------------------------------------------------------------
 def test_windowed_cost_matches_the_global_field_away_from_the_pad(

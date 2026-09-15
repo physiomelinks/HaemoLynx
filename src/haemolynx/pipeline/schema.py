@@ -2046,6 +2046,36 @@ SCHEMA = Schema(
             requires=("do_skeletonize",),
         ),
         Setting(
+            name="skeleton_bridge_weight_by_segmentation",
+            kind="bool",
+            default=False,
+            help=(
+                "Draw skeleton bridges by routing through the segmented mask "
+                "instead of a straight line -- prefers a path that stays "
+                "inside real segmented tissue over one that cuts through "
+                "background. A bridge within skeleton_max_bridge_distance "
+                "is always drawn either way; this only changes its shape"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_bridge_z_distance_weight",
+            kind="float",
+            default=1.0,
+            help=(
+                "Multiplies the z-component of a gap distance before it is "
+                "compared to skeleton_max_bridge_distance -- z and xy "
+                "voxels otherwise count equally regardless of actual voxel "
+                "size. Above 1.0 discourages bridging mostly through z "
+                "relative to xy; below 1.0 does the reverse; 1.0 leaves z "
+                "and xy voxels equally weighted"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=0.0,
+            requires=("do_skeletonize",),
+        ),
+        Setting(
             name="skeleton_component_connectivity",
             kind="int",
             default=3,

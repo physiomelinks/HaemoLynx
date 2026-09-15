@@ -114,6 +114,8 @@ SKELETON_SETTING_NAMES: tuple[str, ...] = (
     "skeleton_closing_radius",
     "skeleton_bridge_gap_size",
     "skeleton_max_bridge_distance",
+    "skeleton_bridge_weight_by_segmentation",
+    "skeleton_bridge_z_distance_weight",
     "skeleton_component_connectivity",
     "skeleton_min_component_percent",
 )
@@ -146,6 +148,14 @@ OPTIMISE_SETTING_NAMES: tuple[str, ...] = (
 #: for a warning threshold in the sense the rest of this search means it, so
 #: nothing here empirically tests them; they stay exactly as the GUI/config
 #: already had them.
+#:
+#: Also deliberately not swept: skeleton_bridge_weight_by_segmentation and
+#: skeleton_bridge_z_distance_weight. Both change *how* a bridge within
+#: skeleton_max_bridge_distance is drawn (mask-hugging vs. straight line;
+#: how much a z-gap counts against xy), not whether the resulting skeleton
+#: scores better on any metric this search evaluates -- they are safety/bias
+#: knobs the user sets deliberately, so they pass through untouched like the
+#: guard settings above.
 
 #: An upper bound on how many sweeps a run does, for progress display. Guarded
 #: sweeps that are skipped mean a real run can finish before reaching this.
@@ -446,6 +456,8 @@ def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
         bundle_density_fraction=float(settings["skeleton_bundle_density_fraction"]),
         bundle_max_connections_per_hub=int(settings["skeleton_bundle_max_connections_per_hub"]),
         bundle_hub_min_spacing=int(settings["skeleton_bundle_hub_min_spacing"]),
+        bridge_weight_by_segmentation=bool(settings["skeleton_bridge_weight_by_segmentation"]),
+        bridge_z_distance_weight=float(settings["skeleton_bridge_z_distance_weight"]),
     )
 
 
@@ -703,7 +715,9 @@ class _Search:
     # -- skeleton-side trial helpers ---------------------------------------------
     def _preprocess_trial(self, overrides: Mapping[str, Any]) -> np.ndarray:
         settings = {**self.current, **overrides}
-        return preprocessing.preprocess_skeleton_for_graph(self.raw_skeleton, **_skeleton_kwargs(settings))
+        return preprocessing.preprocess_skeleton_for_graph(
+            self.raw_skeleton, segmentation_mask=self.raw_mask, **_skeleton_kwargs(settings)
+        )
 
     def _connectivity(self) -> Optional[int]:
         return int(self.current["skeleton_component_connectivity"])
@@ -1345,7 +1359,11 @@ class _Search:
 
     # -- group 4: closing radius -----------------------------------------------------
     def _gap_distances_voxels(self) -> np.ndarray:
-        return preprocessing.inter_component_gap_distances(self.current_skeleton, self._connectivity())
+        return preprocessing.inter_component_gap_distances(
+            self.current_skeleton,
+            self._connectivity(),
+            z_distance_weight=float(self.current["skeleton_bridge_z_distance_weight"]),
+        )
 
     def _fusion_cost(self, cleaned: np.ndarray) -> float:
         signal = met.gap_vs_fusion_signal(

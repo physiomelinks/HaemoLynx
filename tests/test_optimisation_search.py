@@ -92,6 +92,8 @@ _DEFAULT_STARTING_VALUES = {
     "skeleton_closing_radius": 2,
     "skeleton_bridge_gap_size": 3,
     "skeleton_max_bridge_distance": 4,
+    "skeleton_bridge_weight_by_segmentation": False,
+    "skeleton_bridge_z_distance_weight": 1.0,
     "skeleton_component_connectivity": 3,
     "skeleton_min_component_percent": 0.0,
     "graph_reconnect_threshold": 10.0,

@@ -583,7 +583,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         visualization.visualize_skeleton(skeleton, save_path=settings["plot_dir"] / "raw_skeleton.png")
 
         # The `skeleton_*` settings are this function's parameters with a
-        # prefix, so they go in as a group; the percentage is the one exception.
+        # prefix, so they go in as a group; the percentage and the mask
+        # (not a scalar setting) are the exceptions.
         skeleton = preprocessing.preprocess_skeleton_for_graph(
             skeleton,
             **prefixed_arguments(
@@ -592,6 +593,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 parameters_of(preprocessing.preprocess_skeleton_for_graph),
             ),
             min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
+            segmentation_mask=_to_binary_volume_for_skeletonization(image),
         )
         preprocessing.log_skeleton_connectivity_stats(
             "cleaned",
