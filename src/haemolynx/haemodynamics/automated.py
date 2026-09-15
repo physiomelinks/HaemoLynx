@@ -669,6 +669,21 @@ def _fwhm_gaussian_fit_with_diagnostics(
     return fwhm, x0_fit, r2
 
 
+#: Physical width of the moving-average window used only to decide where a
+#: transverse profile's central lobe ends (see
+#: :func:`_clip_profile_to_central_lobe`), never to the samples actually
+#: fitted. Real intensity data wobbles sample-to-sample even while the true
+#: underlying decay is still monotonic; the raw per-sample valley/rise
+#: check mistook a single noisy uptick for a second peak and truncated the
+#: profile almost immediately after the centre -- confirmed on synthetic
+#: data to be catastrophic: Gaussian noise at just 2% of the peak amplitude
+#: collapsed a true 16um-wide profile's accepted window to under 2um, an
+#: 8x-too-small fitted diameter. Matches ``DEFAULT_NOISE_SIGMA_UM``'s own
+#: scale elsewhere in this codebase for "a light touch meant to smooth
+#: single-sample roughness, not reshape real structure."
+_CLIP_DECISION_SMOOTHING_WINDOW_UM = 1.0
+
+
 def _clip_profile_to_central_lobe(
     positions_um: np.ndarray,
     intensities: np.ndarray,
@@ -682,6 +697,12 @@ def _clip_profile_to_central_lobe(
     Profiles can contain a second peak when rays reach a neighbouring branch.
     This helper keeps the segment around offset 0 and truncates each side at the
     first clear valley->rise pattern.
+
+    The valley/rise decision itself runs against a lightly smoothed copy of
+    *intensities* (see :data:`_CLIP_DECISION_SMOOTHING_WINDOW_UM`) -- the
+    returned arrays are always sliced from the original, unsmoothed data,
+    so smoothing never touches what the Gaussian fit actually sees, only
+    where this function decides to cut it.
     """
     x = np.asarray(positions_um, dtype=float).ravel()
     y = np.asarray(intensities, dtype=float).ravel()
@@ -691,18 +712,28 @@ def _clip_profile_to_central_lobe(
     i0 = int(np.argmin(np.abs(x)))
     if i0 <= 0 or i0 >= x.size - 1:
         return x, y
-    center = float(y[i0])
+
+    step_um = float(np.median(np.diff(x))) if x.size >= 2 else 1.0
+    window = max(1, int(round(_CLIP_DECISION_SMOOTHING_WINDOW_UM / max(step_um, 1e-9))))
+    if window % 2 == 0:
+        window += 1
+    if window > 1 and y.size >= window:
+        y_decision = np.convolve(y, np.ones(window) / window, mode="same")
+    else:
+        y_decision = y
+
+    center = float(y_decision[i0])
     if not np.isfinite(center):
         return x, y
     min_drop = float(min_drop_fraction_of_center) * max(center, 1e-12)
     rise_thr = float(re_rise_fraction_of_center) * max(center, 1e-12)
 
     def _bound_right(start: int) -> int:
-        y_min = float(y[start])
+        y_min = float(y_decision[start])
         i_min = start
         saw_drop = False
-        for i in range(start + 1, y.size):
-            yi = float(y[i])
+        for i in range(start + 1, y_decision.size):
+            yi = float(y_decision[i])
             if yi < y_min:
                 y_min = yi
                 i_min = i
@@ -710,14 +741,14 @@ def _clip_profile_to_central_lobe(
                 saw_drop = True
             if saw_drop and yi >= (y_min + rise_thr):
                 return i_min
-        return y.size - 1
+        return y_decision.size - 1
 
     def _bound_left(start: int) -> int:
-        y_min = float(y[start])
+        y_min = float(y_decision[start])
         i_min = start
         saw_drop = False
         for i in range(start - 1, -1, -1):
-            yi = float(y[i])
+            yi = float(y_decision[i])
             if yi < y_min:
                 y_min = yi
                 i_min = i
@@ -729,22 +760,6 @@ def _clip_profile_to_central_lobe(
 
     left = _bound_left(i0)
     right = _bound_right(i0)
-
-    # Additional fallback for tortuous/zig-zag vessels: use the nearest local minima
-    # around offset 0 as hard lobe boundaries if available.
-    left_min = None
-    for i in range(i0 - 1, 0, -1):
-        if y[i] <= y[i - 1] and y[i] <= y[i + 1]:
-            left_min = i
-            break
-    right_min = None
-    for i in range(i0 + 1, y.size - 1):
-        if y[i] <= y[i - 1] and y[i] <= y[i + 1]:
-            right_min = i
-            break
-    if left_min is not None and right_min is not None and (right_min - left_min + 1) >= 5:
-        left = max(left, int(left_min))
-        right = min(right, int(right_min))
 
     if right - left + 1 < 5:
         return x, y
