@@ -1034,6 +1034,119 @@ def test_resolve_auto_downsample_factor_picks_the_smallest_sufficient_factor():
     assert resolve_auto_downsample_factor(shape) == 2
 
 
+def test_estimate_downsample_factor_for_time_budget_falls_back_on_an_empty_mask():
+    """An empty mask has nothing to time a real probe against; falling back
+    to the voxel-count heuristic must not raise."""
+    from haemolynx.optimisation.search import estimate_downsample_factor_for_time_budget
+
+    empty = np.zeros((10, 10, 10), dtype=bool)
+    factor = estimate_downsample_factor_for_time_budget(empty, (1.0, 1.0, 1.0))
+    assert factor == resolve_auto_downsample_factor(empty.shape)
+
+
+def test_estimate_downsample_factor_for_time_budget_picks_full_resolution_for_a_generous_budget(
+    y_shaped_mask,
+):
+    """A tiny synthetic mask's own real probe is fast enough that even a
+    demanding budget (the default, five minutes) should never need to
+    sacrifice detail."""
+    from haemolynx.optimisation.search import estimate_downsample_factor_for_time_budget
+
+    factor = estimate_downsample_factor_for_time_budget(
+        y_shaped_mask, (1.0, 1.0, 1.0), target_seconds=300.0,
+    )
+    assert factor == 1
+
+
+def test_factor_from_probe_seconds_picks_the_coarsest_factor_for_a_tiny_budget():
+    """A budget no real probe could ever fit under must fall back to the
+    coarsest offered factor, not raise or return something outside
+    DOWNSAMPLE_FACTORS. Pure arithmetic (see this function's own docstring
+    for why it is split out from estimate_downsample_factor_for_time_budget) --
+    no real probe or timing involved, so a genuinely unmeetable budget can
+    be tested directly rather than relying on real wall-clock timing.
+    """
+    from haemolynx.optimisation.search import _factor_from_probe_seconds
+
+    factor = _factor_from_probe_seconds(
+        probe_seconds=0.01, probe_factor=DOWNSAMPLE_FACTORS[-1], target_seconds=1e-9,
+    )
+    assert factor == DOWNSAMPLE_FACTORS[-1]
+
+
+def test_factor_from_probe_seconds_picks_full_resolution_for_a_generous_budget():
+    from haemolynx.optimisation.search import _factor_from_probe_seconds
+
+    factor = _factor_from_probe_seconds(
+        probe_seconds=0.01, probe_factor=DOWNSAMPLE_FACTORS[-1], target_seconds=1e9,
+    )
+    assert factor == DOWNSAMPLE_FACTORS[0]
+
+
+def test_factor_from_probe_seconds_is_monotonic_in_target_seconds():
+    """A smaller time budget must never pick a *finer* (smaller) factor than
+    a larger budget, for the same measured probe."""
+    from haemolynx.optimisation.search import _factor_from_probe_seconds
+
+    generous = _factor_from_probe_seconds(
+        probe_seconds=0.01, probe_factor=DOWNSAMPLE_FACTORS[-1], target_seconds=1e9,
+    )
+    stingy = _factor_from_probe_seconds(
+        probe_seconds=0.01, probe_factor=DOWNSAMPLE_FACTORS[-1], target_seconds=1e-9,
+    )
+    assert stingy >= generous
+
+
+def test_factor_from_probe_seconds_zero_probe_means_full_resolution():
+    """A probe that measured as zero (or negative, from clock jitter) gives
+    no evidence downsampling would help; default to full detail rather
+    than dividing by/scaling a meaningless zero."""
+    from haemolynx.optimisation.search import _factor_from_probe_seconds
+
+    assert _factor_from_probe_seconds(0.0, DOWNSAMPLE_FACTORS[-1], 1e-9) == DOWNSAMPLE_FACTORS[0]
+
+
+def test_optimise_settings_auto_downsample_uses_the_time_budget_resolver(monkeypatch):
+    """Regression: 'Auto' (downsample_factor=None) used to resolve purely
+    from the mask's own voxel count (resolve_auto_downsample_factor),
+    which assumes a fixed voxels-per-second rate true of neither a
+    specific machine nor a specific dataset's own topological complexity.
+    It must now consult estimate_downsample_factor_for_time_budget
+    instead, forwarding the caller's own auto_downsample_target_seconds
+    and use_thick_vessel_skeletonisation starting value.
+    """
+    import haemolynx.optimisation.search as search_module
+
+    recorded = {}
+
+    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, use_thick_vessel_skeletonisation):
+        recorded["target_seconds"] = target_seconds
+        recorded["use_thick_vessel_skeletonisation"] = use_thick_vessel_skeletonisation
+        return 4
+
+    monkeypatch.setattr(
+        search_module, "estimate_downsample_factor_for_time_budget", fake_estimate
+    )
+    monkeypatch.setattr(
+        search_module, "resolve_auto_downsample_factor",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not use the voxel-count heuristic for Auto")),
+    )
+
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+    starting_values["use_thick_vessel_skeletonisation"] = True
+    mask = np.zeros((40, 40, 40), dtype=bool)
+    mask[10:30, 10:30, 10:30] = True
+
+    result = search_module.optimise_skeleton_and_graph_settings(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values,
+        auto_downsample_target_seconds=42.0,
+    )
+
+    assert recorded["target_seconds"] == 42.0
+    assert recorded["use_thick_vessel_skeletonisation"] is True
+    assert result.downsample_factor == 4
+
+
 def test_optimise_settings_downsample_factor_1_is_a_no_op(y_shaped_mask):
     result = optimise_skeleton_and_graph_settings(
         y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,

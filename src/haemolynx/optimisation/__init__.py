@@ -31,6 +31,7 @@ from .progress import (
 from .report import build_report_text, config_filename
 from .search import (
     AUTO_DOWNSAMPLE_TARGET_VOXELS,
+    DEFAULT_AUTO_DOWNSAMPLE_TARGET_SECONDS,
     DOWNSAMPLE_FACTORS,
     GRAPH_SETTING_NAMES,
     GROUP_LABELS,
@@ -39,6 +40,7 @@ from .search import (
     SKELETON_SETTING_NAMES,
     OptimisationResult,
     TrialRecord,
+    estimate_downsample_factor_for_time_budget,
     optimise_skeleton_and_graph_settings,
     resolve_auto_downsample_factor,
 )
@@ -60,6 +62,7 @@ __all__ = [
     "build_report_text",
     "config_filename",
     "AUTO_DOWNSAMPLE_TARGET_VOXELS",
+    "DEFAULT_AUTO_DOWNSAMPLE_TARGET_SECONDS",
     "DOWNSAMPLE_FACTORS",
     "GRAPH_SETTING_NAMES",
     "GROUP_LABELS",
@@ -68,6 +71,7 @@ __all__ = [
     "SKELETON_SETTING_NAMES",
     "OptimisationResult",
     "TrialRecord",
+    "estimate_downsample_factor_for_time_budget",
     "optimise_skeleton_and_graph_settings",
     "resolve_auto_downsample_factor",
 ]

@@ -6355,8 +6355,8 @@ def settings_widget(napari_viewer=None):
 
     #: "Optimisation downsampling": how coarse a copy of the image the search
     #: runs on, independent of the resolution a real pipeline run always uses
-    #: -- see haemolynx.optimisation.search.resolve_auto_downsample_factor for
-    #: what "Auto" picks. Kept as a display-label -> factor mapping, since
+    #: -- see haemolynx.optimisation.search.estimate_downsample_factor_for_time_budget
+    #: for what "Auto" picks. Kept as a display-label -> factor mapping, since
     #: "None" (auto-detect) is not a value a ComboBox choice can hold directly.
     _DOWNSAMPLE_CHOICES: dict[str, Any] = {
         "Auto": None,
@@ -6374,7 +6374,8 @@ def settings_widget(napari_viewer=None):
     downsample_dropdown.tooltip = (
         "How coarse a copy of the image to search on for speed -- applies "
         "only to Optimise settings, never to the pipeline run itself. Auto "
-        "picks a factor from the image's own voxel count"
+        "times one real evaluation on this image and picks a factor aiming "
+        "to keep the whole search under about five minutes"
     )
     if input_settings is not None:
         input_settings.append(downsample_dropdown)

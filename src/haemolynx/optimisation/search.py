@@ -48,6 +48,7 @@ search raises, because there is nothing later sweeps could run on.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional
 
@@ -241,6 +242,106 @@ def _downsample_intensity(image: np.ndarray, factor: int) -> np.ndarray:
     from skimage.measure import block_reduce
 
     return block_reduce(image, block_size=(factor, factor, factor), func=np.mean)
+
+
+#: "Auto" downsampling's own time budget, in seconds, when a caller asks it
+#: to target a runtime instead of (or as well as) a voxel count -- see
+#: :func:`estimate_downsample_factor_for_time_budget`.
+DEFAULT_AUTO_DOWNSAMPLE_TARGET_SECONDS = 300.0
+
+
+def estimate_downsample_factor_for_time_budget(
+    raw_mask: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    *,
+    target_seconds: float = DEFAULT_AUTO_DOWNSAMPLE_TARGET_SECONDS,
+    use_thick_vessel_skeletonisation: bool = False,
+) -> int:
+    """The most-detail (smallest) offered factor estimated to keep a full
+    search under *target_seconds* on the machine it actually runs on.
+
+    :data:`AUTO_DOWNSAMPLE_TARGET_VOXELS` assumes a fixed voxels-per-second
+    rate, which is wrong in two ways a real dataset exposes: it does not
+    know how fast *this* machine is, and it does not know how
+    topologically complex *this* mask's own vessel network is -- a densely
+    branched skeleton stays densely branched (and expensive to sweep) at a
+    coarser grid even as its raw voxel count drops, so voxel count alone
+    can underestimate cost on exactly the datasets a search takes longest
+    on. This times one real cleanup-and-skeletonise-and-build-graph cycle
+    on *this* mask, at the coarsest offered factor (cheap and safe
+    regardless of dataset size), then extrapolates to every other factor
+    by how processing cost actually scales -- cubically with the linear
+    downsample factor, since voxel count does -- multiplied by
+    :data:`_GROUP_TOTAL_UPPER_BOUND`, this module's own existing estimate
+    of how many such real evaluations a full run does (already used for
+    progress-bar display, reused here rather than inventing a second,
+    unvalidated constant for the same quantity).
+
+    Falls back to :func:`resolve_auto_downsample_factor` (the voxel-count
+    heuristic) if the probe itself cannot run at all -- an empty mask, or
+    any other error timing it -- so "Auto" never fails a run just because
+    estimating its own runtime did.
+    """
+    probe_factor = DOWNSAMPLE_FACTORS[-1]
+    try:
+        probe_mask = _downsample_mask(raw_mask, probe_factor)
+        if not probe_mask.any():
+            return resolve_auto_downsample_factor(raw_mask.shape)
+        probe_voxel_zyx = tuple(float(v) * probe_factor for v in voxel_size_zyx)
+
+        def _probe_once() -> None:
+            cleaned, _raw = preprocessing.clean_segmented_mask_for_skeletonisation(
+                probe_mask, voxel_size_zyx=probe_voxel_zyx,
+            )
+            preprocessing.score_segmented_mask(cleaned, voxel_size_zyx=probe_voxel_zyx)
+            if use_thick_vessel_skeletonisation:
+                skeleton = preprocessing.skeletonize_thickness_gated(
+                    probe_mask, voxel_size_zyx=probe_voxel_zyx,
+                )
+            else:
+                skeleton = preprocessing.skeletonize_volume(probe_mask)
+            graph_mod.build_graph_from_skeleton(skeleton, voxel_size=probe_voxel_zyx)
+
+        # One untimed warm-up call first: scipy/skimage/networkx do a lot of
+        # lazy, one-time work (imports, numba/compiled-kernel setup, disk
+        # cache checks) on their own first real use in a fresh process --
+        # confirmed on this machine to cost seconds on a call that settles
+        # to milliseconds immediately after. Timing that cold-start cost
+        # would inflate the estimate by orders of magnitude and pick a far
+        # coarser factor than the search actually needs.
+        _probe_once()
+        t0 = time.perf_counter()
+        _probe_once()
+        probe_seconds = time.perf_counter() - t0
+    except Exception:  # noqa: BLE001 - estimating runtime must never block a real run
+        return resolve_auto_downsample_factor(raw_mask.shape)
+
+    return _factor_from_probe_seconds(probe_seconds, probe_factor, target_seconds)
+
+
+def _factor_from_probe_seconds(
+    probe_seconds: float, probe_factor: int, target_seconds: float
+) -> int:
+    """The most-detail offered factor whose estimated total time (the
+    measured *probe_seconds* at *probe_factor*, scaled cubically to every
+    other factor and multiplied by :data:`_GROUP_TOTAL_UPPER_BOUND`) fits
+    within *target_seconds*. Pure arithmetic, split out from
+    :func:`estimate_downsample_factor_for_time_budget` so the decision
+    itself is directly testable without timing anything real.
+    """
+    if probe_seconds <= 0.0:
+        return DOWNSAMPLE_FACTORS[0]
+
+    best = probe_factor
+    for factor in reversed(DOWNSAMPLE_FACTORS):
+        scale = (probe_factor / factor) ** 3
+        estimated_seconds = probe_seconds * scale * _GROUP_TOTAL_UPPER_BOUND
+        if estimated_seconds <= target_seconds:
+            best = factor
+        else:
+            break
+    return best
+
 
 #: Reject a closing/bridging candidate that merges components further apart
 #: than this many typical-vessel-radii -- more likely two distinct vessels
@@ -1702,6 +1803,7 @@ def optimise_skeleton_and_graph_settings(
     groups: Optional[Iterable[str]] = None,
     raw_image: Optional[np.ndarray] = None,
     max_passes: int = 1,
+    auto_downsample_target_seconds: float = DEFAULT_AUTO_DOWNSAMPLE_TARGET_SECONDS,
 ) -> OptimisationResult:
     """Empirically choose every Skeletonise/Graph tab setting for *raw_mask*.
 
@@ -1711,15 +1813,23 @@ def optimise_skeleton_and_graph_settings(
     the search strategy.
 
     *downsample_factor* trades accuracy for speed on a large volume: ``None``
-    (the default) auto-detects from voxel count via
-    :func:`resolve_auto_downsample_factor`, ``1`` runs at full resolution, and
-    ``2``/``4``/``8``/``16`` (:data:`DOWNSAMPLE_FACTORS`) run the whole search
-    on a block-max-reduced copy of *raw_mask* with *voxel_size_xyz* scaled up
-    to match. Micron-based settings come back unaffected by this (the scaled
-    voxel size already accounts for it); the handful of settings measured in
-    voxels (:data:`_VOXEL_SCALED_SETTING_NAMES`) are multiplied back up by the
+    (the default) auto-detects a factor estimated to keep the whole search
+    under *auto_downsample_target_seconds* via
+    :func:`estimate_downsample_factor_for_time_budget` (which times one
+    real evaluation on *this* mask rather than assuming a fixed
+    voxels-per-second rate -- see its own docstring), ``1`` runs at full
+    resolution, and ``2``/``4``/``8``/``16`` (:data:`DOWNSAMPLE_FACTORS`)
+    run the whole search on a block-max-reduced copy of *raw_mask* with
+    *voxel_size_xyz* scaled up to match. Micron-based settings come back
+    unaffected by this (the scaled voxel size already accounts for it);
+    the handful of settings measured in voxels
+    (:data:`_VOXEL_SCALED_SETTING_NAMES`) are multiplied back up by the
     factor before being returned, so they are correct against the
     full-resolution volume a real run actually skeletonises.
+
+    *auto_downsample_target_seconds* is only consulted when
+    *downsample_factor* is ``None`` -- the runtime budget "Auto" aims for,
+    default five minutes.
 
     *groups* restricts the search to some of :data:`GROUP_NAMES` -- ``None``
     (the default) runs all ten; any other setting simply keeps its starting
@@ -1746,7 +1856,17 @@ def optimise_skeleton_and_graph_settings(
     """
     raw_mask = np.asarray(raw_mask, dtype=bool)
     voxel_size_xyz = tuple(float(v) for v in voxel_size_xyz)
-    factor = int(downsample_factor) if downsample_factor else resolve_auto_downsample_factor(raw_mask.shape)
+    if downsample_factor:
+        factor = int(downsample_factor)
+    else:
+        factor = estimate_downsample_factor_for_time_budget(
+            raw_mask,
+            tuple(reversed(voxel_size_xyz)),
+            target_seconds=auto_downsample_target_seconds,
+            use_thick_vessel_skeletonisation=bool(
+                starting_values.get("use_thick_vessel_skeletonisation", False)
+            ),
+        )
     factor = factor if factor in DOWNSAMPLE_FACTORS else 1
 
     if factor > 1:
