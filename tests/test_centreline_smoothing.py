@@ -389,6 +389,77 @@ def test_a_path_that_would_leave_the_vessel_is_blended_back():
     assert counts["relaxed"] + counts["kept_raw"] == 1
 
 
+def test_a_chaikin_path_that_would_leave_the_vessel_is_blended_back_without_crashing():
+    """Regression: chaikin's own smoothed candidate has more points than the
+    original -- corner-cutting subdivision (`_chaikin_once`) roughly doubles
+    the point count each iteration, unlike Taubin, which perturbs the same
+    points it was given. When the direct chaikin candidate is rejected (as
+    here, the same hairpin-corner case the Taubin version of this test
+    uses) and the relaxation loop tries to blend it back towards the
+    original, elementwise blending used to crash with a shape mismatch
+    instead of falling back cleanly.
+    """
+    corner = np.array([[0, 0, 0], [5, 0, 0], [10, 0, 0], [10, 5, 0], [10, 10, 0]], dtype=float)
+    skeleton = np.zeros((16, 16, 4), dtype=bool)
+    for point in corner:
+        skeleton[int(point[0]), int(point[1]), int(point[2])] = True
+
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=corner[0])
+    graph.add_node(1, pos=corner[-1])
+    graph.add_edge(0, 1, key=0, voxels=corner.tolist(), length=20.0)
+
+    counts = smooth_graph_centrelines(
+        graph, skeleton, voxel_size_zyx=(1.0, 1.0, 1.0),
+        method="chaikin", iterations=1, max_deviation=0.5,
+    )
+
+    assert counts["smoothed"] == 0
+    assert counts["relaxed"] + counts["kept_raw"] == 1
+
+
+def test_resample_to_point_count_preserves_endpoints():
+    from haemolynx.graph.smoothing import _resample_to_point_count
+
+    points = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [1, 2, 0]], dtype=float)
+    resampled = _resample_to_point_count(points, 7)
+
+    assert resampled.shape == (7, 3)
+    assert np.allclose(resampled[0], points[0])
+    assert np.allclose(resampled[-1], points[-1])
+
+
+def test_resample_to_point_count_is_a_no_op_when_counts_already_match():
+    from haemolynx.graph.smoothing import _resample_to_point_count
+
+    points = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]], dtype=float)
+    assert _resample_to_point_count(points, 3) is points
+
+
+def test_accept_relaxes_a_candidate_with_a_different_point_count_without_crashing():
+    """Direct unit test of the exact previously-crashing code path: _accept's
+    relaxation blend combines *original* and *smoothed* elementwise, which
+    requires a matching point count -- true for Taubin, false for any
+    method (chaikin included) whose output has a different number of
+    points than its input.
+    """
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph.smoothing import _accept
+
+    original = np.array([[0, 0, 0], [5, 0, 0], [10, 0, 0], [10, 5, 0], [10, 10, 0]], dtype=float)
+    # More points than original, and pushed off-vessel so the direct
+    # candidate is rejected and relaxation actually runs.
+    smoothed = np.linspace(original[0], original[-1], 9)
+    smoothed[4] = smoothed[4] + np.array([5.0, 5.0, 0.0])
+
+    tree = cKDTree(original)
+    accepted, outcome = _accept(original, smoothed, tree, max_deviation=0.5)
+
+    assert outcome in {"relaxed", "kept_raw"}
+    assert accepted.ndim == 2 and accepted.shape[1] == 3
+
+
 def test_smoothing_never_makes_a_centreline_longer():
     """Removing a staircase can only shorten a path.
 

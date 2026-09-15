@@ -125,6 +125,31 @@ def _deviation(points: np.ndarray, tree) -> np.ndarray:
     return tree.query(points)[0]
 
 
+def _resample_to_point_count(points: np.ndarray, n: int) -> np.ndarray:
+    """*points* resampled to exactly *n* points along its own arc length.
+
+    Chaikin corner-cutting roughly doubles the point count each iteration
+    (``_chaikin_once``), unlike Taubin, which perturbs the same points it
+    was given -- so a chaikin-smoothed candidate can have a different shape
+    than *original*, which the relaxation blend below needs to combine
+    elementwise. Resampling by normalized arc length gives the two curves a
+    matching point count without assuming any correspondence between their
+    original indices.
+    """
+    if len(points) == n:
+        return points
+    deltas = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    cumulative = np.concatenate(([0.0], np.cumsum(deltas)))
+    total = float(cumulative[-1])
+    if total <= 0.0:
+        return np.repeat(points[:1], n, axis=0)
+    targets = np.linspace(0.0, total, n)
+    resampled = np.empty((n, points.shape[1]), dtype=float)
+    for axis in range(points.shape[1]):
+        resampled[:, axis] = np.interp(targets, cumulative, points[:, axis])
+    return resampled
+
+
 def _polyline_length(points: np.ndarray) -> float:
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
@@ -166,8 +191,15 @@ def _accept(
     if _is_acceptable(original, smoothed, tree, max_deviation):
         return smoothed, "smoothed"
 
+    # Elementwise blending needs matching point counts; see
+    # _resample_to_point_count's own docstring for why smoothed and
+    # original can differ (Taubin never does -- this is a no-op there).
+    smoothed_for_blend = (
+        smoothed if len(smoothed) == len(original)
+        else _resample_to_point_count(smoothed, len(original))
+    )
     for weight in RELAXATION_STEPS:
-        blended = (1.0 - weight) * original + weight * smoothed
+        blended = (1.0 - weight) * original + weight * smoothed_for_blend
         blended[0], blended[-1] = original[0], original[-1]
         if _is_acceptable(original, blended, tree, max_deviation):
             return blended, "relaxed"
