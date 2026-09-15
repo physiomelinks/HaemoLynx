@@ -276,6 +276,15 @@ _MAX_MISSING_VESSEL_FRACTION_REGRESSION = 0.02
 #: (`preprocessing.compare_segmentation_to_raw_image`) -- only ever
 #: evaluated when a raw image is actually supplied.
 _MAX_RAW_ADDED_FRACTION_REGRESSION = 0.02
+#: The symmetric case: does a candidate erase real, raw-supported
+#: foreground the way over-aggressive smoothing/closing can (confirmed on
+#: real data: a smoothing sigma several times too large erased ~88% of a
+#: real capillary network, none of it flagged as "added", since nothing
+#: was invented -- it was all removed). `added_fraction` alone only ever
+#: caught over-segmentation; this is what catches under-segmentation from
+#: the same raw-image comparison, at no extra cost (both fractions come
+#: from the one call).
+_MAX_RAW_REMOVED_FRACTION_REGRESSION = 0.02
 
 #: Below this physical volume, a mask connected component is segmentation
 #: noise, not a real vessel worth protecting from pruning -- matches
@@ -315,6 +324,11 @@ class OptimisationResult:
     #: Which of :data:`GROUP_NAMES` actually ran; a name missing here kept its
     #: starting value untouched.
     groups_run: tuple[str, ...] = field(default_factory=lambda: GROUP_NAMES)
+    #: How many passes through the group sequence actually ran -- see
+    #: :func:`optimise_skeleton_and_graph_settings`'s own ``max_passes``. 1
+    #: unless a multi-pass run was requested and needed more than one pass
+    #: to converge.
+    passes_run: int = 1
 
 
 def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -419,6 +433,14 @@ class _Search:
         )
         self.groups_run: list[str] = []
         self.trials: list[TrialRecord] = []
+        #: Progress denominator -- see :meth:`run`'s own ``max_passes``:
+        #: scaled up before a multi-pass run so a progress bar's fraction
+        #: never exceeds 1 just because convergence needed more than one
+        #: pass through the group sequence.
+        self._group_total: int = _GROUP_TOTAL_UPPER_BOUND
+        #: How many passes :meth:`run` actually executed -- 1 unless
+        #: ``max_passes`` > 1 and convergence took more than one pass.
+        self.passes_run: int = 0
         self.raw_skeleton: np.ndarray = np.zeros_like(self.raw_mask)
         self.current_skeleton: np.ndarray = self.raw_skeleton
         self.current_graph = None
@@ -490,7 +512,7 @@ class _Search:
             OptimisationEvent(
                 kind=kind,
                 group_index=self._group_index,
-                group_total=_GROUP_TOTAL_UPPER_BOUND,
+                group_total=self._group_total,
                 group_name=group_name,
                 **extra,
             )
@@ -602,26 +624,34 @@ class _Search:
 
         # Optional: when a raw reference image is supplied (see
         # `optimise_skeleton_and_graph_settings`'s own `raw_image`
-        # parameter), guard every candidate against inventing foreground
-        # the raw signal does not support -- `score_segmented_mask` alone
-        # cannot see this, since it only ever looks at the mask's own
-        # geometry (see `preprocessing.segmentation_raw_comparison`'s own
-        # module docstring for why this is a genuinely different signal).
-        baseline_added_fraction: Optional[float] = None
+        # parameter), guard every candidate against inventing foreground the
+        # raw signal does not support *and* against erasing real foreground
+        # the raw signal does support -- `score_segmented_mask` alone cannot
+        # see either, since it only ever looks at the mask's own geometry
+        # (see `preprocessing.segmentation_raw_comparison`'s own module
+        # docstring for why this is a genuinely different signal). Both
+        # directions come from the one `compare_segmentation_to_raw_image`
+        # call, so guarding the second costs nothing extra.
+        baseline_comparison: Optional[preprocessing.SegmentationRawComparison] = None
 
         def quality(mask_trial: np.ndarray) -> float:
             score = -preprocessing.score_segmented_mask(
                 mask_trial, voxel_size_zyx=self.voxel_size_zyx
             ).total
-            if baseline_added_fraction is not None:
-                added_fraction = preprocessing.compare_segmentation_to_raw_image(
+            if baseline_comparison is not None:
+                comparison = preprocessing.compare_segmentation_to_raw_image(
                     mask_trial, self.raw_image, voxel_size_zyx=self.voxel_size_zyx,
                     precomputed=self._raw_image_foreground,
-                ).added_fraction
+                )
                 score += self._regression_penalty(
-                    1.0 - added_fraction,
-                    1.0 - baseline_added_fraction,
+                    1.0 - comparison.added_fraction,
+                    1.0 - baseline_comparison.added_fraction,
                     _MAX_RAW_ADDED_FRACTION_REGRESSION,
+                )
+                score += self._regression_penalty(
+                    1.0 - comparison.removed_fraction,
+                    1.0 - baseline_comparison.removed_fraction,
+                    _MAX_RAW_REMOVED_FRACTION_REGRESSION,
                 )
             return score
 
@@ -635,18 +665,18 @@ class _Search:
             would leave it fixed at the *pre-group* mask while later
             sub-sweeps' candidates are judged against whatever every prior
             sub-sweep in this same group already decided, silently
-            misattributing their own effect on `added_fraction` to
-            whichever setting happens to run next (the same "matched
-            processing stage" bug `_group_min_branch_length` was fixed for
-            -- see project memory). Refreshing here keeps the baseline at
-            exactly this sub-sweep's own starting point instead.
+            misattributing their own effect on `added_fraction`/
+            `removed_fraction` to whichever setting happens to run next
+            (the same "matched processing stage" bug `_group_min_branch_length`
+            was fixed for -- see project memory). Refreshing here keeps the
+            baseline at exactly this sub-sweep's own starting point instead.
             """
-            nonlocal baseline_added_fraction
+            nonlocal baseline_comparison
             if self.raw_image is not None:
-                baseline_added_fraction = preprocessing.compare_segmentation_to_raw_image(
+                baseline_comparison = preprocessing.compare_segmentation_to_raw_image(
                     self._cleanup_trial({}), self.raw_image, voxel_size_zyx=self.voxel_size_zyx,
                     precomputed=self._raw_image_foreground,
-                ).added_fraction
+                )
             return self._sweep(
                 group, setting, candidate_values,
                 lambda value: quality(self._cleanup_trial({setting: value})),
@@ -1464,7 +1494,38 @@ class _Search:
         self._group_index += 1
 
     # -- orchestration ------------------------------------------------------------
-    def run(self) -> None:
+    def run(self, *, max_passes: int = 1) -> None:
+        """Run the fixed group sequence, optionally repeating it to convergence.
+
+        Coordinate descent -- tuning one setting (or small joint group) at a
+        time, holding every other setting at its current value -- cannot see
+        an interaction where two settings only help *together* (e.g. a
+        segmentation-cleanup step that only wants a smaller closing radius
+        once another step is also on): the single pass this module was built
+        around decides each setting once, in a fixed order, and never
+        revisits it. *max_passes* > 1 repeats the whole sequence, each pass
+        starting from where the previous one left `self.current`, using this
+        codebase's own established "always re-derive from source, never from
+        a previous trial's own output" discipline (`_cleanup_trial` re-cleans
+        `self.original_raw_mask`, `_preprocess_trial` re-runs from
+        `self.raw_skeleton`) -- the same discipline that already makes one
+        setting's own sweep safe to re-run is what makes re-running the
+        *whole* sequence safe too. Stops as soon as a pass changes nothing
+        (converged: another pass would just repeat it), so a dataset with no
+        real cross-group interaction pays for at most one extra, cheap
+        confirmation pass, not the full budget every time.
+        """
+        max_passes = max(1, int(max_passes))
+        if max_passes > 1:
+            self._group_total = _GROUP_TOTAL_UPPER_BOUND * max_passes
+        for _pass_index in range(max_passes):
+            before = dict(self.current)
+            self.passes_run += 1
+            self._run_one_pass()
+            if self.current == before:
+                break
+
+    def _run_one_pass(self) -> None:
         if not self.raw_mask.any():
             self.raw_skeleton = self.raw_mask.copy()
             self.current_skeleton = self.raw_skeleton
@@ -1528,6 +1589,7 @@ def optimise_skeleton_and_graph_settings(
     downsample_factor: Optional[int] = None,
     groups: Optional[Iterable[str]] = None,
     raw_image: Optional[np.ndarray] = None,
+    max_passes: int = 1,
 ) -> OptimisationResult:
     """Empirically choose every Skeletonise/Graph tab setting for *raw_mask*.
 
@@ -1558,6 +1620,17 @@ def optimise_skeleton_and_graph_settings(
     ``None`` (the default) is today's exact behaviour. Downsampled the same
     way *raw_mask* is (block-mean, not block-max -- an intensity value
     averages over its block rather than taking the brightest voxel in it).
+
+    *max_passes* repeats the whole group sequence (coordinate descent) up to
+    this many times, each pass starting from where the previous one left
+    every setting, to catch an improvement that only shows up once two
+    settings have *both* moved from their starting values -- a single pass
+    (the default, ``1``, today's exact behaviour) decides each setting once
+    and never revisits it. Stops as soon as a pass changes nothing, so a
+    dataset with no such interaction costs at most one extra, cheap
+    confirmation pass, not the full budget every time; see
+    :meth:`_Search.run`'s own docstring for why repeating the sequence is
+    safe. `OptimisationResult.passes_run` reports how many actually ran.
     """
     raw_mask = np.asarray(raw_mask, dtype=bool)
     voxel_size_xyz = tuple(float(v) for v in voxel_size_xyz)
@@ -1579,7 +1652,7 @@ def optimise_skeleton_and_graph_settings(
         search_mask, search_voxel_size_xyz, starting_values, progress,
         enabled_groups=groups, raw_image=search_raw_image,
     )
-    search.run()
+    search.run(max_passes=max_passes)
     settings = {name: search.current[name] for name in OPTIMISE_SETTING_NAMES if name in search.current}
     if factor > 1:
         for name in _VOXEL_SCALED_SETTING_NAMES:
@@ -1590,4 +1663,5 @@ def optimise_skeleton_and_graph_settings(
         trials=tuple(search.trials),
         downsample_factor=factor,
         groups_run=tuple(dict.fromkeys(search.groups_run)),
+        passes_run=search.passes_run,
     )

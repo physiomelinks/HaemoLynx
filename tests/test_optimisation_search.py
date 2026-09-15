@@ -346,6 +346,133 @@ def test_search_never_aliases_the_callers_own_mask_array():
     assert search.original_raw_mask is not caller_mask
 
 
+def test_run_default_is_a_single_pass_matching_todays_behaviour(monkeypatch):
+    """max_passes defaults to 1 -- calling run() the way every existing
+    caller does (no arguments) must still do exactly one pass, even
+    against a fake _run_one_pass that would keep "improving" forever."""
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    calls = {"n": 0}
+
+    def fake_pass():
+        calls["n"] += 1
+        search.current["skeleton_min_branch_length"] = calls["n"] + 100
+
+    monkeypatch.setattr(search, "_run_one_pass", fake_pass)
+    search.run()
+
+    assert calls["n"] == 1
+    assert search.passes_run == 1
+
+
+def test_run_converges_early_when_a_pass_changes_nothing(monkeypatch):
+    """Regression for the coordinate-descent search order limitation: a
+    single pass decides each setting once, in a fixed order, and never
+    revisits it, so it cannot see an improvement that only appears once
+    two settings have both moved from their starting values. max_passes > 1
+    repeats the sequence to catch that -- but must not cost extra real work
+    once nothing is left to improve: a pass that changes no setting means
+    every later pass would repeat it identically.
+    """
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    calls = {"n": 0}
+
+    def fake_pass():
+        calls["n"] += 1  # never touches self.current -- nothing to converge on
+
+    monkeypatch.setattr(search, "_run_one_pass", fake_pass)
+    search.run(max_passes=5)
+
+    assert calls["n"] == 1
+    assert search.passes_run == 1
+
+
+def test_run_keeps_going_while_a_pass_still_changes_something(monkeypatch):
+    """A pass that moves a setting earns exactly one more pass, to confirm
+    the new value is itself stable -- not the full max_passes budget."""
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    calls = {"n": 0}
+
+    def fake_pass():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            search.current["skeleton_min_branch_length"] = 99  # changes on pass 1 only
+
+    monkeypatch.setattr(search, "_run_one_pass", fake_pass)
+    search.run(max_passes=5)
+
+    assert calls["n"] == 2
+    assert search.passes_run == 2
+    assert search.current["skeleton_min_branch_length"] == 99
+
+
+def test_run_respects_max_passes_as_a_hard_cap_when_never_converging(monkeypatch):
+    """A pathological cost function that keeps finding an improvement every
+    single pass must not loop forever -- max_passes is a hard budget."""
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    calls = {"n": 0}
+
+    def fake_pass():
+        calls["n"] += 1
+        search.current["skeleton_min_branch_length"] = calls["n"]  # always different
+
+    monkeypatch.setattr(search, "_run_one_pass", fake_pass)
+    search.run(max_passes=3)
+
+    assert calls["n"] == 3
+    assert search.passes_run == 3
+
+
+def test_run_scales_the_progress_total_by_max_passes():
+    """A progress bar's own fraction must never exceed 1 just because
+    convergence needed more than one pass through the group sequence."""
+    from haemolynx.optimisation.search import _GROUP_TOTAL_UPPER_BOUND, _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    assert search._group_total == _GROUP_TOTAL_UPPER_BOUND
+
+    search.run(max_passes=3)
+    assert search._group_total == _GROUP_TOTAL_UPPER_BOUND * 3
+
+
+def test_optimise_settings_forwards_max_passes_and_reports_passes_run(y_shaped_mask):
+    result = optimise_skeleton_and_graph_settings(
+        y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,
+        max_passes=2,
+    )
+    assert 1 <= result.passes_run <= 2
+    assert set(result.settings) == set(OPTIMISE_SETTING_NAMES)
+
+
+def test_optimise_settings_default_max_passes_reports_exactly_one_pass(y_shaped_mask):
+    result = optimise_skeleton_and_graph_settings(
+        y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,
+    )
+    assert result.passes_run == 1
+
+
 def test_raw_mask_local_radius_map_is_cached_across_guard_calls(monkeypatch):
     """Regression: `_vessels_represented_fraction`/
     `_skeleton_mask_coverage_fraction` used to trigger a fresh full-volume
@@ -529,6 +656,52 @@ def test_segmentation_cleanup_raw_image_guard_rejects_invented_foreground():
     assert search.current["segmentation_cleanup_close_gaps"] is False
 
 
+def test_segmentation_cleanup_raw_image_guard_rejects_erasing_real_signal():
+    """The symmetric case to the invented-foreground test above: without
+    this guard, `compare_segmentation_to_raw_image`'s own `removed_fraction`
+    was computed but never read, so nothing here caught a candidate that
+    erases real, raw-supported foreground the way over-aggressive
+    smoothing/closing can on real data (confirmed there to erase ~88% of a
+    true vasculature, none of it flagged as "added", since nothing was
+    invented -- it was all removed). Whether or not score_segmented_mask's
+    own geometry-only sub-scores happen to already disfavour a given
+    candidate, the guard itself must independently reject one that erases
+    real signal a reference image confirms is genuinely there.
+    """
+    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+
+    shape = (20, 20, 20)
+    mask = np.zeros(shape, dtype=bool)
+    mask[4:16, 4:16, 4:16] = True  # a solid main body
+    mask[16:19, 9:11, 9:11] = True  # a thin (radius-1) real whisker off one face
+
+    # Raw image: bright exactly where the mask is -- body and whisker alike
+    # -- so the whisker is real, raw-supported signal, not noise.
+    raw_image = np.where(mask, 200.0, 10.0).astype(np.float32)
+
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+    starting_values["segmentation_cleanup_remove_whiskers"] = False
+    starting_values["segmentation_cleanup_whisker_radius_um"] = 1.0
+
+    search = _Search(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None,
+        raw_image=raw_image,
+    )
+    search._group_segmentation_cleanup()
+
+    toggle_trials = {
+        trial.value: trial.score
+        for trial in search.trials
+        if trial.setting == "segmentation_cleanup_remove_whiskers"
+    }
+    assert toggle_trials.get(True, 0.0) > 500.0, (
+        "removing the real whisker erases raw-supported signal and should "
+        f"have tripped the removed-fraction guard, got trials={toggle_trials}"
+    )
+    assert toggle_trials[True] > toggle_trials[False]
+    assert search.current["segmentation_cleanup_remove_whiskers"] is False
+
+
 def test_segmentation_cleanup_reuses_one_precomputed_raw_image_foreground(monkeypatch):
     """Regression: `_group_segmentation_cleanup` used to redo Otsu
     thresholding and connected-components labelling of `self.raw_image`
@@ -670,8 +843,9 @@ def test_optimise_settings_downsample_rescales_voxel_settings_but_not_micron_one
             self.current["graph_reconnect_threshold"] = 12.5  # a micron setting: must pass through unchanged
             self.trials = []
             self.groups_run = list(search_module.GROUP_NAMES)
+            self.passes_run = 1
 
-        def run(self):
+        def run(self, *, max_passes=1):
             pass
 
     monkeypatch.setattr(search_module, "_Search", _FakeSearch)
@@ -700,8 +874,9 @@ def test_optimise_settings_downsample_scales_the_voxel_size_the_search_sees(monk
             self.current = dict(starting_values)
             self.trials = []
             self.groups_run = []
+            self.passes_run = 1
 
-        def run(self):
+        def run(self, *, max_passes=1):
             pass
 
     monkeypatch.setattr(search_module, "_Search", _FakeSearch)
