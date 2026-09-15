@@ -55,6 +55,7 @@ import numpy as np
 
 from haemolynx import graph as graph_mod
 from haemolynx import preprocessing
+from haemolynx.graph import cartwheel_guard
 
 from . import candidates as cand
 from . import metrics as met
@@ -548,6 +549,56 @@ class _Search:
         self._group_index += 1
         return best_value
 
+    def _sweep_with_refinement(
+        self,
+        group: str,
+        setting: str,
+        candidate_values: list,
+        cost_fn,
+        *,
+        refine_fractions: tuple[float, ...] = (0.75, 1.25),
+        min_value: float = 0.0,
+        max_value: Optional[float] = None,
+    ) -> Any:
+        """:meth:`_sweep`, then one more focused round of candidates around
+        the winner.
+
+        The coarse multiplier grids this search's candidate generators use
+        (0.5x/1x/2x/4x the coarsest voxel spacing, or of a measured typical
+        radius) are deliberately sparse -- cheap to evaluate, but a
+        genuinely better value can sit between two grid points, which a
+        single coarse pass can never find. This tries *refine_fractions* of
+        the coarse winner (0.75x/1.25x by default: a modest, local
+        neighbourhood, not another multiplicative octave) alongside the
+        winner itself, so refinement can only match or improve on the
+        coarse result, never regress it -- if the winner is already a local
+        optimum, the second round just re-confirms it at the cost of a
+        couple of extra real evaluations.
+
+        *min_value*/*max_value* bound the refined candidates the same way
+        the coarse generator was bounded (e.g. a caller-supplied
+        ``typical_radius_um`` cap) -- refining outward must not reintroduce
+        a candidate the coarse grid excluded for real safety reasons, not
+        just because it was not on the grid.
+
+        Only meaningful for numeric settings; every other setting's
+        candidates keep exactly today's coarse-grid-only behaviour, since
+        this method is opt-in per call site, not automatic for every
+        :meth:`_sweep` call.
+        """
+        winner = self._sweep(group, setting, candidate_values, cost_fn)
+        if not isinstance(winner, (int, float)) or isinstance(winner, bool):
+            return winner
+        winner = float(winner)
+        refine_candidates = {winner} | {round(winner * f, 6) for f in refine_fractions}
+        refine_candidates = {
+            v for v in refine_candidates
+            if v > min_value and (max_value is None or v <= max_value)
+        }
+        if len(refine_candidates) <= 1:
+            return winner
+        return self._sweep(group, setting, sorted(refine_candidates), cost_fn)
+
     # -- skeleton-side trial helpers ---------------------------------------------
     def _preprocess_trial(self, overrides: Mapping[str, Any]) -> np.ndarray:
         settings = {**self.current, **overrides}
@@ -655,7 +706,7 @@ class _Search:
                 )
             return score
 
-        def sweep_cleanup(setting: str, candidate_values: list) -> Any:
+        def sweep_cleanup(setting: str, candidate_values: list, *, refine: bool = False) -> Any:
             """`self._sweep` for one segmentation-cleanup setting, refreshing
             the raw-image baseline immediately beforehand.
 
@@ -670,6 +721,14 @@ class _Search:
             (the same "matched processing stage" bug `_group_min_branch_length`
             was fixed for -- see project memory). Refreshing here keeps the
             baseline at exactly this sub-sweep's own starting point instead.
+
+            *refine*, for the radius-style settings that use
+            `cand.small_radius_candidates`'s coarse voxel-scale grid, adds
+            one focused round around the coarse winner (see
+            `_sweep_with_refinement`), capped at this mask's own
+            `typical_radius_um` -- the same safety bound the coarse grid
+            itself was generated with, so refining cannot reintroduce the
+            failure mode that bound exists for.
             """
             nonlocal baseline_comparison
             if self.raw_image is not None:
@@ -677,10 +736,12 @@ class _Search:
                     self._cleanup_trial({}), self.raw_image, voxel_size_zyx=self.voxel_size_zyx,
                     precomputed=self._raw_image_foreground,
                 )
-            return self._sweep(
-                group, setting, candidate_values,
-                lambda value: quality(self._cleanup_trial({setting: value})),
-            )
+            cost_fn = lambda value: quality(self._cleanup_trial({setting: value}))
+            if refine:
+                return self._sweep_with_refinement(
+                    group, setting, candidate_values, cost_fn, max_value=self.typical_radius_um,
+                )
+            return self._sweep(group, setting, candidate_values, cost_fn)
 
         sweep_cleanup("segmentation_cleanup_fill_cavities", [False, True])
 
@@ -693,6 +754,7 @@ class _Search:
                     float(self.current["segmentation_cleanup_whisker_radius_um"]),
                     typical_radius_um=self.typical_radius_um,
                 ),
+                refine=True,
             )
 
         sweep_cleanup("segmentation_cleanup_split_narrow_necks", [False, True])
@@ -727,6 +789,7 @@ class _Search:
                     float(self.current["segmentation_cleanup_close_gaps_radius_um"]),
                     typical_radius_um=self.typical_radius_um,
                 ),
+                refine=True,
             )
 
         sweep_cleanup("segmentation_cleanup_reconnect_gaps", [False, True])
@@ -779,6 +842,7 @@ class _Search:
                         float(self.current["segmentation_cleanup_smooth_sigma_um"]),
                         typical_radius_um=self.typical_radius_um,
                     ),
+                    refine=True,
                 )
             else:
                 sweep_cleanup(
@@ -788,6 +852,7 @@ class _Search:
                         float(self.current["segmentation_cleanup_smooth_morphological_radius_um"]),
                         typical_radius_um=self.typical_radius_um,
                     ),
+                    refine=True,
                 )
 
         sweep_cleanup("segmentation_cleanup_remove_small_volumes", [False, True])
@@ -902,6 +967,34 @@ class _Search:
             G, self.current_skeleton, voxel_size_zyx=self.voxel_size_zyx
         )
         return float(report["coverage_fraction"])
+
+    def _cartwheel_hub_count(self, G) -> int:
+        """How many of *G*'s nodes are "cartwheel" artifacts -- one node
+        with many spoke edges radiating in every direction instead of the
+        two or three branches a real vessel junction has (see
+        `graph.cartwheel_guard`'s own module docstring). Uses the same
+        detection thresholds a real pipeline run's own end-of-run check
+        would (`cartwheel_hub_min_degree`/`cartwheel_hub_max_radial_dispersion`/
+        `cartwheel_hub_tangent_length_um`) when present in `self.current`,
+        the function's own reasoned defaults otherwise -- these three are
+        deliberately not settings this search tunes (see this module's own
+        docstring), so a caller's `starting_values` will not always include
+        them.
+        """
+        return len(
+            graph_mod.detect_cartwheel_hubs(
+                G,
+                min_degree=int(self.current.get("cartwheel_hub_min_degree", cartwheel_guard.DEFAULT_MIN_DEGREE)),
+                max_radial_dispersion=float(
+                    self.current.get(
+                        "cartwheel_hub_max_radial_dispersion", cartwheel_guard.DEFAULT_MAX_RADIAL_DISPERSION
+                    )
+                ),
+                tangent_length_um=float(
+                    self.current.get("cartwheel_hub_tangent_length_um", cartwheel_guard.DEFAULT_TANGENT_LENGTH_UM)
+                ),
+            )
+        )
 
     @staticmethod
     def _regression_penalty(current: float, baseline: float, tolerance: float) -> float:
@@ -1339,9 +1432,23 @@ class _Search:
 
     # -- group 8: cluster collapse (distance, method, and the method's own knob) -------
     def _group_cluster_collapse(self) -> None:
+        """Collapsing a cluster of nearby nodes into one representative is
+        exactly the mechanism `graph.cartwheel_guard`'s own module docstring
+        names as the known cause of a "cartwheel" hub: a real vessel
+        junction's daughters continue in some coherent direction, and a
+        collapse distance too generous for this graph produces a
+        representative with edges radiating every which way instead --
+        geometrically valid (no fragmentation, no coverage loss), but not a
+        plausible vessel junction. `graph_topology_metrics` alone cannot see
+        this (it only counts nodes/edges/components/self-loops/degree-2
+        nodes, none of which a cartwheel hub necessarily moves), so a
+        candidate that introduces new ones is guarded the same way a
+        candidate that introduces new components already is.
+        """
         group = "cluster_collapse_distance"
         baseline = met.graph_topology_metrics(self.current_graph)
         baseline_graph_coverage = self._skeleton_graph_coverage_fraction(self.current_graph)
+        baseline_hub_count = self._cartwheel_hub_count(self.current_graph)
 
         def cost_for(key: str, value: Any) -> float:
             G = self._build_graph({key: value})
@@ -1351,6 +1458,9 @@ class _Search:
                 self._skeleton_graph_coverage_fraction(G),
                 baseline_graph_coverage,
                 _MAX_COVERAGE_FRACTION_REGRESSION,
+            )
+            fragmentation_penalty += _GUARD_PENALTY * max(
+                0, self._cartwheel_hub_count(G) - baseline_hub_count
             )
             return float(metrics.total_degree2) + fragmentation_penalty
 
@@ -1370,6 +1480,7 @@ class _Search:
         # stage").
         baseline = met.graph_topology_metrics(self.current_graph)
         baseline_graph_coverage = self._skeleton_graph_coverage_fraction(self.current_graph)
+        baseline_hub_count = self._cartwheel_hub_count(self.current_graph)
 
         self._sweep(
             group, "cluster_collapse_method", cand.cluster_collapse_method_candidates(),
@@ -1380,6 +1491,7 @@ class _Search:
         # knob sweep below.
         baseline = met.graph_topology_metrics(self.current_graph)
         baseline_graph_coverage = self._skeleton_graph_coverage_fraction(self.current_graph)
+        baseline_hub_count = self._cartwheel_hub_count(self.current_graph)
 
         # The other two settings are each read by exactly one method, so only
         # the one the search just chose is worth a sweep of its own.

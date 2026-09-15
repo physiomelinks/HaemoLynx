@@ -6,6 +6,7 @@ search still runs in a few seconds.
 """
 from __future__ import annotations
 
+import networkx as nx
 import numpy as np
 import pytest
 from scipy.ndimage import binary_dilation
@@ -473,6 +474,95 @@ def test_optimise_settings_default_max_passes_reports_exactly_one_pass(y_shaped_
     assert result.passes_run == 1
 
 
+def test_sweep_with_refinement_finds_a_value_between_coarse_grid_points():
+    """Regression: the coarse multiplier grids this search's candidate
+    generators use (0.5x/1x/2x/4x a base scale) cannot land on an
+    arbitrary true optimum -- a genuinely better value can sit between two
+    grid points, which a single coarse `_sweep` can never find. The
+    refinement round's neighbourhood around the coarse winner can get
+    closer.
+    """
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    true_optimum = 2.4  # between the coarse grid's 2.0 and 4.0, closer to 2.5 (2.0 * 1.25)
+
+    def cost(value):
+        return (value - true_optimum) ** 2
+
+    coarse_only = search._sweep("test_group", "test_setting", [0.5, 1.0, 2.0, 4.0], cost)
+    assert coarse_only == 2.0  # the closest coarse grid point alone
+
+    search.current["test_setting"] = 0.5  # reset before the refined run
+    refined = search._sweep_with_refinement("test_group", "test_setting", [0.5, 1.0, 2.0, 4.0], cost)
+    assert abs(refined - true_optimum) < abs(coarse_only - true_optimum)
+    assert search.current["test_setting"] == refined
+
+
+def test_sweep_with_refinement_never_regresses_the_coarse_winner():
+    """The coarse winner is always included in the refine round's own
+    candidate set, so refinement can only match or improve on it -- never
+    silently replace it with something worse."""
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    # The coarse winner (2.0) is already the true optimum -- every refined
+    # neighbour (1.5, 2.5) is strictly worse.
+    def cost(value):
+        return (value - 2.0) ** 2
+
+    refined = search._sweep_with_refinement("test_group", "test_setting", [0.5, 1.0, 2.0, 4.0], cost)
+    assert refined == 2.0
+
+
+def test_sweep_with_refinement_respects_the_max_value_cap():
+    """Refining outward must not reintroduce a candidate the coarse grid's
+    own cap (e.g. a typical_radius_um safety bound) excluded for real
+    safety reasons, not just because it was not on the grid."""
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    # True optimum is past the cap -- 2.5 (2.0 * 1.25) must never be tried.
+    def cost(value):
+        return (value - 10.0) ** 2
+
+    refined = search._sweep_with_refinement(
+        "test_group", "test_setting", [0.5, 1.0, 2.0], cost, max_value=2.0,
+    )
+    assert refined == 2.0
+    assert all(
+        trial.value <= 2.0
+        for trial in search.trials
+        if trial.setting == "test_setting"
+    )
+
+
+def test_sweep_with_refinement_ignores_non_numeric_settings():
+    """A boolean/choice setting's winner is not a radius to refine around;
+    _sweep_with_refinement must pass it through unchanged rather than
+    trying to multiply it by a fraction."""
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    winner = search._sweep_with_refinement(
+        "test_group", "test_setting", ["gaussian", "morphological"],
+        lambda value: 0.0 if value == "morphological" else 1.0,
+    )
+    assert winner == "morphological"
+
+
 def test_raw_mask_local_radius_map_is_cached_across_guard_calls(monkeypatch):
     """Regression: `_vessels_represented_fraction`/
     `_skeleton_mask_coverage_fraction` used to trigger a fresh full-volume
@@ -614,6 +704,96 @@ def test_min_branch_length_guard_ignores_segmentation_noise_flecks():
         )
 
 
+def _cartwheel_graph() -> nx.MultiGraph:
+    """One hub with 6 edges radiating evenly around it in the y-z plane --
+    a textbook cartwheel artifact (see graph.cartwheel_guard's own module
+    docstring), not a real vessel junction."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    for i in range(6):
+        angle = 2 * np.pi * i / 6
+        pos = np.array([0.0, 10.0 * np.cos(angle), 10.0 * np.sin(angle)])
+        G.add_node(i + 1, pos=pos)
+        G.add_edge(0, i + 1, length=10.0)
+    return G
+
+
+def _clean_hub_graph() -> nx.MultiGraph:
+    """A degree-3 bifurcation whose daughters continue in a coherent
+    general direction -- a real vessel junction, never flagged."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([0.0, 10.0, 0.0]))
+    G.add_node(2, pos=np.array([0.0, -7.0, 7.0]))
+    G.add_node(3, pos=np.array([0.0, -7.0, -7.0]))
+    G.add_edge(0, 1, length=10.0)
+    G.add_edge(0, 2, length=10.0)
+    G.add_edge(0, 3, length=10.0)
+    return G
+
+
+def test_cartwheel_hub_count_detects_a_wheel_and_ignores_a_real_junction():
+    from haemolynx.optimisation.search import _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    assert search._cartwheel_hub_count(_cartwheel_graph()) == 1
+    assert search._cartwheel_hub_count(_clean_hub_graph()) == 0
+
+
+def test_cluster_collapse_guard_rejects_a_candidate_that_creates_a_cartwheel_hub(monkeypatch):
+    """Regression: graph_topology_metrics alone (nodes/edges/components/
+    self-loops/degree-2 count) cannot see a "cartwheel" hub -- collapsing a
+    cluster of nearby, real junctions into one representative is exactly
+    the mechanism graph.cartwheel_guard's own module docstring names as
+    the cause, and it moves none of those five numbers on its own. A
+    candidate that introduces one must still be rejected in favour of one
+    that does not, even though the cartwheel graph here has fewer degree-2
+    nodes (0, vs 0 for the clean graph too -- deliberately tied on the
+    score `_group_cluster_collapse` otherwise minimises, so only the new
+    guard can be why the sweep prefers the non-cartwheel candidate).
+    """
+    from haemolynx.optimisation import candidates as cand_module
+    from haemolynx.optimisation.search import _GUARD_PENALTY, _Search
+
+    search = _Search(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=dict(_DEFAULT_STARTING_VALUES), progress=None,
+    )
+    search.current_skeleton = np.zeros((5, 5, 5), dtype=bool)
+    search.current_graph = _clean_hub_graph()
+    monkeypatch.setattr(search, "_skeleton_graph_coverage_fraction", lambda G: 1.0)
+
+    small, large = 1.0, 50.0
+    graphs_by_distance = {small: _clean_hub_graph(), large: _cartwheel_graph()}
+
+    def fake_build_graph(overrides):
+        value = overrides.get("cluster_collapse_distance", search.current["cluster_collapse_distance"])
+        return graphs_by_distance[value]
+
+    monkeypatch.setattr(search, "_build_graph", fake_build_graph)
+    monkeypatch.setattr(
+        cand_module, "cluster_collapse_distance_candidates", lambda *_a, **_k: [small, large]
+    )
+    search.current["cluster_collapse_distance"] = small
+
+    search._group_cluster_collapse()
+
+    trials_by_value = {
+        trial.value: trial.score
+        for trial in search.trials
+        if trial.setting == "cluster_collapse_distance"
+    }
+    assert trials_by_value[large] >= _GUARD_PENALTY, (
+        f"the large candidate creates a cartwheel hub and should have "
+        f"tripped the guard, got trials={trials_by_value}"
+    )
+    assert trials_by_value[small] < _GUARD_PENALTY
+    assert search.current["cluster_collapse_distance"] == small
+
+
 def test_segmentation_cleanup_raw_image_guard_rejects_invented_foreground():
     """Turning close_gaps on bridges a real gap the raw signal does not
     support -- quality() alone (fragmentation/connectivity) would favour
@@ -700,6 +880,44 @@ def test_segmentation_cleanup_raw_image_guard_rejects_erasing_real_signal():
     )
     assert toggle_trials[True] > toggle_trials[False]
     assert search.current["segmentation_cleanup_remove_whiskers"] is False
+
+
+def test_segmentation_cleanup_whisker_radius_gets_a_refinement_round():
+    """Integration check that the real segmentation-cleanup group actually
+    wires `refine=True` through for its radius-style settings, not just
+    that `_sweep_with_refinement` works in isolation: the trials recorded
+    for whisker_radius_um must include a value that is not on
+    `small_radius_candidates`'s own coarse grid, proving a second, refined
+    round of candidates really ran.
+    """
+    from haemolynx.optimisation import candidates as cand_module
+    from haemolynx.optimisation.search import _Search
+
+    mask = _y_shaped_vessel()
+    starting_values = dict(_DEFAULT_STARTING_VALUES)
+    starting_values["segmentation_cleanup_remove_whiskers"] = True
+
+    search = _Search(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values, progress=None,
+    )
+    search._group_segmentation_cleanup()
+
+    coarse_grid = set(
+        cand_module.small_radius_candidates(
+            (1.0, 1.0, 1.0),
+            float(starting_values["segmentation_cleanup_whisker_radius_um"]),
+            typical_radius_um=search.typical_radius_um,
+        )
+    )
+    radius_trial_values = {
+        trial.value
+        for trial in search.trials
+        if trial.setting == "segmentation_cleanup_whisker_radius_um"
+    }
+    assert radius_trial_values - coarse_grid, (
+        "expected at least one refined candidate beyond the coarse grid "
+        f"{coarse_grid}, got trials={radius_trial_values}"
+    )
 
 
 def test_segmentation_cleanup_reuses_one_precomputed_raw_image_foreground(monkeypatch):
