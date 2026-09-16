@@ -36,6 +36,7 @@ from haemolynx.gui.log_view import LogView, VERBOSE_LEVEL
 from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
     BRANCH_HOVER,
+    EDIT_DRAFT,
     FLOW_DIR_COLUMNS,
     FLOW_DIR_RGB_COLUMN,
     FLOW_HEADING_COLUMN,
@@ -7167,13 +7168,34 @@ def settings_widget(napari_viewer=None):
     def _graph_editor_layer(name: str):
         return viewer.layers[name] if viewer is not None and name in viewer.layers else None
 
+    def _attach_graph_editor_click_callbacks() -> None:
+        """(Re-)attach the click handler to the current VESSELS/NODES layer
+        objects. `_add_or_update` replaces a Vectors/Points layer outright
+        rather than shrinking it in place whenever an edit (e.g. Delete
+        edge) reduces its count -- idempotent, so safe to call after every
+        refresh, which is what makes that swap harmless instead of silently
+        detaching the handler from the layer now on screen."""
+        for name in (VESSELS, NODES):
+            layer = _graph_editor_layer(name)
+            if layer is not None and _graph_editor_click not in layer.mouse_drag_callbacks:
+                layer.mouse_drag_callbacks.append(_graph_editor_click)
+
     def _refresh_graph_editor_layers() -> None:
         state = graph_editor["state"]
         if state is None or view.results is None:
             return
-        _apply_layers(viewer, view.results.layers_for_graph(state.graph))
+        draft_points = state.draft.points_um if state.draft is not None else None
+        _apply_layers(
+            viewer, view.results.layers_for_graph(state.graph, draft_points_um=draft_points)
+        )
+        # `_apply_layers` only ever adds or updates layers it was given --
+        # once a draft is finished/committed there is nothing to draw, but
+        # the last drawn segment would otherwise stay on screen forever.
+        if draft_points is None and EDIT_DRAFT in viewer.layers:
+            viewer.layers.remove(viewer.layers[EDIT_DRAFT])
+        _attach_graph_editor_click_callbacks()
 
-    def _graph_editor_click(_layer, event) -> None:
+    def _graph_editor_click_impl(_layer, event) -> None:
         window = graph_editor["window"]
         state = graph_editor["state"]
         if window is None or state is None or not window.is_open() or state.mode == "idle":
@@ -7218,6 +7240,21 @@ def settings_widget(napari_viewer=None):
         if result != "rejected":
             _refresh_graph_editor_layers()
         window.report(result)
+
+    def _graph_editor_click(_layer, event) -> None:
+        # A napari mouse_drag_callback runs on the GUI thread with no
+        # surrounding try/except of its own -- an uncaught exception here
+        # previously surfaced as the editor just "crashing" mid-click rather
+        # than a message the user could act on.
+        try:
+            _graph_editor_click_impl(_layer, event)
+        except Exception as exc:  # noqa: BLE001 - report it, don't crash the viewer
+            logger.exception("graph editor click failed")
+            window = graph_editor["window"]
+            message = f"error: {exc}"
+            if window is not None:
+                window.report(message)
+            report.value = f"Edit: {message}"
 
     def _arm_graph_editor(mode: str) -> None:
         state = graph_editor["state"]
@@ -7275,10 +7312,7 @@ def settings_widget(napari_viewer=None):
             on_regenerate=on_regenerate_from_edit,
         )
         graph_editor["window"] = window
-        for name in (VESSELS, NODES):
-            layer = _graph_editor_layer(name)
-            if layer is not None and _graph_editor_click not in layer.mouse_drag_callbacks:
-                layer.mouse_drag_callbacks.append(_graph_editor_click)
+        _attach_graph_editor_click_callbacks()
         window.show()
 
     def save_run_file(path: Path | str) -> bool:
@@ -7596,6 +7630,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_graph_editor = graph_editor
     panel._haemolynx_open_graph_editor = on_open_graph_editor
     panel._haemolynx_regenerate_from_edit = on_regenerate_from_edit
+    panel._haemolynx_finish_graph_editor_branch = _finish_graph_editor_branch
     layout = QVBoxLayout(panel)
     if layer_row is not None:
         layout.addWidget(layer_row.native)

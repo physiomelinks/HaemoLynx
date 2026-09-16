@@ -208,6 +208,53 @@ def test_astar_can_bridge_a_gap_in_the_mask():
     assert len(path) <= 25
 
 
+def test_astar_path_windows_around_the_two_points_instead_of_the_whole_volume():
+    """Regression: every "Add branch" click re-routed through the *entire*
+    cost field -- on a real stack, seconds to tens of seconds per click,
+    synchronously on the GUI thread (confirmed: 200**3 voxels took ~26s
+    against route_through_array directly). A short local move on a large
+    volume must stay fast regardless of the volume's own size."""
+    import time
+
+    big = np.ones((220, 220, 220), dtype=float)
+    start = time.perf_counter()
+    path = astar_path(big, (10, 10, 10), (15, 15, 15))
+    elapsed = time.perf_counter() - start
+
+    assert tuple(path[0].astype(int)) == (10, 10, 10)
+    assert tuple(path[-1].astype(int)) == (15, 15, 15)
+    assert elapsed < 2.0, f"a short local move took {elapsed:.2f}s -- window not applied?"
+
+
+def test_astar_path_clamps_an_out_of_bounds_point_instead_of_raising():
+    """Regression: a click just outside the segmented volume's bounds (a
+    stray ray in 3D view, an edge case near the boundary) used to raise
+    straight out of route_through_array, crashing the click handler that
+    has no try/except of its own."""
+    cost = np.ones((10, 10, 10), dtype=float)
+    path = astar_path(cost, (5, 5, 5), (500, 500, 500))
+    assert tuple(path[0].astype(int)) == (5, 5, 5)
+    # The out-of-bounds end is clamped to the nearest in-bounds voxel.
+    assert tuple(path[-1].astype(int)) == (9, 9, 9)
+    assert np.all(path >= 0) and np.all(path < 10)
+
+
+def test_astar_path_falls_back_to_a_straight_line_if_routing_itself_fails(monkeypatch):
+    """A routing failure inside the (now-windowed) search must still produce
+    something to draw, not propagate -- matches
+    connect_skeleton_components's own mask-preferred-not-required fallback."""
+    import haemolynx.graph.edit as edit_module
+
+    def _boom(*_args, **_kwargs):
+        raise ValueError("simulated routing failure")
+
+    monkeypatch.setattr(edit_module, "route_through_array", _boom)
+    cost = np.ones((10, 10, 10), dtype=float)
+    path = astar_path(cost, (0, 0, 0), (5, 0, 0))
+    assert tuple(path[0].astype(int)) == (0, 0, 0)
+    assert tuple(path[-1].astype(int)) == (5, 0, 0)
+
+
 def test_voxel_path_to_microns_scales_per_axis():
     path = np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]])
     points = voxel_path_to_microns(path, voxel_size_zyx=(2.0, 0.5, 4.0))

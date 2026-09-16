@@ -18,7 +18,7 @@ napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import _apply_layers, settings_widget  # noqa: E402
-from haemolynx.gui.results import NODES, VESSELS, ResultLayers  # noqa: E402
+from haemolynx.gui.results import EDIT_DRAFT, NODES, VESSELS, ResultLayers  # noqa: E402
 
 from test_gui_results import a_graph, network  # noqa: E402
 
@@ -148,6 +148,71 @@ def test_delete_updates_the_real_vessels_layer(panel):
 
     assert state.graph.number_of_edges() < before_edges
     assert not state.graph.has_edge(0, 1)
+
+
+# --- the real, wired-up mouse callback (not just the pure state machine) ---
+# --- -- this is the entry point a real click actually goes through, and ---
+# --- the one none of the tests above (which drive `state` directly) touch ---
+
+
+def _fake_click_event(position):
+    """Just enough of a napari mouse event for `_graph_editor_click` to read."""
+    return SimpleNamespace(position=position, dims_displayed=(0, 1, 2), view_direction=None)
+
+
+def test_a_real_click_that_misses_everything_extends_the_draft_and_shows_it(panel):
+    """Regression: a click that resolves to no hit (e.g. empty space, or
+    just outside the segmented volume) used to reach an unguarded
+    route_through_array through this exact real callback and raise -- and
+    even when it did not raise, the extended draft was never drawn anywhere.
+    Driving the real `mouse_drag_callbacks` entry (not `state` directly)
+    is what would have caught both."""
+    from haemolynx.gui.graph_click import NodeHit
+
+    widget, viewer = panel
+    _with_vessel_layers(widget, viewer)
+    widget._haemolynx_open_graph_editor()
+
+    state = widget._haemolynx_graph_editor["state"]
+    state.start_add()
+    state.click_add((0.0, 0.0, 0.0), NodeHit(node_id=0))
+
+    click = viewer.layers[VESSELS].mouse_drag_callbacks[-1]
+    # Far outside the tiny 10x10x10 fixture volume -- guaranteed to miss
+    # both the vessels and nodes layers, and past the cost field's own
+    # bounds -- astar_path clamps this to the volume's own far corner
+    # (voxel (9, 9, 9), 1um voxels here) rather than raising.
+    click(viewer.layers[VESSELS], _fake_click_event((500.0, 500.0, 500.0)))
+
+    assert state.mode == "add"
+    assert state.draft is not None
+    assert state.draft.points_um[-1] == (9.0, 9.0, 9.0)
+    assert EDIT_DRAFT in viewer.layers
+    drawn = np.asarray(viewer.layers[EDIT_DRAFT].data[0])
+    assert tuple(drawn[-1]) == (9.0, 9.0, 9.0)
+
+
+def test_finishing_a_draft_through_the_real_flow_clears_the_preview_layer(panel):
+    """Regression: the draft-preview layer was never cleaned up -- once
+    drawn (see the test above), a finished/committed branch would leave its
+    last in-progress segment on screen forever."""
+    from haemolynx.gui.graph_click import NodeHit
+
+    widget, viewer = panel
+    _with_vessel_layers(widget, viewer)
+    widget._haemolynx_open_graph_editor()
+
+    state = widget._haemolynx_graph_editor["state"]
+    state.start_add()
+    state.click_add((0.0, 0.0, 0.0), NodeHit(node_id=0))
+    click = viewer.layers[VESSELS].mouse_drag_callbacks[-1]
+    click(viewer.layers[VESSELS], _fake_click_event((2.0, 0.0, 0.0)))
+    assert EDIT_DRAFT in viewer.layers
+
+    widget._haemolynx_finish_graph_editor_branch()
+
+    assert state.draft is None
+    assert EDIT_DRAFT not in viewer.layers
 
 
 # --- Regenerate with nothing recorded yet -------------------------------------

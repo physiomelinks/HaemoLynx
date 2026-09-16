@@ -95,7 +95,12 @@ class GraphEditorState:
         if self.draft is None:
             raise RuntimeError("no draft to extend")
         if self.cost_field is None:
-            raise RuntimeError("cost_field must be set before drawing a branch")
+            # No segmented mask was available to route through (e.g. the
+            # image layer was missing when the editor opened) -- draw a
+            # straight line rather than refuse the click outright, matching
+            # astar_path's own "always draw something" fallback below.
+            self.draft.extend([self.draft.last_point, point_um])
+            return
         scale = self.voxel_size_zyx
         start_vox = tuple(c / s for c, s in zip(self.draft.last_point, scale))
         end_vox = tuple(c / s for c, s in zip(point_um, scale))

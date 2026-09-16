@@ -164,12 +164,16 @@ def test_clicking_back_on_the_drafts_own_start_keeps_drafting():
     assert state.graph.number_of_edges() == 2  # no self-loop committed
 
 
-def test_extending_without_a_cost_field_raises():
+def test_extending_without_a_cost_field_falls_back_to_a_straight_line():
+    """Regression: a missing cost field (e.g. no image layer available when
+    the editor opened) used to raise straight out of a click -- it must
+    still draw something instead of crashing the interaction."""
     state = _state(cost_field=None)
     state.start_add()
     state.click_add((0.0, 0.0, 0.0), hit=NodeHit(node_id=0))
-    with pytest.raises(RuntimeError, match="cost_field"):
-        state.click_add((3.0, 0.0, 0.0), hit=None)
+    result = state.click_add((3.0, 0.0, 0.0), hit=None)
+    assert result == "extended"
+    assert state.draft.points_um[-1] == (3.0, 0.0, 0.0)
 
 
 def test_finish_add_commits_a_dangling_terminal():

@@ -13,6 +13,7 @@ for what an edge missing either one costs -- a silent zero-conductance edge).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -23,6 +24,8 @@ from skimage.graph import route_through_array
 
 from ._helpers import calculate_path_length, next_node_id
 from .degree2 import create_trivial_merged_edge
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "EdgeDraft",
@@ -157,6 +160,28 @@ def mask_cost_field(mask: np.ndarray) -> np.ndarray:
     return 1.0 + distance_transform_edt(~binary) ** 2
 
 
+#: Voxels of context kept around a routed segment's own start/end when
+#: cropping *cost_field* for :func:`astar_path`. The cost field itself is
+#: already fully computed (unlike ``graph.reconnect``'s own windowing, which
+#: exists to avoid recomputing a distance transform) -- this pad only bounds
+#: the pathfinding search itself, which otherwise scales with the *whole*
+#: array on every single mouse click "Add branch" makes: measured directly
+#: against ``route_through_array``, 128**3 voxels costs ~3s and 200**3 ~26s,
+#: easily enough to freeze the GUI thread this runs on for a real stack.
+#: Matches ``graph.reconnect.COST_WINDOW_PAD`` for the same "far enough to
+#: route around a real obstruction, not so far it re-explores the volume"
+#: reasoning.
+_ASTAR_WINDOW_PAD = 32
+
+
+def _straight_line_path(start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """Evenly spaced integer voxel coordinates from *start* to *end*."""
+    n_steps = max(int(np.linalg.norm(end.astype(float) - start.astype(float))) + 1, 2)
+    return np.round(
+        np.linspace(start.astype(float), end.astype(float), n_steps)
+    )
+
+
 def astar_path(
     cost_field: np.ndarray, start_vox: Sequence[float], end_vox: Sequence[float]
 ) -> np.ndarray:
@@ -167,14 +192,37 @@ def astar_path(
     drawn here costs a path the same way a reconnected secondary loop edge
     does. Returns voxel-index coordinates, not physical microns -- see
     :func:`voxel_path_to_microns`.
+
+    Runs only over a local window around the two points, padded by
+    :data:`_ASTAR_WINDOW_PAD` -- see its own docstring for why. Both points
+    are clamped into *cost_field*'s own bounds first, so a click just
+    outside the segmented volume (a stray ray in 3D view, an edge case near
+    the boundary) routes from the nearest in-bounds voxel instead of
+    raising. Never raises: a routing failure inside the window falls back to
+    a straight line between the two (clamped) points, matching
+    ``preprocessing.skeleton.connect_skeleton_components``'s own
+    mask-preferred-not-mask-required philosophy -- a branch always gets
+    drawn somewhere, even if not the mask-hugging path this is trying for.
     """
-    path_coords, _cost = route_through_array(
-        cost_field,
-        tuple(int(round(c)) for c in start_vox),
-        tuple(int(round(c)) for c in end_vox),
-        fully_connected=True,
-    )
-    return np.asarray(path_coords, dtype=float)
+    shape = np.asarray(cost_field.shape)
+    start = np.clip(np.round(start_vox).astype(int), 0, shape - 1)
+    end = np.clip(np.round(end_vox).astype(int), 0, shape - 1)
+
+    lo = np.maximum(np.minimum(start, end) - _ASTAR_WINDOW_PAD, 0)
+    hi = np.minimum(np.maximum(start, end) + _ASTAR_WINDOW_PAD + 1, shape)
+    window = cost_field[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
+    start_local = tuple((start - lo).astype(int))
+    end_local = tuple((end - lo).astype(int))
+    try:
+        path_coords, _cost = route_through_array(
+            window, start_local, end_local, fully_connected=True
+        )
+        return np.asarray(path_coords, dtype=float) + lo
+    except Exception:
+        logger.debug(
+            "A* branch routing failed; falling back to a straight line.", exc_info=True
+        )
+        return _straight_line_path(start, end)
 
 
 def voxel_path_to_microns(
