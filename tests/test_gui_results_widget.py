@@ -2126,7 +2126,6 @@ def test_flow_direction_layer_gets_length_from_schema_at_draw_time(make_napari_v
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
         graph,
-        show_flow_direction_layer=True,
         flow_arrow_scale=2.5,
     )
     group = results.stage_finished("export_results", SimpleNamespace())
@@ -2161,7 +2160,7 @@ def test_flow_direction_layer_features_include_direction_components(make_napari_
 
     viewer = make_napari_viewer()
     graph = _two_node_edge(flow_signed=1.0)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     _apply_layers(viewer, group)
 
@@ -2194,7 +2193,7 @@ def test_arrow_size_slider_mounts_on_flow_direction_layer(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     graph = _two_node_edge(flow_signed=1.0)
-    results = _built_with_flows(graph, show_flow_direction_layer=True, flow_arrow_scale=2.0)
+    results = _built_with_flows(graph, flow_arrow_scale=2.0)
     group = results.stage_finished("export_results", SimpleNamespace())
     panel._haemolynx_view.results = results
     _apply_layers(viewer, group)
@@ -2217,7 +2216,7 @@ def test_arrow_size_slider_updates_layer_length_live(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     graph = _two_node_edge(flow_signed=1.0)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     _apply_layers(viewer, group)
     layer = viewer.layers[FLOW_DIRECTION]
@@ -2236,7 +2235,7 @@ def test_user_arrow_length_survives_layer_refresh(make_napari_viewer):
     panel = settings_widget(napari_viewer=viewer)
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
-        graph, show_flow_direction_layer=True, flow_arrow_scale=1.0,
+        graph, flow_arrow_scale=1.0,
     )
     group = results.stage_finished("export_results", SimpleNamespace())
     _apply_layers(viewer, group)

@@ -4126,7 +4126,10 @@ def _names_with_prerequisite_closure(schema: Schema, names: Sequence[str]) -> tu
             continue
         closure.add(name)
         for prerequisite in schema[name].requires:
-            stack.append(prerequisite.lstrip("!"))
+            # "name=value" names a choice setting to check the value of, not
+            # a nested prerequisite of its own -- the base name is what needs
+            # to be in the closure.
+            stack.append(prerequisite.lstrip("!").partition("=")[0])
     return tuple(setting.name for setting in schema if setting.name in closure)
 
 

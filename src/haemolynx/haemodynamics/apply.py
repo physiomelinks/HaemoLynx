@@ -82,6 +82,9 @@ DIAMETER_DEFAULTS: dict[str, Any] = {
     "viscosity_law": "pries",
     "diameter_basis": "plasma_column",
     "haematocrit": 0.45,
+    "haematocrit_model": "fixed",
+    "haematocrit_distribution_max_iterations": 20,
+    "haematocrit_distribution_tolerance": 0.01,
 }
 
 

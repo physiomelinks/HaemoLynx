@@ -109,8 +109,13 @@ def check_settings(
 def _because(setting: Setting) -> str:
     if not setting.requires:
         return "for every run"
-    parts = [
-        f"'{name[1:]}' is off" if name.startswith("!") else f"'{name}' is on"
-        for name in setting.requires
-    ]
+    parts = []
+    for name in setting.requires:
+        if "=" in name:
+            key, _, expected = name.partition("=")
+            parts.append(f"'{key}' is '{expected}'")
+        elif name.startswith("!"):
+            parts.append(f"'{name[1:]}' is off")
+        else:
+            parts.append(f"'{name}' is on")
     return "because " + " and ".join(parts)

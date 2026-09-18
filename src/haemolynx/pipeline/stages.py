@@ -45,6 +45,9 @@ from haemolynx.haemodynamics.apply import (
 from haemolynx.haemodynamics.constriction_strategy import (
     set_resistances_for_constriction_strategy,
 )
+from haemolynx.haemodynamics.haematocrit_distribution import (
+    iterate_flow_and_haematocrit,
+)
 from haemolynx.haemodynamics.perturbations import (
     PerturbationSpec,
     is_sweep_perturbation,
@@ -2021,16 +2024,93 @@ def build_haemodynamic_model(
     return model
 
 
-def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
-    """Solve the network: equivalent resistance, then pressures and edge flows."""
+def _distributes_haematocrit(settings: dict) -> bool:
+    """Whether ``haematocrit_model`` picked the iterative bifurcation model
+    rather than the uniform fixed value."""
+    return settings.get("haematocrit_model") == "distributed_iterative"
+
+
+def solve(
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    schema: Schema | None = None,
+):
+    """Solve the network: equivalent resistance, then pressures and edge flows.
+
+    When ``haematocrit_model`` is ``distributed_iterative``, the flow solve
+    and the Pries-Secomb bifurcation haematocrit distribution
+    (:mod:`haemolynx.haemodynamics.haematocrit_distribution`) iterate
+    together to a fixed point instead of solving once: haematocrit sets
+    viscosity, viscosity sets resistance, resistance sets the flow split,
+    and the flow split is what the distribution itself needs.
+    """
     G = model.graph
     resistance_node_pair = boundaries.resistance_node_pair
     solution = Solution()
-    # 6) Compute effective resistance between two selected nodes.
+    distribute_hct = bool(
+        settings["run_haemodynamics"] and _distributes_haematocrit(settings)
+    )
+    hct_result: dict[str, Any] | None = None
+
+    # 6) Solve for flow (and, on the way, the conductance matrix effective
+    # resistance below reads).
     if settings["run_haemodynamics"]:
-        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+        if distribute_hct:
+            logger.info(
+                "Solving flow with Pries-Secomb bifurcation haematocrit "
+                "distribution (up to %s iterations, tolerance %s)...",
+                settings["haematocrit_distribution_max_iterations"],
+                settings["haematocrit_distribution_tolerance"],
+            )
+            if schema is None:
+                from haemolynx.pipeline.schema import default_schema
+
+                schema = default_schema()
+            voxel_size_zyx = tuple(
+                float(v) for v in G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0))
+            )
+            haemo_config = _haemodynamics_apply_config(
+                settings, schema, voxel_size_zyx=voxel_size_zyx,
+            )
+
+            def _recompute_resistances() -> None:
+                apply_poiseuille_resistances(G, haemo_config)
+
+            hct_result = iterate_flow_and_haematocrit(
+                G,
+                recompute_resistances=_recompute_resistances,
+                inlet_haematocrit=float(haemo_config.diameter("haematocrit")),
+                inlet_p_bc=settings["inlet_p_bc"],
+                outlet_p_bc=settings["outlet_p_bc"],
+                inlet_nodes=settings["inlet_nodes"],
+                outlet_nodes=settings["outlet_nodes"],
+                max_iterations=int(settings["haematocrit_distribution_max_iterations"]),
+                tolerance=float(settings["haematocrit_distribution_tolerance"]),
+            )
+            node_list = hct_result["node_list"]
+            conductance, _ = haemodynamics.build_conductance_matrix_from_graph(G)
+            solution.statistics["haematocrit_distribution"] = {
+                "converged": hct_result["converged"],
+                "iterations": hct_result["iterations"],
+                "max_delta": hct_result["max_delta"],
+                "dead_edges": hct_result.get("dead_edges", 0),
+                "compound_junctions": hct_result.get("compound_junctions", 0),
+            }
+            logger.info(
+                "Haematocrit distribution %s after %d iteration(s) (max "
+                "change %.4g).",
+                "converged" if hct_result["converged"] else "stopped without converging",
+                hct_result["iterations"],
+                hct_result["max_delta"],
+            )
+        else:
+            conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
         node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
         logger.info(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
+
+    # 7) Compute effective resistance between two selected nodes, from
+    # whichever conductance matrix the flow solve above finished with.
     if settings["run_haemodynamics"] and settings["do_equiv_resistance_calculation"]:
         if resistance_node_pair is None:
             logger.warning(
@@ -2058,9 +2138,10 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
                     "are not both present in the graph."
                 )
 
-    # 9) Also solve for flow throughout the network using the conductance matrix 
-    # and the input and output pressures.
-    if settings["run_haemodynamics"]:
+    # 9) Solve for flow throughout the network using the conductance matrix
+    # and the input and output pressures -- unless the haematocrit
+    # distribution loop above already did this (repeatedly).
+    if settings["run_haemodynamics"] and not distribute_hct:
         logger.info("Solving flow through the network...")
         flow = haemodynamics.solve_flow_from_conductance_matrix(
             conductance,
@@ -2072,13 +2153,14 @@ def solve(settings: dict, model: HaemodynamicModel, boundaries: BoundaryNodes):
         )
         haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
         logger.info("Flow through the network solved")
+        solution.pressure = flow["pressure"]
+        solution.node_list = list(node_list)
+    elif settings["run_haemodynamics"] and distribute_hct:
+        solution.pressure = hct_result["pressure"]
+        solution.node_list = list(node_list)
     else:
         logger.info("Haemodynamics solve skipped (run_haemodynamics=False).")
 
-
-    if settings["run_haemodynamics"]:
-        solution.pressure = flow["pressure"]
-        solution.node_list = list(node_list)
     solution.graph = G
     return solution
 
@@ -2170,14 +2252,69 @@ def _perturbation_copy(G: nx.MultiGraph) -> nx.MultiGraph:
 
 
 def _solve_network(
-    G: nx.MultiGraph, settings: dict, boundaries: BoundaryNodes
+    G: nx.MultiGraph,
+    settings: dict,
+    boundaries: BoundaryNodes,
+    *,
+    recompute_resistances: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Pressures, boundary flows and equivalent resistance, on *G* as it is.
 
     The full re-solve every perturbation gets: the pressures land on the nodes
     and the flows on the edges, so the perturbed network can be drawn and
     exported the same way the baseline is.
+
+    When ``haematocrit_model`` is ``distributed_iterative`` and the caller
+    supplies *recompute_resistances* -- a closure that redoes exactly the
+    resistance computation this graph's own diameters/constrictions need,
+    reading each edge's current ``discharge_haematocrit`` -- flow and
+    haematocrit are iterated to a fixed point the same way the main solve
+    stage does, and the returned dict also carries a
+    ``"haematocrit_distribution"`` diagnostic. Without a closure (a
+    perturbation type that has none to offer, e.g. a sweep) this falls back
+    to the single solve it has always done, using whatever
+    ``discharge_haematocrit`` is already on the graph.
     """
+    distribute_hct = _distributes_haematocrit(settings)
+    if distribute_hct and recompute_resistances is not None:
+        hct_result = iterate_flow_and_haematocrit(
+            G,
+            recompute_resistances=recompute_resistances,
+            inlet_haematocrit=float(settings["haematocrit"]),
+            inlet_p_bc=float(settings["inlet_p_bc"]),
+            outlet_p_bc=float(settings["outlet_p_bc"]),
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+            max_iterations=int(settings["haematocrit_distribution_max_iterations"]),
+            tolerance=float(settings["haematocrit_distribution_tolerance"]),
+        )
+        # iterate_flow_and_haematocrit's own pressure is solved from the pass
+        # before its last resistance recompute (see its docstring) -- a fresh
+        # solve on the now-converged resistances is what a perturbation's own
+        # equivalent-resistance comparison wants to be self-consistent with.
+        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+        solved = solve_pressure_and_boundary_flow(
+            conductance,
+            list(node_list),
+            inlet_p_bc=float(settings["inlet_p_bc"]),
+            outlet_p_bc=float(settings["outlet_p_bc"]),
+            inlet_nodes=list(boundaries.inlet_nodes),
+            outlet_nodes=list(boundaries.outlet_nodes),
+        )
+        haemodynamics.set_edge_flows(G, list(node_list), solved["pressure"])
+        solved["haematocrit_distribution"] = {
+            "converged": hct_result["converged"],
+            "iterations": hct_result["iterations"],
+            "max_delta": hct_result["max_delta"],
+        }
+        return solved
+    if distribute_hct:
+        logger.warning(
+            "haematocrit_model is distributed_iterative, but this "
+            "perturbation has no way to redo its own resistance computation, "
+            "so it keeps the discharge_haematocrit already on the graph and "
+            "solves flow once instead of re-equilibrating it."
+        )
     conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
     solved = solve_pressure_and_boundary_flow(
         conductance,
@@ -2320,6 +2457,13 @@ def _perturb_one(
     summary: dict[str, Any] = {"overrides": overrides}
     #: Sweep helper payload when this type ran a grid; used for Alice plots.
     sweep_payload: dict[str, Any] | None = None
+    #: Redoes this perturbation's own resistance computation from its
+    #: current diameters/constrictions, given a freshly updated per-edge
+    #: discharge_haematocrit -- set by whichever branch below changes
+    #: geometry, left None for sweeps and `_solve_network` then falls back
+    #: to a single solve on the frozen baseline haematocrit (see its
+    #: docstring).
+    recompute_resistances: Callable[[], None] | None = None
 
     if spec.type == "pressure_sweep":
         sweep_payload = run_pericyte_dilation_pressure_sweep(
@@ -2352,19 +2496,30 @@ def _perturb_one(
             sweep_pressure=False,
         )
     elif spec.type == "arteriole_diameter_change":
-        G, _table, scaling = haemodynamics.scale_arteriole_diameters(
+        arteriole_model = _poiseuille_model_for(perturbed)
+        G, scaled_table, scaling = haemodynamics.scale_arteriole_diameters(
             G,
             diameter_table,
             haemodynamics.percent_change_to_scale(
                 float(perturbed["arteriole_diameter_change_percent"])
             ),
-            model=_poiseuille_model_for(perturbed),
+            model=arteriole_model,
             prefer_edge_fwhm_diameter=prefer_measured,
         )
         summary.update(scaling)
         summary["arteriole_diameter_change_percent"] = float(
             perturbed["arteriole_diameter_change_percent"]
         )
+
+        def recompute_resistances() -> None:
+            # scale_arteriole_diameters already moved every stored diameter
+            # once; set_poiseuille_resistances reads diameter_um straight off
+            # each edge before ever falling back to scaled_table, so calling
+            # it again does not re-scale anything -- only resistance moves,
+            # from the just-updated discharge_haematocrit.
+            arteriole_model.set_poiseuille_resistances(
+                G, scaled_table, prefer_edge_fwhm_diameter=prefer_measured
+            )
     elif spec.type == "arteriole_diameter_sweep":
         sweep_payload = run_arteriole_dilation_pressure_sweep(
             G,
@@ -2424,8 +2579,7 @@ def _perturb_one(
             sweep_axis="length",
         )
     elif spec.type == "pericyte_diameter_change":
-        G, strategy, strategy_results = set_resistances_for_constriction_strategy(
-            G,
+        constriction_kwargs = dict(
             diameter_by_branch_order=diameter_table,
             constriction_factor_by_branch_order=perturbed["constriction_by_branch_order"],
             use_pericyte_mask_constriction=bool(perturbed["use_pericyte_mask_constriction"]),
@@ -2451,8 +2605,19 @@ def _perturb_one(
             axis_order=perturbed["image_axis_order"],
             seed=perturbed["pericyte_constriction_seed"],
         )
+        G, strategy, strategy_results = set_resistances_for_constriction_strategy(
+            G, **constriction_kwargs
+        )
         summary["strategy"] = strategy
         summary.update(strategy_results)
+
+        def recompute_resistances() -> None:
+            # Every strategy re-derives site placement and d1/d2 fresh from
+            # branch_order/length/fwhm_diameter_um and the (seeded, so
+            # reproducible) site generator -- none of that depends on a prior
+            # call's mutations, so redoing it just refreshes resistance from
+            # the new discharge_haematocrit without moving the sites.
+            set_resistances_for_constriction_strategy(G, **constriction_kwargs)
     elif spec.type == "arteriole_and_pericyte_diameter_change":
         # Arteriole whole-branch % scale first, then focal pericyte
         # constrictions on the scaled diameters. Reverse would wipe
@@ -2472,8 +2637,7 @@ def _perturb_one(
         summary["arteriole_diameter_change_percent"] = float(
             perturbed["arteriole_diameter_change_percent"]
         )
-        G, strategy, strategy_results = set_resistances_for_constriction_strategy(
-            G,
+        constriction_kwargs = dict(
             diameter_by_branch_order=scaled_table,
             constriction_factor_by_branch_order=perturbed["constriction_by_branch_order"],
             use_pericyte_mask_constriction=bool(perturbed["use_pericyte_mask_constriction"]),
@@ -2499,8 +2663,18 @@ def _perturb_one(
             axis_order=perturbed["image_axis_order"],
             seed=perturbed["pericyte_constriction_seed"],
         )
+        G, strategy, strategy_results = set_resistances_for_constriction_strategy(
+            G, **constriction_kwargs
+        )
         summary["strategy"] = strategy
         summary.update(strategy_results)
+
+        def recompute_resistances() -> None:
+            # The arteriole scale already moved every stored diameter once
+            # (see the arteriole_diameter_change branch above); only the
+            # constriction step needs redoing per iteration, using the fixed
+            # scaled_table it already closed over.
+            set_resistances_for_constriction_strategy(G, **constriction_kwargs)
     else:
         # `perturbation_problems` reports an unknown type before a run starts;
         # reaching here means a caller skipped the checks.
@@ -2513,7 +2687,9 @@ def _perturb_one(
         summary["sweep_points"] = len(sweep_payload["results"])
         result.sweep_flows = sweep_payload.get("sweep_flows")
 
-    solved = _solve_network(G, perturbed, boundaries)
+    solved = _solve_network(
+        G, perturbed, boundaries, recompute_resistances=recompute_resistances
+    )
     result.graph = G
     summary.update(
         {
@@ -2522,6 +2698,8 @@ def _perturb_one(
             "total_outlet_flow": float(solved["total_outlet_flow"]),
         }
     )
+    if solved.get("haematocrit_distribution") is not None:
+        summary["haematocrit_distribution"] = solved["haematocrit_distribution"]
     result.summary = summary
     _write_perturbation_csvs(
         result,
@@ -2610,8 +2788,21 @@ def run_perturbations(
     # from the same solver as the perturbations' -- but the run's own graph,
     # which `export_results` is about to write out, must leave this stage
     # exactly as it arrived.
+    baseline_graph = _perturbation_copy(model.graph)
+    baseline_recompute: Callable[[], None] | None = None
+    if _distributes_haematocrit(settings):
+        voxel_size_zyx = tuple(
+            float(v) for v in baseline_graph.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0))
+        )
+        haemo_config = _haemodynamics_apply_config(
+            settings, schema, voxel_size_zyx=voxel_size_zyx,
+        )
+
+        def baseline_recompute() -> None:
+            apply_poiseuille_resistances(baseline_graph, haemo_config)
+
     run.baseline = _solve_network(
-        _perturbation_copy(model.graph), settings, boundaries
+        baseline_graph, settings, boundaries, recompute_resistances=baseline_recompute
     )
     logger.info(
         f"Perturbations: {len(specs)} to run from a baseline equivalent "
@@ -3083,7 +3274,7 @@ def run_pipeline_stages(
     _produced(on_stage_output, "build_haemodynamic_model", model)
     with run.stage("solve"):
         if _run_stage_body("solve", start_from):
-            solution = solve(settings, model, boundaries)
+            solution = solve(settings, model, boundaries, schema)
         else:
             solution = _solution_from_graph(model.graph)
     _produced(on_stage_output, "solve", solution)

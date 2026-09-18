@@ -411,6 +411,12 @@ def apply_constriction_sites(
             )
 
         centers = sites.centers_for_edge(u, v, key, edge_data, length=float(length))
+        # A per-edge discharge haematocrit (see
+        # haemodynamics.haematocrit_distribution) takes over from the
+        # uniform value passed in, so a constricted (pericyte) edge stays
+        # consistent with a plain one instead of silently keeping the old
+        # global default.
+        edge_haematocrit = edge_data.get("discharge_haematocrit", haematocrit)
         total_resistance = integrated_resistance(
             length=float(length),
             d1=float(d1),
@@ -419,7 +425,7 @@ def apply_constriction_sites(
             constriction_length=float(constriction_length),
             num_points=int(num_integration_points),
             viscosity_law=viscosity_law,
-            haematocrit=float(haematocrit),
+            haematocrit=float(edge_haematocrit),
             diameter_basis=diameter_basis,
         )
         set_edge_resistance(graph[u][v][key], float(total_resistance))

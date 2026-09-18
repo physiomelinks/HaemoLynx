@@ -34,6 +34,12 @@ from .apply import (
     apply_poiseuille_resistances,
     assign_edge_diameters,
 )
+from .haematocrit_distribution import (
+    DISCHARGE_HAEMATOCRIT_ATTR,
+    distribute_discharge_haematocrit,
+    iterate_flow_and_haematocrit,
+    pries_secomb_daughter_haematocrit,
+)
 from .arteriole import (
     ARTERIOLE_PREFIX,
     LARGE_ARTERIOLE_PREFIX,
@@ -83,6 +89,10 @@ __all__ = [
     "apply_poiseuille_haemodynamics",
     "apply_poiseuille_resistances",
     "assign_edge_diameters",
+    "DISCHARGE_HAEMATOCRIT_ATTR",
+    "distribute_discharge_haematocrit",
+    "iterate_flow_and_haematocrit",
+    "pries_secomb_daughter_haematocrit",
     "DIAMETER_SOURCE_EDT",
     "DIAMETER_SOURCE_MEASURED",
     "DIAMETER_SOURCE_OVERRIDE",

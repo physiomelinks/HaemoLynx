@@ -121,11 +121,12 @@ class Field:
     help: str
     section: str
     advanced: bool
-    #: Prerequisites from the schema, e.g. ``("use_ilastik_segmentation",)`` or
-    #: ``("!use_ilastik_segmentation",)``. Most sections grey the row out until
-    #: they hold so a user can see why it is off. Rows in
-    #: :data:`HIDE_WHEN_UNMET_SECTIONS` instead *hide* when unmet — see
-    #: :meth:`is_visible`.
+    #: Prerequisites from the schema, e.g. ``("use_ilastik_segmentation",)``,
+    #: ``("!use_ilastik_segmentation",)``, or ``("haematocrit_model=distributed_iterative",)``
+    #: for a row that only applies under one value of a ``choice`` setting.
+    #: Most sections grey the row out until they hold so a user can see why it
+    #: is off. Rows in :data:`HIDE_WHEN_UNMET_SECTIONS` instead *hide* when
+    #: unmet — see :meth:`is_visible`.
     enabled_by: tuple[str, ...]
 
     #: The kind this row came from, needed to read its value back.
@@ -205,10 +206,15 @@ class Field:
         unmet = [rule for rule in self.enabled_by if not is_prerequisite_met(rule, values)]
         if not unmet:
             return ""
-        parts = [
-            f"'{rule[1:]}' is on" if rule.startswith("!") else f"'{rule}' is off"
-            for rule in unmet
-        ]
+        parts = []
+        for rule in unmet:
+            if "=" in rule:
+                name, _, expected = rule.partition("=")
+                parts.append(f"'{name}' is not '{expected}'")
+            elif rule.startswith("!"):
+                parts.append(f"'{rule[1:]}' is on")
+            else:
+                parts.append(f"'{rule}' is off")
         return f"Not used while {' and '.join(parts)}."
 
 
@@ -322,6 +328,18 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "use_thick_vessel_skeletonisation": "Use alternate skeletonisation for thick vessels",
 }
 
+#: Display text for a ``choice`` setting's values, keyed by setting name then
+#: raw value. The stored/YAML value stays a plain snake_case identifier, like
+#: every other choice setting -- only the dropdown's own visible text reads
+#: as a sentence for the ones a user picks a whole model from, rather than a
+#: mode word like "pries" or "anatomical".
+CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
+    "haematocrit_model": {
+        "fixed": "Fixed haematocrit",
+        "distributed_iterative": "Calculated haematocrit distribution - iterative",
+    },
+}
+
 
 def label_for(name: str, unit: str | None = None) -> str:
     """`skeleton_closing_radius` -> `Skeleton closing radius (voxels)`.
@@ -357,7 +375,12 @@ def _options_for(setting: Setting, widget_type: str) -> dict[str, Any]:
     """The magicgui keyword options the widget this setting gets will accept."""
     options: dict[str, Any] = {}
     if setting.kind == "choice":
-        options["choices"] = list(setting.choices or ())
+        labels = CHOICE_VALUE_LABELS.get(setting.name)
+        options["choices"] = (
+            [(labels.get(c, c), c) for c in (setting.choices or ())]
+            if labels
+            else list(setting.choices or ())
+        )
     elif setting.kind == "int" and widget_type == "SpinBox":
         low, high = DEFAULT_INT_RANGE
         options["min"] = int(setting.minimum) if setting.minimum is not None else low

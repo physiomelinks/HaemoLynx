@@ -425,6 +425,10 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "edt_diameter_um": "assign_diameters",
     "fwhm_edt_disagreement_ratio": "assign_diameters",
     "fwhm_low_confidence_vs_edt": "assign_diameters",
+    # Only present when haematocrit_model is distributed_iterative --
+    # available_edge_columns already drops any column with no real values,
+    # so this is silently absent from the dropdown otherwise.
+    "discharge_haematocrit": "solve",
 }
 
 #: Derived flow columns always offered on vessel layers once flows exist.
@@ -907,7 +911,7 @@ class ResultLayers:
         #: steps. Off by default: it is eleven extra rebuilds of the geometry
         #: in the middle of the slowest stage.
         self.show_steps = show_steps
-        #: Run settings (Export-tab toggles such as ``show_flow_direction_layer``).
+        #: Run settings (Export-tab toggles such as ``flow_arrow_scale``).
         self.settings: dict[str, Any] = dict(settings or {})
         self._graph: Any | None = None
         #: Live network after ``assign_boundaries`` (post large-vessel cut when
@@ -1822,10 +1826,6 @@ class ResultLayers:
             note=note,
         )
 
-    def _wants_flow_direction_layer(self) -> bool:
-        """Export-tab toggle; absent settings mean off (tests / revert)."""
-        return bool(self.settings.get("show_flow_direction_layer", False))
-
     def _flow_direction_layers(self) -> tuple[LayerSpec, ...]:
         """Mid-edge flow arrows coloured by 3D direction RGB, or empty when none exist."""
         from haemolynx.visualization.flow_direction import flow_direction_vectors
@@ -1874,14 +1874,12 @@ class ResultLayers:
 
     def _from_export_results(self, output: Any) -> StageLayers:
         self._sync_graph_from_output(output)
-        layers: tuple[LayerSpec, ...] = ()
         note = "Wrote the VTK, statistics and plots."
-        if self._wants_flow_direction_layer():
-            layers = self._flow_direction_layers()
-            if layers:
-                note += f" Flow direction: {len(layers[0].data)} arrows."
-            else:
-                note += " Flow direction layer skipped (no signed flows)."
+        layers = self._flow_direction_layers()
+        if layers:
+            note += f" Flow direction: {len(layers[0].data)} arrows."
+        else:
+            note += " Flow direction layer skipped (no signed flows)."
         return StageLayers(
             stage="export_results",
             title=_title_for("export_results"),

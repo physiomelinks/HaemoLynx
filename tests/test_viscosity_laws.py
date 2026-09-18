@@ -503,3 +503,82 @@ def test_choosing_the_law_in_a_config_reaches_the_resistances(tmp_path):
     assert model.calculate_viscosity(5.0) == pytest.approx(
         pries_in_vitro_viscosity(5.0, haematocrit=0.5)
     )
+
+
+# --- per-edge discharge haematocrit override --------------------------------
+#
+# haemodynamics.haematocrit_distribution writes a per-edge
+# "discharge_haematocrit" attribute; PoiseuilleModel reads it in preference
+# to the uniform self.haematocrit wherever present. These pin that the
+# override actually takes effect, and -- critically -- that its absence
+# reproduces today's behaviour exactly, since that is what every existing
+# run (the feature defaults off) must keep doing.
+
+
+def _bare_chain_graph() -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([0.0, 0.0, SEGMENT_LENGTH_UM]))
+    G.add_edge(
+        0, 1, branch_order="B01", length=SEGMENT_LENGTH_UM, diameter_um=8.0,
+    )
+    return G
+
+
+def test_calculate_viscosity_override_wins_over_the_uniform_value():
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    assert model.calculate_viscosity(8.0, haematocrit=0.3) == pytest.approx(
+        pries_in_vitro_viscosity(8.0, haematocrit=0.3)
+    )
+    assert model.calculate_viscosity(8.0, haematocrit=0.3) != pytest.approx(
+        model.calculate_viscosity(8.0)
+    )
+
+
+def test_calculate_viscosity_with_no_override_keeps_the_uniform_value():
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    assert model.calculate_viscosity(8.0, haematocrit=None) == pytest.approx(
+        model.calculate_viscosity(8.0)
+    )
+
+
+def test_set_poiseuille_resistances_reads_a_per_edge_discharge_haematocrit():
+    """Regression: the resistance loop used to read only self.haematocrit,
+    with no way for a per-edge value to reach it at all."""
+    G = _bare_chain_graph()
+    G[0][1][0]["discharge_haematocrit"] = 0.3
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    _, results = model.set_poiseuille_resistances(G, diameter_by_branch_order={})
+    assert results["edges_set"] == 1
+    expected = model.resistance_of_uniform_segment(
+        SEGMENT_LENGTH_UM, 8.0, haematocrit=0.3
+    )
+    assert G[0][1][0]["resistance"] == pytest.approx(expected)
+    # And it must differ from what the uniform 0.45 would have given --
+    # otherwise the override was silently ignored.
+    uniform = model.resistance_of_uniform_segment(SEGMENT_LENGTH_UM, 8.0)
+    assert G[0][1][0]["resistance"] != pytest.approx(uniform)
+
+
+def test_set_poiseuille_resistances_with_no_override_matches_the_pre_feature_baseline():
+    """Critical backward-compatibility pin: an edge with no
+    discharge_haematocrit attribute at all -- every run before this feature
+    existed, and every run today with haematocrit_model left at its "fixed"
+    default -- must get byte-identical resistances to the plain uniform path."""
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+
+    with_no_attr = _bare_chain_graph()
+    _, _ = model.set_poiseuille_resistances(with_no_attr, diameter_by_branch_order={})
+
+    reference = _bare_chain_graph()
+    expected = model.resistance_of_uniform_segment(SEGMENT_LENGTH_UM, 8.0)
+    from haemolynx.haemodynamics.poiseuille import set_edge_resistance
+
+    set_edge_resistance(reference[0][1][0], expected)
+
+    assert with_no_attr[0][1][0]["resistance"] == pytest.approx(
+        reference[0][1][0]["resistance"]
+    )
+    assert with_no_attr[0][1][0]["conductance"] == pytest.approx(
+        reference[0][1][0]["conductance"]
+    )

@@ -325,13 +325,9 @@ solver_and_output:
   vtk_export: true
   # Open the exported VTK network in the interactive viewer  [needs run_haemodynamics and vtk_export]
   visualize_vtk: false
-  # Add a napari Vectors layer of mid-edge arrows coloured by flow magnitude after the solve (Export tab results)  [needs run_haemodynamics]
-  show_flow_direction_layer: true
-  # Include log10(flow_abs) as a vessel colour option in napari (select flow_abs_log10 from the Vectors layer colour-by dropdown)  [needs run_haemodynamics]
-  flow_log_scale: false
-  # Include flow direction axis components (flow_dir_z/y/x) as colour options in the flow-direction Vectors layer (select from the layer colour-by dropdown)  [needs show_flow_direction_layer and run_haemodynamics]
+  # Include flow direction axis components (flow_dir_z/y/x) as colour options in the flow-direction Vectors layer (select from the layer colour-by dropdown). The layer itself -- a napari Vectors layer of mid-edge arrows -- is always added after the solve  [needs run_haemodynamics]
   flow_direction_colouring: true
-  # Initial uniform scale for flow-direction arrow heads in the napari Vectors layer (adjust live via the layer's length control after export)  [range 0.1..5.0; needs show_flow_direction_layer and run_haemodynamics]
+  # Initial uniform scale for flow-direction arrow heads in the napari Vectors layer (adjust live via the layer's length control after export)  [range 0.1..5.0; needs run_haemodynamics]
   flow_arrow_scale: 1.0
   # Print verbose per-stage logging while the pipeline runs
   verbose_logging: false
@@ -505,6 +501,12 @@ diameters_and_pericytes:
   diameter_basis: plasma_column
   # Discharge haematocrit the pries law is evaluated at; read by no other law  [fraction; range 0.0..0.99; needs run_haemodynamics]
   haematocrit: 0.45
+  # Which haematocrit model a resistance is computed from. fixed applies the haematocrit fraction above uniformly to every edge. distributed_iterative instead computes local discharge haematocrit per edge from Pries and Secomb's bifurcation phase-separation law (parent/daughter diameters and flow fraction, not bifurcation angle) -- only changes a resistance when viscosity_law is pries, the only law that reads haematocrit, but works with either diameter_basis, and iterates the flow solve to convergence since haematocrit, viscosity, resistance and the flow split all depend on each other, so a large network costs more than one solve  [one of: fixed, distributed_iterative; needs run_haemodynamics]
+  haematocrit_model: fixed
+  # Give up on haematocrit distribution convergence after this many flow re-solves. The fixed point converges geometrically rather than quickly -- a single strongly asymmetric bifurcation (e.g. a 2.5x diameter ratio) can need 12-15 iterations to settle within the default tolerance below  [range 1..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
+  haematocrit_distribution_max_iterations: 20
+  # Largest per-edge haematocrit change between iterations that counts as converged  [fraction; range 0.0..; needs run_haemodynamics and haematocrit_model = distributed_iterative]
+  haematocrit_distribution_tolerance: 0.01
   # Give every branch order the same vessel diameter instead of a per-order table
   all_diams_const: true
   # Legacy flag kept for older configs and CLI; ignored by baseline Haemodynamics and every perturbation merge (not shown as a typed-entry control). Focal constrictions come only from pericyte-typed perturbations via their strategy path  [needs run_haemodynamics]

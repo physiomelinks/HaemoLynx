@@ -47,8 +47,14 @@ def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
 
     A leading ``!`` negates it, which is how a setting says it applies only
     while some feature is *off* — an input path that a run would otherwise
-    generate for itself, for instance.
+    generate for itself, for instance. ``name=value`` instead asks whether a
+    ``choice`` setting is holding one specific value, for a setting that
+    only makes sense under one of several modes rather than one on/off
+    feature — see :func:`Schema.__init__`'s validation of this form.
     """
+    if "=" in prerequisite:
+        name, _, expected = prerequisite.partition("=")
+        return values.get(name) == expected
     if prerequisite.startswith("!"):
         return not bool(values.get(prerequisite[1:], False))
     return bool(values.get(prerequisite, False))
@@ -57,6 +63,21 @@ def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
 def is_active(setting: "Setting", values: Mapping[str, Any]) -> bool:
     """True when every one of *setting*'s prerequisites is met."""
     return all(is_prerequisite_met(p, values) for p in setting.requires)
+
+
+def describe_unmet_prerequisite(prerequisite: str) -> str:
+    """A sentence fragment naming why *prerequisite* (currently unmet) fails.
+
+    Shared by every message that reports an unmet ``requires`` entry, so a
+    ``name=value`` prerequisite reads naturally everywhere ``!name``/``name``
+    already did.
+    """
+    if "=" in prerequisite:
+        name, _, expected = prerequisite.partition("=")
+        return f"'{name}' is not {expected!r}"
+    if prerequisite.startswith("!"):
+        return f"'{prerequisite[1:]}' is true"
+    return f"'{prerequisite}' is false"
 
 
 def section_key(section: str) -> str:
@@ -104,10 +125,12 @@ class Setting:
         Physical unit shown next to the widget, e.g. ``"um"``.
     requires:
         Names of boolean settings that must all be true for this one to apply,
-        each optionally negated with a leading ``!``. A GUI greys the control
-        out when they are not met; a non-default value whose prerequisites are
-        unmet warns, which is how the silent "setting had no effect" class of
-        bug is caught.
+        each optionally negated with a leading ``!`` -- or ``name=value``,
+        which asks a ``choice`` setting to hold one specific value instead of
+        an on/off feature to be on. A GUI greys the control out when they are
+        not met; a non-default value whose prerequisites are unmet warns,
+        which is how the silent "setting had no effect" class of bug is
+        caught.
     must_exist:
         For a path: the file or directory it names must be there before a run
         starts, whenever this setting is active. Checked by
@@ -335,15 +358,35 @@ class Schema:
             by_name[setting.name] = setting
         for setting in settings:
             for prerequisite in setting.requires:
-                prerequisite = prerequisite.lstrip("!")
-                if prerequisite not in by_name:
+                if "=" in prerequisite:
+                    name, _, expected = prerequisite.partition("=")
+                    if name not in by_name:
+                        raise ConfigError(
+                            f"Setting '{setting.name}' requires '{name}', "
+                            "which is not in the schema."
+                        )
+                    target = by_name[name]
+                    if target.kind != "choice":
+                        raise ConfigError(
+                            f"Setting '{setting.name}' requires "
+                            f"'{name}={expected}', but '{name}' is not a choice."
+                        )
+                    if expected not in (target.choices or ()):
+                        raise ConfigError(
+                            f"Setting '{setting.name}' requires "
+                            f"'{name}={expected}', which is not one of "
+                            f"'{name}'s choices {list(target.choices or ())}."
+                        )
+                    continue
+                name = prerequisite.lstrip("!")
+                if name not in by_name:
                     raise ConfigError(
-                        f"Setting '{setting.name}' requires '{prerequisite}', "
+                        f"Setting '{setting.name}' requires '{name}', "
                         "which is not in the schema."
                     )
-                if by_name[prerequisite].kind != "bool":
+                if by_name[name].kind != "bool":
                     raise ConfigError(
-                        f"Setting '{setting.name}' requires '{prerequisite}', "
+                        f"Setting '{setting.name}' requires '{name}', "
                         "which is not a bool."
                     )
         for section in {setting.section for setting in settings}:
@@ -487,9 +530,10 @@ class Schema:
             ]
             if unmet:
                 messages.append(
-                    f"Setting '{setting.name}' is set to {value!r} but nothing will "
-                    f"read it while {' and '.join(repr(u) for u in unmet)} "
-                    f"{'is' if len(unmet) == 1 else 'are'} false."
+                    f"Setting '{setting.name}' is set to {value!r} but nothing "
+                    "will read it while "
+                    + " and ".join(describe_unmet_prerequisite(u) for u in unmet)
+                    + "."
                 )
         return messages
 

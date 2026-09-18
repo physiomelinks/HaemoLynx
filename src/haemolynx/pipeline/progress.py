@@ -69,6 +69,27 @@ _LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS: tuple[str, ...] = (
 #: :data:`_LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS`.
 _COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS = _LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
 
+#: Pries-Secomb bifurcation haematocrit distribution. Stays in the Diameters
+#: schema section (apply.py's ``_haemodynamics_apply_config`` pulls that
+#: whole section in), but claimed here so its rows sit on the Haemodynamics
+#: tab beside the flow solve they configure, not on Diameters.
+_HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
+    "haematocrit_model",
+    "haematocrit_distribution_max_iterations",
+    "haematocrit_distribution_tolerance",
+)
+
+#: The viscosity law and the uniform haematocrit it can read. Stay in the
+#: Diameters schema section (apply.py's section_values still finds them
+#: there), but claimed here so their rows sit on Haemodynamics beside the
+#: model that actually consumes them (build_haemodynamic_model). Only
+#: diameter_basis -- which diameter a segmented vessel measures -- stays on
+#: Diameters: that is a property of the dataset, not the blood model.
+_VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
+    "viscosity_law",
+    "haematocrit",
+)
+
 
 @dataclass(frozen=True)
 class Stage:
@@ -180,18 +201,17 @@ STAGES: tuple[Stage, ...] = (
     Stage(
         call="assign_diameters",
         title="5. Diameters",
-        summary=(
-            "Branch orders, the diameter each vessel is modelled with, and "
-            "the blood viscosity law."
-        ),
+        summary="Branch orders and the diameter each vessel is modelled with.",
         # Declared under boundary assignment, but it is branch-order
         # assignment that reads it, which happens here.
         settings=("strict_branch_order_assignment",),
         # This is the stage that reads them: it hands the whole
         # `Diameters and pericytes` section to the haemodynamics as one group
         # (see `pipeline/stages.py`), so the settings and the tab agree.
-        # Pericyte / constriction knobs live under Perturbation runs: they
-        # configure a typed perturbation, not the baseline diameter model.
+        # Pericyte / constriction knobs live under Perturbation runs (a typed
+        # perturbation's options, not the baseline model) and the viscosity
+        # law / haematocrit live under Haemodynamics (the model that reads
+        # them) -- both retabbed by name below, ahead of this section claim.
         sections=(
             "Diameters and pericytes",
             "FWHM diameter measurement",
@@ -201,8 +221,14 @@ STAGES: tuple[Stage, ...] = (
     Stage(
         call="build_haemodynamic_model",
         title="6. Haemodynamics",
-        summary="Whether to solve the flow, and the pressures to solve it at.",
-        settings=("run_haemodynamics",),
+        summary=(
+            "Whether to solve the flow, the blood model it solves with, and "
+            "the pressures to solve it at."
+        ),
+        settings=(
+            "run_haemodynamics",
+            *_VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB,
+        ),
     ),
     Stage(
         # Its rows belong beside the haemodynamics they configure, so this
@@ -210,7 +236,12 @@ STAGES: tuple[Stage, ...] = (
         call="solve",
         title="Solve",
         summary="Pressures and flows, from the boundary pressures.",
-        settings=("inlet_p_bc", "outlet_p_bc", "do_equiv_resistance_calculation"),
+        settings=(
+            "inlet_p_bc",
+            "outlet_p_bc",
+            "do_equiv_resistance_calculation",
+            *_HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB,
+        ),
         tab="6. Haemodynamics",
     ),
     Stage(

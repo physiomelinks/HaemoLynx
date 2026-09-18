@@ -1101,11 +1101,13 @@ def test_a_declared_column_still_carries_the_value_once_it_is_filled():
     assert np.allclose(np.asarray(vessels.features["flow_abs"], dtype=float), 7e-16)
 
 
-def test_vessel_layers_include_flow_abs_log10_when_setting_enabled():
+def test_vessel_layers_always_include_flow_abs_log10_once_flows_exist():
+    """Log10 flow is always a layer-panel option once flows exist -- there is
+    no setting that gates it."""
     from haemolynx.haemodynamics.resistance import flow_abs_log10_value
 
     graph = a_graph(conductance=1e-18)
-    results = ResultLayers(settings={"flow_log_scale": True})
+    results = ResultLayers(settings={})
     results.stage_finished("skeletonise", SimpleNamespace(
         image=np.zeros((4, 4, 4)), skeleton=np.zeros((4, 4, 4), dtype=bool),
         voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -1127,33 +1129,6 @@ def test_vessel_layers_include_flow_abs_log10_when_setting_enabled():
         flow_abs_log10_value(1e-12),
     )
     assert spec_named(group, VESSELS).colour_by == "flow_abs"
-
-
-def test_vessel_layers_include_flow_abs_log10_even_when_setting_disabled():
-    """Log10 flow is always a layer-panel option once flows exist."""
-    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
-
-    graph = a_graph(conductance=1e-18)
-    results = ResultLayers(settings={"flow_log_scale": False})
-    results.stage_finished("skeletonise", SimpleNamespace(
-        image=np.zeros((4, 4, 4)), skeleton=np.zeros((4, 4, 4), dtype=bool),
-        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
-    ))
-    results.stage_finished("build_network", network(graph))
-    for _u, _v, _k, data in graph.edges(keys=True, data=True):
-        data["flow_abs"] = 1e-12
-
-    group = results.stage_finished(
-        "solve",
-        SimpleNamespace(node_list=list(graph.nodes),
-                        pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
-    )
-    vessels = next(s for s in group.layers if s.name == VESSELS)
-    assert "flow_abs_log10" in vessels.features
-    assert np.allclose(
-        np.asarray(vessels.features["flow_abs_log10"], dtype=float),
-        flow_abs_log10_value(1e-12),
-    )
 
 
 # --- the range a colour bar should span --------------------------------------

@@ -227,6 +227,7 @@ INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
     "viscosity_law",
     "diameter_basis",
     "haematocrit",
+    "haematocrit_model",
 )
 
 #: Types that run a sweep helper and write a sweep CSV rather than one re-solve.

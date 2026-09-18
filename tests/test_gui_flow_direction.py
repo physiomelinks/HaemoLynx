@@ -1,4 +1,5 @@
-"""Flow-direction napari layer: geometry, colouring, and Export-tab toggle."""
+"""Flow-direction napari layer: geometry and colouring. The layer itself is
+always added after a solve with signed flows -- there is no toggle."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -10,7 +11,6 @@ import pytest
 from haemolynx.gui.results import FLOW_DIRECTION, ResultLayers
 from haemolynx.gui.tabs import assign_to_stages
 from haemolynx.pipeline import default_schema
-from haemolynx.pipeline.progress import STAGES
 from haemolynx.visualization.flow_direction import (
     edge_flow_arrow_zyx,
     edge_flow_direction_sign,
@@ -43,13 +43,8 @@ def _two_node_edge(*, flow_signed: float, voxels=None) -> nx.MultiGraph:
     return graph
 
 
-def _built_with_flows(graph, *, show_flow_direction_layer: bool, **settings) -> ResultLayers:
-    results = ResultLayers(
-        settings={
-            "show_flow_direction_layer": show_flow_direction_layer,
-            **settings,
-        }
-    )
+def _built_with_flows(graph, **settings) -> ResultLayers:
+    results = ResultLayers(settings=dict(settings))
     results.stage_finished(
         "skeletonise",
         SimpleNamespace(
@@ -239,18 +234,10 @@ def test_flow_direction_components_finite_in_features():
 # --- ResultLayers / Export-tab toggle ----------------------------------------
 
 
-def test_toggle_off_omits_flow_direction_layer():
-    graph = _two_node_edge(flow_signed=1.0)
-    results = _built_with_flows(graph, show_flow_direction_layer=False)
-    group = results.stage_finished("export_results", SimpleNamespace())
-    names = [spec.name for spec in group.layers]
-    assert FLOW_DIRECTION not in names
-    assert group.layers == ()
-
-
-def test_toggle_on_with_flows_emits_one_arrow_per_directed_edge():
+def test_flow_direction_layer_always_renders_when_flows_exist():
+    """The layer is unconditional now -- no toggle can omit it."""
     graph = _two_node_edge(flow_signed=1.25)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
 
     assert len(group.layers) == 1
@@ -275,7 +262,6 @@ def test_flow_direction_layer_uses_flow_arrow_scale_setting():
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
         graph,
-        show_flow_direction_layer=True,
         flow_arrow_scale=2.5,
     )
     group = results.stage_finished("export_results", SimpleNamespace())
@@ -284,26 +270,17 @@ def test_flow_direction_layer_uses_flow_arrow_scale_setting():
     assert group.layers[0].options["length"] == 2.5
 
 
-def test_toggle_on_without_flows_emits_no_layer():
+def test_flow_direction_layer_emits_nothing_without_flows():
     graph = _two_node_edge(flow_signed=0.0)
     # Zero signed flow is skipped by the direction helper; strip attributes.
     for _u, _v, _k, data in graph.edges(keys=True, data=True):
         data.pop("flow_signed", None)
         data.pop("flow_abs", None)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     assert FLOW_DIRECTION not in [spec.name for spec in group.layers]
     assert group.layers == ()
     assert "no signed flows" in group.note.lower()
-
-
-def test_show_flow_direction_layer_schema_default_and_requires():
-    schema = default_schema()
-    setting = schema["show_flow_direction_layer"]
-    assert setting.kind == "bool"
-    assert setting.default is True
-    assert setting.requires == ("run_haemodynamics",)
-    assert setting.section == "Solver and output"
 
 
 def test_flow_arrow_scale_schema_default_and_requires():
@@ -313,21 +290,13 @@ def test_flow_arrow_scale_schema_default_and_requires():
     assert setting.default == 1.0
     assert setting.minimum == 0.1
     assert setting.maximum == 5.0
-    assert setting.requires == ("show_flow_direction_layer", "run_haemodynamics")
+    assert setting.requires == ("run_haemodynamics",)
     assert setting.section == "Solver and output"
 
 
 def test_flow_arrow_scale_lives_on_export_tab():
     owner = assign_to_stages(default_schema())
     assert owner["flow_arrow_scale"] == "9. Export"
-
-
-def test_show_flow_direction_layer_lives_on_export_tab():
-    """Last tab is 9. Export (STAGES); Solver and output section lands there."""
-    assert STAGES[-1].call == "export_results"
-    assert STAGES[-1].title == "9. Export"
-    owner = assign_to_stages(default_schema())
-    assert owner["show_flow_direction_layer"] == "9. Export"
 
 
 def test_flow_heading_deg_pure_axes():
@@ -350,7 +319,6 @@ def test_flow_direction_colouring_includes_axis_components_when_enabled():
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
         graph,
-        show_flow_direction_layer=True,
         flow_direction_colouring=True,
     )
     group = results.stage_finished("export_results", SimpleNamespace())
@@ -368,7 +336,6 @@ def test_flow_direction_colouring_keeps_axis_components_when_disabled():
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
         graph,
-        show_flow_direction_layer=True,
         flow_direction_colouring=False,
     )
     group = results.stage_finished("export_results", SimpleNamespace())
@@ -386,7 +353,7 @@ def test_flow_direction_colouring_schema_default_and_requires():
     setting = schema["flow_direction_colouring"]
     assert setting.kind == "bool"
     assert setting.default is True
-    assert setting.requires == ("show_flow_direction_layer", "run_haemodynamics")
+    assert setting.requires == ("run_haemodynamics",)
     assert setting.section == "Solver and output"
 
 
@@ -449,7 +416,7 @@ def _heading_colours_for_graphs(make_napari_viewer, *graphs) -> list[np.ndarray]
 
     colours = []
     for graph in graphs:
-        results = _built_with_flows(graph, show_flow_direction_layer=True)
+        results = _built_with_flows(graph)
         group = results.stage_finished("export_results", SimpleNamespace())
         viewer = make_napari_viewer()
         _apply_layers(viewer, group)
@@ -490,7 +457,7 @@ def test_flow_heading_deg_uses_fixed_clim(make_napari_viewer):
     from haemolynx.gui._widget import _apply_layers, _colour_layer
 
     graph = _axis_arrow_graph(along="y", flow_sign=1)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
@@ -504,7 +471,7 @@ def test_flow_dir_z_colour_distinguishes_perpendicular_arrows(make_napari_viewer
     from haemolynx.gui._widget import _apply_layers, _colour_layer
 
     graph = _perpendicular_arrow_graph()
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
@@ -525,7 +492,7 @@ def test_flow_direction_combo_colours_by_flow_dir_z(make_napari_viewer):
     from haemolynx.gui._widget import _apply_layers, _attach_colour_scale, _layer_controls
 
     graph = _perpendicular_arrow_graph()
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
@@ -544,7 +511,7 @@ def _rgb_for_axis_graph(make_napari_viewer, along: str, flow_sign: int) -> np.nd
     from haemolynx.gui._widget import _apply_layers
 
     graph = _axis_arrow_graph(along=along, flow_sign=flow_sign)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
@@ -558,7 +525,7 @@ def test_flow_direction_layer_defaults_to_3d_rgb(make_napari_viewer):
     from haemolynx.gui._widget import _active_column, _apply_layers
 
     graph = _two_node_edge(flow_signed=1.0)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     spec = group.layers[0]
     assert spec.colour_by == "flow_dir_rgb"
@@ -607,7 +574,7 @@ def test_flow_dir_rgb_combo_switch_to_flow_abs_uses_colormap(make_napari_viewer)
     )
 
     graph = _two_node_edge(flow_signed=1.0)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
@@ -663,7 +630,7 @@ def test_column_defaults_use_the_real_colormap_property(make_napari_viewer):
     from haemolynx.gui._widget import _apply_layers, _colour_layer
 
     graph = _perpendicular_arrow_graph()
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
@@ -702,7 +669,7 @@ def test_flow_direction_colormap_combo_hidden_for_direct_rgb(make_napari_viewer)
     from haemolynx.gui._widget import _apply_layers, _attach_colour_scale
 
     graph = _two_node_edge(flow_signed=1.0)
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
@@ -724,7 +691,7 @@ def test_flow_direction_colormap_combo_applies_a_selected_map(make_napari_viewer
     )
 
     graph = _perpendicular_arrow_graph()
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)
@@ -755,7 +722,7 @@ def test_colour_by_change_resets_colormap_to_the_column_default(make_napari_view
     )
 
     graph = _perpendicular_arrow_graph()
-    results = _built_with_flows(graph, show_flow_direction_layer=True)
+    results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     viewer = make_napari_viewer()
     _apply_layers(viewer, group)

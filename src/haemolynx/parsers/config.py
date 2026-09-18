@@ -157,7 +157,11 @@ def _comment_lines(setting: Setting) -> list[str]:
         notes.append(
             "needs "
             + " and ".join(
-                f"{name[1:]} off" if name.startswith("!") else name
+                (
+                    f"{name.partition('=')[0]} = {name.partition('=')[2]}"
+                    if "=" in name
+                    else f"{name[1:]} off" if name.startswith("!") else name
+                )
                 for name in setting.requires
             )
         )

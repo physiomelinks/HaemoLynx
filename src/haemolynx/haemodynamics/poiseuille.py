@@ -347,16 +347,23 @@ class PoiseuilleModel:
             return d2 + (d1 - d2) * ((phase - 30) / 10)
         return d1
 
-    def calculate_viscosity(self, diameter: float) -> float:
+    def calculate_viscosity(
+        self, diameter: float, *, haematocrit: float | None = None
+    ) -> float:
         """Apparent blood viscosity in Pa.s for a vessel of *diameter* um.
 
         Which law answers is `self.viscosity_law`; see
         :mod:`haemolynx.haemodynamics.viscosity` for what each covers.
+
+        ``haematocrit`` overrides ``self.haematocrit`` for this one call --
+        used by callers that have a per-edge discharge haematocrit (see
+        :mod:`haemolynx.haemodynamics.haematocrit_distribution`) instead of
+        the uniform value every edge otherwise shares.
         """
         return viscosity_for(
             diameter,
             law=self.viscosity_law,
-            haematocrit=self.haematocrit,
+            haematocrit=self.haematocrit if haematocrit is None else float(haematocrit),
             diameter_basis=self.diameter_basis,
         )
 
@@ -366,46 +373,71 @@ class PoiseuilleModel:
             self.viscosity_law, self.haematocrit, self.diameter_basis
         )
 
-    def resistance_of_uniform_segment(self, length: float, diameter: float) -> float:
+    def resistance_of_uniform_segment(
+        self, length: float, diameter: float, *, haematocrit: float | None = None
+    ) -> float:
         """Poiseuille resistance (Pa.s/m^3) of a straight uniform segment.
 
         ``length`` and ``diameter`` are in micrometres. A non-positive
         diameter has no physical channel to carry flow through, so it is
         treated the same as a non-positive length rather than raising
         ``ZeroDivisionError`` when ``diameter`` is exactly 0.
+
+        ``haematocrit`` overrides ``self.haematocrit`` for this one segment
+        -- see :meth:`calculate_viscosity`.
         """
         if length <= 0 or diameter <= 0:
             return float("inf")
-        viscosity = self.calculate_viscosity(diameter)
+        viscosity = self.calculate_viscosity(diameter, haematocrit=haematocrit)
         length_m = length / UM_PER_M
         diameter_m = diameter / UM_PER_M
         return (128.0 * viscosity * length_m) / (np.pi * diameter_m ** 4)
 
     def resistance_integrand(
-        self, position: float, length: float, d1: float, d2: float
+        self,
+        position: float,
+        length: float,
+        d1: float,
+        d2: float,
+        *,
+        haematocrit: float | None = None,
     ) -> float:
         """Resistance per unit length (Pa.s/m^4) at *position* um along the vessel.
 
         ``pericyte_constriction_factor`` is schema-permitted down to 0.0 (a
         fully closed vessel), which would otherwise reach this with
         diameter=0 and raise ``ZeroDivisionError``.
+
+        ``haematocrit`` overrides ``self.haematocrit`` -- see
+        :meth:`calculate_viscosity`.
         """
         diameter = self.get_diameter_at_position(position, length, d1, d2)
         if diameter <= 0:
             return float("inf")
-        viscosity = self.calculate_viscosity(diameter)
+        viscosity = self.calculate_viscosity(diameter, haematocrit=haematocrit)
         diameter_m = diameter / UM_PER_M
         return (128.0 * viscosity) / (np.pi * diameter_m ** 4)
 
     def calculate_integrated_resistance(
-        self, length: float, d1: float, d2: float, num_points: int = 1000
+        self,
+        length: float,
+        d1: float,
+        d2: float,
+        num_points: int = 1000,
+        *,
+        haematocrit: float | None = None,
     ) -> float:
-        """Total resistance (Pa.s/m^3) by trapezoidal integration along the vessel."""
+        """Total resistance (Pa.s/m^3) by trapezoidal integration along the vessel.
+
+        ``haematocrit`` overrides ``self.haematocrit`` for the whole
+        integration -- see :meth:`calculate_viscosity`.
+        """
         if length <= 0:
             return float("inf")
         positions = np.linspace(0, length, num_points)
         resistances = [
-            self.resistance_integrand(pos, length, d1, d2) for pos in positions
+            self.resistance_integrand(pos, length, d1, d2, haematocrit=haematocrit)
+            for pos in positions
         ]
         dx = (length / (num_points - 1) if num_points > 1 else length) / UM_PER_M
         integ = getattr(np, "trapezoid", None) or getattr(np, "trapz")
@@ -514,13 +546,25 @@ class PoiseuilleModel:
                 results['invalid_diameter'].append((u, v, key, branch_order, diameter))
                 continue
 
-            # Get pre-calculated viscosity for this diameter
-            viscosity = diameter_viscosity_map.get(diameter, None)
-            if viscosity is None:
-                # Fallback calculation if not in map
-                viscosity = self.calculate_viscosity(diameter)
-
-            resistance = self.resistance_of_uniform_segment(length, diameter)
+            # A per-edge discharge haematocrit (see
+            # haemodynamics.haematocrit_distribution) takes over from the
+            # precalculated map, which only ever assumed self.haematocrit
+            # uniformly -- everything else falls through to that cache
+            # exactly as before, so the default (no per-edge override) path
+            # pays no extra cost.
+            edge_haematocrit = data.get("discharge_haematocrit")
+            if edge_haematocrit is None:
+                # Get pre-calculated viscosity for this diameter
+                viscosity = diameter_viscosity_map.get(diameter, None)
+                if viscosity is None:
+                    # Fallback calculation if not in map
+                    viscosity = self.calculate_viscosity(diameter)
+                resistance = self.resistance_of_uniform_segment(length, diameter)
+            else:
+                viscosity = self.calculate_viscosity(diameter, haematocrit=edge_haematocrit)
+                resistance = self.resistance_of_uniform_segment(
+                    length, diameter, haematocrit=edge_haematocrit
+                )
             set_edge_resistance(G[u][v][key], resistance)
 
             results['edges_set'] += 1
@@ -663,7 +707,9 @@ class PoiseuilleModel:
                     f"branch_order '{branch_order}': d1={d1}, d2={d2}."
                 )
             try:
-                total_resistance = self.calculate_integrated_resistance(length, d1, d2)
+                total_resistance = self.calculate_integrated_resistance(
+                    length, d1, d2, haematocrit=data.get("discharge_haematocrit")
+                )
                 set_edge_resistance(G[u][v][key], total_resistance)
                 results["edges_set"] += 1
             except Exception as e:
@@ -712,7 +758,9 @@ class PoiseuilleModel:
                 if vessel_length <= 0:
                     continue
                 new_resistance = self.resistance_of_uniform_segment(
-                    vessel_length, edge_diameter
+                    vessel_length,
+                    edge_diameter,
+                    haematocrit=edge_data.get("discharge_haematocrit"),
                 )
                 set_edge_resistance(G[u_actual][v_actual][key], new_resistance)
                 results["updated"].append(

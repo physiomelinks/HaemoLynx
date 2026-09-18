@@ -568,7 +568,14 @@ def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
     solve = next(stage for stage in STAGES if stage.call == "solve")
 
     assert solve.tab == "6. Haemodynamics"
-    assert solve.settings == ("inlet_p_bc", "outlet_p_bc", "do_equiv_resistance_calculation")
+    assert solve.settings == (
+        "inlet_p_bc",
+        "outlet_p_bc",
+        "do_equiv_resistance_calculation",
+        "haematocrit_model",
+        "haematocrit_distribution_max_iterations",
+        "haematocrit_distribution_tolerance",
+    )
     others = [stage.tab for stage in STAGES if stage.call != "solve"]
     assert others == [None] * len(others)
 

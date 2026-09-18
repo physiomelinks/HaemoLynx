@@ -104,11 +104,16 @@ def _non_default_probe_value(setting):
     return None
 
 
-def _first_unmet_prerequisite(setting) -> tuple[str, bool]:
+def _first_unmet_prerequisite(setting) -> tuple[str, object]:
     """One ``(setting_name, value)`` pair that makes *setting*'s first
     prerequisite unmet -- ``all()`` over requires means unmeeting just one
     is enough to make the whole setting ineffective."""
     prerequisite = setting.requires[0]
+    if "=" in prerequisite:
+        name, _, expected = prerequisite.partition("=")
+        choices = default_schema()[name].choices or ()
+        other = next((c for c in choices if c != expected), expected)
+        return name, other
     if prerequisite.startswith("!"):
         return prerequisite[1:], True
     return prerequisite, False
@@ -127,7 +132,7 @@ def test_every_requires_prerequisite_names_a_real_setting():
         (setting.name, prerequisite)
         for setting in schema
         for prerequisite in (setting.requires or ())
-        if (prerequisite[1:] if prerequisite.startswith("!") else prerequisite) not in names
+        if prerequisite.partition("=")[0].lstrip("!") not in names
     ]
     assert bad == []
 

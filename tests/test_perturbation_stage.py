@@ -53,6 +53,8 @@ from haemolynx.pipeline.stages import (  # noqa: E402
     PerturbationResult,
     _perturbation_copy,
     _write_perturbation_csvs,
+    build_haemodynamic_model,
+    solve,
 )
 
 SCHEMA = default_schema()
@@ -1123,3 +1125,207 @@ def test_perturbation_edges_csv_reports_resolved_diameter_for_table_fallback_edg
         assert data["diameter_source"] == "table"
         assert row["diameter_um"] != ""
         assert float(row["diameter_um"]) == pytest.approx(float(data["diameter_um"]))
+
+
+# --- haematocrit_model=distributed_iterative: perturbations re-run the loop
+#
+# A perturbation used to inherit whatever discharge_haematocrit the baseline
+# had already converged to and then solve flow once, so a diameter or
+# constriction change that shifted a bifurcation's flow split never got a
+# matching haematocrit split -- it kept the frozen baseline value applied to
+# new geometry. `_solve_network` now iterates flow and haematocrit together
+# again for a perturbation's own resistance computation, given a closure that
+# knows how to redo it; these pin that it actually happens (not just that the
+# toggle is accepted).
+
+ARTERIOLE_BIFURCATION_DIAMETERS = {"Art1": 15.0, "Art2": 20.0, "Art3": 8.0}
+
+
+def _arteriole_bifurcation_graph() -> nx.MultiGraph:
+    """0 --Art1--> 1, then 1 --Art2--> 2 (wide outlet) and 1 --Art3--> 3
+    (narrow outlet): one diverging bifurcation for phase separation to act
+    on, labelled so arteriole_diameter_change has something to scale."""
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=np.asarray([0.0, 0.0, 0.0]))
+    graph.add_node(1, pos=np.asarray([0.0, 0.0, 300.0]))
+    graph.add_node(2, pos=np.asarray([0.0, 100.0, 600.0]))
+    graph.add_node(3, pos=np.asarray([0.0, -100.0, 600.0]))
+    graph.add_edge(
+        0, 1, key=0, length=300.0,
+        diameter_um=ARTERIOLE_BIFURCATION_DIAMETERS["Art1"],
+        branch_order="Art1", voxels=[[0.0, 0.0, 0.0], [0.0, 0.0, 300.0]],
+    )
+    graph.add_edge(
+        1, 2, key=0, length=300.0,
+        diameter_um=ARTERIOLE_BIFURCATION_DIAMETERS["Art2"],
+        branch_order="Art2", voxels=[[0.0, 0.0, 300.0], [0.0, 100.0, 600.0]],
+    )
+    graph.add_edge(
+        1, 3, key=0, length=300.0,
+        diameter_um=ARTERIOLE_BIFURCATION_DIAMETERS["Art3"],
+        branch_order="Art3", voxels=[[0.0, 0.0, 300.0], [0.0, -100.0, 600.0]],
+    )
+    return graph
+
+
+def _arteriole_bifurcation_boundaries() -> BoundaryNodes:
+    return BoundaryNodes(
+        inlet_nodes=[0], outlet_nodes=[2, 3], resistance_node_pair=(0, 2),
+    )
+
+
+def _hct_baseline(tmp_path: Path, perturbations: list[dict], **extra):
+    """A solved baseline with haematocrit_model=distributed_iterative, the
+    way a real run leaves `model` before `run_perturbations` sees it."""
+    graph = _arteriole_bifurcation_graph()
+    graph.graph["image_voxel_size_zyx"] = (1.0, 1.0, 1.0)
+    model = HaemodynamicModel(graph=graph)
+    boundaries = _arteriole_bifurcation_boundaries()
+    values: dict[str, Any] = {
+        "diameter_by_branch_order": dict(ARTERIOLE_BIFURCATION_DIAMETERS),
+        "constriction_by_branch_order": {
+            order: 1.0 for order in ARTERIOLE_BIFURCATION_DIAMETERS
+        },
+        "viscosity_law": "pries",
+        "haematocrit": 0.45,
+        "haematocrit_model": "distributed_iterative",
+        "haematocrit_distribution_max_iterations": 60,
+        "haematocrit_distribution_tolerance": 1e-3,
+        "inlet_p_bc": 1000.0,
+        "outlet_p_bc": 0.0,
+        "inlet_nodes": [0],
+        "outlet_nodes": [2, 3],
+        "do_equiv_resistance_calculation": False,
+    }
+    values.update(extra)
+    settings = _settings(tmp_path, perturbations, **values)
+    model = build_haemodynamic_model(settings, model, SCHEMA)
+    solution = solve(settings, model, boundaries, SCHEMA)
+    assert solution.statistics["haematocrit_distribution"]["converged"] is True
+    return settings, model, boundaries
+
+
+def test_an_arteriole_perturbation_re_equilibrates_haematocrit_for_its_own_geometry(
+    tmp_path,
+):
+    settings, model, boundaries = _hct_baseline(
+        tmp_path,
+        [
+            {
+                "name": "art_dilate_50",
+                "type": "arteriole_diameter_change",
+                "overrides": {"arteriole_diameter_change_percent": 50},
+            },
+        ],
+    )
+    baseline_narrow_h = model.graph[1][3][0]["discharge_haematocrit"]
+
+    run = run_perturbations(settings, model, boundaries, SCHEMA)
+
+    assert run.baseline["haematocrit_distribution"]["converged"] is True
+    result = run.results[0]
+    assert result.ok, result.error
+    diag = result.summary["haematocrit_distribution"]
+    assert diag["converged"] is True
+
+    perturbed_narrow_h = result.graph[1][3][0]["discharge_haematocrit"]
+    # A 50% wider Art1/Art2/Art3 moves the plasma-skimming threshold
+    # (x0 = 0.4 / parent_diameter_um) and, through viscosity's own
+    # diameter-dependence, the flow split at the bifurcation -- so a
+    # genuinely re-equilibrated haematocrit differs from the value frozen on
+    # the baseline. A perturbation that only carried that value forward
+    # unchanged would leave this exactly the same.
+    assert perturbed_narrow_h != pytest.approx(baseline_narrow_h)
+
+    # Resistance/conductance on the perturbed graph must be derived from
+    # exactly that graph's own final discharge_haematocrit and its own
+    # (scaled) diameter -- not stale by an iteration, and not the baseline's
+    # unscaled diameter.
+    poiseuille_model = PoiseuilleModel(
+        constriction_length=float(settings["constriction_length_um"]),
+        constriction_spacing=float(settings["constriction_spacing_um"]),
+        viscosity_law="pries",
+        haematocrit=0.45,
+    )
+    for u, v, key, data in result.graph.edges(keys=True, data=True):
+        expected = poiseuille_model.resistance_of_uniform_segment(
+            data["length"], data["diameter_um"],
+            haematocrit=data["discharge_haematocrit"],
+        )
+        assert data["resistance"] == pytest.approx(expected), (u, v, key)
+
+
+def test_a_pericyte_perturbation_re_equilibrates_haematocrit_too(tmp_path):
+    """The constriction-strategy resistance path threads discharge_haematocrit
+    through the same way the plain uniform-segment path does: a focal
+    constriction on the narrow daughter changes its resistance, its flow
+    share at the bifurcation, and so the haematocrit split too."""
+    factors = {"Art1": 1.0, "Art2": 1.0, "Art3": 0.5}
+    settings, model, boundaries = _hct_baseline(
+        tmp_path,
+        [
+            {
+                "name": "pinch_narrow_daughter",
+                "type": "pericyte_diameter_change",
+                "overrides": {"constriction_by_branch_order": factors},
+            },
+        ],
+    )
+    baseline_narrow_h = model.graph[1][3][0]["discharge_haematocrit"]
+
+    run = run_perturbations(settings, model, boundaries, SCHEMA)
+
+    result = run.results[0]
+    assert result.ok, result.error
+    diag = result.summary["haematocrit_distribution"]
+    assert diag["converged"] is True
+
+    perturbed_narrow_h = result.graph[1][3][0]["discharge_haematocrit"]
+    assert perturbed_narrow_h != pytest.approx(baseline_narrow_h)
+
+    # With factor 1.0 (Art1, Art2) d1 == d2, which the constriction integral
+    # reduces to exactly the uniform-segment resistance; Art3's factor 0.5
+    # genuinely constricts it, so its check needs the integrated form. Either
+    # way, resistance must come from this graph's own final
+    # discharge_haematocrit, not the baseline's frozen one.
+    poiseuille_model = PoiseuilleModel(
+        constriction_length=float(settings["constriction_length_um"]),
+        constriction_spacing=float(settings["constriction_spacing_um"]),
+        viscosity_law="pries",
+        haematocrit=0.45,
+    )
+    for u, v, key, data in result.graph.edges(keys=True, data=True):
+        order = data["branch_order"]
+        d1 = ARTERIOLE_BIFURCATION_DIAMETERS[order]
+        d2 = d1 * factors[order]
+        expected = poiseuille_model.calculate_integrated_resistance(
+            data["length"], d1, d2, haematocrit=data["discharge_haematocrit"],
+        )
+        assert data["resistance"] == pytest.approx(expected, rel=1e-6), (u, v, key)
+
+
+def test_a_sweep_perturbation_keeps_the_frozen_baseline_haematocrit_and_says_so(
+    tmp_path, caplog,
+):
+    """Sweeps run their own internal grid of resistance/solve passes; coupling
+    every grid point to a full Pries-Secomb re-iteration would multiply an
+    already-expensive nested loop, so this is a deliberate, documented gap:
+    with no recompute closure to offer, a sweep perturbation keeps whatever
+    discharge_haematocrit the baseline already converged to and solves flow
+    once, and says so in the log instead of silently doing the wrong thing.
+    """
+    settings, model, boundaries = _hct_baseline(
+        tmp_path,
+        [{"name": "art_sweep", "type": "arteriole_diameter_sweep", "overrides": {}}],
+    )
+
+    with caplog.at_level("WARNING"):
+        run = run_perturbations(settings, model, boundaries, SCHEMA)
+
+    result = run.results[0]
+    assert result.ok, result.error
+    assert "haematocrit_distribution" not in result.summary
+    assert any(
+        "no way to redo its own resistance computation" in message
+        for message in caplog.messages
+    )

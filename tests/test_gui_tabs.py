@@ -173,23 +173,33 @@ def test_the_whole_section_is_on_the_stage_that_hands_it_over():
     Pericyte / constriction knobs stay in the Diameters schema section so
     apply.py still finds them, but `STAGES` claims them for Perturbations so
     they are not always-on Diameters rows. Legacy baseline / comparison flags
-    are retabbed the same way without becoming typed-entry options.
+    are retabbed the same way without becoming typed-entry options. The
+    Pries-Secomb haematocrit distribution settings, and the viscosity law /
+    haematocrit themselves, are retabbed the same way again, but to
+    Haemodynamics -- they configure the flow solve and the blood model there,
+    not a perturbation and not the baseline diameter table.
     """
     from haemolynx.haemodynamics.perturbations import PERICYTE_CONSTRICTION_SETTINGS
     from haemolynx.pipeline import progress as progress_module
 
     owner = assign_to_stages(SCHEMA)
-    retabbed = set(PERICYTE_CONSTRICTION_SETTINGS) | set(
+    retabbed_to_perturbations = set(PERICYTE_CONSTRICTION_SETTINGS) | set(
         progress_module._LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
     )
+    retabbed_to_haemodynamics = set(
+        progress_module._HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB
+    ) | set(progress_module._VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB)
+    retabbed = retabbed_to_perturbations | retabbed_to_haemodynamics
     tabs = {
         owner[name]
         for name in SCHEMA.section_names(DIAMETERS_AND_PERICYTES)
         if name not in retabbed
     }
     assert tabs == {"5. Diameters"}
-    for name in retabbed:
+    for name in retabbed_to_perturbations:
         assert owner[name] == "7. Perturbations", name
+    for name in retabbed_to_haemodynamics:
+        assert owner[name] == "6. Haemodynamics", name
 
 
 # --- the stages themselves ---------------------------------------------------
@@ -353,31 +363,40 @@ def test_a_claim_for_a_setting_that_does_not_exist_is_ignored(monkeypatch):
 
 
 def test_a_tab_carries_the_rows_for_its_settings():
-    """The haemodynamics tab is whether to solve, and what to solve at.
+    """The haemodynamics tab is whether to solve, what blood model to solve
+    with, and what to solve at.
 
-    Two stages' rows: `build_haemodynamic_model` brings the toggle,
-    `solve` brings the boundary pressures it reads.
+    Two stages' rows: `build_haemodynamic_model` brings the toggle plus the
+    viscosity law and haematocrit (retabbed here from Diameters, since this
+    is the model that reads them), `solve` brings the boundary pressures it
+    reads plus the Pries-Secomb haematocrit distribution settings (retabbed
+    the same way, since they configure the flow solve, not the baseline
+    diameter model).
     """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     haemodynamics = tabs["6. Haemodynamics"]
     assert {field.name for field in haemodynamics.fields} == {
         "run_haemodynamics",
+        "viscosity_law",
+        "haematocrit",
         "inlet_p_bc",
         "outlet_p_bc",
         "do_equiv_resistance_calculation",
+        "haematocrit_model",
+        "haematocrit_distribution_max_iterations",
+        "haematocrit_distribution_tolerance",
     }
 
 
-def test_the_blood_settings_stay_on_the_diameters_tab():
-    """Viscosity and measured diameters belong with the baseline model."""
+def test_diameter_basis_stays_on_the_diameters_tab():
+    """Which diameter a segmented vessel measures is a dataset property, not
+    a choice of blood model -- unlike viscosity_law/haematocrit, it stays
+    with the baseline diameter table."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     shown = {field.name for field in tabs["5. Diameters"].fields}
-    for name in (
-        "viscosity_law",
-        "diameter_basis",
-        "haematocrit",
-    ):
-        assert name in shown, f"{name} is not on the Diameters tab"
+    assert "diameter_basis" in shown
+    assert "viscosity_law" not in shown
+    assert "haematocrit" not in shown
 
 
 def test_legacy_and_comparison_settings_are_not_on_the_diameters_tab():

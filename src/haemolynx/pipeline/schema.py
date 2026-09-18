@@ -1912,38 +1912,18 @@ SCHEMA = Schema(
             requires=("run_haemodynamics", "vtk_export"),
         ),
         Setting(
-            name="show_flow_direction_layer",
-            kind="bool",
-            default=True,
-            help=(
-                "Add a napari Vectors layer of mid-edge arrows coloured by "
-                "flow magnitude after the solve (Export tab results)"
-            ),
-            section=_SOLVER_AND_OUTPUT,
-            requires=("run_haemodynamics",),
-        ),
-        Setting(
-            name="flow_log_scale",
-            kind="bool",
-            default=False,
-            help=(
-                "Include log10(flow_abs) as a vessel colour option in napari "
-                "(select flow_abs_log10 from the Vectors layer colour-by dropdown)"
-            ),
-            section=_SOLVER_AND_OUTPUT,
-            requires=("run_haemodynamics",),
-        ),
-        Setting(
             name="flow_direction_colouring",
             kind="bool",
             default=True,
             help=(
                 "Include flow direction axis components (flow_dir_z/y/x) as "
                 "colour options in the flow-direction Vectors layer (select "
-                "from the layer colour-by dropdown)"
+                "from the layer colour-by dropdown). The layer itself -- a "
+                "napari Vectors layer of mid-edge arrows -- is always added "
+                "after the solve"
             ),
             section=_SOLVER_AND_OUTPUT,
-            requires=("show_flow_direction_layer", "run_haemodynamics"),
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="flow_arrow_scale",
@@ -1957,7 +1937,7 @@ SCHEMA = Schema(
                 "control after export)"
             ),
             section=_SOLVER_AND_OUTPUT,
-            requires=("show_flow_direction_layer", "run_haemodynamics"),
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="verbose_logging",
@@ -2853,6 +2833,54 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=0.99,
             requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="haematocrit_model",
+            kind="choice",
+            default="fixed",
+            choices=["fixed", "distributed_iterative"],
+            help=(
+                "Which haematocrit model a resistance is computed from. "
+                "fixed applies the haematocrit fraction above uniformly to "
+                "every edge. distributed_iterative instead computes local "
+                "discharge haematocrit per edge from Pries and Secomb's "
+                "bifurcation phase-separation law (parent/daughter "
+                "diameters and flow fraction, not bifurcation angle) -- "
+                "only changes a resistance when viscosity_law is pries, "
+                "the only law that reads haematocrit, but works with "
+                "either diameter_basis, and iterates the flow solve to "
+                "convergence since haematocrit, viscosity, resistance and "
+                "the flow split all depend on each other, so a large "
+                "network costs more than one solve"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="haematocrit_distribution_max_iterations",
+            kind="int",
+            default=20,
+            help=(
+                "Give up on haematocrit distribution convergence after "
+                "this many flow re-solves. The fixed point converges "
+                "geometrically rather than quickly -- a single strongly "
+                "asymmetric bifurcation (e.g. a 2.5x diameter ratio) can "
+                "need 12-15 iterations to settle within the default "
+                "tolerance below"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            minimum=1,
+            requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+        ),
+        Setting(
+            name="haematocrit_distribution_tolerance",
+            kind="float",
+            default=0.01,
+            help="Largest per-edge haematocrit change between iterations that counts as converged",
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="fraction",
+            minimum=0.0,
+            requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
         ),
         Setting(
             name="all_diams_const",

@@ -431,7 +431,6 @@ def test_flow_direction_layer_carries_the_same_tooltip_table():
 
     graph = a_graph(flow_signed=1.0, flow_abs=1.5e-12)
     results = built(graph)
-    results.settings["show_flow_direction_layer"] = True
     group = results.stage_finished("export_results", SimpleNamespace())
     flow = spec_named(group, FLOW_DIRECTION)
     assert "tooltip" in flow.features
