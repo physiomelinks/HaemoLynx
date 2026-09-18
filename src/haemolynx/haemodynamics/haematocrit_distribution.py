@@ -374,11 +374,22 @@ def iterate_flow_and_haematocrit(
     converged = False
     max_delta = float("inf")
     diagnostics: dict[str, int] = {}
-    node_list: list = []
     flow: dict[str, Any] = {}
 
+    # G's node/edge set is fixed for the rest of this function -- every pass
+    # below only rewrites attribute values (discharge_haematocrit, then
+    # resistance/conductance), never adds or removes a node or edge -- so the
+    # node ordering and the conductance array itself are built once and
+    # reused, instead of paying the O(n^2) zero-fill and the Python-level
+    # node_to_idx rebuild on every outer iteration.
+    node_list = list(G.nodes())
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    conductance_matrix = np.zeros((len(node_list), len(node_list)), dtype=float)
+
     for iteration in range(1, max_iterations + 1):
-        conductance, node_list = build_conductance_matrix_from_graph(G)
+        conductance, node_list = build_conductance_matrix_from_graph(
+            G, node_list=node_list, node_to_idx=node_to_idx, out=conductance_matrix,
+        )
         flow = solve_flow_from_conductance_matrix(
             conductance,
             node_list,

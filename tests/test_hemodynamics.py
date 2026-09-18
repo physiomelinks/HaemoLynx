@@ -130,6 +130,49 @@ def test_build_conductance_matrix_from_graph():
     assert np.isclose(C[i0, i2], 0.0)
 
 
+def test_build_conductance_matrix_from_graph_reuses_a_caller_supplied_array():
+    """A repeat caller that already knows the node ordering (the haematocrit
+    distribution loop, once per outer iteration) can pass node_list/
+    node_to_idx/out back in and get exactly the matrix a fresh call would
+    build -- this is what lets it skip reallocating and re-indexing every
+    pass without changing the answer."""
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 1, 2])
+    G.add_edge(0, 1, conductance=1.5)
+    G.add_edge(0, 1, conductance=2.5)
+    G.add_edge(1, 2, conductance=1.0)
+
+    fresh, fresh_node_list = build_conductance_matrix_from_graph(G)
+
+    node_list = list(G.nodes())
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    out = np.full((3, 3), fill_value=99.0)  # Garbage, to prove fill(0) runs.
+    reused, reused_node_list = build_conductance_matrix_from_graph(
+        G, node_list=node_list, node_to_idx=node_to_idx, out=out,
+    )
+
+    assert reused_node_list == fresh_node_list == node_list
+    assert reused is out  # Filled in place, not replaced.
+    np.testing.assert_array_equal(reused, fresh)
+
+    # Edge conductances change (as they do between outer iterations); the
+    # same out array, reused a second time, must reflect only the new
+    # values, not a mix with the first call's.
+    G[0][1][0]["conductance"] = 10.0
+    updated, _ = build_conductance_matrix_from_graph(
+        G, node_list=node_list, node_to_idx=node_to_idx, out=out,
+    )
+    expected, _ = build_conductance_matrix_from_graph(G)
+    np.testing.assert_array_equal(updated, expected)
+
+
+def test_build_conductance_matrix_from_graph_rejects_a_mismatched_out_shape():
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 1, 2])
+    with pytest.raises(ValueError, match="shape"):
+        build_conductance_matrix_from_graph(G, out=np.zeros((2, 2)))
+
+
 def test_calc_two_point_from_laplacian_matrix_nodeID():
     G = nx.MultiGraph()
     G.add_nodes_from([0, 1, 2])

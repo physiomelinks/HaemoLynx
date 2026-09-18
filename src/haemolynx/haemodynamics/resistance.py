@@ -16,17 +16,45 @@ def flow_abs_log10_value(flow_abs: float) -> float:
 
 
 def build_conductance_matrix_from_graph(
-    G: nx.Graph, conductance_attr: str = "conductance"
+    G: nx.Graph,
+    conductance_attr: str = "conductance",
+    *,
+    node_list: list | None = None,
+    node_to_idx: dict | None = None,
+    out: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list]:
     """Build symmetric conductance matrix from graph edge conductances.
 
     Returns:
         A tuple of (conductance_matrix, node_list) where matrix indices map to
         node IDs via node_list order.
+
+    *node_list*/*node_to_idx*/*out* let a repeat caller skip rebuilding the
+    node ordering and reallocating the array when only edge conductances
+    changed since the last call -- e.g.
+    :func:`haemolynx.haemodynamics.haematocrit_distribution.iterate_flow_and_haematocrit`,
+    which re-solves the same graph's topology every outer iteration and only
+    ever rewrites edge attributes, never adds or removes a node or edge.
+    Passing none of them reproduces the original behaviour exactly: a fresh
+    ``node_list``/``node_to_idx`` from *G*'s current node order and a newly
+    zeroed array. *out* is filled in place and returned as-is, not replaced
+    with a new array; its shape must match ``(len(node_list), len(node_list))``
+    for whichever *node_list* this call ends up using (explicit or rebuilt).
     """
-    node_list = list(G.nodes())
-    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-    conductance = np.zeros((len(node_list), len(node_list)), dtype=float)
+    if node_list is None:
+        node_list = list(G.nodes())
+    if node_to_idx is None:
+        node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    n = len(node_list)
+    if out is None:
+        conductance = np.zeros((n, n), dtype=float)
+    else:
+        if out.shape != (n, n):
+            raise ValueError(
+                f"out must be shape ({n}, {n}) to match node_list, got {out.shape}."
+            )
+        conductance = out
+        conductance.fill(0.0)
 
     for u, v, data in G.edges(data=True):
         edge_conductance = data.get(conductance_attr)
