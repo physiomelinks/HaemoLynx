@@ -79,6 +79,7 @@ from haemolynx.visualization.perturbation_plots import (
     export_sweep_perturbation_plots,
 )
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
+from haemolynx.pipeline.citations import write_citations
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 
 #: Called with each stage's name and the object that stage returned, so
@@ -3085,6 +3086,13 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     else:
         logger.info("Matplotlib visualizations skipped.")
 
+    # 12) Optional: a plain-text reading list of what this run actually used.
+    if settings["export_citations"]:
+        citations_path = output_dir / f"{settings['input_path'].stem}_citations.txt"
+        write_citations(settings, citations_path)
+        logger.info(f"Saved citations to: {citations_path}")
+    else:
+        logger.info("Citation export skipped.")
 
     return solution
 

@@ -21,6 +21,7 @@ Either way a run says where it has got to, if anything is listening::
     run_pipeline_stages(settings, schema, progress=log_progress)
 """
 from .checks import preflight
+from .citations import render_citations, write_citations
 from .progress import (
     KINDS,
     STAGE_FAILED,
@@ -92,11 +93,13 @@ __all__ = [
     "log_progress",
     "preflight",
     "fill_derived_settings",
+    "render_citations",
     "resolve_settings",
     "run_perturbations",
     "run_pipeline_stages",
     "segment",
     "skeletonise",
     "solve",
+    "write_citations",
     "write_default_config",
 ]

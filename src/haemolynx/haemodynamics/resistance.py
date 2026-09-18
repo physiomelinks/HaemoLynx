@@ -1,4 +1,6 @@
 """Network resistance from Laplacian."""
+from __future__ import annotations
+
 import logging
 import math
 import numpy as np

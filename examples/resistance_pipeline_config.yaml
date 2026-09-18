@@ -351,6 +351,8 @@ solver_and_output:
   flow_arrow_scale: 1.0
   # Print verbose per-stage logging while the pipeline runs
   verbose_logging: false
+  # Write a text file listing the software packages and haemodynamics models this run actually used, with a citation for each -- only the ones this run's own settings turned on, not everything the pipeline can do
+  export_citations: true
 
 # ------------------------------------------------------------------------
 # Pipeline stages

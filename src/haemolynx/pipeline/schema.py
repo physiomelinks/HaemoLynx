@@ -1946,6 +1946,18 @@ SCHEMA = Schema(
             help="Print verbose per-stage logging while the pipeline runs",
             section=_SOLVER_AND_OUTPUT,
         ),
+        Setting(
+            name="export_citations",
+            kind="bool",
+            default=True,
+            help=(
+                "Write a text file listing the software packages and "
+                "haemodynamics models this run actually used, with a "
+                "citation for each -- only the ones this run's own "
+                "settings turned on, not everything the pipeline can do"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+        ),
         # ------------------------------------------------------------------
         # Pipeline stages
         # ------------------------------------------------------------------
