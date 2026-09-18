@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Sequence, Union
 
 from .search import _GUARD_PENALTY, GROUP_NAMES, OptimisationResult, TrialRecord
 
@@ -29,12 +29,20 @@ def config_filename(input_path: Union[str, Path], now: Optional[datetime] = None
     return f"{stamp}_{stem}.yaml"
 
 
-def build_report_text(result: OptimisationResult) -> str:
+def build_report_text(
+    result: OptimisationResult, *, group_names: Sequence[str] = GROUP_NAMES
+) -> str:
     """One line per sweep: how many candidates were tried, and what won.
 
     This is the text ``dump_config`` writes as a leading comment block on the
     optimised config file (see ``parsers.config.dump_config``'s use of
     ``schema.description``), and it is also shown as the GUI's status message.
+
+    *group_names* is the full set of groups the search that produced *result*
+    could have run -- :data:`.search.GROUP_NAMES` (the Skeletonise/Graph
+    search) by default; :mod:`.fwhm_search` passes its own
+    ``FWHM_GROUP_NAMES`` so "not optimised" is reported against the groups
+    that search actually has, not this module's unrelated default.
     """
     lines = ["HaemoLynx settings, optimised from the segmented input image:"]
     if result.downsample_factor > 1:
@@ -42,7 +50,7 @@ def build_report_text(result: OptimisationResult) -> str:
             f"Searched on a {result.downsample_factor}x downsampled copy for speed; "
             "voxel-based settings below are already scaled back up to the full-resolution grid."
         )
-    skipped_groups = [name for name in GROUP_NAMES if name not in result.groups_run]
+    skipped_groups = [name for name in group_names if name not in result.groups_run]
     if skipped_groups:
         lines.append(
             "Not optimised (left at their starting value): " + ", ".join(skipped_groups)

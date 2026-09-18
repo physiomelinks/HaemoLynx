@@ -105,10 +105,13 @@ from haemolynx.gui.vessel_tubes import (
 from haemolynx.io import resolve_voxel_size_xyz
 from haemolynx.io.load import _to_binary_volume_for_skeletonization
 from haemolynx.optimisation import (
+    FWHM_GROUP_NAMES,
+    FWHM_SETTING_NAMES,
     OPTIMISE_SETTING_NAMES,
     OptimisationEvent,
     build_report_text,
     config_filename,
+    optimise_fwhm_settings,
     optimise_skeleton_and_graph_settings,
 )
 from haemolynx.parsers import (
@@ -4339,6 +4342,137 @@ def _run_optimisation_in_background(
     return worker
 
 
+def _run_fwhm_optimisation_in_background(
+    graph: "nx.MultiGraph",
+    voxel_size_zyx: tuple[float, float, float],
+    settings: dict[str, Any],
+    schema: Schema,
+    rows: dict[str, Any],
+    report,
+    button,
+    bars: "OptimiseProgressBars",
+    *,
+    apply_prerequisites,
+    run_state: RunState,
+    groups: "tuple[str, ...] | None" = None,
+):
+    """Run the FWHM settings optimiser off the GUI thread, reporting progress
+    as it goes -- the Diameters tab's own analogue of
+    `_run_optimisation_in_background`, over
+    `haemolynx.optimisation.optimise_fwhm_settings` instead of the
+    skeleton/graph search, against the panel's own current in-memory graph
+    rather than a mask reloaded from disk. Shares *run_state* with "Run
+    pipeline" and "Optimise settings" purely for mutual exclusion and
+    cooperative cancellation -- only one of the three may run at a time
+    against the same `rows`.
+    """
+    from napari.qt.threading import thread_worker
+
+    bridge = _optimisation_progress_bridge()
+    cancel_flag = {"cancelled": False}
+
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
+
+    def progressed(event: OptimisationEvent) -> None:
+        if cancel_flag["cancelled"]:
+            return
+        bars.show_event(event)
+
+    bridge.event.connect(progressed)
+
+    def watched(event: OptimisationEvent) -> None:
+        run_state.check(cancel_flag)
+        bridge.event.emit(event)
+
+    @thread_worker
+    def run():
+        local_settings = dict(settings)
+        starting_values = {
+            name: value for name, value in local_settings.items() if name.startswith("fwhm_")
+        }
+        raw_path = local_settings["fwhm_raw_tiff_path"]
+        result = optimise_fwhm_settings(
+            graph,
+            raw_tiff_path=raw_path,
+            voxel_size_zyx=voxel_size_zyx,
+            starting_values=starting_values,
+            progress=watched,
+            groups=groups,
+            axis_order=local_settings["image_axis_order"],
+        )
+        return result, raw_path
+
+    def finished(payload) -> None:
+        if not still_ours():
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+            return
+        result, raw_path = payload
+        for name, value in result.settings.items():
+            if name in rows:
+                rows[name].value = display_value_for(schema[name], value)
+        apply_prerequisites()
+        out_path = Path(raw_path).parent / config_filename(raw_path)
+        # Same reasoning as `_run_optimisation_in_background`'s own
+        # `documented_schema`: FWHM_SETTING_NAMES are quality knobs only, so
+        # the closure pulls in their own prerequisites (use_fwhm_edge_diameters,
+        # fwhm_raw_tiff_path, ...) for a config that is self-consistent on
+        # its own rather than one that silently depends on values not shown.
+        documented_schema = Schema(
+            list(schema.subset(_names_with_prerequisite_closure(schema, FWHM_SETTING_NAMES))),
+            title="HaemoLynx optimised FWHM settings",
+            description=build_report_text(result, group_names=FWHM_GROUP_NAMES),
+        )
+        try:
+            dump_config(out_path, documented_schema, values=result.settings)
+            wrote_note = f" Wrote {out_path}."
+        except Exception:  # noqa: BLE001 - the optimised settings are already applied
+            logger.exception("could not write optimised FWHM config to %s", out_path)
+            wrote_note = f" Could not write {out_path} (see log)."
+        bars.finish("Optimised")
+        report.value = "Optimised FWHM settings applied." + wrote_note
+
+    def failed(error: Exception) -> None:
+        if not still_ours():
+            if isinstance(error, RunCancelled):
+                return
+            logger.debug("stale FWHM optimisation worker failed after Clear", exc_info=error)
+            return
+        run_state.stopped()
+        button.enabled = True
+        if isinstance(error, RunCancelled):
+            report.value = CANCELLED
+            return
+        bars.fail(f"Failed: {type(error).__name__}")
+        report.value = f"{type(error).__name__}: {error}"
+        logger.exception("FWHM settings optimisation failed", exc_info=error)
+        raise error
+
+    def stopped() -> None:
+        if not still_ours():
+            return
+        if not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+
+    worker = run(_connect={"errored": failed}, _start_thread=False)
+    worker.returned.connect(finished)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, cancel_flag=cancel_flag)
+    button.enabled = False
+    bars.start()
+    report.value = "Optimising FWHM settings..."
+    worker.start()
+    return worker
+
+
 def _run_segmentation_quality_check_in_background(
     settings: dict[str, Any],
     report,
@@ -5947,8 +6081,17 @@ def settings_widget(napari_viewer=None):
     #: Input-tab container that can receive the shared ilastik rows when main
     #: segmentation uses ilastik. Boundaries gets a holder of its own.
     input_settings: Any = None
+    #: Diameters-tab container, so "Optimise FWHM settings" (built further
+    #: down, once its own click handler exists) can be inserted right after
+    #: the fwhm_raw_tiff_path row -- same pattern as `input_settings` above.
+    diameters_settings: Any = None
     #: Which tab currently parents the shared ilastik rows.
     shared_ilastik_placement: dict[str, str | None] = {"host": None}
+    #: Predeclared so `apply_prerequisites` (defined below, but already
+    #: called once before these are built) can safely check them on its very
+    #: first call -- see the `thick_vessel_row` guard just below for the
+    #: same "not built yet" pattern.
+    optimise_fwhm_button: Any = None
 
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
@@ -5967,6 +6110,12 @@ def settings_widget(napari_viewer=None):
                 labels=True,
             )
             native = input_settings.native
+        elif tab.stage.call == "assign_diameters":
+            diameters_settings = Container(
+                widgets=[summary, *(rows[name] for name in names)],
+                labels=True,
+            )
+            native = diameters_settings.native
         else:
             native = Container(
                 widgets=[summary, *(rows[name] for name in names)],
@@ -6198,6 +6347,16 @@ def settings_widget(napari_viewer=None):
         # raw-value level) avoids showing the relabeled text for an
         # inconsistent stored config where the checkbox itself reads
         # unchecked.
+        # "Optimise FWHM settings" (below the master checkbox and input file
+        # line for FWHM): visible only while FWHM measurement is turned on --
+        # a deliberate difference from "Optimise settings" on the Input tab,
+        # which stays visible and only ever toggles `.enabled`. There is
+        # nothing for this one to search once use_fwhm_edge_diameters is off,
+        # so hiding it entirely (rather than greying it out) matches every
+        # other `hide_when_unmet` FWHM row right next to it.
+        if optimise_fwhm_button is not None:
+            optimise_fwhm_button.visible = bool(values.get("use_fwhm_edge_diameters"))
+
         thick_vessel_row = rows.get("use_thick_vessel_skeletonisation")
         if thick_vessel_row is not None:
             large_vessel_network_mode = bool(
@@ -6464,6 +6623,67 @@ def settings_widget(napari_viewer=None):
 
     raw_data_row.changed.connect(_sync_primary_from_raw_data_row)
     rows["fwhm_raw_tiff_path"].changed.connect(_sync_raw_data_row_from_primary)
+
+    #: "Optimise FWHM settings": empirically choose the FWHM diameter-
+    #: measurement settings from the current in-memory graph and its raw
+    #: image -- the Diameters tab's own analogue of "Optimise settings" on
+    #: the Input tab. Placed right after the fwhm_raw_tiff_path row and
+    #: before the rest of the FWHM settings, per its own visibility rule
+    #: (`apply_prerequisites`, above) rather than always shown: there is
+    #: nothing to search until FWHM measurement itself is turned on.
+    optimise_fwhm_button = PushButton(text="Optimise FWHM settings")
+    optimise_fwhm_button.tooltip = (
+        "Empirically choose the FWHM exclusion, extent, clipping, "
+        "same-edge-geometry, baseline and rejection-gate settings by "
+        "running the real measurement on a sample of the current graph's "
+        "own edges against its raw image, then applying the winners to the "
+        "whole graph"
+    )
+    if diameters_settings is not None:
+        raw_tiff_row_index = list(diameters_settings).index(rows["fwhm_raw_tiff_path"])
+        diameters_settings.insert(raw_tiff_row_index + 1, optimise_fwhm_button)
+    # OptimiseProgressBars.native is a plain Qt widget, not a magicgui one --
+    # like the Input tab's own `optimise_bars`, it joins the shared bottom
+    # chrome (below the tabs, added further down) rather than the magicgui
+    # Container above, which only accepts magicgui widgets.
+    optimise_fwhm_bars = OptimiseProgressBars()
+
+    def on_optimise_fwhm_settings() -> None:
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        if view.results is None or getattr(view.results, "_graph", None) is None:
+            report.value = (
+                "Nothing to optimise yet: run the pipeline through at least Graph first."
+            )
+            return
+        values = current_values()
+        raw_path = values.get("fwhm_raw_tiff_path")
+        if not raw_path or not Path(raw_path).is_file():
+            report.value = (
+                "Choose a raw FWHM image first, then press Optimise FWHM settings."
+            )
+            return
+        results = view.results
+        graph = copy_graph(results._graph)
+        voxel_size_zyx = tuple(
+            float(v) for v in getattr(results, "_voxel_size_zyx", (1.0, 1.0, 1.0))
+        )
+        _run_fwhm_optimisation_in_background(
+            graph,
+            voxel_size_zyx,
+            _settings(),
+            schema,
+            rows,
+            report,
+            optimise_fwhm_button,
+            optimise_fwhm_bars,
+            apply_prerequisites=apply_prerequisites,
+            run_state=run_state,
+        )
+
+    optimise_fwhm_button.changed.connect(lambda *_args: on_optimise_fwhm_settings())
+    apply_prerequisites()
 
     def _toggle_group_checkboxes(*_args) -> None:
         group_checkboxes_container.visible = bool(choose_groups_checkbox.value)
@@ -7019,10 +7239,12 @@ def settings_widget(napari_viewer=None):
             checkpoints.freeze()
             run_state.supersede()
             run_button.enabled = True
-            # Whichever of the two was the one running: cancel() does not say
-            # which, and re-enabling/resetting the other is a no-op.
+            # Whichever of the three was the one running: cancel() does not
+            # say which, and re-enabling/resetting the others is a no-op.
             optimise_button.enabled = True
             optimise_bars.reset()
+            optimise_fwhm_button.enabled = True
+            optimise_fwhm_bars.reset()
             log_view.cancelled()
         removed = 0
         if viewer is not None:
@@ -7353,10 +7575,12 @@ def settings_widget(napari_viewer=None):
             checkpoints.freeze()
             run_state.supersede()
             run_button.enabled = True
-            # Whichever of the two was the one running: cancel() does not say
-            # which, and re-enabling/resetting the other is a no-op.
+            # Whichever of the three was the one running: cancel() does not
+            # say which, and re-enabling/resetting the others is a no-op.
             optimise_button.enabled = True
             optimise_bars.reset()
+            optimise_fwhm_button.enabled = True
+            optimise_fwhm_bars.reset()
             log_view.cancelled()
         if viewer is not None:
             _clear_our_layers(viewer)
@@ -7622,6 +7846,10 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_button = optimise_button
     panel._haemolynx_optimise_bars = optimise_bars
     panel._haemolynx_optimise_settings = on_optimise_settings
+    panel._haemolynx_optimise_fwhm_button = optimise_fwhm_button
+    panel._haemolynx_optimise_fwhm_bars = optimise_fwhm_bars
+    panel._haemolynx_optimise_fwhm_settings = on_optimise_fwhm_settings
+    panel._haemolynx_diameters_settings = diameters_settings
     panel._haemolynx_optimise_downsample = downsample_dropdown
     panel._haemolynx_optimise_choose_groups = choose_groups_checkbox
     panel._haemolynx_optimise_group_checkboxes = group_checkboxes
@@ -7656,6 +7884,11 @@ def settings_widget(napari_viewer=None):
     # itself is on the Input tab, but its progress is chrome shared across
     # every tab, same as the pipeline run's bars above.
     layout.addWidget(optimise_bars.native)
+    # "Optimise FWHM settings" is a plain Qt widget too (see its own
+    # construction above), so its bars join the same shared chrome rather
+    # than the magicgui Diameters-tab Container, which the button itself
+    # (a real magicgui PushButton) was inserted into directly.
+    layout.addWidget(optimise_fwhm_bars.native)
     layout.addWidget(report.native)
     if viewer is None:
         view_panel.setParent(panel)
