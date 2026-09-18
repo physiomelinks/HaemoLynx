@@ -683,6 +683,24 @@ def _fwhm_gaussian_fit_with_diagnostics(
 #: single-sample roughness, not reshape real structure."
 _CLIP_DECISION_SMOOTHING_WINDOW_UM = 1.0
 
+#: Upper bound on how much of one edge's own length its branch-endpoint or
+#: junction-proximity exclusion zone may claim -- see
+#: ``measure_edge_diameters_fwhm_from_raw_tiff``'s own
+#: ``_length_scaled_exclusion``. 0.3 leaves an edge excluded from both ends
+#: (a branch point at u and at v) with its central 40% still samplable,
+#: however short the edge.
+MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH = 0.3
+
+#: How many bisection attempts the widening loop makes between a known-good
+#: half-extent and a wider one whose own fit failed a quality gate, before
+#: giving up on reaching min_total_extent_multiplier for this pass and
+#: keeping the known-good width instead. See the loop's own comment in
+#: measure_edge_diameters_fwhm_from_raw_tiff for why: a wider window failing
+#: only because it now reaches a neighbouring structure often has a
+#: perfectly good intermediate width in between that the original
+#: all-or-nothing retry never tried.
+_MAX_WIDTH_BISECTIONS = 3
+
 
 def _clip_profile_to_central_lobe(
     positions_um: np.ndarray,
@@ -1213,6 +1231,22 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     branch_excl = max(0.0, float(branch_endpoint_exclusion_um))
     junction_excl = max(0.0, float(junction_proximity_exclusion_um))
 
+    def _length_scaled_exclusion(exclusion_um: float, total_len: float) -> float:
+        """*exclusion_um*, capped so it cannot alone consume a short edge.
+
+        The default exclusion zones are tuned for major vessels, but a dense
+        capillary network routinely has inter-branch spacing well under
+        their combined reach -- this codebase's own real data has a median
+        edge length under 12um against two 10um zones eating in from either
+        end, leaving most edges with not one valid sample position and no
+        measurement at all (silently falling back to the branch-order
+        table default instead). Capping each zone at
+        :data:`MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH` of *this edge's own*
+        length keeps a short edge's central region samplable -- smaller,
+        centre-biased, but present -- rather than losing the edge outright.
+        """
+        return min(exclusion_um, MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH * total_len)
+
     def _local_arc_window(diameter_estimate: float) -> float:
         return _local_same_edge_window(
             diameter_estimate,
@@ -1322,16 +1356,24 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 dense_poly = np.asarray(dense_pts_list, dtype=float)
                 dense_s = np.asarray(dense_s_list, dtype=float)
 
+        # This edge's own exclusion zones, capped to its own length -- see
+        # _length_scaled_exclusion's own docstring for why a fixed 10um zone
+        # from each end cannot be applied unscaled to a dense network's many
+        # short edges.
+        branch_excl_here = _length_scaled_exclusion(branch_excl, total_len)
+        junction_excl_here = _length_scaled_exclusion(junction_excl, total_len)
+
         diameters: list[float] = []
+        fit_r2_values: list[float | None] = []
         profile_lines_phys: list[np.ndarray] = []
         profile_anchors_phys: list[np.ndarray] = []
         max_out_of_plane_fraction = 0.0
         for s0, center in zip(targets, pts):
-            if u_is_branch and float(s0) < branch_excl:
+            if u_is_branch and float(s0) < branch_excl_here:
                 continue
-            if v_is_branch and float(total_len - s0) < branch_excl:
+            if v_is_branch and float(total_len - s0) < branch_excl_here:
                 continue
-            if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl:
+            if junction_s and min(abs(float(s0) - sj) for sj in junction_s) < junction_excl_here:
                 continue
             tangent = _tangent_at(poly, s, float(s0))
             n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
@@ -1373,10 +1415,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
 
             def _sample_and_fit(
                 half_extent: float, local_arc_window: float, diameter_for_gate: float
-            ) -> tuple[float | None, np.ndarray | None]:
-                """One sample-clip-fit-gate pass. Returns (diameter, offsets)
-                -- diameter is None if the fit itself failed or any gate
-                rejected it, in which case offsets is also None."""
+            ) -> tuple[float | None, np.ndarray | None, float | None]:
+                """One sample-clip-fit-gate pass. Returns (diameter, offsets,
+                fit_r2) -- diameter is None if the fit itself failed or any
+                gate rejected it, in which case offsets and fit_r2 are also
+                None."""
                 pos, prof = _sample_transverse_profile(
                     raw,
                     labels,
@@ -1414,7 +1457,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
                 )
                 if d is None:
-                    return None, None
+                    return None, None, None
                 # The larger of the pre-fit guess and this pass's own fitted
                 # diameter: on an edge with no per-edge diameter guess (or a
                 # guess much narrower than reality), the first pass's guess
@@ -1430,20 +1473,26 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     max_fit_center_offset_fraction_of_diameter=max_fit_center_offset_fraction_of_diameter,
                 )
                 if reject_samples_with_center_offset and x0 is not None and abs(float(x0)) > max_offset:
-                    return None, None
+                    return None, None, None
                 if reject_samples_with_low_fit_r2 and r2 is not None and float(r2) < float(min_fit_r2):
-                    return None, None
+                    return None, None, None
                 if not _passes_plateau_gate(pos_fit, prof_fit):
-                    return None, None
-                return d, pos
+                    return None, None, None
+                return d, pos, r2
 
             # Widen the transverse window until a pass's own fit no longer
             # asks for more room, up to max_transverse_widen_passes -- an
             # upper bound on iteration, not a target (see that parameter's
-            # own docstring). If a wider pass's fit fails a gate, the last
-            # successfully-fitted, gate-passing pass is kept: widening is
-            # only ever an attempt to improve an already-accepted
-            # measurement, never a precondition for keeping one.
+            # own docstring). If a wider pass's fit fails a gate, that is
+            # usually because the wider window now reaches a neighbouring
+            # structure the narrower one did not -- not because every width
+            # between the two also fails -- so before giving up and keeping
+            # the last known-good (possibly geometrically-capped, possibly
+            # well short of min_total_extent_multiplier) pass, bisect
+            # towards the failing width up to _MAX_WIDTH_BISECTIONS times
+            # and keep the widest intermediate width that still passes every
+            # gate. Only when none of those work either does this pass keep
+            # whatever the previous, narrower pass already accepted.
             diameter_estimate = edge_diameter_guess
             local_arc_window = _local_arc_window(diameter_estimate)
             half_extent = _capped_initial_half_extent(
@@ -1451,13 +1500,31 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 local_arc_window,
             )
             best_diameter: float | None = None
+            best_fit_r2: float | None = None
             accepted_offsets: np.ndarray | None = None
+            best_half_extent: float | None = None
             for _pass in range(max(1, int(max_transverse_widen_passes)) + 1):
-                d, pos = _sample_and_fit(half_extent, local_arc_window, diameter_estimate)
+                d, pos, fit_r2 = _sample_and_fit(half_extent, local_arc_window, diameter_estimate)
+                if d is None and best_half_extent is not None:
+                    lo, hi = best_half_extent, half_extent
+                    for _bisection in range(_MAX_WIDTH_BISECTIONS):
+                        mid = 0.5 * (lo + hi)
+                        if mid - lo <= float(transverse_profile_step_um):
+                            break
+                        mid_window = _local_arc_window(diameter_estimate)
+                        d_mid, pos_mid, r2_mid = _sample_and_fit(mid, mid_window, diameter_estimate)
+                        if d_mid is None:
+                            hi = mid
+                            continue
+                        d, pos, fit_r2 = d_mid, pos_mid, r2_mid
+                        half_extent, local_arc_window = mid, mid_window
+                        lo = mid
                 if d is None:
                     break
                 best_diameter = d
+                best_fit_r2 = fit_r2
                 accepted_offsets = pos
+                best_half_extent = half_extent
                 diameter_estimate = d
                 desired_half = 0.5 * mult * d
                 if desired_half <= half_extent + float(transverse_profile_step_um):
@@ -1466,6 +1533,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 local_arc_window = _local_arc_window(d)
             if best_diameter is not None:
                 diameters.append(best_diameter)
+                fit_r2_values.append(best_fit_r2)
 
             if accepted_offsets is not None:
                 max_out_of_plane_fraction = max(
@@ -1490,6 +1558,13 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         d_final = _aggregate_edge_diameter(diameters, edge_diameter_aggregation)
         data["fwhm_diameter_um"] = d_final
         data["fwhm_diameter_samples_um"] = diameters
+        # Parallel to fwhm_diameter_samples_um -- each accepted sample's own
+        # fit R^2, so a caller (the FWHM settings optimiser, in particular)
+        # can judge fit quality without redoing the fit itself. None for a
+        # sample whose accepted fit came from a source that didn't report
+        # one (not expected in practice, but the gate above already treats
+        # r2 is None as "can't reject on r2", so this mirrors that).
+        data["fwhm_diameter_r2_samples"] = fit_r2_values
         data["fwhm_status"] = "measured"
         if (
             transverse_sampling_mode == "in_plane_yx"

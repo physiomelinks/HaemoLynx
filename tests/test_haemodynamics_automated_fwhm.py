@@ -694,6 +694,41 @@ def test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder(tmp_path: Path):
     assert G2[0][1][0]["conductance"] == pytest.approx(1.0 / r)
 
 
+def test_measure_edge_diameters_fwhm_exposes_a_fit_r2_per_accepted_sample(tmp_path: Path):
+    """fwhm_diameter_r2_samples must be parallel to fwhm_diameter_samples_um
+    -- same length, one real R^2 per accepted sample -- so a caller (the
+    FWHM settings optimiser, in particular) can judge fit quality without
+    redoing the fit itself."""
+    nz, ny, nx_dim = 11, 11, 21
+    raw = _cylinder_gaussian_volume(nz, ny, nx_dim, sigma=1.5)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
+    G.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
+    voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
+    G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
+
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=5.0,
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=8.0,
+        diameter_guess_um=2.0,
+        min_total_extent_multiplier=3.0,
+    )
+    edge_data = G[0][1][0]
+    samples = edge_data["fwhm_diameter_samples_um"]
+    r2_samples = edge_data["fwhm_diameter_r2_samples"]
+    assert len(r2_samples) == len(samples) > 0
+    for r2 in r2_samples:
+        assert r2 is not None
+        assert 0.0 <= r2 <= 1.0 + 1e-9  # an ideal synthetic Gaussian fits almost perfectly
+
+
 def test_measure_edge_diameters_seeds_the_first_pass_from_an_edt_diameter_attribute(
     tmp_path: Path, monkeypatch
 ):
@@ -1006,6 +1041,137 @@ def test_transverse_widening_keeps_the_last_good_measurement_if_a_wider_pass_fai
     assert summary["edges_measured"] == 1
     assert summary["per_edge"][0]["fwhm_diameter_um"] == pytest.approx(5.0)
     assert calls["n"] > 1, "the widening pass that fails must actually have been attempted"
+
+
+def test_transverse_widening_bisects_towards_a_failing_wider_pass_instead_of_giving_up(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: a wider pass's own fit failing a gate used to mean giving
+    up immediately and keeping the previous, narrower pass -- even when an
+    intermediate width between the two would have fit cleanly. Real data
+    confirms this: a wider window usually fails because it now reaches a
+    neighbouring structure the narrower one did not, not because *every*
+    width in between also fails, so the narrower fallback is often much
+    smaller than min_total_extent_multiplier ever intended.
+    """
+    nz, ny, nx_dim = 11, 11, 21
+    raw = _cylinder_gaussian_volume(nz, ny, nx_dim, sigma=1.5)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    def _build_graph() -> nx.MultiGraph:
+        G = nx.MultiGraph()
+        G.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
+        G.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
+        voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
+        G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
+        return G
+
+    # call 1 (initial pass): succeeds, d=2.0, which asks to widen further.
+    # call 2 (the wider pass that widening requests): fails a gate.
+    # call 3 (first bisection, between the two): also fails.
+    # call 4 (second bisection, narrower again): succeeds, d=3.0 -- bigger
+    # and more accurate than the 2.0 the pre-fix code would have kept.
+    sequence = [2.0, None, None, 3.0]
+
+    def fake_fit(pos_fit, prof_fit, **kwargs):
+        idx = min(calls["n"], len(sequence) - 1)
+        calls["n"] += 1
+        value = sequence[idx]
+        if value is None:
+            return None, None, None
+        return value, 0.0, 1.0
+
+    calls = {"n": 0}
+    monkeypatch.setattr(automated, "_fwhm_gaussian_fit_with_diagnostics", fake_fit)
+
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        _build_graph(),
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=20.0,  # > edge length: exactly one sample
+        transverse_profile_step_um=0.2,
+        transverse_half_extent_um=1.0,
+        diameter_guess_um=1.0,
+        min_total_extent_multiplier=3.0,
+        cap_half_extent_by_nonlocal_same_edge_distance=False,
+        reject_samples_with_center_offset=False,
+        reject_samples_with_low_fit_r2=False,
+        reject_samples_with_plateau_shape=False,
+        # Only one widen attempt allowed -- the fix must recover 3.0 from
+        # *within* that one attempt's own bisection, not from a further
+        # outer-loop pass.
+        max_transverse_widen_passes=1,
+    )
+    assert summary["edges_measured"] == 1
+    assert summary["per_edge"][0]["fwhm_diameter_um"] == pytest.approx(3.0), (
+        "an intermediate width between the last good pass and the failing "
+        "wider one was never tried"
+    )
+    assert calls["n"] >= 3, "bisection towards the failing width must actually run"
+
+
+def test_branch_exclusion_scales_down_for_a_short_edge_instead_of_excluding_it_whole(
+    tmp_path: Path,
+):
+    """Regression: branch_endpoint_exclusion_um is a fixed distance from each
+    end, applied unscaled -- so an edge shorter than twice that distance (a
+    dense capillary network's median edge length is routinely well under
+    the default 10um zone doubled) has every sample position excluded and
+    fails outright, silently falling back to the branch-order table default
+    diameter instead of ever being measured. The exclusion must scale down
+    for a short edge so its middle stays samplable.
+    """
+    nz, ny, nx_dim = 11, 11, 21
+    raw = _cylinder_gaussian_volume(nz, ny, nx_dim, sigma=1.5)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    def _build_graph() -> nx.MultiGraph:
+        # 0 --3um-- 1 --8um-- 2 --3um-- 3, with an extra edge off each of 1
+        # and 2 so both ends of the middle (target) edge are branch points.
+        G = nx.MultiGraph()
+        G.add_node(0, pos=np.array([5.0, 5.0, 1.0]))
+        G.add_node(1, pos=np.array([5.0, 5.0, 4.0]))
+        G.add_node(2, pos=np.array([5.0, 5.0, 12.0]))
+        G.add_node(3, pos=np.array([5.0, 5.0, 15.0]))
+        G.add_node(4, pos=np.array([5.0, 5.0, 6.0]))
+        G.add_node(5, pos=np.array([5.0, 5.0, 10.0]))
+        G.add_edge(
+            0, 1, length=3.0, branch_order="B01",
+            voxels=[(5.0, 5.0, float(x)) for x in range(1, 5)],
+        )
+        G.add_edge(1, 4, length=2.0, branch_order="B01", voxels=[(5.0, 5.0, 4.0), (5.0, 5.0, 6.0)])
+        G.add_edge(
+            1, 2, length=8.0, branch_order="B01",
+            voxels=[(5.0, 5.0, float(x)) for x in range(4, 13)],
+        )
+        G.add_edge(2, 5, length=2.0, branch_order="B01", voxels=[(5.0, 5.0, 12.0), (5.0, 5.0, 10.0)])
+        G.add_edge(
+            2, 3, length=3.0, branch_order="B01",
+            voxels=[(5.0, 5.0, float(x)) for x in range(12, 16)],
+        )
+        return G
+
+    G = _build_graph()
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=1.0,
+        transverse_profile_step_um=0.25,
+        transverse_half_extent_um=3.0,
+        diameter_guess_um=3.0,
+        # The real-world default: 10um from each end, more than the whole
+        # 8um target edge, let alone half of it.
+        branch_endpoint_exclusion_um=10.0,
+        junction_proximity_exclusion_um=0.0,
+        min_total_extent_multiplier=3.0,
+    )
+    target = G[1][2][0]
+    assert target["fwhm_status"] == "measured", (
+        f"exclusion consumed the whole 8um edge instead of scaling down: {summary}"
+    )
 
 
 def test_set_poiseuille_resistances_prefers_fwhm_optional(multigraph_with_branch_order):
