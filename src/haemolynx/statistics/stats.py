@@ -883,6 +883,22 @@ def _extract_unit(metric_name: str) -> tuple[str, str]:
     return clean_metric, unit
 
 
+def _numeric_csv_text(value: Any) -> str:
+    """A metric value as plain CSV text: ``.6g`` for a real number, else its
+    string form -- typically an "N/A (...)" explanation.
+
+    Shared by both CSV exporters' own numeric-formatting rule --
+    :func:`export_branch_order_statistics_to_csv` reuses this directly
+    (its own per-field notes are specific enough that folding them into
+    :func:`_annotation_for_metric`'s metric-name pattern matching would
+    lose that detail, so only the formatting rule, not the note text, is
+    shared).
+    """
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return f"{float(value):.6g}"
+    return str(value)
+
+
 def _format_stat_value(metric_name: str, value: Any) -> tuple[str, str]:
     """Format metric value plus a short human-readable note."""
     if isinstance(value, str):
@@ -900,7 +916,7 @@ def _format_stat_value(metric_name: str, value: Any) -> tuple[str, str]:
         f_val = float(value)
         if "Coverage" in metric_name:
             return f"{f_val:.2%}", "Fraction of all node-pairs included."
-        return f"{f_val:.6g}", ""
+        return _numeric_csv_text(value), ""
 
     if isinstance(value, (list, tuple, set)):
         serializable = list(value) if not isinstance(value, list) else value
@@ -1580,65 +1596,53 @@ def export_branch_order_statistics_to_csv(
         )
         for branch_tag in sorted(branch_order_stats.keys(), key=_branch_order_sort_key):
             rec = branch_order_stats[branch_tag]
-            mean_len = rec.get("Mean Length (microns)", 0.0)
-            if isinstance(mean_len, (int, float, np.integer, np.floating)):
-                mean_len_s = f"{float(mean_len):.6g}"
-            else:
-                mean_len_s = str(mean_len)
+            mean_len_s = _numeric_csv_text(rec.get("Mean Length (microns)", 0.0))
+
             mean_tort = rec.get("Mean Tortuosity Index", "N/A")
-            if isinstance(mean_tort, (int, float, np.integer, np.floating)):
-                mean_tort_s = f"{float(mean_tort):.6g}"
-                notes = ["Mean tortuosity is path length / straight distance."]
-            else:
-                mean_tort_s = str(mean_tort)
-                notes = [
-                    "Tortuosity unavailable (missing/insufficient node positions)."
-                ]
+            mean_tort_s = _numeric_csv_text(mean_tort)
+            notes = [
+                "Mean tortuosity is path length / straight distance."
+                if isinstance(mean_tort, (int, float, np.integer, np.floating))
+                else "Tortuosity unavailable (missing/insufficient node positions)."
+            ]
+
             mean_angle = rec.get(
                 "Mean Emergence Angle (degrees)",
                 "N/A (no unique parent junction)",
             )
-            if isinstance(mean_angle, (int, float, np.integer, np.floating)):
-                mean_angle_s = f"{float(mean_angle):.6g}"
-                notes.append(
-                    "Mean emergence angle is the deflection from the unique "
-                    "lower-order parent (0 degrees = collinear)."
-                )
-            else:
-                mean_angle_s = str(mean_angle)
-                notes.append(
-                    "Emergence angle unavailable (no unique lower-order "
-                    "parent junction)."
-                )
+            mean_angle_s = _numeric_csv_text(mean_angle)
+            notes.append(
+                "Mean emergence angle is the deflection from the unique "
+                "lower-order parent (0 degrees = collinear)."
+                if isinstance(mean_angle, (int, float, np.integer, np.floating))
+                else "Emergence angle unavailable (no unique lower-order "
+                "parent junction)."
+            )
+
             mean_drop = rec.get("Mean Pressure Drop (Pa)", "N/A (no flow solved)")
             total_drop = rec.get("Total Pressure Drop (Pa)", "N/A (no flow solved)")
-            if isinstance(mean_drop, (int, float, np.integer, np.floating)):
-                mean_drop_s = f"{float(mean_drop):.6g}"
-                total_drop_s = f"{float(total_drop):.6g}"
-                notes.append(
-                    "Pressure drop is |pressure_u - pressure_v|, only present "
-                    "once flow has been solved; total is this order's share "
-                    "of the network's overall pressure loss."
-                )
-            else:
-                mean_drop_s = str(mean_drop)
-                total_drop_s = str(total_drop)
-                notes.append("Pressure drop unavailable (flow not solved).")
+            mean_drop_s = _numeric_csv_text(mean_drop)
+            total_drop_s = _numeric_csv_text(total_drop)
+            notes.append(
+                "Pressure drop is |pressure_u - pressure_v|, only present "
+                "once flow has been solved; total is this order's share "
+                "of the network's overall pressure loss."
+                if isinstance(mean_drop, (int, float, np.integer, np.floating))
+                else "Pressure drop unavailable (flow not solved)."
+            )
+
             mean_diam = rec.get("Mean Diameter (microns)", "N/A (no diameter assigned)")
             diam_cv = rec.get(
                 "Diameter Coefficient of Variation", "N/A (no diameter assigned)"
             )
-            if isinstance(mean_diam, (int, float, np.integer, np.floating)):
-                mean_diam_s = f"{float(mean_diam):.6g}"
-                diam_cv_s = f"{float(diam_cv):.6g}"
-                notes.append(
-                    "Diameter coefficient of variation is its standard "
-                    "deviation / mean across this order's edges."
-                )
-            else:
-                mean_diam_s = str(mean_diam)
-                diam_cv_s = str(diam_cv)
-                notes.append("Diameter unavailable (no diameter assigned).")
+            mean_diam_s = _numeric_csv_text(mean_diam)
+            diam_cv_s = _numeric_csv_text(diam_cv)
+            notes.append(
+                "Diameter coefficient of variation is its standard "
+                "deviation / mean across this order's edges."
+                if isinstance(mean_diam, (int, float, np.integer, np.floating))
+                else "Diameter unavailable (no diameter assigned)."
+            )
             writer.writerow(
                 [
                     branch_tag,
