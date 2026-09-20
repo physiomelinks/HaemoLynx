@@ -16,9 +16,35 @@ from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
 
 from haemolynx.geometry import cumulative_lengths
-from haemolynx.graph.communities import communities_for_weighting, simple_graph_with_edge_attr
+from haemolynx.graph.communities import (
+    DEFAULT_MAX_NODES_EXACT,
+    communities_for_weighting,
+    simple_graph_with_edge_attr,
+)
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from haemolynx.visualization.geometry import edge_polyline
+
+#: The seed values below are not individually meaningful -- they exist only
+#: so a "fast" (sampled) statistics run reproduces the exact same numbers
+#: from one run to the next, not because 42 (or any other value) is a
+#: better sample than another.
+_REPRODUCIBILITY_SEED = 42
+
+#: Above this many nodes, betweenness centrality falls back to an
+#: approximate computation (`DEFAULT_BETWEENNESS_APPROX_K` source nodes)
+#: instead of the exact one -- lower than
+#: `graph.communities.DEFAULT_MAX_NODES_EXACT` (modularity's own threshold)
+#: because betweenness is more expensive per node.
+DEFAULT_BETWEENNESS_MAX_NODES_EXACT = 1000
+#: How many source nodes an approximate betweenness computation samples,
+#: once a graph is too large for the exact one.
+DEFAULT_BETWEENNESS_APPROX_K = 128
+#: How many of the highest-betweenness nodes a summary reports by name.
+DEFAULT_BETWEENNESS_TOP_N = 5
+#: Above this many unique node pairs, path efficiency is estimated from a
+#: bounded random sample of pairs instead of every one, to avoid a runtime
+#: quadratic in node count on a large network.
+DEFAULT_PATH_EFFICIENCY_MAX_PAIRS = 5000
 
 
 def compute_basic_statistics(
@@ -259,8 +285,8 @@ def compute_fractal_dimension(
 def compute_path_efficiency(
     G: Union[nx.Graph, nx.MultiGraph],
     is_multigraph: bool,
-    max_pairs: Optional[int] = 5000,
-    rng_seed: int = 42,
+    max_pairs: Optional[int] = DEFAULT_PATH_EFFICIENCY_MAX_PAIRS,
+    rng_seed: int = _REPRODUCIBILITY_SEED,
 ) -> Dict[str, Any]:
     """Compute path efficiency from weighted shortest-path lengths.
 
@@ -489,7 +515,7 @@ def compute_intercapillary_distance(
 
 
 def compute_communities_summary(
-    G: nx.Graph, max_nodes_exact: int = 1500
+    G: nx.Graph, max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT
 ) -> Dict[str, Any]:
     """Compute community statistics with runtime guards."""
     if G.number_of_nodes() == 0:
@@ -515,10 +541,10 @@ def compute_communities(G: nx.Graph):
 
 def compute_betweenness_summary(
     G: nx.Graph,
-    max_nodes_exact: int = 1000,
-    approx_k: int = 128,
-    seed: int = 42,
-    top_n: int = 5,
+    max_nodes_exact: int = DEFAULT_BETWEENNESS_MAX_NODES_EXACT,
+    approx_k: int = DEFAULT_BETWEENNESS_APPROX_K,
+    seed: int = _REPRODUCIBILITY_SEED,
+    top_n: int = DEFAULT_BETWEENNESS_TOP_N,
 ) -> Dict[str, Any]:
     """Compute compact betweenness summary, avoiding huge outputs."""
     n_nodes = G.number_of_nodes()
@@ -568,10 +594,10 @@ def compute_weighted_betweenness_summary(
     G: Union[nx.Graph, nx.MultiGraph],
     source_attr: str,
     inverse_source_attr: bool = False,
-    max_nodes_exact: int = 1000,
-    approx_k: int = 128,
-    seed: int = 42,
-    top_n: int = 5,
+    max_nodes_exact: int = DEFAULT_BETWEENNESS_MAX_NODES_EXACT,
+    approx_k: int = DEFAULT_BETWEENNESS_APPROX_K,
+    seed: int = _REPRODUCIBILITY_SEED,
+    top_n: int = DEFAULT_BETWEENNESS_TOP_N,
 ) -> Dict[str, Any]:
     """Compute weighted betweenness summary from a chosen edge attribute."""
     transform = (lambda x: 1.0 / x) if inverse_source_attr else None
@@ -620,7 +646,7 @@ def compute_weighted_communities_summary(
     G: Union[nx.Graph, nx.MultiGraph],
     source_attr: str,
     inverse_source_attr: bool = False,
-    max_nodes_exact: int = 1500,
+    max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT,
 ) -> Dict[str, Any]:
     """Compute weighted community summary using greedy modularity."""
     weighting = _WEIGHTING_FOR_SOURCE_ATTR.get((source_attr, inverse_source_attr))
