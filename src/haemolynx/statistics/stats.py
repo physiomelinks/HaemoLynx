@@ -20,7 +20,6 @@ from haemolynx.graph.communities import communities_for_weighting, simple_graph_
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from haemolynx.visualization.geometry import edge_polyline
 
-#Need to add in bifurcation ratios
 
 def compute_basic_statistics(
     G: Union[nx.Graph, nx.MultiGraph], is_multigraph: bool
@@ -49,7 +48,6 @@ def compute_basic_statistics(
         "Average Degree": sum(node_degrees) / len(node_degrees) if node_degrees else 0,
     }
 
-#Update with newer tortuosity values HD gave to Anna
 def compute_tortuosity_measures(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict],
