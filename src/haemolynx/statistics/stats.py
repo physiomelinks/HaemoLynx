@@ -169,8 +169,18 @@ def compute_tree_asymmetry(G: nx.Graph) -> Dict[str, Any]:
 
 
 def _box_counting_fractal_dimension(points: np.ndarray) -> float:
-    """Box-counting fractal-dimension estimate for a physical point cloud."""
+    """Box-counting fractal-dimension estimate for a physical point cloud.
+
+    Returns 0.0 -- the same fallback already used below when the box counts
+    do not admit a fit -- for a degenerate cloud with no spatial extent
+    (every point coincident, or numerically indistinguishable), rather than
+    feeding a zero range into log-spaced box sizes: `np.log10(0)` is `-inf`,
+    which propagates to non-finite box sizes and leaves `np.polyfit` fitting
+    a degenerate system, raising `LinAlgError: SVD did not converge`.
+    """
     max_range = np.max(points.max(axis=0) - points.min(axis=0))
+    if not np.isfinite(max_range) or max_range <= 0:
+        return 0.0
     min_bs = max_range / 100
     max_bs = max_range / 2
     box_sizes, box_counts = [], []

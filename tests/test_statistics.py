@@ -123,6 +123,31 @@ def test_compute_fractal_dimension(simple_graph):
     assert "Fractal Dimension (Centreline)" in s
 
 
+def test_box_counting_fractal_dimension_degenerate_cloud_does_not_raise():
+    """Regression: an all-coincident point cloud (zero spatial extent) used
+    to crash with `LinAlgError: SVD did not converge` -- a zero range feeds
+    `log10(0) = -inf` into the log-spaced box sizes -- instead of degrading
+    like every other degenerate-input case here already does."""
+    from haemolynx.statistics.stats import _box_counting_fractal_dimension
+
+    points = np.zeros((5, 3))
+    assert _box_counting_fractal_dimension(points) == 0.0
+
+
+def test_compute_fractal_dimension_with_coincident_node_positions_does_not_raise():
+    """Same regression through the public entry point: every node at the
+    same physical position (a degenerate but real possibility -- a graph
+    edit or a malformed skeleton merge could leave duplicate positions)."""
+    G = nx.Graph()
+    G.add_edge(0, 1, length=1.0, voxels=[(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)])
+    pos = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 0.0)}
+
+    result = compute_fractal_dimension(G, pos)
+
+    assert result["Fractal Dimension (Node Positions)"] == 0.0
+    assert result["Fractal Dimension (Centreline)"] == 0.0
+
+
 def test_fractal_dimension_centreline_sees_the_polyline_the_node_only_one_misses():
     """The two estimates are deliberately different lenses on the network.
 
