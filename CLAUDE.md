@@ -24,7 +24,13 @@ haemolynx/
 │   │                       #   constriction (the one constriction model) + its site-choosing
 │   │                       #   strategies: probability, pericyte_mask; constriction_strategy
 │   │                       #   (which strategy a run uses), pericyte_comparison, pericyte_sweep
-│   ├── statistics/         # stats.py, three_dim_distances.py (cell-to-vessel distances)
+│   ├── statistics/         # comprehensive.py (compute_comprehensive_vessel_statistics,
+│   │                       #   the orchestrator), topology.py, shape.py, bifurcation.py
+│   │                       #   (junction morphometry + per-branch-order aggregation, which
+│   │                       #   share the parent/daughter edge classification),
+│   │                       #   network_measures.py (betweenness + communities),
+│   │                       #   csv_export.py, _sampling.py (one shared seed constant),
+│   │                       #   three_dim_distances.py (cell-to-vessel distances)
 │   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
 │   │                       #   tabs.py (one tab per stage), progress.py (what the
 │   │                       #   progress bars read, pure), results.py (what each

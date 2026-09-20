@@ -128,7 +128,7 @@ def test_box_counting_fractal_dimension_degenerate_cloud_does_not_raise():
     to crash with `LinAlgError: SVD did not converge` -- a zero range feeds
     `log10(0) = -inf` into the log-spaced box sizes -- instead of degrading
     like every other degenerate-input case here already does."""
-    from haemolynx.statistics.stats import _box_counting_fractal_dimension
+    from haemolynx.statistics.shape import _box_counting_fractal_dimension
 
     points = np.zeros((5, 3))
     assert _box_counting_fractal_dimension(points) == 0.0

@@ -93,4 +93,4 @@ def test_pep604_unions_require_future_annotations(path: Path) -> None:
 
 def test_scan_covers_the_package() -> None:
     scanned = {path.name for path in _python_files()}
-    assert {"load.py", "poiseuille.py", "skeleton.py", "stats.py", "plot.py"} <= scanned
+    assert {"load.py", "poiseuille.py", "skeleton.py", "comprehensive.py", "plot.py"} <= scanned

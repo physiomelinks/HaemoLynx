@@ -11,7 +11,7 @@ from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
 #: graph.branch_order's own BRANCH_ORDER_CATEGORY_SEQUENCE -- the single
 #: source of truth for which category (Large_Art outermost on the arterial
 #: side, then Art, B/BO capillary, Ven, Large_Ven outermost on the venous
-#: side) sorts before which, so this and statistics.stats's own copy cannot
+#: side) sorts before which, so this and statistics.bifurcation's own copy cannot
 #: silently drift apart (see that constant's own docstring). Only the
 #: prefix spellings a raw (non-normalized) branch-order label can actually
 #: have -- "b" and "bo" both -- are this module's own concern.

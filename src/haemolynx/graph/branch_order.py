@@ -20,7 +20,7 @@ PostAssignCallback = Callable[[nx.MultiGraph], None]
 #: capillary tier (``prefix="B"``, see :func:`assign_branch_orders`), then
 #: Ven, then Large_Ven outermost on the venous side. The single source of
 #: truth for "which vessel category sorts before which": both
-#: ``statistics.stats`` and ``visualization._helpers`` derive their own
+#: ``statistics.bifurcation`` and ``visualization._helpers`` derive their own
 #: branch-order sort-rank tables from this sequence's own order (each
 #: mapping its own label-prefix spelling, e.g. "b" vs "bo", to one of these
 #: five category names) rather than each keeping an independent copy of the
