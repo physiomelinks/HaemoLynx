@@ -62,6 +62,14 @@ from .branch_order import (
     assign_hierarchical_branch_orders,
     assign_vessel_branch_orders,
 )
+from .communities import (
+    BOUNDARY_LABEL,
+    COMMUNITY_WEIGHTINGS,
+    VascularCommunitySummary,
+    assign_vascular_communities,
+    communities_for_weighting,
+    simple_graph_with_edge_attr,
+)
 from .boundaries import (
     BoundaryCoordinateWarning,
     select_boundary_nodes_by_method,
@@ -176,6 +184,12 @@ __all__ = [
     "assign_branch_orders",
     "assign_hierarchical_branch_orders",
     "assign_vessel_branch_orders",
+    "BOUNDARY_LABEL",
+    "COMMUNITY_WEIGHTINGS",
+    "VascularCommunitySummary",
+    "assign_vascular_communities",
+    "communities_for_weighting",
+    "simple_graph_with_edge_attr",
     "MissingSmallVesselAssignmentWarning",
     "BoundaryCoordinateWarning",
     "select_boundary_terminal_nodes",

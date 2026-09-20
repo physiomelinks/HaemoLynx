@@ -1591,6 +1591,44 @@ def test_flow_then_branch_order_does_not_raise_either(make_napari_viewer):
     assert len(layer.edge_color) == len(layer.data)
 
 
+def test_vascular_community_then_flow_does_not_raise_either(make_napari_viewer):
+    """Switching the vessels layer to the new domain colouring, then to a
+    continuous column, must not crash -- same categorical/colormap
+    mode-switch hazard `test_branch_order_then_flow_does_not_raise_keyerror_nan`
+    guards against, now via the real export_results path (graph.assign_vascular_communities
+    + ResultLayers._from_export_results's own re-emission of the vessels layer)."""
+    from haemolynx.gui._widget import _colour_layer
+
+    viewer = make_napari_viewer()
+    graph = a_graph(conductance=1e-18)
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+        data["vascular_community"] = "D01"
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(graph)))
+    _apply_layers(
+        viewer,
+        results.stage_finished(
+            "solve",
+            SimpleNamespace(node_list=list(graph.nodes),
+                            pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+        ),
+    )
+    _apply_layers(
+        viewer, results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    )
+    layer = viewer.layers[VESSELS]
+    assert list(layer.features["vascular_community"]) == ["D01", "D01", "D01"]
+
+    _colour_layer(layer, "vascular_community", "categorical",
+                  (("D01", (1.0, 0.0, 0.0, 1.0)),))
+    assert layer.edge_color_mode == "direct"
+
+    _colour_layer(layer, "flow_abs", "continuous")
+    assert layer.edge_color_mode == "colormap"
+    assert len(layer.edge_color) == len(layer.data)
+
+
 def test_a_stage_with_no_opinion_leaves_the_colouring_alone(make_napari_viewer):
     """`None` means "say nothing", `"none"` means "clear it". Not the same.
 

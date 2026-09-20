@@ -56,6 +56,20 @@ def test_the_schema_module_is_importable_without_the_examples_directory():
     assert module.SCHEMA is default_schema()
 
 
+def test_vascular_community_weighting_choices_match_the_graph_module():
+    """The schema's own choices tuple is a literal, matching every other
+    `choice` setting's convention -- this pins it against
+    `graph.communities.COMMUNITY_WEIGHTINGS` so the two cannot silently
+    drift apart."""
+    from haemolynx.graph.communities import COMMUNITY_WEIGHTINGS
+
+    schema = default_schema()
+    setting = schema["vascular_community_weighting"]
+    assert setting.choices == COMMUNITY_WEIGHTINGS
+    assert setting.default == "topology"
+    assert schema["compute_vascular_communities"].default is False
+
+
 def test_no_path_default_points_inside_the_examples_directory():
     """Library defaults describe the user's working directory, not this repo."""
     inside_repo = [

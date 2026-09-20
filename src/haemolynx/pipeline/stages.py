@@ -2955,6 +2955,20 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     else:
         logger.info("Vessel statistics skipped.")
 
+    # 7b) Optional: partition the network into vascular communities/domains
+    # for colouring in the vessels layer -- independent of the statistics
+    # export above, since this writes a graph attribute for visualization,
+    # not a report the user may have turned off.
+    if settings["compute_vascular_communities"]:
+        community_summary = graph.assign_vascular_communities(
+            G, weighting=settings["vascular_community_weighting"],
+        )
+        logger.info(
+            f"Assigned {community_summary.community_count} vascular "
+            f"communities ({community_summary.boundary_edge_count} boundary "
+            f"edge(s)) via {community_summary.method}."
+        )
+
     # 8) Optional: nearest 3D distance from objects in a cell mask to vessel edge.
     if settings["measurement_3d_to_cell_mask"]:
         if settings["cell_mask_path"] is None:

@@ -429,6 +429,10 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     # available_edge_columns already drops any column with no real values,
     # so this is silently absent from the dropdown otherwise.
     "discharge_haematocrit": "solve",
+    # Written by graph.assign_vascular_communities when
+    # compute_vascular_communities is on; empty on every edge otherwise,
+    # exactly like fwhm_status when FWHM measurement never ran.
+    "vascular_community": "export_results",
 }
 
 #: Derived flow columns always offered on vessel layers once flows exist.
@@ -478,7 +482,13 @@ def _enrich_flow_colour_columns(
 
 #: Columns holding text rather than numbers; a missing one is "" not NaN.
 TEXT_COLUMNS = frozenset(
-    {"branch_order", "mask_vessel_type", "diameter_source", "fwhm_status"}
+    {
+        "branch_order",
+        "mask_vessel_type",
+        "diameter_source",
+        "fwhm_status",
+        "vascular_community",
+    }
 )
 
 #: What each stage colours the vessels by once it has run, unless the user has
@@ -1875,9 +1885,17 @@ class ResultLayers:
     def _from_export_results(self, output: Any) -> StageLayers:
         self._sync_graph_from_output(output)
         note = "Wrote the VTK, statistics and plots."
-        layers = self._flow_direction_layers()
-        if layers:
-            note += f" Flow direction: {len(layers[0].data)} arrows."
+        # Re-emit the vessels layer so any attribute this stage itself wrote
+        # (e.g. vascular_community, from graph.assign_vascular_communities)
+        # actually reaches layer.features -- DEFAULT_VESSEL_COLOUR has no
+        # "export_results" entry, so colour_by resolves to None here, which
+        # _colour_layer treats as "leave the current colouring alone" (see
+        # its own docstring): this refreshes features without disturbing
+        # whatever solve, or the user, already coloured the layer by.
+        flow_layers = self._flow_direction_layers()
+        layers = self._vessel_layers("export_results") + flow_layers
+        if flow_layers:
+            note += f" Flow direction: {len(flow_layers[0].data)} arrows."
         else:
             note += " Flow direction layer skipped (no signed flows)."
         return StageLayers(

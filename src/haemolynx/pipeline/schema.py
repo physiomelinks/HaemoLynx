@@ -1940,6 +1940,33 @@ SCHEMA = Schema(
             requires=("run_haemodynamics",),
         ),
         Setting(
+            name="compute_vascular_communities",
+            kind="bool",
+            default=False,
+            help=(
+                "Partition the network into vascular communities/domains by "
+                "modularity (Blinder et al.'s 'cortical angiome' style) and "
+                "add 'vascular_community' as a colour option in the vessels "
+                "layer's colour-by dropdown"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+        ),
+        Setting(
+            name="vascular_community_weighting",
+            kind="choice",
+            default="topology",
+            help=(
+                "Distance model the community partition is weighted by: "
+                "plain topology, or the same resistance/length/flow-"
+                "weighted models the statistics report's community counts "
+                "already use. Resistance and flow are only meaningful once "
+                "haemodynamics has run"
+            ),
+            section=_SOLVER_AND_OUTPUT,
+            choices=("topology", "resistance", "length", "flow"),
+            requires=("compute_vascular_communities",),
+        ),
+        Setting(
             name="verbose_logging",
             kind="bool",
             default=False,

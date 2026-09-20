@@ -754,6 +754,61 @@ def test_edge_columns_includes_fwhm_status_and_edt_crosscheck_columns():
     }
 
 
+def test_edge_columns_includes_vascular_community_as_a_text_column():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    assert OPTIONAL_EDGE_COLUMNS["vascular_community"] == "export_results"
+    assert TEXT_COLUMNS >= {"vascular_community"}
+    assert "vascular_community" in edge_columns_for_settings()
+
+
+# --- vascular community colouring (export_results) --------------------------
+
+
+def test_export_results_refreshes_vessel_features_with_real_community_values():
+    """graph.assign_vascular_communities writes vascular_community during
+    export_results -- _from_export_results must re-emit the vessels layer
+    so those real values (not the empty placeholder every earlier stage's
+    layer already carried) reach the napari layer's own features."""
+    graph = a_graph(conductance=1e-18)
+    results = built(graph)
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+    results.stage_finished(
+        "solve",
+        SimpleNamespace(node_list=list(graph.nodes),
+                        pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+    )
+
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["vascular_community"] = "D01"
+
+    group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    vessels = spec_named(group, VESSELS)
+    assert list(vessels.features["vascular_community"]) == ["D01", "D01", "D01"]
+
+
+def test_export_results_does_not_disturb_the_current_vessel_colouring():
+    """DEFAULT_VESSEL_COLOUR has no "export_results" entry, so re-emitting
+    the vessels layer here must resolve colour_by to None -- which
+    gui._widget._colour_layer treats as "leave the colouring as it is",
+    not "reset to none"."""
+    graph = a_graph(conductance=1e-18)
+    results = built(graph)
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 5e-16
+    solve_group = results.stage_finished(
+        "solve",
+        SimpleNamespace(node_list=list(graph.nodes),
+                        pressure=np.array([1000.0, 900.0, 700.0, 500.0])),
+    )
+    assert spec_named(solve_group, VESSELS).colour_by == "flow_abs"
+
+    export_group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    assert spec_named(export_group, VESSELS).colour_by is None
+    assert "export_results" not in DEFAULT_VESSEL_COLOUR
+
+
 # --- one layer per perturbation ----------------------------------------------
 
 

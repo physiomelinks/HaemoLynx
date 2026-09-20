@@ -329,6 +329,10 @@ solver_and_output:
   flow_direction_colouring: true
   # Initial uniform scale for flow-direction arrow heads in the napari Vectors layer (adjust live via the layer's length control after export)  [range 0.1..5.0; needs run_haemodynamics]
   flow_arrow_scale: 1.0
+  # Partition the network into vascular communities/domains by modularity (Blinder et al.'s 'cortical angiome' style) and add 'vascular_community' as a colour option in the vessels layer's colour-by dropdown
+  compute_vascular_communities: false
+  # Distance model the community partition is weighted by: plain topology, or the same resistance/length/flow-weighted models the statistics report's community counts already use. Resistance and flow are only meaningful once haemodynamics has run  [one of: topology, resistance, length, flow; needs compute_vascular_communities]
+  vascular_community_weighting: topology
   # Print verbose per-stage logging while the pipeline runs
   verbose_logging: false
   # Write a text file listing the software packages and haemodynamics models this run actually used, with a citation for each -- only the ones this run's own settings turned on, not everything the pipeline can do

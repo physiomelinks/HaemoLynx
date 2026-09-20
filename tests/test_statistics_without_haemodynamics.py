@@ -162,6 +162,24 @@ def test_the_edge_length_report_matches_calling_the_functions_directly(tmp_path)
     assert length["Communities"]["Community Count"] == expected_communities["Community Count"]
 
 
+def test_compute_vascular_communities_off_by_default_leaves_the_graph_untouched(tmp_path):
+    G = _export_with_haemodynamics_off(tmp_path)
+    assert all("vascular_community" not in data for _u, _v, data in G.edges(data=True))
+
+
+def test_compute_vascular_communities_on_writes_domain_labels_without_haemodynamics(tmp_path):
+    """The default weighting, "topology", needs no resistance or solved flow
+    -- it must work in the same haemodynamics-off configuration this whole
+    file exercises."""
+    from haemolynx.graph.communities import BOUNDARY_LABEL
+
+    G = _export_with_haemodynamics_off(tmp_path, compute_vascular_communities=True)
+    labels = {data.get("vascular_community") for _u, _v, data in G.edges(data=True)}
+    assert labels
+    assert all(label is not None for label in labels)
+    assert all(label == BOUNDARY_LABEL or label.startswith("D") for label in labels)
+
+
 def test_a_disabled_statistics_measure_setting_is_missing_from_the_exported_csv(tmp_path):
     """Stage-wiring regression test for the statistics_<measure> settings:
     each is read from the right settings-dict key (statistics_murray_law,

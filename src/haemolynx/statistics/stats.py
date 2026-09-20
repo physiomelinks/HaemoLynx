@@ -16,6 +16,7 @@ from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
 
 from haemolynx.geometry import cumulative_lengths
+from haemolynx.graph.communities import communities_for_weighting, simple_graph_with_edge_attr
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from haemolynx.visualization.geometry import edge_polyline
 
@@ -483,28 +484,16 @@ def compute_communities_summary(
     G: nx.Graph, max_nodes_exact: int = 1500
 ) -> Dict[str, Any]:
     """Compute community statistics with runtime guards."""
-    n_nodes = G.number_of_nodes()
-    if n_nodes == 0:
+    if G.number_of_nodes() == 0:
         return {"Community Count": 0}
 
-    if n_nodes <= max_nodes_exact:
-        communities = list(greedy_modularity_communities(G))
-        sizes = [len(c) for c in communities]
-        return {
-            "Community Count": len(communities),
-            "Largest Community Size": max(sizes) if sizes else 0,
-            "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
-            "Community Method": "greedy_modularity",
-        }
-
-    # Fallback for large graphs: connected components are fast and stable.
-    components = list(nx.connected_components(G))
-    sizes = [len(c) for c in components]
+    communities, method = communities_for_weighting(G, "topology", max_nodes_exact)
+    sizes = [len(c) for c in communities]
     return {
-        "Community Count": len(components),
+        "Community Count": len(communities),
         "Largest Community Size": max(sizes) if sizes else 0,
         "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
-        "Community Method": "connected_components_fallback",
+        "Community Method": method,
     }
 
 
@@ -560,44 +549,11 @@ def _simple_graph_with_edge_attr(
     transform: Optional[Callable[[float], float]] = None,
     target_attr: str = "analysis_weight",
 ) -> nx.Graph:
-    """Build a simple graph carrying one transformed edge attribute.
-
-    For MultiGraph inputs, parallel edges are collapsed by taking the smallest
-    transformed value, which is appropriate for path-based distance weights.
-    """
-    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
-    G_s = nx.Graph()
-    G_s.add_nodes_from(G.nodes())
-
-    if transform is None:
-        transform = lambda x: x  # noqa: E731
-
-    if is_mg:
-        best = {}
-        for u, v, _, data in G.edges(keys=True, data=True):
-            raw = data.get(source_attr)
-            if raw is None or raw <= 0:
-                continue
-            transformed = transform(raw)
-            if transformed is None or transformed <= 0:
-                continue
-            uv = tuple(sorted((u, v)))
-            if uv not in best or transformed < best[uv]:
-                best[uv] = float(transformed)
-        for (u, v), val in best.items():
-            G_s.add_edge(u, v, **{target_attr: val})
-    else:
-        for u, v, data in G.edges(data=True):
-            raw = data.get(source_attr)
-            if raw is None or raw <= 0:
-                continue
-            transformed = transform(raw)
-            if transformed is None or transformed <= 0:
-                continue
-            existing = G_s.get_edge_data(u, v, default={}).get(target_attr)
-            if existing is None or transformed < existing:
-                G_s.add_edge(u, v, **{target_attr: float(transformed)})
-    return G_s
+    """``graph.communities.simple_graph_with_edge_attr``, kept as a private
+    name here since :func:`compute_weighted_betweenness_summary` (unrelated
+    to community detection, so it does not import from ``graph.communities``
+    itself) also calls it."""
+    return simple_graph_with_edge_attr(G, source_attr, transform, target_attr)
 
 
 def compute_weighted_betweenness_summary(
@@ -640,6 +596,18 @@ def compute_weighted_betweenness_summary(
     }
 
 
+#: `compute_betweenness_and_community_measurements`'s three source
+#: attributes, translated to `graph.communities`'s own weighting names, so
+#: this function's public `source_attr`/`inverse_source_attr` signature
+#: (unchanged, for backward compatibility) can still delegate to
+#: `communities_for_weighting`.
+_WEIGHTING_FOR_SOURCE_ATTR = {
+    ("resistance", False): "resistance",
+    ("length", False): "length",
+    ("flow_abs", True): "flow",
+}
+
+
 def compute_weighted_communities_summary(
     G: Union[nx.Graph, nx.MultiGraph],
     source_attr: str,
@@ -647,31 +615,36 @@ def compute_weighted_communities_summary(
     max_nodes_exact: int = 1500,
 ) -> Dict[str, Any]:
     """Compute weighted community summary using greedy modularity."""
-    transform = (lambda x: 1.0 / x) if inverse_source_attr else None
-    G_s = _simple_graph_with_edge_attr(
-        G, source_attr=source_attr, transform=transform, target_attr="analysis_weight"
-    )
-    n_nodes = G_s.number_of_nodes()
-    if n_nodes == 0:
+    weighting = _WEIGHTING_FOR_SOURCE_ATTR.get((source_attr, inverse_source_attr))
+    if weighting is not None:
+        communities, method = communities_for_weighting(G, weighting, max_nodes_exact)
+    else:
+        # An arbitrary (source_attr, inverse_source_attr) pair not among the
+        # three named weightings `graph.communities` knows about -- fall
+        # back to the same computation inline, so this function's public
+        # signature stays general rather than restricted to those three.
+        transform = (lambda x: 1.0 / x) if inverse_source_attr else None
+        G_s = simple_graph_with_edge_attr(
+            G, source_attr=source_attr, transform=transform, target_attr="analysis_weight"
+        )
+        n_nodes = G_s.number_of_nodes()
+        if n_nodes == 0:
+            communities, method = [], "greedy_modularity_weighted"
+        elif n_nodes <= max_nodes_exact:
+            communities = list(greedy_modularity_communities(G_s, weight="analysis_weight"))
+            method = "greedy_modularity_weighted"
+        else:
+            communities = list(nx.connected_components(G_s))
+            method = "connected_components_fallback"
+
+    if not communities and method != "connected_components_fallback":
         return {"Community Count": 0}
-
-    if n_nodes <= max_nodes_exact:
-        communities = list(greedy_modularity_communities(G_s, weight="analysis_weight"))
-        sizes = [len(c) for c in communities]
-        return {
-            "Community Count": len(communities),
-            "Largest Community Size": max(sizes) if sizes else 0,
-            "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
-            "Community Method": "greedy_modularity_weighted",
-        }
-
-    components = list(nx.connected_components(G_s))
-    sizes = [len(c) for c in components]
+    sizes = [len(c) for c in communities]
     return {
-        "Community Count": len(components),
+        "Community Count": len(communities),
         "Largest Community Size": max(sizes) if sizes else 0,
         "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
-        "Community Method": "connected_components_fallback",
+        "Community Method": method,
     }
 
 
