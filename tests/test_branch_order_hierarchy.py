@@ -15,6 +15,7 @@ if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
 from haemolynx.graph import (
+    BRANCH_ORDER_CATEGORY_SEQUENCE,
     MissingSmallVesselAssignmentWarning,
     assign_hierarchical_branch_orders,
     assign_vessel_branch_orders,
@@ -450,3 +451,45 @@ if __name__ == "__main__":
         venule_boundary_nodes=venule_boundary_nodes,
     )
     print(f"Saved rotatable 3D vessel-type visualization to: {html_path}")
+
+
+# --- BRANCH_ORDER_CATEGORY_SEQUENCE is the one place this hierarchy lives --
+
+
+def test_branch_order_category_sequence_is_the_arterial_to_venous_hierarchy():
+    """Pins the exact hierarchy statistics.stats and visualization._helpers
+    both derive their own sort-rank tables from -- see that constant's own
+    docstring for why nothing should go back to hand-copying this order."""
+    assert BRANCH_ORDER_CATEGORY_SEQUENCE == (
+        "large_arteriole",
+        "arteriole",
+        "capillary",
+        "venule",
+        "large_venule",
+    )
+
+
+def test_statistics_and_visualization_branch_order_ranks_agree():
+    """Regression: statistics.stats and visualization._helpers used to each
+    keep an independent, hand-written copy of this ranking, with nothing
+    checking they agreed. Both now derive their rank tables from
+    BRANCH_ORDER_CATEGORY_SEQUENCE's own order, so this only re-confirms
+    the derivation -- a reversion to independent hardcoded dicts would show
+    up here as soon as one drifted from the other."""
+    from haemolynx.statistics.stats import _BRANCH_ORDER_SORT_GROUPS as stats_groups
+    from haemolynx.visualization._helpers import _BRANCH_ORDER_SORT_GROUPS as viz_groups
+
+    shared_prefixes = ("large_art", "art", "bo", "ven", "large_ven")
+    assert all(prefix in stats_groups for prefix in shared_prefixes)
+    assert all(prefix in viz_groups for prefix in shared_prefixes)
+    for prefix in shared_prefixes:
+        assert stats_groups[prefix] == viz_groups[prefix], (
+            f"{prefix!r} ranks differently in statistics.stats "
+            f"({stats_groups[prefix]}) and visualization._helpers "
+            f"({viz_groups[prefix]})"
+        )
+    # visualization._helpers additionally accepts the raw "b" prefix
+    # (statistics.stats normalizes "B01" to "BO1" before ever consulting
+    # its own table -- see _normalize_branch_order_tag) -- it must rank
+    # the same as "bo", not a different category.
+    assert viz_groups["b"] == viz_groups["bo"]

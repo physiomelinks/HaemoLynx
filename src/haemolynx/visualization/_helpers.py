@@ -5,20 +5,26 @@ from typing import List, Dict, Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 
+from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
 
-#: Sort-group rank per branch-order prefix, mirroring the hierarchical BFS
-#: tier order in graph/branch_order.py: Large_Art outermost on the arterial
-#: side, then Art, B/BO (capillary), Ven, Large_Ven outermost on the venous
-#: side. Kept in sync with statistics/stats.py's own
-#: _BRANCH_ORDER_SORT_GROUPS -- this module has its own copy rather than
-#: importing it, since visualization does not otherwise depend on statistics.
+#: Sort-group rank per branch-order prefix, derived from
+#: graph.branch_order's own BRANCH_ORDER_CATEGORY_SEQUENCE -- the single
+#: source of truth for which category (Large_Art outermost on the arterial
+#: side, then Art, B/BO capillary, Ven, Large_Ven outermost on the venous
+#: side) sorts before which, so this and statistics.stats's own copy cannot
+#: silently drift apart (see that constant's own docstring). Only the
+#: prefix spellings a raw (non-normalized) branch-order label can actually
+#: have -- "b" and "bo" both -- are this module's own concern.
 _BRANCH_ORDER_SORT_GROUPS = {
-    "large_art": 0,
-    "art": 1,
-    "b": 2,
-    "bo": 2,
-    "ven": 3,
-    "large_ven": 4,
+    prefix: BRANCH_ORDER_CATEGORY_SEQUENCE.index(category)
+    for prefix, category in {
+        "large_art": "large_arteriole",
+        "art": "arteriole",
+        "b": "capillary",
+        "bo": "capillary",
+        "ven": "venule",
+        "large_ven": "large_venule",
+    }.items()
 }
 
 

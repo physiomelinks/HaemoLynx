@@ -16,6 +16,7 @@ from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
 
 from haemolynx.geometry import cumulative_lengths
+from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
 from haemolynx.graph.communities import (
     DEFAULT_MAX_NODES_EXACT,
     communities_for_weighting,
@@ -1033,15 +1034,21 @@ def _normalize_branch_order_tag(tag: Any) -> Optional[str]:
     return f"BO{n}"
 
 
-#: Sort-group rank per branch-order prefix: Large_Art outermost (upstream of
-#: Art), then Art, BO (capillary), Ven, Large_Ven outermost on the venous
-#: side -- mirrors the hierarchical BFS tier order in graph/branch_order.py.
+#: Sort-group rank per (already-normalized, see _normalize_branch_order_tag)
+#: branch-order prefix, derived from graph.branch_order's own
+#: BRANCH_ORDER_CATEGORY_SEQUENCE -- the single source of truth for which
+#: category sorts before which -- rather than an independent copy of the
+#: ranking that could silently drift from it (see that constant's own
+#: docstring).
 _BRANCH_ORDER_SORT_GROUPS = {
-    "large_art": 0,
-    "art": 1,
-    "bo": 2,
-    "ven": 3,
-    "large_ven": 4,
+    prefix: BRANCH_ORDER_CATEGORY_SEQUENCE.index(category)
+    for prefix, category in {
+        "large_art": "large_arteriole",
+        "art": "arteriole",
+        "bo": "capillary",
+        "ven": "venule",
+        "large_ven": "large_venule",
+    }.items()
 }
 
 

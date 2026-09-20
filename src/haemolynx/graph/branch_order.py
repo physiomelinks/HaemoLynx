@@ -15,6 +15,25 @@ logger = logging.getLogger(__name__)
 
 PostAssignCallback = Callable[[nx.MultiGraph], None]
 
+#: The order this module's own hierarchical tiers are assigned in --
+#: Large_Art outermost on the arterial side, then Art, then the plain
+#: capillary tier (``prefix="B"``, see :func:`assign_branch_orders`), then
+#: Ven, then Large_Ven outermost on the venous side. The single source of
+#: truth for "which vessel category sorts before which": both
+#: ``statistics.stats`` and ``visualization._helpers`` derive their own
+#: branch-order sort-rank tables from this sequence's own order (each
+#: mapping its own label-prefix spelling, e.g. "b" vs "bo", to one of these
+#: five category names) rather than each keeping an independent copy of the
+#: ranking itself, which could silently drift from this module's real
+#: hierarchy -- and from each other.
+BRANCH_ORDER_CATEGORY_SEQUENCE: tuple[str, ...] = (
+    "large_arteriole",
+    "arteriole",
+    "capillary",
+    "venule",
+    "large_venule",
+)
+
 
 class MissingSmallVesselAssignmentWarning(UserWarning):
     """Strict branch-order mode ran without small arteriole/venule terminals.

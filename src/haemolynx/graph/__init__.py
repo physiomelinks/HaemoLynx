@@ -57,6 +57,7 @@ from .collapse import collapse_node_clusters
 from .direction_aware_collapse import collapse_node_clusters_direction_aware
 from .persistence_collapse import collapse_node_clusters_persistence
 from .branch_order import (
+    BRANCH_ORDER_CATEGORY_SEQUENCE,
     MissingSmallVesselAssignmentWarning,
     assign_branch_orders,
     assign_hierarchical_branch_orders,
@@ -184,6 +185,7 @@ __all__ = [
     "assign_branch_orders",
     "assign_hierarchical_branch_orders",
     "assign_vessel_branch_orders",
+    "BRANCH_ORDER_CATEGORY_SEQUENCE",
     "BOUNDARY_LABEL",
     "COMMUNITY_WEIGHTINGS",
     "VascularCommunitySummary",
