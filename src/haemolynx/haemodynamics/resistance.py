@@ -188,12 +188,19 @@ def solve_flow_from_conductance_matrix(
     outlet_p_bc: float,
     inlet_nodes: list,
     outlet_nodes: list,
+    node_to_idx: dict | None = None,
 ) -> dict:
     """Solve nodal pressures from a conductance matrix with Dirichlet BCs.
 
     Boundary conditions are applied by node ID. Returns the node order and the
     pressure at each node; use :func:`set_edge_flows` to turn those into
     per-edge flows on the graph.
+
+    *node_to_idx*, when given, must be the ``{node_id: idx}`` mapping for
+    *node_list* in the same order -- lets a caller that already built it
+    (e.g. alongside *node_list* from :func:`build_conductance_matrix_from_graph`)
+    skip rebuilding it here. Not validated against *node_list* for cost
+    reasons; passing a mismatched mapping is the caller's error.
     """
     if conductance.ndim != 2 or conductance.shape[0] != conductance.shape[1]:
         raise ValueError("conductance must be a square matrix")
@@ -207,7 +214,8 @@ def solve_flow_from_conductance_matrix(
     if not outlet_nodes:
         raise ValueError("outlet_nodes cannot be empty")
 
-    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    if node_to_idx is None:
+        node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
     missing_in = [n for n in inlet_nodes if n not in node_to_idx]
     missing_out = [n for n in outlet_nodes if n not in node_to_idx]
     if missing_in or missing_out:
@@ -316,15 +324,27 @@ def solve_flow_from_conductance_matrix(
     return {"node_list": node_list, "pressure": pressure}
 
 
-def set_edge_flows(G: nx.Graph, node_list: list, pressure: np.ndarray) -> dict:
+def set_edge_flows(
+    G: nx.Graph,
+    node_list: list,
+    pressure: np.ndarray,
+    *,
+    node_to_idx: dict | None = None,
+) -> dict:
     """Write the flow implied by *pressure* onto every edge of *G*.
 
     Adds ``pressure_drop`` (Pa), ``flow_signed`` and ``flow_abs`` (m^3/s), so
     the flows travel with the graph and any export writes them out like any
     other edge attribute. Also writes ``pressure`` (Pa) onto every node, so
     :func:`flow_conservation_residuals` can audit the solution later.
+
+    *node_to_idx*, when given, must be the ``{node_id: idx}`` mapping for
+    *node_list* in the same order -- see
+    :func:`solve_flow_from_conductance_matrix`'s own parameter of the same
+    name.
     """
-    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    if node_to_idx is None:
+        node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
     for node_id, idx in node_to_idx.items():
         if node_id in G:
             G.nodes[node_id]["pressure"] = float(pressure[idx])

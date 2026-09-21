@@ -430,6 +430,25 @@ def test_huge_equivalent_resistance_still_solves():
     assert np.all(np.isfinite(flow["pressure"]))
 
 
+def test_solve_flow_from_conductance_matrix_accepts_a_precomputed_node_to_idx():
+    """Regression: node_to_idx= must be usable in place of rebuilding it
+    from node_list, and produce the identical solve."""
+    G = _disconnected_network()
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    kwargs = dict(
+        inlet_p_bc=1000.0,
+        outlet_p_bc=500.0,
+        inlet_nodes=[0],
+        outlet_nodes=[2],
+    )
+    baseline = solve_flow_from_conductance_matrix(conductance, node_list, **kwargs)
+    reused = solve_flow_from_conductance_matrix(
+        conductance, node_list, node_to_idx=node_to_idx, **kwargs
+    )
+    assert np.array_equal(baseline["pressure"], reused["pressure"])
+
+
 def test_set_edge_flows_writes_node_pressures():
     G = _disconnected_network()
     flow = _solve_and_set_flows(G)
@@ -437,6 +456,25 @@ def test_set_edge_flows_writes_node_pressures():
     idx = {n: i for i, n in enumerate(flow["node_list"])}
     for node in G.nodes():
         assert G.nodes[node]["pressure"] == flow["pressure"][idx[node]]
+
+
+def test_set_edge_flows_accepts_a_precomputed_node_to_idx():
+    """Regression: node_to_idx= must be usable in place of rebuilding it
+    from node_list, and write the identical edge/node values."""
+    baseline_graph = _disconnected_network()
+    flow = _solve_and_set_flows(baseline_graph)
+
+    reused_graph = _disconnected_network()
+    node_to_idx = {node_id: idx for idx, node_id in enumerate(flow["node_list"])}
+    set_edge_flows(reused_graph, flow["node_list"], flow["pressure"], node_to_idx=node_to_idx)
+
+    for node in baseline_graph.nodes():
+        assert (
+            reused_graph.nodes[node].get("pressure")
+            == baseline_graph.nodes[node].get("pressure")
+        )
+    for u, v, data in baseline_graph.edges(data=True):
+        assert reused_graph[u][v][0].get("flow_signed") == data.get("flow_signed")
 
 
 def test_set_edge_flows_writes_flow_abs_log10():

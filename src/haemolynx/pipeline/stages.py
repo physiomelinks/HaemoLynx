@@ -2090,7 +2090,19 @@ def solve(
                 tolerance=float(settings["haematocrit_distribution_tolerance"]),
             )
             node_list = hct_result["node_list"]
-            conductance, _ = haemodynamics.build_conductance_matrix_from_graph(G)
+            node_to_idx = hct_result["node_to_idx"]
+            # recompute_resistances() ran once more after the loop's own
+            # last conductance-matrix build (see iterate_flow_and_
+            # haematocrit's docstring), so the matrix itself is stale and
+            # must be rebuilt -- but node order never changes, so reuse
+            # node_list/node_to_idx/the array instead of paying for all
+            # three again.
+            conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
+                G,
+                node_list=node_list,
+                node_to_idx=node_to_idx,
+                out=hct_result["conductance_matrix"],
+            )
             solution.statistics["haematocrit_distribution"] = {
                 "converged": hct_result["converged"],
                 "iterations": hct_result["iterations"],
@@ -2107,7 +2119,7 @@ def solve(
             )
         else:
             conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
-        node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+            node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
         logger.info(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
 
     # 7) Compute effective resistance between two selected nodes, from
@@ -2151,8 +2163,9 @@ def solve(
             outlet_p_bc=settings["outlet_p_bc"],
             inlet_nodes=settings["inlet_nodes"],
             outlet_nodes=settings["outlet_nodes"],
+            node_to_idx=node_to_idx,
         )
-        haemodynamics.set_edge_flows(G, node_list, flow["pressure"])
+        haemodynamics.set_edge_flows(G, node_list, flow["pressure"], node_to_idx=node_to_idx)
         logger.info("Flow through the network solved")
         solution.pressure = flow["pressure"]
         solution.node_list = list(node_list)
@@ -2293,7 +2306,15 @@ def _solve_network(
         # before its last resistance recompute (see its docstring) -- a fresh
         # solve on the now-converged resistances is what a perturbation's own
         # equivalent-resistance comparison wants to be self-consistent with.
-        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+        # Node order never changes across that loop, so reuse its node_list/
+        # node_to_idx/array instead of rebuilding all three from scratch.
+        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
+            G,
+            node_list=hct_result["node_list"],
+            node_to_idx=hct_result["node_to_idx"],
+            out=hct_result["conductance_matrix"],
+        )
+        node_to_idx = hct_result["node_to_idx"]
         solved = solve_pressure_and_boundary_flow(
             conductance,
             list(node_list),
@@ -2302,7 +2323,9 @@ def _solve_network(
             inlet_nodes=list(boundaries.inlet_nodes),
             outlet_nodes=list(boundaries.outlet_nodes),
         )
-        haemodynamics.set_edge_flows(G, list(node_list), solved["pressure"])
+        haemodynamics.set_edge_flows(
+            G, list(node_list), solved["pressure"], node_to_idx=node_to_idx
+        )
         solved["haematocrit_distribution"] = {
             "converged": hct_result["converged"],
             "iterations": hct_result["iterations"],

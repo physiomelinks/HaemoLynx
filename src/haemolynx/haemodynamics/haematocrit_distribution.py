@@ -397,8 +397,9 @@ def iterate_flow_and_haematocrit(
             outlet_p_bc=outlet_p_bc,
             inlet_nodes=inlet_nodes,
             outlet_nodes=outlet_nodes,
+            node_to_idx=node_to_idx,
         )
-        set_edge_flows(G, node_list, flow["pressure"])
+        set_edge_flows(G, node_list, flow["pressure"], node_to_idx=node_to_idx)
         diagnostics = distribute_discharge_haematocrit(G, inlet_haematocrit=inlet_haematocrit)
 
         current = {
@@ -441,6 +442,14 @@ def iterate_flow_and_haematocrit(
     return {
         "pressure": flow["pressure"],
         "node_list": node_list,
+        # Node order never changes across iterations (see this function's
+        # own reuse comment above), so a caller that rebuilds the
+        # conductance matrix again afterwards -- e.g. because resistance
+        # changed again after the loop's own last build -- can reuse these
+        # instead of paying the node_to_idx rebuild and the (n, n)
+        # allocation a second time.
+        "node_to_idx": node_to_idx,
+        "conductance_matrix": conductance_matrix,
         "converged": converged,
         "iterations": iteration,
         "max_delta": 0.0 if max_delta == float("inf") else max_delta,
