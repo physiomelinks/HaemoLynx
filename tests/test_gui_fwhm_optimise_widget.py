@@ -192,3 +192,97 @@ def test_on_clear_resets_the_fwhm_optimise_button_and_bars(panel):
     panel._haemolynx_clear(ask=False)
 
     assert panel._haemolynx_optimise_fwhm_button.enabled is True
+
+
+# --- shared cancellation/progress-bridge helper (also used by
+# _run_optimisation_in_background) -------------------------------------------
+
+
+def test_cancellable_progress_bridge_still_ours_reflects_run_state_identity(qapp):
+    """Regression: _run_fwhm_optimisation_in_background used to build this
+    cancel_flag/still_ours/watched plumbing inline, copy-pasted from
+    _run_optimisation_in_background -- both now share
+    _cancellable_progress_bridge."""
+    from haemolynx.gui.run_state import RunState
+
+    run_state = RunState()
+    bars = SimpleNamespace(show_event=lambda event: None)
+    cancel_flag, still_ours, _watched = widget_mod._cancellable_progress_bridge(run_state, bars)
+
+    assert cancel_flag == {"cancelled": False}
+    assert still_ours() is False  # no run has claimed run_state yet
+
+    run_state.start(worker=None, cancel_flag=cancel_flag)
+    assert still_ours() is True
+
+    other_cancel_flag = {"cancelled": False}
+    run_state.start(worker=None, cancel_flag=other_cancel_flag)
+    assert still_ours() is False  # superseded by a different run
+
+
+def test_cancellable_progress_bridge_watched_raises_once_cancelled(qapp):
+    from haemolynx.gui.run_state import RunCancelled, RunState
+
+    run_state = RunState()
+    bars = SimpleNamespace(show_event=lambda event: None)
+    cancel_flag, _still_ours, watched = widget_mod._cancellable_progress_bridge(run_state, bars)
+    run_state.start(worker=None, cancel_flag=cancel_flag)
+
+    watched(SimpleNamespace(kind="group_started"))  # does not raise before cancel
+
+    cancel_flag["cancelled"] = True
+    with pytest.raises(RunCancelled):
+        watched(SimpleNamespace(kind="group_started"))
+
+
+def test_start_optimisation_worker_wires_up_button_bars_and_report(qapp):
+    """Regression: the final worker-wiring block (button/bars/report/
+    run_state.start) used to be duplicated verbatim between
+    _run_optimisation_in_background and _run_fwhm_optimisation_in_background."""
+    from haemolynx.gui.run_state import RunState
+
+    run_state = RunState()
+    bars = SimpleNamespace(
+        show_event=lambda event: None,
+        start=lambda: started_calls.append("start"),
+    )
+    started_calls: list[str] = []
+    button = SimpleNamespace(enabled=True)
+    report = SimpleNamespace(value="")
+    cancel_flag, still_ours, _watched = widget_mod._cancellable_progress_bridge(run_state, bars)
+
+    class _FakeWorker:
+        def __init__(self):
+            self.returned = SimpleNamespace(connect=lambda fn: None)
+            self.finished = SimpleNamespace(connect=lambda fn: None)
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+    fake_worker = _FakeWorker()
+
+    def run_thread_worker(*, _connect, _start_thread):
+        assert _start_thread is False
+        assert "errored" in _connect
+        return fake_worker
+
+    result = widget_mod._start_optimisation_worker(
+        run_thread_worker,
+        run_state=run_state,
+        cancel_flag=cancel_flag,
+        still_ours=still_ours,
+        button=button,
+        bars=bars,
+        report=report,
+        finished=lambda payload: None,
+        failed=lambda error: None,
+        starting_message="Optimising for a test...",
+    )
+
+    assert result is fake_worker
+    assert fake_worker.started is True
+    assert button.enabled is False
+    assert report.value == "Optimising for a test..."
+    assert started_calls == ["start"]
+    assert run_state.running is True

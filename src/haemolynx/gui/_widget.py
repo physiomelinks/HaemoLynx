@@ -4174,6 +4174,80 @@ def _load_raw_reference_image_or_none(
         return None, f"{type(error).__name__}: {error}"
 
 
+def _cancellable_progress_bridge(run_state: "RunState", bars: "OptimiseProgressBars"):
+    """The cancel-flag/progress-bridge plumbing every "Optimise ..."
+    background run needs, shared by `_run_optimisation_in_background` and
+    `_run_fwhm_optimisation_in_background` (previously copy-pasted between
+    them verbatim).
+
+    Returns ``(cancel_flag, still_ours, watched)`` for the caller's own
+    `run()`/`finished()`/`failed()` closures: *still_ours* is how they check
+    a later "Clear layers and state" press did not already claim
+    *run_state* for something else, and *watched* is what the worker's
+    `progress=` callback should be -- it runs on the worker's own thread,
+    raises ``RunCancelled`` if this run was asked to stop, and forwards the
+    event across the thread boundary via the Qt signal bridge so *bars* can
+    draw it on the GUI thread.
+    """
+    bridge = _optimisation_progress_bridge()
+    cancel_flag: dict[str, bool] = {"cancelled": False}
+
+    def still_ours() -> bool:
+        return run_state.cancel_flag is cancel_flag
+
+    def progressed(event: OptimisationEvent) -> None:
+        if cancel_flag["cancelled"]:
+            return
+        bars.show_event(event)
+
+    bridge.event.connect(progressed)
+
+    def watched(event: OptimisationEvent) -> None:
+        run_state.check(cancel_flag)
+        bridge.event.emit(event)
+
+    return cancel_flag, still_ours, watched
+
+
+def _start_optimisation_worker(
+    run_thread_worker,
+    *,
+    run_state: "RunState",
+    cancel_flag: dict,
+    still_ours,
+    button,
+    bars: "OptimiseProgressBars",
+    report,
+    finished,
+    failed,
+    starting_message: str,
+):
+    """Wire up and start a `thread_worker`-wrapped optimisation run with the
+    button/progress-bar/cancellation bookkeeping `_run_optimisation_in_background`
+    and `_run_fwhm_optimisation_in_background` both need identically --
+    including `stopped()`, whose body never differed between the two.
+    """
+    def stopped() -> None:
+        if not still_ours():
+            return
+        if not run_state.running:
+            return
+        run_state.stopped()
+        button.enabled = True
+        if cancel_flag["cancelled"]:
+            report.value = FINISHED_FIRST
+
+    worker = run_thread_worker(_connect={"errored": failed}, _start_thread=False)
+    worker.returned.connect(finished)
+    worker.finished.connect(stopped)
+    run_state.start(worker=worker, cancel_flag=cancel_flag)
+    button.enabled = False
+    bars.start()
+    report.value = starting_message
+    worker.start()
+    return worker
+
+
 def _run_optimisation_in_background(
     settings: dict[str, Any],
     schema: Schema,
@@ -4199,25 +4273,7 @@ def _run_optimisation_in_background(
     """
     from napari.qt.threading import thread_worker
 
-    bridge = _optimisation_progress_bridge()
-    cancel_flag = {"cancelled": False}
-
-    def still_ours() -> bool:
-        return run_state.cancel_flag is cancel_flag
-
-    def progressed(event: OptimisationEvent) -> None:
-        if cancel_flag["cancelled"]:
-            return
-        bars.show_event(event)
-
-    bridge.event.connect(progressed)
-
-    def watched(event: OptimisationEvent) -> None:
-        # Runs on the worker's own thread; raises RunCancelled if a "Clear
-        # layers and state" press asked this run to stop, exactly like the
-        # pipeline run's own `watched` in `_run_in_background`.
-        run_state.check(cancel_flag)
-        bridge.event.emit(event)
+    cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
 
     @thread_worker
     def run():
@@ -4321,25 +4377,18 @@ def _run_optimisation_in_background(
         logger.exception("settings optimisation failed", exc_info=error)
         raise error
 
-    def stopped() -> None:
-        if not still_ours():
-            return
-        if not run_state.running:
-            return
-        run_state.stopped()
-        button.enabled = True
-        if cancel_flag["cancelled"]:
-            report.value = FINISHED_FIRST
-
-    worker = run(_connect={"errored": failed}, _start_thread=False)
-    worker.returned.connect(finished)
-    worker.finished.connect(stopped)
-    run_state.start(worker=worker, cancel_flag=cancel_flag)
-    button.enabled = False
-    bars.start()
-    report.value = "Optimising settings..."
-    worker.start()
-    return worker
+    return _start_optimisation_worker(
+        run,
+        run_state=run_state,
+        cancel_flag=cancel_flag,
+        still_ours=still_ours,
+        button=button,
+        bars=bars,
+        report=report,
+        finished=finished,
+        failed=failed,
+        starting_message="Optimising settings...",
+    )
 
 
 def _run_fwhm_optimisation_in_background(
@@ -4368,22 +4417,7 @@ def _run_fwhm_optimisation_in_background(
     """
     from napari.qt.threading import thread_worker
 
-    bridge = _optimisation_progress_bridge()
-    cancel_flag = {"cancelled": False}
-
-    def still_ours() -> bool:
-        return run_state.cancel_flag is cancel_flag
-
-    def progressed(event: OptimisationEvent) -> None:
-        if cancel_flag["cancelled"]:
-            return
-        bars.show_event(event)
-
-    bridge.event.connect(progressed)
-
-    def watched(event: OptimisationEvent) -> None:
-        run_state.check(cancel_flag)
-        bridge.event.emit(event)
+    cancel_flag, still_ours, watched = _cancellable_progress_bridge(run_state, bars)
 
     @thread_worker
     def run():
@@ -4452,25 +4486,18 @@ def _run_fwhm_optimisation_in_background(
         logger.exception("FWHM settings optimisation failed", exc_info=error)
         raise error
 
-    def stopped() -> None:
-        if not still_ours():
-            return
-        if not run_state.running:
-            return
-        run_state.stopped()
-        button.enabled = True
-        if cancel_flag["cancelled"]:
-            report.value = FINISHED_FIRST
-
-    worker = run(_connect={"errored": failed}, _start_thread=False)
-    worker.returned.connect(finished)
-    worker.finished.connect(stopped)
-    run_state.start(worker=worker, cancel_flag=cancel_flag)
-    button.enabled = False
-    bars.start()
-    report.value = "Optimising FWHM settings..."
-    worker.start()
-    return worker
+    return _start_optimisation_worker(
+        run,
+        run_state=run_state,
+        cancel_flag=cancel_flag,
+        still_ours=still_ours,
+        button=button,
+        bars=bars,
+        report=report,
+        finished=finished,
+        failed=failed,
+        starting_message="Optimising FWHM settings...",
+    )
 
 
 def _run_segmentation_quality_check_in_background(
