@@ -114,3 +114,54 @@ def test_betweenness_flow_model_treats_higher_flow_as_shorter_distance():
     by_node = {row["node"]: row["value"] for row in result["Betweenness Top Nodes"]}
     assert by_node[1] > 0.0
     assert by_node[2] == pytest.approx(0.0)
+
+
+def test_compute_weighted_communities_summary_accepts_a_precomputed_partition(monkeypatch):
+    """Regression: precomputed= must be usable in place of recomputing the
+    partition via communities_for_weighting, and produce the same summary."""
+    from haemolynx.graph.communities import communities_for_weighting
+    from haemolynx.statistics import network_measures as nm
+
+    G, _ = _two_segment_graph()
+    G, _ = MODEL.set_poiseuille_resistances(G, {"B01": DIAMETER_UM})
+
+    baseline = st.compute_weighted_communities_summary(
+        G, source_attr="resistance", inverse_source_attr=False
+    )
+    precomputed = communities_for_weighting(G, "resistance")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("communities_for_weighting should not be called again")
+
+    monkeypatch.setattr(nm, "communities_for_weighting", _boom)
+    reused = st.compute_weighted_communities_summary(
+        G, source_attr="resistance", inverse_source_attr=False, precomputed=precomputed
+    )
+    assert reused == baseline
+
+
+def test_compute_betweenness_and_community_measurements_reuses_precomputed_communities(monkeypatch):
+    from haemolynx.graph.communities import communities_for_weighting
+    from haemolynx.statistics import network_measures as nm
+
+    G, _ = _two_segment_graph()
+    G, _ = MODEL.set_poiseuille_resistances(G, {"B01": DIAMETER_UM})
+
+    baseline = st.compute_betweenness_and_community_measurements(G)
+    precomputed = communities_for_weighting(G, "resistance")
+
+    calls = []
+    original = nm.communities_for_weighting
+
+    def _spy(graph_arg, weighting, *args, **kwargs):
+        calls.append(weighting)
+        return original(graph_arg, weighting, *args, **kwargs)
+
+    monkeypatch.setattr(nm, "communities_for_weighting", _spy)
+    reused = st.compute_betweenness_and_community_measurements(
+        G, precomputed_communities={"resistance": precomputed}
+    )
+
+    assert "resistance" not in calls  # reused, not recomputed
+    assert set(calls) == {"length", "flow"}  # the other two still compute normally
+    assert reused["edge_resistance"]["Communities"] == baseline["edge_resistance"]["Communities"]

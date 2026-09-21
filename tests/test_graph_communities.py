@@ -202,6 +202,46 @@ def test_assign_vascular_communities_rejects_unknown_weighting():
         gc.assign_vascular_communities(G, weighting="not_a_real_weighting")
 
 
+def test_assign_vascular_communities_accepts_a_precomputed_partition():
+    """Regression: communities= must be usable in place of recomputing the
+    partition, and produce the identical labelling."""
+    G = _two_clusters_joined_by_one_bridge()
+    baseline = nx.MultiGraph(G)
+    gc.assign_vascular_communities(baseline, weighting="topology")
+
+    precomputed = gc.communities_for_weighting(G, "topology")
+    reused = gc.assign_vascular_communities(G, weighting="topology", communities=precomputed)
+
+    assert reused.community_count == 2
+    baseline_labels = {
+        frozenset((u, v)): d["vascular_community"] for u, v, d in baseline.edges(data=True)
+    }
+    reused_labels = {
+        frozenset((u, v)): d["vascular_community"] for u, v, d in G.edges(data=True)
+    }
+    assert reused_labels == baseline_labels
+
+
+def test_assign_vascular_communities_precomputed_partition_skips_recomputation(monkeypatch):
+    G = _two_clusters_joined_by_one_bridge()
+    precomputed = gc.communities_for_weighting(G, "topology")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("communities_for_weighting should not be called again")
+
+    monkeypatch.setattr(gc, "communities_for_weighting", _boom)
+    gc.assign_vascular_communities(G, weighting="topology", communities=precomputed)
+
+
+def test_assign_vascular_communities_still_rejects_unknown_weighting_when_precomputed():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=1.0)
+    with pytest.raises(ValueError, match="Unknown weighting"):
+        gc.assign_vascular_communities(
+            G, weighting="not_a_real_weighting", communities=([{0, 1}], "greedy_modularity")
+        )
+
+
 def test_assign_vascular_communities_uses_a_custom_attribute_name():
     G = nx.MultiGraph()
     G.add_edge(0, 1, length=1.0)

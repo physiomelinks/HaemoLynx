@@ -149,10 +149,23 @@ def compute_weighted_communities_summary(
     source_attr: str,
     inverse_source_attr: bool = False,
     max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT,
+    precomputed: "tuple[list, str] | None" = None,
 ) -> Dict[str, Any]:
-    """Compute weighted community summary using greedy modularity."""
+    """Compute weighted community summary using greedy modularity.
+
+    *precomputed*, when given, is a ``(communities, method)`` pair already
+    produced by :func:`~haemolynx.graph.communities.communities_for_weighting`
+    for this exact (*source_attr*, *inverse_source_attr*) -- lets a caller
+    that already partitioned this graph for the same weighting elsewhere
+    (e.g. :func:`haemolynx.graph.communities.assign_vascular_communities`)
+    skip running greedy modularity on it a second time. Not validated
+    against *source_attr*/*inverse_source_attr* for cost reasons; passing a
+    partition for a different weighting is the caller's error.
+    """
     weighting = _WEIGHTING_FOR_SOURCE_ATTR.get((source_attr, inverse_source_attr))
-    if weighting is not None:
+    if precomputed is not None:
+        communities, method = precomputed
+    elif weighting is not None:
         communities, method = communities_for_weighting(G, weighting, max_nodes_exact)
     else:
         # An arbitrary (source_attr, inverse_source_attr) pair not among the
@@ -186,6 +199,8 @@ def compute_weighted_communities_summary(
 
 def compute_betweenness_and_community_measurements(
     G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    precomputed_communities: "Dict[str, tuple[list, str]] | None" = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Compute weighted betweenness/community using three edge distance models.
 
@@ -202,13 +217,23 @@ def compute_betweenness_and_community_measurements(
 
     All three are reported together rather than one at a time, so a caller
     never has to guess which distance model a given number came from.
+
+    *precomputed_communities*, when given, maps a
+    :data:`haemolynx.graph.communities.COMMUNITY_WEIGHTINGS` name
+    ("resistance"/"length"/"flow") to a ``(communities, method)`` pair
+    already computed for this graph -- e.g. by
+    :func:`haemolynx.graph.communities.assign_vascular_communities` for the
+    same weighting -- so that one weighting's community partition is not
+    computed twice.
     """
+    precomputed_communities = precomputed_communities or {}
     resistance_results = {
         "Betweenness": compute_weighted_betweenness_summary(
             G, source_attr="resistance", inverse_source_attr=False
         ),
         "Communities": compute_weighted_communities_summary(
-            G, source_attr="resistance", inverse_source_attr=False
+            G, source_attr="resistance", inverse_source_attr=False,
+            precomputed=precomputed_communities.get("resistance"),
         ),
     }
     edge_length_results = {
@@ -216,7 +241,8 @@ def compute_betweenness_and_community_measurements(
             G, source_attr="length", inverse_source_attr=False
         ),
         "Communities": compute_weighted_communities_summary(
-            G, source_attr="length", inverse_source_attr=False
+            G, source_attr="length", inverse_source_attr=False,
+            precomputed=precomputed_communities.get("length"),
         ),
     }
     edge_flow_results = {
@@ -224,7 +250,8 @@ def compute_betweenness_and_community_measurements(
             G, source_attr="flow_abs", inverse_source_attr=True
         ),
         "Communities": compute_weighted_communities_summary(
-            G, source_attr="flow_abs", inverse_source_attr=True
+            G, source_attr="flow_abs", inverse_source_attr=True,
+            precomputed=precomputed_communities.get("flow"),
         ),
     }
     return {

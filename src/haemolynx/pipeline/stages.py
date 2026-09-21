@@ -2869,6 +2869,23 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     output_dir = network.volume.output_dir
     voxel_size_zyx = network.volume.voxel_size_zyx
     main_voxel_size_xyz = network.volume.voxel_size_xyz
+
+    # The statistics report's own weighted-community counts (below) and the
+    # vessels-layer vascular-community assignment (further below) can ask
+    # for the exact same partition -- e.g. both weighted by "resistance".
+    # Compute it once up front in that case and hand it to both, instead of
+    # running greedy modularity on the same graph twice.
+    vascular_weighting = settings["vascular_community_weighting"]
+    shared_vascular_communities = None
+    share_vascular_communities_with_statistics = (
+        settings["compute_vascular_communities"]
+        and settings["statistics"]
+        and vascular_weighting in ("resistance", "length", "flow")
+        and (vascular_weighting == "length" or settings["run_haemodynamics"])
+    )
+    if share_vascular_communities_with_statistics:
+        shared_vascular_communities = graph.communities_for_weighting(G, vascular_weighting)
+
     # 7) Compute and print vessel statistics.
     logger.info("Computing vessel statistics...")
     if settings["statistics"]:
@@ -2917,7 +2934,14 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         logger.info(f"Saved branch-order statistics CSV to: {branch_stats_csv_path}")
 
         if settings["run_haemodynamics"]:
-            weighted_measurements = statistics.compute_betweenness_and_community_measurements(G)
+            precomputed_communities = (
+                {vascular_weighting: shared_vascular_communities}
+                if shared_vascular_communities is not None
+                else None
+            )
+            weighted_measurements = statistics.compute_betweenness_and_community_measurements(
+                G, precomputed_communities=precomputed_communities,
+            )
         else:
             # Resistance and solved |flow| both require haemodynamics; only
             # length is purely geometric and stays computable either way.
@@ -2951,6 +2975,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                         G,
                         source_attr="length",
                         inverse_source_attr=False,
+                        precomputed=(
+                            shared_vascular_communities
+                            if vascular_weighting == "length"
+                            else None
+                        ),
                     ),
                 },
             }
@@ -2981,10 +3010,13 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     # 7b) Optional: partition the network into vascular communities/domains
     # for colouring in the vessels layer -- independent of the statistics
     # export above, since this writes a graph attribute for visualization,
-    # not a report the user may have turned off.
+    # not a report the user may have turned off. Reuses the partition
+    # already computed above when the statistics report asked for the same
+    # weighting (see shared_vascular_communities).
     if settings["compute_vascular_communities"]:
         community_summary = graph.assign_vascular_communities(
-            G, weighting=settings["vascular_community_weighting"],
+            G, weighting=vascular_weighting,
+            communities=shared_vascular_communities,
         )
         logger.info(
             f"Assigned {community_summary.community_count} vascular "

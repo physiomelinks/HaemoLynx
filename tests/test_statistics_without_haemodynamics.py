@@ -180,6 +180,39 @@ def test_compute_vascular_communities_on_writes_domain_labels_without_haemodynam
     assert all(label == BOUNDARY_LABEL or label.startswith("D") for label in labels)
 
 
+def test_matching_vascular_community_weighting_reuses_the_statistics_partition(tmp_path, monkeypatch):
+    """Regression: when vascular_community_weighting matches a weighting the
+    statistics report already computes (here "length", the one weighting
+    available with haemodynamics off), export_results must compute that
+    partition once and share it, not run greedy modularity on the same
+    graph twice."""
+    import haemolynx.graph as graph_pkg
+    from haemolynx.graph import communities as gc
+    from haemolynx.statistics import network_measures as nm
+
+    calls = []
+    original = gc.communities_for_weighting
+
+    def _spy(graph_arg, weighting, *args, **kwargs):
+        calls.append(weighting)
+        return original(graph_arg, weighting, *args, **kwargs)
+
+    # Three separate module-level bindings of the same function
+    # (pipeline/stages.py via the haemolynx.graph package, graph/communities.py's
+    # own internal calls, statistics/network_measures.py's own import) --
+    # patch all three so a regression anywhere still shows up as an extra call.
+    monkeypatch.setattr(graph_pkg, "communities_for_weighting", _spy)
+    monkeypatch.setattr(gc, "communities_for_weighting", _spy)
+    monkeypatch.setattr(nm, "communities_for_weighting", _spy)
+    _export_with_haemodynamics_off(
+        tmp_path,
+        compute_vascular_communities=True,
+        vascular_community_weighting="length",
+    )
+
+    assert calls.count("length") == 1
+
+
 def test_a_disabled_statistics_measure_setting_is_missing_from_the_exported_csv(tmp_path):
     """Stage-wiring regression test for the statistics_<measure> settings:
     each is read from the right settings-dict key (statistics_murray_law,

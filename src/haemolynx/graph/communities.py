@@ -190,6 +190,7 @@ def assign_vascular_communities(
     weighting: str = "topology",
     max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT,
     attribute: str = "vascular_community",
+    communities: "tuple[list[frozenset], str] | None" = None,
 ) -> VascularCommunitySummary:
     """Partition *G* into vascular communities/domains and write each edge's
     own domain onto ``attribute``.
@@ -206,8 +207,23 @@ def assign_vascular_communities(
     boundary -- gets :data:`BOUNDARY_LABEL` instead of either endpoint's own
     domain, so a boundary is a visible, distinct category rather than an
     edge that arbitrarily looks like it belongs to one side.
+
+    *communities*, when given, is a ``(communities, method)`` pair already
+    produced by :func:`communities_for_weighting` for this *weighting* on
+    this graph -- lets a caller that partitioned *G* for the same weighting
+    elsewhere (e.g. the statistics report's own
+    :func:`~haemolynx.statistics.compute_betweenness_and_community_measurements`)
+    skip running greedy modularity on it a second time. Not validated
+    against *weighting*/*G*; passing a mismatched pair is the caller's error.
     """
-    communities, method = communities_for_weighting(G, weighting, max_nodes_exact)
+    if weighting not in COMMUNITY_WEIGHTINGS:
+        raise ValueError(
+            f"Unknown weighting={weighting!r}; choose from {COMMUNITY_WEIGHTINGS}."
+        )
+    if communities is not None:
+        communities, method = communities
+    else:
+        communities, method = communities_for_weighting(G, weighting, max_nodes_exact)
     ordered = sorted(communities, key=lambda community: (-len(community), min(community)))
     width = max(2, len(str(len(ordered))))
 
