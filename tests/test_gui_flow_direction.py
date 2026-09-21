@@ -8,7 +8,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.gui.results import FLOW_DIRECTION, ResultLayers
+from haemolynx.gui.results import FLOW_DIRECTION, VESSEL_LABELS, VESSELS, ResultLayers
 from haemolynx.gui.tabs import assign_to_stages
 from haemolynx.pipeline import default_schema
 from haemolynx.visualization.flow_direction import (
@@ -235,13 +235,16 @@ def test_flow_direction_components_finite_in_features():
 
 
 def test_flow_direction_layer_always_renders_when_flows_exist():
-    """The layer is unconditional now -- no toggle can omit it."""
+    """The layer is unconditional now -- no toggle can omit it. export_results
+    also re-emits the vessels/vessel-label layers alongside it (so any
+    attribute export_results itself wrote, e.g. vascular_community, reaches
+    layer.features -- see ResultLayers._from_export_results)."""
     graph = _two_node_edge(flow_signed=1.25)
     results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
 
-    assert len(group.layers) == 1
-    spec = group.layers[0]
+    assert [s.name for s in group.layers] == [VESSELS, VESSEL_LABELS, FLOW_DIRECTION]
+    spec = next(s for s in group.layers if s.name == FLOW_DIRECTION)
     assert spec.name == FLOW_DIRECTION
     assert spec.kind == "vectors"
     assert len(spec.data) == 1
@@ -266,8 +269,9 @@ def test_flow_direction_layer_uses_flow_arrow_scale_setting():
     )
     group = results.stage_finished("export_results", SimpleNamespace())
 
-    assert len(group.layers) == 1
-    assert group.layers[0].options["length"] == 2.5
+    assert [s.name for s in group.layers] == [VESSELS, VESSEL_LABELS, FLOW_DIRECTION]
+    spec = next(s for s in group.layers if s.name == FLOW_DIRECTION)
+    assert spec.options["length"] == 2.5
 
 
 def test_flow_direction_layer_emits_nothing_without_flows():
@@ -279,7 +283,9 @@ def test_flow_direction_layer_emits_nothing_without_flows():
     results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
     assert FLOW_DIRECTION not in [spec.name for spec in group.layers]
-    assert group.layers == ()
+    # The vessels/vessel-label layers are still re-emitted even with no
+    # flow-direction layer to add.
+    assert [s.name for s in group.layers] == [VESSELS, VESSEL_LABELS]
     assert "no signed flows" in group.note.lower()
 
 
@@ -527,7 +533,7 @@ def test_flow_direction_layer_defaults_to_3d_rgb(make_napari_viewer):
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(graph)
     group = results.stage_finished("export_results", SimpleNamespace())
-    spec = group.layers[0]
+    spec = next(s for s in group.layers if s.name == FLOW_DIRECTION)
     assert spec.colour_by == "flow_dir_rgb"
     assert spec.colour_kind == "direct"
 
