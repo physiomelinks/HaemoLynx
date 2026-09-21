@@ -3674,11 +3674,14 @@ SCHEMA = Schema(
             default=False,
             help="Estimate per-edge diameters from the segmentation mask's inscribed radius, for fallback and cross-checking against FWHM",
             section=_EDT_DIAMETER,
-            # Every role this plays -- seeding FWHM's own first-pass guess,
-            # falling back for an edge FWHM failed on, flagging disagreement
-            # with FWHM -- is meaningless with FWHM off (see
-            # haemodynamics.apply.assign_edge_diameters); nest it there too.
-            requires=("run_haemodynamics", "use_fwhm_edge_diameters"),
+            # Seeding FWHM's own first-pass guess and flagging disagreement
+            # with FWHM do need FWHM on, but falling back for an edge FWHM
+            # never measured is exactly as real with FWHM off entirely --
+            # stamp_edge_diameters (haemodynamics.poiseuille) then uses the
+            # EDT estimate for every edge instead of just the ones FWHM
+            # failed on, which is a fully working diameter pipeline on its
+            # own, not a degenerate one. Only run_haemodynamics is required.
+            requires=("run_haemodynamics",),
         ),
         Setting(
             name="edt_mask_path",
@@ -3686,7 +3689,7 @@ SCHEMA = Schema(
             default=None,
             help="Load the vessel mask from here when no in-memory segmentation volume is available (e.g. a resumed run)",
             section=_EDT_DIAMETER,
-            requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
+            requires=("use_edt_diameter_crosscheck",),
             must_exist=True,
             advanced=True,
         ),
@@ -3694,9 +3697,9 @@ SCHEMA = Schema(
             name="edt_diameter_prefer_over_table_on_fwhm_failure",
             kind="bool",
             default=True,
-            help="Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge",
+            help="Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge, or was never attempted",
             section=_EDT_DIAMETER,
-            requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
+            requires=("use_edt_diameter_crosscheck",),
         ),
         Setting(
             name="edt_junction_proximity_exclusion_um",
@@ -3706,7 +3709,7 @@ SCHEMA = Schema(
             section=_EDT_DIAMETER,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
+            requires=("use_edt_diameter_crosscheck",),
             advanced=True,
         ),
         Setting(
@@ -3716,6 +3719,8 @@ SCHEMA = Schema(
             help="Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio",
             section=_EDT_DIAMETER,
             minimum=1.0,
+            # Unlike this section's other settings, comparing FWHM against
+            # EDT genuinely needs both measurements to exist.
             requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
             advanced=True,
         ),
