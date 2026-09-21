@@ -799,7 +799,7 @@ def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
     fields = {
         field.name: field
         for field in tabs["8. Additional measurements"].fields
-        if field.section == "Statistics and measurements"
+        if field.section in ("Statistics and measurements", "Connectivity/Network Analysis")
     }
 
     assert not fields["measurement_3d_to_cell_mask"].hide_when_unmet
@@ -814,10 +814,19 @@ def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
         assert not fields[name].is_visible(off), name
         assert fields[name].is_visible(on), name
 
+    # statistics_mode now nests under statistics then its own
+    # statistics_network_analysis toggle (Connectivity/Network Analysis).
     assert fields["statistics_mode"].hide_when_unmet
     assert not fields["statistics_mode"].is_visible(off)
-    assert fields["statistics_mode"].is_visible(
+    assert not fields["statistics_mode"].is_visible(
         {"measurement_3d_to_cell_mask": False, "statistics": True}
+    )
+    assert fields["statistics_mode"].is_visible(
+        {
+            "measurement_3d_to_cell_mask": False,
+            "statistics": True,
+            "statistics_network_analysis": True,
+        }
     )
 
 

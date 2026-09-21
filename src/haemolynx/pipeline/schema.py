@@ -62,6 +62,7 @@ _PIPELINE_STAGES = "Pipeline stages"
 # Named "Statistics and measurements" rather than "Statistics" so the YAML
 # section heading does not collide with the setting also called `statistics`.
 _STATISTICS = "Statistics and measurements"
+_NETWORK_ANALYSIS = "Connectivity/Network Analysis"
 _CARTWHEEL_GUARD = "Cartwheel hub guard"
 _DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
 _FWHM = "FWHM diameter measurement"
@@ -2706,20 +2707,6 @@ SCHEMA = Schema(
             requires=("measurement_3d_to_cell_mask",),
         ),
         Setting(
-            name="statistics_mode",
-            kind="choice",
-            default="fast",
-            help=(
-                "fast computes sampled/capped path efficiency, community and "
-                "betweenness measures; full computes them exactly over the "
-                "whole graph, which is far slower on a large network. "
-                "Every other statistic below is unaffected by this choice"
-            ),
-            section=_STATISTICS,
-            choices=("fast", "full"),
-            requires=("statistics",),
-        ),
-        Setting(
             name="statistics_basic",
             kind="bool",
             default=True,
@@ -2791,77 +2778,109 @@ SCHEMA = Schema(
             section=_STATISTICS,
             requires=("statistics",),
         ),
+        # ------------------------------------------------------------------
+        # Connectivity/Network Analysis -- nests under `statistics`, then its
+        # own `statistics_network_analysis` toggle, exactly like "EDT mask
+        # diameter estimate" nests under FWHM then `use_edt_diameter_
+        # crosscheck`. Everything here is a graph-theoretic measure of how
+        # the network is connected/arranged (bridges, loops, degree
+        # correlation, shortest-path/centrality measures), as opposed to
+        # Statistics' own geometric/morphometric measures above.
+        # ------------------------------------------------------------------
+        Setting(
+            name="statistics_network_analysis",
+            kind="bool",
+            default=True,
+            help="Compute the connectivity/network-analysis measures below (bridges, loops, centrality, community structure)",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics",),
+        ),
+        Setting(
+            name="statistics_mode",
+            kind="choice",
+            default="fast",
+            help=(
+                "fast computes sampled/capped path efficiency, community and "
+                "betweenness measures; full computes them exactly over the "
+                "whole graph, which is far slower on a large network. Every "
+                "other connectivity/network-analysis measure below is "
+                "unaffected by this choice"
+            ),
+            section=_NETWORK_ANALYSIS,
+            choices=("fast", "full"),
+            requires=("statistics", "statistics_network_analysis"),
+        ),
         Setting(
             name="statistics_network_robustness",
             kind="bool",
             default=True,
             help="Bridge-edge and articulation-point counts -- how much of the network depends on a single connection -- and, when inlet/outlet boundaries are known, which of them are perfusion-critical",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
             name="statistics_cyclomatic_number",
             kind="bool",
             default=True,
             help="Independent loop (anastomosis) count -- 0 means every vessel is a single point of failure for everything downstream of it",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
             name="statistics_degree_assortativity",
             kind="bool",
             default=True,
             help="Whether high-degree junctions connect to other high-degree junctions (vascular trees are normally disassortative)",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
             name="statistics_rich_club",
             kind="bool",
             default=True,
             help="Whether the highest-degree vessels/junctions preferentially interconnect, forming their own backbone",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
             name="statistics_k_core",
             kind="bool",
             default=True,
             help="How onion-layered (redundant core plus peripheral shell) vs. purely tree-like the network is",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
             name="statistics_flow_hierarchy",
             kind="bool",
             default=True,
             help="Fraction of the solved flow's own directed edges that do not sit on a directed (recirculating) loop",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
             name="statistics_path_efficiency",
             kind="bool",
             default=True,
             help="How close shortest network paths are to straight-line distance, sampled (fast) or exact (full) per statistics_mode",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
             name="statistics_community",
             kind="bool",
             default=True,
             help="Community/module detection over the network's topology, sampled (fast) or exact (full) per statistics_mode",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
             name="statistics_betweenness",
             kind="bool",
             default=True,
             help="Betweenness centrality of each node, sampled (fast) or exact (full) per statistics_mode",
-            section=_STATISTICS,
-            requires=("statistics",),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
         ),
         # ------------------------------------------------------------------
         # Diameters and pericytes

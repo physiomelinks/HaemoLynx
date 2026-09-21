@@ -208,6 +208,52 @@ def test_compute_vascular_communities_on_writes_domain_labels_without_haemodynam
     assert all(label == BOUNDARY_LABEL or label.startswith("D") for label in labels)
 
 
+def test_statistics_network_analysis_off_removes_every_network_measure_from_the_csv(tmp_path):
+    """statistics_network_analysis is the GUI's own "Connectivity/Network
+    Analysis" master toggle (nested under statistics) -- turning it off must
+    drop every measure it groups from the statistics CSV even though each
+    individual statistics_<measure> flag is still True, the same
+    "outer gate checked explicitly" enforcement use_edt_diameter_crosscheck's
+    children get from haemodynamics.apply.assign_edge_diameters."""
+    on_dir = tmp_path / "on"
+    off_dir = tmp_path / "off"
+    on_dir.mkdir()
+    off_dir.mkdir()
+    _export_with_haemodynamics_off(on_dir, input_path=on_dir / "on.tif")
+    _export_with_haemodynamics_off(
+        off_dir, input_path=off_dir / "off.tif", statistics_network_analysis=False,
+    )
+
+    on_csv = (on_dir / "on_statistics.csv").read_text()
+    off_csv = (off_dir / "off_statistics.csv").read_text()
+
+    for label in (
+        "Cyclomatic Number", "Degree Assortativity", "Rich Club Coefficient",
+        "Max Core Number", "Flow Hierarchy", "Bridge Edge Count",
+        "Path Efficiency", "Community Count", "Betweenness Mean",
+    ):
+        assert label in on_csv, label
+        assert label not in off_csv, label
+
+    # Nothing outside the new group is affected.
+    assert "Total Nodes" in off_csv
+    assert "Average Tortuosity Index" in off_csv
+
+
+def test_statistics_network_analysis_on_still_respects_each_measures_own_toggle(tmp_path):
+    """The master being on does not force every child measure on -- each
+    keeps its own independent statistics_<measure> toggle underneath it."""
+    G = _export_with_haemodynamics_off(
+        tmp_path,
+        statistics_network_analysis=True,
+        statistics_betweenness=False,
+    )
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    assert "Cyclomatic Number" in csv_text  # still on
+    assert "Betweenness Mean" not in csv_text  # individually turned off
+    assert G.number_of_nodes() == 4
+
+
 def test_matching_vascular_community_weighting_reuses_the_statistics_partition(tmp_path, monkeypatch):
     """Regression: when vascular_community_weighting matches a weighting the
     statistics report already computes (here "length", the one weighting

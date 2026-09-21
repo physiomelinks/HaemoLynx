@@ -36,7 +36,7 @@ from haemolynx.gui.form import (
 )
 from haemolynx.parsers import Schema, Setting
 from haemolynx.pipeline import default_schema
-from haemolynx.statistics import STATISTIC_MEASURES
+from haemolynx.statistics import NETWORK_ANALYSIS_MEASURES, STATISTIC_MEASURES
 
 SCHEMA = default_schema()
 
@@ -736,8 +736,21 @@ _MEASUREMENT_3D_CHILDREN = (
 )
 
 #: One flat per-measure checkbox per haemolynx.statistics.STATISTIC_MEASURES
-#: entry, all nesting under "statistics" the same way statistics_mode does.
-_STATISTICS_MEASURE_CHILDREN = tuple(f"statistics_{measure}" for measure in STATISTIC_MEASURES)
+#: entry not in NETWORK_ANALYSIS_MEASURES, nesting directly under
+#: "statistics" (same section). The NETWORK_ANALYSIS_MEASURES ones nest one
+#: level deeper, under "Connectivity/Network Analysis" -- see
+#: _NETWORK_ANALYSIS_MEASURE_CHILDREN below.
+_STATISTICS_MEASURE_CHILDREN = tuple(
+    f"statistics_{measure}"
+    for measure in STATISTIC_MEASURES
+    if measure not in NETWORK_ANALYSIS_MEASURES
+)
+#: Every graph-theoretic connectivity measure, nested under "statistics"
+#: then "statistics_network_analysis" -- see test_gui_form's own
+#: test_network_analysis_measures_nest_under_statistics_then_their_own_toggle.
+_NETWORK_ANALYSIS_MEASURE_CHILDREN = tuple(
+    f"statistics_{measure}" for measure in NETWORK_ANALYSIS_MEASURES
+)
 
 
 def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
@@ -758,22 +771,46 @@ def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
         assert not child.is_visible({"measurement_3d_to_cell_mask": False}), name
         assert child.is_visible({"measurement_3d_to_cell_mask": True}), name
 
-    # statistics_mode nests under statistics the same way (same section).
-    mode = fields["statistics_mode"]
-    assert mode.hide_when_unmet
-    assert SCHEMA["statistics_mode"].requires == ("statistics",)
-    assert not mode.is_visible({"statistics": False})
-    assert mode.is_visible({"statistics": True})
-
-    # Every per-measure checkbox nests under statistics the same way, and
-    # starts checked so a user opts individual measures out rather than in.
+    # Every non-network-analysis per-measure checkbox nests under statistics
+    # the same way, and starts checked so a user opts individual measures
+    # out rather than in.
     for name in _STATISTICS_MEASURE_CHILDREN:
         child = fields[name]
         assert child.hide_when_unmet, name
+        assert child.section == "Statistics and measurements", name
         assert SCHEMA[name].requires == ("statistics",), name
         assert SCHEMA[name].default is True, name
         assert not child.is_visible({"statistics": False}), name
         assert child.is_visible({"statistics": True}), name
+
+
+def test_network_analysis_measures_nest_under_statistics_then_their_own_toggle():
+    """Connectivity/Network Analysis (bridges, loops, centrality, community
+    structure) is its own section, nesting two levels under "statistics"
+    then "statistics_network_analysis" -- the same pattern EDT mask
+    diameter estimate uses under FWHM then use_edt_diameter_crosscheck."""
+    assert "Connectivity/Network Analysis" in HIDE_WHEN_UNMET_SECTIONS
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    master = fields["statistics_network_analysis"]
+    assert master.hide_when_unmet
+    assert master.section == "Connectivity/Network Analysis"
+    assert SCHEMA["statistics_network_analysis"].requires == ("statistics",)
+    assert SCHEMA["statistics_network_analysis"].default is True
+    assert not master.is_visible({"statistics": False})
+    assert master.is_visible({"statistics": True})
+
+    for name in ("statistics_mode", *_NETWORK_ANALYSIS_MEASURE_CHILDREN):
+        child = fields[name]
+        assert child.hide_when_unmet, name
+        assert child.section == "Connectivity/Network Analysis", name
+        assert SCHEMA[name].requires == ("statistics", "statistics_network_analysis"), name
+        assert not child.is_visible({"statistics": True, "statistics_network_analysis": False}), name
+        assert not child.is_visible({"statistics": False, "statistics_network_analysis": True}), name
+        assert child.is_visible({"statistics": True, "statistics_network_analysis": True}), name
+
+    for name in _NETWORK_ANALYSIS_MEASURE_CHILDREN:
+        assert SCHEMA[name].default is True, name
 
     # Ungated parents stay visible either way.
     assert not fields["statistics"].hide_when_unmet
@@ -803,11 +840,23 @@ def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
     stats_on = {**off, "statistics": True}
     shown = visible_statistics_settings(SCHEMA, stats_on)
     assert shown == {
-        "statistics", "measurement_3d_to_cell_mask", "statistics_mode",
+        "statistics", "measurement_3d_to_cell_mask", "statistics_network_analysis",
         *_STATISTICS_MEASURE_CHILDREN,
     }
+    # statistics_network_analysis itself shows (nested one level under
+    # statistics), but its own children stay hidden until it is on too --
+    # statistics_network_analysis is unset (falsy) in stats_on above.
+    assert "statistics_mode" not in shown
+    for name in _NETWORK_ANALYSIS_MEASURE_CHILDREN:
+        assert name not in shown, name
     for name in _MEASUREMENT_3D_CHILDREN:
         assert name not in shown, name
+
+    network_on = {**stats_on, "statistics_network_analysis": True}
+    shown = visible_statistics_settings(SCHEMA, network_on)
+    assert "statistics_mode" in shown
+    for name in _NETWORK_ANALYSIS_MEASURE_CHILDREN:
+        assert name in shown, name
 
 
 def test_visible_vessel_mask_settings_nests_under_automated_and_parents():

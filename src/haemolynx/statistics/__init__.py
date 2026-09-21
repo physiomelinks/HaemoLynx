@@ -6,7 +6,11 @@ from .bifurcation import (
     compute_murray_law_compliance,
     export_branch_order_statistics_to_csv,
 )
-from .comprehensive import STATISTIC_MEASURES, compute_comprehensive_vessel_statistics
+from .comprehensive import (
+    NETWORK_ANALYSIS_MEASURES,
+    STATISTIC_MEASURES,
+    compute_comprehensive_vessel_statistics,
+)
 from .csv_export import export_statistics_to_csv
 from .network_measures import (
     compute_betweenness_and_community_measurements,
@@ -36,6 +40,7 @@ from .three_dim_distances import run_3d_measurement_to_cell_mask
 
 __all__ = [
     "STATISTIC_MEASURES",
+    "NETWORK_ANALYSIS_MEASURES",
     "compute_comprehensive_vessel_statistics",
     "compute_basic_statistics",
     "compute_tortuosity_measures",

@@ -2896,10 +2896,17 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 f"Choose one of {sorted(valid_statistics_modes)}."
             )
         node_positions = nx.get_node_attributes(G, "pos")
+        # A network-analysis measure also needs statistics_network_analysis
+        # itself on -- the GUI nests it there (see pipeline.schema's own
+        # "Connectivity/Network Analysis" section), the same "outer gate
+        # checked explicitly, not just implied by requires=" pattern
+        # use_edt_diameter_crosscheck's own children use.
+        network_analysis_on = settings["statistics_network_analysis"]
         enabled_measures = frozenset(
             measure
             for measure in statistics.STATISTIC_MEASURES
             if settings[f"statistics_{measure}"]
+            and (measure not in statistics.NETWORK_ANALYSIS_MEASURES or network_analysis_on)
         )
         stats = statistics.compute_comprehensive_vessel_statistics(
             G,

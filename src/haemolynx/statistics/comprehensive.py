@@ -58,6 +58,29 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "betweenness",
 )
 
+#: The subset of :data:`STATISTIC_MEASURES` the GUI groups under
+#: "Connectivity/Network Analysis" -- graph-theoretic measures of how the
+#: network is connected/arranged (bridges and loops, degree correlation,
+#: shortest-path/centrality measures), nested under the schema's own
+#: ``statistics_network_analysis`` toggle. Everything in STATISTIC_MEASURES
+#: but not here (basic, tortuosity, branching, tree_asymmetry,
+#: fractal_dimension, vessel_density, murray_law, daughter_angles,
+#: intercapillary_distance) is geometric/morphometric rather than
+#: connectivity, and stays directly under "statistics".
+NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
+    {
+        "network_robustness",
+        "cyclomatic_number",
+        "degree_assortativity",
+        "rich_club",
+        "k_core",
+        "flow_hierarchy",
+        "path_efficiency",
+        "community",
+        "betweenness",
+    }
+)
+
 
 def compute_comprehensive_vessel_statistics(
     G: Union[nx.Graph, nx.MultiGraph],

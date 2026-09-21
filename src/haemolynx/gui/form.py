@@ -45,12 +45,16 @@ DEFAULT_FLOAT_RANGE = (-1e12, 1e12)
 #: than staying visible and greyed. Input swaps segmented-file vs ilastik
 #: children; Vessel masks nests under ``automated_vessel_assignment``;
 #: Diameters nests constant vs per-order tables and FWHM under its parents;
-#: Statistics nests cell-mask / ``statistics_mode`` under their parent bools;
+#: Statistics nests cell-mask under its parent bool;
 #: EDT mask diameter estimate nests entirely under ``use_fwhm_edge_diameters``
 #: then ``use_edt_diameter_crosscheck`` -- its own diameter estimate only
 #: ever seeds, falls back for, or cross-checks a FWHM measurement (see
 #: haemodynamics.apply.assign_edge_diameters), so it has nothing to show
-#: while FWHM is off.
+#: while FWHM is off; Connectivity/Network Analysis nests entirely under
+#: ``statistics`` then its own ``statistics_network_analysis`` toggle, the
+#: same two-level pattern -- it groups every graph-theoretic connectivity
+#: measure (bridges, loops, centrality, community structure) apart from
+#: Statistics' own geometric/morphometric ones.
 HIDE_WHEN_UNMET_SECTIONS = frozenset({
     "Input and segmentation",
     "Vessel masks",
@@ -58,6 +62,7 @@ HIDE_WHEN_UNMET_SECTIONS = frozenset({
     "FWHM diameter measurement",
     "EDT mask diameter estimate",
     "Statistics and measurements",
+    "Connectivity/Network Analysis",
 })
 
 #: Shared across main / large / small ilastik. Declared once under Input;
@@ -303,7 +308,8 @@ def visible_diameter_settings(
 def visible_statistics_settings(
     schema: Schema, values: Mapping[str, Any]
 ) -> set[str]:
-    """Export-tab Statistics setting names that should appear for *values*.
+    """Export-tab Statistics + Connectivity/Network Analysis setting names
+    that should appear for *values*.
 
     Parent toggles (``statistics``, ``measurement_3d_to_cell_mask``) stay;
     gated children follow their ``requires`` chains. Under
@@ -311,12 +317,15 @@ def visible_statistics_settings(
     ``cell_mask_h5_dataset_name``, ``measurement_3d_vessel_mask_path``,
     ``measurement_3d_vessel_mask_h5_dataset_name``,
     ``measurement_3d_reference_image_path``, and
-    ``measurement_3d_reference_h5_dataset_name``; under ``statistics``,
-    ``statistics_mode``.
+    ``measurement_3d_reference_h5_dataset_name``. Connectivity/Network
+    Analysis (every graph-theoretic connectivity measure: bridges, loops,
+    centrality, community structure) nests two levels under ``statistics``
+    then its own ``statistics_network_analysis`` toggle, the same pattern
+    :func:`visible_diameter_settings` uses for EDT under FWHM.
     """
     return _visible_settings_in_section(
         schema, values, "Statistics and measurements"
-    )
+    ) | _visible_settings_in_section(schema, values, "Connectivity/Network Analysis")
 
 
 #: Export-tab IDE plot rows: schema keys stay snake_case for YAML.
