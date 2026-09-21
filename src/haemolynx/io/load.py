@@ -8,8 +8,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 from skimage.util import img_as_bool
-from skimage.morphology import skeletonize
-from ..preprocessing.skeleton import fill_binary_holes
+from ..preprocessing.skeleton import fill_binary_holes, skeletonize_by_component
 from ..preprocessing.memmap_support import new_memmap_array
 try:
     import h5py
@@ -169,8 +168,16 @@ def _to_binary_volume_for_skeletonization(image: np.ndarray) -> np.ndarray:
     - Keep prior skimage conversion behavior for grayscale integer images.
     - For normalized floating masks (0..1), threshold at 0.5.
     - For other floating data, use ``> 0`` as a conservative fallback.
+
+    Uses ``asanyarray``, not ``asarray``, for the already-bool pass-through
+    case specifically: an ``np.memmap`` loaded with ``use_memmap_loading``
+    would otherwise come back demoted to a plain in-RAM-looking ``ndarray``
+    (same underlying disk-backed buffer, since this is still a view rather
+    than a copy, but the wrong type for anything downstream that checks
+    ``isinstance(x, np.memmap)``) -- the same reasoning as
+    ``io.axis_order.apply_axis_order``.
     """
-    arr = np.asarray(image)
+    arr = np.asanyarray(image)
     if arr.dtype == bool:
         return arr
 
@@ -668,17 +675,26 @@ def _skeletonize_loaded_volume(
     encloses no background, which is what
     ``test_fill_binary_holes_on_a_sparse_skeleton_changes_nothing`` pins.
 
-    *use_memmap* is forwarded to :func:`fill_binary_holes`, whose own
-    connected-component labelling is the one full-volume, wider-than-boolean
-    buffer in this path -- ``skeletonize`` itself has no way to redirect its
-    output to disk, so its own (boolean, same size as the input) allocation
-    is unavoidable regardless.
+    *use_memmap* is forwarded to :func:`skeletonize_by_component` (whose
+    per-component splitting, when it actually shrinks what skimage's own
+    Lee thinning is called on, is the widest lever this path has for a
+    volume too large to skeletonize as one piece) and to
+    :func:`fill_binary_holes`, whose own connected-component labelling is a
+    full-volume, wider-than-boolean buffer this path can also redirect to
+    disk.
+
+    Neither ``_to_binary_volume_for_skeletonization``'s result nor
+    ``fill_binary_holes``'s is ever re-cast with ``.astype(bool)`` here --
+    both already guarantee a boolean return, and ``.astype()`` defaults to
+    ``copy=True`` even when the dtype already matches, which would silently
+    materialise a second full-volume plain-RAM copy of whichever one, memmap
+    or not, use_memmap_loading just avoided making one for.
     """
     binary = _to_binary_volume_for_skeletonization(image)
-    skeleton = skeletonize(binary.astype(bool), method="lee")
-    return fill_binary_holes(
-        skeleton, use_memmap=use_memmap, memmap_directory=memmap_directory
-    ).astype(bool)
+    skeleton = skeletonize_by_component(
+        binary, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    return fill_binary_holes(skeleton, use_memmap=use_memmap, memmap_directory=memmap_directory)
 
 
 def load_and_skeletonize_3d_tif(

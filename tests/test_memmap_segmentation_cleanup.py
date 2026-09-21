@@ -155,6 +155,40 @@ def test_smooth_morphological_ignores_use_memmap():
     assert np.array_equal(memmap_result, eager_result)
 
 
+# --- remove_small_segmented_volumes -------------------------------------------
+
+
+def test_remove_small_segmented_volumes_gives_the_same_result_with_memmap_on():
+    shape = (10, 10, 10)
+    mask = np.zeros(shape, dtype=bool)
+    mask[2:8, 4:6, 4:6] = True  # a real vessel segment, kept
+    mask[0, 0, 0] = True  # a one-voxel speck, dropped
+
+    memmap_result = sc.remove_small_segmented_volumes(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_volume_um3=5.0, use_memmap=True
+    )
+    eager_result = sc.remove_small_segmented_volumes(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_volume_um3=5.0, use_memmap=False
+    )
+
+    assert isinstance(memmap_result, np.memmap)
+    assert not isinstance(eager_result, np.memmap)
+    assert np.array_equal(memmap_result, eager_result)
+    assert not memmap_result[0, 0, 0], "the one-voxel speck should have been dropped"
+    assert memmap_result[4, 5, 5], "the real vessel segment should survive"
+
+
+def test_remove_small_segmented_volumes_with_memmap_on_still_no_ops_below_threshold():
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[1:4, 1:4, 1:4] = True
+
+    result = sc.remove_small_segmented_volumes(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_volume_um3=0.0, use_memmap=True
+    )
+
+    assert result is mask
+
+
 # --- clean_segmented_mask_for_skeletonisation ---------------------------------
 
 

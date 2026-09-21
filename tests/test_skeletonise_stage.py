@@ -79,6 +79,11 @@ def test_use_memmap_loading_gives_the_same_skeleton_as_the_ordinary_load(tmp_pat
     # This is the assertion that would have caught that.
     assert isinstance(memmap_volume.image, np.memmap)
     assert not isinstance(eager_volume.image, np.memmap)
+    # .skeleton itself is *not* asserted memmap here: preprocess_skeleton_for_graph's
+    # first step, skimage.morphology.remove_small_objects, has no disk-backed
+    # output option and always copies to a fresh in-RAM array (see that
+    # function's own docstring) -- the same category of hard limit as
+    # skeletonize/watershed having no `out=` parameter.
     assert np.array_equal(memmap_volume.skeleton, eager_volume.skeleton)
     assert np.array_equal(memmap_volume.image, eager_volume.image)
     assert memmap_volume.voxel_size_xyz == eager_volume.voxel_size_xyz

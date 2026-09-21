@@ -10,6 +10,7 @@ import numpy as np
 from scipy.ndimage import (
     binary_dilation,
     distance_transform_edt,
+    find_objects,
     generate_binary_structure,
     label,
     maximum_filter,
@@ -176,18 +177,34 @@ def fill_binary_holes(
     Windows tries int16 first (half the commit); Linux keeps the int32 path
     that was timed there. Both return the same mask.
 
-    *use_memmap*, when True, writes the labelled background to a disk-backed
-    buffer instead of a fresh in-RAM one -- this runs unconditionally on
+    *use_memmap*, when True, writes the labelled background, the inverted
+    mask fed to it, and this function's own returned mask to disk-backed
+    buffers instead of fresh in-RAM ones -- this runs unconditionally on
     every load (see :func:`haemolynx.io.load._skeletonize_loaded_volume`), so
     it is the one full-volume, wider-than-boolean allocation a low-memory
-    run cannot just disable. *memmap_directory* is forwarded to
-    :func:`haemolynx.preprocessing.new_memmap_array`; ignored when
-    *use_memmap* is False.
+    run cannot just disable. The inversion and the final combine are done
+    one slice (axis 0) at a time rather than as a single ``~mask`` /
+    ``mask | ...`` expression over the whole volume -- either one would
+    otherwise allocate a fresh full-size plain array no matter how *mask*
+    itself is backed, since neither numpy's unary ``~`` nor its binary ``|``
+    write into a memmap unless explicitly told to. *memmap_directory* is
+    forwarded to :func:`haemolynx.preprocessing.new_memmap_array`; both are
+    ignored when *use_memmap* is False.
     """
-    mask = np.asarray(mask, dtype=bool)
-    background_labels, n_labels = _label_inverted_background(
-        ~mask, use_memmap=use_memmap, memmap_directory=memmap_directory
-    )
+    mask = np.asanyarray(mask, dtype=bool)
+    if use_memmap:
+        inverted = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+        for index in range(mask.shape[0]):
+            inverted[index] = ~mask[index]
+    else:
+        inverted = ~mask
+    try:
+        background_labels, n_labels = _label_inverted_background(
+            inverted, use_memmap=use_memmap, memmap_directory=memmap_directory
+        )
+    finally:
+        if use_memmap:
+            release_memmap_array(inverted)
     if n_labels == 0:
         if use_memmap and isinstance(background_labels, np.memmap):
             release_memmap_array(background_labels)
@@ -201,7 +218,12 @@ def fill_binary_holes(
             reaches_edge[background_labels[tuple(face_slice)]] = True
     # Label 0 is the foreground itself, never a hole to fill.
     reaches_edge[0] = True
-    result = mask | ~reaches_edge[background_labels]
+    if use_memmap:
+        result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+        for index in range(mask.shape[0]):
+            result[index] = mask[index] | ~reaches_edge[background_labels[index]]
+    else:
+        result = mask | ~reaches_edge[background_labels]
     if use_memmap and isinstance(background_labels, np.memmap):
         release_memmap_array(background_labels)
     return result
@@ -334,6 +356,68 @@ def skeletonize_volume(img: np.ndarray) -> np.ndarray:
 def skeletonize_3d(img: np.ndarray) -> np.ndarray:
     """Deprecated alias for :func:`skeletonize_volume`."""
     return skeletonize_volume(img)
+
+
+def skeletonize_by_component(
+    mask: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> np.ndarray:
+    """Lee-skeletonize *mask*, one connected component at a time, in each
+    component's own tight bounding box, instead of running
+    ``skimage.morphology.skeletonize`` on the whole volume in one call.
+
+    With *use_memmap* False (the default), this is exactly
+    ``skimage.morphology.skeletonize(mask, method="lee")`` -- that call is
+    made directly, unchanged, so nothing differs for anyone not using
+    ``use_memmap_loading``.
+
+    With *use_memmap* True: Lee thinning's simple-point classification for
+    a voxel depends only on information that can propagate through
+    connected foreground, so a component with no foreground path to any
+    other component is provably unaffected by anything outside itself --
+    this is not an approximation. Splitting first and skeletonizing each
+    component's own (typically far smaller) bounding box, with any other,
+    spatially-nearby-but-unconnected component's voxels inside that box
+    masked out, gives skimage's own algorithm a small in-RAM array to work
+    with regardless of how large the whole volume is, and writes each
+    result into a shared disk-backed output. Only actually reduces peak
+    memory when *mask* splits into components meaningfully smaller than
+    the whole volume -- one single network filling most of the volume gets
+    exactly one "component" the same size as before, no worse, just the
+    modest extra cost of labelling first.
+
+    Labels with the widest possible connectivity for *mask*'s
+    dimensionality (``generate_binary_structure(mask.ndim, mask.ndim)``)
+    regardless of any other connectivity setting elsewhere in this
+    pipeline: two components must be independent under skeletonize's own
+    (full-neighbourhood) notion of adjacency for the exactness argument
+    above to hold, and a narrower connectivity here could split two
+    components that skeletonize's own algorithm would still treat as
+    touching, corrupting the result rather than just failing to help.
+    *memmap_directory* is forwarded to :func:`new_memmap_array`; both are
+    ignored when *use_memmap* is False.
+    """
+    if not use_memmap:
+        return skeletonize(np.asanyarray(mask, dtype=bool), method="lee")
+
+    mask = np.asanyarray(mask, dtype=bool)
+    footprint = generate_binary_structure(mask.ndim, mask.ndim)
+    labeled = new_memmap_array(mask.shape, np.int32, directory=memmap_directory)
+    n_labels = label(mask, footprint, output=labeled)
+    try:
+        result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+        if n_labels == 0:
+            return result
+        for component_id, bbox in enumerate(find_objects(labeled, max_label=n_labels), start=1):
+            if bbox is None:
+                continue
+            component_mask = labeled[bbox] == component_id
+            result[bbox] |= skeletonize(component_mask, method="lee")
+        return result
+    finally:
+        release_memmap_array(labeled)
 
 def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None:
     """Set voxels along the straight line from *start* to *end* to True."""
@@ -705,6 +789,90 @@ def inter_component_gap_distances(
     return np.sort(np.asarray(distances, dtype=float))
 
 
+def _small_object_survival_by_size(sizes: np.ndarray, min_size: int) -> np.ndarray:
+    """For each value in *sizes* (component voxel counts), whether a
+    component of that size would survive
+    ``skimage.morphology.remove_small_objects(..., min_size=min_size)``.
+
+    Answered by asking skimage itself, on a tiny synthetic 1D array holding
+    one isolated run of each *distinct* size, rather than hard-coding this
+    installed skimage version's exact threshold comparison. That comparison
+    is a deprecated parameter (``min_size``, in favour of an inclusive
+    ``max_size``) whose semantics have already changed once between skimage
+    releases and are only pinned here as ``scikit-image>=0.24`` with no
+    upper bound -- confirmed empirically that this installed version
+    removes a component of exactly *min_size* voxels (inclusive), which
+    contradicts the exclusive threshold the deprecated parameter's own
+    docstring still describes. Cost is proportional to the number of
+    distinct sizes, never to the volume :func:`drop_small_components` is
+    protecting RAM for.
+    """
+    if sizes.size == 0:
+        return np.zeros(0, dtype=bool)
+    unique_sizes, inverse = np.unique(sizes, return_inverse=True)
+    synthetic = np.zeros(int(unique_sizes.sum()) + unique_sizes.size, dtype=bool)
+    starts = np.empty(unique_sizes.size, dtype=np.int64)
+    pos = 0
+    for i, size in enumerate(unique_sizes):
+        pos += 1  # a 1-voxel gap keeps each run its own connected component
+        starts[i] = pos
+        synthetic[pos : pos + int(size)] = True
+        pos += int(size)
+    filtered = remove_small_objects(synthetic, min_size=min_size, connectivity=1)
+    return filtered[starts][inverse]
+
+
+def drop_small_components(
+    mask: np.ndarray,
+    *,
+    min_size: int,
+    connectivity: int = 1,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> np.ndarray:
+    """Remove connected components smaller than *min_size* voxels.
+
+    With *use_memmap* False (the default), this is exactly
+    ``skimage.morphology.remove_small_objects(mask, min_size=min_size,
+    connectivity=connectivity)`` -- that call is made directly, unchanged,
+    so nothing about this function's behaviour differs from before it
+    existed for anyone not using ``use_memmap_loading``.
+
+    With *use_memmap* True: skimage's own implementation always allocates
+    two fresh full-volume buffers regardless of how *mask* is backed --
+    ``out = ar.copy()`` and ``ccs = np.zeros_like(ar, dtype=np.int32)`` --
+    silently defeating ``use_memmap_loading`` for whichever caller passes it
+    a memmap-backed skeleton or mask. This computes the identical result
+    with the label array and the final mask disk-backed instead, combining
+    them one z-slice (axis 0) at a time so no full-volume plain array is
+    ever allocated. *memmap_directory* is forwarded to
+    :func:`new_memmap_array`; both are ignored when *use_memmap* is False.
+    The size-threshold decision itself is delegated back to skimage (see
+    :func:`_small_object_survival_by_size`) rather than assumed, so this
+    tracks whatever the *use_memmap* False branch above actually does on
+    whichever skimage version is installed.
+    """
+    if not use_memmap:
+        return remove_small_objects(
+            np.asanyarray(mask, dtype=bool), min_size=min_size, connectivity=connectivity
+        )
+
+    mask = np.asanyarray(mask, dtype=bool)
+    footprint = generate_binary_structure(mask.ndim, connectivity)
+    labeled = new_memmap_array(mask.shape, np.int32, directory=memmap_directory)
+    label(mask, footprint, output=labeled)
+    try:
+        component_sizes = np.bincount(labeled.ravel())
+        too_small = np.zeros(component_sizes.shape, dtype=bool)
+        too_small[1:] = ~_small_object_survival_by_size(component_sizes[1:], min_size)
+        result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+        for index in range(mask.shape[0]):
+            result[index] = mask[index] & ~too_small[labeled[index]]
+        return result
+    finally:
+        release_memmap_array(labeled)
+
+
 def preprocess_skeleton_for_graph(
     skeleton_image: np.ndarray,
     min_branch_length: int = 5,
@@ -767,16 +935,19 @@ def preprocess_skeleton_for_graph(
         ``z_distance_weight``, ``segmentation_mask``, and
         ``weight_by_segmentation`` respectively -- see its own docstring.
     use_memmap, memmap_directory:
-        Forwarded to :func:`bridge_gaps`, whose distance-transform path (only
-        taken when ``bridge_gap_size`` exceeds
-        :data:`MAX_BALL_DILATION_RADIUS`) is the one full-volume ``float64``
-        allocation this function can make.
+        Forwarded to :func:`drop_small_components` (the very first step
+        below) and to :func:`bridge_gaps`, whose distance-transform path
+        (only taken when ``bridge_gap_size`` exceeds
+        :data:`MAX_BALL_DILATION_RADIUS`) is a full-volume ``float64``
+        allocation this function can also redirect to disk.
     """
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
-    cleaned = remove_small_objects(
-        skeleton_image.astype(bool),
+    cleaned = drop_small_components(
+        skeleton_image,
         min_size=min_branch_length,
         connectivity=conn,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
     # Refine dense local bundles into single hub nodes with clean in/out links.
     cleaned = skeletonize_voxel_bundles_into_paths(

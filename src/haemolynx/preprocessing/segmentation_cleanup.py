@@ -65,10 +65,9 @@ from scipy.ndimage import (
 )
 from scipy.spatial import cKDTree
 from skimage.feature import peak_local_max
-from skimage.morphology import remove_small_objects
 from skimage.segmentation import watershed
 
-from .skeleton import fill_binary_holes
+from .skeleton import drop_small_components, fill_binary_holes
 from .memmap_support import new_memmap_array, release_memmap_array
 from .thick_vessels import (
     _dominant_eigenvector_3x3,
@@ -923,24 +922,33 @@ def remove_small_segmented_volumes(
     *,
     voxel_size_zyx: tuple[float, float, float],
     min_volume_um3: float = 5.0,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
     """Drop connected components smaller than ``min_volume_um3``.
 
-    The same ``skimage.morphology.remove_small_objects`` this codebase
-    already uses on the *skeleton*
+    The same :func:`haemolynx.preprocessing.skeleton.drop_small_components`
+    this codebase already uses on the *skeleton*
     (:func:`haemolynx.preprocessing.skeleton.preprocess_skeleton_for_graph`),
     here on the raw mask instead. ``min_size`` in voxels is
     ``min_volume_um3`` divided by one voxel's physical volume.
-    ``min_volume_um3 <= 0`` is a no-op.
+    ``min_volume_um3 <= 0`` is a no-op. *use_memmap* and *memmap_directory*
+    are forwarded to it; see its own docstring for what they change.
     """
-    mask = np.asarray(mask, dtype=bool)
+    mask = np.asanyarray(mask, dtype=bool)
     if float(min_volume_um3) <= 0.0:
         return mask
     voxel_volume = (
         float(voxel_size_zyx[0]) * float(voxel_size_zyx[1]) * float(voxel_size_zyx[2])
     )
     min_size_voxels = int(np.ceil(float(min_volume_um3) / max(1e-9, voxel_volume)))
-    return remove_small_objects(mask, min_size=min_size_voxels, connectivity=3)
+    return drop_small_components(
+        mask,
+        min_size=min_size_voxels,
+        connectivity=3,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
 
 
 def clean_segmented_mask_for_skeletonisation(
@@ -1004,13 +1012,13 @@ def clean_segmented_mask_for_skeletonisation(
     corrected-vs-raw comparison toggle.
 
     *use_memmap*, forwarded to :func:`split_narrow_neck_components`,
-    :func:`reconnect_vessel_like_components` and
-    :func:`smooth_vessel_surfaces`, also decides whether ``raw`` itself (a
-    full-volume boolean copy, kept alive for the rest of the run rather
-    than released here) is disk-backed. The caller owns its backing file
-    the same way it would own a plain array's memory. *memmap_directory* is
-    forwarded to :func:`new_memmap_array` and to each of those three
-    functions in turn.
+    :func:`reconnect_vessel_like_components`, :func:`smooth_vessel_surfaces`
+    and :func:`remove_small_segmented_volumes`, also decides whether ``raw``
+    itself (a full-volume boolean copy, kept alive for the rest of the run
+    rather than released here) is disk-backed. The caller owns its backing
+    file the same way it would own a plain array's memory.
+    *memmap_directory* is forwarded to :func:`new_memmap_array` and to each
+    of those four functions in turn.
     """
     if not (
         fill_cavities
@@ -1072,6 +1080,10 @@ def clean_segmented_mask_for_skeletonisation(
         )
     if remove_small_volumes:
         cleaned = remove_small_segmented_volumes(
-            cleaned, voxel_size_zyx=voxel_size_zyx, min_volume_um3=remove_small_min_volume_um3
+            cleaned,
+            voxel_size_zyx=voxel_size_zyx,
+            min_volume_um3=remove_small_min_volume_um3,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
     return cleaned.astype(bool, copy=False), raw
