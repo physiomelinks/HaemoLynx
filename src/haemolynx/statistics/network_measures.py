@@ -259,3 +259,67 @@ def compute_betweenness_and_community_measurements(
         "edge_length": edge_length_results,
         "edge_flow_abs": edge_flow_results,
     }
+
+
+def compute_flow_hierarchy(
+    G: Union[nx.Graph, nx.MultiGraph],
+    *,
+    signed_flow_attr: str = "flow_signed",
+) -> Dict[str, Any]:
+    """How tree-like (vs. how anastomotic/looped) the solved flow makes this
+    network.
+
+    Orients every edge with a determinate solved flow the way that flow
+    actually moves (u->v for positive ``flow_signed``, v->u for negative),
+    then reports ``nx.flow_hierarchy``: the fraction of directed edges that
+    do *not* sit on a directed cycle. 1.0 means the flow itself never
+    recirculates through any loop -- every anastomosis this network's
+    topology has is still resolved into a one-way street once you look at
+    which way blood is actually moving through it, i.e. this graph carries
+    flow like a tree even though :func:`~haemolynx.statistics.topology.compute_cyclomatic_number`
+    may say the topology has loops. A lower value means flow genuinely
+    recirculates through at least one loop -- physically impossible for a
+    resistive network at steady state, so a low reading past rounding noise
+    is worth checking as a modelling artefact (e.g. two boundary conditions
+    fighting each other) rather than a real anatomical finding.
+
+    An edge with no determinate flow (missing/zero/non-finite
+    ``flow_signed`` -- dead after a large-vessel cut, or haemodynamics never
+    solved) is left out of the directed graph entirely, the same way a
+    missing resistance or length drops an edge from the weighted
+    betweenness/community models above; how many were dropped is reported
+    alongside so a high hierarchy reading is not silently inflated by
+    ignoring exactly the edges most likely to have an ambiguous direction.
+    """
+    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
+    directed = nx.MultiDiGraph()
+    directed.add_nodes_from(G.nodes())
+    edge_iter = (
+        G.edges(keys=True, data=True)
+        if is_mg
+        else ((u, v, 0, data) for u, v, data in G.edges(data=True))
+    )
+    skipped = 0
+    for u, v, _key, data in edge_iter:
+        flow_val = data.get(signed_flow_attr)
+        try:
+            flow_float = float(flow_val) if flow_val is not None else float("nan")
+        except (TypeError, ValueError):
+            flow_float = float("nan")
+        if not np.isfinite(flow_float) or flow_float == 0.0:
+            skipped += 1
+            continue
+        if flow_float > 0.0:
+            directed.add_edge(u, v)
+        else:
+            directed.add_edge(v, u)
+
+    if directed.number_of_edges() == 0:
+        return {
+            "Flow Hierarchy": "N/A (no solved flow)",
+            "Flow Hierarchy Edges Skipped": skipped,
+        }
+    return {
+        "Flow Hierarchy": float(nx.flow_hierarchy(directed)),
+        "Flow Hierarchy Edges Skipped": skipped,
+    }

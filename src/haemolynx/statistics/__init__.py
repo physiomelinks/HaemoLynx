@@ -10,6 +10,7 @@ from .comprehensive import STATISTIC_MEASURES, compute_comprehensive_vessel_stat
 from .csv_export import export_statistics_to_csv
 from .network_measures import (
     compute_betweenness_and_community_measurements,
+    compute_flow_hierarchy,
     compute_weighted_betweenness_summary,
     compute_weighted_communities_summary,
 )
@@ -23,7 +24,11 @@ from .shape import (
 from .topology import (
     compute_basic_statistics,
     compute_branching_statistics,
+    compute_cyclomatic_number,
+    compute_degree_assortativity,
+    compute_k_core_structure,
     compute_network_robustness,
+    compute_rich_club_coefficient,
     compute_tree_asymmetry,
 )
 
@@ -49,6 +54,11 @@ __all__ = [
     "compute_intercapillary_distance",
     "compute_murray_law_compliance",
     "compute_network_robustness",
+    "compute_cyclomatic_number",
+    "compute_degree_assortativity",
+    "compute_rich_club_coefficient",
+    "compute_k_core_structure",
+    "compute_flow_hierarchy",
     "export_branch_order_statistics_to_csv",
     "run_3d_measurement_to_cell_mask",
 ]

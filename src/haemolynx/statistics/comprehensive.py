@@ -13,6 +13,7 @@ from .network_measures import (
     compute_betweenness_summary,
     compute_communities,
     compute_communities_summary,
+    compute_flow_hierarchy,
 )
 from .shape import (
     compute_fractal_dimension,
@@ -24,7 +25,11 @@ from .shape import (
 from .topology import (
     compute_basic_statistics,
     compute_branching_statistics,
+    compute_cyclomatic_number,
+    compute_degree_assortativity,
+    compute_k_core_structure,
     compute_network_robustness,
+    compute_rich_club_coefficient,
     compute_tree_asymmetry,
 )
 
@@ -43,6 +48,11 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "daughter_angles",
     "intercapillary_distance",
     "network_robustness",
+    "cyclomatic_number",
+    "degree_assortativity",
+    "rich_club",
+    "k_core",
+    "flow_hierarchy",
     "path_efficiency",
     "community",
     "betweenness",
@@ -56,6 +66,8 @@ def compute_comprehensive_vessel_statistics(
     image_dimensions=None,
     statistics_mode: str = "fast",
     enabled_measures: Optional[frozenset] = None,
+    inlet_nodes: Optional[Any] = None,
+    outlet_nodes: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Combine all vessel statistics.
 
@@ -67,6 +79,11 @@ def compute_comprehensive_vessel_statistics(
     to actually compute -- everything else is skipped. ``None`` (the default)
     means every measure runs, matching this function's behaviour before this
     parameter existed.
+
+    *inlet_nodes*/*outlet_nodes*, when both given, let "network_robustness"
+    additionally classify which bridges/articulation points are perfusion-
+    critical (see :func:`~haemolynx.statistics.topology.compute_network_robustness`).
+    Omitted (the default), that measure reports exactly what it always has.
     """
     assert_no_forbidden_edge_attributes(G, context="vessel statistics")
     valid_modes = {"fast", "full"}
@@ -125,7 +142,22 @@ def compute_comprehensive_vessel_statistics(
         # The original G, not G_simple: a parallel edge between two
         # junctions is exactly the redundancy that keeps neither of that
         # pair a bridge, which G_simple's collapse would erase.
-        base.update(compute_network_robustness(G))
+        base.update(
+            compute_network_robustness(G, inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes)
+        )
+    if "cyclomatic_number" in enabled:
+        # The original G: a parallel edge is itself an independent loop
+        # that collapsing to G_simple would erase, same reasoning as
+        # network_robustness above.
+        base.update(compute_cyclomatic_number(G))
+    if "degree_assortativity" in enabled:
+        base.update(compute_degree_assortativity(G))
+    if "rich_club" in enabled:
+        base.update(compute_rich_club_coefficient(G))
+    if "k_core" in enabled:
+        base.update(compute_k_core_structure(G))
+    if "flow_hierarchy" in enabled:
+        base.update(compute_flow_hierarchy(G))
 
     if statistics_mode == "full":
         if "path_efficiency" in enabled:

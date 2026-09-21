@@ -508,8 +508,18 @@ statistics_and_measurements:
   statistics_daughter_angles: true
   # Typical spacing between neighbouring capillaries  [needs statistics]
   statistics_intercapillary_distance: true
-  # Bridge-edge and articulation-point counts -- how much of the network depends on a single connection  [needs statistics]
+  # Bridge-edge and articulation-point counts -- how much of the network depends on a single connection -- and, when inlet/outlet boundaries are known, which of them are perfusion-critical  [needs statistics]
   statistics_network_robustness: true
+  # Independent loop (anastomosis) count -- 0 means every vessel is a single point of failure for everything downstream of it  [needs statistics]
+  statistics_cyclomatic_number: true
+  # Whether high-degree junctions connect to other high-degree junctions (vascular trees are normally disassortative)  [needs statistics]
+  statistics_degree_assortativity: true
+  # Whether the highest-degree vessels/junctions preferentially interconnect, forming their own backbone  [needs statistics]
+  statistics_rich_club: true
+  # How onion-layered (redundant core plus peripheral shell) vs. purely tree-like the network is  [needs statistics]
+  statistics_k_core: true
+  # Fraction of the solved flow's own directed edges that do not sit on a directed (recirculating) loop  [needs statistics]
+  statistics_flow_hierarchy: true
   # How close shortest network paths are to straight-line distance, sampled (fast) or exact (full) per statistics_mode  [needs statistics]
   statistics_path_efficiency: true
   # Community/module detection over the network's topology, sampled (fast) or exact (full) per statistics_mode  [needs statistics]

@@ -22,6 +22,10 @@ from haemolynx.statistics import (
     compute_intercapillary_distance,
     compute_murray_law_compliance,
     compute_network_robustness,
+    compute_cyclomatic_number,
+    compute_degree_assortativity,
+    compute_rich_club_coefficient,
+    compute_k_core_structure,
     export_branch_order_statistics_to_csv,
 )
 
@@ -208,6 +212,11 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
     assert "Mean Intercapillary Distance (microns)" in s
     assert "Bridge Edge Count" in s
     assert "Articulation Point Count" in s
+    assert "Cyclomatic Number" in s
+    assert "Degree Assortativity" in s
+    assert "Rich Club Coefficient" in s
+    assert "Max Core Number" in s
+    assert "Flow Hierarchy" in s
 
 
 def test_enabled_measures_none_matches_every_measure_running(simple_graph):
@@ -256,6 +265,185 @@ def test_an_unknown_enabled_measure_name_is_rejected(simple_graph):
             simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
             enabled_measures=frozenset({"not_a_real_measure"}),
         )
+
+
+# --- compute_cyclomatic_number ------------------------------------------------
+
+
+def test_compute_cyclomatic_number_on_a_tree_is_zero(simple_graph):
+    s = compute_cyclomatic_number(simple_graph)
+    assert s["Cyclomatic Number"] == 0
+    assert s["Cyclomatic Number Per Node"] == 0.0
+
+
+def test_compute_cyclomatic_number_counts_a_loop():
+    G = nx.Graph()
+    G.add_edges_from([(0, 1), (1, 2), (2, 0)])
+    s = compute_cyclomatic_number(G)
+    assert s["Cyclomatic Number"] == 1
+
+
+def test_compute_cyclomatic_number_counts_parallel_edges_as_their_own_loop():
+    """Regression: a naive nx.Graph(G) collapse before counting would merge
+    two parallel vessels between the same junctions into one edge and erase
+    the loop they form -- the cyclomatic number must be computed on the
+    MultiGraph directly."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1)
+    G.add_edge(0, 1)  # a second, parallel vessel between the same junctions
+    s = compute_cyclomatic_number(G)
+    assert s["Cyclomatic Number"] == 1
+
+
+def test_compute_cyclomatic_number_on_an_empty_graph_does_not_raise():
+    s = compute_cyclomatic_number(nx.Graph())
+    assert s["Cyclomatic Number"] == 0
+    assert s["Cyclomatic Number Per Node"] == "N/A (no nodes)"
+
+
+# --- compute_degree_assortativity ---------------------------------------------
+
+
+def test_compute_degree_assortativity_disassortative_star():
+    """A star (one hub, several leaves) is maximally disassortative."""
+    G = nx.star_graph(5)  # node 0 is the hub, degree 5; leaves are degree 1
+    s = compute_degree_assortativity(G)
+    assert s["Degree Assortativity"] < 0
+
+
+def test_compute_degree_assortativity_too_few_edges_is_na():
+    G = nx.Graph()
+    G.add_edge(0, 1)
+    assert compute_degree_assortativity(G) == {"Degree Assortativity": "N/A (fewer than 2 edges)"}
+
+
+def test_compute_degree_assortativity_no_variance_is_na():
+    """Every node the same degree (a cycle) has no degree variance to
+    correlate -- nx.degree_assortativity_coefficient returns NaN for this,
+    which must come back as a readable N/A, not a silent NaN in the report."""
+    G = nx.cycle_graph(4)
+    result = compute_degree_assortativity(G)
+    assert result["Degree Assortativity"] == "N/A (no degree variance)"
+
+
+# --- compute_rich_club_coefficient --------------------------------------------
+
+
+def test_compute_rich_club_coefficient_reports_the_tightest_tier():
+    G = nx.Graph()
+    G.add_edges_from([(0, 1), (1, 2), (1, 3), (3, 4), (4, 5), (3, 5)])
+    s = compute_rich_club_coefficient(G)
+    max_degree = max(dict(G.degree()).values())
+    assert s["Rich Club Coefficient Degree Threshold"] == max_degree - 1
+    assert 0.0 <= s["Rich Club Coefficient"] <= 1.0
+
+
+def test_compute_rich_club_coefficient_handles_a_multigraph():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1)
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+    s = compute_rich_club_coefficient(G)
+    assert s["Rich Club Coefficient"] != "N/A (no edges)"
+
+
+def test_compute_rich_club_coefficient_no_edges_is_na():
+    G = nx.Graph()
+    G.add_node(0)
+    assert compute_rich_club_coefficient(G) == {"Rich Club Coefficient": "N/A (no edges)"}
+
+
+# --- compute_k_core_structure -------------------------------------------------
+
+
+def test_compute_k_core_structure_a_triangle_plus_pendant():
+    """A fully-connected triangle (core number 2) with one pendant node
+    hanging off it (core number 1) -- the pendant should not water down the
+    innermost core's own size."""
+    G = nx.Graph()
+    G.add_edges_from([(0, 1), (1, 2), (2, 0), (2, 3)])
+    s = compute_k_core_structure(G)
+    assert s["Max Core Number"] == 2
+    assert s["Innermost Core Size"] == 3
+    assert s["Mean Core Number"] == pytest.approx((2 + 2 + 2 + 1) / 4)
+
+
+def test_compute_k_core_structure_empty_graph_does_not_raise():
+    s = compute_k_core_structure(nx.Graph())
+    assert s["Max Core Number"] == 0
+    assert s["Innermost Core Size"] == 0
+
+
+def test_compute_k_core_structure_handles_a_multigraph():
+    G = nx.MultiGraph()
+    G.add_edges_from([(0, 1), (1, 2), (2, 0)])
+    G.add_edge(0, 1)  # parallel edge -- must not raise on collapse to simple
+    s = compute_k_core_structure(G)
+    assert s["Max Core Number"] == 2
+
+
+# --- compute_network_robustness: perfusion-critical bridges/articulation -----
+
+
+def _dead_end_and_main_path_graph() -> nx.Graph:
+    """0 (inlet) -1- 1 -2- 2 (outlet), plus a dead-end spur 1-3 that leads
+    nowhere -- edges (0,1) and (1,2) are both bridges on the only
+    inlet-to-outlet path; edge (1,3) is a bridge to a spur that is neither
+    inlet nor outlet. Node 1 is the one articulation point, and it is
+    perfusion-critical (removing it separates 0 from 2)."""
+    G = nx.Graph()
+    G.add_edges_from([(0, 1), (1, 2), (1, 3)])
+    return G
+
+
+def test_compute_network_robustness_without_boundaries_is_unchanged():
+    """Backward compatibility: omitting inlet/outlet nodes must report
+    exactly the same keys as before this parameter existed."""
+    G = _dead_end_and_main_path_graph()
+    s = compute_network_robustness(G)
+    assert set(s) == {
+        "Bridge Edge Count", "Bridge Edge Fraction",
+        "Articulation Point Count", "Articulation Point Fraction",
+    }
+    assert s["Bridge Edge Count"] == 3
+    assert s["Articulation Point Count"] == 1
+
+
+def test_compute_network_robustness_flags_only_the_perfusion_path_bridges_as_critical():
+    G = _dead_end_and_main_path_graph()
+    s = compute_network_robustness(G, inlet_nodes=[0], outlet_nodes=[2])
+    assert s["Critical Bridge Edge Count"] == 2  # (0,1) and (1,2), not the (1,3) spur
+    assert s["Critical Bridge Edge Fraction"] == pytest.approx(2 / 3)
+
+
+def test_compute_network_robustness_flags_the_articulation_point_between_inlet_and_outlet():
+    G = _dead_end_and_main_path_graph()
+    s = compute_network_robustness(G, inlet_nodes=[0], outlet_nodes=[2])
+    assert s["Critical Articulation Point Count"] == 1
+    assert s["Critical Articulation Point Fraction"] == 1.0
+
+
+def test_compute_network_robustness_a_bridge_off_the_perfusion_path_is_not_critical():
+    """A dead-end spur bridging off a node that is itself neither inlet nor
+    outlet, and not on the only path between them, must not be flagged."""
+    G = nx.Graph()
+    G.add_edges_from([(0, 1), (1, 2), (2, 3)])  # 0=inlet ... 2=outlet, 2-3 is a spur
+    s = compute_network_robustness(G, inlet_nodes=[0], outlet_nodes=[2])
+    assert s["Critical Bridge Edge Count"] == 2  # (0,1) and (1,2)
+    assert s["Bridge Edge Count"] == 3  # (0,1), (1,2), (2,3)
+
+
+def test_compute_network_robustness_ignores_boundaries_when_only_one_side_given():
+    G = _dead_end_and_main_path_graph()
+    s = compute_network_robustness(G, inlet_nodes=[0], outlet_nodes=[])
+    assert "Critical Bridge Edge Count" not in s
+
+
+def test_compute_network_robustness_no_bridges_reports_na_for_critical_fraction():
+    G = nx.cycle_graph(4)  # no bridges at all
+    s = compute_network_robustness(G, inlet_nodes=[0], outlet_nodes=[2])
+    assert s["Bridge Edge Count"] == 0
+    assert s["Critical Bridge Edge Fraction"] == "N/A (no bridges)"
 
 
 def test_community_and_betweenness_measures_are_independently_toggleable(simple_graph):

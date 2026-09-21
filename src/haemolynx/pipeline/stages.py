@@ -2912,6 +2912,8 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             voxel_size=voxel_size_zyx,
             statistics_mode=settings["statistics_mode"],
             enabled_measures=enabled_measures,
+            inlet_nodes=settings["inlet_nodes"],
+            outlet_nodes=settings["outlet_nodes"],
         )
 
         logger.info("=== Statistics ===")

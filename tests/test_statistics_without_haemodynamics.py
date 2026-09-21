@@ -162,6 +162,34 @@ def test_the_edge_length_report_matches_calling_the_functions_directly(tmp_path)
     assert length["Communities"]["Community Count"] == expected_communities["Community Count"]
 
 
+def test_the_statistics_csv_includes_the_new_topology_measures(tmp_path):
+    _export_with_haemodynamics_off(tmp_path)
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    for label in (
+        "Cyclomatic Number",
+        "Degree Assortativity",
+        "Rich Club Coefficient",
+        "Max Core Number",
+        "Flow Hierarchy",
+    ):
+        assert label in csv_text
+
+
+def test_export_results_passes_inlet_outlet_nodes_to_network_robustness(tmp_path):
+    """Regression: export_results must forward settings["inlet_nodes"]/
+    ["outlet_nodes"] (already resolved to concrete node IDs by
+    assign_boundaries earlier in the pipeline) to compute_comprehensive_
+    vessel_statistics, so network_robustness's perfusion-critical bridge/
+    articulation-point classification actually runs on a real pipeline
+    settings dict, not just when called directly."""
+    _export_with_haemodynamics_off(
+        tmp_path, inlet_nodes=[0], outlet_nodes=[2],
+    )
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    assert "Critical Bridge Edge Count" in csv_text
+    assert "Critical Articulation Point Count" in csv_text
+
+
 def test_compute_vascular_communities_off_by_default_leaves_the_graph_untouched(tmp_path):
     G = _export_with_haemodynamics_off(tmp_path)
     assert all("vascular_community" not in data for _u, _v, data in G.edges(data=True))

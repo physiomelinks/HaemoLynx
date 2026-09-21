@@ -165,3 +165,85 @@ def test_compute_betweenness_and_community_measurements_reuses_precomputed_commu
     assert "resistance" not in calls  # reused, not recomputed
     assert set(calls) == {"length", "flow"}  # the other two still compute normally
     assert reused["edge_resistance"]["Communities"] == baseline["edge_resistance"]["Communities"]
+
+
+# --- compute_flow_hierarchy ---------------------------------------------------
+
+
+def test_flow_hierarchy_pure_tree_flow_is_one():
+    """A branching tree with flow moving strictly root-to-leaves has no
+    directed cycle at all -- every edge counts, hierarchy is exactly 1.0."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, flow_signed=2.0, flow_abs=2.0)
+    G.add_edge(1, 2, flow_signed=1.0, flow_abs=1.0)
+    G.add_edge(1, 3, flow_signed=1.0, flow_abs=1.0)
+    s = st.compute_flow_hierarchy(G)
+    assert s["Flow Hierarchy"] == pytest.approx(1.0)
+    assert s["Flow Hierarchy Edges Skipped"] == 0
+
+
+def test_flow_hierarchy_negative_signed_flow_reverses_the_edge_direction():
+    """A negative flow_signed must reverse that edge relative to a positive
+    one -- confirms direction, not just magnitude, drives the directed
+    graph flow_hierarchy is computed from. 0<-1->2->0 (1 is a source, not
+    part of the 2-node path) has no directed cycle."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+    G.add_edge(2, 0)
+    for u, v, key in list(G.edges(keys=True)):
+        if {u, v} == {0, 1}:
+            points_u_to_v = v == 0  # want 1 -> 0
+        elif {u, v} == {1, 2}:
+            points_u_to_v = v == 2  # want 1 -> 2
+        else:
+            points_u_to_v = v == 0  # want 2 -> 0
+        G[u][v][key]["flow_signed"] = 1.0 if points_u_to_v else -1.0
+        G[u][v][key]["flow_abs"] = 1.0
+
+    s = st.compute_flow_hierarchy(G)
+    assert s["Flow Hierarchy"] == pytest.approx(1.0)
+
+
+def test_flow_hierarchy_detects_a_genuine_flow_recirculation():
+    """A 3-node loop where every edge's solved flow points consistently
+    around the loop is a real directed cycle -- physically impossible at
+    steady state, but exactly what flow_hierarchy exists to catch.
+
+    flow_signed's sign means "u -> v" for whatever (u, v) G.edges() itself
+    reports -- which, for an undirected (Multi)Graph, is decided by
+    adjacency-dict order, not by the order add_edge(u, v) was called with.
+    So the sign for each edge below is picked from the graph's own reported
+    (u, v), not assumed from the add_edge calls, to actually build a cycle
+    rather than accidentally build a DAG that happens to look like one.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1)
+    G.add_edge(1, 2)
+    G.add_edge(2, 0)
+    cycle = {0: 1, 1: 2, 2: 0}  # the directed cycle this test wants: 0->1->2->0
+    for u, v, key in list(G.edges(keys=True)):
+        wants_u_to_v = cycle[u] == v
+        G[u][v][key]["flow_signed"] = 1.0 if wants_u_to_v else -1.0
+        G[u][v][key]["flow_abs"] = 1.0
+
+    s = st.compute_flow_hierarchy(G)
+    assert s["Flow Hierarchy"] == pytest.approx(0.0)
+
+
+def test_flow_hierarchy_skips_edges_with_no_determinate_flow():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, flow_signed=1.0, flow_abs=1.0)
+    G.add_edge(1, 2, flow_signed=0.0, flow_abs=0.0)  # no determinate direction
+    G.add_edge(2, 3)  # never solved at all
+    s = st.compute_flow_hierarchy(G)
+    assert s["Flow Hierarchy Edges Skipped"] == 2
+    assert s["Flow Hierarchy"] == pytest.approx(1.0)  # the one remaining edge
+
+
+def test_flow_hierarchy_no_solved_flow_at_all_is_na():
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=1.0)
+    s = st.compute_flow_hierarchy(G)
+    assert s["Flow Hierarchy"] == "N/A (no solved flow)"
+    assert s["Flow Hierarchy Edges Skipped"] == 1
