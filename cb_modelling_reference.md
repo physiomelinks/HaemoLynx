@@ -1320,19 +1320,20 @@ R &= \frac{128\,\mu_\text{app} L}{\pi d^{4}}
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
 | 1 | `set_poiseuille_resistances` writes R from the power law | $\mu = 1/d^{1.647}$ | Gives every edge a resistance with the right ordering cheaply, so the graph is solvable before any rheology runs | **On** | `poiseuille.py:160` |
-| 2 | Rheology solver **overwrites** R from Pries–Secomb at systemic Hct | H = 0.45, µ_plasma 1.2 cP, in vivo law | The power-law µ is not a viscosity in cP; physical magnitudes have to come from a real relation | **On**, before the loop | `rheology.py:196` |
-| 3 | Each Picard pass recomputes µ_app from the edge's current Hct | in vivo Pries–Secomb | Apparent viscosity depends on the local haematocrit, which the previous pass has just changed | **On** | `rheology.py:349` |
-| 4 | R **rescaled** as $\texttt{original\_resistance} \times \mu_\text{app} / \mu_\text{old}$ | $\mu_\text{old} = 1/d^{1.647}$ | Meant to preserve the geometric constriction profile rather than overwrite it with a straight-tube formula — see the defect below | **On** — see the warning below | `rheology.py:363` |
-| 5 | `original_resistance` captured once, on the first pass through step 4 | — | Freezing the base is what makes the rescale a pure viscosity update; here it freezes the wrong base | **On**, never updated after | `rheology.py:355` |
+| 2 | Rheology solver **overwrites** R from Pries–Secomb at systemic Hct | H = 0.45, µ_plasma 1.2 cP, in vivo law | The power-law µ is not a viscosity in cP; physical magnitudes have to come from a real relation | **On**, before the loop | `rheology.py:236` |
+| 3 | Each Picard pass recomputes µ_app from the edge's current Hct | in vivo Pries–Secomb | Apparent viscosity depends on the local haematocrit, which the previous pass has just changed | **On** | `rheology.py:390` |
+| 4 | R **recomputed** from Hagen–Poiseuille at the new µ_app | $R = 128\,\mu_\text{app} L / \pi d^{4}$ | The same expression as step 2, so initialisation and update agree. Until `7ea1b36` this step rescaled a stored base by $\mu_\text{app} / \mu_\text{old}$ — see closed item 12 below | **On** | `rheology.py:408` |
+| 5 | ~~`original_resistance` captured once~~ | — | Removed in `7ea1b36` with the rescale it served | **Removed** | — |
 
-> ⚠ **Open item 12 — step 4 double-applies viscosity, inflating every resistance by roughly
-> 200–540×.**
+> ⚠ **Item 12 — closed in code by `7ea1b36`; published numbers not yet re-derived.** Until that
+> commit step 4 double-applied viscosity, inflating every resistance by roughly 200–540×. The record
+> below is kept because every absolute flow in §7 and §13 was computed before the fix.
 >
-> The rescale is correct *if* `original_resistance` holds the power-law resistance, because
+> The rescale was correct *if* `original_resistance` holds the power-law resistance, because
 > $R_\text{old} \times \mu_\text{app}/\mu_\text{old}$ then telescopes to $128\,\mu_\text{app} L / (\pi d^{4})$. It does not. Step 2 overwrites
-> `data["resistance"]` with the **Pries–Secomb** value before the loop starts, and step 5 captures
+> `data["resistance"]` with the **Pries–Secomb** value before the loop starts, and step 5 captured
 > `original_resistance` from that overwritten value on the first pass. The power-law µ_old therefore
-> divides a resistance that no longer contains it, and the surviving factor is
+> divided a resistance that no longer contained it, and the surviving factor was
 > $\mu_\text{PS}(d, 0.45)\cdot d^{1.647}$:
 >
 > | d (µm) | $\mu_\text{PS}(d, 0.45)$ cP | $\mu_\text{old} = 1/d^{1.647}$ | Inflation factor |
@@ -1345,38 +1346,39 @@ R &= \frac{128\,\mu_\text{app} L}{\pi d^{4}}
 > | 12 | 5.95 | 0.0167 | **357×** |
 > | 20 | 3.88 | 0.0072 | **539×** |
 >
-> **It does not cancel from ratios.** The factor is a function of diameter, not a constant, so it
-> varies 1.3× across the capillary band (3–8 µm) and 2.3× across the full measured range. Wider
-> vessels are penalised hardest, which redistributes flow away from them. This is unlike the uniform
+> **It did not cancel from ratios.** The factor is a function of diameter, not a constant, so it
+> varied 1.3× across the capillary band (3–8 µm) and 2.3× across the full measured range. Wider
+> vessels were penalised hardest, which redistributed flow away from them. This is unlike the uniform
 > pressure and viscosity scalings of §4.4 and §8.1, which genuinely do cancel.
 >
-> **Iteration 0 is clean; every later iteration is not.** The first pressure solve runs on the
-> step-2 resistances, which are correct. The corruption enters at the end of iteration 0 and the
-> solver converges on the inflated values, so the returned graph carries them.
+> **Iteration 0 was clean; every later iteration was not.** The first pressure solve ran on the
+> step-2 resistances, which were correct. The corruption entered at the end of iteration 0, so the
+> returned graph carried the inflated values.
 >
 > **A candidate — not a demonstrated — explanation for §13.5.** Absolute perfusion there is 20–100×
 > low, and §13.5 computes that reaching 500 µm/s would need about 3,257 mmHg against the 40 mmHg
 > used: an implied excess resistance of roughly 81×. That is the same order as the factor above,
 > which sits near 230× at the median measured diameter of 6.37 µm. The two are not equal and the
 > comparison is loose — velocity is flow-weighted across a diameter distribution — so this is a
-> hypothesis to test by re-running with step 4 corrected, not a conclusion. **No H1 or H2 number in
+> hypothesis to test by re-running now that step 4 is corrected, not a conclusion. **No H1 or H2 number in
 > this document has been re-derived against it.**
 >
 > **Ratios and topology are unaffected in kind but not in value.** β₁, calibre, length and
 > tortuosity are all fixed before any resistance is computed (§2.4–§2.6). Anything downstream of
-> the flow solve — shunt ratio, transit time, PO₂ depletion, wall shear stress — is computed on the
-> inflated field.
+> the flow solve — shunt ratio, transit time, PO₂ depletion, wall shear stress — was computed on the
+> inflated field in every published run.
 
 **So the power law survives only if the rheology solve is not run.** When it is run, it is an
 initial condition that is replaced rather than blended — which is what §11 row 12 means by
-"relaxed by the rescaling step".
+"replaced by the per-pass Poiseuille recompute".
 
-> ⚠ **Open item 9 — the rheology solver falls back to 5.0 µm silently.** On initialisation it
-> reads `assigned_diameter_um`, then `fwhm_diameter_um`, then defaults to **5.0 µm** without
-> raising. A cached graph carrying no calibre therefore solves at a uniform 5 µm for every edge and
-> reports nothing. The H2 drivers work around this by loading diameters from
-> `per_edge_morphometry.csv` first. Contrast `map_vessels_to_grid`, which raises on a missing
-> diameter. The two should behave the same way.
+> **Item 9 — closed by `f92a96c`.** The rheology solver used to fall back to **5.0 µm** silently at
+> initialisation and at every update, so a cached graph carrying no calibre solved at a uniform
+> 5 µm and reported nothing. It now calls `_require_diameters` before initialising and raises
+> unless every edge has a positive `assigned_diameter_um` or `fwhm_diameter_um`, matching
+> `map_vessels_to_grid`. `default_diameter_um` opts in to a stated calibre at every step. The H2
+> drivers still load diameters from `per_edge_morphometry.csv` first, which is now required rather
+> than a workaround.
 
 ### 3.3 Variable-diameter segments · **Frozen**
 
@@ -1548,23 +1550,23 @@ flow. The loop closes it by Picard iteration:
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Every edge set to systemic haematocrit | H = 0.45 | The loop needs a starting haematocrit, and systemic is the only value known independently of the network | **On**, once | `rheology.py:236` |
-| 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | Gives the first pressure solve a physically scaled resistance rather than the power-law stand-in | **On**, once | `rheology.py:237` |
-| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um`, else **5.0 µm, silently**, at initialisation and update; else `None` at a Y-split | `default_diameter_um` used only at the Y-split | Resistance goes as $d^{-4}$, so a substituted calibre produces a fabricated flow field rather than an approximate one | **On** — ⚠ open item 9 still open: `_require_diameters` exists but is never called, and a `None` at a Y-split fails as a `TypeError` inside the logistic branch rather than a clear error | `rheology.py:232`, `:389`, `:359` |
-| 4 | Solve the Laplacian for nodal pressure (§3.4) | — | Flow cannot be known until pressures are, and pressures change as resistances do | **On**, every iteration | `rheology.py:280` |
-| 5 | Per-edge signed flow; direct high → low into a DAG | — | Phase separation is defined on a directed tree, so the flow directions have to be resolved first | **On**, every iteration | `rheology.py:294` |
-| 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | Stops the loop once further passes would not move the answer | **On**, from iteration 1; a pass that converges skips steps 7–15 | `rheology.py:312` |
-| 7 | Topological sort of the DAG | — | Haematocrit has to be propagated downstream in order, parent before child | **On**; a cycle breaks the loop with a warning | `rheology.py:321` |
-| 8 | Force systemic haematocrit at every inlet | H = 0.45 | The inlets are the one place where haematocrit is prescribed rather than inherited | **On** | `rheology.py:333` |
-| 9 | Node haematocrit = flow-weighted mix of inflows | — | A node fed by several vessels carries the flow-weighted mixture, not any one parent's value | **On** | `rheology.py:339` |
-| 10 | Degree-2 pass-through: child inherits the mix | — | With one outlet there is nothing to separate, so the child simply inherits | **On** | `rheology.py:347` |
-| 11 | Bifurcation: phase separation (§4.2) | — | Red cells do not divide in proportion to plasma at a bifurcation — this is the whole Fåhræus effect the model exists to capture | **On** | `rheology.py:355` |
-| 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | The Pries–Secomb relation is defined for a Y-split only, so higher-order junctions fall back to proportional mixing | **On** | `rheology.py:378` |
-| 13 | Recompute µ_app from the new haematocrit | in vivo law | Closes the loop: the new haematocrit changes viscosity, which changes resistance, which changes flow | **On** | `rheology.py:393` |
-| 14 | Recompute R from Hagen–Poiseuille at the new µ_app | $R = 128\mu_\text{app}L/\pi d^4$ | The same expression as step 2, so initialisation and update agree; replaced the $\mu_\text{app}/\mu_\text{old}$ rescale in `7ea1b36` | **On** | `rheology.py:411` |
-| 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | Shear stress is a per-edge diagnostic that depends on both the new viscosity and the current flow | **On** | `rheology.py:418` |
-| 16 | Repeat from step 4 | ≤ 15 iterations | Repeats until converged or capped, because the system is non-linear and one pass is not a solution | **On** | `rheology.py:249` |
-| 17 | Record why the loop stopped | `converged`, `flow_cycle` or `max_iterations` | A cycle or cap exit otherwise returns a graph indistinguishable from a converged one | **On**; written to `G.graph` with the pass count and last flow change. The driver warns on anything but `converged` and saves all three in the printed stats and the vessels VTK `field_data` | `rheology.py:427`, `carotid_image_to_model.py` |
+| 1 | Every edge set to systemic haematocrit | H = 0.45 | The loop needs a starting haematocrit, and systemic is the only value known independently of the network | **On**, once | `rheology.py:235` |
+| 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | Gives the first pressure solve a physically scaled resistance rather than the power-law stand-in | **On**, once | `rheology.py:236` |
+| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um`, else **raise** before initialising | `default_diameter_um` opt-in, used at every step | Resistance goes as $d^{-4}$, so a substituted calibre produces a fabricated flow field rather than an approximate one | **On** — item 9 closed by `f92a96c`; a zero or negative diameter is refused too | `rheology.py:229` |
+| 4 | Solve the Laplacian for nodal pressure (§3.4) | — | Flow cannot be known until pressures are, and pressures change as resistances do | **On**, every iteration | `rheology.py:279` |
+| 5 | Per-edge signed flow; direct high → low into a DAG | — | Phase separation is defined on a directed tree, so the flow directions have to be resolved first | **On**, every iteration | `rheology.py:293` |
+| 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | Stops the loop once further passes would not move the answer | **On**, from iteration 1; a pass that converges skips steps 7–15 | `rheology.py:311` |
+| 7 | Topological sort of the DAG | — | Haematocrit has to be propagated downstream in order, parent before child | **On**; a cycle breaks the loop with a warning | `rheology.py:320` |
+| 8 | Force systemic haematocrit at every inlet | H = 0.45 | The inlets are the one place where haematocrit is prescribed rather than inherited | **On** | `rheology.py:332` |
+| 9 | Node haematocrit = flow-weighted mix of inflows | — | A node fed by several vessels carries the flow-weighted mixture, not any one parent's value | **On** | `rheology.py:338` |
+| 10 | Degree-2 pass-through: child inherits the mix | — | With one outlet there is nothing to separate, so the child simply inherits | **On** | `rheology.py:346` |
+| 11 | Bifurcation: phase separation (§4.2) | — | Red cells do not divide in proportion to plasma at a bifurcation — this is the whole Fåhræus effect the model exists to capture | **On** | `rheology.py:354` |
+| 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | The Pries–Secomb relation is defined for a Y-split only, so higher-order junctions fall back to proportional mixing | **On** | `rheology.py:377` |
+| 13 | Recompute µ_app from the new haematocrit | in vivo law | Closes the loop: the new haematocrit changes viscosity, which changes resistance, which changes flow | **On** | `rheology.py:390` |
+| 14 | Recompute R from Hagen–Poiseuille at the new µ_app | $R = 128\mu_\text{app}L/\pi d^4$ | The same expression as step 2, so initialisation and update agree; replaced the $\mu_\text{app}/\mu_\text{old}$ rescale in `7ea1b36` | **On** | `rheology.py:408` |
+| 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | Shear stress is a per-edge diagnostic that depends on both the new viscosity and the current flow | **On** | `rheology.py:415` |
+| 16 | Repeat from step 4 | ≤ 15 iterations | Repeats until converged or capped, because the system is non-linear and one pass is not a solution | **On** | `rheology.py:248` |
+| 17 | Record why the loop stopped | `converged`, `flow_cycle` or `max_iterations` | A cycle or cap exit otherwise returns a graph indistinguishable from a converged one | **On**; written to `G.graph` with the pass count and last flow change. The driver warns on anything but `converged` and saves all three in the printed stats and the vessels VTK `field_data` | `rheology.py:424`, `carotid_image_to_model.py` |
 
 **What the numbered summary above does not say.**
 
@@ -1760,7 +1762,8 @@ carries discretisation error even though the total is conserved (§11 row 24).
 
 **It raises on a missing diameter.** Diameter feeds surface area and therefore every transvascular
 flux, so it is not substituted silently. Passing `default_diameter_um` is available and is a
-deliberate choice to model unmeasured vessels at a stated calibre. Contrast §3.2's open item 9.
+deliberate choice to model unmeasured vessels at a stated calibre. The rheology solver now does the
+same (§3.2, item 9).
 
 ### 6.3 The transport operator — diffusion plus per-cell exchange
 
@@ -2691,7 +2694,7 @@ the model would push it.
 | 9 | Steady state; no cardiac pulsatility | §3.4 | Removes cyclic wall-shear variation; mean flow largely unaffected |
 | 10 | No-slip at the vessel wall | §3.1 | Standard; negligible |
 | 11 | Plug flow; no radial intraluminal gradient | §6.6 | Transmural driving force slightly **overestimated** |
-| 12 | Newtonian fluid at initialisation | §4.3 | Biases initial resistances; largely relaxed by the resistance-rescaling step |
+| 12 | Newtonian fluid at initialisation | §4.3 | Biases initial resistances; replaced by the per-pass Poiseuille recompute (§4.3 step 14) |
 | 13 | Rheological correlations transferred from rat mesentery | §4.1–§4.2 | Transferability to carotid body microvasculature **unquantified** |
 | 14 | Phase separation occurs at binary bifurcations only | §4.2 | Higher-order divisions mix proportionally → haematocrit heterogeneity **underestimated** |
 | 15 | A systemic-scale pressure gradient falls across the imaged sub-volume | §8 | The config declares MAP-to-CVP, ~98 mmHg across roughly 1 mm, which **overestimates** perfusion pressure. The H2 drivers instead use 60→20 mmHg, arteriolar to venular, and every published H2 number used that. See open item 10 |
@@ -2813,8 +2816,8 @@ Stated as fact, not softened:
 - **Directionally only** — the apparent viscosity curve, the skimming output *value* (its mass
   conservation is exact; its magnitude is not checked against a target), and the Bohr and Haldane
   shifts.
-- **Transitively only, through integration tests rather than directly** — the resistance rescaling
-  rule, the branch-order diameter formulae, the default boundary permeability mode, and the
+- **Transitively only, through integration tests rather than directly** — the branch-order
+  diameter formulae, the default boundary permeability mode, and the
   numerical Hill inversion.
 - **Bracketed rather than to a tolerance** — the radial point source and the Krogh cylinder.
 
@@ -3258,10 +3261,10 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 6 | Solver tolerances disagree between config and code | Appendix A |
 | 7 | 13 parameters still marked `[CITE]`, including every blood-gas solubility and the Spencer CO₂ curve | §10 completeness |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |
-| ~~9~~ | **Closed.** The rheology solver raised a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. The same pass removed the least-squares pressure fallback and the extreme-decile boundary fallback | §3.2, §3.4, §2.8 |
+| ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback and the extreme-decile boundary fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
-| 12 | The rheology loop rescales resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contains $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently | §3.2, §4.3, and every absolute flow in §7, §13.5 |
+| ~~12~~ | **Closed in code** by `7ea1b36`. The rheology loop rescaled resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contained $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently. **Results not yet re-derived** | every absolute flow in §7, §13.5 |
 | 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
 | 14 | `crop_roi` rebuilds the centre from a fraction with two truncations, landing one voxel low when an axis has odd extent and the centre is above the midpoint. The CB drivers avoid it by slicing `RoiPlacement.bounds` directly, so no CB result is affected | §2.1; `carotid_image_to_model.py` and any caller using fractional offsets |
 | 15 | The threshold selector's “median diameter” is a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels. The 4–7 µm capillary window is an external target for the latter and is being applied to the former, which reads 0.63–1.00× as large | §2.2 step 3; the selected threshold, hence everything downstream |
@@ -3272,7 +3275,8 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
 config default drifts further. What is still open is the *decision*: which of the two values is
 right. That is a modelling judgement, not a refactor, and changing either one re-dates every
-number in §7 and §13. Item 12 is the only remaining item that is known to move a result.
+number in §7 and §13. Item 12's fix is known to move results, and every absolute flow in §7 and §13
+predates it; re-running them is the outstanding step.
 Item 16 moves one for two specimens, in a conservative direction. Item 13 would move one, but
 only by re-placing the ROIs and re-running everything, so it is a decision to take deliberately
 rather than a defect to patch.
