@@ -226,12 +226,11 @@ def solve_coupled_flow_and_hematocrit(
     from .resistance import build_conductance_matrix_from_graph, calc_laplacian_from_conductance_matrix, _solve_system_smart
     import logging
     logger = logging.getLogger(__name__)
+    _require_diameters(G, default_diameter_um)
     
     # Initialization: Assign baseline hematocrit and viscosity
     for u, v, key, data in G.edges(keys=True, data=True):
-        diameter = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
-        if diameter is None or diameter <= 0:
-            diameter = 5.0
+        diameter = _edge_diameter_um(data, default_diameter_um)
             
         data["hematocrit"] = systemic_hematocrit
         mu_app = calculate_pries_secomb_viscosity(diameter, systemic_hematocrit)
@@ -386,9 +385,7 @@ def solve_coupled_flow_and_hematocrit(
         for u, v, key, data in G.edges(keys=True, data=True):
             # The DAG data dictionary is a reference to the G data dictionary, so hematocrit is already updated
             h = data["hematocrit"]
-            d = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
-            if d is None or d <= 0:
-                d = 5.0
+            d = _edge_diameter_um(data, default_diameter_um)
                 
             mu_app = calculate_pries_secomb_viscosity(d, h)
             data["viscosity"] = mu_app

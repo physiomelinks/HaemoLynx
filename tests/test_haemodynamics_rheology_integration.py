@@ -790,3 +790,35 @@ def test_stop_reason_is_flow_cycle_when_the_dag_cannot_be_sorted(monkeypatch):
     assert solved.graph["rheology_iterations"] == 1
     assert solved.graph["rheology_max_flow_change"] is None
     assert final_pressure is not None
+
+
+def test_an_edge_without_a_diameter_is_refused_not_solved_at_five_microns():
+    """Open item 9: initialisation and update used to substitute 5.0 um silently."""
+    G = _bifurcation_graph()
+    del G[1][3][0]["fwhm_diameter_um"]
+
+    with pytest.raises(ValueError, match="1 of 3 edges have no usable diameter"):
+        solve_coupled_flow_and_hematocrit(
+            G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+
+def test_a_non_positive_diameter_is_refused_too():
+    G = _bifurcation_graph()
+    G[1][2][0]["fwhm_diameter_um"] = 0.0
+
+    with pytest.raises(ValueError, match="diameter"):
+        solve_coupled_flow_and_hematocrit(
+            G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+
+def test_default_diameter_is_the_stated_calibre_at_every_step():
+    """The opt-in default must reach initialisation and update, not only the Y-split."""
+    G = _bifurcation_graph()
+    del G[1][3][0]["fwhm_diameter_um"]
+
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        G, max_iterations=3, tolerance=1e-4, default_diameter_um=6.0, **_STOP_REASON_BCS)
+
+    data = solved[1][3][0]
+    expected = (128.0 * data["viscosity"] * data["length"]) / (np.pi * 6.0 ** 4)
+    assert data["resistance"] == pytest.approx(expected, rel=1e-12)
