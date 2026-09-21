@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .checks import _ILASTIK_VESSEL_MASK_PREREQUISITES
+
 #: HaemoLynx's own citation, always first: the pipeline that ran everything
 #: else below, not one more optional dependency.
 SOFTWARE_CITATION = (
@@ -40,27 +42,19 @@ class Citation:
 def _used_ilastik(settings: Mapping[str, Any]) -> bool:
     """Whether ilastik actually ran for this settings dict.
 
-    The large/small-vessel-mask flags each need their own two further
-    settings on too (see their ``requires`` in pipeline.schema) -- a flag
-    left on with an unmet prerequisite is exactly the "set but ineffective"
-    case the schema itself already warns about, and crediting ilastik for it
-    here would repeat that same mistake in the citation list.
+    The large/small-vessel-mask flags each need their own further settings on
+    too -- see :data:`~haemolynx.pipeline.checks._ILASTIK_VESSEL_MASK_PREREQUISITES`,
+    the one table both this function and ``check_ilastik_vessel_mask_prerequisites``
+    read, so a flag left on with an unmet prerequisite (the "set but
+    ineffective" case the schema itself already warns about) cannot credit
+    ilastik here without also failing preflight.
     """
     if settings.get("use_ilastik_segmentation"):
         return True
-    if (
-        settings.get("use_ilastik_large_vessel_segmentation")
-        and settings.get("use_large_vessel_masks")
-        and settings.get("automated_vessel_assignment")
-    ):
-        return True
-    if (
-        settings.get("use_ilastik_small_vessel_segmentation")
-        and settings.get("use_small_vessel_masks_for_boundary_assignment")
-        and settings.get("automated_vessel_assignment")
-    ):
-        return True
-    return False
+    return any(
+        settings.get(flag) and all(settings.get(name) for name in requires)
+        for flag, requires in _ILASTIK_VESSEL_MASK_PREREQUISITES.items()
+    )
 
 
 def _input_suffix(settings: Mapping[str, Any]) -> str:
