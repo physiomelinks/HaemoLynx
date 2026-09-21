@@ -1541,30 +1541,32 @@ flow. The loop closes it by Picard iteration:
 4. **Traverse** the DAG from inlets to outlets, applying §4.2 at every bifurcation to assign child
    haematocrits.
 5. **Update** viscosity and resistance from the new haematocrit distribution.
-6. **Repeat** until the maximum relative flow change falls below tolerance.
+6. **Repeat** until the maximum absolute flow change falls below tolerance, a flow cycle stops the
+   sort, or the iteration cap is reached.
 
 **The order of operations.**
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Every edge set to systemic haematocrit | H = 0.45 | The loop needs a starting haematocrit, and systemic is the only value known independently of the network | **On**, once | `rheology.py:195` |
-| 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | Gives the first pressure solve a physically scaled resistance rather than the power-law stand-in | **On**, once | `rheology.py:196` |
-| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um`, else **raise** | `default_diameter_um` opt-in | Resistance goes as $d^{-4}$, so a substituted calibre produces a fabricated flow field rather than an approximate one | **On** — the silent 5.0 µm fallback has been removed; open item 9 closed | `rheology.py:191` |
-| 4 | Solve the Laplacian for nodal pressure (§3.4) | — | Flow cannot be known until pressures are, and pressures change as resistances do | **On**, every iteration | `rheology.py:211` |
-| 5 | Per-edge signed flow; direct high → low into a DAG | — | Phase separation is defined on a directed tree, so the flow directions have to be resolved first | **On**, every iteration | `rheology.py:252` |
-| 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | Stops the loop once further passes would not move the answer | **On**, from iteration 1 | `rheology.py:268` |
-| 7 | Topological sort of the DAG | — | Haematocrit has to be propagated downstream in order, parent before child | **On**; a cycle breaks the loop with a warning | `rheology.py:278` |
-| 8 | Force systemic haematocrit at every inlet | H = 0.45 | The inlets are the one place where haematocrit is prescribed rather than inherited | **On** | `rheology.py:288` |
-| 9 | Node haematocrit = flow-weighted mix of inflows | — | A node fed by several vessels carries the flow-weighted mixture, not any one parent's value | **On** | `rheology.py:295` |
-| 10 | Degree-2 pass-through: child inherits the mix | — | With one outlet there is nothing to separate, so the child simply inherits | **On** | `rheology.py:303` |
-| 11 | Bifurcation: phase separation (§4.2) | — | Red cells do not divide in proportion to plasma at a bifurcation — this is the whole Fåhræus effect the model exists to capture | **On** | `rheology.py:319` |
-| 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | The Pries–Secomb relation is defined for a Y-split only, so higher-order junctions fall back to proportional mixing | **On** | `rheology.py:333` |
-| 13 | Recompute µ_app from the new haematocrit | in vivo law | Closes the loop: the new haematocrit changes viscosity, which changes resistance, which changes flow | **On** | `rheology.py:349` |
-| 14 | Rescale R by $\mu_\text{app} / \mu_\text{old}$ | $\mu_\text{old} = 1/d^{1.647}$ | Applies the new viscosity to the resistance — the step that carries the defect in open item 12 | **On** — ⚠ open item 12, §3.2 | `rheology.py:363` |
-| 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | Shear stress is a per-edge diagnostic that depends on both the new viscosity and the current flow | **On** | `rheology.py:371` |
-| 16 | Repeat from step 4 | ≤ 15 iterations | Repeats until converged or capped, because the system is non-linear and one pass is not a solution | **On** | `rheology.py:207` |
+| 1 | Every edge set to systemic haematocrit | H = 0.45 | The loop needs a starting haematocrit, and systemic is the only value known independently of the network | **On**, once | `rheology.py:236` |
+| 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | Gives the first pressure solve a physically scaled resistance rather than the power-law stand-in | **On**, once | `rheology.py:237` |
+| 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um`, else **5.0 µm, silently**, at initialisation and update; else `None` at a Y-split | `default_diameter_um` used only at the Y-split | Resistance goes as $d^{-4}$, so a substituted calibre produces a fabricated flow field rather than an approximate one | **On** — ⚠ open item 9 still open: `_require_diameters` exists but is never called, and a `None` at a Y-split fails as a `TypeError` inside the logistic branch rather than a clear error | `rheology.py:232`, `:389`, `:359` |
+| 4 | Solve the Laplacian for nodal pressure (§3.4) | — | Flow cannot be known until pressures are, and pressures change as resistances do | **On**, every iteration | `rheology.py:280` |
+| 5 | Per-edge signed flow; direct high → low into a DAG | — | Phase separation is defined on a directed tree, so the flow directions have to be resolved first | **On**, every iteration | `rheology.py:294` |
+| 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | Stops the loop once further passes would not move the answer | **On**, from iteration 1; a pass that converges skips steps 7–15 | `rheology.py:312` |
+| 7 | Topological sort of the DAG | — | Haematocrit has to be propagated downstream in order, parent before child | **On**; a cycle breaks the loop with a warning | `rheology.py:321` |
+| 8 | Force systemic haematocrit at every inlet | H = 0.45 | The inlets are the one place where haematocrit is prescribed rather than inherited | **On** | `rheology.py:333` |
+| 9 | Node haematocrit = flow-weighted mix of inflows | — | A node fed by several vessels carries the flow-weighted mixture, not any one parent's value | **On** | `rheology.py:339` |
+| 10 | Degree-2 pass-through: child inherits the mix | — | With one outlet there is nothing to separate, so the child simply inherits | **On** | `rheology.py:347` |
+| 11 | Bifurcation: phase separation (§4.2) | — | Red cells do not divide in proportion to plasma at a bifurcation — this is the whole Fåhræus effect the model exists to capture | **On** | `rheology.py:355` |
+| 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | The Pries–Secomb relation is defined for a Y-split only, so higher-order junctions fall back to proportional mixing | **On** | `rheology.py:378` |
+| 13 | Recompute µ_app from the new haematocrit | in vivo law | Closes the loop: the new haematocrit changes viscosity, which changes resistance, which changes flow | **On** | `rheology.py:393` |
+| 14 | Recompute R from Hagen–Poiseuille at the new µ_app | $R = 128\mu_\text{app}L/\pi d^4$ | The same expression as step 2, so initialisation and update agree; replaced the $\mu_\text{app}/\mu_\text{old}$ rescale in `7ea1b36` | **On** | `rheology.py:411` |
+| 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | Shear stress is a per-edge diagnostic that depends on both the new viscosity and the current flow | **On** | `rheology.py:418` |
+| 16 | Repeat from step 4 | ≤ 15 iterations | Repeats until converged or capped, because the system is non-linear and one pass is not a solution | **On** | `rheology.py:249` |
+| 17 | Record why the loop stopped | `converged`, `flow_cycle` or `max_iterations` | A cycle or cap exit otherwise returns a graph indistinguishable from a converged one | **On**; written to `G.graph` with the pass count and last flow change. The driver warns on anything but `converged` and saves all three in the printed stats and the vessels VTK `field_data` | `rheology.py:427`, `carotid_image_to_model.py` |
 
-**Three things the numbered summary above does not say.**
+**What the numbered summary above does not say.**
 
 **The convergence test is on an absolute flow difference, not a relative one.** Step 6 takes
 `max |Q_new − Q_old|` and compares it against 1e-4 — in the flow units of §3.7, not as a fraction.
@@ -1577,9 +1579,16 @@ therefore absent at every higher-order junction, and after the degree-2 collapse
 exactly the unresolved multi-way crossings.
 
 **The check runs before the update, so the loop always does at least two passes.** Step 6 is
-evaluated at the top of iteration 1 against iteration 0's flows. Since step 14 changes every
-resistance by two orders of magnitude between those two passes (open item 12), the iteration-1 test
-can never pass, and convergence is reached on the inflated resistances or not at all.
+evaluated after step 5 of iteration 1, against iteration 0's flows. When it passes, steps 7–15 of
+that pass are skipped, so the returned resistances, viscosities and wall shear stress are those of
+the previous pass.
+
+**An asymmetric Y-split does not converge.** On a single bifurcation with 8 µm and 4 µm daughters,
+the 4 µm branch alternates between haematocrit 0 and about 0.246, and its flow changes about
+tenfold, on successive passes. The swing does not decay under either unit scale tested, so the loop
+always ends on `max_iterations` and returns whichever half of the swing the last pass lands on. A
+symmetric Y converges on the second pass. Whether the full CB network converges is not yet checked;
+step 17's `rheology_stop_reason` on a real run answers it.
 
 Limits: 15 iterations, tolerance 10⁻⁴.
 
