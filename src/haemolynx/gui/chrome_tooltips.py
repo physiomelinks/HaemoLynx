@@ -53,6 +53,10 @@ EDIT_GRAPH_TOOLTIP = (
     "diameters, haemodynamics, perturbations, measurements and export up "
     "to the edit"
 )
+REOPEN_VIEW_TOOLTIP = (
+    "Reopen the HaemoLynx view panel (Z-depth, vessel draw mode, scale bar "
+    "and snapshot) if it has been closed; does nothing while it is already open"
+)
 SAVE_CONFIG_TOOLTIP = (
     "Write the current form values to a YAML config file; relative "
     "paths stay relative when saving beside the file they came from"

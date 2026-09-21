@@ -18,6 +18,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     SNAPSHOT_STEM,
     VIEW_DOCK_NAME,
     _apply_layers,
+    _float_dock_over_canvas,
     _scale_bar_overlay,
     _store_z_window_cache,
     data_for_pipeline,
@@ -25,6 +26,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     settings_widget,
     unique_snapshot_path,
 )
+from haemolynx.gui.chrome_tooltips import REOPEN_VIEW_TOOLTIP  # noqa: E402
 from haemolynx.gui.results import IMAGE, NODES, VESSEL_TUBES, VESSELS  # noqa: E402
 from test_gui_results_widget import a_run  # noqa: E402
 
@@ -116,6 +118,114 @@ def test_the_view_panel_floats_over_the_canvas(make_napari_viewer):
     assert button.objectName() == "haemolynx_snapshot_button"
     assert button.parentWidget() is snapshot
     assert snapshot.layout().indexOf(button) >= 0
+
+
+def test_the_floating_view_panel_is_tall_enough_that_snapshot_is_not_clipped(
+    make_napari_viewer,
+):
+    """Regression: a fresh widget's sizeHint() used to under-report, so
+    "Save snapshot" sat partly below the floating dock's own bottom edge."""
+    from qtpy.QtWidgets import QApplication
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    dock = panel._haemolynx_view_dock
+    QApplication.processEvents()
+
+    assert dock.height() >= 220
+
+    button = panel._haemolynx_snapshot_button
+    bottom_in_dock = button.mapTo(dock, button.rect().bottomLeft()).y()
+    assert bottom_in_dock <= dock.height(), (
+        "Save snapshot's own bottom edge falls outside the dock "
+        f"(button bottom={bottom_in_dock}, dock height={dock.height()})"
+    )
+
+
+def test_float_dock_over_canvas_pads_past_the_size_hint():
+    """The resize math itself, isolated from a real dock's own layout pass."""
+    from types import SimpleNamespace
+
+    class FakeSize:
+        def __init__(self, width, height):
+            self._width, self._height = width, height
+
+        def width(self):
+            return self._width
+
+        def height(self):
+            return self._height
+
+    class FakeInner:
+        def sizeHint(self):
+            return FakeSize(300, 150)
+
+    class FakeDock:
+        def __init__(self):
+            self.floated = False
+            self.resized = None
+
+        def setFloating(self, value):
+            self.floated = value
+
+        def widget(self):
+            return FakeInner()
+
+        def resize(self, width, height):
+            self.resized = (width, height)
+
+    dock = FakeDock()
+    viewer = SimpleNamespace(window=SimpleNamespace())
+    _float_dock_over_canvas(viewer, dock)
+
+    assert dock.floated is True
+    width, height = dock.resized
+    assert width == 300
+    assert height >= 150 + 24, "should pad past the hint, not just floor it"
+
+
+def test_the_view_button_sits_left_of_edit_and_has_a_tooltip(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    view_button = panel._haemolynx_view_button
+    edit_button = panel._haemolynx_edit_button
+
+    assert view_button.text == "View"
+    assert view_button.tooltip == REOPEN_VIEW_TOOLTIP
+    assert view_button.enabled
+
+    row = panel._haemolynx_run_file_row
+    layout = row.layout()
+    assert layout.indexOf(view_button.native) < layout.indexOf(edit_button.native)
+
+
+def test_the_view_button_is_disabled_with_no_viewer():
+    panel = settings_widget(napari_viewer=None)
+    assert panel._haemolynx_view_dock is None
+    assert not panel._haemolynx_view_button.enabled
+
+
+def test_reopening_an_already_open_view_panel_is_a_no_op(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    dock = panel._haemolynx_view_dock
+    assert dock.isVisible()
+
+    panel._haemolynx_reopen_view()
+
+    assert dock.isVisible()
+
+
+def test_the_view_button_reopens_a_closed_view_panel(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    dock = panel._haemolynx_view_dock
+    dock.hide()
+    assert not dock.isVisible()
+
+    panel._haemolynx_view_button.native.click()
+
+    assert dock.isVisible()
 
 
 def test_the_view_panel_is_not_on_the_right_settings_column(make_napari_viewer):

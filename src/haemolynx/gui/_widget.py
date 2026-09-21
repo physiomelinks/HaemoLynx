@@ -214,7 +214,10 @@ def _float_dock_over_canvas(viewer, dock) -> None:
     inner = dock.widget() if callable(getattr(dock, "widget", None)) else None
     hint = inner.sizeHint() if inner is not None else dock.sizeHint()
     try:
-        dock.resize(max(int(hint.width()), 280), max(int(hint.height()), 80))
+        # A fresh widget's sizeHint() tends to under-report before Qt has
+        # laid it out for real, which used to clip "Save snapshot" at the
+        # bottom of the panel -- pad past the hint rather than trust it exactly.
+        dock.resize(max(int(hint.width()), 280), max(int(hint.height()) + 24, 220))
     except Exception:  # noqa: BLE001
         logger.debug("could not size floating dock", exc_info=True)
 
@@ -238,6 +241,26 @@ def _create_widget(**kwargs):
     from magicgui.widgets import create_widget
 
     return create_widget(**kwargs)
+
+
+def _safe_widget_value(widget) -> Any:
+    """A row's raw value, treating unparsable literal text as an empty box.
+
+    `LiteralEvalLineEdit` (the widget behind the ``int_list``/``float_list``/
+    ``mapping``/``any`` kinds) evaluates its text as a Python literal on
+    every read of ``.value``. Text that is not a complete literal -- most
+    often a box a user has cleared by hand, but equally every keystroke of
+    typing one out (``[1, 2,`` is a `SyntaxError` mid-edit) -- raises there
+    instead of returning. `current_values()` reads every row's `.value` in
+    one dict comprehension whenever *any* row changes, so one such widget
+    breaks prerequisite handling for the whole panel until its text becomes
+    valid again. Treat that the same way `Field.to_setting_value` already
+    treats an empty string: unset, not a crash.
+    """
+    try:
+        return widget.value
+    except (SyntaxError, ValueError):
+        return ""
 
 
 def _export_dir(values: dict[str, Any]) -> Path:
@@ -283,6 +306,30 @@ def unique_snapshot_path(
         if not candidate.exists():
             return candidate
         n += 1
+
+
+def _grouped_by_section(
+    names: Sequence[str], fields: Mapping[str, Field]
+) -> list[tuple[str, list[str]]]:
+    """*names* split into consecutive runs sharing one section.
+
+    A tab whose `Stage` claims more than one schema section (only "8.
+    Additional measurements" does today, for "Statistics and measurements"
+    plus the nested "Connectivity/Network Analysis") sees each section as one
+    contiguous run here rather than interleaved, because
+    :func:`haemolynx.gui.form.fields_for` walks the schema in declaration
+    order and every section's settings are declared together. A tab with a
+    single section -- everywhere else -- comes back as one run, so callers
+    do not need to special-case it.
+    """
+    runs: list[tuple[str, list[str]]] = []
+    for name in names:
+        section = fields[name].section
+        if runs and runs[-1][0] == section:
+            runs[-1][1].append(name)
+        else:
+            runs.append((section, [name]))
+    return runs
 
 
 def _build_row(field: Field):
@@ -4812,7 +4859,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         return actions[str(role.value)].depth
 
     def current_values() -> dict[str, Any]:
-        return {name: fields[name].to_setting_value(widget.value)
+        return {name: fields[name].to_setting_value(_safe_widget_value(widget))
                 for name, widget in rows.items()}
 
     def write_rows(proposed: dict[str, Any]) -> None:
@@ -5618,7 +5665,7 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         if widget is None:
             return []
         return from_settings(
-            {LIST_SETTING: fields[LIST_SETTING].to_setting_value(widget.value)}
+            {LIST_SETTING: fields[LIST_SETTING].to_setting_value(_safe_widget_value(widget))}
         )
 
     def write_row() -> None:
@@ -6025,6 +6072,7 @@ def settings_widget(napari_viewer=None):
     )
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
+        QGroupBox,
         QHBoxLayout,
         QSizePolicy,
         QStackedWidget,
@@ -6144,10 +6192,35 @@ def settings_widget(napari_viewer=None):
             )
             native = diameters_settings.native
         else:
-            native = Container(
-                widgets=[summary, *(rows[name] for name in names)],
-                labels=True,
-            ).native
+            runs = _grouped_by_section(names, fields)
+            leading_section, leading_names = runs[0] if runs else ("", [])
+            page_stack = QWidget()
+            page_stack_layout = QVBoxLayout(page_stack)
+            page_stack_layout.setContentsMargins(0, 0, 0, 0)
+            page_stack_layout.addWidget(
+                Container(
+                    widgets=[summary, *(rows[name] for name in leading_names)],
+                    labels=True,
+                ).native
+            )
+            # A later section on the same tab is a nested checkbox's own
+            # children (e.g. "Connectivity/Network Analysis" under
+            # "Statistics and measurements") -- boxed so it reads as a
+            # distinct, nested group rather than a continuation of the
+            # leading section's flat list.
+            for section, section_names in runs[1:]:
+                group = QGroupBox(section)
+                slug = section.lower().replace(" ", "_").replace("/", "_")
+                group.setObjectName(f"haemolynx_section_{slug}")
+                group_layout = QVBoxLayout(group)
+                group_layout.addWidget(
+                    Container(
+                        widgets=[rows[name] for name in section_names],
+                        labels=True,
+                    ).native
+                )
+                page_stack_layout.addWidget(group)
+            native = page_stack
         # A bounded QScrollArea rather than `Container(scrollable=True)`: the
         # magicgui one reports the full height of its contents, so a tab with
         # 39 rows stretches the whole napari window instead of scrolling.
@@ -6225,7 +6298,7 @@ def settings_widget(napari_viewer=None):
         it, because then the absolute path is what the user chose.
         """
         values = {
-            name: fields[name].to_setting_value(widget.value)
+            name: fields[name].to_setting_value(_safe_widget_value(widget))
             for name, widget in rows.items()
         }
         for name, original in loaded_paths.items():
@@ -6718,6 +6791,7 @@ def settings_widget(napari_viewer=None):
     choose_groups_checkbox.changed.connect(_toggle_group_checkboxes)
 
     load_button = PushButton(text="Load config...")
+    view_button = PushButton(text="View")
     edit_button = PushButton(text="Edit")
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
@@ -6731,6 +6805,7 @@ def settings_widget(napari_viewer=None):
         EDIT_GRAPH_TOOLTIP,
         LOAD_CONFIG_TOOLTIP,
         LOAD_RUN_TOOLTIP,
+        REOPEN_VIEW_TOOLTIP,
         RUN_CHECKS_TOOLTIP,
         RUN_PIPELINE_TOOLTIP,
         SAVE_CONFIG_TOOLTIP,
@@ -6744,6 +6819,8 @@ def settings_widget(napari_viewer=None):
     )
 
     load_button.tooltip = LOAD_CONFIG_TOOLTIP
+    view_button.tooltip = REOPEN_VIEW_TOOLTIP
+    view_button.enabled = viewer is not None
     edit_button.tooltip = EDIT_GRAPH_TOOLTIP
     save_button.tooltip = SAVE_CONFIG_TOOLTIP
     check_button.tooltip = RUN_CHECKS_TOOLTIP
@@ -7740,6 +7817,7 @@ def settings_widget(napari_viewer=None):
     run_file_layout = QHBoxLayout(run_file_row)
     run_file_layout.setContentsMargins(0, 0, 0, 0)
     run_file_layout.addStretch(1)
+    run_file_layout.addWidget(view_button.native)
     run_file_layout.addWidget(edit_button.native)
     run_file_layout.addWidget(save_run_button.native)
     run_file_layout.addWidget(load_run_button.native)
@@ -7820,6 +7898,19 @@ def settings_widget(napari_viewer=None):
     else:
         view_panel.setVisible(False)
 
+    def on_reopen_view() -> None:
+        """Bring the view panel back after its own close button hid it.
+
+        A no-op while it is already open, so the button never steals focus
+        or re-floats a dock the user has deliberately moved or docked.
+        """
+        if view_dock is None or view_dock.isVisible():
+            return
+        view_dock.show()
+        _float_dock_over_canvas(viewer, view_dock)
+
+    view_button.changed.connect(lambda *_args: on_reopen_view())
+
     panel = QWidget()
     # What the panel would send to a run, and what a run would report back,
     # for a test that cannot press buttons and wait.
@@ -7847,6 +7938,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_vessel_draw_row = vessel_draw_row
     panel._haemolynx_view_panel = view_panel
     panel._haemolynx_view_dock = view_dock
+    panel._haemolynx_view_button = view_button
+    panel._haemolynx_reopen_view = on_reopen_view
     panel._haemolynx_scale_bar = scale_bar_box
     panel._haemolynx_display_group = display_group
     panel._haemolynx_snapshot_group = snapshot_group
