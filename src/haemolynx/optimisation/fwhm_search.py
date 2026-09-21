@@ -41,10 +41,9 @@ from .progress import (
     CANDIDATE_EVALUATED,
     GROUP_FINISHED,
     GROUP_STARTED,
-    OptimisationEvent,
     ProgressCallback,
 )
-from .search import OptimisationResult, TrialRecord
+from .search import OptimisationResult, _SweepBookkeeping
 
 #: The seven independently selectable groups this search runs, in the order
 #: :meth:`_FwhmSearch.run` runs them: exclusion and extent decide *which*
@@ -275,7 +274,7 @@ def estimate_sample_edge_count_for_time_budget(
     )
 
 
-class _FwhmSearch:
+class _FwhmSearch(_SweepBookkeeping):
     """Mutable state for one call to :func:`optimise_fwhm_settings`."""
 
     def __init__(
@@ -296,38 +295,12 @@ class _FwhmSearch:
         self.raw_volume = raw_volume
         self.voxel_size_zyx = voxel_size_zyx
         self.current: dict[str, Any] = dict(starting_values)
-        self.progress = progress
-        self.enabled_groups: Optional[frozenset[str]] = (
-            frozenset(enabled_groups) if enabled_groups is not None else None
+        super().__init__(
+            progress=progress,
+            enabled_groups=enabled_groups,
+            group_total=len(FWHM_GROUP_NAMES) * 4,
         )
-        self.groups_run: list[str] = []
-        self.trials: list[TrialRecord] = []
-        self._group_total: int = len(FWHM_GROUP_NAMES) * 4
         self.passes_run: int = 0
-        self._group_index = 0
-
-    # -- progress / bookkeeping -------------------------------------------------
-    def _emit(self, kind: str, group_name: str, **extra: Any) -> None:
-        if self.progress is None:
-            return
-        self.progress(
-            OptimisationEvent(
-                kind=kind,
-                group_index=self._group_index,
-                group_total=self._group_total,
-                group_name=group_name,
-                **extra,
-            )
-        )
-
-    def _record(self, group: str, setting: str, value: Any, score: float, note: str = "") -> None:
-        self.trials.append(TrialRecord(group=group, setting=setting, value=value, score=score, note=note))
-
-    def _group_enabled(self, name: str) -> bool:
-        enabled = self.enabled_groups is None or name in self.enabled_groups
-        if enabled:
-            self.groups_run.append(name)
-        return enabled
 
     # -- real-measurement trial helpers ------------------------------------------
     def _run_trial(self, overrides: Mapping[str, Any]) -> tuple[nx.MultiGraph, dict[str, Any]]:

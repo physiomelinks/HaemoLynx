@@ -232,3 +232,42 @@ def test_sample_edge_count_from_probe_seconds_zero_probe_time_uses_every_edge():
         probe_seconds=0.0, probe_edge_count=5, total_edges=42, target_seconds=180.0
     )
     assert result == 42
+
+
+def test_fwhm_search_shares_its_bookkeeping_base_class_with_search():
+    """Regression: _FwhmSearch used to copy-paste _emit/_record/_group_enabled
+    from search._Search verbatim instead of sharing them. Both now subclass
+    the same _SweepBookkeeping, so a future bookkeeping fix only needs to
+    land once."""
+    from haemolynx.optimisation.search import _Search, _SweepBookkeeping
+
+    assert issubclass(s._FwhmSearch, _SweepBookkeeping)
+    assert issubclass(_Search, _SweepBookkeeping)
+    for method in ("_emit", "_record", "_group_enabled"):
+        assert getattr(s._FwhmSearch, method) is getattr(_Search, method), (
+            f"{method} is no longer the shared _SweepBookkeeping implementation"
+        )
+
+
+def test_fwhm_search_group_enabled_and_emit_still_work_through_the_base_class():
+    graph = _multi_vessel_graph()
+    events = []
+    search = s._FwhmSearch(
+        graph,
+        raw_volume=_multi_vessel_raw_volume(),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        starting_values={},
+        progress=events.append,
+        enabled_groups=("exclusion_and_extent",),
+    )
+    assert search._group_enabled("exclusion_and_extent") is True
+    assert search._group_enabled("baseline_estimation") is False
+    assert search.groups_run == ["exclusion_and_extent"]
+
+    search._emit("group_started", "exclusion_and_extent")
+    assert len(events) == 1
+    assert events[0].group_name == "exclusion_and_extent"
+
+    search._record("exclusion_and_extent", "some_setting", 1.0, 0.5, note="ok")
+    assert len(search.trials) == 1
+    assert search.trials[0].setting == "some_setting"

@@ -495,7 +495,66 @@ def _raw_skeleton(
     return preprocessing.skeletonize_volume(mask)
 
 
-class _Search:
+class _SweepBookkeeping:
+    """Progress emission, trial recording, and group gating shared by every
+    sweep engine (:class:`_Search`, and
+    :class:`haemolynx.optimisation.fwhm_search._FwhmSearch`).
+
+    Deliberately narrow: only the bookkeeping that never depends on what a
+    "trial" or "group" actually runs. The convergence loop, the sweep
+    strategies, and what one trial measures differ enough between the two
+    searches (mask/graph preprocessing vs. FWHM measurement quality) that
+    sharing more than this would force one engine's shape onto the other's
+    real logic.
+    """
+
+    def __init__(
+        self,
+        *,
+        progress: Optional[ProgressCallback],
+        enabled_groups: Optional[Iterable[str]],
+        group_total: int,
+    ) -> None:
+        self.progress = progress
+        #: ``None`` means every group runs; otherwise only the named ones do
+        #: -- see :meth:`_group_enabled`.
+        self.enabled_groups: Optional[frozenset[str]] = (
+            frozenset(enabled_groups) if enabled_groups is not None else None
+        )
+        self.groups_run: list[str] = []
+        self.trials: list[TrialRecord] = []
+        #: Progress denominator -- see each subclass's own ``run``: scaled up
+        #: before a multi-pass run so a progress bar's fraction never exceeds
+        #: 1 just because convergence needed more than one pass through the
+        #: group sequence.
+        self._group_total: int = group_total
+        self._group_index = 0
+
+    def _group_enabled(self, name: str) -> bool:
+        enabled = self.enabled_groups is None or name in self.enabled_groups
+        if enabled:
+            self.groups_run.append(name)
+        return enabled
+
+    # -- progress / bookkeeping -------------------------------------------------
+    def _emit(self, kind: str, group_name: str, **extra: Any) -> None:
+        if self.progress is None:
+            return
+        self.progress(
+            OptimisationEvent(
+                kind=kind,
+                group_index=self._group_index,
+                group_total=self._group_total,
+                group_name=group_name,
+                **extra,
+            )
+        )
+
+    def _record(self, group: str, setting: str, value: Any, score: float, note: str = "") -> None:
+        self.trials.append(TrialRecord(group=group, setting=setting, value=value, score=score, note=note))
+
+
+class _Search(_SweepBookkeeping):
     """Mutable state for one call to :func:`optimise_skeleton_and_graph_settings`."""
 
     def __init__(
@@ -539,26 +598,17 @@ class _Search:
         # `optimisation` never imports `haemolynx.io`.
         self.voxel_size_zyx: tuple[float, float, float] = tuple(reversed(voxel_size_xyz))
         self.current: dict[str, Any] = dict(starting_values)
-        self.progress = progress
-        #: ``None`` means every group runs; otherwise only the named ones do
-        #: -- see :meth:`_group_enabled`.
-        self.enabled_groups: Optional[frozenset[str]] = (
-            frozenset(enabled_groups) if enabled_groups is not None else None
+        super().__init__(
+            progress=progress,
+            enabled_groups=enabled_groups,
+            group_total=_GROUP_TOTAL_UPPER_BOUND,
         )
-        self.groups_run: list[str] = []
-        self.trials: list[TrialRecord] = []
-        #: Progress denominator -- see :meth:`run`'s own ``max_passes``:
-        #: scaled up before a multi-pass run so a progress bar's fraction
-        #: never exceeds 1 just because convergence needed more than one
-        #: pass through the group sequence.
-        self._group_total: int = _GROUP_TOTAL_UPPER_BOUND
         #: How many passes :meth:`run` actually executed -- 1 unless
         #: ``max_passes`` > 1 and convergence took more than one pass.
         self.passes_run: int = 0
         self.raw_skeleton: np.ndarray = np.zeros_like(self.raw_mask)
         self.current_skeleton: np.ndarray = self.raw_skeleton
         self.current_graph = None
-        self._group_index = 0
         #: Set fresh at the top of `_group_closing_radius`/`_group_gap_bridging`
         #: (each group's own entering state) -- `_fusion_cost` is a shared
         #: method, not a sweep-local closure, so its own coverage-regression
@@ -611,29 +661,6 @@ class _Search:
             ridge_radii >= preprocessing.DEFAULT_TARGET_VOXELS_ACROSS_RADIUS * coarsest_voxel_um
         ]
         return float(np.median(reliable)) if reliable.size else float(np.median(ridge_radii))
-
-    def _group_enabled(self, name: str) -> bool:
-        enabled = self.enabled_groups is None or name in self.enabled_groups
-        if enabled:
-            self.groups_run.append(name)
-        return enabled
-
-    # -- progress / bookkeeping -------------------------------------------------
-    def _emit(self, kind: str, group_name: str, **extra: Any) -> None:
-        if self.progress is None:
-            return
-        self.progress(
-            OptimisationEvent(
-                kind=kind,
-                group_index=self._group_index,
-                group_total=self._group_total,
-                group_name=group_name,
-                **extra,
-            )
-        )
-
-    def _record(self, group: str, setting: str, value: Any, score: float, note: str = "") -> None:
-        self.trials.append(TrialRecord(group=group, setting=setting, value=value, score=score, note=note))
 
     def _sweep(self, group: str, setting: str, candidate_values: list, cost_fn) -> Any:
         """Try every candidate for one setting; keep the lowest-cost one.
