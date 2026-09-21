@@ -305,7 +305,6 @@ class _FwhmSearch:
         self._group_total: int = len(FWHM_GROUP_NAMES) * 4
         self.passes_run: int = 0
         self._group_index = 0
-        self._baseline_diameters_cache: Optional[np.ndarray] = None
 
     # -- progress / bookkeeping -------------------------------------------------
     def _emit(self, kind: str, group_name: str, **extra: Any) -> None:

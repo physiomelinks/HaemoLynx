@@ -18,6 +18,7 @@ the other way round, so this module has no dependency on ``statistics``.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Callable, Optional, Union
 
@@ -51,6 +52,19 @@ DEFAULT_MAX_NODES_EXACT = 1500
 #: An edge whose two endpoints fall in different communities gets this label
 #: instead of a domain id -- see :func:`assign_vascular_communities`.
 BOUNDARY_LABEL = "boundary"
+
+
+class DegenerateCommunityWeightingWarning(UserWarning):
+    """*weighting*'s source attribute is missing from every edge of a
+    non-empty graph, so the partition it produced is meaningless.
+
+    ``communities_for_weighting`` never raises for this -- an edge attribute
+    that is absent, ``None``, or non-positive on every edge (e.g.
+    ``"resistance"`` before haemodynamics has run) simply drops every edge
+    when building the weighted simple graph, leaving every node its own
+    singleton community. That looks like a normal result (a partition, not
+    an error) unless this warning names which weighting degenerated.
+    """
 
 
 def simple_graph_with_edge_attr(
@@ -140,6 +154,15 @@ def communities_for_weighting(
         )
         weight_kwargs = {"weight": "analysis_weight"}
         exact_method = "greedy_modularity_weighted"
+        if G.number_of_edges() > 0 and G_s.number_of_edges() == 0:
+            warnings.warn(
+                f"weighting={weighting!r} found no usable {source_attr!r} value on "
+                "any edge, so its community partition is every node as its own "
+                "singleton -- run haemodynamics first, or choose a weighting "
+                "whose source attribute is already populated.",
+                DegenerateCommunityWeightingWarning,
+                stacklevel=2,
+            )
 
     n_nodes = G_s.number_of_nodes()
     if n_nodes == 0:

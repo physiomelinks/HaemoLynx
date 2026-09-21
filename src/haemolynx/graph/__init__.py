@@ -66,6 +66,7 @@ from .branch_order import (
 from .communities import (
     BOUNDARY_LABEL,
     COMMUNITY_WEIGHTINGS,
+    DegenerateCommunityWeightingWarning,
     VascularCommunitySummary,
     assign_vascular_communities,
     communities_for_weighting,
@@ -192,6 +193,7 @@ __all__ = [
     "assign_vascular_communities",
     "communities_for_weighting",
     "simple_graph_with_edge_attr",
+    "DegenerateCommunityWeightingWarning",
     "MissingSmallVesselAssignmentWarning",
     "BoundaryCoordinateWarning",
     "select_boundary_terminal_nodes",

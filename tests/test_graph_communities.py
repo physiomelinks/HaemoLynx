@@ -1,6 +1,8 @@
 """Unit tests for haemolynx.graph.communities."""
 from __future__ import annotations
 
+import warnings
+
 import networkx as nx
 import pytest
 
@@ -90,13 +92,30 @@ def test_communities_for_weighting_empty_graph_returns_nothing():
 def test_communities_for_weighting_degenerates_gracefully_with_no_populated_attribute():
     """Regression: "resistance"/"flow" weighting before haemodynamics has
     run (no edge carries that attribute) must not raise -- it degenerates
-    to every node its own singleton community."""
+    to every node its own singleton community, with a warning naming why."""
     G = nx.Graph()
     G.add_edge(0, 1)
     G.add_edge(1, 2)
-    communities, method = gc.communities_for_weighting(G, "resistance")
+    with pytest.warns(gc.DegenerateCommunityWeightingWarning, match="resistance"):
+        communities, method = gc.communities_for_weighting(G, "resistance")
     assert method == "greedy_modularity_weighted"
     assert sorted(len(c) for c in communities) == [1, 1, 1]
+
+
+def test_communities_for_weighting_does_not_warn_when_the_attribute_is_populated():
+    G = _two_clusters_joined_by_one_bridge()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", gc.DegenerateCommunityWeightingWarning)
+        gc.communities_for_weighting(G, "resistance")
+
+
+def test_communities_for_weighting_topology_never_warns_on_an_edgeless_check():
+    """"topology" has no source attribute to degenerate on, so it must
+    never raise DegenerateCommunityWeightingWarning even for an empty graph."""
+    G = nx.Graph()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", gc.DegenerateCommunityWeightingWarning)
+        gc.communities_for_weighting(G, "topology")
 
 
 def test_communities_for_weighting_falls_back_to_connected_components_above_the_node_cap():
