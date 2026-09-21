@@ -213,6 +213,15 @@ def solve_coupled_flow_and_hematocrit(
     4. At every bifurcation, calculate plasma skimming (phase separation) to assign new hematocrit values to child edges.
     5. Update viscosities and resistances based on the new hematocrit distribution.
     6. Repeat until flow changes fall below tolerance.
+
+    Why the loop stopped is written to ``G.graph``, since a cycle or iteration-limit exit
+    otherwise returns a graph indistinguishable from a converged one:
+
+    - ``rheology_stop_reason``: ``"converged"``, ``"flow_cycle"`` (the flow directions could
+      not be sorted topologically) or ``"max_iterations"``.
+    - ``rheology_iterations``: number of pressure solves performed.
+    - ``rheology_max_flow_change``: last max absolute change in edge flow between passes, or
+      None if fewer than two passes ran.
     """
     from .resistance import build_conductance_matrix_from_graph, calc_laplacian_from_conductance_matrix, _solve_system_smart
     import logging
@@ -235,6 +244,7 @@ def solve_coupled_flow_and_hematocrit(
     max_flow_diff = float('inf')
     previous_flows = {}
     final_pressure = None
+    stop_reason = "max_iterations"
     
     while iteration < max_iterations and max_flow_diff > tolerance:
         logger.info(f"--- Flow-Hematocrit Iteration {iteration+1} ---")
@@ -301,6 +311,7 @@ def solve_coupled_flow_and_hematocrit(
             logger.info(f"  Max Flow Diff: {max_flow_diff:.6e}")
             if max_flow_diff <= tolerance:
                 logger.info("  -> Converged!")
+                stop_reason = "converged"
                 break
                 
         previous_flows = current_flows.copy()
@@ -310,6 +321,7 @@ def solve_coupled_flow_and_hematocrit(
             topological_order = list(nx.topological_sort(DAG))
         except nx.NetworkXUnfeasible:
             logger.warning("  Cycle detected in flow directions! Cannot topologically sort. Breaking iteration.")
+            stop_reason = "flow_cycle"
             break
             
         # Reset node incoming hematocrit accumulators
@@ -407,5 +419,13 @@ def solve_coupled_flow_and_hematocrit(
             data["wall_shear_stress_pa"] = wss_mPa / 1000.0
             
         iteration += 1
+
+    # A break leaves the pass that triggered it uncounted.
+    iterations = iteration if stop_reason == "max_iterations" else iteration + 1
+    if stop_reason == "max_iterations":
+        logger.warning(f"  Rheology did not converge within {max_iterations} iterations.")
+    G.graph["rheology_stop_reason"] = stop_reason
+    G.graph["rheology_iterations"] = iterations
+    G.graph["rheology_max_flow_change"] = None if np.isinf(max_flow_diff) else float(max_flow_diff)
 
     return G, final_pressure

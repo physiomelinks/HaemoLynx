@@ -716,3 +716,77 @@ def test_a_raised_allowance_lets_a_partial_fallback_through():
     check = results["diameter_provenance_check"]
     assert check["ok"] is True
     assert check["synthetic_fraction"] == pytest.approx(0.5)
+
+
+_STOP_REASON_BCS = dict(
+    starting_nodes=[0],
+    output_nodes=[2, 3],
+    input_p_bc=13.332e6,
+    output_p_bc=0.27e6,
+    systemic_hematocrit=0.45,
+)
+
+
+def test_stop_reason_is_converged_when_flows_settle():
+    """Equal daughters split red cells evenly, so the second pass reproduces the first.
+
+    ``_bifurcation_graph`` is not used here: its 4 um daughter alternates between two
+    haematocrit states on successive passes and never converges.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=40.0, fwhm_diameter_um=12.0)
+    G.add_edge(1, 2, key=0, length=25.0, fwhm_diameter_um=8.0)
+    G.add_edge(1, 3, key=0, length=25.0, fwhm_diameter_um=8.0)
+
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "converged"
+    assert solved.graph["rheology_iterations"] == 2
+    assert solved.graph["rheology_max_flow_change"] <= 1e-4
+
+
+def test_asymmetric_bifurcation_reports_that_it_did_not_converge():
+    """The oscillating case must not be reported as converged."""
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "max_iterations"
+    assert solved.graph["rheology_iterations"] == 15
+
+
+def test_stop_reason_is_max_iterations_when_the_limit_is_hit():
+    """A negative tolerance can never be met, so only the iteration limit can end the loop."""
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=3, tolerance=-1.0, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "max_iterations"
+    assert solved.graph["rheology_iterations"] == 3
+    assert solved.graph["rheology_max_flow_change"] >= 0.0
+
+
+def test_max_flow_change_is_none_after_a_single_pass():
+    """One pass has nothing to compare against, so no flow change was ever measured."""
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=1, tolerance=1e-4, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "max_iterations"
+    assert solved.graph["rheology_iterations"] == 1
+    assert solved.graph["rheology_max_flow_change"] is None
+
+
+def test_stop_reason_is_flow_cycle_when_the_dag_cannot_be_sorted(monkeypatch):
+    """A pressure solve cannot produce a cycle on this graph, so the sort is made to fail."""
+    import ImageLynx.haemodynamics.rheology as rheology
+
+    def raise_cycle(_graph):
+        raise nx.NetworkXUnfeasible("cycle")
+
+    monkeypatch.setattr(rheology.nx, "topological_sort", raise_cycle)
+    solved, final_pressure = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "flow_cycle"
+    assert solved.graph["rheology_iterations"] == 1
+    assert solved.graph["rheology_max_flow_change"] is None
+    assert final_pressure is not None

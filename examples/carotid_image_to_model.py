@@ -1267,6 +1267,16 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         max_iterations=hemo_config.rheology_max_iterations,
         tolerance=hemo_config.rheology_tolerance
     )
+    rheology_status = {
+        key: G.graph[key]
+        for key in ("rheology_stop_reason", "rheology_iterations", "rheology_max_flow_change")
+    }
+    if rheology_status["rheology_stop_reason"] != "converged":
+        print(
+            f"\nWARNING: rheology solve stopped on '{rheology_status['rheology_stop_reason']}' "
+            f"after {rheology_status['rheology_iterations']} iterations, not on convergence. "
+            "Flows, haematocrit and wall shear stress below come from an unconverged solve."
+        )
 
     node_positions = nx.get_node_attributes(G, "pos")
     # Calculate physical and topological statistics (e.g. total length, mean tortuosity, degree distribution)
@@ -1275,6 +1285,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         node_positions=node_positions,
         image_dimensions=image.shape,
     )
+    stats.update(rheology_status)
 
     print("\n=== Statistics ===")
     for key, value in stats.items():
@@ -1361,6 +1372,12 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     vessels.cell_data["viscosity"] = viscosity_array
     vessels.cell_data["wall_shear_stress_pa"] = wss_array
     vessels.cell_data["resistance"] = resistance_array
+    # Saved with the mesh so an unconverged solve can't be mistaken for a converged one later.
+    vessels.field_data["rheology_stop_reason"] = np.array([rheology_status["rheology_stop_reason"]])
+    vessels.field_data["rheology_iterations"] = np.array([rheology_status["rheology_iterations"]])
+    max_flow_change = rheology_status["rheology_max_flow_change"]
+    vessels.field_data["rheology_max_flow_change"] = np.array(
+        [np.nan if max_flow_change is None else max_flow_change])
     vessels.save(vtk_export['vessels_path'])
     
     print("Flow through the network solved and VTK updated with Rheology fields.")
