@@ -762,6 +762,23 @@ def test_edge_columns_includes_vascular_community_as_a_text_column():
     assert "vascular_community" in edge_columns_for_settings()
 
 
+def test_edge_columns_excludes_flow_dir_axis_components_when_colouring_is_off():
+    """Regression: flow_direction_colouring was declared but never read --
+    unchecking it had no effect on the declared columns. flow_dir_rgb/
+    flow_heading_deg are derived encodings, not "axis components", and stay."""
+    from haemolynx.gui.results import FLOW_DIR_COLUMNS, edge_columns_for_settings
+
+    with_colouring = edge_columns_for_settings({"flow_direction_colouring": True})
+    without_colouring = edge_columns_for_settings({"flow_direction_colouring": False})
+    default = edge_columns_for_settings()
+
+    assert FLOW_DIR_COLUMNS <= set(with_colouring)
+    assert FLOW_DIR_COLUMNS <= set(default)
+    assert FLOW_DIR_COLUMNS.isdisjoint(without_colouring)
+    assert "flow_dir_rgb" in without_colouring
+    assert "flow_heading_deg" in without_colouring
+
+
 # --- vascular community colouring (export_results) --------------------------
 
 

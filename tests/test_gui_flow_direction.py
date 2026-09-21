@@ -328,7 +328,7 @@ def test_flow_direction_colouring_includes_axis_components_when_enabled():
         flow_direction_colouring=True,
     )
     group = results.stage_finished("export_results", SimpleNamespace())
-    spec = group.layers[0]
+    spec = next(s for s in group.layers if s.name == FLOW_DIRECTION)
     assert "flow_dir_z" in spec.features
     assert "flow_dir_y" in spec.features
     assert "flow_dir_x" in spec.features
@@ -337,21 +337,30 @@ def test_flow_direction_colouring_includes_axis_components_when_enabled():
     np.testing.assert_allclose(spec.features["flow_dir_z"], [1.0], rtol=1e-5)
 
 
-def test_flow_direction_colouring_keeps_axis_components_when_disabled():
-    """Direction columns stay on the layer for the colour-by dropdown."""
+def test_flow_direction_colouring_excludes_axis_components_when_disabled():
+    """Regression: flow_direction_colouring was declared but never read
+    anywhere -- unchecking it had no effect. The raw axis components are now
+    excluded from the colour-by dropdown; the layer itself, flow_abs, and
+    the derived flow_dir_rgb/flow_heading_deg encodings stay regardless (see
+    the setting's own help text: only "axis components" are gated)."""
     graph = _two_node_edge(flow_signed=1.0)
     results = _built_with_flows(
         graph,
         flow_direction_colouring=False,
     )
     group = results.stage_finished("export_results", SimpleNamespace())
-    spec = group.layers[0]
-    assert "flow_dir_z" in spec.features
-    assert "flow_dir_y" in spec.features
-    assert "flow_dir_x" in spec.features
+    spec = next(s for s in group.layers if s.name == FLOW_DIRECTION)
+    assert "flow_dir_z" not in spec.features
+    assert "flow_dir_y" not in spec.features
+    assert "flow_dir_x" not in spec.features
     assert "flow_heading_deg" in spec.features
     assert "flow_dir_rgb" in spec.features
     assert "flow_abs" in spec.features
+
+    vessels_spec = next(s for s in group.layers if s.name == VESSELS)
+    assert "flow_dir_z" not in vessels_spec.features
+    assert "flow_dir_y" not in vessels_spec.features
+    assert "flow_dir_x" not in vessels_spec.features
 
 
 def test_flow_direction_colouring_schema_default_and_requires():

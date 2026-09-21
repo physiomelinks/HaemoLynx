@@ -451,16 +451,35 @@ FLOW_DERIVED_EDGE_COLUMNS: frozenset[str] = frozenset(
 def edge_columns_for_settings(
     settings: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Declared edge columns, including derived flow columns for colouring."""
+    """Declared edge columns, including derived flow columns for colouring.
+
+    ``flow_direction_colouring`` (default on) is the one setting this
+    actually reads: when off, the raw ``flow_dir_z``/``flow_dir_y``/
+    ``flow_dir_x`` axis components are dropped from the declared columns
+    entirely, so they never appear as a colour-by option on any layer --
+    not just left unfilled, since a declared-but-NaN column would still show
+    up in the dropdown (see this module's own notes on why every column is
+    declared up front). ``flow_dir_rgb``/``flow_heading_deg`` are derived,
+    composite encodings, not "axis components", and stay regardless.
+    """
     columns = dict(EDGE_COLUMNS)
     columns.update(OPTIONAL_EDGE_COLUMNS)
+    if settings is not None and not settings.get("flow_direction_colouring", True):
+        for name in FLOW_DIR_COLUMNS:
+            columns.pop(name, None)
     return columns
 
 
 def _enrich_flow_colour_columns(
-    columns: dict[str, np.ndarray], graph: Any
+    columns: dict[str, np.ndarray], graph: Any, *, include_axis_components: bool = True
 ) -> None:
-    """Add log10 and direction columns whenever the graph carries finite flows."""
+    """Add log10 and direction columns whenever the graph carries finite flows.
+
+    *include_axis_components* gates only the raw ``flow_dir_z``/``flow_dir_y``/
+    ``flow_dir_x`` columns (the ``flow_direction_colouring`` setting's own
+    "axis components" -- see its help text); ``flow_dir_rgb``/
+    ``flow_heading_deg`` are derived, composite encodings and always included.
+    """
     flow_abs = columns.get("flow_abs")
     if flow_abs is None:
         return
@@ -475,6 +494,8 @@ def _enrich_flow_colour_columns(
         dtype=float,
     )
     direction = edge_flow_direction_columns(graph)
+    if not include_axis_components:
+        direction = {k: v for k, v in direction.items() if k not in FLOW_DIR_COLUMNS}
     for name, array in direction.items():
         if len(array) == len(values):
             columns[name] = array
@@ -1095,7 +1116,10 @@ class ResultLayers:
         # happened to flow and pressure, written by the last stage, long after
         # the vessels layer was made.
         columns.update(edge_features(graph, edge_columns_for_settings(self.settings)))
-        _enrich_flow_colour_columns(columns, graph)
+        _enrich_flow_colour_columns(
+            columns, graph,
+            include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
+        )
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
@@ -1846,6 +1870,12 @@ class ResultLayers:
         vectors, features = flow_direction_vectors(graph)
         if len(vectors) == 0:
             return ()
+        if not self.settings.get("flow_direction_colouring", True):
+            # The layer itself is unconditional (see flow_direction_colouring's
+            # own help text) -- only the raw axis components are excluded from
+            # the colour-by dropdown; flow_dir_rgb/flow_heading_deg (derived,
+            # composite encodings, not "axis components") stay available.
+            features = {k: v for k, v in features.items() if k not in FLOW_DIR_COLUMNS}
         colour_by = (
             FLOW_DIR_RGB_COLUMN
             if FLOW_DIR_RGB_COLUMN in features
