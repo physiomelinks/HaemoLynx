@@ -70,6 +70,28 @@ def test_vascular_community_weighting_choices_match_the_graph_module():
     assert schema["compute_vascular_communities"].default is False
 
 
+def test_use_memmap_loading_defaults_off_and_lives_under_input_and_segmentation():
+    """An existing config/run must not change behaviour just from upgrading
+    -- the low-memory path is opt-in."""
+    schema = default_schema()
+    setting = schema["use_memmap_loading"]
+    assert setting.default is False
+    assert setting.kind == "bool"
+    assert setting.section == "Input and segmentation"
+    assert setting.requires == ()
+
+
+def test_memmap_directory_defaults_unset_and_requires_use_memmap_loading():
+    """An unset directory means 'use the OS temp directory' -- the setting
+    only matters once use_memmap_loading is actually on."""
+    schema = default_schema()
+    setting = schema["memmap_directory"]
+    assert setting.default is None
+    assert setting.kind == "path"
+    assert setting.section == "Input and segmentation"
+    assert setting.requires == ("use_memmap_loading",)
+
+
 def test_no_path_default_points_inside_the_examples_directory():
     """Library defaults describe the user's working directory, not this repo."""
     inside_repo = [

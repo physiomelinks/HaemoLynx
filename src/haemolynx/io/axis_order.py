@@ -66,9 +66,17 @@ def apply_axis_order(volume: np.ndarray, axis_order: str = CANONICAL_AXIS_ORDER)
     ``axis_order="zyx"`` is a no-op. Other orders return a contiguous copy so
     downstream skeletonization and distance transforms are not slowed by a
     non-contiguous view.
+
+    Uses ``asanyarray``, not ``asarray``, for the no-op case specifically so
+    it is a genuine no-op even for an ``ndarray`` subclass -- a
+    ``numpy.memmap`` loaded with ``use_memmap_loading`` would otherwise come
+    back demoted to a plain in-RAM-looking ``ndarray`` (same underlying
+    disk-backed buffer, since it is still a view rather than a copy, but the
+    wrong type for anything downstream that checks ``isinstance(x,
+    np.memmap)`` to decide whether it owns a backing file to release).
     """
     normalized = normalize_axis_order(axis_order)
-    arr = np.asarray(volume)
+    arr = np.asanyarray(volume)
     if normalized == CANONICAL_AXIS_ORDER:
         return arr
     if arr.ndim != 3:

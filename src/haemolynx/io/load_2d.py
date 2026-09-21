@@ -31,6 +31,7 @@ control for this.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 
@@ -46,8 +47,15 @@ def promote_2d_to_single_slice_volume(image: np.ndarray) -> tuple[np.ndarray, bo
     *image* is returned unchanged unless it is 2D, in which case it is
     reshaped to ``(1, *image.shape)`` -- a single-slice ``(z, y, x)``
     volume with ``z=1``, the shape every other stage already expects.
+
+    Uses ``asanyarray`` rather than ``asarray`` so an ``np.memmap`` passed
+    in for the already-3D (``was_2d=False``) case comes back a memmap too --
+    ``asarray`` silently downcasts it to a plain in-RAM-backed ``ndarray``
+    view, defeating ``use_memmap_loading`` for every 3D input (2D inputs are
+    reshaped via ``[np.newaxis, ...]`` regardless, which already preserves
+    the subclass).
     """
-    arr = np.asarray(image)
+    arr = np.asanyarray(image)
     if arr.ndim == 2:
         return arr[np.newaxis, ...], True
     return arr, False
@@ -79,6 +87,9 @@ def load_image_with_voxel_size_2d_aware(
     input_format: str,
     axis_order: str = CANONICAL_AXIS_ORDER,
     h5_dataset_name: str | None = None,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    memmap_path: str | Path | None = None,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load a TIFF or H5 image exactly the way the ordinary 3D loaders do,
     promoting a genuinely 2D result to a single-slice volume instead of
@@ -92,11 +103,24 @@ def load_image_with_voxel_size_2d_aware(
     something (missing z metadata, e.g. no z-resolution tag on a 2D TIFF,
     already falls back to 1.0 through the same path a 3D file with no
     z tag uses -- nothing extra needed for that here).
+
+    *use_memmap* and *memmap_directory* are forwarded to whichever reader
+    actually loads the file; see ``use_memmap_loading``/``memmap_directory``
+    in the pipeline schema for what they trade. *memmap_path*, when given,
+    takes precedence over *memmap_directory* -- see
+    :func:`haemolynx.io.load_3d_tif_with_voxel_size`'s own *memmap_path*.
     """
     fmt = input_format.strip().lower()
     if fmt in {"tif", "tiff"}:
         image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
-            load_3d_tif_with_voxel_size(filepath, axis_order=axis_order, allow_2d=True)
+            load_3d_tif_with_voxel_size(
+                filepath,
+                axis_order=axis_order,
+                allow_2d=True,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+                memmap_path=memmap_path,
+            )
         )
     elif fmt == "h5":
         image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
@@ -105,6 +129,9 @@ def load_image_with_voxel_size_2d_aware(
                 h5_dataset_name,
                 axis_order=axis_order,
                 allow_2d=True,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+                memmap_path=memmap_path,
             )
         )
     else:

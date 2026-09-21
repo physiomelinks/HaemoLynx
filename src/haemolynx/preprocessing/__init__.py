@@ -66,6 +66,11 @@ from .segmentation_raw_comparison import (
     compare_segmentation_to_raw_image,
     format_segmentation_raw_comparison_report,
 )
+from .memmap_support import (
+    new_memmap_array,
+    release_memmap_array,
+    temporary_memmap_array,
+)
 
 __all__ = [
     "BRAID_FACTOR_LIMIT",
@@ -121,4 +126,7 @@ __all__ = [
     "analyze_raw_image_foreground",
     "compare_segmentation_to_raw_image",
     "format_segmentation_raw_comparison_report",
+    "new_memmap_array",
+    "release_memmap_array",
+    "temporary_memmap_array",
 ]

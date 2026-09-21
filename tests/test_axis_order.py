@@ -48,6 +48,23 @@ def test_apply_axis_order_is_identity_for_canonical_order():
     assert np.array_equal(result, volume)
 
 
+def test_apply_axis_order_preserves_a_memmap_for_canonical_order(tmp_path):
+    """Regression: the canonical no-op used to demote a ``numpy.memmap`` to a
+    plain ``ndarray`` (``np.asarray`` strips ndarray subclasses even when it
+    returns the same underlying buffer, unlike ``np.asanyarray``) -- harmless
+    for the bytes, but it broke ``isinstance(x, np.memmap)`` checks
+    downstream that decide whether an array owns a backing file to release
+    (see ``use_memmap_loading``)."""
+    path = tmp_path / "volume.dat"
+    volume = np.memmap(path, dtype=np.uint8, mode="w+", shape=(2, 3, 4))
+    volume[:] = np.arange(24, dtype=np.uint8).reshape(2, 3, 4)
+
+    result = apply_axis_order(volume, CANONICAL_AXIS_ORDER)
+
+    assert isinstance(result, np.memmap)
+    assert np.array_equal(result, volume)
+
+
 def test_apply_axis_order_moves_the_named_z_axis_to_axis_zero():
     # Shape (2, 3, 4) stored as (x, y, z) means x=2, y=3, z=4.
     volume = _distinct_shape_volume()

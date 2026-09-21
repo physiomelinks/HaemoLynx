@@ -50,6 +50,7 @@ covariance case.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -68,6 +69,7 @@ from skimage.morphology import remove_small_objects
 from skimage.segmentation import watershed
 
 from .skeleton import fill_binary_holes
+from .memmap_support import new_memmap_array, release_memmap_array
 from .thick_vessels import (
     _dominant_eigenvector_3x3,
     _matvec_3x3,
@@ -363,6 +365,8 @@ def reconnect_vessel_like_components(
     max_axis_angle_degrees: float = 30.0,
     min_facing_cosine: float = 0.85,
     max_radius_ratio: float = 3.0,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Bridge disconnected mask components that look like the same vessel
     tube continuing.
@@ -382,6 +386,11 @@ def reconnect_vessel_like_components(
     Returns ``(mask, stats)`` where ``stats`` has ``attempted_bridges``,
     ``accepted_bridges`` and ``rejected_reasons`` (a ``dict[str, int]``
     counting why each rejected candidate failed).
+
+    *use_memmap*, when True, writes ``edt_inside`` -- a full-volume
+    ``float64`` distance transform, the widest allocation this function
+    makes -- to a disk-backed buffer instead of a fresh in-RAM one.
+    *memmap_directory* is forwarded to :func:`new_memmap_array`.
     """
     mask = np.asarray(mask, dtype=bool)
     sampling = tuple(float(v) for v in voxel_size_zyx)
@@ -394,7 +403,47 @@ def reconnect_vessel_like_components(
     if count < 2:
         return mask, stats
 
-    edt_inside = distance_transform_edt(mask, sampling=sampling)
+    if use_memmap:
+        edt_inside = new_memmap_array(mask.shape, np.float64, directory=memmap_directory)
+        distance_transform_edt(mask, sampling=sampling, distances=edt_inside)
+    else:
+        edt_inside = distance_transform_edt(mask, sampling=sampling)
+    try:
+        return _reconnect_using_edt(
+            mask,
+            sampling=sampling,
+            labeled=labeled,
+            count=count,
+            edt_inside=edt_inside,
+            stats=stats,
+            max_bridge_distance_um=max_bridge_distance_um,
+            min_cylindricality=min_cylindricality,
+            max_axis_angle_degrees=max_axis_angle_degrees,
+            min_facing_cosine=min_facing_cosine,
+            max_radius_ratio=max_radius_ratio,
+        )
+    finally:
+        if use_memmap:
+            release_memmap_array(edt_inside)
+
+
+def _reconnect_using_edt(
+    mask: np.ndarray,
+    *,
+    sampling: tuple[float, float, float],
+    labeled: np.ndarray,
+    count: int,
+    edt_inside: np.ndarray,
+    stats: dict[str, Any],
+    max_bridge_distance_um: float,
+    min_cylindricality: float,
+    max_axis_angle_degrees: float,
+    min_facing_cosine: float,
+    max_radius_ratio: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """The rest of :func:`reconnect_vessel_like_components`, split out so its
+    caller can release a memmap-backed ``edt_inside`` in a ``finally`` clause
+    around whichever return path this takes."""
     descriptors = _component_descriptors(labeled=labeled, count=count, edt_inside=edt_inside)
     component_ids = sorted(descriptors)
     spacing = np.asarray(sampling, dtype=float).reshape(1, 3)
@@ -500,6 +549,8 @@ def split_narrow_neck_components(
     min_marker_separation_um: float = 10.0,
     min_pinch_radius_ratio: float = 0.6,
     min_body_radius_um: float = 1.0,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Cut the mask apart at genuine pinch points -- narrow necks where two
     separate vessels have been fused by segmentation blur, not a real
@@ -523,6 +574,14 @@ def split_narrow_neck_components(
     Returns ``(mask, stats)`` where ``stats`` has ``bodies_found``,
     ``adjacent_pairs``, ``cuts_made`` and ``rejected_reasons`` (a
     ``dict[str, int]``), mirroring :func:`reconnect_vessel_like_components`.
+
+    *use_memmap*, when True, writes ``edt`` -- a full-volume ``float64``
+    distance transform, the widest allocation this function owns for the
+    whole run -- to a disk-backed buffer instead of a fresh in-RAM one.
+    ``watershed``'s own output array has no way to redirect to disk (no
+    ``out=`` parameter in this dependency), so that one allocation stays
+    in RAM regardless. *memmap_directory* is forwarded to
+    :func:`new_memmap_array`.
     """
     mask = np.asarray(mask, dtype=bool)
     sampling = tuple(float(v) for v in voxel_size_zyx)
@@ -535,7 +594,43 @@ def split_narrow_neck_components(
     if not mask.any():
         return mask, stats
 
-    edt = distance_transform_edt(mask, sampling=sampling)
+    if use_memmap:
+        edt = new_memmap_array(mask.shape, np.float64, directory=memmap_directory)
+        distance_transform_edt(mask, sampling=sampling, distances=edt)
+    else:
+        edt = distance_transform_edt(mask, sampling=sampling)
+    try:
+        return _split_using_edt(
+            mask,
+            sampling=sampling,
+            edt=edt,
+            stats=stats,
+            min_marker_separation_um=min_marker_separation_um,
+            min_pinch_radius_ratio=min_pinch_radius_ratio,
+            min_body_radius_um=min_body_radius_um,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+        )
+    finally:
+        if use_memmap:
+            release_memmap_array(edt)
+
+
+def _split_using_edt(
+    mask: np.ndarray,
+    *,
+    sampling: tuple[float, float, float],
+    edt: np.ndarray,
+    stats: dict[str, Any],
+    min_marker_separation_um: float,
+    min_pinch_radius_ratio: float,
+    min_body_radius_um: float,
+    use_memmap: bool,
+    memmap_directory: str | Path | None = None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """The rest of :func:`split_narrow_neck_components`, split out so its
+    caller can release a memmap-backed ``edt`` in a ``finally`` clause
+    around whichever return path this takes."""
     voxel_scale_um = min(sampling)
     min_distance_voxels = max(
         1, int(round(float(min_marker_separation_um) / max(1e-9, voxel_scale_um)))
@@ -556,8 +651,16 @@ def split_narrow_neck_components(
 
     peak_mask = np.zeros(mask.shape, dtype=bool)
     peak_mask[tuple(peaks.T)] = True
-    markers, _n_markers = label(peak_mask, structure=_STRUCTURE_26)
-    labels = watershed(-edt, markers, mask=mask)
+    if use_memmap:
+        markers = new_memmap_array(mask.shape, np.int32, directory=memmap_directory)
+        label(peak_mask, structure=_STRUCTURE_26, output=markers)
+    else:
+        markers, _n_markers = label(peak_mask, structure=_STRUCTURE_26)
+    try:
+        labels = watershed(-edt, markers, mask=mask)
+    finally:
+        if use_memmap:
+            release_memmap_array(markers)
     n_labels = int(labels.max())
     stats["bodies_found"] = n_labels
     if n_labels < 2:
@@ -746,6 +849,8 @@ def smooth_vessel_surfaces(
     sigma_um: float = 1.0,
     method: str = "gaussian",
     morphological_radius_um: float = 1.0,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
     """Reduce surface noise, pulling a ragged mask toward a smoother, more
     cylindrical shape.
@@ -774,6 +879,15 @@ def smooth_vessel_surfaces(
 
     ``sigma_um <= 0`` (gaussian) or ``morphological_radius_um <= 0``
     (morphological) is a no-op for the method actually selected.
+
+    *use_memmap*, when True and the gaussian method actually runs, writes
+    both the float32 cast of *mask* and the blurred result to disk-backed
+    buffers instead of fresh in-RAM ones -- ``gaussian_filter`` needs a
+    float input regardless, so that cast is the one allocation this method
+    cannot avoid either way; this only decides where its two float32
+    buffers live. The morphological method never leaves boolean, so it has
+    nothing to redirect. *memmap_directory* is forwarded to
+    :func:`new_memmap_array`.
     """
     mask = np.asarray(mask, dtype=bool)
     if method == "morphological":
@@ -789,6 +903,17 @@ def smooth_vessel_surfaces(
     sigma_voxels = tuple(
         float(sigma_um) / max(1e-9, float(v)) for v in voxel_size_zyx
     )
+    if use_memmap:
+        float_mask = new_memmap_array(mask.shape, np.float32, directory=memmap_directory)
+        float_mask[:] = mask
+        blurred = new_memmap_array(mask.shape, np.float32, directory=memmap_directory)
+        try:
+            gaussian_filter(float_mask, sigma=sigma_voxels, output=blurred)
+            result = blurred > 0.5
+        finally:
+            release_memmap_array(blurred)
+            release_memmap_array(float_mask)
+        return result
     blurred = gaussian_filter(mask.astype(np.float32), sigma=sigma_voxels)
     return blurred > 0.5
 
@@ -843,6 +968,8 @@ def clean_segmented_mask_for_skeletonisation(
     smooth_morphological_radius_um: float = 1.0,
     remove_small_volumes: bool = False,
     remove_small_min_volume_um3: float = 5.0,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Fill-cavities -> remove-whiskers -> split-narrow-necks ->
     close-small-gaps -> reconnect -> smooth -> remove-small, each
@@ -875,6 +1002,15 @@ def clean_segmented_mask_for_skeletonisation(
     when every step is off; ``raw`` is the pre-cleanup boolean array only
     when at least one step actually ran, which is what feeds the GUI's
     corrected-vs-raw comparison toggle.
+
+    *use_memmap*, forwarded to :func:`split_narrow_neck_components`,
+    :func:`reconnect_vessel_like_components` and
+    :func:`smooth_vessel_surfaces`, also decides whether ``raw`` itself (a
+    full-volume boolean copy, kept alive for the rest of the run rather
+    than released here) is disk-backed. The caller owns its backing file
+    the same way it would own a plain array's memory. *memmap_directory* is
+    forwarded to :func:`new_memmap_array` and to each of those three
+    functions in turn.
     """
     if not (
         fill_cavities
@@ -886,7 +1022,11 @@ def clean_segmented_mask_for_skeletonisation(
         or remove_small_volumes
     ):
         return image, None
-    raw = np.asarray(image, dtype=bool).copy()
+    if use_memmap:
+        raw = new_memmap_array(image.shape, bool, directory=memmap_directory)
+        raw[:] = image
+    else:
+        raw = np.asarray(image, dtype=bool).copy()
     cleaned = raw
     if fill_cavities:
         cleaned = fill_enclosed_cavities(cleaned)
@@ -901,6 +1041,8 @@ def clean_segmented_mask_for_skeletonisation(
             min_marker_separation_um=split_min_marker_separation_um,
             min_pinch_radius_ratio=split_min_pinch_radius_ratio,
             min_body_radius_um=split_min_body_radius_um,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
     if close_gaps:
         cleaned = close_small_gaps(
@@ -915,6 +1057,8 @@ def clean_segmented_mask_for_skeletonisation(
             max_axis_angle_degrees=reconnect_max_axis_angle_degrees,
             min_facing_cosine=reconnect_min_facing_cosine,
             max_radius_ratio=reconnect_max_radius_ratio,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
     if smooth_surfaces:
         cleaned = smooth_vessel_surfaces(
@@ -923,6 +1067,8 @@ def clean_segmented_mask_for_skeletonisation(
             sigma_um=smooth_sigma_um,
             method=smooth_method,
             morphological_radius_um=smooth_morphological_radius_um,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
     if remove_small_volumes:
         cleaned = remove_small_segmented_volumes(

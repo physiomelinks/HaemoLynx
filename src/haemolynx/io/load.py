@@ -10,6 +10,7 @@ import tifffile
 from skimage.util import img_as_bool
 from skimage.morphology import skeletonize
 from ..preprocessing.skeleton import fill_binary_holes
+from ..preprocessing.memmap_support import new_memmap_array
 try:
     import h5py
 except ImportError:
@@ -413,6 +414,9 @@ def load_3d_tif_with_voxel_size(
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
     allow_2d: bool = False,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    memmap_path: str | Path | None = None,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load 3D TIFF image and return image + voxel size (x, y, z) + metadata status.
 
@@ -428,9 +432,35 @@ def load_3d_tif_with_voxel_size(
     Mirrors :func:`load_3d_h5_with_voxel_size`'s own *allow_2d*;
     :mod:`haemolynx.io.load_2d` is what actually sets this. Every other
     caller leaves it False, unchanged from before this parameter existed.
+
+    *use_memmap*, when True, decompresses the pixel data into a disk-backed
+    ``numpy.memmap`` (a temporary file, cleaned up by tifffile itself once
+    the returned array is garbage-collected) instead of a plain in-RAM
+    array -- for a volume too large to hold in memory outright. Compression
+    on the file does not change what this needs: every voxel still has to
+    be materialised somewhere to be indexed at all, this only chooses disk
+    over RAM for where. *memmap_directory*, when given, is where that
+    temporary file is created (tifffile's own ``"memmap:<dir>"`` syntax)
+    instead of the OS default temp directory. *memmap_path*, when given,
+    takes precedence over *memmap_directory* and writes to that exact file
+    instead of a randomly-named one -- a persistent file at a caller-chosen
+    path, e.g. for :mod:`haemolynx.io.raw_volume_cache` to reopen on a later
+    run, rather than a temp file tifffile deletes once nothing references it.
+    Both are ignored when *use_memmap* is False.
     """
     with tifffile.TiffFile(filepath) as tif:
-        raw = tif.asarray()
+        if use_memmap:
+            if memmap_path:
+                Path(memmap_path).parent.mkdir(parents=True, exist_ok=True)
+                out = str(memmap_path)
+            elif memmap_directory:
+                Path(memmap_directory).mkdir(parents=True, exist_ok=True)
+                out = f"memmap:{memmap_directory}"
+            else:
+                out = "memmap"
+        else:
+            out = None
+        raw = tif.asarray(out=out)
         if allow_2d and raw.ndim == 2:
             image = raw
         else:
@@ -447,6 +477,9 @@ def load_3d_h5_with_voxel_size(
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
     allow_2d: bool = False,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    memmap_path: str | Path | None = None,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load 3D H5 image and return image + voxel size (x, y, z) + metadata status.
 
@@ -459,6 +492,20 @@ def load_3d_h5_with_voxel_size(
     into a volume. :mod:`haemolynx.io.load_2d` is what actually sets this
     and does that promotion. Every other caller leaves it False, unchanged
     from before this parameter existed.
+
+    *use_memmap*, when True, copies the dataset into a disk-backed
+    ``numpy.memmap`` one slice (along axis 0) at a time, instead of
+    ``h5py``'s own ``[...]`` reading the whole thing into a fresh in-RAM
+    array in one call -- unlike tifffile's own memmap support, h5py has no
+    built-in equivalent, so this bounds the *copy's* own peak memory too,
+    not just where the final array ends up. The caller owns the returned
+    array's backing file (see :func:`haemolynx.preprocessing.new_memmap_array`)
+    the same way it would own a plain array. *memmap_directory* is forwarded
+    to :func:`haemolynx.preprocessing.new_memmap_array`. *memmap_path*, when
+    given, takes precedence and copies the dataset into that exact
+    persistent file instead of a randomly-named one -- see
+    :func:`load_3d_tif_with_voxel_size`'s own *memmap_path*. Both are
+    ignored when *use_memmap* is False.
     """
     if h5py is None:
         raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
@@ -495,7 +542,20 @@ def load_3d_h5_with_voxel_size(
                 f"Available datasets: {available}"
             )
         dataset = f[selected_name]
-        image = np.array(dataset)
+        if use_memmap:
+            if memmap_path:
+                Path(memmap_path).parent.mkdir(parents=True, exist_ok=True)
+                image = np.memmap(
+                    memmap_path, dtype=dataset.dtype, mode="w+", shape=dataset.shape
+                )
+            else:
+                image = new_memmap_array(
+                    dataset.shape, dataset.dtype, directory=memmap_directory
+                )
+            for index in range(dataset.shape[0]):
+                image[index] = dataset[index]
+        else:
+            image = np.array(dataset)
         (
             (voxel_size_x, voxel_size_y, voxel_size_z),
             voxel_meta_status,
@@ -518,13 +578,18 @@ def load_volume_and_voxel_size(
     h5_dataset_name: str | None = None,
     axis_order: str = CANONICAL_AXIS_ORDER,
     description: str = "mask",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """Load a TIFF/H5 volume in canonical ``(z, y, x)`` order with its voxel size.
 
     The returned voxel size is image-metadata order ``(x, y, z)``; convert with
     :func:`voxel_size_zyx_from_xyz` before scaling array indices. ``description``
     names the volume in the unsupported-format error, so callers can say what the
-    user actually passed ("pericyte mask", "cell mask", ...).
+    user actually passed ("pericyte mask", "cell mask", ...). ``use_memmap`` and
+    ``memmap_directory`` are forwarded to whichever of
+    :func:`load_3d_tif_with_voxel_size` / :func:`load_3d_h5_with_voxel_size`
+    actually reads the file.
     """
     path = Path(volume_path)
     suffix = path.suffix.lower()
@@ -532,12 +597,16 @@ def load_volume_and_voxel_size(
         image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
             str(path),
             axis_order=axis_order,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
     elif suffix == ".h5":
         image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
             str(path),
             dataset_name=h5_dataset_name,
             axis_order=axis_order,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
     else:
         raise ValueError(
@@ -553,6 +622,8 @@ def load_binary_mask_and_voxel_size(
     h5_dataset_name: str | None = None,
     axis_order: str = CANONICAL_AXIS_ORDER,
     description: str = "mask",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float]]:
     """Load a 3D binary mask and return ``(mask_bool, voxel_size_xyz)``.
 
@@ -563,7 +634,11 @@ def load_binary_mask_and_voxel_size(
     consumer (dilation, volume filters, terminal assignment, napari display).
 
     The path may point at a file inside a sibling zip archive; see
-    :func:`resolve_image_path_with_optional_zip`.
+    :func:`resolve_image_path_with_optional_zip`. ``use_memmap`` only governs
+    how the file is *read*; the returned boolean mask is always a fresh
+    in-RAM array either way, since :func:`_to_binary_volume_for_skeletonization`
+    has to compare every voxel against the mask's own foreground convention
+    regardless of where the source pixels live.
     """
     path = resolve_image_path_with_optional_zip(Path(mask_path))
     image, voxel_size_xyz = load_volume_and_voxel_size(
@@ -571,13 +646,17 @@ def load_binary_mask_and_voxel_size(
         h5_dataset_name=h5_dataset_name,
         axis_order=axis_order,
         description=description,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
     if image.ndim != 3:
         raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
     return _to_binary_volume_for_skeletonization(image), voxel_size_xyz
 
 
-def _skeletonize_loaded_volume(image: np.ndarray) -> np.ndarray:
+def _skeletonize_loaded_volume(
+    image: np.ndarray, *, use_memmap: bool = False, memmap_directory: str | Path | None = None
+) -> np.ndarray:
     """Binarize, skeletonize and fill holes: what every loader must do.
 
     One function because the TIFF and H5 loaders drifted apart -- the TIFF one
@@ -588,13 +667,27 @@ def _skeletonize_loaded_volume(image: np.ndarray) -> np.ndarray:
     was wrong. It is a no-op on the normal case anyway: a thin 3D curve
     encloses no background, which is what
     ``test_fill_binary_holes_on_a_sparse_skeleton_changes_nothing`` pins.
+
+    *use_memmap* is forwarded to :func:`fill_binary_holes`, whose own
+    connected-component labelling is the one full-volume, wider-than-boolean
+    buffer in this path -- ``skeletonize`` itself has no way to redirect its
+    output to disk, so its own (boolean, same size as the input) allocation
+    is unavoidable regardless.
     """
     binary = _to_binary_volume_for_skeletonization(image)
     skeleton = skeletonize(binary.astype(bool), method="lee")
-    return fill_binary_holes(skeleton).astype(bool)
+    return fill_binary_holes(
+        skeleton, use_memmap=use_memmap, memmap_directory=memmap_directory
+    ).astype(bool)
 
 
-def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AXIS_ORDER):
+def load_and_skeletonize_3d_tif(
+    filepath: str,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+):
     """Load a TIFF in canonical ``(z, y, x)`` order and skeletonize it."""
     logger.info("Loading and skeletonizing TIFF...")
     (
@@ -603,10 +696,17 @@ def load_and_skeletonize_3d_tif(filepath: str, *, axis_order: str = CANONICAL_AX
         voxel_size_y,
         voxel_size_z,
         voxel_meta_status,
-    ) = load_3d_tif_with_voxel_size(filepath, axis_order=axis_order)
+    ) = load_3d_tif_with_voxel_size(
+        filepath,
+        axis_order=axis_order,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
 
     logger.info("Voxel size — x: %s, y: %s, z: %s", voxel_size_x, voxel_size_y, voxel_size_z)
-    skeleton = _skeletonize_loaded_volume(image)
+    skeleton = _skeletonize_loaded_volume(
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
     return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
@@ -615,6 +715,8 @@ def load_and_skeletonize_3d_h5(
     dataset_name: str | None = None,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ):
     """Load an H5 volume in canonical ``(z, y, x)`` order and skeletonize it."""
     logger.debug("Loading and skeletonizing H5...")
@@ -628,6 +730,8 @@ def load_and_skeletonize_3d_h5(
         filepath,
         dataset_name=dataset_name,
         axis_order=axis_order,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
 
     logger.debug("Original image shape: %s", image.shape)
@@ -636,6 +740,8 @@ def load_and_skeletonize_3d_h5(
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 
-    skeleton = _skeletonize_loaded_volume(image)
+    skeleton = _skeletonize_loaded_volume(
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
     return image, skeleton, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 

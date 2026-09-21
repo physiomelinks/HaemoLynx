@@ -178,6 +178,42 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             choices=AXIS_ORDERS,
         ),
+        Setting(
+            name="use_memmap_loading",
+            kind="bool",
+            default=False,
+            help=(
+                "Load the input image, and any vessel/pericyte/cell masks, "
+                "into a disk-backed array instead of RAM, and write the "
+                "largest full-volume working buffers (connected-component "
+                "labels, distance transforms) to disk too, instead of a "
+                "fresh in-RAM array each time. Same result, much less peak "
+                "RAM, at the cost of disk space (as large as the volume "
+                "itself) and slower reads -- turn on for a volume too large "
+                "to hold in memory outright"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="memmap_directory",
+            kind="path",
+            default=None,
+            help=(
+                "Write use_memmap_loading's disk-backed arrays here instead "
+                "of the OS temp directory -- point this at a drive with "
+                "enough free space for a volume-sized file (or a faster "
+                "disk than the default temp drive) when the default "
+                "location cannot take it. Setting this also lets a later "
+                "run reuse the raw input image already decompressed here "
+                "instead of reloading it, as long as the input file and "
+                "image_axis_order have not changed (skeletonisation and "
+                "everything after it are always rebuilt fresh either way). "
+                "Created if it does not already exist; leave unset to use "
+                "the OS default with no reuse between runs"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("use_memmap_loading",),
+        ),
         # ------------------------------------------------------------------
         # Segmentation cleanup (Input tab): seven independently-toggleable
         # cleanup steps on the raw segmented mask, before skeletonisation.

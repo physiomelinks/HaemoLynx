@@ -35,6 +35,22 @@ def test_promote_2d_to_single_slice_volume_leaves_3d_unchanged():
     assert promoted is image
 
 
+def test_promote_2d_to_single_slice_volume_preserves_a_memmap_for_the_3d_case(tmp_path):
+    """Regression: the 3D (was_2d=False) branch used to go through
+    np.asarray, which silently downcasts an np.memmap to a plain ndarray --
+    defeating use_memmap_loading for every 3D input, since this promotion
+    runs unconditionally inside load_image_with_voxel_size_2d_aware."""
+    path = tmp_path / "volume.tif"
+    tifffile.imwrite(path, np.zeros((4, 6, 8), dtype=np.uint8))
+    with tifffile.TiffFile(path) as tif:
+        image = tif.asarray(out="memmap")
+
+    promoted, was_2d = promote_2d_to_single_slice_volume(image)
+
+    assert was_2d is False
+    assert isinstance(promoted, np.memmap)
+
+
 # --- load_image_with_voxel_size_2d_aware: TIFF ------------------------------
 
 

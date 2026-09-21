@@ -291,6 +291,22 @@ def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
         assert shared.is_visible({"use_ilastik_segmentation": True}), name
 
 
+def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():
+    """The directory override is meaningless with memmap loading off, so it
+    hides like every other Input-tab child row rather than staying visible
+    and greyed."""
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+
+    toggle = fields["use_memmap_loading"]
+    assert not toggle.hide_when_unmet
+    assert toggle.is_visible({})
+
+    directory = fields["memmap_directory"]
+    assert directory.hide_when_unmet
+    assert not directory.is_visible({"use_memmap_loading": False})
+    assert directory.is_visible({"use_memmap_loading": True})
+
+
 def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     off = {"use_ilastik_segmentation": False}
     shown_off = visible_input_segmentation_settings(SCHEMA, off)

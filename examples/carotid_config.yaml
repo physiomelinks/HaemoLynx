@@ -28,6 +28,10 @@ input_and_segmentation:
   voxel_size_policy: auto
   # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
   image_axis_order: zyx
+  # Load the input image, and any vessel/pericyte/cell masks, into a disk-backed array instead of RAM, and write the largest full-volume working buffers (connected-component labels, distance transforms) to disk too, instead of a fresh in-RAM array each time. Same result, much less peak RAM, at the cost of disk space (as large as the volume itself) and slower reads -- turn on for a volume too large to hold in memory outright
+  use_memmap_loading: false
+  # Write use_memmap_loading's disk-backed arrays here instead of the OS temp directory -- point this at a drive with enough free space for a volume-sized file (or a faster disk than the default temp drive) when the default location cannot take it. Setting this also lets a later run reuse the raw input image already decompressed here instead of reloading it, as long as the input file and image_axis_order have not changed (skeletonisation and everything after it are always rebuilt fresh either way). Created if it does not already exist; leave unset to use the OS default with no reuse between runs  [needs use_memmap_loading]
+  memmap_directory: null
   # Clean up the raw segmented mask before skeletonisation -- reveals the individual cleanup steps below
   segmentation_cleanup: false
   # Fill small internal air-gaps/voids -- imaging noise inside an otherwise solid vessel lumen -- before skeletonisation, the same fill done for use_thick_vessel_skeletonisation's own thickness-gated path but here for the plain-Lee path too. Run first, so a hollow lumen does not throw off later steps' own radius measurements. No parameter: a cavity is either enclosed or it is not, with nothing to size  [needs segmentation_cleanup]

@@ -356,20 +356,40 @@ def load_volume_for_skeletonise(settings: dict, input_format: str):
     passing through 2D or raising. Reads settings["input_path"] /
     settings["image_axis_order"] exactly as before, so a 2D file reaches
     the pipeline through the same GUI input row every other file does.
+
+    With both use_memmap_loading and memmap_directory set, this is the one
+    load a later run against the same input can skip re-decompressing --
+    see io.load_raw_volume_reusing_cache for the invalidation rules.
     """
     if input_format not in {"tif", "tiff", "h5"}:
         raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
-    (
-        image,
-        voxel_size_x,
-        voxel_size_y,
-        voxel_size_z,
-        voxel_meta_status,
-    ) = io.load_image_with_voxel_size_2d_aware(
-        settings["input_path"],
-        input_format=input_format,
-        axis_order=settings["image_axis_order"],
-    )
+    if settings["use_memmap_loading"] and settings["memmap_directory"]:
+        (
+            image,
+            voxel_size_x,
+            voxel_size_y,
+            voxel_size_z,
+            voxel_meta_status,
+        ) = io.load_raw_volume_reusing_cache(
+            settings["input_path"],
+            input_format=input_format,
+            axis_order=settings["image_axis_order"],
+            memmap_directory=settings["memmap_directory"],
+        )
+    else:
+        (
+            image,
+            voxel_size_x,
+            voxel_size_y,
+            voxel_size_z,
+            voxel_meta_status,
+        ) = io.load_image_with_voxel_size_2d_aware(
+            settings["input_path"],
+            input_format=input_format,
+            axis_order=settings["image_axis_order"],
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+        )
     metadata_voxel_size = (
         float(voxel_size_x),
         float(voxel_size_y),
@@ -474,7 +494,14 @@ def _skeletonize_loaded_mask(
             ),
             return_thick_mask=True,
         )
-    return _skeletonize_loaded_volume(image), None
+    return (
+        _skeletonize_loaded_volume(
+            image,
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+        ),
+        None,
+    )
 
 
 def skeletonise(settings: dict, inputs: SegmentedInputs):
@@ -553,6 +580,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 voxel_size_zyx=io.voxel_size_zyx_from_xyz(
                     tuple(float(v) for v in voxel_size)
                 ),
+                use_memmap=settings["use_memmap_loading"],
+                memmap_directory=settings["memmap_directory"],
                 **cleanup_kwargs,
             )
 
@@ -598,6 +627,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             ),
             min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
             segmentation_mask=_to_binary_volume_for_skeletonization(image),
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
         )
         preprocessing.log_skeleton_connectivity_stats(
             "cleaned",
@@ -2875,7 +2906,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     # for the exact same partition -- e.g. both weighted by "resistance".
     # Compute it once up front in that case and hand it to both, instead of
     # running greedy modularity on the same graph twice.
-    vascular_weighting = settings["vascular_community_weighting"]
+    vascular_weighting = (
+        settings["vascular_community_weighting"]
+        if settings["compute_vascular_communities"]
+        else None
+    )
     shared_vascular_communities = None
     share_vascular_communities_with_statistics = (
         settings["compute_vascular_communities"]

@@ -60,6 +60,86 @@ def _write_2d_mask(tmp_path: Path, mask: np.ndarray) -> Path:
     return path
 
 
+def test_use_memmap_loading_gives_the_same_skeleton_as_the_ordinary_load(tmp_path):
+    """``use_memmap_loading`` must only change where the image/skeleton live,
+    never what ``skeletonise()`` actually produces -- stage-level version of
+    the per-function equivalence tests in ``tests/test_memmap_loading.py``."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+
+    memmap_settings = settings_for(tmp_path / "memmap", mask_path, use_memmap_loading=True)
+    memmap_volume = skeletonise(memmap_settings, segment(memmap_settings))
+
+    eager_settings = settings_for(tmp_path / "eager", mask_path, use_memmap_loading=False)
+    eager_volume = skeletonise(eager_settings, segment(eager_settings))
+
+    # Not just "the two runs agree" -- a settings dict is a plain dict, so an
+    # override key nothing actually reads would make the two runs identical
+    # (both plain eager loads) without the toggle being wired to anything.
+    # This is the assertion that would have caught that.
+    assert isinstance(memmap_volume.image, np.memmap)
+    assert not isinstance(eager_volume.image, np.memmap)
+    assert np.array_equal(memmap_volume.skeleton, eager_volume.skeleton)
+    assert np.array_equal(memmap_volume.image, eager_volume.image)
+    assert memmap_volume.voxel_size_xyz == eager_volume.voxel_size_xyz
+
+
+def test_memmap_directory_setting_controls_where_the_backing_file_lands(tmp_path):
+    """Not just 'still a memmap' -- memmap_directory must actually redirect
+    the backing file, the same discriminating-assertion lesson as the
+    use_memmap_loading test above: an unwired setting would leave the
+    default OS temp directory in use and this would pass vacuously."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    custom_dir = tmp_path / "custom_memmap_dir"
+    assert not custom_dir.exists()
+
+    settings = settings_for(
+        tmp_path / "run",
+        mask_path,
+        use_memmap_loading=True,
+        memmap_directory=custom_dir,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert isinstance(volume.image, np.memmap)
+    assert Path(volume.image.filename).parent == custom_dir
+
+
+def test_a_second_run_reuses_the_raw_volume_instead_of_reloading_it(tmp_path):
+    """The point of memmap_directory's reuse-across-runs behaviour: a second
+    pipeline run against the same input skips re-reading/re-decompressing
+    it. Proven the same way tests/test_raw_volume_cache.py proves it -- by
+    checking the returned image is backed by the deterministic cache file,
+    not a freshly-created one -- rather than by anything that could pass
+    vacuously (e.g. two runs merely agreeing on pixel values, which an
+    unwired cache would too)."""
+    from haemolynx.io.raw_volume_cache import _cache_file_paths, _cache_key
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+    cache_dir = tmp_path / "cache"
+
+    settings = settings_for(
+        tmp_path / "run1", mask_path, use_memmap_loading=True, memmap_directory=cache_dir
+    )
+    first_volume = skeletonise(settings, segment(settings))
+
+    resolved = mask_path.resolve()
+    key = _cache_key(resolved, resolved.stat(), "zyx")
+    memmap_path, _sidecar_path = _cache_file_paths(cache_dir, key)
+    assert Path(first_volume.image.filename) == memmap_path
+
+    settings2 = settings_for(
+        tmp_path / "run2", mask_path, use_memmap_loading=True, memmap_directory=cache_dir
+    )
+    second_volume = skeletonise(settings2, segment(settings2))
+
+    assert Path(second_volume.image.filename) == memmap_path
+    assert np.array_equal(second_volume.image, first_volume.image)
+    assert np.array_equal(second_volume.skeleton, first_volume.skeleton)
+
+
 def test_thickness_gate_defaults_off_and_matches_the_locked_radius():
     assert SCHEMA["use_thick_vessel_skeletonisation"].default is False
     assert SCHEMA["skeleton_thick_vessel_min_radius_um"].default == pytest.approx(

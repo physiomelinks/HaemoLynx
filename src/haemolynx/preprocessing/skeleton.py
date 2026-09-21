@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import (
@@ -15,6 +16,9 @@ from scipy.ndimage import (
     uniform_filter,
 )
 from skimage.morphology import remove_small_objects, skeletonize
+
+from .memmap_support import new_memmap_array, release_memmap_array, temporary_memmap_array
+
 logger = logging.getLogger(__name__)
 
 def _resolve_component_connectivity(ndim: int, connectivity: int | None) -> int:
@@ -149,7 +153,9 @@ def log_skeleton_connectivity_stats(
     )
 
 
-def fill_binary_holes(mask: np.ndarray) -> np.ndarray:
+def fill_binary_holes(
+    mask: np.ndarray, *, use_memmap: bool = False, memmap_directory: str | Path | None = None
+) -> np.ndarray:
     """Fill background regions of *mask* that are enclosed by foreground.
 
     The same result as :func:`scipy.ndimage.binary_fill_holes`, reached the
@@ -169,10 +175,22 @@ def fill_binary_holes(mask: np.ndarray) -> np.ndarray:
     is the reason to reach for the flood fill on a machine short of memory.
     Windows tries int16 first (half the commit); Linux keeps the int32 path
     that was timed there. Both return the same mask.
+
+    *use_memmap*, when True, writes the labelled background to a disk-backed
+    buffer instead of a fresh in-RAM one -- this runs unconditionally on
+    every load (see :func:`haemolynx.io.load._skeletonize_loaded_volume`), so
+    it is the one full-volume, wider-than-boolean allocation a low-memory
+    run cannot just disable. *memmap_directory* is forwarded to
+    :func:`haemolynx.preprocessing.new_memmap_array`; ignored when
+    *use_memmap* is False.
     """
     mask = np.asarray(mask, dtype=bool)
-    background_labels, n_labels = _label_inverted_background(~mask)
+    background_labels, n_labels = _label_inverted_background(
+        ~mask, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
     if n_labels == 0:
+        if use_memmap and isinstance(background_labels, np.memmap):
+            release_memmap_array(background_labels)
         return mask
 
     reaches_edge = np.zeros(n_labels + 1, dtype=bool)
@@ -183,24 +201,44 @@ def fill_binary_holes(mask: np.ndarray) -> np.ndarray:
             reaches_edge[background_labels[tuple(face_slice)]] = True
     # Label 0 is the foreground itself, never a hole to fill.
     reaches_edge[0] = True
-    return mask | ~reaches_edge[background_labels]
+    result = mask | ~reaches_edge[background_labels]
+    if use_memmap and isinstance(background_labels, np.memmap):
+        release_memmap_array(background_labels)
+    return result
 
 
 def _label_inverted_background(
     inverted: np.ndarray,
     *,
     platform: str | None = None,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, int]:
-    """Label background components; compact dtype on Windows only."""
+    """Label background components; compact dtype on Windows only.
+
+    *use_memmap*, when True, allocates the labelled array (and, on Windows,
+    its int32 fallback) as a disk-backed buffer -- the caller
+    (:func:`fill_binary_holes`) releases it once it has read what it needs.
+    *memmap_directory* is forwarded to :func:`new_memmap_array`.
+    """
     if platform is None:
         platform = sys.platform
     if platform == "win32":
-        compact = np.empty(inverted.shape, dtype=np.int16)
+        compact = (
+            new_memmap_array(inverted.shape, np.int16, directory=memmap_directory)
+            if use_memmap
+            else np.empty(inverted.shape, dtype=np.int16)
+        )
         try:
             n_labels = int(label(inverted, output=compact))
             return compact, n_labels
         except (RuntimeError, TypeError, ValueError):
-            pass
+            if use_memmap:
+                release_memmap_array(compact)
+    if use_memmap:
+        labeled = new_memmap_array(inverted.shape, np.int32, directory=memmap_directory)
+        n_labels = int(label(inverted, output=labeled))
+        return labeled, n_labels
     labeled, n_labels = label(inverted)
     return labeled, int(n_labels)
 
@@ -221,7 +259,13 @@ def _euclidean_ball(radius: int) -> np.ndarray:
 MAX_BALL_DILATION_RADIUS = 3
 
 
-def bridge_gaps(binary_skeleton: np.ndarray, max_gap: int = 4) -> np.ndarray:
+def bridge_gaps(
+    binary_skeleton: np.ndarray,
+    max_gap: int = 4,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> np.ndarray:
     """Fill small gaps in a binary mask.
 
     Every background voxel within *max_gap* voxels of any foreground voxel is
@@ -232,14 +276,29 @@ def bridge_gaps(binary_skeleton: np.ndarray, max_gap: int = 4) -> np.ndarray:
     :data:`MAX_BALL_DILATION_RADIUS` up the footprint grows faster than the
     transform does and the transform wins. Both return the same mask, so this
     only decides how long it takes.
+
+    *use_memmap*, when True and the distance-transform path is taken, writes
+    the transform to a disk-backed buffer instead of a fresh in-RAM
+    ``float64`` array -- 8 bytes per voxel, the widest full-volume allocation
+    anywhere in this module. Only reached when ``max_gap`` exceeds
+    :data:`MAX_BALL_DILATION_RADIUS` (not the pipeline's own default).
+    *memmap_directory* is forwarded to :func:`temporary_memmap_array`;
+    ignored when *use_memmap* is False.
     """
     if max_gap <= 0:
         return binary_skeleton
     max_gap = int(max_gap)
     if max_gap <= MAX_BALL_DILATION_RADIUS:
         return binary_dilation(binary_skeleton, structure=_euclidean_ball(max_gap))
-    distance = distance_transform_edt(~binary_skeleton)
-    return binary_skeleton | ((distance <= max_gap) & (~binary_skeleton))
+    inverted = ~binary_skeleton
+    if use_memmap:
+        with temporary_memmap_array(
+            binary_skeleton.shape, np.float64, directory=memmap_directory
+        ) as distance:
+            distance_transform_edt(inverted, distances=distance)
+            return binary_skeleton | ((distance <= max_gap) & inverted)
+    distance = distance_transform_edt(inverted)
+    return binary_skeleton | ((distance <= max_gap) & inverted)
 
 
 def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
@@ -662,6 +721,8 @@ def preprocess_skeleton_for_graph(
     bridge_z_distance_weight: float = 1.0,
     segmentation_mask: np.ndarray | None = None,
     bridge_weight_by_segmentation: bool = False,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
     """Remove small objects, re-skeletonize, and reconnect isolated fragments.
 
@@ -705,6 +766,11 @@ def preprocess_skeleton_for_graph(
         Forwarded to :func:`connect_skeleton_components` as
         ``z_distance_weight``, ``segmentation_mask``, and
         ``weight_by_segmentation`` respectively -- see its own docstring.
+    use_memmap, memmap_directory:
+        Forwarded to :func:`bridge_gaps`, whose distance-transform path (only
+        taken when ``bridge_gap_size`` exceeds
+        :data:`MAX_BALL_DILATION_RADIUS`) is the one full-volume ``float64``
+        allocation this function can make.
     """
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
     cleaned = remove_small_objects(
@@ -727,7 +793,12 @@ def preprocess_skeleton_for_graph(
 
     # Dilation-based gap filling reconnects nearby foreground regions.
     if bridge_gap_size > 0:
-        cleaned = bridge_gaps(cleaned.astype(bool), max_gap=bridge_gap_size)
+        cleaned = bridge_gaps(
+            cleaned.astype(bool),
+            max_gap=bridge_gap_size,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+        )
 
     cleaned = skeletonize_volume(cleaned.astype(bool))
 
