@@ -12,7 +12,7 @@ import pytest
 import tifffile
 
 from haemolynx.pipeline import default_schema
-from haemolynx.pipeline.stages import segment, skeletonise
+from haemolynx.pipeline.stages import _skeletonize_tile_halo_voxels, segment, skeletonise
 from haemolynx.preprocessing import (
     BRAID_FACTOR_LIMIT,
     THICK_VESSEL_MIN_RADIUS_UM,
@@ -175,6 +175,16 @@ def test_skeletonize_tiling_gives_the_same_result_as_untiled_memmap_skeletonisat
     untiled_volume = skeletonise(untiled_settings, segment(untiled_settings))
 
     assert np.array_equal(tiled_volume.skeleton, untiled_volume.skeleton)
+
+
+def test_skeletonize_tile_halo_voxels_is_zero_when_tiling_is_off():
+    settings = {"skeletonize_tile_large_components": False, "skeletonize_tile_halo_um": 30.0}
+    assert _skeletonize_tile_halo_voxels(settings, (2.0, 1.0, 1.0)) == 0
+
+
+def test_skeletonize_tile_halo_voxels_converts_microns_to_z_voxels():
+    settings = {"skeletonize_tile_large_components": True, "skeletonize_tile_halo_um": 30.0}
+    assert _skeletonize_tile_halo_voxels(settings, (2.0, 1.0, 1.0)) == 15
 
 
 def test_thickness_gate_defaults_off_and_matches_the_locked_radius():

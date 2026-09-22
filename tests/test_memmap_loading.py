@@ -19,7 +19,11 @@ from haemolynx.io import (
     load_3d_tif_with_voxel_size,
     load_and_skeletonize_3d_tif,
 )
-from haemolynx.io.load import _skeletonize_loaded_volume
+from haemolynx.io.load import (
+    _skeletonize_loaded_volume,
+    _to_binary_volume_for_skeletonization,
+    _unique_with_counts,
+)
 from haemolynx.preprocessing import (
     bridge_gaps,
     drop_small_components,
@@ -128,6 +132,106 @@ def test_h5_memmap_loading_honours_memmap_directory(tmp_path):
 
     assert isinstance(image, np.memmap)
     assert Path(image.filename).parent == custom_dir
+
+
+# --- io.load._unique_with_counts / _to_binary_volume_for_skeletonization -----
+
+
+class _RaisesIfFlattenedWhole(np.ndarray):
+    """Proves a caller never sees this array as one flat/raveled unit.
+
+    ``np.unique`` flattens its input via ``.flatten()`` before sorting it --
+    for a ``use_memmap_loading`` volume, that flatten is a fresh, full-size,
+    plain-RAM copy regardless of how the source pixels are stored, which is
+    exactly the allocation ``_unique_with_counts`` exists to avoid. Slicing
+    (``arr[index]``, the per-slice access the memmap-safe path uses) comes
+    back as a plain ``np.ndarray``, so a per-slice ``np.unique`` call is
+    unaffected; only asking this class to flatten *itself* raises.
+    """
+
+    def flatten(self, *args, **kwargs):
+        raise AssertionError("flattened the whole array instead of per-slice access")
+
+    def ravel(self, *args, **kwargs):
+        raise AssertionError("raveled the whole array instead of per-slice access")
+
+    def __getitem__(self, item):
+        result = np.ndarray.__getitem__(self, item)
+        return np.asarray(result) if isinstance(result, np.ndarray) else result
+
+
+def _watched(arr: np.ndarray) -> _RaisesIfFlattenedWhole:
+    return arr.view(_RaisesIfFlattenedWhole)
+
+
+def test_unique_with_counts_matches_np_unique_with_memmap_off():
+    arr = _random_volume(shape=(4, 5, 6), seed=1)
+    values, counts = _unique_with_counts(arr, use_memmap=False)
+    expected_values, expected_counts = np.unique(arr, return_counts=True)
+    assert np.array_equal(values, expected_values)
+    assert np.array_equal(counts, expected_counts)
+
+
+def test_unique_with_counts_matches_np_unique_with_memmap_on():
+    """Some values only appear in some slices, so this also pins that
+    per-slice tallies are correctly merged, not just each slice's own."""
+    arr = np.zeros((5, 4, 4), dtype=np.uint8)
+    arr[0] = 1
+    arr[1] = 2
+    arr[2, 0, 0] = 3
+    arr[3:] = 1
+    expected_values, expected_counts = np.unique(arr, return_counts=True)
+
+    values, counts = _unique_with_counts(arr, use_memmap=True)
+
+    assert np.array_equal(values, expected_values)
+    assert np.array_equal(counts, expected_counts)
+
+
+def test_unique_with_counts_with_memmap_on_never_flattens_the_whole_array():
+    arr = _watched(_random_volume(shape=(4, 5, 6), seed=2))
+
+    values, counts = _unique_with_counts(arr, use_memmap=True)
+
+    expected_values, expected_counts = np.unique(np.asarray(arr), return_counts=True)
+    assert np.array_equal(values, expected_values)
+    assert np.array_equal(counts, expected_counts)
+
+
+def test_unique_with_counts_with_memmap_off_does_flatten_the_whole_array():
+    """Confirms the watcher above is a real discriminator, not a no-op --
+    the plain (unprotected) path really does flatten its input whole."""
+    arr = _watched(_random_volume(shape=(4, 5, 6), seed=2))
+
+    with pytest.raises(AssertionError):
+        _unique_with_counts(arr, use_memmap=False)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        np.array([[[0, 1], [1, 0]], [[1, 1], [0, 0]]], dtype=np.uint8),
+        np.array([[[0, 255], [255, 0]], [[255, 255], [0, 0]]], dtype=np.uint8),
+        np.array([[[1, 2], [2, 1]], [[2, 2], [1, 1]]], dtype=np.uint8),
+        np.full((2, 2, 2), 7, dtype=np.uint8),
+    ],
+)
+def test_to_binary_volume_for_skeletonization_gives_the_same_result_with_memmap_on(raw):
+    memmap_result = _to_binary_volume_for_skeletonization(raw, use_memmap=True)
+    eager_result = _to_binary_volume_for_skeletonization(raw, use_memmap=False)
+
+    assert memmap_result.dtype == bool
+    assert np.array_equal(memmap_result, eager_result)
+
+
+def test_to_binary_volume_for_skeletonization_with_memmap_on_never_flattens_a_low_cardinality_mask():
+    raw = _watched(
+        np.array([[[0, 255], [255, 0]], [[255, 255], [0, 0]]], dtype=np.uint8)
+    )
+
+    result = _to_binary_volume_for_skeletonization(raw, use_memmap=True)
+
+    assert np.array_equal(result, np.asarray(raw) == 255)
 
 
 # --- io.load._skeletonize_loaded_volume / load_and_skeletonize_3d_tif --------
@@ -377,6 +481,35 @@ def test_skeletonize_by_component_gives_the_same_result_with_memmap_on():
     release_memmap_array(memmap_result)
 
 
+def test_skeletonize_by_component_with_memmap_on_gives_each_component_a_memmap_mask(monkeypatch):
+    """Regression: ``labeled[bbox] == component_id`` always allocated a
+    fresh, plain-RAM array the size of the component's bbox, regardless of
+    `use_memmap` -- for a single component filling (almost) the whole
+    volume, exactly the case Tier 2 tiling exists for, that bbox *is* the
+    whole volume, so every component's own mask must be a memmap too, not
+    only the labelled array and the accumulated result."""
+    import haemolynx.preprocessing.skeleton as skeleton_module
+
+    mask = np.zeros((10, 30, 30), dtype=bool)
+    mask[2:8, 5:15, 5:15] = True  # component A
+    mask[2:8, 20:28, 5:15] = True  # component B, disconnected from A
+
+    seen_types = []
+    original = skeleton_module._skeletonize_component_into
+
+    def spy(component_mask, out, **kwargs):
+        seen_types.append(type(component_mask))
+        return original(component_mask, out, **kwargs)
+
+    monkeypatch.setattr(skeleton_module, "_skeletonize_component_into", spy)
+
+    result = skeletonize_by_component(mask, use_memmap=True)
+
+    assert len(seen_types) == 2, "expected one call per connected component"
+    assert all(issubclass(t, np.memmap) for t in seen_types), seen_types
+    release_memmap_array(result)
+
+
 def test_skeletonize_by_component_with_memmap_off_calls_skimage_directly():
     """The documented contract: use_memmap=False must be byte-for-byte
     skimage.morphology.skeletonize, not a reimplementation."""
@@ -573,3 +706,48 @@ def test_preprocess_skeleton_for_graph_gives_the_same_result_with_memmap_on():
     )
 
     assert np.array_equal(memmap_result, eager_result)
+
+
+def test_preprocess_skeleton_for_graph_re_skeletonizes_through_skeletonize_by_component(
+    monkeypatch,
+):
+    """Regression: the re-skeletonize step after bundle collapse called the
+    plain, untiled ``skeletonize_volume`` unconditionally -- a second,
+    full-volume Lee-thinning call with none of the first call's
+    use_memmap/tiling protection. It must route through
+    ``skeletonize_by_component`` instead, with the tiling settings this
+    function was given forwarded to it."""
+    import haemolynx.preprocessing.skeleton as skeleton_module
+
+    skeleton = np.zeros((5, 15, 15), dtype=bool)
+    skeleton[2, 2, :] = True
+
+    # skeletonize_voxel_bundles_into_paths (the step just before the one
+    # under test) legitimately calls skeletonize_volume itself -- only the
+    # re-skeletonize step after it is the regression under test, so this
+    # spies on skeletonize_by_component rather than forbidding
+    # skeletonize_volume outright.
+    calls = []
+    original = skeleton_module.skeletonize_by_component
+
+    def spy(mask, **kwargs):
+        calls.append(kwargs)
+        return original(mask, **kwargs)
+
+    monkeypatch.setattr(skeleton_module, "skeletonize_by_component", spy)
+
+    result = preprocess_skeleton_for_graph(
+        skeleton,
+        max_bridge_distance=0,
+        use_memmap=True,
+        tile_large_components=True,
+        tile_max_voxels=123,
+        tile_halo_voxels=4,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["use_memmap"] is True
+    assert calls[0]["tile_large_components"] is True
+    assert calls[0]["tile_max_voxels"] == 123
+    assert calls[0]["tile_halo_voxels"] == 4
+    assert np.array_equal(result, skeleton)

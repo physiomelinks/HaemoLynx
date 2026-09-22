@@ -161,7 +161,35 @@ def simplify_to_3d(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Expected 3D or 4D image, got shape {image.shape}")
 
 
-def _to_binary_volume_for_skeletonization(image: np.ndarray) -> np.ndarray:
+def _unique_with_counts(arr: np.ndarray, *, use_memmap: bool) -> tuple[np.ndarray, np.ndarray]:
+    """``np.unique(arr, return_counts=True)`` without flattening *arr* whole.
+
+    ``np.unique`` sorts a flattened copy of its input to find distinct
+    values -- for a ``use_memmap_loading`` volume, that copy is a fresh,
+    plain-RAM, full-volume buffer regardless of how the source pixels are
+    stored, exactly what ``use_memmap_loading`` exists to avoid (and large
+    enough on its own to be the allocation that fails, before skeletonize
+    ever runs). With *use_memmap* False, this is the plain call, unchanged.
+    With it True, tallies are accumulated one axis-0 slice at a time
+    instead, each slice's own ``np.unique`` call bounded to that slice's
+    size rather than the whole volume's.
+    """
+    if not use_memmap:
+        return np.unique(arr, return_counts=True)
+    tally: dict[object, int] = {}
+    for index in range(arr.shape[0]):
+        slice_values, slice_counts = np.unique(arr[index], return_counts=True)
+        for value, count in zip(slice_values.tolist(), slice_counts.tolist()):
+            tally[value] = tally.get(value, 0) + count
+    ordered = sorted(tally)
+    values = np.array(ordered, dtype=arr.dtype)
+    counts = np.array([tally[value] for value in ordered], dtype=np.int64)
+    return values, counts
+
+
+def _to_binary_volume_for_skeletonization(
+    image: np.ndarray, *, use_memmap: bool = False
+) -> np.ndarray:
     """Convert loaded image volume to a boolean mask for skeletonization.
 
     - Preserve low-cardinality integer label masks (e.g., 0/1, 0/255, 1/2).
@@ -176,13 +204,19 @@ def _to_binary_volume_for_skeletonization(image: np.ndarray) -> np.ndarray:
     than a copy, but the wrong type for anything downstream that checks
     ``isinstance(x, np.memmap)``) -- the same reasoning as
     ``io.axis_order.apply_axis_order``.
+
+    *use_memmap* only changes how the integer branch below finds the
+    volume's distinct values (see :func:`_unique_with_counts`) -- the
+    boolean pass-through above is unaffected, and every branch's own
+    final comparison (``arr == fg_value`` etc.) already produces its own
+    fresh boolean array regardless, same as before.
     """
     arr = np.asanyarray(image)
     if arr.dtype == bool:
         return arr
 
     if np.issubdtype(arr.dtype, np.integer):
-        values, counts = np.unique(arr, return_counts=True)
+        values, counts = _unique_with_counts(arr, use_memmap=use_memmap)
         if values.size == 1:
             return arr > 0
         # Common binary-mask conventions (e.g., 0/1 or 0/255).
@@ -641,11 +675,12 @@ def load_binary_mask_and_voxel_size(
     consumer (dilation, volume filters, terminal assignment, napari display).
 
     The path may point at a file inside a sibling zip archive; see
-    :func:`resolve_image_path_with_optional_zip`. ``use_memmap`` only governs
-    how the file is *read*; the returned boolean mask is always a fresh
-    in-RAM array either way, since :func:`_to_binary_volume_for_skeletonization`
-    has to compare every voxel against the mask's own foreground convention
-    regardless of where the source pixels live.
+    :func:`resolve_image_path_with_optional_zip`. ``use_memmap`` governs how
+    the file is *read* and, via :func:`_to_binary_volume_for_skeletonization`,
+    how it finds the mask's own foreground convention; the returned boolean
+    mask is always a fresh in-RAM array either way, since every branch's own
+    final voxel-by-voxel comparison already produces one regardless of where
+    the source pixels live.
     """
     path = resolve_image_path_with_optional_zip(Path(mask_path))
     image, voxel_size_xyz = load_volume_and_voxel_size(
@@ -658,7 +693,10 @@ def load_binary_mask_and_voxel_size(
     )
     if image.ndim != 3:
         raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
-    return _to_binary_volume_for_skeletonization(image), voxel_size_xyz
+    return (
+        _to_binary_volume_for_skeletonization(image, use_memmap=use_memmap),
+        voxel_size_xyz,
+    )
 
 
 def _skeletonize_loaded_volume(
@@ -700,7 +738,7 @@ def _skeletonize_loaded_volume(
     materialise a second full-volume plain-RAM copy of whichever one, memmap
     or not, use_memmap_loading just avoided making one for.
     """
-    binary = _to_binary_volume_for_skeletonization(image)
+    binary = _to_binary_volume_for_skeletonization(image, use_memmap=use_memmap)
     skeleton = skeletonize_by_component(
         binary,
         use_memmap=use_memmap,

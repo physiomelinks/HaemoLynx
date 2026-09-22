@@ -475,7 +475,15 @@ def skeletonize_by_component(
     ignored when *use_memmap* is False. The label array is a transient
     buffer, scoped to a ``with temporary_memmap_array(...)`` block that
     also covers the per-component loop -- released whether or not that
-    loop raises partway through, rather than leaking on a failure.
+    loop raises partway through, rather than leaking on a failure. Each
+    component's own boolean mask (``labeled[bbox] == component_id``) is
+    a second transient memmap of its own, filled one slice at a time via
+    :func:`_combine_per_slice` rather than as a single whole-bbox
+    expression -- otherwise that comparison would allocate a fresh,
+    plain-RAM array the size of the bbox regardless of how *mask* itself
+    is backed, which for the single-giant-component case is (almost) the
+    whole volume: the exact case *tile_large_components* below exists to
+    shrink, undone if reaching it still costs one full-volume allocation.
 
     *tile_large_components*, *tile_max_voxels* and *tile_halo_voxels* are
     forwarded to :func:`_skeletonize_component_into` for each component in
@@ -497,14 +505,26 @@ def skeletonize_by_component(
         for component_id, bbox in enumerate(find_objects(labeled, max_label=n_labels), start=1):
             if bbox is None:
                 continue
-            component_mask = labeled[bbox] == component_id
-            _skeletonize_component_into(
-                component_mask,
-                result[bbox],
-                tile_large_components=tile_large_components,
-                tile_max_voxels=tile_max_voxels,
-                tile_halo_voxels=tile_halo_voxels,
-            )
+            labeled_component = labeled[bbox]
+            # Not `labeled_component == component_id`: that comparison
+            # always allocates a fresh, plain-RAM array the size of the
+            # bbox, regardless of how `labeled` itself is backed -- for
+            # the single-giant-component case Tier 2 tiling exists for,
+            # that bbox *is* (almost) the whole volume, defeating memmap
+            # right before the one call tiling is supposed to shrink.
+            with temporary_memmap_array(
+                labeled_component.shape, bool, directory=memmap_directory
+            ) as component_mask:
+                _combine_per_slice(
+                    component_mask, lambda lb: lb == component_id, labeled_component
+                )
+                _skeletonize_component_into(
+                    component_mask,
+                    result[bbox],
+                    tile_large_components=tile_large_components,
+                    tile_max_voxels=tile_max_voxels,
+                    tile_halo_voxels=tile_halo_voxels,
+                )
     return result
 
 
@@ -978,6 +998,9 @@ def preprocess_skeleton_for_graph(
     bridge_weight_by_segmentation: bool = False,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    tile_large_components: bool = False,
+    tile_max_voxels: int = 200_000_000,
+    tile_halo_voxels: int = 0,
 ) -> np.ndarray:
     """Remove small objects, re-skeletonize, and reconnect isolated fragments.
 
@@ -1023,10 +1046,23 @@ def preprocess_skeleton_for_graph(
         ``weight_by_segmentation`` respectively -- see its own docstring.
     use_memmap, memmap_directory:
         Forwarded to :func:`drop_small_components` (the very first step
-        below) and to :func:`bridge_gaps`, whose distance-transform path
+        below); to :func:`bridge_gaps`, whose distance-transform path
         (only taken when ``bridge_gap_size`` exceeds
         :data:`MAX_BALL_DILATION_RADIUS`) is a full-volume ``float64``
-        allocation this function can also redirect to disk.
+        allocation this function can also redirect to disk; and to the
+        re-skeletonize step after bundle collapse, via
+        :func:`skeletonize_by_component` rather than the plain
+        :func:`skeletonize_volume` -- bundle collapse changes individual
+        voxels but never the volume's shape, so that second Lee-thinning
+        call is exactly as large as the first one this pipeline already
+        protects, not a smaller, already-cheap operation.
+    tile_large_components, tile_max_voxels, tile_halo_voxels:
+        Forwarded to the same re-skeletonize step's own
+        :func:`skeletonize_by_component` call -- see its docstring.
+        ``connect_skeleton_components`` and, when ``min_component_fraction``
+        is set, ``_filter_components_by_total_fraction`` still label the
+        whole volume in plain RAM regardless of ``use_memmap``; unlike
+        re-skeletonizing, neither has a tiling-shaped alternative available.
     """
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
     cleaned = drop_small_components(
@@ -1052,19 +1088,33 @@ def preprocess_skeleton_for_graph(
     # Dilation-based gap filling reconnects nearby foreground regions.
     if bridge_gap_size > 0:
         cleaned = bridge_gaps(
-            cleaned.astype(bool),
+            np.asanyarray(cleaned, dtype=bool),
             max_gap=bridge_gap_size,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
         )
 
-    cleaned = skeletonize_volume(cleaned.astype(bool))
+    # Not skeletonize_volume: that is the plain, untiled, single-component
+    # skimage.morphology.skeletonize call this whole module exists to avoid
+    # on a volume too large for it -- calling it here on the *whole* volume
+    # (bundle-collapse can change individual voxels but never the shape)
+    # would silently throw away every bit of use_memmap/tiling protection
+    # the first skeletonize call in this pipeline already got, for a
+    # second, identical-in-kind allocation.
+    cleaned = skeletonize_by_component(
+        np.asanyarray(cleaned, dtype=bool),
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+        tile_large_components=tile_large_components,
+        tile_max_voxels=tile_max_voxels,
+        tile_halo_voxels=tile_halo_voxels,
+    )
 
     # Bridge remaining disconnected components BEFORE filtering by size so
     # that small fragments get a chance to merge rather than being discarded.
     if max_bridge_distance > 0:
         cleaned = connect_skeleton_components(
-            cleaned.astype(bool),
+            np.asanyarray(cleaned, dtype=bool),
             max_bridge_distance=max_bridge_distance,
             component_connectivity=conn,
             z_distance_weight=bridge_z_distance_weight,
@@ -1079,4 +1129,4 @@ def preprocess_skeleton_for_graph(
             component_connectivity=conn,
         )
 
-    return cleaned.astype(bool)
+    return np.asanyarray(cleaned, dtype=bool)

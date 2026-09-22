@@ -463,6 +463,19 @@ def _thick_vessel_restriction_mask(
     return restriction
 
 
+def _skeletonize_tile_halo_voxels(settings: dict, voxel_size_zyx) -> int:
+    """``skeletonize_tile_halo_um`` in Z voxels, or 0 when tiling is off.
+
+    Shared by both of this stage's skeletonize calls (the initial one and
+    the re-skeletonize inside ``preprocess_skeleton_for_graph``) so the
+    physical-to-voxel conversion is not repeated -- and cannot silently
+    drift -- between them.
+    """
+    if not settings["skeletonize_tile_large_components"]:
+        return 0
+    return round(float(settings["skeletonize_tile_halo_um"]) / voxel_size_zyx[0])
+
+
 def _skeletonize_loaded_mask(
     image, settings: dict, voxel_size_xyz
 ) -> tuple[np.ndarray, np.ndarray | None]:
@@ -493,11 +506,6 @@ def _skeletonize_loaded_mask(
             ),
             return_thick_mask=True,
         )
-    tile_halo_voxels = 0
-    if settings["skeletonize_tile_large_components"]:
-        tile_halo_voxels = round(
-            float(settings["skeletonize_tile_halo_um"]) / voxel_size_zyx[0]
-        )
     return (
         _skeletonize_loaded_volume(
             image,
@@ -505,7 +513,7 @@ def _skeletonize_loaded_mask(
             memmap_directory=settings["memmap_directory"],
             tile_large_components=settings["skeletonize_tile_large_components"],
             tile_max_voxels=settings["skeletonize_tile_max_voxels"],
-            tile_halo_voxels=tile_halo_voxels,
+            tile_halo_voxels=_skeletonize_tile_halo_voxels(settings, voxel_size_zyx),
         ),
         None,
     )
@@ -581,7 +589,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 cleanup_kwargs.get("smooth_surfaces"),
                 cleanup_kwargs.get("remove_small_volumes"),
             )
-            binary_image = _to_binary_volume_for_skeletonization(image)
+            binary_image = _to_binary_volume_for_skeletonization(
+                image, use_memmap=settings["use_memmap_loading"]
+            )
             image, raw_segmented_image = preprocessing.clean_segmented_mask_for_skeletonisation(
                 binary_image,
                 voxel_size_zyx=io.voxel_size_zyx_from_xyz(
@@ -625,6 +635,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         # The `skeleton_*` settings are this function's parameters with a
         # prefix, so they go in as a group; the percentage and the mask
         # (not a scalar setting) are the exceptions.
+        tile_halo_voxels = _skeletonize_tile_halo_voxels(
+            settings, io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size))
+        )
         skeleton = preprocessing.preprocess_skeleton_for_graph(
             skeleton,
             **prefixed_arguments(
@@ -633,9 +646,14 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 parameters_of(preprocessing.preprocess_skeleton_for_graph),
             ),
             min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
-            segmentation_mask=_to_binary_volume_for_skeletonization(image),
+            segmentation_mask=_to_binary_volume_for_skeletonization(
+                image, use_memmap=settings["use_memmap_loading"]
+            ),
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
+            tile_large_components=settings["skeletonize_tile_large_components"],
+            tile_max_voxels=settings["skeletonize_tile_max_voxels"],
+            tile_halo_voxels=tile_halo_voxels,
         )
         preprocessing.log_skeleton_connectivity_stats(
             "cleaned",
