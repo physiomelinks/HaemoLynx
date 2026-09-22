@@ -23,6 +23,7 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
     DISPLAY_SETTINGS_OFF_IN_NAPARI,
+    FORCED_HIDDEN_EXPORT_SETTINGS,
     OURS,
     _vessel_segment_diameters_um,
     settings_widget,
@@ -192,8 +193,9 @@ def test_an_untouched_panel_reads_back_the_schema_defaults(panel):
     assert [str(w.message) for w in caught] == []
     expected = schema.validate(
         {
-            setting.name: DISPLAY_SETTINGS_OFF_IN_NAPARI.get(
-                setting.name, setting.default
+            setting.name: FORCED_HIDDEN_EXPORT_SETTINGS.get(
+                setting.name,
+                DISPLAY_SETTINGS_OFF_IN_NAPARI.get(setting.name, setting.default),
             )
             for setting in schema
         }
@@ -226,6 +228,38 @@ def test_the_settings_that_open_a_browser_start_off(panel):
         assert values[name] == expected, f"{name} should start {expected}"
     assert values["show_plots_in_ide"] is False
     assert values["interactive_plots"] is False
+
+
+def test_forced_hidden_export_settings_have_no_row_but_keep_their_value(panel):
+    """flow_direction_colouring, flow_arrow_scale and compute_vascular_communities
+    are not per-run decisions, so Export shows no row for them -- but they
+    must still read back their forced value, and a stale/loaded value must
+    not stick with no visible control to fix it. vascular_community_weighting
+    stays a real, visible, enabled choice."""
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    tabs = widget._haemolynx_tabs
+    for index in range(tabs.count()):
+        if "Export" in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            break
+    else:
+        raise AssertionError("no tab containing 'Export'")
+
+    for name, forced in FORCED_HIDDEN_EXPORT_SETTINGS.items():
+        assert rows[name].visible is False, name
+        assert widget._haemolynx_values()[name] == forced, name
+
+    rows["compute_vascular_communities"].value = False
+    QApplication.processEvents()
+    assert widget._haemolynx_values()["compute_vascular_communities"] is True
+
+    assert rows["vascular_community_weighting"].visible is True
+    assert rows["vascular_community_weighting"].enabled is True
 
 
 def test_the_input_path_starts_empty(panel):

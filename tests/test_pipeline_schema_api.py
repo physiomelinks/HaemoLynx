@@ -117,6 +117,56 @@ def test_skeletonize_tiling_settings_default_off_and_chain_their_requires():
     assert halo.requires == ("skeletonize_tile_large_components",)
 
 
+def test_all_diams_const_children_are_declared_immediately_after_it():
+    """gui/_widget.py's Diameters tab is a flat Container in schema
+    declaration order with no QGroupBox -- nesting a child under its parent
+    checkbox is purely "declared right after it", so a child declared pages
+    away (behind ~20 unrelated pericyte settings, as a regression once put
+    them) reads as un-nested, or as having disappeared, even though
+    `requires` still gates it correctly. This pins the six per-order
+    diameter overrides directly after `all_diams_const` with nothing
+    unrelated between them."""
+    schema = default_schema()
+    names = schema.names
+    start = names.index("all_diams_const")
+    children = (
+        "manual_capillary_diameter_by_branch_order",
+        "manual_arteriole_diameter_by_branch_order",
+        "manual_venule_diameter_by_branch_order",
+        "manual_large_arteriole_diameter_by_branch_order",
+        "manual_large_venule_diameter_by_branch_order",
+        "diameter_by_branch_order",
+    )
+    assert names[start + 1 : start + 1 + len(children)] == children
+    for name in children:
+        assert schema[name].requires == ("!all_diams_const",), name
+
+
+def test_measurement_3d_to_cell_mask_is_declared_after_statistics_settings():
+    """Same flat-Container nesting rule as Diameters applies to "8.
+    Additional measurements": measurement_3d_to_cell_mask and its six
+    children must sit between statistics_intercapillary_distance (the last
+    of Statistics' own measurement toggles) and statistics_network_analysis
+    (the first setting of the separate, boxed "Connectivity/Network
+    Analysis" group) -- a regression once declared this block right after
+    `statistics` instead, so it rendered above the rest of Statistics'
+    settings rather than after them."""
+    schema = default_schema()
+    names = schema.names
+    start = names.index("statistics_intercapillary_distance")
+    end = names.index("statistics_network_analysis")
+    children = (
+        "measurement_3d_to_cell_mask",
+        "cell_mask_path",
+        "cell_mask_h5_dataset_name",
+        "measurement_3d_vessel_mask_path",
+        "measurement_3d_vessel_mask_h5_dataset_name",
+        "measurement_3d_reference_image_path",
+        "measurement_3d_reference_h5_dataset_name",
+    )
+    assert names[start + 1 : end] == children
+
+
 def test_no_path_default_points_inside_the_examples_directory():
     """Library defaults describe the user's working directory, not this repo."""
     inside_repo = [

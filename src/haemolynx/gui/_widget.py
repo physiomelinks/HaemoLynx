@@ -151,6 +151,20 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
     "visualize_results": False,
 }
 
+#: Export settings that are not a per-run decision, so they get no row of
+#: their own: flow_direction_colouring/flow_arrow_scale are cosmetics for a
+#: layer that is always added anyway, and compute_vascular_communities is
+#: worth having on whenever its weighting can be chosen -- only the
+#: weighting itself (``vascular_community_weighting``, still a real row) is
+#: a choice worth surfacing. Never parented as flat tab rows, forced to
+#: this value on every call to ``apply_prerequisites`` so a loaded config
+#: cannot silently turn one off with no visible control to notice it by.
+FORCED_HIDDEN_EXPORT_SETTINGS: dict[str, Any] = {
+    "flow_direction_colouring": True,
+    "flow_arrow_scale": 1.0,
+    "compute_vascular_communities": True,
+}
+
 #: What napari calls the log window's dock.
 LOG_DOCK_NAME = "HaemoLynx run log"
 
@@ -6135,6 +6149,14 @@ def settings_widget(napari_viewer=None):
             rows[name].visible = False
             orphan_holder.append(rows[name])
 
+    # FORCED_HIDDEN_EXPORT_SETTINGS: never parented as a flat Export row for
+    # the same reason as the perturbation rows above -- park them in the
+    # same hidden holder rather than leaving them as a floating window.
+    for name in FORCED_HIDDEN_EXPORT_SETTINGS:
+        if name in rows:
+            rows[name].visible = False
+            orphan_holder.append(rows[name])
+
     #: Stages that lay their own page out, keyed by the stage function they
     #: belong to rather than by the tab's title, so renaming a tab cannot
     #: silently drop them. Any future stage-specific page has a home here.
@@ -6167,15 +6189,25 @@ def settings_widget(napari_viewer=None):
     #: first call -- see the `thick_vessel_row` guard just below for the
     #: same "not built yet" pattern.
     optimise_fwhm_button: Any = None
+    #: A nested QGroupBox (e.g. "Connectivity/Network Analysis" on "8.
+    #: Additional measurements") boxes a run of settings that all share one
+    #: `requires` gate on the section above it. Left always visible, an
+    #: unmet gate hides every row inside but not the box itself, so a user
+    #: sees an empty frame with a title and nothing in it rather than the
+    #: box simply not being there -- apply_prerequisites (below) hides the
+    #: box itself once none of its own rows are visible.
+    section_group_boxes: dict[str, tuple[Any, list[str]]] = {}
 
     for tab in tabs:
         summary = Label(value=tab.stage.summary)
         build = pages.get(tab.stage.call or "")
-        # Shared ilastik knobs start unparented; place_shared_ilastik hosts them.
+        # Shared ilastik knobs start unparented; place_shared_ilastik hosts
+        # them. FORCED_HIDDEN_EXPORT_SETTINGS are parked in orphan_holder.
         names = [
             field.name
             for field in tab.fields
             if field.name not in SHARED_ILASTIK_SETTING_SET
+            and field.name not in FORCED_HIDDEN_EXPORT_SETTINGS
         ]
         if build is not None:
             native = build(summary, names)
@@ -6220,6 +6252,7 @@ def settings_widget(napari_viewer=None):
                     ).native
                 )
                 page_stack_layout.addWidget(group)
+                section_group_boxes[section] = (group, section_names)
             native = page_stack
         # A bounded QScrollArea rather than `Container(scrollable=True)`: the
         # magicgui one reports the full height of its contents, so a tab with
@@ -6407,6 +6440,13 @@ def settings_widget(napari_viewer=None):
 
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""
+        # Pinned before the values snapshot below, not inside the rows loop:
+        # a dependent row (vascular_community_weighting) reads this value to
+        # compute its own `enabled`, so correcting it mid-loop would leave
+        # that computation using the stale, not-yet-forced value.
+        for name, forced in FORCED_HIDDEN_EXPORT_SETTINGS.items():
+            if name in rows and rows[name].value != forced:
+                rows[name].value = forced
         values = current_values()
         place_shared_ilastik()
         for name, widget in rows.items():
@@ -6422,6 +6462,12 @@ def settings_widget(napari_viewer=None):
                 widget.enabled = True
                 widget.tooltip = fields[name].help
                 continue
+            if name in FORCED_HIDDEN_EXPORT_SETTINGS:
+                # Value already pinned above -- just keep it hidden.
+                widget.visible = False
+                widget.enabled = True
+                widget.tooltip = fields[name].help
+                continue
             field = fields[name]
             enabled = field.is_enabled(values)
             if field.hide_when_unmet:
@@ -6433,6 +6479,15 @@ def settings_widget(napari_viewer=None):
             else:
                 widget.enabled = enabled
                 widget.tooltip = field.help if enabled else field.why_disabled(values)
+
+        for group, section_names in section_group_boxes.values():
+            # Not `rows[name].visible`: magicgui reads that back through the
+            # widget's own composite Qt visibility, which is masked by the
+            # group's *current* (possibly still-hidden, from the previous
+            # call) state -- reading it here would latch the group hidden
+            # forever once hidden once. `field.is_visible` is the pure,
+            # ancestor-independent answer the per-row loop above just used.
+            group.setVisible(any(fields[name].is_visible(values) for name in section_names))
 
         # Large-vessel-network mode relabels the thick-vessel checkbox: once
         # both are on, "thick vessel skeletonisation" is no longer the

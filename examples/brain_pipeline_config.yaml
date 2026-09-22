@@ -482,20 +482,6 @@ cartwheel_hub_guard:
 statistics_and_measurements:
   # Compute and export the global vessel statistics
   statistics: false
-  # Measure 3D distances from the vessel network to a cell mask
-  measurement_3d_to_cell_mask: false
-  # Read this cell mask for the 3D distance measurement  [needs measurement_3d_to_cell_mask; must exist]
-  cell_mask_path: null
-  # Read this dataset from the cell mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
-  cell_mask_h5_dataset_name: null
-  # Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input  [needs measurement_3d_to_cell_mask; must exist]
-  measurement_3d_vessel_mask_path: null
-  # Read this dataset from the 3D-distance vessel mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
-  measurement_3d_vessel_mask_h5_dataset_name: null
-  # Take the vessel-volume raster shape from this reference image  [needs measurement_3d_to_cell_mask; must exist]
-  measurement_3d_reference_image_path: null
-  # Read this dataset from the 3D-distance reference image when it is an H5 file  [needs measurement_3d_to_cell_mask]
-  measurement_3d_reference_h5_dataset_name: null
   # Node/edge counts, total length, mean diameter and the other basic vessel statistics  [needs statistics]
   statistics_basic: true
   # How much each vessel's centreline deviates from a straight line  [needs statistics]
@@ -514,6 +500,20 @@ statistics_and_measurements:
   statistics_daughter_angles: true
   # Typical spacing between neighbouring capillaries  [needs statistics]
   statistics_intercapillary_distance: true
+  # Measure 3D distances from the vessel network to a cell mask
+  measurement_3d_to_cell_mask: false
+  # Read this cell mask for the 3D distance measurement  [needs measurement_3d_to_cell_mask; must exist]
+  cell_mask_path: null
+  # Read this dataset from the cell mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
+  cell_mask_h5_dataset_name: null
+  # Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input  [needs measurement_3d_to_cell_mask; must exist]
+  measurement_3d_vessel_mask_path: null
+  # Read this dataset from the 3D-distance vessel mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
+  measurement_3d_vessel_mask_h5_dataset_name: null
+  # Take the vessel-volume raster shape from this reference image  [needs measurement_3d_to_cell_mask; must exist]
+  measurement_3d_reference_image_path: null
+  # Read this dataset from the 3D-distance reference image when it is an H5 file  [needs measurement_3d_to_cell_mask]
+  measurement_3d_reference_h5_dataset_name: null
 
 # ------------------------------------------------------------------------
 # Connectivity/Network Analysis
@@ -560,6 +560,22 @@ diameters_and_pericytes:
   haematocrit_distribution_tolerance: 0.01
   # Give every branch order the same vessel diameter instead of a per-order table
   all_diams_const: true
+  # Override capillary diameters per branch-order label, e.g. B01  [um; needs all_diams_const off]
+  manual_capillary_diameter_by_branch_order:
+    B01: 6.2
+    B02: 4.0
+    B03: 5.0
+    B04: 5.0
+  # Override arteriole diameters per branch-order label, e.g. Art1  [um; needs all_diams_const off]
+  manual_arteriole_diameter_by_branch_order: {}
+  # Override venule diameters per branch-order label, e.g. Ven1  [um; needs all_diams_const off]
+  manual_venule_diameter_by_branch_order: {}
+  # Override large-arteriole diameters per branch-order label, e.g. Large_Art1  [um; needs all_diams_const off]
+  manual_large_arteriole_diameter_by_branch_order: {}
+  # Override large-venule diameters per branch-order label, e.g. Large_Ven1  [um; needs all_diams_const off]
+  manual_large_venule_diameter_by_branch_order: {}
+  # Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings  [um; needs all_diams_const off]
+  diameter_by_branch_order: null
   # Legacy flag kept for older configs and CLI; ignored by baseline Haemodynamics and every perturbation merge (not shown as a typed-entry control). Focal constrictions come only from pericyte-typed perturbations via their strategy path  [needs run_haemodynamics]
   do_pericyte_construction: false
   # Axial length of each focal pericyte constriction/dilation site along the vessel centreline  [um; range 0.0..]
@@ -596,22 +612,6 @@ diameters_and_pericytes:
   max_branch_order: 51
   # Use this vessel diameter where no branch-order override applies  [um; range 0.0..]
   default_diameter: 4.0
-  # Override capillary diameters per branch-order label, e.g. B01  [um; needs all_diams_const off]
-  manual_capillary_diameter_by_branch_order:
-    B01: 6.2
-    B02: 4.0
-    B03: 5.0
-    B04: 5.0
-  # Override arteriole diameters per branch-order label, e.g. Art1  [um; needs all_diams_const off]
-  manual_arteriole_diameter_by_branch_order: {}
-  # Override venule diameters per branch-order label, e.g. Ven1  [um; needs all_diams_const off]
-  manual_venule_diameter_by_branch_order: {}
-  # Override large-arteriole diameters per branch-order label, e.g. Large_Art1  [um; needs all_diams_const off]
-  manual_large_arteriole_diameter_by_branch_order: {}
-  # Override large-venule diameters per branch-order label, e.g. Large_Ven1  [um; needs all_diams_const off]
-  manual_large_venule_diameter_by_branch_order: {}
-  # Supply the full branch-order diameter lookup; leave unset to derive it from the manual diameter settings  [um; needs all_diams_const off]
-  diameter_by_branch_order: null
   # Global focal constriction/dilation factor for every branch order (1.0 = no local change; <1 narrows, >1 widens at pericyte sites). constriction_by_branch_order replaces this for listed orders only — empty map means this global factor alone  [range 0.0..; needs run_haemodynamics]
   pericyte_constriction_factor: 1.0
   # Sparse per-order overrides of pericyte_constriction_factor (<1 constricts, >1 dilates locally). Empty or unset makes no change (global factor only). A listed order replaces the global factor for that order alone (e.g. {B01: 1.0} with global 0.8 leaves B01 unchanged)
