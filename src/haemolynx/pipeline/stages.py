@@ -494,11 +494,22 @@ def _skeletonize_loaded_mask(
             ),
             return_thick_mask=True,
         )
+    tile_halo_voxels = 0
+    if settings["skeletonize_tile_large_components"]:
+        voxel_size_z = io.voxel_size_zyx_from_xyz(
+            tuple(float(v) for v in voxel_size_xyz)
+        )[0]
+        tile_halo_voxels = round(
+            float(settings["skeletonize_tile_halo_um"]) / voxel_size_z
+        )
     return (
         _skeletonize_loaded_volume(
             image,
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
+            tile_large_components=settings["skeletonize_tile_large_components"],
+            tile_max_voxels=settings["skeletonize_tile_max_voxels"],
+            tile_halo_voxels=tile_halo_voxels,
         ),
         None,
     )

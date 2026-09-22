@@ -2570,6 +2570,51 @@ SCHEMA = Schema(
             requires=("use_thick_vessel_skeletonisation", "detect_thick_vessel_braiding"),
         ),
         Setting(
+            name="skeletonize_tile_large_components",
+            kind="bool",
+            default=False,
+            help=(
+                "When a connected component is still too large to skeletonize "
+                "as one piece even after splitting the mask into connected "
+                "components, split it further into overlapping Z slabs "
+                "instead. Not provably exact like the per-component split "
+                "itself -- a generous skeletonize_tile_halo_um keeps results "
+                "indistinguishable from the monolithic computation for real "
+                "vessel data, but this is a heuristic margin, not a proof"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_memmap_loading",),
+        ),
+        Setting(
+            name="skeletonize_tile_max_voxels",
+            kind="int",
+            default=200_000_000,
+            help=(
+                "Largest single skeletonize() call this will make while "
+                "tiling -- roughly this many bytes of peak RAM for the "
+                "boolean slab, since skeletonize's own internal buffer is at "
+                "least this size regardless"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("skeletonize_tile_large_components",),
+        ),
+        Setting(
+            name="skeletonize_tile_halo_um",
+            kind="float",
+            default=30.0,
+            help=(
+                "Padding margin read from each slab's Z neighbours before "
+                "skeletonizing it, discarded before stitching -- should be "
+                "generously larger than the largest vessel radius in the "
+                "stack; too small risks a seam artefact where slabs join"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("skeletonize_tile_large_components",),
+        ),
+        Setting(
             name="smooth_centrelines",
             kind="bool",
             default=True,

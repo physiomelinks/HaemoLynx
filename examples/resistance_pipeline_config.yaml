@@ -450,6 +450,12 @@ pipeline_stages:
   thick_vessel_braid_factor_limit: 2.0
   # Only warn about a fat vessel component whose long axis has at least this many occupied slices, so a short stub end does not decide the average on its own  [range 1..; needs use_thick_vessel_skeletonisation and detect_thick_vessel_braiding]
   thick_vessel_braid_min_occupied_slices: 5
+  # When a connected component is still too large to skeletonize as one piece even after splitting the mask into connected components, split it further into overlapping Z slabs instead. Not provably exact like the per-component split itself -- a generous skeletonize_tile_halo_um keeps results indistinguishable from the monolithic computation for real vessel data, but this is a heuristic margin, not a proof  [needs use_memmap_loading]
+  skeletonize_tile_large_components: false
+  # Largest single skeletonize() call this will make while tiling -- roughly this many bytes of peak RAM for the boolean slab, since skeletonize's own internal buffer is at least this size regardless  [range 1..; needs skeletonize_tile_large_components]
+  skeletonize_tile_max_voxels: 200000000
+  # Padding margin read from each slab's Z neighbours before skeletonizing it, discarded before stitching -- should be generously larger than the largest vessel radius in the stack; too small risks a seam artefact where slabs join  [um; range 0.0..; needs skeletonize_tile_large_components]
+  skeletonize_tile_halo_um: 30.0
   # Take the voxel staircase out of each vessel's centreline after the graph is built, and re-measure its length from the result  [needs do_graph_building]
   smooth_centrelines: true
   # How to smooth a centreline: taubin recovers true length, chaikin changes it least  [one of: taubin, chaikin; needs smooth_centrelines]

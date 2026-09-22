@@ -145,6 +145,38 @@ def test_a_second_run_reuses_the_raw_volume_instead_of_reloading_it(tmp_path):
     assert np.array_equal(second_volume.skeleton, first_volume.skeleton)
 
 
+def test_skeletonize_tiling_gives_the_same_result_as_untiled_memmap_skeletonisation(tmp_path):
+    """skeletonize_tile_large_components (Tier 2) must not change what
+    skeletonise() produces for a component small enough that a generous
+    halo fully covers any boundary effect.
+
+    plasma_labelled_object(8.0) is one connected component whose own tight
+    bounding box is (17, 99, 61) = 102,663 voxels (confirmed directly,
+    since the tile threshold has to beat the *component's* own bbox, not
+    the outer mask array's shape). tile_max_voxels=20000 is well under one
+    of its own (99*61=6039-voxel) slices x a handful, forcing several
+    tiles rather than the two a looser threshold would give."""
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    mask_path = _write_mask(tmp_path, mask)
+
+    tiled_settings = settings_for(
+        tmp_path / "tiled",
+        mask_path,
+        use_memmap_loading=True,
+        skeletonize_tile_large_components=True,
+        skeletonize_tile_max_voxels=20_000,
+        skeletonize_tile_halo_um=20.0,
+    )
+    tiled_volume = skeletonise(tiled_settings, segment(tiled_settings))
+
+    untiled_settings = settings_for(
+        tmp_path / "untiled", mask_path, use_memmap_loading=True
+    )
+    untiled_volume = skeletonise(untiled_settings, segment(untiled_settings))
+
+    assert np.array_equal(tiled_volume.skeleton, untiled_volume.skeleton)
+
+
 def test_thickness_gate_defaults_off_and_matches_the_locked_radius():
     assert SCHEMA["use_thick_vessel_skeletonisation"].default is False
     assert SCHEMA["skeleton_thick_vessel_min_radius_um"].default == pytest.approx(

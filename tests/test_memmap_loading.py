@@ -399,6 +399,138 @@ def test_skeletonize_by_component_honours_memmap_directory(tmp_path):
     release_memmap_array(result)
 
 
+# --- skeletonize_by_component: tile_large_components (Tier 2) ----------------
+
+
+def test_tiling_with_a_generous_halo_matches_the_monolithic_result():
+    """A straight tube long enough in Z that a small tile_max_voxels forces
+    several tiles; tile_halo_voxels generously larger than the tube's own
+    radius should make tiling indistinguishable from the untiled result --
+    and from tiling turned off entirely, proving the *toggle* is what
+    changes behaviour, not incidental tile-size bookkeeping."""
+    mask = np.zeros((60, 20, 20), dtype=bool)
+    mask[:, 8:12, 8:12] = True
+    monolithic = skeletonize(mask, method="lee")
+
+    tiled = skeletonize_by_component(
+        mask,
+        use_memmap=True,
+        tile_large_components=True,
+        tile_max_voxels=20 * 20 * 10,  # 10 z-slices per tile -> 6 tiles
+        tile_halo_voxels=15,
+    )
+    untiled = skeletonize_by_component(
+        mask,
+        use_memmap=True,
+        tile_large_components=False,
+        tile_max_voxels=20 * 20 * 10,
+        tile_halo_voxels=15,
+    )
+
+    assert isinstance(tiled, np.memmap)
+    assert np.array_equal(tiled, monolithic)
+    assert np.array_equal(untiled, monolithic)
+    release_memmap_array(tiled)
+    release_memmap_array(untiled)
+
+
+def test_tiling_toggle_off_ignores_tile_max_voxels_even_if_it_would_force_tiling():
+    """tile_large_components defaults False -- a component larger than
+    tile_max_voxels must still be skeletonized as one piece, exactly like
+    before tiling existed, unless the toggle is explicitly on."""
+    mask = np.zeros((60, 20, 20), dtype=bool)
+    mask[:, 8:12, 8:12] = True
+
+    result = skeletonize_by_component(
+        mask, use_memmap=True, tile_max_voxels=1, tile_halo_voxels=0
+    )
+
+    assert np.array_equal(result, skeletonize(mask, method="lee"))
+    release_memmap_array(result)
+
+
+@pytest.mark.parametrize(
+    "tile_max_voxels",
+    [
+        500,  # depth=20, 10x10 slices -> tile_depth=5, exact multiple (4 tiles)
+        700,  # tile_depth=7, 20 has a remainder tile (2 full + 6 left over)
+        50,  # smaller than one slice's own 100 voxels -> tile_depth forced to 1
+        2000,  # >= mask.size -> fits in a single tile, no actual tiling
+    ],
+)
+def test_tiling_boundary_math_matches_the_monolithic_result(tile_max_voxels):
+    mask = np.zeros((20, 10, 10), dtype=bool)
+    mask[:, 3:7, 3:7] = True
+
+    result = skeletonize_by_component(
+        mask,
+        use_memmap=True,
+        tile_large_components=True,
+        tile_max_voxels=tile_max_voxels,
+        tile_halo_voxels=8,
+    )
+
+    assert np.array_equal(result, skeletonize(mask, method="lee"))
+    release_memmap_array(result)
+
+
+def test_a_too_small_halo_gives_a_small_bounded_difference_not_an_unbounded_one():
+    """Documents the actual tradeoff with concrete numbers instead of an
+    unverified claim: a thick cylinder (needs more erosion context per
+    slab than a thin tube) shows a real but small, bounded difference from
+    the monolithic result at an inadequate halo, and none at a generous
+    one -- confirmed empirically before writing this test that halo=10
+    already fully closes the gap for this shape, so this pins both sides
+    of that boundary rather than just asserting inequality."""
+    zz, yy, xx = np.indices((60, 40, 40))
+    mask = (yy - 20) ** 2 + (xx - 20) ** 2 <= 15**2
+    monolithic = skeletonize(mask, method="lee")
+
+    inadequate = skeletonize_by_component(
+        mask,
+        use_memmap=True,
+        tile_large_components=True,
+        tile_max_voxels=40 * 40 * 8,
+        tile_halo_voxels=0,
+    )
+    diff_count = int(np.count_nonzero(inadequate != monolithic))
+    assert 0 < diff_count < 200, (
+        "expected a real but bounded difference at an inadequate halo, "
+        f"got {diff_count} differing voxels"
+    )
+    release_memmap_array(inadequate)
+
+    generous = skeletonize_by_component(
+        mask,
+        use_memmap=True,
+        tile_large_components=True,
+        tile_max_voxels=40 * 40 * 8,
+        tile_halo_voxels=10,
+    )
+    assert np.array_equal(generous, monolithic)
+    release_memmap_array(generous)
+
+
+def test_tiling_honours_memmap_directory(tmp_path):
+    mask = np.zeros((60, 20, 20), dtype=bool)
+    mask[:, 8:12, 8:12] = True
+    custom_dir = tmp_path / "custom_memmap_dir"
+    assert not custom_dir.exists()
+
+    result = skeletonize_by_component(
+        mask,
+        use_memmap=True,
+        memmap_directory=custom_dir,
+        tile_large_components=True,
+        tile_max_voxels=20 * 20 * 10,
+        tile_halo_voxels=15,
+    )
+
+    assert Path(result.filename).parent == custom_dir
+    assert np.array_equal(result, skeletonize(mask, method="lee"))
+    release_memmap_array(result)
+
+
 def test_preprocess_skeleton_for_graph_gives_the_same_result_with_memmap_on():
     skeleton = np.zeros((5, 15, 15), dtype=bool)
     skeleton[2, 2, :] = True

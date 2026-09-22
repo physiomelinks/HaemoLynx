@@ -358,11 +358,62 @@ def skeletonize_3d(img: np.ndarray) -> np.ndarray:
     return skeletonize_volume(img)
 
 
+def _skeletonize_component_into(
+    component_mask: np.ndarray,
+    out: np.ndarray,
+    *,
+    tile_large_components: bool,
+    tile_max_voxels: int,
+    tile_halo_voxels: int,
+) -> None:
+    """Skeletonize *component_mask*, OR-ing the result into *out* (same
+    shape as *component_mask* -- typically a view into a larger memmap,
+    e.g. ``result[bbox]``).
+
+    With *tile_large_components* False, or *component_mask* already at or
+    below *tile_max_voxels*, this is exactly
+    ``out |= skeletonize(component_mask, method="lee")`` -- no tiling.
+
+    Otherwise, splits *component_mask* along axis 0 (Z) into slabs no
+    larger than *tile_max_voxels*, each padded by *tile_halo_voxels* of
+    neighbouring context on either side before skeletonizing, with only
+    the un-padded core written into *out*. Unlike
+    :func:`skeletonize_by_component`'s own per-component split, this is
+    **not** provably exact -- Lee thinning is iterative, with no hard
+    bound on how far a boundary effect could in principle propagate, so
+    the halo is a heuristic margin, not a proof. A halo generously larger
+    than the largest vessel radius in the data keeps results
+    indistinguishable from the monolithic computation in practice.
+
+    At the component's own true Z edges, the padding window clips to the
+    real boundary rather than extending past it -- the same "outside is
+    background" treatment ``skimage.morphology.skeletonize``'s own
+    internal zero-padding already applies at the outer boundary of a
+    monolithic call, so an edge slab sees exactly what the monolithic call
+    would have seen there.
+    """
+    if not tile_large_components or component_mask.size <= tile_max_voxels:
+        out |= skeletonize(component_mask, method="lee")
+        return
+    depth, height, width = component_mask.shape
+    tile_depth = max(1, tile_max_voxels // max(1, height * width))
+    for start in range(0, depth, tile_depth):
+        end = min(start + tile_depth, depth)
+        pad_start = max(0, start - tile_halo_voxels)
+        pad_end = min(depth, end + tile_halo_voxels)
+        padded = skeletonize(component_mask[pad_start:pad_end], method="lee")
+        core_lo = start - pad_start
+        out[start:end] |= padded[core_lo : core_lo + (end - start)]
+
+
 def skeletonize_by_component(
     mask: np.ndarray,
     *,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    tile_large_components: bool = False,
+    tile_max_voxels: int = 200_000_000,
+    tile_halo_voxels: int = 0,
 ) -> np.ndarray:
     """Lee-skeletonize *mask*, one connected component at a time, in each
     component's own tight bounding box, instead of running
@@ -398,6 +449,13 @@ def skeletonize_by_component(
     touching, corrupting the result rather than just failing to help.
     *memmap_directory* is forwarded to :func:`new_memmap_array`; both are
     ignored when *use_memmap* is False.
+
+    *tile_large_components*, *tile_max_voxels* and *tile_halo_voxels* are
+    forwarded to :func:`_skeletonize_component_into` for each component in
+    turn -- see its own docstring. Defaulted so that leaving them alone
+    reproduces this function's own pre-tiling behaviour exactly: a
+    component larger than the whole volume normally is is skeletonized as
+    one piece regardless, same as before tiling existed.
     """
     if not use_memmap:
         return skeletonize(np.asanyarray(mask, dtype=bool), method="lee")
@@ -414,7 +472,13 @@ def skeletonize_by_component(
             if bbox is None:
                 continue
             component_mask = labeled[bbox] == component_id
-            result[bbox] |= skeletonize(component_mask, method="lee")
+            _skeletonize_component_into(
+                component_mask,
+                result[bbox],
+                tile_large_components=tile_large_components,
+                tile_max_voxels=tile_max_voxels,
+                tile_halo_voxels=tile_halo_voxels,
+            )
         return result
     finally:
         release_memmap_array(labeled)

@@ -92,6 +92,31 @@ def test_memmap_directory_defaults_unset_and_requires_use_memmap_loading():
     assert setting.requires == ("use_memmap_loading",)
 
 
+def test_skeletonize_tiling_settings_default_off_and_chain_their_requires():
+    """skeletonize_tile_large_components requires use_memmap_loading (the
+    residual-case fallback only exists once memmap loading is already on);
+    its own two children require it in turn, matching the same
+    master-toggle-plus-children pattern use_thick_vessel_skeletonisation's
+    own settings already use in this section."""
+    schema = default_schema()
+
+    toggle = schema["skeletonize_tile_large_components"]
+    assert toggle.default is False
+    assert toggle.kind == "bool"
+    assert toggle.section == "Pipeline stages"
+    assert toggle.requires == ("use_memmap_loading",)
+
+    max_voxels = schema["skeletonize_tile_max_voxels"]
+    assert max_voxels.default == 200_000_000
+    assert max_voxels.kind == "int"
+    assert max_voxels.requires == ("skeletonize_tile_large_components",)
+
+    halo = schema["skeletonize_tile_halo_um"]
+    assert halo.default == 30.0
+    assert halo.kind == "float"
+    assert halo.requires == ("skeletonize_tile_large_components",)
+
+
 def test_no_path_default_points_inside_the_examples_directory():
     """Library defaults describe the user's working directory, not this repo."""
     inside_repo = [

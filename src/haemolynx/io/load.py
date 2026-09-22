@@ -662,7 +662,13 @@ def load_binary_mask_and_voxel_size(
 
 
 def _skeletonize_loaded_volume(
-    image: np.ndarray, *, use_memmap: bool = False, memmap_directory: str | Path | None = None
+    image: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    tile_large_components: bool = False,
+    tile_max_voxels: int = 200_000_000,
+    tile_halo_voxels: int = 0,
 ) -> np.ndarray:
     """Binarize, skeletonize and fill holes: what every loader must do.
 
@@ -681,7 +687,11 @@ def _skeletonize_loaded_volume(
     volume too large to skeletonize as one piece) and to
     :func:`fill_binary_holes`, whose own connected-component labelling is a
     full-volume, wider-than-boolean buffer this path can also redirect to
-    disk.
+    disk. *tile_large_components*, *tile_max_voxels* and
+    *tile_halo_voxels* are also forwarded to
+    :func:`skeletonize_by_component`, for the residual case where a single
+    connected component is still too large after the per-component split
+    -- see its own docstring.
 
     Neither ``_to_binary_volume_for_skeletonization``'s result nor
     ``fill_binary_holes``'s is ever re-cast with ``.astype(bool)`` here --
@@ -692,7 +702,12 @@ def _skeletonize_loaded_volume(
     """
     binary = _to_binary_volume_for_skeletonization(image)
     skeleton = skeletonize_by_component(
-        binary, use_memmap=use_memmap, memmap_directory=memmap_directory
+        binary,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+        tile_large_components=tile_large_components,
+        tile_max_voxels=tile_max_voxels,
+        tile_halo_voxels=tile_halo_voxels,
     )
     return fill_binary_holes(skeleton, use_memmap=use_memmap, memmap_directory=memmap_directory)
 
