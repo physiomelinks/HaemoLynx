@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,38 +30,82 @@ def _resolve_component_connectivity(ndim: int, connectivity: int | None) -> int:
     return max(1, min(int(connectivity), ndim))
 
 
+@contextmanager
+def _labeled_components(
+    mask: np.ndarray,
+    structure: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+):
+    """Yield ``(labeled, n_components)`` for ``label(mask, structure=structure)``.
+
+    Calling ``scipy.ndimage.label`` with no ``output=`` argument -- as every
+    caller here used to -- always allocates a fresh, plain-RAM array the
+    size of *mask*, regardless of how *mask* itself is backed. With
+    *use_memmap* True, the labelled array is a transient memmap instead,
+    released (if this block does not raise first) when the ``with`` block
+    exits; do not let *labeled* escape it. Unlike
+    :func:`_label_inverted_background`, no Windows-specific compact dtype
+    is attempted -- that saving was worth its own complexity only for
+    ``fill_binary_holes``, which runs unconditionally on every load.
+    """
+    if not use_memmap:
+        labeled, n_components = label(mask, structure=structure)
+        yield labeled, n_components
+        return
+    with temporary_memmap_array(mask.shape, np.int32, directory=memmap_directory) as labeled:
+        n_components = int(label(mask, structure=structure, output=labeled))
+        yield labeled, n_components
+
+
 def _filter_components_by_total_fraction(
     skeleton: np.ndarray,
     min_component_fraction: float,
     component_connectivity: int | None = None,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
-    """Keep only components with size >= min_component_fraction of total voxels."""
-    skeleton_bool = skeleton.astype(bool)
+    """Keep only components with size >= min_component_fraction of total voxels.
+
+    *use_memmap*, when True, backs the labelled array (see
+    :func:`_labeled_components`) and, if any component is actually dropped,
+    the returned mask with disk-backed buffers instead of fresh in-RAM
+    ones; *memmap_directory* is forwarded to both.
+    """
+    skeleton_bool = np.asanyarray(skeleton, dtype=bool)
     total_voxels = int(skeleton_bool.sum())
     if total_voxels == 0 or min_component_fraction <= 0.0:
         return skeleton_bool
 
     conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
     structure = generate_binary_structure(skeleton_bool.ndim, conn)
-    labeled, n_components = label(skeleton_bool, structure=structure)
-    if n_components == 0:
-        return skeleton_bool
+    with _labeled_components(
+        skeleton_bool, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
+    ) as (labeled, n_components):
+        if n_components == 0:
+            return skeleton_bool
 
-    min_component_size = int(np.ceil(min_component_fraction * total_voxels))
-    component_sizes = np.bincount(labeled.ravel())
-    keep_labels = np.where(component_sizes >= min_component_size)[0]
-    keep_labels = keep_labels[keep_labels != 0]  # exclude background
+        min_component_size = int(np.ceil(min_component_fraction * total_voxels))
+        component_sizes = np.bincount(labeled.ravel())
+        keep_labels = np.where(component_sizes >= min_component_size)[0]
+        keep_labels = keep_labels[keep_labels != 0]  # exclude background
 
-    if keep_labels.size == 0:
-        logger.warning(
-            "Component fraction %.4f removed all components (min size=%d). "
-            "Returning original skeleton.",
-            min_component_fraction,
-            min_component_size,
-        )
-        return skeleton_bool
+        if keep_labels.size == 0:
+            logger.warning(
+                "Component fraction %.4f removed all components (min size=%d). "
+                "Returning original skeleton.",
+                min_component_fraction,
+                min_component_size,
+            )
+            return skeleton_bool
 
-    return np.isin(labeled, keep_labels)
+        if use_memmap:
+            result = new_memmap_array(skeleton_bool.shape, bool, directory=memmap_directory)
+            _combine_per_slice(result, lambda lb: np.isin(lb, keep_labels), labeled)
+            return result
+        return np.isin(labeled, keep_labels)
 
 
 @dataclass(frozen=True)
@@ -711,6 +756,11 @@ def connect_skeleton_components(
     z_distance_weight: float = 1.0,
     segmentation_mask: np.ndarray | None = None,
     weight_by_segmentation: bool = False,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    tile_large_components: bool = False,
+    tile_max_voxels: int = 200_000_000,
+    tile_halo_voxels: int = 0,
 ) -> np.ndarray:
     """Bridge nearby skeleton components with straight voxel lines.
 
@@ -744,93 +794,120 @@ def connect_skeleton_components(
         see :func:`_bridge_path_through_mask`. A bridge within
         *max_bridge_distance* is always drawn either way; this only changes
         the path's shape, never whether two components get connected.
+    use_memmap, memmap_directory:
+        Back the labelled array (see :func:`_labeled_components`), the
+        working copy of *skeleton* that bridges are drawn into, and (via
+        :func:`skeletonize_by_component`) the re-skeletonize step after
+        bridging, with disk-backed buffers instead of fresh in-RAM ones.
+        The coordinate lists and KD-trees below are sized to the sparse
+        skeleton's own foreground voxel count, not the volume, so only
+        these three are worth redirecting.
+    tile_large_components, tile_max_voxels, tile_halo_voxels:
+        Forwarded to the re-skeletonize step's own
+        :func:`skeletonize_by_component` call, only reached when a bridge
+        was actually drawn -- see its own docstring.
     """
-    from scipy.ndimage import label
     from scipy.spatial import cKDTree
 
     conn = _resolve_component_connectivity(skeleton.ndim, component_connectivity)
     structure = generate_binary_structure(skeleton.ndim, conn)
-    labeled, n_components = label(skeleton, structure=structure)
-    if n_components <= 1:
-        return skeleton
+    with _labeled_components(
+        skeleton, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
+    ) as (labeled, n_components):
+        if n_components <= 1:
+            return skeleton
 
-    z_weight = float(z_distance_weight)
-    axis_weights = np.array([z_weight, 1.0, 1.0], dtype=float)
+        z_weight = float(z_distance_weight)
+        axis_weights = np.array([z_weight, 1.0, 1.0], dtype=float)
 
-    # One pass over the labels, then split by component. Asking
-    # `labeled == comp_id` per component instead re-reads the whole volume once
-    # for every component, which on a full stack with a hundred-odd fragments
-    # was the bulk of this function's cost.
-    coords_all = np.argwhere(labeled)
-    labels_all = labeled[tuple(coords_all.T)]
-    order = np.argsort(labels_all, kind="stable")
-    coords_all = coords_all[order]
-    labels_all = labels_all[order]
-    starts = np.searchsorted(labels_all, np.arange(1, n_components + 2))
+        # One pass over the labels, then split by component. Asking
+        # `labeled == comp_id` per component instead re-reads the whole volume once
+        # for every component, which on a full stack with a hundred-odd fragments
+        # was the bulk of this function's cost.
+        coords_all = np.argwhere(labeled)
+        labels_all = labeled[tuple(coords_all.T)]
+        order = np.argsort(labels_all, kind="stable")
+        coords_all = coords_all[order]
+        labels_all = labels_all[order]
+        starts = np.searchsorted(labels_all, np.arange(1, n_components + 2))
 
-    comp_coords: dict[int, np.ndarray] = {}
-    comp_trees: dict[int, cKDTree] = {}
-    for comp_id in range(1, n_components + 1):
-        lo, hi = int(starts[comp_id - 1]), int(starts[comp_id])
-        if hi <= lo:
-            continue
-        coords = coords_all[lo:hi]
-        comp_coords[comp_id] = coords
-        # The tree is built (and queried) in z-weighted space so nearest-pair
-        # selection and the distance cutoff both respect `z_distance_weight`;
-        # the original, unscaled `coords` above are what actually get drawn.
-        comp_trees[comp_id] = cKDTree(coords * axis_weights)
+        comp_coords: dict[int, np.ndarray] = {}
+        comp_trees: dict[int, cKDTree] = {}
+        for comp_id in range(1, n_components + 1):
+            lo, hi = int(starts[comp_id - 1]), int(starts[comp_id])
+            if hi <= lo:
+                continue
+            coords = coords_all[lo:hi]
+            comp_coords[comp_id] = coords
+            # The tree is built (and queried) in z-weighted space so nearest-pair
+            # selection and the distance cutoff both respect `z_distance_weight`;
+            # the original, unscaled `coords` above are what actually get drawn.
+            comp_trees[comp_id] = cKDTree(coords * axis_weights)
 
-    # Union-find helpers
-    _parent: dict[int, int] = {c: c for c in comp_coords}
+        # Union-find helpers
+        _parent: dict[int, int] = {c: c for c in comp_coords}
 
-    def _find(x: int) -> int:
-        while _parent[x] != x:
-            _parent[x] = _parent[_parent[x]]
-            x = _parent[x]
-        return x
+        def _find(x: int) -> int:
+            while _parent[x] != x:
+                _parent[x] = _parent[_parent[x]]
+                x = _parent[x]
+            return x
 
-    def _union(a: int, b: int) -> None:
-        ra, rb = _find(a), _find(b)
-        if ra != rb:
-            _parent[ra] = rb
+        def _union(a: int, b: int) -> None:
+            ra, rb = _find(a), _find(b)
+            if ra != rb:
+                _parent[ra] = rb
 
-    # Collect candidate bridges (distance, start, end, comp_a, comp_b)
-    comp_ids = sorted(comp_coords.keys())
-    candidates: list[tuple[float, np.ndarray, np.ndarray, int, int]] = []
-    for i, cid_a in enumerate(comp_ids):
-        for cid_b in comp_ids[i + 1 :]:
-            dists, idxs = comp_trees[cid_b].query(comp_coords[cid_a] * axis_weights)
-            nearest_idx = int(np.argmin(dists))
-            min_dist = float(dists[nearest_idx])
-            if min_dist <= max_bridge_distance:
-                start = comp_coords[cid_a][nearest_idx]
-                end = comp_coords[cid_b][int(idxs[nearest_idx])]
-                candidates.append((min_dist, start, end, cid_a, cid_b))
+        # Collect candidate bridges (distance, start, end, comp_a, comp_b)
+        comp_ids = sorted(comp_coords.keys())
+        candidates: list[tuple[float, np.ndarray, np.ndarray, int, int]] = []
+        for i, cid_a in enumerate(comp_ids):
+            for cid_b in comp_ids[i + 1 :]:
+                dists, idxs = comp_trees[cid_b].query(comp_coords[cid_a] * axis_weights)
+                nearest_idx = int(np.argmin(dists))
+                min_dist = float(dists[nearest_idx])
+                if min_dist <= max_bridge_distance:
+                    start = comp_coords[cid_a][nearest_idx]
+                    end = comp_coords[cid_b][int(idxs[nearest_idx])]
+                    candidates.append((min_dist, start, end, cid_a, cid_b))
 
-    candidates.sort(key=lambda c: c[0])
+        candidates.sort(key=lambda c: c[0])
 
-    result = skeleton.copy()
-    bridged = 0
-    for _, start, end, cid_a, cid_b in candidates:
-        if _find(cid_a) == _find(cid_b):
-            continue
-        path = None
-        if weight_by_segmentation and segmentation_mask is not None:
-            if segmentation_mask.shape == skeleton.shape:
-                path = _bridge_path_through_mask(segmentation_mask, start, end)
-        if path is not None:
-            result[tuple(path.T)] = True
+        skeleton_bool = np.asanyarray(skeleton, dtype=bool)
+        if use_memmap:
+            result = new_memmap_array(skeleton_bool.shape, bool, directory=memmap_directory)
+            _combine_per_slice(result, lambda s: s, skeleton_bool)
         else:
-            _draw_line_3d(result, start, end)
-        _union(cid_a, cid_b)
-        bridged += 1
+            result = skeleton_bool.copy()
+        bridged = 0
+        for _, start, end, cid_a, cid_b in candidates:
+            if _find(cid_a) == _find(cid_b):
+                continue
+            path = None
+            if weight_by_segmentation and segmentation_mask is not None:
+                if segmentation_mask.shape == skeleton.shape:
+                    path = _bridge_path_through_mask(segmentation_mask, start, end)
+            if path is not None:
+                result[tuple(path.T)] = True
+            else:
+                _draw_line_3d(result, start, end)
+            _union(cid_a, cid_b)
+            bridged += 1
 
+    # `labeled` is released above (or was never disk-backed) before the
+    # re-skeletonize step's own, potentially large, working buffers exist.
     if bridged:
         logger.debug("Bridged %d skeleton component pair(s).", bridged)
-        result = skeletonize_volume(result)
+        result = skeletonize_by_component(
+            result,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+            tile_large_components=tile_large_components,
+            tile_max_voxels=tile_max_voxels,
+            tile_halo_voxels=tile_halo_voxels,
+        )
 
-    return result.astype(bool)
+    return np.asanyarray(result, dtype=bool)
 
 
 def inter_component_gap_distances(
@@ -1049,20 +1126,26 @@ def preprocess_skeleton_for_graph(
         below); to :func:`bridge_gaps`, whose distance-transform path
         (only taken when ``bridge_gap_size`` exceeds
         :data:`MAX_BALL_DILATION_RADIUS`) is a full-volume ``float64``
-        allocation this function can also redirect to disk; and to the
+        allocation this function can also redirect to disk; to the
         re-skeletonize step after bundle collapse, via
         :func:`skeletonize_by_component` rather than the plain
         :func:`skeletonize_volume` -- bundle collapse changes individual
         voxels but never the volume's shape, so that second Lee-thinning
         call is exactly as large as the first one this pipeline already
-        protects, not a smaller, already-cheap operation.
+        protects, not a smaller, already-cheap operation; to
+        :func:`connect_skeleton_components` (reached whenever
+        ``max_bridge_distance`` is nonzero, the default), whose own
+        connected-component labelling and bridged-copy buffer are the same
+        shape of allocation; and to
+        :func:`_filter_components_by_total_fraction` (only reached when
+        ``min_component_fraction`` is set), for the same reason.
     tile_large_components, tile_max_voxels, tile_halo_voxels:
-        Forwarded to the same re-skeletonize step's own
-        :func:`skeletonize_by_component` call -- see its docstring.
-        ``connect_skeleton_components`` and, when ``min_component_fraction``
-        is set, ``_filter_components_by_total_fraction`` still label the
-        whole volume in plain RAM regardless of ``use_memmap``; unlike
-        re-skeletonizing, neither has a tiling-shaped alternative available.
+        Forwarded to the re-skeletonize step's own
+        :func:`skeletonize_by_component` call, and to
+        :func:`connect_skeleton_components`'s own re-skeletonize step
+        (reached only once a bridge is actually drawn) -- see either
+        docstring. :func:`_filter_components_by_total_fraction` has no
+        skeletonize call of its own, so these do not apply there.
     """
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
     cleaned = drop_small_components(
@@ -1120,6 +1203,11 @@ def preprocess_skeleton_for_graph(
             z_distance_weight=bridge_z_distance_weight,
             segmentation_mask=segmentation_mask,
             weight_by_segmentation=bridge_weight_by_segmentation,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+            tile_large_components=tile_large_components,
+            tile_max_voxels=tile_max_voxels,
+            tile_halo_voxels=tile_halo_voxels,
         )
 
     if min_component_fraction > 0.0:
@@ -1127,6 +1215,8 @@ def preprocess_skeleton_for_graph(
             cleaned,
             min_component_fraction=min_component_fraction,
             component_connectivity=conn,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
 
     return np.asanyarray(cleaned, dtype=bool)

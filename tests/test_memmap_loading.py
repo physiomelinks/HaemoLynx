@@ -26,13 +26,17 @@ from haemolynx.io.load import (
 )
 from haemolynx.preprocessing import (
     bridge_gaps,
+    connect_skeleton_components,
     drop_small_components,
     fill_binary_holes,
     preprocess_skeleton_for_graph,
     skeletonize_by_component,
 )
 from haemolynx.preprocessing.memmap_support import release_memmap_array
-from haemolynx.preprocessing.skeleton import MAX_BALL_DILATION_RADIUS
+from haemolynx.preprocessing.skeleton import (
+    MAX_BALL_DILATION_RADIUS,
+    _filter_components_by_total_fraction,
+)
 
 
 def _random_volume(shape=(6, 7, 8), seed=0):
@@ -690,6 +694,105 @@ def test_tiling_honours_memmap_directory(tmp_path):
     assert Path(result.filename).parent == custom_dir
     assert np.array_equal(result, skeletonize(mask, method="lee"))
     release_memmap_array(result)
+
+
+# --- preprocessing.skeleton: connect_skeleton_components / -------------------
+# --- _filter_components_by_total_fraction -------------------------------
+
+
+def _two_disconnected_lines(shape=(5, 20, 20)):
+    mask = np.zeros(shape, dtype=bool)
+    mask[2, 2, 2:8] = True  # component A, 6 voxels
+    mask[2, 2, 12:18] = True  # component B, 6 voxels, 4 voxels away from A
+    return mask
+
+
+def test_connect_skeleton_components_gives_the_same_result_with_memmap_on():
+    skeleton = _two_disconnected_lines()
+
+    memmap_result = connect_skeleton_components(
+        skeleton, max_bridge_distance=10, use_memmap=True
+    )
+    eager_result = connect_skeleton_components(
+        skeleton, max_bridge_distance=10, use_memmap=False
+    )
+
+    assert isinstance(memmap_result, np.memmap)
+    assert not isinstance(eager_result, np.memmap)
+    assert np.array_equal(memmap_result, eager_result)
+    # The gap must actually have been bridged, or this test would pass
+    # vacuously (both sides just returning the untouched input).
+    assert memmap_result.sum() > skeleton.sum()
+    release_memmap_array(memmap_result)
+
+
+def test_connect_skeleton_components_with_memmap_on_reaches_no_bridge_early_return():
+    """n_components <= 1 (or, as here, a single line with nothing to bridge
+    to) returns the original array from inside the labelled-components
+    block -- must not raise on the way out even though that block's own
+    memmap gets released first."""
+    skeleton = np.zeros((5, 20, 20), dtype=bool)
+    skeleton[2, 2, 2:8] = True
+
+    result = connect_skeleton_components(skeleton, max_bridge_distance=10, use_memmap=True)
+
+    assert result is skeleton
+
+
+def test_connect_skeleton_components_with_memmap_on_re_skeletonizes_through_skeletonize_by_component(
+    monkeypatch,
+):
+    """Regression: the re-skeletonize step after a successful bridge called
+    the plain, untiled skeletonize_volume -- same bug as
+    preprocess_skeleton_for_graph's own re-skeletonize step, in a second
+    place that reaches it independently (connect_skeleton_components is
+    also called directly by preprocess_skeleton_for_graph, not only
+    through that other step)."""
+    import haemolynx.preprocessing.skeleton as skeleton_module
+
+    skeleton = _two_disconnected_lines()
+    calls = []
+    original = skeleton_module.skeletonize_by_component
+
+    def spy(mask, **kwargs):
+        calls.append(kwargs)
+        return original(mask, **kwargs)
+
+    monkeypatch.setattr(skeleton_module, "skeletonize_by_component", spy)
+
+    connect_skeleton_components(
+        skeleton,
+        max_bridge_distance=10,
+        use_memmap=True,
+        tile_large_components=True,
+        tile_max_voxels=321,
+        tile_halo_voxels=7,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["use_memmap"] is True
+    assert calls[0]["tile_large_components"] is True
+    assert calls[0]["tile_max_voxels"] == 321
+    assert calls[0]["tile_halo_voxels"] == 7
+
+
+def test_filter_components_by_total_fraction_gives_the_same_result_with_memmap_on():
+    skeleton = np.zeros((5, 20, 20), dtype=bool)
+    skeleton[2, 2, 2:14] = True  # 12 voxels, kept
+    skeleton[2, 10, 10] = True  # 1 voxel, dropped at fraction=0.5
+
+    memmap_result = _filter_components_by_total_fraction(
+        skeleton, min_component_fraction=0.5, use_memmap=True
+    )
+    eager_result = _filter_components_by_total_fraction(
+        skeleton, min_component_fraction=0.5, use_memmap=False
+    )
+
+    assert isinstance(memmap_result, np.memmap)
+    assert not isinstance(eager_result, np.memmap)
+    assert np.array_equal(memmap_result, eager_result)
+    assert memmap_result.sum() == 12
+    release_memmap_array(memmap_result)
 
 
 def test_preprocess_skeleton_for_graph_gives_the_same_result_with_memmap_on():
