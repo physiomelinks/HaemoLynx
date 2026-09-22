@@ -154,6 +154,23 @@ def log_skeleton_connectivity_stats(
     )
 
 
+def _combine_per_slice(out: np.ndarray, op, *arrays: np.ndarray) -> None:
+    """Write ``op(*slice)`` into ``out[index]`` for every z-slice (axis 0).
+
+    Shared by every caller that needs to combine same-shaped boolean
+    arrays into a *pre-allocated* ``out`` (memmap or not) one slice at a
+    time -- neither numpy's unary ``~`` nor its binary ``|``/``&`` write
+    into a memmap unless explicitly told to, so a single whole-volume
+    expression always allocates a fresh plain array regardless of how any
+    of *arrays* is itself backed. Callers that don't need a memmap-backed
+    result skip this and just write the whole-volume expression directly,
+    since that stays the faster, simpler path when nothing here needs to
+    be disk-backed.
+    """
+    for index in range(out.shape[0]):
+        out[index] = op(*(arr[index] for arr in arrays))
+
+
 def fill_binary_holes(
     mask: np.ndarray, *, use_memmap: bool = False, memmap_directory: str | Path | None = None
 ) -> np.ndarray:
@@ -183,28 +200,30 @@ def fill_binary_holes(
     every load (see :func:`haemolynx.io.load._skeletonize_loaded_volume`), so
     it is the one full-volume, wider-than-boolean allocation a low-memory
     run cannot just disable. The inversion and the final combine are done
-    one slice (axis 0) at a time rather than as a single ``~mask`` /
-    ``mask | ...`` expression over the whole volume -- either one would
-    otherwise allocate a fresh full-size plain array no matter how *mask*
-    itself is backed, since neither numpy's unary ``~`` nor its binary ``|``
-    write into a memmap unless explicitly told to. *memmap_directory* is
-    forwarded to :func:`haemolynx.preprocessing.new_memmap_array`; both are
-    ignored when *use_memmap* is False.
+    one slice (axis 0) at a time via :func:`_combine_per_slice` rather than
+    as a single ``~mask`` / ``mask | ...`` expression over the whole volume
+    -- either one would otherwise allocate a fresh full-size plain array no
+    matter how *mask* itself is backed. *memmap_directory* is forwarded to
+    :func:`haemolynx.preprocessing.new_memmap_array`; both are ignored when
+    *use_memmap* is False.
+
+    The inverted mask is a transient buffer, scoped to a ``with
+    temporary_memmap_array(...)`` block that also covers the labelling
+    call -- not just allocated ahead of a separate ``try/finally``, so a
+    failure anywhere in between (including while writing it slice by
+    slice) still releases its backing file rather than leaking it.
     """
     mask = np.asanyarray(mask, dtype=bool)
     if use_memmap:
-        inverted = new_memmap_array(mask.shape, bool, directory=memmap_directory)
-        for index in range(mask.shape[0]):
-            inverted[index] = ~mask[index]
+        with temporary_memmap_array(mask.shape, bool, directory=memmap_directory) as inverted:
+            _combine_per_slice(inverted, lambda m: ~m, mask)
+            background_labels, n_labels = _label_inverted_background(
+                inverted, use_memmap=use_memmap, memmap_directory=memmap_directory
+            )
     else:
-        inverted = ~mask
-    try:
         background_labels, n_labels = _label_inverted_background(
-            inverted, use_memmap=use_memmap, memmap_directory=memmap_directory
+            ~mask, use_memmap=use_memmap, memmap_directory=memmap_directory
         )
-    finally:
-        if use_memmap:
-            release_memmap_array(inverted)
     if n_labels == 0:
         if use_memmap and isinstance(background_labels, np.memmap):
             release_memmap_array(background_labels)
@@ -220,8 +239,7 @@ def fill_binary_holes(
     reaches_edge[0] = True
     if use_memmap:
         result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
-        for index in range(mask.shape[0]):
-            result[index] = mask[index] | ~reaches_edge[background_labels[index]]
+        _combine_per_slice(result, lambda m, bl: m | ~reaches_edge[bl], mask, background_labels)
     else:
         result = mask | ~reaches_edge[background_labels]
     if use_memmap and isinstance(background_labels, np.memmap):
@@ -391,12 +409,18 @@ def _skeletonize_component_into(
     internal zero-padding already applies at the outer boundary of a
     monolithic call, so an edge slab sees exactly what the monolithic call
     would have seen there.
+
+    Works for any *component_mask* dimensionality, not just 3D: "axis 0"
+    is whatever the caller's own first axis means (Z for this pipeline's
+    canonical volumes), and the per-tile voxel budget is derived from
+    ``size // depth`` rather than unpacking a fixed number of axes.
     """
     if not tile_large_components or component_mask.size <= tile_max_voxels:
         out |= skeletonize(component_mask, method="lee")
         return
-    depth, height, width = component_mask.shape
-    tile_depth = max(1, tile_max_voxels // max(1, height * width))
+    depth = component_mask.shape[0]
+    per_slice_voxels = max(1, component_mask.size // max(1, depth))
+    tile_depth = max(1, tile_max_voxels // per_slice_voxels)
     for start in range(0, depth, tile_depth):
         end = min(start + tile_depth, depth)
         pad_start = max(0, start - tile_halo_voxels)
@@ -448,7 +472,10 @@ def skeletonize_by_component(
     components that skeletonize's own algorithm would still treat as
     touching, corrupting the result rather than just failing to help.
     *memmap_directory* is forwarded to :func:`new_memmap_array`; both are
-    ignored when *use_memmap* is False.
+    ignored when *use_memmap* is False. The label array is a transient
+    buffer, scoped to a ``with temporary_memmap_array(...)`` block that
+    also covers the per-component loop -- released whether or not that
+    loop raises partway through, rather than leaking on a failure.
 
     *tile_large_components*, *tile_max_voxels* and *tile_halo_voxels* are
     forwarded to :func:`_skeletonize_component_into` for each component in
@@ -462,10 +489,9 @@ def skeletonize_by_component(
 
     mask = np.asanyarray(mask, dtype=bool)
     footprint = generate_binary_structure(mask.ndim, mask.ndim)
-    labeled = new_memmap_array(mask.shape, np.int32, directory=memmap_directory)
-    n_labels = label(mask, footprint, output=labeled)
-    try:
-        result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+    result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+    with temporary_memmap_array(mask.shape, np.int32, directory=memmap_directory) as labeled:
+        n_labels = label(mask, footprint, output=labeled)
         if n_labels == 0:
             return result
         for component_id, bbox in enumerate(find_objects(labeled, max_label=n_labels), start=1):
@@ -479,9 +505,8 @@ def skeletonize_by_component(
                 tile_max_voxels=tile_max_voxels,
                 tile_halo_voxels=tile_halo_voxels,
             )
-        return result
-    finally:
-        release_memmap_array(labeled)
+    return result
+
 
 def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None:
     """Set voxels along the straight line from *start* to *end* to True."""
@@ -907,14 +932,16 @@ def drop_small_components(
     ``out = ar.copy()`` and ``ccs = np.zeros_like(ar, dtype=np.int32)`` --
     silently defeating ``use_memmap_loading`` for whichever caller passes it
     a memmap-backed skeleton or mask. This computes the identical result
-    with the label array and the final mask disk-backed instead, combining
-    them one z-slice (axis 0) at a time so no full-volume plain array is
-    ever allocated. *memmap_directory* is forwarded to
-    :func:`new_memmap_array`; both are ignored when *use_memmap* is False.
-    The size-threshold decision itself is delegated back to skimage (see
-    :func:`_small_object_survival_by_size`) rather than assumed, so this
-    tracks whatever the *use_memmap* False branch above actually does on
-    whichever skimage version is installed.
+    with the label array disk-backed and transient (scoped to a ``with
+    temporary_memmap_array(...)`` block, released whether or not the block
+    raises) and the final mask disk-backed and persistent, combined one
+    z-slice (axis 0) at a time via :func:`_combine_per_slice` so no
+    full-volume plain array is ever allocated. *memmap_directory* is
+    forwarded to :func:`new_memmap_array`; both are ignored when
+    *use_memmap* is False. The size-threshold decision itself is delegated
+    back to skimage (see :func:`_small_object_survival_by_size`) rather
+    than assumed, so this tracks whatever the *use_memmap* False branch
+    above actually does on whichever skimage version is installed.
     """
     if not use_memmap:
         return remove_small_objects(
@@ -923,18 +950,14 @@ def drop_small_components(
 
     mask = np.asanyarray(mask, dtype=bool)
     footprint = generate_binary_structure(mask.ndim, connectivity)
-    labeled = new_memmap_array(mask.shape, np.int32, directory=memmap_directory)
-    label(mask, footprint, output=labeled)
-    try:
+    result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+    with temporary_memmap_array(mask.shape, np.int32, directory=memmap_directory) as labeled:
+        label(mask, footprint, output=labeled)
         component_sizes = np.bincount(labeled.ravel())
         too_small = np.zeros(component_sizes.shape, dtype=bool)
         too_small[1:] = ~_small_object_survival_by_size(component_sizes[1:], min_size)
-        result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
-        for index in range(mask.shape[0]):
-            result[index] = mask[index] & ~too_small[labeled[index]]
-        return result
-    finally:
-        release_memmap_array(labeled)
+        _combine_per_slice(result, lambda m, lb: m & ~too_small[lb], mask, labeled)
+    return result
 
 
 def preprocess_skeleton_for_graph(

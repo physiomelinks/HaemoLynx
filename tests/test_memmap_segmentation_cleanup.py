@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from haemolynx.preprocessing import segmentation_cleanup as sc
+from haemolynx.preprocessing.memmap_support import release_memmap_array
 
 
 def _cylinder_along_x(
@@ -176,6 +177,7 @@ def test_remove_small_segmented_volumes_gives_the_same_result_with_memmap_on():
     assert np.array_equal(memmap_result, eager_result)
     assert not memmap_result[0, 0, 0], "the one-voxel speck should have been dropped"
     assert memmap_result[4, 5, 5], "the real vessel segment should survive"
+    release_memmap_array(memmap_result)
 
 
 def test_remove_small_segmented_volumes_with_memmap_on_still_no_ops_below_threshold():
@@ -187,6 +189,29 @@ def test_remove_small_segmented_volumes_with_memmap_on_still_no_ops_below_thresh
     )
 
     assert result is mask
+
+
+def test_remove_small_segmented_volumes_below_threshold_preserves_a_memmap_input():
+    """Regression found in code review: the early return for
+    min_volume_um3<=0 used to go through np.asarray, which silently
+    demotes an np.memmap input to a plain ndarray view (same underlying
+    disk-backed buffer, wrong type for isinstance(x, np.memmap) checks
+    downstream) -- np.asanyarray fixes that, but the only existing test
+    for this early-return path used a plain ndarray, so it would have
+    passed either way. This uses an actual memmap input."""
+    from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+    mask = np.zeros((5, 5, 5), dtype=bool)
+    mask[1:4, 1:4, 1:4] = True
+    memmap_mask = new_memmap_array(mask.shape, bool)
+    memmap_mask[:] = mask
+
+    result = sc.remove_small_segmented_volumes(
+        memmap_mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_volume_um3=0.0, use_memmap=True
+    )
+
+    assert isinstance(result, np.memmap)
+    release_memmap_array(result)
 
 
 # --- clean_segmented_mask_for_skeletonisation ---------------------------------

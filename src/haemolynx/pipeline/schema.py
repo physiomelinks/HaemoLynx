@@ -190,7 +190,10 @@ SCHEMA = Schema(
                 "fresh in-RAM array each time. Same result, much less peak "
                 "RAM, at the cost of disk space (as large as the volume "
                 "itself) and slower reads -- turn on for a volume too large "
-                "to hold in memory outright"
+                "to hold in memory outright. Does not cover "
+                "use_thick_vessel_skeletonisation's own centreline-tree "
+                "computation, which still allocates full-volume buffers "
+                "regardless of this setting"
             ),
             section=_INPUT_AND_SEGMENTATION,
         ),
@@ -2399,7 +2402,10 @@ SCHEMA = Schema(
                 "Give fat plasma-labelled vessels (inscribed radius above "
                 "skeleton_thick_vessel_min_radius_um, 6 um by default) a "
                 "centreline tree of every arm instead of Lee thinning; "
-                "capillaries stay on Lee"
+                "capillaries stay on Lee. Not covered by use_memmap_loading "
+                "-- this path always allocates full-volume buffers, so it "
+                "can still run out of memory on a volume large enough that "
+                "the plain-Lee path would otherwise handle it fine"
             ),
             section=_PIPELINE_STAGES,
             requires=("do_skeletonize",),

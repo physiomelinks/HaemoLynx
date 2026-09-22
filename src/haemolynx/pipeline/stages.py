@@ -471,14 +471,13 @@ def _skeletonize_loaded_mask(
     Returns ``(skeleton, thick_vessel_mask)`` -- the mask is None on the
     plain-Lee path, where there is no fat/thin split at all.
     """
+    voxel_size_zyx = io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
     if settings["use_thick_vessel_skeletonisation"]:
         binary = _to_binary_volume_for_skeletonization(image)
         return preprocessing.skeletonize_thickness_gated(
             binary,
             min_radius_um=float(settings["skeleton_thick_vessel_min_radius_um"]),
-            voxel_size_zyx=io.voxel_size_zyx_from_xyz(
-                tuple(float(v) for v in voxel_size_xyz)
-            ),
+            voxel_size_zyx=voxel_size_zyx,
             fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
             wall_absorption_um=settings["skeleton_thick_vessel_wall_absorption_um"],
             restrict_thick_to_mask=_thick_vessel_restriction_mask(
@@ -496,11 +495,8 @@ def _skeletonize_loaded_mask(
         )
     tile_halo_voxels = 0
     if settings["skeletonize_tile_large_components"]:
-        voxel_size_z = io.voxel_size_zyx_from_xyz(
-            tuple(float(v) for v in voxel_size_xyz)
-        )[0]
         tile_halo_voxels = round(
-            float(settings["skeletonize_tile_halo_um"]) / voxel_size_z
+            float(settings["skeletonize_tile_halo_um"]) / voxel_size_zyx[0]
         )
     return (
         _skeletonize_loaded_volume(

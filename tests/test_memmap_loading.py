@@ -242,6 +242,34 @@ def test_fill_binary_holes_honours_memmap_directory(tmp_path):
     release_memmap_array(result)
 
 
+def test_fill_binary_holes_releases_the_inverted_memmap_even_if_the_inversion_loop_raises():
+    """Regression for a leak found in code review: the per-slice loop that
+    built the transient `inverted` buffer used to run *before* the
+    try/finally that released it, so an exception raised while writing
+    any slice leaked the backing file -- only a failure in the labelling
+    call *after* the loop was ever protected. The loop now runs inside a
+    ``with temporary_memmap_array(...)`` block that covers it directly, so
+    this forces the failure inside the loop itself (not the labelling
+    call) and checks nothing is left behind."""
+    import glob
+    import tempfile
+
+    class PoisonedAtSliceTwo(np.ndarray):
+        def __getitem__(self, key):
+            if key == 2:
+                raise RuntimeError("boom")
+            return super().__getitem__(key)
+
+    mask = np.zeros((5, 5, 5), dtype=bool).view(PoisonedAtSliceTwo)
+
+    before = set(glob.glob(str(tempfile.gettempdir()) + "/haemolynx_*.memmap"))
+    with pytest.raises(RuntimeError, match="boom"):
+        fill_binary_holes(mask, use_memmap=True)
+    after = set(glob.glob(str(tempfile.gettempdir()) + "/haemolynx_*.memmap"))
+
+    assert after == before
+
+
 def test_bridge_gaps_distance_transform_path_gives_the_same_result_with_memmap_on():
     arr = np.zeros((5, 15, 15), dtype=bool)
     arr[2, 2, :] = True
