@@ -333,10 +333,14 @@ def test_clearing_takes_the_perturbation_layers_with_it(viewer):
     are not in `LAYER_NAMES`, which cannot list a name a config invents."""
     _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
     assert perturbation_layer_names("art_dilate_20")[0] in viewer.layers
+    # Vessels, nodes and flow direction today; counted rather than spelt out,
+    # so a perturbation that gains a layer does not have to edit this test.
+    ours = len(viewer.layers)
+    assert ours >= 2
 
     removed = _clear_our_layers(viewer)
 
-    assert removed == 2
+    assert removed == ours
     assert len(viewer.layers) == 0
 
 
@@ -705,11 +709,12 @@ def test_clearing_the_layers_with_no_run_going_is_unchanged(make_napari_viewer):
     # is a different behaviour and not the one under test.
     theirs = viewer.add_points(np.zeros((3, 3)), name="their data")
     _apply_layers(viewer, a_perturbation_group("art_dilate_20"))
+    ours = len(viewer.layers) - 1
 
     panel._haemolynx_clear()
 
     assert [layer.name for layer in viewer.layers] == [theirs.name]
-    assert panel._haemolynx_report() == "Removed 2 HaemoLynx layer(s)."
+    assert panel._haemolynx_report() == f"Removed {ours} HaemoLynx layer(s)."
     assert panel._haemolynx_run_button.enabled is True
     assert panel._haemolynx_run_state.cancelled is False
 

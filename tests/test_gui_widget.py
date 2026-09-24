@@ -112,12 +112,12 @@ def test_there_is_one_tab_per_stage_that_opens_one(panel):
 
 
 def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
-    """The Diameters tab has 39 rows; it must scroll, not stretch the window.
+    """A tab with more rows than fit must scroll, not stretch the window.
 
     What matters is not that every tab asks for the same height -- a scroll
     area's hint does vary a little -- but that a tab asks for much less than
     the rows inside it would need, so napari sizes the dock to the panel rather
-    than to 39 spin boxes.
+    than to every spin box on its longest tab.
     """
     from qtpy.QtWidgets import QScrollArea, QTabWidget
 
@@ -141,9 +141,11 @@ def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
         tab_widget.widget(index).sizeHint().height()
         for index in range(tab_widget.count())
     )
-    # Relative to the hint, not a pixel count: wrapped row labels (which no
-    # longer demand their one-line width) made every tab a little shorter.
-    assert tallest_content > 3 * TAB_SCROLL_HINT_HEIGHT, (
+    # Relative to the hint, not a pixel count: wrapped row labels and the
+    # tab 8 reorganisation have each made the longest tab shorter. Twice the
+    # hint is still a tab that could not fit without scrolling, which is all
+    # the check below needs.
+    assert tallest_content > 2 * TAB_SCROLL_HINT_HEIGHT, (
         "the fixture no longer has a long tab to test"
     )
     assert asked < tallest_content / 2, (
