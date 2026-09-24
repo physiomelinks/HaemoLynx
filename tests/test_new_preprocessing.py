@@ -212,44 +212,83 @@ def test_two_class_entropy_criterion_is_non_monotonic_in_probability():
     assert not candidate[1], "p = 0.50 should be discarded - this is the non-monotonicity"
     assert candidate[2] and candidate[3], "high-confidence voxels should be retained"
 
-def test_entropy_map_not_computed_for_two_class_probability_field(tmp_path):
-    """The pipeline-level gate, which is what actually protects the run.
-
-    Leaving entropy_map as None routes _apply_preprocessing_filters down its existing plain
-    hysteresis branch. There is a single origin for the entropy map, so this covers the
-    monolithic and the map-reduce paths alike.
-    """
+def _carotid_loader():
     import sys
     from pathlib import Path
-    import tifffile
 
     examples_path = Path(__file__).parent.parent / "examples"
     if str(examples_path) not in sys.path:
         sys.path.insert(0, str(examples_path))
-    from carotid_image_to_model import (
-        _load_raw_probability_field, PreprocessingConfig, SkeletonConfig,
-    )
+    import carotid_image_to_model
+    return carotid_image_to_model
 
-    def write_probability_field(path, n_classes):
-        vol = np.zeros((6, n_classes, 8, 8), dtype=np.float32)   # ZCYX
-        vol[:, 0] = 0.7
-        vol[:, 1:] = 0.3 / (n_classes - 1)
-        tifffile.imwrite(str(path), vol)
-        return path
 
-    pre_config = PreprocessingConfig()
-    assert pre_config.enable_shannon_entropy, "fixture assumes entropy is requested"
-    skel_config = SkeletonConfig()
+def _write_probability_field(path, n_classes):
+    import tifffile
+
+    vol = np.zeros((6, n_classes, 8, 8), dtype=np.float32)   # ZCYX
+    vol[:, 0] = 0.7
+    vol[:, 1:] = 0.3 / (n_classes - 1)
+    tifffile.imwrite(str(path), vol)
+    return path
+
+
+def _load(tmp_path, n_classes, entropy_on):
+    C = _carotid_loader()
+    pre_config = C.PreprocessingConfig(enable_shannon_entropy=entropy_on)
+    skel_config = C.SkeletonConfig()
     skel_config.sub_volume_percentage = 1.0
+    path = _write_probability_field(tmp_path / f"{n_classes}_class.tif", n_classes)
+    return C._load_raw_probability_field(str(path), "tif", pre_config, skel_config)
 
-    two_class = write_probability_field(tmp_path / "two_class.tif", 2)
-    _, entropy_two = _load_raw_probability_field(str(two_class), "tif", pre_config, skel_config)
-    assert entropy_two is None, "a 2-class field must not produce an entropy map"
 
-    three_class = write_probability_field(tmp_path / "three_class.tif", 3)
-    _, entropy_three = _load_raw_probability_field(str(three_class), "tif", pre_config, skel_config)
-    assert entropy_three is not None, "a 3-class field must still produce an entropy map"
-    assert entropy_three.shape == (6, 8, 8)
+def test_entropy_is_off_by_default_and_a_two_class_field_loads_plainly(tmp_path):
+    """Open item 11: the default no longer describes a path that cannot run on CB data."""
+    assert not _carotid_loader().PreprocessingConfig().enable_shannon_entropy
+    _, entropy = _load(tmp_path, 2, entropy_on=False)
+    assert entropy is None
+
+
+def test_entropy_on_a_two_class_field_is_refused_not_silently_dropped(tmp_path):
+    """It used to warn and run plain hysteresis, under a config that said entropy was on."""
+    with pytest.raises(ValueError, match="only 2 classes"):
+        _load(tmp_path, 2, entropy_on=True)
+
+
+def test_entropy_on_a_three_class_field_still_produces_a_map(tmp_path):
+    _, entropy = _load(tmp_path, 3, entropy_on=True)
+    assert entropy is not None
+    assert entropy.shape == (6, 8, 8)
+
+
+def test_entropy_on_a_field_with_no_class_axis_is_refused(tmp_path):
+    import tifffile
+
+    C = _carotid_loader()
+    path = tmp_path / "prob3d.tif"
+    tifffile.imwrite(str(path), np.full((6, 8, 8), 0.7, dtype=np.float32))
+    skel_config = C.SkeletonConfig()
+    skel_config.sub_volume_percentage = 1.0
+    with pytest.raises(ValueError, match="no class"):
+        C._load_raw_probability_field(
+            str(path), "tif", C.PreprocessingConfig(enable_shannon_entropy=True), skel_config)
+
+
+def test_the_entropy_core_is_a_config_field_that_reaches_the_threshold(monkeypatch):
+    """It used to be read with .get(..., 0.6) and was not a config field, so it could not be set."""
+    C = _carotid_loader()
+    seen = {}
+
+    def fake_joint(image, entropy, **kwargs):
+        seen.update(kwargs)
+        return image > 0.5
+
+    monkeypatch.setattr(C.preprocessing, "joint_hysteresis_threshold", fake_joint)
+    config = C.PreprocessingConfig(enable_shannon_entropy=True, shannon_entropy_core=0.42)
+    prob = np.full((6, 8, 8), 0.7, dtype=np.float32)
+    C._apply_preprocessing_filters(prob, np.zeros_like(prob), config.__dict__)
+    assert seen["shannon_core"] == 0.42
+    assert seen["shannon_max"] == config.shannon_entropy_threshold
 
 def test_evaluate_preprocessing_uncertainty():
     from ImageLynx.statistics.benchmarking import evaluate_preprocessing_uncertainty

@@ -684,8 +684,8 @@ config's 0.65 / 0.75 with an inverted ordering.
 **What it does.** Converts the probability field to a binary mask.
 
 **What was chosen.** Hysteresis thresholding with all pre-threshold filtering disabled. A joint
-probability-and-entropy variant exists and is enabled by default, but **it does not run on the CB
-vessel data** — see below.
+probability-and-entropy variant exists but is **off by default, and cannot run on the CB vessel
+data** — turning it on raises. See below.
 
 **Why no pre-threshold filtering.** Every filter whose support is comparable to the structure width
 deletes the structure. A 6 µm capillary is 3.2 voxels across at 1.866 µm. A 3×3×3 median spans
@@ -763,14 +763,14 @@ inside that range rather than against a search bound.
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
 | 1 | ROI crop of the probability field | 160³ voxels | Bounds the work and fixes the volume every later count is taken from (§2.1) | **On** | `carotid_image_to_model.py:754` |
-| 2 | Class-axis detection, then entropy map | `n_classes` | Entropy is independent evidence only at three or more classes; at two it is a folded function of $p$ and would evacuate the vessel walls | **Skipped** — 2 classes, warns and leaves `entropy_map = None` | `carotid_image_to_model.py:781` |
+| 2 | Class-axis detection, then entropy map | `n_classes` | Entropy is independent evidence only at three or more classes; at two it is a folded function of $p$ and would evacuate the vessel walls | **Off** — `enable_shannon_entropy = False`. Turned on at 2 classes, or with no class axis, it raises | `carotid_image_to_model.py:796` |
 | 3 | Vessel channel selection | `ilastik_vessel_channel` | The threshold operates on one scalar probability field, not on the class stack | **On** | `carotid_image_to_model.py:789` |
 | 4 | Virtual padding in z | 10 voxels, `mode='edge'` | Stops the array boundary caging the mask; `edge` replicates the boundary probability rather than introducing background | **On** (`caged`) | `carotid_image_to_model.py:680` |
 | 5 | Median filter | size 0 | Off — a 3×3×3 median spans 5.6 µm against a 3.2-voxel capillary, and costs 80% of the vessel | Off | `carotid_image_to_model.py:684` |
 | 6 | Morphological opening | radius 0 | Off — radius 1 retains 51% of a 1.6-voxel-radius tube and radius 2 retains none | Off | `carotid_image_to_model.py:688` |
 | 7 | Morphological closing | radius 0 | Off — same objection: any operator whose support matches the structure width deletes the structure | Off | `carotid_image_to_model.py:692` |
 | 8 | Probability smoothing | sigma 0.0 | Off — blurring the field moves the wall the threshold lands on, which resistance carries as $d^{-4}$ | Off | `carotid_image_to_model.py:696` |
-| 9 | Joint probability–entropy hysteresis | core 0.6 / max 0.95 | Would gate seeding and growth on classifier confidence as well as probability; the guard keeps it out of reach at 2 classes | **Unreachable** — guarded on `entropy_map is not None` | `carotid_image_to_model.py:701` |
+| 9 | Joint probability–entropy hysteresis | core 0.6 / max 0.95 | Would gate seeding and growth on classifier confidence as well as probability; the guard keeps it out of reach at 2 classes | **Off** — needs a 3-class classifier | `carotid_image_to_model.py:710` |
 | 10 | Plain hysteresis threshold | 0.90 / 0.95 **as run** (config 0.65 / 0.75) | Confidence legitimately falls at vessel walls, so a single hard cut erodes every vessel from the outside in | **On** | `carotid_image_to_model.py:710` |
 | 11 | Hole filling, 3D | — | A lumen voxel the classifier missed would otherwise stay a permanent hole and shrink the EDT inscribed radius through it | **On** | `carotid_image_to_model.py:720` |
 | 12 | Un-pad | 10 voxels in z | The pad is scaffolding; leaving it would extend every boundary vessel by 10 slices of replicated probability | **On** | `carotid_image_to_model.py:722` |
@@ -821,24 +821,23 @@ already carry**. $H \le t$ then resolves to $p \le r$ or $p \ge 1 - r$, which ca
 voxels while discarding higher-probability ones. Every vessel would come out as a core plus a
 detached shell, with the wall voxels evacuated — the opposite of the intent.
 
-> ⚠ **Open item 11 — both entropy parameters are inert on the CB path.** The pooled vessel
-> classifier's `LabelNames` are `['vessel', 'background']`: **two classes**. The pipeline detects
-> this, warns, leaves `entropy_map` as `None`, and routes to plain `hysteresis_threshold`. So
-> `shannon_core` and `shannon_max` never affect any CB mask, and `enable_shannon_entropy = True`
-> in the config describes a path that does not execute.
+> **Formerly open item 11 — the entropy path is off, and says so.** The pooled vessel classifier's
+> `LabelNames` are `['vessel', 'background']`: **two classes**. The pipeline used to default
+> `enable_shannon_entropy = True`, detect the two classes, warn, and run plain hysteresis — so the
+> config described a path that never executed, and the only trace was a warning in the run log.
+> `shannon_entropy_core` was not even a `PreprocessingConfig` field; it was read with a 0.6 default.
 >
-> Two consequences worth knowing. The library function `joint_hysteresis_threshold` *raises* on
-> `n_classes < 3`, but the pipeline only *warns and falls back* — the safety net is real, but it is
-> silent in the run log rather than fatal. And **`shannon_entropy_core` is not a field of
-> `PreprocessingConfig` at all** — it is read as `pre_config_dict.get("shannon_entropy_core", 0.6)`
-> and exists only in the auto-tuner's search space, so even on a 3-class classifier it could not be
-> set from config and would silently sit at 0.6. Same shape as open item 5 (`C_arterial`).
+> Now `enable_shannon_entropy` defaults to **False**, and turning it on raises if the probability
+> field has fewer than three classes or no class axis at all, matching the library function
+> `joint_hysteresis_threshold`, which already raised. `shannon_entropy_core` is a config field
+> (0.6), and both entropy parameters are read without defaults. CB masks are unchanged: they were
+> plain hysteresis before and are now.
 >
-> The joint path re-engages by itself if the classifier is retrained with a third class — glomus
-> being the obvious candidate, since the TH channel already exists.
+> The joint path becomes usable if the classifier is retrained with a third class — glomus being
+> the obvious candidate, since the TH channel already exists — but it now has to be switched on.
 
-> **At a glance** — plain hysteresis in practice; the joint probability–entropy path is dead at
-> 2 classes · no pre-threshold filtering, median-3 costs 80% recall · `image.py:179`,
+> **At a glance** — plain hysteresis; the joint probability–entropy path is off, and raises if
+> switched on at 2 classes · no pre-threshold filtering, median-3 costs 80% recall · `image.py:179`,
 > `image.py:261`, `carotid_image_to_model.py:769` · `tests/test_preprocessing.py`,
 > `tests/test_new_preprocessing.py`
 
@@ -1068,8 +1067,8 @@ figure below countable rather than an estimate.
 
 **Step 2 runs even though step 11 forbids its output.** The branch-order diameter table is built on
 every run, then never read under `edt_radius` — and if it ever were read, the zero-tolerance guard
-would raise first. It is live code on a dead path, the same shape as the entropy parameters
-(§2.3, open item 11).
+would raise first. It is live code on a dead path, the same shape the entropy parameters had
+before they were switched off (§2.3).
 
 **The alternative.** FWHM: fit a Gaussian plus baseline to the intensity profile across the vessel
 and report $2\sqrt{2 \ln 2}\,\sigma$.
@@ -2509,9 +2508,9 @@ in the coupled solvers.
 | `hysteresis_threshold_high` | 0.75 | probability | (iii) | Provisional, as above | measured, in sensitivity scope |
 | `enable_hole_filling` | True | — | (iii) | — | unswept |
 | `ilastik_vessel_channel` | 0 | index | (i) | Classifier output layout | — |
-| `enable_shannon_entropy` | True | — | (iii) | **Inert** — the vessel classifier has 2 classes, so the joint path is skipped (§2.3, open item 11) | no effect |
+| `enable_shannon_entropy` | False | — | (iii) | **Off.** The vessel classifier has 2 classes; turning this on raises (§2.3) | no effect |
 | `shannon_entropy_threshold` | 0.95 | normalised entropy | (iii) | Chosen. Max entropy for a *candidate* voxel; permissive gate | no effect on the CB path |
-| `shannon_entropy_core` | 0.6 | normalised entropy | (iii) | Chosen. Max entropy for a *seed* voxel; strict gate. **Not a `PreprocessingConfig` field** — only reachable through the auto-tuner | no effect on the CB path |
+| `shannon_entropy_core` | 0.6 | normalised entropy | (iii) | Chosen. Max entropy for a *seed* voxel; strict gate | no effect on the CB path |
 
 > ⚠ **Open item 1 — two different thresholds are in play.** The config defaults above are
 > 0.65 / 0.75. The H1 cohort runs instead froze the vessel threshold at **0.90**, which is not
@@ -3247,7 +3246,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |
 | ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
-| 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
+| ~~11~~ | **Closed.** The entropy path defaulted to on but could not run at 2 classes, and fell back to plain hysteresis with only a warning. `enable_shannon_entropy` now defaults to False and raises if turned on for a 2-class field or one with no class axis; `shannon_entropy_core` is a real config field. CB masks unchanged | — |
 | ~~12~~ | **Closed in code** by `7ea1b36`. The rheology loop rescaled resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contained $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently. **Results not yet re-derived** | every absolute flow in §7, §13.5 |
 | 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
 | ~~14~~ | **Closed.** `crop_roi` rounded the centre twice and landed one voxel low on odd axes with the centre above the midpoint. It now rounds once and uses the same `centre − size // 2` rule as `RoiPlacement.bounds`, so the two paths agree exactly. No CB result used that path | — |

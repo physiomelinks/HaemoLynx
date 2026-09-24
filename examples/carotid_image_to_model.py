@@ -131,7 +131,13 @@ class PreprocessingConfig:
     hysteresis_threshold_high: float = 0.75
     enable_hole_filling: bool = True
     ilastik_vessel_channel: int = 0
-    enable_shannon_entropy: bool = True
+    # Joint probability-entropy hysteresis. Off by default because it needs a classifier with
+    # three or more classes: at two, entropy is a folded function of the vessel probability and
+    # the joint criterion carves wall voxels out of every vessel. The pooled CB classifier has
+    # two, so turning this on for CB data raises rather than silently running plain hysteresis
+    # under a config that says otherwise (open item 11).
+    enable_shannon_entropy: bool = False
+    shannon_entropy_core: float = 0.6
     shannon_entropy_threshold: float = 0.95
 
 @dataclass
@@ -701,14 +707,14 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict, bou
         image = preprocessing.smooth_probability_map(image, sigma=pre_config_dict["probability_smoothing_sigma"])
         
     if pre_config_dict.get("enable_hysteresis_threshold", True):
-        if entropy_map is not None and pre_config_dict.get("enable_shannon_entropy", True):
+        if entropy_map is not None and pre_config_dict["enable_shannon_entropy"]:
             binary = preprocessing.joint_hysteresis_threshold(
                 image, 
                 entropy_map,
                 low=pre_config_dict.get("hysteresis_threshold_low", 0.2), 
                 high=pre_config_dict.get("hysteresis_threshold_high", 0.4),
-                shannon_core=pre_config_dict.get("shannon_entropy_core", 0.6),
-                shannon_max=pre_config_dict.get("shannon_entropy_threshold", 0.95)
+                shannon_core=pre_config_dict["shannon_entropy_core"],
+                shannon_max=pre_config_dict["shannon_entropy_threshold"]
             )
         else:
             binary = preprocessing.hysteresis_threshold(
@@ -766,6 +772,12 @@ def _load_raw_probability_field(image_path, input_format, pre_config, skel_confi
         print(f"  ROI new shape: {image.shape}")
 
     entropy_map = None
+    if pre_config.enable_shannon_entropy and image.ndim != 4:
+        raise ValueError(
+            f"enable_shannon_entropy is set but the input has shape {image.shape}, with no class "
+            f"axis to compute entropy over. Turn it off, or supply the classifier's full "
+            f"per-class probability field."
+        )
     if image.ndim == 4:
         dims = np.array(image.shape)
         c_axis = np.argmin(dims)
@@ -778,18 +790,18 @@ def _load_raw_probability_field(image_path, input_format, pre_config, skel_confi
             # and carves a band out of the middle of the probability range - retaining voxels
             # of lower vessel probability while discarding higher ones, and leaving every
             # vessel as a core plus a detached shell with the wall voxels evacuated.
-            # Leaving entropy_map as None routes _apply_preprocessing_filters to plain
-            # hysteresis. The joint path re-engages by itself once the classifier is
-            # retrained with a third class (e.g. TH/glomus).
-            if n_classes >= 3:
-                entropy_map = preprocessing.calculate_entropy_map(image)
-            else:
-                msg = (f"Shannon entropy is enabled but the probability field has only "
-                       f"{n_classes} classes; entropy is then a folded function of the vessel "
-                       f"probability and adds no independent evidence. Falling back to plain "
-                       f"hysteresis thresholding.")
-                logger.warning(msg)
-                print(f"  [WARNING] {msg}")
+            # This used to warn and fall back to plain hysteresis, so a run whose config said
+            # entropy was on produced a mask that never used it. It now raises: turn the flag
+            # off for a 2-class classifier, or retrain with a third class (e.g. TH/glomus).
+            if n_classes < 3:
+                raise ValueError(
+                    f"enable_shannon_entropy is set but the probability field has only "
+                    f"{n_classes} classes; entropy is then a folded function of the vessel "
+                    f"probability and adds no independent evidence. Set "
+                    f"enable_shannon_entropy to False, or use a classifier with three or "
+                    f"more classes."
+                )
+            entropy_map = preprocessing.calculate_entropy_map(image)
         if c_axis == 0: image = image[pre_config.ilastik_vessel_channel, :, :, :]
         elif c_axis == 1: image = image[:, pre_config.ilastik_vessel_channel, :, :]
         elif c_axis == 2: image = image[:, :, pre_config.ilastik_vessel_channel, :]
