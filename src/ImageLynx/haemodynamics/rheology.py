@@ -237,6 +237,43 @@ def feeding_vessel_diameter(
     return max(d1, d2), True
 
 
+def _upstream_viscosity(diameter_um: float) -> float:
+    """The viscosity every upstream resistance setter bakes in: 1 / D^1.647.
+
+    poiseuille.py, pericyte_mask.py and probability.py all use it.
+    """
+    return 1.0 / (diameter_um ** 1.647)
+
+
+def _record_original_resistance(data: dict, diameter_um: float) -> None:
+    """Save the resistance the edge arrived with, once, before the solver rescales it.
+
+    An edge with no resistance gets straight-tube Poiseuille with the upstream viscosity, so
+    the rescale reduces to 128 mu_app L / (pi D^4). An edge that already carries
+    original_resistance, from an earlier call on the same graph, keeps it: re-saving would
+    rescale an already rescaled value.
+    """
+    if "original_resistance" in data:
+        return
+    resistance = data.get("resistance")
+    if resistance is None:
+        length = data.get("length", 10.0)
+        resistance = (
+            128.0 * _upstream_viscosity(diameter_um) * length
+        ) / (np.pi * diameter_um**4)
+    data["original_resistance"] = resistance
+
+
+def _rescaled_resistance(data: dict, diameter_um: float, mu_app: float) -> float:
+    """The arriving resistance with its upstream viscosity swapped for mu_app.
+
+    Resistance is linear in viscosity, so this keeps any sphincter or pericyte geometry
+    integrated upstream. For a constricted edge it is approximate: upstream integrated
+    1 / d(x)^1.647 along the edge, while this ratio uses the one edge diameter.
+    """
+    return data["original_resistance"] * (mu_app / _upstream_viscosity(diameter_um))
+
+
 def solve_coupled_flow_and_hematocrit(
     G: nx.MultiGraph, 
     starting_nodes: list[int],
@@ -282,16 +319,18 @@ def solve_coupled_flow_and_hematocrit(
     logger = logging.getLogger(__name__)
     _require_diameters(G, default_diameter_um)
     
-    # Initialization: Assign baseline hematocrit and viscosity
+    # Initialization: Assign baseline hematocrit and viscosity. The arriving resistance is
+    # recorded before it is touched; overwriting it here used to discard any upstream
+    # sphincter or pericyte geometry and count viscosity twice in the update below.
     for u, v, key, data in G.edges(keys=True, data=True):
         diameter = _edge_diameter_um(data, default_diameter_um)
             
         data["hematocrit"] = systemic_hematocrit
         mu_app = calculate_pries_secomb_viscosity(diameter, systemic_hematocrit)
         data["viscosity"] = mu_app
-        
-        length = data.get("length", 10.0)
-        data["resistance"] = (128.0 * mu_app * length) / (np.pi * diameter**4)
+
+        _record_original_resistance(data, diameter)
+        data["resistance"] = _rescaled_resistance(data, diameter, mu_app)
 
     iteration = 0
     max_flow_diff = float('inf')
@@ -463,23 +502,10 @@ def solve_coupled_flow_and_hematocrit(
             mu_app = calculate_pries_secomb_viscosity(d, h)
             data["viscosity"] = mu_app
             
-            # Poiseuille directly, rather than rescaling a stored baseline by
-            # mu_app / mu_old. The rescale was meant to preserve a geometric constriction
-            # profile integrated into original_resistance, and it telescopes correctly only
-            # if that baseline still carries the poiseuille.py power law mu_old = 1/d^1.647.
-            # It does not: the initialisation above overwrites resistance with the
-            # Pries-Secomb value before the loop starts, so original_resistance was captured
-            # from a baseline that no longer contained mu_old. Dividing by it therefore
-            # applied viscosity twice and inflated every resistance by 200-540x, and
-            # calibre-dependently, since the surviving factor is mu_PS(d, H) * d^1.647.
-            #
-            # constrict_at_pericytes is False and HaemodynamicsConfig.__post_init__ raises
-            # when it is set True, so on this path original_resistance held a plain
-            # straight-tube value and there was no profile to preserve. Recomputing gives
-            # the same expression the initialisation uses, so the two now agree.
-            length = data.get("length", 10.0)
-            data["resistance"] = (128.0 * mu_app * length) / (np.pi * d**4)
-
+            # Rescale the arriving resistance rather than overwrite it with a straight tube,
+            # so sphincter and pericyte geometry survives.
+            data["resistance"] = _rescaled_resistance(data, d, mu_app)
+            
             # WSS = (32 * mu * Q) / (pi * D^3)
             # Units: mu is in mPa*s (cP), Q is in um^3/s, D is in um
             # To get WSS in Pa: (mPa*s * um^3/s) / um^3 = mPa. So WSS is in mPa.
