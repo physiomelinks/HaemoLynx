@@ -1,0 +1,92 @@
+flowchart TD
+
+  IN(["Q per edge from E27<br/>vessel radius r"])
+
+  subgraph S5["Vessel-to-grid mapping"]
+    E28["E28 · S = 2 pi r l_cell"]
+    E29["E29 · f_l = l_cell / l_total"]
+  end
+
+  subgraph S6["ADR matrix assembly"]
+    E30["E30 · q_total per grid cell"]
+    E31["E31 · P50 with Bohr shift"]
+    E32["E32 · Hill saturation S_O2"]
+    E33["E33 · C_O2 blood oxygen content"]
+    E34["E34 · s_in arterial oxygen flux"]
+    E35["E35 · Dz Dy Dx face conductances"]
+    E36["E36 · A seven-point diffusion operator"]
+    E31 --> E32 --> E33 --> E34
+    E35 --> E36
+  end
+
+  subgraph S7["Multi-species perfusion solve"]
+    E37["E37 · S_O2 Haldane term"]
+    E38["E38 · c_CO2 base capacity"]
+    E39["E39 · Haldane shift"]
+    E40["E40 · C_CO2 blood CO2 content"]
+    E41["E41 · pH Henderson-Hasselbalch"]
+    E42["E42 · Dz Dy Dx scaled by alpha"]
+    E43["E43 · Lambda pseudo-washout diagonal"]
+    E44["E44 · M_O2 metabolic consumption"]
+    E45["E45 · M_CO2 = M_O2 x RQ"]
+    E46["E46 · C_mix nodal mixing"]
+    E47["E47 · invert content to partial pressure"]
+    E48["E48 · phi_O2 transmural flux"]
+    E49["E49 · phi_CO2 transmural flux"]
+    E50["E50 · blood content depletion along edge"]
+    E51["E51 · b_O2 right-hand side"]
+    E52["E52 · b_CO2 right-hand side"]
+    E53["E53 · A P = b conjugate gradient solve"]
+    E54["E54 · Picard convergence check"]
+    E55["E55 · final tissue pH"]
+
+    E37 --> E39
+    E38 --> E40
+    E39 --> E40
+    E42 --> E53
+    E43 --> E51
+    E43 --> E52
+    E43 --> E53
+    E44 --> E45
+    E44 --> E51
+    E45 --> E52
+    E41 --> E47
+    E46 --> E47
+    E47 --> E48
+    E47 --> E49
+    E48 --> E50
+    E49 --> E50
+    E50 --> E46
+    E48 --> E51
+    E49 --> E52
+    E51 --> E53
+    E52 --> E53
+    E53 --> E54
+    E53 --> E55
+    E54 -. "x50 or until tolerance 1e-4" .-> E41
+    E54 -.-> E44
+  end
+
+  OUT2(["Tissue PO2, PCO2, pH fields"])
+
+  IN --> E28
+  IN --> E29
+  IN --> E30
+  IN --> E34
+  IN --> E46
+  E29 --> E30
+  E29 --> E34
+  E33 --> E46
+  E33 --> E47
+  E40 --> E46
+  E40 --> E47
+  E28 --> E43
+  E28 --> E48
+  E28 --> E49
+  E31 --> E41
+  E32 --> E37
+  E53 --> OUT2
+  E55 --> OUT2
+
+  classDef deadend fill:#fdf0dc,stroke:#d99b3d,color:#6b4a12;
+  class E30,E34,E36 deadend;

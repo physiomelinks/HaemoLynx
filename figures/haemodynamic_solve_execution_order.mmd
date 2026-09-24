@@ -1,0 +1,120 @@
+flowchart TD
+
+  START(["Vessel radii assigned to every edge"])
+
+  subgraph P1["Phase 4 · diameter assignment and provenance guards"]
+    L1{{"for each edge in G"}}
+    A3["store assigned_diameter_um<br/>from the measured radius"]
+    A4["diameter-provenance guards<br/>total failure, then partial fallback"]
+    L1 --> A3
+    A3 -. "next edge" .-> L1
+    L1 --> A4
+  end
+
+  VT["graph_to_vtk · writes the mesh and its paths<br/>resistance array refreshed after the solve"]
+
+  RX["raise unless 0 < relaxation ≤ 1"]
+  RQ["_require_diameters · raise unless every edge<br/>has a positive diameter or default_diameter_um"]
+
+  subgraph P2["Phase 5 · Rheology initialisation"]
+    L2{{"for each edge in G"}}
+    B1["set hematocrit = 0.45<br/>this is what breaks the circular dependency"]
+    B2["E3, E5, E6, E7 → E8 → E10<br/>mu_app from Pries-Secomb"]
+    B4["record R0 unless already recorded<br/>the arriving resistance, else 128 mu_old L / pi D^4<br/>none arrives on this path"]
+    B3["E11 · R = R0 mu_app / mu_old<br/>mu_old cancels in the fallback"]
+    L2 --> B1 --> B2 --> B4 --> B3
+    B3 -. "next edge" .-> L2
+  end
+
+  IT["iteration = 0"]
+  D2{"iteration < 15<br/>and flow change > 1e-4?"}
+
+  subgraph P3["Phase 5 · Rheology iteration body"]
+    C1["E12 · build conductance matrix"]
+    C2["E13 · build Laplacian"]
+    C3["apply Dirichlet pressures<br/>at inlet and outlet nodes"]
+    C4["E14 · solve Luu pu = -Luk pk"]
+    L3{{"for each edge in G"}}
+    C5["E15 · Q_ij = dp / R_ij<br/>record sign, orient into a DAG"]
+    C12["compute max flow change<br/>against the previous pass"]
+    D5{"iteration > 0 and<br/>flow change ≤ 1e-4?"}
+    D6{"DAG sorts topologically?<br/>no cycle in flow directions"}
+    C6s["snapshot H_old on every edge<br/>for the under-relaxation"]
+    C6a["reset every node's inflow totals<br/>node_q_in = 0, node_h_in = 0"]
+    C6b["seed each inlet<br/>node_h_in = 0.45, node_q_in = 1.0 as a dummy"]
+    L4{{"for each node in topological order"}}
+    subgraph C6["C6 · mix incoming haematocrit"]
+      D8{"node_q_in > 0?<br/>did any flow arrive"}
+      C6c["h_mix = node_h_in / node_q_in<br/>Σ H·Q / Σ Q over incoming edges"]
+      C6d["h_mix = 0.45<br/>no inflow, fall back to systemic"]
+    end
+    D3{"node has exactly<br/>two out-edges?"}
+    CDF["D_F · feeding_vessel_diameter<br/>single in-edge, flow-weighted mean at a merge,<br/>larger daughter and count it if none"]
+    C7["E16, E17 → E18 → E19 → E20<br/>phase separation split, scaled by D_F"]
+    C8["proportional mixing<br/>relation undefined above a Y-split"]
+    C6e["add H·Q and Q of each out-edge<br/>to its child's inflow totals"]
+    L5{{"for each edge in G"}}
+    CLG["log the count of splits<br/>with no inflowing parent, if any"]
+    C13["H = H_old + 0.5 (H_skim - H_old)<br/>under-relaxation"]
+    C9["recompute E6, E8, E10<br/>from the relaxed haematocrit"]
+    C10["E21 · R = R0 mu_app / mu_old<br/>same rule as E11"]
+    C11["E22 · tau_w = 32 mu_app Q / pi D^3"]
+
+    C1 --> C2 --> C3 --> C4 --> L3
+    L3 --> C5
+    C5 -. "next edge" .-> L3
+    L3 --> C12 --> D5
+    D5 -- no --> D6
+    D6 -- yes --> C6s --> C6a --> C6b --> L4
+    L4 --> D8
+    D8 -- yes --> C6c --> D3
+    D8 -- no --> C6d --> D3
+    D3 -- yes --> CDF --> C7 --> C6e
+    D3 -- no --> C8 --> C6e
+    C6e -. "next node" .-> L4
+    L4 --> CLG --> L5
+    L5 --> C13 --> C9 --> C10 --> C11
+    C11 -. "next edge" .-> L5
+  end
+
+  subgraph P4["Phase 5 · Final conductance, effective resistance and flow solve"]
+    F1["E23 · build conductance matrix<br/>from the final resistances"]
+    F2["E24 · build Laplacian"]
+    D4{"do_resistance_calculation<br/>enabled?"}
+    F3["E25 · R_eff two-point resistance<br/>reported, not reused"]
+    F4["E26 · solve Luu pu = -Luk pk"]
+    F5["E27 · Q_ij = dp / R_ij"]
+    F6["write flow arrays to VTK and refresh<br/>resistance, hematocrit, viscosity, tau_w<br/>save stop status as field_data"]
+    F1 --> F2 --> D4
+    D4 -- yes --> F3 --> F4
+    D4 -- no --> F4
+    F4 --> F5 --> F6
+  end
+
+  RS["write rheology_stop_reason, rheology_iterations<br/>and rheology_max_flow_change to G.graph"]
+  D7{"stop reason<br/>is converged?"}
+  WN["print non-convergence warning"]
+  ST["compute_comprehensive_vessel_statistics<br/>betweenness and communities, weighted by the solved resistance<br/>stop status appended to the printed stats"]
+  PE["export_per_edge_morphometry to CSV"]
+
+  END(["Pressures, flows and wall shear stress<br/>tagged with the rheology stop reason"])
+
+  START --> L1
+  A4 --> VT --> RX --> RQ --> L2
+  B3 --> IT
+  IT --> D2
+  D2 -- yes --> C1
+  L5 -. "iteration = iteration + 1" .-> D2
+  D5 -- "yes, break · converged" --> RS
+  D6 -- "no, log a warning and break · flow_cycle" --> RS
+  D2 -- "no · max_iterations" --> RS
+  RS --> D7
+  D7 -- yes --> ST
+  D7 -- no --> WN --> ST
+  ST --> PE --> F1
+  F6 --> END
+
+  classDef deadend fill:#fdf0dc,stroke:#d99b3d,color:#6b4a12;
+  classDef loop fill:#eef4ff,stroke:#7c9fd6,color:#24456f;
+  class F3 deadend;
+  class L1,L2,L3,L4,L5 loop;
