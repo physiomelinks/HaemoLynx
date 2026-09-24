@@ -354,3 +354,107 @@ def test_a_disabled_statistics_measure_setting_is_missing_from_the_exported_csv(
     # Nothing else should have been affected by disabling just this one.
     assert "Fractal Dimension" in without_csv
     assert "Tortuosity" in without_csv
+
+
+#: The eight annotating analyses beyond bottlenecks/shunts, with the per-vessel
+#: attributes each writes and one report row each always adds when it runs.
+NETWORK_ANALYSES = {
+    "statistics_occlusion_impact": (("occlusion_flow_loss", "occlusion_hypoperfused_length_um"), "Occlusion Impact Method"),
+    "statistics_occlusion_curves": ((), "Occlusion Curves Route Weighting"),
+    "statistics_current_flow": (("current_flow_share",), "Equivalent Inlet-Outlet Resistance"),
+    "statistics_perfusion_territories": (
+        ("arteriolar_territory", "venular_territory", "watershed", "arteriolar_watershed_margin"),
+        "Arteriolar Territory Count",
+    ),
+    "statistics_transit_time": (("transit_time_s", "arrival_time_s"), "Transit Time Status"),
+    "statistics_loop_hierarchy": (("loop_length_um",), "Vessels On No Loop"),
+    "statistics_strahler": (("strahler_order",), "Strahler Method"),
+    "statistics_algebraic_connectivity": (("fiedler_value", "fiedler_side"), "Algebraic Connectivity lambda_2"),
+}
+
+
+def test_export_results_runs_every_network_analysis_and_annotates_the_vessels(tmp_path):
+    """All eight on, with inlet 0 and outlet 2 on the forked 0-1-2 (+ spur 1-3)
+    graph and haemodynamics off: each adds its report rows, and every one that
+    can run writes its per-vessel attributes. Transit time needs a solved
+    flow, so it reports why not and writes nothing."""
+    G = _export_with_haemodynamics_off(
+        tmp_path,
+        inlet_nodes=[0],
+        outlet_nodes=[2],
+        **{name: True for name in NETWORK_ANALYSES},
+    )
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    for name, (attributes, row) in NETWORK_ANALYSES.items():
+        assert row in csv_text, name
+        for attribute in attributes:
+            present = all(attribute in data for _u, _v, data in G.edges(data=True))
+            assert present == (name != "statistics_transit_time"), (name, attribute)
+    assert "needs a solved flow" in csv_text
+
+    # 0-1-2 carries everything and blocking either vessel stops it; the spur nothing.
+    assert G[0][1][0]["current_flow_share"] == pytest.approx(1.0)
+    assert G[1][3][0]["current_flow_share"] == pytest.approx(0.0)
+    assert G[0][1][0]["occlusion_flow_loss"] == pytest.approx(1.0)
+    assert G[1][3][0]["occlusion_flow_loss"] == pytest.approx(0.0)
+    # A tree: no vessel is on a loop.
+    assert all(np.isnan(data["loop_length_um"]) for _u, _v, data in G.edges(data=True))
+
+
+def test_export_results_skips_every_network_analysis_when_toggled_off(tmp_path):
+    G = _export_with_haemodynamics_off(
+        tmp_path,
+        inlet_nodes=[0],
+        outlet_nodes=[2],
+        **{name: False for name in NETWORK_ANALYSES},
+    )
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    for name, (attributes, row) in NETWORK_ANALYSES.items():
+        assert row not in csv_text, name
+        assert all(
+            attribute not in data for attribute in attributes for _u, _v, data in G.edges(data=True)
+        ), name
+
+
+def test_the_network_analysis_master_toggle_gates_the_new_analyses_too(tmp_path):
+    G = _export_with_haemodynamics_off(
+        tmp_path,
+        inlet_nodes=[0],
+        outlet_nodes=[2],
+        statistics_network_analysis=False,
+        **{name: True for name in NETWORK_ANALYSES},
+    )
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    for name, (attributes, row) in NETWORK_ANALYSES.items():
+        assert row not in csv_text, name
+    assert all("current_flow_share" not in data for _u, _v, data in G.edges(data=True))
+
+
+def test_export_results_passes_the_occlusion_settings_through(tmp_path, monkeypatch):
+    from haemolynx.statistics import comprehensive
+
+    seen = {}
+    real = comprehensive.compute_occlusion_curves
+
+    def spy(*args, **kwargs):
+        seen["max_fraction"] = kwargs["max_fraction"]
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(comprehensive, "compute_occlusion_curves", spy)
+    real_impact = comprehensive.compute_single_vessel_occlusion_impact
+
+    def spy_impact(*args, **kwargs):
+        seen["hypoperfusion_fraction"] = kwargs["hypoperfusion_fraction"]
+        return real_impact(*args, **kwargs)
+
+    monkeypatch.setattr(comprehensive, "compute_single_vessel_occlusion_impact", spy_impact)
+    _export_with_haemodynamics_off(
+        tmp_path,
+        inlet_nodes=[0],
+        outlet_nodes=[2],
+        statistics_occlusion_impact=True,
+        statistics_occlusion_curves=True,
+        statistics_occlusion_curve_max_fraction=0.3,
+        statistics_occlusion_hypoperfusion_fraction=0.8,
+    )
+    assert seen == {"max_fraction": 0.3, "hypoperfusion_fraction": 0.8}

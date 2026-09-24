@@ -57,9 +57,12 @@ OCCLUSION_IMPACT_EDGE_ATTRIBUTES: tuple[str, ...] = (
 #: ``fast`` mode evaluates at most this many vessels exactly -- the ones
 #: carrying the most flow power (the vessel's own flow x pressure drop,
 #: a lower bound on the flow its occlusion costs); the rest are reported
-#: "not evaluated". ``full`` evaluates every flow-carrying vessel.
-DEFAULT_FAST_MAX_EVALUATED = 5000
-#: Vessels solved together per batch (one sparse solve per vessel).
+#: "not evaluated". ``full`` evaluates every flow-carrying vessel. Each is
+#: one sparse solve, ~18 ms on the 27k-node / 78k-vessel benchmark lattice:
+#: 500 is ~13 s there, every vessel ~25 min.
+DEFAULT_FAST_MAX_EVALUATED = 500
+#: Vessels whose updates are applied together per batch (one sparse solve
+#: per vessel; the batch only vectorises what follows the solves).
 DEFAULT_BATCH = 32
 DEFAULT_TOP_N = 10
 ASSUMPTIONS = (
@@ -175,7 +178,11 @@ def compute_single_vessel_occlusion_impact(
         idx = candidates[start : start + batch]
         rhs = incidence[idx].T.toarray()  # n_free x b
         if system.lu is not None and rhs.size:
-            x = system.lu.solve(rhs)
+            # One column at a time: SuperLU's own multi-right-hand-side solve
+            # is ~3.5x slower per column than solving them singly.
+            x = np.empty_like(rhs)
+            for column in range(rhs.shape[1]):
+                x[:, column] = system.lu.solve(np.ascontiguousarray(rhs[:, column]))
             r_eff = np.einsum("ij,ji->i", incidence[idx].toarray(), x)
             dflow = (incidence @ x) * g[:, None]
         else:
@@ -259,6 +266,14 @@ def compute_single_vessel_occlusion_impact(
 
 # --- cumulative occlusion curves -------------------------------------------------
 
+#: Removal steps per curve (each a sparse factorisation of the thinned
+#: network, ~1.5 s on the 27k-node benchmark lattice).
+FAST_CURVE_STEPS = 5
+FULL_CURVE_STEPS = 25
+
+#: ``np.trapezoid`` is NumPy >= 2.0; ``np.trapz`` is the same function before it.
+_trapezoid = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+
 
 def _interpolated_crossing(fractions: list, flows: list, level: float) -> Any:
     """First removal fraction at which *flows* falls to *level*, linearly
@@ -273,14 +288,18 @@ def _interpolated_crossing(fractions: list, flows: list, level: float) -> Any:
     return f"> {fractions[-1]:g} (never reached)"
 
 
-def _curve(G, inlets, outlets, weighting, order, fractions, q0) -> tuple[list, list]:
+def _curve(G, inlets, outlets, weighting, order, fractions, q0, intact) -> tuple[list, list]:
     flows, reach = [], []
     m = len(order)
     for fraction in fractions:
         # Round half up: Python's round() rounds 0.5 to 0, so on a small
         # network the first step would silently remove nothing.
         removed = set(order[: int(fraction * m + 0.5)])
-        system = TerminalFlowSystem(G, inlets, outlets, weighting, removed=removed)
+        # Nothing removed is the intact network, already solved: each
+        # factorisation is most of this function's cost.
+        system = intact if not removed else TerminalFlowSystem(
+            G, inlets, outlets, weighting, removed=removed
+        )
         flows.append(max(0.0, system.total_flow * system.scale / q0))
         reach.append(system.reachable_outlet_fraction(inlets, outlets))
     return flows, reach
@@ -320,7 +339,7 @@ def compute_occlusion_curves(
     if q0 <= 0.0:
         return _unavailable("Occlusion Curves", "no inlet-outlet flow", label, both)
 
-    steps = 10 if statistics_mode == "fast" else 25
+    steps = FAST_CURVE_STEPS if statistics_mode == "fast" else FULL_CURVE_STEPS
     repeats = 3 if statistics_mode == "fast" else 5
     fractions = [round(max_fraction * i / steps, 6) for i in range(steps + 1)]
     vessels = list(base.edges)
@@ -345,7 +364,7 @@ def compute_occlusion_curves(
     for r in range(repeats):
         shuffled = list(vessels)
         random.Random(REPRODUCIBILITY_SEED + r).shuffle(shuffled)
-        flows, reach = _curve(G, inlets, outlets, effective, shuffled, fractions, q0)
+        flows, reach = _curve(G, inlets, outlets, effective, shuffled, fractions, q0, base)
         random_flows.append(flows)
         random_reach.append(reach)
     curves["random"] = (
@@ -353,10 +372,10 @@ def compute_occlusion_curves(
         np.mean(random_reach, axis=0).tolist(),
     )
     for name, order in orders.items():
-        curves[name] = _curve(G, inlets, outlets, effective, order, fractions, q0)
+        curves[name] = _curve(G, inlets, outlets, effective, order, fractions, q0, base)
 
     for name, (flows, reach) in curves.items():
-        area = float(np.trapezoid(flows, fractions) / max_fraction)
+        area = float(_trapezoid(flows, fractions) / max_fraction)
         result[f"Occlusion Curve ({name})"] = {
             "Robustness Index": area,
             "Removal Fraction At 50% Flow": _interpolated_crossing(fractions, flows, 0.5),

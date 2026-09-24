@@ -529,10 +529,30 @@ connectivity/network_analysis:
   statistics_bottlenecks: true
   # Find inlet-to-outlet shunts: vessels on a route much shorter than the network's median inlet-to-outlet route, bypassing the bulk of the bed. Needs inlet and outlet nodes; adds shunt and shunt_route_ratio as vessels-layer colour options  [needs statistics and statistics_network_analysis]
   statistics_shunts: true
-  # Distance the bottleneck and shunt routes are measured in: vessel count (topology), centreline length, or hydraulic resistance (and conductance for the bottleneck cut). Resistance needs haemodynamics and falls back to length without it  [one of: topology, length, resistance; needs statistics and statistics_network_analysis]
+  # Distance the bottleneck, shunt and territory routes are measured in: vessel count (topology), centreline length, or hydraulic resistance (and conductance for the bottleneck cut). Also sets the conductance model of current flow, the occlusion analyses and algebraic connectivity: one per vessel, 1/length, or the solved conductance. Resistance needs haemodynamics and falls back to length without it  [one of: topology, length, resistance; needs statistics and statistics_network_analysis]
   statistics_route_weighting: length
   # Flag a vessel as a shunt when its shortest inlet-to-outlet route is at most this fraction of the median route  [fraction; range 0.0..1.0; needs statistics and statistics_network_analysis and statistics_shunts]
   statistics_shunt_max_route_fraction: 0.5
+  # Predict where a single blocked vessel matters most: for every vessel, the fraction of inlet-to-outlet flow lost and the length of other vessels starved of flow if it alone is blocked, summarised for the whole network, by vessel type and by branch order. One sparse solve per vessel: fast mode evaluates the 500 vessels carrying the most flow power exactly (~13 s on a 78k-vessel network) and leaves the rest 'not evaluated'; full mode evaluates every vessel exactly (~25 min there). Assumes fixed vessel conductances. Adds occlusion_flow_loss and occlusion_hypoperfused_length_um as vessels-layer colour options  [needs statistics and statistics_network_analysis]
+  statistics_occlusion_impact: false
+  # Count another vessel as starved when its flow falls by at least this fraction after the blockage  [fraction; range 0.0..1.0; needs statistics and statistics_network_analysis and statistics_occlusion_impact]
+  statistics_occlusion_hypoperfusion_fraction: 0.5
+  # Block vessels cumulatively (random, busiest-first, narrowest-first) and track remaining flow and inlet-outlet connectivity, with a robustness index per removal order. Slower: one sparse factorisation per removal step, ~30 s on a 78k-vessel network in fast mode (5 steps, 3 random repeats) and ~3.5 min in full mode (25 steps, 5 random repeats)  [needs statistics and statistics_network_analysis]
+  statistics_occlusion_curves: false
+  # Keep blocking vessels until this fraction of them is blocked  [fraction; range 0.01..1.0; needs statistics and statistics_network_analysis and statistics_occlusion_curves]
+  statistics_occlusion_curve_max_fraction: 0.5
+  # Each vessel's share of the inlet-to-outlet flow as Kirchhoff splits it across parallel routes (current-flow betweenness), the equivalent inlet-outlet resistance, and (full mode, small networks) the Kirchhoff index; adds current_flow_share as a vessels-layer colour option  [needs statistics and statistics_network_analysis]
+  statistics_current_flow: true
+  # Assign each vessel to its nearest inlet (arteriolar) and outlet (venular) territory and flag watershed vessels on the borders between territories; adds arteriolar_territory, venular_territory, watershed and arteriolar_watershed_margin as vessels-layer colour options  [needs statistics and statistics_network_analysis]
+  statistics_perfusion_territories: true
+  # Blood transit time per vessel and the inlet-to-outlet transit-time distribution, including capillary transit-time heterogeneity (CTH). Needs haemodynamics and diameters; adds transit_time_s and arrival_time_s as vessels-layer colour options  [needs statistics and statistics_network_analysis]
+  statistics_transit_time: true
+  # Shortest loop through each vessel and the loop-length distribution overall and by vessel type -- the scale at which the network's redundancy sits; adds loop_length_um as a vessels-layer colour option  [needs statistics and statistics_network_analysis]
+  statistics_loop_hierarchy: true
+  # Horton-Strahler orders of the arterial and venous trees and Horton's bifurcation, length and diameter ratios; adds strahler_order as a vessels-layer colour option  [needs statistics and statistics_network_analysis]
+  statistics_strahler: true
+  # Algebraic connectivity (Fiedler value) of the weighted network and its natural two-way split; adds fiedler_value and fiedler_side as vessels-layer colour options  [needs statistics and statistics_network_analysis]
+  statistics_algebraic_connectivity: true
   # Independent loop (anastomosis) count -- 0 means every vessel is a single point of failure for everything downstream of it  [needs statistics and statistics_network_analysis]
   statistics_cyclomatic_number: true
   # Whether high-degree junctions connect to other high-degree junctions (vascular trees are normally disassortative)  [needs statistics and statistics_network_analysis]

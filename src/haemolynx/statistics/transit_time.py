@@ -81,6 +81,7 @@ def compute_transit_times(
     flow_max = max((float(d["flow_abs"]) for *_r, d in edges), default=0.0)
     tiny = 1e-12 * flow_max
     inflows: dict = defaultdict(list)  # downstream node -> [(upstream, tau, tau_cap, q, edge)]
+    outflow: dict = defaultdict(float)  # upstream node -> flow leaving it through vessels
     transit = {}
     for u, v, key, data in edges:
         q = float(data["flow_abs"])
@@ -93,6 +94,7 @@ def compute_transit_times(
         tau_cap = tau if branch_order_category(data.get("branch_order")) == "capillary" else 0.0
         transit[(u, v, key)] = tau
         inflows[downstream].append((upstream, tau, tau_cap, q, (u, v, key)))
+        outflow[upstream] += q
 
     # (weight-normalised) first/second moments of whole-path and capillary time
     mean, second, mean_c, second_c = {}, {}, {}, {}
@@ -117,23 +119,28 @@ def compute_transit_times(
             mean[node], second[node] = m1 / w, m2 / w
             mean_c[node], second_c[node] = c1 / w, c2 / w
 
+    # Blood leaves the network at an outlet at the rate it arrives there net
+    # of what drains on through the outlet to a lower-pressure one -- counting
+    # every inflow would count that through-flow at both outlets. What leaves
+    # carries the outlet's own mixed arrival-time distribution.
+    w = m1 = m2 = c1 = c2 = 0.0
+    for outlet in outlets:
+        if outlet not in mean or outlet in inlets:
+            continue
+        reached = sum(q for up, _t, _tc, q, _e in inflows.get(outlet, ()) if up in mean)
+        leaving = max(0.0, reached - outflow.get(outlet, 0.0))
+        w += leaving
+        m1 += leaving * mean[outlet]
+        m2 += leaving * second[outlet]
+        c1 += leaving * mean_c[outlet]
+        c2 += leaving * second_c[outlet]
+    if w <= 0:
+        return _unavailable("Transit Time", "no flow reaches an outlet from an inlet", both=both)
+
+    # Only now the measure has an answer: nothing is written when it cannot run.
     for u, v, key, _data in edges:
         _set_edge(G, u, v, key, "transit_time_s", transit.get((u, v, key), math.nan))
         _set_edge(G, u, v, key, "arrival_time_s", arrival.get((u, v, key), math.nan))
-
-    w = m1 = m2 = c1 = c2 = 0.0
-    for outlet in outlets:
-        for upstream, tau, tau_cap, q, _edge in inflows.get(outlet, ()):
-            if upstream not in mean:
-                continue
-            mu, su, cu, scu = mean[upstream], second[upstream], mean_c[upstream], second_c[upstream]
-            w += q
-            m1 += q * (mu + tau)
-            m2 += q * (su + 2 * mu * tau + tau * tau)
-            c1 += q * (cu + tau_cap)
-            c2 += q * (scu + 2 * cu * tau_cap + tau_cap * tau_cap)
-    if w <= 0:
-        return _unavailable("Transit Time", "no flow reaches an outlet from an inlet", both=both)
 
     mtt, sd = _moments_summary(w, m1, m2)
     result: Dict[str, Any] = {

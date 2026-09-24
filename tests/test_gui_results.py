@@ -838,6 +838,105 @@ def test_bottleneck_and_shunt_columns_are_absent_without_inlets_and_outlets():
     )
 
 
+# --- the other network analyses' colouring (export_results) ------------------
+
+#: Every per-vessel column the eight network analyses write, and whether it is
+#: text (categorical colouring) or a number (continuous).
+NETWORK_ANALYSIS_COLUMNS = {
+    "occlusion_flow_loss": False,
+    "occlusion_hypoperfused_length_um": False,
+    "current_flow_share": False,
+    "arteriolar_territory": True,
+    "venular_territory": True,
+    "watershed": True,
+    "arteriolar_watershed_margin": False,
+    "transit_time_s": False,
+    "arrival_time_s": False,
+    "loop_length_um": False,
+    "strahler_order": False,
+    "fiedler_value": False,
+    "fiedler_side": True,
+}
+
+
+def test_network_analysis_columns_are_declared_for_export_results():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    for name, is_text in NETWORK_ANALYSIS_COLUMNS.items():
+        assert OPTIONAL_EDGE_COLUMNS[name] == "export_results", name
+        assert (name in TEXT_COLUMNS) == is_text, name
+    assert set(NETWORK_ANALYSIS_COLUMNS) <= set(edge_columns_for_settings())
+
+
+def _solved_chain():
+    """a_graph with the flow a pressure drop 0 -> 3 would give, for transit time."""
+    graph = a_graph(diameter_um=5.0, conductance=1.0, resistance=1.0, branch_order="BO1")
+    for node, pressure in zip(range(4), (3.0, 2.0, 1.0, 0.0)):
+        graph.nodes[node]["pressure"] = pressure
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["flow_abs"] = 1e-12
+    return graph
+
+
+def test_export_results_offers_every_network_analysis_colouring_on_the_vessels():
+    from haemolynx.gui.results import _colouring, available_edge_columns
+    from haemolynx import statistics
+
+    graph = _solved_chain()
+    results = built(graph)
+    statistics.compute_single_vessel_occlusion_impact(graph, [0], [3])
+    statistics.compute_current_flow(graph, [0], [3])
+    statistics.compute_perfusion_territories(graph, [0], [3])
+    statistics.compute_transit_times(graph, [0], [3])
+    # A chain has no loop and so no finite loop length; it is covered by its
+    # own test below on a graph that has one.
+    statistics.compute_strahler_orders(graph, [0], [3])
+    statistics.compute_algebraic_connectivity(graph)
+
+    group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    vessels = spec_named(group, VESSELS)
+    offered = set(available_edge_columns(graph))
+
+    for name, is_text in NETWORK_ANALYSIS_COLUMNS.items():
+        if name == "loop_length_um":
+            continue
+        assert name in offered, name
+        kind = _colouring(vessels.features, name)["colour_kind"]
+        assert kind == ("categorical" if is_text else "continuous"), name
+    assert list(vessels.features["current_flow_share"]) == pytest.approx([1.0, 1.0, 1.0])
+
+
+def test_loop_length_is_offered_once_a_vessel_is_on_a_loop():
+    from haemolynx.gui.results import available_edge_columns
+    from haemolynx.statistics import compute_loop_hierarchy
+
+    graph = a_graph()
+    graph.add_edge(0, 3, key=0, voxels=[[0.0, 0, 0], [30.0, 0, 0]], length=30.0, segment_id=9)
+    compute_loop_hierarchy(graph)
+
+    assert "loop_length_um" in set(available_edge_columns(graph))
+
+
+def test_network_analysis_columns_are_absent_without_inlets_and_outlets():
+    from haemolynx.gui.results import available_edge_columns
+    from haemolynx import statistics
+
+    graph = _solved_chain()
+    statistics.compute_single_vessel_occlusion_impact(graph, [], [])
+    statistics.compute_current_flow(graph, [], [])
+    statistics.compute_perfusion_territories(graph, [], [])
+    statistics.compute_transit_times(graph, [], [])
+
+    present = set(available_edge_columns(graph))
+    assert present.isdisjoint(
+        {
+            "occlusion_flow_loss", "occlusion_hypoperfused_length_um", "current_flow_share",
+            "arteriolar_territory", "venular_territory", "watershed",
+            "arteriolar_watershed_margin", "transit_time_s", "arrival_time_s",
+        }
+    )
+
+
 # --- vascular community colouring (export_results) --------------------------
 
 

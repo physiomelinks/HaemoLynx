@@ -69,11 +69,15 @@ def compute_algebraic_connectivity(G: nx.Graph, *, weighting: str = "length") ->
         lambda2 = 2.0 * largest[u][v]["weight"]
         fiedler = {u: -1 / math.sqrt(2), v: 1 / math.sqrt(2)}
     else:
-        lambda2 = float(
-            nx.algebraic_connectivity(largest, weight="weight", method=method, seed=REPRODUCIBILITY_SEED)
-        )
+        # One eigensolve: lambda_2 is the Fiedler vector's Rayleigh quotient,
+        # sum w (f_u - f_v)^2 / sum f^2, so asking networkx for both would
+        # solve the same eigenproblem twice.
         vector = nx.fiedler_vector(largest, weight="weight", method=method, seed=REPRODUCIBILITY_SEED)
         fiedler = dict(zip(largest.nodes, vector))
+        lambda2 = float(
+            sum(d["weight"] * (fiedler[a] - fiedler[b]) ** 2 for a, b, d in largest.edges(data=True))
+            / float(np.dot(vector, vector))
+        )
     # Fix the eigenvector's arbitrary sign so side A is always the larger half.
     if sum(1 for x in fiedler.values() if x < 0) < sum(1 for x in fiedler.values() if x > 0):
         fiedler = {k: -x for k, x in fiedler.items()}

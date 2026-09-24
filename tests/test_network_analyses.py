@@ -232,3 +232,47 @@ def test_lambda_2_scales_with_the_conductance_units():
     assert by_length["Normalised Algebraic Connectivity"] == pytest.approx(
         by_topology["Normalised Algebraic Connectivity"], rel=1e-6
     )
+
+
+def test_a_symmetric_split_has_no_transit_time_spread():
+    G = nx.MultiGraph()
+    for node, p in ((0, 3.0), (1, 2.0), (2, 2.0), (3, 1.0)):
+        G.add_node(node, pressure=p)
+    for u, v in ((0, 1), (1, 3), (0, 2), (2, 3)):
+        _flow_vessel(G, u, v, 1e-12)
+
+    result = compute_transit_times(G, [0], [3])
+
+    assert result["Mean Transit Time (s)"] == pytest.approx(2 * _tau(10.0, 100.0, 1e-12))
+    assert result["Transit Time SD (s)"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_flow_draining_through_one_outlet_to_another_is_counted_once():
+    """Outlet 2 passes half its inflow on to outlet 3 at lower pressure.
+    Only what leaves at each outlet counts: 1 unit at 2 (arriving at tau)
+    and 1 unit at 3 (arriving at 2 tau) -- counting every inflow would
+    weigh the through-flow twice."""
+    G = nx.MultiGraph()
+    for node, p in ((0, 3.0), (2, 2.0), (3, 1.0)):
+        G.add_node(node, pressure=p)
+    _flow_vessel(G, 0, 2, 2e-12, length=200.0)
+    _flow_vessel(G, 2, 3, 1e-12, length=100.0)
+    tau = _tau(10.0, 200.0, 2e-12)  # == _tau(10, 100, 1e-12)
+
+    result = compute_transit_times(G, [0], [2, 3])
+
+    assert result["Mean Transit Time (s)"] == pytest.approx(1.5 * tau)
+    assert result["Transit Time SD (s)"] == pytest.approx(0.5 * tau)
+
+
+def test_transit_time_writes_nothing_when_no_flow_reaches_an_outlet():
+    G = nx.MultiGraph()
+    for node, p in ((0, 2.0), (1, 1.0), (2, 1.0)):
+        G.add_node(node, pressure=p)
+    _flow_vessel(G, 0, 1, 1e-12)
+    G.add_edge(1, 2, flow_abs=0.0, length=10.0, diameter_um=5.0)  # outlet 2 gets nothing
+
+    result = compute_transit_times(G, [0], [2])
+
+    assert result["Transit Time Status"].startswith("N/A")
+    assert all("transit_time_s" not in d for _u, _v, d in G.edges(data=True))

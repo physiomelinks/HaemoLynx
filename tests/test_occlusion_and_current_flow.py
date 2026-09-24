@@ -211,7 +211,10 @@ def test_a_chain_loses_all_flow_at_the_first_removal():
     result = compute_occlusion_curves(G, [0], [10], max_fraction=0.5)
     curve = result["Occlusion Curve (highest_current_flow_share)"]
     assert curve["Curve [fraction removed, flow fraction, outlets reachable]"][1][1] == pytest.approx(0.0)
-    assert curve["Removal Fraction At 50% Flow"] == pytest.approx(0.025)
+    # Flow is 1 before the first step and 0 after it: halfway, interpolated.
+    from haemolynx.statistics.occlusion import FAST_CURVE_STEPS
+
+    assert curve["Removal Fraction At 50% Flow"] == pytest.approx(0.5 * 0.5 / FAST_CURVE_STEPS)
     assert result["Occlusion Curve (narrowest_diameter)"].startswith("N/A")
 
 

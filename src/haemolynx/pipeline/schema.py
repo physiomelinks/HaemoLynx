@@ -2938,11 +2938,13 @@ SCHEMA = Schema(
             kind="choice",
             default="length",
             help=(
-                "Distance the bottleneck and shunt routes are measured in: "
-                "vessel count (topology), centreline length, or hydraulic "
-                "resistance (and conductance for the bottleneck cut). "
-                "Resistance needs haemodynamics and falls back to length "
-                "without it"
+                "Distance the bottleneck, shunt and territory routes are "
+                "measured in: vessel count (topology), centreline length, or "
+                "hydraulic resistance (and conductance for the bottleneck "
+                "cut). Also sets the conductance model of current flow, the "
+                "occlusion analyses and algebraic connectivity: one per "
+                "vessel, 1/length, or the solved conductance. Resistance "
+                "needs haemodynamics and falls back to length without it"
             ),
             section=_NETWORK_ANALYSIS,
             choices=("topology", "length", "resistance"),
@@ -2971,9 +2973,13 @@ SCHEMA = Schema(
                 "vessel, the fraction of inlet-to-outlet flow lost and the "
                 "length of other vessels starved of flow if it alone is "
                 "blocked, summarised for the whole network, by vessel type and "
-                "by branch order. Exact but slower (~25 s on a 40k-vessel "
-                "network in fast mode); adds occlusion_flow_loss and "
-                "occlusion_hypoperfused_length_um as vessels-layer colour options"
+                "by branch order. One sparse solve per vessel: fast mode "
+                "evaluates the 500 vessels carrying the most flow power exactly "
+                "(~13 s on a 78k-vessel network) and leaves the rest 'not "
+                "evaluated'; full mode evaluates every vessel exactly (~25 min "
+                "there). Assumes fixed vessel conductances. Adds "
+                "occlusion_flow_loss and occlusion_hypoperfused_length_um as "
+                "vessels-layer colour options"
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
@@ -3000,7 +3006,9 @@ SCHEMA = Schema(
                 "Block vessels cumulatively (random, busiest-first, "
                 "narrowest-first) and track remaining flow and inlet-outlet "
                 "connectivity, with a robustness index per removal order. "
-                "Slower (~10 s on a 40k-vessel network in fast mode)"
+                "Slower: one sparse factorisation per removal step, ~30 s on a "
+                "78k-vessel network in fast mode (5 steps, 3 random repeats) "
+                "and ~3.5 min in full mode (25 steps, 5 random repeats)"
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
