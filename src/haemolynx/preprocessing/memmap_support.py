@@ -230,3 +230,26 @@ def map_by_slab(
     for start in range(0, shape[0], step):
         out[start:start + step] = op(np.asarray(source[start:start + step]))
     return out
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def delete_when_unmapped(array: np.memmap) -> np.memmap:
+    """Delete *array*'s backing file once nothing maps it any more.
+
+    For a volume handed to something that decides its lifetime -- a napari
+    layer -- rather than released explicitly: the file goes when the last
+    view of the mapping is garbage-collected, instead of waiting in the temp
+    directory. Returns *array* for chaining.
+    """
+    mapping = getattr(array, "_mmap", None)
+    if mapping is not None and getattr(array, "filename", None):
+        import weakref
+
+        weakref.finalize(mapping, _remove_quietly, str(array.filename))
+    return array

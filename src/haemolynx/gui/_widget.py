@@ -559,12 +559,47 @@ def _thick_thin_skeleton_labels(skeleton: np.ndarray, thick_vessel_mask: np.ndar
     voxel is "thin". Pure and shape-agnostic -- the two inputs just need to
     broadcast together.
     """
-    skel = np.asarray(skeleton, dtype=bool)
-    thick = np.asarray(thick_vessel_mask, dtype=bool)
-    labels = np.zeros(skel.shape, dtype=np.uint8)
-    labels[skel] = 1
-    labels[skel & thick] = 2
-    return labels
+    def labels_for(skel, thick):
+        skel = np.asarray(skel, dtype=bool)
+        thick = np.asarray(thick, dtype=bool)
+        labels = np.zeros(skel.shape, dtype=np.uint8)
+        labels[skel] = 1
+        labels[skel & thick] = 2
+        return labels
+
+    if _on_disk(skeleton) and np.shape(thick_vessel_mask) == np.shape(skeleton):
+        return _labels_by_slab(labels_for, skeleton, thick_vessel_mask)
+    return labels_for(skeleton, thick_vessel_mask)
+
+
+def _on_disk(*volumes) -> bool:
+    """A disk-backed (low-RAM option) volume: its display labels are built a
+    slab at a time into a new disk-backed array, with the same values."""
+    return any(isinstance(v, np.memmap) for v in volumes)
+
+
+def _labels_by_slab(labels_for, *volumes) -> np.ndarray:
+    from haemolynx.preprocessing.memmap_support import (
+        LOW_MEMORY_BLOCK_VOXELS,
+        delete_when_unmapped,
+        new_memmap_array,
+    )
+
+    shape = volumes[0].shape
+    # Made only to be displayed: the file goes when the layer drops it.
+    out = delete_when_unmapped(new_memmap_array(shape, np.uint8))
+    step = max(1, LOW_MEMORY_BLOCK_VOXELS // max(1, int(np.prod(shape[1:], dtype=np.int64))))
+    for start in range(0, shape[0], step):
+        out[start:start + step] = labels_for(*(v[start:start + step] for v in volumes))
+    return out
+
+
+def _as_uint8_layer_data(volume: np.ndarray) -> np.ndarray:
+    """``volume.astype(np.uint8)`` -- an independent copy a Labels layer can be
+    painted on -- written a slab at a time to disk for a disk-backed volume."""
+    if _on_disk(volume):
+        return _labels_by_slab(lambda slab: np.asarray(slab).astype(np.uint8), volume)
+    return volume.astype(np.uint8)
 
 
 def _is_ours(layer) -> bool:
@@ -2353,12 +2388,14 @@ def _apply_thick_thin_skeleton_display(
         if z_window is not None:
             z_min, z_max, z_extent = z_window
             dz = _layer_voxel_size_z(layer)
-            skeleton_bool = clip_volume_to_z(
-                skeleton_bool, dz, z_min, z_max, z_extent=z_extent
-            ).astype(bool)
-            thick_vessel_mask = clip_volume_to_z(
-                thick_vessel_mask, dz, z_min, z_max, z_extent=z_extent
-            ).astype(bool)
+            skeleton_bool = np.asanyarray(
+                clip_volume_to_z(skeleton_bool, dz, z_min, z_max, z_extent=z_extent),
+                dtype=bool,
+            )
+            thick_vessel_mask = np.asanyarray(
+                clip_volume_to_z(thick_vessel_mask, dz, z_min, z_max, z_extent=z_extent),
+                dtype=bool,
+            )
         layer.data = _thick_thin_skeleton_labels(skeleton_bool, thick_vessel_mask)
         layer.colormap = {
             1: THIN_SKELETON_COLOUR,
@@ -2371,7 +2408,7 @@ def _apply_thick_thin_skeleton_display(
     # stuck on the two-colour debug scheme with no control left to fix it.
     layer.colormap = default_colormap
     if skeleton_bool is not None:
-        data = skeleton_bool.astype(np.uint8)
+        data = _as_uint8_layer_data(skeleton_bool)
         if z_window is not None:
             z_min, z_max, z_extent = z_window
             dz = _layer_voxel_size_z(layer)
@@ -2497,13 +2534,18 @@ def _segmentation_cleanup_state(layer) -> tuple[np.ndarray | None, np.ndarray | 
 def _segmentation_cleanup_diff_labels(corrected: np.ndarray, raw: np.ndarray) -> np.ndarray:
     """Four labels: 0 background, 1 unchanged, 2 added by cleanup, 3 removed
     by cleanup. Pure, shape-agnostic, like ``_thick_thin_skeleton_labels``."""
-    corr = np.asarray(corrected, dtype=bool)
-    raw_bool = np.asarray(raw, dtype=bool)
-    labels = np.zeros(corr.shape, dtype=np.uint8)
-    labels[corr & raw_bool] = 1
-    labels[corr & ~raw_bool] = 2
-    labels[~corr & raw_bool] = 3
-    return labels
+    def labels_for(corrected, raw):
+        corr = np.asarray(corrected, dtype=bool)
+        raw_bool = np.asarray(raw, dtype=bool)
+        labels = np.zeros(corr.shape, dtype=np.uint8)
+        labels[corr & raw_bool] = 1
+        labels[corr & ~raw_bool] = 2
+        labels[~corr & raw_bool] = 3
+        return labels
+
+    if _on_disk(corrected, raw) and np.shape(corrected) == np.shape(raw):
+        return _labels_by_slab(labels_for, corrected, raw)
+    return labels_for(corrected, raw)
 
 
 def _apply_segmentation_cleanup_display(
@@ -2526,12 +2568,14 @@ def _apply_segmentation_cleanup_display(
         if z_window is not None:
             z_min, z_max, z_extent = z_window
             dz = _layer_voxel_size_z(layer)
-            corrected_bool = clip_volume_to_z(
-                corrected_bool, dz, z_min, z_max, z_extent=z_extent
-            ).astype(bool)
-            raw_mask = clip_volume_to_z(
-                raw_mask, dz, z_min, z_max, z_extent=z_extent
-            ).astype(bool)
+            corrected_bool = np.asanyarray(
+                clip_volume_to_z(corrected_bool, dz, z_min, z_max, z_extent=z_extent),
+                dtype=bool,
+            )
+            raw_mask = np.asanyarray(
+                clip_volume_to_z(raw_mask, dz, z_min, z_max, z_extent=z_extent),
+                dtype=bool,
+            )
         from napari.utils.colormaps import Colormap
 
         layer.data = _segmentation_cleanup_diff_labels(corrected_bool, raw_mask)
@@ -2549,7 +2593,7 @@ def _apply_segmentation_cleanup_display(
     layer.colormap = default_colormap
     layer.contrast_limits = default_contrast_limits
     if corrected_bool is not None:
-        data = corrected_bool.astype(np.uint8)
+        data = _as_uint8_layer_data(corrected_bool)
         if z_window is not None:
             z_min, z_max, z_extent = z_window
             dz = _layer_voxel_size_z(layer)

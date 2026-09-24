@@ -139,6 +139,32 @@ BINARY_IMAGE_VOLUME_OPTIONS: dict[str, Any] = {
 }
 
 
+def _on_disk(data: Any) -> bool:
+    """A disk-backed volume -- what the low-RAM option loads -- is read a slab
+    at a time here, so displaying it never builds a whole-volume temporary.
+    Every function below gives the same answer either way."""
+    return isinstance(data, np.memmap)
+
+
+def _display_owned(volume: Any) -> Any:
+    """A disk-backed volume made only to be displayed goes when the viewer
+    drops it."""
+    if isinstance(volume, np.memmap):
+        from haemolynx.preprocessing.memmap_support import delete_when_unmapped
+
+        delete_when_unmapped(volume)
+    return volume
+
+
+def _slabs(volume: np.ndarray):
+    from haemolynx.preprocessing.memmap_support import LOW_MEMORY_BLOCK_VOXELS
+
+    slice_voxels = max(1, int(np.prod(volume.shape[1:], dtype=np.int64)))
+    step = max(1, LOW_MEMORY_BLOCK_VOXELS // slice_voxels)
+    for start in range(0, volume.shape[0], step):
+        yield np.asarray(volume[start:start + step])
+
+
 def binary_value_range(data: Any) -> tuple[float, float] | None:
     """``(low, high)`` if *data* takes on exactly two distinct values.
 
@@ -147,6 +173,14 @@ def binary_value_range(data: Any) -> tuple[float, float] | None:
     more than two distinct values (genuine grayscale), so a caller can fall
     back to treating it as a continuous image.
     """
+    if _on_disk(data) and data.ndim >= 1 and data.size:
+        low = float(min(slab.min() for slab in _slabs(data)))
+        high = float(max(slab.max() for slab in _slabs(data)))
+        if low == high:
+            return None
+        if not all(bool(np.all((slab == low) | (slab == high))) for slab in _slabs(data)):
+            return None
+        return (low, high)
     array = np.asarray(data)
     if array.size == 0:
         return None
@@ -189,17 +223,21 @@ def binarize_for_display(data: Any) -> np.ndarray | None:
     foreground split once this check passes, so what is displayed always
     matches what the pipeline analyses.
     """
-    array = np.asarray(data)
+    on_disk = _on_disk(data)
+    array = data if on_disk else np.asarray(data)
     if array.size == 0 or not np.issubdtype(array.dtype, np.integer):
         return None
-    _values, counts = np.unique(array, return_counts=True)
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization, _unique_with_counts
+
+    if on_disk:
+        _values, counts = _unique_with_counts(array, use_memmap=True)
+    else:
+        _values, counts = np.unique(array, return_counts=True)
     if _values.size not in (3, 4):
         return None
     if float(counts.max()) / float(array.size) <= 0.5:
         return None
-    from haemolynx.io.load import _to_binary_volume_for_skeletonization
-
-    return _to_binary_volume_for_skeletonization(array)
+    return _display_owned(_to_binary_volume_for_skeletonization(array, use_memmap=on_disk))
 
 
 #: The fixed names this module emits -- one set of layers per run, whatever the
@@ -335,18 +373,25 @@ def clip_volume_to_z(
     covering the full extent returns *volume* unchanged. ``z_max < z_min``
     returns zeros. Display-only — the pipeline must keep the original stack.
     """
-    volume = np.asarray(volume)
+    on_disk = _on_disk(volume)
+    volume = volume if on_disk else np.asarray(volume)
     if volume.ndim < 3:
         return volume
+    if on_disk:
+        from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+        zeros = lambda: _display_owned(new_memmap_array(volume.shape, volume.dtype))  # noqa: E731
+    else:
+        zeros = lambda: np.zeros_like(volume)  # noqa: E731
     if z_max < z_min:
-        return np.zeros_like(volume)
+        return zeros()
     n_z = int(volume.shape[0])
     dz = float(voxel_size_z) if voxel_size_z else 1.0
     extent = float(z_extent) if z_extent is not None else dz * n_z
     if z_window_is_full(z_min, z_max, extent):
         return volume
     start, stop = z_slice_window(n_z, dz, z_min, z_max)
-    out = np.zeros_like(volume)
+    out = zeros()
     out[start : stop + 1] = volume[start : stop + 1]
     return out
 
@@ -1347,7 +1392,9 @@ class ResultLayers:
                 # the display always agreeing with what gets skeletonized.
                 from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
-                display_image = _to_binary_volume_for_skeletonization(image)
+                display_image = _display_owned(
+                    _to_binary_volume_for_skeletonization(image, use_memmap=_on_disk(image))
+                )
                 value_range = (0.0, 1.0)
             else:
                 binarized = binarize_for_display(image)

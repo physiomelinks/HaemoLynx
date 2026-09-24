@@ -453,3 +453,120 @@ def test_graph_editor_routes_the_same_branch_in_low_ram_mode():
         graph_edit.astar_path(s.cost_field, (4.0, 10.0, 12.0), (30.0, 70.0, 88.0)) for s in states
     ]
     assert np.array_equal(paths[0], paths[1])
+
+
+# --- gui: what the viewer is handed -------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from haemolynx.gui import results as gui_results  # noqa: E402
+from haemolynx.gui import _widget as gui_widget  # noqa: E402
+from haemolynx.preprocessing.memmap_support import new_memmap_array  # noqa: E402
+
+
+def _on_disk(array: np.ndarray, tmp_path: Path) -> np.memmap:
+    mapped = np.lib.format.open_memmap(
+        tmp_path / f"v{len(list(tmp_path.iterdir()))}.npy",
+        mode="w+",
+        dtype=array.dtype,
+        shape=array.shape,
+    )
+    mapped[...] = array
+    return mapped
+
+
+def _display_volumes():
+    rng = np.random.default_rng(9)
+    mask = rng.random((9, 10, 11)) < 0.1
+    return {
+        "0/255": mask.astype(np.uint8) * 255,
+        "1/2": np.where(mask, 1, 2).astype(np.uint8),
+        "ilastik with 0-border": np.where(mask, 1, np.where(rng.random(mask.shape) < 0.02, 0, 2)).astype(np.uint8),
+        "four labels": np.where(mask, 3, np.where(rng.random(mask.shape) < 0.05, 7, 0)).astype(np.uint16),
+        "grayscale": rng.integers(0, 4000, mask.shape).astype(np.uint16),
+        "float": rng.random(mask.shape).astype(np.float32),
+        "blank": np.zeros(mask.shape, dtype=np.uint8),
+    }
+
+
+def test_display_value_checks_read_a_disk_backed_volume_by_slab(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "haemolynx.preprocessing.memmap_support.LOW_MEMORY_BLOCK_VOXELS", 150
+    )
+    for name, volume in _display_volumes().items():
+        mapped = _on_disk(volume, tmp_path)
+        assert gui_results.binary_value_range(mapped) == gui_results.binary_value_range(volume), name
+        plain = gui_results.binarize_for_display(volume)
+        low_ram = gui_results.binarize_for_display(mapped)
+        assert (low_ram is None) == (plain is None), name
+        if plain is not None:
+            assert isinstance(low_ram, np.memmap), name
+            assert np.array_equal(low_ram, plain), name
+
+
+def test_the_skeletonise_image_layer_is_the_same_and_stays_on_disk(tmp_path):
+    for name, volume in _display_volumes().items():
+        specs = []
+        for image in (volume, _on_disk(volume, tmp_path)):
+            layers = gui_results.ResultLayers().stage_finished(
+                "skeletonise",
+                SimpleNamespace(
+                    image=image,
+                    skeleton=np.zeros(volume.shape, dtype=bool),
+                    voxel_size_xyz=(1.0, 1.0, 1.0),
+                    voxel_size_zyx=(1.0, 1.0, 1.0),
+                ),
+            )
+            specs.append(next(s for s in layers.layers if s.name == gui_results.IMAGE))
+        plain, low_ram = specs
+        assert np.array_equal(low_ram.data, plain.data), name
+        assert low_ram.contrast_limits == plain.contrast_limits, name
+        assert low_ram.options == plain.options, name
+        if plain.data is not volume:  # it was binarised for display
+            assert isinstance(low_ram.data, np.memmap), name
+
+
+@pytest.mark.parametrize("window", [(0.0, 100.0), (2.0, 5.0), (5.0, 2.0), (7.5, 8.5)])
+def test_clip_volume_to_z_on_disk_matches_in_ram(window, tmp_path):
+    volume = np.random.default_rng(10).integers(0, 3, (9, 5, 6)).astype(np.uint8)
+    plain = gui_results.clip_volume_to_z(volume, 1.0, *window)
+    low_ram = gui_results.clip_volume_to_z(_on_disk(volume, tmp_path), 1.0, *window)
+
+    assert np.array_equal(low_ram, plain)
+    assert low_ram.dtype == plain.dtype
+
+
+def test_debug_label_volumes_are_the_same_and_stay_on_disk(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "haemolynx.preprocessing.memmap_support.LOW_MEMORY_BLOCK_VOXELS", 150
+    )
+    rng = np.random.default_rng(11)
+    a = rng.random((9, 10, 11)) < 0.3
+    b = rng.random((9, 10, 11)) < 0.3
+    a_disk, b_disk = _on_disk(a, tmp_path), _on_disk(b, tmp_path)
+
+    for build in (gui_widget._thick_thin_skeleton_labels, gui_widget._segmentation_cleanup_diff_labels):
+        low_ram = build(a_disk, b_disk)
+        assert isinstance(low_ram, np.memmap)
+        assert np.array_equal(low_ram, build(a, b))
+
+    as_uint8 = gui_widget._as_uint8_layer_data(a_disk)
+    assert isinstance(as_uint8, np.memmap)
+    assert np.array_equal(as_uint8, a.astype(np.uint8))
+    as_uint8[...] = 9  # a Labels layer can be painted on without touching the source
+    assert np.array_equal(a_disk, a)
+
+
+def test_a_display_volume_on_disk_is_deleted_once_nothing_maps_it(tmp_path):
+    import gc
+
+    a = _on_disk(np.random.default_rng(12).random((4, 5, 6)) < 0.3, tmp_path)
+    labels = gui_widget._as_uint8_layer_data(a)
+    path = Path(labels.filename)
+    view = labels[1:]
+    del labels
+    gc.collect()
+    assert path.exists(), "deleted while a view still maps it"
+    del view
+    gc.collect()
+    assert not path.exists()
