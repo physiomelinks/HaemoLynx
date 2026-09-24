@@ -6,6 +6,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 from scipy.ndimage import (
@@ -1013,6 +1014,66 @@ def _bridge_path_through_mask(
         return None
 
 
+def _pairs_within_reach(
+    comp_ids: list[int], weighted: dict[int, np.ndarray], reach: float
+) -> Iterator[tuple[int, int]]:
+    """Every ``(a, b)``, ``a`` before ``b`` in *comp_ids*, in the same order a
+    double loop over them gives -- less the pairs whose bounding boxes are
+    more than *reach* apart along some axis. No voxel pair of those can be
+    within *reach*: each coordinate difference is at least that gap (float
+    subtraction is monotonic), and a distance is at least any one of its
+    coordinate differences. So skipping them never drops a bridge.
+    """
+    if not comp_ids:
+        return
+    lo = np.stack([weighted[cid].min(axis=0) for cid in comp_ids])
+    hi = np.stack([weighted[cid].max(axis=0) for cid in comp_ids])
+    for i, cid_a in enumerate(comp_ids):
+        later = slice(i + 1, None)
+        apart = ((lo[later] - hi[i]) > reach) | ((lo[i] - hi[later]) > reach)
+        for j in np.flatnonzero(~apart.any(axis=1)):
+            yield cid_a, comp_ids[i + 1 + int(j)]
+
+
+def _nearest_voxel_pair(
+    points_a: np.ndarray,
+    tree_a,
+    points_b: np.ndarray,
+    tree_b,
+    *,
+    max_distance: float,
+) -> tuple[float, int, int] | None:
+    """``(distance, i, j)`` for the closest voxels ``points_a[i]``,
+    ``points_b[j]``, or None if they are further apart than *max_distance*.
+
+    Exactly what querying every point of *a* against *b*'s tree and taking the
+    first minimum gives -- the same ``i`` and ``j`` on a tie -- without doing
+    that for every point of a large component: the minimum distance comes
+    from whichever side is smaller, and only the points of *a* that could
+    reach it are queried the original way to pick ``i`` and ``j``.
+    """
+    bound = float(max_distance) * (1 + 1e-9) + 1e-9
+    if len(points_a) <= len(points_b):
+        dists, _ = tree_b.query(points_a, distance_upper_bound=bound)
+        min_dist = float(dists.min())
+        if not min_dist <= max_distance:
+            return None
+        candidates = np.flatnonzero(dists == min_dist)[:1]
+    else:
+        dists, _ = tree_a.query(points_b, distance_upper_bound=bound)
+        min_dist = float(dists.min())
+        if not min_dist <= max_distance:
+            return None
+        # Any point of a at the minimum is within it of one of these.
+        near = tree_a.query_ball_point(
+            points_b[dists == min_dist], r=min_dist * (1 + 1e-9) + 1e-9
+        )
+        candidates = np.unique(np.concatenate([np.asarray(n, dtype=np.intp) for n in near]))
+    exact, idx = tree_b.query(points_a[candidates])
+    first = int(np.flatnonzero(exact == min_dist)[0])
+    return min_dist, int(candidates[first]), int(idx[first])
+
+
 def connect_skeleton_components(
     skeleton: np.ndarray,
     max_bridge_distance: int = 20,
@@ -1125,16 +1186,21 @@ def connect_skeleton_components(
 
         # Collect candidate bridges (distance, start, end, comp_a, comp_b)
         comp_ids = sorted(comp_coords.keys())
+        weighted = {cid: comp_coords[cid] * axis_weights for cid in comp_ids}
         candidates: list[tuple[float, np.ndarray, np.ndarray, int, int]] = []
-        for i, cid_a in enumerate(comp_ids):
-            for cid_b in comp_ids[i + 1 :]:
-                dists, idxs = comp_trees[cid_b].query(comp_coords[cid_a] * axis_weights)
-                nearest_idx = int(np.argmin(dists))
-                min_dist = float(dists[nearest_idx])
-                if min_dist <= max_bridge_distance:
-                    start = comp_coords[cid_a][nearest_idx]
-                    end = comp_coords[cid_b][int(idxs[nearest_idx])]
-                    candidates.append((min_dist, start, end, cid_a, cid_b))
+        for cid_a, cid_b in _pairs_within_reach(comp_ids, weighted, max_bridge_distance):
+            found = _nearest_voxel_pair(
+                weighted[cid_a],
+                comp_trees[cid_a],
+                weighted[cid_b],
+                comp_trees[cid_b],
+                max_distance=max_bridge_distance,
+            )
+            if found is not None:
+                min_dist, start_idx, end_idx = found
+                start = comp_coords[cid_a][start_idx]
+                end = comp_coords[cid_b][end_idx]
+                candidates.append((min_dist, start, end, cid_a, cid_b))
 
         candidates.sort(key=lambda c: c[0])
 
@@ -1236,7 +1302,12 @@ def inter_component_gap_distances(
     distances: list[float] = []
     for i, cid_a in enumerate(comp_ids):
         for cid_b in comp_ids[i + 1:]:
-            dists, _ = comp_trees[cid_b].query(comp_coords[cid_a])
+            # The smaller side queried against the larger one's tree: the
+            # same nearest-pair distance, for a fraction of the lookups.
+            if len(comp_coords[cid_a]) <= len(comp_coords[cid_b]):
+                dists, _ = comp_trees[cid_b].query(comp_coords[cid_a])
+            else:
+                dists, _ = comp_trees[cid_a].query(comp_coords[cid_b])
             distances.append(float(dists.min()))
 
     return np.sort(np.asarray(distances, dtype=float))
