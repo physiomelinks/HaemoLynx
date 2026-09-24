@@ -107,6 +107,12 @@ VESSEL_DRAW_TOOLTIP = (
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
 )
+#: Canvas buttons, bottom-left: centre the data and look straight at a plane.
+VIEW_SNAP_TOOLTIPS = {
+    "XY": "Centre the view and look down z at the XY plane",
+    "XZ": "Centre the view and look along y at the XZ plane, z increasing downwards",
+    "YZ": "Centre the view and look along x at the YZ plane, z increasing downwards",
+}
 SNAPSHOT_TOOLTIP = (
     "Write a TIFF of the current napari view into the pipeline "
     "output folder (cosmetic export only; does not feed the run)"

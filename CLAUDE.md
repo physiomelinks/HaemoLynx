@@ -37,7 +37,9 @@ haemolynx/
 │   │                       #   stage puts in the viewer, pure), layers.py (an open
 │   │                       #   layer -> run settings, pure), boundary_picking.py
 │   │                       #   (boundary settings <-> napari Points/Shapes, pure),
-│   │                       #   _widget.py (the panel), napari.yaml (npe2 manifest)
+│   │                       #   view_snap.py (XY/XZ/YZ plane -> dims order / camera
+│   │                       #   directions, pure), _widget.py (the panel),
+│   │                       #   napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py,
 │   │                       #   geometry.py (an edge -> a drawable polyline),
 │   │                       #   dilation_curves.py, _helpers.py
@@ -150,7 +152,7 @@ pip install -e ".[dev]"
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, FWHM/pericyte integration tests |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py` |
-| `src/haemolynx/gui/` | `tests/test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking*.py`, `test_gui_widget.py` |
+| `src/haemolynx/gui/` | `tests/test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking*.py`, `test_gui_view_snap.py`, `test_gui_widget.py` |
 | `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
 | Full pipeline / examples | `tests/integration/test_image_to_model_pipeline.py`, `test_nerve_pipeline.py` |

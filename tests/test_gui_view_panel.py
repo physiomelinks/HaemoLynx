@@ -718,3 +718,94 @@ def test_z_depth_filter_rebuilds_tubes_from_filtered_vectors(make_napari_viewer)
     assert len(viewer.layers[VESSELS].data) == full_segments
     assert len(viewer.layers[VESSEL_TUBES].data[0]) == full_verts
 
+
+
+# --- XY / XZ / YZ view-snap buttons ------------------------------------------
+
+
+def _snap_viewer(make_napari_viewer):
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    # A box, not a cube, so every plane's centre differs.
+    viewer.add_image(np.zeros((10, 20, 40), dtype=np.uint8), scale=(2.0, 1.0, 0.5))
+    return viewer
+
+
+def test_the_view_snap_buttons_sit_in_the_canvas_bottom_left(make_napari_viewer):
+    from haemolynx.gui._widget import VIEW_SNAP_MARGIN
+
+    viewer = _snap_viewer(make_napari_viewer)
+    bar = viewer._haemolynx_view_snap_buttons
+    assert list(bar.buttons) == ["XY", "XZ", "YZ"]
+    for plane, button in bar.buttons.items():
+        assert button.text() == plane
+        assert button.toolTip()
+
+    qt_viewer = viewer.window._qt_viewer
+    native = qt_viewer.canvas.native
+    for size in ((500, 400), (800, 650)):
+        native.resize(*size)
+        bar.place()
+        corner = native.mapTo(qt_viewer, native.rect().bottomLeft())
+        assert bar.x() == corner.x() + VIEW_SNAP_MARGIN
+        assert bar.geometry().bottom() == corner.y() - VIEW_SNAP_MARGIN
+
+
+def test_a_second_panel_reuses_the_viewers_view_snap_buttons(make_napari_viewer):
+    viewer = _snap_viewer(make_napari_viewer)
+    first = viewer._haemolynx_view_snap_buttons
+    settings_widget(napari_viewer=viewer)
+    assert viewer._haemolynx_view_snap_buttons is first
+
+
+@pytest.mark.parametrize(
+    ("plane", "view", "up"),
+    [
+        ("XY", (-1.0, 0.0, 0.0), (0.0, -1.0, 0.0)),
+        ("XZ", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
+        ("YZ", (0.0, 0.0, -1.0), (-1.0, 0.0, 0.0)),
+    ],
+)
+def test_a_3d_snap_turns_the_camera_and_recentres(make_napari_viewer, plane, view, up):
+    viewer = _snap_viewer(make_napari_viewer)
+    viewer.dims.ndisplay = 3
+    viewer.reset_view()
+    centre = tuple(viewer.camera.center)
+    # Somewhere else entirely, as a user leaves it after orbiting and panning.
+    viewer.camera.angles = (35.0, -20.0, 70.0)
+    viewer.camera.center = (0.0, 0.0, 0.0)
+    viewer.dims.order = (2, 1, 0)
+
+    viewer._haemolynx_view_snap_buttons.buttons[plane].click()
+
+    np.testing.assert_allclose(viewer.camera.view_direction, view, atol=1e-9)
+    np.testing.assert_allclose(viewer.camera.up_direction, up, atol=1e-9)
+    np.testing.assert_allclose(viewer.camera.center, centre)
+    assert tuple(viewer.dims.order) == (0, 1, 2)
+
+
+@pytest.mark.parametrize(
+    ("plane", "displayed"), [("XY", (1, 2)), ("XZ", (0, 2)), ("YZ", (0, 1))]
+)
+def test_a_2d_snap_shows_the_planes_axes(make_napari_viewer, plane, displayed):
+    from haemolynx.gui._widget import snap_view_to_plane
+
+    viewer = _snap_viewer(make_napari_viewer)
+    viewer.dims.ndisplay = 2
+    viewer.camera.zoom = 50.0
+
+    assert snap_view_to_plane(viewer, plane)
+
+    assert tuple(viewer.dims.displayed) == displayed
+    assert viewer.camera.zoom != 50.0  # refitted to the data
+
+
+def test_snapping_without_3d_data_changes_nothing(make_napari_viewer):
+    from haemolynx.gui._widget import snap_view_to_plane
+
+    viewer = make_napari_viewer()
+    viewer.add_image(np.zeros((20, 40), dtype=np.uint8))
+    order = tuple(viewer.dims.order)
+
+    assert snap_view_to_plane(viewer, "XZ") is False
+    assert tuple(viewer.dims.order) == order

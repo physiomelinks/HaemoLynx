@@ -93,6 +93,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.VESSEL_DRAW_TOOLTIP,
         chrome.SCALE_BAR_TOOLTIP,
         chrome.SNAPSHOT_TOOLTIP,
+        *chrome.VIEW_SNAP_TOOLTIPS.values(),
         *chrome.ACTION_TOOLTIPS.values(),
     ]
     empty = [text for text in named if not text.strip()]

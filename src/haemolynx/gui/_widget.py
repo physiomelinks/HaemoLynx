@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+import weakref
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
@@ -251,6 +252,129 @@ def _float_dock_over_canvas(viewer, dock) -> None:
             logger.debug("could not place dock over the canvas", exc_info=True)
 
     QTimer.singleShot(0, place)
+
+
+#: Gap between the view-snap buttons and the canvas's bottom-left corner (px).
+VIEW_SNAP_MARGIN = 8
+
+
+def snap_view_to_plane(viewer, plane: str) -> bool:
+    """Centre the data and look straight at *plane* ("XY", "XZ" or "YZ").
+
+    A 3D view keeps napari's own axis order and turns the camera; a 2D view
+    reorders the dims so the plane's two axes are the ones on screen. Either
+    way ``reset_view`` recentres and refits first, so the snap also brings
+    back data panned or zoomed out of sight. False (and nothing changes)
+    when there is no 3D data to look at a plane of.
+    """
+    from haemolynx.gui.view_snap import (
+        camera_directions_for_plane,
+        dims_order_for_plane,
+    )
+
+    ndim = int(viewer.dims.ndim)
+    if ndim < 3:
+        return False
+    if int(viewer.dims.ndisplay) == 3:
+        viewer.dims.order = tuple(range(ndim))
+        viewer.reset_view()
+        view_direction, up_direction = camera_directions_for_plane(plane)
+        viewer.camera.set_view_direction(view_direction, up_direction)
+    else:
+        viewer.dims.order = dims_order_for_plane(plane, ndim)
+        viewer.reset_view()
+    return True
+
+
+def _install_view_snap_buttons(viewer):
+    """XY / XZ / YZ buttons pinned to the canvas's bottom-left corner.
+
+    Parented to the Qt viewer rather than the vispy canvas -- a child of an
+    OpenGL widget does not reliably paint on every platform -- and moved back
+    to the corner whenever the canvas is resized. One set per viewer: a
+    second panel on the same viewer reuses it. None without a Qt window.
+    """
+    existing = getattr(viewer, "_haemolynx_view_snap_buttons", None)
+    if existing is not None:
+        return existing
+    from qtpy.QtCore import QEvent, QObject, Qt
+    from qtpy.QtWidgets import QHBoxLayout, QLayout, QPushButton, QWidget
+
+    from haemolynx.gui.chrome_tooltips import VIEW_SNAP_TOOLTIPS
+    from haemolynx.gui.view_snap import VIEW_PLANES
+
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
+    canvas = getattr(qt_viewer, "canvas", None)
+    native = getattr(canvas, "native", canvas)
+    if qt_viewer is None or native is None:
+        return None
+
+    bar = QWidget(qt_viewer)
+    bar.setObjectName("haemolynx_view_snap")
+    # Only the buttons show: napari's stylesheet otherwise paints the bar as
+    # an opaque strip over the canvas.
+    bar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    bar.setStyleSheet("#haemolynx_view_snap { background: transparent; }")
+    layout = QHBoxLayout(bar)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    # The bar is exactly as wide as its buttons, never stretched across the
+    # canvas.
+    layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+    bar.buttons = {}
+    # Weak references only: Qt owns the bar through the viewer, a link the
+    # garbage collector cannot see, so a strong one back to the viewer or
+    # canvas would keep the closed viewer alive for good.
+    viewer_ref = weakref.ref(viewer)
+    native_ref = weakref.ref(native)
+
+    def snap(plane: str) -> None:
+        live = viewer_ref()
+        if live is not None:
+            snap_view_to_plane(live, plane)
+
+    for plane in VIEW_PLANES:
+        button = QPushButton(plane, bar)
+        button.setObjectName(f"haemolynx_view_snap_{plane.lower()}")
+        button.setToolTip(VIEW_SNAP_TOOLTIPS[plane])
+        button.setFixedWidth(40)
+        button.clicked.connect(lambda _checked=False, plane=plane: snap(plane))
+        layout.addWidget(button)
+        bar.buttons[plane] = button
+    bar.adjustSize()
+    bar_ref = weakref.ref(bar)
+
+    def place() -> None:
+        bar = bar_ref()
+        native = native_ref()
+        if bar is None or native is None:
+            return
+        try:
+            corner = native.mapTo(bar.parentWidget(), native.rect().bottomLeft())
+            bar.move(
+                int(corner.x()) + VIEW_SNAP_MARGIN,
+                int(corner.y()) - bar.height() - VIEW_SNAP_MARGIN + 1,
+            )
+            bar.raise_()
+        except RuntimeError:
+            # The canvas or bar was deleted with the viewer.
+            logger.debug("view-snap buttons outlived the canvas", exc_info=True)
+
+    class _FollowCanvas(QObject):
+        def eventFilter(self, _watched, event):  # noqa: N802 - Qt's name
+            if event.type() in (QEvent.Resize, QEvent.Move, QEvent.Show):
+                place()
+            return False
+
+    follower = _FollowCanvas(bar)
+    native.installEventFilter(follower)
+    bar._haemolynx_follow_canvas = follower
+    bar.place = place
+    place()
+    bar.show()
+    viewer._haemolynx_view_snap_buttons = bar
+    return bar
 
 
 def _create_widget(**kwargs):
@@ -8070,6 +8194,10 @@ def settings_widget(napari_viewer=None):
             pass
         _give_bottom_docks_the_corners(viewer)
         _float_dock_over_canvas(viewer, view_dock)
+        try:
+            _install_view_snap_buttons(viewer)
+        except Exception:  # noqa: BLE001 - a missing overlay must not stop the panel
+            logger.debug("could not add the view-snap buttons", exc_info=True)
     else:
         view_panel.setVisible(False)
 
