@@ -2596,9 +2596,9 @@ Present in the code, disabled for the CB path, and `__post_init__` raises if re-
 
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
-| `input_p_bc` | 13.332 × 10⁶ | mPa (= 100 mmHg) | (i) | Systemic MAP `[CITE]` | assumed |
-| `output_p_bc` | 0.27 × 10⁶ | mPa (= 2 mmHg) | (i) | Central venous pressure `[CITE]` | assumed |
-| `blood_plasma_viscosity_cP` | 1.2 | cP | (i) | Plasma viscosity `[CITE]` | assumed |
+| `input_p_bc` | 13.332 × 10⁶ | mPa (= 100 mmHg) | (i) | Systemic MAP `[CITE — unconfirmed]`. Measured resting MAP in conscious rats is WKY 116 ± 3, SHR 154 ± 3 mmHg [`li_sympathetic_1997`] | assumed |
+| `output_p_bc` | 0.27 × 10⁶ | mPa (= 2 mmHg) | (i) | Central venous pressure; 4 ± 3 mmHg in conscious control rats [`willenbrock_effect_1997`] | assumed |
+| `blood_plasma_viscosity_cP` | 1.2 | cP | (i) | Plasma viscosity; normal range 1.10–1.30 mPa·s at 37 °C, human [`kesmarky_plasma_2008`] | assumed |
 | Viscosity law | `in_vivo` | — | (ii) | Pries et al. 1994, fitted to microvessels in living tissue, where the endothelial surface layer narrows the effective lumen [`pries_resistance_1994`]. `in_vitro` (Pries et al. 1992, glass tubes) is available and not default [`pries_blood_1992`] | measured — the two differ by ≈3.4× apparent viscosity at D = 8 µm, but a 3–4× change moved no within-specimen ratio (§13) |
 | μ₄₅ in vivo | 6.0·e^(−0.085 d) + 3.2 − 2.44·e^(−0.06 d^0.645) | relative | (ii) | [`pries_resistance_1994`] | — |
 | μ₄₅ in vitro | 220·e^(−1.3 d) + 3.2 − 2.44·e^(−0.06 d^0.645) | relative | (ii) | [`pries_blood_1992`] | — |
@@ -2615,16 +2615,16 @@ These are **not** configurable. They live in the function bodies.
 
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
-| `alpha_o2` | 1.34 × 10⁻³ | mmol/L/mmHg | (i) | O₂ solubility in plasma `[CITE]` | assumed |
-| `hill_n` | 2.7 | — | (i) | Hill coefficient [`hill_possible_1910`] | assumed |
-| `c_hb_max` | 0.446 × 20.4 / 0.45 ≈ 20.22 | mmol/L | (i) | Haemoglobin O₂ capacity scaled to pure RBC `[CITE]` | assumed |
-| Baseline P₅₀ | 26.0 | mmHg | (i) | At pH 7.4, PCO₂ 40 mmHg. **Human** haemoglobin `[CITE]` | assumed |
+| `alpha_o2` | 1.34 × 10⁻³ | mmol/L/mmHg | (i) | O₂ solubility in plasma; 1.37 × 10⁻³ at 37 °C, human [`dash_erratum_2010`] | assumed |
+| `hill_n` | 2.7 | — | (i) | Hill coefficient [`hill_possible_1910`]; n = 2.7 fits normal human blood for saturations of 20–98% [`dash_erratum_2010`] | assumed |
+| `c_hb_max` | 0.446 × 20.4 / 0.45 ≈ 20.22 | mmol/L | (i) | Haemoglobin O₂ capacity scaled to pure RBC. Derived; compare 4 [Hb]_rbc = 4 × 5.18 = 20.7 mmol/L, human [`dash_erratum_2010`] | assumed |
+| Baseline P₅₀ | 26.0 | mmHg | (i) | At pH 7.4, PCO₂ 40 mmHg. **Human** haemoglobin; the source gives about 26.8 mmHg [`dash_erratum_2010`] | assumed |
 | Bohr pH coefficient | −0.4 | per pH unit (log₁₀ P₅₀) | (ii) | [`severinghaus_simple_1979`], [`kelman_digital_1966`] | assumed |
 | Bohr PCO₂ coefficient | +0.06 | per log₁₀(PCO₂/40) | (ii) | [`severinghaus_simple_1979`], [`kelman_digital_1966`] | assumed |
-| `alpha_co2` | 0.03 | mmol/L/mmHg | (i) | CO₂ solubility in plasma `[CITE]` | assumed |
+| `alpha_co2` | 0.03 | mmol/L/mmHg | (i) | CO₂ solubility in plasma; 3.07 × 10⁻² at 37 °C, human [`dash_erratum_2010`] | assumed |
 | CO₂ base capacity | 11.02 · PCO₂^0.396 | mmol/L | (ii) | Spencer (1979) empirical CO₂ dissociation curve `[CITE — not in bibliography]` | assumed |
 | Haldane shift | (0.15 − 0.05·S_O₂) · PCO₂ | mmol/L | (ii) | Same source `[CITE]`. Saturation is evaluated at fixed P₅₀ = 26, not the Bohr-shifted value | assumed |
-| `pKa` | 6.1 | — | (i) | Henderson–Hasselbalch `[CITE]` | assumed |
+| `pKa` | 6.1 | — | (i) | Henderson–Hasselbalch; 6.10, revised to 6.09 at pH 7.4 and 37.5 °C [`severinghaus_variations_1956`] | assumed |
 
 > ⚠ **Species mismatch.** The haemoglobin parameters above are human. The tissue is rat. Direction
 > of the resulting bias is not established.
@@ -2635,15 +2635,15 @@ These are **not** configurable. They live in the function bodies.
 |---|---|---|---|---|---|
 | `do_perfusion_modeling` | True | — | — | — | — |
 | `grid_resolution_xyz` | (10, 10, 10) default; **4 µm** for H2 §2.3 | µm | (iii) | 4 µm chosen on convergence: median PO₂ 27.34 / 27.92 / 28.21 at 10 / 6 / 4 µm, increments halving, extrapolating to ≈28.5. 4 µm is within ~1% of that limit at 1/27 the cost of native resolution | measured |
-| `sigma_diff` | 1.5 × 10⁻⁹ | m²/s | (i) | O₂ diffusivity in tissue `[CITE]` | assumed |
-| `sigma_diff_co2` | 3.0 × 10⁻⁸ | m²/s | (i) | CO₂ diffuses ≈20× faster than O₂ `[CITE]` | assumed |
-| `permeability_o2_cm_s` | 1.0 × 10⁻⁴ | cm/s | (ii) | Endothelial O₂ permeability `[CITE]` | assumed |
-| `permeability_co2_cm_s` | 2.0 × 10⁻³ | cm/s | (ii) | Endothelial CO₂ permeability `[CITE]` | assumed |
-| `respiratory_quotient` | 0.82 | — | (i) | CO₂ produced per O₂ consumed `[CITE]` | assumed |
-| `systemic_hematocrit` | 0.45 | fraction | (i) | `[CITE]` | assumed |
-| `po2_arterial_mmHg` | 100.0 | mmHg | (i) | `[CITE]` — but see open item 3 | assumed |
-| `pco2_arterial` | 40.0 | mmHg | (i) | `[CITE]` | assumed |
-| `hco3_tissue` | 24.0 | mmol/L | (i) | Fixed bicarbonate buffer; no renal compensation `[CITE]` | assumed |
+| `sigma_diff` | 1.5 × 10⁻⁹ | m²/s | (i) | O₂ diffusivity in tissue. Consistent with K_O₂/α_O₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`] and (1.04 ± 0.78) × 10⁻⁹ in rat mesentery [`yaegashi_diffusivity_1996`] | assumed |
+| `sigma_diff_co2` | 3.0 × 10⁻⁸ | m²/s | (i) | `[CITE — unconfirmed]`. Measured K_CO₂/α_CO₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`], about 1/19 of this value. The ≈20× ratio holds for Krogh's constant (Dα), not for D; see open item 18 | assumed |
+| `permeability_o2_cm_s` | 1.0 × 10⁻⁴ | cm/s | (ii) | Endothelial O₂ permeability `[CITE — unconfirmed]` | assumed |
+| `permeability_co2_cm_s` | 2.0 × 10⁻³ | cm/s | (ii) | Endothelial CO₂ permeability `[CITE — unconfirmed]` | assumed |
+| `respiratory_quotient` | 0.82 | — | (i) | CO₂ produced per O₂ consumed `[CITE — unconfirmed]`. Measured 0.85 in rat skeletal muscle [`kawashiro_determination_1975`] | assumed |
+| `systemic_hematocrit` | 0.45 | fraction | (i) | Standard haematocrit ≈ 0.45, human [`dash_erratum_2010`] | assumed |
+| `po2_arterial_mmHg` | 100.0 | mmHg | (i) | Standard arterial PO₂, human [`dash_erratum_2010`] — but see open item 3 | assumed |
+| `pco2_arterial` | 40.0 | mmHg | (i) | Arterial reference 40 ± 2 mmHg, human [`dash_erratum_2010`], [`berend_physiological_2014`] | assumed |
+| `hco3_tissue` | 24.0 | mmol/L | (i) | Fixed bicarbonate buffer; no renal compensation. Arterial reference 24 ± 2 mmol/L, human, used here for tissue [`berend_physiological_2014`] | assumed |
 | `M_max` | **config 0.005; H2 driver 0.05** | mmol/L/s | (iii) | Maximum metabolic consumption rate. The two disagree by 10× — see open item 8. The driver's 0.05 is the defensible one: it is 0.067 mL O₂ per mL per minute against roughly 0.040 for brain, the right order for a metabolically active organ | unswept in magnitude; the glomus:stroma *ratio* is swept |
 | `k_reduce` | 0.1 | per mmol | (iii) | Phenomenological metabolic reduction in hypoxic zones. **Not Michaelis–Menten** — that form is used nowhere in the pipeline, and the two differ most in the low-PO₂ regime, which is exactly where §2.3 reads its answer | unswept |
 | `C_arterial` | 0.13 | mmol/L | (iii) | **Dead configuration.** Declared in three places (`PerfusionConfig` and the two H2 driver `PerfConfig` classes) and read nowhere in `src/` or `examples/`. Superseded in practice by the blood-gas path, which computes arterial oxygen content from PO₂ and haematocrit | n/a |
@@ -3259,7 +3259,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 4 | Baseline haematocrit duplicated in the Tier 1 washout path | §6.6 |
 | 5 | `C_arterial` is dead configuration — declared 3×, read 0× | §6 |
 | 6 | Solver tolerances disagree between config and code | Appendix A |
-| 7 | 13 parameters still marked `[CITE]`, including every blood-gas solubility and the Spencer CO₂ curve | §10 completeness |
+| 7 | 7 parameters still marked `[CITE]`: systemic MAP, the Spencer CO₂ curve and its Haldane shift, `sigma_diff_co2`, both endothelial permeabilities, and the respiratory quotient | §10 completeness |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |
 | ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback and the extreme-decile boundary fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
@@ -3270,6 +3270,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 15 | The threshold selector's “median diameter” is a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels. The 4–7 µm capillary window is an external target for the latter and is being applied to the former, which reads 0.63–1.00× as large | §2.2 step 3; the selected threshold, hence everything downstream |
 | 16 | Freezing the threshold at 0.90 runs SHR-B and SHR-C above their own calibre choice, at a median diameter of 3.73 µm — below the selector's own 4.0 µm floor. 0 of 3 WKY and 2 of 3 SHR are affected, so the freeze is group-asymmetric even though `assess_cohort_split` on the choices reports no separation | §2.2 step 13; every per-specimen geometric quantity |
 | 17 | The probability field is quantised to hundredths and every sweep threshold lands exactly on a level, so the strict `p > t` discards a whole level — 0.5% of the ROI at 0.30 rising to 4.2–5.9% at 0.99, where it is two thirds of the mask. `p > 0.99` is exactly `p = 1.0`. Using `≥` moves 3 of 6 per-specimen choices and removes item 16's group asymmetry | §2.2 step 2; the per-specimen choices, and item 16 |
+| 18 | `sigma_diff_co2` (3.0 × 10⁻⁸ m²/s) is 20× `sigma_diff`, but the multi-species solver also multiplies each diffusivity by its solubility (`build_diffusion_matrix`), and α_CO₂ is already ≈22× α_O₂. The effective CO₂ Krogh constant is then ≈450× the O₂ one; the measured ratio in rat muscle is ≈21 [`kawashiro_determination_1975`], which puts D_CO₂ near 1.6 × 10⁻⁹ m²/s. Not changed here: correcting it changes the solved CO₂ and pH fields, which feed back into O₂ unloading through the Bohr shift | §10.9, §6 |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the

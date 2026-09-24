@@ -125,56 +125,56 @@ Listed in execution order for the default configuration.
 
 ## Rheology and network flow
 
-| Symbol | Parameter name | Value | Units |
-|---|---|---|---|
-| $\mu_{\text{plasma}}$ | `mu_plasma` | 1.2 | mPa·s |
-| — | Pries–Secomb law | `in_vivo` | — |
-| — | Diameter floor for the Pries–Secomb relation | 3.0 | µm |
-| $X_0$ | Phase separation skimming threshold | $0.964\,(1 - H_{\text{in}})/D_F$ (E18) | — |
-| $H$ | `systemic_hematocrit` | 0.45 | — |
-| $p_{\text{in}}$ | `input_p_bc` | $13.332\times10^{6}$ (100 mmHg) | mPa |
-| $p_{\text{out}}$ | `output_p_bc` | $0.27\times10^{6}$ (2 mmHg) | mPa |
-| — | `rheology_max_iterations` | 15 | — |
-| — | `rheology_tolerance` | $1\times10^{-4}$ | — |
-| — | `robin_distal_resistance_multiplier` | 10.0 | — |
+| Symbol | Parameter name | Value | Units | Source |
+|---|---|---|---|---|
+| $\mu_{\text{plasma}}$ | `mu_plasma` | 1.2 | mPa·s | [@kesmarky2008]: normal range 1.10–1.30 mPa·s at 37 °C (human) |
+| — | Pries–Secomb law | `in_vivo` | — | — |
+| — | Diameter floor for the Pries–Secomb relation | 3.0 | µm | — |
+| $X_0$ | Phase separation skimming threshold | $0.964\,(1 - H_{\text{in}})/D_F$ (E18) | — | Derived from $H_{\text{in}}$ and $D_F$ (E18) [@pries1989; @rasmussen2018] |
+| $H$ | `systemic_hematocrit` | 0.45 | — | [@dash2010]: standard haematocrit ≈ 0.45 (human) |
+| $p_{\text{in}}$ | `input_p_bc` | $13.332\times10^{6}$ (100 mmHg) | mPa | [CITE — unconfirmed]. Measured resting MAP in conscious rats: WKY 116 ± 3, SHR 154 ± 3 mmHg [@li1997] |
+| $p_{\text{out}}$ | `output_p_bc` | $0.27\times10^{6}$ (2 mmHg) | mPa | [@willenbrock1997]: central venous pressure 4 ± 3 mmHg in conscious control rats |
+| — | `rheology_max_iterations` | 15 | — | — |
+| — | `rheology_tolerance` | $1\times10^{-4}$ | — | — |
+| — | `robin_distal_resistance_multiplier` | 10.0 | — | — |
 
 ## Blood gas chemistry
 
-| Symbol | Parameter name | Value | Units |
-|---|---|---|---|
-| $\alpha_{\mathrm{O_2}}$ | Oxygen plasma solubility | $1.34\times10^{-3}$ | mmol·L⁻¹·mmHg⁻¹ |
-| $\alpha_{\mathrm{CO_2}}$ | Carbon dioxide plasma solubility | 0.03 | mmol·L⁻¹·mmHg⁻¹ |
-| $n$ | Hill coefficient | 2.7 | — |
-| $c_{\mathrm{Hb,max}}$ | Pure red cell oxygen capacity | $0.446 \times 20.4 / 0.45 = 20.22$ | mmol·L⁻¹ |
-| $P_{50}$ | Baseline P50 at pH 7.4, $P_{\mathrm{CO_2}}$ 40 mmHg | 26.0 | mmHg |
-| — | Bohr pH coefficient | $-0.4$ | — |
-| — | Bohr $P_{\mathrm{CO_2}}$ coefficient | 0.06 | — |
-| — | Carbon dioxide base capacity prefactor | 11.02 | — |
-| — | Carbon dioxide base capacity exponent | 0.396 | — |
-| — | Haldane shift coefficients | 0.15, 0.05 | — |
-| $\mathrm{p}K_a$ | Henderson–Hasselbalch dissociation constant | 6.1 | — |
-| $[\mathrm{HCO_3^-}]$ | `hco3_tissue` | 24.0 | mmol·L⁻¹ |
-| $P_{\mathrm{O_2}}^{\text{art}}$ | `po2_arterial_mmHg` | 100.0 | mmHg |
-| $P_{\mathrm{CO_2}}^{\text{art}}$ | `pco2_arterial` | 40.0 | mmHg |
+| Symbol | Parameter name | Value | Units | Source |
+|---|---|---|---|---|
+| $\alpha_{\mathrm{O_2}}$ | Oxygen plasma solubility | $1.34\times10^{-3}$ | mmol·L⁻¹·mmHg⁻¹ | [@dash2010]: $1.37\times10^{-3}$ in plasma at 37 °C (human) |
+| $\alpha_{\mathrm{CO_2}}$ | Carbon dioxide plasma solubility | 0.03 | mmol·L⁻¹·mmHg⁻¹ | [@dash2010]: $3.07\times10^{-2}$ in plasma at 37 °C (human) |
+| $n$ | Hill coefficient | 2.7 | — | [@dash2010]: $n = 2.7$ fits normal blood for saturations of 20–98% (human) |
+| $c_{\mathrm{Hb,max}}$ | Pure red cell oxygen capacity | $0.446 \times 20.4 / 0.45 = 20.22$ | mmol·L⁻¹ | Derived (E33). Compare $4\,[\mathrm{Hb}]_{\text{rbc}} = 4 \times 5.18 = 20.7$ mmol·L⁻¹ [@dash2010] (human) |
+| $P_{50}$ | Baseline P50 at pH 7.4, $P_{\mathrm{CO_2}}$ 40 mmHg | 26.0 | mmHg | [@dash2010]: about 26.8 mmHg (human); 26.0 is slightly lower |
+| — | Bohr pH coefficient | $-0.4$ | — | — |
+| — | Bohr $P_{\mathrm{CO_2}}$ coefficient | 0.06 | — | — |
+| — | Carbon dioxide base capacity prefactor | 11.02 | — | — |
+| — | Carbon dioxide base capacity exponent | 0.396 | — | — |
+| — | Haldane shift coefficients | 0.15, 0.05 | — | — |
+| $\mathrm{p}K_a$ | Henderson–Hasselbalch dissociation constant | 6.1 | — | [@severinghaus1956]: 6.10, revised to 6.09 at pH 7.4 and 37.5 °C (human and canine serum) |
+| $[\mathrm{HCO_3^-}]$ | `hco3_tissue` | 24.0 | mmol·L⁻¹ | [@berend2014]: arterial reference $24 \pm 2$ mmol·L⁻¹ (human); used here for tissue |
+| $P_{\mathrm{O_2}}^{\text{art}}$ | `po2_arterial_mmHg` | 100.0 | mmHg | [@dash2010]: standard arterial $P_{\mathrm{O_2}}$ = 100 mmHg (human) |
+| $P_{\mathrm{CO_2}}^{\text{art}}$ | `pco2_arterial` | 40.0 | mmHg | [@dash2010; @berend2014]: arterial $P_{\mathrm{CO_2}}$ = 40 mmHg, reference $40 \pm 2$ (human) |
 
 ## Tissue transport
 
-| Symbol | Parameter name | Value | Units |
-|---|---|---|---|
-| — | `grid_resolution_xyz` | (10.0, 10.0, 10.0) | µm |
-| $\sigma_{\mathrm{O_2}}$ | `sigma_diff` | $1.5\times10^{-9}$ ($=1.5\times10^{3}$ µm²·s⁻¹) | m²·s⁻¹ |
-| $\sigma_{\mathrm{CO_2}}$ | `sigma_diff_co2` | $3.0\times10^{-8}$ ($=3.0\times10^{4}$ µm²·s⁻¹) | m²·s⁻¹ |
-| $P^{\mathrm{O_2}}_{\text{perm}}$ | `permeability_o2_cm_s` | $1.0\times10^{-4}$ ($=1.0$ µm·s⁻¹) | cm·s⁻¹ |
-| $P^{\mathrm{CO_2}}_{\text{perm}}$ | `permeability_co2_cm_s` | $2.0\times10^{-3}$ ($=20.0$ µm·s⁻¹) | cm·s⁻¹ |
-| $M_{\max}$ | `M_max` | 0.005 | mmol·L⁻¹·s⁻¹ |
-| $k$ | `k_reduce` | 0.1 | mmHg⁻¹ |
-| $RQ$ | `respiratory_quotient` | 0.82 | — |
-| $\gamma$ | Picard relaxation factor, multi-species | 1.0 | — |
-| $\varepsilon$ | Diagonal regularisation | $1\times10^{-12}$ | — |
-| — | `picard_max_iterations` | 50 | — |
-| — | `picard_tolerance` | $1\times10^{-4}$ | — |
-| — | Conjugate gradient relative tolerance | $1\times10^{-5}$ | — |
-| — | Conjugate gradient maximum iterations | 500 | — |
+| Symbol | Parameter name | Value | Units | Source |
+|---|---|---|---|---|
+| — | `grid_resolution_xyz` | (10.0, 10.0, 10.0) | µm | — |
+| $\sigma_{\mathrm{O_2}}$ | `sigma_diff` | $1.5\times10^{-9}$ ($=1.5\times10^{3}$ µm²·s⁻¹) | m²·s⁻¹ | Consistent with $K_{\mathrm{O_2}}/\alpha_{\mathrm{O_2}} \approx 1.6\times10^{-9}$ from rat skeletal muscle [@kawashiro1975] and $(1.04 \pm 0.78)\times10^{-9}$ in rat mesentery [@yaegashi1996] |
+| $\sigma_{\mathrm{CO_2}}$ | `sigma_diff_co2` | $3.0\times10^{-8}$ ($=3.0\times10^{4}$ µm²·s⁻¹) | m²·s⁻¹ | [CITE — unconfirmed]. $K_{\mathrm{CO_2}}/\alpha_{\mathrm{CO_2}} \approx 1.6\times10^{-9}$ in rat skeletal muscle [@kawashiro1975], about 1/19 of this value. The 20× ratio holds for Krogh’s constant ($D\alpha$), not for $D$; see `cb_modelling_reference.md` open item 18 |
+| $P^{\mathrm{O_2}}_{\text{perm}}$ | `permeability_o2_cm_s` | $1.0\times10^{-4}$ ($=1.0$ µm·s⁻¹) | cm·s⁻¹ | [CITE — unconfirmed] |
+| $P^{\mathrm{CO_2}}_{\text{perm}}$ | `permeability_co2_cm_s` | $2.0\times10^{-3}$ ($=20.0$ µm·s⁻¹) | cm·s⁻¹ | [CITE — unconfirmed] |
+| $M_{\max}$ | `M_max` | 0.005 | mmol·L⁻¹·s⁻¹ | Chosen; see `cb_modelling_reference.md` §10.9 and open item 8 |
+| $k$ | `k_reduce` | 0.1 | mmHg⁻¹ | Chosen; phenomenological, see `cb_modelling_reference.md` §10.9 |
+| $RQ$ | `respiratory_quotient` | 0.82 | — | [CITE — unconfirmed]. Measured 0.85 in rat skeletal muscle [@kawashiro1975] |
+| $\gamma$ | Picard relaxation factor, multi-species | 1.0 | — | Numerical choice |
+| $\varepsilon$ | Diagonal regularisation | $1\times10^{-12}$ | — | Numerical choice |
+| — | `picard_max_iterations` | 50 | — | — |
+| — | `picard_tolerance` | $1\times10^{-4}$ | — | — |
+| — | Conjugate gradient relative tolerance | $1\times10^{-5}$ | — | — |
+| — | Conjugate gradient maximum iterations | 500 | — | — |
 
 ## Upstream constants referenced by these equations
 
