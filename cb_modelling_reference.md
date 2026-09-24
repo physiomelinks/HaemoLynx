@@ -1211,30 +1211,33 @@ in the H2 drivers. The main pipeline still runs the band rule on axis 0; see the
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Collect degree-1 nodes that carry a `pos` | — | Only a dead end can be a vessel entering or leaving the region; an interior junction is already connected on both sides | **On** | `boundaries.py:45` |
-| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | `image_shape` is in voxels while node `pos` is in microns — comparing them unscaled shrinks the apparent volume and drags interior dead ends into range | **On** | `boundaries.py:40` |
-| 3 | Low-face terminals within tolerance → inlets | 1 voxel | A vessel supplying this region has to cross one of its faces; a dead end mid-volume cannot be an inlet whatever its coordinate | **On** | `boundaries.py:88` |
-| 4 | High-face terminals within tolerance → outlets | 1 voxel | The opposite face is where that blood has to leave | **On** | `boundaries.py:88` |
-| 5 | A terminal within tolerance of both faces → low face wins | — | A terminal within tolerance of both faces would mean a region one voxel thick; the ambiguity is resolved rather than silently doubled into both sets | **On** | `boundaries.py:88` |
-| 6 | Raise if either face carries no terminal | — | An unsolvable region should stay unsolvable rather than be solved with invented boundaries | **On**, no fallback | `boundaries.py:88` |
-| 7 | Non-face terminals: nothing under `caged` | `caged` | An interior dead end is a mask defect, not a vessel, so it earns no pressure | **On** | `boundaries.py:95` |
+| 1 | Collect degree-1 nodes that carry a `pos` | — | Only a dead end can be a vessel entering or leaving the region; an interior junction is already connected on both sides | **On** | `boundaries.py:169` |
+| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | `image_shape` is in voxels while node `pos` is in microns — comparing them unscaled shrinks the apparent volume and drags interior dead ends into range | **On** | `boundaries.py:166` |
+| 3 | Low-face terminals within tolerance → inlets | 1 voxel | A vessel supplying this region has to cross one of its faces; a dead end mid-volume cannot be an inlet whatever its coordinate | **On** | `boundaries.py:174` |
+| 4 | High-face terminals within tolerance → outlets | 1 voxel | The opposite face is where that blood has to leave | **On** | `boundaries.py:178` |
+| 5 | A terminal within tolerance of both faces → low face wins | — | A terminal within tolerance of both faces would mean a region one voxel thick; the ambiguity is resolved rather than silently doubled into both sets | **On** | `boundaries.py:176` |
+| 6 | Raise if either face carries no terminal | — | An unsolvable region should stay unsolvable rather than be solved with invented boundaries | **On**, no fallback | `boundaries.py:181` |
+| 7 | Non-face terminals: nothing under `caged` | `caged` | An interior dead end is a mask defect, not a vessel, so it earns no pressure | **On** | `boundaries.py:191` |
 
 **And the band rule, as the main pipeline runs it.**
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Collect degree-1 nodes that carry a `pos` | — | Only a dead end can be a vessel entering or leaving the region; an interior junction is already connected on both sides | **On** | `boundaries.py:45` |
-| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | `image_shape` is in voxels while node `pos` is in microns — comparing them unscaled shrinks the apparent volume and drags interior dead ends into the band | **On** | `boundaries.py:40` |
-| 3 | Terminals in the lowest `edge_percent` of the axis → inlets | 25% | A positional proxy for "near the arterial end", with no anatomical anchor behind the width | **On** | `boundaries.py:47` |
-| 4 | Terminals in the highest `end_percent` of the axis → outlets | 25% | The same proxy at the other end of the axis | **On** | `boundaries.py:48` |
-| 5 | If either set is empty, **raise** | — | An unsolvable region should stay unsolvable rather than be solved with boundaries picked from nodes that are not vessel terminations | **On** — the silent fallback to the extreme decile of *all* nodes has been removed | `boundaries.py:52` |
-| 6 | Route the remainder by permeability mode | `caged` | Decides whether the remaining interior dead ends drain, resist, or simply stop | **On** — non-band terminals are not boundaries | `boundaries.py:66` |
-| 7 | Drop any node that landed in both sets | — | A node cannot carry two different Dirichlet pressures at once | **On**, inlets win | `boundaries.py:81` |
-| 8 | Sort inlets ascending, outlets descending, by axis coordinate | — | Makes `resistance_node_pair` deterministic across runs, since it takes the first entry of each list | **On** | `boundaries.py:83` |
+| 1 | Collect degree-1 nodes that carry a `pos` | — | Only a dead end can be a vessel entering or leaving the region; an interior junction is already connected on both sides | **On** | `boundaries.py:53` |
+| 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | `image_shape` is in voxels while node `pos` is in microns — comparing them unscaled shrinks the apparent volume and drags interior dead ends into the band | **On** | `boundaries.py:48` |
+| 3 | Terminals in the lowest `edge_percent` of the axis → inlets | 25% | A positional proxy for "near the arterial end", with no anatomical anchor behind the width | **On** | `boundaries.py:55` |
+| 4 | Terminals in the highest `end_percent` of the axis → outlets | 25% | The same proxy at the other end of the axis | **On** | `boundaries.py:56` |
+| 5 | If either set is empty, **raise** | — | An unsolvable region should stay unsolvable rather than be solved with boundaries picked from nodes that are not vessel terminations | **On** — the fallback to the extreme decile of *all* nodes now runs only when a caller passes `allow_extreme_fallback=True`. The CB path never does; the nerve pipeline's `select_boundary_nodes_by_method` does | `boundaries.py:60` |
+| 6 | Route the remainder by permeability mode | `caged` | Decides whether the remaining interior dead ends drain, resist, or simply stop | **On** — non-band terminals are not boundaries | `boundaries.py:83` |
+| 7 | Drop any node that landed in both sets | — | A node cannot carry two different Dirichlet pressures at once | **On**, inlets win | `boundaries.py:99` |
+| 8 | Sort inlets ascending, outlets descending, by axis coordinate | — | Makes `resistance_node_pair` deterministic across runs, since it takes the first entry of each list | **On** | `boundaries.py:101` |
 
-⚠ Step 5 of the band rule is the fallback this section warns about below, and it is **live** on the H1 path.
-It converts a graph with no terminal in the band into a solved one by promoting the extreme decile
-of *all* nodes — interior spurs included — to pressure boundaries. The face rule raises instead.
+Step 5 used to be a fallback, and it was live on the H1 path until the band rule was made to
+raise: a graph with no terminal in the band became a solved one by promoting the extreme decile of
+*all* nodes — interior spurs included — to pressure boundaries. None of the six H1 runs took it:
+each `pipeline.log` reports inlet and outlet counts drawn from terminals (37–226 per side), not the
+equal-sized decile the fallback returns. It survives only as an explicit opt-in for the nerve
+pipeline.
 
 **Why not a positional band.** About **86% of degree-1 nodes in these graphs are interior** — nowhere
 near a region face. They are skeletonisation spurs and segmentation breaks, not vessels entering the
@@ -1276,7 +1279,7 @@ The low face wins; the ambiguity is not silently doubled into both sets.
 `universal_sink` adds them all as outlets; `robin_resistance` tags them for a distal resistance.
 
 > **At a glance** — face-crossing rule, axis 1, 1-voxel tolerance, raises on an empty face ·
-> 86% of degree-1 nodes are interior; ratio spread 13.3% vs 75.8% · `boundaries.py:88`,
+> 86% of degree-1 nodes are interior; ratio spread 13.3% vs 75.8% · `boundaries.py:106`,
 > `boundaries.py:208` · `tests/test_boundary_faces.py`
 
 ---
@@ -2416,7 +2419,7 @@ The rheology loop starts every edge at systemic haematocrit 0.45 with the corres
 Pries–Secomb viscosity (§4.3) — likewise a starting guess, replaced on the first pass.
 
 > **At a glance** — Dirichlet pressure at face terminals, everything else caged; Neumann on tissue ·
-> config 100/2 mmHg but H2 ran 60/20; 86% of terminals interior · `boundaries.py:88`,
+> config 100/2 mmHg but H2 ran 60/20; 86% of terminals interior · `boundaries.py:106`,
 > `perfusion.py:349`, `perfusion.py:461` · `tests/test_boundary_faces.py`,
 > `tests/test_flow_conservation.py`
 
@@ -3054,7 +3057,7 @@ repository that has moved on from the one that produced the published figures ha
 | # | Change | Can it move a published number? |
 |---|---|---|
 | 1 | `src/ImageLynx/cb_settings.py` owns the analysis constants; every `cb_*` driver imports them | **No.** Same values, one definition. `tests/test_cb_settings.py` pins them |
-| 2 | Missing or degenerate data raises instead of being substituted | **No** for any run that completed. A run that silently used a 5.0 µm diameter, a least-squares pressure field, or the extreme-decile boundary fallback would now fail loudly instead |
+| 2 | Missing or degenerate data raises instead of being substituted | **No** for any run that completed. A run that silently used a 5.0 µm diameter, a least-squares pressure field, or the extreme-decile boundary fallback would now fail loudly instead. The boundary fallback was removed later than the other two — `2d98ab8` did not touch `boundaries.py` — and none of the six H1 logs shows it firing |
 | 3 | `SkeletonConfig.bridge_gap_size` removed | **No.** It applied a second radius-1 closing, and closing is idempotent, so it could not act |
 | 4 | Core dead-end resolution and the constriction branch removed from the CB driver; bundle collapse guarded out | **No.** All three were already inert: mode `"none"`, a validator that raises, and a density threshold no window can reach |
 
@@ -3224,7 +3227,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | FWHM calibre | `automated.py:971` | `test_haemodynamics_automated_fwhm.py`, `test_integration_synthetic_vessel_fwhm.py` |
 | Calibre provenance guard | `poiseuille.py:16` | `test_silent_fallback_guards.py` |
 | Branch order | `branch_order.py:95` | `test_branch_order_hierarchy.py` |
-| Face boundary rule | `boundaries.py:88` | `test_boundary_faces.py` |
+| Face boundary rule | `boundaries.py:106` | `test_boundary_faces.py` |
 | Poiseuille resistance | `poiseuille.py:160` | `test_haemodynamics_analytical.py` |
 | Variable-diameter resistance | `poiseuille.py:146` | `test_haemodynamics_analytical.py` |
 | Network Laplacian solve | `resistance.py:46`, `resistance.py:138` | `test_haemodynamics_analytical.py` |
@@ -3254,14 +3257,14 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | # | Item | Blocks |
 |---|---|---|
 | 1 | Two segmentation thresholds in play — config 0.65/0.75 vs the frozen 0.90 used for H1. **Now pinned**: `cb_settings.FROZEN_THRESHOLD` owns the value and `test_cb_settings.py` asserts the config default has not moved | §2.2, and any quoted calibre |
-| 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1. **Now pinned**: `cb_settings.BOUNDARY_AXIS` owns the axis, and the band rule's silent decile fallback has been removed | §2.8, §8, §13 — the largest sensitivity in the model |
+| 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1. **Now pinned**: `cb_settings.BOUNDARY_AXIS` owns the axis, and the band rule raises on an empty band instead of falling back to the extreme decile of all nodes (opt-in only, for the nerve pipeline) | §2.8, §8, §13 — the largest sensitivity in the model |
 | 3 | Arterial PO₂ set in both config and solver bodies | §5, §6 |
 | 4 | Baseline haematocrit duplicated in the Tier 1 washout path | §6.6 |
 | 5 | `C_arterial` is dead configuration — declared 3×, read 0× | §6 |
 | 6 | Solver tolerances disagree between config and code | Appendix A |
 | 7 | 5 parameters still marked `[CITE]`: the Spencer CO₂ curve and its Haldane shift, `sigma_diff_co2`, and both endothelial permeabilities | §10 completeness |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |
-| ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback and the extreme-decile boundary fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
+| ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
 | ~~12~~ | **Closed in code** by `7ea1b36`. The rheology loop rescaled resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contained $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently. **Results not yet re-derived** | every absolute flow in §7, §13.5 |

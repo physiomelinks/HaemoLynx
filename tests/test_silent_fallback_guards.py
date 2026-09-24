@@ -193,3 +193,77 @@ def test_the_original_zero_measured_guard_still_holds():
     with pytest.raises(ValueError, match="edt_diameter_um"):
         _raise_if_measurement_mode_measured_nothing("edt_radius", 100, 0)
     _raise_if_measurement_mode_measured_nothing("fwhm_radius", 100, 0)
+
+
+# --- The band rule's extreme-decile boundary fallback --------------------------------------
+
+from ImageLynx.graph.boundaries import (                               # noqa: E402
+    select_boundary_nodes_by_method,
+    select_boundary_terminal_nodes,
+)
+
+_BAND_SHAPE = (101, 101, 101)
+
+
+def _band_graph(terminal_z):
+    """A hub in the middle of axis 0 with one degree-1 terminal at each given z."""
+    G = nx.Graph()
+    G.add_node("hub", pos=np.array([50.0, 50.0, 50.0]))
+    for i, z in enumerate(terminal_z):
+        G.add_node(f"t{i}", pos=np.array([float(z), 50.0 + i, 50.0]))
+        G.add_edge("hub", f"t{i}")
+    return G
+
+
+def test_an_empty_outlet_band_is_refused_not_filled_by_position():
+    """Both terminals sit in the inlet band, so the outlet band is empty.
+
+    The fallback used to hand back the last tenth of all nodes along the axis - here the hub,
+    an interior junction no vessel leaves the volume through - as the venous boundary.
+    """
+    G = _band_graph([0.0, 10.0])
+    with pytest.raises(ValueError, match="outlet band"):
+        select_boundary_terminal_nodes(
+            G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
+
+
+def test_an_empty_inlet_band_is_refused_and_named():
+    G = _band_graph([90.0, 100.0])
+    with pytest.raises(ValueError, match="inlet band"):
+        select_boundary_terminal_nodes(
+            G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
+
+
+def test_a_graph_with_no_terminals_at_all_is_refused():
+    """A closed cage: the case the fallback was written for."""
+    G = nx.cycle_graph(4)
+    for n, z in zip(G.nodes, (0.0, 30.0, 70.0, 100.0)):
+        G.nodes[n]["pos"] = np.array([z, 50.0, 50.0])
+    with pytest.raises(ValueError, match="inlet and outlet band"):
+        select_boundary_terminal_nodes(
+            G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
+
+
+def test_populated_bands_are_selected_as_before():
+    G = _band_graph([0.0, 100.0])
+    starting, outputs = select_boundary_terminal_nodes(
+        G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
+    assert starting == ["t0"] and outputs == ["t1"]
+
+
+def test_the_fallback_can_be_taken_deliberately_but_must_be_asked_for_at_the_boundary():
+    G = _band_graph([0.0, 10.0])
+    starting, outputs = select_boundary_terminal_nodes(
+        G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0,
+        allow_extreme_fallback=True)
+    assert starting and outputs
+    assert "hub" in outputs
+
+
+def test_the_nerve_pipeline_entry_point_keeps_the_fallback():
+    """select_boundary_nodes_by_method is the nerve pipeline's route; it opts in explicitly."""
+    G = _band_graph([0.0, 10.0])
+    outputs = select_boundary_nodes_by_method(
+        G, _BAND_SHAPE, method="edge_percent", node_role="output",
+        edge_percent=25.0, end_percent=25.0, axis=0)
+    assert "hub" in outputs

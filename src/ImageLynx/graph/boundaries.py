@@ -15,7 +15,8 @@ def select_boundary_terminal_nodes(
     end_percent: float,
     axis: int = 1,
     boundary_permeability_mode: str = "caged",
-    voxel_size: tuple[float, ...] = None
+    voxel_size: tuple[float, ...] = None,
+    allow_extreme_fallback: bool = False,
 ) -> tuple[list[Any], list[Any]]:
     """Select degree-1 nodes with support for Tri-Mode 3D permeability.
 
@@ -23,6 +24,13 @@ def select_boundary_terminal_nodes(
     stored in physical units while ``image_shape`` is in voxels, so the axis extent must be
     scaled before the two are compared. Defaults to unit spacing, under which the comparison
     is unchanged.
+
+    Raises ``ValueError`` when either band holds no degree-1 node. The alternative - taking
+    the first and last tenth of *all* nodes along the axis - pins pressure on nodes chosen by
+    position alone, most of them interior junctions no vessel leaves the volume through.
+    ``allow_extreme_fallback=True`` restores that substitution for the nerve pipeline, which
+    reaches this function through ``select_boundary_nodes_by_method``; the CB path never
+    sets it.
     """
     if not (0.0 <= edge_percent <= 100.0 and 0.0 <= end_percent <= 100.0):
         raise ValueError("edge_percent and end_percent must be in [0, 100].")
@@ -47,8 +55,18 @@ def select_boundary_terminal_nodes(
     starting = [node for node in terminal_nodes if axis_coord(node) <= top_limit]
     outputs = [node for node in terminal_nodes if axis_coord(node) >= bottom_start]
 
-    # TIER 2: Spatial Extremes Fallback
+    # TIER 2: Spatial Extremes Fallback, opt-in only.
     # If the network forms a closed loop cage (0 dead ends) or stitching removed them.
+    if (not starting or not outputs) and not allow_extreme_fallback:
+        empty = " and ".join(
+            side for side, nodes in (("inlet", starting), ("outlet", outputs)) if not nodes
+        )
+        raise ValueError(
+            f"axis {axis}: no degree-1 node in the {empty} band "
+            f"(inlet band {edge_percent}%, outlet band {end_percent}%). Widen the band "
+            f"deliberately, choose another axis, or treat the region as unsuitable. Taking the "
+            f"extreme tenth of all nodes instead would invent boundaries that no vessel crosses."
+        )
     if not starting or not outputs:
         import logging
         logger = logging.getLogger(__name__)
@@ -274,6 +292,9 @@ def select_boundary_nodes_by_method(
             edge_percent=edge_percent,
             end_percent=end_percent,
             axis=axis,
+            # The nerve pipeline keeps the extreme-decile substitution; the CB path calls
+            # select_boundary_terminal_nodes directly and raises instead.
+            allow_extreme_fallback=True,
         )
         selected = start_nodes if node_role == "input" else out_nodes
     elif method_norm == "degree_1_from_starting":
