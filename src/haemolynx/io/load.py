@@ -730,12 +730,11 @@ def load_binary_mask_and_voxel_size(
     consumer (dilation, volume filters, terminal assignment, napari display).
 
     The path may point at a file inside a sibling zip archive; see
-    :func:`resolve_image_path_with_optional_zip`. ``use_memmap`` governs how
-    the file is *read* and, via :func:`_to_binary_volume_for_skeletonization`,
-    how it finds the mask's own foreground convention; the returned boolean
-    mask is always a fresh in-RAM array either way, since every branch's own
-    final voxel-by-voxel comparison already produces one regardless of where
-    the source pixels live.
+    :func:`resolve_image_path_with_optional_zip`. ``use_memmap`` reads the
+    file disk-backed and, via :func:`_to_binary_volume_for_skeletonization`,
+    writes the boolean mask a slice at a time into a new disk-backed array
+    in *memmap_directory*, which the caller releases; the mask is the same
+    either way.
     """
     path = resolve_image_path_with_optional_zip(Path(mask_path))
     image, voxel_size_xyz = load_volume_and_voxel_size(
