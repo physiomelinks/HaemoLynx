@@ -185,8 +185,39 @@ def calculate_phase_separation_hematocrit(
     return float(h_out1), float(h_out2)
 
 
+def _edge_diameter_um(data, default_diameter_um=None):
+    """The edge's measured diameter, or the caller's deliberate stand-in.
+
+    This used to substitute 5.0 um silently whenever the attribute was absent or
+    non-positive - open item 9 in ``cb_modelling_reference.md``. Resistance goes as the
+    fourth power of diameter, so a cached graph carrying no calibre solved at a uniform
+    5 um for every edge and produced a flow field that was arithmetically fine and meant
+    nothing. ``map_vessels_to_grid`` and ``edge_transit_times`` already raised on exactly
+    this condition; this function makes the third site agree with them.
+    """
+    diameter = data.get("assigned_diameter_um", data.get("fwhm_diameter_um"))
+    if diameter is not None and float(diameter) > 0:
+        return float(diameter)
+    return None if default_diameter_um is None else float(default_diameter_um)
+
+
+def _require_diameters(G, default_diameter_um=None):
+    """Raise unless every edge carries a usable diameter."""
+    missing = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
+               if _edge_diameter_um(d, default_diameter_um) is None]
+    if missing:
+        shown = ", ".join(str(e) for e in missing[:3])
+        raise ValueError(
+            f"{len(missing)} of {G.number_of_edges()} edges have no usable diameter "
+            f"(absent or non-positive), for example {shown}. Resistance goes as the fourth "
+            f"power of diameter, so a substituted calibre produces a fabricated flow field "
+            f"rather than an approximate one. Assign diameters first, or pass "
+            f"default_diameter_um to model the unmeasured edges at a stated calibre."
+        )
+
+
 def feeding_vessel_diameter(
-    DAG: nx.MultiDiGraph, node, d1: float, d2: float
+    DAG: nx.MultiDiGraph, node, d1: float, d2: float, default_diameter_um=None
 ) -> tuple[float, bool]:
     """
     The feeding diameter D_F at a diverging bifurcation, for the phase separation law.
@@ -200,15 +231,10 @@ def feeding_vessel_diameter(
     for _, _, data in DAG.in_edges(node, data=True):
         q = data["flow_abs"]
         q_sum += q
-        qd_sum += q * _edge_diameter(data)
+        qd_sum += q * _edge_diameter_um(data, default_diameter_um)
     if q_sum > 0.0:
         return qd_sum / q_sum, False
     return max(d1, d2), True
-
-
-def _edge_diameter(data: dict) -> float:
-    """The edge diameter the solver uses, in micrometers, with the 5 um fallback."""
-    return data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
 
 
 def _upstream_viscosity(diameter_um: float) -> float:
@@ -257,6 +283,7 @@ def solve_coupled_flow_and_hematocrit(
     systemic_hematocrit: float = 0.45,
     max_iterations: int = 15,
     tolerance: float = 1e-4,
+    default_diameter_um: float | None = None,
     relaxation: float = 0.5,
 ) -> tuple[nx.MultiGraph, np.ndarray]:
     """
@@ -271,25 +298,33 @@ def solve_coupled_flow_and_hematocrit(
        resistances from it.
     6. Repeat until flow changes fall below tolerance.
 
+    Why the loop stopped is written to ``G.graph``, since a cycle or iteration-limit exit
+    otherwise returns a graph indistinguishable from a converged one:
+
+    - ``rheology_stop_reason``: ``"converged"``, ``"flow_cycle"`` (the flow directions could
+      not be sorted topologically) or ``"max_iterations"``.
+    - ``rheology_iterations``: number of pressure solves performed.
+    - ``rheology_max_flow_change``: last max absolute change in edge flow between passes, or
+      None if fewer than two passes ran.
+
     ``relaxation`` is the step taken towards the new hematocrit each pass,
     H = H_old + relaxation * (H_skim - H_old). At 1.0 (undamped) a 15 -> 10/5 um Y-junction
     under the in vivo viscosity law flips between two states every pass and never converges;
-    0.5 settles it. A warning is logged if max_iterations runs out before convergence.
+    0.5 settles it.
     """
     if not 0.0 < relaxation <= 1.0:
         raise ValueError(f"relaxation must be in (0, 1], got {relaxation}.")
     from .resistance import build_conductance_matrix_from_graph, calc_laplacian_from_conductance_matrix, _solve_system_smart
     import logging
     logger = logging.getLogger(__name__)
+    _require_diameters(G, default_diameter_um)
     
     # Initialization: Assign baseline hematocrit and viscosity. The arriving resistance is
     # recorded before it is touched; overwriting it here used to discard any upstream
     # sphincter or pericyte geometry and count viscosity twice in the update below.
     for u, v, key, data in G.edges(keys=True, data=True):
-        diameter = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
-        if diameter is None or diameter <= 0:
-            diameter = 5.0
-
+        diameter = _edge_diameter_um(data, default_diameter_um)
+            
         data["hematocrit"] = systemic_hematocrit
         mu_app = calculate_pries_secomb_viscosity(diameter, systemic_hematocrit)
         data["viscosity"] = mu_app
@@ -301,7 +336,7 @@ def solve_coupled_flow_and_hematocrit(
     max_flow_diff = float('inf')
     previous_flows = {}
     final_pressure = None
-    converged = False
+    stop_reason = "max_iterations"
     
     while iteration < max_iterations and max_flow_diff > tolerance:
         logger.info(f"--- Flow-Hematocrit Iteration {iteration+1} ---")
@@ -368,7 +403,7 @@ def solve_coupled_flow_and_hematocrit(
             logger.info(f"  Max Flow Diff: {max_flow_diff:.6e}")
             if max_flow_diff <= tolerance:
                 logger.info("  -> Converged!")
-                converged = True
+                stop_reason = "converged"
                 break
                 
         previous_flows = current_flows.copy()
@@ -378,6 +413,7 @@ def solve_coupled_flow_and_hematocrit(
             topological_order = list(nx.topological_sort(DAG))
         except nx.NetworkXUnfeasible:
             logger.warning("  Cycle detected in flow directions! Cannot topologically sort. Breaking iteration.")
+            stop_reason = "flow_cycle"
             break
             
         previous_hematocrit = {
@@ -419,11 +455,13 @@ def solve_coupled_flow_and_hematocrit(
                 # Bifurcation -> Plasma Skimming
                 e1, e2 = out_edges[0], out_edges[1]
                 q1 = e1[3]["flow_abs"]
-                d1 = e1[3].get("assigned_diameter_um", e1[3].get("fwhm_diameter_um", 5.0))
+                d1 = _edge_diameter_um(e1[3], default_diameter_um)
                 q2 = e2[3]["flow_abs"]
-                d2 = e2[3].get("assigned_diameter_um", e2[3].get("fwhm_diameter_um", 5.0))
+                d2 = _edge_diameter_um(e2[3], default_diameter_um)
                 
-                d_parent, fell_back = feeding_vessel_diameter(DAG, node, d1, d2)
+                d_parent, fell_back = feeding_vessel_diameter(
+                    DAG, node, d1, d2, default_diameter_um
+                )
                 n_parent_fallbacks += fell_back
                 h1, h2 = calculate_phase_separation_hematocrit(
                     q1 + q2, h_mix, q1, d1, q2, d2, d_parent
@@ -459,9 +497,7 @@ def solve_coupled_flow_and_hematocrit(
             h_old = previous_hematocrit[(u, v, key)]
             h = h_old + relaxation * (data["hematocrit"] - h_old)
             data["hematocrit"] = h
-            d = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
-            if d is None or d <= 0:
-                d = 5.0
+            d = _edge_diameter_um(data, default_diameter_um)
                 
             mu_app = calculate_pries_secomb_viscosity(d, h)
             data["viscosity"] = mu_app
@@ -480,10 +516,12 @@ def solve_coupled_flow_and_hematocrit(
             
         iteration += 1
 
-    if not converged and iteration >= max_iterations:
-        logger.warning(
-            f"Flow-hematocrit coupling did not converge in {max_iterations} iterations "
-            f"(last max flow change {max_flow_diff:.3e}, tolerance {tolerance:.1e})."
-        )
+    # A break leaves the pass that triggered it uncounted.
+    iterations = iteration if stop_reason == "max_iterations" else iteration + 1
+    if stop_reason == "max_iterations":
+        logger.warning(f"  Rheology did not converge within {max_iterations} iterations.")
+    G.graph["rheology_stop_reason"] = stop_reason
+    G.graph["rheology_iterations"] = iterations
+    G.graph["rheology_max_flow_change"] = None if np.isinf(max_flow_diff) else float(max_flow_diff)
 
     return G, final_pressure

@@ -1,0 +1,109 @@
+flowchart TD
+
+  START(["Converged flows Q on every edge"])
+
+  D0{"do_perfusion_modeling<br/>enabled?"}
+  SKIP(["skip tissue transport"])
+
+  GR["build PerfusionGrid<br/>10 x 10 x 10 um cells over the node bounding box"]
+
+  subgraph M1["map_vessels_to_grid"]
+    L1{{"for each edge in G"}}
+    M2{{"for each centreline voxel of the edge"}}
+    M3["locate the grid cell containing the voxel"]
+    M4["E28 · S = 2 pi r l_cell<br/>accumulate wall surface area in that cell"]
+    M5["E29 · f_l = l_cell / l_total"]
+    L1 --> M2 --> M3 --> M4
+    M4 -. "next voxel" .-> M2
+    M2 --> M5
+    M5 -. "next edge" .-> L1
+  end
+
+  subgraph A1["build_adr_matrix"]
+    L2{{"for each grid cell holding vessels"}}
+    A2["E30 · q_total for the cell"]
+    L3{{"for each vessel in the cell"}}
+    A3["E31 → E32 → E33<br/>arterial blood oxygen content"]
+    A4["E34 · accumulate s_in"]
+    A5["E35 · Dz, Dy, Dx face conductances"]
+    A6["E36 · assemble seven-point diffusion operator<br/>add 1e-12 to the diagonal"]
+    L2 --> A2 --> L3 --> A3 --> A4
+    A4 -. "next vessel" .-> L3
+    L3 -. "next cell" .-> L2
+    L2 --> A5 --> A6
+  end
+
+  D1{"use_multi_species_model<br/>enabled?"}
+  ALT(["instant-equilibrium or endothelial-barrier solver<br/>not taken by default"])
+
+  subgraph S1["solve_multi_species_perfusion · setup"]
+    S2["initialise PO2 = 0, PCO2 = 40, pH = 7.4"]
+    S3["build edge-to-cell map and per-cell q_total"]
+    S4["orient edges into a DAG from flow sign<br/>topologically sort the nodes"]
+    S5["E42 · build A_O2 and A_CO2 diffusion matrices"]
+    S6["E43 · add Lambda pseudo-washout to both diagonals"]
+    S7["build Jacobi preconditioners"]
+    S2 --> S3 --> S4 --> S5 --> S6 --> S7
+  end
+
+  IT["iteration = 0"]
+  D2{"iteration < 50<br/>and change > 1e-4?"}
+
+  subgraph P1["Picard iteration body"]
+    P2["clamp PO2 and PCO2 at zero"]
+    P3["E44 · M_O2 metabolic consumption<br/>E45 · M_CO2 = M_O2 x RQ"]
+    P4["E41 · pH from PCO2"]
+    P5["seed inlet nodes with arterial content<br/>E31 → E33 and E37 → E40"]
+
+    L4{{"for each node in topological order"}}
+    P6["E46 · C_mix flow-weighted inlet mixing"]
+    L5{{"for each out-edge of the node"}}
+    P7["E47 · invert C_mix to PO2 and PCO2<br/>Brent root find"]
+    L6{{"for each grid cell the edge passes through"}}
+    P8["E48 · phi_O2 transmural flux<br/>E49 · phi_CO2 transmural flux"]
+    P9["E50 · deplete blood content by flux / Q"]
+    P10["E47 again · re-invert using the local tissue pH"]
+    P11["accumulate transmural flux into the cell"]
+    P12["hand the outgoing content to the downstream node"]
+
+    P13["E51 · b_O2 right-hand side<br/>E52 · b_CO2 right-hand side"]
+    P14["E53 · conjugate gradient solve for both species"]
+    P15["clamp both fields at zero"]
+    P16["E54 · relative change in PO2 and PCO2"]
+
+    P2 --> P3 --> P4 --> P5 --> L4
+    L4 --> P6 --> L5
+    L5 --> P7 --> L6
+    L6 --> P8 --> P9 --> P10 --> P11
+    P11 -. "next cell" .-> L6
+    L6 --> P12
+    P12 -. "next out-edge" .-> L5
+    L5 -. "next node" .-> L4
+    L4 --> P13 --> P14 --> P15 --> P16
+  end
+
+  FIN["E55 · final tissue pH from converged PCO2"]
+  EXP["export PO2, PCO2 and pH fields to VTI"]
+  END(["Tissue PO2, PCO2 and pH fields"])
+
+  START --> D0
+  D0 -- no --> SKIP
+  D0 -- yes --> GR
+  GR --> L1
+  M5 --> L2
+  A6 --> D1
+  D1 -- no --> ALT
+  D1 -- yes --> S2
+  S7 --> IT
+  IT --> D2
+  D2 -- yes --> P2
+  P16 -. "iteration = iteration + 1" .-> D2
+  D2 -- no --> FIN
+  FIN --> EXP --> END
+
+  classDef deadend fill:#fdf0dc,stroke:#d99b3d,color:#6b4a12;
+  classDef unused fill:#f2f2f2,stroke:#b0b0b0,stroke-dasharray:5 4,color:#7a7a7a;
+  classDef loop fill:#eef4ff,stroke:#7c9fd6,color:#24456f;
+  class A2,A4,A6 deadend;
+  class ALT,SKIP unused;
+  class L1,L2,L3,L4,L5,L6,M2 loop;

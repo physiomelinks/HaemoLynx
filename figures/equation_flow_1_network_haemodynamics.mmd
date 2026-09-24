@@ -1,0 +1,98 @@
+flowchart TD
+
+  R0(["Per-edge vessel radius r, diameter D, segment length L"])
+
+  subgraph S1["Poiseuille resistance assignment · E2 not taken on this path"]
+    E1["E1 · mu_old = 1 / D^1.647"]
+    E2["E2 · R = 128 mu_old L / pi D^4"]
+    E1 --> E2
+  end
+
+  VTKR["VTK cell_data resistance"]
+
+  subgraph S3["Coupled flow-haematocrit solver"]
+    E3["E3 · mu_45 in vivo"]
+    E4["E4 · mu_45 in vitro"]
+    E5["E5 · C of D shape parameter"]
+    E6["E6 · Phi haematocrit term"]
+    E7["E7 · W cell-depleted wall layer"]
+    E8["E8 · mu_rel in vivo"]
+    E9["E9 · mu_rel in vitro"]
+    E10["E10 · mu_app = mu_rel x mu_plasma"]
+    E11["E11 · R = R0 mu_app(D, 0.45) / mu_old<br/>initialisation, R0 saved on entry"]
+    E12["E12 · C_ij = 1 / R_ij"]
+    E13["E13 · Laplacian"]
+    E14["E14 · Luu pu = -Luk pk"]
+    E15["E15 · Q_ij = dp / R_ij"]
+    E16["E16 · A bifurcation asymmetry"]
+    E17["E17 · B logistic steepness"]
+    E18["E18 · logit of FQe1"]
+    E19["E19 · FQe1 red cell flux fraction"]
+    E20["E20 · H1 and H2 daughter haematocrit"]
+    RLX["under-relaxation<br/>H = H_old + 0.5 (H_new - H_old)"]
+    DF["D_F · feeding-vessel diameter<br/>in-edge, flow-weighted mean at a merge,<br/>larger daughter if none"]
+    E21["E21 · R = R0 mu_app(D, H) / mu_old<br/>rescaled by the new haematocrit"]
+    E22["E22 · tau_w = 32 mu_app Q / pi D^3"]
+
+    E3 --> E8
+    E4 --> E9
+    E5 --> E6
+    E6 --> E8
+    E6 --> E9
+    E7 --> E8
+    E8 --> E10
+    E9 --> E10
+    E10 --> E11
+    E11 --> E12
+    E12 --> E13 --> E14 --> E15
+    E15 --> E16
+    E15 --> E18
+    E15 --> DF
+    DF --> E16
+    DF --> E17
+    DF --> E18
+    E16 --> E18
+    E17 --> E18
+    E18 --> E19 --> E20
+    E20 --> RLX --> E10
+    E10 --> E21
+    E10 --> E22
+    E15 --> E22
+    E21 -. "x15 or until tolerance 1e-4" .-> E12
+  end
+
+  subgraph S4["Final conductance, effective resistance and flow solve"]
+    E23["E23 · C_ij = 1 / R_ij"]
+    E24["E24 · Laplacian"]
+    E25["E25 · R_eff via Laplacian pseudoinverse"]
+    E26["E26 · Luu pu = -Luk pk"]
+    E27["E27 · Q_ij = dp / R_ij"]
+    E23 --> E24
+    E24 --> E25
+    E24 --> E26 --> E27
+  end
+
+  STATS["resistance-weighted betweenness<br/>and communities · reported"]
+  OUT(["Q, p, tau_w per edge<br/>to tissue transport"])
+
+  R0 --> E1
+  R0 --> DF
+  E1 -. "R0 = 128 mu_old L / pi D^4 fallback,<br/>mu_old cancels" .-> E11
+  E1 -. "mu_old" .-> E21
+  R0 --> E3
+  R0 --> E5
+  R0 --> E7
+  R0 --> E11
+  R0 --> E16
+  R0 --> E17
+  R0 --> E22
+  E21 --> VTKR
+  E21 --> STATS
+  E21 --> E23
+  E27 --> OUT
+  E22 --> OUT
+
+  classDef unused fill:#f2f2f2,stroke:#b0b0b0,stroke-dasharray:5 4,color:#7a7a7a;
+  classDef deadend fill:#fdf0dc,stroke:#d99b3d,color:#6b4a12;
+  class E2,E4,E9 unused;
+  class E25 deadend;

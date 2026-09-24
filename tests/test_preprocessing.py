@@ -184,10 +184,12 @@ def test_closing_does_not_delete_vessels_at_the_domain_boundary():
 def test_closing_twice_is_a_no_op():
     """Closing is idempotent for a fixed structuring element.
 
-    The pipeline calls close_binary_mask twice in succession, at closing_radius then at
-    bridge_gap_size. The second call has never done anything - which is worth knowing before
-    anyone tunes bridge_gap_size expecting it to bridge wider gaps. Radius is not additive
-    across calls; one call at radius 2 is a different, larger operation.
+    The CB pipeline used to call close_binary_mask twice in succession, at closing_radius
+    and then at bridge_gap_size. The second call could never do anything at equal radii, and
+    at unequal ones it was a second, differently sized closing wearing the name of a bridge.
+    bridge_gap_size has been removed from SkeletonConfig; this test is what stops a second
+    closing parameter being reintroduced on the belief that radii accumulate. They do not:
+    one call at radius 2 is a different, larger operation than two calls at radius 1.
     """
     from ImageLynx.preprocessing.skeleton import close_binary_mask
 

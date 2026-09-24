@@ -137,8 +137,15 @@ class PreprocessingConfig:
 @dataclass
 class SkeletonConfig:
     """Configuration for 3D skeletonization, artifact pruning, and topological cleanup."""
+    # One closing parameter, not two. closing_radius and bridge_gap_size both called
+    # close_binary_mask, one after the other, and closing is idempotent for a fixed
+    # structuring element - so the second call could never do anything at equal radii, and
+    # at unequal ones it was a second, differently sized closing masquerading as a "bridge".
+    # Radius is not additive across calls: set this to 2 rather than reaching for a
+    # second field. Mask gap repair is a closing and not the bridge_gaps dilation, which
+    # inflates every vessel unconditionally and biases the EDT calibre the wall is measured
+    # against - see close_binary_mask and section 2.4.
     closing_radius: int = 1
-    bridge_gap_size: int = 1
     min_branch_length: int = 3
     max_bridge_distance: int = 0
     component_connectivity: int = 3
@@ -837,13 +844,6 @@ def _preprocess_local_mask(raw_prob_map, entropy_map, pre_config, skel_config, g
 
     if skel_config.closing_radius > 0:
         binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.closing_radius)
-    if skel_config.bridge_gap_size > 0:
-        # Was bridge_gaps(), which is a plain dilation: it never erodes back, so every vessel
-        # gained bridge_gap_size voxels of radius unconditionally and anything within twice
-        # that fused. On a thick mask a closing bridges the same gaps without expanding
-        # boundaries. (It is not a substitute on a 1-voxel skeleton, where the erosion step
-        # would remove the bridge again - see bridge_gaps' docstring.)
-        binary = preprocessing.skeleton.close_binary_mask(binary, radius=skel_config.bridge_gap_size)
     if skel_config.prune_mask_before > 0:
         binary = preprocessing.skeleton.keep_largest_mask_components(
             binary, n_components=skel_config.prune_mask_before, connectivity=skel_config.component_connectivity
@@ -987,27 +987,11 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
     if pipeline_config.enable_diagnostic_plots:
         visualization.visualize_edges_and_nodes(image, G, label_nodes=True, save_path=pipeline_config.plot_dir / "prune_vascular_stubs.png")
     
-    # --- Plan A & B: Core Dead-End Resolution ---
-    if skel_config.core_dead_end_resolution_mode in ["eradicate", "stitch"]:
-        voxel_size_xyz = tuple(float(v) for v in current_spacing)
-        stats = graph.resolve_core_dead_ends(
-            G,
-            image_shape=image.shape,
-            voxel_size_xyz=voxel_size_xyz,
-            mode=skel_config.core_dead_end_resolution_mode,
-            safe_zone_percent=skel_config.core_safe_zone_percent,
-            max_stitch_distance_um=skel_config.core_stitch_max_distance_um,
-            max_degree=skel_config.core_stitch_max_degree
-        )
-        print(f"\n--- Core Dead-End Resolution [{skel_config.core_dead_end_resolution_mode.upper()} MODE] ---")
-        print(f"Initial edges: {stats.get('initial_edges', 0)}")
-        if stats.get('edges_added', 0) > 0:
-            print(f"Stitched edges added: {stats['edges_added']} ({stats['edges_added_pct']}%)")
-        if stats.get('edges_removed', 0) > 0:
-            print(f"Eradicated edges removed: {stats['edges_removed']} ({stats['edges_removed_pct']}%)")
-            if stats.get('fallback_eradicated', 0) > 0:
-                print(f" (Includes {stats['fallback_eradicated']} un-stitchable edges safely eradicated as fallback)")
-    # --------------------------------------------
+    # Core dead-end resolution is deliberately absent from this path. Both of its modes
+    # invent topology: `eradicate` deletes capillaries that are real but unresolved, and
+    # `stitch` fabricates connections that were never imaged. About 86% of degree-1 nodes
+    # in these graphs are interior, so either mode acts on most of the network. The
+    # operator remains in ImageLynx.graph.prune for resistance_network_pipeline.py.
     
     # Smooth the physical 3D paths (voxels) of all edges using B-Splines to ensure realistic biological curvature
     print("Smoothing all edge centerlines in parallel using Joblib and B-Splines...")
@@ -1189,24 +1173,31 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             constriction_spacing=100.0, # Not used in sphincter mode
             mode=hemo_config.constriction_mode
         )
-        if hemo_config.constrict_at_pericytes:
-            poiseuille_model.set_poiseuille_resistances_with_constrictions(
-                G,
-                hemo_config.diameter_by_branch_order,
-                radius_assignment_mode=hemo_config.radius_assignment_mode,
-                constant_radius_um=hemo_config.constant_radius_um
-            )
-        else:
-            # For non-constricted mode, extract d1 from the config dicts
+        # No constriction branch. HaemodynamicsConfig.__post_init__ raises when
+        # constrict_at_pericytes is True, so the sphincter path was already unreachable from
+        # here: its sites come from a hard-coded topological rule rather than from imaging,
+        # and the ratio multiplies whatever diameter was measured, so a 0.5 capillary ratio
+        # is a 16x local resistance error on a real vessel. The capability stays on
+        # PoiseuilleModel for the pipelines that own it.
+        if True:
+            # Extract d1 from the config dicts
             simple_diameters = {
                 k: (v["d1"] if isinstance(v, dict) else v)
                 for k, v in hemo_config.diameter_by_branch_order.items()
             }
+            # assign_resistance=False: this call is here for assigned_diameter_um and the
+            # diameter-provenance guard, not for a resistance. solve_coupled_flow_and_hematocrit
+            # recomputes every resistance from Pries-Secomb at systemic haematocrit before its
+            # first solve, so the power-law value mu = 1 / d^1.647 was written and then
+            # overwritten without being read. It broke no circular dependency either: the
+            # solver breaks that by assuming a haematocrit, which is what lets it use a real
+            # viscosity relation immediately.
             poiseuille_model.set_poiseuille_resistances(
                 G,
                 simple_diameters,
                 radius_assignment_mode=hemo_config.radius_assignment_mode,
-                constant_radius_um=hemo_config.constant_radius_um
+                constant_radius_um=hemo_config.constant_radius_um,
+                assign_resistance=False,
             )
             
     return starting_nodes, output_nodes, resistance_node_pair
@@ -1247,7 +1238,76 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             show_nodes=False,
         )
 
-    # Convert the networkx graph into a massive symmetric Conductance Matrix representing flow ease between all nodes
+    # The conductance matrix and the two-point effective resistance are both built *after*
+    # the rheology solve, further down. They used to be built here, before it, which meant
+    # the reported effective resistance came from set_poiseuille_resistances' power law
+    # mu = 1 / d^1.647 - not a viscosity in cP, and carrying a d^-5.647 dependence rather
+    # than Poiseuille's d^-4. Every flow and pressure in the model comes from the
+    # Pries-Secomb resistances, so reporting an effective resistance from the other set put
+    # two different viscosity models behind two numbers in the same results table.
+
+    # Statistics and per-edge morphometry are reported *after* the rheology solve, further
+    # down. compute_comprehensive_vessel_statistics weights betweenness and community
+    # detection by the edge "resistance" attribute, and running it here weighted them by
+    # set_poiseuille_resistances' power law mu = 1 / d^1.647 - a d^-5.647 dependence rather
+    # than the d^-4 mu(d) the solved network actually has. Per-edge morphometry is purely
+    # geometric and unaffected either way; it moves with the statistics so the reported
+    # block stays in one place.
+
+    # Inject boundary pressures and solve the system of linear equations to find pressure at every node and flow in every edge
+    print("Running Iterative Flow-Hematocrit solver (Phase Separation and Fåhræus–Lindqvist effect)...")
+    import ImageLynx.haemodynamics.rheology as rheo
+    G, final_pressure = rheo.solve_coupled_flow_and_hematocrit(
+        G,
+        starting_nodes,
+        output_nodes,
+        hemo_config.input_p_bc,
+        hemo_config.output_p_bc,
+        systemic_hematocrit=perf_config.systemic_hematocrit,
+        max_iterations=hemo_config.rheology_max_iterations,
+        tolerance=hemo_config.rheology_tolerance
+    )
+    rheology_status = {
+        key: G.graph[key]
+        for key in ("rheology_stop_reason", "rheology_iterations", "rheology_max_flow_change")
+    }
+    if rheology_status["rheology_stop_reason"] != "converged":
+        print(
+            f"\nWARNING: rheology solve stopped on '{rheology_status['rheology_stop_reason']}' "
+            f"after {rheology_status['rheology_iterations']} iterations, not on convergence. "
+            "Flows, haematocrit and wall shear stress below come from an unconverged solve."
+        )
+
+    node_positions = nx.get_node_attributes(G, "pos")
+    # Calculate physical and topological statistics (e.g. total length, mean tortuosity, degree distribution)
+    stats = statistics.compute_comprehensive_vessel_statistics(
+        G,
+        node_positions=node_positions,
+        image_dimensions=image.shape,
+    )
+    stats.update(rheology_status)
+
+    print("\n=== Statistics ===")
+    for key, value in stats.items():
+        print(f"  {key}: {value}")
+
+    # Per-edge morphometry (#98 Tier 1 item 13). Sections 1.2 and 1.4 are distributional
+    # claims, and the summary above reduces each to a single mean. With n = 3 specimens per
+    # group the per-edge table is the only place with enough data to describe a distribution
+    # at all, and every provenance tag has to travel with its measurement - the diameter,
+    # smoothing and reconnection columns are each inhomogeneous in ways that matter.
+    per_edge = statistics.export_per_edge_morphometry(G, node_positions=node_positions)
+    per_edge_path = statistics.write_per_edge_morphometry_csv(
+        per_edge, pipeline_config.vtk_output_prefix.parent / "per_edge_morphometry.csv")
+    print(f"  Per-edge morphometry: {len(per_edge)} edges -> {per_edge_path}")
+    for column in ("diameter_provenance", "centreline_smoothing"):
+        counts = {}
+        for row in per_edge:
+            counts[row[column]] = counts.get(row[column], 0) + 1
+        print(f"    {column}: {counts}")
+
+    # We still need to export the final flow data to VTK
+    # Let's build the conductance matrix now that the iterative solver has settled all the resistances
     conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
 
@@ -1272,50 +1332,6 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
                 "are not both present in the graph."
             )
 
-    node_positions = nx.get_node_attributes(G, "pos")
-    # Calculate physical and topological statistics (e.g. total length, mean tortuosity, degree distribution)
-    stats = statistics.compute_comprehensive_vessel_statistics(
-        G,
-        node_positions=node_positions,
-        image_dimensions=image.shape,
-    )
-
-    print("\n=== Statistics ===")
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
-
-    # Per-edge morphometry (#98 Tier 1 item 13). Sections 1.2 and 1.4 are distributional
-    # claims, and the summary above reduces each to a single mean. With n = 3 specimens per
-    # group the per-edge table is the only place with enough data to describe a distribution
-    # at all, and every provenance tag has to travel with its measurement - the diameter,
-    # smoothing and reconnection columns are each inhomogeneous in ways that matter.
-    per_edge = statistics.export_per_edge_morphometry(G, node_positions=node_positions)
-    per_edge_path = statistics.write_per_edge_morphometry_csv(
-        per_edge, pipeline_config.vtk_output_prefix.parent / "per_edge_morphometry.csv")
-    print(f"  Per-edge morphometry: {len(per_edge)} edges -> {per_edge_path}")
-    for column in ("diameter_provenance", "centreline_smoothing"):
-        counts = {}
-        for row in per_edge:
-            counts[row[column]] = counts.get(row[column], 0) + 1
-        print(f"    {column}: {counts}")
-
-    # Inject boundary pressures and solve the system of linear equations to find pressure at every node and flow in every edge
-    print("Running Iterative Flow-Hematocrit solver (Phase Separation and Fåhræus–Lindqvist effect)...")
-    import ImageLynx.haemodynamics.rheology as rheo
-    G, final_pressure = rheo.solve_coupled_flow_and_hematocrit(
-        G,
-        starting_nodes,
-        output_nodes,
-        hemo_config.input_p_bc,
-        hemo_config.output_p_bc,
-        systemic_hematocrit=perf_config.systemic_hematocrit,
-        max_iterations=hemo_config.rheology_max_iterations,
-        tolerance=hemo_config.rheology_tolerance
-    )
-    
-    # We still need to export the final flow data to VTK
-    # Let's rebuild the final conductance matrix now that the iterative solver updated all the resistances
-    conductance, _ = haemodynamics.build_conductance_matrix_from_graph(G)
     flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
         conductance,
         node_list,
@@ -1336,17 +1352,32 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     hematocrit_array = np.full(vessels.n_cells, 0.45, dtype=float)
     viscosity_array = np.full(vessels.n_cells, 1.2, dtype=float)
     wss_array = np.zeros(vessels.n_cells, dtype=float)
-    
+    # graph_to_vtk ran before the rheology solve, so the resistance array it wrote holds
+    # set_poiseuille_resistances' power-law values while the viscosity array below holds the
+    # Pries-Secomb ones. The two did not satisfy R = 128 mu L / (pi d^4) together, and a
+    # reader of the file had no way to tell. Refreshed here alongside the others. NaN is the
+    # missing-value convention graph_to_vtk itself uses.
+    resistance_array = np.full(vessels.n_cells, np.nan, dtype=float)
+
     for ii in range(vessels.n_cells):
         u, v, k = int(edge_u[ii]), int(edge_v[ii]), int(edge_k[ii])
         if G.has_edge(u, v, k):
             hematocrit_array[ii] = G[u][v][k].get("hematocrit", 0.45)
             viscosity_array[ii] = G[u][v][k].get("viscosity", 1.2)
             wss_array[ii] = G[u][v][k].get("wall_shear_stress_pa", 0.0)
-            
+            r = G[u][v][k].get("resistance")
+            resistance_array[ii] = float(r) if r is not None else np.nan
+
     vessels.cell_data["hematocrit"] = hematocrit_array
     vessels.cell_data["viscosity"] = viscosity_array
     vessels.cell_data["wall_shear_stress_pa"] = wss_array
+    vessels.cell_data["resistance"] = resistance_array
+    # Saved with the mesh so an unconverged solve can't be mistaken for a converged one later.
+    vessels.field_data["rheology_stop_reason"] = np.array([rheology_status["rheology_stop_reason"]])
+    vessels.field_data["rheology_iterations"] = np.array([rheology_status["rheology_iterations"]])
+    max_flow_change = rheology_status["rheology_max_flow_change"]
+    vessels.field_data["rheology_max_flow_change"] = np.array(
+        [np.nan if max_flow_change is None else max_flow_change])
     vessels.save(vtk_export['vessels_path'])
     
     print("Flow through the network solved and VTK updated with Rheology fields.")
@@ -1923,7 +1954,6 @@ if __name__ == "__main__":
     parser.add_argument("--optimize-skeleton", type=int, default=0, help="Run Bayesian optimization (Optuna) for N trials before continuing.")
     parser.add_argument("--optimize-preprocessing", type=int, default=0, help="Run Bayesian optimization for preprocessing filters for N trials.")
     parser.add_argument("--optimize-patience", type=int, default=None, help="Override the EarlyStoppingCallback patience limit.")
-    parser.add_argument("--core-resolution", type=str, choices=["eradicate", "stitch", "none"], default=None, help="Mode for resolving internal core dead-ends.")
     parser.add_argument("--boundary-mode", type=str, choices=["caged", "universal_sink", "robin_resistance"], default=None, help="Mode for handling X/Y boundary permeability.")
     parser.add_argument("--radius-mode", type=str, choices=["fwhm_radius", "edt_radius", "constant_radius"], default=None, help="Radius assignment mode for physical flow.")
     parser.add_argument("--voxel-size-um", type=float, nargs=3, metavar=("Z", "Y", "X"), default=None,
@@ -2054,8 +2084,6 @@ if __name__ == "__main__":
     if args.sub_volume is not None:
         skel_config.sub_volume_percentage = args.sub_volume
         
-    if args.core_resolution is not None:
-        skel_config.core_dead_end_resolution_mode = args.core_resolution
         
     if args.boundary_mode is not None:
         graph_config.boundary_permeability_mode = args.boundary_mode

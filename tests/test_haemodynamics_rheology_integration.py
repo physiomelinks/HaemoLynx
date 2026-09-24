@@ -53,23 +53,29 @@ def test_coupled_solver_convergence():
 
     # The direction of skimming is *not* asserted here, and that is deliberate: it depends on
     # the viscosity law through the flow split, and the split is what the skimming model keys
-    # on. See test_skimming_direction_depends_on_the_flow_split below.
+    # on. See test_skimming_follows_the_flow_fraction_not_the_velocity below.
 
 
-def test_skimming_direction_depends_on_the_flow_split():
-    """The skimming model favours the faster branch, and here that is the wider one.
+def test_skimming_follows_the_flow_fraction_not_the_velocity():
+    """Red cells concentrate in the branch taking the larger share of *flow*.
 
-    With the phase separation law scaled by the feeding diameter, as Pries et al. pose it,
-    this Y-junction sends most flow and most red cells down the 10 um branch under both
-    viscosity relations: 93.1% of flow in vitro and 92.9% in vivo, with the 5 um branch left
-    at 0.139 and 0.145 haematocrit. Both match an independent fixed-point calculation with
-    plain Poiseuille resistance at the apparent viscosity.
+    That is the invariant the implemented model can actually guarantee.
+    ``calculate_phase_separation_hematocrit`` is posed in fractional blood flow:
 
-    An earlier version scaled the law by one daughter's diameter with a fixed X0 = 0.05. Under
-    the in vivo relation that evened the split to 64/36, made the narrow branch the faster
-    one, and concentrated red cells there. That inversion came from the misscaled law and is
-    gone. Without haematocrit under-relaxation the in vivo case never converges: it flips
-    between two states every pass.
+        fq1 = q_out1 / q_in
+        logit_fq = log((fq1 - x0) / (1 - fq1 - x0))
+
+    Velocity appears nowhere in it. This test previously asserted that red cells follow the
+    *faster* branch, which held only because the flow split happened to put the faster branch
+    and the larger flow fraction on the same side.
+
+    It then recorded an in vivo split of 72/28 with the narrow branch the faster one. That
+    was not a converged answer: undamped, the in vivo case flips every pass between two
+    states (72/28 and 97/3), and 72/28 is the one an even iteration count stops on. With
+    haematocrit under-relaxation it converges to 92.9/7.1 in vivo and 93.1/6.9 in vitro,
+    with the 5 um branch at H = 0.145 and 0.139. Both match an independent fixed-point
+    calculation with plain Poiseuille resistance at the apparent viscosity, and in both the
+    wide branch is also the faster one.
     """
     import ImageLynx.haemodynamics.rheology as rh
 
@@ -97,13 +103,20 @@ def test_skimming_direction_depends_on_the_flow_split():
         rh.calculate_pries_secomb_viscosity = original
 
     for law, r in results.items():
-        faster_is_wide = r["v_wide"] > r["v_narrow"]
+        wide_takes_more_flow = r["share_wide"] > 0.5
         richer_is_wide = r["h_wide"] > r["h_narrow"]
-        assert faster_is_wide == richer_is_wide, (
-            f"{law}: red cells did not follow the faster branch ({r})")
+        assert wide_takes_more_flow == richer_is_wide, (
+            f"{law}: red cells did not follow the larger flow fraction ({r})")
+
+
+    # The converged fixed point, from an independent calculation (see the docstring).
+    expected = {"in_vitro": (0.9309, 0.1391), "in_vivo": (0.9290, 0.1451)}
+    for law, (share_wide, h_narrow) in expected.items():
+        r = results[law]
+        assert r["share_wide"] == pytest.approx(share_wide, abs=5e-4), f"{law}: {r}"
+        assert r["h_narrow"] == pytest.approx(h_narrow, abs=5e-4), f"{law}: {r}"
         assert r["v_wide"] > r["v_narrow"], f"{law}: the narrow branch was the faster ({r})"
         assert r["h_wide"] > 0.45 > r["h_narrow"], f"{law}: the narrow branch was not skimmed ({r})"
-
 
 
 def test_coupled_solver_dag_cycle_handling(caplog):
@@ -210,10 +223,599 @@ def test_carotid_pipeline_end_to_end_resistance_and_skimming():
         assert len(start) > 0
         assert len(end) > 0
         
-        # Ensure Phase 4 correctly attached the resistance from the Sphincter PoiseuilleModel
+        # Phase 4 attaches the measured diameter, not a resistance. It used to write the
+        # power-law resistance mu = 1/d^1.647 as well, which the rheology solver overwrote
+        # before anything read it; the CB driver now passes assign_resistance=False so that
+        # provisional value is never created. assigned_diameter_um is what the solver reads.
         for u, v, k, d in G.edges(keys=True, data=True):
-            assert "resistance" in d
-            assert d["resistance"] > 0
-            
+            assert "assigned_diameter_um" in d
+            assert d["assigned_diameter_um"] > 0
+            assert "resistance" not in d, (
+                "Phase 4 should no longer write a provisional power-law resistance on the "
+                "CB path; the rheology solver assigns it from Pries-Secomb"
+            )
+
+
     except Exception as e:
         pytest.fail(f"End-to-End Pipeline Phase 4 failed: {e}")
+
+
+def _bifurcation_graph():
+    """Inlet, one junction, two unequal daughters. Diameters span the capillary range."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=40.0, fwhm_diameter_um=12.0)
+    G.add_edge(1, 2, key=0, length=25.0, fwhm_diameter_um=8.0)
+    G.add_edge(1, 3, key=0, length=60.0, fwhm_diameter_um=4.0)
+    return G
+
+
+def test_resistance_matches_poiseuille_at_the_solved_viscosity():
+    """Every edge's resistance must be the straight-tube value at its own viscosity.
+
+    The update step used to rescale a stored baseline by ``mu_app / mu_old``, where
+    ``mu_old = 1 / d**1.647`` is the power law ``poiseuille.py`` assigns. That telescopes to
+    Poiseuille only if the baseline still carries ``mu_old``, and it does not: the solver
+    overwrites resistance with the Pries-Secomb value before the loop starts, so the
+    baseline was captured without it. Viscosity was therefore applied twice.
+    """
+    G_solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(),
+        starting_nodes=[0],
+        output_nodes=[2, 3],
+        input_p_bc=13.332e6,
+        output_p_bc=0.27e6,
+        systemic_hematocrit=0.45,
+        max_iterations=10,
+        tolerance=1e-4,
+    )
+
+    for u, v, key, data in G_solved.edges(keys=True, data=True):
+        d = data["fwhm_diameter_um"]
+        expected = (128.0 * data["viscosity"] * data["length"]) / (np.pi * d ** 4)
+        assert data["resistance"] == pytest.approx(expected, rel=1e-9), (
+            f"edge ({u}, {v}, {key}) at d={d} um carries "
+            f"{data['resistance']:.6g} against Poiseuille's {expected:.6g}"
+        )
+
+
+def test_resistance_is_not_inflated_by_the_power_law_viscosity():
+    """Guard the specific defect: the surviving factor was mu_PS(d, H) * d**1.647.
+
+    That factor is calibre-dependent, running roughly 200x at 3 um to 540x at 20 um, so it
+    distorted the distribution of flow and not merely its scale. Asserting the ratio is 1
+    rather than merely 'small' is what makes a partial reintroduction fail here.
+    """
+    G_solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(),
+        starting_nodes=[0],
+        output_nodes=[2, 3],
+        input_p_bc=13.332e6,
+        output_p_bc=0.27e6,
+        systemic_hematocrit=0.45,
+        max_iterations=10,
+        tolerance=1e-4,
+    )
+
+    for u, v, key, data in G_solved.edges(keys=True, data=True):
+        d = data["fwhm_diameter_um"]
+        poiseuille = (128.0 * data["viscosity"] * data["length"]) / (np.pi * d ** 4)
+        inflated = poiseuille * (data["viscosity"] * d ** 1.647)
+
+        assert data["resistance"] / poiseuille == pytest.approx(1.0, rel=1e-9)
+        assert data["resistance"] < inflated / 10.0, (
+            f"edge ({u}, {v}, {key}) resistance is within an order of magnitude of the "
+            f"double-applied value {inflated:.6g}"
+        )
+
+
+def test_the_update_step_agrees_with_the_initialisation():
+    """One iteration and many must give the same resistance where haematocrit is unchanged.
+
+    The inlet edge carries systemic haematocrit throughout, so its viscosity never changes.
+    Its resistance must therefore be identical however many passes the solver makes. A
+    mismatch means the initialisation and the in-loop update disagree on the formula, which
+    is how the double application went unnoticed.
+    """
+    common = dict(
+        starting_nodes=[0],
+        output_nodes=[2, 3],
+        input_p_bc=13.332e6,
+        output_p_bc=0.27e6,
+        systemic_hematocrit=0.45,
+        tolerance=1e-4,
+    )
+    one_pass, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=1, **common)
+    many_passes, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=10, **common)
+
+    assert one_pass[0][1][0]["hematocrit"] == pytest.approx(0.45, abs=1e-9)
+    assert many_passes[0][1][0]["hematocrit"] == pytest.approx(0.45, abs=1e-9)
+    assert many_passes[0][1][0]["resistance"] == pytest.approx(
+        one_pass[0][1][0]["resistance"], rel=1e-9)
+
+
+def _driver_call_lines(function_name, call_attrs):
+    """Line numbers of calls to ``call_attrs`` inside ``function_name`` of the CB driver."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
+    tree = ast.parse(source)
+    target = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    found = {name: [] for name in call_attrs}
+    for node in ast.walk(target):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in found:
+                found[node.func.attr].append(node.lineno)
+    return found
+
+
+def test_two_point_resistance_is_computed_after_the_rheology_solve():
+    """The reported effective resistance must come from the Pries-Secomb resistances.
+
+    It used to be computed before ``solve_coupled_flow_and_hematocrit`` ran, so it was built
+    from whatever ``set_poiseuille_resistances`` had written - the power law mu = 1/d^1.647,
+    which is not a viscosity in cP and carries a d^-5.647 dependence rather than Poiseuille's
+    d^-4. Every flow and pressure in the model comes from the Pries-Secomb resistances, so
+    the results table held two numbers derived from two different viscosity models.
+
+    Asserted on call order in the source rather than behaviourally: the enclosing driver
+    function also writes VTK, computes statistics and runs perfusion, and no test harness
+    exists that can execute it. The ordering is the whole of the fix, so pinning the ordering
+    is what stops it regressing.
+    """
+    calls = _driver_call_lines(
+        "_export_and_solve_haemodynamics",
+        ("solve_coupled_flow_and_hematocrit",
+         "calc_two_point_from_laplacian_matrix_nodeID",
+         "build_conductance_matrix_from_graph"),
+    )
+
+    assert len(calls["solve_coupled_flow_and_hematocrit"]) == 1
+    assert len(calls["calc_two_point_from_laplacian_matrix_nodeID"]) == 1
+    solve_line = calls["solve_coupled_flow_and_hematocrit"][0]
+    two_point_line = calls["calc_two_point_from_laplacian_matrix_nodeID"][0]
+
+    assert two_point_line > solve_line, (
+        f"the two-point resistance is computed at line {two_point_line}, before the rheology "
+        f"solve at line {solve_line}, so it reports the power-law resistances"
+    )
+
+    # One matrix build, not two. The pre-rheology build existed only to feed the two-point
+    # calculation; leaving it behind would rebuild an ~8000-edge matrix for nothing.
+    builds = calls["build_conductance_matrix_from_graph"]
+    assert len(builds) == 1, f"expected a single conductance build, found {len(builds)}"
+    assert builds[0] > solve_line
+
+
+def test_the_two_point_resistance_depends_on_which_resistances_are_in_force():
+    """Show the ordering is not cosmetic: the two resistance sets give different answers.
+
+    If these agreed, computing the effective resistance before or after the rheology solve
+    would not matter and the ordering test above would be pinning nothing.
+    """
+    from ImageLynx.haemodynamics.resistance import (
+        build_conductance_matrix_from_graph,
+        calc_laplacian_from_conductance_matrix,
+        calc_two_point_from_laplacian_matrix_nodeID,
+    )
+
+    def two_point(graph):
+        conductance, _ = build_conductance_matrix_from_graph(graph)
+        laplacian = calc_laplacian_from_conductance_matrix(conductance)
+        return calc_two_point_from_laplacian_matrix_nodeID(laplacian, graph, 0, 2)
+
+    # As set_poiseuille_resistances leaves them, with mu = 1 / d^1.647.
+    power_law = _bifurcation_graph()
+    for u, v, key, data in power_law.edges(keys=True, data=True):
+        d = data["fwhm_diameter_um"]
+        mu_old = 1.0 / (d ** 1.647)
+        data["resistance"] = (128.0 * mu_old * data["length"]) / (np.pi * d ** 4)
+    before = two_point(power_law)
+
+    # As the rheology solver leaves them.
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(),
+        starting_nodes=[0],
+        output_nodes=[2, 3],
+        input_p_bc=13.332e6,
+        output_p_bc=0.27e6,
+        systemic_hematocrit=0.45,
+        max_iterations=10,
+        tolerance=1e-4,
+    )
+    after = two_point(solved)
+
+    assert np.isfinite(before) and np.isfinite(after)
+    assert after / before > 100.0, (
+        f"expected the Pries-Secomb resistances to give a far larger effective resistance "
+        f"than the power law; got {before:.6g} against {after:.6g}"
+    )
+
+
+def test_vessel_statistics_are_computed_after_the_rheology_solve():
+    """Graph statistics must be weighted by the resistances the model actually solves on.
+
+    ``compute_comprehensive_vessel_statistics`` weights betweenness and community detection
+    by the edge ``resistance`` attribute. It used to run before
+    ``solve_coupled_flow_and_hematocrit``, so those weights came from
+    ``set_poiseuille_resistances`` - the power law mu = 1/d^1.647, giving an effective
+    d^-5.647 dependence against the solved network's d^-4 mu(d), which fits d^-5.221 over
+    the capillary range.
+
+    Same reasoning as ``test_two_point_resistance_is_computed_after_the_rheology_solve`` for
+    why this is asserted on call order rather than behaviourally.
+    """
+    calls = _driver_call_lines(
+        "_export_and_solve_haemodynamics",
+        ("solve_coupled_flow_and_hematocrit",
+         "compute_comprehensive_vessel_statistics",
+         "export_per_edge_morphometry"),
+    )
+
+    assert len(calls["solve_coupled_flow_and_hematocrit"]) == 1
+    assert len(calls["compute_comprehensive_vessel_statistics"]) == 1
+    solve_line = calls["solve_coupled_flow_and_hematocrit"][0]
+    stats_line = calls["compute_comprehensive_vessel_statistics"][0]
+
+    assert stats_line > solve_line, (
+        f"vessel statistics are computed at line {stats_line}, before the rheology solve at "
+        f"line {solve_line}, so betweenness is weighted by the power-law resistances"
+    )
+
+    # Per-edge morphometry is purely geometric, so it is unaffected either way. It is kept
+    # alongside the statistics only so the reported block stays contiguous.
+    assert calls["export_per_edge_morphometry"][0] > solve_line
+
+
+def test_the_two_resistance_models_weight_edges_differently():
+    """The ordering above matters because the two models do not rank edges identically.
+
+    Asserted on relative weight rather than on a betweenness value. Betweenness uses only
+    the ordering of path costs, and on a small graph a moderate reweighting often leaves the
+    shortest paths unchanged - measured, it does exactly that on the ladder below. So a test
+    asserting that some betweenness summary changes would pass or fail on the shape of the
+    fixture rather than on the thing being fixed.
+
+    What is reliably true is that the two models have different effective exponents, so the
+    weight of a narrow edge relative to a wide one differs. That is what makes weighting by
+    one rather than the other a real choice.
+    """
+    from ImageLynx.haemodynamics.rheology import calculate_pries_secomb_viscosity
+
+    def power_law(d):
+        return (1.0 / d ** 1.647) / d ** 4
+
+    def pries(d):
+        return calculate_pries_secomb_viscosity(d, 0.45) / d ** 4
+
+    # Relative to an 8 um reference edge, across the range these graphs span.
+    ratios = []
+    for d in (3.0, 4.0, 6.0, 8.0, 12.0, 20.0):
+        rel_power = power_law(d) / power_law(8.0)
+        rel_pries = pries(d) / pries(8.0)
+        ratios.append(rel_pries / rel_power)
+
+    spread = max(ratios) / min(ratios)
+    assert spread > 2.0, (
+        f"expected the two models to rank edges differently across the calibre range; "
+        f"relative weighting varies by only {spread:.2f}x"
+    )
+
+
+def _driver_cell_data_writes(function_name):
+    """Line numbers of ``<something>.cell_data["name"] = ...`` inside a driver function."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
+    tree = ast.parse(source)
+    target = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    writes = {}
+    for node in ast.walk(target):
+        if not isinstance(node, ast.Assign):
+            continue
+        for t in node.targets:
+            if (isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Attribute)
+                    and t.value.attr == "cell_data"
+                    and isinstance(t.slice, ast.Constant)):
+                writes.setdefault(t.slice.value, []).append(node.lineno)
+    return writes
+
+
+def test_the_vtk_resistance_array_is_refreshed_after_the_rheology_solve():
+    """The exported mesh must not carry a resistance and a viscosity from different models.
+
+    ``graph_to_vtk`` runs before the solver and writes a ``resistance`` cell array from
+    ``set_poiseuille_resistances``' power-law values. The post-solve pass then adds
+    ``hematocrit``, ``viscosity`` and ``wall_shear_stress_pa`` from the converged graph. It
+    used not to touch ``resistance``, so a reader of the file had a resistance and a
+    viscosity that do not satisfy R = 128 mu L / (pi d^4) together, and no way to tell.
+
+    Asserted on the source for the same reason as the two ordering tests above: the
+    enclosing driver function cannot be executed by any existing harness. Testing it
+    behaviourally would mean duplicating the refresh loop in the test, which would guard the
+    duplicate rather than the driver.
+    """
+    writes = _driver_cell_data_writes("_export_and_solve_haemodynamics")
+    calls = _driver_call_lines(
+        "_export_and_solve_haemodynamics", ("solve_coupled_flow_and_hematocrit",))
+    solve_line = calls["solve_coupled_flow_and_hematocrit"][0]
+
+    assert "resistance" in writes, (
+        "the VTK resistance cell array is never refreshed after the solve, so it keeps the "
+        "power-law values graph_to_vtk wrote before it"
+    )
+    assert min(writes["resistance"]) > solve_line, (
+        f"the resistance cell array is written at line {min(writes['resistance'])}, before "
+        f"the rheology solve at line {solve_line}"
+    )
+
+    # The four rheology-derived arrays are refreshed together. If a fifth is added later it
+    # should join them rather than being left on pre-solve values, which is the defect this
+    # test exists for.
+    for name in ("hematocrit", "viscosity", "wall_shear_stress_pa"):
+        assert name in writes, f"{name} is no longer written to cell_data"
+        assert min(writes[name]) > solve_line
+
+
+def _diameter_graph():
+    """One edge carrying everything set_poiseuille_resistances needs."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    return G
+
+
+def _poiseuille_model():
+    from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
+    return PoiseuilleModel(constriction_length=5.0, constriction_spacing=100.0, mode="sphincter")
+
+
+def test_assign_resistance_false_writes_the_diameter_but_no_resistance():
+    """The CB path needs the diameter and the provenance guard, not the power-law resistance.
+
+    mu = 1 / d^1.647 is written and then overwritten by the rheology solver before anything
+    reads it, so on that path it is a provisional number nothing consumes.
+    ``assigned_diameter_um`` is what the solver actually reads, and it comes from the
+    measured radius.
+    """
+    G, results = _poiseuille_model().set_poiseuille_resistances(
+        _diameter_graph(), {"DEFAULT": 5.0},
+        radius_assignment_mode="edt_radius", assign_resistance=False)
+
+    data = G[0][1][0]
+    assert "resistance" not in data, "no resistance should be written when the flag is off"
+    assert data["assigned_diameter_um"] == pytest.approx(8.0)
+    assert data["diameter_provenance"] == "measured_edt"
+
+
+def test_assign_resistance_defaults_to_writing_one():
+    """The default must stay True: resistance_network_pipeline.py has no other resistance.
+
+    That pipeline never calls solve_coupled_flow_and_hematocrit - it has no rheology stage at
+    all - so the value written here is the one its conductance matrix, two-point resistance,
+    statistics and flow solve all use. Flipping the default would silently leave it with no
+    resistance rather than a wrong one.
+    """
+    G, _ = _poiseuille_model().set_poiseuille_resistances(
+        _diameter_graph(), {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius")
+
+    data = G[0][1][0]
+    d, L = 8.0, 20.0
+    expected = (128.0 * (1.0 / d ** 1.647) * L) / (np.pi * d ** 4)
+    assert data["resistance"] == pytest.approx(expected, rel=1e-12)
+
+
+def test_the_diameter_provenance_guard_still_fires_when_no_resistance_is_written():
+    """The guard counts processed edges, and that counter must not depend on the flag.
+
+    ``_raise_if_measurement_mode_measured_nothing`` reads ``results['resistances_set']`` as
+    the number of edges processed. That counter is incremented in the same loop that assigns
+    the resistance, so skipping the assignment naively would leave it at zero and the guard
+    would stop firing - silently disabling the check that stops a fabricated diameter
+    reaching the model. Resistance goes as the inverse fourth power of diameter, so that is
+    not a small failure to hide.
+    """
+    # edt_radius selected, but no edge carries edt_diameter_um: every edge falls back to a
+    # synthetic branch-order diameter, which is what the guard exists to refuse.
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01")
+
+    with pytest.raises(ValueError, match="edt_radius"):
+        _poiseuille_model().set_poiseuille_resistances(
+            G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius", assign_resistance=False)
+
+
+def test_a_partial_synthetic_fallback_is_refused():
+    """The whole-graph guard cannot see a per-edge fallback; this is the one that can.
+
+    ``_raise_if_measurement_mode_measured_nothing`` fires only when *no* edge was measured.
+    A graph where EDT measured most edges and fabricated the rest passed it silently, and
+    resistance goes as the inverse fourth power of diameter, so the fabricated edges carry a
+    fabricated resistance of unknown size.
+
+    ``check_diameter_provenance`` catches that, and has been called from
+    ``set_poiseuille_resistances_with_constrictions`` since 79baf86 - but not from
+    ``set_poiseuille_resistances``, which is the only one the carotid body pipeline reaches.
+    """
+    G = nx.MultiGraph()
+    # Two edges measured, one not: 33% synthetic, against a 0.0 allowance for edt_radius.
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, length=20.0, branch_order="B01", edt_diameter_um=6.0)
+    G.add_edge(2, 3, key=0, length=20.0, branch_order="B01")
+
+    with pytest.raises(ValueError, match="synthetic"):
+        _poiseuille_model().set_poiseuille_resistances(
+            G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius")
+
+
+def test_a_fully_measured_graph_records_its_provenance_and_passes():
+    """The report travels with the result even when nothing is wrong.
+
+    That is what makes the fabricated share auditable rather than merely absent: a caller can
+    read the counts off the result instead of inferring them from the absence of an exception.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, length=20.0, branch_order="B01", edt_diameter_um=6.0)
+
+    _, results = _poiseuille_model().set_poiseuille_resistances(
+        G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius")
+
+    check = results["diameter_provenance_check"]
+    assert check["ok"] is True
+    assert check["edges"] == 2
+    assert check["synthetic_edges"] == 0
+    assert check["synthetic_fraction"] == pytest.approx(0.0)
+    assert results["diameter_provenance_counts"] == {"measured_edt": 2}
+
+
+def test_the_partial_guard_also_applies_when_no_resistance_is_written():
+    """The CB path passes assign_resistance=False, and must still be guarded.
+
+    The two are independent: whether a resistance is written says nothing about whether the
+    diameter it would have used was measured or fabricated, and it is the diameter the
+    rheology solver goes on to read.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, length=20.0, branch_order="B01")
+
+    with pytest.raises(ValueError, match="synthetic"):
+        _poiseuille_model().set_poiseuille_resistances(
+            G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius",
+            assign_resistance=False)
+
+
+def test_a_raised_allowance_lets_a_partial_fallback_through():
+    """The bound is a parameter, so a run that accepts fabricated calibre can say so.
+
+    Deliberately explicit: the guard's own message tells the caller to raise it only if the
+    fabricated share is acceptable *and recorded*, and the recorded share comes back in the
+    result either way.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=20.0, branch_order="B01", edt_diameter_um=8.0)
+    G.add_edge(1, 2, key=0, length=20.0, branch_order="B01")
+
+    _, results = _poiseuille_model().set_poiseuille_resistances(
+        G, {"DEFAULT": 5.0}, radius_assignment_mode="edt_radius",
+        max_synthetic_fraction=0.5)
+
+    check = results["diameter_provenance_check"]
+    assert check["ok"] is True
+    assert check["synthetic_fraction"] == pytest.approx(0.5)
+
+
+_STOP_REASON_BCS = dict(
+    starting_nodes=[0],
+    output_nodes=[2, 3],
+    input_p_bc=13.332e6,
+    output_p_bc=0.27e6,
+    systemic_hematocrit=0.45,
+)
+
+
+def test_stop_reason_is_converged_when_flows_settle():
+    """Equal daughters split red cells evenly, so the second pass reproduces the first.
+
+    ``_bifurcation_graph`` is not used here: its 4 um daughter alternates between two
+    haematocrit states on successive passes and never converges.
+    """
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, length=40.0, fwhm_diameter_um=12.0)
+    G.add_edge(1, 2, key=0, length=25.0, fwhm_diameter_um=8.0)
+    G.add_edge(1, 3, key=0, length=25.0, fwhm_diameter_um=8.0)
+
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "converged"
+    assert solved.graph["rheology_iterations"] == 2
+    assert solved.graph["rheology_max_flow_change"] <= 1e-4
+
+
+def test_asymmetric_bifurcation_reports_that_it_did_not_converge():
+    """The oscillating case must not be reported as converged."""
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "max_iterations"
+    assert solved.graph["rheology_iterations"] == 15
+
+
+def test_stop_reason_is_max_iterations_when_the_limit_is_hit():
+    """A negative tolerance can never be met, so only the iteration limit can end the loop."""
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=3, tolerance=-1.0, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "max_iterations"
+    assert solved.graph["rheology_iterations"] == 3
+    assert solved.graph["rheology_max_flow_change"] >= 0.0
+
+
+def test_max_flow_change_is_none_after_a_single_pass():
+    """One pass has nothing to compare against, so no flow change was ever measured."""
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=1, tolerance=1e-4, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "max_iterations"
+    assert solved.graph["rheology_iterations"] == 1
+    assert solved.graph["rheology_max_flow_change"] is None
+
+
+def test_stop_reason_is_flow_cycle_when_the_dag_cannot_be_sorted(monkeypatch):
+    """A pressure solve cannot produce a cycle on this graph, so the sort is made to fail."""
+    import ImageLynx.haemodynamics.rheology as rheology
+
+    def raise_cycle(_graph):
+        raise nx.NetworkXUnfeasible("cycle")
+
+    monkeypatch.setattr(rheology.nx, "topological_sort", raise_cycle)
+    solved, final_pressure = solve_coupled_flow_and_hematocrit(
+        _bifurcation_graph(), max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+    assert solved.graph["rheology_stop_reason"] == "flow_cycle"
+    assert solved.graph["rheology_iterations"] == 1
+    assert solved.graph["rheology_max_flow_change"] is None
+    assert final_pressure is not None
+
+
+def test_an_edge_without_a_diameter_is_refused_not_solved_at_five_microns():
+    """Open item 9: initialisation and update used to substitute 5.0 um silently."""
+    G = _bifurcation_graph()
+    del G[1][3][0]["fwhm_diameter_um"]
+
+    with pytest.raises(ValueError, match="1 of 3 edges have no usable diameter"):
+        solve_coupled_flow_and_hematocrit(
+            G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+
+def test_a_non_positive_diameter_is_refused_too():
+    G = _bifurcation_graph()
+    G[1][2][0]["fwhm_diameter_um"] = 0.0
+
+    with pytest.raises(ValueError, match="diameter"):
+        solve_coupled_flow_and_hematocrit(
+            G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+
+
+def test_default_diameter_is_the_stated_calibre_at_every_step():
+    """The opt-in default must reach initialisation and update, not only the Y-split."""
+    G = _bifurcation_graph()
+    del G[1][3][0]["fwhm_diameter_um"]
+
+    solved, _ = solve_coupled_flow_and_hematocrit(
+        G, max_iterations=3, tolerance=1e-4, default_diameter_um=6.0, **_STOP_REASON_BCS)
+
+    data = solved[1][3][0]
+    expected = (128.0 * data["viscosity"] * data["length"]) / (np.pi * 6.0 ** 4)
+    assert data["resistance"] == pytest.approx(expected, rel=1e-12)
