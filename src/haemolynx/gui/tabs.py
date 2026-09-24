@@ -27,22 +27,41 @@ haemodynamics they belong with while staying a stage a run reports through.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from haemolynx.gui.form import Field, fields_for
 from haemolynx.parsers.schema import Schema
 from haemolynx.pipeline.progress import STAGES, Stage
 
 __all__ = [
+    "SECTION_BOX_TITLES",
     "STAGES",
     "Stage",
     "Tab",
     "assign_to_stages",
+    "section_box_title",
     "tab_title",
     "tab_titles",
     "tabs_for",
     "unassigned",
 ]
+
+
+#: What the panel titles a section's group box on one tab, where the schema's
+#: section name reads wrong there. Keyed by (stage call, section) because a
+#: section's settings can be split across tabs: "6. Haemodynamics" shows the
+#: viscosity and haematocrit settings, which are declared in "Diameters and
+#: pericytes" -- a name that describes the Diameters tab, not these. Only the
+#: title changes; the section name is what settings, configs and
+#: ``section_values`` go on keying by.
+SECTION_BOX_TITLES: Mapping[tuple[str, str], str] = {
+    ("build_haemodynamic_model", "Diameters and pericytes"): "Haemodynamics settings",
+}
+
+
+def section_box_title(stage_call: str, section: str) -> str:
+    """The title of *section*'s group box on the tab of *stage_call*."""
+    return SECTION_BOX_TITLES.get((stage_call, section), section)
 
 
 def tab_title(stage: Stage) -> str:

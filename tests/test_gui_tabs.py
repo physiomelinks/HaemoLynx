@@ -850,3 +850,27 @@ def test_automated_assignment_documents_that_it_overrides_manual_methods():
 def test_every_tab_starts_with_a_number_so_the_order_is_visible(title):
     """Tabs are numbered, not stages: a stage that opens none needs no number."""
     assert title[0].isdigit()
+
+
+# --- group-box titles -----------------------------------------------------------
+
+
+def test_the_haemodynamics_tab_titles_its_blood_model_box_haemodynamics_settings():
+    """The viscosity/haematocrit rows are declared in "Diameters and
+    pericytes", but on "6. Haemodynamics" that name describes another tab."""
+    from haemolynx.gui.tabs import section_box_title, tabs_for
+
+    haemodynamics = next(t for t in tabs_for(SCHEMA) if t.stage.call == "build_haemodynamic_model")
+    sections = {field.section for field in haemodynamics.fields}
+    assert DIAMETERS_AND_PERICYTES in sections
+
+    assert section_box_title("build_haemodynamic_model", DIAMETERS_AND_PERICYTES) == "Haemodynamics settings"
+
+
+def test_a_box_title_changes_only_on_its_own_tab_and_not_the_section():
+    from haemolynx.gui.tabs import section_box_title
+
+    assert section_box_title("assign_diameters", DIAMETERS_AND_PERICYTES) == DIAMETERS_AND_PERICYTES
+    assert section_box_title("build_haemodynamic_model", "Pipeline stages") == "Pipeline stages"
+    # The settings themselves keep keying by the schema's section name.
+    assert SCHEMA["viscosity_law"].section == DIAMETERS_AND_PERICYTES

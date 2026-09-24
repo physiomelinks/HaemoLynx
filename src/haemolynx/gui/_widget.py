@@ -91,7 +91,7 @@ from haemolynx.gui.run_snapshot import (
     write_resume_artefacts,
     write_run_snapshot,
 )
-from haemolynx.gui.tabs import tabs_for
+from haemolynx.gui.tabs import section_box_title, tabs_for
 from haemolynx.gui.vessel_tubes import (
     DEFAULT_VESSEL_DRAW,
     VESSEL_DRAW_LINES,
@@ -6304,7 +6304,7 @@ def settings_widget(napari_viewer=None):
             # distinct, nested group rather than a continuation of the
             # leading section's flat list.
             for section, section_names in runs[1:]:
-                group = QGroupBox(section)
+                group = QGroupBox(section_box_title(tab.stage.call, section))
                 slug = section.lower().replace(" ", "_").replace("/", "_")
                 group.setObjectName(f"haemolynx_section_{slug}")
                 group_layout = QVBoxLayout(group)
