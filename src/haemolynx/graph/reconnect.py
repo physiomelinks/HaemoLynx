@@ -1,5 +1,10 @@
 """Reconnect secondary loop edges with alternative paths."""
 import logging
+import os
+import pickle
+import queue
+import subprocess
+import sys
 import threading
 from contextlib import contextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -58,6 +63,124 @@ def _path_length_3d(points) -> float:
     return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
 
 
+#: Candidate pairs from which routing is handed to worker processes. skimage's
+#: router holds the GIL, so the worker threads otherwise take turns at it; the
+#: workers cost a second or two to start, worth it only for a real run.
+ROUTING_PROCESS_MIN_PAIRS = 32
+
+
+#: What a routing worker process runs: it imports skimage and nothing else --
+#: never this package, and never the caller's own script (multiprocessing's
+#: spawn re-imports ``__main__``, which re-runs any script without an
+#: ``if __name__ == "__main__"`` guard in every worker).
+_ROUTE_WORKER_CODE = """
+import pickle, sys
+from skimage.graph import route_through_array
+read, write = sys.stdin.buffer, sys.stdout.buffer
+while True:
+    try:
+        cost, start, end = pickle.load(read)
+    except EOFError:
+        break
+    try:
+        reply = (True, route_through_array(cost, start, end, fully_connected=True))
+    except BaseException as exc:
+        reply = (False, exc)
+    pickle.dump(reply, write, protocol=pickle.HIGHEST_PROTOCOL)
+    write.flush()
+"""
+
+
+class _Router:
+    """``route_through_array(cost, start, end, fully_connected=True)``, in
+    worker processes when there are any.
+
+    Each call hands its cost array to a free worker over a pipe and waits for
+    the path -- the same call on the same array, so the same path, or the same
+    exception -- while the calling thread releases the GIL, letting the other
+    threads build their windows and the workers route in parallel. If a
+    worker cannot start or stops answering, routing carries on in-thread, as
+    it did before workers existed.
+    """
+
+    def __init__(self, processes: int):
+        self._idle: queue.SimpleQueue = queue.SimpleQueue()
+        self._workers: list[subprocess.Popen] = []
+        self._broken = False
+        if processes <= 1 or getattr(sys, "frozen", False):
+            return
+        try:
+            for _ in range(int(processes)):
+                worker = subprocess.Popen(
+                    [sys.executable, "-c", _ROUTE_WORKER_CODE],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                )
+                self._workers.append(worker)
+                self._idle.put(worker)
+        except OSError:
+            logger.warning("[reconnect] no routing processes; routing in-thread", exc_info=True)
+            self.close()
+
+    def __call__(self, cost, start, end):
+        if self._workers and not self._broken:
+            worker = self._idle.get()
+            try:
+                if not self._broken:
+                    pickle.dump(
+                        (np.ascontiguousarray(cost), start, end),
+                        worker.stdin,
+                        protocol=pickle.HIGHEST_PROTOCOL,
+                    )
+                    worker.stdin.flush()
+                    ok, value = pickle.load(worker.stdout)
+                    if ok:
+                        return value
+                    raise value
+            except (OSError, EOFError, pickle.UnpicklingError):
+                if not self._broken:
+                    self._broken = True
+                    logger.warning("[reconnect] a routing process stopped; routing in-thread")
+            finally:
+                # Always handed back, dead or alive: a thread waiting for a
+                # worker must never wait for one that is not coming.
+                self._idle.put(worker)
+        return route_through_array(cost, start, end, fully_connected=True)
+
+    def close(self) -> None:
+        for worker in self._workers:
+            try:
+                worker.stdin.close()
+                worker.wait(timeout=10)
+            except Exception:
+                worker.kill()
+        self._workers = []
+
+
+def _gaussian_of_sparse(mask, sigma):
+    """``gaussian_filter(mask, sigma)`` for a *mask* that is zero outside a
+    small region, computed on that region only.
+
+    The filter reaches ``int(4 * sigma + 0.5)`` voxels, so outside the
+    nonzero bounding box grown by that (plus one) the result is exactly zero,
+    and inside it every value reads only the region: its edges are either the
+    window's own -- reflected exactly as the whole window would be -- or so
+    far from anything nonzero that what they reflect is zero too. The same
+    values, from a region the size of one edge's neighbourhood rather than
+    the whole routing window.
+    """
+    nonzero = np.argwhere(mask)
+    if not len(nonzero):
+        return gaussian_filter(mask, sigma=sigma)
+    reach = int(4.0 * float(sigma) + 0.5) + 1
+    lo = np.maximum(nonzero.min(axis=0) - reach, 0)
+    hi = np.minimum(nonzero.max(axis=0) + reach + 1, mask.shape)
+    region = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    out = np.zeros(mask.shape, dtype=np.result_type(mask.dtype, np.float64))
+    out[region] = gaussian_filter(mask[region], sigma=sigma)
+    return out
+
+
 def reconnect_secondary_loop_edges(
     G,
     skeleton,
@@ -75,6 +198,7 @@ def reconnect_secondary_loop_edges(
     max_cache_size=None,
     use_memmap=False,
     low_memory_window_voxels=LOW_MEMORY_ROUTING_VOXELS,
+    routing_processes=None,
 ):
     """Find alternative paths for degree-2 pairs and add as secondary edges.
 
@@ -86,6 +210,11 @@ def reconnect_secondary_loop_edges(
     voxels between them -- a thread waits for room rather than adding to RAM.
     A single window bigger than that is skipped, and counted in the closing
     summary.
+
+    *routing_processes* is how many worker processes route (see
+    :class:`_Router`): by default one per worker thread, capped at the CPU
+    count, once there are :data:`ROUTING_PROCESS_MIN_PAIRS` candidate pairs;
+    0 or 1 routes in-thread. The same paths either way.
 
     *max_cache_size* is accepted for compatibility and ignored: each pair
     routes through its own windows only once, and a cost field (which carries
@@ -247,7 +376,7 @@ def reconnect_secondary_loop_edges(
         if valid_count == 0:
             return np.zeros(sub_shape, dtype=float)
         try:
-            repulsion_field = gaussian_filter(mask, sigma=repulsion_sigma)
+            repulsion_field = _gaussian_of_sparse(mask, repulsion_sigma)
             max_repulsion = np.max(repulsion_field)
             if max_repulsion > 0:
                 repulsion_field = (repulsion_field / max_repulsion) * 50.0
@@ -353,9 +482,7 @@ def reconnect_secondary_loop_edges(
                     ):
                         continue
                     try:
-                        path_coords, cost = route_through_array(
-                            sub_cost, tuple(ru), tuple(rv), fully_connected=True
-                        )
+                        path_coords, cost = router(sub_cost, tuple(ru), tuple(rv))
                         if path_coords is None or len(path_coords) < min_length_voxels:
                             continue
                         path_coords = np.array(path_coords)
@@ -441,6 +568,13 @@ def reconnect_secondary_loop_edges(
     added = 0
     edge_lock = threading.Lock()
     max_workers = max_workers or min(4, len(pairs))
+    if routing_processes is None:
+        routing_processes = (
+            min(max_workers, os.cpu_count() or 1)
+            if len(pairs) >= ROUTING_PROCESS_MIN_PAIRS
+            else 0
+        )
+    router = _Router(routing_processes)
     try:
         with nested_native_thread_limit():
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -496,6 +630,8 @@ def reconnect_secondary_loop_edges(
     except Exception as e:
         logger.error("Threading failed: %s", e)
         return G
+    finally:
+        router.close()
 
     # Always reported, unlike the per-occurrence messages above: a run where
     # every candidate pair failed the same way must not look identical to a

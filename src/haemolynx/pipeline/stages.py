@@ -757,8 +757,10 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         # Read-only check on the skeleton just produced (or loaded): how much
         # of the segmented image it actually runs through -- see
         # preprocessing.skeleton_consistency. Never changes skeleton or image.
-        mask_consistency = preprocessing.diagnose_skeleton_mask_consistency(
-            skeleton, image, voxel_size_zyx=voxel_size_zyx
+        # Both checks from one distance transform of the skeleton.
+        mask_consistency, missing_vessels = preprocessing.diagnose_skeleton_against_mask(
+            skeleton, image, voxel_size_zyx=voxel_size_zyx,
+            min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
         )
         consistency_report = preprocessing.format_skeleton_mask_consistency_report(
             mask_consistency
@@ -774,10 +776,6 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         # question: not how well-traced the mask is overall, but whether any
         # genuine vessel is missing from the skeleton entirely -- see
         # preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton.
-        missing_vessels = preprocessing.diagnose_vessels_missing_from_skeleton(
-            skeleton, image, voxel_size_zyx=voxel_size_zyx,
-            min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
-        )
         missing_vessels_report = preprocessing.format_vessels_missing_from_skeleton_report(
             missing_vessels
         )
@@ -877,8 +875,10 @@ def _log_graph_consistency_diagnostics(
 
     # How much of the original segmented image it still runs through -- see
     # graph.diagnostics.diagnose_graph_mask_consistency.
-    graph_mask_consistency = graph.diagnose_graph_mask_consistency(
-        G, image, voxel_size_zyx=voxel_size_zyx
+    # Both mask checks from one distance transform of the graph's edges.
+    graph_mask_consistency, missing_vessels = graph.diagnose_graph_against_mask(
+        G, image, voxel_size_zyx=voxel_size_zyx,
+        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
     )
     graph_mask_consistency_report = graph.format_graph_mask_consistency_report(
         graph_mask_consistency
@@ -893,10 +893,6 @@ def _log_graph_consistency_diagnostics(
     # The inverse question on the same pair: not how well-traced the mask is
     # overall, but whether any genuine vessel is missing from the graph
     # entirely -- see graph.diagnostics.diagnose_vessels_missing_from_graph.
-    missing_vessels = graph.diagnose_vessels_missing_from_graph(
-        G, image, voxel_size_zyx=voxel_size_zyx,
-        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
-    )
     missing_vessels_report = graph.format_vessels_missing_from_graph_report(
         missing_vessels
     )

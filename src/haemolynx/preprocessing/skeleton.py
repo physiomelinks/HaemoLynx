@@ -722,6 +722,65 @@ def _draw_hub_links(
         _draw_line_3d(result, center, endpoint)
 
 
+def _collapse_hubs(
+    result: np.ndarray,
+    mask: np.ndarray,
+    dense_volume: np.ndarray,
+    selected_hubs: list[np.ndarray],
+    scan: tuple[int, ...],
+    max_connections_per_hub: int,
+) -> None:
+    """Collapse each hub's dense window of *result* to one centre voxel,
+    relinked to the skeleton just outside it, in place.
+
+    Each hub reads and writes only its own scan window plus one voxel -- the
+    boundary shell's dilation reaches no further -- so this works in that
+    box rather than on a volume-sized array per hub: the same shell and the
+    same boundary points in the same (C) order, hence the same links, as the
+    whole-volume version this replaced, which allocated, dilated and scanned
+    the entire volume once for every hub.
+    """
+    shape = np.array(mask.shape)
+    half_window = np.array(scan) // 2
+    structure = generate_binary_structure(mask.ndim, 1)
+
+    for hub in selected_hubs:
+        lo = np.maximum(hub - half_window, 0)
+        hi = np.minimum(hub + half_window + 1, shape)
+        slices = tuple(slice(int(lo[d]), int(hi[d])) for d in range(mask.ndim))
+        box_lo = np.maximum(lo - 1, 0)
+        box_hi = np.minimum(hi + 1, shape)
+        box = tuple(slice(int(box_lo[d]), int(box_hi[d])) for d in range(mask.ndim))
+        window_in_box = tuple(
+            slice(int(lo[d] - box_lo[d]), int(hi[d] - box_lo[d])) for d in range(mask.ndim)
+        )
+        local_dense = np.zeros(tuple(int(v) for v in box_hi - box_lo), dtype=bool)
+        local_dense[window_in_box] = dense_volume[slices]
+        if not local_dense.any():
+            continue
+
+        local_mask_coords = np.argwhere(mask[slices])
+        if local_mask_coords.size == 0:
+            continue
+        local_center = hub - lo
+        nearest = int(
+            np.argmin(np.sum((local_mask_coords - local_center.astype(float)) ** 2, axis=1))
+        )
+        center = (local_mask_coords[nearest] + lo).astype(int)
+        center_t = tuple(center.tolist())
+
+        shell = binary_dilation(local_dense, structure=structure) & ~local_dense
+        result_box = result[box]
+        boundary_points = np.argwhere(np.asarray(result_box) & shell) + box_lo
+
+        result_box[local_dense] = False
+        result[center_t] = True
+
+        if boundary_points.size == 0:
+            continue
+        _draw_hub_links(result, center, boundary_points, max_connections_per_hub)
+
+
 def skeletonize_voxel_bundles_into_paths(
     binary_mask: np.ndarray,
     scan_size: int | tuple[int, ...] = 9,
@@ -812,38 +871,7 @@ def skeletonize_voxel_bundles_into_paths(
     )
 
     result = base_skeleton.astype(bool).copy()
-    shape = np.array(mask.shape)
-    half_window = np.array(scan) // 2
-    structure = generate_binary_structure(mask.ndim, 1)
-
-    for hub in selected_hubs:
-        lo = np.maximum(hub - half_window, 0)
-        hi = np.minimum(hub + half_window + 1, shape)
-        slices = tuple(slice(int(lo[d]), int(hi[d])) for d in range(mask.ndim))
-        local_dense = np.zeros_like(mask, dtype=bool)
-        local_dense[slices] = dense_volume[slices]
-        if not local_dense.any():
-            continue
-
-        local_mask_coords = np.argwhere(mask[slices])
-        if local_mask_coords.size == 0:
-            continue
-        local_center = hub - lo
-        nearest = int(
-            np.argmin(np.sum((local_mask_coords - local_center.astype(float)) ** 2, axis=1))
-        )
-        center = (local_mask_coords[nearest] + lo).astype(int)
-        center_t = tuple(center.tolist())
-
-        shell = binary_dilation(local_dense, structure=structure) & ~local_dense
-        boundary_points = np.argwhere(result & shell)
-
-        result[local_dense] = False
-        result[center_t] = True
-
-        if boundary_points.size == 0:
-            continue
-        _draw_hub_links(result, center, boundary_points, max_connections_per_hub)
+    _collapse_hubs(result, mask, dense_volume, selected_hubs, scan, max_connections_per_hub)
 
     return skeletonize_volume(result.astype(bool)).astype(bool)
 
@@ -923,45 +951,9 @@ def _skeletonize_voxel_bundles_into_paths_low_memory(
         )
 
         result = base_skeleton
-        shape = np.array(mask.shape)
-        half_window = np.array(scan) // 2
-        structure = generate_binary_structure(mask.ndim, 1)
-
-        for hub in selected_hubs:
-            lo = np.maximum(hub - half_window, 0)
-            hi = np.minimum(hub + half_window + 1, shape)
-            slices = tuple(slice(int(lo[d]), int(hi[d])) for d in range(mask.ndim))
-            box_lo = np.maximum(lo - 1, 0)
-            box_hi = np.minimum(hi + 1, shape)
-            box = tuple(slice(int(box_lo[d]), int(box_hi[d])) for d in range(mask.ndim))
-            window_in_box = tuple(
-                slice(int(lo[d] - box_lo[d]), int(hi[d] - box_lo[d])) for d in range(mask.ndim)
-            )
-            local_dense = np.zeros(tuple(int(v) for v in box_hi - box_lo), dtype=bool)
-            local_dense[window_in_box] = dense_volume[slices]
-            if not local_dense.any():
-                continue
-
-            local_mask_coords = np.argwhere(mask[slices])
-            if local_mask_coords.size == 0:
-                continue
-            local_center = hub - lo
-            nearest = int(
-                np.argmin(np.sum((local_mask_coords - local_center.astype(float)) ** 2, axis=1))
-            )
-            center = (local_mask_coords[nearest] + lo).astype(int)
-            center_t = tuple(center.tolist())
-
-            shell = binary_dilation(local_dense, structure=structure) & ~local_dense
-            result_box = result[box]
-            boundary_points = np.argwhere(np.asarray(result_box) & shell) + box_lo
-
-            result_box[local_dense] = False
-            result[center_t] = True
-
-            if boundary_points.size == 0:
-                continue
-            _draw_hub_links(result, center, boundary_points, max_connections_per_hub)
+        _collapse_hubs(
+            result, mask, dense_volume, selected_hubs, scan, max_connections_per_hub
+        )
 
     final = skeletonize_all(result)
     if final is not result:

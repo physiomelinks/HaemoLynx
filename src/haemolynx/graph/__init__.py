@@ -38,6 +38,7 @@ from .prune import (
 )
 from .diagnostics import (
     diagnose_degree2_nodes,
+    diagnose_graph_against_mask,
     diagnose_graph_mask_consistency,
     diagnose_skeleton_graph_consistency,
     diagnose_vessels_missing_from_graph,
@@ -168,6 +169,7 @@ __all__ = [
     "prune_vascular_stubs",
     "remove_components_without_connected_io",
     "diagnose_degree2_nodes",
+    "diagnose_graph_against_mask",
     "diagnose_graph_mask_consistency",
     "diagnose_skeleton_graph_consistency",
     "diagnose_vessels_missing_from_graph",

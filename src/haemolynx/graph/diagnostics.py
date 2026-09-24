@@ -282,6 +282,51 @@ def diagnose_vessels_missing_from_graph(
     )
 
 
+def diagnose_graph_against_mask(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    min_vessel_voxels: int = 2,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """``(diagnose_graph_mask_consistency(...),
+    diagnose_vessels_missing_from_graph(...))`` for the same pair, from one
+    rasterisation, one local-radius map and one distance transform of the
+    graph's edges instead of two of each -- the same two reports.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.skeleton_consistency import (
+        _explained_by_local_radius,
+        _missing_mask_components,
+    )
+
+    mask_bool = _to_binary_volume_for_skeletonization(mask)
+    mask_voxel_count = int(mask_bool.sum())
+    if mask_voxel_count == 0:
+        consistency = {
+            "mask_voxel_count": 0,
+            "graph_voxel_count": 0,
+            "explained_voxel_count": 0,
+            "coverage_fraction": 1.0,
+        }
+        return consistency, _missing_mask_components(
+            mask_bool, mask_bool, min_vessel_voxels=min_vessel_voxels
+        )
+    spacing = np.asarray([float(v) for v in voxel_size_zyx], dtype=float)
+    covered = _rasterize_graph_edges(G, mask_bool.shape, spacing)
+    explained = _explained_by_local_radius(covered, mask_bool, voxel_size_zyx=voxel_size_zyx)
+    explained_voxel_count = int(explained.sum())
+    consistency = {
+        "mask_voxel_count": mask_voxel_count,
+        "graph_voxel_count": int(covered.sum()),
+        "explained_voxel_count": explained_voxel_count,
+        "coverage_fraction": explained_voxel_count / mask_voxel_count,
+    }
+    return consistency, _missing_mask_components(
+        explained, mask_bool, min_vessel_voxels=min_vessel_voxels
+    )
+
+
 def format_vessels_missing_from_graph_report(report: Dict[str, Any]) -> str:
     """A one-line summary of :func:`diagnose_vessels_missing_from_graph`."""
     return (

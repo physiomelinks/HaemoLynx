@@ -258,6 +258,45 @@ def diagnose_vessels_missing_from_skeleton(
     )
 
 
+def diagnose_skeleton_against_mask(
+    skeleton: np.ndarray,
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    min_vessel_voxels: int = 2,
+    local_radius_map: Optional[np.ndarray] = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(diagnose_skeleton_mask_consistency(...),
+    diagnose_vessels_missing_from_skeleton(...))`` for the same pair, from
+    one binarisation, one local-radius map and one distance transform of
+    the skeleton instead of two of each -- the same two reports.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    mask_bool = _to_binary_volume_for_skeletonization(mask)
+    mask_voxel_count = int(mask_bool.sum())
+    if mask_voxel_count == 0:
+        consistency = {"mask_voxel_count": 0, "explained_voxel_count": 0, "coverage_fraction": 1.0}
+        return consistency, _missing_mask_components(
+            mask_bool, mask_bool, min_vessel_voxels=min_vessel_voxels
+        )
+    explained = _explained_by_local_radius(
+        np.asarray(skeleton, dtype=bool),
+        mask_bool,
+        voxel_size_zyx=voxel_size_zyx,
+        local_radius_map=local_radius_map,
+    )
+    explained_voxel_count = int(explained.sum())
+    consistency = {
+        "mask_voxel_count": mask_voxel_count,
+        "explained_voxel_count": explained_voxel_count,
+        "coverage_fraction": explained_voxel_count / mask_voxel_count,
+    }
+    return consistency, _missing_mask_components(
+        explained, mask_bool, min_vessel_voxels=min_vessel_voxels
+    )
+
+
 def format_vessels_missing_from_skeleton_report(report: dict[str, Any]) -> str:
     """A one-line summary of :func:`diagnose_vessels_missing_from_skeleton`."""
     return (

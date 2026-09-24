@@ -527,7 +527,7 @@ def test_skeletonise_in_low_ram_mode_logs_the_skipped_diagnostic(tmp_path, monke
     def forbidden(*args, **kwargs):
         raise AssertionError("the whole-volume diagnostic ran in low-RAM mode")
 
-    monkeypatch.setattr(stages.preprocessing, "diagnose_skeleton_mask_consistency", forbidden)
+    monkeypatch.setattr(stages.preprocessing, "diagnose_skeleton_against_mask", forbidden)
     settings = _stage_settings(tmp_path, _write_rod_mask(tmp_path), use_memmap_loading=True)
 
     with caplog.at_level(logging.INFO, logger=stages.logger.name):
@@ -539,13 +539,13 @@ def test_skeletonise_in_low_ram_mode_logs_the_skipped_diagnostic(tmp_path, monke
 
 def test_skeletonise_without_low_ram_still_runs_the_diagnostic(tmp_path, monkeypatch):
     calls = []
-    real = stages.preprocessing.diagnose_skeleton_mask_consistency
+    real = stages.preprocessing.diagnose_skeleton_against_mask
 
     def spy(*args, **kwargs):
         calls.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(stages.preprocessing, "diagnose_skeleton_mask_consistency", spy)
+    monkeypatch.setattr(stages.preprocessing, "diagnose_skeleton_against_mask", spy)
     settings = _stage_settings(tmp_path, _write_rod_mask(tmp_path), use_memmap_loading=False)
 
     stages.skeletonise(settings, stages.segment(settings))
