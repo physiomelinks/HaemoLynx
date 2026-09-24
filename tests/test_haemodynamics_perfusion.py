@@ -19,7 +19,6 @@ class MockPerfusionConfig:
     sigma_diff: float = 1.5e-9
     M_max: float = 0.05
     k_reduce: float = 0.1
-    C_arterial: float = 0.13
 
 @pytest.fixture
 def mock_graph():
@@ -332,7 +331,6 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
         sigma_diff = 1.5e-9
         M_max = 0.005
         k_reduce = 0.1
-        C_arterial = 0.13
         po2_arterial_mmHg = 100.0
         picard_max_iterations = 5
         picard_tolerance = 1e-4

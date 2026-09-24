@@ -121,3 +121,28 @@ def test_known_config_disagreements_are_exactly_the_recorded_open_items():
     # open item 1 - hysteresis band, superseded at run time by the frozen threshold
     assert default_of("hysteresis_threshold_low") == 0.65
     assert default_of("hysteresis_threshold_high") == 0.75
+
+
+def test_dead_arterial_concentration_is_gone_everywhere():
+    """Open item 5: ``C_arterial`` was declared three times and read nowhere.
+
+    Leaving it in a config invited someone to set it and expect an effect. One analytical
+    test did exactly that, setting it to the arterial PO2 it meant to test, and passed only
+    because the value matched the solver's own hidden default.
+    """
+    assert not hasattr(cb_settings.PerfusionSettings(), "C_arterial")
+    offenders = [
+        str(path.relative_to(REPO))
+        for folder in ("src", "examples", "tests")
+        for path in (REPO / folder).rglob("*.py")
+        if path.name != Path(__file__).name
+        and "C_arterial" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
+@pytest.mark.parametrize("name", ["cb_h2_hypoxic_fraction.py", "cb_h2_vtk.py"])
+def test_h2_drivers_take_their_perfusion_config_from_settings(name):
+    """Both H2 transport drivers use the one settings class, not a local copy of it."""
+    value = _module_level_assignments(REPO / "examples" / name)["PerfConfig"]
+    assert ast.unparse(value) == "cb_settings.PerfusionSettings"

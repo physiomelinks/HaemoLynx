@@ -411,9 +411,6 @@ class PerfusionConfig:
     # k_reduce: Metabolic reduction constant for hypoxic zones (per mmol)
     k_reduce: float = 0.1
 
-    # C_arterial: Oxygen concentration entering the network (mmol / L)
-    C_arterial: float = 0.13
-
 
 @dataclass
 class VisualizationConfig:

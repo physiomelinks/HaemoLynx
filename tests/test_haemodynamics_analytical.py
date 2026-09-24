@@ -28,7 +28,6 @@ class MockPerfusionConfig:
     sigma_diff: float = 1.0 # Simplified for analytical tests
     M_max: float = 10.0
     k_reduce: float = 1000.0 # High value forces linear "zero-order" kinetics
-    C_arterial: float = 100.0
 
 
 # --- Part 1: 1D Hemodynamics Analytical Tests ---
@@ -566,7 +565,7 @@ def test_multi_species_0d_fick_mass_balance():
         M_max = m_max; k_reduce = 1000.0; respiratory_quotient = rq; hco3_tissue = hco3
         permeability_o2_cm_s = p_perm_o2_cm_s
         permeability_co2_cm_s = p_perm_co2_cm_s
-        C_arterial = po2_art; pco2_arterial = pco2_art
+        po2_arterial_mmHg = po2_art; pco2_arterial = pco2_art
         sigma_diff = 1.5e-9; sigma_diff_co2 = 3.0e-8
             
     grid = FakeGrid()

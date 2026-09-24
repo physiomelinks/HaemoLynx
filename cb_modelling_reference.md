@@ -2649,7 +2649,6 @@ These are **not** configurable. They live in the function bodies.
 | `hco3_tissue` | 24.0 | mmol/L | (i) | Fixed bicarbonate buffer; no renal compensation. Arterial reference 24 ± 2 mmol/L, human, used here for tissue [`berend_physiological_2014`] | assumed |
 | `M_max` | **config 0.005; H2 driver 0.05** | mmol/L/s | (iii) | Maximum metabolic consumption rate. The two disagree by 10× — see open item 8. The driver's 0.05 is the defensible one: it is 0.067 mL O₂ per mL per minute against roughly 0.040 for brain, the right order for a metabolically active organ | unswept in magnitude; the glomus:stroma *ratio* is swept |
 | `k_reduce` | 0.1 | per mmol | (iii) | Phenomenological metabolic reduction in hypoxic zones. **Not Michaelis–Menten** — that form is used nowhere in the pipeline, and the two differ most in the low-PO₂ regime, which is exactly where §2.3 reads its answer | unswept |
-| `C_arterial` | 0.13 | mmol/L | (iii) | **Dead configuration.** Declared in three places (`PerfusionConfig` and the two H2 driver `PerfConfig` classes) and read nowhere in `src/` or `examples/`. Superseded in practice by the blood-gas path, which computes arterial oxygen content from PO₂ and haematocrit | n/a |
 | `use_endothelial_barrier_model` | True | — | — | **Implemented, unreachable.** The dispatch is `if use_multi_species_model: … elif use_endothelial_barrier_model: …`, and multi-species is also True by default, so the `elif` never fires. Setting this flag alone changes nothing | — |
 | `use_multi_species_model` | True | — | — | Selects the O₂/CO₂/pH solver | — |
 | Glomus : stroma metabolic ratio | swept, not fixed | — | (iii) | **Nothing in this study measures it.** §2.3 reports the hypoxic fraction across a range of it rather than at one value | measured by sweep |
@@ -2661,10 +2660,6 @@ These are **not** configurable. They live in the function bodies.
 > ⚠ **Open item 4 — baseline haematocrit is duplicated too.** `h_baseline = 0.45` is hard-coded
 > in the Tier 1 washout path, duplicating `systemic_hematocrit`. In Tier 1 the washout is
 > therefore decoupled from local haematocrit.
->
-> ⚠ **Open item 5 — `C_arterial` is dead configuration.** Confirmed: declared three times, read
-> nowhere. Either wire it up or delete it; leaving it in a config invites someone to set it and
-> expect an effect.
 
 ---
 
@@ -3260,7 +3255,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1. **Now pinned**: `cb_settings.BOUNDARY_AXIS` owns the axis, and the band rule raises on an empty band instead of falling back to the extreme decile of all nodes (opt-in only, for the nerve pipeline) | §2.8, §8, §13 — the largest sensitivity in the model |
 | 3 | Arterial PO₂ set in both config and solver bodies | §5, §6 |
 | 4 | Baseline haematocrit duplicated in the Tier 1 washout path | §6.6 |
-| 5 | `C_arterial` is dead configuration — declared 3×, read 0× | §6 |
+| ~~5~~ | **Closed.** `C_arterial` was declared 3× and read 0×; it is removed from `PerfusionConfig`, `cb_settings.PerfusionSettings` and the H2 drivers, and `test_cb_settings.py` fails if it comes back. One analytical test had set it expecting it to control arterial PO₂; it now sets `po2_arterial_mmHg` | — |
 | 6 | Solver tolerances disagree between config and code | Appendix A |
 | 7 | 3 parameters still marked `[CITE]` that need only a source: the Spencer CO₂ curve, its Haldane shift, and `permeability_o2_cm_s`. `sigma_diff_co2` and `permeability_co2_cm_s` are uncited too, but their values look wrong rather than merely unsourced, so they are tracked under item 18 | §10 completeness |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |

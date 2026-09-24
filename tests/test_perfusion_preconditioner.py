@@ -86,7 +86,7 @@ def test_the_perfusion_matrix_diagonal_is_positive_by_construction():
         PerfusionGrid, build_adr_matrix, map_vessels_to_grid)
 
     class Cfg:
-        sigma_diff, M_max, k_reduce, C_arterial = 1.5e-9, 0.05, 0.1, 0.13
+        sigma_diff, M_max, k_reduce = 1.5e-9, 0.05, 0.1
 
     G = nx.MultiGraph()
     G.add_node(1, pos=np.array([0.0, 0.0, 0.0]))

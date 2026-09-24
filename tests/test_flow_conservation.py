@@ -79,7 +79,7 @@ def test_the_oxygen_source_is_grid_independent_end_to_end():
     from ImageLynx.haemodynamics.perfusion import build_adr_matrix
 
     class Cfg:
-        sigma_diff, M_max, k_reduce, C_arterial = 1.5e-9, 0.05, 0.1, 0.13
+        sigma_diff, M_max, k_reduce = 1.5e-9, 0.05, 0.1
 
     G = _one_long_edge()
     sums = {}

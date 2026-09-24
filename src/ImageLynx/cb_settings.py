@@ -166,6 +166,3 @@ class PerfusionSettings:
     sigma_diff: float = 1.5e-9
     #: Rate constant of the saturating metabolic sink, per mmol.
     k_reduce: float = 0.1
-    #: Declared for interface compatibility with ``PerfusionConfig``. Read by nothing;
-    #: this is open item 5, recorded rather than quietly dropped.
-    C_arterial: float = 0.13

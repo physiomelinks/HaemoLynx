@@ -60,16 +60,7 @@ GRID_UM = cb_settings.GRID_UM
 INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
 BASE_M_MAX = cb_settings.BASE_M_MAX
 HYPOXIC_THRESHOLDS = (5.0, 10.0, 20.0)
-
-
-class PerfConfig:
-    """M_max may be a scalar or a per-cell array; the solver uses it elementwise."""
-
-    def __init__(self, m_max):
-        self.sigma_diff = 1.5e-9
-        self.M_max = m_max
-        self.k_reduce = 0.1
-        self.C_arterial = 0.13
+PerfConfig = cb_settings.PerfusionSettings
 
 
 def _load_graph(specimen):
