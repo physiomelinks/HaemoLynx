@@ -1781,7 +1781,7 @@ it away from the same cell; it does not carry oxygen from one cell to the next.
 | 1 | Convert the diffusion coefficient m²/s → µm²/s | × 10¹² | `sigma_diff` is stored in SI while the whole grid is in microns; converting once here keeps every conductance in µm³/s | **On** | `perfusion.py:368` |
 | 2 | Face conductances D_z, D_y, D_x from σ, face area and normal spacing | — | Fick's law across a cell face: flux scales with the face area and inversely with the distance between cell centres | **On** | `perfusion.py:373` |
 | 3 | Per perfused cell, `q_total` = Σ flow × `length_fraction` | — | Blood entering a cell is the only oxygen source the tissue has | **On** | `perfusion.py:388` |
-| 4 | Per perfused cell, `s_incoming` = Σ flow-share × C_O₂(PO₂_art, H_edge) | PO₂_art **hard-coded 100 mmHg** | Converts that flow into an oxygen delivery rate using the arterial content at the edge's own haematocrit | **On** — open item 3 | `perfusion.py:382` |
+| 4 | Per perfused cell, `s_incoming` = Σ flow-share × C_O₂(PO₂_art, H_edge) | PO₂_art = `po2_arterial_mmHg`, 100 mmHg | Converts that flow into an oxygen delivery rate using the arterial content at the edge's own haematocrit. An edge with no `hematocrit` is refused by `map_vessels_to_grid` rather than given 0.45 | **On** | `perfusion.py:398` |
 | 5 | Reshape the index array `(nx, ny, nz)` so the last axis is z | C-order | The linear index is z-fastest, and a C-order reshape makes the last axis fastest — so the shape has to be reversed to match | **On** | `perfusion.py:406` |
 | 6 | Off-diagonals for the six face neighbours, both directions | −D per face | A cell exchanges with each face neighbour symmetrically, which is what makes the matrix symmetric and CG-solvable | **On** | `perfusion.py:409` |
 | 7 | Diagonal accumulates every conductance the cell participates in | — | Conservation: whatever leaves a cell across its faces must appear on its own diagonal | **On** | `perfusion.py:437` |
@@ -1885,8 +1885,11 @@ scaled versions of each other.
 | 2 | `solve_coupled_1d3d_perfusion` | O₂ across an endothelial permeability barrier | **Implemented, unreachable** — the dispatch is `if multi_species … elif barrier …`, and multi-species is also on |
 | 3 | `solve_multi_species_perfusion` | O₂, CO₂ and pH, linked by the respiratory quotient | Reachable; reads Picard settings from config where Tier 1 hard-codes them |
 
-**Tier 1 uses a fixed baseline haematocrit** of 0.45 for the washout, hard-coded rather than read
-from the edge (§11 row 27).
+**Tier 1 uses a fixed baseline haematocrit** for the washout: `systemic_hematocrit` (0.45) from the
+config, not the edge's own haematocrit (§11 row 27). The source side does use the edge's
+haematocrit, so the two sides only agree where the edge carries systemic haematocrit. Set the
+config value below the edge value and a cell receives more oxygen than it can wash out at arterial
+PO₂, and tissue PO₂ climbs above arterial.
 
 ### 6.7 Numerical stabilisation of the Picard loop
 
@@ -1917,7 +1920,7 @@ The loop warns rather than raising if it hits its iteration cap without reaching
 | 4 | Build the Jacobi preconditioner from the stabilised matrix | diagonal | Built once because the stabilised matrix never changes; only the right-hand side does | **On**, once | `perfusion.py:493` |
 | 5 | Clamp PO₂ ≥ 0 | — | Negative PO₂ is non-physical and would drive the oxygen-content curve into an oscillation | **On**, every iteration | `perfusion.py:497` |
 | 6 | Metabolic sink $M_\text{max}\bigl(1 - e^{-k P_{\mathrm{O_2}}}\bigr)$ | k = 0.1 | The sink saturates with PO₂, so it has to be re-evaluated from the current iterate rather than held fixed | **On** | `perfusion.py:501` |
-| 7 | Advective washout $q_\text{total} \cdot C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H)$ per perfused cell | H **hard-coded 0.45** | Blood leaves each cell carrying oxygen at the local tissue PO₂, which is exactly what the previous iterate just changed | **On** — open item 4 | `perfusion.py:507` |
+| 7 | Advective washout $q_\text{total} \cdot C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H)$ per perfused cell | H = `systemic_hematocrit`, 0.45 — not the cell's local haematocrit | Blood leaves each cell carrying oxygen at the local tissue PO₂, which is exactly what the previous iterate just changed | **On** — §11 row 27 | `perfusion.py:523` |
 | 8 | RHS = $s_\text{incoming} - s_\text{washout} - M V_\text{cell} + q\gamma P_{\mathrm{O_2}}$ | — | Assembles delivery, removal and consumption into one right-hand side, with the pseudo-washout added back so the fixed point is unchanged | **On** | `perfusion.py:512` |
 | 9 | CG solve, warm-started from the previous iterate | `rtol` 1e-6, `maxiter` 1000 | Warm-starting from the previous iterate means later Picard passes cost far fewer inner iterations than the first | **On** | `perfusion.py:515` |
 | 10 | Non-convergence warns, never fails silently | — | A truncated inner solve is reported rather than returned as if it had converged | **On** | `perfusion.py:517` |
@@ -2391,9 +2394,9 @@ Values carried by blood entering the tissue, all constants (§10.8, §10.9):
 
 | Quantity | Value | Notes |
 |---|---|---|
-| Arterial PO₂ | 100 mmHg | Also hard-coded in two solver bodies — open item 3 |
+| Arterial PO₂ | 100 mmHg | `po2_arterial_mmHg`, read by all three tiers |
 | Arterial PCO₂ | 40 mmHg | |
-| Systemic haematocrit | 0.45 | Tier 1 washout hard-codes the same value — open item 4 |
+| Systemic haematocrit | 0.45 | `systemic_hematocrit`; Tier 1 evaluates its washout at this value (§6.6) |
 | Tissue bicarbonate | 24 mmol/L | Constant buffer; no renal compensation |
 
 Arterial oxygen **content** is not imposed directly — it is computed from arterial PO₂ and the
@@ -2643,8 +2646,8 @@ These are **not** configurable. They live in the function bodies.
 | `permeability_o2_cm_s` | 1.0 × 10⁻⁴ | cm/s | (ii) | Endothelial O₂ permeability `[CITE — unconfirmed]`. No measured or model-used value found; open item 7 | assumed |
 | `permeability_co2_cm_s` | 2.0 × 10⁻³ | cm/s | (ii) | Endothelial CO₂ permeability `[CITE — unconfirmed]`. [`dash_simultaneous_2006`] use one capillary PS for both O₂ and CO₂, not a 20× ratio; see open item 18 | assumed |
 | `respiratory_quotient` | 0.82 | — | (i) | CO₂ produced per O₂ consumed; fasting whole-body RQ ≈ 0.80–0.90 depending on diet, human [`miles-chan_fasting_2015`]. Measured 0.85 in rat skeletal muscle [`kawashiro_determination_1975`] | assumed |
-| `systemic_hematocrit` | 0.45 | fraction | (i) | Standard haematocrit ≈ 0.45, human [`dash_erratum_2010`] | assumed |
-| `po2_arterial_mmHg` | 100.0 | mmHg | (i) | Standard arterial PO₂, human [`dash_erratum_2010`] — but see open item 3 | assumed |
+| `systemic_hematocrit` | 0.45 | fraction | (i) | Standard haematocrit ≈ 0.45, human [`dash_erratum_2010`]. Also the Tier 1 washout haematocrit (§6.6); `cb_settings.PerfusionSettings` carries the same value | assumed |
+| `po2_arterial_mmHg` | 100.0 | mmHg | (i) | Standard arterial PO₂, human [`dash_erratum_2010`]. Read by all three tiers; `cb_settings.PerfusionSettings` carries the same value for the H2 drivers | assumed |
 | `pco2_arterial` | 40.0 | mmHg | (i) | Arterial reference 40 ± 2 mmHg, human [`dash_erratum_2010`], [`berend_physiological_2014`] | assumed |
 | `hco3_tissue` | 24.0 | mmol/L | (i) | Fixed bicarbonate buffer; no renal compensation. Arterial reference 24 ± 2 mmol/L, human, used here for tissue [`berend_physiological_2014`] | assumed |
 | `M_max` | **config 0.005; H2 driver 0.05** | mmol/L/s | (iii) | Maximum metabolic consumption rate. The two disagree by 10× — see open item 8. The driver's 0.05 is the defensible one: it is 0.067 mL O₂ per mL per minute against roughly 0.040 for brain, the right order for a metabolically active organ | unswept in magnitude; the glomus:stroma *ratio* is swept |
@@ -2652,14 +2655,6 @@ These are **not** configurable. They live in the function bodies.
 | `use_endothelial_barrier_model` | True | — | — | **Implemented, unreachable.** The dispatch is `if use_multi_species_model: … elif use_endothelial_barrier_model: …`, and multi-species is also True by default, so the `elif` never fires. Setting this flag alone changes nothing | — |
 | `use_multi_species_model` | True | — | — | Selects the O₂/CO₂/pH solver | — |
 | Glomus : stroma metabolic ratio | swept, not fixed | — | (iii) | **Nothing in this study measures it.** §2.3 reports the hypoxic fraction across a range of it rather than at one value | measured by sweep |
-
-> ⚠ **Open item 3 — arterial PO₂ is set in two places.** `PerfusionConfig.po2_arterial_mmHg`
-> exists, but `po2_arterial = 100.0` is also hard-coded inside two solver bodies. If the config
-> value is changed, one or both solvers may ignore it. Trace before treating it as a knob.
->
-> ⚠ **Open item 4 — baseline haematocrit is duplicated too.** `h_baseline = 0.45` is hard-coded
-> in the Tier 1 washout path, duplicating `systemic_hematocrit`. In Tier 1 the washout is
-> therefore decoupled from local haematocrit.
 
 ---
 
@@ -2717,7 +2712,7 @@ the model would push it.
 | 24 | Vessel-to-grid mapping is point-sampled along the centreline | §6.2 | An approximation to line–plane intersection, so *where* a vessel deposits carries discretisation error. The *total* is conserved: shares are normalised by accumulated length, so an edge's flow sums to exactly one across the cells it crosses |
 | 25 | The grid spans the segmented volume, not the graph's extent | §6.1 | Tissue beyond the graph is represented; tissue beyond the segmentation is not represented at all |
 | 26 | No lymphatic drainage or interstitial fluid flow | §6.3 | Omits a minor transport pathway |
-| 27 | Fixed baseline haematocrit in the Tier 1 washout | §6.6 | `h_baseline = 0.45` is hard-coded, so Tier 1 washout is decoupled from local haematocrit. Tier 1 only |
+| 27 | Fixed baseline haematocrit in the Tier 1 washout | §6.6 | The washout reads `systemic_hematocrit` (0.45), not the cell's local haematocrit, so Tier 1 washout is decoupled from phase separation. Tier 1 only |
 
 ### 11.5 Study design and reporting
 
@@ -3253,8 +3248,8 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 |---|---|---|
 | 1 | Two segmentation thresholds in play — config 0.65/0.75 vs the frozen 0.90 used for H1. **Now pinned**: `cb_settings.FROZEN_THRESHOLD` owns the value and `test_cb_settings.py` asserts the config default has not moved | §2.2, and any quoted calibre |
 | 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1. **Now pinned**: `cb_settings.BOUNDARY_AXIS` owns the axis, and the band rule raises on an empty band instead of falling back to the extreme decile of all nodes (opt-in only, for the nerve pipeline) | §2.8, §8, §13 — the largest sensitivity in the model |
-| 3 | Arterial PO₂ set in both config and solver bodies | §5, §6 |
-| 4 | Baseline haematocrit duplicated in the Tier 1 washout path | §6.6 |
+| ~~3~~ | **Closed.** Arterial PO₂ was hard-coded as 100 in the Tier 1 source and Tier 2, and read through `getattr` with a default in Tier 3. All three now read `po2_arterial_mmHg` and raise if it is missing; `cb_settings.PerfusionSettings` gains the field at 100, so no published number moves. `test_perfusion_config_values.py` | — |
+| ~~4~~ | **Closed.** The Tier 1 washout now reads `systemic_hematocrit` instead of a hard-coded 0.45, and `cb_settings.PerfusionSettings` gains the field at 0.45. The washout is still evaluated at systemic rather than local haematocrit; that is a modelling choice, kept as §11 row 27. The 0.45 edge-haematocrit and 100 µm² surface-area defaults in `perfusion.py` are gone too: `map_vessels_to_grid` raises on an edge with no `hematocrit` | — |
 | ~~5~~ | **Closed.** `C_arterial` was declared 3× and read 0×; it is removed from `PerfusionConfig`, `cb_settings.PerfusionSettings` and the H2 drivers, and `test_cb_settings.py` fails if it comes back. One analytical test had set it expecting it to control arterial PO₂; it now sets `po2_arterial_mmHg` | — |
 | 6 | Solver tolerances disagree between config and code | Appendix A |
 | 7 | 3 parameters still marked `[CITE]` that need only a source: the Spencer CO₂ curve, its Haldane shift, and `permeability_o2_cm_s`. `sigma_diff_co2` and `permeability_co2_cm_s` are uncited too, but their values look wrong rather than merely unsourced, so they are tracked under item 18 | §10 completeness |

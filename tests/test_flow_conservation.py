@@ -20,7 +20,7 @@ def _one_long_edge(n_points=40, span=280.0):
     G.add_node(1, pos=pts[0])
     G.add_node(2, pos=pts[-1])
     G.add_edge(1, 2, key=0, length=float(span - 10.0), flow_abs=4.0,
-               assigned_diameter_um=8.0, voxels=pts)
+               assigned_diameter_um=8.0, hematocrit=0.45, voxels=pts)
     return G
 
 
@@ -68,7 +68,8 @@ def test_an_edge_wholly_inside_one_cell_keeps_its_whole_share():
     G = nx.MultiGraph()
     pts = [np.array([100.0, 100.0, 100.0]), np.array([102.0, 100.0, 100.0])]
     G.add_node(1, pos=pts[0]); G.add_node(2, pos=pts[1])
-    G.add_edge(1, 2, key=0, length=2.0, flow_abs=3.0, assigned_diameter_um=8.0, voxels=pts)
+    G.add_edge(1, 2, key=0, length=2.0, flow_abs=3.0, assigned_diameter_um=8.0, hematocrit=0.45,
+               voxels=pts)
     mapping = map_vessels_to_grid(G, PerfusionGrid(G, (50.0, 50.0, 50.0)))
     shares = [v["length_fraction"] for cell in mapping.values() for v in cell]
     assert sum(shares) == pytest.approx(1.0)
@@ -80,6 +81,7 @@ def test_the_oxygen_source_is_grid_independent_end_to_end():
 
     class Cfg:
         sigma_diff, M_max, k_reduce = 1.5e-9, 0.05, 0.1
+        po2_arterial_mmHg, systemic_hematocrit = 100.0, 0.45
 
     G = _one_long_edge()
     sums = {}

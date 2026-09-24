@@ -19,6 +19,8 @@ class MockPerfusionConfig:
     sigma_diff: float = 1.5e-9
     M_max: float = 0.05
     k_reduce: float = 0.1
+    po2_arterial_mmHg: float = 100.0
+    systemic_hematocrit: float = 0.45
 
 @pytest.fixture
 def mock_graph():
@@ -37,7 +39,7 @@ def mock_graph():
         np.array([20.0, 5.0, 5.0])
     ]
     
-    G.add_edge(1, 2, key=0, voxels=voxels_z_line, flow_abs=10.0, length=15.0)
+    G.add_edge(1, 2, key=0, voxels=voxels_z_line, flow_abs=10.0, length=15.0, hematocrit=0.45)
     G.graph["voxel_size"] = (1.0, 1.0, 1.0) # Used in older parts, not perfusion directly anymore
     return G
 
@@ -259,6 +261,7 @@ def test_analytical_0d_fick_principle_mass_balance():
         def __init__(self):
             self.M_max = 0.05
             self.k_reduce = 1000.0
+            self.systemic_hematocrit = 0.45
             
     grid = FakeGrid()
     config = FakeConfig()
@@ -297,6 +300,7 @@ def test_analytical_transmural_exponential_decay():
         def __init__(self):
             # Giant metabolic sink forces Tissue PO2 to 0.0
             self.M_max = 1e9; self.k_reduce = 1000.0; self.permeability_o2_cm_s = p_perm_cm_s; self.sigma_diff = 1.5e-9
+            self.po2_arterial_mmHg = 100.0; self.systemic_hematocrit = 0.45
 
     grid = FakeGrid(); config = FakeConfig(); A = sp.csr_matrix([[0.0]])
     G_mock = nx.MultiGraph(); G_mock.add_node(0); G_mock.add_node(1)

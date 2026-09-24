@@ -223,6 +223,10 @@ def map_vessels_to_grid(
     Passing it is a deliberate choice to model unmeasured vessels at a stated calibre; the
     previous behaviour made that choice silently, at 5.0 um, on the caller's behalf.
 
+    Also raises if any edge lacks a ``hematocrit``. It used to be read with a 0.45 default,
+    so a graph that had never been through the rheology solve was given systemic haematocrit
+    everywhere and delivered oxygen as if it had.
+
     Returns:
         Mapping of linear_cell_index -> list of segments passing through that cell.
         Each segment info includes the edge ID, flow in um^3/s, and length in that cell.
@@ -239,6 +243,18 @@ def map_vessels_to_grid(
             f"area and therefore every transvascular flux and tissue PO2 computed from it, so "
             f"it is not substituted silently. Assign diameters first, or pass "
             f"default_diameter_um to model the unmeasured edges at a stated calibre."
+        )
+    no_hct = [
+        (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+        if data.get("hematocrit") is None
+    ]
+    if no_hct:
+        shown = ", ".join(str(e) for e in no_hct[:3])
+        raise ValueError(
+            f"{len(no_hct)} of {G.number_of_edges()} edges have no 'hematocrit', for example "
+            f"{shown}. Haematocrit sets the oxygen content each edge delivers, so it is not "
+            f"substituted silently. Run the rheology solve "
+            f"(solve_coupled_flow_and_hematocrit) first, or set it on every edge."
         )
 
     cell_to_vessels = {}
@@ -284,7 +300,7 @@ def map_vessels_to_grid(
                     cell_to_vessels[idx].append({
                         'edge': (u, v, key),
                         'flow': flow,
-                        'hematocrit': data.get("hematocrit", 0.45),
+                        'hematocrit': float(data["hematocrit"]),
                         'length': len_per_vox,
                         'surface_area': 2.0 * np.pi * radius * len_per_vox
                     })
@@ -379,7 +395,7 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     q_total = np.zeros(N, dtype=np.float64)
     s_incoming = np.zeros(N, dtype=np.float64)
     
-    po2_arterial = 100.0 # mmHg
+    po2_arterial = perf_config.po2_arterial_mmHg  # mmHg
     
     # Advection arrays (Vessel coupling)
     for idx, vessels in cell_to_vessels.items():
@@ -391,7 +407,7 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
         # S_incoming = Sum( Q_share * C_blood_arterial )
         total_o2_flux = 0.0
         for v in vessels:
-            h = v.get('hematocrit', 0.45)
+            h = v['hematocrit']
             c_art = calculate_blood_oxygen_content(po2_arterial, h)
             total_o2_flux += v['flow'] * v.get('length_fraction', 1.0) * c_art
             
@@ -464,11 +480,10 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     k_reduce = perf_config.k_reduce
     V_cell = grid.cell_volume
     
-    # We need a system-wide baseline hematocrit for the venous washout calculation
-    # For a perfect voxel-level solution, we'd store a weighted average H_D per voxel,
-    # but for stability we can assume the washout matches systemic 0.45, or we can approximate.
-    # We will use 0.45 as the baseline for the tissue equilibrium curve.
-    h_baseline = 0.45
+    # The venous washout is evaluated at systemic haematocrit, not at each cell's local
+    # haematocrit, so in Tier 1 the washout is decoupled from phase separation. Read from the
+    # config rather than written out here, so it cannot drift from the systemic value.
+    h_baseline = perf_config.systemic_hematocrit
     
     max_iter = 50
     tolerance = 1e-5
@@ -561,9 +576,9 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     V_cell = grid.cell_volume
     P_perm_o2 = getattr(perf_config, 'permeability_o2_cm_s', 1.0e-4) * 1e4 # um/s
     P_perm_co2 = getattr(perf_config, 'permeability_co2_cm_s', 2.0e-3) * 1e4 # um/s
-    po2_art = getattr(perf_config, 'po2_arterial_mmHg', 100.0)
+    po2_art = perf_config.po2_arterial_mmHg
     pco2_art = getattr(perf_config, 'pco2_arterial', 40.0)
-    systemic_h = getattr(perf_config, 'systemic_hematocrit', 0.45)
+    systemic_h = perf_config.systemic_hematocrit
     max_iter = getattr(perf_config, 'picard_max_iterations', 50)
     tolerance = getattr(perf_config, 'picard_tolerance', 1e-4)
 
@@ -576,7 +591,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         for v in vessels:
             edge = v['edge']
             if edge not in edge_to_cells: edge_to_cells[edge] = []
-            edge_to_cells[edge].append({'cell_idx': cell_idx, 'surface_area': v.get('surface_area', 100.0), 'flow': v['flow']})
+            edge_to_cells[edge].append({'cell_idx': cell_idx, 'surface_area': v['surface_area'], 'flow': v['flow']})
 
     DAG = nx.MultiDiGraph()
     for u, v, key, e_data in G.edges(keys=True, data=True):
@@ -635,7 +650,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
 
     area_total = np.zeros(N)
     for cell_idx, vessels in cell_to_vessels.items():
-        area_total[cell_idx] = sum(v.get('surface_area', 100.0) for v in vessels)
+        area_total[cell_idx] = sum(v['surface_area'] for v in vessels)
 
     gamma_relax_o2 = 1.0
     gamma_relax_co2 = 1.0 
@@ -668,7 +683,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
             if n in DAG.nodes:
                 for succ in DAG.successors(n):
                     for k, d in DAG[n][succ].items():
-                        h = d.get("hematocrit", systemic_h)
+                        h = d["hematocrit"]
                         q = d.get("flow_abs", 0.0)
                         # Arterial blood assumed pH 7.4
                         node_o2_flux_in[n] += calculate_blood_oxygen_content(po2_art, h, pco2_art, 7.4) * q
@@ -690,7 +705,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                 edge_key = (node, v, k)
                 if edge_key not in edge_to_cells: edge_key = (v, node, k)
                 q = e_data.get("flow_abs", 0.0)
-                h = e_data.get("hematocrit", systemic_h)
+                h = e_data["hematocrit"]
 
                 # Approximate incoming pressures based on mix
                 try:
@@ -812,7 +827,8 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
     k_reduce = perf_config.k_reduce
     V_cell = grid.cell_volume
     P_perm = perf_config.permeability_o2_cm_s * 1e4 # um/s
-    po2_arterial = 100.0
+    po2_arterial = perf_config.po2_arterial_mmHg
+    systemic_h = perf_config.systemic_hematocrit
     
     edge_to_cells = {}
     q_total = np.zeros(N)
@@ -821,7 +837,7 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
         for v in vessels:
             edge = v['edge']
             if edge not in edge_to_cells: edge_to_cells[edge] = []
-            edge_to_cells[edge].append({'cell_idx': cell_idx, 'surface_area': v.get('surface_area', 100.0), 'flow': v['flow']})
+            edge_to_cells[edge].append({'cell_idx': cell_idx, 'surface_area': v['surface_area'], 'flow': v['flow']})
             
     DAG = nx.MultiDiGraph()
     for u, v, key, e_data in G.edges(keys=True, data=True):
@@ -836,7 +852,7 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
         
     area_total = np.zeros(N)
     for cell_idx, vessels in cell_to_vessels.items():
-        area_total[cell_idx] = sum(v.get('surface_area', 100.0) for v in vessels)
+        area_total[cell_idx] = sum(v['surface_area'] for v in vessels)
         
     A_stable = A.copy()
     # The true linear sink of Tissue PO2 is the trans-mural flux: -P_perm * Area * Tissue_PO2.
@@ -859,18 +875,18 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
             if n in DAG.nodes:
                 for succ in DAG.successors(n):
                     for k, d in DAG[n][succ].items():
-                        h = d.get("hematocrit", 0.45)
+                        h = d["hematocrit"]
                         node_o2_flux_in[n] += calculate_blood_oxygen_content(po2_arterial, h) * d.get("flow_abs", 0.0)
                         node_q_in[n] += d.get("flow_abs", 0.0)
         
         cell_transmural_flux = np.zeros(N, dtype=np.float64)
         for node in topo_order:
-            c_mix = node_o2_flux_in[node] / node_q_in[node] if node_q_in[node] > 0 else calculate_blood_oxygen_content(po2_arterial, 0.45)
+            c_mix = node_o2_flux_in[node] / node_q_in[node] if node_q_in[node] > 0 else calculate_blood_oxygen_content(po2_arterial, systemic_h)
             for _, v, k, e_data in DAG.out_edges(node, data=True, keys=True):
                 edge_key = (node, v, k)
                 if edge_key not in edge_to_cells: edge_key = (v, node, k)
                 q = e_data.get("flow_abs", 0.0)
-                h = e_data.get("hematocrit", 0.45)
+                h = e_data["hematocrit"]
                 try:
                     po2_current = brentq(lambda p: calculate_blood_oxygen_content(p, h) - c_mix, 0.0, 150.0)
                 except ValueError: po2_current = po2_arterial if c_mix > 0 else 0.0

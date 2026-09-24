@@ -441,6 +441,8 @@ def test_krogh_cylinder_radial_diffusion():
         k_reduce = 1000.0 # Force zero-order linear sink
         permeability_o2_cm_s = 1e9 # Infinite perm to match Krogh boundary (Pc = fixed)
         sigma_diff = 1.5e-9
+        po2_arterial_mmHg = 100.0
+        systemic_hematocrit = 0.45
         
     grid = FakeGrid()
     config = FakeConfig()
@@ -565,7 +567,7 @@ def test_multi_species_0d_fick_mass_balance():
         M_max = m_max; k_reduce = 1000.0; respiratory_quotient = rq; hco3_tissue = hco3
         permeability_o2_cm_s = p_perm_o2_cm_s
         permeability_co2_cm_s = p_perm_co2_cm_s
-        po2_arterial_mmHg = po2_art; pco2_arterial = pco2_art
+        po2_arterial_mmHg = po2_art; pco2_arterial = pco2_art; systemic_hematocrit = h_d
         sigma_diff = 1.5e-9; sigma_diff_co2 = 3.0e-8
             
     grid = FakeGrid()

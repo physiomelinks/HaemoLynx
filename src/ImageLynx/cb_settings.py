@@ -166,3 +166,10 @@ class PerfusionSettings:
     sigma_diff: float = 1.5e-9
     #: Rate constant of the saturating metabolic sink, per mmol.
     k_reduce: float = 0.1
+    #: Arterial PO2 of the blood entering the network, mmHg. It used to be written out as
+    #: 100.0 inside the solver bodies (open item 3); the value is unchanged.
+    po2_arterial_mmHg: float = 100.0
+    #: Systemic haematocrit. Tier 1 evaluates the venous washout at this value rather than at
+    #: each cell's local haematocrit; it used to be written out as 0.45 in the solver (open
+    #: item 4). The value is unchanged.
+    systemic_hematocrit: float = 0.45

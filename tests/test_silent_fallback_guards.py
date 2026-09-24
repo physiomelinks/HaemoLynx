@@ -24,7 +24,7 @@ def _grid_graph(diameters):
         name = f"n{i}"
         pos = np.array([20.0 + 5.0 * (i + 1), 20.0, 20.0])
         G.add_node(name, pos=pos)
-        attrs = {"length": 5.0, "flow_abs": 1.0,
+        attrs = {"length": 5.0, "flow_abs": 1.0, "hematocrit": 0.45,
                  "voxels": [(20.0, 20.0, 20.0), tuple(pos)]}
         if d is not None:
             attrs["assigned_diameter_um"] = d
@@ -72,6 +72,31 @@ def test_the_fallback_can_be_taken_deliberately_but_must_be_asked_for():
     grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
     mapping = map_vessels_to_grid(G, grid, default_diameter_um=5.0)
     assert mapping
+
+
+# --- The 0.45 haematocrit default in map_vessels_to_grid ------------------------------------
+
+def test_an_edge_without_a_haematocrit_is_refused_not_given_systemic():
+    """Haematocrit sets each edge's delivered oxygen content.
+
+    A graph that never went through the rheology solve used to be given 0.45 on every edge
+    and deliver oxygen as though phase separation had been computed.
+    """
+    G = _grid_graph([8.0, 6.0, 10.0])
+    del G.edges["hub", "n1", 0]["hematocrit"]
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    with pytest.raises(ValueError, match="1 of 3 edges have no 'hematocrit'"):
+        map_vessels_to_grid(G, grid)
+
+
+def test_the_edge_haematocrit_is_carried_into_the_mapping():
+    G = _grid_graph([8.0, 6.0])
+    G.edges["hub", "n0", 0]["hematocrit"] = 0.2
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    carried = {item["edge"]: item["hematocrit"]
+               for vessels in map_vessels_to_grid(G, grid).values() for item in vessels}
+    assert carried[("hub", "n0", 0)] == 0.2
+    assert carried[("hub", "n1", 0)] == 0.45
 
 
 # --- T2.3: edges dropped from the conductance matrix ---------------------------------------
