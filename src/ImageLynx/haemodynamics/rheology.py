@@ -90,11 +90,27 @@ def calculate_pries_secomb_viscosity(
 def calculate_phase_separation_hematocrit(
     q_in: float, h_in: float, 
     q_out1: float, d_out1: float, 
-    q_out2: float, d_out2: float
+    q_out2: float, d_out2: float,
+    d_parent: float,
 ) -> tuple[float, float]:
     """
     Calculates the phase separation of Red Blood Cells (Plasma Skimming) at a diverging bifurcation.
     RBCs disproportionately favor the branch with higher flow velocity and larger diameter.
+
+    Implements the empirical phase separation law of Pries et al. (1989) in its later
+    parametrisation, as printed in Rasmussen, Secomb & Pries (2018):
+
+        A  = -13.29 * ((D1/D2)^2 - 1) / ((D1/D2)^2 + 1) * (1 - H) / D_F
+        B  = 1 + 6.98 * (1 - H) / D_F
+        X0 = 0.964 * (1 - H) / D_F
+        logit FQ_E1 = A + B * logit[(FQ_1 - X0) / (1 - 2 X0)]
+
+    with FQ_E1 = 0 for FQ_1 <= X0 and 1 for FQ_1 >= 1 - X0. Rasmussen et al. attribute the
+    constants to a regression in Pries, Reglin & Secomb (2003); other sources call the same
+    form Pries & Secomb (2005). Which of the two first printed them is unconfirmed.
+
+    All three terms scale with the feeding vessel diameter D_F, not a daughter's, which makes
+    the result independent of which branch is labelled 1.
 
     Parameters:
     -----------
@@ -106,11 +122,14 @@ def calculate_phase_separation_hematocrit(
         Volumetric blood flow into branch 1 and branch 2.
     d_out1, d_out2 : float
         Diameters of branch 1 and branch 2 in micrometers.
+    d_parent : float
+        Diameter of the feeding (parent) vessel D_F in micrometers.
 
     Returns:
     --------
     tuple[float, float]
-        (hematocrit_out1, hematocrit_out2)
+        (hematocrit_out1, hematocrit_out2). If X0 >= 0.5, which happens only for D_F below
+        about 1.06 um at H = 0.45, the law is undefined and both branches get h_in.
     """
     # Prevent division by zero or biologically impossible negative flows
     if q_in <= 1e-12 or h_in <= 0.0:
@@ -125,9 +144,13 @@ def calculate_phase_separation_hematocrit(
     if fq2 < 1e-6:
         return h_in * (q_in / max(q_out1, 1e-12)), 0.0
 
-    # Critical flow fraction where RBCs completely fail to enter a branch (skimming threshold)
-    # Empirically, RBCs struggle to enter branches drawing less than ~5% of flow
-    x0 = 0.05 
+    # Minimum flow fraction a branch must draw to receive any red cells (Pries et al.)
+    x0 = 0.964 * (1 - h_in) / d_parent
+
+    # 1 - 2 X0 <= 0 leaves no flow range for the logistic curve; fall back to proportional
+    # splitting rather than extrapolating the regression that far below its data.
+    if x0 >= 0.5:
+        return float(h_in), float(h_in)
 
     if fq1 <= x0:
         fq_e1 = 0.0
@@ -136,12 +159,12 @@ def calculate_phase_separation_hematocrit(
     else:
         # Pries-Secomb Logistic Skimming Function
         # A defines the asymmetry of the bifurcation based on diameters
-        A = -13.29 * ((d_out1**2 / d_out2**2) - 1) / ((d_out1**2 / d_out2**2) + 1) * (1 - h_in) / d_out1
+        A = -13.29 * ((d_out1**2 / d_out2**2) - 1) / ((d_out1**2 / d_out2**2) + 1) * (1 - h_in) / d_parent
         
         # B controls the steepness of the skimming curve
-        B = 1.0 + 6.98 * (1 - h_in) / d_out1
+        B = 1.0 + 6.98 * (1 - h_in) / d_parent
         
-        # Logit transformation
+        # Logit transformation; (FQ-X0)/(1-FQ-X0) is logit[(FQ-X0)/(1-2 X0)] rearranged
         logit_fq = np.log((fq1 - x0) / (1.0 - fq1 - x0))
         
         logit_fe = A + B * logit_fq
@@ -154,7 +177,8 @@ def calculate_phase_separation_hematocrit(
     h_out1 = h_in * (fq_e1 / fq1)
     h_out2 = h_in * (fq_e2 / fq2)
 
-    # Physical bounds check
+    # Physical bounds check. Not part of the Pries law, and RBC flux is no longer conserved
+    # if it ever fires; it has not been seen to for daughters of 3-30 um.
     h_out1 = min(max(h_out1, 0.0), 0.95)
     h_out2 = min(max(h_out2, 0.0), 0.95)
 
@@ -190,6 +214,27 @@ def _require_diameters(G, default_diameter_um=None):
             f"rather than an approximate one. Assign diameters first, or pass "
             f"default_diameter_um to model the unmeasured edges at a stated calibre."
         )
+
+
+def feeding_vessel_diameter(
+    DAG: nx.MultiDiGraph, node, d1: float, d2: float, default_diameter_um=None
+) -> tuple[float, bool]:
+    """
+    The feeding diameter D_F at a diverging bifurcation, for the phase separation law.
+
+    One incoming edge gives its diameter. Several (a merge that splits again) give the
+    flow-weighted mean of their diameters. No incoming edge with flow falls back to the
+    larger daughter, and the second return value is True so callers can count the fallbacks.
+    """
+    q_sum = 0.0
+    qd_sum = 0.0
+    for _, _, data in DAG.in_edges(node, data=True):
+        q = data["flow_abs"]
+        q_sum += q
+        qd_sum += q * _edge_diameter_um(data, default_diameter_um)
+    if q_sum > 0.0:
+        return qd_sum / q_sum, False
+    return max(d1, d2), True
 
 
 def solve_coupled_flow_and_hematocrit(
@@ -331,6 +376,9 @@ def solve_coupled_flow_and_hematocrit(
         for n in starting_nodes:
             node_h_in[n] = systemic_hematocrit
             node_q_in[n] = 1.0 # Dummy >0 to prevent div by zero at root
+
+        # Bifurcations with no inflowing parent, where D_F falls back to the larger daughter
+        n_parent_fallbacks = 0
             
         for node in topological_order:
             # Calculate mixed hematocrit at this node
@@ -359,8 +407,12 @@ def solve_coupled_flow_and_hematocrit(
                 q2 = e2[3]["flow_abs"]
                 d2 = _edge_diameter_um(e2[3], default_diameter_um)
                 
+                d_parent, fell_back = feeding_vessel_diameter(
+                    DAG, node, d1, d2, default_diameter_um
+                )
+                n_parent_fallbacks += fell_back
                 h1, h2 = calculate_phase_separation_hematocrit(
-                    q1 + q2, h_mix, q1, d1, q2, d2
+                    q1 + q2, h_mix, q1, d1, q2, d2, d_parent
                 )
                 
                 G[node][e1[1]][e1[2]]["hematocrit"] = h1
@@ -380,6 +432,12 @@ def solve_coupled_flow_and_hematocrit(
                     data["hematocrit"] = h_mix
                     node_h_in[v] += h_mix * data["flow_abs"]
                     node_q_in[v] += data["flow_abs"]
+
+        if n_parent_fallbacks:
+            logger.info(
+                f"  {n_parent_fallbacks} bifurcation(s) had no inflowing parent; "
+                "D_F fell back to the larger daughter diameter."
+            )
 
         # 7. Update Graph Viscosities and Resistances for next iteration
         for u, v, key, data in G.edges(keys=True, data=True):
