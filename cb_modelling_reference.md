@@ -347,39 +347,30 @@ def bounds(self):
 `cb_h2_vtk.py:117`, `cb_h2_glomus_perfusion.py:84` and `cb_h2_hypoxic_fraction.py:92`. Integer
 arithmetic throughout, so the box is exactly 160 wide and exactly centred on the requested voxel.
 
-**The two paths do not agree, and the unused one is the worse of the two.** `crop_roi` rebuilds
-the centre from the fraction, and it truncates twice — `int()` on the offset, then `int()` again
-on the start:
+**The two paths now agree.** `crop_roi` used to rebuild the centre from the fraction by truncating
+twice — `int()` on the offset, then `int()` again on the start. On an axis of **odd** extent,
+`extent / 2.0` ends in `.5`; with the centre above the volume midpoint the residue rounded the
+wrong way and the box landed **one voxel low**. On the six, one axis per specimen was affected
+(WKY-A in z, the other five in y), and the error was always −1, never +1, so it would not have
+averaged out across specimens.
+
+It now rounds once, on the whole centre, and starts the box at `centre − size // 2`, the same
+integer rule as `bounds`:
 
 ```python
-offset_voxels = int(orig_shape[ax] * offsets[i])      # truncates toward zero
-sub_center = center + offset_voxels
-start = max(0, int(sub_center - target_dims[ax] / 2.0))   # truncates again
+extent = int(orig_shape[ax])
+sub_center = int(np.ceil(extent / 2.0 + extent * offsets[i] - 0.5))   # halves round down
+start = max(0, sub_center - target_dims[ax] // 2)
 ```
 
-When an axis has **odd** extent, `extent / 2.0` ends in `.5`, and the first truncation loses it.
-If the centre sits *above* the volume midpoint the residue rounds the wrong way and the box lands
-**one voxel low**; below the midpoint the two truncations cancel and it is exact. Measured on the
-six, one axis per specimen is affected:
+Halves round down, so a zero offset still centres on `extent // 2`, matching `clamp_centre`. An
+offset from `centre_to_offsets` lands exactly on its centre, for every legal centre of a 160-voxel
+box on each extent tested, odd and even, 160–521 (`test_preprocessing.py`, `test_roi_placement.py`).
 
-| Specimen | Axis | `bounds` | `crop_roi` | Error |
-|---|---|---|---|---|
-| WKY-A | z | [150, 310) | [149, 309) | −1 |
-| WKY-B | y | [118, 278) | [117, 277) | −1 |
-| WKY-C | y | [86, 246) | [85, 245) | −1 |
-| SHR-A | y | [180, 340) | [179, 339) | −1 |
-| SHR-B | y | [206, 366) | [205, 365) | −1 |
-| SHR-C | y | [218, 378) | [217, 377) | −1 |
-
-One voxel is 1.87 µm against a 298 µm box, so the size of the error is negligible. Its
-*direction* is not: it is always −1, never +1, so it would not average out across specimens — it
-would shift every affected axis the same way. Over a sweep of extents 200–520 and every legal
-centre, the two paths disagree on **27% of cases**, and **96% of the disagreements** have the
-centre above the midpoint.
-
-**None of this touches a published number**, because the CB drivers never take that path. It is
-recorded so that anyone who reaches for `crop_roi` — as `carotid_image_to_model.py` does — knows
-the box is not where the offsets say it is. Open item 14.
+**No published number moved**: the CB drivers never took that path. What changes is the
+fractional-offset path in `carotid_image_to_model.py`, which now crops where its offsets say. It
+also moves a centred crop one voxel up when the extent is even and the box size odd, because the
+old start `int(E/2 − s/2)` rounded down where `bounds` does not. Formerly open item 14.
 
 **The box is clamped, never truncated.** `clamp_centre` pulls the centre inwards until the box fits
 wholly inside the volume. A box hanging over an edge would be silently cropped, making that
@@ -3259,7 +3250,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 11 | Both Shannon-entropy parameters are inert — the vessel classifier has 2 classes, so the joint hysteresis path never runs; `shannon_entropy_core` is not even a config field | §2.3 |
 | ~~12~~ | **Closed in code** by `7ea1b36`. The rheology loop rescaled resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contained $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently. **Results not yet re-derived** | every absolute flow in §7, §13.5 |
 | 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
-| 14 | `crop_roi` rebuilds the centre from a fraction with two truncations, landing one voxel low when an axis has odd extent and the centre is above the midpoint. The CB drivers avoid it by slicing `RoiPlacement.bounds` directly, so no CB result is affected | §2.1; `carotid_image_to_model.py` and any caller using fractional offsets |
+| ~~14~~ | **Closed.** `crop_roi` rounded the centre twice and landed one voxel low on odd axes with the centre above the midpoint. It now rounds once and uses the same `centre − size // 2` rule as `RoiPlacement.bounds`, so the two paths agree exactly. No CB result used that path | — |
 | 15 | The threshold selector's “median diameter” is a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels. The 4–7 µm capillary window is an external target for the latter and is being applied to the former, which reads 0.63–1.00× as large | §2.2 step 3; the selected threshold, hence everything downstream |
 | ~~16~~ | **Merged into 17.** The group asymmetry of the freeze is a consequence of item 17's quantisation, not a separate defect: it disappears under `≥` | — |
 | 17 | The probability field is quantised to hundredths and every sweep threshold lands exactly on a level, so the strict `p > t` discards a whole level — 0.5% of the ROI at 0.30 rising to 4.2–5.9% at 0.99, where it is two thirds of the mask. `p > 0.99` is exactly `p = 1.0`. Using `≥` moves 3 of 6 per-specimen choices. **Consequence (formerly item 16):** freezing at 0.90 runs SHR-B and SHR-C above their own choice, at a median diameter of 3.73 µm — below the selector's own 4.0 µm floor. 0 of 3 WKY and 2 of 3 SHR are affected, so the freeze is group-asymmetric even though `assess_cohort_split` on the choices reports no separation. Under `≥` all three SHR choose 0.90 and the asymmetry disappears | §2.2 steps 2 and 13; the per-specimen choices, and every per-specimen geometric quantity |

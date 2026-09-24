@@ -365,11 +365,15 @@ def crop_roi(
     
     slices = [slice(None)] * image.ndim
     for i, ax in enumerate(spatial_axes):
-        center = orig_shape[ax] / 2.0
-        offset_voxels = int(orig_shape[ax] * offsets[i])
-        sub_center = center + offset_voxels
-        
-        start = max(0, int(sub_center - target_dims[ax] / 2.0))
+        # One rounding, of the whole centre, then the same integer rule as
+        # RoiPlacement.bounds: start = centre - size // 2. Truncating the offset and then the
+        # start separately put the box one voxel low whenever the extent was odd and the
+        # centre lay above the midpoint. Halves round down, so a zero offset still centres on
+        # extent // 2, and offsets from centre_to_offsets land exactly on their centre.
+        extent = int(orig_shape[ax])
+        sub_center = int(np.ceil(extent / 2.0 + extent * offsets[i] - 0.5))
+
+        start = max(0, sub_center - target_dims[ax] // 2)
         end = min(orig_shape[ax], start + target_dims[ax])
         
         # Alignment check

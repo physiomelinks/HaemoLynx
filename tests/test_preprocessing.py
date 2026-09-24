@@ -249,3 +249,34 @@ def test_absolute_roi_handles_a_trailing_channel_axis():
 
     volume = np.zeros((60, 60, 60, 2), dtype=np.float32)
     assert crop_roi(volume, size_zyx=(20, 20, 20)).shape == (20, 20, 20, 2)
+
+
+@pytest.mark.parametrize("extent", [160, 161, 200, 201, 377, 520, 521])
+def test_offsets_reproduce_the_placement_bounds_exactly(extent):
+    """Open item 14: crop_roi from centre_to_offsets lands on RoiPlacement.bounds.
+
+    Truncating the offset and the start separately put the box one voxel low on odd extents
+    with the centre above the midpoint - always low, never high, so it did not average out.
+    """
+    from ImageLynx.preprocessing import crop_roi
+    from ImageLynx.roi_placement import RoiPlacement, centre_to_offsets
+
+    size = 160
+    line = np.arange(extent, dtype=np.int32)
+    volume = np.broadcast_to(line[:, None, None], (extent, 2, 2))
+    for centre in range(size // 2, extent - (size - size // 2) + 1):
+        placement = RoiPlacement("X", (centre, 1, 1), (size, 2, 2),
+                                 centre_to_offsets((centre, 1, 1), volume.shape), None, "test")
+        expected = volume[placement.bounds]
+        got = crop_roi(volume, size_zyx=(size, 2, 2), offset_z=placement.offsets_zyx[0])
+        assert got[0, 0, 0] == expected[0, 0, 0], f"centre {centre}"
+        assert got.shape == expected.shape
+
+
+def test_a_zero_offset_on_an_odd_extent_centres_on_the_lower_middle_voxel():
+    """Halves round down, matching clamp_centre's extent // 2."""
+    from ImageLynx.preprocessing import crop_roi
+
+    volume = np.arange(21, dtype=np.int32)[:, None, None] * np.ones((1, 4, 4), dtype=np.int32)
+    got = crop_roi(volume, size_zyx=(5, 4, 4))
+    assert list(got[:, 0, 0]) == [8, 9, 10, 11, 12]

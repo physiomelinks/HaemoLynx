@@ -93,14 +93,13 @@ def test_the_cb_path_crops_with_bounds_and_is_exact():
             assert (sl.start + sl.stop) // 2 == centre, (specimen.specimen_id, axis)
 
 
-def test_crop_roi_lands_one_voxel_low_on_odd_axes_above_the_midpoint():
-    """Why the CB drivers use .bounds rather than the fractional-offset path.
+def test_crop_roi_lands_on_the_requested_centre_on_odd_axes_too():
+    """Open item 14: the fractional-offset path now agrees with .bounds.
 
-    crop_roi truncates twice - once on the offset, once on the start. On an axis of odd
-    extent, extent / 2.0 ends in .5; if the centre is above the midpoint that residue
-    rounds the wrong way and the box lands one voxel low. Below the midpoint the two
-    truncations cancel. This is open item 14 in the modelling reference: it affects no
-    CB result, because no CB driver takes that path.
+    crop_roi used to truncate twice - once on the offset, once on the start. On an axis of
+    odd extent, extent / 2.0 ends in .5; with the centre above the midpoint that residue
+    rounded the wrong way and the box landed one voxel low. These are the cases that used
+    to be off; every one is now exact.
     """
     from ImageLynx.preprocessing.image import crop_roi
 
@@ -112,13 +111,13 @@ def test_crop_roi_lands_one_voxel_low_on_odd_axes_above_the_midpoint():
         found = np.argwhere(out == 1)
         return None if not len(found) else centre - int(found[0][0]) + target // 2
 
-    # odd extent, centre above the midpoint -> one voxel low
-    assert crop_centre(435, 230) == 229
-    assert crop_centre(315, 166) == 165
-    # odd extent, centre below the midpoint -> exact
+    # odd extent, centre above the midpoint - used to land one voxel low
+    assert crop_centre(435, 230) == 230
+    assert crop_centre(315, 166) == 166
+    # odd extent, centre below the midpoint
     assert crop_centre(435, 106) == 106
     assert crop_centre(495, 164) == 164
-    # even extent -> exact either way
+    # even extent
     assert crop_centre(456, 240) == 240
     assert crop_centre(456, 150) == 150
 
